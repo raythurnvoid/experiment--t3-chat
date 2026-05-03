@@ -1215,7 +1215,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 	expect(yjsUpdates).toHaveLength(0);
 });
 
-test("/api/ai-docs-temp/contextual-prompt returns 429 on the third inline AI request before model work", async () => {
+test("/api/ai-docs-temp/contextual-prompt returns 429 on the second inline AI request before model work", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => {
@@ -1241,7 +1241,7 @@ test("/api/ai-docs-temp/contextual-prompt returns 429 on the third inline AI req
 		email: "inline-ai-rate-user@example.com",
 	});
 
-	for (let i = 0; i < 2; i++) {
+	for (let i = 0; i < 1; i++) {
 		const response = await asUser.fetch("/api/ai-docs-temp/contextual-prompt", {
 			method: "POST",
 			headers: {
@@ -1276,7 +1276,12 @@ test("/api/ai-docs-temp/contextual-prompt returns 429 on the third inline AI req
 
 test("restore_snapshot emits page_save usage for the restored Yjs sequence", async () => {
 	const t = test_convex();
-	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const db = await t.run(async (ctx) => {
+		const userId = await ctx.db.insert("users", {
+			clerkUserId: "clerk-restore-billing-user",
+		});
+		return await test_mocks_fill_db_with.membership(ctx, { userId });
+	});
 	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
@@ -1338,9 +1343,13 @@ test("restore_snapshot emits page_save usage for the restored Yjs sequence", asy
 			expect.objectContaining({
 				name: "page_save",
 				externalCustomerId: db.userId,
-				externalId: `page_save::${db.userId}::${createdPage._yay.pageId}::${yjsUpdates[0]?.sequence}`,
+				externalId: `page_save::${db.userId}::${db.userId}::${db.workspaceId}::${db.projectId}::${createdPage._yay.pageId}::${yjsUpdates[0]?.sequence}`,
 				metadata: expect.objectContaining({
 					amount: 1,
+					actorUserId: db.userId,
+					billedUserId: db.userId,
+					workspaceId: db.workspaceId,
+					projectId: db.projectId,
 					pageId: createdPage._yay.pageId,
 					yjsSequence: String(yjsUpdates[0]?.sequence),
 				}),

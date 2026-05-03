@@ -418,6 +418,7 @@ const app_convex_schema = defineSchema({
 		name: v.string(),
 		description: v.string(),
 		default: v.boolean(),
+		billingMode: v.union(v.literal("user"), v.literal("workspace_owner")),
 		owner: v.optional(v.id("users")),
 		defaultProjectId: v.optional(v.id("workspaces_projects")),
 		updatedAt: v.number(),

@@ -1540,6 +1540,7 @@ describe("process_deletion_requests", () => {
 					name: `quota-workspace-${i}`,
 					description: "",
 					default: false,
+					billingMode: "user",
 					updatedAt: now,
 				});
 				await ctx.db.insert("data_deletion_requests", {
@@ -1557,6 +1558,7 @@ describe("process_deletion_requests", () => {
 					name: `quota-project-workspace-${i}`,
 					description: "",
 					default: false,
+					billingMode: "user",
 					updatedAt: now,
 				});
 				const projectId = await ctx.db.insert("workspaces_projects", {

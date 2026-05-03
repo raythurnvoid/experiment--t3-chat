@@ -1372,9 +1372,9 @@ describe("save_pages_pending_edit", () => {
 				throw new Error("Expected anonymous user");
 			}
 			await ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
-				userEvents: [
+				billedUserEvents: [
 					{
-						user,
+						billedUser: user,
 						event: billing_event({
 							name: "manual_credit",
 							externalCustomerId: result.userId,
@@ -1534,8 +1534,11 @@ describe("save_pages_pending_edit", () => {
 				expect.objectContaining({
 					name: "page_save",
 					externalCustomerId: seeded.userId,
+					externalId: `page_save::${seeded.userId}::${seeded.userId}::${seeded.workspaceId}::${seeded.projectId}::${seeded.pageId}::${saveResult._yay.newSequence}`,
 					metadata: expect.objectContaining({
 						amount: 1,
+						actorUserId: seeded.userId,
+						billedUserId: seeded.userId,
 						workspaceId: seeded.workspaceId,
 						projectId: seeded.projectId,
 						pageId: seeded.pageId,

@@ -127,6 +127,67 @@
 	}
 	/* #endregion create modal */
 
+	/* #region billing modal */
+	.MyModalPopover.MainAppHeaderWorkspaceSwitcherModalBillingModal {
+		max-width: 420px;
+		width: min(94vw, 420px);
+
+		background: var(--color-base-1-03);
+
+		border-color: var(--color-base-1-08);
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalBillingModal-body {
+		padding-top: 12px;
+		padding-bottom: 12px;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalBillingModal-options {
+		display: grid;
+		gap: 8px;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalBillingModal-option {
+		display: grid;
+		justify-items: start;
+		gap: 4px;
+
+		width: 100%;
+		height: auto;
+		padding: 10px 12px;
+
+		border: 1px solid transparent;
+		border-radius: 8px;
+
+		text-align: left;
+
+		&[data-selected] {
+			border-color: var(--color-accent-06);
+			background: var(--color-accent-02);
+		}
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalBillingModal-option-title {
+		color: var(--color-fg-10);
+
+		font-weight: 600;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalBillingModal-option-description {
+		color: var(--color-fg-07);
+
+		font-size: 0.875em;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalBillingModal-message {
+		margin-top: 10px;
+
+		color: var(--color-red-09);
+
+		font-size: 0.875em;
+	}
+	/* #endregion billing modal */
+
 	/* #region select head */
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead {
 		display: flex;
@@ -262,10 +323,18 @@
 		pointer-events: none;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalListItem-label {
+	.MainAppHeaderWorkspaceSwitcherModalListItem-label-row {
 		grid-column: 1;
 		grid-row: 1;
 
+		min-width: 0;
+
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalListItem-label {
 		min-width: 0;
 
 		contain: content;
@@ -276,6 +345,25 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalListItem-billing-badge {
+		display: inline-flex;
+		flex-shrink: 0;
+		align-items: center;
+
+		height: 18px;
+		padding: 0 5px;
+
+		border: 1px solid var(--color-base-1-08);
+		border-radius: 6px;
+
+		background: var(--color-base-1-04);
+		color: var(--color-fg-07);
+
+		font-size: 0.6875em;
+		font-weight: 500;
+		line-height: 1;
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalListItem-description {
@@ -309,7 +397,7 @@
 
 		contain: content;
 
-		margin-right: 1px;
+		padding-right: 10px;
 	}
 
 	/* #endregion list item */

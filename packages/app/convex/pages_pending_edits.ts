@@ -1,14 +1,15 @@
 import { query, mutation, internalMutation, internalQuery, type MutationCtx } from "./_generated/server.js";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
+import type { Id } from "./_generated/dataModel.js";
 import type { app_convex_Doc } from "../src/lib/app-convex-client.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { pages_db_yjs_push_update } from "./ai_docs_temp.ts";
 import { billing_event } from "../server/billing.ts";
-import { billing_db_check_credits, billing_ingest_events } from "./billing.ts";
-import { composite_id } from "../shared/shared-utils.ts";
+import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing.ts";
+import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
 import { workspaces_db_get_membership_for_user } from "./workspaces.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -883,18 +884,60 @@ export const save_pages_pending_edit = mutation({
 			yjsDoc: latestPageYjsDoc,
 		});
 		if (diffUpdateForLatestPageYjsDoc) {
-			const check = await billing_db_check_credits(ctx, {
+			const workspace = await ctx.db.get("workspaces", membership.workspaceId);
+			if (!workspace) {
+				return Result({ _nay: { message: "Workspace not found" } });
+			}
+			let workspaceOwnerId: Id<"users"> | null = null;
+			if (!workspace.default && workspace.billingMode === "workspace_owner") {
+				const defaultProjectId = workspace.defaultProjectId;
+				if (!defaultProjectId) {
+					throw should_never_happen("Workspace default project not found", {
+						workspaceId: workspace._id,
+					});
+				}
+
+				workspaceOwnerId =
+					(
+						await ctx.db
+							.query("access_control_role_assignments")
+							.withIndex("by_workspace_project_role_user", (q) =>
+								q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
+							)
+							.first()
+					)?.userId ?? null;
+			}
+			const billedUserId = billing_pick_billed_user_id({
 				userId: user._id,
+				workspace,
+				workspaceOwnerId,
+			});
+			if (!billedUserId) {
+				throw should_never_happen("Workspace owner not found", {
+					userId: user._id,
+					workspaceId: workspace._id,
+				});
+			}
+			const billedUser = await ctx.db.get("users", billedUserId);
+			if (!billedUser) {
+				throw should_never_happen("Billed user not found", {
+					userId: user._id,
+					workspaceId: workspace._id,
+					billedUserId,
+				});
+			}
+
+			const check = await billing_db_check_credits(ctx, {
+				userId: billedUser._id,
 				minimumRequiredCents: 1,
 			});
-			if (!check._yay.hasCredits) {
+			if (!check.hasCredits) {
 				return Result({
 					_nay: {
 						message: "Insufficient funds",
 					},
 				});
 			}
-
 			const result = await pages_db_yjs_push_update(ctx, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
@@ -909,15 +952,27 @@ export const save_pages_pending_edit = mutation({
 
 			newSequence = result._yay.newSequence;
 			await billing_ingest_events(ctx, {
-				userEvents: [
+				billedUserEvents: [
 					{
-						user,
+						billedUser,
 						event: billing_event({
 							name: "page_save",
-							externalCustomerId: user._id,
-							externalId: composite_id("billing", "page_save", user._id, args.pageId, result._yay.newSequence),
+							externalCustomerId: billedUser._id,
+							externalMemberId: user._id,
+							externalId: composite_id(
+								"billing",
+								"page_save",
+								billedUser._id,
+								user._id,
+								membership.workspaceId,
+								membership.projectId,
+								args.pageId,
+								result._yay.newSequence,
+							),
 							metadata: {
 								amount: 1,
+								actorUserId: user._id,
+								billedUserId: billedUser._id,
 								workspaceId: membership.workspaceId,
 								projectId: membership.projectId,
 								pageId: args.pageId,

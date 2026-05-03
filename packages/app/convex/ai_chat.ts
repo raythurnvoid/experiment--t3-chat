@@ -943,25 +943,25 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								}
 
 								// Check credits after cheap request validation but before any LLM work.
-								const lastUserMessage = (body.messages as Array<{ id?: string }>).at(-1);
-								const billingEventId = composite_id(
-									"billing",
-									"ai_usage",
-									membership.userId,
-									(body.threadId ?? body.clientGeneratedThreadId) as string,
-									lastUserMessage?.id ?? body.parentId ?? "turn",
-								);
 								const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
-									userId: membership.userId,
+									userId: user._id,
+									workspaceId: membership.workspaceId,
 									minimumRequiredCents: 1,
 								});
-								if (!creditCheck._yay.hasCredits) {
+								if (!creditCheck.hasCredits) {
 									return {
 										status: 402,
 										body: {
 											message: "Insufficient funds",
 										},
 									} as const;
+								}
+								const billedUser = creditCheck.billedUser;
+								if (!billedUser) {
+									throw should_never_happen("Workspace credit check did not return billed user", {
+										userId: user._id,
+										workspaceId: membership.workspaceId,
+									});
 								}
 
 								if (!threadId) {
@@ -1174,7 +1174,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											},
 											onFinish: async ({ totalUsage }) => {
 												// Aggregated across all steps; read by createUIMessageStream.onFinish
-												// to emit one direct usage event with the actual cost.
+												// to emit one response-usage event.
 												capturedUsage = {
 													inputTokens: totalUsage.inputTokens ?? 0,
 													outputTokens: totalUsage.outputTokens ?? 0,
@@ -1213,6 +1213,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											}
 
 											const titleMessages = [...modelMessages, ...response1.messages];
+											let titleInputTokens = 0;
+											let titleOutputTokens = 0;
 											const titleResult = streamText({
 												model: openai(ai_chat_TITLE_MODEL_ID),
 												system: ai_chat_TITLE_SYSTEM_PROMPT,
@@ -1222,21 +1224,9 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 												maxOutputTokens: 50,
 												abortSignal: request.signal,
 												onFinish: async ({ totalUsage }) => {
-													const titleUsage = {
-														inputTokens: totalUsage.inputTokens ?? 0,
-														outputTokens: totalUsage.outputTokens ?? 0,
-													};
-													capturedUsage = capturedUsage
-														? {
-																inputTokens: capturedUsage.inputTokens + titleUsage.inputTokens,
-																outputTokens: capturedUsage.outputTokens + titleUsage.outputTokens,
-															}
-														: titleUsage;
-													capturedActualCents += compute_token_usage_cost_cents({
-														modelId: ai_chat_TITLE_MODEL_ID,
-														inputTokens: titleUsage.inputTokens,
-														outputTokens: titleUsage.outputTokens,
-													});
+													// Keep title usage separate from the response event
+													titleInputTokens = totalUsage.inputTokens ?? 0;
+													titleOutputTokens = totalUsage.outputTokens ?? 0;
 												},
 											});
 
@@ -1273,6 +1263,47 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 													});
 												}
 											}
+
+											if (titleInputTokens + titleOutputTokens > 0) {
+												await billing_ingest_events(ctx, {
+													billedUserEvents: [
+														{
+															billedUser,
+															event: billing_event({
+																name: "ai_usage",
+																externalCustomerId: billedUser._id,
+																externalMemberId: user._id,
+																externalId: composite_id(
+																	"billing",
+																	"ai_usage",
+																	billedUser._id,
+																	user._id,
+																	membership.workspaceId,
+																	membership.projectId,
+																	String(threadId ?? ""),
+																	"title",
+																),
+																metadata: {
+																	amount: compute_token_usage_cost_cents({
+																		modelId: ai_chat_TITLE_MODEL_ID,
+																		inputTokens: titleInputTokens,
+																		outputTokens: titleOutputTokens,
+																	}),
+																	actorUserId: user._id,
+																	billedUserId: billedUser._id,
+																	workspaceId: membership.workspaceId,
+																	projectId: membership.projectId,
+																	modelId: ai_chat_TITLE_MODEL_ID,
+																	inputTokens: titleInputTokens,
+																	outputTokens: titleOutputTokens,
+																	threadId: String(threadId ?? ""),
+																	messageId: "title",
+																},
+															}),
+														},
+													],
+												});
+											}
 										}
 									},
 									onError: (error: unknown) => {
@@ -1301,15 +1332,29 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
 										if (capturedTotalTokens > 0 && !didStreamError) {
 											await billing_ingest_events(ctx, {
-												userEvents: [
+												billedUserEvents: [
 													{
-														user,
+														billedUser,
 														event: billing_event({
 															name: "ai_usage",
-															externalCustomerId: membership.userId,
-															externalId: billingEventId,
+															externalCustomerId: billedUser._id,
+															externalMemberId: user._id,
+															externalId: composite_id(
+																"billing",
+																"ai_usage",
+																billedUser._id,
+																user._id,
+																membership.workspaceId,
+																membership.projectId,
+																String(threadId ?? ""),
+																String(result.responseMessage.id ?? ""),
+															),
 															metadata: {
 																amount: capturedActualCents,
+																actorUserId: user._id,
+																billedUserId: billedUser._id,
+																workspaceId: membership.workspaceId,
+																projectId: membership.projectId,
 																modelId: body.model,
 																inputTokens: capturedInputTokens,
 																outputTokens: capturedOutputTokens,
@@ -1501,8 +1546,6 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								const billingEventId = composite_id("billing", "ai_usage", membership.userId, thread_id, "title");
-
 								const rateLimit = await rate_limiter_limit_by_key(ctx, {
 									name: "ai_chat_http",
 									key: membership.userId,
@@ -1520,17 +1563,26 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								// Check credits before title generation. One title per thread; the literal
 								// "title" discriminator keeps the usage event id stable across HTTP retries.
 								const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
-									userId: membership.userId,
+									userId: user._id,
+									workspaceId: membership.workspaceId,
 									minimumRequiredCents: 1,
 								});
-								if (!creditCheck._yay.hasCredits) {
+								if (!creditCheck.hasCredits) {
 									return {
 										status: 402,
 										body: { message: "Insufficient funds" },
 									} as const;
 								}
+								const billedUser = creditCheck.billedUser;
+								if (!billedUser) {
+									throw should_never_happen("Workspace credit check did not return billed user", {
+										userId: user._id,
+										workspaceId: membership.workspaceId,
+									});
+								}
 
-								let titleCapturedUsage: { inputTokens: number; outputTokens: number } | null = null;
+								let titleInputTokens = 0;
+								let titleOutputTokens = 0;
 
 								// Generate title using AI with streaming
 								const result = streamText({
@@ -1549,10 +1601,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										delayInMs: 100,
 									}),
 									onFinish: async ({ totalUsage }) => {
-										titleCapturedUsage = {
-											inputTokens: totalUsage.inputTokens ?? 0,
-											outputTokens: totalUsage.outputTokens ?? 0,
-										};
+										titleInputTokens = totalUsage.inputTokens ?? 0;
+										titleOutputTokens = totalUsage.outputTokens ?? 0;
 									},
 								});
 
@@ -1566,28 +1616,40 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										controller.enqueue(chunk);
 									},
 									flush: async () => {
-										const capturedInputTokens = titleCapturedUsage?.inputTokens ?? 0;
-										const capturedOutputTokens = titleCapturedUsage?.outputTokens ?? 0;
-										const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
+										const capturedTotalTokens = titleInputTokens + titleOutputTokens;
 										if (capturedTotalTokens > 0) {
 											const titleCostCents = compute_token_usage_cost_cents({
 												modelId: ai_chat_TITLE_MODEL_ID,
-												inputTokens: capturedInputTokens,
-												outputTokens: capturedOutputTokens,
+												inputTokens: titleInputTokens,
+												outputTokens: titleOutputTokens,
 											});
 											await billing_ingest_events(ctx, {
-												userEvents: [
+												billedUserEvents: [
 													{
-														user,
+														billedUser,
 														event: billing_event({
 															name: "ai_usage",
-															externalCustomerId: membership.userId,
-															externalId: billingEventId,
+															externalCustomerId: billedUser._id,
+															externalMemberId: user._id,
+															externalId: composite_id(
+																"billing",
+																"ai_usage",
+																billedUser._id,
+																user._id,
+																membership.workspaceId,
+																membership.projectId,
+																thread_id,
+																"title",
+															),
 															metadata: {
 																amount: titleCostCents,
+																actorUserId: user._id,
+																billedUserId: billedUser._id,
+																workspaceId: membership.workspaceId,
+																projectId: membership.projectId,
 																modelId: ai_chat_TITLE_MODEL_ID,
-																inputTokens: capturedInputTokens,
-																outputTokens: capturedOutputTokens,
+																inputTokens: titleInputTokens,
+																outputTokens: titleOutputTokens,
 																threadId: thread_id,
 																messageId: "title",
 															},

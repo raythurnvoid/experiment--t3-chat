@@ -33,7 +33,11 @@ export const billing_POLAR_METER_EVENT = "press_usage_event";
  * - `name`: Redirected to `metadata.name`; Polar's `name` is always
  *   `billing_POLAR_METER_EVENT` because one meter tracks both charges and credits.
  * - `externalCustomerId`: Sent as Polar `externalCustomerId`; this is the
- *   Convex user id used as Polar's customer external id.
+ *   Convex user id of the payer/billed user. Workspace usage may bill a
+ *   different user than the actor who performed the operation.
+ * - `externalMemberId`: Optional actor attribution for usage events. When
+ *   present, Polar receives it as top-level member attribution; metadata always
+ *   keeps `actorUserId` and `billedUserId` for app-owned auditability.
  * - `externalId`: Sent as Polar `externalId` for idempotency.
  * - `metadata`: Sent as Polar `metadata`, with `name` added by the ingest helper.
  *
@@ -42,8 +46,8 @@ export const billing_POLAR_METER_EVENT = "press_usage_event";
  * payments that increase balance.
  *
  * Other Polar event fields are intentionally not modeled until a real billing
- * event needs them: `customerId`, `externalMemberId`, `memberId`,
- * `organizationId`, `parentId`, and `timestamp`.
+ * event needs them: `customerId`, `memberId`, `organizationId`, `parentId`, and
+ * `timestamp`.
  */
 export type billing_Event = FunctionArgs<typeof internal.billing.ingest_events>["events"][number];
 

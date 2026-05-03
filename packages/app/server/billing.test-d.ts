@@ -19,10 +19,13 @@ test("billing_Event can be discriminated by built payload name", () => {
 test("billing_event preserves the matching source-specific payload type", () => {
 	const pageSaveEvent = billing_event({
 		name: "page_save",
-		externalCustomerId: "user_1" as Id<"users">,
-		externalId: "page_save::user_1::page_1::1",
+		externalCustomerId: "billed_user_1" as Id<"users">,
+		externalMemberId: "actor_user_1" as Id<"users">,
+		externalId: "page_save::billed_user_1::actor_user_1::workspace_1::project_1::page_1::1",
 		metadata: {
 			amount: 1,
+			actorUserId: "actor_user_1" as Id<"users">,
+			billedUserId: "billed_user_1" as Id<"users">,
 			workspaceId: "workspace_1",
 			projectId: "project_1",
 			pageId: "page_1",
@@ -32,7 +35,10 @@ test("billing_event preserves the matching source-specific payload type", () => 
 
 	expectTypeOf(pageSaveEvent.name).toEqualTypeOf<"page_save">();
 	expectTypeOf(pageSaveEvent.externalCustomerId).toEqualTypeOf<Id<"users">>();
+	expectTypeOf(pageSaveEvent.externalMemberId).toEqualTypeOf<Id<"users">>();
 	expectTypeOf(pageSaveEvent.externalId).toBeString();
+	expectTypeOf(pageSaveEvent.metadata.actorUserId).toEqualTypeOf<Id<"users">>();
+	expectTypeOf(pageSaveEvent.metadata.billedUserId).toEqualTypeOf<Id<"users">>();
 	expectTypeOf(pageSaveEvent.metadata.workspaceId).toBeString();
 	expectTypeOf(pageSaveEvent.metadata.projectId).toBeString();
 	expectTypeOf(pageSaveEvent.metadata.pageId).toBeString();

@@ -6,6 +6,7 @@ import { CircleHelp, TriangleAlert } from "lucide-react";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipInfoTrigger } from "@/components/my-tooltip.tsx";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { format_cents } from "@/lib/currency.ts";
 import { cn } from "@/lib/utils.ts";
@@ -118,28 +119,83 @@ const MainAppHeaderBillingIndicatorRemaining = memo(function MainAppHeaderBillin
 // #endregion remaining
 
 // #region root
-type MainAppHeaderBillingIndicator_ClassNames = "MainAppHeaderBillingIndicator" | "MainAppHeaderBillingIndicator-sep";
+type MainAppHeaderBillingIndicator_ClassNames =
+	| "MainAppHeaderBillingIndicator"
+	| "MainAppHeaderBillingIndicator-sep"
+	| "MainAppHeaderBillingIndicator-badge"
+	| "MainAppHeaderBillingIndicator-badge-help";
 
 export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingIndicator() {
 	const auth = AppAuthProvider.useAuth();
 	const convexAuth = useConvexAuth();
+	const { workspaceId } = AppTenantProvider.useContext();
 
 	const shouldQuery = auth.isLoaded && auth.isAuthenticated && convexAuth.isAuthenticated && auth.isAnonymous === false;
 
-	const subscription = useQuery(app_convex_api.billing.get_current_user_subscription, shouldQuery ? {} : "skip");
-	const billingUsageSnapshot = useQuery(app_convex_api.billing.get_usage_snapshot, shouldQuery ? {} : "skip");
-	const products = useQuery(app_convex_api.billing.list_products, shouldQuery ? {} : "skip");
+	const workspaceList = useQuery(app_convex_api.workspaces.list, shouldQuery ? {} : "skip");
+	const currentWorkspace = workspaceList?.workspaces.find((workspace) => workspace._id === workspaceId);
+	const isOwnerBilledWorkspace =
+		currentWorkspace !== undefined && !currentWorkspace.default && currentWorkspace.billingMode === "workspace_owner";
+	const ownerUserId = isOwnerBilledWorkspace ? currentWorkspace.ownerUserId : null;
+	const ownerBilledToAnotherUser = ownerUserId !== null && ownerUserId !== auth.userId;
+	const shouldShowCurrentUserBalance = shouldQuery && currentWorkspace !== undefined && !ownerBilledToAnotherUser;
+
+	const billingUsageSnapshot = useQuery(
+		app_convex_api.billing.get_usage_snapshot,
+		shouldShowCurrentUserBalance ? {} : "skip",
+	);
+	const products = useQuery(
+		app_convex_api.billing.list_products,
+		shouldShowCurrentUserBalance ? {} : "skip",
+	);
+	const workspaceOwnerAnagraphic = useQuery(
+		app_convex_api.users.get_anagraphic,
+		shouldQuery && ownerUserId !== null ? { userId: ownerUserId } : "skip",
+	);
 
 	if (!shouldQuery) {
 		return null;
 	}
 
-	// Root layout gates children on billing bootstrap, so the subscription and
-	// the snapshot subscription metadata must be present. The customer meter is
-	// the authoritative source for remaining credits and amount due, so hide the
-	// indicator until Polar has synced it for this user.
+	if (!currentWorkspace) {
+		return null;
+	}
+
+	const ownerLabel = workspaceOwnerAnagraphic
+		? workspaceOwnerAnagraphic.email
+			? `${workspaceOwnerAnagraphic.displayName} (${workspaceOwnerAnagraphic.email})`
+			: workspaceOwnerAnagraphic.displayName
+		: "the workspace owner";
+	const ownerBillingBadgeLabel = ownerBilledToAnotherUser ? "Owner billing" : "Workspace billing";
+	const ownerBillingTooltip = ownerBilledToAnotherUser
+		? `Usage in this workspace is billed to ${ownerLabel}.`
+		: "Usage by members in this workspace is billed to your account because you own the workspace.";
+	const ownerBillingBadge = (
+		<MyTooltip placement="bottom">
+			<MyTooltipInfoTrigger>
+				<span className={cn("MainAppHeaderBillingIndicator-badge" satisfies MainAppHeaderBillingIndicator_ClassNames)}>
+					{ownerBillingBadgeLabel}
+					<CircleHelp
+						className={cn("MainAppHeaderBillingIndicator-badge-help" satisfies MainAppHeaderBillingIndicator_ClassNames)}
+						aria-hidden
+					/>
+				</span>
+			</MyTooltipInfoTrigger>
+			<MyTooltipContent unmountOnHide>
+				<>{ownerBillingTooltip}</>
+			</MyTooltipContent>
+		</MyTooltip>
+	);
+
+	if (ownerBilledToAnotherUser) {
+		return (
+			<div className={cn("MainAppHeaderBillingIndicator" satisfies MainAppHeaderBillingIndicator_ClassNames)}>
+				{ownerBillingBadge}
+			</div>
+		);
+	}
+
 	if (
-		!subscription ||
 		!billingUsageSnapshot?.subscription ||
 		billingUsageSnapshot.polarCustomerId == null ||
 		billingUsageSnapshot.subscription.id == null ||
@@ -150,7 +206,7 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 		return null;
 	}
 
-	const activeProduct = products.find((product) => product.id === subscription.productId) ?? null;
+	const activeProduct = products.find((product) => product.id === billingUsageSnapshot.subscription?.productId) ?? null;
 	if (!activeProduct) {
 		return null;
 	}
@@ -169,6 +225,7 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 				|
 			</span>
 			<MainAppHeaderBillingIndicatorRemaining value={creditsLeftText} isExhausted={isExhausted} />
+			{isOwnerBilledWorkspace ? ownerBillingBadge : null}
 		</div>
 	);
 });

@@ -122,10 +122,10 @@ When working on rich text editors in this repo, treat Tiptap and Novel as source
 - [references-submodules/](references-submodules) - Reference-only git submodules (docs + source scraping; see full list in "Submodules (Special Import Handling)" below)
 
 - [../t3-chat-+personal/](../t3-chat-+personal) - DOCUMENTATION & RESEARCH FOLDER
-  - [../t3-chat-+personal/+ai/](../t3-chat-+personal/+ai) - Only writable subfolder for AI-generated content
-  - [../t3-chat-+personal/sources/](../t3-chat-+personal/sources) - Local research sources, contains 3rd party codebases and documentation for research purposes
+  - [../t3-chat-+personal/+ai/](../t3-chat-+personal/+ai) - Writable subfolder for AI-generated content and scratch artifacts
+  - [../t3-chat-+personal/sources/](../t3-chat-+personal/sources) - Local research sources, contains 3rd party codebases and documentation for research purposes; treat as read-only unless the user explicitly asks to add or update a reference source
   - [../t3-chat-+personal/sources/README.md](../t3-chat-+personal/sources/README.md) - Master list of local research sources, read this if you need to read inside the [../t3-chat-+personal/sources/](../t3-chat-+personal/sources) folder to have an idea of what the packages are
-  - DO NOT MODIFY other files in ../t3-chat-+personal/ - they are reference material only
+  - DO NOT MODIFY other files in ../t3-chat-+personal/ unless the user explicitly asks; they are reference material only
 
 ## Submodules (Special Import Handling)
 
@@ -215,7 +215,7 @@ When users ask about 3rd party libraries or request implementations using extern
 
 Documentation Sources
 
-- [../t3-chat-+personal/sources](../t3-chat-+personal/sources) - read `../t3-chat-+personal/sources/README.md` when reading inside the folder; you may assume this source mirror matches runtime versions (e.g. `node_modules/.pnpm`)
+- [../t3-chat-+personal/sources](../t3-chat-+personal/sources) - read `../t3-chat-+personal/sources/README.md` when reading inside the folder; you may assume this source mirror matches runtime versions (e.g. `node_modules/.pnpm`). This includes the full Polar source mirror at `../t3-chat-+personal/sources/polar-main`.
 - Submodules - see [Submodules (Special Import Handling)](#submodules-special-import-handling) above for the canonical full reference list
 - Web search - For external documentation when not available locally
 

@@ -17,6 +17,33 @@
 	.MainAppHeaderBillingIndicator-sep {
 		color: var(--color-fg-05);
 	}
+
+	.MainAppHeaderBillingIndicator-badge {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+
+		height: 20px;
+		padding: 0 6px;
+
+		border: 1px solid var(--color-base-1-08);
+		border-radius: 6px;
+
+		background: var(--color-base-1-04);
+		color: var(--color-fg-08);
+
+		font-size: 0.75rem;
+		font-weight: 500;
+	}
+
+	.MainAppHeaderBillingIndicator-badge-help {
+		flex-shrink: 0;
+
+		width: 12px;
+		height: 12px;
+
+		color: var(--color-fg-08);
+	}
 	/* #endregion root */
 
 	/* #region due */

@@ -63,7 +63,7 @@ import type { RouterForConvexModules } from "./http.ts";
 import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { workspaces_db_get_membership_for_user } from "./workspaces.ts";
-import { billing_db_check_credits, billing_ingest_events } from "./billing.ts";
+import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 const pages_INLINE_AI_MODEL_ID = "gpt-5-mini" as const;
@@ -83,7 +83,10 @@ function pages_compute_token_usage_cost_cents(args: { modelId: string; inputToke
 async function pages_ingest_inline_ai_usage_event(
 	ctx: ActionCtx | MutationCtx,
 	args: {
-		user: Doc<"users">;
+		actorUserId: Id<"users">;
+		billedUser: Doc<"users">;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		requestId: string;
 		inputTokens: number;
 		outputTokens: number;
@@ -94,19 +97,33 @@ async function pages_ingest_inline_ai_usage_event(
 	}
 
 	await billing_ingest_events(ctx, {
-		userEvents: [
+		billedUserEvents: [
 			{
-				user: args.user,
+				billedUser: args.billedUser,
 				event: billing_event({
 					name: "ai_usage",
-					externalCustomerId: args.user._id,
-					externalId: composite_id("billing", "ai_usage", args.user._id, "inline_ai", args.requestId),
+					externalCustomerId: args.billedUser._id,
+					externalMemberId: args.actorUserId,
+					externalId: composite_id(
+						"billing",
+						"ai_usage",
+						args.billedUser._id,
+						args.actorUserId,
+						args.workspaceId,
+						args.projectId,
+						"inline_ai",
+						args.requestId,
+					),
 					metadata: {
 						amount: pages_compute_token_usage_cost_cents({
 							modelId: pages_INLINE_AI_MODEL_ID,
 							inputTokens: args.inputTokens,
 							outputTokens: args.outputTokens,
 						}),
+						actorUserId: args.actorUserId,
+						billedUserId: args.billedUser._id,
+						workspaceId: args.workspaceId,
+						projectId: args.projectId,
 						modelId: pages_INLINE_AI_MODEL_ID,
 						inputTokens: args.inputTokens,
 						outputTokens: args.outputTokens,
@@ -2805,11 +2822,54 @@ export const yjs_push_update = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const check = await billing_db_check_credits(ctx, {
+		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
+		if (!workspace) {
+			return Result({ _nay: { message: "Workspace not found" } });
+		}
+		let workspaceOwnerId: Id<"users"> | null = null;
+		if (!workspace.default && workspace.billingMode === "workspace_owner") {
+			const defaultProjectId = workspace.defaultProjectId;
+			if (!defaultProjectId) {
+				throw should_never_happen("Workspace default project not found", {
+					workspaceId: workspace._id,
+				});
+			}
+
+			workspaceOwnerId =
+				(
+					await ctx.db
+						.query("access_control_role_assignments")
+						.withIndex("by_workspace_project_role_user", (q) =>
+							q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
+						)
+						.first()
+				)?.userId ?? null;
+		}
+		const billedUserId = billing_pick_billed_user_id({
 			userId: user._id,
+			workspace,
+			workspaceOwnerId,
+		});
+		if (!billedUserId) {
+			throw should_never_happen("Workspace owner not found", {
+				userId: user._id,
+				workspaceId: workspace._id,
+			});
+		}
+		const billedUser = await ctx.db.get("users", billedUserId);
+		if (!billedUser) {
+			throw should_never_happen("Billed user not found", {
+				userId: user._id,
+				workspaceId: workspace._id,
+				billedUserId,
+			});
+		}
+
+		const check = await billing_db_check_credits(ctx, {
+			userId: billedUser._id,
 			minimumRequiredCents: 1,
 		});
-		if (!check._yay.hasCredits) {
+		if (!check.hasCredits) {
 			return Result({
 				_nay: {
 					message: "Insufficient funds",
@@ -2830,15 +2890,27 @@ export const yjs_push_update = mutation({
 		}
 
 		await billing_ingest_events(ctx, {
-			userEvents: [
+			billedUserEvents: [
 				{
-					user,
+					billedUser,
 					event: billing_event({
 						name: "page_save",
-						externalCustomerId: user._id,
-						externalId: composite_id("billing", "page_save", user._id, args.pageId, pushResult._yay.newSequence),
+						externalCustomerId: billedUser._id,
+						externalMemberId: user._id,
+						externalId: composite_id(
+							"billing",
+							"page_save",
+							billedUser._id,
+							user._id,
+							membership.workspaceId,
+							membership.projectId,
+							args.pageId,
+							pushResult._yay.newSequence,
+						),
 						metadata: {
 							amount: 1,
+							actorUserId: user._id,
+							billedUserId: billedUser._id,
 							workspaceId: page.workspaceId,
 							projectId: page.projectId,
 							pageId: args.pageId,
@@ -2997,11 +3069,54 @@ export const restore_snapshot = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const check = await billing_db_check_credits(ctx, {
+		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
+		if (!workspace) {
+			return Result({ _nay: { message: "Workspace not found" } });
+		}
+		let workspaceOwnerId: Id<"users"> | null = null;
+		if (!workspace.default && workspace.billingMode === "workspace_owner") {
+			const defaultProjectId = workspace.defaultProjectId;
+			if (!defaultProjectId) {
+				throw should_never_happen("Workspace default project not found", {
+					workspaceId: workspace._id,
+				});
+			}
+
+			workspaceOwnerId =
+				(
+					await ctx.db
+						.query("access_control_role_assignments")
+						.withIndex("by_workspace_project_role_user", (q) =>
+							q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
+						)
+						.first()
+				)?.userId ?? null;
+		}
+		const billedUserId = billing_pick_billed_user_id({
 			userId: userAuth.id,
+			workspace,
+			workspaceOwnerId,
+		});
+		if (!billedUserId) {
+			throw should_never_happen("Workspace owner not found", {
+				userId: userAuth.id,
+				workspaceId: workspace._id,
+			});
+		}
+		const billedUser = await ctx.db.get("users", billedUserId);
+		if (!billedUser) {
+			throw should_never_happen("Billed user not found", {
+				userId: userAuth.id,
+				workspaceId: workspace._id,
+				billedUserId,
+			});
+		}
+
+		const check = await billing_db_check_credits(ctx, {
+			userId: billedUser._id,
 			minimumRequiredCents: 1,
 		});
-		if (!check._yay.hasCredits) {
+		if (!check.hasCredits) {
 			return Result({
 				_nay: {
 					message: "Insufficient funds",
@@ -3095,15 +3210,27 @@ export const restore_snapshot = mutation({
 
 		if (restoredYjsSequence !== null) {
 			await billing_ingest_events(ctx, {
-				userEvents: [
+				billedUserEvents: [
 					{
-						user: userDoc,
+						billedUser,
 						event: billing_event({
 							name: "page_save",
-							externalCustomerId: userDoc._id,
-							externalId: composite_id("billing", "page_save", userDoc._id, args.pageId, restoredYjsSequence),
+							externalCustomerId: billedUser._id,
+							externalMemberId: userAuth.id,
+							externalId: composite_id(
+								"billing",
+								"page_save",
+								billedUser._id,
+								userAuth.id,
+								membership.workspaceId,
+								membership.projectId,
+								args.pageId,
+								restoredYjsSequence,
+							),
 							metadata: {
 								amount: 1,
+								actorUserId: userAuth.id,
+								billedUserId: billedUser._id,
 								workspaceId: membership.workspaceId,
 								projectId: membership.projectId,
 								pageId: args.pageId,
@@ -3291,15 +3418,23 @@ export function pages_http_routes(router: RouterForConvexModules) {
 
 								const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
 									userId: user._id,
+									workspaceId: membership.workspaceId,
 									minimumRequiredCents: 1,
 								});
-								if (!creditCheck._yay.hasCredits) {
+								if (!creditCheck.hasCredits) {
 									return {
 										status: 402,
 										body: {
 											message: "Insufficient funds",
 										},
 									} as const;
+								}
+								const billedUser = creditCheck.billedUser;
+								if (!billedUser) {
+									throw should_never_happen("Workspace credit check did not return billed user", {
+										userId: user._id,
+										workspaceId: membership.workspaceId,
+									});
 								}
 
 								// Use the Liveblocks contextual shape when editor context is present; the inline popover path
@@ -3389,7 +3524,10 @@ export function pages_http_routes(router: RouterForConvexModules) {
 									});
 
 									await pages_ingest_inline_ai_usage_event(ctx, {
-										user,
+										actorUserId: user._id,
+										billedUser,
+										workspaceId: membership.workspaceId,
+										projectId: membership.projectId,
 										requestId,
 										inputTokens: result.totalUsage.inputTokens ?? 0,
 										outputTokens: result.totalUsage.outputTokens ?? 0,
@@ -3422,7 +3560,10 @@ export function pages_http_routes(router: RouterForConvexModules) {
 									abortSignal: request.signal,
 									onFinish: async ({ totalUsage }) => {
 										await pages_ingest_inline_ai_usage_event(ctx, {
-											user,
+											actorUserId: user._id,
+											billedUser,
+											workspaceId: membership.workspaceId,
+											projectId: membership.projectId,
 											requestId,
 											inputTokens: totalUsage.inputTokens ?? 0,
 											outputTokens: totalUsage.outputTokens ?? 0,

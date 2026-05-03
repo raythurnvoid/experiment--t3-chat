@@ -203,7 +203,15 @@ export type AppCompositeIds = {
 	rooms: [kind: "pages", workspaceId: string, projectId: string, pageId: string];
 	billing:
 		| [name: "manual_credit", userId: string, timestamp: number]
-		| [name: "page_save", userId: string, pageId: string, yjsSequence: number]
+		| [
+				name: "page_save",
+				billedUserId: string,
+				actorUserId: string,
+				workspaceId: string,
+				projectId: string,
+				pageId: string,
+				yjsSequence: number,
+		  ]
 		| [
 				name: "monthly_credit",
 				userId: string,
@@ -213,7 +221,15 @@ export type AppCompositeIds = {
 				 */
 				periodStart: string,
 		  ]
-		| [name: "ai_usage", userId: string, threadId: string, messageId: string];
+		| [
+				name: "ai_usage",
+				billedUserId: string,
+				actorUserId: string,
+				workspaceId: string,
+				projectId: string,
+				threadId: string,
+				messageId: string,
+		  ];
 };
 
 /**
@@ -224,6 +240,8 @@ export function composite_id<const TContext extends keyof AppCompositeIds>(
 	_context: TContext,
 	...parts: AppCompositeIds[TContext]
 ) {
+	// Keep this as a raw tuple join. Do not add context-specific behavior or
+	// special cases based on argument values; callers own the exact tuple they pass.
 	return parts.join("::");
 }
 // #endregion composite ids

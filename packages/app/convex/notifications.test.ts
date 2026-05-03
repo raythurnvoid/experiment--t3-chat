@@ -21,6 +21,7 @@ async function notifications_test_seed_target(ctx: MutationCtx) {
 		name: "notifications-workspace",
 		description: "",
 		default: false,
+		billingMode: "user",
 		updatedAt: now,
 	});
 	const projectId = await ctx.db.insert("workspaces_projects", {
@@ -115,6 +116,7 @@ describe("list_current_notifications", () => {
 				name: "notifications-workspace-without-membership",
 				description: "",
 				default: false,
+				billingMode: "user",
 				updatedAt: now,
 			});
 			const projectWithoutMembershipId = await ctx.db.insert("workspaces_projects", {

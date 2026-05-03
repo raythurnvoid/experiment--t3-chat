@@ -8,7 +8,8 @@ import {
 	billing_db_check_credits,
 	billing_ingest_events,
 } from "./billing.ts";
-import { test_convex } from "./setup.test.ts";
+import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { subscriptionsCreate } from "@polar-sh/sdk/funcs/subscriptionsCreate.js";
@@ -19,7 +20,7 @@ import { PaymentFailed } from "@polar-sh/sdk/models/errors/paymentfailed.js";
 import { UnexpectedClientError } from "@polar-sh/sdk/models/errors/httpclienterrors.js";
 import { ResourceNotFound } from "@polar-sh/sdk/models/errors/resourcenotfound.js";
 import { SubscriptionLocked } from "@polar-sh/sdk/models/errors/subscriptionlocked.js";
-import { billing_event } from "../server/billing.ts";
+import { billing_POLAR_METER_EVENT, billing_event } from "../server/billing.ts";
 import type { Id } from "./_generated/dataModel.js";
 
 vi.mock("@polar-sh/sdk/core.js", () => ({
@@ -290,6 +291,72 @@ async function seed_billing_usage_snapshot(
 	});
 }
 
+let seed_workspace_billing_scope_counter = 0;
+
+async function seed_workspace_billing_scope(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		billingMode: "user" | "workspace_owner";
+		member?: boolean;
+	},
+) {
+	const suffix = seed_workspace_billing_scope_counter++;
+
+	return await t.run(async (ctx) => {
+		const now = Date.now();
+		const ownerId = await ctx.db.insert("users", {
+			clerkUserId: `clerk-workspace-billing-owner-${suffix}`,
+		});
+		const ownerMembership = await test_mocks_fill_db_with.membership(ctx, {
+			userId: ownerId,
+			workspaceName: `billing-workspace-${suffix}`,
+			projectName: "home",
+		});
+		await ctx.db.patch("workspaces", ownerMembership.workspaceId, {
+			billingMode: args.billingMode,
+		});
+
+		if (!args.member) {
+			return {
+				ownerId,
+				actorUserId: ownerId,
+				workspaceId: ownerMembership.workspaceId,
+				projectId: ownerMembership.projectId,
+			};
+		}
+
+		const memberId = await ctx.db.insert("users", {
+			clerkUserId: `clerk-workspace-billing-member-${suffix}`,
+		});
+		await test_mocks_fill_db_with.membership(ctx, {
+			userId: memberId,
+			workspaceName: "personal",
+			projectName: "home",
+		});
+		await ctx.db.insert("workspaces_projects_users", {
+			workspaceId: ownerMembership.workspaceId,
+			projectId: ownerMembership.projectId,
+			userId: memberId,
+			active: true,
+			updatedAt: now,
+		});
+		await access_control_db_ensure_role_assignment(ctx, {
+			workspaceId: ownerMembership.workspaceId,
+			projectId: ownerMembership.projectId,
+			userId: memberId,
+			role: "member",
+			now,
+		});
+
+		return {
+			ownerId,
+			actorUserId: memberId,
+			workspaceId: ownerMembership.workspaceId,
+			projectId: ownerMembership.projectId,
+		};
+	});
+}
+
 async function get_cancel_polar_subscription_job(t: ReturnType<typeof test_convex>, userId: Id<"users">) {
 	return await t.run((ctx) =>
 		ctx.db
@@ -493,9 +560,7 @@ describe("check_credits", () => {
 		});
 
 		expect(result).toEqual({
-			_yay: {
-				hasCredits: true,
-			},
+			hasCredits: true,
 		});
 	});
 
@@ -509,9 +574,7 @@ describe("check_credits", () => {
 		});
 
 		expect(result).toEqual({
-			_yay: {
-				hasCredits: false,
-			},
+			hasCredits: false,
 		});
 	});
 
@@ -534,9 +597,7 @@ describe("check_credits", () => {
 		});
 
 		expect(result).toEqual({
-			_yay: {
-				hasCredits: false,
-			},
+			hasCredits: false,
 		});
 	});
 
@@ -557,13 +618,12 @@ describe("check_credits", () => {
 			}),
 		);
 
-		for (const result of [chatResult, pageSaveResult]) {
-			expect(result).toEqual({
-				_yay: {
-					hasCredits: false,
-				},
-			});
-		}
+		expect(chatResult).toEqual({
+			hasCredits: false,
+		});
+		expect(pageSaveResult).toEqual({
+			hasCredits: false,
+		});
 	});
 
 	test("allows paid plans even with a negative balance", async () => {
@@ -579,11 +639,279 @@ describe("check_credits", () => {
 			});
 
 			expect(result).toEqual({
-				_yay: {
-					hasCredits: true,
-				},
+				hasCredits: true,
 			});
 		}
+	});
+});
+
+describe("workspace billing check", () => {
+	test("personal workspaces bill the actor", async () => {
+		const t = test_convex();
+		const personalScope = await t.run(async (ctx) => {
+			return await test_mocks_fill_db_with.membership(ctx, {
+				workspaceName: "personal",
+				projectName: "home",
+			});
+		});
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "prod_workspace_personal_actor",
+		});
+		await seed_billing_usage_snapshot(t, {
+			userId: personalScope.userId,
+			polarProductId,
+			balanceCents: 10,
+		});
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId: personalScope.userId,
+			workspaceId: personalScope.workspaceId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result.hasCredits).toBe(true);
+		expect(result.billedUser?._id).toBe(personalScope.userId);
+	});
+
+	test("created user-billed workspaces bill the actor", async () => {
+		const t = test_convex();
+		const scope = await seed_workspace_billing_scope(t, { billingMode: "user", member: true });
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "prod_workspace_user_billing_actor",
+		});
+		await seed_billing_usage_snapshot(t, {
+			userId: scope.actorUserId,
+			polarProductId,
+			balanceCents: 10,
+		});
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId: scope.actorUserId,
+			workspaceId: scope.workspaceId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result.hasCredits).toBe(true);
+		expect(result.billedUser?._id).toBe(scope.actorUserId);
+	});
+
+	test("owner-billed workspaces bill the current workspace owner", async () => {
+		const t = test_convex();
+		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner", member: true });
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "prod_workspace_owner_billing_owner",
+		});
+		await seed_billing_usage_snapshot(t, {
+			userId: scope.ownerId,
+			polarProductId,
+			balanceCents: 10,
+		});
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId: scope.actorUserId,
+			workspaceId: scope.workspaceId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result.hasCredits).toBe(true);
+		expect(result.billedUser?._id).toBe(scope.ownerId);
+	});
+
+	test("owner acting in their own owner-billed workspace bills the owner", async () => {
+		const t = test_convex();
+		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner" });
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "prod_workspace_owner_billing_owner_actor",
+		});
+		await seed_billing_usage_snapshot(t, {
+			userId: scope.ownerId,
+			polarProductId,
+			balanceCents: 10,
+		});
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId: scope.ownerId,
+			workspaceId: scope.workspaceId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result.hasCredits).toBe(true);
+		expect(result.billedUser?._id).toBe(scope.ownerId);
+	});
+
+	test("ownership transfer changes future owner-billed usage", async () => {
+		const t = test_convex();
+		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner", member: true });
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "prod_workspace_owner_billing_transfer",
+		});
+		await seed_billing_usage_snapshot(t, {
+			userId: scope.actorUserId,
+			polarProductId,
+			balanceCents: 10,
+		});
+		const ownerClient = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: scope.ownerId,
+			name: "Workspace Billing Owner",
+			email: "workspace-billing-owner@test.local",
+		});
+
+		const transferResult = await ownerClient.mutation(api.access_control.transfer_workspace_ownership, {
+			workspaceId: scope.workspaceId,
+			newOwnerUserId: scope.actorUserId,
+		});
+		expect(transferResult._yay).toBeNull();
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId: scope.ownerId,
+			workspaceId: scope.workspaceId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result.hasCredits).toBe(true);
+		expect(result.billedUser?._id).toBe(scope.actorUserId);
+	});
+
+	test("ownership transfer does not affect user-billed workspace usage", async () => {
+		const t = test_convex();
+		const scope = await seed_workspace_billing_scope(t, { billingMode: "user", member: true });
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "prod_workspace_user_billing_transfer",
+		});
+		await seed_billing_usage_snapshot(t, {
+			userId: scope.ownerId,
+			polarProductId,
+			balanceCents: 10,
+		});
+		const ownerClient = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: scope.ownerId,
+			name: "User Billing Owner",
+			email: "user-billing-owner@test.local",
+		});
+
+		const transferResult = await ownerClient.mutation(api.access_control.transfer_workspace_ownership, {
+			workspaceId: scope.workspaceId,
+			newOwnerUserId: scope.actorUserId,
+		});
+		expect(transferResult._yay).toBeNull();
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId: scope.ownerId,
+			workspaceId: scope.workspaceId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result.hasCredits).toBe(true);
+		expect(result.billedUser?._id).toBe(scope.ownerId);
+	});
+
+	test("fails clearly when an owner-billed workspace has no owner assignment", async () => {
+		const t = test_convex();
+		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner", member: true });
+		await t.run(async (ctx) => {
+			const ownerAssignment = await ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_workspace_project_role_user", (q) =>
+					q.eq("workspaceId", scope.workspaceId).eq("projectId", scope.projectId).eq("role", "owner"),
+				)
+				.first();
+			if (!ownerAssignment) {
+				throw new Error("Expected owner assignment");
+			}
+			await ctx.db.delete("access_control_role_assignments", ownerAssignment._id);
+		});
+
+		await expect(
+			t.query(internal.billing.check_credits, {
+				userId: scope.actorUserId,
+				workspaceId: scope.workspaceId,
+				minimumRequiredCents: 1,
+			}),
+		).rejects.toThrow("Workspace owner not found while checking credits");
+	});
+
+	test("checks the relevant payer snapshot", async () => {
+		const t = test_convex();
+		const userBilledScope = await seed_workspace_billing_scope(t, { billingMode: "user", member: true });
+		const ownerBilledScope = await seed_workspace_billing_scope(t, {
+			billingMode: "workspace_owner",
+			member: true,
+		});
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "prod_workspace_context_relevant_payer",
+		});
+		await seed_billing_usage_snapshot(t, {
+			userId: ownerBilledScope.ownerId,
+			polarProductId,
+			balanceCents: 10,
+		});
+		await seed_billing_usage_snapshot(t, {
+			userId: ownerBilledScope.actorUserId,
+			polarProductId,
+			balanceCents: 0,
+		});
+
+		const userBilledResult = await t.query(internal.billing.check_credits, {
+			userId: userBilledScope.actorUserId,
+			workspaceId: userBilledScope.workspaceId,
+			minimumRequiredCents: 1,
+		});
+		const ownerBilledResult = await t.query(internal.billing.check_credits, {
+			userId: ownerBilledScope.actorUserId,
+			workspaceId: ownerBilledScope.workspaceId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(userBilledResult.hasCredits).toBe(false);
+		expect(userBilledResult.billedUser?._id).toBe(userBilledScope.actorUserId);
+		expect(ownerBilledResult.hasCredits).toBe(true);
+		expect(ownerBilledResult.billedUser?._id).toBe(ownerBilledScope.ownerId);
+	});
+
+	test("allows paid owner-billed usage even when the owner balance is negative", async () => {
+		const t = test_convex();
+		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner", member: true });
+		const { polarProductId } = await seed_pay_as_you_go_product(t, {
+			polarProductId: "prod_workspace_paid_owner_negative",
+		});
+		await seed_billing_usage_snapshot(t, {
+			userId: scope.ownerId,
+			polarProductId,
+			balanceCents: -100,
+		});
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId: scope.actorUserId,
+			workspaceId: scope.workspaceId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result.hasCredits).toBe(true);
+		expect(result.billedUser?._id).toBe(scope.ownerId);
+	});
+
+	test("blocks owner-billed member usage when the free owner is below the minimum", async () => {
+		const t = test_convex();
+		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner", member: true });
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "prod_workspace_free_owner_zero",
+		});
+		await seed_billing_usage_snapshot(t, {
+			userId: scope.ownerId,
+			polarProductId,
+			balanceCents: 0,
+		});
+
+		const result = await t.query(internal.billing.check_credits, {
+			userId: scope.actorUserId,
+			workspaceId: scope.workspaceId,
+			minimumRequiredCents: 1,
+		});
+
+		expect(result.hasCredits).toBe(false);
+		expect(result.billedUser?._id).toBe(scope.ownerId);
 	});
 });
 
@@ -657,7 +985,7 @@ describe("anonymous credit gate", () => {
 			minimumRequiredCents: 1,
 		});
 
-		expect(result).toEqual({ _yay: { hasCredits: true } });
+		expect(result).toEqual({ hasCredits: true });
 	});
 
 	test("check_credits returns hasCredits: false after draining anonymous balance", async () => {
@@ -677,9 +1005,9 @@ describe("anonymous credit gate", () => {
 			}
 
 			await ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
-				userEvents: [
+				billedUserEvents: [
 					{
-						user,
+						billedUser: user,
 						event: billing_event({
 							name: "manual_credit",
 							externalCustomerId: userId,
@@ -698,7 +1026,7 @@ describe("anonymous credit gate", () => {
 			minimumRequiredCents: 1,
 		});
 
-		expect(result).toEqual({ _yay: { hasCredits: false } });
+		expect(result).toEqual({ hasCredits: false });
 	});
 
 	test("check_credits stays false after the period ends until the daily reset runs", async () => {
@@ -719,9 +1047,9 @@ describe("anonymous credit gate", () => {
 			}
 
 			await ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
-				userEvents: [
+				billedUserEvents: [
 					{
-						user,
+						billedUser: user,
 						event: billing_event({
 							name: "manual_credit",
 							externalCustomerId: userId,
@@ -752,7 +1080,7 @@ describe("anonymous credit gate", () => {
 
 		const result = await t.run(async (ctx) => billing_db_check_credits(ctx, { userId, minimumRequiredCents: 1 }));
 
-		expect(result).toEqual({ _yay: { hasCredits: false } });
+		expect(result).toEqual({ hasCredits: false });
 	});
 
 	test("reset_due_anonymous_credits refills the balance and advances the period on the due UTC day", async () => {
@@ -773,9 +1101,9 @@ describe("anonymous credit gate", () => {
 			}
 
 			await ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
-				userEvents: [
+				billedUserEvents: [
 					{
-						user,
+						billedUser: user,
 						event: billing_event({
 							name: "manual_credit",
 							externalCustomerId: userId,
@@ -807,9 +1135,9 @@ describe("anonymous credit gate", () => {
 		});
 	});
 
-	test("ingest_anonymous_user_events does not mutate a non-anonymous snapshot", async () => {
+	test("ingest_anonymous_user_events does not mutate a signed-in billed user snapshot", async () => {
 		const t = test_convex();
-		const userId = await seed_user_id(t);
+		const userId = await seed_signed_in_user_id(t);
 		const { polarProductId } = await seed_free_product(t, { polarProductId: "prod_free_anon_guard" });
 		await seed_billing_usage_snapshot(t, { userId, polarProductId, balanceCents: 500 });
 
@@ -820,9 +1148,9 @@ describe("anonymous credit gate", () => {
 			}
 
 			await ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
-				userEvents: [
+				billedUserEvents: [
 					{
-						user,
+						billedUser: user,
 						event: billing_event({
 							name: "manual_credit",
 							externalCustomerId: userId,
@@ -3362,7 +3690,59 @@ describe("ingest_events", () => {
 		expect(eventsIngestMock).not.toHaveBeenCalled();
 	});
 
-	test("billing_ingest_events splits signed-in and anonymous userEvents", async () => {
+	test("passes externalMemberId through to the Polar payload when present", async () => {
+		const t = test_convex();
+		const billedUserId = await seed_user_id(t);
+		const actorUserId = await seed_user_id(t);
+		const originalNodeEnv = process.env.NODE_ENV;
+		process.env.NODE_ENV = "production";
+		eventsIngestMock.mockResolvedValue({ ok: true } as never);
+
+		try {
+			await t.action(internal.billing.ingest_events, {
+				events: [
+					{
+						name: "page_save",
+						externalCustomerId: billedUserId,
+						externalMemberId: actorUserId,
+						externalId: `page_save::${billedUserId}::${actorUserId}::workspace_1::project_1::page_1::1`,
+						metadata: {
+							amount: 1,
+							actorUserId,
+							billedUserId,
+							workspaceId: "workspace_1",
+							projectId: "project_1",
+							pageId: "page_1",
+							yjsSequence: "1",
+						},
+					},
+				],
+			});
+		} finally {
+			if (originalNodeEnv === undefined) {
+				delete process.env.NODE_ENV;
+			} else {
+				process.env.NODE_ENV = originalNodeEnv;
+			}
+		}
+
+		expect(eventsIngestMock).toHaveBeenCalledWith(expect.anything(), {
+			events: [
+				expect.objectContaining({
+					name: billing_POLAR_METER_EVENT,
+					externalCustomerId: billedUserId,
+					externalMemberId: actorUserId,
+					metadata: expect.objectContaining({
+						name: "page_save",
+						actorUserId,
+						billedUserId,
+					}),
+				}),
+			],
+		});
+	});
+
+	test("billing_ingest_events splits signed-in and anonymous billedUserEvents", async () => {
 		const t = test_convex();
 		const anonymousUserId = await seed_user_id(t);
 		const signedInUserId = await seed_signed_in_user_id(t);
@@ -3383,9 +3763,9 @@ describe("ingest_events", () => {
 			}
 
 			await billing_ingest_events(ctx, {
-				userEvents: [
+				billedUserEvents: [
 					{
-						user: signedInUser,
+						billedUser: signedInUser,
 						event: billing_event({
 							name: "manual_credit",
 							externalCustomerId: signedInUserId,
@@ -3396,7 +3776,7 @@ describe("ingest_events", () => {
 						}),
 					},
 					{
-						user: anonymousUser,
+						billedUser: anonymousUser,
 						event: billing_event({
 							name: "manual_credit",
 							externalCustomerId: anonymousUserId,
@@ -3455,15 +3835,17 @@ describe("ingest_events", () => {
 			}
 
 			await billing_ingest_events(ctx, {
-				userEvents: [
+				billedUserEvents: [
 					{
-						user,
+						billedUser: user,
 						event: billing_event({
 							name: "page_save",
 							externalCustomerId: userId,
 							externalId: "page_save::anonymous::1",
 							metadata: {
 								amount: 1,
+								actorUserId: userId,
+								billedUserId: userId,
 								workspaceId: "workspace_1",
 								projectId: "project_1",
 								pageId: "page_1",

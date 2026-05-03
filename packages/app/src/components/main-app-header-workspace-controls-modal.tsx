@@ -20,6 +20,7 @@ import {
 	Briefcase,
 	ChevronRight,
 	CircleHelp,
+	CreditCard,
 	EllipsisVertical,
 	FolderKanban,
 	Pencil,
@@ -80,6 +81,8 @@ export type MainAppHeaderWorkspaceSwitcherModal_ListItem = {
 	description: string;
 	isCurrent?: boolean;
 	isDefault?: boolean;
+	billingBadge?: string;
+	onManageBilling?: () => void;
 	onEdit?: () => void;
 	onDelete?: () => void;
 	onSelect: () => void;
@@ -111,13 +114,21 @@ export type MainAppHeaderWorkspaceSwitcherModal_AfterEdit = {
 	workspaceId: app_convex_Id<"workspaces">;
 	projectId?: app_convex_Id<"workspaces_projects">;
 };
+
+export type MainAppHeaderWorkspaceSwitcherModal_BillingTarget = {
+	workspaceId: app_convex_Id<"workspaces">;
+	workspaceName: string;
+	billingMode: "user" | "workspace_owner";
+};
 // #endregion edit target / callback
 
 // #region list item
 type MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalListItem"
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-primary"
+	| "MainAppHeaderWorkspaceSwitcherModalListItem-label-row"
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-label"
+	| "MainAppHeaderWorkspaceSwitcherModalListItem-billing-badge"
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-description"
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-actions"
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-action"
@@ -143,12 +154,15 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 	const handleDelete = useFn(() => {
 		item.onDelete?.();
 	});
+	const handleManageBilling = useFn(() => {
+		item.onManageBilling?.();
+	});
 
 	const descriptionText = item.description.trim() ? item.description : "(No description)";
 	const isCurrent = Boolean(item.isCurrent);
 	const isDefault = Boolean(item.isDefault);
 	const canDelete = !isDefault && Boolean(item.onDelete);
-	const showMenu = Boolean(item.onEdit || item.onDelete);
+	const showMenu = Boolean(item.onManageBilling || item.onEdit || item.onDelete);
 
 	return (
 		<li
@@ -178,10 +192,25 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 
 				<div
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalListItem-label" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+						"MainAppHeaderWorkspaceSwitcherModalListItem-label-row" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
 					)}
 				>
-					{item.label}
+					<div
+						className={cn(
+							"MainAppHeaderWorkspaceSwitcherModalListItem-label" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+						)}
+					>
+						{item.label}
+					</div>
+					{item.billingBadge ? (
+						<span
+							className={cn(
+								"MainAppHeaderWorkspaceSwitcherModalListItem-billing-badge" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+							)}
+						>
+							{item.billingBadge}
+						</span>
+					) : null}
 				</div>
 
 				<div
@@ -215,6 +244,16 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 						</MyMenuTrigger>
 						<MyMenuPopover>
 							<MyMenuPopoverContent>
+								{item.onManageBilling ? (
+									<MyMenuItem onClick={handleManageBilling}>
+										<MyMenuItemContent>
+											<MyMenuItemContentIcon>
+												<CreditCard />
+											</MyMenuItemContentIcon>
+											<MyMenuItemContentPrimary>Manage</MyMenuItemContentPrimary>
+										</MyMenuItemContent>
+									</MyMenuItem>
+								) : null}
 								{item.onEdit ? (
 									<MyMenuItem onClick={handleEdit}>
 										<MyMenuItemContent>
@@ -1375,6 +1414,193 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 });
 // #endregion edit modal
 
+// #region billing modal
+type MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames =
+	| "MainAppHeaderWorkspaceSwitcherModalBillingModal"
+	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-body"
+	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-options"
+	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-option"
+	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-option-title"
+	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-option-description"
+	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-message";
+
+type MainAppHeaderWorkspaceSwitcherModalBillingModal_Props = {
+	target: MainAppHeaderWorkspaceSwitcherModal_BillingTarget | null;
+	setTarget: Dispatch<SetStateAction<MainAppHeaderWorkspaceSwitcherModal_BillingTarget | null>>;
+	setWorkspaceBillingMode: (
+		args: FunctionArgs<typeof app_convex_api.workspaces.set_workspace_billing_mode>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.set_workspace_billing_mode> | undefined>;
+};
+
+const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHeaderWorkspaceSwitcherModalBillingModal(
+	props: MainAppHeaderWorkspaceSwitcherModalBillingModal_Props,
+) {
+	const { target, setTarget, setWorkspaceBillingMode } = props;
+
+	const [selectedMode, setSelectedMode] = useState<"user" | "workspace_owner">("user");
+	const [isSubmitting, setIsSubmitting] = useState(false);
+	const [message, setMessage] = useState<string | undefined>(undefined);
+
+	const billingOpen = target !== null;
+	const isUnchanged = selectedMode === target?.billingMode;
+
+	const handleSetOpen = useFn<Dispatch<SetStateAction<boolean>>>((next) => {
+		const resolved = typeof next === "function" ? next(target !== null) : next;
+		if (!resolved) {
+			setTarget(null);
+		}
+	});
+
+	const handleCancel = useFn(() => {
+		setTarget(null);
+	});
+
+	const handleSave = useFn(() => {
+		if (!target || isSubmitting || isUnchanged) {
+			return;
+		}
+
+		const activeTarget = target;
+		void (async (/* iife */) => {
+			setIsSubmitting(true);
+			setMessage(undefined);
+
+			const result = await setWorkspaceBillingMode({
+				workspaceId: activeTarget.workspaceId,
+				billingMode: selectedMode,
+			});
+			if (result == null) {
+				return;
+			}
+
+			if (result._nay) {
+				setMessage(result._nay.message);
+				return;
+			}
+
+			await app_convex.query(app_convex_api.workspaces.list, {});
+			setTarget(null);
+		})()
+			.catch((error) => {
+				console.error("[MainAppHeaderWorkspaceSwitcherModalBillingModal] Unexpected billing mode error", {
+					error,
+					workspaceId: activeTarget.workspaceId,
+				});
+			})
+			.finally(() => {
+				setIsSubmitting(false);
+			});
+	});
+
+	useEffect(() => {
+		if (!target) {
+			return;
+		}
+
+		setSelectedMode(target.billingMode);
+		setMessage(undefined);
+	}, [target]);
+
+	return (
+		<MyModal open={billingOpen} setOpen={handleSetOpen}>
+			<MyModalPopover
+				className={cn(
+					"MainAppHeaderWorkspaceSwitcherModalBillingModal" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+				)}
+			>
+				<MyModalHeader>
+					<MyModalHeading>Workspace billing</MyModalHeading>
+					<MyModalDescription>{target ? target.workspaceName : "Workspace"}</MyModalDescription>
+				</MyModalHeader>
+
+				<MyModalScrollableArea
+					className={cn(
+						"MainAppHeaderWorkspaceSwitcherModalBillingModal-body" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+					)}
+				>
+					<div
+						className={cn(
+							"MainAppHeaderWorkspaceSwitcherModalBillingModal-options" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+						)}
+					>
+						<MyButton
+							type="button"
+							variant="ghost-highlightable"
+							className={cn(
+								"MainAppHeaderWorkspaceSwitcherModalBillingModal-option" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+							)}
+							data-selected={selectedMode === "user" || undefined}
+							aria-pressed={selectedMode === "user"}
+							onClick={() => setSelectedMode("user")}
+						>
+							<span
+								className={cn(
+									"MainAppHeaderWorkspaceSwitcherModalBillingModal-option-title" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+								)}
+							>
+								User billing
+							</span>
+							<span
+								className={cn(
+									"MainAppHeaderWorkspaceSwitcherModalBillingModal-option-description" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+								)}
+							>
+								Each member spends their own balance.
+							</span>
+						</MyButton>
+						<MyButton
+							type="button"
+							variant="ghost-highlightable"
+							className={cn(
+								"MainAppHeaderWorkspaceSwitcherModalBillingModal-option" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+							)}
+							data-selected={selectedMode === "workspace_owner" || undefined}
+							aria-pressed={selectedMode === "workspace_owner"}
+							onClick={() => setSelectedMode("workspace_owner")}
+						>
+							<span
+								className={cn(
+									"MainAppHeaderWorkspaceSwitcherModalBillingModal-option-title" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+								)}
+							>
+								Owner billing
+							</span>
+							<span
+								className={cn(
+									"MainAppHeaderWorkspaceSwitcherModalBillingModal-option-description" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+								)}
+							>
+								Workspace usage spends the owner balance.
+							</span>
+						</MyButton>
+					</div>
+					{message ? (
+						<div
+							className={cn(
+								"MainAppHeaderWorkspaceSwitcherModalBillingModal-message" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+							)}
+						>
+							{message}
+						</div>
+					) : null}
+				</MyModalScrollableArea>
+
+				<MyModalFooter>
+					<MyButton type="button" variant="outline" disabled={isSubmitting} onClick={handleCancel}>
+						Cancel
+					</MyButton>
+					<MyButton type="button" variant="accent" disabled={isSubmitting || isUnchanged} onClick={handleSave}>
+						{isSubmitting ? "Saving…" : "Save"}
+					</MyButton>
+				</MyModalFooter>
+
+				<MyModalCloseTrigger />
+			</MyModalPopover>
+		</MyModal>
+	);
+});
+// #endregion billing modal
+
 // #region root
 type MainAppHeaderWorkspaceSwitcherModal_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModal"
@@ -1409,6 +1635,7 @@ export type MainAppHeaderWorkspaceSwitcherModal_Props = {
 	projectQuotaTooltip?: string;
 	switchDisabled: boolean;
 	editTarget: MainAppHeaderWorkspaceSwitcherModal_EditTarget | null;
+	billingTarget: MainAppHeaderWorkspaceSwitcherModal_BillingTarget | null;
 	createWorkspace: (
 		args: FunctionArgs<typeof app_convex_api.workspaces.create_workspace>,
 	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.create_workspace> | undefined>;
@@ -1418,6 +1645,8 @@ export type MainAppHeaderWorkspaceSwitcherModal_Props = {
 	editWorkspace: MainAppHeaderWorkspaceSwitcherModalEditModal_Props["editWorkspace"];
 	editProject: MainAppHeaderWorkspaceSwitcherModalEditModal_Props["editProject"];
 	setEditTarget: MainAppHeaderWorkspaceSwitcherModalEditModal_Props["setTarget"];
+	setBillingTarget: MainAppHeaderWorkspaceSwitcherModalBillingModal_Props["setTarget"];
+	setWorkspaceBillingMode: MainAppHeaderWorkspaceSwitcherModalBillingModal_Props["setWorkspaceBillingMode"];
 	onAfterCreateWorkspace: (args: {
 		workspaceId: app_convex_Id<"workspaces">;
 		projectId: app_convex_Id<"workspaces_projects">;
@@ -1458,11 +1687,14 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 		projectQuotaTooltip,
 		switchDisabled,
 		editTarget,
+		billingTarget,
 		createWorkspace,
 		createProject,
 		editWorkspace,
 		editProject,
 		setEditTarget,
+		setBillingTarget,
+		setWorkspaceBillingMode,
 		onAfterCreateWorkspace,
 		onAfterCreateProject,
 		onAfterEdit,
@@ -1610,6 +1842,11 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 					editWorkspace={editWorkspace}
 					setTarget={setEditTarget}
 					onAfterEdit={onAfterEdit}
+				/>
+				<MainAppHeaderWorkspaceSwitcherModalBillingModal
+					target={billingTarget}
+					setTarget={setBillingTarget}
+					setWorkspaceBillingMode={setWorkspaceBillingMode}
 				/>
 			</MyModalPopover>
 		</>

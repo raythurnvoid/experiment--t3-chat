@@ -13,6 +13,7 @@ import {
 	type MainAppHeaderWorkspaceSwitcherModal_ListItem,
 	type MainAppHeaderWorkspaceSwitcherModal_Props,
 	type MainAppHeaderWorkspaceSwitcherModal_EditTarget,
+	type MainAppHeaderWorkspaceSwitcherModal_BillingTarget,
 } from "@/components/main-app-header-workspace-controls-modal.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyModal, MyModalTrigger } from "@/components/my-modal.tsx";
@@ -114,6 +115,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 	const [isOpen, setIsOpen] = useState(false);
 	const [localDraft, setLocalDraft] = useState<MainAppHeaderWorkspaceControls_LocalDraft | null>(null);
 	const [editTarget, setEditTarget] = useState<MainAppHeaderWorkspaceSwitcherModal_EditTarget | null>(null);
+	const [billingTarget, setBillingTarget] = useState<MainAppHeaderWorkspaceSwitcherModal_BillingTarget | null>(null);
 
 	const workspaces = workspaceList?.workspaces;
 	const projects = workspaceId ? workspaceList?.workspaceIdsProjectsDict[workspaceId] : undefined;
@@ -262,6 +264,21 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 						isPrimaryProject: false,
 					}),
 					isDefault: w.default,
+					billingBadge: w.default
+						? "Personal"
+						: w.billingMode === "workspace_owner"
+							? "Owner billing"
+							: "User billing",
+					onManageBilling:
+						w.default || currentUserWorkspaceRole !== "owner"
+							? undefined
+							: () => {
+									setBillingTarget({
+										workspaceId: w._id,
+										workspaceName: w.name,
+										billingMode: w.billingMode,
+									});
+								},
 					onEdit:
 						w.default || !primaryProject
 							? undefined
@@ -548,9 +565,16 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 		return app_convex.mutation(app_convex_api.workspaces.edit_project, args);
 	});
 
+	const handleWorkspaceSwitcherSetWorkspaceBillingMode = useFn<
+		MainAppHeaderWorkspaceSwitcherModal_Props["setWorkspaceBillingMode"]
+	>((args) => {
+		return app_convex.mutation(app_convex_api.workspaces.set_workspace_billing_mode, args);
+	});
+
 	useEffect(() => {
 		if (!isOpen) {
 			setEditTarget(null);
+			setBillingTarget(null);
 			return;
 		}
 
@@ -610,11 +634,14 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 				projectQuotaTooltip={projectQuotaTooltip}
 				switchDisabled={switchDisabled}
 				editTarget={editTarget}
+				billingTarget={billingTarget}
 				createWorkspace={handleWorkspaceSwitcherCreateWorkspace}
 				createProject={handleWorkspaceSwitcherCreateProject}
 				editWorkspace={handleWorkspaceSwitcherEditWorkspace}
 				editProject={handleWorkspaceSwitcherEditProject}
 				setEditTarget={setEditTarget}
+				setBillingTarget={setBillingTarget}
+				setWorkspaceBillingMode={handleWorkspaceSwitcherSetWorkspaceBillingMode}
 				onAfterCreateWorkspace={handleWorkspaceSwitcherAfterCreate}
 				onAfterCreateProject={handleWorkspaceSwitcherAfterCreate}
 				onAfterEdit={handleWorkspaceSwitcherAfterEdit}

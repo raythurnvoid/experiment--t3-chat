@@ -9,6 +9,10 @@ description: Workspaces, projects, default personal/home tenant, membership, inv
 - **Membership** is per **project**: table `workspaces_projects_users` keys `(userId, workspaceId, projectId)`. A user “sees” a workspace in `list` if they have **any active** project membership under that workspace (`active !== false`; run backfill so stored rows use `active: true` / `false` for index queries).
 - **Product rule (workspace membership by primary project):** Workspace-level operations that mean “is this user a member of this workspace?” (e.g. `edit_workspace`) require a membership row on that workspace’s **primary/default project** (`defaultProjectId`), not merely on any project in the workspace.
 - **Access control** is separate from workspace/project rows. `access_control_role_assignments` is the source of truth for role membership: `owner`, `admin`, and `member` assignments are scoped to a project, and the workspace default project means workspace-wide authority. `workspaces.owner` is legacy owner backfill input only; new code should not write it or use it for authorization.
+- **Billing mode** lives on `workspaces.billingMode`. Default/personal workspaces always behave as `"user"` billing. Non-personal workspaces are created with `"user"` billing by default and the workspace owner may switch them to `"workspace_owner"`.
+- The owner role assignment on the workspace default project is the billing payer only when `workspaces.billingMode === "workspace_owner"`. In `"user"` mode, the actor/member remains the payer.
+- Ownership transfer changes future owner-billed usage only. It does not rewrite historical usage, move snapshots, transfer credits, or affect `"user"` mode billing.
+- `workspaces.owner` must not be used for billing.
 - Tenant-scoped APIs should take `membershipId` whenever the caller is operating inside a current workspace/project. Derive `workspaceId` and `projectId` from the active membership row instead of trusting client-provided scope strings. Comment APIs (`chat_messages.*`) follow this rule for create/add/archive/list/get.
 - The **public API** (`api.workspaces.*` mutations/queries and Convex helpers they call) is the contract. The **database schema** is wider (optional fields, flags) so migrations and edge rows can exist; do not assume “schema allows it ⇒ product allows it.” Enforce invariants in Convex handlers and in `packages/app/convex/workspaces.ts`.
 
@@ -18,6 +22,7 @@ description: Workspaces, projects, default personal/home tenant, membership, inv
 - **Stored names** (normalized slugs): workspace `personal`, project `home` (see `DEFAULT_WORKSPACE_NAME` / `DEFAULT_PROJECT_NAME` in `packages/app/convex/workspaces.ts`). UI may display title case; API/storage uses these slugs.
 - **User row cache:** `users.defaultWorkspaceId` and `users.defaultProjectId` point at that default tenant. `workspaces_db_ensure_default_workspace_and_project_for_user` is an invariant-establishing helper: if the user already has a default workspace pointer, it trusts the existing tenant and does nothing; if no default exists yet, it creates `personal`/`home`. Do not add "repair" behavior for broken pointers or missing memberships here; that would hide a bug elsewhere.
 - **Exactly one default tenant per user** in normal flows: the UI does not create a second default workspace; internal `workspaces_db_create(..., default: true)` is for provisioning that tenant. Non-default workspaces are created with `default: false`.
+- Default workspaces use `billingMode: "user"` and do not expose workspace billing management.
 - The default `personal` workspace remains private. Invitation/member-management mutations must reject it, and the main nav hides the Users entry for default workspaces even though the Users page may render for direct/debug URLs.
 
 # Anonymous upgrade preserves tenancy and data
@@ -32,7 +37,7 @@ description: Workspaces, projects, default personal/home tenant, membership, inv
 
 - `workspaces_db_create` always inserts a default project named `home` (`default: true`) and links `workspaces.defaultProjectId`.
 - **`create_workspace`** (public) calls `workspaces_db_create` **without** `default: true`, so it creates a **non-default** workspace plus its `home` project. That workspace is not the user’s `personal` default.
-- `workspaces_db_create` also creates the workspace owner assignment on the default project and seeds default access-control grants. This applies to both default and non-default workspaces, but only non-default ownership consumes the user’s `extra_workspaces` quota.
+- `workspaces_db_create` also creates the workspace owner assignment on the default project, seeds default access-control grants, and stores `billingMode: "user"`. This applies to both default and non-default workspaces, but only non-default ownership consumes the user’s `extra_workspaces` quota.
 
 # Access control model
 
@@ -73,6 +78,7 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 - The new owner must be an active member of the workspace `home` project.
 - The new owner must have an available `extra_workspaces` quota slot. Transfer releases one old-owner quota unit and consumes one new-owner quota unit.
 - The old owner remains a regular member through existing memberships and a default-project `member` assignment unless a separate flow removes them.
+- Billing code does not write during ownership transfer. Owner-billed workspaces automatically bill the new owner for operations started after transfer because billing resolves the current default-project owner assignment at operation start.
 
 # Active memberships
 
@@ -116,7 +122,7 @@ Workspace deletion requests are expected to reference an existing workspace. The
 # Resolution helpers
 
 - **`get_membership_by_workspace_project_name`:** resolves validated names against the **current user’s** membership rows and returns only the matching membership row; **first matching** workspace+project pair wins (no global sort of candidates). UI that needs workspace metadata, including `workspace.default`, should compose it from `workspaces.list` instead of carrying it in tenant context.
-- **`list`:** sorts workspaces (default first) and projects (primary first, then name / id).
+- **`list`:** sorts workspaces (default first) and projects (primary first, then name / id), and includes `ownerUserId` from the default-project owner assignment so UI can label owner-billed workspaces without querying billing state.
 
 # Related files
 

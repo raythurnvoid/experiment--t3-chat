@@ -274,7 +274,7 @@ export const remove_access_control_member_management_grants = app_migrations.def
 			return;
 		}
 
-		await ctx.db.delete(grant._id);
+		await ctx.db.delete("access_control_permission_grants", grant._id);
 	},
 });
 
@@ -316,7 +316,7 @@ export const update_extra_workspaces_quota_max_count_to_2 = app_migrations.defin
 			return;
 		}
 
-		await ctx.db.patch(quota._id, {
+		await ctx.db.patch("quotas", quota._id, {
 			maxCount: quotas.extra_workspaces.maxCount,
 			updatedAt: Date.now(),
 		});

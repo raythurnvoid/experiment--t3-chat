@@ -21,16 +21,22 @@ describe("billing_event", () => {
 	test("builds the canonical page_save usage event payload", () => {
 		const event = {
 			name: "page_save",
-			externalCustomerId: "user_1" as Id<"users">,
+			externalCustomerId: "billed_user_1" as Id<"users">,
+			externalMemberId: "actor_user_1" as Id<"users">,
 			externalId: composite_id(
 				"billing",
 				"page_save",
-				"user_1" as Id<"users">,
+				"billed_user_1" as Id<"users">,
+				"actor_user_1" as Id<"users">,
+				"workspace_1",
+				"project_1",
 				"page_1",
 				42,
 			),
 			metadata: {
 				amount: 1,
+				actorUserId: "actor_user_1" as Id<"users">,
+				billedUserId: "billed_user_1" as Id<"users">,
 				workspaceId: "workspace_1",
 				projectId: "project_1",
 				pageId: "page_1",
@@ -67,10 +73,24 @@ describe("billing_event", () => {
 	test("builds the canonical ai_usage usage event payload", () => {
 		const event = {
 			name: "ai_usage",
-			externalCustomerId: "user_1" as Id<"users">,
-			externalId: composite_id("billing", "ai_usage", "user_1" as Id<"users">, "thread_1", "message_1"),
+			externalCustomerId: "billed_user_1" as Id<"users">,
+			externalMemberId: "actor_user_1" as Id<"users">,
+			externalId: composite_id(
+				"billing",
+				"ai_usage",
+				"billed_user_1" as Id<"users">,
+				"actor_user_1" as Id<"users">,
+				"workspace_1",
+				"project_1",
+				"thread_1",
+				"message_1",
+			),
 			metadata: {
 				amount: 12.5,
+				actorUserId: "actor_user_1" as Id<"users">,
+				billedUserId: "billed_user_1" as Id<"users">,
+				workspaceId: "workspace_1",
+				projectId: "project_1",
 				modelId: "gpt-5.4-nano",
 				inputTokens: 1000,
 				outputTokens: 250,

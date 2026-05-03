@@ -270,6 +270,7 @@ describe("create_workspace", () => {
 				};
 
 		expect(workspace?.name).toBe("acme-labs");
+		expect(workspace?.billingMode).toBe("user");
 		expect(workspace?.owner).toBeUndefined();
 		expect(ownerRole?.userId).toBe(userId);
 		expect(permissionGrants.some((grant) => grant.role === "member" && grant.permission === "project.create")).toBe(
@@ -3636,6 +3637,124 @@ describe("get_membership_by_workspace_project_name", () => {
 	});
 });
 
+describe("set_workspace_billing_mode", () => {
+	test("lets the workspace owner update a created workspace billing mode", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-set-billing-owner",
+			}),
+		);
+		await workspaces_test_bootstrap_user(t, { userId });
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Billing Owner",
+			email: "billing-owner@test.local",
+		});
+		const created = await asOwner.mutation(api.workspaces.create_workspace, {
+			description: "",
+			name: "billing-mode-owner",
+		});
+		expect(created._yay).toBeTruthy();
+
+		const result = await asOwner.mutation(api.workspaces.set_workspace_billing_mode, {
+			workspaceId: created._yay!.workspaceId,
+			billingMode: "workspace_owner",
+		});
+
+		expect(result._yay).toBeNull();
+		const workspace = await t.run((ctx) => ctx.db.get("workspaces", created._yay!.workspaceId));
+		expect(workspace?.billingMode).toBe("workspace_owner");
+	});
+
+	test("rejects billing mode changes for personal workspaces", async () => {
+		const t = test_convex();
+		const userId = await t.run(async (ctx) =>
+			ctx.db.insert("users", {
+				clerkUserId: "clerk-user-set-billing-personal",
+			}),
+		);
+		await workspaces_test_bootstrap_user(t, { userId });
+		const user = await t.run((ctx) => ctx.db.get("users", userId));
+		if (!user?.defaultWorkspaceId) {
+			throw new Error("Expected default workspace");
+		}
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Personal Billing Owner",
+			email: "billing-personal@test.local",
+		});
+
+		const result = await asOwner.mutation(api.workspaces.set_workspace_billing_mode, {
+			workspaceId: user.defaultWorkspaceId,
+			billingMode: "workspace_owner",
+		});
+
+		expect(result).toEqual({
+			_nay: {
+				message: "Cannot manage billing for the default workspace",
+			},
+		});
+	});
+
+	test("rejects billing mode changes from non-owner members", async () => {
+		const t = test_convex();
+		const [ownerId, memberId] = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.insert("users", { clerkUserId: "clerk-user-set-billing-owner-denied" }),
+				ctx.db.insert("users", { clerkUserId: "clerk-user-set-billing-member-denied" }),
+			]),
+		);
+		await workspaces_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "billing-denied-owner@test.local",
+		});
+		const member = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: memberId,
+			name: "Member",
+			email: "billing-denied-member@test.local",
+		});
+		const created = await owner.mutation(api.workspaces.create_workspace, {
+			description: "",
+			name: "billing-mode-denied",
+		});
+		expect(created._yay).toBeTruthy();
+		await t.run(async (ctx) => {
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
+				userId: memberId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
+				userId: memberId,
+				role: "member",
+				now: Date.now(),
+			});
+		});
+
+		const result = await member.mutation(api.workspaces.set_workspace_billing_mode, {
+			workspaceId: created._yay!.workspaceId,
+			billingMode: "workspace_owner",
+		});
+
+		expect(result).toEqual({
+			_nay: {
+				message: "Permission denied",
+			},
+		});
+	});
+});
+
 describe("list", () => {
 	test("orders non-default workspaces alphabetically by name", async () => {
 		const t = test_convex();
@@ -3943,6 +4062,7 @@ describe("quotas.get", () => {
 				name: "workspace-quota-missing-doc",
 				description: "",
 				default: false,
+				billingMode: "user",
 				updatedAt: now,
 			});
 			const projectId = await ctx.db.insert("workspaces_projects", {

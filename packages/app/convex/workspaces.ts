@@ -139,6 +139,7 @@ export async function workspaces_db_create(
 		name,
 		description: args.description,
 		default: args.default ?? false,
+		billingMode: "user",
 		updatedAt: args.now,
 	});
 
@@ -372,7 +373,12 @@ export async function workspaces_db_ensure_default_workspace_and_project_for_use
 export const list = query({
 	args: {},
 	returns: v.object({
-		workspaces: v.array(doc(app_convex_schema, "workspaces")),
+		workspaces: v.array(
+			v.object({
+				...doc(app_convex_schema, "workspaces").fields,
+				ownerUserId: v.id("users"),
+			}),
+		),
 		workspaceIdsProjectsDict: v.record(v.id("workspaces"), v.array(doc(app_convex_schema, "workspaces_projects"))),
 	}),
 	handler: async (ctx) => {
@@ -415,7 +421,38 @@ export const list = query({
 		});
 
 		// Presentation order: default workspace first, then locale-aware name (+ `_id` tiebreaker). Project rows per workspace: workspace primary first (`defaultProjectId` / `default` flag), then the same name rule.
-		const workspaces = workspaces_list_sort_workspaces(workspacesUnsorted);
+		const workspaces = workspaces_list_sort_workspaces(
+			await Promise.all(
+				workspacesUnsorted.map(async (workspace) => {
+					if (workspace.default) {
+						return {
+							...workspace,
+							ownerUserId: userAuth.id,
+						};
+					}
+
+					const defaultProjectId = workspace.defaultProjectId;
+					if (!defaultProjectId) {
+						throw should_never_happen("Workspace default project not found", { workspaceId: workspace._id });
+					}
+
+					const ownerAssignment = await ctx.db
+						.query("access_control_role_assignments")
+						.withIndex("by_workspace_project_role_user", (q) =>
+							q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
+						)
+						.first();
+					if (!ownerAssignment) {
+						throw should_never_happen("Workspace owner assignment not found", { workspaceId: workspace._id });
+					}
+
+					return {
+						...workspace,
+						ownerUserId: ownerAssignment.userId,
+					};
+				}),
+			),
+		);
 
 		const workspaceIdsProjectsDict = Object.fromEntries(
 			await Promise.all(
@@ -1157,6 +1194,64 @@ export const edit_workspace = mutation({
 				name,
 			},
 		});
+	},
+});
+
+export const set_workspace_billing_mode = mutation({
+	args: {
+		workspaceId: v.id("workspaces"),
+		billingMode: doc(app_convex_schema, "workspaces").fields.billingMode,
+	},
+	returns: v_result({
+		_yay: v.null(),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const workspace = await ctx.db.get("workspaces", args.workspaceId);
+		if (!workspace) {
+			return Result({ _nay: { message: "Workspace not found" } });
+		}
+
+		if (workspace.default) {
+			return Result({ _nay: { message: "Cannot manage billing for the default workspace" } });
+		}
+
+		const defaultProjectId = workspace.defaultProjectId;
+		if (!defaultProjectId) {
+			throw should_never_happen("Workspace default project not found", {
+				workspaceId: workspace._id,
+			});
+		}
+
+		const ownerAssignment = await ctx.db
+			.query("access_control_role_assignments")
+			.withIndex("by_workspace_project_user_role", (q) =>
+				q
+					.eq("workspaceId", workspace._id)
+					.eq("projectId", defaultProjectId)
+					.eq("userId", userAuth.id)
+					.eq("role", "owner"),
+			)
+			.first();
+		if (!ownerAssignment) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		await ctx.db.patch("workspaces", workspace._id, {
+			billingMode: args.billingMode,
+			updatedAt: Date.now(),
+		});
+
+		return Result({ _yay: null });
 	},
 });
 

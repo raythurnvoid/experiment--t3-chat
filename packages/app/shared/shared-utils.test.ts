@@ -34,9 +34,18 @@ describe("composite_id", () => {
 	});
 
 	test("joins page save ids with double colons", () => {
-		const id = composite_id("billing", "page_save", "user_1", "page_1", 42);
+		const id = composite_id(
+			"billing",
+			"page_save",
+			"billed_user_1",
+			"actor_user_1",
+			"workspace_1",
+			"project_1",
+			"page_1",
+			42,
+		);
 
-		expect(id).toBe("page_save::user_1::page_1::42");
+		expect(id).toBe("page_save::billed_user_1::actor_user_1::workspace_1::project_1::page_1::42");
 	});
 
 	test("joins monthly credit ids with double colons", () => {
@@ -46,9 +55,18 @@ describe("composite_id", () => {
 	});
 
 	test("joins AI usage ids with double colons", () => {
-		const id = composite_id("billing", "ai_usage", "user_1", "thread_1", "message_1");
+		const id = composite_id(
+			"billing",
+			"ai_usage",
+			"billed_user_1",
+			"actor_user_1",
+			"workspace_1",
+			"project_1",
+			"thread_1",
+			"message_1",
+		);
 
-		expect(id).toBe("ai_usage::user_1::thread_1::message_1");
+		expect(id).toBe("ai_usage::billed_user_1::actor_user_1::workspace_1::project_1::thread_1::message_1");
 	});
 });
 

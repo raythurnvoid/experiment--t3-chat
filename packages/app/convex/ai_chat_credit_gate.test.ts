@@ -126,14 +126,17 @@ describe("/api/chat credit gate", () => {
 		});
 	});
 
-	test("returns 429 on the third signed-in chat request before credit or model work", async () => {
+	test("returns 429 on the second signed-in chat request before credit or model work", async () => {
 		const t = test_convex();
-		const seeded = await t.run(async (ctx) =>
-			test_mocks_fill_db_with.membership(ctx, {
+		const seeded = await t.run(async (ctx) => {
+			await ctx.db.insert("users", { clerkUserId: "clerk-chat-rate-limit-dummy" });
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-chat-rate-limit-user" });
+			return await test_mocks_fill_db_with.membership(ctx, {
+				userId,
 				workspaceName: "personal",
 				projectName: "home",
-			}),
-		);
+			});
+		});
 		await seed_free_product(t, "prod_chat_rate_limit_zero");
 		await seed_snapshot(t, {
 			userId: seeded.userId,
@@ -164,7 +167,7 @@ describe("/api/chat credit gate", () => {
 			membershipId: seeded.membershipId,
 		};
 
-		for (let i = 0; i < 2; i++) {
+		for (let i = 0; i < 1; i++) {
 			const response = await asUser.fetch("/api/chat", {
 				method: "POST",
 				headers: {
@@ -189,14 +192,18 @@ describe("/api/chat credit gate", () => {
 		expect(typeof blockedBody.retryAfterMs).toBe("number");
 	});
 
-	test("returns 429 on the third signed-in title request before credit or model work", async () => {
+	test("returns 429 on the second signed-in title request before credit or model work", async () => {
 		const t = test_convex();
-		const seeded = await t.run(async (ctx) =>
-			test_mocks_fill_db_with.membership(ctx, {
+		const seeded = await t.run(async (ctx) => {
+			await ctx.db.insert("users", { clerkUserId: "clerk-title-rate-limit-dummy-1" });
+			await ctx.db.insert("users", { clerkUserId: "clerk-title-rate-limit-dummy-2" });
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-title-rate-limit-user" });
+			return await test_mocks_fill_db_with.membership(ctx, {
+				userId,
 				workspaceName: "personal",
 				projectName: "home",
-			}),
-		);
+			});
+		});
 		await seed_free_product(t, "prod_title_rate_limit_zero");
 		await seed_snapshot(t, {
 			userId: seeded.userId,
@@ -223,7 +230,7 @@ describe("/api/chat credit gate", () => {
 			],
 		};
 
-		for (let i = 0; i < 2; i++) {
+		for (let i = 0; i < 1; i++) {
 			const response = await asUser.fetch("/api/v1/runs/stream", {
 				method: "POST",
 				headers: {
@@ -267,9 +274,9 @@ describe("/api/chat credit gate", () => {
 				throw new Error("Expected anonymous user");
 			}
 			await ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
-				userEvents: [
+				billedUserEvents: [
 					{
-						user,
+						billedUser: user,
 						event: billing_event({
 							name: "manual_credit",
 							externalCustomerId: seeded.userId,

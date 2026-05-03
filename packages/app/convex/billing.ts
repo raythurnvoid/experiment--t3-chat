@@ -77,6 +77,15 @@ const billing_workpool_usage_event = new Workpool(components.billing_workpool_us
 
 // #region check credits
 
+export function billing_pick_billed_user_id(args: {
+	userId: Id<"users">;
+	workspace: Pick<Doc<"workspaces">, "default" | "billingMode">;
+	workspaceOwnerId: Id<"users"> | null;
+}) {
+	if (!args.workspace.default && args.workspace.billingMode === "workspace_owner") return args.workspaceOwnerId;
+	return args.userId;
+}
+
 export async function billing_db_check_credits(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -108,25 +117,83 @@ export async function billing_db_check_credits(
 			return true;
 		});
 
-	return Result({
-		_yay: {
-			hasCredits,
-		},
-	});
+	return { hasCredits };
 }
 
 export const check_credits = internalQuery({
 	args: {
 		userId: v.id("users"),
+		workspaceId: v.optional(v.id("workspaces")),
 		minimumRequiredCents: v.number(),
 	},
-	returns: v_result({
-		_yay: v.object({
-			hasCredits: v.boolean(),
-		}),
+	returns: v.object({
+		hasCredits: v.boolean(),
+		billedUser: v.optional(doc(app_convex_schema, "users")),
 	}),
 	handler: async (ctx, args) => {
-		return await billing_db_check_credits(ctx, args);
+		let billedUser: Doc<"users"> | null = null;
+		if (args.workspaceId) {
+			const workspace = await ctx.db.get("workspaces", args.workspaceId);
+			if (!workspace) {
+				throw should_never_happen("Workspace not found while checking credits", {
+					userId: args.userId,
+					workspaceId: args.workspaceId,
+				});
+			}
+
+			let workspaceOwnerId: Id<"users"> | null = null;
+			if (!workspace.default && workspace.billingMode === "workspace_owner") {
+				const defaultProjectId = workspace.defaultProjectId;
+				if (!defaultProjectId) {
+					throw should_never_happen("Workspace default project not found", {
+						workspaceId: workspace._id,
+					});
+				}
+
+				// Use the current workspace owner as the payer only for owner-billed workspaces.
+				// Ownership transfer changes future billing; in-flight operations keep their frozen billed user.
+				workspaceOwnerId =
+					(
+						await ctx.db
+							.query("access_control_role_assignments")
+							.withIndex("by_workspace_project_role_user", (q) =>
+								q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
+							)
+							.first()
+					)?.userId ?? null;
+			}
+
+			const billedUserId = billing_pick_billed_user_id({
+				userId: args.userId,
+				workspace,
+				workspaceOwnerId,
+			});
+			if (!billedUserId) {
+				throw should_never_happen("Workspace owner not found while checking credits", {
+					userId: args.userId,
+					workspaceId: args.workspaceId,
+				});
+			}
+
+			billedUser = await ctx.db.get("users", billedUserId);
+			if (!billedUser) {
+				throw should_never_happen("Billed user not found while checking credits", {
+					userId: args.userId,
+					workspaceId: args.workspaceId,
+					billedUserId,
+				});
+			}
+		}
+
+		const creditCheck = await billing_db_check_credits(ctx, {
+			userId: billedUser?._id ?? args.userId,
+			minimumRequiredCents: args.minimumRequiredCents,
+		});
+
+		return {
+			hasCredits: creditCheck.hasCredits,
+			...(billedUser ? { billedUser } : {}),
+		};
 	},
 });
 
@@ -730,9 +797,9 @@ async function db_apply_polar_customer_state_refresh(
 				syncedAt,
 			});
 			await billing_ingest_events(ctx, {
-				userEvents: [
+				billedUserEvents: [
 					{
-						user,
+						billedUser: user,
 						event: billing_event({
 							name: "monthly_credit",
 							externalCustomerId: user._id,
@@ -1493,9 +1560,12 @@ const billing_event_validator = v.union(
 	v.object({
 		name: v.literal("page_save"),
 		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
 		externalId: v.string(),
 		metadata: v.object({
 			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
 			workspaceId: v.string(),
 			projectId: v.string(),
 			pageId: v.string(),
@@ -1517,9 +1587,14 @@ const billing_event_validator = v.union(
 	v.object({
 		name: v.literal("ai_usage"),
 		externalCustomerId: v.id("users"),
+		externalMemberId: v.optional(v.id("users")),
 		externalId: v.string(),
 		metadata: v.object({
 			amount: v.number(),
+			actorUserId: v.id("users"),
+			billedUserId: v.id("users"),
+			workspaceId: v.string(),
+			projectId: v.string(),
 			modelId: v.string(),
 			inputTokens: v.number(),
 			outputTokens: v.number(),
@@ -1562,10 +1637,10 @@ export const ingest_events = internalAction({
 
 export const ingest_anonymous_user_events = internalMutation({
 	args: {
-		userEvents: v.array(
+		billedUserEvents: v.array(
 			v.object({
 				event: billing_event_validator,
-				user: doc(app_convex_schema, "users"),
+				billedUser: doc(app_convex_schema, "users"),
 			}),
 		),
 	},
@@ -1574,10 +1649,10 @@ export const ingest_anonymous_user_events = internalMutation({
 		const now = Date.now();
 
 		await Promise.all(
-			args.userEvents.map(async ({ event, user }) => {
-				if (user.clerkUserId != null) {
+			args.billedUserEvents.map(async ({ event, billedUser }) => {
+				if (billedUser.clerkUserId != null) {
 					console.error("Anonymous billing ingest received a signed-in user row", {
-						userId: user._id,
+						billedUserId: billedUser._id,
 						event,
 					});
 					return;
@@ -1589,11 +1664,11 @@ export const ingest_anonymous_user_events = internalMutation({
 
 				const usageSnapshot = await ctx.db
 					.query("billing_usage_snapshots")
-					.withIndex("by_user", (q) => q.eq("userId", user._id))
+					.withIndex("by_user", (q) => q.eq("userId", billedUser._id))
 					.first();
 				if (!usageSnapshot || usageSnapshot.meter == null) {
 					throw should_never_happen("Anonymous user usage snapshot not found or has no meter", {
-						userId: user._id,
+						userId: billedUser._id,
 						event,
 						usageSnapshot,
 					});
@@ -1614,21 +1689,21 @@ export const ingest_anonymous_user_events = internalMutation({
 	},
 });
 
-/** Route app-owned billing events by real user row: Polar for signed-in users, local snapshot updates for anonymous users. */
+/** Route app-owned billing events by billed user row: Polar for signed-in payers, local snapshot updates for anonymous payers. */
 export async function billing_ingest_events(
 	ctx: ActionCtx | MutationCtx,
 	args: {
-		userEvents: Array<{
+		billedUserEvents: Array<{
 			event: billing_Event;
-			user: Doc<"users">;
+			billedUser: Doc<"users">;
 		}>;
 	},
 ) {
-	const anonymousUserEvents: typeof args.userEvents = [];
+	const anonymousUserEvents: typeof args.billedUserEvents = [];
 	const signedInEvents: Array<billing_Event> = [];
 
-	for (const userEvent of args.userEvents) {
-		if (userEvent.user.clerkUserId == null) {
+	for (const userEvent of args.billedUserEvents) {
+		if (userEvent.billedUser.clerkUserId == null) {
 			anonymousUserEvents.push(userEvent);
 			continue;
 		}
@@ -1645,7 +1720,7 @@ export async function billing_ingest_events(
 		anonymousUserEvents.length === 0
 			? Promise.resolve()
 			: ctx.runMutation(internal.billing.ingest_anonymous_user_events, {
-					userEvents: anonymousUserEvents,
+					billedUserEvents: anonymousUserEvents,
 				}),
 	]);
 }
@@ -1759,9 +1834,9 @@ export const grant_credit = internalAction({
 		}
 
 		await billing_ingest_events(ctx, {
-			userEvents: [
+			billedUserEvents: [
 				{
-					user,
+					billedUser: user,
 					event: billing_event({
 						name: "manual_credit",
 						externalCustomerId: args.userId,
