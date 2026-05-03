@@ -304,7 +304,7 @@ export class pages_PresenceStore extends TypedEventTarget<pages_PresenceStore_Ev
 
 		if (!args.data.sessions.some((session) => session.sessionId === args.localSessionId)) {
 			// TODO: remove this if we do not catch it for a long time
-			should_never_happen("localSessionId is not in sessions");
+			should_never_happen("[pages_PresenceStore.constructor] localSessionId is not in sessions");
 		}
 	}
 
@@ -387,7 +387,7 @@ export class pages_PresenceStore extends TypedEventTarget<pages_PresenceStore_Ev
 
 		for (const disconnectedSessionId of disconnectedSessions) {
 			const userId = this.sessionIdUserIdMap.get(disconnectedSessionId);
-			if (!userId) throw should_never_happen("userId is undefined");
+			if (!userId) throw should_never_happen("[pages_PresenceStore.sync] userId is undefined");
 
 			this.sessionIds.delete(disconnectedSessionId);
 			this.sessionsData.delete(disconnectedSessionId);
@@ -402,7 +402,7 @@ export class pages_PresenceStore extends TypedEventTarget<pages_PresenceStore_Ev
 		const currentPresenceData = this.sessionsData.get(this.localSessionId);
 		if (!currentPresenceData) {
 			if (this.disposed) return;
-			throw should_never_happen("currentPresenceData is undefined");
+			throw should_never_happen("[pages_PresenceStore.setSessionData] currentPresenceData is undefined");
 		}
 
 		const newValue = { ...currentPresenceData, ...data };

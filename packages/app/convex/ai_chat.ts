@@ -1281,6 +1281,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 																	membership.workspaceId,
 																	membership.projectId,
 																	String(threadId ?? ""),
+																	// TODO: Evaluate if this is a good idea to pass "title" as messageId
 																	"title",
 																),
 																metadata: {
@@ -1639,6 +1640,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 																membership.workspaceId,
 																membership.projectId,
 																thread_id,
+																// TODO: Evaluate if this is a good idea to pass "title" as messageId
 																"title",
 															),
 															metadata: {
