@@ -1,6 +1,7 @@
 import { test_mocks_hardcoded } from "../convex/setup.test.ts";
 import { test, expect, vi } from "vitest";
 import type { ActionCtx } from "../convex/_generated/server";
+import type { Id } from "../convex/_generated/dataModel";
 
 const exa_test = vi.hoisted(() => ({
 	searchMock: vi.fn(),
@@ -33,10 +34,12 @@ import { files_chunk_BITMASK_FLAGS } from "./files-markdown-chunking-mastra.ts";
 
 type server_ai_tools_test_user_identity = NonNullable<Awaited<ReturnType<ActionCtx["auth"]["getUserIdentity"]>>>;
 
+const server_ai_tools_test_user_id = test_mocks_hardcoded.user.user_1.id as Id<"users">;
+
 const server_ai_tools_test_ctx_data = {
 	workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 	projectId: test_mocks_hardcoded.project_id.project_1,
-	userId: test_mocks_hardcoded.user.user_1.id,
+	userId: server_ai_tools_test_user_id,
 } as const;
 
 const server_ai_tools_test_user_identity_default = {
@@ -237,6 +240,7 @@ test("read_file tool forwards pendingUpdateId and returns it in metadata", async
 		path: "/docs/plan.md",
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		projectId: test_mocks_hardcoded.project_id.project_1,
+		userId: server_ai_tools_test_user_id,
 		pendingUpdateId,
 	});
 
@@ -280,11 +284,19 @@ test("write_file tool stores pending unstaged branch updates from the agent", as
 
 	expect(runQuery).toHaveBeenCalledTimes(2);
 	expect(runMutation).toHaveBeenCalledTimes(1);
-	const [, args] = runMutation.mock.calls[0]!;
-	expect(args).toEqual({
+	const [, firstQueryArgs] = runQuery.mock.calls[0]!;
+	expect(firstQueryArgs).toEqual({
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		projectId: test_mocks_hardcoded.project_id.project_1,
-		userId: test_mocks_hardcoded.user.user_1.id,
+		userId: server_ai_tools_test_user_id,
+		path: "/docs/plan.md",
+		pendingUpdateId: undefined,
+	});
+	const [, mutationArgs] = runMutation.mock.calls[0]!;
+	expect(mutationArgs).toEqual({
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		userId: server_ai_tools_test_user_id,
 		nodeId,
 		pendingUpdateId,
 		unstagedMarkdown: "# Updated",
@@ -293,6 +305,70 @@ test("write_file tool stores pending unstaged branch updates from the agent", as
 	expect(result.metadata.nodeId).toBe(nodeId);
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 	expect(result.metadata.exists).toBe(true);
+});
+
+test("write_file tool creates missing files with the agent user", async () => {
+	const nodeId = "p999";
+	const pendingUpdateId = "pending999";
+
+	let runQueryCallCount = 0;
+	let runMutationCallCount = 0;
+	const { ctx, runQuery, runMutation } = makeCtx(
+		async () => {
+			runQueryCallCount += 1;
+			return runQueryCallCount === 1 ? null : { _id: pendingUpdateId };
+		},
+		{
+			runMutationImpl: async () => {
+				runMutationCallCount += 1;
+				return runMutationCallCount === 1 ? { _yay: { nodeId } } : null;
+			},
+		},
+	);
+	const tool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	const result = await tool.execute?.({ path: "/docs/new.md", content: "# New" }, { toolCallId: "test", messages: [] });
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	expect(runQuery).toHaveBeenCalledTimes(2);
+	const [, firstQueryArgs] = runQuery.mock.calls[0]!;
+	expect(firstQueryArgs).toEqual({
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		userId: server_ai_tools_test_user_id,
+		path: "/docs/new.md",
+		pendingUpdateId: undefined,
+	});
+
+	expect(runMutation).toHaveBeenCalledTimes(2);
+	const [, createArgs] = runMutation.mock.calls[0]!;
+	expect(createArgs).toEqual({
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		userId: server_ai_tools_test_user_id,
+		path: "/docs/new.md",
+	});
+	const [, pendingArgs] = runMutation.mock.calls[1]!;
+	expect(pendingArgs).toEqual({
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		userId: server_ai_tools_test_user_id,
+		nodeId,
+		pendingUpdateId: undefined,
+		unstagedMarkdown: "# New",
+	});
+
+	expect(result.metadata.nodeId).toBe(nodeId);
+	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
+	expect(result.metadata.exists).toBe(false);
 });
 
 test("edit_file tool stores pending unstaged branch updates from the agent", async () => {
@@ -332,11 +408,19 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 
 	expect(runQuery).toHaveBeenCalledTimes(2);
 	expect(runMutation).toHaveBeenCalledTimes(1);
-	const [, args] = runMutation.mock.calls[0]!;
-	expect(args).toEqual({
+	const [, firstQueryArgs] = runQuery.mock.calls[0]!;
+	expect(firstQueryArgs).toEqual({
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		projectId: test_mocks_hardcoded.project_id.project_1,
-		userId: test_mocks_hardcoded.user.user_1.id,
+		userId: server_ai_tools_test_user_id,
+		path: "/docs/hello.md",
+		pendingUpdateId: undefined,
+	});
+	const [, mutationArgs] = runMutation.mock.calls[0]!;
+	expect(mutationArgs).toEqual({
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		userId: server_ai_tools_test_user_id,
 		nodeId,
 		pendingUpdateId,
 		unstagedMarkdown: "Hello team",
@@ -437,7 +521,7 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 	};
 
 	let runQueryCallCount = 0;
-	const { ctx, runMutation } = makeCtx(async () => {
+	const { ctx, runQuery, runMutation } = makeCtx(async () => {
 		runQueryCallCount += 1;
 		return runQueryCallCount === 1 ? currentContent : { _id: pendingUpdateId };
 	});
@@ -462,11 +546,20 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 		throw new Error("`result` is AsyncIterable but expected sync object");
 	}
 
+	const [, firstQueryArgs] = runQuery.mock.calls[0]!;
+	expect(firstQueryArgs).toEqual({
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		userId: server_ai_tools_test_user_id,
+		path: "/docs/newline.md",
+		pendingUpdateId: undefined,
+	});
+
 	const [, args] = runMutation.mock.calls[0]!;
 	expect(args).toEqual({
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		projectId: test_mocks_hardcoded.project_id.project_1,
-		userId: test_mocks_hardcoded.user.user_1.id,
+		userId: server_ai_tools_test_user_id,
 		nodeId,
 		pendingUpdateId,
 		unstagedMarkdown: "Hello team\n",

@@ -6,11 +6,7 @@ import { createPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
 import { internal } from "../convex/_generated/api.js";
-import {
-	path_name_of,
-	server_path_normalize,
-	server_path_parent_of,
-} from "./server-utils.ts";
+import { path_name_of, server_path_normalize, server_path_parent_of } from "./server-utils.ts";
 import { minimatch } from "minimatch";
 import { files_chunk_has_bitmask_flag, files_chunk_BITMASK_FLAGS } from "./files-markdown-chunking-mastra.ts";
 
@@ -533,6 +529,7 @@ export function ai_chat_tool_create_read_file(
 	ctxData: {
 		workspaceId: string;
 		projectId: string;
+		userId: Id<"users">;
 	},
 ) {
 	return tool({
@@ -569,6 +566,7 @@ export function ai_chat_tool_create_read_file(
 			const fileContent = await ctx.runQuery(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
+				userId: ctxData.userId,
 				path: normalizedPath,
 				pendingUpdateId,
 			});
@@ -665,6 +663,7 @@ export function ai_chat_tool_create_list_files(
 	ctxData: {
 		workspaceId: string;
 		projectId: string;
+		userId: Id<"users">;
 	},
 ) {
 	return tool({
@@ -734,6 +733,7 @@ export function ai_chat_tool_create_glob_files(
 	ctxData: {
 		workspaceId: string;
 		projectId: string;
+		userId: Id<"users">;
 	},
 ) {
 	return tool({
@@ -811,6 +811,7 @@ export function ai_chat_tool_create_grep_files(
 	ctxData: {
 		workspaceId: string;
 		projectId: string;
+		userId: Id<"users">;
 	},
 ) {
 	return tool({
@@ -878,6 +879,7 @@ export function ai_chat_tool_create_grep_files(
 					path: item.path,
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
+					userId: ctxData.userId,
 				});
 
 				const fileName = path_name_of(item.path);
@@ -945,6 +947,7 @@ export function ai_chat_tool_create_text_search_files(
 	ctxData: {
 		workspaceId: string;
 		projectId: string;
+		userId: Id<"users">;
 	},
 ) {
 	return tool({
@@ -1076,11 +1079,7 @@ export function ai_chat_tool_create_write_file(
 			- The content must be valid GitHub Flavored Markdown.`,
 
 		inputSchema: z.object({
-			path: z
-				.string()
-				.describe(
-					'Absolute path to the Markdown file to write. Must start with "/" and end with ".md".',
-				),
+			path: z.string().describe('Absolute path to the Markdown file to write. Must start with "/" and end with ".md".'),
 			content: z.string().describe("The GitHub Flavored Markdown content to write to the file"),
 			pendingUpdateId: z
 				.string()
@@ -1100,6 +1099,7 @@ export function ai_chat_tool_create_write_file(
 				{
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
+					userId: ctxData.userId,
 					path,
 					pendingUpdateId,
 				},
@@ -1116,6 +1116,7 @@ export function ai_chat_tool_create_write_file(
 				const created = await ctx.runMutation(internal.files_nodes.create_file_by_path, {
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
+					userId: ctxData.userId,
 					path,
 				});
 				if (created._nay) {
@@ -1192,11 +1193,7 @@ export function ai_chat_tool_create_edit_file(
 			- This tool does not apply changes directly; it saves a pending update for human review.`,
 
 		inputSchema: z.object({
-			path: z
-				.string()
-				.describe(
-					'Absolute path to the Markdown file (must start with "/" and end with ".md").',
-				),
+			path: z.string().describe('Absolute path to the Markdown file (must start with "/" and end with ".md").'),
 			oldString: z.string().describe("The GitHub Flavored Markdown text to replace"),
 			newString: z.string().describe("The replacement GitHub Flavored Markdown text"),
 			replaceAll: z.boolean().optional().default(false),
@@ -1218,6 +1215,7 @@ export function ai_chat_tool_create_edit_file(
 				{
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
+					userId: ctxData.userId,
 					path: normalizedPath,
 					pendingUpdateId,
 				},
@@ -1293,9 +1291,10 @@ type ai_chat_tool_web_search_ContentsOptions = {
 	};
 };
 
-function ai_chat_tool_web_search_map_sdk_results(
-	result: SearchResponse<ai_chat_tool_web_search_ContentsOptions>,
-): { requestId: string | undefined; results: ai_chat_tool_web_search_ExaItem[] } {
+function ai_chat_tool_web_search_map_sdk_results(result: SearchResponse<ai_chat_tool_web_search_ContentsOptions>): {
+	requestId: string | undefined;
+	results: ai_chat_tool_web_search_ExaItem[];
+} {
 	const results: ai_chat_tool_web_search_ExaItem[] = [];
 
 	for (const entry of result.results) {

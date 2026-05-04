@@ -429,6 +429,7 @@ test("archived nodes can share path with a new active node", async () => {
 	const createdFile = await asUser.mutation(internal.files_nodes.create_file_by_path, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
+		userId: db.userId,
 		path: `/${duplicateName}`,
 	});
 	if (createdFile._nay) {
@@ -689,6 +690,7 @@ test("create_file_by_path rejects invalid path segments", async () => {
 	const createByPath = await asUser.mutation(internal.files_nodes.create_file_by_path, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
+		userId: db.userId,
 		path: invalidPath,
 	});
 
@@ -732,6 +734,7 @@ test("create_file_by_path reuses only active files", async () => {
 	const createByPath = await asUser.mutation(internal.files_nodes.create_file_by_path, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
+		userId: db.userId,
 		path: `/${db.files.file_root_2.name}/new-leaf.md`,
 	});
 	if (createByPath._nay) {
@@ -1204,19 +1207,13 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 		const updates = await ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_workspace_project_file_sequence", (q) =>
-				q
-					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
-					.eq("nodeId", createdFile._yay.nodeId),
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const lastSequence = await ctx.db
 			.query("files_yjs_docs_last_sequences")
 			.withIndex("by_workspace_project_file", (q) =>
-				q
-					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
-					.eq("nodeId", createdFile._yay.nodeId),
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
 			)
 			.first();
 		return {
@@ -1470,22 +1467,26 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 			.collect(),
 	);
 	expect(yjsUpdates).toHaveLength(1);
-	expect(vi.mocked(Workpool.prototype.enqueueAction)).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
-		events: [
-			expect.objectContaining({
-				name: "file_save",
-				externalCustomerId: db.userId,
-				externalId: `file_save::${db.userId}::${db.userId}::${db.workspaceId}::${db.projectId}::${createdFile._yay.nodeId}::${yjsUpdates[0]?.sequence}`,
-				metadata: expect.objectContaining({
-					amount: 1,
-					actorUserId: db.userId,
-					billedUserId: db.userId,
-					workspaceId: db.workspaceId,
-					projectId: db.projectId,
-					nodeId: createdFile._yay.nodeId,
-					yjsSequence: String(yjsUpdates[0]?.sequence),
+	expect(vi.mocked(Workpool.prototype.enqueueAction)).toHaveBeenCalledWith(
+		expect.anything(),
+		internal.billing.ingest_events,
+		{
+			events: [
+				expect.objectContaining({
+					name: "file_save",
+					externalCustomerId: db.userId,
+					externalId: `file_save::${db.userId}::${db.userId}::${db.workspaceId}::${db.projectId}::${createdFile._yay.nodeId}::${yjsUpdates[0]?.sequence}`,
+					metadata: expect.objectContaining({
+						amount: 1,
+						actorUserId: db.userId,
+						billedUserId: db.userId,
+						workspaceId: db.workspaceId,
+						projectId: db.projectId,
+						nodeId: createdFile._yay.nodeId,
+						yjsSequence: String(yjsUpdates[0]?.sequence),
+					}),
 				}),
-			}),
-		],
-	});
+			],
+		},
+	);
 });

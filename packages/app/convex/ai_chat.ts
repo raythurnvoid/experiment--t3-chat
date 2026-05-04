@@ -26,7 +26,6 @@ import {
 } from "../server/server-utils.ts";
 import { workspaces_db_get_membership_for_user } from "./workspaces.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import type { app_convex_Doc, app_convex_Id } from "../src/lib/app-convex-client.ts";
 import {
 	ai_chat_tool_create_list_files,
 	ai_chat_tool_create_read_file,
@@ -44,6 +43,7 @@ import { Result } from "../src/lib/errors-as-values-utils.ts";
 import { billing_event } from "../server/billing.ts";
 import { billing_ingest_events } from "./billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import type { Doc, Id } from "./_generated/dataModel";
 
 export {
 	remove_file_pending_update_if_expired,
@@ -94,7 +94,7 @@ function ai_chat_get_agent_configuration(input: {
 	ctxData: {
 		workspaceId: string;
 		projectId: string;
-		userId: app_convex_Id<"users">;
+		userId: Id<"users">;
 	};
 	args: {
 		modeId: (typeof ai_chat_MODE_IDS)[number];
@@ -327,9 +327,7 @@ export const thread_branch = mutation({
 			)
 			.collect();
 
-		const byId = new Map<string, app_convex_Doc<"ai_chat_threads_messages_aisdk_5">>(
-			allMessages.map((m) => [m._id, m]),
-		);
+		const byId = new Map<string, Doc<"ai_chat_threads_messages_aisdk_5">>(allMessages.map((m) => [m._id, m]));
 
 		let newestMessage = undefined;
 		if (args.messageId) {
@@ -378,7 +376,7 @@ export const thread_branch = mutation({
 		}
 
 		if (!newestMessage) {
-			let newest: app_convex_Doc<"ai_chat_threads_messages_aisdk_5"> | null = null;
+			let newest: Doc<"ai_chat_threads_messages_aisdk_5"> | null = null;
 
 			for (const message of allMessages) {
 				if (!newest || message._creationTime > newest._creationTime) {
@@ -415,9 +413,9 @@ export const thread_branch = mutation({
 			return Result({ _yay: { threadId: newThreadId } });
 		}
 
-		const chain: Array<app_convex_Doc<"ai_chat_threads_messages_aisdk_5">> = [];
+		const chain: Array<Doc<"ai_chat_threads_messages_aisdk_5">> = [];
 
-		let current: app_convex_Doc<"ai_chat_threads_messages_aisdk_5"> | undefined = newestMessage;
+		let current: Doc<"ai_chat_threads_messages_aisdk_5"> | undefined = newestMessage;
 		while (current) {
 			chain.push(current);
 			current = current.parentId ? byId.get(current.parentId) : undefined;
@@ -446,9 +444,9 @@ export const thread_branch = mutation({
 			});
 		}
 
-		let nextParentId: app_convex_Id<"ai_chat_threads_messages_aisdk_5"> | null = null;
+		let nextParentId: Id<"ai_chat_threads_messages_aisdk_5"> | null = null;
 		for (const message of messages) {
-			const insertedId: app_convex_Id<"ai_chat_threads_messages_aisdk_5"> = await ctx.db.insert(
+			const insertedId: Id<"ai_chat_threads_messages_aisdk_5"> = await ctx.db.insert(
 				"ai_chat_threads_messages_aisdk_5",
 				{
 					workspaceId,
@@ -705,7 +703,7 @@ export const thread_messages_add = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const ids: Array<app_convex_Id<"ai_chat_threads_messages_aisdk_5">> = [];
+		const ids: Array<Id<"ai_chat_threads_messages_aisdk_5">> = [];
 		let nextParentId = parentId;
 		for (const message of args.messages) {
 			const messageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
@@ -799,7 +797,30 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
+								const now = Date.now();
+
 								const body = requestParseResult._yay;
+
+								const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+								if (!userAuth) {
+									return {
+										status: 401,
+										body: {
+											message: "Unauthenticated",
+										},
+									} as const;
+								}
+								const user = await ctx.runQuery(internal.users.get, {
+									userId: userAuth.id,
+								});
+								if (!user) {
+									return {
+										status: 401,
+										body: {
+											message: "Unauthenticated",
+										},
+									} as const;
+								}
 
 								const membership = await ctx.runQuery(api.workspaces.get_membership, {
 									membershipId: body.membershipId,
@@ -828,7 +849,9 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									ctxData: {
 										workspaceId: membership.workspaceId,
 										projectId: membership.projectId,
-										userId: membership.userId,
+										// Pass the same user id into file tools so pending overlays and file-create audit fields
+										// use the identity already accepted by this chat action.
+										userId: user._id,
 									},
 									args: {
 										modeId: body.mode,
@@ -874,25 +897,6 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											} as const;
 										}
 									}
-								}
-
-								const now = Date.now();
-								const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
-									if (!userAuth) {
-										return null;
-									}
-
-									return ctx.runQuery(internal.users.get, {
-										userId: userAuth.id,
-									});
-								});
-								if (!user) {
-									return {
-										status: 401,
-										body: {
-											message: "Unauthenticated",
-										},
-									} as const;
 								}
 
 								let threadId = null;
@@ -994,7 +998,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								if (threadId) {
 									do {
 										const threadMessagesResult = await ctx.runQuery(api.ai_chat.thread_messages_list, {
-											threadId: threadId as app_convex_Id<"ai_chat_threads">,
+											threadId: threadId as Id<"ai_chat_threads">,
 											membershipId: membership._id,
 											order: "asc",
 										});
@@ -1009,10 +1013,10 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										// real-time subscription hasn't delivered the persisted messages yet.
 										//
 										// BEFORE:
-										// const messagesMap = new Map<string, app_convex_Doc<"ai_chat_threads_messages_aisdk_5">>(
+										// const messagesMap = new Map<string, Doc<"ai_chat_threads_messages_aisdk_5">>(
 										// 	threadMessagesResult.messages.map((msg) => [msg._id, msg]),
 										// );
-										const messagesMap = new Map<string, app_convex_Doc<"ai_chat_threads_messages_aisdk_5">>();
+										const messagesMap = new Map<string, Doc<"ai_chat_threads_messages_aisdk_5">>();
 										for (const msg of threadMessagesResult.messages) {
 											messagesMap.set(msg._id, msg);
 											if (msg.clientGeneratedMessageId) {
@@ -1020,7 +1024,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											}
 										}
 
-										const reconstructedMessages: app_convex_Doc<"ai_chat_threads_messages_aisdk_5">[] = [];
+										const reconstructedMessages: Doc<"ai_chat_threads_messages_aisdk_5">[] = [];
 
 										let nextMessageId = body.parentId;
 										while (nextMessageId) {
@@ -1065,7 +1069,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								if (requestMessages.length > 0) {
 									const persistedRequestMessages = await ctx.runMutation(api.ai_chat.thread_messages_add, {
 										membershipId: membership._id,
-										threadId: threadId as app_convex_Id<"ai_chat_threads">,
+										threadId: threadId as Id<"ai_chat_threads">,
 										parentId: resolvedParentId,
 										messages: requestMessages.map((message) => ({
 											clientGeneratedMessageId: message.id,
@@ -1384,7 +1388,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										// Persist completed assistant responses below the last persisted request message.
 										const assistantPersistResult = await ctx.runMutation(api.ai_chat.thread_messages_add, {
 											membershipId: membership._id,
-											threadId: threadId as app_convex_Id<"ai_chat_threads">,
+											threadId: threadId as Id<"ai_chat_threads">,
 											parentId: resolvedParentId,
 											messages: [
 												{
@@ -1747,7 +1751,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const ai_chat_get_agent_configuration_test_ctx_data = {
 		workspaceId: "app_workspace_test_1",
 		projectId: "app_project_test_1",
-		userId: "user_1" as app_convex_Id<"users">,
+		userId: "user_1" as Id<"users">,
 	} as const;
 
 	const ai_chat_get_agent_configuration_test_user_identity_default = {

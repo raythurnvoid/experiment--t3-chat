@@ -33,8 +33,8 @@ The files is a DB-backed file/folder model. Folders are tree nodes only. Files a
 For `POST /api/chat`:
 
 1. Validate the request body, including allowlisted `model`, `mode`, and `trigger`, and require one of `threadId` or `clientGeneratedThreadId`.
-2. Load the membership row, derive the agent configuration, and validate UI messages against the full tool registry.
-3. Resolve the authenticated or anonymous app user.
+2. Resolve the authenticated or anonymous app user and load the app `users` row.
+3. Load the membership row, derive the agent configuration, and validate UI messages against the full tool registry.
 4. Resolve the existing thread or keep the optimistic client thread id for a new thread.
 5. Rate-limit and credit-gate the request before LLM work.
 6. Create the thread if needed and persist incoming user messages before generation.
@@ -51,6 +51,7 @@ Non-obvious runtime details:
 - User messages are persisted before generation so they survive aborts/stopped generations.
 - Thread/file access is scoped by a `membershipId` row that determines the effective workspace/project scope.
 - Auth falls back to an anonymous user identity when a signed-in identity is unavailable.
+- The chat HTTP action resolves the current app `users` row once and passes `user._id` into AI file tools; file-tool internals should use that id instead of re-reading auth from Convex context.
 
 # Current Toolbelt
 
@@ -79,7 +80,7 @@ Important limitation:
 - Path must be absolute and resolve to a file node.
 - Output uses line numbers like `00001| ...`.
 - Reads through `internal.files_nodes.get_file_last_available_markdown_content_by_path`.
-- That query overlays the current user's pending `unstaged` branch if a pending update exists.
+- That query overlays the passed `userId` user's pending `unstaged` branch if a pending update exists.
 - Missing files may return sibling suggestions from the parent directory.
 
 ## `list_files`
@@ -147,10 +148,11 @@ Writes:
 2. Folder nodes are not readable/writable by AI file tools.
 3. File reads are user-scoped because pending overlays are user-scoped.
 4. `write_file` and `edit_file` create pending review state, not direct committed writes.
-5. `text_search_files` is chunk-based and exact-filters candidate chunks by `includes(query)`.
-6. `grep_files` is the precise regex tool; `glob_files` is the path-discovery tool.
-7. `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
-8. Request messages are persisted before generation; assistant responses are persisted after streaming finishes.
+5. `write_file` passes the already-resolved `userId` into `create_file_by_path`; pending-update rows store the same id.
+6. `text_search_files` is chunk-based and exact-filters candidate chunks by `includes(query)`.
+7. `grep_files` is the precise regex tool; `glob_files` is the path-discovery tool.
+8. `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
+9. Request messages are persisted before generation; assistant responses are persisted after streaming finishes.
 
 # Verification Checklist
 

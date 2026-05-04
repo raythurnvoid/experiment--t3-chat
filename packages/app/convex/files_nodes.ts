@@ -549,7 +549,7 @@ export const get_tree_nodes_list = query({
 async function db_create_node(
 	ctx: MutationCtx,
 	args: {
-		userAuth: NonNullable<Awaited<ReturnType<typeof server_convex_get_user_fallback_to_anonymous>>>;
+		userId: Id<"users">;
 		workspaceId: string;
 		projectId: string;
 		parentId: Doc<"files_nodes">["parentId"];
@@ -604,8 +604,8 @@ async function db_create_node(
 		name: args.name,
 		kind: args.kind,
 		archiveOperationId: undefined,
-		createdBy: args.userAuth.id,
-		updatedBy: args.userAuth.name,
+		createdBy: args.userId,
+		updatedBy: args.userId,
 		updatedAt: now,
 	});
 
@@ -649,8 +649,8 @@ async function db_create_node(
 				nodeId: nodeId,
 				sequence: initialYjsSequence,
 				snapshotUpdate: files_u8_to_array_buffer(initialYjsSnapshotUpdate),
-				createdBy: args.userAuth.id,
-				updatedBy: args.userAuth.name,
+				createdBy: args.userId,
+				updatedBy: args.userId,
 				updatedAt: now,
 			}),
 			ctx.db.insert("files_yjs_docs_last_sequences", {
@@ -666,7 +666,7 @@ async function db_create_node(
 				content: markdownContent,
 				isArchived: false,
 				yjsSequence: initialYjsSequence,
-				updatedBy: args.userAuth.name,
+				updatedBy: args.userId,
 				updatedAt: now,
 			}),
 			db_insert_file_chunks(ctx, {
@@ -722,7 +722,6 @@ export const create_node = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
@@ -737,7 +736,7 @@ export const create_node = mutation({
 		}
 
 		const node = await db_create_node(ctx, {
-			userAuth,
+			userId: userAuth.id,
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
 			parentId: args.parentId,
@@ -763,7 +762,6 @@ export const create_file_quick = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
@@ -794,7 +792,7 @@ export const create_file_quick = mutation({
 
 		if (!tmp) {
 			const tmpNode = await db_create_node(ctx, {
-				userAuth,
+				userId: userAuth.id,
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				parentId: files_ROOT_ID,
@@ -814,7 +812,7 @@ export const create_file_quick = mutation({
 		// Create quick file under "tmp".
 		const title = `quick-file-${Date.now()}.md`;
 		const node = await db_create_node(ctx, {
-			userAuth,
+			userId: userAuth.id,
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
 			parentId: tmpNodeId,
@@ -925,7 +923,6 @@ export const move_nodes = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
@@ -1732,6 +1729,7 @@ export const get_file_last_available_markdown_content_by_path = internalQuery({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
+		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 	},
@@ -1744,11 +1742,6 @@ export const get_file_last_available_markdown_content_by_path = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-
 		const convexId = await resolve_id_from_path(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
@@ -1777,7 +1770,7 @@ export const get_file_last_available_markdown_content_by_path = internalQuery({
 			pendingUpdateById &&
 			pendingUpdateById.workspaceId === args.workspaceId &&
 			pendingUpdateById.projectId === args.projectId &&
-			pendingUpdateById.userId === userAuth.id &&
+			pendingUpdateById.userId === args.userId &&
 			pendingUpdateById.nodeId === convexId
 				? pendingUpdateById
 				: await ctx.db
@@ -1786,7 +1779,7 @@ export const get_file_last_available_markdown_content_by_path = internalQuery({
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
-								.eq("userId", userAuth.id)
+								.eq("userId", args.userId)
 								.eq("nodeId", convexId),
 						)
 						.first();
@@ -2081,15 +2074,11 @@ export const create_file_by_path = internalMutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
+		userId: v.id("users"),
 		path: v.string(),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
 		const path = args.path.trim();
 		const segments = path_extract_segments_from(path);
 		if (segments.length === 0) {
@@ -2130,7 +2119,7 @@ export const create_file_by_path = internalMutation({
 			if (!existing) {
 				const kind: files_NodeKind = i === segments.length - 1 ? "file" : "folder";
 				const node = await db_create_node(ctx, {
-					userAuth,
+					userId: args.userId,
 					workspaceId: args.workspaceId,
 					projectId: args.projectId,
 					parentId: currentParent,
@@ -2229,7 +2218,6 @@ export const create_home_file = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
@@ -2253,7 +2241,7 @@ export const create_home_file = mutation({
 		}
 
 		const result = await db_create_node(ctx, {
-			userAuth,
+			userId: userAuth.id,
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
 			parentId: files_ROOT_ID,
