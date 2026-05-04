@@ -1999,26 +1999,49 @@ describe("save_file_pending_update", () => {
 		expect(pendingBeforeSave).not.toBeNull();
 
 		for (let i = 0; i < 2; i++) {
-			const result = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			const result = await asUser.mutation(api.ai_chat.save_file_pending_update, {
 				membershipId: seeded.membershipId,
 				nodeId: seeded.nodeId,
-				update: new ArrayBuffer(0),
-				sessionId: "rate-limit-pre-exhaust",
 			});
 			if (result._nay) {
-				throw new Error(`Expected pre-exhaust push #${i + 1} to succeed, got: ${result._nay.message}`);
+				throw new Error(`Expected pre-exhaust save #${i + 1} to succeed, got: ${result._nay.message}`);
 			}
+
+			await t.run(async (ctx) => {
+				const saveMarkdown = `${seeded.baseMarkdown}\n\nStaged change ${i + 1}`;
+				const upsert = await ctx.runMutation(internal.files_pending_updates.upsert_file_pending_update_internal, {
+					workspaceId: seeded.workspaceId,
+					projectId: seeded.projectId,
+					userId: seeded.userId,
+					nodeId: seeded.nodeId,
+					stagedMarkdown: saveMarkdown,
+					unstagedMarkdown: saveMarkdown,
+				});
+				if (upsert._nay) {
+					throw new Error(upsert._nay.message);
+				}
+			});
 		}
 
-		const yjsUpdatesBeforeSave = await t.run(async (ctx) =>
+		const pendingBeforeBlockedSave = await t.run(async (ctx) =>
 			ctx.db
-				.query("files_yjs_updates")
-				.withIndex("by_workspace_project_file_sequence", (q) =>
-					q.eq("workspaceId", seeded.workspaceId).eq("projectId", seeded.projectId).eq("nodeId", seeded.nodeId),
+				.query("files_pending_updates")
+				.withIndex("by_workspace_project_user_file", (q) =>
+					q
+						.eq("workspaceId", seeded.workspaceId)
+						.eq("projectId", seeded.projectId)
+						.eq("userId", seeded.userId)
+						.eq("nodeId", seeded.nodeId),
 				)
-				.collect(),
+				.first(),
 		);
-		expect(yjsUpdatesBeforeSave.length).toBe(2);
+		expect(pendingBeforeBlockedSave).not.toBeNull();
+
+		const lastSequenceSavedBeforeBlockedSave = await asUser.query(api.ai_chat.get_file_pending_update_last_sequence_saved, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(lastSequenceSavedBeforeBlockedSave?.lastSequenceSaved).toBe(2);
 
 		const saveResult = await asUser.mutation(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
@@ -2041,13 +2064,14 @@ describe("save_file_pending_update", () => {
 				)
 				.first(),
 		);
-		expect(pendingAfterSave?._id).toBe(pendingBeforeSave?._id);
+		expect(pendingAfterSave?._id).toBe(pendingBeforeBlockedSave?._id);
 
 		const lastSequenceSavedAfter = await asUser.query(api.ai_chat.get_file_pending_update_last_sequence_saved, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
-		expect(lastSequenceSavedAfter).toBeNull();
+		expect(lastSequenceSavedAfter?._id).toBe(lastSequenceSavedBeforeBlockedSave?._id);
+		expect(lastSequenceSavedAfter?.lastSequenceSaved).toBe(2);
 
 		const yjsUpdatesAfterSave = await t.run(async (ctx) =>
 			Promise.all([

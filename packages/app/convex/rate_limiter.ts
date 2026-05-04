@@ -50,6 +50,7 @@ const rate_limiter_CONFIG = {
 		capacity: 3,
 	},
 	presence_write: STRICT_WRITE,
+	save_file_pending_update: STRICT_WRITE,
 	workspaces_write: STRICT_WRITE,
 } as const;
 

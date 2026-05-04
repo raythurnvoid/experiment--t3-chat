@@ -722,17 +722,18 @@ export const create_node = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const node = await db_create_node(ctx, {
@@ -762,17 +763,18 @@ export const create_file_quick = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		// Ensure "tmp" under root exists
@@ -840,6 +842,12 @@ export const rename_node = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
@@ -889,11 +897,6 @@ export const rename_node = mutation({
 			}
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
 		await ctx.db.patch("files_nodes", args.nodeId, {
 			name: args.name,
 			path: renamedPath,
@@ -922,6 +925,12 @@ export const move_nodes = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
@@ -989,13 +998,6 @@ export const move_nodes = mutation({
 			}
 		}
 
-		if (filesToMove.length > 0) {
-			const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-			if (rateLimit) {
-				return Result({ _nay: { message: rateLimit.message } });
-			}
-		}
-
 		for (const fileToMove of filesToMove) {
 			await ctx.db.patch("files_nodes", fileToMove.itemId, {
 				workspaceId: membership.workspaceId,
@@ -1022,11 +1024,16 @@ export const archive_nodes = mutation({
 	},
 	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
-		const now = Date.now();
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
@@ -1098,12 +1105,7 @@ export const archive_nodes = mutation({
 			}
 		}
 
-		if (nodeIdsToArchive.size > 0) {
-			const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-			if (rateLimit) {
-				return Result({ _nay: { message: rateLimit.message } });
-			}
-		}
+		const now = Date.now();
 
 		await Promise.all(
 			[...nodeIdsToArchive].map(async (nodeId) => {
@@ -1130,6 +1132,12 @@ export const unarchive_nodes = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
@@ -1398,13 +1406,8 @@ export const unarchive_nodes = mutation({
 			}
 		}
 
-		// Preconditions passed, apply all patches.
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
 		const updatedAt = Date.now();
+
 		await Promise.all(
 			plans.map(async (plan) =>
 				ctx.db.patch("files_nodes", plan.file._id, {
@@ -2226,6 +2229,12 @@ export const create_home_file = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
@@ -2241,11 +2250,6 @@ export const create_home_file = mutation({
 
 		if (file) {
 			return Result({ _yay: { nodeId: file._id } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const result = await db_create_node(ctx, {
@@ -2420,6 +2424,12 @@ export const archive_snapshot = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_snapshot_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
@@ -2431,11 +2441,6 @@ export const archive_snapshot = mutation({
 		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
 		if (!snapshot || snapshot.workspaceId !== membership.workspaceId || snapshot.projectId !== membership.projectId) {
 			return Result({ _yay: null });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_snapshot_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		await ctx.db.patch("files_snapshots", args.snapshotId, {
@@ -2457,6 +2462,12 @@ export const unarchive_snapshot = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_snapshot_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
@@ -2468,11 +2479,6 @@ export const unarchive_snapshot = mutation({
 		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
 		if (!snapshot || snapshot.workspaceId !== membership.workspaceId || snapshot.projectId !== membership.projectId) {
 			return Result({ _yay: null });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_snapshot_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		await ctx.db.patch("files_snapshots", args.snapshotId, {
@@ -2569,27 +2575,8 @@ export async function files_db_yjs_push_update(
 		sessionId: string;
 		userId: Id<"users">;
 	},
-): Promise<
-	Result<
-		| { _yay: { newSequence: number } }
-		| {
-				_nay: {
-					message: "Rate limit exceeded";
-				};
-		  }
-	>
-> {
+) {
 	const now = Date.now();
-
-	const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_yjs_push_update", key: args.userId });
-	if (rateLimit) {
-		return Result({
-			_nay: {
-				name: "nay",
-				message: rateLimit.message,
-			},
-		});
-	}
 
 	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
 		workspaceId: args.workspaceId,
@@ -2649,13 +2636,17 @@ export const yjs_push_update = mutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
-			if (!userAuth) {
-				return null;
-			}
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
 
-			return ctx.db.get("users", userAuth.id);
-		});
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_yjs_push_update", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const user = await ctx.db.get("users", userAuth.id);
 		if (!user) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
@@ -3105,6 +3096,12 @@ export const restore_snapshot = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_snapshot_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
 		const membership = await workspaces_db_get_membership_for_user(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
@@ -3161,11 +3158,6 @@ export const restore_snapshot = mutation({
 		const userDoc = await ctx.db.get("users", userAuth.id);
 		if (!userDoc) {
 			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_snapshot_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
@@ -3436,6 +3428,30 @@ export function files_http_routes(router: RouterForConvexModules) {
 
 						const handler = async (ctx: ActionCtx, request: Request) => {
 							try {
+								const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+								if (!userAuth) {
+									return {
+										status: 401,
+										body: {
+											message: "Unauthenticated",
+										},
+									} as const;
+								}
+
+								const rateLimit = await rate_limiter_limit_by_key(ctx, {
+									name: "ai_inline_http",
+									key: userAuth.id,
+								});
+								if (rateLimit) {
+									return {
+										status: 429,
+										body: {
+											message: rateLimit.message,
+											retryAfterMs: rateLimit.retryAfterMs,
+										},
+									} as const;
+								}
+
 								const body = await server_request_json_parse_and_validate(request, bodyValidator);
 								if (body._nay) {
 									return {
@@ -3455,9 +3471,7 @@ export function files_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) =>
-									userAuth ? ctx.runQuery(internal.users.get, { userId: userAuth.id }) : null,
-								);
+								const user = await ctx.runQuery(internal.users.get, { userId: userAuth.id });
 								if (!user) {
 									return {
 										status: 401,
@@ -3473,20 +3487,6 @@ export function files_http_routes(router: RouterForConvexModules) {
 										status: 403,
 										body: {
 											message: "Unauthorized",
-										},
-									} as const;
-								}
-
-								const rateLimit = await rate_limiter_limit_by_key(ctx, {
-									name: "ai_inline_http",
-									key: user._id,
-								});
-								if (rateLimit) {
-									return {
-										status: 429,
-										body: {
-											message: rateLimit.message,
-											retryAfterMs: rateLimit.retryAfterMs,
 										},
 									} as const;
 								}

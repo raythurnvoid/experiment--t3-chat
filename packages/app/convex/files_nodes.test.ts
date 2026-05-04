@@ -5,7 +5,7 @@ import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
 import { minimatch } from "minimatch";
 import { server_path_normalize } from "../server/server-utils.ts";
-import { files_ROOT_ID } from "../server/files.ts";
+import { files_FIRST_VERSION, files_ROOT_ID } from "../server/files.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
@@ -313,13 +313,21 @@ test("home file path stays immutable on rename and move", async () => {
 		name: "Test User",
 	});
 
-	const ensuredHomeFile = await asUser.mutation(api.files_nodes.create_home_file, {
-		membershipId: db.membershipId,
-	});
-	if (ensuredHomeFile._nay) {
-		throw new Error("create_home_file failed in test");
-	}
-	const homeNodeId = ensuredHomeFile._yay.nodeId;
+	const homeNodeId = await t.run(async (ctx) =>
+		ctx.db.insert("files_nodes", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			createdBy: db.userId,
+			updatedAt: Date.now(),
+			updatedBy: db.userId,
+			parentId: files_ROOT_ID,
+			name: "readme.md",
+			kind: "file",
+			path: "/readme.md",
+			version: files_FIRST_VERSION,
+			archiveOperationId: undefined,
+		}),
+	);
 
 	await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
@@ -569,19 +577,13 @@ test("unarchive_nodes returns conflict when active file already has the same pat
 		name: "Test User",
 	});
 
-	await asUser.mutation(api.files_nodes.archive_nodes, {
-		membershipId: db.membershipId,
-		nodeIds: [db.files.file_root_2._id],
-	});
-
-	const renameArchived = await asUser.mutation(api.files_nodes.rename_node, {
-		membershipId: db.membershipId,
-		nodeId: db.files.file_root_2._id,
-		name: db.files.file_root_1.name,
-	});
-	if (renameArchived._nay) {
-		throw new Error("Expected archived rename to succeed");
-	}
+	await t.run(async (ctx) =>
+		ctx.db.patch("files_nodes", db.files.file_root_2._id, {
+			archiveOperationId: "unarchive-conflict-test",
+			name: db.files.file_root_1.name,
+			path: `/${db.files.file_root_1.name}`,
+		}),
+	);
 
 	const unarchiveResult = await asUser.mutation(api.files_nodes.unarchive_nodes, {
 		membershipId: db.membershipId,
@@ -893,7 +895,7 @@ test("N08 move_nodes idempotency: same parent no-op", async () => {
 	expect(after?.path).toBe(before?.path);
 });
 
-test("N09 archive/unarchive idempotency", async () => {
+test("N09 archive idempotency", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -902,10 +904,11 @@ test("N09 archive/unarchive idempotency", async () => {
 		name: "Test User",
 	});
 
-	await asUser.mutation(api.files_nodes.archive_nodes, {
-		membershipId: db.membershipId,
-		nodeIds: [db.files.file_root_2._id],
-	});
+	await t.run(async (ctx) =>
+		ctx.db.patch("files_nodes", db.files.file_root_2._id, {
+			archiveOperationId: "archive-idempotency-test",
+		}),
+	);
 
 	const archiveAgain = await asUser.mutation(api.files_nodes.archive_nodes, {
 		membershipId: db.membershipId,
@@ -913,11 +916,20 @@ test("N09 archive/unarchive idempotency", async () => {
 	});
 	expect(archiveAgain).not.toHaveProperty("_nay");
 
-	const unarchiveResult = await asUser.mutation(api.files_nodes.unarchive_nodes, {
-		membershipId: db.membershipId,
-		nodeIds: [db.files.file_root_2._id],
+	await t.run(async (ctx) => {
+		const p = await ctx.db.get("files_nodes", db.files.file_root_2._id);
+		expect(p?.archiveOperationId).toBe("archive-idempotency-test");
 	});
-	expect(unarchiveResult).not.toHaveProperty("_nay");
+});
+
+test("N09 unarchive idempotency", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.files.file_root_1.createdBy,
+		name: "Test User",
+	});
 
 	const unarchiveAgain = await asUser.mutation(api.files_nodes.unarchive_nodes, {
 		membershipId: db.membershipId,
@@ -1046,6 +1058,89 @@ test("membership-scoped file and yjs APIs reject cross-user membership ids", asy
 	expect(unauthorizedYjsPush).toEqual({ _nay: { message: "Unauthorized" } });
 });
 
+test("files_tree_write rate limit runs before membership validation", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const otherDb = await t.run(async (ctx) => {
+		const otherUserId = await ctx.db.insert("users", {
+			clerkUserId: null,
+		});
+
+		return await test_mocks_fill_db_with.membership(ctx, {
+			userId: otherUserId,
+			workspaceName: "rl-other-ws",
+			projectName: "rl-other-prj",
+		});
+	});
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Tree Rate User",
+	});
+	const createdNodeIds: Array<Id<"files_nodes">> = [];
+
+	for (let i = 0; i < 2; i++) {
+		const result = await asUser.mutation(api.files_nodes.create_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			name: `tree-rate-limit-${i}.md`,
+			kind: "file",
+		});
+		if (result._nay) {
+			throw new Error(`Expected tree write #${i + 1} to succeed, got: ${result._nay.message}`);
+		}
+
+		createdNodeIds.push(result._yay.nodeId);
+	}
+
+	const blocked = await asUser.mutation(api.files_nodes.rename_node, {
+		membershipId: otherDb.membershipId,
+		nodeId: createdNodeIds[0],
+		name: "should-rate-limit-before-membership.md",
+	});
+
+	expect(blocked._nay?.message).toBe("Rate limit exceeded");
+});
+
+test("files_snapshot_write rate limit runs before restore snapshot validation", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+	const snapshotId = await t.run(async (ctx) =>
+		ctx.db.insert("files_snapshots", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			nodeId: db.files.file_root_1._id,
+			createdBy: db.userId,
+			archivedAt: 0,
+		}),
+	);
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Snapshot Rate User",
+	});
+
+	for (let i = 0; i < 2; i++) {
+		const result = await asUser.mutation(api.files_nodes.archive_snapshot, {
+			membershipId: db.membershipId,
+			snapshotId,
+		});
+		if (result._nay) {
+			throw new Error(`Expected snapshot write #${i + 1} to succeed, got: ${result._nay.message}`);
+		}
+	}
+
+	const blocked = await asUser.mutation(api.files_nodes.restore_snapshot, {
+		membershipId: db.membershipId,
+		nodeId: db.files.file_root_1._id,
+		snapshotId,
+		sessionId: "snapshot-rate-limit",
+		currentMarkdownContent: "",
+	});
+
+	expect(blocked._nay?.message).toBe("Rate limit exceeded");
+});
+
 test("yjs_push_update enforces per-user rate limit and leaves DB untouched on rejection", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -1086,6 +1181,24 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 		throw new Error("Expected third push to be rate limited");
 	}
 	expect(blocked._nay.message).toBe("Rate limit exceeded");
+
+	const otherDb = await t.run(async (ctx) => {
+		const otherUserId = await ctx.db.insert("users", {
+			clerkUserId: null,
+		});
+
+		return await test_mocks_fill_db_with.membership(ctx, {
+			userId: otherUserId,
+			workspaceName: "yjs-rl-ws",
+			projectName: "yjs-rl-prj",
+		});
+	});
+	const blockedBeforeMembership = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		...pushArgs,
+		membershipId: otherDb.membershipId,
+		sessionId: "rate-limit-before-membership",
+	});
+	expect(blockedBeforeMembership._nay?.message).toBe("Rate limit exceeded");
 
 	const stateAfterBlock = await t.run(async (ctx) => {
 		const updates = await ctx.db
@@ -1237,7 +1350,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 	expect(yjsUpdates).toHaveLength(0);
 });
 
-test("/api/files/contextual-prompt returns 429 on the second inline AI request before model work", async () => {
+test("/api/files/contextual-prompt returns 429 before body validation and model work", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => {
@@ -1283,11 +1396,7 @@ test("/api/files/contextual-prompt returns 429 on the second inline AI request b
 		headers: {
 			"Content-Type": "application/json",
 		},
-		body: JSON.stringify({
-			prompt: "Continue this sentence",
-			membershipId: db.membershipId,
-			requestId: "inline_ai_rate_blocked",
-		}),
+		body: "not json",
 	});
 	const blockedBody = await blocked.json();
 

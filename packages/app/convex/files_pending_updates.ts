@@ -802,13 +802,17 @@ export const save_file_pending_update = mutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) => {
-			if (!userAuth) {
-				return null;
-			}
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
 
-			return ctx.db.get("users", userAuth.id);
-		});
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "save_file_pending_update", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const user = await ctx.db.get("users", userAuth.id);
 		if (!user) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
@@ -848,11 +852,6 @@ export const save_file_pending_update = mutation({
 					message: "File Yjs content not found",
 				},
 			});
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_pending_update_write", key: user._id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const reconstructedBranchDocs = files_pending_update_reconstruct_branch_docs(pendingUpdate);
