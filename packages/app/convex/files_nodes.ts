@@ -194,13 +194,14 @@ function path_rebase(args: { fromBasePath: string; toBasePath: string; path: str
 function is_home_file(node: Pick<Doc<"files_nodes">, "path" | "kind">): boolean;
 function is_home_file(node: Pick<Doc<"files_nodes">, "parentId" | "name" | "kind">): boolean;
 function is_home_file(node: Partial<Pick<Doc<"files_nodes">, "path" | "parentId" | "name" | "kind">>) {
-	return node.kind === "file" && (node.path === "/readme.md" || (node.parentId === files_ROOT_ID && node.name === "readme.md"));
+	return (
+		node.kind === "file" &&
+		(node.path === "/readme.md" || (node.parentId === files_ROOT_ID && node.name === "readme.md"))
+	);
 }
 
-type files_QueryOrMutationCtx = QueryCtx | MutationCtx;
-
 function db_query_files_by_path(
-	ctx: files_QueryOrMutationCtx,
+	ctx: QueryCtx | MutationCtx,
 	args: { workspaceId: string; projectId: string; path: string; archiveOperationId: string | undefined },
 ) {
 	return ctx.db
@@ -214,7 +215,7 @@ function db_query_files_by_path(
 		);
 }
 
-function db_get_home_file(ctx: files_QueryOrMutationCtx, args: { workspaceId: string; projectId: string }) {
+function db_get_home_file(ctx: QueryCtx | MutationCtx, args: { workspaceId: string; projectId: string }) {
 	return ctx.db
 		.query("files_nodes")
 		.withIndex("by_workspace_project_parent_name", (q) =>
@@ -237,14 +238,16 @@ async function db_find_active_path_conflict(
 		excludeNodeIds?: Array<Id<"files_nodes">>;
 	},
 ) {
-	const activeFiles = await db_query_files_by_path(ctx, {
+	const activeFilesCursor = db_query_files_by_path(ctx, {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		path: args.path,
 		archiveOperationId: undefined,
-	}).collect();
+	});
+
 	const excludeNodeIdsSet = new Set(args.excludeNodeIds ?? []);
-	for (const activeFile of activeFiles) {
+
+	for await (const activeFile of activeFilesCursor) {
 		if (excludeNodeIdsSet.has(activeFile._id)) {
 			continue;
 		}
@@ -253,7 +256,7 @@ async function db_find_active_path_conflict(
 	return null;
 }
 
-export async function db_upsert_file_chunks(
+async function db_insert_file_chunks(
 	ctx: MutationCtx,
 	args: {
 		workspaceId: string;
@@ -263,37 +266,13 @@ export async function db_upsert_file_chunks(
 		markdownContent: string;
 	},
 ) {
-	// Delete existing chunk rows
-	await Promise.all([
-		ctx.db
-			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
-			)
-			.collect(),
-		ctx.db
-			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
-			)
-			.collect(),
-	]).then(([plainTextChunkRows, markdownChunkRows]) =>
-		Promise.all([
-			...plainTextChunkRows.map((row) => ctx.db.delete("files_plain_text_chunks", row._id)),
-			...markdownChunkRows.map((row) => ctx.db.delete("files_markdown_chunks", row._id)),
-		]),
-	);
-
-	// Create new chunks from markdown
+	// Create new chunks from markdown.
 	const chunks = await files_chunk_markdown(args.markdownContent);
 	if (chunks._nay) {
 		return chunks;
 	}
 
-	if (chunks._yay.length === 0) {
-		return Result({ _yay: null });
-	}
-
+	// An empty chunk list naturally performs no inserts.
 	const markdownChunkIds = await Promise.all(
 		chunks._yay.map((chunk) =>
 			ctx.db.insert("files_markdown_chunks", {
@@ -327,6 +306,40 @@ export async function db_upsert_file_chunks(
 	);
 
 	return Result({ _yay: null });
+}
+
+export async function db_replace_file_chunks(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		nodeId: Id<"files_nodes">;
+		yjsSequence: number;
+		markdownContent: string;
+	},
+) {
+	// Delete existing chunk rows.
+	await Promise.all([
+		ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+			)
+			.collect(),
+		ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+			)
+			.collect(),
+	]).then(([plainTextChunkRows, markdownChunkRows]) =>
+		Promise.all([
+			...plainTextChunkRows.map((row) => ctx.db.delete("files_plain_text_chunks", row._id)),
+			...markdownChunkRows.map((row) => ctx.db.delete("files_markdown_chunks", row._id)),
+		]),
+	);
+
+	return db_insert_file_chunks(ctx, args);
 }
 
 async function resolve_id_from_path(ctx: QueryCtx, args: { workspaceId: string; projectId: string; path: string }) {
@@ -533,9 +546,10 @@ export const get_tree_nodes_list = query({
 	},
 });
 
-async function do_create_node(
+async function db_create_node(
 	ctx: MutationCtx,
 	args: {
+		userAuth: NonNullable<Awaited<ReturnType<typeof server_convex_get_user_fallback_to_anonymous>>>;
 		workspaceId: string;
 		projectId: string;
 		parentId: Doc<"files_nodes">["parentId"];
@@ -547,10 +561,6 @@ async function do_create_node(
 		};
 	},
 ) {
-	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-	if (!userAuth) {
-		return Result({ _nay: { message: "Unauthenticated" } });
-	}
 	const now = Date.now();
 	const parentPath = await resolve_parent_path_from_parent_id(ctx, {
 		workspaceId: args.workspaceId,
@@ -594,8 +604,8 @@ async function do_create_node(
 		name: args.name,
 		kind: args.kind,
 		archiveOperationId: undefined,
-		createdBy: userAuth.id,
-		updatedBy: userAuth.name,
+		createdBy: args.userAuth.id,
+		updatedBy: args.userAuth.name,
 		updatedAt: now,
 	});
 
@@ -639,8 +649,8 @@ async function do_create_node(
 				nodeId: nodeId,
 				sequence: initialYjsSequence,
 				snapshotUpdate: files_u8_to_array_buffer(initialYjsSnapshotUpdate),
-				createdBy: userAuth.id,
-				updatedBy: userAuth.name,
+				createdBy: args.userAuth.id,
+				updatedBy: args.userAuth.name,
 				updatedAt: now,
 			}),
 			ctx.db.insert("files_yjs_docs_last_sequences", {
@@ -656,10 +666,10 @@ async function do_create_node(
 				content: markdownContent,
 				isArchived: false,
 				yjsSequence: initialYjsSequence,
-				updatedBy: userAuth.name,
+				updatedBy: args.userAuth.name,
 				updatedAt: now,
 			}),
-			db_upsert_file_chunks(ctx, {
+			db_insert_file_chunks(ctx, {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				nodeId,
@@ -720,17 +730,13 @@ export const create_node = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const nameValidationResult = files_validate_name(args.name, args.kind);
-		if (nameValidationResult._nay) {
-			return nameValidationResult;
-		}
-
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const node = await do_create_node(ctx, {
+		const node = await db_create_node(ctx, {
+			userAuth,
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
 			parentId: args.parentId,
@@ -785,7 +791,8 @@ export const create_file_quick = mutation({
 		let tmpNodeId = null;
 
 		if (!tmp) {
-			const tmpNode = await do_create_node(ctx, {
+			const tmpNode = await db_create_node(ctx, {
+				userAuth,
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				parentId: files_ROOT_ID,
@@ -804,7 +811,8 @@ export const create_file_quick = mutation({
 
 		// Create quick file under "tmp".
 		const title = `quick-file-${Date.now()}.md`;
-		const node = await do_create_node(ctx, {
+		const node = await db_create_node(ctx, {
+			userAuth,
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
 			parentId: tmpNodeId,
@@ -1759,7 +1767,9 @@ export const get_file_last_available_markdown_content_by_path = internalQuery({
 			});
 		}
 
-		const pendingUpdateById = args.pendingUpdateId ? await ctx.db.get("files_pending_updates", args.pendingUpdateId) : null;
+		const pendingUpdateById = args.pendingUpdateId
+			? await ctx.db.get("files_pending_updates", args.pendingUpdateId)
+			: null;
 		const pendingUpdate =
 			pendingUpdateById &&
 			pendingUpdateById.workspaceId === args.workspaceId &&
@@ -1885,7 +1895,12 @@ export const get_file_last_yjs_sequence = query({
 		}
 
 		const file = await ctx.db.get("files_nodes", args.nodeId);
-		if (!file || file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId || file.kind !== "file") {
+		if (
+			!file ||
+			file.workspaceId !== membership.workspaceId ||
+			file.projectId !== membership.projectId ||
+			file.kind !== "file"
+		) {
 			return null;
 		}
 
@@ -2067,6 +2082,11 @@ export const create_file_by_path = internalMutation({
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
 		const path = args.path.trim();
 		const segments = path_extract_segments_from(path);
 		if (segments.length === 0) {
@@ -2106,7 +2126,8 @@ export const create_file_by_path = internalMutation({
 
 			if (!existing) {
 				const kind: files_NodeKind = i === segments.length - 1 ? "file" : "folder";
-				const node = await do_create_node(ctx, {
+				const node = await db_create_node(ctx, {
+					userAuth,
 					workspaceId: args.workspaceId,
 					projectId: args.projectId,
 					parentId: currentParent,
@@ -2227,7 +2248,8 @@ export const create_home_file = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const result = await do_create_node(ctx, {
+		const result = await db_create_node(ctx, {
+			userAuth,
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
 			parentId: files_ROOT_ID,
@@ -2241,15 +2263,6 @@ export const create_home_file = mutation({
 
 		return Result({ _yay: { nodeId: result._yay } });
 	},
-});
-
-// Shared helper for snapshot creation
-const store_version_snapshot_args_schema = v.object({
-	workspaceId: v.string(),
-	projectId: v.string(),
-	nodeId: v.id("files_nodes"),
-	content: v.string(),
-	createdBy: v.id("users"),
 });
 
 export const get_file_snapshots_list = query({
@@ -2469,116 +2482,11 @@ export const unarchive_snapshot = mutation({
 	},
 });
 
-function yjs_merge_updates_to_array_buffer(updates: Uint8Array[]) {
-	return files_u8_to_array_buffer(mergeUpdates(updates));
-}
-
 function yjs_create_state_update_from_tiptap_editor(args: { tiptapEditor: Editor }) {
 	const yjsDoc = files_yjs_doc_create_from_tiptap_editor({
 		tiptapEditor: args.tiptapEditor,
 	});
 	return encodeStateAsUpdate(yjsDoc);
-}
-
-function yjs_compute_diff_update_with_headless_tiptap_editor(args: {
-	fileYjsData: Doc<"files_yjs_snapshots">;
-	headlessEditorWithUpdatedContent: Editor;
-	opKind: "snapshot-restore" | "user-edit";
-}) {
-	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(args.fileYjsData.snapshotUpdate);
-	const yjsBeforeStateVector = encodeStateVector(yjsDoc);
-
-	files_yjs_doc_update_from_tiptap_editor({
-		mut_yjsDoc: yjsDoc,
-		tiptapEditor: args.headlessEditorWithUpdatedContent,
-		opKind: args.opKind,
-	});
-
-	// TODO: there's a small performance improvement that can be achieved by listening for updates events from ydoc
-	const diffUpdate = files_yjs_compute_diff_update_from_state_vector({ yjsDoc, yjsBeforeStateVector });
-
-	return diffUpdate;
-}
-
-async function write_markdown_to_yjs_sync(
-	ctx: MutationCtx,
-	args: {
-		workspaceId: string;
-		projectId: string;
-		userId: Id<"users">;
-		nodeId: Id<"files_nodes">;
-		markdownContent: string;
-		sessionId: string;
-		snapshotId: Id<"files_snapshots">;
-	},
-) {
-	// Reconstruct the latest Y.Doc from last snapshot
-	const fileYjsData = await ctx.db
-		.query("files_yjs_snapshots")
-		.withIndex("by_workspace_project_file_sequence", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
-		)
-		.order("desc")
-		.first();
-
-	if (!fileYjsData) {
-		return null;
-	}
-
-	// Convert markdown to TipTap JSON
-	const headlessEditor = files_headless_tiptap_editor_create({
-		initialContent: { markdown: args.markdownContent },
-	});
-
-	if (headlessEditor._nay) {
-		throw should_never_happen("Could not create headless editor from markdown content", {
-			nodeId: args.nodeId,
-			nay: headlessEditor._nay,
-		});
-	}
-
-	const diffUpdate = yjs_compute_diff_update_with_headless_tiptap_editor({
-		fileYjsData,
-		headlessEditorWithUpdatedContent: headlessEditor._yay,
-		opKind: "snapshot-restore",
-	});
-
-	if (!diffUpdate) {
-		return null;
-	}
-
-	const newSnapshotUpdate = yjs_merge_updates_to_array_buffer([new Uint8Array(fileYjsData.snapshotUpdate), diffUpdate]);
-
-	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		nodeId: args.nodeId,
-	});
-
-	await Promise.all([
-		ctx.db.insert("files_yjs_updates", {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			nodeId: args.nodeId,
-			sequence: newSequenceData.lastSequence,
-			update: files_u8_to_array_buffer(diffUpdate),
-			origin: {
-				type: "USER_SNAPSHOT_RESTORE",
-				snapshotId: args.snapshotId,
-			},
-			createdBy: args.userId,
-			createdAt: Date.now(),
-		}),
-
-		ctx.db.patch("files_yjs_snapshots", fileYjsData._id, {
-			sequence: newSequenceData.lastSequence,
-			snapshotUpdate: newSnapshotUpdate,
-			updatedAt: Date.now(),
-			updatedBy: args.userId,
-		}),
-	]);
-
-	return newSequenceData.lastSequence;
 }
 
 export const yjs_get_doc_last_snapshot = query({
@@ -2601,7 +2509,12 @@ export const yjs_get_doc_last_snapshot = query({
 		}
 
 		const node = await ctx.db.get("files_nodes", args.nodeId);
-		if (!node || node.workspaceId !== membership.workspaceId || node.projectId !== membership.projectId || node.kind !== "file") {
+		if (
+			!node ||
+			node.workspaceId !== membership.workspaceId ||
+			node.projectId !== membership.projectId ||
+			node.kind !== "file"
+		) {
 			return null;
 		}
 
@@ -2612,150 +2525,6 @@ export const yjs_get_doc_last_snapshot = query({
 			)
 			.order("desc")
 			.first();
-	},
-});
-
-export const update_snapshots = internalMutation({
-	args: {
-		userId: v.id("users"),
-		workspaceId: v.string(),
-		projectId: v.string(),
-		nodeId: v.id("files_nodes"),
-		_errors: v.optional(
-			v.object({
-				message: v.literal("Failed to update the file snapshots"),
-			}),
-		),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const cleanScheduleLocksPromise = ctx.db
-			.query("files_yjs_snapshot_schedules")
-			.withIndex("by_file", (q) => q.eq("nodeId", args.nodeId))
-			.collect()
-			.then((scheduleLocks) =>
-				Promise.all(scheduleLocks.map((schedule) => ctx.db.delete("files_yjs_snapshot_schedules", schedule._id))),
-			);
-
-		try {
-			const now = Date.now();
-
-			const file = await ctx.db.get("files_nodes", args.nodeId);
-			if (
-				!file ||
-				file.workspaceId !== args.workspaceId ||
-				file.projectId !== args.projectId ||
-				!file.markdownContentId
-			) {
-				throw should_never_happen("file not found", {
-					nodeId: args.nodeId,
-					file: file,
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
-					markdownContentId: file?.markdownContentId,
-				});
-			}
-
-			// Load latest snapshot
-			const yjsSnapshotData = await ctx.db
-				.query("files_yjs_snapshots")
-				.withIndex("by_workspace_project_file_sequence", (q) =>
-					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
-				)
-				.order("desc")
-				.first();
-
-			if (!yjsSnapshotData) {
-				throw should_never_happen(
-					"yjs_snapshot_data or last_sequence_data are null.\n" + //
-						"The job should start only if the last sequence exists and is greater than 0\n" + //
-						"and only if the yjs snapshot data already exists, the snapshot data should\n" + //
-						"be created with the file",
-				);
-			}
-
-			// Fetch updates since snapshot up to uptoSeq
-			const updateDataList = await ctx.db
-				.query("files_yjs_updates")
-				.withIndex("by_workspace_project_file_sequence", (q) =>
-					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
-				)
-				.order("asc")
-				.collect();
-
-			const lastUpdate = updateDataList.at(-1);
-			const sequence = lastUpdate ? lastUpdate.sequence : yjsSnapshotData.sequence;
-
-			// merge last snapshot update with all incremental updates into a single update blob
-			const snapshotUpdate = yjs_merge_updates_to_array_buffer([
-				new Uint8Array(yjsSnapshotData.snapshotUpdate),
-				...updateDataList.map((u) => new Uint8Array(u.update)),
-			]);
-
-			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(snapshotUpdate);
-			const markdown = files_yjs_doc_get_markdown({ yjsDoc });
-
-			if (markdown._nay) {
-				return markdown;
-			}
-
-			const dbWriteResult = Result_all(
-				await Promise.all([
-					// Write new snapshot row (append-only)
-					ctx.db.patch("files_yjs_snapshots", yjsSnapshotData._id, {
-						sequence,
-						snapshotUpdate: snapshotUpdate,
-						updatedBy: "system",
-						updatedAt: now,
-					}),
-
-					// Prune compacted updates
-					...updateDataList.map((updateData) => ctx.db.delete("files_yjs_updates", updateData._id)),
-
-					ctx.db.patch("files_markdown_content", file.markdownContentId, {
-						content: markdown._yay,
-						yjsSequence: sequence,
-						updatedBy: "system",
-						updatedAt: now,
-					}),
-
-					db_upsert_file_chunks(ctx, {
-						workspaceId: args.workspaceId,
-						projectId: args.projectId,
-						nodeId: args.nodeId,
-						yjsSequence: sequence,
-						markdownContent: markdown._yay,
-					}),
-
-					store_version_snapshot(ctx, {
-						workspaceId: args.workspaceId,
-						projectId: args.projectId,
-						nodeId: args.nodeId,
-						content: markdown._yay,
-						createdBy: args.userId,
-					}),
-				]),
-			);
-
-			if (dbWriteResult._nay) {
-				const message = "Failed to update the file snapshots" satisfies NonNullable<
-					(typeof args)["_errors"]
-				>["message"];
-				console.error(message, {
-					dbWriteResult,
-				});
-				return Result({
-					_nay: {
-						name: "nay",
-						message,
-					},
-				});
-			}
-
-			return Result({ _yay: null });
-		} finally {
-			await cleanScheduleLocksPromise;
-		}
 	},
 });
 
@@ -3011,7 +2780,12 @@ export const yjs_get_incremental_updates = query({
 		}
 
 		const node = await ctx.db.get("files_nodes", args.nodeId);
-		if (!node || node.workspaceId !== membership.workspaceId || node.projectId !== membership.projectId || node.kind !== "file") {
+		if (
+			!node ||
+			node.workspaceId !== membership.workspaceId ||
+			node.projectId !== membership.projectId ||
+			node.kind !== "file"
+		) {
 			return null;
 		}
 
@@ -3028,6 +2802,265 @@ export const yjs_get_incremental_updates = query({
 		}
 
 		return { updates };
+	},
+});
+
+// #region snapshots
+
+const store_version_snapshot_args_schema = v.object({
+	workspaceId: v.string(),
+	projectId: v.string(),
+	nodeId: v.id("files_nodes"),
+	content: v.string(),
+	createdBy: v.id("users"),
+});
+
+function yjs_merge_updates_to_array_buffer(updates: Uint8Array[]) {
+	return files_u8_to_array_buffer(mergeUpdates(updates));
+}
+
+function yjs_compute_diff_update_with_headless_tiptap_editor(args: {
+	fileYjsData: Doc<"files_yjs_snapshots">;
+	headlessEditorWithUpdatedContent: Editor;
+	opKind: "snapshot-restore" | "user-edit";
+}) {
+	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(args.fileYjsData.snapshotUpdate);
+	const yjsBeforeStateVector = encodeStateVector(yjsDoc);
+
+	files_yjs_doc_update_from_tiptap_editor({
+		mut_yjsDoc: yjsDoc,
+		tiptapEditor: args.headlessEditorWithUpdatedContent,
+		opKind: args.opKind,
+	});
+
+	// TODO: there's a small performance improvement that can be achieved by listening for updates events from ydoc
+	const diffUpdate = files_yjs_compute_diff_update_from_state_vector({ yjsDoc, yjsBeforeStateVector });
+
+	return diffUpdate;
+}
+
+async function write_markdown_to_yjs_sync(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+		markdownContent: string;
+		sessionId: string;
+		snapshotId: Id<"files_snapshots">;
+	},
+) {
+	// Reconstruct the latest Y.Doc from last snapshot
+	const fileYjsData = await ctx.db
+		.query("files_yjs_snapshots")
+		.withIndex("by_workspace_project_file_sequence", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+		)
+		.order("desc")
+		.first();
+
+	if (!fileYjsData) {
+		return null;
+	}
+
+	// Convert markdown to TipTap JSON
+	const headlessEditor = files_headless_tiptap_editor_create({
+		initialContent: { markdown: args.markdownContent },
+	});
+
+	if (headlessEditor._nay) {
+		throw should_never_happen("Could not create headless editor from markdown content", {
+			nodeId: args.nodeId,
+			nay: headlessEditor._nay,
+		});
+	}
+
+	const diffUpdate = yjs_compute_diff_update_with_headless_tiptap_editor({
+		fileYjsData,
+		headlessEditorWithUpdatedContent: headlessEditor._yay,
+		opKind: "snapshot-restore",
+	});
+
+	if (!diffUpdate) {
+		return null;
+	}
+
+	const newSnapshotUpdate = yjs_merge_updates_to_array_buffer([new Uint8Array(fileYjsData.snapshotUpdate), diffUpdate]);
+
+	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		nodeId: args.nodeId,
+	});
+
+	await Promise.all([
+		ctx.db.insert("files_yjs_updates", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId: args.nodeId,
+			sequence: newSequenceData.lastSequence,
+			update: files_u8_to_array_buffer(diffUpdate),
+			origin: {
+				type: "USER_SNAPSHOT_RESTORE",
+				snapshotId: args.snapshotId,
+			},
+			createdBy: args.userId,
+			createdAt: Date.now(),
+		}),
+
+		ctx.db.patch("files_yjs_snapshots", fileYjsData._id, {
+			sequence: newSequenceData.lastSequence,
+			snapshotUpdate: newSnapshotUpdate,
+			updatedAt: Date.now(),
+			updatedBy: args.userId,
+		}),
+	]);
+
+	return newSequenceData.lastSequence;
+}
+
+export const update_snapshots = internalMutation({
+	args: {
+		userId: v.id("users"),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		nodeId: v.id("files_nodes"),
+		_errors: v.optional(
+			v.object({
+				message: v.literal("Failed to update the file snapshots"),
+			}),
+		),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const cleanScheduleLocksPromise = ctx.db
+			.query("files_yjs_snapshot_schedules")
+			.withIndex("by_file", (q) => q.eq("nodeId", args.nodeId))
+			.collect()
+			.then((scheduleLocks) =>
+				Promise.all(scheduleLocks.map((schedule) => ctx.db.delete("files_yjs_snapshot_schedules", schedule._id))),
+			);
+
+		try {
+			const now = Date.now();
+
+			const file = await ctx.db.get("files_nodes", args.nodeId);
+			if (
+				!file ||
+				file.workspaceId !== args.workspaceId ||
+				file.projectId !== args.projectId ||
+				!file.markdownContentId
+			) {
+				throw should_never_happen("file not found", {
+					nodeId: args.nodeId,
+					file: file,
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					markdownContentId: file?.markdownContentId,
+				});
+			}
+
+			// Load latest snapshot
+			const yjsSnapshotData = await ctx.db
+				.query("files_yjs_snapshots")
+				.withIndex("by_workspace_project_file_sequence", (q) =>
+					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+				)
+				.order("desc")
+				.first();
+
+			if (!yjsSnapshotData) {
+				throw should_never_happen(
+					"yjs_snapshot_data or last_sequence_data are null.\n" + //
+						"The job should start only if the last sequence exists and is greater than 0\n" + //
+						"and only if the yjs snapshot data already exists, the snapshot data should\n" + //
+						"be created with the file",
+				);
+			}
+
+			// Fetch updates since snapshot up to uptoSeq
+			const updateDataList = await ctx.db
+				.query("files_yjs_updates")
+				.withIndex("by_workspace_project_file_sequence", (q) =>
+					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+				)
+				.order("asc")
+				.collect();
+
+			const lastUpdate = updateDataList.at(-1);
+			const sequence = lastUpdate ? lastUpdate.sequence : yjsSnapshotData.sequence;
+
+			// merge last snapshot update with all incremental updates into a single update blob
+			const snapshotUpdate = yjs_merge_updates_to_array_buffer([
+				new Uint8Array(yjsSnapshotData.snapshotUpdate),
+				...updateDataList.map((u) => new Uint8Array(u.update)),
+			]);
+
+			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(snapshotUpdate);
+			const markdown = files_yjs_doc_get_markdown({ yjsDoc });
+
+			if (markdown._nay) {
+				return markdown;
+			}
+
+			const dbWriteResult = Result_all(
+				await Promise.all([
+					// Write new snapshot row (append-only)
+					ctx.db.patch("files_yjs_snapshots", yjsSnapshotData._id, {
+						sequence,
+						snapshotUpdate: snapshotUpdate,
+						updatedBy: "system",
+						updatedAt: now,
+					}),
+
+					// Prune compacted updates
+					...updateDataList.map((updateData) => ctx.db.delete("files_yjs_updates", updateData._id)),
+
+					ctx.db.patch("files_markdown_content", file.markdownContentId, {
+						content: markdown._yay,
+						yjsSequence: sequence,
+						updatedBy: "system",
+						updatedAt: now,
+					}),
+
+					db_replace_file_chunks(ctx, {
+						workspaceId: args.workspaceId,
+						projectId: args.projectId,
+						nodeId: args.nodeId,
+						yjsSequence: sequence,
+						markdownContent: markdown._yay,
+					}),
+
+					store_version_snapshot(ctx, {
+						workspaceId: args.workspaceId,
+						projectId: args.projectId,
+						nodeId: args.nodeId,
+						content: markdown._yay,
+						createdBy: args.userId,
+					}),
+				]),
+			);
+
+			if (dbWriteResult._nay) {
+				const message = "Failed to update the file snapshots" satisfies NonNullable<
+					(typeof args)["_errors"]
+				>["message"];
+				console.error(message, {
+					dbWriteResult,
+				});
+				return Result({
+					_nay: {
+						name: "nay",
+						message,
+					},
+				});
+			}
+
+			return Result({ _yay: null });
+		} finally {
+			await cleanScheduleLocksPromise;
+		}
 	},
 });
 
@@ -3225,7 +3258,7 @@ export const restore_snapshot = mutation({
 					updatedBy: updatedBy,
 					updatedAt: now,
 				}),
-				db_upsert_file_chunks(ctx, {
+				db_replace_file_chunks(ctx, {
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,
 					nodeId: args.nodeId,
@@ -3363,6 +3396,8 @@ export const cleanup_old_snapshots = internalMutation({
 		return null;
 	},
 });
+
+// #endregion snapshots
 
 export function files_http_routes(router: RouterForConvexModules) {
 	return {

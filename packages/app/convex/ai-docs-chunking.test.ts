@@ -1,9 +1,9 @@
 import { expect, test } from "vitest";
-import { db_upsert_file_chunks } from "./files_nodes.ts";
+import { db_replace_file_chunks } from "./files_nodes.ts";
 import { test_convex, test_mocks_hardcoded } from "./setup.test.ts";
 import { files_FIRST_VERSION, files_ROOT_ID } from "../server/files.ts";
 
-test("db_upsert_file_chunks replaces existing chunk rows for a page", async () => {
+test("db_replace_file_chunks replaces existing chunk rows for a page", async () => {
 	const t = test_convex();
 
 	await t.run(async (ctx) => {
@@ -51,7 +51,7 @@ test("db_upsert_file_chunks replaces existing chunk rows for a page", async () =
 			markdownChunkId: oldMarkdownChunkId,
 		});
 
-		const result = await db_upsert_file_chunks(ctx, {
+		const result = await db_replace_file_chunks(ctx, {
 			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 			projectId: test_mocks_hardcoded.project_id.project_1,
 			nodeId,
