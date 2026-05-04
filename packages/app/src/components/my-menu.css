@@ -94,6 +94,27 @@
 	}
 	/* #endregion item */
 
+	/* #region checkbox item control */
+	.MyMenuCheckboxItemControl.MyCheckboxButton {
+		grid-column: 1;
+		grid-row: 1 / -1;
+
+		width: 16px;
+		height: 16px;
+		padding: 0;
+		border: 0;
+		margin: 0 12px 0 0;
+
+		background: transparent;
+		color: inherit;
+		pointer-events: none;
+
+		.MyCheckboxButton-box {
+			margin-right: 0;
+		}
+	}
+	/* #endregion checkbox item control */
+
 	/* #region item content */
 	.MyMenuItemContent {
 		display: grid;

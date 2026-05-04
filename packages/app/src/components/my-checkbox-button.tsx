@@ -10,6 +10,9 @@ import { cn } from "@/lib/utils.ts";
 
 export type MyCheckboxButton_ClassNames =
 	| "MyCheckboxButton"
+	| "MyCheckboxButton-state-checked"
+	| "MyCheckboxButton-state-disabled"
+	| "MyCheckboxButton-state-focus-visible"
 	| "MyCheckboxButton-control"
 	| "MyCheckboxButton-box"
 	| "MyCheckboxButton-check";

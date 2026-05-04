@@ -21,6 +21,7 @@ import {
 	Folder,
 	FolderPlus,
 	Search,
+	Upload,
 	X,
 	CopyMinus,
 	CopyPlus,
@@ -44,7 +45,6 @@ import { useTree } from "@headless-tree/react/react-compiler";
 import { useNavigate } from "@tanstack/react-router";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
-import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink } from "@/components/my-link.tsx";
@@ -53,6 +53,8 @@ import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-t
 import { MyPrimaryAction } from "@/components/my-action.tsx";
 import {
 	MyMenu,
+	MyMenuCheckboxItem,
+	MyMenuCheckboxItemControl,
 	MyMenuItem,
 	MyMenuItemContent,
 	MyMenuItemContentIcon,
@@ -1201,14 +1203,84 @@ const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarH
 });
 // #endregion header
 
+// #region top section more action
+type FilesSidebarTopSectionMoreAction_ClassNames = "FilesSidebarTopSectionMoreAction";
+
+type FilesSidebarTopSectionMoreAction_Props = {
+	className?: string;
+	isBusy: boolean;
+	archivedCount: number;
+	showArchived: boolean;
+	onArchiveToggleClick: () => void;
+};
+
+const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMoreAction(
+	props: FilesSidebarTopSectionMoreAction_Props,
+) {
+	const { className, isBusy, archivedCount, showArchived, onArchiveToggleClick } = props;
+
+	const archivedItemsLabel = `${showArchived ? "Hide" : "Show"} ${archivedCount} ${
+		archivedCount === 1 ? "item" : "items"
+	} archived`;
+
+	const handleArchiveToggleClick = useFn(() => {
+		onArchiveToggleClick();
+	});
+
+	return (
+		<MyMenu>
+			<MyMenuTrigger>
+				<MyIconButton
+					className={cn(
+						"FilesSidebarTopSectionMoreAction" satisfies FilesSidebarTopSectionMoreAction_ClassNames,
+						className,
+					)}
+					variant="ghost-highlightable"
+					tooltip="More options"
+					disabled={isBusy}
+				>
+					<MyIconButtonIcon>
+						<EllipsisVertical />
+					</MyIconButtonIcon>
+				</MyIconButton>
+			</MyMenuTrigger>
+			<MyMenuPopover placement="bottom-end" unmountOnHide>
+				<MyMenuPopoverContent>
+					<MyMenuCheckboxItem
+						name="showArchivedFiles"
+						checked={showArchived}
+						disabled={isBusy || archivedCount === 0}
+						onClick={handleArchiveToggleClick}
+					>
+						<MyMenuItemContent>
+							<MyMenuCheckboxItemControl
+								checked={showArchived}
+								disabled={isBusy || archivedCount === 0}
+							/>
+							<MyMenuItemContentPrimary>{archivedItemsLabel}</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuCheckboxItem>
+					<MyMenuItem disabled>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Upload />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Upload file</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+				</MyMenuPopoverContent>
+			</MyMenuPopover>
+		</MyMenu>
+	);
+});
+// #endregion top section more action
+
 // #region top section
 type FilesSidebarTopSection_ClassNames =
 	| "FilesSidebarTopSection"
 	| "FilesSidebarTopSection-actions"
 	| "FilesSidebarTopSection-actions-group"
 	| "FilesSidebarTopSection-actions-icon-button"
-	| "FilesSidebarTopSection-action-new-file"
-	| "FilesSidebarTopSection-archive-toggle"
 	| "FilesSidebarTopSection-multi-selection-counter"
 	| "FilesSidebarTopSection-multi-selection-counter-label";
 
@@ -1288,64 +1360,67 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 					</div>
 				) : (
 					<div className={cn("FilesSidebarTopSection-actions-group" satisfies FilesSidebarTopSection_ClassNames)}>
-						<MyButton
-							className={cn("FilesSidebarTopSection-action-new-file" satisfies FilesSidebarTopSection_ClassNames)}
-							variant="secondary"
+						<MyIconButton
+							className={cn("FilesSidebarTopSection-actions-icon-button" satisfies FilesSidebarTopSection_ClassNames)}
+							variant="ghost-highlightable"
+							tooltip="New file"
 							onClick={onCreateRootFileClick}
 							disabled={isBusy}
 						>
-							<MyButtonIcon>
+							<MyIconButtonIcon>
 								<FilePlus />
-							</MyButtonIcon>
-							New File
-						</MyButton>
-						<MyButton variant="secondary" onClick={onCreateRootFolderClick} disabled={isBusy}>
-							<MyButtonIcon>
+							</MyIconButtonIcon>
+						</MyIconButton>
+						<MyIconButton
+							className={cn("FilesSidebarTopSection-actions-icon-button" satisfies FilesSidebarTopSection_ClassNames)}
+							variant="ghost-highlightable"
+							tooltip="New folder"
+							onClick={onCreateRootFolderClick}
+							disabled={isBusy}
+						>
+							<MyIconButtonIcon>
 								<FolderPlus />
-							</MyButtonIcon>
-							New Folder
-						</MyButton>
+							</MyIconButtonIcon>
+						</MyIconButton>
 					</div>
 				)}
-			</div>
 
-			<div className={cn("FilesSidebarTopSection-actions" satisfies FilesSidebarTopSection_ClassNames)}>
 				<div className={cn("FilesSidebarTopSection-actions-group" satisfies FilesSidebarTopSection_ClassNames)}>
-					<MyIconButton
-						className={cn("FilesSidebarTopSection-actions-icon-button" satisfies FilesSidebarTopSection_ClassNames)}
-						variant="ghost-highlightable"
-						tooltip="Expand root folders"
-						onClick={onExpandTopFilesClick}
-						disabled={isBusy || !canExpandAll}
-					>
-						<MyIconButtonIcon>
-							<CopyPlus />
-						</MyIconButtonIcon>
-					</MyIconButton>
+					{selectedNodeIdsCount <= 1 ? (
+						<>
+							<MyIconButton
+								className={cn("FilesSidebarTopSection-actions-icon-button" satisfies FilesSidebarTopSection_ClassNames)}
+								variant="ghost-highlightable"
+								tooltip="Expand root folders"
+								onClick={onExpandTopFilesClick}
+								disabled={isBusy || !canExpandAll}
+							>
+								<MyIconButtonIcon>
+									<CopyPlus />
+								</MyIconButtonIcon>
+							</MyIconButton>
 
-					<MyIconButton
+							<MyIconButton
+								className={cn("FilesSidebarTopSection-actions-icon-button" satisfies FilesSidebarTopSection_ClassNames)}
+								variant="ghost-highlightable"
+								tooltip="Collapse all"
+								onClick={onCollapseAllClick}
+								disabled={isBusy || !canCollapseAll}
+							>
+								<MyIconButtonIcon>
+									<CopyMinus />
+								</MyIconButtonIcon>
+							</MyIconButton>
+						</>
+					) : null}
+					<FilesSidebarTopSectionMoreAction
 						className={cn("FilesSidebarTopSection-actions-icon-button" satisfies FilesSidebarTopSection_ClassNames)}
-						variant="ghost-highlightable"
-						tooltip="Collapse all"
-						onClick={onCollapseAllClick}
-						disabled={isBusy || !canCollapseAll}
-					>
-						<MyIconButtonIcon>
-							<CopyMinus />
-						</MyIconButtonIcon>
-					</MyIconButton>
+						isBusy={isBusy}
+						archivedCount={archivedCount}
+						showArchived={showArchived}
+						onArchiveToggleClick={onArchiveToggleClick}
+					/>
 				</div>
-
-				{archivedCount ? (
-					<MyButton
-						className={cn("FilesSidebarTopSection-archive-toggle" satisfies FilesSidebarTopSection_ClassNames)}
-						variant="ghost"
-						onClick={onArchiveToggleClick}
-						disabled={isBusy}
-					>
-						{showArchived ? `Hide archived (${archivedCount})` : `Show archived (${archivedCount})`}
-					</MyButton>
-				) : null}
 			</div>
 		</div>
 	);

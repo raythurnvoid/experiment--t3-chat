@@ -4,7 +4,9 @@ import { memo } from "react";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
-import { ChevronRight } from "lucide-react";
+import { Check, ChevronRight } from "lucide-react";
+import type { MyButton_ClassNames } from "@/components/my-button.tsx";
+import type { MyCheckboxButton_ClassNames } from "@/components/my-checkbox-button.tsx";
 import { MyIcon, type MyIcon_Props } from "./my-icon.tsx";
 
 // #region items group text
@@ -179,6 +181,64 @@ export const MyMenuItem = memo(function MyMenuItem(props: MyMenuItem_Props) {
 	);
 });
 // #endregion item
+
+// #region checkbox item
+export type MyMenuCheckboxItem_ClassNames = "MyMenuCheckboxItem";
+
+export type MyMenuCheckboxItem_Props = Ariakit.MenuItemCheckboxProps;
+
+export const MyMenuCheckboxItem = memo(function MyMenuCheckboxItem(props: MyMenuCheckboxItem_Props) {
+	const { className, children, ...rest } = props;
+
+	return (
+		<Ariakit.MenuItemCheckbox
+			className={cn(
+				"MyMenuItem" satisfies MyMenuItem_ClassNames,
+				"MyMenuCheckboxItem" satisfies MyMenuCheckboxItem_ClassNames,
+				className,
+			)}
+			{...rest}
+		>
+			{children}
+		</Ariakit.MenuItemCheckbox>
+	);
+});
+// #endregion checkbox item
+
+// #region checkbox item control
+export type MyMenuCheckboxItemControl_ClassNames = "MyMenuCheckboxItemControl";
+
+export type MyMenuCheckboxItemControl_Props = {
+	className?: string;
+	checked: boolean;
+	disabled?: boolean;
+};
+
+export const MyMenuCheckboxItemControl = memo(function MyMenuCheckboxItemControl(
+	props: MyMenuCheckboxItemControl_Props,
+) {
+	const { className, checked, disabled } = props;
+
+	return (
+		<span
+			className={cn(
+				"MyMenuCheckboxItemControl" satisfies MyMenuCheckboxItemControl_ClassNames,
+				"MyCheckboxButton" satisfies MyCheckboxButton_ClassNames,
+				"MyButton" satisfies MyButton_ClassNames,
+				"MyButton-variant-ghost" satisfies MyButton_ClassNames,
+				checked && ("MyCheckboxButton-state-checked" satisfies MyCheckboxButton_ClassNames),
+				disabled && ("MyCheckboxButton-state-disabled" satisfies MyCheckboxButton_ClassNames),
+				className,
+			)}
+			aria-hidden
+		>
+			<span className={"MyCheckboxButton-box" satisfies MyCheckboxButton_ClassNames}>
+				<Check className={"MyCheckboxButton-check" satisfies MyCheckboxButton_ClassNames} />
+			</span>
+		</span>
+	);
+});
+// #endregion checkbox item control
 
 // #region popover scrollable area
 export type MyMenuPopoverScrollableArea_ClassNames = "MyMenuPopoverScrollableArea";
