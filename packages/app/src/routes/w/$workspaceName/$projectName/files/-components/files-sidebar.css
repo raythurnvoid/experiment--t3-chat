@@ -244,6 +244,7 @@
 		contain: content;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		user-select: none;
 		min-width: 0;
 	}
 	/* #endregion tree item meta label */

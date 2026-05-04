@@ -1,5 +1,5 @@
 import { Workpool } from "@convex-dev/workpool";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi, type MockInstance } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
@@ -10,10 +10,14 @@ import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 
+let enqueueActionSpy: MockInstance;
+
 beforeEach(() => {
 	// Keep file tests focused on file behavior; billing event enqueue behavior is
 	// covered in billing tests.
-	vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_file_test_billing_event" as never);
+	enqueueActionSpy = vi
+		.spyOn(Workpool.prototype, "enqueueAction")
+		.mockResolvedValue("work_file_test_billing_event" as never);
 });
 
 afterEach(() => {
@@ -1467,7 +1471,7 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 			.collect(),
 	);
 	expect(yjsUpdates).toHaveLength(1);
-	expect(vi.mocked(Workpool.prototype.enqueueAction)).toHaveBeenCalledWith(
+	expect(enqueueActionSpy).toHaveBeenCalledWith(
 		expect.anything(),
 		internal.billing.ingest_events,
 		{

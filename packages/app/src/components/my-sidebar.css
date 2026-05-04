@@ -11,7 +11,7 @@
 		flex-shrink: 0;
 		contain: strict;
 
-		background: var(--color-base-1-03);
+		background: linear-gradient(to bottom, var(--color-base-1-04), var(--color-base-1-03));
 		color: var(--color-fg-09);
 		border-right: 1px solid var(--color-fg-02);
 	}
@@ -221,30 +221,30 @@
 			font-size: 0.875rem;
 			font-weight: 500;
 			transition: background-color 0.1s linear;
-		}
 
-		&:not(:disabled):not(.MyButton-state-disabled) {
-			&:hover,
-			&:focus-visible {
-				background: var(--color-base-1-07);
-				color: var(--color-fg-11);
+			&[data-selected] {
+				background: var(--color-base-1-06);
+				color: var(--color-fg-09);
 			}
 
-			&:active {
-				background: var(--color-base-1-08);
-				color: var(--color-fg-12);
+			&:disabled,
+			&.MyButton-state-disabled {
+				color: var(--color-fg-04);
+				cursor: default;
 			}
-		}
 
-		&[data-selected] {
-			background: var(--color-base-1-05);
-			color: var(--color-fg-09);
-		}
+			&:not(:disabled):not(.MyButton-state-disabled) {
+				&:hover,
+				&:focus-visible {
+					background: var(--color-base-1-07);
+					color: var(--color-fg-11);
+				}
 
-		&:disabled,
-		&.MyButton-state-disabled {
-			color: var(--color-fg-04);
-			cursor: default;
+				&:active {
+					background: var(--color-base-1-08);
+					color: var(--color-fg-12);
+				}
+			}
 		}
 	}
 

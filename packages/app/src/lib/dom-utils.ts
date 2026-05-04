@@ -24,6 +24,16 @@ export class dom_TypedAttributeAccessor<CustomAttributes extends Record<string, 
 	}
 }
 
+// Clear both DOM and input selections because input text selection can remain visible after focus leaves.
+export function dom_clear_text_selection(element = document.activeElement) {
+	if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+		const selectionEnd = element.selectionEnd ?? 0;
+		element.setSelectionRange(selectionEnd, selectionEnd);
+	}
+
+	document.getSelection()?.removeAllRanges();
+}
+
 export function dom_find_first_element_overflowing_element(
 	scrollEl: Element,
 	elements: readonly Element[],

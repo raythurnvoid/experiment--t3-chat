@@ -575,6 +575,7 @@ async function db_create_node(
 			},
 		});
 	}
+
 	const nameValidationResult = files_validate_name(args.name, args.kind);
 	if (nameValidationResult._nay) {
 		return nameValidationResult;
@@ -722,6 +723,7 @@ export const create_node = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
@@ -762,6 +764,7 @@ export const create_file_quick = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
@@ -923,6 +926,7 @@ export const move_nodes = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
@@ -2218,6 +2222,7 @@ export const create_home_file = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });

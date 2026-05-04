@@ -68,6 +68,7 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
+import { dom_clear_text_selection } from "@/lib/dom-utils.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
 import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
 import { files_ROOT_ID, files_create_tree_root, type files_EditorView, type files_TreeItem } from "@/lib/files.ts";
@@ -404,7 +405,18 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 
 	const handleRenameInputRef = useFn((element: HTMLInputElement | null) => {
 		renameInputElementRef.current = element;
-		forward_ref(element, renameInputProps.ref);
+		if (isRenaming) {
+			forward_ref(element, renameInputProps.ref);
+		}
+	});
+
+	const handleRenameInputBlur = useFn<NonNullable<ComponentProps<"input">["onBlur"]>>((event) => {
+		if (!isRenaming) {
+			return;
+		}
+
+		renameInputProps.onBlur();
+		dom_clear_text_selection(event.currentTarget);
 	});
 
 	// when renaming starts focus the input and select the whole text.
@@ -425,8 +437,9 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 			<MyInputBox />
 			<MyInputControl
 				{...(isRenaming ? renameInputProps : null)}
-				ref={isRenaming ? handleRenameInputRef : undefined}
+				ref={handleRenameInputRef}
 				className={"FilesSidebarTreeItemTitle-input" satisfies FilesSidebarTreeItemTitle_ClassNames}
+				onBlur={handleRenameInputBlur}
 				readOnly={!isRenaming}
 				tabIndex={isRenaming ? undefined : -1}
 				value={value}
@@ -883,7 +896,10 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 						onClick={handleTreeItemArrowClick}
 					/>
 				) : (
-					<div className={"FilesSidebarTreeItemArrow" satisfies FilesSidebarTreeItemArrow_ClassNames} aria-hidden="true" />
+					<div
+						className={"FilesSidebarTreeItemArrow" satisfies FilesSidebarTreeItemArrow_ClassNames}
+						aria-hidden="true"
+					/>
 				)}
 
 				<FilesSidebarTreeItemMetaLabel metaText={metaText} />
@@ -1253,10 +1269,7 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 						onClick={handleArchiveToggleClick}
 					>
 						<MyMenuItemContent>
-							<MyMenuCheckboxItemControl
-								checked={showArchived}
-								disabled={isBusy || archivedCount === 0}
-							/>
+							<MyMenuCheckboxItemControl checked={showArchived} disabled={isBusy || archivedCount === 0} />
 							<MyMenuItemContentPrimary>{archivedItemsLabel}</MyMenuItemContentPrimary>
 						</MyMenuItemContent>
 					</MyMenuCheckboxItem>
@@ -1673,6 +1686,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		return item.getItemData().type === "node";
 	});
 
+	const handleRenamingItemChange = useFn<NonNullable<TreeConfig<files_TreeItem>["setRenamingItem"]>>((renamingItem) => {
+		if (renamingItem == null) {
+			dom_clear_text_selection();
+		}
+	});
+
 	const handleRename = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["onRename"]>>((item, value) => {
 		const trimmedValue = value.trim();
 		const itemData = item.getItemData();
@@ -1744,8 +1763,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					const readmeId = treeItems?.sortedItemsIdsByParentId
 						.get(item.getId())
 						?.map((childId) => treeItems.itemById.get(childId))
-						.find((child) => child?.kind === "file" && child.archiveOperationId === undefined && child.title === "readme.md")
-						?._id;
+						.find(
+							(child) =>
+								child?.kind === "file" && child.archiveOperationId === undefined && child.title === "readme.md",
+						)?._id;
 					onPrimaryAction(readmeId ?? item.getId(), readmeId ? "file" : "folder");
 					return;
 				}
@@ -1828,6 +1849,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		isItemFolder: (item) => item.getItemData().kind === "folder",
 		canDrag,
 		canDrop,
+		setRenamingItem: handleRenamingItemChange,
 		onDrop: handleDrop,
 		canRename,
 		onRename: handleRename,

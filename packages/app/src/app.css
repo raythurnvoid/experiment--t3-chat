@@ -131,12 +131,12 @@
 
 	/* https://oklch.fyi/ */
 
-	--color-base-1-01: oklch(0.04 0.001 85);
-	--color-base-1-02: oklch(0.09 0.002 85);
-	--color-base-1-03: oklch(0.16 0.004 85);
-	--color-base-1-04: oklch(0.2 0.005 85);
-	--color-base-1-05: oklch(0.24 0.006 85);
-	--color-base-1-06: oklch(0.275 0.007 85);
+	--color-base-1-01: oklch(0.14 0.001 85);
+	--color-base-1-02: oklch(0.18 0.002 85);
+	--color-base-1-03: oklch(0.2 0.004 85);
+	--color-base-1-04: oklch(0.22 0.005 85);
+	--color-base-1-05: oklch(0.25 0.006 85);
+	--color-base-1-06: oklch(0.27 0.007 85);
 	--color-base-1-07: oklch(0.305 0.008 85);
 	--color-base-1-08: oklch(0.335 0.009 85);
 	--color-base-1-09: oklch(0.365 0.01 85);
@@ -157,18 +157,18 @@
 	--color-base-2-11: oklch(0.909 0.004 85);
 	--color-base-2-12: oklch(0.95 0.002 85);
 
-	--color-base-alt-1-01: oklch(0.05 0.002 260);
-	--color-base-alt-1-02: oklch(0.087 0.003 260);
-	--color-base-alt-1-03: oklch(0.125 0.005 260);
-	--color-base-alt-1-04: oklch(0.162 0.006 260);
-	--color-base-alt-1-05: oklch(0.199 0.008 260);
-	--color-base-alt-1-06: oklch(0.236 0.009 260);
-	--color-base-alt-1-07: oklch(0.274 0.011 260);
-	--color-base-alt-1-08: oklch(0.311 0.012 260);
-	--color-base-alt-1-09: oklch(0.348 0.013 260);
-	--color-base-alt-1-10: oklch(0.385 0.015 260);
-	--color-base-alt-1-11: oklch(0.423 0.016 260);
-	--color-base-alt-1-12: oklch(0.46 0.018 260);
+	--color-base-alt-1-01: oklch(0.14 0.002 260);
+	--color-base-alt-1-02: oklch(0.18 0.003 260);
+	--color-base-alt-1-03: oklch(0.2 0.005 260);
+	--color-base-alt-1-04: oklch(0.22 0.006 260);
+	--color-base-alt-1-05: oklch(0.25 0.008 260);
+	--color-base-alt-1-06: oklch(0.27 0.009 260);
+	--color-base-alt-1-07: oklch(0.305 0.011 260);
+	--color-base-alt-1-08: oklch(0.335 0.012 260);
+	--color-base-alt-1-09: oklch(0.365 0.013 260);
+	--color-base-alt-1-10: oklch(0.395 0.015 260);
+	--color-base-alt-1-11: oklch(0.43 0.016 260);
+	--color-base-alt-1-12: oklch(0.47 0.018 260);
 
 	--color-base-alt-2-01: oklch(0.05 0.001 260);
 	--color-base-alt-2-02: oklch(0.1 0.002 260);
