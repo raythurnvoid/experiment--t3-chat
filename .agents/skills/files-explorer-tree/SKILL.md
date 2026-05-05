@@ -37,7 +37,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Backend returns root/node items only; placeholder rows are client-rendered.
 - Folder nodes can have children, expand/collapse, and receive drops.
 - File nodes are leaves and open in the editor.
-- Clicking a folder opens an active direct child file named `readme.md` when present; otherwise the route renders a folder listing.
+- Clicking a folder opens an active direct child file named `README.md` when present; otherwise the route renders a folder listing.
 
 # Main Components
 
@@ -87,7 +87,7 @@ Tree-item components:
 - Primary click implements single select, toggle-select, and shift-range.
 - Non-modifier click runs primary action for node items.
 - File primary action navigates to the file.
-- Folder primary action navigates to child `readme.md` if present; otherwise it navigates to the folder listing.
+- Folder primary action navigates to child `README.md` if present; otherwise it navigates to the folder listing.
 - In multi-select mode, selection anchor files active track highlighting.
 
 ## Create, Rename, Archive, Unarchive
@@ -96,6 +96,12 @@ Tree-item components:
 - Folder row actions can create child files and folders.
 - File rows do not show child-creation actions.
 - Default generated names are sibling-aware: `new-file.md`, `new-file-2.md`, `new-folder`, `new-folder-2`.
+- File create/rename first canonicalizes names by lowercasing, converting unsupported characters/separators to dashes, collapsing repeated dashes/underscores, turning non-final file dots into dashes, and normalizing path-like input segments.
+- Rename input filters draft typing/paste/composition through shared live-name normalization: files allow lowercase letters, digits, `.`, `-`, `_`; folders allow lowercase letters, digits, `-`, `_`; adjacent separators are blocked while typing; special file-name casing remains submit-time only.
+- File and folder create/rename reject double-dot names; file names with a non-empty basename and a trailing dot are treated as missing the extension, while invalid extension text such as separators inside the final extension is rejected.
+- File create/rename then applies the Markdown storage contract: extensionless file names get `.md`, and explicit alternate extensions are replaced with `.md`.
+- File create/rename applies special file-name casing after normalization: `readme`, `readme.md`, and `README.md` store as `README.md`.
+- File rename selects the basename by default so `.md` is not included in the initial edit selection.
 - Rename uses `files.rename_node` with Convex `optimisticUpdate` for immediate title feedback.
 - Archive/unarchive uses `files.archive_nodes` / `files.unarchive_nodes`.
 

@@ -217,9 +217,11 @@
 		&.MyPrimaryActionLink {
 			border-radius: 8px;
 			background: transparent;
+
 			color: var(--color-fg-07);
 			font-size: 0.875rem;
 			font-weight: 500;
+
 			transition: background-color 0.1s linear;
 
 			&[data-selected] {

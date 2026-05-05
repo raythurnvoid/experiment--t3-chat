@@ -71,7 +71,14 @@ import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { dom_clear_text_selection } from "@/lib/dom-utils.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
 import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
-import { files_ROOT_ID, files_create_tree_root, type files_EditorView, type files_TreeItem } from "@/lib/files.ts";
+import {
+	files_ROOT_ID,
+	files_create_tree_root,
+	files_normalize_name_input,
+	files_validate_and_normalize_name,
+	type files_EditorView,
+	type files_TreeItem,
+} from "@/lib/files.ts";
 import { format_relative_time } from "@/lib/date.ts";
 import type { FunctionReturnType } from "convex/server";
 
@@ -130,6 +137,49 @@ function files_sidebar_get_default_node_name(args: {
 		}
 		suffix += 1;
 	}
+}
+
+function files_sidebar_get_protected_markdown_extension_start(args: {
+	kind: files_TreeItem["kind"];
+	value: string;
+	selectionStart: number;
+	selectionEnd: number;
+}) {
+	// Locate the storage extension so live basename edits can ignore the protected suffix.
+	const extensionStart = args.value.length - ".md".length;
+	if (
+		args.kind === "file" &&
+		args.value.endsWith(".md") &&
+		args.selectionStart <= extensionStart &&
+		args.selectionEnd <= extensionStart
+	) {
+		// Ignore `.md` separator adjacency when the edit is fully inside the basename.
+		return extensionStart;
+	}
+
+	// Normalize edits that touch the extension against the full remaining value.
+	return args.value.length;
+}
+
+function files_sidebar_normalize_rename_input_value(args: { kind: files_TreeItem["kind"]; value: string }) {
+	if (args.kind === "file" && args.value.endsWith(".md")) {
+		// Preserve the protected Markdown extension and sanitize only the editable basename.
+		const extensionStart = args.value.length - ".md".length;
+		return `${files_normalize_name_input({
+			kind: args.kind,
+			previousText: "",
+			insertedText: args.value.slice(0, extensionStart),
+			nextText: "",
+		})}.md`;
+	}
+
+	// Sanitize the whole current value for folders and non-canonical file drafts.
+	return files_normalize_name_input({
+		kind: args.kind,
+		previousText: "",
+		insertedText: args.value,
+		nextText: "",
+	});
 }
 
 function sort_children(args: { children: string[]; itemById: Map<string, files_TreeItem> }) {
@@ -395,19 +445,100 @@ type FilesSidebarTreeItemTitle_Props = {
 	renameInputProps: ReturnType<FilesSidebarTreeItem_Instance["getRenameInputProps"]>;
 	isRenaming: boolean;
 	title: string;
+	kind: files_TreeItem["kind"];
+	renameError: string | undefined;
+	onRenameErrorClear: () => void;
 };
 
 const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props: FilesSidebarTreeItemTitle_Props) {
-	const { renameInputProps, isRenaming, title } = props;
+	const { renameInputProps, isRenaming, title, kind, renameError, onRenameErrorClear } = props;
 
 	const value = isRenaming ? (renameInputProps.value ?? "") : title;
 	const renameInputElementRef = useRef<HTMLInputElement | null>(null);
 
 	const handleRenameInputRef = useFn((element: HTMLInputElement | null) => {
+		// Keep a local DOM ref for native validity and selection management.
 		renameInputElementRef.current = element;
 		if (isRenaming) {
+			// Forward the same input to Headless Tree only while rename mode owns it.
 			forward_ref(element, renameInputProps.ref);
 		}
+	});
+
+	const clearRenameInputError = useFn((element: HTMLInputElement) => {
+		if (!renameError) {
+			return;
+		}
+
+		// Clear both DOM validity and React tooltip state as soon as the user edits.
+		element.setCustomValidity("");
+		onRenameErrorClear();
+	});
+
+	const syncRenameInputValue = useFn((element: HTMLInputElement, nextValue: string, nextSelectionStart?: number) => {
+		if (element.value !== nextValue) {
+			// Update the DOM immediately because beforeinput/paste handlers prevent the browser default.
+			element.value = nextValue;
+		}
+
+		// Mirror the same value into Headless Tree's controlled renaming state.
+		renameInputProps.onChange({ target: { value: nextValue } });
+
+		if (nextSelectionStart === undefined) {
+			return;
+		}
+
+		queueMicrotask(() => {
+			if (document.activeElement !== element) {
+				return;
+			}
+
+			// Restore the caret after React and Headless Tree have reconciled the controlled value.
+			const safeSelectionStart = Math.min(nextSelectionStart, element.value.length);
+			element.setSelectionRange(safeSelectionStart, safeSelectionStart);
+		});
+	});
+
+	const replaceRenameInputSelection = useFn((element: HTMLInputElement, insertedText: string) => {
+		// Read the current selection so typed and pasted text replace the same range natively.
+		const selectionStart = element.selectionStart ?? element.value.length;
+		const selectionEnd = element.selectionEnd ?? element.value.length;
+		const nextTextEnd = files_sidebar_get_protected_markdown_extension_start({
+			kind,
+			value: element.value,
+			selectionStart,
+			selectionEnd,
+		});
+		const replacementEnd =
+			kind === "file" && selectionEnd === nextTextEnd && insertedText.includes(".") ? element.value.length : selectionEnd;
+		// Let full file names such as `foo/bar.md` replace the protected `.md` instead of appending another suffix.
+		// Normalize only the inserted fragment, using the surrounding text for separator adjacency.
+		const normalizedInsertedText = files_normalize_name_input({
+			kind,
+			previousText: element.value.slice(0, selectionStart),
+			insertedText,
+			nextText: element.value.slice(selectionEnd, nextTextEnd),
+		});
+		// Rebuild the full control value with the sanitized replacement.
+		const nextValue = element.value.slice(0, selectionStart) + normalizedInsertedText + element.value.slice(replacementEnd);
+		if (nextValue === element.value) {
+			return;
+		}
+
+		// Place the caret at the end of the inserted normalized fragment.
+		syncRenameInputValue(element, nextValue, selectionStart + normalizedInsertedText.length);
+	});
+
+	const applyRenameInputToControl = useFn((element: HTMLInputElement) => {
+		// Preserve the current caret as closely as possible when the fallback sanitizer rewrites the value.
+		const selectionStart = element.selectionStart ?? element.value.length;
+		const nextValue = files_sidebar_normalize_rename_input_value({
+			kind,
+			value: element.value,
+		});
+
+		// Push the fully sanitized fallback value into both DOM and Headless Tree state.
+		syncRenameInputValue(element, nextValue, selectionStart);
 	});
 
 	const handleRenameInputBlur = useFn<NonNullable<ComponentProps<"input">["onBlur"]>>((event) => {
@@ -415,21 +546,106 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 			return;
 		}
 
+		// Remove local invalid state on blur because blur aborts rename instead of submitting the draft.
+		event.currentTarget.setCustomValidity("");
+		onRenameErrorClear();
 		renameInputProps.onBlur();
 		dom_clear_text_selection(event.currentTarget);
 	});
 
-	// when renaming starts focus the input and select the whole text.
+	const handleRenameInputBeforeInput = useFn<NonNullable<ComponentProps<"input">["onBeforeInput"]>>((event) => {
+		if (!isRenaming) {
+			return;
+		}
+
+		const nativeEvent = event.nativeEvent as InputEvent;
+		if (nativeEvent.isComposing) {
+			// Wait for compositionend so IME text normalizes as one completed fragment.
+			return;
+		}
+
+		const insertedText = nativeEvent.data;
+		if (insertedText == null || insertedText === "") {
+			// Let non-text beforeinput operations such as deletion use the normal input path.
+			return;
+		}
+
+		// Replace the browser insertion with our sanitized insertion.
+		event.preventDefault();
+		clearRenameInputError(event.currentTarget);
+		replaceRenameInputSelection(event.currentTarget, insertedText);
+	});
+
+	const handleRenameInputPaste = useFn<NonNullable<ComponentProps<"input">["onPaste"]>>((event) => {
+		const pastedText = event.clipboardData.getData("text/plain");
+		if (pastedText === "") {
+			return;
+		}
+
+		// Route pasted text through the same insertion helper because it can contain many characters.
+		event.preventDefault();
+		clearRenameInputError(event.currentTarget);
+		replaceRenameInputSelection(event.currentTarget, pastedText);
+	});
+
+	const handleRenameInputCompositionEnd = useFn<NonNullable<ComponentProps<"input">["onCompositionEnd"]>>((event) => {
+		// Sanitize the whole control after composition mutates the real input.
+		clearRenameInputError(event.currentTarget);
+		applyRenameInputToControl(event.currentTarget);
+	});
+
+	const handleRenameInputChange = useFn<NonNullable<ComponentProps<"input">["onChange"]>>((event) => {
+		// Keep onChange as a fallback for browser paths not covered by beforeinput or paste.
+		clearRenameInputError(event.currentTarget);
+		applyRenameInputToControl(event.currentTarget);
+	});
+
+	useLayoutEffect(() => {
+		const inputElement = renameInputElementRef.current;
+		if (!inputElement) {
+			return;
+		}
+
+		// Use native validity for :invalid styling while keeping the app tooltip as the visible message.
+		inputElement.setCustomValidity(isRenaming ? (renameError ?? "") : "");
+		return () => {
+			inputElement.setCustomValidity("");
+		};
+	}, [isRenaming, renameError]);
+
+	// Keep `.md` outside the initial edit range so ordinary renames preserve the file type.
 	useLayoutEffect(() => {
 		if (!isRenaming) {
 			return;
 		}
 
-		renameInputElementRef.current?.focus();
-		renameInputElementRef.current?.select();
-	}, [isRenaming]);
+		const inputElement = renameInputElementRef.current;
+		if (!inputElement) {
+			return;
+		}
 
-	return (
+		const focusAndSelectInput = () => {
+			inputElement.focus();
+			if (kind === "file" && inputElement.value.endsWith(".md")) {
+				const selectionEnd = inputElement.value.length - ".md".length;
+				if (selectionEnd > 0) {
+					inputElement.setSelectionRange(0, selectionEnd);
+					return;
+				}
+			}
+
+			inputElement.select();
+		};
+
+		focusAndSelectInput();
+		// Menus restore focus after closing; refocus once so Rename lands in the input.
+		const focusTimeoutId = setTimeout(focusAndSelectInput, 0);
+		return () => {
+			clearTimeout(focusTimeoutId);
+		};
+	}, [isRenaming, kind]);
+
+	const input = (
 		<MyInput
 			className={"FilesSidebarTreeItemTitle" satisfies FilesSidebarTreeItemTitle_ClassNames}
 			variant="transparent"
@@ -440,11 +656,22 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 				ref={handleRenameInputRef}
 				className={"FilesSidebarTreeItemTitle-input" satisfies FilesSidebarTreeItemTitle_ClassNames}
 				onBlur={handleRenameInputBlur}
+				onBeforeInput={isRenaming ? handleRenameInputBeforeInput : undefined}
+				onChange={isRenaming ? handleRenameInputChange : undefined}
+				onCompositionEnd={isRenaming ? handleRenameInputCompositionEnd : undefined}
+				onPaste={isRenaming ? handleRenameInputPaste : undefined}
 				readOnly={!isRenaming}
 				tabIndex={isRenaming ? undefined : -1}
 				value={value}
 			/>
 		</MyInput>
+	);
+
+	return (
+		<MyTooltip open={isRenaming && Boolean(renameError)} placement="bottom-start">
+			<MyTooltipTrigger>{input}</MyTooltipTrigger>
+			{renameError ? <MyTooltipContent variant="error">{renameError}</MyTooltipContent> : null}
+		</MyTooltip>
 	);
 });
 // #endregion tree item title
@@ -457,17 +684,26 @@ type FilesSidebarTreeItemPrimaryContent_Props = {
 	kind: files_TreeItem["kind"];
 	renameInputProps: ReturnType<FilesSidebarTreeItem_Instance["getRenameInputProps"]>;
 	isRenaming: boolean;
+	renameError: string | undefined;
+	onRenameErrorClear: () => void;
 };
 
 const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPrimaryContent(
 	props: FilesSidebarTreeItemPrimaryContent_Props,
 ) {
-	const { title, kind, renameInputProps, isRenaming } = props;
+	const { title, kind, renameInputProps, isRenaming, renameError, onRenameErrorClear } = props;
 
 	return (
 		<div className={"FilesSidebarTreeItemPrimaryContent" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames}>
 			<FilesSidebarTreeItemIcon kind={kind} />
-			<FilesSidebarTreeItemTitle renameInputProps={renameInputProps} isRenaming={isRenaming} title={title} />
+			<FilesSidebarTreeItemTitle
+				renameInputProps={renameInputProps}
+				isRenaming={isRenaming}
+				title={title}
+				kind={kind}
+				renameError={renameError}
+				onRenameErrorClear={onRenameErrorClear}
+			/>
 		</div>
 	);
 });
@@ -696,7 +932,8 @@ type FilesSidebarTreeItem_ClassNames =
 	| "FilesSidebarTreeItem"
 	| "FilesSidebarTreeItem-content-navigated"
 	| "FilesSidebarTreeItem-content-dragging-target"
-	| "FilesSidebarTreeItem-content-archived";
+	| "FilesSidebarTreeItem-content-archived"
+	| "FilesSidebarTreeItem-content-renaming";
 
 type FilesSidebarTreeItem_CustomAttributes = {
 	"data-file-id": string;
@@ -716,9 +953,11 @@ type FilesSidebarTreeItem_Props = {
 	isSearchActive: boolean;
 	isBusy: boolean;
 	pendingActionNodeIds: Set<string>;
+	renameError: string | undefined;
 	isTreeDragging: boolean;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
+	onRenameErrorClear: (itemId: string) => void;
 	onArchive: (nodeId: string) => void;
 	onUnarchive: (nodeId: string) => void;
 };
@@ -732,9 +971,11 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		isSearchActive,
 		isBusy,
 		pendingActionNodeIds,
+		renameError,
 		isTreeDragging,
 		onCreateNode,
 		onStartRename,
+		onRenameErrorClear,
 		onArchive,
 		onUnarchive,
 	} = props;
@@ -790,6 +1031,10 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 	const handleRenameClick = useFn<FilesSidebarTreeItemMoreAction_Props["onRename"]>(() => {
 		onStartRename(itemId);
+	});
+
+	const handleRenameErrorClear = useFn(() => {
+		onRenameErrorClear(itemId);
 	});
 
 	const handleExpandSubtreeClick = useFn<FilesSidebarTreeItemMoreAction_Props["onExpandSubtree"]>(() => {
@@ -862,6 +1107,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					isNavigated && ("FilesSidebarTreeItem-content-navigated" satisfies FilesSidebarTreeItem_ClassNames),
 					isDragTarget && ("FilesSidebarTreeItem-content-dragging-target" satisfies FilesSidebarTreeItem_ClassNames),
 					isArchived && ("FilesSidebarTreeItem-content-archived" satisfies FilesSidebarTreeItem_ClassNames),
+					isRenaming && ("FilesSidebarTreeItem-content-renaming" satisfies FilesSidebarTreeItem_ClassNames),
 				)}
 				style={sx({
 					"--FilesSidebarTreeItem-content-depth": depth,
@@ -886,6 +1132,8 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					kind={itemData.kind}
 					renameInputProps={renameInputProps}
 					isRenaming={isRenaming}
+					renameError={renameError}
+					onRenameErrorClear={handleRenameErrorClear}
 				/>
 
 				{itemData.kind === "folder" ? (
@@ -957,8 +1205,10 @@ type FilesSidebarTree_Props = {
 	selectedNodeIds: Set<string>;
 	isBusy: boolean;
 	pendingActionNodeIds: Set<string>;
+	renameErrorByNodeId: Map<string, string>;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
+	onRenameErrorClear: (itemId: string) => void;
 	onArchive: (nodeId: string) => void;
 	onUnarchive: (nodeId: string) => void;
 };
@@ -976,8 +1226,10 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		selectedNodeIds,
 		isBusy,
 		pendingActionNodeIds,
+		renameErrorByNodeId,
 		onCreateNode,
 		onStartRename,
+		onRenameErrorClear,
 		onArchive,
 		onUnarchive,
 	} = props;
@@ -1110,9 +1362,11 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 									isSearchActive={isSearchActive}
 									isBusy={isBusy}
 									pendingActionNodeIds={pendingActionNodeIds}
+									renameError={renameErrorByNodeId.get(itemId)}
 									isTreeDragging={isTreeDragging}
 									onCreateNode={onCreateNode}
 									onStartRename={onStartRename}
+									onRenameErrorClear={onRenameErrorClear}
 									onArchive={onArchive}
 									onUnarchive={onUnarchive}
 								/>
@@ -1469,6 +1723,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const [isCreatingFile, setIsCreatingFile] = useState(false);
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState<Set<string>>(new Set());
+	const [renamingItem, setRenamingItem] = useState<string | null | undefined>(undefined);
+	const [renameErrorByNodeId, setRenameErrorByNodeId] = useState<Map<string, string>>(new Map());
 	const isBusy = isCreatingFile || isArchivingSelection;
 
 	const [expandedItems, setExpandedItems] = useState<string[]>([]);
@@ -1628,6 +1884,26 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		});
 	};
 
+	const setRenameError = useFn((nodeId: string, message: string) => {
+		setRenameErrorByNodeId((oldValue) => {
+			const nextValue = new Map(oldValue);
+			nextValue.set(nodeId, message);
+			return nextValue;
+		});
+	});
+
+	const clearRenameError = useFn((nodeId: string) => {
+		setRenameErrorByNodeId((oldValue) => {
+			if (!oldValue.has(nodeId)) {
+				return oldValue;
+			}
+
+			const nextValue = new Map(oldValue);
+			nextValue.delete(nodeId);
+			return nextValue;
+		});
+	});
+
 	const canDrag = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canDrag"]>>((items) => {
 		return items.every((item) => item.getItemData().type === "node");
 	});
@@ -1686,12 +1962,29 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		return item.getItemData().type === "node";
 	});
 
-	const handleRenamingItemChange = useFn<NonNullable<TreeConfig<files_TreeItem>["setRenamingItem"]>>((renamingItem) => {
-		if (renamingItem == null) {
-			dom_clear_text_selection();
-		}
-	});
+	/**
+	 * Handle Headless Tree rename mode changes.
+	 *
+	 * Called whenever rename mode starts, aborts, or completes.
+	 */
+	const handleRenamingItemChange = useFn<NonNullable<TreeConfig<files_TreeItem>["setRenamingItem"]>>(
+		(renamingItemUpdate) => {
+			const nextRenamingItem =
+				typeof renamingItemUpdate === "function" ? renamingItemUpdate(renamingItem) : renamingItemUpdate;
 
+			setRenamingItem(nextRenamingItem);
+			if (nextRenamingItem == null) {
+				dom_clear_text_selection();
+			}
+			setRenameErrorByNodeId(new Map());
+		},
+	);
+
+	/**
+	 * Handle accepted rename submissions.
+	 *
+	 * Called by Headless Tree from `completeRenaming()` after the submit path is allowed.
+	 */
 	const handleRename = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["onRename"]>>((item, value) => {
 		const trimmedValue = value.trim();
 		const itemData = item.getItemData();
@@ -1702,22 +1995,35 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			return;
 		}
 
-		if (!trimmedValue || trimmedValue === itemData.title) {
+		if (!trimmedValue) {
 			return;
 		}
 
+		const normalizedNameResult = files_validate_and_normalize_name(itemData.kind, trimmedValue);
+		if (normalizedNameResult._nay) {
+			console.error("[FilesSidebar.handleRename] Invalid rename value", { result: normalizedNameResult, itemId });
+			return;
+		}
+		const normalizedName = normalizedNameResult._yay;
+
+		if (normalizedName === itemData.title) {
+			return;
+		}
+
+		clearRenameError(itemId);
 		item.setFocused();
 		markFileAsPending(itemId);
+		// Send the lowercase Markdown-safe name; Convex remains responsible for final special casing.
 		convex
 			.mutation(
 				app_convex_api.files_nodes.rename_node,
 				{
 					membershipId,
 					nodeId: files_sidebar_to_file_id(itemId),
-					name: trimmedValue,
+					name: normalizedName.toLowerCase(),
 				},
 				{
-					optimisticUpdate: (localStore, args) => {
+					optimisticUpdate: (localStore) => {
 						const treeItemsList = localStore.getQuery(app_convex_api.files_nodes.get_tree_nodes_list, {
 							membershipId,
 						});
@@ -1733,7 +2039,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 								if (treeItem._id === itemId) {
 									return {
 										...treeItem,
-										title: args.name,
+										title: normalizedName,
 									};
 								}
 								return treeItem;
@@ -1755,6 +2061,34 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			});
 	});
 
+	/**
+	 * Handle Enter while an item is being renamed.
+	 *
+	 * Called by the Headless Tree hotkey layer before `completeRenaming()` submits the value.
+	 */
+	const handleCompleteRenamingHotkey = useFn((event: KeyboardEvent, currentTree: TreeInstance<files_TreeItem>) => {
+		const item = currentTree.getRenamingItem();
+		if (!item) {
+			return;
+		}
+
+		const itemData = item.getItemData();
+		const itemId = item.getId();
+		const trimmedValue = currentTree.getRenamingValue().trim();
+		if (itemData.type === "node" && trimmedValue) {
+			const normalizedNameResult = files_validate_and_normalize_name(itemData.kind, trimmedValue);
+			if (normalizedNameResult._nay) {
+				event.preventDefault();
+				setRenameError(itemId, normalizedNameResult._nay.message);
+				item.setFocused();
+				return;
+			}
+		}
+
+		clearRenameError(itemId);
+		currentTree.completeRenaming();
+	});
+
 	const handlePrimaryAction = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["onPrimaryAction"]>>(
 		(item) => {
 			const itemData = item.getItemData();
@@ -1765,7 +2099,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						?.map((childId) => treeItems.itemById.get(childId))
 						.find(
 							(child) =>
-								child?.kind === "file" && child.archiveOperationId === undefined && child.title === "readme.md",
+								child?.kind === "file" &&
+								child.archiveOperationId === undefined &&
+								child.title.toLowerCase() === "readme.md",
 						)?._id;
 					onPrimaryAction(readmeId ?? item.getId(), readmeId ? "file" : "folder");
 					return;
@@ -1831,6 +2167,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		rootItemId: files_ROOT_ID,
 		state: {
 			expandedItems,
+			renamingItem,
 		},
 		setExpandedItems,
 		canReorder: false,
@@ -1845,6 +2182,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			clickBehaviorFeature,
 			propMemoizationFeature,
 		],
+		hotkeys: {
+			completeRenaming: {
+				hotkey: "Enter",
+				allowWhenInputFocused: true,
+				handler: handleCompleteRenamingHotkey,
+			},
+		},
 		getItemName: (item) => item.getItemData().title,
 		isItemFolder: (item) => item.getItemData().kind === "folder",
 		canDrag,
@@ -2211,8 +2555,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					selectedNodeIds={selectedNodeIds}
 					isBusy={isBusy}
 					pendingActionNodeIds={pendingActionNodeIds}
+					renameErrorByNodeId={renameErrorByNodeId}
 					onCreateNode={handleCreateNodeClick}
 					onStartRename={handleStartRename}
+					onRenameErrorClear={clearRenameError}
 					onArchive={handleArchive}
 					onUnarchive={handleUnarchive}
 				/>

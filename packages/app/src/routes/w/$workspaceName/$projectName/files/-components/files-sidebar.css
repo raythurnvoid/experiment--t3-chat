@@ -320,6 +320,25 @@
 
 		contain: strict;
 	}
+
+	.FilesSidebarTreeItem-content-renaming {
+		/*
+		Disable pointer events for the primary action while renaming 
+		otherwise the user cannot select text in the input.
+		*/
+		> .FilesSidebarTreeItemPrimaryAction {
+			pointer-events: none;
+		}
+
+		/*
+		Enable pointer events for the primary content while renaming
+		so the user can select text in the input that is a descendant
+		of the primary content.
+		*/
+		> .FilesSidebarTreeItemPrimaryContent {
+			pointer-events: auto;
+		}
+	}
 	/* #endregion tree item primary action */
 
 	/* #region tree item secondary action */
@@ -400,13 +419,9 @@
 
 		color: inherit;
 
-		.MyInputBox {
-			border-color: transparent;
-		}
-
-		&:has(.FilesSidebarTreeItemTitle-input:not([readonly])) {
+		&:has(.FilesSidebarTreeItemTitle-input[readonly]) {
 			.MyInputBox {
-				border-color: var(--color-fg-01);
+				border-color: transparent;
 			}
 		}
 	}

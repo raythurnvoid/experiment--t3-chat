@@ -63,9 +63,10 @@
 			background: transparent;
 		}
 
-		.MyInput:has([aria-invalid="true"], :user-invalid) & {
-			outline-color: var(--color-red-06);
-			box-shadow: 0 0 0 3px oklch(from var(--color-red-06) l c h / 0.2);
+		.MyInput:has([aria-invalid="true"], :invalid, :user-invalid) & {
+			border-color: var(--color-red-09);
+			outline-color: var(--color-red-09);
+			box-shadow: none;
 		}
 	}
 	/* #endregion box */

@@ -1,4 +1,5 @@
 import type { files_TreeItem } from "../convex/files_nodes.ts";
+import type { Doc } from "../convex/_generated/dataModel";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import { TaskList } from "@tiptap/extension-task-list";
@@ -48,54 +49,271 @@ export function files_create_room_id(workspaceId: string, projectId: string, nod
 	return composite_id("rooms", "files_nodes", workspaceId, projectId, nodeId);
 }
 
-export type files_NodeKind = "folder" | "file";
+// #region file name normalization
+export type files_NodeKind = Doc<"files_nodes">["kind"];
 
-const files_NAME_SEGMENT_REGEX = /^[a-z0-9_-]+$/;
+const FILES_NORMALIZED_NAME_PART_REGEX = /^(?!.*--)(?!.*__)[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/;
+const FILES_NORMALIZED_FILE_NAME_REGEX =
+	/^(?!.*--)(?!.*__)[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/;
+const FILES_FILE_EXTENSION_REGEX = /^[a-z0-9_-]+$/i;
+const FILES_DIACRITIC_MARKS_REGEX = /\p{Mark}/gu;
+const FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX = /[^a-z0-9_-]+/g;
+const FILES_REPEATED_DASH_REGEX = /-+/g;
+const FILES_REPEATED_UNDERSCORE_REGEX = /_+/g;
+const FILES_EDGE_DASH_OR_UNDERSCORE_REGEX = /^[-_]+|[-_]+$/g;
+const FILES_PATH_SEPARATOR_REGEX = /[\\/]+/g;
+const FILES_TRAILING_DOTS_REGEX = /\.+$/g;
+const FILES_NAME_INPUT_ALPHANUMERIC_REGEX = /^[a-z0-9]$/;
+const FILES_FILE_NAME_INPUT_SEPARATOR_REGEX = /^[/._-]$/;
+const FILES_FOLDER_NAME_INPUT_SEPARATOR_REGEX = /^[/_-]$/;
+// Keep special Markdown file basenames in their conventional case after the general lowercase normalization.
+const FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES = new Set(["readme"]);
 
-export function files_validate_name(name: string, kind: files_NodeKind) {
-	if (name === "." || name === ".." || name.includes("/") || name.includes("\\") || name.includes(" ")) {
-		return Result({
-			_nay: {
-				name: "nay",
-				message: "Invalid file name",
-			},
-		});
-	}
+export function files_normalize_name_input(args: {
+	kind: files_NodeKind;
+	previousText: string;
+	insertedText: string;
+	nextText: string;
+}) {
+	// Normalize the inserted fragment before checking adjacency so pasted text,
+	// IME output, and direct keystrokes go through the same draft rules.
+	const normalizedInsertedText = args.insertedText
+		.normalize("NFKD")
+		.replace(FILES_DIACRITIC_MARKS_REGEX, "")
+		.toLowerCase();
 
-	if (kind === "folder") {
-		if (name.includes(".") || !files_NAME_SEGMENT_REGEX.test(name)) {
-			return Result({
-				_nay: {
-					name: "nay",
-					message: "Invalid folder name",
-				},
-			});
+	// Track the characters around the edit so we can block separator sequences
+	// without needing to normalize the full input value on every keystroke.
+	let previousCharacter = args.previousText.at(-1) ?? "";
+	const nextCharacter = args.nextText.at(0) ?? "";
+	let normalizedText = "";
+
+	for (const character of normalizedInsertedText) {
+		// Convert each incoming character to the live draft alphabet for the node kind.
+		const normalizedCharacter = files_normalize_name_input_character(args.kind, character);
+		if (files_is_name_input_separator(args.kind, normalizedCharacter)) {
+			// Skip leading separators and adjacent separator pairs while typing.
+			if (!previousCharacter || files_is_name_input_separator(args.kind, previousCharacter)) {
+				continue;
+			}
 		}
 
-		return Result({ _yay: null });
+		// Keep accepted characters in order and update adjacency state for the next one.
+		normalizedText += normalizedCharacter;
+		previousCharacter = normalizedCharacter;
 	}
 
-	if (!name.endsWith(".md")) {
-		return Result({
-			_nay: {
-				name: "nay",
-				message: "Invalid file name: Markdown files must end with .md",
-			},
-		});
+	if (
+		normalizedText &&
+		files_is_name_input_separator(args.kind, normalizedText.at(-1) ?? "") &&
+		files_is_name_input_separator(args.kind, nextCharacter)
+	) {
+		// Avoid creating a separator pair across the insertion boundary.
+		normalizedText = normalizedText.slice(0, -1);
 	}
 
-	const baseName = name.slice(0, -".md".length);
-	if (!baseName || !files_NAME_SEGMENT_REGEX.test(baseName)) {
-		return Result({
-			_nay: {
-				name: "nay",
-				message: "Invalid file name",
-			},
-		});
+	return normalizedText;
+}
+
+export function files_validate_and_normalize_name(kind: files_NodeKind, name: string) {
+	if (name.includes("..")) {
+		// Reject double dots because their basename/extension intent is ambiguous.
+		return files_invalid_name_result(kind);
+	}
+
+	// Keep already-canonical names on a cheap fast path; pasted path-like names take the slower cleanup route.
+	if (kind === "folder") {
+		if (FILES_NORMALIZED_NAME_PART_REGEX.test(name)) {
+			return Result({ _yay: name });
+		}
+
+		// Normalize folder names as extensionless parts and trim edge separators.
+		const normalizedName = name
+			.normalize("NFKD")
+			.replace(FILES_DIACRITIC_MARKS_REGEX, "")
+			.toLowerCase()
+			.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
+			.replace(FILES_REPEATED_DASH_REGEX, "-")
+			.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
+			.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "");
+
+		return Result({ _yay: normalizedName || "untitled" });
+	}
+
+	const trimmedName = name.trim();
+	if (!trimmedName.includes(".")) {
+		// Treat extensionless file names as Markdown basenames.
+		const baseName =
+			trimmedName
+				.normalize("NFKD")
+				.replace(FILES_DIACRITIC_MARKS_REGEX, "")
+				.toLowerCase()
+				.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
+				.replace(FILES_REPEATED_DASH_REGEX, "-")
+				.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
+				.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "") || "untitled";
+		const fileName = `${baseName}.md`;
+
+		return Result({ _yay: files_apply_special_file_name_case(fileName) });
+	}
+	if (trimmedName.endsWith(".")) {
+		// Treat a trailing dot as a missing Markdown extension.
+		const baseName = trimmedName
+			.replace(FILES_TRAILING_DOTS_REGEX, "")
+			.normalize("NFKD")
+			.replace(FILES_DIACRITIC_MARKS_REGEX, "")
+			.toLowerCase()
+			.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
+			.replace(FILES_REPEATED_DASH_REGEX, "-")
+			.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
+			.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "");
+		if (!baseName) {
+			// Reject a bare "." or dots-only value because there is no usable basename.
+			return files_invalid_name_result(kind);
+		}
+
+		const fileName = `${baseName}.md`;
+
+		return Result({ _yay: files_apply_special_file_name_case(fileName) });
+	}
+
+	const extensionSeparatorIndex = trimmedName.lastIndexOf(".");
+	const extension = trimmedName.slice(extensionSeparatorIndex + 1);
+	if (!FILES_FILE_EXTENSION_REGEX.test(extension)) {
+		// Keep the extension strict so path separators, spaces, and punctuation are not repaired there.
+		return files_invalid_name_result(kind);
+	}
+
+	if (FILES_NORMALIZED_FILE_NAME_REGEX.test(name)) {
+		// Apply only the final Markdown extension policy when the file name is already canonical.
+		const extensionSeparatorIndex = name.lastIndexOf(".");
+		const fileName = `${name.slice(0, extensionSeparatorIndex)}.md`;
+
+		return Result({ _yay: files_apply_special_file_name_case(fileName) });
+	}
+
+	// Use the slow path for pasted or generated names, then flatten path separators before splitting.
+	const normalizedName = name
+		.normalize("NFKD")
+		.replace(FILES_DIACRITIC_MARKS_REGEX, "")
+		.toLowerCase()
+		.trim()
+		.replace(FILES_PATH_SEPARATOR_REGEX, "-");
+	if (!normalizedName.includes(".")) {
+		const baseName =
+			normalizedName
+				.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
+				.replace(FILES_REPEATED_DASH_REGEX, "-")
+				.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
+				.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "") || "untitled";
+		const fileName = `${baseName}.md`;
+
+		return Result({ _yay: files_apply_special_file_name_case(fileName) });
+	}
+
+	// Treat only the final dot as the extension separator; earlier dots become basename separators.
+	const nameParts = normalizedName.split(".");
+	const normalizedExtension =
+		(nameParts.pop() ?? "")
+			.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
+			.replace(FILES_REPEATED_DASH_REGEX, "-")
+			.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
+			.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "") || "";
+	const baseNameInput = nameParts.join("-");
+	const baseName = baseNameInput
+		.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
+		.replace(FILES_REPEATED_DASH_REGEX, "-")
+		.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
+		.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "");
+	let normalizedFileName: string;
+	if (!baseName || !normalizedExtension) {
+		// Preserve a usable piece when either side disappears during normalization.
+		if (!baseName && normalizedExtension && baseNameInput !== "") {
+			normalizedFileName = `untitled.${normalizedExtension}`;
+		} else if (!baseName && normalizedExtension) {
+			normalizedFileName = `untitled.${normalizedExtension}`;
+		} else {
+			normalizedFileName = baseName || normalizedExtension || "untitled";
+		}
+	} else {
+		normalizedFileName = `${baseName}.${normalizedExtension}`;
+	}
+
+	// Apply the Markdown-only storage policy after cleanup, regardless of the original extension.
+	const markdownExtensionSeparatorIndex = normalizedFileName.lastIndexOf(".");
+	const fileName =
+		markdownExtensionSeparatorIndex === -1
+			? `${normalizedFileName}.md`
+			: `${normalizedFileName.slice(0, markdownExtensionSeparatorIndex)}.md`;
+
+	return Result({ _yay: files_apply_special_file_name_case(fileName) });
+}
+
+export function files_validate_name(name: string, kind: files_NodeKind) {
+	// Reuse normalization for validation and discard the normalized value.
+	const nameNormalizationResult = files_validate_and_normalize_name(kind, name);
+	if (nameNormalizationResult._nay) {
+		return nameNormalizationResult;
 	}
 
 	return Result({ _yay: null });
 }
+
+function files_invalid_name_result(kind: files_NodeKind) {
+	// Keep the visible message kind-specific while preserving the shared Result shape.
+	return Result({
+		_nay: {
+			name: "nay",
+			message: kind === "folder" ? "Invalid folder name" : "Invalid file name",
+		},
+	});
+}
+
+function files_normalize_name_input_character(kind: files_NodeKind, character: string) {
+	if (FILES_NAME_INPUT_ALPHANUMERIC_REGEX.test(character)) {
+		// Accept lowercase ASCII letters and digits as valid draft characters.
+		return character;
+	}
+
+	if (character === "/" || character === "\\") {
+		// Keep path separators in create/rename drafts so the submit path can create missing folders.
+		return "/";
+	}
+
+	if (kind === "file" && character === ".") {
+		// Allow files to type an extension separator; folders turn dots into separators.
+		return character;
+	}
+
+	if (character === "-" || character === "_") {
+		// Keep supported separators and let the caller handle adjacency rules.
+		return character;
+	}
+
+	// Unsupported characters become dashes so live typing can recover when possible.
+	return "-";
+}
+
+function files_is_name_input_separator(kind: files_NodeKind, character: string) {
+	// Treat dots as file separators, while folder drafts do not allow dots at all.
+	return kind === "file"
+		? FILES_FILE_NAME_INPUT_SEPARATOR_REGEX.test(character)
+		: FILES_FOLDER_NAME_INPUT_SEPARATOR_REGEX.test(character);
+}
+
+function files_apply_special_file_name_case(name: string) {
+	// Compare only the basename so the extension policy stays independent of special casing.
+	const extensionSeparatorIndex = name.lastIndexOf(".");
+	const baseName = extensionSeparatorIndex === -1 ? name : name.slice(0, extensionSeparatorIndex);
+	if (!FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES.has(baseName)) {
+		return name;
+	}
+
+	// Preserve the normalized extension and uppercase only the special basename.
+	const extension = extensionSeparatorIndex === -1 ? "" : name.slice(extensionSeparatorIndex);
+	return `${baseName.toUpperCase()}${extension}`;
+}
+// #endregion file name normalization
 
 const TRAILING_SPACES_OR_TABS_REGEX = /[ \t]+$/;
 const TRAILING_WHITESPACE_ONLY_LINE_REGEX = /\n([ \t]+)$/;

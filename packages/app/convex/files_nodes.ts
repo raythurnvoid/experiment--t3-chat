@@ -2,7 +2,7 @@
 Files nodes are organized as a file tree where each node is either a folder or a Markdown file.
 
 This structure allows file-system-like operations such as finding all items under a path (`/docs/*`) or
-listing folder children and reading file content (`/docs/readme.md`).
+listing folder children and reading file content (`/docs/README.md`).
 */
 
 import {
@@ -38,7 +38,7 @@ import {
 import {
 	files_FIRST_VERSION,
 	files_ROOT_ID,
-	files_validate_name,
+	files_validate_and_normalize_name,
 	files_headless_tiptap_editor_create,
 	files_u8_to_array_buffer,
 	files_headless_tiptap_editor_set_content_from_markdown,
@@ -68,6 +68,9 @@ import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_e
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 const files_INLINE_AI_MODEL_ID = "gpt-5-mini" as const;
+const files_HOME_FILE_NAME = "README.md";
+// Keep recognizing home files created before special file-name casing normalized them to README.md.
+const files_LEGACY_HOME_FILE_NAME = "readme.md";
 
 function files_compute_token_usage_cost_cents(args: { modelId: string; inputTokens: number; outputTokens: number }) {
 	switch (args.modelId) {
@@ -196,7 +199,10 @@ function is_home_file(node: Pick<Doc<"files_nodes">, "parentId" | "name" | "kind
 function is_home_file(node: Partial<Pick<Doc<"files_nodes">, "path" | "parentId" | "name" | "kind">>) {
 	return (
 		node.kind === "file" &&
-		(node.path === "/readme.md" || (node.parentId === files_ROOT_ID && node.name === "readme.md"))
+		(node.path === `/${files_HOME_FILE_NAME}` ||
+			node.path === `/${files_LEGACY_HOME_FILE_NAME}` ||
+			(node.parentId === files_ROOT_ID &&
+				(node.name === files_HOME_FILE_NAME || node.name === files_LEGACY_HOME_FILE_NAME)))
 	);
 }
 
@@ -215,7 +221,23 @@ function db_query_files_by_path(
 		);
 }
 
-function db_get_home_file(ctx: QueryCtx | MutationCtx, args: { workspaceId: string; projectId: string }) {
+async function db_get_home_file(ctx: QueryCtx | MutationCtx, args: { workspaceId: string; projectId: string }) {
+	const homeFile = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_workspace_project_parent_name", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("parentId", files_ROOT_ID)
+				.eq("name", files_HOME_FILE_NAME),
+		)
+		.filter((q) => q.and(q.eq(q.field("archiveOperationId"), undefined), q.eq(q.field("kind"), "file")))
+		.first();
+
+	if (homeFile) {
+		return homeFile;
+	}
+
 	return ctx.db
 		.query("files_nodes")
 		.withIndex("by_workspace_project_parent_name", (q) =>
@@ -223,7 +245,7 @@ function db_get_home_file(ctx: QueryCtx | MutationCtx, args: { workspaceId: stri
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
 				.eq("parentId", files_ROOT_ID)
-				.eq("name", "readme.md"),
+				.eq("name", files_LEGACY_HOME_FILE_NAME),
 		)
 		.filter((q) => q.and(q.eq(q.field("archiveOperationId"), undefined), q.eq(q.field("kind"), "file")))
 		.first();
@@ -576,12 +598,13 @@ async function db_create_node(
 		});
 	}
 
-	const nameValidationResult = files_validate_name(args.name, args.kind);
-	if (nameValidationResult._nay) {
-		return nameValidationResult;
+	const nameNormalizationResult = files_validate_and_normalize_name(args.kind, args.name);
+	if (nameNormalizationResult._nay) {
+		return nameNormalizationResult;
 	}
+	const name = nameNormalizationResult._yay;
 
-	const nodePath = files_materialized_path_join(parentPath, args.name);
+	const nodePath = files_materialized_path_join(parentPath, name);
 	const activePathConflict = await db_find_active_path_conflict(ctx, {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
@@ -602,7 +625,7 @@ async function db_create_node(
 		parentId: args.parentId,
 		path: nodePath,
 		version: files_FIRST_VERSION,
-		name: args.name,
+		name,
 		kind: args.kind,
 		archiveOperationId: undefined,
 		createdBy: args.userId,
@@ -867,7 +890,7 @@ export const rename_node = mutation({
 			return Result({ _yay: null });
 		}
 
-		const nameValidationResult = files_validate_name(args.name, file.kind);
+		const nameValidationResult = files_validate_and_normalize_name(file.kind, args.name);
 		if (nameValidationResult._nay) {
 			return nameValidationResult;
 		}
@@ -880,7 +903,7 @@ export const rename_node = mutation({
 		if (parentPath == null) {
 			return Result({ _yay: null });
 		}
-		const renamedPath = files_materialized_path_join(parentPath, args.name);
+		const renamedPath = files_materialized_path_join(parentPath, nameValidationResult._yay);
 		if (file.archiveOperationId === undefined) {
 			const activePathConflict = await db_find_active_path_conflict(ctx, {
 				workspaceId: membership.workspaceId,
@@ -899,7 +922,7 @@ export const rename_node = mutation({
 		}
 
 		await ctx.db.patch("files_nodes", args.nodeId, {
-			name: args.name,
+			name: nameValidationResult._yay,
 			path: renamedPath,
 			updatedBy: userAuth.name,
 			updatedAt: Date.now(),
@@ -2094,19 +2117,20 @@ export const create_file_by_path = internalMutation({
 			});
 		}
 
-		for (let i = 0; i < segments.length; i++) {
-			const nameValidationResult = files_validate_name(segments[i], i === segments.length - 1 ? "file" : "folder");
-			if (nameValidationResult._nay) {
-				return nameValidationResult;
+		const normalizedSegments: string[] = [];
+		for (const [i, segment] of segments.entries()) {
+			const kind = i === segments.length - 1 ? "file" : "folder";
+			const nameNormalizationResult = files_validate_and_normalize_name(kind, segment);
+			if (nameNormalizationResult._nay) {
+				return nameNormalizationResult;
 			}
+			normalizedSegments.push(nameNormalizationResult._yay);
 		}
 
 		let currentParent: Doc<"files_nodes">["parentId"] = files_ROOT_ID;
 		let lastNodeId: Id<"files_nodes"> | null = null;
 
-		for (let i = 0; i < segments.length; i++) {
-			const name = segments[i];
-
+		for (const [i, name] of normalizedSegments.entries()) {
 			// Does this segment exist?
 			const existing = await ctx.db
 				.query("files_nodes")
@@ -2121,7 +2145,7 @@ export const create_file_by_path = internalMutation({
 				.first();
 
 			if (!existing) {
-				const kind: files_NodeKind = i === segments.length - 1 ? "file" : "folder";
+				const kind: files_NodeKind = i === normalizedSegments.length - 1 ? "file" : "folder";
 				const node = await db_create_node(ctx, {
 					userId: args.userId,
 					workspaceId: args.workspaceId,
@@ -2138,7 +2162,7 @@ export const create_file_by_path = internalMutation({
 				currentParent = node._yay;
 				lastNodeId = node._yay;
 			} else {
-				if (i < segments.length - 1 && existing.kind !== "folder") {
+				if (i < normalizedSegments.length - 1 && existing.kind !== "folder") {
 					return Result({
 						_nay: {
 							name: "nay",
@@ -2146,7 +2170,7 @@ export const create_file_by_path = internalMutation({
 						},
 					});
 				}
-				if (i === segments.length - 1 && existing.kind !== "file") {
+				if (i === normalizedSegments.length - 1 && existing.kind !== "file") {
 					return Result({
 						_nay: {
 							name: "nay",
@@ -2250,7 +2274,7 @@ export const create_home_file = mutation({
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
 			parentId: files_ROOT_ID,
-			name: "readme.md",
+			name: files_HOME_FILE_NAME,
 			kind: "file",
 		});
 

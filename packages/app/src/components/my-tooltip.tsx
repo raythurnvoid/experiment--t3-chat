@@ -61,18 +61,24 @@ export const MyTooltipInfoTrigger = memo(function MyTooltipInfoTrigger(props: My
 // #endregion Info Trigger
 
 // #region Content
-export type MyTooltipContent_ClassNames = "MyTooltipContent";
+export type MyTooltipContent_ClassNames = "MyTooltipContent" | "MyTooltipContent-variant-error";
 
-export type MyTooltipContent_Props = Ariakit.TooltipProps;
+export type MyTooltipContent_Props = Ariakit.TooltipProps & {
+	variant?: "default" | "error";
+};
 
 export const MyTooltipContent = memo(function MyTooltipContent(props: MyTooltipContent_Props) {
-	const { ref, id, className, portal = true, gutter = 8, children, ...rest } = props;
+	const { ref, id, className, portal = true, gutter = 8, variant = "default", children, ...rest } = props;
 
 	return (
 		<Ariakit.Tooltip
 			ref={ref}
 			id={id}
-			className={cn("MyTooltipContent" satisfies MyTooltipContent_ClassNames, className)}
+			className={cn(
+				"MyTooltipContent" satisfies MyTooltipContent_ClassNames,
+				variant === "error" && ("MyTooltipContent-variant-error" satisfies MyTooltipContent_ClassNames),
+				className,
+			)}
 			portal={portal}
 			gutter={gutter}
 			{...rest}

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+	files_normalize_name_input,
+	files_validate_and_normalize_name,
 	files_parse_markdown_to_html,
 	files_tiptap_markdown_to_json,
 	files_tiptap_markdown_to_plain_text,
@@ -7,6 +9,119 @@ import {
 	files_yjs_doc_update_from_markdown,
 } from "./files.ts";
 import { Doc as YDoc } from "yjs";
+
+describe("files_normalize_name_input", () => {
+	test.each(
+		[
+			[{ kind: "file", previousText: "", insertedText: "A", nextText: "" }, "a"],
+			[{ kind: "file", previousText: "", insertedText: "é", nextText: "" }, "e"],
+			[{ kind: "folder", previousText: "", insertedText: "é", nextText: "" }, "e"],
+			[{ kind: "file", previousText: "file", insertedText: " ", nextText: "name" }, "-"],
+			[{ kind: "file", previousText: "file-", insertedText: " ", nextText: "name" }, ""],
+			[{ kind: "file", previousText: "notes", insertedText: ".", nextText: "md" }, "."],
+			[{ kind: "folder", previousText: "notes", insertedText: ".", nextText: "md" }, "-"],
+			[{ kind: "file", previousText: "a-", insertedText: "_", nextText: "b" }, ""],
+			[{ kind: "file", previousText: "a", insertedText: "_", nextText: "-b" }, ""],
+			[{ kind: "file", previousText: "a", insertedText: ".", nextText: "-b" }, ""],
+			[{ kind: "file", previousText: "a_", insertedText: ".", nextText: "b" }, ""],
+			[{ kind: "folder", previousText: "a", insertedText: "_", nextText: "-b" }, ""],
+			[{ kind: "file", previousText: "file", insertedText: "2026", nextText: "" }, "2026"],
+			[{ kind: "folder", previousText: "", insertedText: "2026", nextText: "" }, "2026"],
+			[{ kind: "file", previousText: "foo", insertedText: "-", nextText: "" }, "-"],
+			[{ kind: "file", previousText: "foo", insertedText: "_", nextText: "" }, "_"],
+			[{ kind: "file", previousText: "", insertedText: "-file", nextText: "" }, "file"],
+		] satisfies Array<[Parameters<typeof files_normalize_name_input>[0], string]>,
+	)("normalizes live input %#", (input, expected) => {
+		expect(files_normalize_name_input(input)).toBe(expected);
+	});
+});
+
+describe("files_validate_and_normalize_name", () => {
+	test.each([
+		["docs", "docs"],
+		["new-folder", "new-folder"],
+		["UPPER_lower-123", "upper_lower-123"],
+		["Résumé", "resume"],
+		["a\u1ab0folder", "afolder"],
+		["---docs---", "docs"],
+		["___docs___", "docs"],
+		["a@b#c!", "a-b-c"],
+		["asd/.txt", "asd-txt"],
+		["test.", "test"],
+		[".test", "test"],
+		[".", "untitled"],
+		["test/test.txt", "test-test-txt"],
+		["test//test.txt", "test-test-txt"],
+		["test.txt/test", "test-txt-test"],
+		["bad\\name", "bad-name"],
+		["  spaced name  ", "spaced-name"],
+		["你好", "untitled"],
+		["2026 plan", "2026-plan"],
+		["a__b", "a_b"],
+		["a--b", "a-b"],
+		["test___test", "test_test"],
+		["test---test", "test-test"],
+	])("normalizes folder %s to %s", (input, expected) => {
+		expect(files_validate_and_normalize_name("folder", input)).toEqual({ _yay: expected });
+	});
+
+	test.each(["..", "test..test"])("rejects folder %s", (input) => {
+		const result = files_validate_and_normalize_name("folder", input);
+		if (result._yay) {
+			throw new Error("Expected folder name normalization to fail");
+		}
+
+		expect(result._nay.message).toBe("Invalid folder name");
+	});
+
+	test.each([
+		["notes.md", "notes.md"],
+		["notes", "notes.md"],
+		["NOTES.MD", "notes.md"],
+		["readme", "README.md"],
+		["README", "README.md"],
+		["readme.md", "README.md"],
+		["README.md", "README.md"],
+		["readme.txt", "README.md"],
+		["New File.md", "new-file.md"],
+		["notes.txt", "notes.md"],
+		["Résumé.DOC", "resume.md"],
+		["a\u1ab0file.md", "afile.md"],
+		["---notes---.MD", "notes.md"],
+		["___notes___.md", "notes.md"],
+		["a@b#c!.md", "a-b-c.md"],
+		["asd/.txt", "asd.md"],
+		["x.", "x.md"],
+		["test.", "test.md"],
+		[".test", "untitled.md"],
+		["test/test.txt", "test-test.md"],
+		["test//test.txt", "test-test.md"],
+		["bad\\name.md", "bad-name.md"],
+		["archive.tar.gz", "archive-tar.md"],
+		["folder/file.name.with.many.dots", "folder-file-name-with-many.md"],
+		["  spaced name.md  ", "spaced-name.md"],
+		["你好.md", "untitled.md"],
+		["emoji😊file.md", "emoji-file.md"],
+		["2026 plan.final", "2026-plan.md"],
+		["multi___under.txt", "multi_under.md"],
+		["test___test.md", "test_test.md"],
+		["test---test.md", "test-test.md"],
+	])("normalizes file %s to %s", (input, expected) => {
+		expect(files_validate_and_normalize_name("file", input)).toEqual({ _yay: expected });
+	});
+
+	test.each(["..", ".", "test..test", "test.txt/test", "test.txt\\test", "test.m d"])(
+		"rejects file %s",
+		(input) => {
+			const result = files_validate_and_normalize_name("file", input);
+			if (result._yay) {
+				throw new Error("Expected file name normalization to fail");
+			}
+
+			expect(result._nay.message).toBe("Invalid file name");
+		},
+	);
+});
 
 describe("files_tiptap_markdown_to_json", () => {
 	beforeEach(() => {
@@ -151,7 +266,9 @@ describe("files_tiptap_markdown_to_json", () => {
 		});
 
 		expect(trailingNewline._yay).not.toEqual(noTrailingWhitespace._yay);
-		expect((trailingNewline._yay.content ?? []).length).toBeGreaterThan((noTrailingWhitespace._yay.content ?? []).length);
+		expect((trailingNewline._yay.content ?? []).length).toBeGreaterThan(
+			(noTrailingWhitespace._yay.content ?? []).length,
+		);
 	});
 
 	test("preserves trailing whitespace at EOF for heading markdown through JSON conversion", () => {
