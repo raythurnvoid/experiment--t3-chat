@@ -21,6 +21,7 @@ import type * as migrations from "../migrations.js";
 import type * as notifications from "../notifications.js";
 import type * as presence from "../presence.js";
 import type * as quotas from "../quotas.js";
+import type * as r2 from "../r2.js";
 import type * as rate_limiter from "../rate_limiter.js";
 import type * as users from "../users.js";
 import type * as workspaces from "../workspaces.js";
@@ -45,6 +46,7 @@ declare const fullApi: ApiFromModules<{
   notifications: typeof notifications;
   presence: typeof presence;
   quotas: typeof quotas;
+  r2: typeof r2;
   rate_limiter: typeof rate_limiter;
   users: typeof users;
   workspaces: typeof workspaces;
