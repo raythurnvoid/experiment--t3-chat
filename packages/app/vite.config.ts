@@ -81,6 +81,7 @@ export default defineConfig({
 			"@convex-dev/presence",
 			"@convex-dev/polar",
 			"@convex-dev/rate-limiter",
+			"@convex-dev/r2",
 			"@ariakit/react",
 			"@ariakit/react-core",
 

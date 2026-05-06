@@ -96,3 +96,7 @@
 [submodule "references-submodules/tanstack-router"]
 	path = references-submodules/tanstack-router
 	url = ../../TanStack/router.git
+[submodule "packages/app/vendor/r2"]
+	path = packages/app/vendor/r2
+	url = https://github.com/raythurnvoid/r2.git
+	branch = rt0-updates

@@ -11,3 +11,4 @@ packages:
   - "packages/app/vendor/polar"
   - "packages/app/vendor/presence"
   - "packages/app/vendor/rate-limiter"
+  - "packages/app/vendor/r2"

@@ -84,4 +84,5 @@ export declare const components: {
   billing_workpool_cancellation: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"billing_workpool_cancellation">;
   billing_workpool_usage_event: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"billing_workpool_usage_event">;
   rate_limiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rate_limiter">;
+  r2: import("@convex-dev/r2/_generated/component.js").ComponentApi<"r2">;
 };
