@@ -38,7 +38,7 @@ import {
 import {
 	files_FIRST_VERSION,
 	files_ROOT_ID,
-	files_validate_and_normalize_name,
+	files_normalize_name,
 	files_headless_tiptap_editor_create,
 	files_u8_to_array_buffer,
 	files_headless_tiptap_editor_set_content_from_markdown,
@@ -206,32 +206,18 @@ function is_home_file(node: Partial<Pick<Doc<"files_nodes">, "path" | "parentId"
 	);
 }
 
-function db_query_files_by_path(
-	ctx: QueryCtx | MutationCtx,
-	args: { workspaceId: string; projectId: string; path: string; archiveOperationId: string | undefined },
-) {
-	return ctx.db
-		.query("files_nodes")
-		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
-			q
-				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
-				.eq("path", args.path)
-				.eq("archiveOperationId", args.archiveOperationId),
-		);
-}
-
 async function db_get_home_file(ctx: QueryCtx | MutationCtx, args: { workspaceId: string; projectId: string }) {
 	const homeFile = await ctx.db
 		.query("files_nodes")
-		.withIndex("by_workspace_project_parent_name", (q) =>
+		.withIndex("by_workspace_project_parent_kind_name_archiveOperation", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
 				.eq("parentId", files_ROOT_ID)
-				.eq("name", files_HOME_FILE_NAME),
+				.eq("kind", "file")
+				.eq("name", files_HOME_FILE_NAME)
+				.eq("archiveOperationId", undefined),
 		)
-		.filter((q) => q.and(q.eq(q.field("archiveOperationId"), undefined), q.eq(q.field("kind"), "file")))
 		.first();
 
 	if (homeFile) {
@@ -240,42 +226,16 @@ async function db_get_home_file(ctx: QueryCtx | MutationCtx, args: { workspaceId
 
 	return ctx.db
 		.query("files_nodes")
-		.withIndex("by_workspace_project_parent_name", (q) =>
+		.withIndex("by_workspace_project_parent_kind_name_archiveOperation", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
 				.eq("parentId", files_ROOT_ID)
-				.eq("name", files_LEGACY_HOME_FILE_NAME),
+				.eq("kind", "file")
+				.eq("name", files_LEGACY_HOME_FILE_NAME)
+				.eq("archiveOperationId", undefined),
 		)
-		.filter((q) => q.and(q.eq(q.field("archiveOperationId"), undefined), q.eq(q.field("kind"), "file")))
 		.first();
-}
-
-async function db_find_active_path_conflict(
-	ctx: MutationCtx,
-	args: {
-		workspaceId: string;
-		projectId: string;
-		path: string;
-		excludeNodeIds?: Array<Id<"files_nodes">>;
-	},
-) {
-	const activeFilesCursor = db_query_files_by_path(ctx, {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		path: args.path,
-		archiveOperationId: undefined,
-	});
-
-	const excludeNodeIdsSet = new Set(args.excludeNodeIds ?? []);
-
-	for await (const activeFile of activeFilesCursor) {
-		if (excludeNodeIdsSet.has(activeFile._id)) {
-			continue;
-		}
-		return activeFile;
-	}
-	return null;
 }
 
 async function db_insert_file_chunks(
@@ -369,12 +329,16 @@ async function resolve_id_from_path(ctx: QueryCtx, args: { workspaceId: string; 
 		return null;
 	}
 
-	const activeFileByMaterializedPath = await db_query_files_by_path(ctx, {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		path: args.path,
-		archiveOperationId: undefined,
-	}).first();
+	const activeFileByMaterializedPath = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("path", args.path)
+				.eq("archiveOperationId", undefined),
+		)
+		.first();
 	return activeFileByMaterializedPath?._id ?? null;
 }
 
@@ -397,18 +361,22 @@ export const resolve_file_id_from_path = internalQuery({
 	},
 });
 
-async function resolve_tree_node_id_from_path_fn(
+async function db_resolve_tree_node_id_from_path(
 	ctx: QueryCtx,
 	args: { workspaceId: string; projectId: string; path: string },
 ) {
 	if (args.path === "/") return files_ROOT_ID;
 
-	const fileByMaterializedPath = await db_query_files_by_path(ctx, {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		path: args.path,
-		archiveOperationId: undefined,
-	}).first();
+	const fileByMaterializedPath = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("path", args.path)
+				.eq("archiveOperationId", undefined),
+		)
+		.first();
 	if (fileByMaterializedPath) {
 		return fileByMaterializedPath._id;
 	}
@@ -420,7 +388,7 @@ export const resolve_tree_node_id_from_path = internalQuery({
 	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
 	returns: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID), v.null()),
 	handler: async (ctx, args) => {
-		return resolve_tree_node_id_from_path_fn(ctx, {
+		return db_resolve_tree_node_id_from_path(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			path: args.path,
@@ -530,13 +498,14 @@ export const get_tree_nodes_list = query({
 
 		const nodes = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_name", (q) =>
+			.withIndex("by_workspace_project_kind_name", (q) =>
 				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId),
 			)
 			.order("asc")
 			.collect();
 
 		const treeItemsList: files_TreeItem[] = [
+			// We need a root to render a tree, the root node is hardcoded in the code
 			{
 				type: "root",
 				index: files_ROOT_ID,
@@ -544,7 +513,7 @@ export const get_tree_nodes_list = query({
 				kind: "folder",
 				title: "Files",
 				archiveOperationId: undefined,
-				updatedAt: Date.now(),
+				updatedAt: 0,
 				updatedBy: "system",
 				_id: null,
 			},
@@ -578,9 +547,6 @@ async function db_create_node(
 		name: Doc<"files_nodes">["name"];
 		kind: files_NodeKind;
 		markdownContent?: Doc<"files_markdown_content">["content"];
-		_errors?: {
-			message: "Failed to create file content rows";
-		};
 	},
 ) {
 	const now = Date.now();
@@ -598,18 +564,24 @@ async function db_create_node(
 		});
 	}
 
-	const nameNormalizationResult = files_validate_and_normalize_name(args.kind, args.name);
+	const nameNormalizationResult = files_normalize_name(args.kind, args.name);
 	if (nameNormalizationResult._nay) {
 		return nameNormalizationResult;
 	}
 	const name = nameNormalizationResult._yay;
 
 	const nodePath = files_materialized_path_join(parentPath, name);
-	const activePathConflict = await db_find_active_path_conflict(ctx, {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		path: nodePath,
-	});
+	// Check whether an active file already exists for the same path.
+	const activePathConflict = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("path", nodePath)
+				.eq("archiveOperationId", undefined),
+		)
+		.first();
 	if (activePathConflict) {
 		return Result({
 			_nay: {
@@ -665,64 +637,65 @@ async function db_create_node(
 		initialYjsSnapshotUpdate = files_yjs_create_empty_state_update();
 	}
 
-	const createFileRowsResult = Result_all(
-		await Promise.all([
-			ctx.db.insert("files_yjs_snapshots", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				nodeId: nodeId,
-				sequence: initialYjsSequence,
-				snapshotUpdate: files_u8_to_array_buffer(initialYjsSnapshotUpdate),
-				createdBy: args.userId,
-				updatedBy: args.userId,
-				updatedAt: now,
-			}),
-			ctx.db.insert("files_yjs_docs_last_sequences", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				nodeId: nodeId,
-				lastSequence: initialYjsSequence,
-			}),
-			ctx.db.insert("files_markdown_content", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				nodeId: nodeId,
-				content: markdownContent,
-				isArchived: false,
-				yjsSequence: initialYjsSequence,
-				updatedBy: args.userId,
-				updatedAt: now,
-			}),
-			db_insert_file_chunks(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				nodeId,
-				yjsSequence: initialYjsSequence,
-				markdownContent,
-			}),
-		] as const),
-	);
-
-	if (createFileRowsResult._nay) {
-		const message = "Failed to create file content rows" satisfies NonNullable<(typeof args)["_errors"]>["message"];
+	const [yjs_snapshot_id, yjs_last_sequence_id, markdown_content_id] = await Promise.all([
+		ctx.db.insert("files_yjs_snapshots", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId: nodeId,
+			sequence: initialYjsSequence,
+			snapshotUpdate: files_u8_to_array_buffer(initialYjsSnapshotUpdate),
+			createdBy: args.userId,
+			updatedBy: args.userId,
+			updatedAt: now,
+		}),
+		ctx.db.insert("files_yjs_docs_last_sequences", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId: nodeId,
+			lastSequence: initialYjsSequence,
+		}),
+		ctx.db.insert("files_markdown_content", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId: nodeId,
+			content: markdownContent,
+			isArchived: false,
+			yjsSequence: initialYjsSequence,
+			updatedBy: args.userId,
+			updatedAt: now,
+		}),
+		db_insert_file_chunks(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId,
+			yjsSequence: initialYjsSequence,
+			markdownContent,
+		}).then((chunks) => {
+			if (chunks._nay) {
+				throw convex_error({
+					message: "Failed to chunk",
+					cause: chunks._nay,
+				});
+			}
+			return chunks;
+		}),
+	] as const).catch((error) => {
+		const message = "Failed to create file content rows";
 		console.error("Failed to create file content rows", {
 			message,
-			createFileRowsResult,
+			error,
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			parentId: args.parentId,
 			nodeId,
 			yjsSequence: initialYjsSequence,
 		});
-		return Result({
-			_nay: {
-				name: "nay",
-				message,
-			},
+		// Throw so Convex rolls back the node and all related file rows created in this mutation.
+		throw convex_error({
+			message,
+			cause: error,
 		});
-	}
-
-	const [yjs_snapshot_id, yjs_last_sequence_id, markdown_content_id] = createFileRowsResult._yay;
+	});
 
 	await ctx.db.patch("files_nodes", nodeId, {
 		markdownContentId: markdown_content_id,
@@ -731,6 +704,82 @@ async function db_create_node(
 	});
 
 	return Result({ _yay: nodeId });
+}
+
+/**
+ * Create a node from a path, creating each missing parent folder segment before
+ * creating the final file/folder segment.
+ *
+ * Trust callers to pass a valid, normalized path for the requested leaf kind.
+ */
+async function db_create_node_recursively_at_path(
+	ctx: MutationCtx,
+	args: {
+		userId: Id<"users">;
+		workspaceId: string;
+		projectId: string;
+		parentId: Doc<"files_nodes">["parentId"];
+		path: string;
+		kind: files_NodeKind;
+	},
+) {
+	let currentParent: Doc<"files_nodes">["parentId"] = args.parentId;
+	const pathSegments = path_extract_segments_from(args.path);
+
+	// Walk segments in order because each child lookup needs the previous folder id.
+	for (const [i, name] of pathSegments.entries()) {
+		const isLeaf = i === pathSegments.length - 1;
+		const kind: files_NodeKind = isLeaf ? args.kind : "folder";
+		const existing = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_parent_kind_name_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("parentId", currentParent)
+					.eq("kind", kind)
+					.eq("name", name)
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+
+		if (existing) {
+			// Reuse active intermediate folders, but keep leaf creation as a real create.
+			if (!isLeaf) {
+				currentParent = existing._id;
+				continue;
+			}
+
+			return Result({
+				_nay: {
+					name: "nay",
+					message: "Failed to create node because path already exists",
+				},
+			});
+		}
+
+		const node = await db_create_node(ctx, {
+			userId: args.userId,
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			parentId: currentParent,
+			name,
+			kind,
+		});
+
+		if (node._nay) {
+			return node;
+		}
+
+		// Return the requested leaf; otherwise continue creating below the new folder.
+		if (isLeaf) {
+			return Result({ _yay: node._yay });
+		}
+
+		currentParent = node._yay;
+	}
+
+	throw should_never_happen("nodeId not resolved after node path creation");
 }
 
 export const create_node = mutation({
@@ -760,14 +809,26 @@ export const create_node = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const node = await db_create_node(ctx, {
-			userId: userAuth.id,
-			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
-			parentId: args.parentId,
-			name: args.name,
-			kind: args.kind,
-		});
+		const pathSegments = path_extract_segments_from(args.name.trim());
+		// We trust that the front-end is validating the input correctly.
+		const node =
+			pathSegments.length > 1
+				? await db_create_node_recursively_at_path(ctx, {
+						userId: userAuth.id,
+						workspaceId: membership.workspaceId,
+						projectId: membership.projectId,
+						parentId: args.parentId,
+						path: args.name,
+						kind: args.kind,
+					})
+				: await db_create_node(ctx, {
+						userId: userAuth.id,
+						workspaceId: membership.workspaceId,
+						projectId: membership.projectId,
+						parentId: args.parentId,
+						name: args.name,
+						kind: args.kind,
+					});
 
 		if (node._nay) {
 			return node;
@@ -804,14 +865,15 @@ export const create_file_quick = mutation({
 		// Ensure "tmp" under root exists
 		const tmp = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_parent_name", (q) =>
+			.withIndex("by_workspace_project_parent_kind_name_archiveOperation", (q) =>
 				q
 					.eq("workspaceId", membership.workspaceId)
 					.eq("projectId", membership.projectId)
 					.eq("parentId", files_ROOT_ID)
-					.eq("name", "tmp"),
+					.eq("kind", "folder")
+					.eq("name", "tmp")
+					.eq("archiveOperationId", undefined),
 			)
-			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 			.first();
 
 		let tmpNodeId = null;
@@ -890,28 +952,109 @@ export const rename_node = mutation({
 			return Result({ _yay: null });
 		}
 
-		const nameValidationResult = files_validate_and_normalize_name(file.kind, args.name);
-		if (nameValidationResult._nay) {
-			return nameValidationResult;
-		}
+		const pathSegments = path_extract_segments_from(args.name.trim());
+		// Resolve the target first so simple and nested renames share one conflict/write path.
+		let targetParentId = file.parentId;
+		let targetParentPath: string;
+		let leafName: string;
 
-		const parentPath = await resolve_parent_path_from_parent_id(ctx, {
-			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
-			parentId: file.parentId,
-		});
-		if (parentPath == null) {
-			return Result({ _yay: null });
-		}
-		const renamedPath = files_materialized_path_join(parentPath, nameValidationResult._yay);
-		if (file.archiveOperationId === undefined) {
-			const activePathConflict = await db_find_active_path_conflict(ctx, {
+		if (pathSegments.length > 1) {
+			// Treat slash-delimited names as a move into created/reused parent folders.
+			const parentPath = await resolve_parent_path_from_parent_id(ctx, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
-				path: renamedPath,
-				excludeNodeIds: [args.nodeId],
+				parentId: file.parentId,
 			});
-			if (activePathConflict) {
+			if (parentPath == null) {
+				return Result({ _yay: null });
+			}
+
+			targetParentPath = parentPath;
+			// We trust that the front-end is validating the input correctly.
+			for (const name of pathSegments.slice(0, -1)) {
+				const existing = await ctx.db
+					.query("files_nodes")
+					.withIndex("by_workspace_project_parent_kind_name_archiveOperation", (q) =>
+						q
+							.eq("workspaceId", membership.workspaceId)
+							.eq("projectId", membership.projectId)
+							.eq("parentId", targetParentId)
+							.eq("kind", "folder")
+							.eq("name", name)
+							.eq("archiveOperationId", undefined),
+					)
+					.first();
+
+				if (existing) {
+					if (existing._id === args.nodeId) {
+						return Result({
+							_nay: {
+								name: "nay",
+								message: "Parent folder not found",
+							},
+						});
+					}
+
+					targetParentId = existing._id;
+					targetParentPath = existing.path;
+					continue;
+				}
+
+				const folder = await db_create_node(ctx, {
+					userId: userAuth.id,
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					parentId: targetParentId,
+					name,
+					kind: "folder",
+				});
+				if (folder._nay) {
+					return folder;
+				}
+
+				targetParentId = folder._yay;
+				targetParentPath = files_materialized_path_join(targetParentPath, name);
+			}
+
+			const resolvedLeafName = pathSegments.at(-1);
+			if (!resolvedLeafName) {
+				throw should_never_happen("leafName not resolved after path rename");
+			}
+			leafName = resolvedLeafName;
+		} else {
+			// Use normal name normalization only for same-parent renames.
+			const nameValidationResult = files_normalize_name(file.kind, args.name);
+			if (nameValidationResult._nay) {
+				return nameValidationResult;
+			}
+
+			const parentPath = await resolve_parent_path_from_parent_id(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				parentId: file.parentId,
+			});
+			if (parentPath == null) {
+				return Result({ _yay: null });
+			}
+
+			targetParentPath = parentPath;
+			leafName = nameValidationResult._yay;
+		}
+
+		const renamedPath = files_materialized_path_join(targetParentPath, leafName);
+		if (file.archiveOperationId === undefined) {
+			// Check whether an active file already exists for the same path.
+			const activePathConflict = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+					q
+						.eq("workspaceId", membership.workspaceId)
+						.eq("projectId", membership.projectId)
+						.eq("path", renamedPath)
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			if (activePathConflict && activePathConflict._id !== args.nodeId) {
 				return Result({
 					_nay: {
 						name: "nay",
@@ -921,8 +1064,10 @@ export const rename_node = mutation({
 			}
 		}
 
+		// Update the node once and then rebase descendants under the new materialized path.
 		await ctx.db.patch("files_nodes", args.nodeId, {
-			name: nameValidationResult._yay,
+			parentId: targetParentId,
+			name: leafName,
 			path: renamedPath,
 			updatedBy: userAuth.name,
 			updatedAt: Date.now(),
@@ -988,7 +1133,7 @@ export const move_nodes = mutation({
 			filesToMove.push({ itemId, file, movedPath });
 		}
 
-		const movingNodeIds = filesToMove.map((file) => file.itemId);
+		const movingNodeIds = new Set(filesToMove.map((file) => file.itemId));
 		const movedPathByNodeId = new Map<string, Id<"files_nodes">>();
 		for (const fileToMove of filesToMove) {
 			if (fileToMove.file.archiveOperationId !== undefined) {
@@ -1006,13 +1151,18 @@ export const move_nodes = mutation({
 			}
 			movedPathByNodeId.set(fileToMove.movedPath, fileToMove.itemId);
 
-			const activePathConflict = await db_find_active_path_conflict(ctx, {
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				path: fileToMove.movedPath,
-				excludeNodeIds: movingNodeIds,
-			});
-			if (activePathConflict) {
+			// Check whether an active file already exists for the same path.
+			const activePathConflict = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+					q
+						.eq("workspaceId", membership.workspaceId)
+						.eq("projectId", membership.projectId)
+						.eq("path", fileToMove.movedPath)
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			if (activePathConflict && !movingNodeIds.has(activePathConflict._id)) {
 				return Result({
 					_nay: {
 						name: "nay",
@@ -1404,13 +1554,18 @@ export const unarchive_nodes = mutation({
 			return plansResult;
 		}
 
-		// Validate top-most ancestor conflicts against currently not archived files outside this operation.
 		for (const [ancestorTargetPath, ancestorFile] of ancestorFilesByTargetPath) {
-			const conflictFile = await db_find_active_path_conflict(ctx, {
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				path: ancestorTargetPath,
-			});
+			// Check whether an active file already exists for the same path.
+			const conflictFile = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+					q
+						.eq("workspaceId", membership.workspaceId)
+						.eq("projectId", membership.projectId)
+						.eq("path", ancestorTargetPath)
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
 
 			if (conflictFile) {
 				return Result({
@@ -1538,7 +1693,7 @@ export const read_dir = internalQuery({
 	},
 	returns: v.array(v.string()),
 	handler: async (ctx, args) => {
-		const nodeId = await resolve_tree_node_id_from_path_fn(ctx, {
+		const nodeId = await db_resolve_tree_node_id_from_path(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			path: args.path,
@@ -1622,7 +1777,7 @@ export const list_files = internalQuery({
 	}),
 	handler: async (ctx, args) => {
 		// TODO: when truncating, we truncate the total rows but we don't tell the LLM if we truncated in depth
-		const startNodeId = await resolve_tree_node_id_from_path_fn(ctx, {
+		const startNodeId = await db_resolve_tree_node_id_from_path(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			path: args.path,
@@ -2097,6 +2252,11 @@ export const text_search_files = internalQuery({
 	},
 });
 
+/**
+ * Create a Markdown file at a trusted path.
+ *
+ * Trust callers to validate and normalize `path` before calling this mutation.
+ */
 export const create_file_by_path = internalMutation({
 	args: {
 		workspaceId: v.string(),
@@ -2106,95 +2266,33 @@ export const create_file_by_path = internalMutation({
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
-		const path = args.path.trim();
-		const segments = path_extract_segments_from(path);
-		if (segments.length === 0) {
-			return Result({
-				_nay: {
-					name: "nay",
-					message: "Invalid file path",
-				},
-			});
+		const activeFile = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("path", args.path)
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+		if (activeFile?.kind === "file") {
+			return Result({ _yay: { nodeId: activeFile._id } });
 		}
 
-		const normalizedSegments: string[] = [];
-		for (const [i, segment] of segments.entries()) {
-			const kind = i === segments.length - 1 ? "file" : "folder";
-			const nameNormalizationResult = files_validate_and_normalize_name(kind, segment);
-			if (nameNormalizationResult._nay) {
-				return nameNormalizationResult;
-			}
-			normalizedSegments.push(nameNormalizationResult._yay);
+		const node = await db_create_node_recursively_at_path(ctx, {
+			userId: args.userId,
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			parentId: files_ROOT_ID,
+			path: args.path,
+			kind: "file",
+		});
+		if (node._nay) {
+			return node;
 		}
 
-		let currentParent: Doc<"files_nodes">["parentId"] = files_ROOT_ID;
-		let lastNodeId: Id<"files_nodes"> | null = null;
-
-		for (const [i, name] of normalizedSegments.entries()) {
-			// Does this segment exist?
-			const existing = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_workspace_project_parent_name", (q) =>
-					q
-						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
-						.eq("parentId", currentParent)
-						.eq("name", name),
-				)
-				.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
-				.first();
-
-			if (!existing) {
-				const kind: files_NodeKind = i === normalizedSegments.length - 1 ? "file" : "folder";
-				const node = await db_create_node(ctx, {
-					userId: args.userId,
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
-					parentId: currentParent,
-					name: name,
-					kind,
-				});
-
-				if (node._nay) {
-					return node;
-				}
-
-				currentParent = node._yay;
-				lastNodeId = node._yay;
-			} else {
-				if (i < normalizedSegments.length - 1 && existing.kind !== "folder") {
-					return Result({
-						_nay: {
-							name: "nay",
-							message: "Parent folder not found",
-						},
-					});
-				}
-				if (i === normalizedSegments.length - 1 && existing.kind !== "file") {
-					return Result({
-						_nay: {
-							name: "nay",
-							message: "File not found",
-						},
-					});
-				}
-
-				// Continue traversal
-				currentParent = existing._id;
-				lastNodeId = existing._id;
-
-				// If it's the leaf and exists already, we should not create; caller decides overwrite path.
-				if (i === segments.length - 1) {
-					return Result({ _yay: { nodeId: lastNodeId } });
-				}
-			}
-		}
-
-		if (!lastNodeId) {
-			throw should_never_happen("lastNodeId not resolved after file creation");
-		}
-
-		return Result({ _yay: { nodeId: lastNodeId } });
+		return Result({ _yay: { nodeId: node._yay } });
 	},
 });
 

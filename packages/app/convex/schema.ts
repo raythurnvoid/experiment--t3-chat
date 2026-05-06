@@ -129,6 +129,14 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	})
 		.index("by_workspace_project_parent_name", ["workspaceId", "projectId", "parentId", "name"])
+		.index("by_workspace_project_parent_kind_name_archiveOperation", [
+			"workspaceId",
+			"projectId",
+			"parentId",
+			"kind",
+			"name",
+			"archiveOperationId",
+		])
 		.index("by_workspace_project_parent_archiveOperation", [
 			"workspaceId",
 			"projectId",
@@ -137,7 +145,7 @@ const app_convex_schema = defineSchema({
 		])
 		.index("by_workspace_project_path_archiveOperation", ["workspaceId", "projectId", "path", "archiveOperationId"])
 		.index("by_workspace_project_archiveOperation_path", ["workspaceId", "projectId", "archiveOperationId", "path"])
-		.index("by_workspace_project_name", ["workspaceId", "projectId", "name"]),
+		.index("by_workspace_project_kind_name", ["workspaceId", "projectId", "kind", "name"]),
 	/**
 	 * Table to store markdown content for files.
 	 */

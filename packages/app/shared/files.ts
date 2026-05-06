@@ -115,7 +115,7 @@ export function files_normalize_name_input(args: {
 	return normalizedText;
 }
 
-export function files_validate_and_normalize_name(kind: files_NodeKind, name: string) {
+export function files_normalize_name(kind: files_NodeKind, name: string) {
 	if (name.includes("..")) {
 		// Reject double dots because their basename/extension intent is ambiguous.
 		return files_invalid_name_result(kind);
@@ -247,16 +247,6 @@ export function files_validate_and_normalize_name(kind: files_NodeKind, name: st
 			: `${normalizedFileName.slice(0, markdownExtensionSeparatorIndex)}.md`;
 
 	return Result({ _yay: files_apply_special_file_name_case(fileName) });
-}
-
-export function files_validate_name(name: string, kind: files_NodeKind) {
-	// Reuse normalization for validation and discard the normalized value.
-	const nameNormalizationResult = files_validate_and_normalize_name(kind, name);
-	if (nameNormalizationResult._nay) {
-		return nameNormalizationResult;
-	}
-
-	return Result({ _yay: null });
 }
 
 function files_invalid_name_result(kind: files_NodeKind) {

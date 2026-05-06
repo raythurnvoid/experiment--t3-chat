@@ -9,6 +9,7 @@ import { internal } from "../convex/_generated/api.js";
 import { path_name_of, server_path_normalize, server_path_parent_of } from "./server-utils.ts";
 import { minimatch } from "minimatch";
 import { files_chunk_has_bitmask_flag, files_chunk_BITMASK_FLAGS } from "./files-markdown-chunking-mastra.ts";
+import { files_normalize_name } from "./files.ts";
 
 /**
  * Advanced replace utility mirroring OpenCode's edit replacer pipeline.
@@ -1088,11 +1089,17 @@ export function ai_chat_tool_create_write_file(
 		}),
 
 		execute: async (args) => {
-			const path = server_path_normalize(args.path);
-			const pendingUpdateId = args.pendingUpdateId as Id<"files_pending_updates"> | undefined;
-			if (!path.startsWith("/") || path === "/") {
-				throw new Error(`Invalid path: ${path}. Path must be absolute and not root.`);
+			const normalizedPath = server_path_normalize(args.path);
+			if (!normalizedPath.startsWith("/") || normalizedPath === "/") {
+				throw new Error(`Invalid path: ${normalizedPath}. Path must be absolute and not root.`);
 			}
+			const fileName = files_normalize_name("file", path_name_of(normalizedPath));
+			if (fileName._nay) {
+				throw new Error(`Invalid path: ${normalizedPath}`, { cause: fileName._nay });
+			}
+			const parentPath = server_path_parent_of(normalizedPath);
+			const path = parentPath === "/" ? `/${fileName._yay}` : `${parentPath}/${fileName._yay}`;
+			const pendingUpdateId = args.pendingUpdateId as Id<"files_pending_updates"> | undefined;
 
 			const currentFileContent = await ctx.runQuery(
 				internal.files_nodes.get_file_last_available_markdown_content_by_path,

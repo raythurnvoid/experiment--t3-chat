@@ -65,7 +65,7 @@ import {
 	type MyMenuItem_Props,
 } from "@/components/my-menu.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { cn, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
+import { cn, forward_ref, path_extract_segments_from, should_never_happen, sx } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { dom_clear_text_selection } from "@/lib/dom-utils.ts";
@@ -75,7 +75,7 @@ import {
 	files_ROOT_ID,
 	files_create_tree_root,
 	files_normalize_name_input,
-	files_validate_and_normalize_name,
+	files_normalize_name,
 	type files_EditorView,
 	type files_TreeItem,
 } from "@/lib/files.ts";
@@ -190,6 +190,10 @@ function sort_children(args: { children: string[]; itemById: Map<string, files_T
 			return 0;
 		}
 
+		if (itemA.kind !== itemB.kind) {
+			return itemA.kind === "folder" ? -1 : 1;
+		}
+
 		const titleA = itemA.title || "";
 		const titleB = itemB.title || "";
 		return titleA.localeCompare(titleB, undefined, {
@@ -222,18 +226,19 @@ const FilesSidebarTreeItemIcon = memo(function FilesSidebarTreeItemIcon(props: F
 type FilesSidebarTreeItemSecondaryAction_ClassNames = "FilesSidebarTreeItemSecondaryAction";
 
 type FilesSidebarTreeItemSecondaryAction_Props = {
-	className?: string;
+	className: string;
 	children: React.ReactNode;
-	tooltip: string | undefined;
+	tooltip: string;
 	isActive: boolean;
-	disabled?: boolean;
+	disabled: boolean;
+	ariaLabel: string;
 	onClick: () => void;
 };
 
 const FilesSidebarTreeItemSecondaryAction = memo(function FilesSidebarTreeItemSecondaryAction(
 	props: FilesSidebarTreeItemSecondaryAction_Props,
 ) {
-	const { className, children, tooltip, isActive, disabled, onClick } = props;
+	const { className, children, tooltip, isActive, disabled, ariaLabel, onClick } = props;
 
 	const handleClick = useFn<MyIconButton_Props["onClick"]>(() => {
 		onClick();
@@ -249,8 +254,9 @@ const FilesSidebarTreeItemSecondaryAction = memo(function FilesSidebarTreeItemSe
 			tooltip={tooltip}
 			tooltipSide="bottom"
 			tabIndex={isActive ? 0 : -1}
-			onClick={handleClick}
 			disabled={disabled}
+			aria-label={ariaLabel}
+			onClick={handleClick}
 		>
 			<MyIconButtonIcon>{children}</MyIconButtonIcon>
 		</MyIconButton>
@@ -263,24 +269,27 @@ type FilesSidebarTreeItemSecondaryActionCreateFile_ClassNames = "FilesSidebarTre
 
 type FilesSidebarTreeItemSecondaryActionCreateFile_Props = {
 	kind: files_TreeItem["kind"];
+	label: string;
 	isActive: boolean;
-	disabled?: boolean;
+	disabled: boolean;
 	onClick: () => void;
 };
 
 const FilesSidebarTreeItemSecondaryActionCreateFile = memo(function FilesSidebarTreeItemSecondaryActionCreateFile(
 	props: FilesSidebarTreeItemSecondaryActionCreateFile_Props,
 ) {
-	const { kind, isActive, disabled, onClick } = props;
+	const { kind, label, isActive, disabled, onClick } = props;
+	const actionLabel = kind === "folder" ? "Add folder" : "Add file";
 
 	return (
 		<FilesSidebarTreeItemSecondaryAction
 			className={cn(
 				"FilesSidebarTreeItemSecondaryActionCreateFile" satisfies FilesSidebarTreeItemSecondaryActionCreateFile_ClassNames,
 			)}
-			tooltip={kind === "folder" ? "Add folder" : "Add file"}
+			tooltip={actionLabel}
 			isActive={isActive}
 			disabled={disabled}
+			ariaLabel={`${actionLabel} to ${label}`}
 			onClick={onClick}
 		>
 			{kind === "folder" ? <FolderPlus /> : <FilePlus />}
@@ -294,6 +303,7 @@ type FilesSidebarTreeItemMoreAction_ClassNames = "FilesSidebarTreeItemMoreAction
 
 type FilesSidebarTreeItemMoreAction_Props = {
 	kind: files_TreeItem["kind"];
+	label: string;
 	archiveOperationId: string | undefined;
 	isPending: boolean;
 	isFocused: boolean;
@@ -311,6 +321,7 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 ) {
 	const {
 		kind,
+		label,
 		archiveOperationId,
 		isPending,
 		isFocused,
@@ -354,6 +365,7 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 					variant="ghost-highlightable"
 					tooltip={"More actions"}
 					disabled={isPending}
+					aria-label={`More actions for ${label}`}
 				>
 					<MyIconButtonIcon>
 						<EllipsisVertical />
@@ -411,6 +423,7 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 type FilesSidebarTreeItemArrow_ClassNames = "FilesSidebarTreeItemArrow" | "FilesSidebarTreeItemArrow-icon-button";
 
 type FilesSidebarTreeItemArrow_Props = {
+	label: string;
 	isExpanded: boolean;
 	isPending: boolean;
 	isFocused: boolean;
@@ -418,18 +431,20 @@ type FilesSidebarTreeItemArrow_Props = {
 };
 
 const FilesSidebarTreeItemArrow = memo(function FilesSidebarTreeItemArrow(props: FilesSidebarTreeItemArrow_Props) {
-	const { isExpanded, isPending, isFocused, onClick } = props;
+	const { label, isExpanded, isPending, isFocused, onClick } = props;
+	const actionLabel = isExpanded ? "Collapse folder" : "Expand folder";
 
 	return (
 		<div className={"FilesSidebarTreeItemArrow" satisfies FilesSidebarTreeItemArrow_ClassNames}>
 			<MyIconButton
 				className={"FilesSidebarTreeItemArrow-icon-button" satisfies FilesSidebarTreeItemArrow_ClassNames}
-				tooltip={isExpanded ? "Collapse folder" : "Expand folder"}
+				tooltip={actionLabel}
 				tooltipSide="bottom"
 				variant="ghost-highlightable"
 				tabIndex={isFocused ? 0 : -1}
-				onClick={onClick}
 				disabled={isPending}
+				aria-label={`${actionLabel} ${label}`}
+				onClick={onClick}
 			>
 				<MyIconButtonIcon>{isExpanded ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
 			</MyIconButton>
@@ -510,7 +525,9 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 			selectionEnd,
 		});
 		const replacementEnd =
-			kind === "file" && selectionEnd === nextTextEnd && insertedText.includes(".") ? element.value.length : selectionEnd;
+			kind === "file" && selectionEnd === nextTextEnd && insertedText.includes(".")
+				? element.value.length
+				: selectionEnd;
 		// Let full file names such as `foo/bar.md` replace the protected `.md` instead of appending another suffix.
 		// Normalize only the inserted fragment, using the surrounding text for separator adjacency.
 		const normalizedInsertedText = files_normalize_name_input({
@@ -520,7 +537,8 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 			nextText: element.value.slice(selectionEnd, nextTextEnd),
 		});
 		// Rebuild the full control value with the sanitized replacement.
-		const nextValue = element.value.slice(0, selectionStart) + normalizedInsertedText + element.value.slice(replacementEnd);
+		const nextValue =
+			element.value.slice(0, selectionStart) + normalizedInsertedText + element.value.slice(replacementEnd);
 		if (nextValue === element.value) {
 			return;
 		}
@@ -655,14 +673,17 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 				{...(isRenaming ? renameInputProps : null)}
 				ref={handleRenameInputRef}
 				className={"FilesSidebarTreeItemTitle-input" satisfies FilesSidebarTreeItemTitle_ClassNames}
+				readOnly={!isRenaming}
+				tabIndex={isRenaming ? undefined : -1}
+				value={value}
+				// Hide the idle readonly title input; the treeitem owns the accessible row name until rename mode starts.
+				{...(isRenaming ? {} : { inert: "true" })}
+				aria-hidden={isRenaming ? undefined : true}
 				onBlur={handleRenameInputBlur}
 				onBeforeInput={isRenaming ? handleRenameInputBeforeInput : undefined}
 				onChange={isRenaming ? handleRenameInputChange : undefined}
 				onCompositionEnd={isRenaming ? handleRenameInputCompositionEnd : undefined}
 				onPaste={isRenaming ? handleRenameInputPaste : undefined}
-				readOnly={!isRenaming}
-				tabIndex={isRenaming ? undefined : -1}
-				value={value}
 			/>
 		</MyInput>
 	);
@@ -714,19 +735,19 @@ type FilesSidebarTreeItemPrimaryAction_ClassNames = "FilesSidebarTreeItemPrimary
 
 type FilesSidebarTreeItemPrimaryAction_Props = {
 	itemProps: ReturnType<FilesSidebarTreeItem_Instance["getProps"]>;
-	title: string;
 	updatedAt: files_TreeItem["updatedAt"];
 	updatedBy: files_TreeItem["updatedBy"];
 	isPending: boolean;
 	isSelected: boolean;
 	isTreeDragging: boolean;
 	isFocused: boolean;
+	ariaLabel: string;
 };
 
 const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrimaryAction(
 	props: FilesSidebarTreeItemPrimaryAction_Props,
 ) {
-	const { itemProps, title, updatedAt, updatedBy, isPending, isSelected, isTreeDragging, isFocused } = props;
+	const { itemProps, updatedAt, updatedBy, isPending, isSelected, isTreeDragging, isFocused, ariaLabel } = props;
 
 	const tooltipContent = `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the " })} by ${updatedBy || "Unknown"}`;
 
@@ -739,8 +760,8 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 			tooltip={tooltipContent}
 			tooltipTimeout={2000}
 			tooltipDisabled={isTreeDragging}
-			aria-label={title}
 			aria-selected={isSelected ? "true" : "false"}
+			aria-label={ariaLabel}
 		></MyPrimaryAction>
 	);
 });
@@ -773,6 +794,7 @@ type FilesSidebarTreeItemActions_ClassNames = "FilesSidebarTreeItemActions";
 
 type FilesSidebarTreeItemActions_Props = {
 	kind: FilesSidebarTreeItemMoreAction_Props["kind"];
+	label: string;
 	archiveOperationId: FilesSidebarTreeItemMoreAction_Props["archiveOperationId"];
 	isPending: boolean;
 	isFocused: boolean;
@@ -793,6 +815,7 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 ) {
 	const {
 		kind,
+		label,
 		archiveOperationId,
 		isPending,
 		isFocused,
@@ -809,17 +832,23 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 	} = props;
 
 	return (
-		<div className={"FilesSidebarTreeItemActions" satisfies FilesSidebarTreeItemActions_ClassNames}>
+		<div
+			className={"FilesSidebarTreeItemActions" satisfies FilesSidebarTreeItemActions_ClassNames}
+			role="group"
+			aria-label={`Actions for ${label}`}
+		>
 			{canCreateChildren ? (
 				<>
 					<FilesSidebarTreeItemSecondaryActionCreateFile
 						kind="file"
+						label={label}
 						isActive={isFocused}
 						disabled={isPending}
 						onClick={onCreateFile}
 					/>
 					<FilesSidebarTreeItemSecondaryActionCreateFile
 						kind="folder"
+						label={label}
 						isActive={isFocused}
 						disabled={isPending}
 						onClick={onCreateFolder}
@@ -828,6 +857,7 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 			) : null}
 			<FilesSidebarTreeItemMoreAction
 				kind={kind}
+				label={label}
 				archiveOperationId={archiveOperationId}
 				isPending={isPending}
 				isFocused={isFocused}
@@ -1020,6 +1050,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 	const metaText = `${format_relative_time(itemData.updatedAt)} ${itemData.updatedBy || "Unknown"}`;
 	const shouldRenderPlaceholder = !isSearchActive && itemData.kind === "folder" && !hasChildren && isExpanded;
+	const label = isArchived ? `${itemData.title} archived` : itemData.title;
 
 	const handleCreateFileClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 		onCreateNode(itemId, "file");
@@ -1118,13 +1149,13 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 			>
 				<FilesSidebarTreeItemPrimaryAction
 					itemProps={itemProps}
-					title={itemData.title}
 					updatedAt={itemData.updatedAt}
 					updatedBy={itemData.updatedBy}
 					isPending={isPending}
 					isSelected={isSelected}
 					isTreeDragging={isTreeDragging}
 					isFocused={isFocused}
+					ariaLabel={label}
 				/>
 
 				<FilesSidebarTreeItemPrimaryContent
@@ -1138,6 +1169,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 				{itemData.kind === "folder" ? (
 					<FilesSidebarTreeItemArrow
+						label={label}
 						isExpanded={isExpanded}
 						isPending={isPending}
 						isFocused={isFocused}
@@ -1154,6 +1186,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 				<FilesSidebarTreeItemActions
 					kind={itemData.kind}
+					label={label}
 					archiveOperationId={itemData.archiveOperationId}
 					isPending={isPending}
 					isFocused={isFocused}
@@ -1477,7 +1510,7 @@ const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarH
 type FilesSidebarTopSectionMoreAction_ClassNames = "FilesSidebarTopSectionMoreAction";
 
 type FilesSidebarTopSectionMoreAction_Props = {
-	className?: string;
+	className: string;
 	isBusy: boolean;
 	archivedCount: number;
 	showArchived: boolean;
@@ -1731,7 +1764,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const canCollapseAll = expandedItems.length > 1;
 
 	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
-	const selectedFilePathAutoExpandedOnMountRef = useRef(false);
+	const selectedFilePathAutoExpandedKeyRef = useRef<string | null>(null);
 
 	const treeItemsList = useQuery(app_convex_api.files_nodes.get_tree_nodes_list, {
 		membershipId,
@@ -1999,12 +2032,40 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			return;
 		}
 
-		const normalizedNameResult = files_validate_and_normalize_name(itemData.kind, trimmedValue);
-		if (normalizedNameResult._nay) {
-			console.error("[FilesSidebar.handleRename] Invalid rename value", { result: normalizedNameResult, itemId });
+		// Keep path-like renames as folder segments, but canonicalize the final file leaf before Convex creates/moves nodes.
+		const isPathLikeName = trimmedValue.includes("/");
+		const normalizedName = ((/* iife */) => {
+			if (isPathLikeName) {
+				const pathSegments = path_extract_segments_from(trimmedValue);
+				const leafSegment = pathSegments.at(-1);
+				if (!leafSegment) {
+					return null;
+				}
+
+				if (itemData.kind === "file") {
+					const leafSegmentResult = files_normalize_name(itemData.kind, leafSegment);
+					if (leafSegmentResult._nay) {
+						console.error("[FilesSidebar.handleRename] Invalid path leaf value", { result: leafSegmentResult, itemId });
+						return null;
+					}
+
+					pathSegments[pathSegments.length - 1] = leafSegmentResult._yay;
+				}
+
+				return pathSegments.join("/");
+			}
+
+			const normalizedNameResult = files_normalize_name(itemData.kind, trimmedValue);
+			if (normalizedNameResult._nay) {
+				console.error("[FilesSidebar.handleRename] Invalid rename value", { result: normalizedNameResult, itemId });
+				return null;
+			}
+
+			return normalizedNameResult._yay;
+		})();
+		if (normalizedName == null) {
 			return;
 		}
-		const normalizedName = normalizedNameResult._yay;
 
 		if (normalizedName === itemData.title) {
 			return;
@@ -2013,17 +2074,20 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		clearRenameError(itemId);
 		item.setFocused();
 		markFileAsPending(itemId);
-		// Send the lowercase Markdown-safe name; Convex remains responsible for final special casing.
 		convex
 			.mutation(
 				app_convex_api.files_nodes.rename_node,
 				{
 					membershipId,
 					nodeId: files_sidebar_to_file_id(itemId),
-					name: normalizedName.toLowerCase(),
+					name: normalizedName,
 				},
 				{
 					optimisticUpdate: (localStore) => {
+						if (isPathLikeName) {
+							return;
+						}
+
 						const treeItemsList = localStore.getQuery(app_convex_api.files_nodes.get_tree_nodes_list, {
 							membershipId,
 						});
@@ -2075,8 +2139,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const itemData = item.getItemData();
 		const itemId = item.getId();
 		const trimmedValue = currentTree.getRenamingValue().trim();
-		if (itemData.type === "node" && trimmedValue) {
-			const normalizedNameResult = files_validate_and_normalize_name(itemData.kind, trimmedValue);
+		if (itemData.type === "node" && trimmedValue && !trimmedValue.includes("/")) {
+			const normalizedNameResult = files_normalize_name(itemData.kind, trimmedValue);
 			if (normalizedNameResult._nay) {
 				event.preventDefault();
 				setRenameError(itemId, normalizedNameResult._nay.message);
@@ -2448,7 +2512,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		tree().rebuildTree();
 	}, [expandedItems, visibleFileIds]);
 
-	// Auto expand files on search or mount
+	// Auto-expand search matches and the current page path.
 	useLayoutEffect(() => {
 		if (!treeItems) {
 			return;
@@ -2487,23 +2551,43 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			}
 		}
 
-		// Auto-expand selected-file ancestors once on mount.
-		if (!selectedFilePathAutoExpandedOnMountRef.current && selectedNodeId && hasSelectedFileInTree) {
+		// Build a stable selected-file path key so each selected path auto-expands once, even after nested create/rename moves.
+		const selectedFilePathAutoExpanded = (() => {
+			if (!selectedNodeId || !hasSelectedFileInTree) {
+				return null;
+			}
+
+			const ancestorIds: string[] = [];
 			let currentItemId = treeItems.itemById.get(selectedNodeId)?.parentId;
 
-			// Walk up the selected file's parent chain and ensure each ancestor is expanded.
 			while (currentItemId) {
-				if (nextExpandedItemsSet.has(currentItemId)) {
+				ancestorIds.push(currentItemId);
+
+				const currentItem = treeItems.itemById.get(currentItemId);
+				if (!currentItem || currentItem.type !== "node") {
 					break;
-				} else {
-					nextExpandedItemsSet.add(currentItemId);
 				}
 
-				currentItemId = treeItems.itemById.get(selectedNodeId)?.parentId;
+				currentItemId = currentItem.parentId;
 			}
-		}
 
-		selectedFilePathAutoExpandedOnMountRef.current = true;
+			return {
+				ancestorIds,
+				key: [selectedNodeId, ...ancestorIds].join("/"),
+			};
+		})();
+
+		// Keep the current page visible in the tree after route changes and path-based create/rename moves.
+		if (
+			selectedFilePathAutoExpanded &&
+			selectedFilePathAutoExpandedKeyRef.current !== selectedFilePathAutoExpanded.key
+		) {
+			for (const ancestorId of selectedFilePathAutoExpanded.ancestorIds) {
+				nextExpandedItemsSet.add(ancestorId);
+			}
+
+			selectedFilePathAutoExpandedKeyRef.current = selectedFilePathAutoExpanded.key;
+		}
 
 		// Skip state updates when nothing changed to avoid unnecessary rebuilds.
 		if (currentExpandedItems.symmetricDifference(nextExpandedItemsSet).size > 0) {

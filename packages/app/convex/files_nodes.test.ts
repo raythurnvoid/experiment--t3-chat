@@ -404,7 +404,7 @@ test("create_node adds markdown extension to extensionless file names", async ()
 	});
 });
 
-test("create_node normalizes names containing path separator characters", async () => {
+test("create_node creates missing folders for nested folder paths", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -420,15 +420,63 @@ test("create_node normalizes names containing path separator characters", async 
 	});
 
 	if (result._nay) {
-		throw new Error("Expected create_node to normalize the file name", {
+		throw new Error("Expected create_node to create the nested folder path", {
+			cause: result._nay,
+		});
+	}
+
+	await t.run(async (ctx) => {
+		const folder = await ctx.db.get("files_nodes", result._yay.nodeId);
+		expect(folder?.name).toBe("name");
+		expect(folder?.path).toBe("/invalid/name");
+
+		const parentFolder = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", "/invalid"),
+			)
+			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+			.first();
+		expect(parentFolder?.kind).toBe("folder");
+		expect(folder?.parentId).toBe(parentFolder?._id);
+	});
+});
+
+test("create_node creates missing folders for nested file paths", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.files.file_root_1.createdBy,
+		name: "Test User",
+	});
+
+	const result = await asUser.mutation(api.files_nodes.create_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "notes/projects/plan.md",
+		kind: "file",
+	});
+	if (result._nay) {
+		throw new Error("Expected create_node to create the nested file path", {
 			cause: result._nay,
 		});
 	}
 
 	await t.run(async (ctx) => {
 		const file = await ctx.db.get("files_nodes", result._yay.nodeId);
-		expect(file?.name).toBe("invalid-name");
-		expect(file?.path).toBe("/invalid-name");
+		expect(file?.name).toBe("plan.md");
+		expect(file?.path).toBe("/notes/projects/plan.md");
+
+		const parentFolder = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", "/notes/projects"),
+			)
+			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+			.first();
+		expect(parentFolder?.kind).toBe("folder");
+		expect(file?.parentId).toBe(parentFolder?._id);
 	});
 });
 
@@ -480,6 +528,39 @@ test("archived nodes can share path with a new active node", async () => {
 		expect(filesAtPath.filter((file) => file.archiveOperationId !== undefined)).toHaveLength(1);
 		expect(filesAtPath.filter((file) => file.archiveOperationId === undefined)).toHaveLength(1);
 	});
+});
+
+test("create_file_by_path can reuse an existing active file", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.files.file_root_1.createdBy,
+		name: "Test User",
+	});
+	const path = "/existing-by-path.md";
+
+	const createdFile = await asUser.mutation(internal.files_nodes.create_file_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path,
+	});
+	if (createdFile._nay) {
+		throw new Error("Expected initial file creation to succeed");
+	}
+
+	const reusedFile = await asUser.mutation(internal.files_nodes.create_file_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path,
+	});
+	if (reusedFile._nay) {
+		throw new Error("Expected existing file reuse to succeed");
+	}
+
+	expect(reusedFile._yay.nodeId).toBe(createdFile._yay.nodeId);
 });
 
 test("rename_node returns conflict and keeps original path", async () => {
@@ -549,6 +630,55 @@ test("rename_node adds markdown extension to extensionless file names", async ()
 		const file = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
 		expect(file?.name).toBe("renamed-extensionless.md");
 		expect(file?.path).toBe("/renamed-extensionless.md");
+	});
+});
+
+test("rename_node creates missing folders for nested file paths", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.files.file_root_1.createdBy,
+		name: "Test User",
+	});
+
+	const createdFile = await asUser.mutation(api.files_nodes.create_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "rename-path-source.md",
+		kind: "file",
+	});
+	if (createdFile._nay) {
+		throw new Error("Expected source file creation to succeed", {
+			cause: createdFile._nay,
+		});
+	}
+
+	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
+		membershipId: db.membershipId,
+		nodeId: createdFile._yay.nodeId,
+		name: "notes/projects/plan.md",
+	});
+	if (renameResult._nay) {
+		throw new Error("Expected rename_node to create the nested file path", {
+			cause: renameResult._nay,
+		});
+	}
+
+	await t.run(async (ctx) => {
+		const file = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		expect(file?.name).toBe("plan.md");
+		expect(file?.path).toBe("/notes/projects/plan.md");
+
+		const parentFolder = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", "/notes/projects"),
+			)
+			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+			.first();
+		expect(parentFolder?.kind).toBe("folder");
+		expect(file?.parentId).toBe(parentFolder?._id);
 	});
 });
 
@@ -633,7 +763,7 @@ test("rename_node replaces unsupported file extensions with markdown", async () 
 	expect(after?.path).toBe("/renamed-source.md");
 });
 
-test("rename_node normalizes names containing path separator characters", async () => {
+test("rename_node creates missing folders for nested folder paths", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -649,14 +779,26 @@ test("rename_node normalizes names containing path separator characters", async 
 	});
 
 	if (renameResult._nay) {
-		throw new Error("Expected rename_node to normalize the file name", {
+		throw new Error("Expected rename_node to create the nested folder path", {
 			cause: renameResult._nay,
 		});
 	}
 
-	const after = await t.run(async (ctx) => ctx.db.get("files_nodes", db.files.file_root_2._id));
-	expect(after?.name).toBe("invalid-name");
-	expect(after?.path).toBe("/invalid-name");
+	await t.run(async (ctx) => {
+		const folder = await ctx.db.get("files_nodes", db.files.file_root_2._id);
+		expect(folder?.name).toBe("name");
+		expect(folder?.path).toBe("/invalid/name");
+
+		const parentFolder = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", "/invalid"),
+			)
+			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+			.first();
+		expect(parentFolder?.kind).toBe("folder");
+		expect(folder?.parentId).toBe(parentFolder?._id);
+	});
 });
 
 test("move_nodes returns conflict and keeps original path", async () => {
@@ -808,66 +950,7 @@ test("resolve_file_id_from_path ignores archived files with duplicate path", asy
 	expect(resolvedRoot1).toBe(db.files.file_root_1._id);
 });
 
-test("create_file_by_path adds markdown extension to final extensionless segment", async () => {
-	const t = test_convex();
-	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
-	const asUser = t.withIdentity({
-		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
-		name: "Test User",
-	});
-
-	const createByPath = await asUser.mutation(internal.files_nodes.create_file_by_path, {
-		workspaceId: db.workspaceId,
-		projectId: db.projectId,
-		userId: db.userId,
-		path: "/generated-folder/extensionless-leaf",
-	});
-	if (createByPath._nay) {
-		throw new Error("Expected create_file_by_path to normalize extensionless final segment", {
-			cause: createByPath._nay,
-		});
-	}
-
-	await t.run(async (ctx) => {
-		const file = await ctx.db.get("files_nodes", createByPath._yay.nodeId);
-		expect(file?.name).toBe("extensionless-leaf.md");
-		expect(file?.path).toBe("/generated-folder/extensionless-leaf.md");
-	});
-});
-
-test("create_file_by_path normalizes invalid path segments", async () => {
-	const t = test_convex();
-	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
-	const asUser = t.withIdentity({
-		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
-		name: "Test User",
-	});
-
-	const invalidPath = "/invalid_parent/invalid\\name";
-	const createByPath = await asUser.mutation(internal.files_nodes.create_file_by_path, {
-		workspaceId: db.workspaceId,
-		projectId: db.projectId,
-		userId: db.userId,
-		path: invalidPath,
-	});
-
-	if (createByPath._nay) {
-		throw new Error("Expected create_file_by_path to normalize invalid path segments", {
-			cause: createByPath._nay,
-		});
-	}
-
-	await t.run(async (ctx) => {
-		const fileAtNormalizedPath = await ctx.db.get("files_nodes", createByPath._yay.nodeId);
-
-		expect(fileAtNormalizedPath?.name).toBe("invalid-name.md");
-		expect(fileAtNormalizedPath?.path).toBe("/invalid_parent/invalid-name.md");
-	});
-});
-
-test("create_file_by_path reuses only active files", async () => {
+test("create_file_by_path creates active ancestors instead of reusing archived nodes", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({

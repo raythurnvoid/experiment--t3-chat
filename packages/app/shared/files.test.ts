@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	files_normalize_name_input,
-	files_validate_and_normalize_name,
+	files_normalize_name,
 	files_parse_markdown_to_html,
 	files_tiptap_markdown_to_json,
 	files_tiptap_markdown_to_plain_text,
@@ -29,6 +29,8 @@ describe("files_normalize_name_input", () => {
 			[{ kind: "folder", previousText: "", insertedText: "2026", nextText: "" }, "2026"],
 			[{ kind: "file", previousText: "foo", insertedText: "-", nextText: "" }, "-"],
 			[{ kind: "file", previousText: "foo", insertedText: "_", nextText: "" }, "_"],
+			[{ kind: "file", previousText: "foo", insertedText: "/bar", nextText: "" }, "/bar"],
+			[{ kind: "folder", previousText: "foo", insertedText: "\\bar", nextText: "" }, "/bar"],
 			[{ kind: "file", previousText: "", insertedText: "-file", nextText: "" }, "file"],
 		] satisfies Array<[Parameters<typeof files_normalize_name_input>[0], string]>,
 	)("normalizes live input %#", (input, expected) => {
@@ -36,7 +38,7 @@ describe("files_normalize_name_input", () => {
 	});
 });
 
-describe("files_validate_and_normalize_name", () => {
+describe("files_normalize_name", () => {
 	test.each([
 		["docs", "docs"],
 		["new-folder", "new-folder"],
@@ -62,12 +64,12 @@ describe("files_validate_and_normalize_name", () => {
 		["test___test", "test_test"],
 		["test---test", "test-test"],
 	])("normalizes folder %s to %s", (input, expected) => {
-		expect(files_validate_and_normalize_name("folder", input)).toEqual({ _yay: expected });
+		expect(files_normalize_name("folder", input)).toEqual({ _yay: expected });
 	});
 
 	test.each(["..", "test..test"])("rejects folder %s", (input) => {
-		const result = files_validate_and_normalize_name("folder", input);
-		if (result._yay) {
+		const result = files_normalize_name("folder", input);
+		if (!result._nay) {
 			throw new Error("Expected folder name normalization to fail");
 		}
 
@@ -107,14 +109,14 @@ describe("files_validate_and_normalize_name", () => {
 		["test___test.md", "test_test.md"],
 		["test---test.md", "test-test.md"],
 	])("normalizes file %s to %s", (input, expected) => {
-		expect(files_validate_and_normalize_name("file", input)).toEqual({ _yay: expected });
+		expect(files_normalize_name("file", input)).toEqual({ _yay: expected });
 	});
 
 	test.each(["..", ".", "test..test", "test.txt/test", "test.txt\\test", "test.m d"])(
 		"rejects file %s",
 		(input) => {
-			const result = files_validate_and_normalize_name("file", input);
-			if (result._yay) {
+			const result = files_normalize_name("file", input);
+			if (!result._nay) {
 				throw new Error("Expected file name normalization to fail");
 			}
 

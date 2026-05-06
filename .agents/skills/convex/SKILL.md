@@ -1,6 +1,6 @@
 ---
 name: convex
-description: Convex backend conventions for this codebase covering both base Convex usage (validators, schema, function registration, queries/mutations/actions, pagination, full-text search, scheduling/crons, file storage, testing) and codebase-specific patterns (Result/`_nay` error contract, `ConvexError` typing, HTTP route builder, schema-backed `doc()` validators, query cache composition, membership-scoped handlers, `migrations.ts` workflow). Use when reading or modifying any Convex code under `packages/app/convex/**` (functions, schema, HTTP routes, actions, mutations, queries, migrations, crons, tests).
+description: Convex backend conventions for this codebase covering both base Convex usage (validators, schema, function registration, queries/mutations/actions, pagination, full-text search, scheduling/crons, file storage, testing) and codebase-specific patterns (Result/`_nay` error contract, `convex_error` typing, HTTP route builder, schema-backed `doc()` validators, query cache composition, membership-scoped handlers, `migrations.ts` workflow). Use when reading or modifying any Convex code under `packages/app/convex/**` (functions, schema, HTTP routes, actions, mutations, queries, migrations, crons, tests).
 ---
 
 <!-- Base guidance from https://docs.convex.dev/ai/using-cursor -->
@@ -379,9 +379,9 @@ The sections above describe Convex itself. For conventions specific to this repo
 
 - **HTTP route builder typing pattern** — `*_http_routes(router)` returning a typed `{ [path]: { [method]: { pathParams, searchParams, headers, body, response } } }` schema with literal path/method via small IIFEs.
 - **Errors-as-values `Result` contract** — `_yay` / `_nay` branches, `v_result(...)` validators, and the fail-fast `Result_all` + `Promise.all` loop pattern for concurrent work.
-- **Throw vs return rules** — when to prefer `_nay` / `null` over `throw new Error`, and when to use `convex_error` / `ConvexError` instead of raw `Error`.
+- **Throw vs return rules** — when to prefer `_nay` / `null` over `throw new Error`, and when to use `convex_error` instead of raw `Error`.
 - **Membership-scoped handlers** — `membershipId` arg ordering, the `Unauthorized` / `Not found` flow, and write ordering so `_nay` returns do not leave partial writes behind.
-- **Type-safe `ConvexError` pattern** — attaching `_errors` metadata to mutation args for client-side narrowing via `app_convex_Error`.
+- **Type-safe `convex_error` pattern** — attaching `_errors` metadata to mutation args for client-side narrowing via `app_convex_Error`.
 - **Schema-backed validators** — using `doc(app_convex_schema, "...")` instead of redefining shapes with `v.object({...})`, plus `v.id(...)` and `ctx.db.normalizeId(...)` rules.
 - **Query performance patterns** — concurrent fetches with `Promise.all`, `ctx.db.get` over `ctx.db.query` when ids are known, avoiding `collect().find(...)` for single-row lookups.
 - **Query cache and composition** — favoring stable, composable shared queries over narrowly tailored wrappers.

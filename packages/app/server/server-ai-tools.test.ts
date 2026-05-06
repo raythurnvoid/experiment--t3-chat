@@ -307,7 +307,7 @@ test("write_file tool stores pending unstaged branch updates from the agent", as
 	expect(result.metadata.exists).toBe(true);
 });
 
-test("write_file tool creates missing files with the agent user", async () => {
+test("write_file tool normalizes missing file paths before creating with the agent user", async () => {
 	const nodeId = "p999";
 	const pendingUpdateId = "pending999";
 
@@ -329,7 +329,7 @@ test("write_file tool creates missing files with the agent user", async () => {
 		ctx,
 		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
 	);
-	const result = await tool.execute?.({ path: "/docs/new.md", content: "# New" }, { toolCallId: "test", messages: [] });
+	const result = await tool.execute?.({ path: "/docs/New Plan", content: "# New" }, { toolCallId: "test", messages: [] });
 
 	if (!result) {
 		throw new Error("`result` is undefined");
@@ -344,7 +344,7 @@ test("write_file tool creates missing files with the agent user", async () => {
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
-		path: "/docs/new.md",
+		path: "/docs/new-plan.md",
 		pendingUpdateId: undefined,
 	});
 
@@ -354,7 +354,7 @@ test("write_file tool creates missing files with the agent user", async () => {
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
-		path: "/docs/new.md",
+		path: "/docs/new-plan.md",
 	});
 	const [, pendingArgs] = runMutation.mock.calls[1]!;
 	expect(pendingArgs).toEqual({

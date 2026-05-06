@@ -152,8 +152,8 @@ Convex already tags backend logs with function/runtime context, so do not prefix
 
 - In Convex actions and mutations, prefer `returns: v_result(...)` plus `Result({ _nay: ... })` for expected or recoverable failures instead of `throw new Error(...)`.
 - In Convex queries, prefer `return null` for missing / unauthorized / not-found branches unless the API already uses `Result`.
-- If a Convex query truly must throw a typed app-level error, use `convex_error(...)` / `ConvexError`, not `throw new Error(...)`.
-- Reserve throws for cases where the handler truly needs exception semantics (for example rollback or an external boundary that cannot use `Result`), and prefer typed `ConvexError` over raw `Error` in Convex code.
+- If a Convex query truly must throw a typed app-level error, use `convex_error(...)`, not `throw new Error(...)`.
+- Reserve throws for cases where the handler truly needs exception semantics (for example rollback or an external boundary that cannot use `Result`), and prefer `convex_error(...)` over raw `Error` in Convex code.
 
 ## Membership-scoped Convex handlers
 
@@ -260,7 +260,7 @@ Use this variant when:
 - you still want one flat `Result` at the end.
 
 Outside a Result/null contract, do not throw `_nay.message` directly.
-In Convex code, prefer `convex_error(...)` / `ConvexError`; outside Convex code, throw an ad hoc message and pass `_nay` via `cause`:
+In Convex code, prefer `convex_error(...)`; outside Convex code, throw an ad hoc message and pass `_nay` via `cause`:
 
 ```ts
 if (result._nay) {
@@ -278,12 +278,12 @@ This applies to any mutation flow, not only errors-as-values:
 - Any normal return (including `_nay`, `null`, `{ error: ... }`, etc.) does **not** rollback prior writes in that mutation.
 - Keep validation/fallible non-DB work first, and group DB writes at the end.
 - Avoid early returns between related DB writes unless partial writes are explicitly intended.
-- If a failure branch must rollback all writes, `throw` only when the boundary cannot return `Result` or `null`; prefer `ConvexError` / `convex_error(...)` over raw `Error` in Convex code.
+- If a failure branch must rollback all writes, `throw` only when the boundary cannot return `Result` or `null`; prefer `convex_error(...)` over raw `Error` in Convex code.
 - Exception: explicit cleanup markers in `finally` can be intentional side effects; document this clearly.
 
-## Type-safe `ConvexError` pattern (this repo)
+## Type-safe `convex_error` pattern (this repo)
 
-For thrown `ConvexError` typing, we attach error metadata to mutation args and extract it on the client.
+For thrown `convex_error(...)` typing, we attach error metadata to mutation args and extract it on the client.
 
 Server side (in the mutation file):
 
@@ -300,7 +300,7 @@ export const restore_snapshot = mutation({
 		...({} as ReturnType<typeof restore_snapshot_error>),
 	},
 	handler: async (ctx, args) => {
-		throw new ConvexError({
+		throw convex_error({
 			message: "yjsSnapshotUpdates is not set" satisfies NonNullable<(typeof args)["_errors"]>["message"],
 		});
 	},
