@@ -19,8 +19,6 @@ export default defineConfig({
 			verboseFileRoutes: false,
 		}),
 		react({
-			// Keep default node_modules exclusion, but allow Ariakit modules through Babel transforms.
-			exclude: /node_modules[\\/](?!\.pnpm[\\/]@ariakit\+|@ariakit[\\/])/,
 			// https://react.dev/learn/react-compiler
 			babel: {
 				plugins: [
@@ -46,9 +44,7 @@ export default defineConfig({
 									filename.startsWith(path.resolve(__dirname, "src")) ||
 									filename.startsWith(path.resolve(__dirname, "vendor/novel")) ||
 									filename.startsWith(path.resolve(__dirname, "vendor/polar")) ||
-									filename.startsWith(path.resolve(__dirname, "vendor/tiptap")) ||
-									filename.includes(`${path.sep}node_modules${path.sep}@ariakit${path.sep}`) ||
-									filename.includes(`${path.sep}.pnpm${path.sep}@ariakit+`)
+									filename.startsWith(path.resolve(__dirname, "vendor/tiptap"))
 								);
 							},
 						},
@@ -82,8 +78,6 @@ export default defineConfig({
 			"@convex-dev/polar",
 			"@convex-dev/rate-limiter",
 			"@convex-dev/r2",
-			"@ariakit/react",
-			"@ariakit/react-core",
 
 			"novel",
 
