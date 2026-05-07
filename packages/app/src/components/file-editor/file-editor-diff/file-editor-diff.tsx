@@ -423,6 +423,7 @@ export type FileEditorDiff_Props = {
 	threadId?: string;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost?: HTMLElement | null;
+	serverSequence?: number;
 	onExit: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
@@ -582,12 +583,8 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			wordWrap: "on",
 			scrollBeyondLastLine: false,
 			minimap: { enabled: false },
-			
-			// Force the scrollbar to always be visible otherwise the default
-			// auto behaviour does not work well with the top view zone.
 			scrollbar: { vertical: "visible" },
-
-			padding: { top: hasTopViewZoneSlot ? 0 : 64, bottom: 64 },
+			padding: { top: hasTopViewZoneSlot ? 0 : 32, bottom: 64 },
 
 			lineNumbers: "on",
 			renderLineHighlight: "all",
@@ -1402,8 +1399,16 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 });
 
 export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff_Props) {
-	const { nodeId, pendingUpdateId, presenceStore, commentsPortalHost, className, topStickyFloatingSlot, topViewZoneSlot } =
-		props;
+	const {
+		nodeId,
+		pendingUpdateId,
+		presenceStore,
+		commentsPortalHost,
+		className,
+		serverSequence,
+		topStickyFloatingSlot,
+		topViewZoneSlot,
+	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -1414,10 +1419,6 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		pendingUpdateId,
 	});
 	const pendingUpdateLastSequenceSaved = useQuery(api.files_pending_updates.get_file_pending_update_last_sequence_saved, {
-		membershipId,
-		nodeId,
-	});
-	const serverSequenceData = useQuery(api.files_nodes.get_file_last_yjs_sequence, {
 		membershipId,
 		nodeId,
 	});
@@ -1434,9 +1435,9 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 
 	const isSyncDisabled =
 		isSyncing ||
-		serverSequenceData == null ||
+		serverSequence == null ||
 		remoteEditorContentState == null ||
-		remoteEditorContentState.yjsSequence === serverSequenceData.lastSequence;
+		remoteEditorContentState.yjsSequence === serverSequence;
 
 	/**
 	 * The container for the tiptap hoisted elements.

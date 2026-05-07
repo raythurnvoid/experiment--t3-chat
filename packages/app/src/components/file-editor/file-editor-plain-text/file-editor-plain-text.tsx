@@ -10,11 +10,11 @@ import {
 	files_monaco_create_editor_model,
 	files_fetch_file_yjs_state_and_markdown,
 } from "@/lib/files.ts";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Editor, type EditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor } from "monaco-editor";
-import { useQuery, useMutation } from "convex/react";
+import { useMutation } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, should_never_happen } from "@/lib/utils.ts";
@@ -165,6 +165,7 @@ type FileEditorPlainTextInner_Props = {
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost?: HTMLElement | null;
+	serverSequence?: number;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 };
@@ -176,6 +177,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
+		serverSequence,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
@@ -183,11 +185,6 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const pushYjsUpdateMutation = useMutation(api.files_nodes.yjs_push_update);
-
-	const serverSequenceData = useQuery(api.files_nodes.get_file_last_yjs_sequence, {
-		membershipId,
-		nodeId,
-	});
 
 	const [initialEditorModel] = useState(() => files_monaco_create_editor_model(initialData.markdown));
 
@@ -210,8 +207,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 	const isSaveDebouncing = dirtyCheckState === "checking";
 	const isSaveDisabled = isSaving || isSyncing || dirtyCheckState !== "dirty";
-	const serverSequence = serverSequenceData?.lastSequence;
-	const isSyncDisabled = isSyncing || isSaving || serverSequence == null || workingYjsDocSequence === serverSequence;
+	const activeServerSequence = serverSequence ?? initialData.yjsSequence;
+	const isSyncDisabled = isSyncing || isSaving || workingYjsDocSequence === activeServerSequence;
 	const hasTopViewZoneSlot = topViewZoneSlot != null && topViewZoneSlot !== false;
 
 	const hoistingContainer = document.getElementById("app_monaco_hoisting_container" satisfies AppElementId);
@@ -617,22 +614,31 @@ export type FileEditorPlainText_Props = {
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost?: HTMLElement | null;
+	serverSequence?: number;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 };
 
 export const FileEditorPlainText = memo(function FileEditorPlainText(props: FileEditorPlainText_Props) {
-	const { nodeId, presenceStore, commentsPortalHost, toolbarPortalHost, topStickyFloatingSlot, topViewZoneSlot } =
-		props;
+	const {
+		nodeId,
+		presenceStore,
+		commentsPortalHost,
+		toolbarPortalHost,
+		serverSequence,
+		topStickyFloatingSlot,
+		topViewZoneSlot,
+	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
-	const fileContentData = usePromiseValue(
-		files_fetch_file_yjs_state_and_markdown({
+	const fileContentDataPromise = useMemo(() => {
+		return files_fetch_file_yjs_state_and_markdown({
 			membershipId,
 			nodeId,
-		}),
-	);
+		});
+	}, [membershipId, nodeId]);
+	const fileContentData = usePromiseValue(fileContentDataPromise);
 
 	if (fileContentData?.markdown._nay) {
 		console.error("[FileEditorPlainText] Error while fetching file content data", fileContentData.markdown._nay);
@@ -656,6 +662,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}
+			serverSequence={serverSequence}
 			topStickyFloatingSlot={topStickyFloatingSlot}
 			topViewZoneSlot={topViewZoneSlot}
 		/>

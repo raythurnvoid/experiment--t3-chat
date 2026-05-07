@@ -7,7 +7,7 @@ import { FileEditorPlainTextSkeleton } from "./file-editor-plain-text/file-edito
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn } from "@/lib/utils.ts";
 import { FileEditorDiff } from "./file-editor-diff/file-editor-diff.tsx";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
@@ -40,7 +40,7 @@ type FileEditorPendingUpdatesFloating_ClassNames =
 	| "FileEditorPendingUpdatesFloating-review-pager-button"
 	| "FileEditorPendingUpdatesFloating-review-pager-label";
 
-type FileEditorPendingUpdatesFloating_Props = {
+export type FileEditorPendingUpdatesFloating_Props = {
 	updatedAt?: number;
 	showReviewButton: boolean;
 	reviewPagerLabel: string;
@@ -50,7 +50,7 @@ type FileEditorPendingUpdatesFloating_Props = {
 	onNavigateNext: () => void;
 };
 
-function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdatesFloating_Props) {
+export function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdatesFloating_Props) {
 	const { showReviewButton, reviewPagerLabel, canNavigate, onReviewChanges, onNavigatePrevious, onNavigateNext } =
 		props;
 
@@ -362,6 +362,7 @@ type FileEditorRender_Props = {
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost?: HTMLElement | null;
+	serverSequence?: number;
 	onDiffExit: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
@@ -375,6 +376,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
+		serverSequence,
 		onDiffExit,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
@@ -411,9 +413,10 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				nodeId={nodeId}
 				pendingUpdateId={pendingUpdateId}
 				presenceStore={presenceStore}
-				onExit={onDiffExit}
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}
+				serverSequence={serverSequence}
+				onExit={onDiffExit}
 				topStickyFloatingSlot={topStickyFloatingSlot}
 				topViewZoneSlot={topViewZoneSlot}
 			/>
@@ -426,6 +429,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}
+			serverSequence={serverSequence}
 			topStickyFloatingSlot={topStickyFloatingSlot}
 			topViewZoneSlot={topViewZoneSlot}
 		/>
@@ -445,106 +449,42 @@ export type FileEditor_ClassNames =
 	| "FileEditor-mode-rich-text"
 	| "FileEditor-editor-area";
 
-export type FileEditor_NavigatePendingUpdates = (args: {
-	nodeId: app_convex_Id<"files_nodes">;
-	forceDiffEditor: boolean;
-}) => void;
-
 export type FileEditor_Layout = "route" | "embedded";
 
 type FileEditorInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
+	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	serverSequence?: number;
 	editorMode: FileEditor_Mode;
 	layout: FileEditor_Layout;
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost?: HTMLElement | null;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
-	onReviewPendingUpdates?: () => void;
-	onNavigatePendingUpdates?: FileEditor_NavigatePendingUpdates;
 	onDiffExit?: () => void;
+	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 };
 
 function FileEditorInner(props: FileEditorInner_Props) {
 	const {
 		nodeId,
+		pendingUpdateId,
+		serverSequence,
 		editorMode,
 		layout,
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
 		onEditorModeChange,
-		onReviewPendingUpdates,
-		onNavigatePendingUpdates,
 		onDiffExit,
+		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
-
-	const { membershipId } = AppTenantProvider.useContext();
-
-	const allPendingUpdatesResult = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, {
-		membershipId,
-	});
-
-	const pendingUpdatesOrdered = allPendingUpdatesResult ? allPendingUpdatesResult.toReversed() : [];
-	const hasAnyPendingUpdates = pendingUpdatesOrdered.length > 0;
-	const hasPendingUpdates = hasAnyPendingUpdates;
-	const currentPendingUpdateIndex = pendingUpdatesOrdered.findIndex((pendingUpdate) => pendingUpdate.nodeId === nodeId);
-	const currentPendingUpdate = pendingUpdatesOrdered[currentPendingUpdateIndex];
-	const hasCurrentPendingUpdates = currentPendingUpdateIndex >= 0;
-	const activePendingUpdateIndex = hasCurrentPendingUpdates ? currentPendingUpdateIndex : 0;
-	const canNavigatePendingUpdates =
-		pendingUpdatesOrdered.length > 1 || (pendingUpdatesOrdered.length === 1 && !hasCurrentPendingUpdates);
-	const reviewPagerLabel = hasCurrentPendingUpdates
-		? `Review ${activePendingUpdateIndex + 1} of ${pendingUpdatesOrdered.length}`
-		: "Review pending updates";
 
 	const handleDiffExit = useFn(() => {
 		onEditorModeChange("rich_text_editor");
 		onDiffExit?.();
-	});
-
-	const handleNavigatePendingUpdates = useFn((direction: "prev" | "next") => {
-		if (!onNavigatePendingUpdates) {
-			return;
-		}
-
-		const navCount = pendingUpdatesOrdered.length;
-		if (navCount <= 1) {
-			const onlyPendingUpdate = pendingUpdatesOrdered[0];
-			if (!onlyPendingUpdate || hasCurrentPendingUpdates) {
-				return;
-			}
-
-			onNavigatePendingUpdates({
-				nodeId: onlyPendingUpdate.nodeId,
-				forceDiffEditor: true,
-			});
-			return;
-		}
-
-		const nextIndex =
-			direction === "prev"
-				? (activePendingUpdateIndex - 1 + navCount) % navCount
-				: (activePendingUpdateIndex + 1) % navCount;
-		const nextPendingUpdate = pendingUpdatesOrdered[nextIndex];
-		if (!nextPendingUpdate) {
-			return;
-		}
-
-		onNavigatePendingUpdates({
-			nodeId: nextPendingUpdate.nodeId,
-			forceDiffEditor: !hasCurrentPendingUpdates,
-		});
-	});
-
-	const handleNavigatePendingUpdatesPrevious = useFn(() => {
-		handleNavigatePendingUpdates("prev");
-	});
-
-	const handleNavigatePendingUpdatesNext = useFn(() => {
-		handleNavigatePendingUpdates("next");
 	});
 
 	const handleCatchBoundaryError = useFn((err: Error) => {
@@ -552,18 +492,6 @@ function FileEditorInner(props: FileEditorInner_Props) {
 	});
 
 	const getCatchBoundaryResetKey = useFn(() => 0);
-
-	const topStickyFloatingSlot = hasPendingUpdates ? (
-		<FileEditorPendingUpdatesFloating
-			updatedAt={currentPendingUpdate?.updatedAt}
-			showReviewButton={hasCurrentPendingUpdates && editorMode !== "diff_editor"}
-			reviewPagerLabel={reviewPagerLabel}
-			canNavigate={canNavigatePendingUpdates}
-			onReviewChanges={onReviewPendingUpdates ?? (() => {})}
-			onNavigatePrevious={handleNavigatePendingUpdatesPrevious}
-			onNavigateNext={handleNavigatePendingUpdatesNext}
-		/>
-	) : null;
 
 	const renderHostStyle =
 		editorMode === "rich_text_editor"
@@ -619,14 +547,15 @@ function FileEditorInner(props: FileEditorInner_Props) {
 					<div style={renderHostStyle}>
 						<FileEditorRender
 							nodeId={nodeId}
-							pendingUpdateId={currentPendingUpdate?._id}
+							pendingUpdateId={pendingUpdateId}
 							editorMode={editorMode}
 							presenceStore={presenceStore}
 							commentsPortalHost={commentsPortalHost}
 							toolbarPortalHost={toolbarPortalHost}
+							serverSequence={serverSequence}
+							onDiffExit={handleDiffExit}
 							topStickyFloatingSlot={topStickyFloatingSlot}
 							topViewZoneSlot={topViewZoneSlot}
-							onDiffExit={handleDiffExit}
 						/>
 					</div>
 				</CatchBoundary>
@@ -642,13 +571,15 @@ export type FileEditor_Ref = {
 export type FileEditor_Props = {
 	ref?: Ref<FileEditor_Ref>;
 	nodeId: app_convex_Id<"files_nodes"> | null | undefined;
+	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	serverSequence?: number;
 	editorMode: FileEditor_Mode;
 	layout?: FileEditor_Layout;
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost?: HTMLElement | null;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
-	onNavigatePendingUpdates?: FileEditor_NavigatePendingUpdates;
+	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 };
 
@@ -656,13 +587,15 @@ export function FileEditor(props: FileEditor_Props) {
 	const {
 		ref,
 		nodeId,
+		pendingUpdateId,
+		serverSequence,
 		editorMode,
 		layout = "route",
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
 		onEditorModeChange,
-		onNavigatePendingUpdates,
+		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
 
@@ -674,21 +607,18 @@ export function FileEditor(props: FileEditor_Props) {
 		[editorMode],
 	);
 
-	const handleReviewPendingUpdates = useFn(() => {
-		onEditorModeChange("diff_editor");
-	});
-
 	return nodeId ? (
 		<FileEditorInner
 			nodeId={nodeId}
+			pendingUpdateId={pendingUpdateId}
+			serverSequence={serverSequence}
 			editorMode={editorMode}
 			layout={layout}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}
 			onEditorModeChange={onEditorModeChange}
-			onReviewPendingUpdates={handleReviewPendingUpdates}
-			onNavigatePendingUpdates={onNavigatePendingUpdates}
+			topStickyFloatingSlot={topStickyFloatingSlot}
 			topViewZoneSlot={topViewZoneSlot}
 		/>
 	) : (

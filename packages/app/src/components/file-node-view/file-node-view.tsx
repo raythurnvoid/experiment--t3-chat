@@ -5,11 +5,13 @@ import { FileEditorSidebar } from "@/components/file-editor/file-editor-sidebar/
 import { FileEditorPresence } from "@/components/file-editor/file-editor-presence.tsx";
 import {
 	FileEditor,
+	FileEditorPendingUpdatesFloating,
 	FileEditorPresenceSupplier,
 	type FileEditor_Mode,
 	type FileEditor_Layout,
-	type FileEditor_NavigatePendingUpdates,
 	type FileEditor_OnlineUser,
+	type FileEditorPresenceSupplier_Props,
+	type FileEditor_Props,
 } from "@/components/file-editor/file-editor.tsx";
 import { FilesSidebarToggle } from "@/components/files-sidebar-toggle.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
@@ -33,7 +35,7 @@ import type { AppElementId } from "@/lib/dom-utils.ts";
 import { files_ROOT_ID, type files_EditorView, type files_TreeItem } from "@/lib/files.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { cn } from "@/lib/utils.ts";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { BookOpen, FilePlus, FileText, Folder, Home } from "lucide-react";
 import React, { memo, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -66,6 +68,23 @@ function get_breadcrumb_path(treeItemsList: files_TreeItem[] | undefined, nodeId
 	}
 
 	return path;
+}
+
+function get_folder_readme_node_id(
+	treeItemsList: files_TreeItem[] | undefined,
+	folderItemId: string | null | undefined,
+): app_convex_Id<"files_nodes"> | null {
+	const readmeItem = treeItemsList?.find((item) => {
+		return (
+			item.type === "node" &&
+			item.parentId === folderItemId &&
+			item.kind === "file" &&
+			item.archiveOperationId === undefined &&
+			item.title.toLowerCase() === "readme.md"
+		);
+	});
+
+	return readmeItem?._id ?? null;
 }
 
 // #region header
@@ -212,95 +231,101 @@ const FileNodeViewHeaderPortal = memo(function FileNodeViewHeaderPortal(props: F
 // #region file editor
 type FileNodeViewFileEditor_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
+	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	serverSequence?: number;
 	editorMode: FileEditor_Mode;
 	layout?: FileEditor_Layout;
+	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost?: HTMLElement | null;
+	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
-	onNavigatePendingUpdates: FileEditor_NavigatePendingUpdates;
 };
 
 const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileNodeViewFileEditor_Props) {
 	const {
 		nodeId,
+		pendingUpdateId,
+		serverSequence,
 		editorMode,
 		layout,
+		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
+		topStickyFloatingSlot,
 		topViewZoneSlot,
 		onEditorModeChange,
-		onNavigatePendingUpdates,
 	} = props;
 
-	const authenticated = AppAuthProvider.useAuthenticated();
-
 	return (
-		<FileEditorPresenceSupplier userId={authenticated.userId} nodeId={nodeId}>
-			{({ presenceStore }) => (
-				<FileEditor
-					nodeId={nodeId}
-					editorMode={editorMode}
-					layout={layout}
-					presenceStore={presenceStore}
-					commentsPortalHost={commentsPortalHost}
-					toolbarPortalHost={toolbarPortalHost}
-					topViewZoneSlot={topViewZoneSlot}
-					onEditorModeChange={onEditorModeChange}
-					onNavigatePendingUpdates={onNavigatePendingUpdates}
-				/>
-			)}
-		</FileEditorPresenceSupplier>
+		<FileEditor
+			nodeId={nodeId}
+			pendingUpdateId={pendingUpdateId}
+			serverSequence={serverSequence}
+			editorMode={editorMode}
+			layout={layout}
+			presenceStore={presenceStore}
+			commentsPortalHost={commentsPortalHost}
+			toolbarPortalHost={toolbarPortalHost}
+			topStickyFloatingSlot={topStickyFloatingSlot}
+			topViewZoneSlot={topViewZoneSlot}
+			onEditorModeChange={onEditorModeChange}
+		/>
 	);
 });
 
 type FileNodeViewFile_Props = {
 	node: app_convex_Doc<"files_nodes">;
 	treeItemsList: FileNodeViewContent_Props["treeItemsList"];
+	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	serverSequence?: number;
 	editorMode: FileEditor_Mode;
 	filesSidebarOpen: boolean;
+	presenceStore: FileEditor_Props["presenceStore"];
+	onlineUsers: FileEditor_OnlineUser[];
 	commentsPortalHost: HTMLElement | null;
+	topStickyFloatingSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
-	onNavigatePendingUpdates: FileEditor_NavigatePendingUpdates;
 };
 
 const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_Props) {
 	const {
 		node,
 		treeItemsList,
+		pendingUpdateId,
+		serverSequence,
 		editorMode,
 		filesSidebarOpen,
+		presenceStore,
+		onlineUsers,
 		commentsPortalHost,
+		topStickyFloatingSlot,
 		onEditorModeChange,
-		onNavigatePendingUpdates,
 	} = props;
 
-	const authenticated = AppAuthProvider.useAuthenticated();
-
 	return (
-		<FileEditorPresenceSupplier userId={authenticated.userId} nodeId={node._id}>
-			{({ presenceStore, onlineUsers }) => (
-				<>
-					<FileNodeViewHeaderPortal
-						selectedNodeId={node._id}
-						treeItemsList={treeItemsList}
-						editorMode={editorMode}
-						filesSidebarOpen={filesSidebarOpen}
-						showFileControls={true}
-						onlineUsers={onlineUsers}
-						onEditorModeChange={onEditorModeChange}
-					/>
-					<FileEditor
-						nodeId={node._id}
-						editorMode={editorMode}
-						presenceStore={presenceStore}
-						commentsPortalHost={commentsPortalHost}
-						onEditorModeChange={onEditorModeChange}
-						onNavigatePendingUpdates={onNavigatePendingUpdates}
-					/>
-				</>
-			)}
-		</FileEditorPresenceSupplier>
+		<>
+			<FileNodeViewHeaderPortal
+				selectedNodeId={node._id}
+				treeItemsList={treeItemsList}
+				editorMode={editorMode}
+				filesSidebarOpen={filesSidebarOpen}
+				showFileControls={true}
+				onlineUsers={onlineUsers}
+				onEditorModeChange={onEditorModeChange}
+			/>
+			<FileNodeViewFileEditor
+				nodeId={node._id}
+				pendingUpdateId={pendingUpdateId}
+				serverSequence={serverSequence}
+				editorMode={editorMode}
+				presenceStore={presenceStore}
+				commentsPortalHost={commentsPortalHost}
+				topStickyFloatingSlot={topStickyFloatingSlot}
+				onEditorModeChange={onEditorModeChange}
+			/>
+		</>
 	);
 });
 // #endregion file editor
@@ -338,10 +363,13 @@ type FileNodeViewFolderExplorer_Props = {
 	node: app_convex_Doc<"files_nodes"> | null;
 	folderItemId: app_convex_Doc<"files_nodes">["parentId"];
 	treeItemsList: FileNodeViewContent_Props["treeItemsList"];
+	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	serverSequence?: number;
 	editorMode: FileEditor_Mode;
+	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
+	topStickyFloatingSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
-	onNavigatePendingUpdates: FileEditor_NavigatePendingUpdates;
 };
 
 const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(props: FileNodeViewFolderExplorer_Props) {
@@ -349,10 +377,13 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		node,
 		folderItemId,
 		treeItemsList,
+		pendingUpdateId,
+		serverSequence,
 		editorMode,
+		presenceStore,
 		commentsPortalHost,
+		topStickyFloatingSlot,
 		onEditorModeChange,
-		onNavigatePendingUpdates,
 	} = props;
 	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
 
@@ -381,8 +412,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		? childItems
 		: childItems.slice(0, FILE_NODE_VIEW_FOLDER_EXPLORER_INITIAL_ITEMS_COUNT);
 	const hiddenChildItemsCount = childItems.length - visibleChildItems.length;
-	const readmeItem = childItems.find((item) => item.kind === "file" && item.title.toLowerCase() === "readme.md");
-	const readmeNodeId = readmeItem?._id ?? null;
+	const readmeNodeId = get_folder_readme_node_id(treeItemsList, folderItemId);
 	const folderTitle = node?.name ?? "Files";
 
 	const handleShowMoreClick = useFn(() => {
@@ -416,7 +446,6 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			});
 	});
 
-	const isMonacoEditorMode = editorMode !== "rich_text_editor";
 	const toolbarPortalHostElement = (
 		<div
 			ref={setToolbarPortalHost}
@@ -539,13 +568,16 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			<FileNodeViewFileEditor
 				key={readmeNodeId}
 				nodeId={readmeNodeId}
+				pendingUpdateId={pendingUpdateId}
+				serverSequence={serverSequence}
 				editorMode={editorMode}
 				layout="embedded"
+				presenceStore={presenceStore}
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}
-				topViewZoneSlot={isMonacoEditorMode ? folderBrowserContent : undefined}
+				topStickyFloatingSlot={topStickyFloatingSlot}
+				topViewZoneSlot={editorMode !== "rich_text_editor" ? folderBrowserContent : undefined}
 				onEditorModeChange={onEditorModeChange}
-				onNavigatePendingUpdates={onNavigatePendingUpdates}
 			/>
 		</div>
 	) : null;
@@ -554,12 +586,12 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		<div
 			className={cn(
 				"FileNodeViewFolderExplorer" satisfies FileNodeViewFolderExplorer_ClassNames,
-				isMonacoEditorMode &&
+				editorMode !== "rich_text_editor" &&
 					readmeNodeId &&
 					("FileNodeViewFolderExplorer-mode-monaco" satisfies FileNodeViewFolderExplorer_ClassNames),
 			)}
 		>
-			{isMonacoEditorMode && readmeNodeId ? (
+			{editorMode !== "rich_text_editor" && readmeNodeId ? (
 				<>
 					{toolbarPortalHostElement}
 					{readmeEditor}
@@ -581,11 +613,15 @@ type FileNodeViewContent_Props = {
 	selectedNodeId: string | null | undefined;
 	node: app_convex_Doc<"files_nodes"> | null | undefined;
 	treeItemsList: app_convex_FunctionReturnType<typeof app_convex_api.files_nodes.get_tree_nodes_list> | undefined;
+	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	serverSequence?: number;
 	editorMode: FileEditor_Mode;
 	filesSidebarOpen: boolean;
+	presenceStore: FileEditor_Props["presenceStore"];
+	onlineUsers: FileEditor_OnlineUser[];
 	commentsPortalHost: HTMLElement | null;
+	topStickyFloatingSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
-	onNavigatePendingUpdates: FileEditor_NavigatePendingUpdates;
 };
 
 const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeViewContent_Props) {
@@ -593,11 +629,15 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		selectedNodeId,
 		node,
 		treeItemsList,
+		pendingUpdateId,
+		serverSequence,
 		editorMode,
 		filesSidebarOpen,
+		presenceStore,
+		onlineUsers,
 		commentsPortalHost,
+		topStickyFloatingSlot,
 		onEditorModeChange,
-		onNavigatePendingUpdates,
 	} = props;
 
 	if (selectedNodeId === files_ROOT_ID) {
@@ -609,17 +649,20 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					editorMode={editorMode}
 					filesSidebarOpen={filesSidebarOpen}
 					showFileControls={true}
-					onlineUsers={[]}
+					onlineUsers={onlineUsers}
 					onEditorModeChange={onEditorModeChange}
 				/>
 				<FileNodeViewFolderExplorer
 					node={null}
 					folderItemId={files_ROOT_ID}
 					treeItemsList={treeItemsList}
+					pendingUpdateId={pendingUpdateId}
+					serverSequence={serverSequence}
 					editorMode={editorMode}
+					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
+					topStickyFloatingSlot={topStickyFloatingSlot}
 					onEditorModeChange={onEditorModeChange}
-					onNavigatePendingUpdates={onNavigatePendingUpdates}
 				/>
 			</>
 		);
@@ -638,17 +681,20 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					editorMode={editorMode}
 					filesSidebarOpen={filesSidebarOpen}
 					showFileControls={true}
-					onlineUsers={[]}
+					onlineUsers={onlineUsers}
 					onEditorModeChange={onEditorModeChange}
 				/>
 				<FileNodeViewFolderExplorer
 					node={node}
 					folderItemId={node._id}
 					treeItemsList={treeItemsList}
+					pendingUpdateId={pendingUpdateId}
+					serverSequence={serverSequence}
 					editorMode={editorMode}
+					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
+					topStickyFloatingSlot={topStickyFloatingSlot}
 					onEditorModeChange={onEditorModeChange}
-					onNavigatePendingUpdates={onNavigatePendingUpdates}
 				/>
 			</>
 		);
@@ -658,11 +704,15 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		<FileNodeViewFile
 			node={node}
 			treeItemsList={treeItemsList}
+			pendingUpdateId={pendingUpdateId}
+			serverSequence={serverSequence}
 			editorMode={editorMode}
 			filesSidebarOpen={filesSidebarOpen}
+			presenceStore={presenceStore}
+			onlineUsers={onlineUsers}
 			commentsPortalHost={commentsPortalHost}
+			topStickyFloatingSlot={topStickyFloatingSlot}
 			onEditorModeChange={onEditorModeChange}
-			onNavigatePendingUpdates={onNavigatePendingUpdates}
 		/>
 	);
 });
@@ -695,6 +745,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const { searchParams, onNavigateSearch } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
+	const authenticated = AppAuthProvider.useAuthenticated();
 
 	const effectiveView: files_EditorView = searchParams.view ?? "rich_text_editor";
 
@@ -728,6 +779,29 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	);
 	const resolvedNodeId = isRootNodeSelected ? files_ROOT_ID : (resolvedNode?._id ?? null);
 
+	// Treat a folder README as the active editor node so pending-update and sync subscriptions
+	// have the same owner for selected files and folder README editors.
+	const activeEditorNodeId = isRootNodeSelected
+		? get_folder_readme_node_id(treeItemsList, files_ROOT_ID)
+		: resolvedNode?.kind === "file"
+			? resolvedNode._id
+				: resolvedNode?.kind === "folder"
+				? get_folder_readme_node_id(treeItemsList, resolvedNode._id)
+				: null;
+
+	const allPendingUpdatesResult = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, {
+		membershipId,
+	});
+	const activeEditorServerSequenceData = useQuery(
+		app_convex_api.files_nodes.get_file_last_yjs_sequence,
+		activeEditorNodeId && effectiveView !== "rich_text_editor"
+			? {
+					membershipId,
+					nodeId: activeEditorNodeId,
+				}
+			: "skip",
+	);
+
 	const navigateToNode = useFn((nodeId?: string, nextEditorMode: files_EditorView = effectiveView) => {
 		const view = nextEditorMode === "rich_text_editor" ? undefined : nextEditorMode;
 
@@ -740,10 +814,77 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		onNavigateSearch({ nodeId, view });
 	});
 
-	const handleNavigatePendingUpdates = useFn<FileEditor_NavigatePendingUpdates>((args) => {
-		const nextView = args.forceDiffEditor ? "diff_editor" : effectiveView;
-		navigateToNode(args.nodeId, nextView);
+	const pendingUpdates = allPendingUpdatesResult ?? [];
+	const currentPendingUpdateIndex = activeEditorNodeId
+		? pendingUpdates.findIndex((pendingUpdate) => pendingUpdate.nodeId === activeEditorNodeId)
+		: -1;
+	const currentPendingUpdate = pendingUpdates[currentPendingUpdateIndex];
+	const hasCurrentPendingUpdates = currentPendingUpdateIndex >= 0;
+	const activePendingUpdateIndex = hasCurrentPendingUpdates ? currentPendingUpdateIndex : 0;
+	const canNavigatePendingUpdates =
+		pendingUpdates.length > 1 || (pendingUpdates.length === 1 && !hasCurrentPendingUpdates);
+	const reviewPagerLabel = hasCurrentPendingUpdates
+		? `Review ${activePendingUpdateIndex + 1} of ${pendingUpdates.length}`
+		: "Review pending updates";
+
+	const handleReviewPendingUpdates = useFn(() => {
+		navigateToView("diff_editor");
 	});
+
+	const handleNavigatePendingUpdates = useFn(
+		(args: { nodeId: app_convex_Id<"files_nodes">; forceDiffEditor: boolean }) => {
+			const nextView = args.forceDiffEditor ? "diff_editor" : effectiveView;
+			navigateToNode(args.nodeId, nextView);
+		},
+	);
+
+	const handleNavigatePendingUpdatesDirection = useFn((direction: "prev" | "next") => {
+		if (pendingUpdates.length <= 1) {
+			if (!pendingUpdates[0] || hasCurrentPendingUpdates) {
+				return;
+			}
+
+			handleNavigatePendingUpdates({
+				nodeId: pendingUpdates[0].nodeId,
+				forceDiffEditor: true,
+			});
+			return;
+		}
+
+		const nextIndex =
+			direction === "prev"
+				? (activePendingUpdateIndex - 1 + pendingUpdates.length) % pendingUpdates.length
+				: (activePendingUpdateIndex + 1) % pendingUpdates.length;
+		const nextPendingUpdate = pendingUpdates[nextIndex];
+		if (!nextPendingUpdate) {
+			return;
+		}
+
+		handleNavigatePendingUpdates({
+			nodeId: nextPendingUpdate.nodeId,
+			forceDiffEditor: !hasCurrentPendingUpdates,
+		});
+	});
+
+	const handleNavigatePendingUpdatesPrevious = useFn(() => {
+		handleNavigatePendingUpdatesDirection("prev");
+	});
+
+	const handleNavigatePendingUpdatesNext = useFn(() => {
+		handleNavigatePendingUpdatesDirection("next");
+	});
+
+	const topStickyFloatingSlot = pendingUpdates.length > 0 ? (
+		<FileEditorPendingUpdatesFloating
+			updatedAt={currentPendingUpdate?.updatedAt}
+			showReviewButton={hasCurrentPendingUpdates && effectiveView !== "diff_editor"}
+			reviewPagerLabel={reviewPagerLabel}
+			canNavigate={canNavigatePendingUpdates}
+			onReviewChanges={handleReviewPendingUpdates}
+			onNavigatePrevious={handleNavigatePendingUpdatesPrevious}
+			onNavigateNext={handleNavigatePendingUpdatesNext}
+		/>
+	) : null;
 
 	const handleArchive = useFn<React.ComponentProps<typeof FilesSidebar>["onArchive"]>((itemId) => {
 		// When the selected node is archived, leave the user on the root folder instead of a stale node id.
@@ -836,6 +977,27 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				}
 			: undefined;
 
+	const renderContent: FileEditorPresenceSupplier_Props["children"] = (presenceProps) => {
+		return resolvedNodeId ? (
+			<FileNodeViewContent
+				selectedNodeId={searchNodeId}
+				node={resolvedNode}
+				treeItemsList={treeItemsList}
+				pendingUpdateId={currentPendingUpdate?._id}
+				serverSequence={activeEditorServerSequenceData?.lastSequence}
+				editorMode={effectiveView}
+				filesSidebarOpen={filesSidebarOpen}
+				presenceStore={presenceProps.presenceStore}
+				onlineUsers={presenceProps.onlineUsers}
+				commentsPortalHost={commentsPortalHost}
+				topStickyFloatingSlot={topStickyFloatingSlot}
+				onEditorModeChange={navigateToView}
+			/>
+		) : searchNodeId ? (
+			<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames}>Loading...</div>
+		) : null;
+	};
+
 	return (
 		<MyPanelGroup
 			className={"FileNodeView" satisfies FileNodeView_ClassNames}
@@ -878,20 +1040,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 							className={"FileNodeView-content-panel" satisfies FileNodeView_ClassNames}
 							style={contentPanelStyle}
 						>
-							{resolvedNodeId ? (
-								<FileNodeViewContent
-									selectedNodeId={searchNodeId}
-									node={resolvedNode}
-									treeItemsList={treeItemsList}
-									editorMode={effectiveView}
-									filesSidebarOpen={filesSidebarOpen}
-									commentsPortalHost={commentsPortalHost}
-									onEditorModeChange={navigateToView}
-									onNavigatePendingUpdates={handleNavigatePendingUpdates}
-								/>
-							) : searchNodeId ? (
-								<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames}>Loading...</div>
-							) : null}
+							{activeEditorNodeId ? (
+								<FileEditorPresenceSupplier userId={authenticated.userId} nodeId={activeEditorNodeId}>
+									{renderContent}
+								</FileEditorPresenceSupplier>
+							) : (
+								renderContent({ presenceStore: null, onlineUsers: [] })
+							)}
 						</MyPanel>
 						<MyPanelResizeHandle onDragging={handleEditorPanelDragging} />
 						<MyPanel

@@ -650,10 +650,11 @@ describe("process_user_deletion_request", () => {
 				userId: String(deletedUser.userId),
 				nodeId: await ctx.db
 					.query("files_nodes")
-					.withIndex("by_workspace_project_name", (q) =>
+					.withIndex("by_workspace_project_kind_name", (q) =>
 						q
 							.eq("workspaceId", String(created._yay.workspaceId))
 							.eq("projectId", String(created._yay.defaultProjectId))
+							.eq("kind", "file")
 							.eq("name", "shared-page"),
 					)
 					.first()
@@ -745,10 +746,11 @@ describe("process_user_deletion_request", () => {
 				ctx.db.get("workspaces", sharedWorkspace.workspaceId),
 				ctx.db
 					.query("files_nodes")
-					.withIndex("by_workspace_project_name", (q) =>
+					.withIndex("by_workspace_project_kind_name", (q) =>
 						q
 							.eq("workspaceId", String(sharedWorkspace.workspaceId))
 							.eq("projectId", String(sharedWorkspace.defaultProjectId))
+							.eq("kind", "file")
 							.eq("name", "shared-page"),
 					)
 					.collect(),
