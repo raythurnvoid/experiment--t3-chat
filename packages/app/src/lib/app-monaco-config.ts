@@ -72,7 +72,7 @@ try {
 		inherit: true,
 		rules: [],
 		colors: {
-			"editor.background": app_monaco_get_color_hex("color-base-1-03", "#1e1e1e"),
+			"editor.background": app_monaco_get_color_hex("color-base-1-02", "#1e1e1e"),
 			"editor.foreground": app_monaco_get_color_hex("color-fg-11", "#d4d4d4"),
 
 			"editorLineNumber.foreground": app_monaco_get_color_hex("color-fg-07", "#858585"),
@@ -98,7 +98,7 @@ try {
 			"editor.lineHighlightBackground": hex_with_alpha(app_monaco_get_color_hex("color-base-1-05", "#252526"), 0.65),
 			"editor.lineHighlightBorder": "#00000000",
 
-			"editorGutter.background": app_monaco_get_color_hex("color-base-1-03", "#1e1e1e"),
+			"editorGutter.background": app_monaco_get_color_hex("color-base-1-02", "#1e1e1e"),
 
 			"editorIndentGuide.background1": hex_with_alpha(app_monaco_get_color_hex("color-base-1-10", "#3c3c3c"), 0.55),
 			"editorIndentGuide.activeBackground1": hex_with_alpha(app_monaco_get_color_hex("color-fg-07", "#858585"), 0.55),
@@ -120,8 +120,6 @@ try {
 			"scrollbarSlider.activeBackground": hex_with_alpha(app_monaco_get_color_hex("color-fg-07", "#858585"), 0.55),
 
 			"editorWhitespace.foreground": hex_with_alpha(app_monaco_get_color_hex("color-fg-07", "#858585"), 0.35),
-
-			"minimap.background": app_monaco_get_color_hex("color-base-1-03", "#1e1e1e"),
 		},
 	});
 	monaco.editor.setTheme(app_monaco_THEME_NAME_DARK);

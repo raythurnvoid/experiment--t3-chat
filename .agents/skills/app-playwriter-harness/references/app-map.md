@@ -6,7 +6,7 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 
 - Development app URL: `http://localhost:5173/`.
 - Workspace/project files route shape: `/w/:workspaceName/:projectName/files`.
-- The `/files` route accepts `fileId` and optional `view` search params.
+- The `/files` route accepts `nodeId` and optional `view` search params.
 - Known page editor views: `rich_text_editor`, `plain_text_editor`, `diff_editor`.
 
 ## Main Left Navigation

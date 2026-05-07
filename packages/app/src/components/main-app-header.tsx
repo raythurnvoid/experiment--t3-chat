@@ -662,7 +662,7 @@ export const MainAppHeader = memo(function MainAppHeader(props: MainAppHeader_Pr
 	const { ref, id, className, ...rest } = props;
 
 	// Match the generated /files index route instead of parsing the browser path.
-	// The editor header renders its own inline billing indicator, so suppress the bar-level copy there.
+	// FileNodeView renders its own inline billing indicator, so suppress the bar-level copy there.
 	const isFilesRoute =
 		useMatch({
 			from: "/w/$workspaceName/$projectName/files/",

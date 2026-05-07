@@ -93,6 +93,8 @@
 
 	/* #region editor */
 	.FileEditorDiff-editor {
+		position: relative;
+
 		height: 100%;
 		flex: 1;
 		contain: strict;

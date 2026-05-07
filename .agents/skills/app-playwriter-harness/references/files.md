@@ -4,7 +4,8 @@ Use this file for reusable `/files` route and editor interaction knowledge.
 
 ## Route
 
-- Route shape: `/w/:workspaceName/:projectName/files?fileId=<id>`.
+- Route shape: `/w/:workspaceName/:projectName/files?nodeId=<id>`.
+- `nodeId=root` opens the root folder browser. Folder node ids open the folder browser, and file node ids open the file editor.
 - Optional `view` search param selects editor mode:
   - `rich_text_editor`
   - `plain_text_editor`
@@ -18,12 +19,15 @@ Use this file for reusable `/files` route and editor interaction knowledge.
 - Rich text toolbar: `[role="toolbar"][aria-label="Toolbar"]`.
 - Rich text content root class: `.FileEditorRichText-editor-content-root`.
 - Rich text content class: `.FileEditorRichText-editor-content`.
+- Folder explorer root: `.FileNodeViewFolderExplorer`.
+- Folder explorer rows: `.FileNodeViewFolderExplorer-row`.
 
 ## Debugging Notes
 
 - Start with `state.appPlaywriterHarness.observe({ search: /Files|Chat|Review|Toolbar/i })` to confirm the route and major controls.
 - Use `state.appPlaywriterHarness.inspectLeftNav()` before clicking the main sidebar when diagnosing navigation clickability.
 - Avoid force-clicking editor or sidebar controls; if a click is blocked, inspect the topmost element at the target point.
+- Editor mode radios are visually represented by labels in the app header. If clicking a radio locator times out because the native input is tiny, click the matching `#app_main_header_content label` instead.
 
 
 ## Rapid page-switch presence QA

@@ -10,7 +10,7 @@ import {
 	files_monaco_create_editor_model,
 	files_fetch_file_yjs_state_and_markdown,
 } from "@/lib/files.ts";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Editor, type EditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor } from "monaco-editor";
@@ -31,6 +31,8 @@ import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorPlainTextSkeleton } from "./file-editor-plain-text-skeleton.tsx";
+import { FileEditorMonacoTopViewZone } from "../file-editor-monaco-top-view-zone.tsx";
+import { useFn } from "@/hooks/utils-hooks.ts";
 
 // #region toolbar
 export type FileEditorPlainTextToolbar_ClassNames =
@@ -49,9 +51,10 @@ export type FileEditorPlainTextToolbar_Props = {
 	onApplySnapshotMarkdown: (markdown: string) => void;
 	onClickSave: () => void;
 	onClickSync: () => void;
+	toolbarPortalHost?: HTMLElement | null;
 };
 
-function FileEditorPlainTextToolbar(props: FileEditorPlainTextToolbar_Props) {
+const FileEditorPlainTextToolbar = memo(function FileEditorPlainTextToolbar(props: FileEditorPlainTextToolbar_Props) {
 	const {
 		isSaveDisabled,
 		isSyncDisabled,
@@ -62,11 +65,12 @@ function FileEditorPlainTextToolbar(props: FileEditorPlainTextToolbar_Props) {
 		onApplySnapshotMarkdown,
 		onClickSave,
 		onClickSync,
+		toolbarPortalHost,
 	} = props;
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 
-	return (
+	const toolbar = (
 		<div
 			ref={setPortalElement}
 			role="toolbar"
@@ -115,7 +119,13 @@ function FileEditorPlainTextToolbar(props: FileEditorPlainTextToolbar_Props) {
 			)}
 		</div>
 	);
-}
+
+	if (toolbarPortalHost !== undefined) {
+		return toolbarPortalHost ? createPortal(toolbar, toolbarPortalHost) : null;
+	}
+
+	return toolbar;
+});
 // #endregion toolbar
 
 // #region top sticky floating container
@@ -125,7 +135,9 @@ type FileEditorPlainTextTopStickyFloatingContainer_Props = {
 	topStickyFloatingSlot: React.ReactNode;
 };
 
-function FileEditorPlainTextTopStickyFloatingContainer(props: FileEditorPlainTextTopStickyFloatingContainer_Props) {
+const FileEditorPlainTextTopStickyFloatingContainer = memo(function FileEditorPlainTextTopStickyFloatingContainer(
+	props: FileEditorPlainTextTopStickyFloatingContainer_Props,
+) {
 	const { topStickyFloatingSlot } = props;
 
 	return (
@@ -137,7 +149,7 @@ function FileEditorPlainTextTopStickyFloatingContainer(props: FileEditorPlainTex
 			{topStickyFloatingSlot}
 		</div>
 	);
-}
+});
 // #endregion top sticky floating container
 
 // #region root
@@ -152,11 +164,21 @@ type FileEditorPlainTextInner_Props = {
 	};
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost?: HTMLElement | null;
 	topStickyFloatingSlot?: React.ReactNode;
+	topViewZoneSlot?: React.ReactNode;
 };
 
-function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
-	const { initialData, nodeId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
+const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
+	const {
+		initialData,
+		nodeId,
+		presenceStore,
+		commentsPortalHost,
+		toolbarPortalHost,
+		topStickyFloatingSlot,
+		topViewZoneSlot,
+	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -170,6 +192,7 @@ function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
 	const [initialEditorModel] = useState(() => files_monaco_create_editor_model(initialData.markdown));
 
 	const editorRef = useRef<monaco_editor.IStandaloneCodeEditor | null>(null);
+	const [mountedEditor, setMountedEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
 	const modelRef = useRef<monaco_editor.ITextModel | null>(initialEditorModel);
 	const baselineYjsDocRef = useRef<YDoc>(initialData.mut_yjsDoc);
 	const baselineMarkdownRef = useRef<string>(initialData.markdown);
@@ -189,8 +212,26 @@ function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
 	const isSaveDisabled = isSaving || isSyncing || dirtyCheckState !== "dirty";
 	const serverSequence = serverSequenceData?.lastSequence;
 	const isSyncDisabled = isSyncing || isSaving || serverSequence == null || workingYjsDocSequence === serverSequence;
+	const hasTopViewZoneSlot = topViewZoneSlot != null && topViewZoneSlot !== false;
 
 	const hoistingContainer = document.getElementById("app_monaco_hoisting_container" satisfies AppElementId);
+	const editorOptions = ((/* iife */) => {
+		return {
+			overflowWidgetsDomNode: hoistingContainer ?? undefined,
+			fixedOverflowWidgets: true,
+			fontSize: 16,
+			wordWrap: "on",
+			scrollBeyondLastLine: false,
+			minimap: { enabled: false },
+
+			// Force the scrollbar to always be visible otherwise the default
+			// auto behaviour does not work well with the top view zone.
+			scrollbar: { vertical: "visible" },
+
+			padding: { top: hasTopViewZoneSlot ? 0 : 32, bottom: 64 },
+			model: initialEditorModel,
+		} satisfies NonNullable<EditorProps["options"]>;
+	})();
 
 	const updateThreadIds = (markdown: string) => {
 		const headlessEditor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
@@ -298,11 +339,11 @@ function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
 		setDirtyCheckState("dirty");
 	};
 
-	const getCurrentMarkdown = () => {
+	const getCurrentMarkdown = useFn(() => {
 		return modelRef.current?.getValue() ?? initialData.markdown;
-	};
+	});
 
-	const handleApplySnapshotMarkdown = () => {
+	const handleApplySnapshotMarkdown = useFn(() => {
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const remoteData = await files_fetch_file_yjs_state_and_markdown({
@@ -335,9 +376,9 @@ function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
 				toast.error(err instanceof Error ? err.message : "Failed to restore snapshot");
 			})
 			.finally(() => {});
-	};
+	});
 
-	const handleClickSave = () => {
+	const handleClickSave = useFn(() => {
 		const editorModel = modelRef.current;
 		if (!editorModel) {
 			const error = should_never_happen("[FileEditorPlainText.handleClickSave] Missing editorModel", {
@@ -417,9 +458,9 @@ function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
 			.finally(() => {
 				setIsSaving(false);
 			});
-	};
+	});
 
-	const handleClickSync = () => {
+	const handleClickSync = useFn(() => {
 		if (isSyncing || isSaving) return;
 
 		setDirtyCheckState("checking");
@@ -512,10 +553,11 @@ function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
 			.finally(() => {
 				setIsSyncing(false);
 			});
-	};
+	});
 
-	const handleOnMount: EditorProps["onMount"] = (editor) => {
+	const handleOnMount = useFn<EditorProps["onMount"]>((editor) => {
 		editorRef.current = editor;
+		setMountedEditor(editor);
 		modelRef.current = initialEditorModel;
 		updateDirtyBaseline(initialData.markdown);
 		updateThreadIds(initialData.markdown);
@@ -523,7 +565,7 @@ function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
 		editor.onDidChangeModelContent(() => {
 			scheduleDirtyCheck();
 		});
-	};
+	});
 
 	useEffect(() => {
 		return () => {
@@ -546,25 +588,21 @@ function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
 					onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
 					onClickSave={handleClickSave}
 					onClickSync={handleClickSync}
+					toolbarPortalHost={toolbarPortalHost}
 				/>
 				<FileEditorPlainTextTopStickyFloatingContainer topStickyFloatingSlot={topStickyFloatingSlot} />
 				<div className={"FileEditorPlainText-editor" satisfies FileEditorPlainText_ClassNames}>
 					{hoistingContainer && (
-						<Editor
-							height="100%"
-							language="markdown"
-							theme={app_monaco_THEME_NAME_DARK}
-							options={{
-								overflowWidgetsDomNode: hoistingContainer,
-								fixedOverflowWidgets: true,
-								fontSize: 16,
-								wordWrap: "on",
-								scrollBeyondLastLine: false,
-								padding: { top: 64, bottom: 64 },
-								model: initialEditorModel,
-							}}
-							onMount={handleOnMount}
-						/>
+						<>
+							<Editor
+								height="100%"
+								language="markdown"
+								theme={app_monaco_THEME_NAME_DARK}
+								options={editorOptions}
+								onMount={handleOnMount}
+							/>
+							<FileEditorMonacoTopViewZone editor={mountedEditor}>{topViewZoneSlot}</FileEditorMonacoTopViewZone>
+						</>
 					)}
 				</div>
 			</div>
@@ -572,17 +610,20 @@ function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
 				createPortal(<FileEditorCommentsSidebar threadIds={commentThreadIds} />, commentsPortalHost)}
 		</>
 	);
-}
+});
 
 export type FileEditorPlainText_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost?: HTMLElement | null;
 	topStickyFloatingSlot?: React.ReactNode;
+	topViewZoneSlot?: React.ReactNode;
 };
 
-export function FileEditorPlainText(props: FileEditorPlainText_Props) {
-	const { nodeId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
+export const FileEditorPlainText = memo(function FileEditorPlainText(props: FileEditorPlainText_Props) {
+	const { nodeId, presenceStore, commentsPortalHost, toolbarPortalHost, topStickyFloatingSlot, topViewZoneSlot } =
+		props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -614,8 +655,10 @@ export function FileEditorPlainText(props: FileEditorPlainText_Props) {
 			}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
+			toolbarPortalHost={toolbarPortalHost}
 			topStickyFloatingSlot={topStickyFloatingSlot}
+			topViewZoneSlot={topViewZoneSlot}
 		/>
 	);
-}
+});
 // #endregion root

@@ -67,7 +67,6 @@ import {
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, forward_ref, path_extract_segments_from, should_never_happen, sx } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { dom_clear_text_selection } from "@/lib/dom-utils.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
 import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
@@ -86,7 +85,7 @@ type FilesSidebarTree_Shared = () => TreeInstance<files_TreeItem>;
 type FilesSidebarTreeItem_Instance = ReturnType<TreeInstance<files_TreeItem>["getItemInstance"]>;
 
 // #region helpers
-type FilesSidebar_TreeItems = {
+type TreeItems = {
 	list: files_TreeItem[] | undefined;
 	itemsIds: Set<string>;
 	itemsIdsByParentId: Map<string, Set<string>>;
@@ -94,21 +93,17 @@ type FilesSidebar_TreeItems = {
 	itemById: Map<string, files_TreeItem>;
 };
 
-function files_sidebar_to_file_id(nodeId: string) {
+function to_file_id(nodeId: string) {
 	return nodeId as app_convex_Id<"files_nodes">;
 }
 
-function files_sidebar_to_parent_id(parentId: string) {
-	return (parentId === files_ROOT_ID ? files_ROOT_ID : files_sidebar_to_file_id(parentId)) as
+function to_parent_id(parentId: string) {
+	return (parentId === files_ROOT_ID ? files_ROOT_ID : to_file_id(parentId)) as
 		| app_convex_Id<"files_nodes">
 		| typeof files_ROOT_ID;
 }
 
-function files_sidebar_get_default_node_name(args: {
-	parentId: string;
-	kind: files_TreeItem["kind"];
-	treeItems: FilesSidebar_TreeItems;
-}) {
+function get_default_node_name(args: { parentId: string; kind: files_TreeItem["kind"]; treeItems: TreeItems }) {
 	const siblingIds = args.treeItems.sortedItemsIdsByParentId.get(args.parentId) ?? [];
 	const activeSiblingNames = new Set<string>();
 
@@ -139,7 +134,7 @@ function files_sidebar_get_default_node_name(args: {
 	}
 }
 
-function files_sidebar_get_protected_markdown_extension_start(args: {
+function get_protected_markdown_extension_start(args: {
 	kind: files_TreeItem["kind"];
 	value: string;
 	selectionStart: number;
@@ -161,7 +156,7 @@ function files_sidebar_get_protected_markdown_extension_start(args: {
 	return args.value.length;
 }
 
-function files_sidebar_normalize_rename_input_value(args: { kind: files_TreeItem["kind"]; value: string }) {
+function normalize_rename_input_value(args: { kind: files_TreeItem["kind"]; value: string }) {
 	if (args.kind === "file" && args.value.endsWith(".md")) {
 		// Preserve the protected Markdown extension and sanitize only the editable basename.
 		const extensionStart = args.value.length - ".md".length;
@@ -204,6 +199,130 @@ function sort_children(args: { children: string[]; itemById: Map<string, files_T
 }
 
 // #endregion helpers
+
+// #region optimistic tree rename
+function get_tree_items_list_after_optimistic_rename(args: {
+	treeItemsList: files_TreeItem[];
+	itemId: string;
+	normalizedName: string;
+	now: number;
+}) {
+	const renamedItem = args.treeItemsList.find((treeItem) => treeItem.type === "node" && treeItem.index === args.itemId);
+	if (!renamedItem) {
+		return args.treeItemsList;
+	}
+
+	const pathSegments = path_extract_segments_from(args.normalizedName);
+	const leafName = pathSegments.at(-1);
+	if (!leafName) {
+		return args.treeItemsList;
+	}
+
+	if (pathSegments.length === 1) {
+		return args.treeItemsList.map((treeItem) => {
+			if (treeItem.index === args.itemId) {
+				return {
+					...treeItem,
+					title: leafName,
+				};
+			}
+			return treeItem;
+		});
+	}
+
+	const parentSegments = pathSegments.slice(0, -1);
+	const existingAncestorTitles: string[] = [];
+	let currentAncestorId = renamedItem.parentId;
+	while (currentAncestorId && currentAncestorId !== files_ROOT_ID) {
+		const currentAncestor = args.treeItemsList.find(
+			(treeItem) => treeItem.type === "node" && treeItem.index === currentAncestorId,
+		);
+		if (!currentAncestor) {
+			break;
+		}
+
+		existingAncestorTitles.unshift(currentAncestor.title);
+		currentAncestorId = currentAncestor.parentId;
+	}
+	const existingAncestorSuffix = existingAncestorTitles.slice(-parentSegments.length);
+	// Treat same-timestamp ancestor matches as already-applied optimistic renames so Convex replay stays idempotent.
+	if (
+		renamedItem.updatedAt === args.now &&
+		renamedItem.title === leafName &&
+		existingAncestorSuffix.length === parentSegments.length &&
+		existingAncestorSuffix.every((title, index) => title === parentSegments[index])
+	) {
+		return args.treeItemsList;
+	}
+
+	const nextTreeItemsList = [...args.treeItemsList];
+	let targetParentId = renamedItem.parentId;
+
+	for (const [index, segment] of parentSegments.entries()) {
+		const activeExistingNode = nextTreeItemsList.find(
+			(treeItem) =>
+				treeItem.type === "node" &&
+				treeItem.parentId === targetParentId &&
+				treeItem.title === segment &&
+				treeItem.archiveOperationId === undefined,
+		);
+
+		if (activeExistingNode) {
+			if (activeExistingNode.kind !== "folder" || activeExistingNode.index === args.itemId) {
+				return args.treeItemsList;
+			}
+
+			targetParentId = activeExistingNode.index;
+			continue;
+		}
+
+		const optimisticFolderId = `optimistic-folder:${args.itemId}:${parentSegments
+			.slice(0, index + 1)
+			.join("/")}` as app_convex_Id<"files_nodes">;
+		const optimisticFolderExists = nextTreeItemsList.some((treeItem) => treeItem.index === optimisticFolderId);
+		if (!optimisticFolderExists) {
+			nextTreeItemsList.push({
+				type: "node",
+				kind: "folder",
+				index: optimisticFolderId,
+				parentId: targetParentId,
+				title: segment,
+				archiveOperationId: undefined,
+				updatedAt: args.now,
+				updatedBy: renamedItem.updatedBy,
+				_id: optimisticFolderId,
+			});
+		}
+
+		targetParentId = optimisticFolderId;
+	}
+
+	const activeLeafConflict = nextTreeItemsList.find(
+		(treeItem) =>
+			treeItem.type === "node" &&
+			treeItem.index !== args.itemId &&
+			treeItem.parentId === targetParentId &&
+			treeItem.title === leafName &&
+			treeItem.archiveOperationId === undefined,
+	);
+	if (activeLeafConflict) {
+		return args.treeItemsList;
+	}
+
+	return nextTreeItemsList.map((treeItem) => {
+		if (treeItem.index === args.itemId) {
+			return {
+				...treeItem,
+				parentId: targetParentId,
+				title: leafName,
+				updatedAt: args.now,
+			};
+		}
+		return treeItem;
+	});
+}
+
+// #endregion optimistic tree rename
 
 // #region tree item icon
 type FilesSidebarTreeItemIcon_ClassNames = "FilesSidebarTreeItemIcon";
@@ -518,7 +637,7 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 		// Read the current selection so typed and pasted text replace the same range natively.
 		const selectionStart = element.selectionStart ?? element.value.length;
 		const selectionEnd = element.selectionEnd ?? element.value.length;
-		const nextTextEnd = files_sidebar_get_protected_markdown_extension_start({
+		const nextTextEnd = get_protected_markdown_extension_start({
 			kind,
 			value: element.value,
 			selectionStart,
@@ -550,7 +669,7 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 	const applyRenameInputToControl = useFn((element: HTMLInputElement) => {
 		// Preserve the current caret as closely as possible when the fallback sanitizer rewrites the value.
 		const selectionStart = element.selectionStart ?? element.value.length;
-		const nextValue = files_sidebar_normalize_rename_input_value({
+		const nextValue = normalize_rename_input_value({
 			kind,
 			value: element.value,
 		});
@@ -1456,13 +1575,12 @@ type FilesSidebarHeader_ClassNames =
 	| "FilesSidebarHeader-close-button";
 
 type FilesSidebarHeader_Props = {
-	homeNodeId: string | undefined;
 	view: files_EditorView;
 	onClose: () => void;
 };
 
 const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarHeader_Props) {
-	const { homeNodeId, view, onClose } = props;
+	const { view, onClose } = props;
 
 	const { workspaceName, projectName } = AppTenantProvider.useContext();
 
@@ -1482,12 +1600,12 @@ const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarH
 							variant="button-tertiary"
 							to="/w/$workspaceName/$projectName/files"
 							params={{ workspaceName, projectName }}
-							search={{ nodeId: homeNodeId, view }}
+							search={{ nodeId: files_ROOT_ID, view }}
 						>
 							<MySidebarTitle>Files</MySidebarTitle>
 						</MyLink>
 					</MyTooltipTrigger>
-					<MyTooltipContent>Open Home</MyTooltipContent>
+					<MyTooltipContent>Open files root</MyTooltipContent>
 				</MyTooltip>
 			</div>
 
@@ -1585,7 +1703,6 @@ type FilesSidebarTopSection_ClassNames =
 	| "FilesSidebarTopSection-multi-selection-counter-label";
 
 type FilesSidebarTopSection_Props = {
-	homeNodeId: string | undefined;
 	view: files_EditorView;
 	selectedNodeIdsCount: number;
 	isBusy: boolean;
@@ -1605,7 +1722,6 @@ type FilesSidebarTopSection_Props = {
 
 const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: FilesSidebarTopSection_Props) {
 	const {
-		homeNodeId,
 		view,
 		selectedNodeIdsCount,
 		isBusy,
@@ -1628,7 +1744,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 
 	return (
 		<div className={cn("FilesSidebarTopSection" satisfies FilesSidebarTopSection_ClassNames)}>
-			<FilesSidebarHeader homeNodeId={homeNodeId} view={view} onClose={onClose} />
+			<FilesSidebarHeader view={view} onClose={onClose} />
 
 			<FilesSidebarSearch onSearchQueryChange={onSearchQueryChange} />
 
@@ -1745,8 +1861,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const convex = useConvex();
 	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
 
-	const homeNodeId = useAppGlobalStore((state) => state.files_home_id_by_membership_id[membershipId] ?? "");
-
 	const [searchQuery, setSearchQuery] = useState("");
 	const searchQueryDeferred = useDeferredValue(searchQuery);
 	const isSearchActive = searchQueryDeferred.trim().length > 0;
@@ -1787,7 +1901,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			itemsIdsByParentId: new Map<string, Set<string>>([[files_ROOT_ID, new Set()]]),
 			sortedItemsIdsByParentId: new Map<string, string[]>([[files_ROOT_ID, []]]),
 			itemById: new Map<string, files_TreeItem>([[files_ROOT_ID, rootItem]]),
-		} satisfies FilesSidebar_TreeItems;
+		} satisfies TreeItems;
 
 		// Collect all items from the list to the maps
 		for (const item of treeItemsList) {
@@ -1979,8 +2093,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		return convex
 			.mutation(app_convex_api.files_nodes.move_nodes, {
 				membershipId,
-				itemIds: movedNodeIds.map((itemId) => files_sidebar_to_file_id(itemId)),
-				targetParentId: files_sidebar_to_parent_id(targetParentId),
+				itemIds: movedNodeIds.map((itemId) => to_file_id(itemId)),
+				targetParentId: to_parent_id(targetParentId),
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -2079,15 +2193,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				app_convex_api.files_nodes.rename_node,
 				{
 					membershipId,
-					nodeId: files_sidebar_to_file_id(itemId),
+					nodeId: to_file_id(itemId),
 					name: normalizedName,
 				},
 				{
 					optimisticUpdate: (localStore) => {
-						if (isPathLikeName) {
-							return;
-						}
-
 						const treeItemsList = localStore.getQuery(app_convex_api.files_nodes.get_tree_nodes_list, {
 							membershipId,
 						});
@@ -2099,14 +2209,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							{
 								membershipId,
 							},
-							treeItemsList.map((treeItem) => {
-								if (treeItem._id === itemId) {
-									return {
-										...treeItem,
-										title: normalizedName,
-									};
-								}
-								return treeItem;
+							get_tree_items_list_after_optimistic_rename({
+								treeItemsList,
+								itemId,
+								normalizedName,
+								now: Date.now(),
 							}),
 						);
 					},
@@ -2157,20 +2264,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		(item) => {
 			const itemData = item.getItemData();
 			if (itemData.type === "node") {
-				if (itemData.kind === "folder") {
-					const readmeId = treeItems?.sortedItemsIdsByParentId
-						.get(item.getId())
-						?.map((childId) => treeItems.itemById.get(childId))
-						.find(
-							(child) =>
-								child?.kind === "file" &&
-								child.archiveOperationId === undefined &&
-								child.title.toLowerCase() === "readme.md",
-						)?._id;
-					onPrimaryAction(readmeId ?? item.getId(), readmeId ? "file" : "folder");
-					return;
-				}
-
 				onPrimaryAction(item.getId(), itemData.kind);
 			}
 		},
@@ -2364,7 +2457,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			return;
 		}
 
-		const nextNodeName = files_sidebar_get_default_node_name({
+		const nextNodeName = get_default_node_name({
 			parentId: parentNodeId,
 			kind,
 			treeItems,
@@ -2374,7 +2467,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		convex
 			.mutation(app_convex_api.files_nodes.create_node, {
 				membershipId,
-				parentId: files_sidebar_to_parent_id(parentNodeId),
+				parentId: to_parent_id(parentNodeId),
 				name: nextNodeName,
 				kind,
 			})
@@ -2458,7 +2551,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		convex
 			.mutation(app_convex_api.files_nodes.unarchive_nodes, {
 				membershipId,
-				nodeIds: [files_sidebar_to_file_id(nodeId)],
+				nodeIds: [to_file_id(nodeId)],
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -2610,7 +2703,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	return (
 		<aside className={"FilesSidebar" satisfies FilesSidebar_ClassNames}>
 			<FilesSidebarTopSection
-				homeNodeId={homeNodeId}
 				view={view}
 				selectedNodeIdsCount={selectedNodeIds.size}
 				isBusy={isBusy}
@@ -2651,3 +2743,220 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	);
 });
 // #endregion root
+
+// #region tests
+if (import.meta.vitest) {
+	const { describe, test, expect } = import.meta.vitest;
+
+	const test_node = (args: {
+		index: string;
+		parentId: string;
+		kind: files_TreeItem["kind"];
+		title: string;
+		archiveOperationId?: string;
+	}): files_TreeItem => {
+		const id = args.index as app_convex_Id<"files_nodes">;
+		return {
+			type: "node",
+			kind: args.kind,
+			index: args.index,
+			parentId: args.parentId,
+			title: args.title,
+			archiveOperationId: args.archiveOperationId,
+			updatedAt: 1,
+			updatedBy: "test-user",
+			_id: id,
+		};
+	};
+
+	describe("files_sidebar_get_tree_items_list_after_optimistic_rename", () => {
+		test("updates only the title for simple renames", () => {
+			const root = files_create_tree_root();
+			const file = test_node({
+				index: "file_1",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				title: "draft.md",
+			});
+			const result = get_tree_items_list_after_optimistic_rename({
+				treeItemsList: [root, file],
+				itemId: file.index,
+				normalizedName: "plan.md",
+				now: 10,
+			});
+
+			expect(result).toEqual([root, { ...file, title: "plan.md" }]);
+		});
+
+		test("creates missing folders and moves a file under the final folder", () => {
+			const root = files_create_tree_root();
+			const file = test_node({
+				index: "file_1",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				title: "draft.md",
+			});
+			const result = get_tree_items_list_after_optimistic_rename({
+				treeItemsList: [root, file],
+				itemId: file.index,
+				normalizedName: "notes/projects/plan.md",
+				now: 10,
+			});
+			const notesId = "optimistic-folder:file_1:notes" as app_convex_Id<"files_nodes">;
+			const projectsId = "optimistic-folder:file_1:notes/projects" as app_convex_Id<"files_nodes">;
+
+			expect(result).toContainEqual({
+				type: "node",
+				kind: "folder",
+				index: notesId,
+				parentId: files_ROOT_ID,
+				title: "notes",
+				archiveOperationId: undefined,
+				updatedAt: 10,
+				updatedBy: "test-user",
+				_id: notesId,
+			});
+			expect(result).toContainEqual({
+				type: "node",
+				kind: "folder",
+				index: projectsId,
+				parentId: notesId,
+				title: "projects",
+				archiveOperationId: undefined,
+				updatedAt: 10,
+				updatedBy: "test-user",
+				_id: projectsId,
+			});
+			expect(result).toContainEqual({ ...file, parentId: projectsId, title: "plan.md", updatedAt: 10 });
+		});
+
+		test("reuses existing active folder segments", () => {
+			const root = files_create_tree_root();
+			const notes = test_node({
+				index: "folder_notes",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				title: "notes",
+			});
+			const file = test_node({
+				index: "file_1",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				title: "draft.md",
+			});
+			const result = get_tree_items_list_after_optimistic_rename({
+				treeItemsList: [root, notes, file],
+				itemId: file.index,
+				normalizedName: "notes/projects/plan.md",
+				now: 10,
+			});
+			const projectsId = "optimistic-folder:file_1:notes/projects" as app_convex_Id<"files_nodes">;
+
+			expect(result.filter((treeItem) => treeItem.type === "node" && treeItem.title === "notes")).toHaveLength(1);
+			expect(result).toContainEqual({
+				type: "node",
+				kind: "folder",
+				index: projectsId,
+				parentId: notes.index,
+				title: "projects",
+				archiveOperationId: undefined,
+				updatedAt: 10,
+				updatedBy: "test-user",
+				_id: projectsId,
+			});
+			expect(result).toContainEqual({ ...file, parentId: projectsId, title: "plan.md", updatedAt: 10 });
+		});
+
+		test("ignores archived folder segments", () => {
+			const root = files_create_tree_root();
+			const archivedNotes = test_node({
+				index: "folder_archived_notes",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				title: "notes",
+				archiveOperationId: "archive_1",
+			});
+			const file = test_node({
+				index: "file_1",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				title: "draft.md",
+			});
+			const result = get_tree_items_list_after_optimistic_rename({
+				treeItemsList: [root, archivedNotes, file],
+				itemId: file.index,
+				normalizedName: "notes/plan.md",
+				now: 10,
+			});
+			const notesId = "optimistic-folder:file_1:notes" as app_convex_Id<"files_nodes">;
+
+			expect(result.filter((treeItem) => treeItem.type === "node" && treeItem.title === "notes")).toHaveLength(2);
+			expect(result).toContainEqual({
+				type: "node",
+				kind: "folder",
+				index: notesId,
+				parentId: files_ROOT_ID,
+				title: "notes",
+				archiveOperationId: undefined,
+				updatedAt: 10,
+				updatedBy: "test-user",
+				_id: notesId,
+			});
+			expect(result).toContainEqual({ ...file, parentId: notesId, title: "plan.md", updatedAt: 10 });
+		});
+
+		test("returns the original list when an intermediate active file blocks the path", () => {
+			const root = files_create_tree_root();
+			const blockingFile = test_node({
+				index: "file_notes",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				title: "notes",
+			});
+			const file = test_node({
+				index: "file_1",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				title: "draft.md",
+			});
+			const treeItemsList = [root, blockingFile, file];
+			const result = get_tree_items_list_after_optimistic_rename({
+				treeItemsList,
+				itemId: file.index,
+				normalizedName: "notes/plan.md",
+				now: 10,
+			});
+
+			expect(result).toBe(treeItemsList);
+		});
+
+		test("does not duplicate optimistic folders when reapplied", () => {
+			const root = files_create_tree_root();
+			const file = test_node({
+				index: "file_1",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				title: "draft.md",
+			});
+			const firstResult = get_tree_items_list_after_optimistic_rename({
+				treeItemsList: [root, file],
+				itemId: file.index,
+				normalizedName: "notes/projects/plan.md",
+				now: 10,
+			});
+			const secondResult = get_tree_items_list_after_optimistic_rename({
+				treeItemsList: firstResult,
+				itemId: file.index,
+				normalizedName: "notes/projects/plan.md",
+				now: 10,
+			});
+
+			expect(secondResult).toBe(firstResult);
+			expect(secondResult.filter((treeItem) => treeItem.type === "node" && treeItem.title === "notes")).toHaveLength(1);
+			expect(secondResult.filter((treeItem) => treeItem.type === "node" && treeItem.title === "projects")).toHaveLength(
+				1,
+			);
+		});
+	});
+}
+// #endregion tests

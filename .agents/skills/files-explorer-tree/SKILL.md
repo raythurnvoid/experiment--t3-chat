@@ -37,13 +37,14 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Backend returns root/node items only; placeholder rows are client-rendered.
 - Folder nodes can have children, expand/collapse, and receive drops.
 - File nodes are leaves and open in the editor.
-- Clicking a folder opens an active direct child file named `README.md` when present; otherwise the route renders a folder listing.
+- Clicking a folder opens its folder screen. `FileNodeView` decides whether the selected node renders the folder explorer or the file editor, and folder screens embed an editable child `README.md` when present.
 
 # Main Components
 
 Main component:
 
 - `FilesSidebar` (name retained to avoid a large route/component rename)
+- `FileNodeView` owns the files route shell, sidebar panel, app-header breadcrumb, folder explorer branch, and file editor branch.
 
 Main sections:
 
@@ -87,7 +88,7 @@ Tree-item components:
 - Primary click implements single select, toggle-select, and shift-range.
 - Non-modifier click runs primary action for node items.
 - File primary action navigates to the file.
-- Folder primary action navigates to child `README.md` if present; otherwise it navigates to the folder listing.
+- Folder primary action navigates to the folder screen.
 - In multi-select mode, selection anchor files active track highlighting.
 
 ## Create, Rename, Archive, Unarchive

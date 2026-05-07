@@ -19,127 +19,33 @@
 		container: FileEditor-editor-area / size;
 	}
 
-	.FileEditor-panels-group {
-		/*
-		flex 1 0 auto needed to take the whole available space
-		but at the same time let the element grow if the content
-		is bigger than the available space. Necessary to  make descendant
-		sticky elements work correctly.
-		*/
-		flex: 1 0 auto;
-	}
-
-	.FileEditor-content-panel {
-		> .MyPanelInfiniteBackground::before {
-			background-color: var(--RouteFiles-background);
-		}
-	}
-
-	.FileEditor-sidebar {
-		container-type: size;
-
-		/* Necessary to let the anchored comments set the size of the scrollable area */
+	.FileEditor-mode-rich-text .FileEditor-editor-area {
+		/* FileNodeView owns the shared editor/comments scroll surface. */
+		overflow: visible;
 		contain: inline-size style;
-
-		> .MyPanelInfiniteBackground::before {
-			background-color: var(--RouteFiles-background);
-		}
 	}
 	/* #endregion root */
 
-	/* #region header */
-	.FileEditorHeader {
-		display: flex;
-		flex: 1;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
+	/* #region monaco top view zone */
+	.FileEditorMonacoTopViewZone {
+		position: absolute;
+		top: 0;
+		left: 0;
+		z-index: 20;
 
+		box-sizing: border-box;
+		width: 100%;
 		min-width: 0;
-
-		padding: 0 16px;
+		background: var(--color-base-1-02);
+		pointer-events: auto;
+		will-change: transform;
 	}
 
-	.FileEditorHeader-diff-switch {
-		display: flex;
-		align-items: center;
-		gap: 8px;
+	.FileEditorMonacoTopViewZone-spacer {
+		visibility: hidden;
+		pointer-events: none;
 	}
-
-	.FileEditorHeader-start {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		min-width: 0;
-	}
-
-	.FileEditorHeader-sidebars-actions {
-		display: flex;
-		align-items: center;
-	}
-
-	.FileEditorHeader-breadcrumb {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		margin: 0;
-		padding: 0;
-		list-style: none;
-		font-size: 0.875rem;
-		color: var(--gray-800);
-	}
-
-	.FileEditorHeader-breadcrumb-segment,
-	.FileEditorHeader-breadcrumb-segment-current {
-		white-space: nowrap;
-
-		padding: 6px;
-
-		display: inline-flex;
-		gap: 4px;
-		align-items: center;
-		justify-content: center;
-	}
-
-	.FileEditorHeader-breadcrumb-segment {
-		color: var(--gray-600);
-		cursor: pointer;
-
-		&:hover {
-			color: var(--gray-800);
-			text-decoration: underline;
-		}
-	}
-
-	.FileEditorHeader-breadcrumb-home {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-	}
-
-	.FileEditorHeader-breadcrumb-segment-current {
-		padding: 8px;
-		color: var(--gray-700);
-	}
-
-	.FileEditorHeader-switch-group {
-		display: flex;
-		align-items: center;
-		gap: 12px;
-	}
-
-	.FileEditorHeader-switch-container {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-	}
-
-	.FileEditorHeader-label-text,
-	.FileEditorHeader-switch-text {
-		font-size: 0.75rem;
-		color: var(--gray-600);
-	}
-	/* #endregion header */
+	/* #endregion monaco top view zone */
 
 	/* #region pending updates floating */
 	.FileEditorPendingUpdatesFloating {

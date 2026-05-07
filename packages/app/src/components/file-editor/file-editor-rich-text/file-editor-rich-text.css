@@ -1,6 +1,8 @@
 @layer components {
 	/* #region root */
 	.FileEditorRichText {
+		--FileEditorRichText-safe-bottom-padding: max(300px, 50dvh);
+
 		height: max-content;
 		width: 100%;
 		display: flex;
@@ -49,11 +51,10 @@
 		width: 100%;
 
 		/*
-		Adding a big padding at the bottom to ensure there's anough
-		space at the bottom of the editor for the bubble menu,
-		otherwise positioning it becomes a pain.
+		Add a large bottom safe area so the shared FileNodeView scroller can move
+		the final editable block above bubble menus and anchored comment cards.
 		*/
-		padding: 64px 64px 300px 64px;
+		padding: 32px 64px var(--FileEditorRichText-safe-bottom-padding) 64px;
 
 		color: var(--FileEditorRichText-text-color-fg-default);
 

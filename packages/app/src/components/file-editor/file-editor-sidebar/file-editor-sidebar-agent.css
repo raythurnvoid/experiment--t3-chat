@@ -4,7 +4,7 @@
 		flex-direction: column;
 
 		width: 100%;
-		/* 92px is the size of `FileEditorSidebar-toolbar`  and `FileEditorHeader` */
+		/* 92px is the size of `FileEditorSidebar-toolbar` and the files route header. */
 		height: calc(100dvh - 92px);
 
 		position: sticky;

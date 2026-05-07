@@ -59,6 +59,8 @@
 
 	/* #region editor */
 	.FileEditorPlainText-editor {
+		position: relative;
+
 		height: 100%;
 		flex: 1;
 		contain: strict;

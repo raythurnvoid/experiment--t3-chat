@@ -3,7 +3,7 @@ import { Check, Undo2 } from "lucide-react";
 import { MyTooltip, MyTooltipArrow, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import { CoalescedRunner } from "@/lib/async.ts";
-import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import React, { memo, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DiffEditor, type DiffEditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor, Range as monaco_Range } from "monaco-editor";
@@ -18,7 +18,7 @@ import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
 import { CheckCheck, RefreshCcw, Save, SaveAll, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
-import { useStateRef } from "@/hooks/utils-hooks.ts";
+import { useFn, useStateRef } from "@/hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import {
 	files_monaco_create_editor_model,
@@ -36,6 +36,7 @@ import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
 import { Result } from "../../../lib/errors-as-values-utils.ts";
 import { FileEditorDiffSkeleton } from "./file-editor-diff-skeleton.tsx";
+import { FileEditorMonacoTopViewZone } from "../file-editor-monaco-top-view-zone.tsx";
 
 // #region toolbar
 export type FileEditorDiffToolbar_ClassNames =
@@ -62,9 +63,10 @@ export type FileEditorDiffToolbar_Props = {
 	onClickAcceptAll: () => void;
 	onClickAcceptAllAndSave: () => void;
 	onClickDiscardAll: () => void;
+	toolbarPortalHost?: HTMLElement | null;
 };
 
-function FileEditorDiffToolbar(props: FileEditorDiffToolbar_Props) {
+const FileEditorDiffToolbar = memo(function FileEditorDiffToolbar(props: FileEditorDiffToolbar_Props) {
 	const {
 		isSaveDisabled,
 		isSyncDisabled,
@@ -80,11 +82,12 @@ function FileEditorDiffToolbar(props: FileEditorDiffToolbar_Props) {
 		onClickAcceptAll,
 		onClickAcceptAllAndSave,
 		onClickDiscardAll,
+		toolbarPortalHost,
 	} = props;
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 
-	return (
+	const toolbar = (
 		<div
 			ref={setPortalElement}
 			role="toolbar"
@@ -168,7 +171,13 @@ function FileEditorDiffToolbar(props: FileEditorDiffToolbar_Props) {
 			)}
 		</div>
 	);
-}
+
+	if (toolbarPortalHost !== undefined) {
+		return toolbarPortalHost ? createPortal(toolbar, toolbarPortalHost) : null;
+	}
+
+	return toolbar;
+});
 // #endregion toolbar
 
 // #region top sticky floating container
@@ -178,7 +187,9 @@ type FileEditorDiffTopStickyFloatingContainer_Props = {
 	topStickyFloatingSlot: React.ReactNode;
 };
 
-function FileEditorDiffTopStickyFloatingContainer(props: FileEditorDiffTopStickyFloatingContainer_Props) {
+const FileEditorDiffTopStickyFloatingContainer = memo(function FileEditorDiffTopStickyFloatingContainer(
+	props: FileEditorDiffTopStickyFloatingContainer_Props,
+) {
 	const { topStickyFloatingSlot } = props;
 
 	return (
@@ -190,7 +201,7 @@ function FileEditorDiffTopStickyFloatingContainer(props: FileEditorDiffTopSticky
 			{topStickyFloatingSlot}
 		</div>
 	);
-}
+});
 // #endregion top sticky floating container
 
 // #region FileEditorDiffWidgetAcceptDiscard
@@ -314,22 +325,24 @@ class FileEditorDiffWidgetAcceptDiscard_Monaco implements monaco_editor.IContent
 	}
 }
 
-export function FileEditorDiffWidgetAcceptDiscard(props: FileEditorDiffWidgetAcceptDiscard_Props) {
+export const FileEditorDiffWidgetAcceptDiscard = memo(function FileEditorDiffWidgetAcceptDiscard(
+	props: FileEditorDiffWidgetAcceptDiscard_Props,
+) {
 	const { onAccept, onDiscard } = props;
 
-	const handleMouseDown = (e: React.MouseEvent) => {
+	const handleMouseDown = useFn((e: React.MouseEvent) => {
 		e.preventDefault();
-	};
+	});
 
-	const handleClickAccept = (e: React.MouseEvent) => {
+	const handleClickAccept = useFn((e: React.MouseEvent) => {
 		e.preventDefault();
 		onAccept();
-	};
+	});
 
-	const handleClickDiscard = (e: React.MouseEvent) => {
+	const handleClickDiscard = useFn((e: React.MouseEvent) => {
 		e.preventDefault();
 		onDiscard();
-	};
+	});
 
 	return (
 		<>
@@ -382,7 +395,7 @@ export function FileEditorDiffWidgetAcceptDiscard(props: FileEditorDiffWidgetAcc
 			</MyTooltip>
 		</>
 	);
-}
+});
 // #endregion FileEditorDiffWidgetAcceptDiscard
 
 // #region root
@@ -409,8 +422,10 @@ export type FileEditorDiff_Props = {
 	presenceStore: files_PresenceStore;
 	threadId?: string;
 	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost?: HTMLElement | null;
 	onExit: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
+	topViewZoneSlot?: React.ReactNode;
 };
 
 type FileEditorDiffInner_Props = FileEditorDiff_Props & {
@@ -476,13 +491,14 @@ function create_editor_content_state_from_file_content_data(
 	} satisfies RemoteEditorContentState;
 }
 
-function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
+const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 	const {
 		className,
 		nodeId,
 		pendingUpdateId,
 		presenceStore,
 		commentsPortalHost,
+		toolbarPortalHost,
 		hoistingContainer,
 		editorContentState,
 		isSaving,
@@ -491,6 +507,7 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 		onSave,
 		onClickSync,
 		topStickyFloatingSlot,
+		topViewZoneSlot,
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
@@ -501,6 +518,7 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 	const convex = useConvex();
 
 	const editorRef = useRef<monaco_editor.IStandaloneDiffEditor | null>(null);
+	const [mountedModifiedEditor, setMountedModifiedEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
 	const pendingUpdateSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const ignoredProgrammaticModelChangesRef = useRef(0);
 	const [pendingUpdateSyncRunner] = useState(() => new CoalescedRunner());
@@ -548,6 +566,34 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 	const isAcceptAllDisabled = isSaving || isSyncing || !hasUnstagedChanges;
 	const isAcceptAllAndSaveDisabled = isSaving || isSyncing || !hasUnstagedChanges;
 	const isDiscardAllDisabled = isSaving || isSyncing || !hasUnstagedChanges;
+	const hasTopViewZoneSlot = topViewZoneSlot != null && topViewZoneSlot !== false;
+	const diffEditorOptions = ((/* iife */) => {
+		return {
+			overflowWidgetsDomNode: hoistingContainer,
+			originalEditable: false,
+			renderSideBySide: false,
+			ignoreTrimWhitespace: false,
+			glyphMargin: false,
+			lineDecorationsWidth: 72,
+			renderMarginRevertIcon: false,
+			renderGutterMenu: false,
+			fixedOverflowWidgets: true,
+			fontSize: 16,
+			wordWrap: "on",
+			scrollBeyondLastLine: false,
+			minimap: { enabled: false },
+			
+			// Force the scrollbar to always be visible otherwise the default
+			// auto behaviour does not work well with the top view zone.
+			scrollbar: { vertical: "visible" },
+
+			padding: { top: hasTopViewZoneSlot ? 0 : 64, bottom: 64 },
+
+			lineNumbers: "on",
+			renderLineHighlight: "all",
+			renderLineHighlightOnlyWhenFocus: true,
+		} satisfies NonNullable<DiffEditorProps["options"]>;
+	})();
 
 	const updateThreadIds = (markdown: string) => {
 		const headlessEditor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
@@ -900,11 +946,11 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 		onSave({ flushPendingUpdateUpsertIfNeeded });
 	};
 
-	const getCurrentMarkdown = () => {
+	const getCurrentMarkdown = useFn(() => {
 		return editorModelsRef.current?.original.getValue() ?? editorContentState.stagedMarkdown;
-	};
+	});
 
-	const handleApplySnapshotMarkdown = () => {
+	const handleApplySnapshotMarkdown = useFn(() => {
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const remoteData = await files_fetch_file_yjs_state_and_markdown({
@@ -938,30 +984,30 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 				toast.error(err instanceof Error ? err.message : "Failed to restore snapshot");
 			})
 			.finally(() => {});
-	};
+	});
 
-	const handleClickSave = () => {
+	const handleClickSave = useFn(() => {
 		if (isSaving || isSyncing) return;
 		doSave();
-	};
+	});
 
-	const handleClickAcceptAllAndSave = () => {
+	const handleClickAcceptAllAndSave = useFn(() => {
 		if (isSaving || isSyncing || !hasUnstagedChanges) return;
 		acceptAllDiffs();
 		doSave();
-	};
+	});
 
-	const handleClickAcceptAll = () => {
+	const handleClickAcceptAll = useFn(() => {
 		if (isSaving || isSyncing || !hasUnstagedChanges) return;
 		acceptAllDiffs();
-	};
+	});
 
-	const handleClickDiscardAll = () => {
+	const handleClickDiscardAll = useFn(() => {
 		if (isSaving || isSyncing || !hasUnstagedChanges) return;
 		discardAllDiffs();
-	};
+	});
 
-	const handleClickSync = () => {
+	const handleClickSync = useFn(() => {
 		if (isSyncDisabled) return;
 
 		if (!editorModelsRef.current) {
@@ -975,7 +1021,8 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 			return;
 		}
 
-		Promise.try(async () => {
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks
+		(async (/* iife */) => {
 			// Drain pending updates writes before sync so an older debounced upsert cannot land
 			// after the rebase/persist flow.
 			if (pendingUpdateSyncTimeoutRef.current != null) {
@@ -993,16 +1040,16 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 				stagedMarkdown: editorModelsRef.current.original.getValue(),
 				unstagedMarkdown: editorModelsRef.current.modified.getValue(),
 			});
-		}).catch((error) => {
+		})().catch((error) => {
 			console.error("[FileEditorDiff.handleClickSync] Error while preparing sync", {
 				error,
 				nodeId,
 			});
 			toast.error("Error while preparing sync");
 		});
-	};
+	});
 
-	const handleClickWidgetAccept = (index: number) => {
+	const handleClickWidgetAccept = useFn((index: number) => {
 		if (!editorRef.current) {
 			const error = should_never_happen("[FileEditorDiff.handleClickWidgetAccept] Missing `editorRef.current`", {
 				editor: editorRef.current,
@@ -1024,9 +1071,9 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 		const newEditorContent = applyDiffs([diffToApply]);
 		pushChangeToStagedEditor(newEditorContent);
 		editorRef.current.focus();
-	};
+	});
 
-	const handleClickWidgetDiscard = (index: number) => {
+	const handleClickWidgetDiscard = useFn((index: number) => {
 		if (!editorRef.current) {
 			const error = should_never_happen("[FileEditorDiff.handleClickWidgetDiscard] Missing `editorRef.current`", {
 				editor: editorRef.current,
@@ -1059,10 +1106,11 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 		const newEditorContent = applyDiffs(diffsToKeep);
 		pushChangeToUnstagedEditor(newEditorContent);
 		editorRef.current.focus();
-	};
+	});
 
-	const handleOnMount: DiffEditorProps["onMount"] = (editor) => {
+	const handleOnMount = useFn<DiffEditorProps["onMount"]>((editor) => {
 		editorRef.current = editor;
+		setMountedModifiedEditor(editor.getModifiedEditor());
 
 		const prevModels = [editor.getModel()?.original, editor.getModel()?.modified];
 		const nextModels = {
@@ -1210,7 +1258,7 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 				disposable.dispose();
 			}
 		});
-	};
+	});
 
 	// Reconcile the remote editor content state with the local editor values,
 	// Needs to be a layout effect to ensure the `isDirty` state calculated
@@ -1314,6 +1362,7 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 					onClickAcceptAll={handleClickAcceptAll}
 					onClickAcceptAllAndSave={handleClickAcceptAllAndSave}
 					onClickDiscardAll={handleClickDiscardAll}
+					toolbarPortalHost={toolbarPortalHost}
 				/>
 				<FileEditorDiffTopStickyFloatingContainer topStickyFloatingSlot={topStickyFloatingSlot} />
 				<div className={"FileEditorDiff-editor" satisfies FileEditorDiff_ClassNames}>
@@ -1329,26 +1378,11 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 						// because we dispose them manually
 						keepCurrentOriginalModel={true}
 						keepCurrentModifiedModel={true}
-						options={{
-							overflowWidgetsDomNode: hoistingContainer,
-							originalEditable: false,
-							renderSideBySide: false,
-							ignoreTrimWhitespace: false,
-							glyphMargin: false,
-							lineDecorationsWidth: 72,
-							renderMarginRevertIcon: false,
-							renderGutterMenu: false,
-							fixedOverflowWidgets: true,
-							fontSize: 16,
-							wordWrap: "on",
-							scrollBeyondLastLine: false,
-							padding: { top: 64, bottom: 64 },
-
-							lineNumbers: "on",
-							renderLineHighlight: "all",
-							renderLineHighlightOnlyWhenFocus: true,
-						}}
+						options={diffEditorOptions}
 					/>
+					<FileEditorMonacoTopViewZone editor={mountedModifiedEditor}>
+						{topViewZoneSlot}
+					</FileEditorMonacoTopViewZone>
 				</div>
 			</div>
 			{commentsPortalHost &&
@@ -1365,10 +1399,11 @@ function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 			)}
 		</>
 	);
-}
+});
 
-export function FileEditorDiff(props: FileEditorDiff_Props) {
-	const { nodeId, pendingUpdateId, presenceStore, commentsPortalHost, className, topStickyFloatingSlot } = props;
+export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff_Props) {
+	const { nodeId, pendingUpdateId, presenceStore, commentsPortalHost, className, topStickyFloatingSlot, topViewZoneSlot } =
+		props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -1426,10 +1461,11 @@ export function FileEditorDiff(props: FileEditorDiff_Props) {
 		});
 	};
 
-	const handleSave: FileEditorDiffInner_Props["onSave"] = ({ flushPendingUpdateUpsertIfNeeded }) => {
+	const handleSave = useFn<FileEditorDiffInner_Props["onSave"]>(({ flushPendingUpdateUpsertIfNeeded }) => {
 		setIsSaving(true);
 
-		Promise.try(async () => {
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks
+		(async (/* iife */) => {
 			const didSyncPendingUpdate = await flushPendingUpdateUpsertIfNeeded();
 			if (!didSyncPendingUpdate) {
 				toast.error("Failed to sync pending updates before save");
@@ -1464,7 +1500,7 @@ export function FileEditorDiff(props: FileEditorDiff_Props) {
 			if (nextFileContentData.status === "fulfilled") {
 				setFileContentData(nextFileContentData.value);
 			}
-		})
+		})()
 			.catch((error) => {
 				console.error("[FileEditorDiff.handleSave] Failed to refresh file content after save", {
 					error,
@@ -1474,14 +1510,15 @@ export function FileEditorDiff(props: FileEditorDiff_Props) {
 			.finally(() => {
 				setIsSaving(false);
 			});
-	};
+	});
 
-	const handleClickSync: FileEditorDiffInner_Props["onClickSync"] = (editorValues) => {
+	const handleClickSync = useFn<FileEditorDiffInner_Props["onClickSync"]>((editorValues) => {
 		if (isSyncing) return;
 
 		setIsSyncing(true);
 
-		Promise.try(async () => {
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks
+		(async (/* iife */) => {
 			if (!remoteEditorContentState) {
 				return Result({
 					_nay: {
@@ -1573,7 +1610,7 @@ export function FileEditorDiff(props: FileEditorDiff_Props) {
 			setFileContentData(nextFileContentData);
 
 			return Result({ _yay: null });
-		})
+		})()
 			.then((result) => {
 				if (result._nay) {
 					console.error("[FileEditorDiff.handleClickSync] Sync failed", {
@@ -1593,7 +1630,7 @@ export function FileEditorDiff(props: FileEditorDiff_Props) {
 			.finally(() => {
 				setIsSyncing(false);
 			});
-	};
+	});
 
 	// Reset state when `nodeId` changes
 	useLayoutEffect(() => {
@@ -1607,7 +1644,8 @@ export function FileEditorDiff(props: FileEditorDiff_Props) {
 	useEffect(() => {
 		let didCancel = false;
 
-		Promise.try(async () => {
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks
+		(async (/* iife */) => {
 			const nextFileContentData = await files_fetch_file_yjs_state_and_markdown({
 				membershipId,
 				nodeId,
@@ -1615,7 +1653,7 @@ export function FileEditorDiff(props: FileEditorDiff_Props) {
 			if (didCancel) return;
 
 			setFileContentData(nextFileContentData);
-		}).catch((error) => {
+		})().catch((error) => {
 			if (didCancel) return;
 
 			console.error("[FileEditorDiff.useLayoutEffect] Failed to fetch file content data", error);
@@ -1640,7 +1678,8 @@ export function FileEditorDiff(props: FileEditorDiff_Props) {
 
 		let didCancel = false;
 
-		Promise.try(async () => {
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks
+		(async (/* iife */) => {
 			const nextFileContentData = await files_fetch_file_yjs_state_and_markdown({
 				membershipId,
 				nodeId,
@@ -1648,7 +1687,7 @@ export function FileEditorDiff(props: FileEditorDiff_Props) {
 			if (didCancel) return;
 
 			setFileContentData(nextFileContentData);
-		}).catch((error) => {
+		})().catch((error) => {
 			if (didCancel) return;
 
 			console.error("[FileEditorDiff.savedSequenceRefetch] Failed to refetch file content data", {
@@ -1772,7 +1811,8 @@ export function FileEditorDiff(props: FileEditorDiff_Props) {
 			onSave={handleSave}
 			onClickSync={handleClickSync}
 			topStickyFloatingSlot={topStickyFloatingSlot}
+			topViewZoneSlot={topViewZoneSlot}
 		/>
 	);
-}
+});
 // #endregion root

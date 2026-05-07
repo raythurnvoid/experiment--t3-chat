@@ -29,11 +29,12 @@ function generate_color_json_get_paths() {
 function generate_color_json_extract_oklch_vars(css: string) {
 	const results: Array<{ name: string; oklch: string }> = [];
 
-	// Extract ONLY variables like:
+	// Extract static CSS variables like:
 	// --color-foo-bar: oklch(...);
+	// --gray-000: oklch(...);
 	//
 	// Note: we intentionally keep the source `oklch(...)` string, since that's what you want in JSON.
-	const regex = /--(color-[a-zA-Z0-9-_]+)\s*:\s*(oklch\([^;]+\))\s*;/g;
+	const regex = /--([a-zA-Z0-9-_]+)\s*:\s*(oklch\([^;]+\))\s*;/g;
 	for (const match of css.matchAll(regex)) {
 		const name = match[1]?.trim();
 		const oklch = match[2]?.trim();

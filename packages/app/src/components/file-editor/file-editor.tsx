@@ -1,35 +1,24 @@
 import "./file-editor.css";
-import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { FileEditorRichText } from "./file-editor-rich-text/file-editor-rich-text.tsx";
 import { FileEditorDiffSkeleton } from "./file-editor-diff/file-editor-diff-skeleton.tsx";
 import React, { useState, useImperativeHandle, type Ref, useEffect, useRef } from "react";
-import { createPortal } from "react-dom";
 import { FileEditorPlainText } from "./file-editor-plain-text/file-editor-plain-text.tsx";
 import { FileEditorPlainTextSkeleton } from "./file-editor-plain-text/file-editor-plain-text-skeleton.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn } from "@/lib/utils.ts";
 import { FileEditorDiff } from "./file-editor-diff/file-editor-diff.tsx";
-import { FileEditorSidebar } from "./file-editor-sidebar/file-editor-sidebar.tsx";
 import { useMutation, useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
-	files_ROOT_ID,
 	files_create_room_id,
-	type files_TreeItem,
 	files_PresenceStore,
 	type files_EditorView,
 } from "@/lib/files.ts";
-import { ChevronLeft, ChevronRight, Home, Sparkles } from "lucide-react";
-import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
-import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
-import { FilesSidebarToggle } from "@/components/files-sidebar-toggle.tsx";
-import { MyButtonGroup, MyButtonGroupItem } from "../my-button-group.tsx";
+import { ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
 import { MyButton } from "../my-button.tsx";
 import { MyIcon } from "../my-icon.tsx";
 import { MyIconButton } from "../my-icon-button.tsx";
-import { MyLink, MyLinkIcon } from "../my-link.tsx";
-import { FileEditorPresence } from "./file-editor-presence.tsx";
 import { FileEditorRichTextSkeleton } from "./file-editor-rich-text/file-editor-rich-text-skeleton.tsx";
 import {
 	usePresence,
@@ -37,190 +26,10 @@ import {
 	usePresenceList,
 	usePresenceSessions,
 	usePresenceSessionsData,
-} from "../../hooks/presence-hooks.ts";
-import { CatchBoundary, useNavigate } from "@tanstack/react-router";
+} from "@/hooks/presence-hooks.ts";
+import { CatchBoundary } from "@tanstack/react-router";
 import { FileEditorError } from "./file-editor-error.tsx";
-import {
-	MyPanel,
-	MyPanelGroup,
-	type MyPanelGroup_Props,
-	MyPanelResizeHandle,
-	type MyPanelResizeHandle_Props,
-} from "../my-resizable-panel-group.tsx";
-import type { AppElementId } from "@/lib/dom-utils.ts";
-import { useAppGlobalStore } from "@/lib/app-global-store.ts";
-import { useAppLocalStorageStateValue, useAppLocalStorageValue } from "@/lib/storage.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
-
-function get_breadcrumb_path(
-	treeItemsList: files_TreeItem[] | undefined,
-	nodeId: app_convex_Id<"files_nodes"> | null | undefined,
-): files_TreeItem[] {
-	if (!treeItemsList || !nodeId) return [];
-
-	const path: files_TreeItem[] = [];
-	let currentId: string = files_ROOT_ID;
-
-	// Create a map for quick lookup
-	const itemsMap = new Map<string, files_TreeItem>();
-	for (const item of treeItemsList) {
-		itemsMap.set(item.index, item);
-		if (item._id === nodeId) {
-			currentId = item.index;
-		}
-	}
-
-	// Navigate up the tree using parentId
-	while (currentId && currentId !== files_ROOT_ID) {
-		const item = itemsMap.get(currentId);
-		if (!item) break;
-
-		path.unshift(item); // Add to beginning of array
-		currentId = item.parentId;
-	}
-
-	return path;
-}
-
-// #region header
-type FileEditorHeader_ClassNames =
-	| "FileEditorHeader"
-	| "FileEditorHeader-start"
-	| "FileEditorHeader-sidebars-actions"
-	| "FileEditorHeader-breadcrumb"
-	| "FileEditorHeader-breadcrumb-home"
-	| "FileEditorHeader-breadcrumb-segment"
-	| "FileEditorHeader-breadcrumb-segment-current"
-	| "FileEditorHeader-breadcrumb-separator"
-	| "FileEditorHeader-diff-switch"
-	| "FileEditorHeader-switch-container"
-	| "FileEditorHeader-switch-group"
-	| "FileEditorHeader-label-text"
-	| "FileEditorHeader-switch-text";
-
-type FileEditorHeader_Props = {
-	nodeId: app_convex_Id<"files_nodes"> | null | undefined;
-	editorMode: FileEditor_Mode;
-	onlineUsers: Array<{
-		userId: string;
-		isSelf: boolean;
-		anagraphic: { displayName: string; avatarUrl?: string };
-		color: string;
-	}>;
-	onEditorModeChange: (mode: FileEditor_Mode) => void;
-};
-
-function FileEditorHeader(props: FileEditorHeader_Props) {
-	const { nodeId, editorMode, onlineUsers, onEditorModeChange } = props;
-
-	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
-
-	const homeNodeId = useAppGlobalStore((state) => state.files_home_id_by_membership_id[membershipId] ?? "");
-
-	const filesSidebarOpen = useAppLocalStorageValue("app_state::sidebar::files_open");
-
-	const handleEditorModeChange = useFn((mode: string) => {
-		onEditorModeChange(mode as FileEditorHeader_Props["editorMode"]);
-	});
-
-	// Query tree items to build breadcrumb path
-	const treeItemsList = useQuery(app_convex_api.files_nodes.get_tree_nodes_list, {
-		membershipId,
-	});
-
-	// Build breadcrumb path from nodeId up to root
-	const breadcrumbPath = get_breadcrumb_path(treeItemsList, nodeId);
-
-	return (
-		<div className={cn("FileEditorHeader" satisfies FileEditorHeader_ClassNames)}>
-			<div className={cn("FileEditorHeader-start" satisfies FileEditorHeader_ClassNames)}>
-				{!filesSidebarOpen && (
-					<div className={cn("FileEditorHeader-sidebars-actions" satisfies FileEditorHeader_ClassNames)}>
-						<MainAppSidebarToggle variant="ghost-highlightable" tooltip="Open app sidebar" />
-						<FilesSidebarToggle variant="ghost-highlightable" tooltip="Open files sidebar" />
-					</div>
-				)}
-
-				{/* Left: Breadcrumb path */}
-				<ol className={cn("FileEditorHeader-breadcrumb" satisfies FileEditorHeader_ClassNames)}>
-					{nodeId && treeItemsList && breadcrumbPath.length > 0 ? (
-						<>
-							<li>
-								<MyLink
-									aria-label="Home"
-									className={cn("FileEditorHeader-breadcrumb-home" satisfies FileEditorHeader_ClassNames)}
-									to="/w/$workspaceName/$projectName/files"
-									params={{ workspaceName, projectName }}
-									search={{ nodeId: homeNodeId, view: editorMode }}
-									variant="button-icon-ghost-highlightable"
-									tooltip="Home"
-								>
-									<MyLinkIcon aria-hidden>
-										<Home />
-									</MyLinkIcon>
-								</MyLink>
-							</li>
-							<span>/</span>
-							{breadcrumbPath.map((item, index) => {
-								const isCurrentFile = index === breadcrumbPath.length - 1;
-								const breadcrumbItem = (
-									<React.Fragment key={item.index}>
-										{isCurrentFile ? (
-											<li
-												className={cn(
-													"FileEditorHeader-breadcrumb-segment-current" satisfies FileEditorHeader_ClassNames,
-												)}
-											>
-												{item.title}
-											</li>
-										) : (
-											<li>
-												<MyLink
-													className={cn("FileEditorHeader-breadcrumb-segment" satisfies FileEditorHeader_ClassNames)}
-													to="/w/$workspaceName/$projectName/files"
-													params={{ workspaceName, projectName }}
-													search={{ nodeId: item.index, view: editorMode }}
-													variant="button-tertiary"
-												>
-													{item.title}
-												</MyLink>
-											</li>
-										)}
-										{index < breadcrumbPath.length - 1 && (
-											<span
-												className={cn("FileEditorHeader-breadcrumb-separator" satisfies FileEditorHeader_ClassNames)}
-											>
-												/
-											</span>
-										)}
-									</React.Fragment>
-								);
-								return breadcrumbItem;
-							})}
-						</>
-					) : (
-						<li className={cn("FileEditorHeader-breadcrumb-segment-current" satisfies FileEditorHeader_ClassNames)}>
-							<Home size={16} />
-							<span>Home</span>
-						</li>
-					)}
-				</ol>
-			</div>
-
-			{/* Right: Presence indicator and switches */}
-			<div className={cn("FileEditorHeader-switch-group" satisfies FileEditorHeader_ClassNames)}>
-				<FileEditorPresence users={onlineUsers} />
-				<MainAppHeaderBillingIndicator />
-				<MyButtonGroup value={editorMode} onValueChange={handleEditorModeChange}>
-					<MyButtonGroupItem value="rich_text_editor">Rich</MyButtonGroupItem>
-					<MyButtonGroupItem value="plain_text_editor">Markdown</MyButtonGroupItem>
-					<MyButtonGroupItem value="diff_editor">Diff</MyButtonGroupItem>
-				</MyButtonGroup>
-			</div>
-		</div>
-	);
-}
-// #endregion header
 
 // #region pending updates floating
 type FileEditorPendingUpdatesFloating_ClassNames =
@@ -314,18 +123,20 @@ function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdatesFloatin
 
 // #region presence supplier
 
-type FileEditorPresenceSupplier_Props = {
+export type FileEditor_OnlineUser = {
+	userId: string;
+	isSelf: boolean;
+	anagraphic: { displayName: string; avatarUrl?: string };
+	color: string;
+};
+
+export type FileEditorPresenceSupplier_Props = {
 	userId: string | null | undefined;
 	nodeId: app_convex_Id<"files_nodes">;
 
 	children: (props: {
 		presenceStore: files_PresenceStore | null;
-		onlineUsers: Array<{
-			userId: string;
-			isSelf: boolean;
-			anagraphic: { displayName: string; avatarUrl?: string };
-			color: string;
-		}>;
+		onlineUsers: FileEditor_OnlineUser[];
 	}) => React.ReactNode;
 };
 
@@ -531,7 +342,7 @@ function FileEditorPresenceSupplier_Disabled(props: FileEditorPresenceSupplier_P
 	return children({ presenceStore, onlineUsers: [] });
 }
 
-function FileEditorPresenceSupplier(props: FileEditorPresenceSupplier_Props) {
+export function FileEditorPresenceSupplier(props: FileEditorPresenceSupplier_Props) {
 	const presenceEnabled = usePresenceEnabled();
 
 	if (!presenceEnabled) {
@@ -550,13 +361,24 @@ type FileEditorRender_Props = {
 	editorMode: FileEditor_Mode;
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost?: HTMLElement | null;
 	onDiffExit: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
+	topViewZoneSlot?: React.ReactNode;
 };
 
 function FileEditorRender(props: FileEditorRender_Props) {
-	const { nodeId, pendingUpdateId, editorMode, presenceStore, commentsPortalHost, onDiffExit, topStickyFloatingSlot } =
-		props;
+	const {
+		nodeId,
+		pendingUpdateId,
+		editorMode,
+		presenceStore,
+		commentsPortalHost,
+		toolbarPortalHost,
+		onDiffExit,
+		topStickyFloatingSlot,
+		topViewZoneSlot,
+	} = props;
 
 	if (!presenceStore) {
 		if (editorMode === "diff_editor") {
@@ -576,6 +398,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				nodeId={nodeId}
 				presenceStore={presenceStore}
 				commentsPortalHost={commentsPortalHost}
+				toolbarPortalHost={toolbarPortalHost}
 				topStickyFloatingSlot={topStickyFloatingSlot}
 			/>
 		);
@@ -590,7 +413,9 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				presenceStore={presenceStore}
 				onExit={onDiffExit}
 				commentsPortalHost={commentsPortalHost}
+				toolbarPortalHost={toolbarPortalHost}
 				topStickyFloatingSlot={topStickyFloatingSlot}
+				topViewZoneSlot={topViewZoneSlot}
 			/>
 		);
 	}
@@ -600,7 +425,9 @@ function FileEditorRender(props: FileEditorRender_Props) {
 			nodeId={nodeId}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
+			toolbarPortalHost={toolbarPortalHost}
 			topStickyFloatingSlot={topStickyFloatingSlot}
+			topViewZoneSlot={topViewZoneSlot}
 		/>
 	);
 }
@@ -611,37 +438,47 @@ export type FileEditor_Mode = files_EditorView;
 
 export type FileEditor_ClassNames =
 	| "FileEditor"
-	| "FileEditor-editor-area"
-	| "FileEditor-panels-group"
-	| "FileEditor-content-panel"
-	| "FileEditor-sidebar";
+	| "FileEditor-layout-embedded"
+	| "FileEditor-layout-route"
+	| "FileEditor-mode-diff"
+	| "FileEditor-mode-plain-text"
+	| "FileEditor-mode-rich-text"
+	| "FileEditor-editor-area";
+
+export type FileEditor_NavigatePendingUpdates = (args: {
+	nodeId: app_convex_Id<"files_nodes">;
+	forceDiffEditor: boolean;
+}) => void;
+
+export type FileEditor_Layout = "route" | "embedded";
 
 type FileEditorInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editorMode: FileEditor_Mode;
+	layout: FileEditor_Layout;
 	presenceStore: files_PresenceStore | null;
-	onlineUsers: Array<{
-		userId: string;
-		isSelf: boolean;
-		anagraphic: { displayName: string; avatarUrl?: string };
-		color: string;
-	}>;
-	onEditorModeChange: FileEditorHeader_Props["onEditorModeChange"];
+	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost?: HTMLElement | null;
+	onEditorModeChange: (mode: FileEditor_Mode) => void;
 	onReviewPendingUpdates?: () => void;
-	onNavigatePendingUpdates?: (args: { nodeId: app_convex_Id<"files_nodes">; forceDiffEditor: boolean }) => void;
+	onNavigatePendingUpdates?: FileEditor_NavigatePendingUpdates;
 	onDiffExit?: () => void;
+	topViewZoneSlot?: React.ReactNode;
 };
 
 function FileEditorInner(props: FileEditorInner_Props) {
 	const {
 		nodeId,
 		editorMode,
+		layout,
 		presenceStore,
-		onlineUsers,
+		commentsPortalHost,
+		toolbarPortalHost,
 		onEditorModeChange,
 		onReviewPendingUpdates,
 		onNavigatePendingUpdates,
 		onDiffExit,
+		topViewZoneSlot,
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
@@ -662,12 +499,6 @@ function FileEditorInner(props: FileEditorInner_Props) {
 	const reviewPagerLabel = hasCurrentPendingUpdates
 		? `Review ${activePendingUpdateIndex + 1} of ${pendingUpdatesOrdered.length}`
 		: "Review pending updates";
-
-	const [commentsPortalHost, setCommentsPortalHost] = useState<HTMLElement | null>(null);
-	const [savedPanelLayout, setSavedPanelLayout] = useAppLocalStorageStateValue(
-		"app_state::resizable_panel::file_editor_panel",
-	);
-	const panelLayoutRef = useRef(savedPanelLayout ?? [75, 25]);
 
 	const handleDiffExit = useFn(() => {
 		onEditorModeChange("rich_text_editor");
@@ -716,18 +547,6 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		handleNavigatePendingUpdates("next");
 	});
 
-	const handlePanelLayout = useFn<NonNullable<MyPanelGroup_Props["onLayout"]>>((layout) => {
-		panelLayoutRef.current = layout;
-	});
-
-	const handlePanelDragging = useFn<NonNullable<MyPanelResizeHandle_Props["onDragging"]>>((isDragging) => {
-		if (isDragging) {
-			return;
-		}
-
-		setSavedPanelLayout(panelLayoutRef.current);
-	});
-
 	const handleCatchBoundaryError = useFn((err: Error) => {
 		console.error("[FileEditorInner]", err);
 	});
@@ -746,80 +565,71 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		/>
 	) : null;
 
-	const headerPortalElement = document.getElementById("app_main_header_content" satisfies AppElementId);
-
-	const headerSlot = headerPortalElement
-		? createPortal(
-				<FileEditorHeader
-					nodeId={nodeId}
-					editorMode={editorMode}
-					onEditorModeChange={onEditorModeChange}
-					onlineUsers={onlineUsers}
-				/>,
-				headerPortalElement,
-			)
-		: null;
-
-	const leftPanelStyle =
+	const renderHostStyle =
 		editorMode === "rich_text_editor"
-			? {
-					minHeight: "100%",
-					height: "max-content",
-					/** required for sticky descendants to work */
-					overflow: "visible",
-				}
-			: undefined;
+			? layout === "embedded"
+				? {
+						flex: "0 0 auto",
+						minHeight: 0,
+						height: "max-content",
+						/** required for sticky descendants to work */
+						overflow: "visible",
+					}
+				: {
+						flex: "1 0 auto",
+						minHeight: "100%",
+						height: "max-content",
+						/** required for sticky descendants to work */
+						overflow: "visible",
+					}
+			: {
+					flex: "1 1 auto",
+					minHeight: 0,
+					height: "100%",
+				};
+
+	const editorModeClass =
+		editorMode === "rich_text_editor"
+			? ("FileEditor-mode-rich-text" satisfies FileEditor_ClassNames)
+			: editorMode === "plain_text_editor"
+				? ("FileEditor-mode-plain-text" satisfies FileEditor_ClassNames)
+				: ("FileEditor-mode-diff" satisfies FileEditor_ClassNames);
 
 	return (
-		<div className={cn("FileEditor" satisfies FileEditor_ClassNames)}>
-			{headerSlot}
+		<div
+			className={cn(
+				"FileEditor" satisfies FileEditor_ClassNames,
+				layout === "embedded"
+					? ("FileEditor-layout-embedded" satisfies FileEditor_ClassNames)
+					: ("FileEditor-layout-route" satisfies FileEditor_ClassNames),
+				editorModeClass,
+			)}
+			role="region"
+			aria-label="File editor"
+		>
 			<div
 				className={cn("FileEditor-editor-area" satisfies FileEditor_ClassNames)}
 				style={editorMode === "rich_text_editor" ? undefined : { overflowY: "visible" }}
 			>
-				<MyPanelGroup
-					direction="horizontal"
-					className={cn("FileEditor-panels-group" satisfies FileEditor_ClassNames)}
-					onLayout={handlePanelLayout}
-					style={{
-						height: "max-content",
-						/** required for sticky descendants to work */
-						overflow: "visible",
-					}}
+				<CatchBoundary
+					getResetKey={getCatchBoundaryResetKey}
+					errorComponent={FileEditorError}
+					onCatch={handleCatchBoundaryError}
 				>
-					<MyPanel
-						defaultSize={savedPanelLayout?.[0] ?? 75}
-						className={cn("FileEditor-content-panel" satisfies FileEditor_ClassNames)}
-						style={leftPanelStyle}
-					>
-						<CatchBoundary
-							getResetKey={getCatchBoundaryResetKey}
-							errorComponent={FileEditorError}
-							onCatch={handleCatchBoundaryError}
-						>
-							<FileEditorRender
-								nodeId={nodeId}
-								pendingUpdateId={currentPendingUpdate?._id}
-								editorMode={editorMode}
-								presenceStore={presenceStore}
-								commentsPortalHost={commentsPortalHost}
-								topStickyFloatingSlot={topStickyFloatingSlot}
-								onDiffExit={handleDiffExit}
-							/>
-						</CatchBoundary>
-					</MyPanel>
-					<MyPanelResizeHandle onDragging={handlePanelDragging} />
-					<MyPanel
-						className={"FileEditor-sidebar" satisfies FileEditor_ClassNames}
-						collapsible={false}
-						defaultSize={savedPanelLayout?.[1] ?? 25}
-						style={{
-							overflow: "initial",
-						}}
-					>
-						<FileEditorSidebar commentsContainerRef={setCommentsPortalHost} />
-					</MyPanel>
-				</MyPanelGroup>
+					<div style={renderHostStyle}>
+						<FileEditorRender
+							nodeId={nodeId}
+							pendingUpdateId={currentPendingUpdate?._id}
+							editorMode={editorMode}
+							presenceStore={presenceStore}
+							commentsPortalHost={commentsPortalHost}
+							toolbarPortalHost={toolbarPortalHost}
+							topStickyFloatingSlot={topStickyFloatingSlot}
+							topViewZoneSlot={topViewZoneSlot}
+							onDiffExit={handleDiffExit}
+						/>
+					</div>
+				</CatchBoundary>
 			</div>
 		</div>
 	);
@@ -833,15 +643,28 @@ export type FileEditor_Props = {
 	ref?: Ref<FileEditor_Ref>;
 	nodeId: app_convex_Id<"files_nodes"> | null | undefined;
 	editorMode: FileEditor_Mode;
-	onEditorModeChange: FileEditorHeader_Props["onEditorModeChange"];
+	layout?: FileEditor_Layout;
+	presenceStore: files_PresenceStore | null;
+	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost?: HTMLElement | null;
+	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	onNavigatePendingUpdates?: FileEditor_NavigatePendingUpdates;
+	topViewZoneSlot?: React.ReactNode;
 };
 
 export function FileEditor(props: FileEditor_Props) {
-	const { ref, nodeId, editorMode, onEditorModeChange } = props;
-
-	const navigate = useNavigate();
-	const authenticated = AppAuthProvider.useAuthenticated();
-	const { workspaceName, projectName } = AppTenantProvider.useContext();
+	const {
+		ref,
+		nodeId,
+		editorMode,
+		layout = "route",
+		presenceStore,
+		commentsPortalHost,
+		toolbarPortalHost,
+		onEditorModeChange,
+		onNavigatePendingUpdates,
+		topViewZoneSlot,
+	} = props;
 
 	useImperativeHandle(
 		ref,
@@ -855,36 +678,19 @@ export function FileEditor(props: FileEditor_Props) {
 		onEditorModeChange("diff_editor");
 	});
 
-	const handleNavigatePendingUpdates = useFn<NonNullable<FileEditorInner_Props["onNavigatePendingUpdates"]>>((args) => {
-		const nextView = args.forceDiffEditor ? "diff_editor" : editorMode;
-		const nextSearch = {
-			nodeId: args.nodeId,
-			view: nextView === "rich_text_editor" ? undefined : nextView,
-		};
-
-		navigate({
-			to: "/w/$workspaceName/$projectName/files",
-			params: { workspaceName, projectName },
-			search: nextSearch,
-		}).catch((error) => {
-			console.error("[FileEditorInner.handleNavigatePendingUpdates] Error navigating to pending updates", { error });
-		});
-	});
-
 	return nodeId ? (
-		<FileEditorPresenceSupplier userId={authenticated.userId} nodeId={nodeId}>
-			{({ presenceStore, onlineUsers }) => (
-				<FileEditorInner
-					nodeId={nodeId}
-					editorMode={editorMode}
-					presenceStore={presenceStore}
-					onlineUsers={onlineUsers}
-					onEditorModeChange={onEditorModeChange}
-					onReviewPendingUpdates={handleReviewPendingUpdates}
-					onNavigatePendingUpdates={handleNavigatePendingUpdates}
-				/>
-			)}
-		</FileEditorPresenceSupplier>
+		<FileEditorInner
+			nodeId={nodeId}
+			editorMode={editorMode}
+			layout={layout}
+			presenceStore={presenceStore}
+			commentsPortalHost={commentsPortalHost}
+			toolbarPortalHost={toolbarPortalHost}
+			onEditorModeChange={onEditorModeChange}
+			onReviewPendingUpdates={handleReviewPendingUpdates}
+			onNavigatePendingUpdates={onNavigatePendingUpdates}
+			topViewZoneSlot={topViewZoneSlot}
+		/>
 	) : (
 		<div>No document selected</div>
 	);

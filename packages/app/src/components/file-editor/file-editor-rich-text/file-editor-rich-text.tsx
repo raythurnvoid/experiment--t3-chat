@@ -66,6 +66,7 @@ export type FileEditorRichTextToolbar_Props = {
 	sessionId: string;
 	syncChanged: boolean;
 	syncStatus: SyncStatus;
+	toolbarPortalHost?: HTMLElement | null;
 };
 
 type FileEditorRichTextToolbarTools_Props = {
@@ -142,13 +143,13 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 });
 
 const FileEditorRichTextToolbar = memo(function FileEditorRichTextToolbar(props: FileEditorRichTextToolbar_Props) {
-	const { editor, nodeId, sessionId, syncChanged, syncStatus } = props;
+	const { editor, nodeId, sessionId, syncChanged, syncStatus, toolbarPortalHost } = props;
 
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 
 	const getCurrentMarkdown = useFn(() => editor.getMarkdown());
 
-	return (
+	const toolbar = (
 		<div
 			ref={setPortalElement}
 			role="toolbar"
@@ -171,6 +172,12 @@ const FileEditorRichTextToolbar = memo(function FileEditorRichTextToolbar(props:
 			)}
 		</div>
 	);
+
+	if (toolbarPortalHost !== undefined) {
+		return toolbarPortalHost ? createPortal(toolbar, toolbarPortalHost) : null;
+	}
+
+	return toolbar;
 });
 // #endregion toolbar
 
@@ -720,11 +727,12 @@ type FileEditorRichTextInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost?: HTMLElement | null;
 	topStickyFloatingSlot?: React.ReactNode;
 };
 
 function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
-	const { filesYjs, nodeId, presenceStore, commentsPortalHost, topStickyFloatingSlot } = props;
+	const { filesYjs, nodeId, presenceStore, commentsPortalHost, toolbarPortalHost, topStickyFloatingSlot } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -781,6 +789,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 						sessionId={presenceStore.localSessionId}
 						syncChanged={filesYjs.syncChanged}
 						syncStatus={filesYjs.syncStatus}
+						toolbarPortalHost={toolbarPortalHost}
 					/>
 				)}
 				<FileEditorRichTextTopStickyFloatingContainer topStickyFloatingSlot={topStickyFloatingSlot} />
@@ -860,11 +869,12 @@ export type FileEditorRichText_Props = React.ComponentProps<"div"> & {
 	nodeId: app_convex_Id<"files_nodes">;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost?: HTMLElement | null;
 	topStickyFloatingSlot?: React.ReactNode;
 };
 
 export function FileEditorRichText(props: FileEditorRichText_Props) {
-	const { nodeId, presenceStore, commentsPortalHost, topStickyFloatingSlot, ...rest } = props;
+	const { nodeId, presenceStore, commentsPortalHost, toolbarPortalHost, topStickyFloatingSlot, ...rest } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -883,6 +893,7 @@ export function FileEditorRichText(props: FileEditorRichText_Props) {
 					nodeId={nodeId}
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
+					toolbarPortalHost={toolbarPortalHost}
 					topStickyFloatingSlot={topStickyFloatingSlot}
 					{...rest}
 				/>

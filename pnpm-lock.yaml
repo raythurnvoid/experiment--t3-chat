@@ -520,9 +520,12 @@ importers:
       pngjs:
         specifier: ^7.0.0
         version: 7.0.0
+      prettier:
+        specifier: 3.5.3
+        version: 3.5.3
       prettier-plugin-tailwindcss:
         specifier: ^0.6.14
-        version: 0.6.14(prettier@3.8.3)
+        version: 0.6.14(prettier@3.5.3)
       tw-animate-css:
         specifier: ^1.4.0
         version: 1.4.0
@@ -39485,10 +39488,6 @@ snapshots:
   prettier-plugin-tailwindcss@0.6.14(prettier@3.5.3):
     dependencies:
       prettier: 3.5.3
-
-  prettier-plugin-tailwindcss@0.6.14(prettier@3.8.3):
-    dependencies:
-      prettier: 3.8.3
 
   prettier@2.8.8:
     optional: true
