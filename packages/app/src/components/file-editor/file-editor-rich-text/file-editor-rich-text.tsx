@@ -153,7 +153,7 @@ const FileEditorRichTextToolbar = memo(function FileEditorRichTextToolbar(props:
 		<div
 			ref={setPortalElement}
 			role="toolbar"
-			aria-label="Toolbar"
+			aria-label="Rich text editor actions"
 			aria-orientation="horizontal"
 			className={cn("FileEditorRichTextToolbar" satisfies FileEditorRichTextToolbar_ClassNames)}
 		>

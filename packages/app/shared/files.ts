@@ -1,5 +1,6 @@
-import type { files_TreeItem } from "../convex/files_nodes.ts";
+import type { api } from "../convex/_generated/api.js";
 import type { Doc } from "../convex/_generated/dataModel";
+import type { FunctionReturnType } from "convex/server";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import { TaskList } from "@tiptap/extension-task-list";
@@ -16,11 +17,13 @@ import { Editor, Extension, type Extensions } from "@tiptap/core";
 import type { JSONContent as TiptapJSONContent, MarkdownRendererHelpers, RenderContext } from "@tiptap/core";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { updateYFragment } from "y-prosemirror";
-import { composite_id, is_browser, should_never_happen } from "../shared/shared-utils.ts";
+import { composite_id, is_browser, path_extract_segments_from, should_never_happen } from "../shared/shared-utils.ts";
 import { CommentsExtension } from "@liveblocks/react-tiptap";
 import { generateJSON as tiptap_generateJSON_server } from "@tiptap/html/server";
 import { generateJSON as tiptap_generateJSON_browser } from "@tiptap/html";
 import { Result } from "./errors-as-values-utils.ts";
+
+export type files_TreeItem = FunctionReturnType<typeof api.files_nodes.get_tree_nodes_list>[number];
 
 export const files_ROOT_ID = "root";
 export const files_FIRST_VERSION = 1;
@@ -28,10 +31,12 @@ export const files_YJS_DOC_KEYS = {
 	richText: "default",
 	plainText: "markdown",
 };
+export const files_CREATE_NODE_VALIDATION_MESSAGES = {
+	fileAlreadyExists: "This file already exists.",
+	folderAlreadyExists: "This folder already exists.",
+} as const;
 
-export type { files_TreeItem };
-
-export function files_create_tree_root(): files_TreeItem {
+export function files_create_tree_root() {
 	return {
 		type: "root",
 		kind: "folder",
@@ -42,16 +47,27 @@ export function files_create_tree_root(): files_TreeItem {
 		updatedAt: 0,
 		updatedBy: "",
 		_id: null,
-	};
+	} satisfies files_TreeItem;
 }
 
 export function files_create_room_id(workspaceId: string, projectId: string, nodeId: string) {
 	return composite_id("rooms", "files_nodes", workspaceId, projectId, nodeId);
 }
 
-// #region file name normalization
-export type files_NodeKind = Doc<"files_nodes">["kind"];
+/**
+ * Return the end index of the file stem. The file name is the full leaf name;
+ * the stem is the part before the final extension separator.
+ */
+export function files_find_file_stem_end_index(args: { fileName: string }) {
+	const extensionSeparatorIndex = args.fileName.lastIndexOf(".");
+	if (extensionSeparatorIndex > 0) {
+		return extensionSeparatorIndex;
+	}
 
+	return args.fileName.length;
+}
+
+// #region file name normalization
 const FILES_NORMALIZED_NAME_PART_REGEX = /^(?!.*--)(?!.*__)[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/;
 const FILES_NORMALIZED_FILE_NAME_REGEX =
 	/^(?!.*--)(?!.*__)[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/;
@@ -70,7 +86,7 @@ const FILES_FOLDER_NAME_INPUT_SEPARATOR_REGEX = /^[/_-]$/;
 const FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES = new Set(["readme"]);
 
 export function files_normalize_name_input(args: {
-	kind: files_NodeKind;
+	kind: Doc<"files_nodes">["kind"];
 	previousText: string;
 	insertedText: string;
 	nextText: string;
@@ -115,7 +131,7 @@ export function files_normalize_name_input(args: {
 	return normalizedText;
 }
 
-export function files_normalize_name(kind: files_NodeKind, name: string) {
+export function files_normalize_name(kind: Doc<"files_nodes">["kind"], name: string) {
 	if (name.includes("..")) {
 		// Reject double dots because their basename/extension intent is ambiguous.
 		return files_invalid_name_result(kind);
@@ -249,7 +265,40 @@ export function files_normalize_name(kind: files_NodeKind, name: string) {
 	return Result({ _yay: files_apply_special_file_name_case(fileName) });
 }
 
-function files_invalid_name_result(kind: files_NodeKind) {
+export function files_get_normalized_node_path_segments(args: {
+	kind: Doc<"files_nodes">["kind"] | null;
+	nameOrPath: string;
+}) {
+	if (!args.kind) {
+		return null;
+	}
+
+	const trimmedNameOrPath = args.nameOrPath.trim();
+	if (!trimmedNameOrPath) {
+		return null;
+	}
+
+	const pathSegments = path_extract_segments_from(trimmedNameOrPath);
+	if (pathSegments.length === 0) {
+		return null;
+	}
+
+	const normalizedPathSegments: string[] = [];
+	for (const [index, pathSegment] of pathSegments.entries()) {
+		const isLeaf = index === pathSegments.length - 1;
+		const pathSegmentKind = isLeaf ? args.kind : "folder";
+		const normalizedName = files_normalize_name(pathSegmentKind, pathSegment);
+		if (normalizedName._nay) {
+			return { validationMessage: normalizedName._nay.message };
+		}
+
+		normalizedPathSegments.push(normalizedName._yay);
+	}
+
+	return { normalizedPathSegments };
+}
+
+function files_invalid_name_result(kind: Doc<"files_nodes">["kind"]) {
 	// Keep the visible message kind-specific while preserving the shared Result shape.
 	return Result({
 		_nay: {
@@ -259,7 +308,7 @@ function files_invalid_name_result(kind: files_NodeKind) {
 	});
 }
 
-function files_normalize_name_input_character(kind: files_NodeKind, character: string) {
+function files_normalize_name_input_character(kind: Doc<"files_nodes">["kind"], character: string) {
 	if (FILES_NAME_INPUT_ALPHANUMERIC_REGEX.test(character)) {
 		// Accept lowercase ASCII letters and digits as valid draft characters.
 		return character;
@@ -284,7 +333,7 @@ function files_normalize_name_input_character(kind: files_NodeKind, character: s
 	return "-";
 }
 
-function files_is_name_input_separator(kind: files_NodeKind, character: string) {
+function files_is_name_input_separator(kind: Doc<"files_nodes">["kind"], character: string) {
 	// Treat dots as file separators, while folder drafts do not allow dots at all.
 	return kind === "file"
 		? FILES_FILE_NAME_INPUT_SEPARATOR_REGEX.test(character)

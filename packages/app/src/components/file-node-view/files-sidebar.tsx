@@ -72,7 +72,11 @@ import { useUiInteractedOutside } from "@/lib/ui.tsx";
 import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
 import {
 	files_ROOT_ID,
+	files_clear_node_path_cached_validation_messages,
 	files_create_tree_root,
+	files_find_file_stem_end_index,
+	files_get_default_node_name,
+	files_get_node_path_validation,
 	files_normalize_name_input,
 	files_normalize_name,
 	type files_EditorView,
@@ -116,22 +120,10 @@ function get_default_node_name(args: { parentId: string; kind: files_TreeItem["k
 			continue;
 		}
 
-		activeSiblingNames.add(siblingItem.title.trim().toLowerCase());
+		activeSiblingNames.add(siblingItem.title);
 	}
 
-	const baseName = args.kind === "folder" ? "new-folder" : "new-file.md";
-	if (!activeSiblingNames.has(baseName.toLowerCase())) {
-		return baseName;
-	}
-
-	let suffix = 2;
-	for (;;) {
-		const candidateName = args.kind === "folder" ? `new-folder-${suffix}` : `new-file-${suffix}.md`;
-		if (!activeSiblingNames.has(candidateName.toLowerCase())) {
-			return candidateName;
-		}
-		suffix += 1;
-	}
+	return files_get_default_node_name({ kind: args.kind, siblingNames: activeSiblingNames });
 }
 
 function get_protected_markdown_extension_start(args: {
@@ -763,12 +755,11 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 
 		const focusAndSelectInput = () => {
 			inputElement.focus();
-			if (kind === "file" && inputElement.value.endsWith(".md")) {
-				const selectionEnd = inputElement.value.length - ".md".length;
-				if (selectionEnd > 0) {
-					inputElement.setSelectionRange(0, selectionEnd);
-					return;
-				}
+			const selectionEnd =
+				kind === "file" ? files_find_file_stem_end_index({ fileName: inputElement.value }) : inputElement.value.length;
+			if (selectionEnd > 0 && selectionEnd < inputElement.value.length) {
+				inputElement.setSelectionRange(0, selectionEnd);
+				return;
 			}
 
 			inputElement.select();
@@ -796,7 +787,7 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 				tabIndex={isRenaming ? undefined : -1}
 				value={value}
 				// Hide the idle readonly title input; the treeitem owns the accessible row name until rename mode starts.
-				{...(isRenaming ? {} : { inert: "true" })}
+				{...(isRenaming ? {} : { inert: true })}
 				aria-hidden={isRenaming ? undefined : true}
 				onBlur={handleRenameInputBlur}
 				onBeforeInput={isRenaming ? handleRenameInputBeforeInput : undefined}
@@ -2122,6 +2113,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			setRenamingItem(nextRenamingItem);
 			if (nextRenamingItem == null) {
 				dom_clear_text_selection();
+				files_clear_node_path_cached_validation_messages();
 			}
 			setRenameErrorByNodeId(new Map());
 		},
@@ -2143,6 +2135,22 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 
 		if (!trimmedValue) {
+			return;
+		}
+
+		const renameValidation = files_get_node_path_validation({
+			scopeId: membershipId,
+			treeItemsList: treeItems?.list,
+			itemIdToIgnore: itemId,
+			parentId: itemData.parentId,
+			kind: itemData.kind,
+			nameOrPath: trimmedValue,
+		});
+		const renameError = renameValidation.validationMessage;
+		if (renameError) {
+			renameValidation.cacheValidationMessage(renameError);
+			setRenameError(itemId, renameError);
+			item.setFocused();
 			return;
 		}
 
@@ -2221,6 +2229,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			)
 			.then((result) => {
 				if (result._nay) {
+					renameValidation.cacheValidationMessage(result._nay.message);
+					setRenameError(itemId, result._nay.message);
 					console.error("[FilesSidebar.handleRename] Failed to rename node", { result });
 				}
 			})
@@ -2229,6 +2239,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			})
 			.finally(() => {
 				unmarkFileAsPending(itemId);
+				files_clear_node_path_cached_validation_messages();
 			});
 	});
 
@@ -2246,17 +2257,28 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const itemData = item.getItemData();
 		const itemId = item.getId();
 		const trimmedValue = currentTree.getRenamingValue().trim();
-		if (itemData.type === "node" && trimmedValue && !trimmedValue.includes("/")) {
-			const normalizedNameResult = files_normalize_name(itemData.kind, trimmedValue);
-			if (normalizedNameResult._nay) {
+		if (itemData.type === "node" && trimmedValue) {
+			const renameValidation = files_get_node_path_validation({
+				scopeId: membershipId,
+				treeItemsList: treeItems?.list,
+				itemIdToIgnore: itemId,
+				parentId: itemData.parentId,
+				kind: itemData.kind,
+				nameOrPath: trimmedValue,
+			});
+			const renameError = renameValidation.validationMessage;
+			if (renameError) {
 				event.preventDefault();
-				setRenameError(itemId, normalizedNameResult._nay.message);
+				renameValidation.cacheValidationMessage(renameError);
+				setRenameError(itemId, renameError);
 				item.setFocused();
 				return;
 			}
 		}
 
 		clearRenameError(itemId);
+
+		// Triggers the BE mutation
 		currentTree.completeRenaming();
 	});
 
@@ -2473,6 +2495,14 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			})
 			.then((result) => {
 				if (result._nay) {
+					const createNodeValidation = files_get_node_path_validation({
+						scopeId: membershipId,
+						treeItemsList: treeItems.list,
+						parentId: parentNodeId,
+						kind,
+						nameOrPath: nextNodeName,
+					});
+					createNodeValidation.cacheValidationMessage(result._nay.message);
 					console.error("[FilesSidebar.handleCreateNodeClick] Failed to create node", {
 						result,
 					});
@@ -2759,7 +2789,7 @@ if (import.meta.vitest) {
 		return {
 			type: "node",
 			kind: args.kind,
-			index: args.index,
+			index: id,
 			parentId: args.parentId,
 			title: args.title,
 			archiveOperationId: args.archiveOperationId,

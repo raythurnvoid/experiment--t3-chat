@@ -18,11 +18,39 @@ import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-bill
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyButtonGroup, MyButtonGroupItem } from "@/components/my-button-group.tsx";
+import { MyGridTable, MyGridTableBody, MyGridTableCell, MyGridTableRow } from "@/components/my-grid-table.tsx";
+import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
+import {
+	MyInput,
+	MyInputArea,
+	MyInputBox,
+	MyInputControl,
+	MyInputHelperText,
+	MyInputLabel,
+} from "@/components/my-input.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
+import {
+	MyModal,
+	MyModalCloseTrigger,
+	MyModalFooter,
+	MyModalHeader,
+	MyModalHeading,
+	MyModalPopover,
+} from "@/components/my-modal.tsx";
+import {
+	MyMenu,
+	MyMenuItem,
+	MyMenuItemContent,
+	MyMenuItemContentIcon,
+	MyMenuItemContentPrimary,
+	MyMenuPopover,
+	MyMenuPopoverContent,
+	MyMenuTrigger,
+} from "@/components/my-menu.tsx";
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
-import { useFn } from "@/hooks/utils-hooks.ts";
+import { useFn, useRenderPromise } from "@/hooks/utils-hooks.ts";
 import {
 	app_convex_api,
 	type app_convex_Doc,
@@ -32,12 +60,21 @@ import {
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
-import { files_ROOT_ID, type files_EditorView, type files_TreeItem } from "@/lib/files.ts";
+import {
+	files_ROOT_ID,
+	files_clear_node_path_cached_validation_messages,
+	files_find_file_stem_end_index,
+	files_get_default_node_name,
+	files_get_node_path_validation,
+	type files_EditorView,
+	type files_TreeItem,
+} from "@/lib/files.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { cn } from "@/lib/utils.ts";
+import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery } from "convex/react";
-import { BookOpen, FilePlus, FileText, Folder, Home } from "lucide-react";
-import React, { memo, useEffect, useRef, useState } from "react";
+import { Archive, BookOpen, EllipsisVertical, FilePlus, FileText, Folder, FolderPlus, Home } from "lucide-react";
+import React, { memo, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FilesSidebar } from "./files-sidebar.tsx";
 
@@ -186,7 +223,9 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 										)}
 										{index < breadcrumbPath.length - 1 && (
 											<span
-												className={cn("FileNodeViewHeader-breadcrumb-separator" satisfies FileNodeViewHeader_ClassNames)}
+												className={cn(
+													"FileNodeViewHeader-breadcrumb-separator" satisfies FileNodeViewHeader_ClassNames,
+												)}
 											>
 												/
 											</span>
@@ -330,37 +369,12 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 });
 // #endregion file editor
 
-// #region folder explorer
-const FILE_NODE_VIEW_FOLDER_EXPLORER_INITIAL_ITEMS_COUNT = 5;
+// #region folder
+const FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT = 5;
 
-type FileNodeViewFolderExplorer_ClassNames =
-	| "FileNodeViewFolderExplorer"
-	| "FileNodeViewFolderExplorer-mode-monaco"
-	| "FileNodeViewFolderExplorer-browser"
-	| "FileNodeViewFolderExplorer-toolbar"
-	| "FileNodeViewFolderExplorer-header"
-	| "FileNodeViewFolderExplorer-title"
-	| "FileNodeViewFolderExplorer-list"
-	| "FileNodeViewFolderExplorer-table"
-	| "FileNodeViewFolderExplorer-row"
-	| "FileNodeViewFolderExplorer-cell"
-	| "FileNodeViewFolderExplorer-cell-name"
-	| "FileNodeViewFolderExplorer-cell-kind"
-	| "FileNodeViewFolderExplorer-cell-updated"
-	| "FileNodeViewFolderExplorer-link"
-	| "FileNodeViewFolderExplorer-icon"
-	| "FileNodeViewFolderExplorer-show-more"
-	| "FileNodeViewFolderExplorer-readme"
-	| "FileNodeViewFolderExplorer-readme-header"
-	| "FileNodeViewFolderExplorer-readme-title"
-	| "FileNodeViewFolderExplorer-readme-editor"
-	| "FileNodeViewFolderExplorer-readme-empty"
-	| "FileNodeViewFolderExplorer-readme-empty-text"
-	| "FileNodeViewFolderExplorer-readme-empty-action"
-	| "FileNodeViewFolderExplorer-readme-empty-action-icon";
+type FileNodeViewFolder_ClassNames = "FileNodeViewFolder" | "FileNodeViewFolder-mode-monaco";
 
-type FileNodeViewFolderExplorer_Props = {
-	node: app_convex_Doc<"files_nodes"> | null;
+type FileNodeViewFolder_Props = {
 	folderItemId: app_convex_Doc<"files_nodes">["parentId"];
 	treeItemsList: FileNodeViewContent_Props["treeItemsList"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
@@ -372,9 +386,8 @@ type FileNodeViewFolderExplorer_Props = {
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
 };
 
-const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(props: FileNodeViewFolderExplorer_Props) {
+const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewFolder_Props) {
 	const {
-		node,
 		folderItemId,
 		treeItemsList,
 		pendingUpdateId,
@@ -388,19 +401,17 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
 
 	const createNode = useMutation(app_convex_api.files_nodes.create_node);
+	const archiveNodes = useMutation(app_convex_api.files_nodes.archive_nodes);
 
 	const [showAllItems, setShowAllItems] = useState(false);
 	const [isCreatingReadme, setIsCreatingReadme] = useState(false);
+	const [isCreatingNode, setIsCreatingNode] = useState(false);
+	const [pendingActionNodeIds, setPendingActionNodeIds] = useState(() => new Set<string>());
+	const createNodeModalRef = useRef<FileNodeViewFolderCreateNodeModal_Ref | null>(null);
 	const [toolbarPortalHost, setToolbarPortalHost] = useState<HTMLElement | null>(null);
 
-	useEffect(() => {
-		setShowAllItems(false);
-	}, [folderItemId]);
-
 	const childItems = (treeItemsList ?? [])
-		.filter(
-			(item) => item.type === "node" && item.parentId === folderItemId && item.archiveOperationId === undefined,
-		)
+		.filter((item) => item.type === "node" && item.parentId === folderItemId && item.archiveOperationId === undefined)
 		.sort((a, b) => {
 			if (a.kind !== b.kind) {
 				return a.kind === "folder" ? -1 : 1;
@@ -410,13 +421,51 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		});
 	const visibleChildItems = showAllItems
 		? childItems
-		: childItems.slice(0, FILE_NODE_VIEW_FOLDER_EXPLORER_INITIAL_ITEMS_COUNT);
+		: childItems.slice(0, FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT);
 	const hiddenChildItemsCount = childItems.length - visibleChildItems.length;
 	const readmeNodeId = get_folder_readme_node_id(treeItemsList, folderItemId);
-	const folderTitle = node?.name ?? "Files";
+	const childItemNames = childItems.map((child) => child.title);
 
 	const handleShowMoreClick = useFn(() => {
 		setShowAllItems(true);
+	});
+
+	const handleCreateNodeModalOpen = useFn((kind: files_TreeItem["kind"]) => {
+		createNodeModalRef.current?.open(kind);
+	});
+
+	const handleCreateNodeSubmit = useFn((args: { kind: files_TreeItem["kind"]; name: string }) => {
+		const { kind, name } = args;
+		setIsCreatingNode(true);
+		return createNode({
+			membershipId,
+			parentId: folderItemId,
+			name,
+			kind,
+		})
+			.then((result) => {
+				if (result._nay) {
+					console.error("[FileNodeViewFolder.handleCreateNodeSubmit] Failed to create node", {
+						result,
+						folderItemId,
+						kind,
+					});
+					return result._nay.message;
+				}
+
+				return null;
+			})
+			.catch((error) => {
+				console.error("[FileNodeViewFolder.handleCreateNodeSubmit] Error creating node", {
+					error,
+					folderItemId,
+					kind,
+				});
+				return `Failed to create ${kind}.`;
+			})
+			.finally(() => {
+				setIsCreatingNode(false);
+			});
 	});
 
 	const handleCreateReadmeClick = useFn(() => {
@@ -429,14 +478,14 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		})
 			.then((result) => {
 				if (result._nay) {
-					console.error("[FileNodeViewFolderExplorer.handleCreateReadmeClick] Failed to create README", {
+					console.error("[FileNodeViewFolder.handleCreateReadmeClick] Failed to create README", {
 						result,
 						folderItemId,
 					});
 				}
 			})
 			.catch((error) => {
-				console.error("[FileNodeViewFolderExplorer.handleCreateReadmeClick] Error creating README", {
+				console.error("[FileNodeViewFolder.handleCreateReadmeClick] Error creating README", {
 					error,
 					folderItemId,
 				});
@@ -446,151 +495,106 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 			});
 	});
 
+	const handleArchiveNode = useFn((nodeId: app_convex_Id<"files_nodes">) => {
+		setPendingActionNodeIds((current) => new Set(current).add(nodeId));
+		archiveNodes({
+			membershipId,
+			nodeIds: [nodeId],
+		})
+			.then((result) => {
+				if (result._nay) {
+					console.error("[FileNodeViewFolder.handleArchiveNode] Failed to archive node", {
+						result,
+						nodeId,
+					});
+				}
+			})
+			.catch((error) => {
+				console.error("[FileNodeViewFolder.handleArchiveNode] Error archiving node", {
+					error,
+					nodeId,
+				});
+			})
+			.finally(() => {
+				setPendingActionNodeIds((current) => {
+					const next = new Set(current);
+					next.delete(nodeId);
+					return next;
+				});
+			});
+	});
+
+	// Collapse the folder table again when navigating into a different folder.
+	useEffect(() => {
+		setShowAllItems(false);
+	}, [folderItemId]);
+
 	const toolbarPortalHostElement = (
-		<div
-			ref={setToolbarPortalHost}
-			className={"FileNodeViewFolderExplorer-toolbar" satisfies FileNodeViewFolderExplorer_ClassNames}
+		<FileNodeViewFolderToolbar
+			disabled={isCreatingNode}
+			onToolbarPortalHostChange={setToolbarPortalHost}
+			onCreateNode={handleCreateNodeModalOpen}
+		/>
+	);
+
+	const createNodeModal = (
+		<FileNodeViewFolderCreateNodeModal
+			ref={createNodeModalRef}
+			membershipId={membershipId}
+			folderItemId={folderItemId}
+			treeItemsList={treeItemsList}
+			siblingNames={childItemNames}
+			isCreatingNode={isCreatingNode}
+			onCreateNode={handleCreateNodeSubmit}
 		/>
 	);
 
 	const folderBrowserContent = (
-		<div className={"FileNodeViewFolderExplorer-browser" satisfies FileNodeViewFolderExplorer_ClassNames}>
-			<div className={"FileNodeViewFolderExplorer-header" satisfies FileNodeViewFolderExplorer_ClassNames}>
-				<h1 className={"FileNodeViewFolderExplorer-title" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					{folderTitle}
-				</h1>
-			</div>
-
-			{(childItems.length > 0 || hiddenChildItemsCount > 0) && (
-				<div className={"FileNodeViewFolderExplorer-list" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					{childItems.length > 0 && (
-						<table className={"FileNodeViewFolderExplorer-table" satisfies FileNodeViewFolderExplorer_ClassNames}>
-							<tbody>
-								{visibleChildItems.map((child) => (
-									<tr
-										key={child.index}
-										className={"FileNodeViewFolderExplorer-row" satisfies FileNodeViewFolderExplorer_ClassNames}
-									>
-										<td
-											className={cn(
-												"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorer_ClassNames,
-												"FileNodeViewFolderExplorer-cell-name" satisfies FileNodeViewFolderExplorer_ClassNames,
-											)}
-										>
-											<MyIcon className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorer_ClassNames}>
-												{child.kind === "folder" ? <Folder /> : <FileText />}
-											</MyIcon>
-											<MyLink
-												className={"FileNodeViewFolderExplorer-link" satisfies FileNodeViewFolderExplorer_ClassNames}
-												to="/w/$workspaceName/$projectName/files"
-												params={{ workspaceName, projectName }}
-												search={{ nodeId: child.index, view: editorMode }}
-												variant="button-tertiary"
-											>
-												{child.title}
-											</MyLink>
-										</td>
-										<td
-											className={cn(
-												"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorer_ClassNames,
-												"FileNodeViewFolderExplorer-cell-kind" satisfies FileNodeViewFolderExplorer_ClassNames,
-											)}
-										>
-											{child.kind === "folder" ? "Folder" : "File"}
-										</td>
-										<td
-											className={cn(
-												"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorer_ClassNames,
-												"FileNodeViewFolderExplorer-cell-updated" satisfies FileNodeViewFolderExplorer_ClassNames,
-											)}
-										>
-											{format_relative_time(child.updatedAt)}
-										</td>
-									</tr>
-								))}
-							</tbody>
-						</table>
-					)}
-
-					{hiddenChildItemsCount > 0 && (
-						<MyButton
-							className={"FileNodeViewFolderExplorer-show-more" satisfies FileNodeViewFolderExplorer_ClassNames}
-							variant="outline"
-							onClick={handleShowMoreClick}
-						>
-							Show more
-						</MyButton>
-					)}
-				</div>
-			)}
-
-			<section className={"FileNodeViewFolderExplorer-readme" satisfies FileNodeViewFolderExplorer_ClassNames}>
-				<div className={"FileNodeViewFolderExplorer-readme-header" satisfies FileNodeViewFolderExplorer_ClassNames}>
-					<MyIcon className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorer_ClassNames}>
-						<BookOpen />
-					</MyIcon>
-					<h2 className={"FileNodeViewFolderExplorer-readme-title" satisfies FileNodeViewFolderExplorer_ClassNames}>
-						README.md
-					</h2>
-				</div>
-
-				{treeItemsList === undefined ? (
-					<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames}>Loading...</div>
-				) : !readmeNodeId ? (
-					<div className={"FileNodeViewFolderExplorer-readme-empty" satisfies FileNodeViewFolderExplorer_ClassNames}>
-						<p className={"FileNodeViewFolderExplorer-readme-empty-text" satisfies FileNodeViewFolderExplorer_ClassNames}>
-							No README available.
-						</p>
-						<MyButton
-							className={"FileNodeViewFolderExplorer-readme-empty-action" satisfies FileNodeViewFolderExplorer_ClassNames}
-							variant="outline"
-							disabled={isCreatingReadme}
-							aria-busy={isCreatingReadme}
-							onClick={handleCreateReadmeClick}
-						>
-							<MyButtonIcon
-								className={
-									"FileNodeViewFolderExplorer-readme-empty-action-icon" satisfies FileNodeViewFolderExplorer_ClassNames
-								}
-							>
-								<FilePlus />
-							</MyButtonIcon>
-							Create README
-						</MyButton>
-					</div>
-				) : null}
-			</section>
-		</div>
+		<FileNodeViewFolderBody>
+			<FileNodeViewFolderExplorer
+				visibleChildItems={visibleChildItems}
+				hiddenChildItemsCount={hiddenChildItemsCount}
+				editorMode={editorMode}
+				workspaceName={workspaceName}
+				projectName={projectName}
+				pendingActionNodeIds={pendingActionNodeIds}
+				onArchiveNode={handleArchiveNode}
+				onShowMoreClick={handleShowMoreClick}
+			/>
+			<FileNodeViewFolderReadme
+				readmeNodeId={readmeNodeId}
+				treeItemsList={treeItemsList}
+				isCreatingReadme={isCreatingReadme}
+				onCreateReadmeClick={handleCreateReadmeClick}
+			/>
+		</FileNodeViewFolderBody>
 	);
 
 	const readmeEditor = readmeNodeId ? (
-		<div className={"FileNodeViewFolderExplorer-readme-editor" satisfies FileNodeViewFolderExplorer_ClassNames}>
-			<FileNodeViewFileEditor
-				key={readmeNodeId}
-				nodeId={readmeNodeId}
-				pendingUpdateId={pendingUpdateId}
-				serverSequence={serverSequence}
-				editorMode={editorMode}
-				layout="embedded"
-				presenceStore={presenceStore}
-				commentsPortalHost={commentsPortalHost}
-				toolbarPortalHost={toolbarPortalHost}
-				topStickyFloatingSlot={topStickyFloatingSlot}
-				topViewZoneSlot={editorMode !== "rich_text_editor" ? folderBrowserContent : undefined}
-				onEditorModeChange={onEditorModeChange}
-			/>
-		</div>
+		<FileNodeViewFolderReadmeEditor
+			readmeNodeId={readmeNodeId}
+			pendingUpdateId={pendingUpdateId}
+			serverSequence={serverSequence}
+			editorMode={editorMode}
+			presenceStore={presenceStore}
+			commentsPortalHost={commentsPortalHost}
+			toolbarPortalHost={toolbarPortalHost}
+			topStickyFloatingSlot={topStickyFloatingSlot}
+			topViewZoneSlot={editorMode !== "rich_text_editor" ? folderBrowserContent : undefined}
+			onEditorModeChange={onEditorModeChange}
+		/>
 	) : null;
 
 	return (
 		<div
 			className={cn(
-				"FileNodeViewFolderExplorer" satisfies FileNodeViewFolderExplorer_ClassNames,
+				"FileNodeViewFolder" satisfies FileNodeViewFolder_ClassNames,
 				editorMode !== "rich_text_editor" &&
 					readmeNodeId &&
-					("FileNodeViewFolderExplorer-mode-monaco" satisfies FileNodeViewFolderExplorer_ClassNames),
+					("FileNodeViewFolder-mode-monaco" satisfies FileNodeViewFolder_ClassNames),
 			)}
 		>
+			{createNodeModal}
 			{editorMode !== "rich_text_editor" && readmeNodeId ? (
 				<>
 					{toolbarPortalHostElement}
@@ -606,7 +610,572 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		</div>
 	);
 });
+// #endregion folder
+
+// #region folder toolbar
+type FileNodeViewFolderToolbar_ClassNames =
+	| "FileNodeViewFolderToolbar"
+	| "FileNodeViewFolderToolbar-actions"
+	| "FileNodeViewFolderToolbar-action"
+	| "FileNodeViewFolderToolbar-action-icon";
+
+type FileNodeViewFolderToolbar_Props = {
+	disabled: boolean;
+	onToolbarPortalHostChange: (element: HTMLElement | null) => void;
+	onCreateNode: (kind: files_TreeItem["kind"]) => void;
+};
+
+const FileNodeViewFolderToolbar = memo(function FileNodeViewFolderToolbar(props: FileNodeViewFolderToolbar_Props) {
+	const { disabled, onToolbarPortalHostChange, onCreateNode } = props;
+
+	return (
+		<div
+			ref={onToolbarPortalHostChange}
+			className={"FileNodeViewFolderToolbar" satisfies FileNodeViewFolderToolbar_ClassNames}
+		>
+			<div
+				role="toolbar"
+				aria-label="Folder actions"
+				className={"FileNodeViewFolderToolbar-actions" satisfies FileNodeViewFolderToolbar_ClassNames}
+			>
+				<MyIconButton
+					className={"FileNodeViewFolderToolbar-action" satisfies FileNodeViewFolderToolbar_ClassNames}
+					variant="ghost"
+					tooltip="New file in current folder"
+					disabled={disabled}
+					onClick={() => onCreateNode("file")}
+				>
+					<MyIconButtonIcon
+						className={"FileNodeViewFolderToolbar-action-icon" satisfies FileNodeViewFolderToolbar_ClassNames}
+					>
+						<FilePlus />
+					</MyIconButtonIcon>
+				</MyIconButton>
+				<MyIconButton
+					className={"FileNodeViewFolderToolbar-action" satisfies FileNodeViewFolderToolbar_ClassNames}
+					variant="ghost"
+					tooltip="New folder in current folder"
+					disabled={disabled}
+					onClick={() => onCreateNode("folder")}
+				>
+					<MyIconButtonIcon
+						className={"FileNodeViewFolderToolbar-action-icon" satisfies FileNodeViewFolderToolbar_ClassNames}
+					>
+						<FolderPlus />
+					</MyIconButtonIcon>
+				</MyIconButton>
+			</div>
+		</div>
+	);
+});
+// #endregion folder toolbar
+
+// #region folder create node modal
+type FileNodeViewFolderCreateNodeModal_ClassNames =
+	| "FileNodeViewFolderCreateNodeModal"
+	| "FileNodeViewFolderCreateNodeModal-form"
+	| "FileNodeViewFolderCreateNodeModal-field"
+	| "FileNodeViewFolderCreateNodeModal-validation";
+
+type FileNodeViewFolderCreateNodeModal_Ref = {
+	open: (kind: files_TreeItem["kind"]) => void;
+};
+
+type FileNodeViewFolderCreateNodeModal_Props = {
+	ref: React.Ref<FileNodeViewFolderCreateNodeModal_Ref>;
+	membershipId: app_convex_Id<"workspaces_projects_users">;
+	folderItemId: FileNodeViewFolder_Props["folderItemId"];
+	treeItemsList: FileNodeViewFolder_Props["treeItemsList"];
+	siblingNames: Iterable<string>;
+	isCreatingNode: boolean;
+	onCreateNode: (args: { kind: files_TreeItem["kind"]; name: string }) => Promise<string | null>;
+};
+
+const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreateNodeModal(
+	props: FileNodeViewFolderCreateNodeModal_Props,
+) {
+	const { ref, membershipId, folderItemId, treeItemsList, siblingNames, isCreatingNode, onCreateNode } = props;
+
+	const [kind, setKind] = useState<files_TreeItem["kind"] | null>(null);
+	const [name, setName] = useState("");
+	const [error, setError] = useState<string | null>(null);
+	const inputRef = useRef<HTMLInputElement | null>(null);
+	const renderPromise = useRenderPromise();
+
+	const kindLabel = kind === "folder" ? "folder" : "file";
+	const nodePathValidation = files_get_node_path_validation({
+		scopeId: membershipId,
+		parentId: folderItemId,
+		treeItemsList,
+		kind,
+		nameOrPath: name,
+	});
+	const displayedValidationMessage = error ?? nodePathValidation.validationMessage;
+	const isSubmitBlocked = Boolean(nodePathValidation.validationMessage);
+
+	const closeModal = useFn(() => {
+		files_clear_node_path_cached_validation_messages();
+		setKind(null);
+		setName("");
+		setError(null);
+	});
+
+	const handleNameChange = useFn<React.ComponentProps<typeof MyInputControl>["onChange"]>((event) => {
+		setName(event.currentTarget.value);
+		setError(null);
+	});
+
+	const handleOpenChange = useFn((open: boolean) => {
+		if (open || isCreatingNode) {
+			return;
+		}
+
+		closeModal();
+	});
+
+	const handleSubmit = useFn<React.ComponentProps<"form">["onSubmit"]>((event) => {
+		event.preventDefault();
+		if (!kind) {
+			return;
+		}
+
+		const trimmedName = name.trim();
+		if (!trimmedName) {
+			setError(`Enter a ${kind} name.`);
+			return;
+		}
+		if (nodePathValidation.validationMessage) {
+			nodePathValidation.cacheValidationMessage(nodePathValidation.validationMessage);
+			setError(nodePathValidation.validationMessage);
+			return;
+		}
+
+		setError(null);
+		onCreateNode({ kind, name: trimmedName })
+			.then((serverErrorMessage) => {
+				if (!serverErrorMessage) {
+					closeModal();
+					return;
+				}
+
+				nodePathValidation.cacheValidationMessage(serverErrorMessage);
+				setError(serverErrorMessage);
+			})
+			.catch((caughtError) => {
+				setError(`Failed to create ${kind}.`);
+				console.error("[FileNodeViewFolderCreateNodeModal.handleSubmit] Error creating node", {
+					error: caughtError,
+					folderItemId,
+					kind,
+				});
+			});
+	});
+
+	useImperativeHandle(
+		ref,
+		() => ({
+			open: (kind) => {
+				const defaultName = files_get_default_node_name({
+					kind: kind,
+					siblingNames,
+				});
+				const selectionEnd =
+					kind === "file" ? files_find_file_stem_end_index({ fileName: defaultName }) : defaultName.length;
+				setKind(kind);
+				setName(defaultName);
+				setError(null);
+				renderPromise
+					.wait()
+					.then((result) => {
+						if (result._nay) {
+							return;
+						}
+
+						const input = inputRef.current;
+						if (!input) {
+							return;
+						}
+
+						input.focus();
+						input.setSelectionRange(0, selectionEnd);
+					})
+					.catch((error) => {
+						console.error("[FileNodeViewFolderCreateNodeModal.open] Error selecting default node name", { error });
+					});
+			},
+		}),
+		[ref, renderPromise, siblingNames],
+	);
+
+	// Keep client-side path conflicts in the shared cache so repeated values fail immediately.
+	useEffect(() => {
+		if (!nodePathValidation.validationMessage) {
+			return;
+		}
+
+		nodePathValidation.cacheValidationMessage(nodePathValidation.validationMessage);
+	}, [nodePathValidation.validationCacheKey, nodePathValidation.validationMessage]);
+
+	// Use native validity for invalid styling while keeping the app helper text as the visible message.
+	useLayoutEffect(() => {
+		const input = inputRef.current;
+		if (!input) {
+			return;
+		}
+
+		input.setCustomValidity(kind ? (displayedValidationMessage ?? "") : "");
+		return () => {
+			input.setCustomValidity("");
+		};
+	}, [displayedValidationMessage, inputRef, kind]);
+
+	return (
+		<MyModal open={kind !== null} setOpen={handleOpenChange}>
+			<MyModalPopover
+				className={"FileNodeViewFolderCreateNodeModal" satisfies FileNodeViewFolderCreateNodeModal_ClassNames}
+			>
+				<form
+					className={"FileNodeViewFolderCreateNodeModal-form" satisfies FileNodeViewFolderCreateNodeModal_ClassNames}
+					onSubmit={handleSubmit}
+				>
+					<MyModalHeader>
+						<MyModalHeading>New {kindLabel}</MyModalHeading>
+					</MyModalHeader>
+					<div
+						className={"FileNodeViewFolderCreateNodeModal-field" satisfies FileNodeViewFolderCreateNodeModal_ClassNames}
+					>
+						<MyInput variant="surface">
+							<MyInputLabel>Name</MyInputLabel>
+							<MyInputArea>
+								<MyInputBox />
+								<MyInputControl
+									ref={inputRef}
+									autoFocus
+									required
+									value={name}
+									disabled={isCreatingNode}
+									aria-invalid={Boolean(displayedValidationMessage)}
+									onChange={handleNameChange}
+								/>
+							</MyInputArea>
+							<MyInputHelperText
+								className={
+									"FileNodeViewFolderCreateNodeModal-validation" satisfies FileNodeViewFolderCreateNodeModal_ClassNames
+								}
+								aria-live="polite"
+							>
+								{displayedValidationMessage}
+							</MyInputHelperText>
+						</MyInput>
+					</div>
+					<MyModalFooter>
+						<MyModalCloseTrigger disabled={isCreatingNode}>
+							<MyButton variant="ghost">Cancel</MyButton>
+						</MyModalCloseTrigger>
+						<MyButton
+							type="submit"
+							disabled={!name.trim() || isSubmitBlocked || isCreatingNode}
+							aria-busy={isCreatingNode}
+						>
+							{isCreatingNode ? `Creating ${kindLabel}...` : `Create ${kindLabel}`}
+						</MyButton>
+					</MyModalFooter>
+				</form>
+				<MyModalCloseTrigger disabled={isCreatingNode} />
+			</MyModalPopover>
+		</MyModal>
+	);
+});
+// #endregion folder create node modal
+
+// #region folder body
+type FileNodeViewFolderBody_ClassNames = "FileNodeViewFolderBody";
+
+type FileNodeViewFolderBody_Props = {
+	children: React.ReactNode;
+};
+
+const FileNodeViewFolderBody = memo(function FileNodeViewFolderBody(props: FileNodeViewFolderBody_Props) {
+	const { children } = props;
+
+	return <div className={"FileNodeViewFolderBody" satisfies FileNodeViewFolderBody_ClassNames}>{children}</div>;
+});
+// #endregion folder body
+
+// #region folder explorer
+type FileNodeViewFolderExplorer_ClassNames =
+	| "FileNodeViewFolderExplorer"
+	| "FileNodeViewFolderExplorer-table"
+	| "FileNodeViewFolderExplorer-row"
+	| "FileNodeViewFolderExplorer-row-action"
+	| "FileNodeViewFolderExplorer-cell"
+	| "FileNodeViewFolderExplorer-cell-name"
+	| "FileNodeViewFolderExplorer-cell-updated-by"
+	| "FileNodeViewFolderExplorer-cell-updated"
+	| "FileNodeViewFolderExplorer-cell-actions"
+	| "FileNodeViewFolderExplorer-link"
+	| "FileNodeViewFolderExplorer-icon"
+	| "FileNodeViewFolderExplorer-more-action"
+	| "FileNodeViewFolderExplorer-show-more";
+
+type FileNodeViewFolderExplorer_Props = {
+	visibleChildItems: files_TreeItem[];
+	hiddenChildItemsCount: number;
+	editorMode: FileEditor_Mode;
+	workspaceName: string;
+	projectName: string;
+	pendingActionNodeIds: ReadonlySet<string>;
+	onArchiveNode: (nodeId: app_convex_Id<"files_nodes">) => void;
+	onShowMoreClick: () => void;
+};
+
+const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(props: FileNodeViewFolderExplorer_Props) {
+	const {
+		visibleChildItems,
+		hiddenChildItemsCount,
+		editorMode,
+		workspaceName,
+		projectName,
+		pendingActionNodeIds,
+		onArchiveNode,
+		onShowMoreClick,
+	} = props;
+
+	if (visibleChildItems.length === 0 && hiddenChildItemsCount <= 0) {
+		return null;
+	}
+
+	return (
+		<div className={"FileNodeViewFolderExplorer" satisfies FileNodeViewFolderExplorer_ClassNames}>
+			{visibleChildItems.length > 0 && (
+				<MyGridTable
+					aria-label="Folder contents"
+					className={"FileNodeViewFolderExplorer-table" satisfies FileNodeViewFolderExplorer_ClassNames}
+				>
+					<MyGridTableBody>
+						{visibleChildItems.map((child) => {
+							const childNodeId = child.index as app_convex_Id<"files_nodes">;
+							const isPendingAction = pendingActionNodeIds.has(child.index);
+
+							return (
+								<MyGridTableRow
+									key={child.index}
+									className={"FileNodeViewFolderExplorer-row" satisfies FileNodeViewFolderExplorer_ClassNames}
+								>
+									<Link
+										aria-label={`Open ${child.title}`}
+										className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorer_ClassNames}
+										to="/w/$workspaceName/$projectName/files"
+										params={{ workspaceName, projectName }}
+										search={{ nodeId: child.index, view: editorMode }}
+									/>
+									<MyGridTableCell
+										className={cn(
+											"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorer_ClassNames,
+											"FileNodeViewFolderExplorer-cell-name" satisfies FileNodeViewFolderExplorer_ClassNames,
+										)}
+									>
+										<MyIcon
+											className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorer_ClassNames}
+										>
+											{child.kind === "folder" ? <Folder /> : <FileText />}
+										</MyIcon>
+										<span className={"FileNodeViewFolderExplorer-link" satisfies FileNodeViewFolderExplorer_ClassNames}>
+											{child.title}
+										</span>
+									</MyGridTableCell>
+									<MyGridTableCell
+										className={cn(
+											"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorer_ClassNames,
+											"FileNodeViewFolderExplorer-cell-updated-by" satisfies FileNodeViewFolderExplorer_ClassNames,
+										)}
+									>
+										{child.updatedBy || "Unknown"}
+									</MyGridTableCell>
+									<MyGridTableCell
+										className={cn(
+											"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorer_ClassNames,
+											"FileNodeViewFolderExplorer-cell-updated" satisfies FileNodeViewFolderExplorer_ClassNames,
+										)}
+									>
+										{format_relative_time(child.updatedAt)}
+									</MyGridTableCell>
+									<MyGridTableCell
+										className={cn(
+											"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorer_ClassNames,
+											"FileNodeViewFolderExplorer-cell-actions" satisfies FileNodeViewFolderExplorer_ClassNames,
+										)}
+									>
+										<MyMenu>
+											<MyMenuTrigger>
+												<MyIconButton
+													className={
+														"FileNodeViewFolderExplorer-more-action" satisfies FileNodeViewFolderExplorer_ClassNames
+													}
+													variant="ghost-highlightable"
+													tooltip="More actions"
+													disabled={isPendingAction}
+													aria-label={`More actions for ${child.title}`}
+												>
+													<MyIconButtonIcon>
+														<EllipsisVertical />
+													</MyIconButtonIcon>
+												</MyIconButton>
+											</MyMenuTrigger>
+											<MyMenuPopover placement="bottom-end" unmountOnHide>
+												<MyMenuPopoverContent>
+													<MyMenuItem
+														variant="destructive"
+														disabled={isPendingAction}
+														hideOnClick
+														onClick={() => onArchiveNode(childNodeId)}
+													>
+														<MyMenuItemContent>
+															<MyMenuItemContentIcon>
+																<Archive />
+															</MyMenuItemContentIcon>
+															<MyMenuItemContentPrimary>Archive</MyMenuItemContentPrimary>
+														</MyMenuItemContent>
+													</MyMenuItem>
+												</MyMenuPopoverContent>
+											</MyMenuPopover>
+										</MyMenu>
+									</MyGridTableCell>
+								</MyGridTableRow>
+							);
+						})}
+					</MyGridTableBody>
+				</MyGridTable>
+			)}
+
+			{hiddenChildItemsCount > 0 && (
+				<MyButton
+					className={"FileNodeViewFolderExplorer-show-more" satisfies FileNodeViewFolderExplorer_ClassNames}
+					variant="outline"
+					onClick={onShowMoreClick}
+				>
+					Show more
+				</MyButton>
+			)}
+		</div>
+	);
+});
 // #endregion folder explorer
+
+// #region folder readme
+type FileNodeViewFolderReadme_ClassNames =
+	| "FileNodeViewFolderReadme"
+	| "FileNodeViewFolderReadme-header"
+	| "FileNodeViewFolderReadme-icon"
+	| "FileNodeViewFolderReadme-title"
+	| "FileNodeViewFolderReadme-empty"
+	| "FileNodeViewFolderReadme-empty-title"
+	| "FileNodeViewFolderReadme-empty-description"
+	| "FileNodeViewFolderReadme-empty-action"
+	| "FileNodeViewFolderReadme-empty-action-icon";
+
+type FileNodeViewFolderReadme_Props = {
+	readmeNodeId: app_convex_Id<"files_nodes"> | null;
+	treeItemsList: FileNodeViewContent_Props["treeItemsList"];
+	isCreatingReadme: boolean;
+	onCreateReadmeClick: () => void;
+};
+
+const FileNodeViewFolderReadme = memo(function FileNodeViewFolderReadme(props: FileNodeViewFolderReadme_Props) {
+	const { readmeNodeId, treeItemsList, isCreatingReadme, onCreateReadmeClick } = props;
+
+	return (
+		<section className={"FileNodeViewFolderReadme" satisfies FileNodeViewFolderReadme_ClassNames}>
+			{readmeNodeId ? (
+				<div className={"FileNodeViewFolderReadme-header" satisfies FileNodeViewFolderReadme_ClassNames}>
+					<MyIcon className={"FileNodeViewFolderReadme-icon" satisfies FileNodeViewFolderReadme_ClassNames}>
+						<BookOpen />
+					</MyIcon>
+					<h2 className={"FileNodeViewFolderReadme-title" satisfies FileNodeViewFolderReadme_ClassNames}>README.md</h2>
+				</div>
+			) : treeItemsList === undefined ? (
+				<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames}>Loading...</div>
+			) : (
+				<div className={"FileNodeViewFolderReadme-empty" satisfies FileNodeViewFolderReadme_ClassNames}>
+					<h2 className={"FileNodeViewFolderReadme-empty-title" satisfies FileNodeViewFolderReadme_ClassNames}>
+						No README.md
+					</h2>
+					<p className={"FileNodeViewFolderReadme-empty-description" satisfies FileNodeViewFolderReadme_ClassNames}>
+						Creating a README.md file will show its content in this area.
+					</p>
+					<MyButton
+						className={"FileNodeViewFolderReadme-empty-action" satisfies FileNodeViewFolderReadme_ClassNames}
+						variant="outline"
+						disabled={isCreatingReadme}
+						aria-busy={isCreatingReadme}
+						onClick={onCreateReadmeClick}
+					>
+						<MyButtonIcon
+							className={"FileNodeViewFolderReadme-empty-action-icon" satisfies FileNodeViewFolderReadme_ClassNames}
+						>
+							<FilePlus />
+						</MyButtonIcon>
+						Create a README.md
+					</MyButton>
+				</div>
+			)}
+		</section>
+	);
+});
+// #endregion folder readme
+
+// #region folder readme editor
+type FileNodeViewFolderReadmeEditor_ClassNames = "FileNodeViewFolderReadmeEditor";
+
+type FileNodeViewFolderReadmeEditor_Props = {
+	readmeNodeId: app_convex_Id<"files_nodes">;
+	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	serverSequence?: number;
+	editorMode: FileEditor_Mode;
+	presenceStore: FileEditor_Props["presenceStore"];
+	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost: HTMLElement | null;
+	topStickyFloatingSlot?: React.ReactNode;
+	topViewZoneSlot?: React.ReactNode;
+	onEditorModeChange: (mode: FileEditor_Mode) => void;
+};
+
+const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEditor(
+	props: FileNodeViewFolderReadmeEditor_Props,
+) {
+	const {
+		readmeNodeId,
+		pendingUpdateId,
+		serverSequence,
+		editorMode,
+		presenceStore,
+		commentsPortalHost,
+		toolbarPortalHost,
+		topStickyFloatingSlot,
+		topViewZoneSlot,
+		onEditorModeChange,
+	} = props;
+
+	return (
+		<div className={"FileNodeViewFolderReadmeEditor" satisfies FileNodeViewFolderReadmeEditor_ClassNames}>
+			<FileNodeViewFileEditor
+				key={readmeNodeId}
+				nodeId={readmeNodeId}
+				pendingUpdateId={pendingUpdateId}
+				serverSequence={serverSequence}
+				editorMode={editorMode}
+				layout="embedded"
+				presenceStore={presenceStore}
+				commentsPortalHost={commentsPortalHost}
+				toolbarPortalHost={toolbarPortalHost}
+				topStickyFloatingSlot={topStickyFloatingSlot}
+				topViewZoneSlot={topViewZoneSlot}
+				onEditorModeChange={onEditorModeChange}
+			/>
+		</div>
+	);
+});
+// #endregion folder readme editor
 
 // #region content
 type FileNodeViewContent_Props = {
@@ -652,8 +1221,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					onlineUsers={onlineUsers}
 					onEditorModeChange={onEditorModeChange}
 				/>
-				<FileNodeViewFolderExplorer
-					node={null}
+				<FileNodeViewFolder
 					folderItemId={files_ROOT_ID}
 					treeItemsList={treeItemsList}
 					pendingUpdateId={pendingUpdateId}
@@ -684,8 +1252,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					onlineUsers={onlineUsers}
 					onEditorModeChange={onEditorModeChange}
 				/>
-				<FileNodeViewFolderExplorer
-					node={node}
+				<FileNodeViewFolder
 					folderItemId={node._id}
 					treeItemsList={treeItemsList}
 					pendingUpdateId={pendingUpdateId}
@@ -785,7 +1352,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		? get_folder_readme_node_id(treeItemsList, files_ROOT_ID)
 		: resolvedNode?.kind === "file"
 			? resolvedNode._id
-				: resolvedNode?.kind === "folder"
+			: resolvedNode?.kind === "folder"
 				? get_folder_readme_node_id(treeItemsList, resolvedNode._id)
 				: null;
 
@@ -874,17 +1441,18 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		handleNavigatePendingUpdatesDirection("next");
 	});
 
-	const topStickyFloatingSlot = pendingUpdates.length > 0 ? (
-		<FileEditorPendingUpdatesFloating
-			updatedAt={currentPendingUpdate?.updatedAt}
-			showReviewButton={hasCurrentPendingUpdates && effectiveView !== "diff_editor"}
-			reviewPagerLabel={reviewPagerLabel}
-			canNavigate={canNavigatePendingUpdates}
-			onReviewChanges={handleReviewPendingUpdates}
-			onNavigatePrevious={handleNavigatePendingUpdatesPrevious}
-			onNavigateNext={handleNavigatePendingUpdatesNext}
-		/>
-	) : null;
+	const topStickyFloatingSlot =
+		pendingUpdates.length > 0 ? (
+			<FileEditorPendingUpdatesFloating
+				updatedAt={currentPendingUpdate?.updatedAt}
+				showReviewButton={hasCurrentPendingUpdates && effectiveView !== "diff_editor"}
+				reviewPagerLabel={reviewPagerLabel}
+				canNavigate={canNavigatePendingUpdates}
+				onReviewChanges={handleReviewPendingUpdates}
+				onNavigatePrevious={handleNavigatePendingUpdatesPrevious}
+				onNavigateNext={handleNavigatePendingUpdatesNext}
+			/>
+		) : null;
 
 	const handleArchive = useFn<React.ComponentProps<typeof FilesSidebar>["onArchive"]>((itemId) => {
 		// When the selected node is archived, leave the user on the root folder instead of a stale node id.
@@ -893,13 +1461,11 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		}
 	});
 
-	const handlePrimaryAction = useFn<React.ComponentProps<typeof FilesSidebar>["onPrimaryAction"]>(
-		(itemId) => {
-			if (searchNodeId !== itemId) {
-				navigateToNode(itemId);
-			}
-		},
-	);
+	const handlePrimaryAction = useFn<React.ComponentProps<typeof FilesSidebar>["onPrimaryAction"]>((itemId) => {
+		if (searchNodeId !== itemId) {
+			navigateToNode(itemId);
+		}
+	});
 
 	const handleCloseSidebar = useFn<React.ComponentProps<typeof FilesSidebar>["onClose"]>(() => {
 		setFilesSidebarOpen(false);

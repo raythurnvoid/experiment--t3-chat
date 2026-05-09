@@ -910,7 +910,7 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 
 	return (
 		<>
-			<MyIconButton variant="ghost" tooltip="Snapshots" onClick={handleOpenSnapshotsList}>
+			<MyIconButton variant="ghost" tooltip="Open file snapshots" onClick={handleOpenSnapshotsList}>
 				<Clock />
 			</MyIconButton>
 

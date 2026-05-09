@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+	files_find_file_stem_end_index,
+	files_get_normalized_node_path_segments,
 	files_normalize_name_input,
 	files_normalize_name,
 	files_parse_markdown_to_html,
@@ -9,6 +11,36 @@ import {
 	files_yjs_doc_update_from_markdown,
 } from "./files.ts";
 import { Doc as YDoc } from "yjs";
+
+describe("files_find_file_stem_end_index", () => {
+	test.each([
+		["notes.md", 5],
+		["archive.tar.gz", 11],
+		["notes", 5],
+		[".env", 4],
+		["trailing.", 8],
+		["", 0],
+	])("finds the stem end in %s", (fileName, expected) => {
+		expect(files_find_file_stem_end_index({ fileName })).toBe(expected);
+	});
+});
+
+describe("files_get_normalized_node_path_segments", () => {
+	test.each(
+		[
+			[null, "docs/readme", null],
+			["file", "", null],
+			["file", "/", null],
+			["folder", "Docs / Feature Plan", { normalizedPathSegments: ["docs", "feature-plan"] }],
+			["file", "Docs / readme", { normalizedPathSegments: ["docs", "README.md"] }],
+			["file", "docs/archive.tar.gz", { normalizedPathSegments: ["docs", "archive-tar.md"] }],
+			["folder", "docs/Bad Name", { normalizedPathSegments: ["docs", "bad-name"] }],
+			["file", "docs/bad.m d", { validationMessage: "Invalid file name" }],
+		] satisfies Array<[Parameters<typeof files_get_normalized_node_path_segments>[0]["kind"], string, unknown]>,
+	)("normalizes %#", (kind, nameOrPath, expected) => {
+		expect(files_get_normalized_node_path_segments({ kind, nameOrPath })).toEqual(expected);
+	});
+});
 
 describe("files_normalize_name_input", () => {
 	test.each(

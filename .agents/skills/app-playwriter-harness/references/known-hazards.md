@@ -4,10 +4,12 @@ Use this file for reusable problems that affect app browser QA.
 
 ## Playwriter Availability
 
-- The global `playwriter` command may not exist on this machine. Use `pnpm dlx playwriter@latest`.
+- The global `playwriter` command may not exist on this machine. Use `pnpx playwriter`.
 - Create sessions from the repo root so the scoped Playwriter filesystem can read and append skill files.
 - Use extension mode by default. Do not use direct CDP unless the user explicitly asks for it.
 - In PowerShell, use double quotes around `-e` and single quotes inside JavaScript strings. Single-quoted `-e` snippets can reach Playwriter with JavaScript string quotes stripped.
+- Avoid JavaScript template literals in PowerShell `-e` snippets. PowerShell treats backticks as escapes, so use string concatenation or put the script in a file/here-string before passing it to Playwriter.
+- `pnpx playwriter session new` can print status text plus the session id. Parse the `Session <id> created` line instead of using the whole trimmed output as the id.
 
 ## Interaction Discipline
 

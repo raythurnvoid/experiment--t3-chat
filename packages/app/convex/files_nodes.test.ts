@@ -373,7 +373,7 @@ test("create_node rejects duplicate active path", async () => {
 		throw new Error("Expected duplicate creation to fail");
 	}
 
-	expect(duplicateCreation._nay.message).toContain("path already exists");
+	expect(duplicateCreation._nay.message).toBe("This folder already exists.");
 });
 
 test("create_node adds markdown extension to extensionless file names", async () => {

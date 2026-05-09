@@ -3,6 +3,7 @@
 		background-color: var(--color-base-1-03);
 
 		display: flex;
+
 		height: 100%;
 		width: 100%;
 		min-width: 0;
@@ -10,6 +11,7 @@
 
 	.FileNodeView-loading-text {
 		padding: 1rem;
+
 		font-size: 0.875rem;
 		line-height: 1.25rem;
 		color: hsl(var(--muted-foreground));
@@ -52,6 +54,7 @@
 	.FileNodeView-content-panel {
 		/* Let rich editor content define the shared scroll height for anchored comments. */
 		contain: inline-size style;
+		isolation: isolate;
 
 		> .MyPanelInfiniteBackground::before {
 			background-color: var(--color-base-1-02);
@@ -98,9 +101,12 @@
 		display: flex;
 		align-items: center;
 		gap: 4px;
+
 		margin: 0;
 		padding: 0;
+
 		list-style: none;
+
 		font-size: 0.875rem;
 		color: var(--gray-800);
 	}
@@ -145,12 +151,15 @@
 	}
 	/* #endregion header */
 
-	/* #region folder explorer */
-	.FileNodeViewFolderExplorer {
+	/* #region folder */
+	.FileNodeViewFolder {
 		width: 100%;
 		min-height: 100%;
+
 		height: max-content;
+
 		overflow: visible;
+
 		background-color: var(--color-base-1-02);
 
 		display: flex;
@@ -160,12 +169,119 @@
 		padding: 0;
 	}
 
-	.FileNodeViewFolderExplorer-mode-monaco {
+	.FileNodeViewFolder-mode-monaco {
 		height: 100%;
 		gap: 0;
 	}
+	/* #endregion folder */
 
-	.FileNodeViewFolderExplorer-browser {
+	/* #region folder toolbar */
+	.FileNodeViewFolderToolbar {
+		position: sticky;
+		top: 0;
+		z-index: 30;
+
+		display: flex;
+		align-items: stretch;
+
+		width: 100%;
+		min-width: 0;
+		/* Keep the toolbar row reserved even when the folder has no README editor to portal here. */
+		min-height: 44px;
+		flex: 0 0 auto;
+
+		overflow: hidden;
+		background: var(--color-base-1-04);
+		border-bottom: 1px solid var(--color-fg-02);
+	}
+
+	.FileNodeViewFolderToolbar-actions {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+
+		flex: 0 0 auto;
+
+		min-width: 0;
+		min-height: 44px;
+
+		padding: 4px 0 4px 18px;
+
+		overflow: visible;
+	}
+
+	.FileNodeViewFolderToolbar-actions::after {
+		content: "";
+
+		align-self: stretch;
+
+		width: 1px;
+		margin: 6px 8px 6px 4px;
+
+		background: var(--color-fg-03);
+	}
+
+	.FileNodeViewFolderToolbar-action {
+		flex: 0 0 auto;
+	}
+
+	.FileNodeViewFolderToolbar-action-icon {
+		width: 20px;
+		height: 20px;
+	}
+
+	.FileNodeViewFolderToolbar > .FileEditorRichTextToolbar,
+	.FileNodeViewFolderToolbar > .FileEditorPlainTextToolbar,
+	.FileNodeViewFolderToolbar > .FileEditorDiffToolbar {
+		position: relative;
+		top: auto;
+
+		flex: 1 1 auto;
+
+		min-width: 0;
+		height: 44px;
+
+		background: transparent;
+		border-bottom: 0;
+	}
+
+	.FileNodeViewFolderToolbar > .FileEditorRichTextToolbar {
+		contain: inline-size layout style;
+	}
+
+	.FileNodeViewFolderToolbar > .FileEditorRichTextToolbar > .FileEditorRichTextToolbar-scrollable-area,
+	.FileNodeViewFolderToolbar > .FileEditorPlainTextToolbar > .FileEditorPlainTextToolbar-scrollable-area,
+	.FileNodeViewFolderToolbar > .FileEditorDiffToolbar > .FileEditorDiffToolbar-scrollable-area {
+		padding: 4px 18px 4px 0;
+	}
+
+	.FileNodeViewFolder-mode-monaco .FileNodeViewFolderToolbar {
+		position: relative;
+		top: auto;
+	}
+	/* #endregion folder toolbar */
+
+	/* #region folder create node modal */
+	.FileNodeViewFolderCreateNodeModal {
+		width: min(92vw, 420px);
+	}
+
+	.FileNodeViewFolderCreateNodeModal-form {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.FileNodeViewFolderCreateNodeModal-field {
+		padding: 20px;
+	}
+
+	.FileNodeViewFolderCreateNodeModal-validation {
+		min-height: 1.25rem;
+	}
+	/* #endregion folder create node modal */
+
+	/* #region folder body */
+	.FileNodeViewFolderBody {
 		width: 100%;
 		min-width: 0;
 		background-color: var(--color-base-1-02);
@@ -175,38 +291,16 @@
 		flex: 0 0 auto;
 		gap: 16px;
 
-		padding: 0;
+		/*
+		Keep the folder browser content below the pending-changes floating UI.
+		The banner is 36px tall and sits 6px below the toolbar, with extra room for shadow.
+		*/
+		padding: 56px 0 0;
 	}
+	/* #endregion folder body */
 
-	.FileNodeViewFolderExplorer-toolbar {
-		position: sticky;
-		top: 0;
-		z-index: 30;
-
-		width: 100%;
-		min-width: 0;
-		/* Keep the toolbar row reserved even when the folder has no README editor to portal here. */
-		min-height: 44px;
-		flex: 0 0 auto;
-	}
-
-	.FileNodeViewFolderExplorer-mode-monaco .FileNodeViewFolderExplorer-toolbar {
-		position: relative;
-		top: auto;
-	}
-
-	.FileNodeViewFolderExplorer-header {
-		flex: 0 0 auto;
-		padding: 48px 24px 0;
-	}
-
-	.FileNodeViewFolderExplorer-title {
-		margin: 0;
-		font-size: 1.125rem;
-		font-weight: 600;
-	}
-
-	.FileNodeViewFolderExplorer-list {
+	/* #region folder explorer */
+	.FileNodeViewFolderExplorer {
 		display: flex;
 		flex-direction: column;
 		gap: 16px;
@@ -217,8 +311,7 @@
 
 	.FileNodeViewFolderExplorer-table {
 		width: 100%;
-		border-collapse: separate;
-		border-spacing: 0;
+		grid-template-columns: minmax(0, 1fr) max-content max-content max-content;
 		overflow: hidden;
 
 		border: 1px solid var(--color-fg-03);
@@ -233,33 +326,81 @@
 			border-bottom: 1px solid var(--color-fg-03);
 		}
 
-		&:hover {
+		&:hover .FileNodeViewFolderExplorer-cell {
+			background: var(--color-base-1-05);
+		}
+
+		&:has(.FileNodeViewFolderExplorer-row-action:focus-visible) .FileNodeViewFolderExplorer-cell {
 			background: var(--color-base-1-05);
 		}
 	}
 
+	.FileNodeViewFolderExplorer-row-action {
+		grid-column: 1 / 4;
+		grid-row: 1;
+		align-self: stretch;
+		justify-self: stretch;
+
+		min-width: 0;
+
+		border-radius: 6px;
+
+		z-index: 0;
+
+		&:focus-visible {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: -2px;
+			z-index: 2;
+		}
+	}
+
 	.FileNodeViewFolderExplorer-cell {
+		grid-row: 1;
+		z-index: 1;
+
+		display: flex;
+		align-items: center;
+
+		min-width: 0;
 		padding: 8px 12px;
-		vertical-align: middle;
+
+		pointer-events: none;
 	}
 
 	.FileNodeViewFolderExplorer-cell-name {
-		display: flex;
-		align-items: center;
+		grid-column: 1;
 		gap: 8px;
-		min-width: 0;
 		width: 100%;
 	}
 
-	.FileNodeViewFolderExplorer-cell-kind,
+	.FileNodeViewFolderExplorer-cell-updated-by {
+		grid-column: 2;
+
+		max-width: 12rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
 	.FileNodeViewFolderExplorer-cell-updated {
-		width: 1%;
+		grid-column: 3;
+	}
+
+	.FileNodeViewFolderExplorer-cell-actions {
+		grid-column: 4;
+
+		justify-content: center;
+		padding: 4px 6px;
+	}
+
+	.FileNodeViewFolderExplorer-cell-updated-by,
+	.FileNodeViewFolderExplorer-cell-updated {
 		white-space: nowrap;
 		color: var(--color-fg-07);
 	}
 
 	.FileNodeViewFolderExplorer-link {
 		min-width: 0;
+
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -269,24 +410,33 @@
 	.FileNodeViewFolderExplorer-icon {
 		width: 16px;
 		height: 16px;
+
 		flex: 0 0 auto;
+
 		color: var(--color-fg-07);
+	}
+
+	.FileNodeViewFolderExplorer-more-action {
+		pointer-events: auto;
 	}
 
 	.FileNodeViewFolderExplorer-show-more {
 		align-self: flex-start;
 	}
+	/* #endregion folder explorer */
 
-	.FileNodeViewFolderExplorer-readme {
+	/* #region folder readme */
+	.FileNodeViewFolderReadme {
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
 		flex: 0 0 auto;
+
 		width: 100%;
 		min-height: 0;
 	}
 
-	.FileNodeViewFolderExplorer-readme-header {
+	.FileNodeViewFolderReadme-header {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -294,33 +444,86 @@
 		padding: 0 24px;
 	}
 
-	.FileNodeViewFolderExplorer-readme-title {
+	.FileNodeViewFolderReadme-icon {
+		width: 16px;
+		height: 16px;
+
+		flex: 0 0 auto;
+
+		color: var(--color-fg-07);
+	}
+
+	.FileNodeViewFolderReadme-title {
 		margin: 0;
+
 		font-size: 0.875rem;
 		font-weight: 600;
 		color: var(--color-fg-11);
 	}
 
-	.FileNodeViewFolderExplorer-readme-editor {
+	.FileNodeViewFolderReadme-empty {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 12px;
+
+		min-height: max(280px, 45cqh);
+		padding: 48px 24px;
+
+		text-align: center;
+	}
+
+	.FileNodeViewFolderReadme-empty-title {
+		margin: 0;
+
+		font-size: 1.125rem;
+		font-weight: 600;
+		color: var(--color-fg-11);
+	}
+
+	.FileNodeViewFolderReadme-empty-description {
+		max-width: 360px;
+		margin: 0;
+		font-size: 1rem;
+		line-height: 1.4;
+		color: var(--color-fg-07);
+	}
+
+	.FileNodeViewFolderReadme-empty-action {
+		gap: 6px;
+		flex: 0 0 auto;
+	}
+
+	.FileNodeViewFolderReadme-empty-action-icon {
+		width: 16px;
+		height: 16px;
+	}
+	/* #endregion folder readme */
+
+	/* #region folder readme editor */
+	.FileNodeViewFolderReadmeEditor {
 		width: 100%;
 		min-width: 0;
 		min-height: 0;
+
 		overflow: visible;
+
 		background: var(--color-base-1-02);
 	}
 
-	.FileNodeViewFolderExplorer-readme-editor .FileEditor {
+	.FileNodeViewFolderReadmeEditor .FileEditor {
 		width: 100%;
 		min-height: 0;
 	}
 
-	.FileNodeViewFolderExplorer-readme-editor .FileEditor-layout-embedded.FileEditor-mode-rich-text {
+	.FileNodeViewFolderReadmeEditor .FileEditor-layout-embedded.FileEditor-mode-rich-text {
 		height: auto;
 		min-height: 0;
 	}
 
-	.FileNodeViewFolderExplorer-readme-editor .FileEditor-layout-embedded.FileEditor-mode-plain-text,
-	.FileNodeViewFolderExplorer-readme-editor .FileEditor-layout-embedded.FileEditor-mode-diff {
+	.FileNodeViewFolderReadmeEditor .FileEditor-layout-embedded.FileEditor-mode-plain-text,
+	.FileNodeViewFolderReadmeEditor .FileEditor-layout-embedded.FileEditor-mode-diff {
 		height: max(560px, 100cqh);
 		min-height: 560px;
 		overflow: hidden;
@@ -331,51 +534,19 @@
 		}
 	}
 
-	.FileNodeViewFolderExplorer-mode-monaco
-		.FileNodeViewFolderExplorer-readme-editor
+	.FileNodeViewFolder-mode-monaco
+		.FileNodeViewFolderReadmeEditor
 		.FileEditor-layout-embedded.FileEditor-mode-plain-text,
-	.FileNodeViewFolderExplorer-mode-monaco
-		.FileNodeViewFolderExplorer-readme-editor
+	.FileNodeViewFolder-mode-monaco
+		.FileNodeViewFolderReadmeEditor
 		.FileEditor-layout-embedded.FileEditor-mode-diff {
 		height: max(560px, calc(100cqh - 44px));
 	}
 
-	.FileNodeViewFolderExplorer-readme-editor
-		.FileEditor-layout-embedded.FileEditor-mode-rich-text
-		.FileEditor-editor-area {
+	.FileNodeViewFolderReadmeEditor .FileEditor-layout-embedded.FileEditor-mode-rich-text .FileEditor-editor-area {
 		flex: 0 0 auto;
 		overflow: visible;
 		contain: inline-size style;
 	}
-
-	.FileNodeViewFolderExplorer-readme-empty {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-
-		padding: 16px;
-
-		border: 1px solid var(--color-fg-03);
-		border-radius: 8px;
-		margin: 0 24px;
-		background: var(--color-base-1-04);
-	}
-
-	.FileNodeViewFolderExplorer-readme-empty-text {
-		margin: 0;
-		font-size: 0.875rem;
-		color: var(--color-fg-07);
-	}
-
-	.FileNodeViewFolderExplorer-readme-empty-action {
-		gap: 6px;
-		flex: 0 0 auto;
-	}
-
-	.FileNodeViewFolderExplorer-readme-empty-action-icon {
-		width: 16px;
-		height: 16px;
-	}
-	/* #endregion folder explorer */
+	/* #endregion folder readme editor */
 }

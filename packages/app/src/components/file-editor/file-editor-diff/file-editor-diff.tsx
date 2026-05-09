@@ -91,7 +91,7 @@ const FileEditorDiffToolbar = memo(function FileEditorDiffToolbar(props: FileEdi
 		<div
 			ref={setPortalElement}
 			role="toolbar"
-			aria-label="Toolbar"
+			aria-label="Diff editor actions"
 			aria-orientation="horizontal"
 			className={cn("FileEditorDiffToolbar" satisfies FileEditorDiffToolbar_ClassNames)}
 		>

@@ -40,7 +40,7 @@ const FileEditorRichTextToolsMathToggleInner = memo(function FileEditorRichTextT
 		<div className={cn("FileEditorRichTextToolsMathToggle" satisfies FileEditorRichTextToolsMathToggle_ClassNames)}>
 			<MyIconButton
 				variant="ghost"
-				tooltip="Math"
+				tooltip={isActive ? "Remove math formatting" : "Apply math formatting"}
 				onClick={handleClick}
 				className={cn(
 					isActive &&

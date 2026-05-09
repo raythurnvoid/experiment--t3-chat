@@ -1,0 +1,24 @@
+@layer components {
+	:where(.MyGridTable) {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		min-width: 0;
+	}
+
+	:where(.MyGridTableHeader),
+	:where(.MyGridTableBody) {
+		display: contents;
+	}
+
+	:where(.MyGridTableRow) {
+		display: grid;
+		grid-column: 1 / -1;
+		grid-template-columns: subgrid;
+		min-width: 0;
+	}
+
+	:where(.MyGridTableColumnHeader),
+	:where(.MyGridTableCell) {
+		min-width: 0;
+	}
+}

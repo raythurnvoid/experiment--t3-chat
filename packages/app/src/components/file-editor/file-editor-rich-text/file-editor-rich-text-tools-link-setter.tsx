@@ -53,21 +53,29 @@ const FileEditorRichTextToolsLinkSetterForm = memo(function FileEditorRichTextTo
 			className={cn("FileEditorRichTextToolsLinkSetterForm" satisfies FileEditorRichTextToolsLinkSetterForm_ClassNames)}
 		>
 			<MyInput
-				className={cn("FileEditorRichTextToolsLinkSetterForm-input" satisfies FileEditorRichTextToolsLinkSetterForm_ClassNames)}
+				className={cn(
+					"FileEditorRichTextToolsLinkSetterForm-input" satisfies FileEditorRichTextToolsLinkSetterForm_ClassNames,
+				)}
 			>
 				<MyInputBox />
 				<MyInputArea>
-					<MyInputControl ref={inputRef} type="text" placeholder="Paste a link" defaultValue={activeHref || ""} />
+					<MyInputControl
+						ref={inputRef}
+						type="text"
+						placeholder="Paste a link"
+						aria-label="Link URL"
+						defaultValue={activeHref || ""}
+					/>
 				</MyInputArea>
 			</MyInput>
 			{activeHref ? (
-				<MyIconButton variant="destructive" type="submit" name="delete">
+				<MyIconButton variant="destructive" type="submit" name="delete" tooltip="Remove link">
 					<MyIconButtonIcon>
 						<Trash />
 					</MyIconButtonIcon>
 				</MyIconButton>
 			) : (
-				<MyIconButton variant="default" type="submit">
+				<MyIconButton variant="default" type="submit" tooltip="Apply link">
 					<MyIconButtonIcon>
 						<Check />
 					</MyIconButtonIcon>
@@ -179,12 +187,13 @@ const FileEditorRichTextToolsLinkSetterInner = memo(function FileEditorRichTextT
 				<MyPopoverTrigger>
 					<MyButton
 						ref={triggerButtonRef}
-						variant="ghost"
 						className={cn(
 							"FileEditorRichTextToolsLinkSetter-trigger-button" satisfies FileEditorRichTextToolsLinkSetter_ClassNames,
 							isLinkActive &&
 								("FileEditorRichTextToolsLinkSetter-trigger-button-active" satisfies FileEditorRichTextToolsLinkSetter_ClassNames),
 						)}
+						variant="ghost"
+						aria-label={isLinkActive ? "Edit link" : "Add link"}
 						{...(setDecorationHighlightOnOpen
 							? ({ "data-app-set-decoration-highlight": "" } satisfies Partial<FileEditorRichText_CustomAttributes>)
 							: {})}
@@ -201,11 +210,7 @@ const FileEditorRichTextToolsLinkSetterInner = memo(function FileEditorRichTextT
 					)}
 					gutter={10}
 				>
-					<FileEditorRichTextToolsLinkSetterForm
-						inputRef={inputRef}
-						activeHref={activeHref}
-						onSubmit={handleSubmit}
-					/>
+					<FileEditorRichTextToolsLinkSetterForm inputRef={inputRef} activeHref={activeHref} onSubmit={handleSubmit} />
 				</MyPopoverContent>
 			</MyPopover>
 		</div>

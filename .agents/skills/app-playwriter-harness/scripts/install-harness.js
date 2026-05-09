@@ -304,6 +304,151 @@
 		return result;
 	}
 
+	async function testFilesFolderCreateFlow({ cleanup = true } = {}) {
+		const targetPage = getHarnessPage();
+		const pagesBefore = context.pages().length;
+		const qaName = `aaa-pw-qa-${Date.now().toString(36).slice(-6)}`;
+		const results = [];
+
+		function ok(name, data = {}) {
+			results.push({ name, ok: true, ...data });
+		}
+
+		async function assert(condition, message) {
+			if (!condition) throw new Error(message);
+		}
+
+		await targetPage.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => undefined);
+		await assert(targetPage.url().includes("/files"), "Expected the bound page to be on the files route");
+		await assert(pagesBefore === 1, "Expected exactly one Playwriter-enabled tab before the test");
+		ok("single tab before", { pages: pagesBefore, url: targetPage.url() });
+
+		await targetPage.getByRole("button", { name: "New folder in current folder" }).click();
+		const folderInput = targetPage.getByRole("textbox", { name: "Name" });
+		await folderInput.waitFor({ state: "visible", timeout: 5000 });
+		const folderDefault = await folderInput.inputValue();
+		const folderSelection = await folderInput.evaluate((element) => ({
+			start: element.selectionStart,
+			end: element.selectionEnd,
+			value: element.value,
+		}));
+		await assert(
+			/^new-folder(?:-\d+)?$/.test(folderDefault),
+			"Expected folder default name to be new-folder or an incremented variant",
+		);
+		await assert(
+			folderSelection.start === 0 && folderSelection.end === folderDefault.length,
+			"Expected the whole folder name to be selected",
+		);
+		ok("new folder modal default selection", { folderDefault, folderSelection });
+
+		const parentFolderUrl = targetPage.url();
+		await folderInput.fill(qaName);
+		await targetPage.getByRole("button", { name: "Create folder" }).click();
+		await targetPage
+			.getByRole("button", { name: "Create folder" })
+			.waitFor({ state: "detached", timeout: 10000 })
+			.catch(async () => {
+				await targetPage.getByRole("button", { name: "Create folder" }).waitFor({ state: "hidden", timeout: 10000 });
+			});
+		await targetPage.getByRole("link", { name: `Open ${qaName}` }).waitFor({ state: "visible", timeout: 15000 });
+		await assert(targetPage.url() === parentFolderUrl, "Creating a folder should not navigate");
+		ok("folder create did not navigate", { before: parentFolderUrl, after: targetPage.url() });
+
+		await targetPage.getByRole("link", { name: `Open ${qaName}` }).click();
+		await targetPage.waitForURL((url) => url.searchParams.get("nodeId") !== "root", { timeout: 10000 });
+		const qaFolderUrl = targetPage.url();
+		ok("navigated to qa folder", { qaFolderUrl });
+
+		await targetPage.getByRole("toolbar", { name: "Folder actions" }).waitFor({ state: "visible", timeout: 10000 });
+		await targetPage.getByRole("button", { name: "New file in current folder" }).waitFor({
+			state: "visible",
+			timeout: 10000,
+		});
+		await targetPage.getByRole("button", { name: "New folder in current folder" }).waitFor({
+			state: "visible",
+			timeout: 10000,
+		});
+		ok("empty folder toolbar is accessible", {
+			toolbarActions: ["New file in current folder", "New folder in current folder"],
+		});
+
+		await targetPage.getByRole("button", { name: "New file in current folder" }).click();
+		const fileInput = targetPage.getByRole("textbox", { name: "Name" });
+		await fileInput.waitFor({ state: "visible", timeout: 5000 });
+		const fileDefault = await fileInput.inputValue();
+		const fileSelection = await fileInput.evaluate((element) => ({
+			start: element.selectionStart,
+			end: element.selectionEnd,
+			value: element.value,
+		}));
+		await assert(
+			/^new-file(?:-\d+)?\.md$/.test(fileDefault),
+			"Expected file default name to be new-file.md or an incremented variant",
+		);
+		await assert(
+			fileSelection.start === 0 && fileSelection.end === fileDefault.length - ".md".length,
+			"Expected only the file basename to be selected",
+		);
+		ok("new file modal default selection", { fileDefault, fileSelection });
+
+		const deepFilePath = "deep/path/example.md";
+		await fileInput.fill(deepFilePath);
+		await targetPage.getByRole("button", { name: "Create file" }).click();
+		await targetPage
+			.getByRole("button", { name: "Create file" })
+			.waitFor({ state: "detached", timeout: 10000 })
+			.catch(async () => {
+				await targetPage.getByRole("button", { name: "Create file" }).waitFor({ state: "hidden", timeout: 10000 });
+			});
+		await targetPage.getByRole("link", { name: "Open deep" }).waitFor({ state: "visible", timeout: 15000 });
+		await assert(targetPage.url() === qaFolderUrl, "Creating a deep file should not navigate");
+		ok("deep file create did not navigate and created top folder row", {
+			before: qaFolderUrl,
+			after: targetPage.url(),
+			row: "deep",
+		});
+
+		await targetPage.getByRole("button", { name: "New file in current folder" }).click();
+		const duplicateFileInput = targetPage.getByRole("textbox", { name: "Name" });
+		await duplicateFileInput.waitFor({ state: "visible", timeout: 5000 });
+		await duplicateFileInput.fill(deepFilePath);
+		await targetPage.getByText("This file already exists.").waitFor({ state: "visible", timeout: 5000 });
+		const createFileDisabled = await targetPage.getByRole("button", { name: "Create file" }).isDisabled();
+		await assert(createFileDisabled, "Expected duplicate file submit to be disabled");
+		ok("duplicate deep file validation", { message: "This file already exists.", createFileDisabled });
+		await targetPage.getByRole("button", { name: "Cancel" }).click();
+
+		await targetPage.getByRole("button", { name: "New folder in current folder" }).click();
+		const duplicateFolderInput = targetPage.getByRole("textbox", { name: "Name" });
+		await duplicateFolderInput.waitFor({ state: "visible", timeout: 5000 });
+		await duplicateFolderInput.fill("deep/path");
+		await targetPage.getByText("This folder already exists.").waitFor({ state: "visible", timeout: 5000 });
+		const createFolderDisabled = await targetPage.getByRole("button", { name: "Create folder" }).isDisabled();
+		await assert(createFolderDisabled, "Expected duplicate folder submit to be disabled");
+		ok("duplicate deep folder validation", { message: "This folder already exists.", createFolderDisabled });
+		await targetPage.getByRole("button", { name: "Cancel" }).click();
+
+		if (cleanup) {
+			await targetPage.goto(parentFolderUrl, { waitUntil: "domcontentloaded" });
+			await targetPage
+				.locator(".FileNodeViewFolderExplorer")
+				.getByRole("button", { name: `More actions for ${qaName}` })
+				.click();
+			await targetPage.getByRole("menuitem", { name: "Archive" }).click();
+			await targetPage.getByRole("link", { name: `Open ${qaName}` }).waitFor({ state: "detached", timeout: 10000 });
+			ok("cleanup archived qa folder", { qaName });
+		}
+
+		const pagesAfter = context.pages().length;
+		await assert(pagesAfter === pagesBefore, "The test opened a new tab");
+		ok("single tab after", { pages: pagesAfter });
+
+		const result = { qaName, cleanup, results };
+		console.log(JSON.stringify(result, null, 2));
+		return result;
+	}
+
 	function appendMemory({ file = "known-hazards.md", title, body }) {
 		const normalizedFile = String(file).replace(/^references[\\/]/, "");
 		if (!MEMORY_FILES.has(normalizedFile)) {
@@ -338,6 +483,7 @@
 		latestLogs,
 		hitTest,
 		inspectLeftNav,
+		testFilesFolderCreateFlow,
 		appendMemory,
 	};
 

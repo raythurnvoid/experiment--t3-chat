@@ -1,14 +1,252 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import {
+	files_clear_node_path_cached_validation_messages,
+	files_get_node_path_cached_validation_message,
+	files_get_node_path_validation,
+	files_get_node_path_validation_cache_key,
+	files_get_node_path_validation_message,
+	files_set_node_path_cached_validation_message,
 	files_yjs_compute_diff_update_from_yjs_doc,
 	files_yjs_doc_clone,
 	files_yjs_doc_get_markdown,
 	files_yjs_doc_update_from_markdown,
 	files_yjs_rebase_branch_with_local_markdown,
 	files_yjs_reconcile_branch_with_local_markdown,
+	type files_TreeItem,
 } from "./files.ts";
+import type { Id } from "../../convex/_generated/dataModel";
 import { Doc as YDoc } from "yjs";
+
+const createTreeItem = (args: {
+	index: string;
+	parentId: string;
+	kind: files_TreeItem["kind"];
+	title: string;
+	archiveOperationId?: string;
+}) => {
+	const id = args.index as Id<"files_nodes">;
+	return {
+		type: "node",
+		kind: args.kind,
+		index: id,
+		parentId: args.parentId,
+		title: args.title,
+		archiveOperationId: args.archiveOperationId,
+		updatedAt: 0,
+		updatedBy: "Test User",
+		_id: id,
+	} satisfies files_TreeItem;
+};
+
+describe("files_get_node_path_validation_message", () => {
+	const treeItemsList = [
+		createTreeItem({ index: "folder-docs", parentId: "root", kind: "folder", title: "docs" }),
+		createTreeItem({ index: "file-readme", parentId: "folder-docs", kind: "file", title: "README.md" }),
+		createTreeItem({
+			index: "archived-file",
+			parentId: "folder-docs",
+			kind: "file",
+			title: "archived.md",
+			archiveOperationId: "archive-operation",
+		}),
+	] satisfies files_TreeItem[];
+
+	test("returns a duplicate folder message for an existing leaf folder", () => {
+		expect(
+			files_get_node_path_validation_message({
+				treeItemsList,
+				parentId: "root",
+				kind: "folder",
+				nameOrPathValidate: "docs",
+			}),
+		).toBe("This folder already exists.");
+	});
+
+	test("returns a duplicate file message for an existing nested file after normalization", () => {
+		expect(
+			files_get_node_path_validation_message({
+				treeItemsList,
+				parentId: "root",
+				kind: "file",
+				nameOrPathValidate: "docs/readme",
+			}),
+		).toBe("This file already exists.");
+	});
+
+	test("ignores the item currently being renamed", () => {
+		expect(
+			files_get_node_path_validation_message({
+				treeItemsList,
+				itemIdToIgnore: "file-readme",
+				parentId: "folder-docs",
+				kind: "file",
+				nameOrPathValidate: "readme.md",
+			}),
+		).toBeNull();
+	});
+
+	test("allows paths whose missing folders would be created", () => {
+		expect(
+			files_get_node_path_validation_message({
+				treeItemsList,
+				parentId: "root",
+				kind: "file",
+				nameOrPathValidate: "new-folder/readme",
+			}),
+		).toBeNull();
+	});
+
+	test("ignores archived nodes when checking for duplicates", () => {
+		expect(
+			files_get_node_path_validation_message({
+				treeItemsList,
+				parentId: "folder-docs",
+				kind: "file",
+				nameOrPathValidate: "archived.md",
+			}),
+		).toBeNull();
+	});
+
+	test("returns normalized name errors before checking tree conflicts", () => {
+		expect(
+			files_get_node_path_validation_message({
+				treeItemsList,
+				parentId: "folder-docs",
+				kind: "file",
+				nameOrPathValidate: "bad.m d",
+			}),
+		).toBe("Invalid file name");
+	});
+});
+
+describe("files node path validation cache", () => {
+	test("returns a normalized cache key", () => {
+		expect(
+			files_get_node_path_validation_cache_key({
+				scopeId: "scope-key",
+				parentId: "root",
+				kind: "file",
+				nameOrPath: "Docs/readme",
+			}),
+		).toBe("node_path_validation_cache_key::scope-key::root::file::docs/readme.md");
+	});
+
+	test("reuses duplicate failures for the same normalized path", () => {
+		const cacheKey = files_get_node_path_validation_cache_key({
+			scopeId: "scope-cache-duplicate",
+			parentId: "root",
+			kind: "file",
+			nameOrPath: "Docs/readme",
+		});
+		if (!cacheKey) {
+			throw new Error("Expected cache key");
+		}
+
+		files_set_node_path_cached_validation_message({
+			cacheKey,
+			message: "This file already exists.",
+		});
+
+		expect(
+			files_get_node_path_cached_validation_message({
+				cacheKey,
+			}),
+		).toBe("This file already exists.");
+	});
+
+	test("returns null when the path cannot be normalized", () => {
+		const cacheKey = files_get_node_path_validation_cache_key({
+			scopeId: "scope-cache-invalid",
+			parentId: "root",
+			kind: "file",
+			nameOrPath: "bad.m d",
+		});
+		expect(cacheKey).toBeNull();
+	});
+
+	test("keeps cache entries scoped by parent and tenant scope", () => {
+		const cacheKey = files_get_node_path_validation_cache_key({
+			scopeId: "scope-cache-a",
+			parentId: "root",
+			kind: "folder",
+			nameOrPath: "docs",
+		});
+		if (!cacheKey) {
+			throw new Error("Expected cache key");
+		}
+
+		files_set_node_path_cached_validation_message({
+			cacheKey,
+			message: "This folder already exists.",
+		});
+
+		const otherScopeCacheKey = files_get_node_path_validation_cache_key({
+			scopeId: "scope-cache-b",
+			parentId: "root",
+			kind: "folder",
+			nameOrPath: "docs",
+		});
+		const otherParentCacheKey = files_get_node_path_validation_cache_key({
+			scopeId: "scope-cache-a",
+			parentId: "other-parent",
+			kind: "folder",
+			nameOrPath: "docs",
+		});
+		if (!otherScopeCacheKey || !otherParentCacheKey) {
+			throw new Error("Expected scoped cache keys");
+		}
+
+		expect(
+			files_get_node_path_cached_validation_message({
+				cacheKey: otherScopeCacheKey,
+			}),
+		).toBeNull();
+		expect(
+			files_get_node_path_cached_validation_message({
+				cacheKey: otherParentCacheKey,
+			}),
+		).toBeNull();
+	});
+
+	test("caches messages through the combined validation helper", () => {
+		const validationArgs = {
+			scopeId: "scope-cache-helper",
+			treeItemsList: [] satisfies files_TreeItem[],
+			parentId: "root",
+			kind: "file" as const,
+			nameOrPath: "docs/readme",
+		};
+		const validation = files_get_node_path_validation(validationArgs);
+
+		expect(validation.validationMessage).toBeNull();
+
+		validation.cacheValidationMessage("This file already exists.");
+
+		expect(files_get_node_path_validation(validationArgs).validationMessage).toBe("This file already exists.");
+	});
+
+	test("clears cached validation messages", () => {
+		const cacheKey = files_get_node_path_validation_cache_key({
+			scopeId: "scope-cache-clear",
+			parentId: "root",
+			kind: "folder",
+			nameOrPath: "docs",
+		});
+		if (!cacheKey) {
+			throw new Error("Expected cache key");
+		}
+
+		files_set_node_path_cached_validation_message({
+			cacheKey,
+			message: "This folder already exists.",
+		});
+
+		files_clear_node_path_cached_validation_messages();
+
+		expect(files_get_node_path_cached_validation_message({ cacheKey })).toBeNull();
+	});
+});
 
 describe("files_yjs_reconcile_branch_with_local_markdown", () => {
 	beforeEach(() => {

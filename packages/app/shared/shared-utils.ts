@@ -242,6 +242,10 @@ export function composite_id<const TContext extends keyof AppCompositeIds>(
 ) {
 	// Keep this as a raw tuple join. Do not add context-specific behavior or
 	// special cases based on argument values; callers own the exact tuple they pass.
+	return composite_key(...parts);
+}
+
+export function composite_key(...parts: Array<string | number>) {
 	return parts.join("::");
 }
 // #endregion composite ids

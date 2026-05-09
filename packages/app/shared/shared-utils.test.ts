@@ -1,6 +1,6 @@
 import { ConvexError } from "convex/values";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { composite_id, should_never_happen } from "./shared-utils.ts";
+import { composite_id, composite_key, should_never_happen } from "./shared-utils.ts";
 
 const convex_runtime_env_keys = ["CONVEX_CLOUD_URL", "CONVEX_SITE_URL", "CONVEX_URL", "VITE_CONVEX_HTTP_URL"] as const;
 
@@ -67,6 +67,14 @@ describe("composite_id", () => {
 		);
 
 		expect(id).toBe("ai_usage::billed_user_1::actor_user_1::workspace_1::project_1::thread_1::message_1");
+	});
+});
+
+describe("composite_key", () => {
+	test("joins arbitrary cache key parts with double colons", () => {
+		const key = composite_key("node_path_validation_cache_key", "scope_1", "parent_1", "file", "docs/readme.md");
+
+		expect(key).toBe("node_path_validation_cache_key::scope_1::parent_1::file::docs/readme.md");
 	});
 });
 

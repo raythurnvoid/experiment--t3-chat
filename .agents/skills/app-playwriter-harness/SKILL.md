@@ -9,23 +9,23 @@ Use this skill when a task needs the live t3-chat app in the user's browser. Kee
 
 ## Start
 
-1. Read the installed `playwriter` skill first. If `playwriter` is not on PATH here, use `pnpm dlx playwriter@latest`.
+1. Read the installed `playwriter` skill first. If `playwriter` is not on PATH here, use `pnpx playwriter`.
 2. Create an isolated session from the repo root:
 
 ```powershell
-$session = pnpm dlx playwriter@latest session new
+$session = pnpx playwriter session new
 ```
 
 3. Install the helper namespace in that session:
 
 ```powershell
-pnpm dlx playwriter@latest -s $session -e "const fs = require('node:fs'); const code = fs.readFileSync('.agents/skills/app-playwriter-harness/scripts/install-harness.js', 'utf8'); await eval(code);"
+pnpx playwriter -s $session -e "const fs = require('node:fs'); const code = fs.readFileSync('.agents/skills/app-playwriter-harness/scripts/install-harness.js', 'utf8'); await eval(code);"
 ```
 
 4. Bind to the target app tab before acting:
 
 ```powershell
-pnpm dlx playwriter@latest -s $session -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/files' });"
+pnpx playwriter -s $session -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/files' });"
 ```
 
 ## Workflow

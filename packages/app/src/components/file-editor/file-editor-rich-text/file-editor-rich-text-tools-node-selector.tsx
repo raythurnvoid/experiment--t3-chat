@@ -237,6 +237,7 @@ const FileEditorRichTextToolsNodeSelectorInner = memo(function FileEditorRichTex
 					<MyButton
 						ref={triggerButtonRef}
 						variant="ghost"
+						aria-label={`Block format: ${activeItemName || "Select format"}`}
 						{...(setDecorationHighlightOnOpen
 							? ({ "data-app-set-decoration-highlight": "" } satisfies Partial<FileEditorRichText_CustomAttributes>)
 							: {})}

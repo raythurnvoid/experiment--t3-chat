@@ -7,7 +7,12 @@ import {
 	files_yjs_doc_create_from_array_buffer_update,
 	files_yjs_doc_get_markdown,
 	files_yjs_doc_update_from_markdown,
+	files_CREATE_NODE_VALIDATION_MESSAGES,
+	files_get_normalized_node_path_segments,
+	type files_TreeItem,
 } from "../../shared/files.ts";
+import { composite_key } from "../../shared/shared-utils.ts";
+import type { Doc } from "../../convex/_generated/dataModel";
 import { TypedEventTarget } from "@remix-run/interaction";
 import { should_never_happen, XCustomEvent } from "./utils.ts";
 import type { usePresenceList, usePresenceSessions, usePresenceSessionsData } from "../hooks/presence-hooks.ts";
@@ -22,6 +27,179 @@ export * from "../../shared/files.ts";
 export const files_editor_view_values = ["rich_text_editor", "plain_text_editor", "diff_editor"] as const;
 
 export type files_EditorView = (typeof files_editor_view_values)[number];
+
+/**
+ * Return `new-file.md` or `new-folder` for the requested kind, adding an
+ * incrementing suffix when one of the provided sibling names already uses it.
+ */
+export function files_get_default_node_name(args: {
+	kind: Doc<"files_nodes">["kind"];
+	siblingNames: Iterable<string>;
+}) {
+	const activeSiblingNames = new Set([...args.siblingNames].map((name) => name.trim().toLowerCase()));
+	const baseName = args.kind === "folder" ? "new-folder" : "new-file";
+	const extension = args.kind === "file" ? ".md" : "";
+	const initialName = `${baseName}${extension}`;
+
+	if (!activeSiblingNames.has(initialName.toLowerCase())) {
+		return initialName;
+	}
+
+	let counter = 1;
+	for (;;) {
+		const candidateName = `${baseName}-${counter}${extension}`;
+		if (!activeSiblingNames.has(candidateName.toLowerCase())) {
+			return candidateName;
+		}
+
+		counter += 1;
+	}
+}
+
+// #region node path validation
+const cachedNodePathValidationMessages = new Map<string, string>();
+
+function get_node_kind_conflict_message(args: { kind: Doc<"files_nodes">["kind"] }) {
+	return args.kind === "file"
+		? files_CREATE_NODE_VALIDATION_MESSAGES.fileAlreadyExists
+		: files_CREATE_NODE_VALIDATION_MESSAGES.folderAlreadyExists;
+}
+
+/**
+ * Build the cache key for path validation failures.
+ * Cache duplicate-name errors so repeat submissions for paths we already know
+ * exist can fail immediately without sending another create or rename mutation.
+ */
+export function files_get_node_path_validation_cache_key(args: {
+	scopeId: string;
+	parentId: files_TreeItem["parentId"];
+	kind: Doc<"files_nodes">["kind"] | null;
+	nameOrPath: string;
+}) {
+	const normalizedPath = files_get_normalized_node_path_segments({ kind: args.kind, nameOrPath: args.nameOrPath });
+	if (!args.kind || !normalizedPath || "validationMessage" in normalizedPath) {
+		return null;
+	}
+
+	return composite_key(
+		"node_path_validation_cache_key",
+		args.scopeId,
+		args.parentId,
+		args.kind,
+		normalizedPath.normalizedPathSegments.map((pathSegment) => pathSegment.toLowerCase()).join("/"),
+	);
+}
+
+export function files_get_node_path_cached_validation_message(args: { cacheKey: string }) {
+	return cachedNodePathValidationMessages.get(args.cacheKey) ?? null;
+}
+
+export function files_set_node_path_cached_validation_message(args: { cacheKey: string; message: string }) {
+	cachedNodePathValidationMessages.set(args.cacheKey, args.message);
+}
+
+export function files_clear_node_path_cached_validation_messages() {
+	cachedNodePathValidationMessages.clear();
+}
+
+export function files_get_node_path_validation(args: {
+	scopeId: string;
+	treeItemsList: files_TreeItem[] | undefined;
+	itemIdToIgnore?: string;
+	parentId: files_TreeItem["parentId"];
+	kind: Doc<"files_nodes">["kind"] | null;
+	nameOrPath: string;
+}) {
+	const validationMessage = files_get_node_path_validation_message({
+		treeItemsList: args.treeItemsList,
+		itemIdToIgnore: args.itemIdToIgnore,
+		parentId: args.parentId,
+		kind: args.kind,
+		nameOrPathValidate: args.nameOrPath,
+	});
+	const validationCacheKey = files_get_node_path_validation_cache_key({
+		scopeId: args.scopeId,
+		parentId: args.parentId,
+		kind: args.kind,
+		nameOrPath: args.nameOrPath,
+	});
+	const cachedValidationMessage = validationCacheKey
+		? files_get_node_path_cached_validation_message({ cacheKey: validationCacheKey })
+		: null;
+	const effectiveValidationMessage = validationMessage ?? cachedValidationMessage;
+
+	const cacheValidationMessage = (message = effectiveValidationMessage) => {
+		if (!validationCacheKey || !message) {
+			return;
+		}
+
+		files_set_node_path_cached_validation_message({
+			cacheKey: validationCacheKey,
+			message,
+		});
+	};
+
+	return {
+		cacheValidationMessage,
+		validationCacheKey,
+		validationMessage: effectiveValidationMessage,
+	};
+}
+
+/**
+ * Validate a node name or slash-separated path and return the user-facing error.
+ * Use `treeItemsList` to detect duplicate leaves in the current folder, including
+ * paths that traverse existing intermediate folders.
+ */
+export function files_get_node_path_validation_message(args: {
+	treeItemsList: files_TreeItem[] | undefined;
+	itemIdToIgnore?: string;
+	parentId: files_TreeItem["parentId"];
+	kind: Doc<"files_nodes">["kind"] | null;
+	nameOrPathValidate: string;
+}) {
+	// First validate and canonicalize the user input without consulting the tree.
+	const normalizedPath = files_get_normalized_node_path_segments({
+		kind: args.kind,
+		nameOrPath: args.nameOrPathValidate,
+	});
+	if (!normalizedPath) {
+		return null;
+	}
+	if ("validationMessage" in normalizedPath) {
+		return normalizedPath.validationMessage;
+	}
+	if (!args.kind || !args.treeItemsList) {
+		return null;
+	}
+
+	// Then walk the current tree to catch duplicates, following existing folders for deep paths.
+	let currentParentId = args.parentId;
+	for (const [index, normalizedName] of normalizedPath.normalizedPathSegments.entries()) {
+		const isLeaf = index === normalizedPath.normalizedPathSegments.length - 1;
+		const existingNode = args.treeItemsList.find((item) => {
+			return (
+				item.type === "node" &&
+				item.index !== args.itemIdToIgnore &&
+				item.parentId === currentParentId &&
+				item.archiveOperationId === undefined &&
+				item.title.trim().toLowerCase() === normalizedName.toLowerCase()
+			);
+		});
+		if (isLeaf) {
+			return existingNode ? get_node_kind_conflict_message({ kind: args.kind }) : null;
+		}
+
+		if (!existingNode || existingNode.kind !== "folder") {
+			return null;
+		}
+
+		currentParentId = existingNode.index;
+	}
+
+	return null;
+}
+// #endregion node path validation
 
 export const files_INITIAL_CONTENT = `\
 # Welcome

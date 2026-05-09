@@ -368,6 +368,7 @@ const FileEditorRichTextToolsColorSelectorInner = memo(function FileEditorRichTe
 					<MyButton
 						ref={triggerButtonRef}
 						variant="ghost"
+						aria-label="Text color and highlight"
 						{...(setDecorationHighlightOnOpen
 							? ({ "data-app-set-decoration-highlight": "" } satisfies Partial<FileEditorRichText_CustomAttributes>)
 							: {})}

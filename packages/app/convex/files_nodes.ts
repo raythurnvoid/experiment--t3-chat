@@ -48,7 +48,7 @@ import {
 	files_yjs_doc_update_from_tiptap_editor,
 	files_yjs_doc_create_from_tiptap_editor,
 	files_yjs_compute_diff_update_from_state_vector,
-	type files_NodeKind,
+	files_CREATE_NODE_VALIDATION_MESSAGES,
 } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { minimatch } from "minimatch";
@@ -476,8 +476,6 @@ const get_tree_nodes_list_validator = v.array(
 	}),
 );
 
-export type files_TreeItem = Infer<typeof get_tree_nodes_list_validator>[number];
-
 export const get_tree_nodes_list = query({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
@@ -504,33 +502,30 @@ export const get_tree_nodes_list = query({
 			.order("asc")
 			.collect();
 
-		const treeItemsList: files_TreeItem[] = [
+		const treeItemsList = [
 			// We need a root to render a tree, the root node is hardcoded in the code
 			{
-				type: "root",
+				type: "root" as const,
 				index: files_ROOT_ID,
 				parentId: "",
-				kind: "folder",
+				kind: "folder" as const,
 				title: "Files",
 				archiveOperationId: undefined,
 				updatedAt: 0,
 				updatedBy: "system",
 				_id: null,
 			},
-			...nodes.map(
-				(node) =>
-					({
-						type: "node" as const,
-						kind: node.kind,
-						index: node._id,
-						parentId: node.parentId === files_ROOT_ID ? files_ROOT_ID : node.parentId,
-						title: node.name || "Untitled",
-						archiveOperationId: node.archiveOperationId,
-						updatedAt: node.updatedAt,
-						updatedBy: node.updatedBy,
-						_id: node._id,
-					}) satisfies files_TreeItem,
-			),
+			...nodes.map((node) => ({
+				type: "node" as const,
+				kind: node.kind,
+				index: node._id,
+				parentId: node.parentId === files_ROOT_ID ? files_ROOT_ID : node.parentId,
+				title: node.name || "Untitled",
+				archiveOperationId: node.archiveOperationId,
+				updatedAt: node.updatedAt,
+				updatedBy: node.updatedBy,
+				_id: node._id,
+			})),
 		];
 
 		return treeItemsList;
@@ -545,7 +540,7 @@ async function db_create_node(
 		projectId: string;
 		parentId: Doc<"files_nodes">["parentId"];
 		name: Doc<"files_nodes">["name"];
-		kind: files_NodeKind;
+		kind: Doc<"files_nodes">["kind"];
 		markdownContent?: Doc<"files_markdown_content">["content"];
 	},
 ) {
@@ -586,7 +581,10 @@ async function db_create_node(
 		return Result({
 			_nay: {
 				name: "nay",
-				message: "Failed to create node because path already exists",
+				message:
+					args.kind === "file"
+						? files_CREATE_NODE_VALIDATION_MESSAGES.fileAlreadyExists
+						: files_CREATE_NODE_VALIDATION_MESSAGES.folderAlreadyExists,
 			},
 		});
 	}
@@ -720,7 +718,7 @@ async function db_create_node_recursively_at_path(
 		projectId: string;
 		parentId: Doc<"files_nodes">["parentId"];
 		path: string;
-		kind: files_NodeKind;
+		kind: Doc<"files_nodes">["kind"];
 	},
 ) {
 	let currentParent: Doc<"files_nodes">["parentId"] = args.parentId;
@@ -729,7 +727,7 @@ async function db_create_node_recursively_at_path(
 	// Walk segments in order because each child lookup needs the previous folder id.
 	for (const [i, name] of pathSegments.entries()) {
 		const isLeaf = i === pathSegments.length - 1;
-		const kind: files_NodeKind = isLeaf ? args.kind : "folder";
+		const kind: Doc<"files_nodes">["kind"] = isLeaf ? args.kind : "folder";
 		const existing = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_workspace_project_parent_kind_name_archiveOperation", (q) =>
@@ -753,7 +751,10 @@ async function db_create_node_recursively_at_path(
 			return Result({
 				_nay: {
 					name: "nay",
-					message: "Failed to create node because path already exists",
+					message:
+						kind === "file"
+							? files_CREATE_NODE_VALIDATION_MESSAGES.fileAlreadyExists
+							: files_CREATE_NODE_VALIDATION_MESSAGES.folderAlreadyExists,
 				},
 			});
 		}
@@ -1811,7 +1812,12 @@ export const list_files = internalQuery({
 
 		const matchesInclude = (absPath: string) => matches_path(absPath, include);
 
-		const results: Array<{ path: string; kind: files_NodeKind; updatedAt: number; depthTruncated: boolean }> = [];
+		const results: Array<{
+			path: string;
+			kind: Doc<"files_nodes">["kind"];
+			updatedAt: number;
+			depthTruncated: boolean;
+		}> = [];
 		let truncated = false;
 
 		// Depth-first traversal using an explicit stack.

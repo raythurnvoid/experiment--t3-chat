@@ -74,7 +74,7 @@ const FileEditorPlainTextToolbar = memo(function FileEditorPlainTextToolbar(prop
 		<div
 			ref={setPortalElement}
 			role="toolbar"
-			aria-label="Toolbar"
+			aria-label="Markdown editor actions"
 			aria-orientation="horizontal"
 			className={cn("FileEditorPlainTextToolbar" satisfies FileEditorPlainTextToolbar_ClassNames)}
 		>
