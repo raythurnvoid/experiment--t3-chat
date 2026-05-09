@@ -54,74 +54,295 @@
 	}
 	/* #endregion background */
 
-	/* #region handle */
-	.MyPanelResizeHandleContainer {
-		contain: layout style size;
-		z-index: 1;
-
-		display: flex;
-		justify-content: center;
-	}
-
-	.MyPanelResizeHandleContainer-orientation-vertical {
-		width: 0;
-	}
-
-	.MyPanelResizeHandleContainer-orientation-horizontal {
-		height: 0;
-	}
-
-	.MyPanelResizeHandle {
-		contain: layout style;
-		touch-action: none;
+	/* #region handle track */
+	.MyPanelResizeHandleTrack {
 		position: absolute;
+		inset: 0;
+		z-index: 0;
+
+		pointer-events: auto;
+	}
+
+	.MyPanelResizeHandleTrack-orientation-vertical {
+		width: 100%;
+	}
+
+	.MyPanelResizeHandleTrack-orientation-horizontal {
+		height: 100%;
+	}
+	/* #endregion handle track */
+
+	/* #region handle grip */
+	.MyPanelResizeHandleGrip {
+		position: sticky;
+		z-index: 1;
+		flex: 0 0 auto;
+
+		color: var(--color-base-alt-1-11);
 		background-color: transparent;
 
-		&[data-resize-handle-state="drag"] {
-			background-color: var(--color-base-alt-2-10);
-		}
+		pointer-events: auto;
 
-		&[data-resize-handle-state="hover"] {
-			background-color: var(--color-base-alt-1-07);
-		}
+		transition: color 0.1s linear;
 
 		&::before {
 			content: "";
 			position: absolute;
+
+			border-radius: 999px;
+			background-color: var(--color-base-alt-1-09);
+			box-shadow:
+				inset 0 1px 1px oklch(1 0 0 / 0.08),
+				0 0px 1px oklch(0 0 0 / 0.45),
+				0 1px 2px oklch(0 0 0 / 0.2);
+
+			pointer-events: none;
+
+			transition:
+				background-color 0.1s linear,
+				box-shadow 0.1s linear;
+		}
+	}
+
+	.MyPanelResizeHandleGrip-icon {
+		position: absolute;
+		left: 50%;
+		top: 50%;
+		z-index: 1;
+
+		width: 14px;
+		height: 14px;
+
+		color: currentColor;
+
+		pointer-events: none;
+
+		transform: translate(-50%, -50%);
+	}
+
+	.MyPanelResizeHandleGrip-orientation-vertical {
+		top: calc(50dvh - 26px);
+
+		width: 24px;
+		height: 52px;
+
+		cursor: ew-resize;
+
+		&::before {
+			left: 50%;
+			top: 50%;
+
+			width: 16px;
+			height: 44px;
+
+			transform: translate(-50%, -50%);
+		}
+	}
+
+	.MyPanelResizeHandleGrip-orientation-horizontal {
+		left: calc(50dvw - 26px);
+
+		width: 52px;
+		height: 24px;
+
+		cursor: ns-resize;
+
+		&::before {
+			left: 50%;
+			top: 50%;
+
+			width: 44px;
+			height: 16px;
+
+			transform: translate(-50%, -50%);
+		}
+	}
+
+	.MyPanelResizeHandle[data-resize-handle-state="drag"] .MyPanelResizeHandleGrip,
+	.MyPanelResizeHandle[data-resize-handle-state="hover"] .MyPanelResizeHandleGrip,
+	.MyPanelResizeHandle:has(.MyPanelResizeHandleGrip:hover) .MyPanelResizeHandleGrip,
+	.MyPanelResizeHandleGrip:hover {
+		color: var(--color-fg-10);
+	}
+
+	.MyPanelResizeHandle[data-resize-handle-state="drag"] .MyPanelResizeHandleGrip::before,
+	.MyPanelResizeHandle[data-resize-handle-state="hover"] .MyPanelResizeHandleGrip::before,
+	.MyPanelResizeHandle:has(.MyPanelResizeHandleGrip:hover) .MyPanelResizeHandleGrip::before,
+	.MyPanelResizeHandleGrip:hover::before {
+		background-color: var(--color-base-alt-1-11);
+		box-shadow:
+			inset 0 1px 1px oklch(1 0 0 / 0.12),
+			0 0px 1px oklch(0 0 0 / 0.5),
+			0 1px 2px oklch(0 0.4 30 / 0.25);
+	}
+
+	.MyPanelResizeHandle[data-resize-handle-state="drag"] .MyPanelResizeHandleGrip {
+		color: var(--color-fg-12);
+	}
+
+	.MyPanelResizeHandle:active .MyPanelResizeHandleGrip,
+	.MyPanelResizeHandle:has(.MyPanelResizeHandleGrip:active) .MyPanelResizeHandleGrip {
+		color: var(--color-fg-12);
+	}
+
+	.MyPanelResizeHandle[data-resize-handle-state="drag"] .MyPanelResizeHandleGrip::before,
+	.MyPanelResizeHandle:active .MyPanelResizeHandleGrip::before,
+	.MyPanelResizeHandle:has(.MyPanelResizeHandleGrip:active) .MyPanelResizeHandleGrip::before {
+		background-color: var(--color-base-alt-1-12);
+	}
+	/* #endregion handle grip */
+
+	/* #region handle */
+	.MyPanelResizeHandleContainer {
+		contain: layout style size;
+
+		position: relative;
+		z-index: 1;
+
+		display: flex;
+		justify-content: center;
+		align-items: stretch;
+	}
+
+	.MyPanelResizeHandleContainer-orientation-vertical {
+		width: 2px;
+
+		flex: 0 0 2px;
+	}
+
+	.MyPanelResizeHandleContainer-orientation-horizontal {
+		height: 2px;
+
+		flex: 0 0 2px;
+	}
+
+	.MyPanelResizeHandle {
+		contain: layout style;
+
+		position: absolute;
+		z-index: 1;
+
+		touch-action: none;
+
+		outline: none;
+		background-color: transparent;
+
+		&::before {
+			content: "";
+			position: absolute;
+
+			pointer-events: none;
+
+			transition:
+				background-color 0.1s linear,
+				height 0.1s linear,
+				width 0.1s linear;
 		}
 	}
 
 	.MyPanelResizeHandle-orientation-vertical {
+		left: 50%;
+		top: 0;
+
 		height: 9999px;
-		width: 24px;
+		width: 8px;
 
 		display: flex;
 		justify-content: center;
 
+		cursor: ew-resize;
+
+		transform: translateX(-50%);
+
 		&::before {
-			height: 100%;
+			top: 0;
+			bottom: 0;
+			left: 50%;
+
 			width: 2px;
+
+			transform: translateX(-50%);
 		}
 
 		&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"])::before {
 			background-color: var(--color-base-alt-1-07);
+		}
+
+		&[data-resize-handle-state="hover"]::before,
+		&:has(.MyPanelResizeHandleGrip:hover)::before {
+			width: 8px;
+
+			background-color: var(--color-base-alt-1-10);
+		}
+
+		&:has(.MyPanelResizeHandleGrip:hover) {
+			width: 24px;
+		}
+
+		&[data-resize-handle-state="drag"]::before,
+		&:active::before,
+		&:has(.MyPanelResizeHandleGrip:active)::before {
+			width: 8px;
+
+			background-color: var(--color-base-alt-2-10);
+		}
+
+		&:focus-visible::before {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: -4px;
 		}
 	}
 
 	.MyPanelResizeHandle-orientation-horizontal {
+		left: 0;
+		top: 50%;
+
 		width: 9999px;
-		height: 24px;
+		height: 8px;
 
 		display: flex;
 		align-items: center;
 
+		cursor: ns-resize;
+
+		transform: translateY(-50%);
+
 		&::before {
-			width: 100%;
+			right: 0;
+			left: 0;
+			top: 50%;
+
 			height: 2px;
+
+			transform: translateY(-50%);
 		}
 
 		&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"])::before {
 			background-color: var(--color-base-alt-1-07);
+		}
+
+		&[data-resize-handle-state="hover"]::before,
+		&:has(.MyPanelResizeHandleGrip:hover)::before {
+			height: 8px;
+
+			background-color: var(--color-base-alt-1-10);
+		}
+
+		&:has(.MyPanelResizeHandleGrip:hover) {
+			height: 24px;
+		}
+
+		&[data-resize-handle-state="drag"]::before,
+		&:active::before,
+		&:has(.MyPanelResizeHandleGrip:active)::before {
+			height: 8px;
+
+			background-color: var(--color-base-alt-2-10);
+		}
+
+		&:focus-visible::before {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: -4px;
 		}
 	}
 	/* #endregion handle */

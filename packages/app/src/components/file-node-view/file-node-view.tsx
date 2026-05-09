@@ -1298,6 +1298,9 @@ type FileNodeView_ClassNames =
 
 type FileNodeView_SidebarState = "closed" | "expanded";
 
+const DEFAULT_PANEL_LAYOUT = [24, 76] satisfies [number, number];
+const DEFAULT_EDITOR_PANEL_LAYOUT = [75, 25] satisfies [number, number];
+
 export type FileNodeView_SearchParams = {
 	nodeId?: string;
 	view?: files_EditorView;
@@ -1321,8 +1324,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const [savedEditorPanelLayout, setEditorPanelLayout] = useAppLocalStorageStateValue(
 		"app_state::resizable_panel::file_editor_panel",
 	);
-	const panelLayoutRef = useRef(savedPanelLayout ?? [24, 76]);
-	const editorPanelLayoutRef = useRef(savedEditorPanelLayout ?? [75, 25]);
+	const panelLayoutRef = useRef(savedPanelLayout ?? DEFAULT_PANEL_LAYOUT);
+	const editorPanelLayoutRef = useRef(savedEditorPanelLayout ?? DEFAULT_EDITOR_PANEL_LAYOUT);
 	const filesSidebarState: FileNodeView_SidebarState = filesSidebarOpen ? "expanded" : "closed";
 	const [commentsPortalHost, setCommentsPortalHost] = useState<HTMLElement | null>(null);
 
@@ -1485,6 +1488,11 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		},
 	);
 
+	const handlePanelReset = useFn<NonNullable<React.ComponentProps<typeof MyPanelGroup>["onLayoutReset"]>>((layout) => {
+		panelLayoutRef.current = layout;
+		setMainPanelLayout(null);
+	});
+
 	const handleEditorPanelLayout = useFn<NonNullable<React.ComponentProps<typeof MyPanelGroup>["onLayout"]>>(
 		(layout) => {
 			editorPanelLayoutRef.current = layout;
@@ -1500,6 +1508,11 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			setEditorPanelLayout(editorPanelLayoutRef.current);
 		},
 	);
+
+	const handleEditorPanelReset = useFn<NonNullable<React.ComponentProps<typeof MyPanelGroup>["onLayoutReset"]>>((layout) => {
+		editorPanelLayoutRef.current = layout;
+		setEditorPanelLayout(null);
+	});
 
 	// If URL has no node id, restore last-open; otherwise default to the root folder.
 	useEffect(() => {
@@ -1567,11 +1580,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	return (
 		<MyPanelGroup
 			className={"FileNodeView" satisfies FileNodeView_ClassNames}
+			defaultLayout={DEFAULT_PANEL_LAYOUT}
 			direction="horizontal"
 			onLayout={handlePanelLayout}
+			onLayoutReset={handlePanelReset}
 		>
 			<MyPanel
-				defaultSize={savedPanelLayout?.[0] ?? 24}
+				defaultSize={savedPanelLayout?.[0] ?? DEFAULT_PANEL_LAYOUT[0]}
 				className={"FileNodeView-sidebar-panel" satisfies FileNodeView_ClassNames}
 				isOpen={filesSidebarOpen}
 				closeBehavior="unmount"
@@ -1584,24 +1599,31 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 					onPrimaryAction={handlePrimaryAction}
 				/>
 			</MyPanel>
-			<MyPanelResizeHandle isOpen={filesSidebarOpen} closeBehavior="unmount" onDragging={handlePanelDragging} />
+			<MyPanelResizeHandle
+				isOpen={filesSidebarOpen}
+				closeBehavior="unmount"
+				aria-label="Resize files sidebar"
+				onDragging={handlePanelDragging}
+			/>
 			<MyPanel
-				defaultSize={filesSidebarState === "closed" ? 100 : (savedPanelLayout?.[1] ?? 76)}
+				defaultSize={filesSidebarState === "closed" ? 100 : (savedPanelLayout?.[1] ?? DEFAULT_PANEL_LAYOUT[1])}
 				minSize={40}
 				className={"FileNodeView-main-panel" satisfies FileNodeView_ClassNames}
 			>
 				<div className={"FileNodeView-editor-area" satisfies FileNodeView_ClassNames}>
 					<MyPanelGroup
 						className={"FileNodeView-content-group" satisfies FileNodeView_ClassNames}
+						defaultLayout={DEFAULT_EDITOR_PANEL_LAYOUT}
 						direction="horizontal"
 						onLayout={handleEditorPanelLayout}
+						onLayoutReset={handleEditorPanelReset}
 						style={{
 							height: "max-content",
 							overflow: "visible",
 						}}
 					>
 						<MyPanel
-							defaultSize={savedEditorPanelLayout?.[0] ?? 75}
+							defaultSize={savedEditorPanelLayout?.[0] ?? DEFAULT_EDITOR_PANEL_LAYOUT[0]}
 							minSize={40}
 							className={"FileNodeView-content-panel" satisfies FileNodeView_ClassNames}
 							style={contentPanelStyle}
@@ -1614,11 +1636,14 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 								renderContent({ presenceStore: null, onlineUsers: [] })
 							)}
 						</MyPanel>
-						<MyPanelResizeHandle onDragging={handleEditorPanelDragging} />
+						<MyPanelResizeHandle
+							aria-label="Resize comments and agent sidebar"
+							onDragging={handleEditorPanelDragging}
+						/>
 						<MyPanel
 							className={"FileNodeView-editor-sidebar-panel" satisfies FileNodeView_ClassNames}
 							collapsible={false}
-							defaultSize={savedEditorPanelLayout?.[1] ?? 25}
+							defaultSize={savedEditorPanelLayout?.[1] ?? DEFAULT_EDITOR_PANEL_LAYOUT[1]}
 							minSize={18}
 							style={{
 								overflow: "initial",
