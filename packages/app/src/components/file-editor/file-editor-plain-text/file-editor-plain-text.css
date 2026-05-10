@@ -8,39 +8,21 @@
 	/* #endregion root */
 
 	/* #region toolbar */
-	.FileEditorPlainTextToolbar {
-		height: 44px;
-		background: var(--color-base-alt-1-05);
-
-		contain: inline-size layout style;
-
-		position: relative;
-		z-index: 1;
-	}
-
-	.FileEditorPlainTextToolbar-scrollable-area {
-		gap: 4px;
-
+	.FileEditorPlainTextToolbarActions {
+		display: flex;
 		flex-direction: row;
 		align-items: center;
-		display: flex;
-
-		padding: 4px 18px;
-
-		overflow-x: auto;
-		overflow-y: hidden;
-		contain: content;
-
-		scrollbar-width: initial;
+		gap: 4px;
 
 		min-width: 0;
+		contain: inline-size layout style;
 	}
 
-	.FileEditorPlainTextToolbar-button {
+	.FileEditorPlainTextToolbarActions-button {
 		gap: 4px;
 	}
 
-	.FileEditorPlainTextToolbar-icon {
+	.FileEditorPlainTextToolbarActions-icon {
 		width: 20px;
 		height: 20px;
 	}

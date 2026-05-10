@@ -61,6 +61,13 @@
 		}
 	}
 
+	.FileNodeView-content-panel > .FileEditor,
+	.FileNodeView-content-panel > .FileNodeViewFolder {
+		flex: 1 1 auto;
+		min-height: 0;
+		height: auto;
+	}
+
 	.FileNodeView-editor-sidebar-panel {
 		container-type: size;
 
@@ -175,8 +182,8 @@
 	}
 	/* #endregion folder */
 
-	/* #region folder toolbar */
-	.FileNodeViewFolderToolbar {
+	/* #region toolbar */
+	.FileNodeViewToolbar {
 		position: sticky;
 		top: 0;
 		z-index: 30;
@@ -195,22 +202,27 @@
 		border-bottom: 1px solid var(--color-fg-02);
 	}
 
-	.FileNodeViewFolderToolbar-actions {
+	.FileNodeViewToolbarFolderActions,
+	.FileNodeViewToolbar-editor-actions {
 		display: flex;
 		align-items: center;
 		gap: 4px;
 
-		flex: 0 0 auto;
-
 		min-width: 0;
 		min-height: 44px;
 
-		padding: 4px 0 4px 18px;
-
-		overflow: visible;
+		overflow-y: hidden;
 	}
 
-	.FileNodeViewFolderToolbar-actions::after {
+	.FileNodeViewToolbarFolderActions {
+		flex: 0 0 auto;
+
+		padding: 4px 0 4px 18px;
+
+		overflow-x: visible;
+	}
+
+	.FileNodeViewToolbarFolderActions::after {
 		content: "";
 
 		align-self: stretch;
@@ -221,45 +233,30 @@
 		background: var(--color-fg-03);
 	}
 
-	.FileNodeViewFolderToolbar-action {
+	.FileNodeViewToolbar-editor-actions {
+		flex: 1 1 auto;
+
+		padding: 4px 18px 4px 0;
+
+		overflow-x: auto;
+		contain: content;
+		scrollbar-width: initial;
+	}
+
+	.FileNodeViewToolbar:not(:has(.FileNodeViewToolbarFolderActions)) .FileNodeViewToolbar-editor-actions {
+		padding-left: 18px;
+	}
+
+	.FileNodeViewToolbarFolderActions-action {
 		flex: 0 0 auto;
 	}
 
-	.FileNodeViewFolderToolbar-action-icon {
+	.FileNodeViewToolbarFolderActions-action-icon {
 		width: 20px;
 		height: 20px;
 	}
 
-	.FileNodeViewFolderToolbar > .FileEditorRichTextToolbar,
-	.FileNodeViewFolderToolbar > .FileEditorPlainTextToolbar,
-	.FileNodeViewFolderToolbar > .FileEditorDiffToolbar {
-		position: relative;
-		top: auto;
-
-		flex: 1 1 auto;
-
-		min-width: 0;
-		height: 44px;
-
-		background: transparent;
-		border-bottom: 0;
-	}
-
-	.FileNodeViewFolderToolbar > .FileEditorRichTextToolbar {
-		contain: inline-size layout style;
-	}
-
-	.FileNodeViewFolderToolbar > .FileEditorRichTextToolbar > .FileEditorRichTextToolbar-scrollable-area,
-	.FileNodeViewFolderToolbar > .FileEditorPlainTextToolbar > .FileEditorPlainTextToolbar-scrollable-area,
-	.FileNodeViewFolderToolbar > .FileEditorDiffToolbar > .FileEditorDiffToolbar-scrollable-area {
-		padding: 4px 18px 4px 0;
-	}
-
-	.FileNodeViewFolder-mode-monaco .FileNodeViewFolderToolbar {
-		position: relative;
-		top: auto;
-	}
-	/* #endregion folder toolbar */
+	/* #endregion toolbar */
 
 	/* #region folder create node modal */
 	.FileNodeViewFolderCreateNodeModal {

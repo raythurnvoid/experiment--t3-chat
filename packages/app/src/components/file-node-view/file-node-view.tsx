@@ -124,6 +124,9 @@ function get_folder_readme_node_id(
 	return readmeItem?._id ?? null;
 }
 
+const FILE_NODE_VIEW_TOOLBAR_EDITOR_ACTIONS_ID =
+	"app_file_node_view_toolbar_editor_actions" satisfies AppElementId;
+
 // #region header
 type FileNodeViewHeader_ClassNames =
 	| "FileNodeViewHeader"
@@ -276,7 +279,7 @@ type FileNodeViewFileEditor_Props = {
 	layout?: FileEditor_Layout;
 	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
-	toolbarPortalHost?: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
@@ -324,6 +327,7 @@ type FileNodeViewFile_Props = {
 	presenceStore: FileEditor_Props["presenceStore"];
 	onlineUsers: FileEditor_OnlineUser[];
 	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	topStickyFloatingSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
 };
@@ -339,6 +343,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		presenceStore,
 		onlineUsers,
 		commentsPortalHost,
+		toolbarPortalHost,
 		topStickyFloatingSlot,
 		onEditorModeChange,
 	} = props;
@@ -361,6 +366,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				editorMode={editorMode}
 				presenceStore={presenceStore}
 				commentsPortalHost={commentsPortalHost}
+				toolbarPortalHost={toolbarPortalHost}
 				topStickyFloatingSlot={topStickyFloatingSlot}
 				onEditorModeChange={onEditorModeChange}
 			/>
@@ -382,6 +388,7 @@ type FileNodeViewFolder_Props = {
 	editorMode: FileEditor_Mode;
 	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	topStickyFloatingSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
 };
@@ -395,6 +402,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		editorMode,
 		presenceStore,
 		commentsPortalHost,
+		toolbarPortalHost,
 		topStickyFloatingSlot,
 		onEditorModeChange,
 	} = props;
@@ -405,10 +413,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	const [showAllItems, setShowAllItems] = useState(false);
 	const [isCreatingReadme, setIsCreatingReadme] = useState(false);
-	const [isCreatingNode, setIsCreatingNode] = useState(false);
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState(() => new Set<string>());
-	const createNodeModalRef = useRef<FileNodeViewFolderCreateNodeModal_Ref | null>(null);
-	const [toolbarPortalHost, setToolbarPortalHost] = useState<HTMLElement | null>(null);
 
 	const childItems = (treeItemsList ?? [])
 		.filter((item) => item.type === "node" && item.parentId === folderItemId && item.archiveOperationId === undefined)
@@ -424,48 +429,9 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		: childItems.slice(0, FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT);
 	const hiddenChildItemsCount = childItems.length - visibleChildItems.length;
 	const readmeNodeId = get_folder_readme_node_id(treeItemsList, folderItemId);
-	const childItemNames = childItems.map((child) => child.title);
 
 	const handleShowMoreClick = useFn(() => {
 		setShowAllItems(true);
-	});
-
-	const handleCreateNodeModalOpen = useFn((kind: files_TreeItem["kind"]) => {
-		createNodeModalRef.current?.open(kind);
-	});
-
-	const handleCreateNodeSubmit = useFn((args: { kind: files_TreeItem["kind"]; name: string }) => {
-		const { kind, name } = args;
-		setIsCreatingNode(true);
-		return createNode({
-			membershipId,
-			parentId: folderItemId,
-			name,
-			kind,
-		})
-			.then((result) => {
-				if (result._nay) {
-					console.error("[FileNodeViewFolder.handleCreateNodeSubmit] Failed to create node", {
-						result,
-						folderItemId,
-						kind,
-					});
-					return result._nay.message;
-				}
-
-				return null;
-			})
-			.catch((error) => {
-				console.error("[FileNodeViewFolder.handleCreateNodeSubmit] Error creating node", {
-					error,
-					folderItemId,
-					kind,
-				});
-				return `Failed to create ${kind}.`;
-			})
-			.finally(() => {
-				setIsCreatingNode(false);
-			});
 	});
 
 	const handleCreateReadmeClick = useFn(() => {
@@ -529,26 +495,6 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		setShowAllItems(false);
 	}, [folderItemId]);
 
-	const toolbarPortalHostElement = (
-		<FileNodeViewFolderToolbar
-			disabled={isCreatingNode}
-			onToolbarPortalHostChange={setToolbarPortalHost}
-			onCreateNode={handleCreateNodeModalOpen}
-		/>
-	);
-
-	const createNodeModal = (
-		<FileNodeViewFolderCreateNodeModal
-			ref={createNodeModalRef}
-			membershipId={membershipId}
-			folderItemId={folderItemId}
-			treeItemsList={treeItemsList}
-			siblingNames={childItemNames}
-			isCreatingNode={isCreatingNode}
-			onCreateNode={handleCreateNodeSubmit}
-		/>
-	);
-
 	const folderBrowserContent = (
 		<FileNodeViewFolderBody>
 			<FileNodeViewFolderExplorer
@@ -594,15 +540,10 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					("FileNodeViewFolder-mode-monaco" satisfies FileNodeViewFolder_ClassNames),
 			)}
 		>
-			{createNodeModal}
 			{editorMode !== "rich_text_editor" && readmeNodeId ? (
-				<>
-					{toolbarPortalHostElement}
-					{readmeEditor}
-				</>
+				readmeEditor
 			) : (
 				<>
-					{toolbarPortalHostElement}
 					{folderBrowserContent}
 					{readmeEditor}
 				</>
@@ -612,63 +553,84 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 });
 // #endregion folder
 
-// #region folder toolbar
-type FileNodeViewFolderToolbar_ClassNames =
-	| "FileNodeViewFolderToolbar"
-	| "FileNodeViewFolderToolbar-actions"
-	| "FileNodeViewFolderToolbar-action"
-	| "FileNodeViewFolderToolbar-action-icon";
+// #region toolbar
+type FileNodeViewToolbarFolderActions_ClassNames =
+	| "FileNodeViewToolbarFolderActions"
+	| "FileNodeViewToolbarFolderActions-action"
+	| "FileNodeViewToolbarFolderActions-action-icon";
 
-type FileNodeViewFolderToolbar_Props = {
+type FileNodeViewToolbarFolderActions_Props = {
 	disabled: boolean;
-	onToolbarPortalHostChange: (element: HTMLElement | null) => void;
 	onCreateNode: (kind: files_TreeItem["kind"]) => void;
 };
 
-const FileNodeViewFolderToolbar = memo(function FileNodeViewFolderToolbar(props: FileNodeViewFolderToolbar_Props) {
-	const { disabled, onToolbarPortalHostChange, onCreateNode } = props;
+const FileNodeViewToolbarFolderActions = memo(function FileNodeViewToolbarFolderActions(
+	props: FileNodeViewToolbarFolderActions_Props,
+) {
+	const { disabled, onCreateNode } = props;
 
 	return (
 		<div
-			ref={onToolbarPortalHostChange}
-			className={"FileNodeViewFolderToolbar" satisfies FileNodeViewFolderToolbar_ClassNames}
+			role="group"
+			aria-label="Create files and folders"
+			className={"FileNodeViewToolbarFolderActions" satisfies FileNodeViewToolbarFolderActions_ClassNames}
 		>
-			<div
-				role="toolbar"
-				aria-label="Folder actions"
-				className={"FileNodeViewFolderToolbar-actions" satisfies FileNodeViewFolderToolbar_ClassNames}
+			<MyIconButton
+				className={"FileNodeViewToolbarFolderActions-action" satisfies FileNodeViewToolbarFolderActions_ClassNames}
+				variant="ghost"
+				tooltip="New file"
+				disabled={disabled}
+				onClick={() => onCreateNode("file")}
 			>
-				<MyIconButton
-					className={"FileNodeViewFolderToolbar-action" satisfies FileNodeViewFolderToolbar_ClassNames}
-					variant="ghost"
-					tooltip="New file in current folder"
-					disabled={disabled}
-					onClick={() => onCreateNode("file")}
+				<MyIconButtonIcon
+					className={"FileNodeViewToolbarFolderActions-action-icon" satisfies FileNodeViewToolbarFolderActions_ClassNames}
 				>
-					<MyIconButtonIcon
-						className={"FileNodeViewFolderToolbar-action-icon" satisfies FileNodeViewFolderToolbar_ClassNames}
-					>
-						<FilePlus />
-					</MyIconButtonIcon>
-				</MyIconButton>
-				<MyIconButton
-					className={"FileNodeViewFolderToolbar-action" satisfies FileNodeViewFolderToolbar_ClassNames}
-					variant="ghost"
-					tooltip="New folder in current folder"
-					disabled={disabled}
-					onClick={() => onCreateNode("folder")}
+					<FilePlus />
+				</MyIconButtonIcon>
+			</MyIconButton>
+			<MyIconButton
+				className={"FileNodeViewToolbarFolderActions-action" satisfies FileNodeViewToolbarFolderActions_ClassNames}
+				variant="ghost"
+				tooltip="New folder"
+				disabled={disabled}
+				onClick={() => onCreateNode("folder")}
+			>
+				<MyIconButtonIcon
+					className={"FileNodeViewToolbarFolderActions-action-icon" satisfies FileNodeViewToolbarFolderActions_ClassNames}
 				>
-					<MyIconButtonIcon
-						className={"FileNodeViewFolderToolbar-action-icon" satisfies FileNodeViewFolderToolbar_ClassNames}
-					>
-						<FolderPlus />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			</div>
+					<FolderPlus />
+				</MyIconButtonIcon>
+			</MyIconButton>
 		</div>
 	);
 });
-// #endregion folder toolbar
+
+type FileNodeViewToolbar_ClassNames = "FileNodeViewToolbar" | "FileNodeViewToolbar-editor-actions";
+
+type FileNodeViewToolbar_Props = {
+	editorActionsRef: React.Ref<HTMLDivElement>;
+	folderActionsSlot: React.ReactNode;
+};
+
+const FileNodeViewToolbar = memo(function FileNodeViewToolbar(props: FileNodeViewToolbar_Props) {
+	const { editorActionsRef, folderActionsSlot } = props;
+
+	return (
+		<div
+			role="toolbar"
+			aria-label="File actions"
+			className={"FileNodeViewToolbar" satisfies FileNodeViewToolbar_ClassNames}
+		>
+			{folderActionsSlot}
+			<div
+				id={FILE_NODE_VIEW_TOOLBAR_EDITOR_ACTIONS_ID}
+				ref={editorActionsRef}
+				className={"FileNodeViewToolbar-editor-actions" satisfies FileNodeViewToolbar_ClassNames}
+			></div>
+		</div>
+	);
+});
+// #endregion toolbar
 
 // #region folder create node modal
 type FileNodeViewFolderCreateNodeModal_ClassNames =
@@ -884,6 +846,102 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 				<MyModalCloseTrigger disabled={isCreatingNode} />
 			</MyModalPopover>
 		</MyModal>
+	);
+});
+
+type FileNodeViewToolbarCreateNodeActions_Props = {
+	children: (folderActionsSlot: FileNodeViewToolbar_Props["folderActionsSlot"]) => React.ReactNode;
+	folderItemId: FileNodeViewFolder_Props["folderItemId"] | null;
+	membershipId: app_convex_Id<"workspaces_projects_users">;
+	treeItemsList: FileNodeViewFolder_Props["treeItemsList"];
+};
+
+const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCreateNodeActions(
+	props: FileNodeViewToolbarCreateNodeActions_Props,
+) {
+	const { children, folderItemId, membershipId, treeItemsList } = props;
+
+	const createNode = useMutation(app_convex_api.files_nodes.create_node);
+	const createNodeModalRef = useRef<FileNodeViewFolderCreateNodeModal_Ref | null>(null);
+	const [isCreatingNode, setIsCreatingNode] = useState(false);
+
+	const siblingNames =
+		folderItemId && treeItemsList
+			? treeItemsList
+					.filter(
+						(item) =>
+							item.type === "node" &&
+							item.parentId === folderItemId &&
+							item.archiveOperationId === undefined,
+					)
+					.map((child) => child.title)
+			: [];
+
+	const handleCreateNodeModalOpen = useFn((kind: files_TreeItem["kind"]) => {
+		if (!folderItemId) {
+			return;
+		}
+
+		createNodeModalRef.current?.open(kind);
+	});
+
+	const handleCreateNodeSubmit = useFn((args: { kind: files_TreeItem["kind"]; name: string }) => {
+		const { kind, name } = args;
+		if (!folderItemId) {
+			return Promise.resolve("Select a folder before creating a node.");
+		}
+
+		setIsCreatingNode(true);
+		return createNode({
+			membershipId,
+			parentId: folderItemId,
+			name,
+			kind,
+		})
+			.then((result) => {
+				if (result._nay) {
+					console.error("[FileNodeViewToolbarCreateNodeActions.handleCreateNodeSubmit] Failed to create node", {
+						result,
+						folderItemId,
+						kind,
+					});
+					return result._nay.message;
+				}
+
+				return null;
+			})
+			.catch((error) => {
+				console.error("[FileNodeViewToolbarCreateNodeActions.handleCreateNodeSubmit] Error creating node", {
+					error,
+					folderItemId,
+					kind,
+				});
+				return `Failed to create ${kind}.`;
+			})
+			.finally(() => {
+				setIsCreatingNode(false);
+			});
+	});
+
+	const folderActionsSlot = folderItemId ? (
+		<FileNodeViewToolbarFolderActions disabled={isCreatingNode} onCreateNode={handleCreateNodeModalOpen} />
+	) : null;
+
+	return (
+		<>
+			{folderItemId && (
+				<FileNodeViewFolderCreateNodeModal
+					ref={createNodeModalRef}
+					membershipId={membershipId}
+					folderItemId={folderItemId}
+					treeItemsList={treeItemsList}
+					siblingNames={siblingNames}
+					isCreatingNode={isCreatingNode}
+					onCreateNode={handleCreateNodeSubmit}
+				/>
+			)}
+			{children(folderActionsSlot)}
+		</>
 	);
 });
 // #endregion folder create node modal
@@ -1134,7 +1192,7 @@ type FileNodeViewFolderReadmeEditor_Props = {
 	editorMode: FileEditor_Mode;
 	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
-	toolbarPortalHost: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
@@ -1189,6 +1247,7 @@ type FileNodeViewContent_Props = {
 	presenceStore: FileEditor_Props["presenceStore"];
 	onlineUsers: FileEditor_OnlineUser[];
 	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	topStickyFloatingSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
 };
@@ -1205,6 +1264,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		presenceStore,
 		onlineUsers,
 		commentsPortalHost,
+		toolbarPortalHost,
 		topStickyFloatingSlot,
 		onEditorModeChange,
 	} = props;
@@ -1229,6 +1289,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					editorMode={editorMode}
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
+					toolbarPortalHost={toolbarPortalHost}
 					topStickyFloatingSlot={topStickyFloatingSlot}
 					onEditorModeChange={onEditorModeChange}
 				/>
@@ -1260,6 +1321,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					editorMode={editorMode}
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
+					toolbarPortalHost={toolbarPortalHost}
 					topStickyFloatingSlot={topStickyFloatingSlot}
 					onEditorModeChange={onEditorModeChange}
 				/>
@@ -1278,6 +1340,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 			presenceStore={presenceStore}
 			onlineUsers={onlineUsers}
 			commentsPortalHost={commentsPortalHost}
+			toolbarPortalHost={toolbarPortalHost}
 			topStickyFloatingSlot={topStickyFloatingSlot}
 			onEditorModeChange={onEditorModeChange}
 		/>
@@ -1328,6 +1391,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const editorPanelLayoutRef = useRef(savedEditorPanelLayout ?? DEFAULT_EDITOR_PANEL_LAYOUT);
 	const filesSidebarState: FileNodeView_SidebarState = filesSidebarOpen ? "expanded" : "closed";
 	const [commentsPortalHost, setCommentsPortalHost] = useState<HTMLElement | null>(null);
+	const [toolbarPortalHost, setToolbarPortalHost] = useState<HTMLElement | null>(null);
 
 	const [lastOpenNodeId, setLastOpenNodeId] = useAppLocalStorageStateValue(
 		`app_state::files_last_open::scope::${membershipId}`,
@@ -1348,6 +1412,12 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			: "skip",
 	);
 	const resolvedNodeId = isRootNodeSelected ? files_ROOT_ID : (resolvedNode?._id ?? null);
+	// Keep create actions scoped to the visible folder/root selection; file views use this toolbar only for editor actions.
+	const targetFolderId = isRootNodeSelected
+		? files_ROOT_ID
+		: resolvedNode?.kind === "folder"
+			? resolvedNode._id
+			: null;
 
 	// Treat a folder README as the active editor node so pending-update and sync subscriptions
 	// have the same owner for selected files and folder README editors.
@@ -1382,6 +1452,10 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		const nodeId = searchNodeId ?? files_ROOT_ID;
 		const view = nextView === "rich_text_editor" ? undefined : nextView;
 		onNavigateSearch({ nodeId, view });
+	});
+
+	const handleToolbarPortalHostChange = useFn((element: HTMLDivElement | null) => {
+		setToolbarPortalHost(element);
 	});
 
 	const pendingUpdates = allPendingUpdatesResult ?? [];
@@ -1556,7 +1630,10 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				}
 			: undefined;
 
-	const renderContent: FileEditorPresenceSupplier_Props["children"] = (presenceProps) => {
+	const renderContent = (
+		presenceProps: Parameters<FileEditorPresenceSupplier_Props["children"]>[0],
+		toolbarPortalHost: HTMLElement,
+	) => {
 		return resolvedNodeId ? (
 			<FileNodeViewContent
 				selectedNodeId={searchNodeId}
@@ -1569,6 +1646,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				presenceStore={presenceProps.presenceStore}
 				onlineUsers={presenceProps.onlineUsers}
 				commentsPortalHost={commentsPortalHost}
+				toolbarPortalHost={toolbarPortalHost}
 				topStickyFloatingSlot={topStickyFloatingSlot}
 				onEditorModeChange={navigateToView}
 			/>
@@ -1628,13 +1706,26 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 							className={"FileNodeView-content-panel" satisfies FileNodeView_ClassNames}
 							style={contentPanelStyle}
 						>
-							{activeEditorNodeId ? (
+							<FileNodeViewToolbarCreateNodeActions
+								membershipId={membershipId}
+								folderItemId={targetFolderId}
+								treeItemsList={treeItemsList}
+							>
+								{(folderActionsSlot) => (
+									<FileNodeViewToolbar
+										editorActionsRef={handleToolbarPortalHostChange}
+										folderActionsSlot={folderActionsSlot}
+									/>
+								)}
+							</FileNodeViewToolbarCreateNodeActions>
+							{/* Wait for the toolbar action slot before mounting editor content so editor portals receive a host. */}
+							{toolbarPortalHost && activeEditorNodeId ? (
 								<FileEditorPresenceSupplier userId={authenticated.userId} nodeId={activeEditorNodeId}>
-									{renderContent}
+									{(presenceProps) => renderContent(presenceProps, toolbarPortalHost)}
 								</FileEditorPresenceSupplier>
-							) : (
-								renderContent({ presenceStore: null, onlineUsers: [] })
-							)}
+							) : toolbarPortalHost ? (
+								renderContent({ presenceStore: null, onlineUsers: [] }, toolbarPortalHost)
+							) : null}
 						</MyPanel>
 						<MyPanelResizeHandle
 							aria-label="Resize comments and agent sidebar"

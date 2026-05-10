@@ -9,39 +9,21 @@
 	/* #endregion root */
 
 	/* #region toolbar */
-	.FileEditorDiffToolbar {
-		height: 44px;
-		background: var(--color-base-alt-1-05);
-
-		contain: inline-size layout style;
-
-		position: relative;
-		z-index: 1;
-	}
-
-	.FileEditorDiffToolbar-scrollable-area {
-		gap: 4px;
-
+	.FileEditorDiffToolbarActions {
+		display: flex;
 		flex-direction: row;
 		align-items: center;
-		display: flex;
-
-		padding: 4px 18px;
-
-		overflow-x: auto;
-		overflow-y: hidden;
-		contain: content;
-
-		scrollbar-width: initial;
+		gap: 4px;
 
 		min-width: 0;
+		contain: inline-size layout style;
 	}
 
-	.FileEditorDiffToolbar-button {
+	.FileEditorDiffToolbarActions-button {
 		gap: 4px;
 	}
 
-	.FileEditorDiffToolbar-button-accept-all {
+	.FileEditorDiffToolbarActions-button-accept-all {
 		&:not(:disabled) {
 			color: var(--color-green-11);
 
@@ -52,7 +34,7 @@
 		}
 	}
 
-	.FileEditorDiffToolbar-button-accept-all-and-save {
+	.FileEditorDiffToolbarActions-button-accept-all-and-save {
 		&:not(:disabled) {
 			color: var(--color-green-10);
 
@@ -63,7 +45,7 @@
 		}
 	}
 
-	.FileEditorDiffToolbar-button-discard-all {
+	.FileEditorDiffToolbarActions-button-discard-all {
 		&:not(:disabled) {
 			color: var(--color-red-10);
 
@@ -74,7 +56,7 @@
 		}
 	}
 
-	.FileEditorDiffToolbar-icon {
+	.FileEditorDiffToolbarActions-icon {
 		width: 20px;
 		height: 20px;
 	}

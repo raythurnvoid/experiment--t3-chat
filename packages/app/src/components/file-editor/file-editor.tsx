@@ -361,7 +361,7 @@ type FileEditorRender_Props = {
 	editorMode: FileEditor_Mode;
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
-	toolbarPortalHost?: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	serverSequence?: number;
 	onDiffExit: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
@@ -459,7 +459,7 @@ type FileEditorInner_Props = {
 	layout: FileEditor_Layout;
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
-	toolbarPortalHost?: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
 	onDiffExit?: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
@@ -577,7 +577,7 @@ export type FileEditor_Props = {
 	layout?: FileEditor_Layout;
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
-	toolbarPortalHost?: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;

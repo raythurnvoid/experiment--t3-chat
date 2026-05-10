@@ -2,6 +2,7 @@ export type AppElementId =
 	| "root"
 	| "app_hoisting_container"
 	| "app_main_header_content"
+	| "app_file_node_view_toolbar_editor_actions"
 	| "app_tiptap_hoisting_container"
 	| "app_monaco_hoisting_container"
 	| "app_file_editor_sidebar_tabs_comments"

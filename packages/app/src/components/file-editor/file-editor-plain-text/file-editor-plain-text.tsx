@@ -35,13 +35,12 @@ import { FileEditorMonacoTopViewZone } from "../file-editor-monaco-top-view-zone
 import { useFn } from "@/hooks/utils-hooks.ts";
 
 // #region toolbar
-export type FileEditorPlainTextToolbar_ClassNames =
-	| "FileEditorPlainTextToolbar"
-	| "FileEditorPlainTextToolbar-scrollable-area"
-	| "FileEditorPlainTextToolbar-button"
-	| "FileEditorPlainTextToolbar-icon";
+type FileEditorPlainTextToolbarActions_ClassNames =
+	| "FileEditorPlainTextToolbarActions"
+	| "FileEditorPlainTextToolbarActions-button"
+	| "FileEditorPlainTextToolbarActions-icon";
 
-export type FileEditorPlainTextToolbar_Props = {
+type FileEditorPlainTextToolbarActions_Props = {
 	isSaveDisabled: boolean;
 	isSyncDisabled: boolean;
 	isSaveDebouncing: boolean;
@@ -51,10 +50,12 @@ export type FileEditorPlainTextToolbar_Props = {
 	onApplySnapshotMarkdown: (markdown: string) => void;
 	onClickSave: () => void;
 	onClickSync: () => void;
-	toolbarPortalHost?: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 };
 
-const FileEditorPlainTextToolbar = memo(function FileEditorPlainTextToolbar(props: FileEditorPlainTextToolbar_Props) {
+const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolbarActions(
+	props: FileEditorPlainTextToolbarActions_Props,
+) {
 	const {
 		isSaveDisabled,
 		isSyncDisabled,
@@ -68,63 +69,48 @@ const FileEditorPlainTextToolbar = memo(function FileEditorPlainTextToolbar(prop
 		toolbarPortalHost,
 	} = props;
 
-	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
-
-	const toolbar = (
+	return createPortal(
 		<div
-			ref={setPortalElement}
-			role="toolbar"
+			role="group"
 			aria-label="Markdown editor actions"
-			aria-orientation="horizontal"
-			className={cn("FileEditorPlainTextToolbar" satisfies FileEditorPlainTextToolbar_ClassNames)}
+			className={cn("FileEditorPlainTextToolbarActions" satisfies FileEditorPlainTextToolbarActions_ClassNames)}
 		>
-			{portalElement && (
-				<div
-					className={cn("FileEditorPlainTextToolbar-scrollable-area" satisfies FileEditorPlainTextToolbar_ClassNames)}
+			<MyButton
+				variant="ghost"
+				className={cn("FileEditorPlainTextToolbarActions-button" satisfies FileEditorPlainTextToolbarActions_ClassNames)}
+				disabled={isSaveDisabled}
+				aria-busy={isSaveDebouncing}
+				onClick={onClickSave}
+			>
+				<MyButtonIcon
+					className={cn("FileEditorPlainTextToolbarActions-icon" satisfies FileEditorPlainTextToolbarActions_ClassNames)}
 				>
-					<MyButton
-						variant="ghost"
-						className={cn("FileEditorPlainTextToolbar-button" satisfies FileEditorPlainTextToolbar_ClassNames)}
-						disabled={isSaveDisabled}
-						aria-busy={isSaveDebouncing}
-						onClick={onClickSave}
-					>
-						<MyButtonIcon
-							className={cn("FileEditorPlainTextToolbar-icon" satisfies FileEditorPlainTextToolbar_ClassNames)}
-						>
-							{isSaveDebouncing ? <MySpinner aria-label="Checking" /> : <Save />}
-						</MyButtonIcon>
-						Save
-					</MyButton>
-					<MyButton
-						variant="ghost"
-						className={cn("FileEditorPlainTextToolbar-button" satisfies FileEditorPlainTextToolbar_ClassNames)}
-						disabled={isSyncDisabled}
-						onClick={onClickSync}
-					>
-						<MyButtonIcon
-							className={cn("FileEditorPlainTextToolbar-icon" satisfies FileEditorPlainTextToolbar_ClassNames)}
-						>
-							<RefreshCcw />
-						</MyButtonIcon>
-						Sync
-					</MyButton>
-					<FileEditorSnapshotsModal
-						nodeId={nodeId}
-						sessionId={sessionId}
-						getCurrentMarkdown={getCurrentMarkdown}
-						onApplySnapshotMarkdown={onApplySnapshotMarkdown}
-					/>
-				</div>
-			)}
-		</div>
+					{isSaveDebouncing ? <MySpinner aria-label="Checking" /> : <Save />}
+				</MyButtonIcon>
+				Save
+			</MyButton>
+			<MyButton
+				variant="ghost"
+				className={cn("FileEditorPlainTextToolbarActions-button" satisfies FileEditorPlainTextToolbarActions_ClassNames)}
+				disabled={isSyncDisabled}
+				onClick={onClickSync}
+			>
+				<MyButtonIcon
+					className={cn("FileEditorPlainTextToolbarActions-icon" satisfies FileEditorPlainTextToolbarActions_ClassNames)}
+				>
+					<RefreshCcw />
+				</MyButtonIcon>
+				Sync
+			</MyButton>
+			<FileEditorSnapshotsModal
+				nodeId={nodeId}
+				sessionId={sessionId}
+				getCurrentMarkdown={getCurrentMarkdown}
+				onApplySnapshotMarkdown={onApplySnapshotMarkdown}
+			/>
+		</div>,
+		toolbarPortalHost,
 	);
-
-	if (toolbarPortalHost !== undefined) {
-		return toolbarPortalHost ? createPortal(toolbar, toolbarPortalHost) : null;
-	}
-
-	return toolbar;
 });
 // #endregion toolbar
 
@@ -164,7 +150,7 @@ type FileEditorPlainTextInner_Props = {
 	};
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
-	toolbarPortalHost?: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	serverSequence?: number;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
@@ -575,7 +561,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	return (
 		<>
 			<div className={"FileEditorPlainText" satisfies FileEditorPlainText_ClassNames}>
-				<FileEditorPlainTextToolbar
+				<FileEditorPlainTextToolbarActions
 					isSaveDisabled={isSaveDisabled}
 					isSyncDisabled={isSyncDisabled}
 					isSaveDebouncing={isSaveDebouncing}
@@ -613,7 +599,7 @@ export type FileEditorPlainText_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
-	toolbarPortalHost?: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	serverSequence?: number;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;

@@ -53,20 +53,19 @@ import { FileEditorRichTextSkeleton } from "./file-editor-rich-text-skeleton.tsx
 type SyncStatus = YjsSyncStatus;
 
 // #region toolbar
-export type FileEditorRichTextToolbar_ClassNames =
-	| "FileEditorRichTextToolbar"
-	| "FileEditorRichTextToolbar-scrollable-area"
-	| "FileEditorRichTextToolbar-status-badge"
-	| "FileEditorRichTextToolbar-word-count-badge"
-	| "FileEditorRichTextToolbar-word-count-badge-hidden";
+type FileEditorRichTextToolbarActions_ClassNames =
+	| "FileEditorRichTextToolbarActions"
+	| "FileEditorRichTextToolbarActions-status-badge"
+	| "FileEditorRichTextToolbarActions-word-count-badge"
+	| "FileEditorRichTextToolbarActions-word-count-badge-hidden";
 
-export type FileEditorRichTextToolbar_Props = {
+type FileEditorRichTextToolbarActions_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
 	sessionId: string;
 	syncChanged: boolean;
 	syncStatus: SyncStatus;
-	toolbarPortalHost?: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 };
 
 type FileEditorRichTextToolbarTools_Props = {
@@ -119,7 +118,7 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 		<>
 			<MyBadge
 				variant="secondary"
-				className={cn("FileEditorRichTextToolbar-status-badge" satisfies FileEditorRichTextToolbar_ClassNames)}
+				className={cn("FileEditorRichTextToolbarActions-status-badge" satisfies FileEditorRichTextToolbarActions_ClassNames)}
 			>
 				{/*
 					If syncChanged it's false then force to show "Saved" because when the
@@ -131,8 +130,8 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 				variant="secondary"
 				className={cn(
 					wordsCount
-						? ("FileEditorRichTextToolbar-word-count-badge" satisfies FileEditorRichTextToolbar_ClassNames)
-						: ("FileEditorRichTextToolbar-word-count-badge-hidden" satisfies FileEditorRichTextToolbar_ClassNames),
+						? ("FileEditorRichTextToolbarActions-word-count-badge" satisfies FileEditorRichTextToolbarActions_ClassNames)
+						: ("FileEditorRichTextToolbarActions-word-count-badge-hidden" satisfies FileEditorRichTextToolbarActions_ClassNames),
 				)}
 			>
 				{wordsCount} Words
@@ -142,42 +141,31 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 	);
 });
 
-const FileEditorRichTextToolbar = memo(function FileEditorRichTextToolbar(props: FileEditorRichTextToolbar_Props) {
+const FileEditorRichTextToolbarActions = memo(function FileEditorRichTextToolbarActions(
+	props: FileEditorRichTextToolbarActions_Props,
+) {
 	const { editor, nodeId, sessionId, syncChanged, syncStatus, toolbarPortalHost } = props;
-
-	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 
 	const getCurrentMarkdown = useFn(() => editor.getMarkdown());
 
-	const toolbar = (
+	return createPortal(
 		<div
-			ref={setPortalElement}
-			role="toolbar"
+			role="group"
 			aria-label="Rich text editor actions"
-			aria-orientation="horizontal"
-			className={cn("FileEditorRichTextToolbar" satisfies FileEditorRichTextToolbar_ClassNames)}
+			className={cn("FileEditorRichTextToolbarActions" satisfies FileEditorRichTextToolbarActions_ClassNames)}
 		>
-			{portalElement && (
-				<div className={cn("FileEditorRichTextToolbar-scrollable-area" satisfies FileEditorRichTextToolbar_ClassNames)}>
-					<FileEditorRichTextToolbarTools editor={editor} />
-					<FileEditorRichTextToolbarStatus
-						editor={editor}
-						getCurrentMarkdown={getCurrentMarkdown}
-						nodeId={nodeId}
-						sessionId={sessionId}
-						syncChanged={syncChanged}
-						syncStatus={syncStatus}
-					/>
-				</div>
-			)}
-		</div>
+			<FileEditorRichTextToolbarTools editor={editor} />
+			<FileEditorRichTextToolbarStatus
+				editor={editor}
+				getCurrentMarkdown={getCurrentMarkdown}
+				nodeId={nodeId}
+				sessionId={sessionId}
+				syncChanged={syncChanged}
+				syncStatus={syncStatus}
+			/>
+		</div>,
+		toolbarPortalHost,
 	);
-
-	if (toolbarPortalHost !== undefined) {
-		return toolbarPortalHost ? createPortal(toolbar, toolbarPortalHost) : null;
-	}
-
-	return toolbar;
 });
 // #endregion toolbar
 
@@ -727,7 +715,7 @@ type FileEditorRichTextInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
-	toolbarPortalHost?: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	topStickyFloatingSlot?: React.ReactNode;
 };
 
@@ -783,7 +771,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 				)}
 			>
 				{editor && (
-					<FileEditorRichTextToolbar
+					<FileEditorRichTextToolbarActions
 						editor={editor}
 						nodeId={nodeId}
 						sessionId={presenceStore.localSessionId}
@@ -869,7 +857,7 @@ export type FileEditorRichText_Props = React.ComponentProps<"div"> & {
 	nodeId: app_convex_Id<"files_nodes">;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
-	toolbarPortalHost?: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	topStickyFloatingSlot?: React.ReactNode;
 };
 

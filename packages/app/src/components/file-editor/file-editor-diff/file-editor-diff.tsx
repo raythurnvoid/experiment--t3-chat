@@ -39,16 +39,15 @@ import { FileEditorDiffSkeleton } from "./file-editor-diff-skeleton.tsx";
 import { FileEditorMonacoTopViewZone } from "../file-editor-monaco-top-view-zone.tsx";
 
 // #region toolbar
-export type FileEditorDiffToolbar_ClassNames =
-	| "FileEditorDiffToolbar"
-	| "FileEditorDiffToolbar-scrollable-area"
-	| "FileEditorDiffToolbar-button"
-	| "FileEditorDiffToolbar-button-accept-all"
-	| "FileEditorDiffToolbar-button-accept-all-and-save"
-	| "FileEditorDiffToolbar-button-discard-all"
-	| "FileEditorDiffToolbar-icon";
+type FileEditorDiffToolbarActions_ClassNames =
+	| "FileEditorDiffToolbarActions"
+	| "FileEditorDiffToolbarActions-button"
+	| "FileEditorDiffToolbarActions-button-accept-all"
+	| "FileEditorDiffToolbarActions-button-accept-all-and-save"
+	| "FileEditorDiffToolbarActions-button-discard-all"
+	| "FileEditorDiffToolbarActions-icon";
 
-export type FileEditorDiffToolbar_Props = {
+type FileEditorDiffToolbarActions_Props = {
 	isSaveDisabled: boolean;
 	isSyncDisabled: boolean;
 	isAcceptAllDisabled: boolean;
@@ -63,10 +62,12 @@ export type FileEditorDiffToolbar_Props = {
 	onClickAcceptAll: () => void;
 	onClickAcceptAllAndSave: () => void;
 	onClickDiscardAll: () => void;
-	toolbarPortalHost?: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 };
 
-const FileEditorDiffToolbar = memo(function FileEditorDiffToolbar(props: FileEditorDiffToolbar_Props) {
+const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
+	props: FileEditorDiffToolbarActions_Props,
+) {
 	const {
 		isSaveDisabled,
 		isSyncDisabled,
@@ -85,98 +86,85 @@ const FileEditorDiffToolbar = memo(function FileEditorDiffToolbar(props: FileEdi
 		toolbarPortalHost,
 	} = props;
 
-	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
-
-	const toolbar = (
+	return createPortal(
 		<div
-			ref={setPortalElement}
-			role="toolbar"
+			role="group"
 			aria-label="Diff editor actions"
-			aria-orientation="horizontal"
-			className={cn("FileEditorDiffToolbar" satisfies FileEditorDiffToolbar_ClassNames)}
+			className={cn("FileEditorDiffToolbarActions" satisfies FileEditorDiffToolbarActions_ClassNames)}
 		>
-			{portalElement && (
-				<div className={cn("FileEditorDiffToolbar-scrollable-area" satisfies FileEditorDiffToolbar_ClassNames)}>
-					<MyButton
-						variant="ghost"
-						className={cn("FileEditorDiffToolbar-button" satisfies FileEditorDiffToolbar_ClassNames)}
-						disabled={isSaveDisabled}
-						onClick={onClickSave}
-					>
-						<MyButtonIcon className={cn("FileEditorDiffToolbar-icon" satisfies FileEditorDiffToolbar_ClassNames)}>
-							<Save />
-						</MyButtonIcon>
-						Save
-					</MyButton>
-					<MyButton
-						variant="ghost"
-						className={cn("FileEditorDiffToolbar-button" satisfies FileEditorDiffToolbar_ClassNames)}
-						disabled={isSyncDisabled}
-						onClick={onClickSync}
-					>
-						<MyButtonIcon className={cn("FileEditorDiffToolbar-icon" satisfies FileEditorDiffToolbar_ClassNames)}>
-							<RefreshCcw />
-						</MyButtonIcon>
-						Sync
-					</MyButton>
-					<MyButton
-						variant="ghost"
-						className={cn(
-							"FileEditorDiffToolbar-button" satisfies FileEditorDiffToolbar_ClassNames,
-							"FileEditorDiffToolbar-button-accept-all" satisfies FileEditorDiffToolbar_ClassNames,
-						)}
-						disabled={isAcceptAllDisabled}
-						onClick={onClickAcceptAll}
-					>
-						<MyButtonIcon className={cn("FileEditorDiffToolbar-icon" satisfies FileEditorDiffToolbar_ClassNames)}>
-							<CheckCheck />
-						</MyButtonIcon>
-						Accept all
-					</MyButton>
-					<MyButton
-						variant="ghost"
-						className={cn(
-							"FileEditorDiffToolbar-button" satisfies FileEditorDiffToolbar_ClassNames,
-							"FileEditorDiffToolbar-button-accept-all-and-save" satisfies FileEditorDiffToolbar_ClassNames,
-						)}
-						disabled={isAcceptAllAndSaveDisabled}
-						onClick={onClickAcceptAllAndSave}
-					>
-						<MyButtonIcon className={cn("FileEditorDiffToolbar-icon" satisfies FileEditorDiffToolbar_ClassNames)}>
-							<SaveAll />
-						</MyButtonIcon>
-						Accept all + save
-					</MyButton>
-					<MyButton
-						variant="ghost"
-						className={cn(
-							"FileEditorDiffToolbar-button" satisfies FileEditorDiffToolbar_ClassNames,
-							"FileEditorDiffToolbar-button-discard-all" satisfies FileEditorDiffToolbar_ClassNames,
-						)}
-						disabled={isDiscardAllDisabled}
-						onClick={onClickDiscardAll}
-					>
-						<MyButtonIcon className={cn("FileEditorDiffToolbar-icon" satisfies FileEditorDiffToolbar_ClassNames)}>
-							<Trash2 />
-						</MyButtonIcon>
-						Discard all
-					</MyButton>
-					<FileEditorSnapshotsModal
-						nodeId={nodeId}
-						sessionId={sessionId}
-						getCurrentMarkdown={getCurrentMarkdown}
-						onApplySnapshotMarkdown={onApplySnapshotMarkdown}
-					/>
-				</div>
-			)}
-		</div>
+			<MyButton
+				variant="ghost"
+				className={cn("FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames)}
+				disabled={isSaveDisabled}
+				onClick={onClickSave}
+			>
+				<MyButtonIcon className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}>
+					<Save />
+				</MyButtonIcon>
+				Save
+			</MyButton>
+			<MyButton
+				variant="ghost"
+				className={cn("FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames)}
+				disabled={isSyncDisabled}
+				onClick={onClickSync}
+			>
+				<MyButtonIcon className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}>
+					<RefreshCcw />
+				</MyButtonIcon>
+				Sync
+			</MyButton>
+			<MyButton
+				variant="ghost"
+				className={cn(
+					"FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames,
+					"FileEditorDiffToolbarActions-button-accept-all" satisfies FileEditorDiffToolbarActions_ClassNames,
+				)}
+				disabled={isAcceptAllDisabled}
+				onClick={onClickAcceptAll}
+			>
+				<MyButtonIcon className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}>
+					<CheckCheck />
+				</MyButtonIcon>
+				Accept all
+			</MyButton>
+			<MyButton
+				variant="ghost"
+				className={cn(
+					"FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames,
+					"FileEditorDiffToolbarActions-button-accept-all-and-save" satisfies FileEditorDiffToolbarActions_ClassNames,
+				)}
+				disabled={isAcceptAllAndSaveDisabled}
+				onClick={onClickAcceptAllAndSave}
+			>
+				<MyButtonIcon className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}>
+					<SaveAll />
+				</MyButtonIcon>
+				Accept all + save
+			</MyButton>
+			<MyButton
+				variant="ghost"
+				className={cn(
+					"FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames,
+					"FileEditorDiffToolbarActions-button-discard-all" satisfies FileEditorDiffToolbarActions_ClassNames,
+				)}
+				disabled={isDiscardAllDisabled}
+				onClick={onClickDiscardAll}
+			>
+				<MyButtonIcon className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}>
+					<Trash2 />
+				</MyButtonIcon>
+				Discard all
+			</MyButton>
+			<FileEditorSnapshotsModal
+				nodeId={nodeId}
+				sessionId={sessionId}
+				getCurrentMarkdown={getCurrentMarkdown}
+				onApplySnapshotMarkdown={onApplySnapshotMarkdown}
+			/>
+		</div>,
+		toolbarPortalHost,
 	);
-
-	if (toolbarPortalHost !== undefined) {
-		return toolbarPortalHost ? createPortal(toolbar, toolbarPortalHost) : null;
-	}
-
-	return toolbar;
 });
 // #endregion toolbar
 
@@ -422,7 +410,7 @@ export type FileEditorDiff_Props = {
 	presenceStore: files_PresenceStore;
 	threadId?: string;
 	commentsPortalHost: HTMLElement | null;
-	toolbarPortalHost?: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
 	serverSequence?: number;
 	onExit: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
@@ -1344,7 +1332,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 					} satisfies Partial<FileEditorDiff_CssVars> as CSSPropertiesX),
 				}}
 			>
-				<FileEditorDiffToolbar
+				<FileEditorDiffToolbarActions
 					isSaveDisabled={isSaveDisabled}
 					isSyncDisabled={isSyncDisabled || isSaving}
 					isAcceptAllDisabled={isAcceptAllDisabled}
@@ -1404,6 +1392,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		pendingUpdateId,
 		presenceStore,
 		commentsPortalHost,
+		toolbarPortalHost,
 		className,
 		serverSequence,
 		topStickyFloatingSlot,
@@ -1804,6 +1793,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			pendingUpdateId={currentPendingUpdateId}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
+			toolbarPortalHost={toolbarPortalHost}
 			hoistingContainer={hoistingContainer}
 			editorContentState={remoteEditorContentState}
 			isSaving={isSaving}
