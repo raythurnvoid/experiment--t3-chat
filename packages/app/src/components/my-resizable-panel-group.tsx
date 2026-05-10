@@ -110,37 +110,10 @@ export const MyPanelInfiniteBackground = memo(function MyPanelInfiniteBackground
 });
 // #endregion background
 
-// #region handle track
-type MyPanelResizeHandleTrack_ClassNames =
-	| "MyPanelResizeHandleTrack"
-	| "MyPanelResizeHandleTrack-orientation-vertical"
-	| "MyPanelResizeHandleTrack-orientation-horizontal";
-
-type MyPanelResizeHandleTrack_Props = {
-	orientation: MyPanelResizeHandle_Orientation;
-};
-
-const MyPanelResizeHandleTrack = memo(function MyPanelResizeHandleTrack(props: MyPanelResizeHandleTrack_Props) {
-	const { orientation } = props;
-
-	return (
-		<div
-			aria-hidden="true"
-			className={cn(
-				"MyPanelResizeHandleTrack" satisfies MyPanelResizeHandleTrack_ClassNames,
-				orientation === "vertical" &&
-					("MyPanelResizeHandleTrack-orientation-vertical" satisfies MyPanelResizeHandleTrack_ClassNames),
-				orientation === "horizontal" &&
-					("MyPanelResizeHandleTrack-orientation-horizontal" satisfies MyPanelResizeHandleTrack_ClassNames),
-			)}
-		/>
-	);
-});
-// #endregion handle track
-
 // #region handle grip
 type MyPanelResizeHandleGrip_ClassNames =
 	| "MyPanelResizeHandleGrip"
+	| "MyPanelResizeHandleGrip-pill"
 	| "MyPanelResizeHandleGrip-icon"
 	| "MyPanelResizeHandleGrip-orientation-vertical"
 	| "MyPanelResizeHandleGrip-orientation-horizontal";
@@ -164,7 +137,9 @@ const MyPanelResizeHandleGrip = memo(function MyPanelResizeHandleGrip(props: MyP
 					("MyPanelResizeHandleGrip-orientation-horizontal" satisfies MyPanelResizeHandleGrip_ClassNames),
 			)}
 		>
-			<Icon aria-hidden="true" className={"MyPanelResizeHandleGrip-icon" satisfies MyPanelResizeHandleGrip_ClassNames} />
+			<span className={"MyPanelResizeHandleGrip-pill" satisfies MyPanelResizeHandleGrip_ClassNames}>
+				<Icon aria-hidden="true" className={"MyPanelResizeHandleGrip-icon" satisfies MyPanelResizeHandleGrip_ClassNames} />
+			</span>
 		</div>
 	);
 });
@@ -267,7 +242,6 @@ export const MyPanelResizeHandle = memo(function MyPanelResizeHandle(props: MyPa
 				onDragging={onDragging}
 				{...rest}
 			>
-				<MyPanelResizeHandleTrack orientation={orientation} />
 				{children}
 				<MyPanelResizeHandleGrip orientation={orientation} />
 			</PanelResizeHandle>

@@ -2,7 +2,7 @@
 	const fs = require("node:fs");
 	const path = require("node:path");
 
-	const VERSION = "0.1.0";
+	const VERSION = "0.2.0";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	const MEMORY_FILES = new Set([
 		"app-map.md",
@@ -195,256 +195,165 @@
 		return result;
 	}
 
-	async function inspectLeftNav() {
+	async function inspectElement({
+		selector,
+		attribute,
+		actionSelector,
+		computedStyles = [],
+		hitTargets = [],
+		localStorageKeys = [],
+	} = {}) {
+		if (!selector) {
+			throw new Error("inspectElement requires selector");
+		}
+
 		const targetPage = getHarnessPage();
-		const result = await targetPage.evaluate(() => {
-			const nav = document.querySelector('[aria-label="Main navigation"]');
-			const sidebar = nav?.closest(".MainAppSidebar, .MySidebar") || document.querySelector(".MainAppSidebar");
-			const actions = Array.from(nav?.querySelectorAll('a, button, [role="link"], [role="button"]') || []);
+		await targetPage.waitForSelector(selector, { state: "attached", timeout: 15000 });
 
-			function describeElement(element) {
-				if (!element) return null;
+		const result = await targetPage.evaluate(
+			({ selector, attribute, actionSelector, computedStyles, hitTargets, localStorageKeys }) => {
+				const candidates = Array.from(document.querySelectorAll(selector));
+				const root = attribute
+					? candidates.find((element) => element.getAttribute(attribute.name) === attribute.value)
+					: candidates[0];
 
-				const style = window.getComputedStyle(element);
-				const rect = element.getBoundingClientRect();
-				const label =
-					element.getAttribute("aria-label") ||
-					element.getAttribute("title") ||
-					element.textContent?.trim().replace(/\s+/g, " ").slice(0, 80) ||
-					"";
-
-				return {
-					tag: element.tagName.toLowerCase(),
-					id: element.id || null,
-					className: typeof element.className === "string" ? element.className : "",
-					role: element.getAttribute("role"),
-					ariaLabel: element.getAttribute("aria-label"),
-					href: element.getAttribute("href"),
-					label,
-					rect: {
-						x: Math.round(rect.x),
-						y: Math.round(rect.y),
-						width: Math.round(rect.width),
-						height: Math.round(rect.height),
-					},
-					style: {
-						display: style.display,
-						visibility: style.visibility,
-						pointerEvents: style.pointerEvents,
-						position: style.position,
-						zIndex: style.zIndex,
-						opacity: style.opacity,
-					},
-					inert: element.inert === true || element.hasAttribute("inert"),
-					ariaHidden: element.getAttribute("aria-hidden"),
-				};
-			}
-
-			function describePath(element) {
-				const path = [];
-				let current = element;
-
-				while (current && path.length < 8) {
-					path.push(describeElement(current));
-					const root = current.getRootNode?.();
-					current = current.parentElement || root?.host || null;
+				if (!root) {
+					throw new Error(`Could not find element: ${selector}`);
 				}
 
-				return path;
-			}
+				function describeElement(element) {
+					if (!element) return null;
 
-			function centerOf(rect) {
+					const style = window.getComputedStyle(element);
+					const rect = element.getBoundingClientRect();
+					const label =
+						element.getAttribute("aria-label") ||
+						element.getAttribute("title") ||
+						element.textContent?.trim().replace(/\s+/g, " ").slice(0, 80) ||
+						"";
+
+					return {
+						tag: element.tagName.toLowerCase(),
+						id: element.id || null,
+						className: typeof element.className === "string" ? element.className : "",
+						role: element.getAttribute("role"),
+						ariaLabel: element.getAttribute("aria-label"),
+						href: element.getAttribute("href"),
+						label,
+						rect: {
+							x: Math.round(rect.x),
+							y: Math.round(rect.y),
+							width: Math.round(rect.width),
+							height: Math.round(rect.height),
+						},
+						style: {
+							display: style.display,
+							visibility: style.visibility,
+							pointerEvents: style.pointerEvents,
+							position: style.position,
+							zIndex: style.zIndex,
+							opacity: style.opacity,
+						},
+						inert: element.inert === true || element.hasAttribute("inert"),
+						ariaHidden: element.getAttribute("aria-hidden"),
+					};
+				}
+
+				function describePath(element) {
+					const path = [];
+					let current = element;
+
+					while (current && path.length < 8) {
+						path.push(describeElement(current));
+						const root = current.getRootNode?.();
+						current = current.parentElement || root?.host || null;
+					}
+
+					return path;
+				}
+
+				function centerOf(rect) {
+					return {
+						x: Math.round(rect.x + rect.width / 2),
+						y: Math.round(rect.y + rect.height / 2),
+					};
+				}
+
+				const actions = actionSelector ? Array.from(root.querySelectorAll(actionSelector)) : [];
+				const actionResults = actions.map((action, index) => {
+					const rect = action.getBoundingClientRect();
+					const center = centerOf(rect);
+					const top = document.elementFromPoint(center.x, center.y);
+					const hitInsideAction = top === action || action.contains(top);
+
+					return {
+						index,
+						action: describeElement(action),
+						center,
+						topAtCenter: describeElement(top),
+						topPathAtCenter: describePath(top),
+						hitInsideAction,
+					};
+				});
+
+				const computedStyleResults = computedStyles.map(({ name, selector: styleSelector, properties }) => {
+					const element = styleSelector ? root.querySelector(styleSelector) : root;
+					const style = element ? getComputedStyle(element) : null;
+
+					return {
+						name,
+						selector: styleSelector || null,
+						element: describeElement(element),
+						style: style
+							? Object.fromEntries((properties || []).map((property) => [property, style[property]]))
+							: null,
+					};
+				});
+
+				const hitTargetResults = hitTargets.map(({ name, selector: hitSelector }) => {
+					const element = hitSelector ? root.querySelector(hitSelector) : root;
+					if (!element) {
+						return { name, selector: hitSelector || null, element: null, center: null, topAtCenter: null };
+					}
+
+					const center = centerOf(element.getBoundingClientRect());
+					const top = document.elementFromPoint(center.x, center.y);
+
+					return {
+						name,
+						selector: hitSelector || null,
+						element: describeElement(element),
+						center,
+						topAtCenter: describeElement(top),
+						topPathAtCenter: describePath(top),
+						hitInsideElement: top === element || element.contains(top),
+					};
+				});
+
+				const localStorageValues = Object.fromEntries(
+					(localStorageKeys || []).map((key) => [key, localStorage.getItem(key)]),
+				);
+
 				return {
-					x: Math.round(rect.x + rect.width / 2),
-					y: Math.round(rect.y + rect.height / 2),
+					url: location.href,
+					title: document.title,
+					selector,
+					attribute,
+					viewport: {
+						innerWidth: window.innerWidth,
+						innerHeight: window.innerHeight,
+						devicePixelRatio: window.devicePixelRatio,
+					},
+					localStorage: localStorageValues,
+					element: describeElement(root),
+					actions: actionResults,
+					computedStyles: computedStyleResults,
+					hitTargets: hitTargetResults,
 				};
-			}
-
-			const localStorageKeys = [
-				"app_state::sidebar::main_app_open",
-				"app_state::sidebar::main_app_collapsed",
-			];
-
-			const localStorageValues = Object.fromEntries(
-				localStorageKeys.map((key) => [key, localStorage.getItem(key)]),
-			);
-
-			const navActions = actions.map((action, index) => {
-				const rect = action.getBoundingClientRect();
-				const center = centerOf(rect);
-				const top = document.elementFromPoint(center.x, center.y);
-				const hitInsideAction = top === action || action.contains(top);
-
-				return {
-					index,
-					action: describeElement(action),
-					center,
-					topAtCenter: describeElement(top),
-					topPathAtCenter: describePath(top),
-					hitInsideAction,
-				};
-			});
-
-			return {
-				url: location.href,
-				title: document.title,
-				viewport: {
-					innerWidth: window.innerWidth,
-					innerHeight: window.innerHeight,
-					devicePixelRatio: window.devicePixelRatio,
-				},
-				localStorage: localStorageValues,
-				sidebar: describeElement(sidebar),
-				nav: describeElement(nav),
-				navActions,
-			};
-		});
-
-		console.log(JSON.stringify(result, null, 2));
-		return result;
-	}
-
-	async function testFilesFolderCreateFlow({ cleanup = true } = {}) {
-		const targetPage = getHarnessPage();
-		const pagesBefore = context.pages().length;
-		const qaName = `aaa-pw-qa-${Date.now().toString(36).slice(-6)}`;
-		const results = [];
-
-		function ok(name, data = {}) {
-			results.push({ name, ok: true, ...data });
-		}
-
-		async function assert(condition, message) {
-			if (!condition) throw new Error(message);
-		}
-
-		await targetPage.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => undefined);
-		await assert(targetPage.url().includes("/files"), "Expected the bound page to be on the files route");
-		await assert(pagesBefore === 1, "Expected exactly one Playwriter-enabled tab before the test");
-		ok("single tab before", { pages: pagesBefore, url: targetPage.url() });
-
-		await targetPage.getByRole("button", { name: "New folder in current folder" }).click();
-		const folderInput = targetPage.getByRole("textbox", { name: "Name" });
-		await folderInput.waitFor({ state: "visible", timeout: 5000 });
-		const folderDefault = await folderInput.inputValue();
-		const folderSelection = await folderInput.evaluate((element) => ({
-			start: element.selectionStart,
-			end: element.selectionEnd,
-			value: element.value,
-		}));
-		await assert(
-			/^new-folder(?:-\d+)?$/.test(folderDefault),
-			"Expected folder default name to be new-folder or an incremented variant",
+			},
+			{ selector, attribute, actionSelector, computedStyles, hitTargets, localStorageKeys },
 		);
-		await assert(
-			folderSelection.start === 0 && folderSelection.end === folderDefault.length,
-			"Expected the whole folder name to be selected",
-		);
-		ok("new folder modal default selection", { folderDefault, folderSelection });
 
-		const parentFolderUrl = targetPage.url();
-		await folderInput.fill(qaName);
-		await targetPage.getByRole("button", { name: "Create folder" }).click();
-		await targetPage
-			.getByRole("button", { name: "Create folder" })
-			.waitFor({ state: "detached", timeout: 10000 })
-			.catch(async () => {
-				await targetPage.getByRole("button", { name: "Create folder" }).waitFor({ state: "hidden", timeout: 10000 });
-			});
-		await targetPage.getByRole("link", { name: `Open ${qaName}` }).waitFor({ state: "visible", timeout: 15000 });
-		await assert(targetPage.url() === parentFolderUrl, "Creating a folder should not navigate");
-		ok("folder create did not navigate", { before: parentFolderUrl, after: targetPage.url() });
-
-		await targetPage.getByRole("link", { name: `Open ${qaName}` }).click();
-		await targetPage.waitForURL((url) => url.searchParams.get("nodeId") !== "root", { timeout: 10000 });
-		const qaFolderUrl = targetPage.url();
-		ok("navigated to qa folder", { qaFolderUrl });
-
-		await targetPage.getByRole("toolbar", { name: "Folder actions" }).waitFor({ state: "visible", timeout: 10000 });
-		await targetPage.getByRole("button", { name: "New file in current folder" }).waitFor({
-			state: "visible",
-			timeout: 10000,
-		});
-		await targetPage.getByRole("button", { name: "New folder in current folder" }).waitFor({
-			state: "visible",
-			timeout: 10000,
-		});
-		ok("empty folder toolbar is accessible", {
-			toolbarActions: ["New file in current folder", "New folder in current folder"],
-		});
-
-		await targetPage.getByRole("button", { name: "New file in current folder" }).click();
-		const fileInput = targetPage.getByRole("textbox", { name: "Name" });
-		await fileInput.waitFor({ state: "visible", timeout: 5000 });
-		const fileDefault = await fileInput.inputValue();
-		const fileSelection = await fileInput.evaluate((element) => ({
-			start: element.selectionStart,
-			end: element.selectionEnd,
-			value: element.value,
-		}));
-		await assert(
-			/^new-file(?:-\d+)?\.md$/.test(fileDefault),
-			"Expected file default name to be new-file.md or an incremented variant",
-		);
-		await assert(
-			fileSelection.start === 0 && fileSelection.end === fileDefault.length - ".md".length,
-			"Expected only the file basename to be selected",
-		);
-		ok("new file modal default selection", { fileDefault, fileSelection });
-
-		const deepFilePath = "deep/path/example.md";
-		await fileInput.fill(deepFilePath);
-		await targetPage.getByRole("button", { name: "Create file" }).click();
-		await targetPage
-			.getByRole("button", { name: "Create file" })
-			.waitFor({ state: "detached", timeout: 10000 })
-			.catch(async () => {
-				await targetPage.getByRole("button", { name: "Create file" }).waitFor({ state: "hidden", timeout: 10000 });
-			});
-		await targetPage.getByRole("link", { name: "Open deep" }).waitFor({ state: "visible", timeout: 15000 });
-		await assert(targetPage.url() === qaFolderUrl, "Creating a deep file should not navigate");
-		ok("deep file create did not navigate and created top folder row", {
-			before: qaFolderUrl,
-			after: targetPage.url(),
-			row: "deep",
-		});
-
-		await targetPage.getByRole("button", { name: "New file in current folder" }).click();
-		const duplicateFileInput = targetPage.getByRole("textbox", { name: "Name" });
-		await duplicateFileInput.waitFor({ state: "visible", timeout: 5000 });
-		await duplicateFileInput.fill(deepFilePath);
-		await targetPage.getByText("This file already exists.").waitFor({ state: "visible", timeout: 5000 });
-		const createFileDisabled = await targetPage.getByRole("button", { name: "Create file" }).isDisabled();
-		await assert(createFileDisabled, "Expected duplicate file submit to be disabled");
-		ok("duplicate deep file validation", { message: "This file already exists.", createFileDisabled });
-		await targetPage.getByRole("button", { name: "Cancel" }).click();
-
-		await targetPage.getByRole("button", { name: "New folder in current folder" }).click();
-		const duplicateFolderInput = targetPage.getByRole("textbox", { name: "Name" });
-		await duplicateFolderInput.waitFor({ state: "visible", timeout: 5000 });
-		await duplicateFolderInput.fill("deep/path");
-		await targetPage.getByText("This folder already exists.").waitFor({ state: "visible", timeout: 5000 });
-		const createFolderDisabled = await targetPage.getByRole("button", { name: "Create folder" }).isDisabled();
-		await assert(createFolderDisabled, "Expected duplicate folder submit to be disabled");
-		ok("duplicate deep folder validation", { message: "This folder already exists.", createFolderDisabled });
-		await targetPage.getByRole("button", { name: "Cancel" }).click();
-
-		if (cleanup) {
-			await targetPage.goto(parentFolderUrl, { waitUntil: "domcontentloaded" });
-			await targetPage
-				.locator(".FileNodeViewFolderExplorer")
-				.getByRole("button", { name: `More actions for ${qaName}` })
-				.click();
-			await targetPage.getByRole("menuitem", { name: "Archive" }).click();
-			await targetPage.getByRole("link", { name: `Open ${qaName}` }).waitFor({ state: "detached", timeout: 10000 });
-			ok("cleanup archived qa folder", { qaName });
-		}
-
-		const pagesAfter = context.pages().length;
-		await assert(pagesAfter === pagesBefore, "The test opened a new tab");
-		ok("single tab after", { pages: pagesAfter });
-
-		const result = { qaName, cleanup, results };
 		console.log(JSON.stringify(result, null, 2));
 		return result;
 	}
@@ -472,7 +381,6 @@
 	}
 
 	state.appPlaywriterHarness = {
-		...(state.appPlaywriterHarness || state.t3ChatHarness || {}),
 		version: VERSION,
 		page: state.appPlaywriterHarness?.page || state.t3ChatHarness?.page || state.page || page,
 		boundUrl: state.appPlaywriterHarness?.boundUrl || state.t3ChatHarness?.boundUrl,
@@ -482,8 +390,7 @@
 		observe,
 		latestLogs,
 		hitTest,
-		inspectLeftNav,
-		testFilesFolderCreateFlow,
+		inspectElement,
 		appendMemory,
 	};
 

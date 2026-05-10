@@ -5,7 +5,14 @@ description: Use Playwriter to inspect, debug, test, and learn this browser app 
 
 # App Playwriter Harness
 
-Use this skill when a task needs the live t3-chat app in the user's browser. Keep the harness small: use Playwriter directly, add only tiny helpers, and save only durable lessons that will help future browser work.
+Use this skill when a task needs the live t3-chat app in the user's browser. Keep the installed harness small and generic: use Playwriter directly, add only reusable primitives, and save task-specific workflows as Markdown recipes.
+
+## Organization
+
+- Keep `scripts/install-harness.js` limited to generic browser QA primitives: tab binding, observation, logs, hit testing, generic element inspection, and durable memory writes.
+- Do not add feature-specific helpers or one-off QA flows to the installed harness. If a helper name contains a feature, component, route, or bug name, it probably belongs in `references/*.md` instead.
+- Put reusable feature recipes in the nearest reference doc, such as `references/files.md` for `/files` behavior or `references/snippets.md` for short copyable commands.
+- Prefer composing generic helpers from docs over growing the helper namespace. Promote a recipe into the harness only when it is broadly reusable across routes and components.
 
 ## Start
 
@@ -13,28 +20,31 @@ Use this skill when a task needs the live t3-chat app in the user's browser. Kee
 2. Create an isolated session from the repo root:
 
 ```powershell
-$session = pnpx playwriter session new
+$sessionOutput = pnpx playwriter session new
+$session = ($sessionOutput | Select-String -Pattern "Session (\d+) created").Matches.Groups[1].Value
+if (-not $session) { $session = ($sessionOutput | Select-Object -Last 1).Trim() }
 ```
 
 3. Install the helper namespace in that session:
 
 ```powershell
-pnpx playwriter -s $session -e "const fs = require('node:fs'); const code = fs.readFileSync('.agents/skills/app-playwriter-harness/scripts/install-harness.js', 'utf8'); await eval(code);"
+pnpx playwriter -s $session --% -e "const fs = require('node:fs'); const code = fs.readFileSync('.agents/skills/app-playwriter-harness/scripts/install-harness.js', 'utf8'); await eval(code);"
 ```
 
 4. Bind to the target app tab before acting:
 
 ```powershell
-pnpx playwriter -s $session -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/files' });"
+pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/files' });"
 ```
 
 ## Workflow
 
 - Observe before acting: print the URL and call `state.appPlaywriterHarness.observe(...)` or raw `snapshot({ page: state.page })`.
 - Prefer Playwriter accessibility locators and normal clicks. Do not use `{ force: true }`, `dispatchEvent`, or `element.click()` to bypass blockers.
-- Use `state.appPlaywriterHarness.inspectLeftNav()` for sidebar/nav click bugs before trying alternate clicks.
+- Use `state.appPlaywriterHarness.inspectElement(...)` or `hitTest(...)` for layout and clickability bugs before trying alternate clicks.
 - Use `state.appPlaywriterHarness.latestLogs()` when a UI action fails or the app looks blank.
 - Use `state.appPlaywriterHarness.hitTest({ x, y })` only for layout or clickability bugs where a visible element may be covered.
+- For route-specific checks, read the relevant reference recipe and run it with generic helpers instead of adding a new helper function.
 - Keep each execute call focused on one observation or one action, then observe again.
 
 ## Memories

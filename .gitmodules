@@ -100,3 +100,6 @@
 	path = packages/app/vendor/r2
 	url = https://github.com/raythurnvoid/r2.git
 	branch = rt0-updates
+[submodule "references-submodules/react-resizable-panels"]
+	path = references-submodules/react-resizable-panels
+	url = ../../bvaughn/react-resizable-panels.git
