@@ -1,22 +1,11 @@
 import { v } from "convex/values";
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { mutation, query } from "./_generated/server.js";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
-import type { Doc, Id } from "./_generated/dataModel.js";
+import type { Doc } from "./_generated/dataModel.js";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-
-async function chat_messages_db_get_membership(
-	ctx: QueryCtx | MutationCtx,
-	args: { membershipId: Id<"workspaces_projects_users">; userId: Id<"users"> },
-) {
-	const membership = await ctx.db.get("workspaces_projects_users", args.membershipId);
-	if (!membership || membership.userId !== args.userId || membership.active === false) {
-		return null;
-	}
-
-	return membership;
-}
+import { workspaces_db_get_membership } from "./workspaces.ts";
 
 function chat_messages_has_membership_scope(
 	message: Doc<"chat_messages">,
@@ -42,7 +31,10 @@ export const chat_messages_threads_create = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: userAuth.id });
+		const membership = await workspaces_db_get_membership(ctx, {
+			membershipId: args.membershipId,
+			userId: userAuth.id,
+		});
 		if (!membership) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
@@ -84,7 +76,10 @@ export const chat_messages_add = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: userAuth.id });
+		const membership = await workspaces_db_get_membership(ctx, {
+			membershipId: args.membershipId,
+			userId: userAuth.id,
+		});
 		if (!membership) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
@@ -134,7 +129,10 @@ export const chat_messages_list = query({
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
-		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: userAuth.id });
+		const membership = await workspaces_db_get_membership(ctx, {
+			membershipId: args.membershipId,
+			userId: userAuth.id,
+		});
 		if (!membership) {
 			return { messages: [] };
 		}
@@ -175,7 +173,10 @@ export const chat_messages_archive = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: userAuth.id });
+		const membership = await workspaces_db_get_membership(ctx, {
+			membershipId: args.membershipId,
+			userId: userAuth.id,
+		});
 		if (!membership) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
@@ -216,7 +217,10 @@ export const chat_messages_get = query({
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
-		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: userAuth.id });
+		const membership = await workspaces_db_get_membership(ctx, {
+			membershipId: args.membershipId,
+			userId: userAuth.id,
+		});
 		if (!membership) {
 			return null;
 		}
@@ -257,7 +261,10 @@ export const chat_messages_threads_list = query({
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
-		const membership = await chat_messages_db_get_membership(ctx, { membershipId: args.membershipId, userId: userAuth.id });
+		const membership = await workspaces_db_get_membership(ctx, {
+			membershipId: args.membershipId,
+			userId: userAuth.id,
+		});
 		if (!membership) {
 			return { threads: [] };
 		}

@@ -72,7 +72,8 @@ function get_node_kind_conflict_message(args: { kind: Doc<"files_nodes">["kind"]
  */
 export function files_get_node_path_validation_cache_key(args: {
 	scopeId: string;
-	parentId: files_TreeItem["parentId"];
+	nodeIdToIgnore?: Doc<"files_nodes">["_id"];
+	parentId: Doc<"files_nodes">["parentId"];
 	kind: Doc<"files_nodes">["kind"] | null;
 	nameOrPath: string;
 }) {
@@ -87,6 +88,7 @@ export function files_get_node_path_validation_cache_key(args: {
 		args.parentId,
 		args.kind,
 		normalizedPath.normalizedPathSegments.map((pathSegment) => pathSegment.toLowerCase()).join("/"),
+		...(args.nodeIdToIgnore ? [args.nodeIdToIgnore] : []),
 	);
 }
 
@@ -105,20 +107,21 @@ export function files_clear_node_path_cached_validation_messages() {
 export function files_get_node_path_validation(args: {
 	scopeId: string;
 	treeItemsList: files_TreeItem[] | undefined;
-	itemIdToIgnore?: string;
-	parentId: files_TreeItem["parentId"];
+	nodeIdToIgnore?: Doc<"files_nodes">["_id"];
+	parentId: Doc<"files_nodes">["parentId"];
 	kind: Doc<"files_nodes">["kind"] | null;
 	nameOrPath: string;
 }) {
 	const validationMessage = files_get_node_path_validation_message({
 		treeItemsList: args.treeItemsList,
-		itemIdToIgnore: args.itemIdToIgnore,
+		nodeIdToIgnore: args.nodeIdToIgnore,
 		parentId: args.parentId,
 		kind: args.kind,
 		nameOrPathValidate: args.nameOrPath,
 	});
 	const validationCacheKey = files_get_node_path_validation_cache_key({
 		scopeId: args.scopeId,
+		nodeIdToIgnore: args.nodeIdToIgnore,
 		parentId: args.parentId,
 		kind: args.kind,
 		nameOrPath: args.nameOrPath,
@@ -153,8 +156,8 @@ export function files_get_node_path_validation(args: {
  */
 export function files_get_node_path_validation_message(args: {
 	treeItemsList: files_TreeItem[] | undefined;
-	itemIdToIgnore?: string;
-	parentId: files_TreeItem["parentId"];
+	nodeIdToIgnore?: Doc<"files_nodes">["_id"];
+	parentId: Doc<"files_nodes">["parentId"];
 	kind: Doc<"files_nodes">["kind"] | null;
 	nameOrPathValidate: string;
 }) {
@@ -180,7 +183,7 @@ export function files_get_node_path_validation_message(args: {
 		const existingNode = args.treeItemsList.find((item) => {
 			return (
 				item.type === "node" &&
-				item.index !== args.itemIdToIgnore &&
+				item.index !== args.nodeIdToIgnore &&
 				item.parentId === currentParentId &&
 				item.archiveOperationId === undefined &&
 				item.title.trim().toLowerCase() === normalizedName.toLowerCase()

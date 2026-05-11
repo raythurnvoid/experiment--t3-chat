@@ -72,7 +72,7 @@ function workspaces_validate_description(raw: string) {
 /**
  * Get a membership doc by id and verify it belongs to the given user.
  */
-export async function workspaces_db_get_membership_for_user(
+export async function workspaces_db_get_membership(
 	ctx: QueryCtx | MutationCtx,
 	args: { userId: Id<"users">; membershipId: Id<"workspaces_projects_users"> },
 ) {
@@ -559,17 +559,6 @@ export const get_membership_by_workspace_project_name = query({
 	},
 });
 
-async function db_get_membership(
-	ctx: QueryCtx,
-	args: { membershipId: Id<"workspaces_projects_users">; userId: Id<"users"> },
-) {
-	const membership = await ctx.db.get("workspaces_projects_users", args.membershipId);
-	if (!membership || membership.userId !== args.userId || membership.active === false) {
-		return null;
-	}
-	return membership;
-}
-
 /**
  * Get the membership doc.
  *
@@ -592,7 +581,7 @@ export const get_membership = query({
 			return null;
 		}
 
-		return await db_get_membership(ctx, { membershipId, userId: userAuth.id });
+		return await workspaces_db_get_membership(ctx, { membershipId, userId: userAuth.id });
 	},
 });
 

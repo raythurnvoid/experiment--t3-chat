@@ -24,7 +24,7 @@ import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
-import { workspaces_db_get_membership_for_user } from "./workspaces.ts";
+import { workspaces_db_get_membership } from "./workspaces.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
 	ai_chat_tool_create_list_files,
@@ -145,7 +145,7 @@ export const threads_list = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -193,7 +193,7 @@ export const thread_get = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -238,7 +238,7 @@ export const thread_create = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -295,7 +295,7 @@ export const thread_branch = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -491,7 +491,7 @@ export const thread_update = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -562,7 +562,7 @@ export const thread_archive = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -616,7 +616,7 @@ export const thread_messages_list = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -674,7 +674,7 @@ export const thread_messages_add = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});

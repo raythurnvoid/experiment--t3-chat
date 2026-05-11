@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	files_find_file_stem_end_index,
 	files_get_normalized_node_path_segments,
+	files_normalize_markdown_name,
 	files_normalize_name_input,
 	files_normalize_name,
 	files_parse_markdown_to_html,
@@ -33,7 +34,8 @@ describe("files_get_normalized_node_path_segments", () => {
 			["file", "/", null],
 			["folder", "Docs / Feature Plan", { normalizedPathSegments: ["docs", "feature-plan"] }],
 			["file", "Docs / readme", { normalizedPathSegments: ["docs", "README.md"] }],
-			["file", "docs/archive.tar.gz", { normalizedPathSegments: ["docs", "archive-tar.md"] }],
+			["file", "docs/archive.tar.md", { normalizedPathSegments: ["docs", "archive-tar.md"] }],
+			["file", "docs/archive.tar.gz", { validationMessage: "Invalid file name" }],
 			["folder", "docs/Bad Name", { normalizedPathSegments: ["docs", "bad-name"] }],
 			["file", "docs/bad.m d", { validationMessage: "Invalid file name" }],
 		] satisfies Array<[Parameters<typeof files_get_normalized_node_path_segments>[0]["kind"], string, unknown]>,
@@ -116,35 +118,45 @@ describe("files_normalize_name", () => {
 		["README", "README.md"],
 		["readme.md", "README.md"],
 		["README.md", "README.md"],
-		["readme.txt", "README.md"],
 		["New File.md", "new-file.md"],
-		["notes.txt", "notes.md"],
-		["Résumé.DOC", "resume.md"],
 		["a\u1ab0file.md", "afile.md"],
 		["---notes---.MD", "notes.md"],
 		["___notes___.md", "notes.md"],
 		["a@b#c!.md", "a-b-c.md"],
-		["asd/.txt", "asd.md"],
 		["x.", "x.md"],
 		["test.", "test.md"],
-		[".test", "untitled.md"],
-		["test/test.txt", "test-test.md"],
-		["test//test.txt", "test-test.md"],
 		["bad\\name.md", "bad-name.md"],
-		["archive.tar.gz", "archive-tar.md"],
-		["folder/file.name.with.many.dots", "folder-file-name-with-many.md"],
+		["archive.tar.md", "archive-tar.md"],
+		["folder/file.name.with.many.md", "folder-file-name-with-many.md"],
 		["  spaced name.md  ", "spaced-name.md"],
+		["你好", "untitled.md"],
 		["你好.md", "untitled.md"],
 		["emoji😊file.md", "emoji-file.md"],
-		["2026 plan.final", "2026-plan.md"],
-		["multi___under.txt", "multi_under.md"],
 		["test___test.md", "test_test.md"],
 		["test---test.md", "test-test.md"],
 	])("normalizes file %s to %s", (input, expected) => {
 		expect(files_normalize_name("file", input)).toEqual({ _yay: expected });
 	});
 
-	test.each(["..", ".", "test..test", "test.txt/test", "test.txt\\test", "test.m d"])(
+	test.each([
+		"..",
+		".",
+		"test..test",
+		".test",
+		"readme.txt",
+		"notes.txt",
+		"Résumé.DOC",
+		"asd/.txt",
+		"test/test.txt",
+		"test//test.txt",
+		"test.txt/test",
+		"test.txt\\test",
+		"archive.tar.gz",
+		"folder/file.name.with.many.dots",
+		"2026 plan.final",
+		"multi___under.txt",
+		"test.m d",
+	])(
 		"rejects file %s",
 		(input) => {
 			const result = files_normalize_name("file", input);
@@ -155,6 +167,18 @@ describe("files_normalize_name", () => {
 			expect(result._nay.message).toBe("Invalid file name");
 		},
 	);
+});
+
+describe("files_normalize_markdown_name", () => {
+	test("normalizes extensionless names as Markdown files", () => {
+		expect(files_normalize_markdown_name("Feature Plan")).toEqual({ _yay: "feature-plan.md" });
+	});
+
+	test("rejects non-Markdown extensions instead of rewriting them", () => {
+		expect(files_normalize_markdown_name("Feature Plan.pdf")).toEqual({
+			_nay: { name: "nay", message: "Invalid file name" },
+		});
+	});
 });
 
 describe("files_tiptap_markdown_to_json", () => {

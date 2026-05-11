@@ -6,6 +6,8 @@ import {
 	files_get_node_path_validation,
 	files_get_node_path_validation_cache_key,
 	files_get_node_path_validation_message,
+	files_normalize_upload_file_name,
+	files_ROOT_ID,
 	files_set_node_path_cached_validation_message,
 	files_yjs_compute_diff_update_from_yjs_doc,
 	files_yjs_doc_clone,
@@ -30,7 +32,8 @@ const createTreeItem = (args: {
 		type: "node",
 		kind: args.kind,
 		index: id,
-		parentId: args.parentId,
+		parentId: args.parentId === files_ROOT_ID ? files_ROOT_ID : (args.parentId as Id<"files_nodes">),
+		fileStorageKind: args.kind === "folder" ? null : "markdown",
 		title: args.title,
 		archiveOperationId: args.archiveOperationId,
 		updatedAt: 0,
@@ -39,10 +42,21 @@ const createTreeItem = (args: {
 	} satisfies files_TreeItem;
 };
 
+describe("files_normalize_upload_file_name", () => {
+	test("preserves the uploaded file extension", () => {
+		expect(files_normalize_upload_file_name("Annual Report 2026.PDF")).toBe("annual-report-2026.pdf");
+	});
+
+	test("flattens path-like names and repeated dots", () => {
+		expect(files_normalize_upload_file_name("C:\\Uploads\\Résumé..Final.PDF")).toBe("resume-final.pdf");
+	});
+});
+
 describe("files_get_node_path_validation_message", () => {
 	const treeItemsList = [
 		createTreeItem({ index: "folder-docs", parentId: "root", kind: "folder", title: "docs" }),
 		createTreeItem({ index: "file-readme", parentId: "folder-docs", kind: "file", title: "README.md" }),
+		createTreeItem({ index: "file-guide", parentId: "folder-docs", kind: "file", title: "guide.md" }),
 		createTreeItem({
 			index: "archived-file",
 			parentId: "folder-docs",
@@ -56,7 +70,7 @@ describe("files_get_node_path_validation_message", () => {
 		expect(
 			files_get_node_path_validation_message({
 				treeItemsList,
-				parentId: "root",
+				parentId: files_ROOT_ID,
 				kind: "folder",
 				nameOrPathValidate: "docs",
 			}),
@@ -67,7 +81,7 @@ describe("files_get_node_path_validation_message", () => {
 		expect(
 			files_get_node_path_validation_message({
 				treeItemsList,
-				parentId: "root",
+				parentId: files_ROOT_ID,
 				kind: "file",
 				nameOrPathValidate: "docs/readme",
 			}),
@@ -78,19 +92,31 @@ describe("files_get_node_path_validation_message", () => {
 		expect(
 			files_get_node_path_validation_message({
 				treeItemsList,
-				itemIdToIgnore: "file-readme",
-				parentId: "folder-docs",
+				nodeIdToIgnore: "file-readme" as Id<"files_nodes">,
+				parentId: "folder-docs" as Id<"files_nodes">,
 				kind: "file",
 				nameOrPathValidate: "readme.md",
 			}),
 		).toBeNull();
 	});
 
+	test("still checks sibling conflicts when renaming an existing item", () => {
+		expect(
+			files_get_node_path_validation_message({
+				treeItemsList,
+				nodeIdToIgnore: "file-readme" as Id<"files_nodes">,
+				parentId: "folder-docs" as Id<"files_nodes">,
+				kind: "file",
+				nameOrPathValidate: "guide.md",
+			}),
+		).toBe("This file already exists.");
+	});
+
 	test("allows paths whose missing folders would be created", () => {
 		expect(
 			files_get_node_path_validation_message({
 				treeItemsList,
-				parentId: "root",
+				parentId: files_ROOT_ID,
 				kind: "file",
 				nameOrPathValidate: "new-folder/readme",
 			}),
@@ -101,7 +127,7 @@ describe("files_get_node_path_validation_message", () => {
 		expect(
 			files_get_node_path_validation_message({
 				treeItemsList,
-				parentId: "folder-docs",
+				parentId: "folder-docs" as Id<"files_nodes">,
 				kind: "file",
 				nameOrPathValidate: "archived.md",
 			}),
@@ -112,7 +138,7 @@ describe("files_get_node_path_validation_message", () => {
 		expect(
 			files_get_node_path_validation_message({
 				treeItemsList,
-				parentId: "folder-docs",
+				parentId: "folder-docs" as Id<"files_nodes">,
 				kind: "file",
 				nameOrPathValidate: "bad.m d",
 			}),
@@ -125,7 +151,7 @@ describe("files node path validation cache", () => {
 		expect(
 			files_get_node_path_validation_cache_key({
 				scopeId: "scope-key",
-				parentId: "root",
+				parentId: files_ROOT_ID,
 				kind: "file",
 				nameOrPath: "Docs/readme",
 			}),
@@ -135,7 +161,7 @@ describe("files node path validation cache", () => {
 	test("reuses duplicate failures for the same normalized path", () => {
 		const cacheKey = files_get_node_path_validation_cache_key({
 			scopeId: "scope-cache-duplicate",
-			parentId: "root",
+			parentId: files_ROOT_ID,
 			kind: "file",
 			nameOrPath: "Docs/readme",
 		});
@@ -158,7 +184,7 @@ describe("files node path validation cache", () => {
 	test("returns null when the path cannot be normalized", () => {
 		const cacheKey = files_get_node_path_validation_cache_key({
 			scopeId: "scope-cache-invalid",
-			parentId: "root",
+			parentId: files_ROOT_ID,
 			kind: "file",
 			nameOrPath: "bad.m d",
 		});
@@ -168,7 +194,7 @@ describe("files node path validation cache", () => {
 	test("keeps cache entries scoped by parent and tenant scope", () => {
 		const cacheKey = files_get_node_path_validation_cache_key({
 			scopeId: "scope-cache-a",
-			parentId: "root",
+			parentId: files_ROOT_ID,
 			kind: "folder",
 			nameOrPath: "docs",
 		});
@@ -183,13 +209,13 @@ describe("files node path validation cache", () => {
 
 		const otherScopeCacheKey = files_get_node_path_validation_cache_key({
 			scopeId: "scope-cache-b",
-			parentId: "root",
+			parentId: files_ROOT_ID,
 			kind: "folder",
 			nameOrPath: "docs",
 		});
 		const otherParentCacheKey = files_get_node_path_validation_cache_key({
 			scopeId: "scope-cache-a",
-			parentId: "other-parent",
+			parentId: "other-parent" as Id<"files_nodes">,
 			kind: "folder",
 			nameOrPath: "docs",
 		});
@@ -213,10 +239,10 @@ describe("files node path validation cache", () => {
 		const validationArgs = {
 			scopeId: "scope-cache-helper",
 			treeItemsList: [] satisfies files_TreeItem[],
-			parentId: "root",
+			parentId: files_ROOT_ID,
 			kind: "file" as const,
 			nameOrPath: "docs/readme",
-		};
+		} satisfies Parameters<typeof files_get_node_path_validation>[0];
 		const validation = files_get_node_path_validation(validationArgs);
 
 		expect(validation.validationMessage).toBeNull();
@@ -226,10 +252,40 @@ describe("files node path validation cache", () => {
 		expect(files_get_node_path_validation(validationArgs).validationMessage).toBe("This file already exists.");
 	});
 
+	test("keeps create and rename cache entries separate for the same path", () => {
+		const treeItemsList = [
+			createTreeItem({ index: "folder-docs", parentId: "root", kind: "folder", title: "docs" }),
+			createTreeItem({ index: "file-readme", parentId: "folder-docs", kind: "file", title: "readme.md" }),
+		] satisfies files_TreeItem[];
+
+		const createValidation = files_get_node_path_validation({
+			scopeId: "scope-cache-create-rename",
+			treeItemsList,
+			parentId: "folder-docs" as Id<"files_nodes">,
+			kind: "file",
+			nameOrPath: "readme.md",
+		});
+		expect(createValidation.validationMessage).toBe("This file already exists.");
+
+		createValidation.cacheValidationMessage();
+
+		const renameValidation = files_get_node_path_validation({
+			scopeId: "scope-cache-create-rename",
+			treeItemsList,
+			nodeIdToIgnore: "file-readme" as Id<"files_nodes">,
+			parentId: "folder-docs" as Id<"files_nodes">,
+			kind: "file",
+			nameOrPath: "readme.md",
+		});
+
+		expect(renameValidation.validationCacheKey).not.toBe(createValidation.validationCacheKey);
+		expect(renameValidation.validationMessage).toBeNull();
+	});
+
 	test("clears cached validation messages", () => {
 		const cacheKey = files_get_node_path_validation_cache_key({
 			scopeId: "scope-cache-clear",
-			parentId: "root",
+			parentId: files_ROOT_ID,
 			kind: "folder",
 			nameOrPath: "docs",
 		});

@@ -327,6 +327,7 @@ test("home file path stays immutable on rename and move", async () => {
 			parentId: files_ROOT_ID,
 			name: "README.md",
 			kind: "file",
+			fileStorageKind: "markdown",
 			path: "/README.md",
 			version: files_FIRST_VERSION,
 			archiveOperationId: undefined,
@@ -376,7 +377,7 @@ test("create_node rejects duplicate active path", async () => {
 	expect(duplicateCreation._nay.message).toBe("This folder already exists.");
 });
 
-test("create_node adds markdown extension to extensionless file names", async () => {
+test("create_node preserves caller-provided file names", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -392,15 +393,15 @@ test("create_node adds markdown extension to extensionless file names", async ()
 		kind: "file",
 	});
 	if (createdFile._nay) {
-		throw new Error("Expected create_node to normalize extensionless file name", {
+		throw new Error("Expected create_node to preserve caller-provided file name", {
 			cause: createdFile._nay,
 		});
 	}
 
 	await t.run(async (ctx) => {
 		const file = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		expect(file?.name).toBe("extensionless-create-file.md");
-		expect(file?.path).toBe("/extensionless-create-file.md");
+		expect(file?.name).toBe("extensionless-create-file");
+		expect(file?.path).toBe("/extensionless-create-file");
 	});
 });
 
@@ -495,6 +496,7 @@ test("archived nodes can share path with a new active node", async () => {
 		projectId: db.projectId,
 		userId: db.userId,
 		path: `/${duplicateName}`,
+		fileStorageKind: "markdown",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected initial file creation to succeed");
@@ -545,6 +547,7 @@ test("create_file_by_path can reuse an existing active file", async () => {
 		projectId: db.projectId,
 		userId: db.userId,
 		path,
+		fileStorageKind: "markdown",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected initial file creation to succeed");
@@ -555,6 +558,7 @@ test("create_file_by_path can reuse an existing active file", async () => {
 		projectId: db.projectId,
 		userId: db.userId,
 		path,
+		fileStorageKind: "markdown",
 	});
 	if (reusedFile._nay) {
 		throw new Error("Expected existing file reuse to succeed");
@@ -594,7 +598,7 @@ test("rename_node returns conflict and keeps original path", async () => {
 	});
 });
 
-test("rename_node adds markdown extension to extensionless file names", async () => {
+test("rename_node preserves caller-provided file names", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -621,15 +625,15 @@ test("rename_node adds markdown extension to extensionless file names", async ()
 		name: "renamed-extensionless",
 	});
 	if (renameResult._nay) {
-		throw new Error("Expected rename_node to normalize extensionless file name", {
+		throw new Error("Expected rename_node to preserve caller-provided file name", {
 			cause: renameResult._nay,
 		});
 	}
 
 	await t.run(async (ctx) => {
 		const file = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		expect(file?.name).toBe("renamed-extensionless.md");
-		expect(file?.path).toBe("/renamed-extensionless.md");
+		expect(file?.name).toBe("renamed-extensionless");
+		expect(file?.path).toBe("/renamed-extensionless");
 	});
 });
 
@@ -682,7 +686,7 @@ test("rename_node creates missing folders for nested file paths", async () => {
 	});
 });
 
-test("rename_node normalizes nested README file names", async () => {
+test("rename_node preserves caller-provided nested file names", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -701,6 +705,7 @@ test("rename_node normalizes nested README file names", async () => {
 			parentId: db.files.file_root_1._id,
 			name: "yo.md",
 			kind: "file",
+			fileStorageKind: "markdown",
 			path: `/${db.files.file_root_1.name}/yo.md`,
 			version: files_FIRST_VERSION,
 			archiveOperationId: undefined,
@@ -713,19 +718,19 @@ test("rename_node normalizes nested README file names", async () => {
 		name: "README",
 	});
 	if (renameResult._nay) {
-		throw new Error("Expected rename_node to normalize nested README file name", {
+		throw new Error("Expected rename_node to preserve nested README file name", {
 			cause: renameResult._nay,
 		});
 	}
 
 	await t.run(async (ctx) => {
 		const file = await ctx.db.get("files_nodes", nestedFileId);
-		expect(file?.name).toBe("README.md");
-		expect(file?.path).toBe(`/${db.files.file_root_1.name}/README.md`);
+		expect(file?.name).toBe("README");
+		expect(file?.path).toBe(`/${db.files.file_root_1.name}/README`);
 	});
 });
 
-test("rename_node replaces unsupported file extensions with markdown", async () => {
+test("rename_node preserves caller-provided file extensions", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -753,14 +758,14 @@ test("rename_node replaces unsupported file extensions with markdown", async () 
 	});
 
 	if (renameResult._nay) {
-		throw new Error("Expected rename_node to replace unsupported file extension", {
+		throw new Error("Expected rename_node to preserve caller-provided file extension", {
 			cause: renameResult._nay,
 		});
 	}
 
 	const after = await t.run(async (ctx) => ctx.db.get("files_nodes", createdFile._yay.nodeId));
-	expect(after?.name).toBe("renamed-source.md");
-	expect(after?.path).toBe("/renamed-source.md");
+	expect(after?.name).toBe("renamed-source.txt");
+	expect(after?.path).toBe("/renamed-source.txt");
 });
 
 test("rename_node creates missing folders for nested folder paths", async () => {
@@ -969,6 +974,7 @@ test("create_file_by_path creates active ancestors instead of reusing archived n
 		projectId: db.projectId,
 		userId: db.userId,
 		path: `/${db.files.file_root_2.name}/new-leaf.md`,
+		fileStorageKind: "markdown",
 	});
 	if (createByPath._nay) {
 		throw new Error("Expected create_file_by_path to succeed with archived duplicate ancestor");

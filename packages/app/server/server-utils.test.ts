@@ -8,7 +8,7 @@ import {
 	path_name_of,
 	encode_path_segment,
 	decode_path_segment,
-	server_json_parse_and_validate,
+	json_parse_and_validate,
 	server_request_json_parse_and_validate,
 } from "./server-utils.ts";
 
@@ -47,12 +47,12 @@ test("encode/decode path segment roundtrip", () => {
 	expect(decode_path_segment(encoded)).toBe(original);
 });
 
-test("server_json_parse_and_validate success and failure", () => {
+test("json_parse_and_validate success and failure", () => {
 	const schema = z.object({ a: z.number() });
-	const ok = server_json_parse_and_validate('{"a":1}', schema);
+	const ok = json_parse_and_validate('{"a":1}', schema);
 	expect(ok._yay).toEqual({ a: 1 });
 
-	const bad = server_json_parse_and_validate("not json", schema);
+	const bad = json_parse_and_validate("not json", schema);
 	expect(bad._nay).toBeTruthy();
 	expect(bad._nay?.message).toBe("Failed to parse JSON string");
 });

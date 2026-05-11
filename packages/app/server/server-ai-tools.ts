@@ -9,7 +9,7 @@ import { internal } from "../convex/_generated/api.js";
 import { path_name_of, server_path_normalize, server_path_parent_of } from "./server-utils.ts";
 import { minimatch } from "minimatch";
 import { files_chunk_has_bitmask_flag, files_chunk_BITMASK_FLAGS } from "./files-markdown-chunking-mastra.ts";
-import { files_normalize_name } from "./files.ts";
+import { files_get_normalized_node_path_segments } from "./files.ts";
 
 /**
  * Advanced replace utility mirroring OpenCode's edit replacer pipeline.
@@ -1093,12 +1093,16 @@ export function ai_chat_tool_create_write_file(
 			if (!normalizedPath.startsWith("/") || normalizedPath === "/") {
 				throw new Error(`Invalid path: ${normalizedPath}. Path must be absolute and not root.`);
 			}
-			const fileName = files_normalize_name("file", path_name_of(normalizedPath));
-			if (fileName._nay) {
-				throw new Error(`Invalid path: ${normalizedPath}`, { cause: fileName._nay });
+			const normalizedPathSegments = files_get_normalized_node_path_segments({
+				kind: "file",
+				nameOrPath: normalizedPath,
+			});
+			if (!normalizedPathSegments || "validationMessage" in normalizedPathSegments) {
+				throw new Error(`Invalid path: ${normalizedPath}`, {
+					cause: normalizedPathSegments,
+				});
 			}
-			const parentPath = server_path_parent_of(normalizedPath);
-			const path = parentPath === "/" ? `/${fileName._yay}` : `${parentPath}/${fileName._yay}`;
+			const path = `/${normalizedPathSegments.normalizedPathSegments.join("/")}`;
 			const pendingUpdateId = args.pendingUpdateId as Id<"files_pending_updates"> | undefined;
 
 			const currentFileContent = await ctx.runQuery(
@@ -1125,6 +1129,7 @@ export function ai_chat_tool_create_write_file(
 					projectId: ctxData.projectId,
 					userId: ctxData.userId,
 					path,
+					fileStorageKind: "markdown",
 				});
 				if (created._nay) {
 					throw new Error("[server-ai-tools.ai_chat_tool_create_write_file] Error creating file by path", {

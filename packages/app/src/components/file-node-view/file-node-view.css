@@ -158,6 +158,90 @@
 	}
 	/* #endregion header */
 
+	/* #region stored file */
+	.FileNodeViewStoredFile {
+		display: flex;
+		flex-direction: column;
+		gap: 28px;
+
+		min-height: 100%;
+		padding: 48px;
+
+		background-color: var(--color-base-1-02);
+		color: var(--gray-800);
+	}
+
+	.FileNodeViewStoredFile-header {
+		display: flex;
+		align-items: center;
+		gap: 16px;
+		min-width: 0;
+	}
+
+	.FileNodeViewStoredFile-icon {
+		width: 40px;
+		height: 40px;
+		flex: 0 0 auto;
+
+		color: var(--gray-600);
+	}
+
+	.FileNodeViewStoredFile-title-group {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		min-width: 0;
+	}
+
+	.FileNodeViewStoredFile-title {
+		margin: 0;
+
+		overflow-wrap: anywhere;
+
+		font-size: 1.5rem;
+		font-weight: 600;
+		line-height: 2rem;
+	}
+
+	.FileNodeViewStoredFile-subtitle {
+		margin: 0;
+
+		overflow-wrap: anywhere;
+
+		font-size: 0.875rem;
+		color: var(--gray-600);
+	}
+
+	.FileNodeViewStoredFile-metadata {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		margin: 0;
+	}
+
+	.FileNodeViewStoredFile-metadata-row {
+		display: grid;
+		grid-template-columns: 140px minmax(0, 720px);
+		gap: 24px;
+	}
+
+	.FileNodeViewStoredFile-metadata-label {
+		font-size: 0.8125rem;
+		font-weight: 500;
+		color: var(--gray-600);
+	}
+
+	.FileNodeViewStoredFile-metadata-value {
+		margin: 0;
+
+		overflow-wrap: anywhere;
+
+		font-size: 0.875rem;
+		color: var(--gray-800);
+	}
+	/* #endregion stored file */
+
 	/* #region folder */
 	.FileNodeViewFolder {
 		width: 100%;

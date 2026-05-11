@@ -40,6 +40,7 @@ export function files_create_tree_root() {
 	return {
 		type: "root",
 		kind: "folder",
+		fileStorageKind: null,
 		index: files_ROOT_ID,
 		parentId: "",
 		title: "",
@@ -67,11 +68,27 @@ export function files_find_file_stem_end_index(args: { fileName: string }) {
 	return args.fileName.length;
 }
 
+export function files_format_size(size: number | undefined) {
+	if (size === undefined) {
+		return "Unknown";
+	}
+	if (size < 1024) {
+		return `${size} bytes`;
+	}
+	if (size < 1024 * 1024) {
+		return `${(size / 1024).toFixed(1)} KB`;
+	}
+
+	return new Intl.NumberFormat(undefined, {
+		maximumFractionDigits: 1,
+		style: "unit",
+		unit: "megabyte",
+		unitDisplay: "short",
+	}).format(size / (1024 * 1024));
+}
+
 // #region file name normalization
 const FILES_NORMALIZED_NAME_PART_REGEX = /^(?!.*--)(?!.*__)[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/;
-const FILES_NORMALIZED_FILE_NAME_REGEX =
-	/^(?!.*--)(?!.*__)[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?\.[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/;
-const FILES_FILE_EXTENSION_REGEX = /^[a-z0-9_-]+$/i;
 const FILES_DIACRITIC_MARKS_REGEX = /\p{Mark}/gu;
 const FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX = /[^a-z0-9_-]+/g;
 const FILES_REPEATED_DASH_REGEX = /-+/g;
@@ -137,8 +154,8 @@ export function files_normalize_name(kind: Doc<"files_nodes">["kind"], name: str
 		return files_invalid_name_result(kind);
 	}
 
-	// Keep already-canonical names on a cheap fast path; pasted path-like names take the slower cleanup route.
 	if (kind === "folder") {
+		// Keep already-canonical folder names on a cheap fast path; pasted path-like names take the slower cleanup route.
 		if (FILES_NORMALIZED_NAME_PART_REGEX.test(name)) {
 			return Result({ _yay: name });
 		}
@@ -156,113 +173,99 @@ export function files_normalize_name(kind: Doc<"files_nodes">["kind"], name: str
 		return Result({ _yay: normalizedName || "untitled" });
 	}
 
-	const trimmedName = name.trim();
-	if (!trimmedName.includes(".")) {
-		// Treat extensionless file names as Markdown basenames.
-		const baseName =
-			trimmedName
-				.normalize("NFKD")
-				.replace(FILES_DIACRITIC_MARKS_REGEX, "")
-				.toLowerCase()
-				.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
-				.replace(FILES_REPEATED_DASH_REGEX, "-")
-				.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
-				.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "") || "untitled";
-		const fileName = `${baseName}.md`;
+	return files_normalize_markdown_name(name);
+}
 
-		return Result({ _yay: files_apply_special_file_name_case(fileName) });
+export function files_normalize_markdown_name(name: string) {
+	if (name.includes("..")) {
+		// Reject double dots because their basename/extension intent is ambiguous.
+		return files_invalid_name_result("file");
 	}
+
+	const trimmedName = name.trim();
+	if (trimmedName === ".") {
+		return files_invalid_name_result("file");
+	}
+
 	if (trimmedName.endsWith(".")) {
 		// Treat a trailing dot as a missing Markdown extension.
-		const baseName = trimmedName
-			.replace(FILES_TRAILING_DOTS_REGEX, "")
-			.normalize("NFKD")
-			.replace(FILES_DIACRITIC_MARKS_REGEX, "")
-			.toLowerCase()
-			.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
-			.replace(FILES_REPEATED_DASH_REGEX, "-")
-			.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
-			.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "");
-		if (!baseName) {
-			// Reject a bare "." or dots-only value because there is no usable basename.
-			return files_invalid_name_result(kind);
+		const fileNameParts = files_normalize_file_name_parts({
+			fileName: trimmedName.replace(FILES_TRAILING_DOTS_REGEX, ""),
+			pathSeparators: "dash",
+			fallbackBaseName: "untitled",
+		});
+
+		if (!fileNameParts.baseName) {
+			return files_invalid_name_result("file");
 		}
 
-		const fileName = `${baseName}.md`;
-
-		return Result({ _yay: files_apply_special_file_name_case(fileName) });
+		return Result({ _yay: files_apply_special_file_name_case(`${fileNameParts.baseName}.md`) });
 	}
 
-	const extensionSeparatorIndex = trimmedName.lastIndexOf(".");
-	const extension = trimmedName.slice(extensionSeparatorIndex + 1);
-	if (!FILES_FILE_EXTENSION_REGEX.test(extension)) {
-		// Keep the extension strict so path separators, spaces, and punctuation are not repaired there.
-		return files_invalid_name_result(kind);
+	const fileNameParts = files_normalize_file_name_parts({
+		fileName: name,
+		pathSeparators: "dash",
+		fallbackBaseName: "untitled",
+	});
+	if (fileNameParts.extension && fileNameParts.extension !== "md") {
+		return files_invalid_name_result("file");
 	}
 
-	if (FILES_NORMALIZED_FILE_NAME_REGEX.test(name)) {
-		// Apply only the final Markdown extension policy when the file name is already canonical.
-		const extensionSeparatorIndex = name.lastIndexOf(".");
-		const fileName = `${name.slice(0, extensionSeparatorIndex)}.md`;
+	return Result({ _yay: files_apply_special_file_name_case(`${fileNameParts.baseName}.md`) });
+}
 
-		return Result({ _yay: files_apply_special_file_name_case(fileName) });
-	}
+// Normalize browser File.name for an app node while preserving non-Markdown extensions.
+export function files_normalize_upload_file_name(fileName: string) {
+	const fileNameParts = files_normalize_file_name_parts({
+		fileName,
+		pathSeparators: "leaf",
+		fallbackBaseName: "upload",
+	});
+	return fileNameParts.extension ? `${fileNameParts.baseName}.${fileNameParts.extension}` : fileNameParts.baseName;
+}
 
-	// Use the slow path for pasted or generated names, then flatten path separators before splitting.
+function files_normalize_file_name_parts(args: {
+	fileName: string;
+	pathSeparators: "dash" | "leaf";
+	fallbackBaseName: string;
+}) {
+	const name =
+		args.pathSeparators === "leaf"
+			? (args.fileName.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) ?? args.fallbackBaseName)
+			: args.fileName;
 	const normalizedName = name
 		.normalize("NFKD")
 		.replace(FILES_DIACRITIC_MARKS_REGEX, "")
 		.toLowerCase()
 		.trim()
-		.replace(FILES_PATH_SEPARATOR_REGEX, "-");
-	if (!normalizedName.includes(".")) {
-		const baseName =
-			normalizedName
-				.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
-				.replace(FILES_REPEATED_DASH_REGEX, "-")
-				.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
-				.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "") || "untitled";
-		const fileName = `${baseName}.md`;
+		.replace(FILES_PATH_SEPARATOR_REGEX, args.pathSeparators === "dash" ? "-" : "/");
+	const parts = normalizedName.split(".").map(files_normalize_file_name_part);
 
-		return Result({ _yay: files_apply_special_file_name_case(fileName) });
+	if (parts.length === 0) {
+		return { baseName: args.fallbackBaseName, extension: null };
+	}
+	if (parts.length === 1) {
+		return { baseName: parts[0] || args.fallbackBaseName, extension: null };
 	}
 
-	// Treat only the final dot as the extension separator; earlier dots become basename separators.
-	const nameParts = normalizedName.split(".");
-	const normalizedExtension =
-		(nameParts.pop() ?? "")
-			.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
-			.replace(FILES_REPEATED_DASH_REGEX, "-")
-			.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
-			.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "") || "";
-	const baseNameInput = nameParts.join("-");
-	const baseName = baseNameInput
+	const extension = parts.at(-1) || null;
+	const baseName = parts.slice(0, -1).filter(Boolean).join("-") || args.fallbackBaseName;
+	if (!extension) {
+		return { baseName, extension: null };
+	}
+
+	return {
+		baseName,
+		extension,
+	};
+}
+
+function files_normalize_file_name_part(part: string) {
+	return part
 		.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
 		.replace(FILES_REPEATED_DASH_REGEX, "-")
 		.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
 		.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "");
-	let normalizedFileName: string;
-	if (!baseName || !normalizedExtension) {
-		// Preserve a usable piece when either side disappears during normalization.
-		if (!baseName && normalizedExtension && baseNameInput !== "") {
-			normalizedFileName = `untitled.${normalizedExtension}`;
-		} else if (!baseName && normalizedExtension) {
-			normalizedFileName = `untitled.${normalizedExtension}`;
-		} else {
-			normalizedFileName = baseName || normalizedExtension || "untitled";
-		}
-	} else {
-		normalizedFileName = `${baseName}.${normalizedExtension}`;
-	}
-
-	// Apply the Markdown-only storage policy after cleanup, regardless of the original extension.
-	const markdownExtensionSeparatorIndex = normalizedFileName.lastIndexOf(".");
-	const fileName =
-		markdownExtensionSeparatorIndex === -1
-			? `${normalizedFileName}.md`
-			: `${normalizedFileName.slice(0, markdownExtensionSeparatorIndex)}.md`;
-
-	return Result({ _yay: files_apply_special_file_name_case(fileName) });
 }
 
 export function files_get_normalized_node_path_segments(args: {

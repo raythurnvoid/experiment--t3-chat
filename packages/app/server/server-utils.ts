@@ -102,7 +102,7 @@ export function server_path_parent_of(path: string): string {
 	return `/${segments.slice(0, -1).join("/")}`;
 }
 
-export function server_json_parse_and_validate<T>(json: string, schema: z.ZodSchema<T>) {
+export function json_parse_and_validate<T>(json: string, schema: z.ZodSchema<T>) {
 	try {
 		const value = JSON.parse(json);
 		return Result({ _yay: schema.parse(value) });

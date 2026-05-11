@@ -3,6 +3,26 @@
 - Package manager: this repository uses `pnpm`; do not use `npm`.
 - Dev server: do not run `pnpm run dev`; let the user run it manually.
 
+## Modal CLI
+
+Use the Docker-wrapped Modal CLI script instead of installing Python or the Modal Python package on the Windows host:
+
+```powershell
+.\packages\app\scripts\modal-cli.ps1 <modal args>
+```
+
+The script builds and runs the `t3-chat-modal-cli:1.4.2` Docker image from [packages/app/modal/Dockerfile.cli](packages/app/modal/Dockerfile.cli), mounts the repo at `/workspace`, and stores Modal credentials outside the repo at `%USERPROFILE%\.modal-cli\.modal.toml`.
+
+Examples:
+
+```powershell
+.\packages\app\scripts\modal-cli.ps1 token new
+.\packages\app\scripts\modal-cli.ps1 secret create BONOBO_SENATE_PRESS BONOBO_SENATE_PRESS=replace-with-random-token
+.\packages\app\scripts\modal-cli.ps1 deploy packages/app/modal/files_markitdown.py
+```
+
+Prefer non-interactive Modal CLI commands and flags when available so Codex does not block on prompts.
+
 # Application Architecture
 
 This project uses [Convex](https://convex.dev) as its backend.
@@ -288,14 +308,41 @@ Use `export` only when a symbol is intentionally part of the module's public API
 - Do not export symbols "just in case" or to make local file organization feel cleaner.
 - When in doubt, start module-private and add `export` later once there is a real cross-module use.
 
+## External data validation
+
+When parsing data that comes from outside the application process, validate it with Zod before using it. TypeScript cannot enforce type safety for data received at runtime from another system, so these boundaries need runtime validation before the app trusts the shape.
+
+- Use Zod for external HTTP API responses, third-party service callbacks, and similar integration boundaries.
+- Validate that the fields the application needs are present and have the expected shape before relying on them.
+- For vendor webhooks in Convex, keep the boundary validator loose as described in the Convex skill, then use Zod after signature/event verification to validate the fields the app consumes.
+- Prefer `safeParse` when the caller should handle malformed external data as a recoverable error.
+
 ## Convex function argument types
 
 When a helper needs a Convex args object type, keep the type surface as small and local as the code needs.
 
 - Prefer an inline object type when the helper only consumes a small body shape or a one-off subset.
 - If a helper intentionally mirrors a generated registered function's full args shape (`api.foo.bar` or `internal.foo.bar`), use `FunctionArgs<typeof internal.foo.bar>`.
-- If you truly need the full args shape from a local registered function export (`typeof check_credits`), convert it first with `FunctionArgs<FunctionReferenceFromExport<typeof check_credits>>`.
-- Import those utility types from `convex/server` only when you use them: `import type { FunctionArgs, FunctionReferenceFromExport } from "convex/server";`
+- If you need the result type from a local registered function export in the same file, extract only the awaited return type:
+
+```ts
+import type { RegisteredMutation } from "convex/server";
+
+type create_source_and_shadow_files_Result =
+	typeof create_source_and_shadow_files extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+```
+
+- For same-file Convex calls that would otherwise trigger generated API circularity, keep the generated reference direct and cast only the awaited result:
+
+```ts
+const created = (await ctx.runMutation(internal.files_content.create_source_and_shadow_files, {
+	membershipId: args.membershipId,
+	parentId: args.parentId,
+})) as create_source_and_shadow_files_Result;
+```
+
 - Do not use implementation details such as `_handler`, do not extract a separate validator just to get a type, and do not create a named args type unless a production API genuinely needs it.
 
 ## Test organization

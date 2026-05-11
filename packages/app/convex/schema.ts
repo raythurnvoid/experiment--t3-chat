@@ -107,8 +107,10 @@ const app_convex_schema = defineSchema({
 		path: v.string(),
 		/** Display name used in path resolution */
 		name: v.string(),
-		/** Folders organize children; files own markdown/Yjs/content rows. */
+		/** Folders organize children; files are either Markdown editor files or stored source files. */
 		kind: v.union(v.literal("folder"), v.literal("file")),
+		/** Folders use null; files are either Markdown editor files or stored source files. */
+		fileStorageKind: v.union(v.null(), v.literal("markdown"), v.literal("r2")),
 		/** ID of the markdown content for the file */
 		markdownContentId: v.optional(v.id("files_markdown_content")),
 		/** ID of the last YJS sequence for the file */
@@ -280,6 +282,42 @@ const app_convex_schema = defineSchema({
 		content: v.string(),
 		nodeId: v.id("files_nodes"),
 	}).index("by_workspace_project_fileSnapshot", ["workspaceId", "projectId", "snapshotId"]),
+
+	files_r2_assets: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		r2Bucket: v.string(),
+		r2Key: v.string(),
+		filename: v.string(),
+		contentType: v.optional(v.string()),
+		size: v.optional(v.number()),
+		sourceNodeId: v.id("files_nodes"),
+		shadowNodeId: v.id("files_nodes"),
+		conversionStatus: v.union(v.literal("uploaded"), v.literal("converting"), v.literal("converted"), v.literal("failed")),
+		createdBy: v.id("users"),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_workspace_project_r2Key", ["workspaceId", "projectId", "r2Key"])
+		.index("by_workspace_project_sourceNode", ["workspaceId", "projectId", "sourceNodeId"])
+		.index("by_workspace_project_shadowNode", ["workspaceId", "projectId", "shadowNodeId"]),
+
+	files_uploads: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		createdBy: v.id("users"),
+		r2Bucket: v.string(),
+		r2Key: v.string(),
+		filename: v.string(),
+		contentType: v.optional(v.string()),
+		size: v.optional(v.number()),
+		createdAt: v.number(),
+		expiresAt: v.number(),
+		assetId: v.optional(v.id("files_r2_assets")),
+		sourceNodeId: v.optional(v.id("files_nodes")),
+		shadowNodeId: v.optional(v.id("files_nodes")),
+		finalizedAt: v.optional(v.number()),
+	}),
 	// #endregion files
 
 	// #region chat messages

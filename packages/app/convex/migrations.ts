@@ -25,6 +25,12 @@ type NotificationWithCreatedAt = Doc<"notifications"> & {
 	createdAt?: number;
 };
 
+type LegacyFilesNode = Omit<Doc<"files_nodes">, "_id" | "_creationTime" | "fileStorageKind"> & {
+	_id: Id<"files_nodes">;
+	_creationTime: number;
+	fileStorageKind?: null | "none" | "markdown" | "r2";
+};
+
 type LegacyWorkspaceWithOwner = Omit<Doc<"workspaces">, "_id" | "_creationTime" | "ownerUserId"> & {
 	_id: Id<"workspaces">;
 	_creationTime: number;
@@ -302,6 +308,34 @@ export const remove_notifications_created_at = app_migrations.define({
 	},
 });
 
+export const backfill_files_nodes_file_storage_kind = app_migrations.define({
+	table: "files_nodes",
+	migrateOne: async (ctx, node) => {
+		const legacyNode = node as LegacyFilesNode;
+		if (legacyNode.fileStorageKind !== undefined) {
+			return;
+		}
+
+		await ctx.db.patch("files_nodes", legacyNode._id, {
+			fileStorageKind: legacyNode.kind === "folder" ? null : "markdown",
+		});
+	},
+});
+
+export const backfill_files_nodes_folder_storage_kind_null = app_migrations.define({
+	table: "files_nodes",
+	migrateOne: async (ctx, node) => {
+		const legacyNode = node as LegacyFilesNode;
+		if (legacyNode.fileStorageKind !== "none") {
+			return;
+		}
+
+		await ctx.db.patch("files_nodes", legacyNode._id, {
+			fileStorageKind: null,
+		});
+	},
+});
+
 /** Run migrations from the CLI: `pnpm exec convex run migrations:run -- ...` (cwd: packages/app). */
 export const run = app_migrations.runner();
 export const run_remove_billing_usage_snapshots_last_granted_period_start = app_migrations.runner(
@@ -339,4 +373,10 @@ export const run_cleanup_duplicate_access_control_owner_assignments = app_migrat
 );
 export const run_update_extra_workspaces_quota_max_count_to_2 = app_migrations.runner(
 	internal.migrations.update_extra_workspaces_quota_max_count_to_2,
+);
+export const run_backfill_files_nodes_file_storage_kind = app_migrations.runner(
+	internal.migrations.backfill_files_nodes_file_storage_kind,
+);
+export const run_backfill_files_nodes_folder_storage_kind_null = app_migrations.runner(
+	internal.migrations.backfill_files_nodes_folder_storage_kind_null,
 );

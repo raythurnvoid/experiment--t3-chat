@@ -79,7 +79,7 @@ For vendor-owned webhooks:
 
 - Accept the raw payload at the Convex boundary with a loose validator such as `v.any()`.
 - Let signature verification and the vendor SDK identify the event; do not use a strict app-owned payload shape as an availability gate.
-- Do not model every documented vendor field as optional in local TypeScript just because the Convex validator is loose. After the event is verified, assert the documented payload shape for the fields you use and keep their real casing/nullability.
+- Do not model every documented vendor field as optional in local TypeScript just because the Convex validator is loose. After the event is verified, use Zod or a small local assertion for the documented payload shape of the fields you use, and keep their real casing/nullability.
 - Inside the handler, read only the fields the app needs, check those fields locally, and save whatever valid subset can be derived.
 - If required fields for a specific local write are missing, skip that write or return `null` instead of failing the whole webhook delivery.
 - Keep comments near the loose validator explaining that the webhook schema is vendor-owned and intentionally tolerant of payload changes.

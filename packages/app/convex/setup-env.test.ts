@@ -42,3 +42,27 @@ if (!process.env.POLAR_SERVER) {
 if (!process.env.POLAR_ORGANIZATION_TOKEN) {
 	process.env.POLAR_ORGANIZATION_TOKEN = "POLAR_ORGANIZATION_TOKEN_TEST";
 }
+
+if (!process.env.MODAL_FILE_CONVERTER_URL) {
+	process.env.MODAL_FILE_CONVERTER_URL = "https://modal.test/convert";
+}
+
+if (!process.env.MODAL_TOKEN) {
+	process.env.MODAL_TOKEN = "MODAL_TOKEN_TEST";
+}
+
+if (!process.env.R2_BUCKET_FILES) {
+	process.env.R2_BUCKET_FILES = "test-files-bucket";
+}
+
+if (!process.env.R2_ENDPOINT) {
+	process.env.R2_ENDPOINT = "https://test.r2.cloudflarestorage.com";
+}
+
+if (!process.env.R2_ACCESS_KEY_ID) {
+	process.env.R2_ACCESS_KEY_ID = "R2_ACCESS_KEY_ID_TEST";
+}
+
+if (!process.env.R2_SECRET_ACCESS_KEY) {
+	process.env.R2_SECRET_ACCESS_KEY = "R2_SECRET_ACCESS_KEY_TEST";
+}

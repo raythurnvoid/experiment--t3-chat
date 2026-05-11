@@ -9,6 +9,7 @@ import React, {
 	useState,
 	type ComponentProps,
 } from "react";
+import { toast } from "sonner";
 import {
 	Archive,
 	ArchiveRestore,
@@ -79,6 +80,7 @@ import {
 	files_get_node_path_validation,
 	files_normalize_name_input,
 	files_normalize_name,
+	files_normalize_upload_file_name,
 	type files_EditorView,
 	type files_TreeItem,
 } from "@/lib/files.ts";
@@ -87,6 +89,7 @@ import type { FunctionReturnType } from "convex/server";
 
 type FilesSidebarTree_Shared = () => TreeInstance<files_TreeItem>;
 type FilesSidebarTreeItem_Instance = ReturnType<TreeInstance<files_TreeItem>["getItemInstance"]>;
+type FilesSidebarTree_NodeItem = Extract<files_TreeItem, { type: "node" }>;
 
 // #region helpers
 type TreeItems = {
@@ -96,16 +99,6 @@ type TreeItems = {
 	sortedItemsIdsByParentId: Map<string, string[]>;
 	itemById: Map<string, files_TreeItem>;
 };
-
-function to_file_id(nodeId: string) {
-	return nodeId as app_convex_Id<"files_nodes">;
-}
-
-function to_parent_id(parentId: string) {
-	return (parentId === files_ROOT_ID ? files_ROOT_ID : to_file_id(parentId)) as
-		| app_convex_Id<"files_nodes">
-		| typeof files_ROOT_ID;
-}
 
 function get_default_node_name(args: { parentId: string; kind: files_TreeItem["kind"]; treeItems: TreeItems }) {
 	const siblingIds = args.treeItems.sortedItemsIdsByParentId.get(args.parentId) ?? [];
@@ -199,7 +192,9 @@ function get_tree_items_list_after_optimistic_rename(args: {
 	normalizedName: string;
 	now: number;
 }) {
-	const renamedItem = args.treeItemsList.find((treeItem) => treeItem.type === "node" && treeItem.index === args.itemId);
+	const renamedItem = args.treeItemsList.find(
+		(treeItem): treeItem is FilesSidebarTree_NodeItem => treeItem.type === "node" && treeItem.index === args.itemId,
+	);
 	if (!renamedItem) {
 		return args.treeItemsList;
 	}
@@ -212,7 +207,7 @@ function get_tree_items_list_after_optimistic_rename(args: {
 
 	if (pathSegments.length === 1) {
 		return args.treeItemsList.map((treeItem) => {
-			if (treeItem.index === args.itemId) {
+			if (treeItem.type === "node" && treeItem.index === args.itemId) {
 				return {
 					...treeItem,
 					title: leafName,
@@ -227,7 +222,8 @@ function get_tree_items_list_after_optimistic_rename(args: {
 	let currentAncestorId = renamedItem.parentId;
 	while (currentAncestorId && currentAncestorId !== files_ROOT_ID) {
 		const currentAncestor = args.treeItemsList.find(
-			(treeItem) => treeItem.type === "node" && treeItem.index === currentAncestorId,
+			(treeItem): treeItem is FilesSidebarTree_NodeItem =>
+				treeItem.type === "node" && treeItem.index === currentAncestorId,
 		);
 		if (!currentAncestor) {
 			break;
@@ -252,7 +248,7 @@ function get_tree_items_list_after_optimistic_rename(args: {
 
 	for (const [index, segment] of parentSegments.entries()) {
 		const activeExistingNode = nextTreeItemsList.find(
-			(treeItem) =>
+			(treeItem): treeItem is FilesSidebarTree_NodeItem =>
 				treeItem.type === "node" &&
 				treeItem.parentId === targetParentId &&
 				treeItem.title === segment &&
@@ -276,6 +272,7 @@ function get_tree_items_list_after_optimistic_rename(args: {
 			nextTreeItemsList.push({
 				type: "node",
 				kind: "folder",
+				fileStorageKind: null,
 				index: optimisticFolderId,
 				parentId: targetParentId,
 				title: segment,
@@ -290,7 +287,7 @@ function get_tree_items_list_after_optimistic_rename(args: {
 	}
 
 	const activeLeafConflict = nextTreeItemsList.find(
-		(treeItem) =>
+		(treeItem): treeItem is FilesSidebarTree_NodeItem =>
 			treeItem.type === "node" &&
 			treeItem.index !== args.itemId &&
 			treeItem.parentId === targetParentId &&
@@ -302,7 +299,7 @@ function get_tree_items_list_after_optimistic_rename(args: {
 	}
 
 	return nextTreeItemsList.map((treeItem) => {
-		if (treeItem.index === args.itemId) {
+		if (treeItem.type === "node" && treeItem.index === args.itemId) {
 			return {
 				...treeItem,
 				parentId: targetParentId,
@@ -418,6 +415,7 @@ type FilesSidebarTreeItemMoreAction_Props = {
 	archiveOperationId: string | undefined;
 	isPending: boolean;
 	isFocused: boolean;
+	canRename: boolean;
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
 	onRename: () => void;
@@ -436,6 +434,7 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 		archiveOperationId,
 		isPending,
 		isFocused,
+		canRename,
 		canExpandSubtree,
 		canCollapseSubtree,
 		onRename,
@@ -485,7 +484,7 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 			</MyMenuTrigger>
 			<MyMenuPopover unmountOnHide>
 				<MyMenuPopoverContent>
-					<MyMenuItem hideOnClick onClick={handleRenameClick}>
+					<MyMenuItem disabled={!canRename} hideOnClick onClick={handleRenameClick}>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>
 								<Edit2 />
@@ -909,6 +908,7 @@ type FilesSidebarTreeItemActions_Props = {
 	isPending: boolean;
 	isFocused: boolean;
 	canCreateChildren: boolean;
+	canRename: FilesSidebarTreeItemMoreAction_Props["canRename"];
 	canExpandSubtree: FilesSidebarTreeItemMoreAction_Props["canExpandSubtree"];
 	canCollapseSubtree: FilesSidebarTreeItemMoreAction_Props["canCollapseSubtree"];
 	onCreateFile: FilesSidebarTreeItemSecondaryAction_Props["onClick"];
@@ -930,6 +930,7 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 		isPending,
 		isFocused,
 		canCreateChildren,
+		canRename,
 		canExpandSubtree,
 		canCollapseSubtree,
 		onCreateFile,
@@ -971,6 +972,7 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 				archiveOperationId={archiveOperationId}
 				isPending={isPending}
 				isFocused={isFocused}
+				canRename={canRename}
 				canExpandSubtree={canExpandSubtree}
 				canCollapseSubtree={canCollapseSubtree}
 				onRename={onRename}
@@ -1143,6 +1145,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	const canCollapseSubtree = useVal(
 		() => itemData.kind === "folder" && isExpanded && item.getChildren().some((child) => child.isExpanded()),
 	);
+	const canRename = itemData.type === "node" && itemData.fileStorageKind !== "r2";
 
 	const ancestorIds = useVal(() => {
 		const result: string[] = [];
@@ -1301,6 +1304,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					isPending={isPending}
 					isFocused={isFocused}
 					canCreateChildren={itemData.kind === "folder"}
+					canRename={canRename}
 					canExpandSubtree={canExpandSubtree}
 					canCollapseSubtree={canCollapseSubtree}
 					onCreateFile={handleCreateFileClick}
@@ -1621,15 +1625,18 @@ type FilesSidebarTopSectionMoreAction_ClassNames = "FilesSidebarTopSectionMoreAc
 type FilesSidebarTopSectionMoreAction_Props = {
 	className: string;
 	isBusy: boolean;
+	isUploadingFile: boolean;
 	archivedCount: number;
 	showArchived: boolean;
 	onArchiveToggleClick: () => void;
+	onUploadFileClick: () => void;
 };
 
 const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMoreAction(
 	props: FilesSidebarTopSectionMoreAction_Props,
 ) {
-	const { className, isBusy, archivedCount, showArchived, onArchiveToggleClick } = props;
+	const { className, isBusy, isUploadingFile, archivedCount, showArchived, onArchiveToggleClick, onUploadFileClick } =
+		props;
 
 	const archivedItemsLabel = `${showArchived ? "Hide" : "Show"} ${archivedCount} ${
 		archivedCount === 1 ? "item" : "items"
@@ -1669,7 +1676,7 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 							<MyMenuItemContentPrimary>{archivedItemsLabel}</MyMenuItemContentPrimary>
 						</MyMenuItemContent>
 					</MyMenuCheckboxItem>
-					<MyMenuItem disabled>
+					<MyMenuItem disabled={isBusy || isUploadingFile} onClick={onUploadFileClick}>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>
 								<Upload />
@@ -1697,6 +1704,7 @@ type FilesSidebarTopSection_Props = {
 	view: files_EditorView;
 	selectedNodeIdsCount: number;
 	isBusy: boolean;
+	isUploadingFile: boolean;
 	canExpandAll: boolean;
 	canCollapseAll: boolean;
 	treeItemsList: FunctionReturnType<typeof app_convex_api.files_nodes.get_tree_nodes_list> | undefined;
@@ -1709,6 +1717,7 @@ type FilesSidebarTopSection_Props = {
 	onCreateRootFileClick: () => void;
 	onCreateRootFolderClick: () => void;
 	onArchiveToggleClick: () => void;
+	onUploadFileClick: () => void;
 };
 
 const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: FilesSidebarTopSection_Props) {
@@ -1716,6 +1725,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		view,
 		selectedNodeIdsCount,
 		isBusy,
+		isUploadingFile,
 		canExpandAll,
 		canCollapseAll,
 		treeItemsList,
@@ -1728,6 +1738,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		onCreateRootFileClick,
 		onCreateRootFolderClick,
 		onArchiveToggleClick,
+		onUploadFileClick,
 	} = props;
 
 	const archivedCount =
@@ -1823,9 +1834,11 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 					<FilesSidebarTopSectionMoreAction
 						className={cn("FilesSidebarTopSection-actions-icon-button" satisfies FilesSidebarTopSection_ClassNames)}
 						isBusy={isBusy}
+						isUploadingFile={isUploadingFile}
 						archivedCount={archivedCount}
 						showArchived={showArchived}
 						onArchiveToggleClick={onArchiveToggleClick}
+						onUploadFileClick={onUploadFileClick}
 					/>
 				</div>
 			</div>
@@ -1860,10 +1873,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const [isCreatingFile, setIsCreatingFile] = useState(false);
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
+	const [isUploadingFile, setIsUploadingFile] = useState(false);
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState<Set<string>>(new Set());
 	const [renamingItem, setRenamingItem] = useState<string | null | undefined>(undefined);
 	const [renameErrorByNodeId, setRenameErrorByNodeId] = useState<Map<string, string>>(new Map());
 	const isBusy = isCreatingFile || isArchivingSelection;
+	const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
 	const [expandedItems, setExpandedItems] = useState<string[]>([]);
 	const canCollapseAll = expandedItems.length > 1;
@@ -2084,8 +2099,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		return convex
 			.mutation(app_convex_api.files_nodes.move_nodes, {
 				membershipId,
-				itemIds: movedNodeIds.map((itemId) => to_file_id(itemId)),
-				targetParentId: to_parent_id(targetParentId),
+				itemIds: movedNodeIds.map((itemId) => itemId as app_convex_Id<"files_nodes">),
+				targetParentId:
+					targetParentId === files_ROOT_ID ? files_ROOT_ID : (targetParentId as app_convex_Id<"files_nodes">),
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -2097,7 +2113,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const canRename = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canRename"]>>((item) => {
-		return item.getItemData().type === "node";
+		const itemData = item.getItemData();
+		return itemData.type === "node" && itemData.fileStorageKind !== "r2";
 	});
 
 	/**
@@ -2141,7 +2158,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const renameValidation = files_get_node_path_validation({
 			scopeId: membershipId,
 			treeItemsList: treeItems?.list,
-			itemIdToIgnore: itemId,
+			nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
 			parentId: itemData.parentId,
 			kind: itemData.kind,
 			nameOrPath: trimmedValue,
@@ -2201,7 +2218,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				app_convex_api.files_nodes.rename_node,
 				{
 					membershipId,
-					nodeId: to_file_id(itemId),
+					nodeId: itemId as app_convex_Id<"files_nodes">,
 					name: normalizedName,
 				},
 				{
@@ -2261,7 +2278,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			const renameValidation = files_get_node_path_validation({
 				scopeId: membershipId,
 				treeItemsList: treeItems?.list,
-				itemIdToIgnore: itemId,
+				nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
 				parentId: itemData.parentId,
 				kind: itemData.kind,
 				nameOrPath: trimmedValue,
@@ -2489,7 +2506,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		convex
 			.mutation(app_convex_api.files_nodes.create_node, {
 				membershipId,
-				parentId: to_parent_id(parentNodeId),
+				parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
 				name: nextNodeName,
 				kind,
 			})
@@ -2498,7 +2515,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					const createNodeValidation = files_get_node_path_validation({
 						scopeId: membershipId,
 						treeItemsList: treeItems.list,
-						parentId: parentNodeId,
+						parentId:
+							parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
 						kind,
 						nameOrPath: nextNodeName,
 					});
@@ -2581,7 +2599,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		convex
 			.mutation(app_convex_api.files_nodes.unarchive_nodes, {
 				membershipId,
-				nodeIds: [to_file_id(nodeId)],
+				nodeIds: [nodeId as app_convex_Id<"files_nodes">],
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -2628,6 +2646,84 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const handleArchiveToggleClick = useFn(() => {
 		setShowArchived((oldValue) => !oldValue);
+	});
+
+	const handleUploadFileClick = useFn(() => {
+		uploadInputRef.current?.click();
+	});
+
+	const handleUploadFileChange = useFn<React.ComponentProps<"input">["onChange"]>((event) => {
+		const file = event.currentTarget.files?.[0];
+		event.currentTarget.value = "";
+		if (!file || !treeItems) {
+			return;
+		}
+
+		const selectedItem = selectedNodeId ? treeItems.itemById.get(selectedNodeId) : null;
+		const parentId =
+			selectedItem?.type === "node" && selectedItem.kind === "folder" && selectedItem.archiveOperationId === undefined
+				? selectedItem.index
+				: files_ROOT_ID;
+		const contentType = file.type || undefined;
+		const filename = files_normalize_upload_file_name(file.name);
+
+		setIsUploadingFile(true);
+		convex
+			.mutation(app_convex_api.r2.generate_upload_url, {
+				membershipId,
+				filename,
+				contentType,
+				size: file.size,
+			})
+			.then(async (upload) => {
+				if (upload._nay) {
+					console.error("[FilesSidebar.handleUploadFileChange] Failed to generate upload URL", { upload });
+					toast.error(upload._nay.message ?? "Failed to prepare upload");
+					return null;
+				}
+
+				const uploadResponse = await fetch(upload._yay.url, {
+					method: "PUT",
+					headers: upload._yay.headers,
+					body: file,
+				});
+				if (!uploadResponse.ok) {
+					console.error("[FilesSidebar.handleUploadFileChange] R2 upload failed", {
+						status: uploadResponse.status,
+						uploadId: upload._yay.uploadId,
+					});
+					toast.error("Failed to upload file");
+					return null;
+				}
+
+				const finalized = await convex.action(app_convex_api.files_content.finalize_upload, {
+					membershipId,
+					parentId,
+					uploadId: upload._yay.uploadId,
+				});
+				if (finalized._nay) {
+					console.error("[FilesSidebar.handleUploadFileChange] Failed to finalize upload", {
+						finalized,
+						uploadId: upload._yay.uploadId,
+					});
+					toast.error(finalized._nay.message ?? "Failed to process upload");
+					return null;
+				}
+
+				toast.success("File uploaded");
+				return navigate({
+					to: "/w/$workspaceName/$projectName/files",
+					params: { workspaceName, projectName },
+					search: { nodeId: finalized._yay.sourceNodeId, view },
+				});
+			})
+			.catch((error) => {
+				console.error("[FilesSidebar.handleUploadFileChange] Error uploading file", { error });
+				toast.error(error instanceof Error ? error.message : "Failed to upload file");
+			})
+			.finally(() => {
+				setIsUploadingFile(false);
+			});
 	});
 
 	// Rebuild tree when visible files or controlled expansion state changes.
@@ -2732,10 +2828,19 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	return (
 		<aside className={"FilesSidebar" satisfies FilesSidebar_ClassNames}>
+			<input
+				ref={uploadInputRef}
+				type="file"
+				aria-hidden="true"
+				tabIndex={-1}
+				style={{ display: "none" }}
+				onChange={handleUploadFileChange}
+			/>
 			<FilesSidebarTopSection
 				view={view}
 				selectedNodeIdsCount={selectedNodeIds.size}
 				isBusy={isBusy}
+				isUploadingFile={isUploadingFile}
 				canExpandAll={canExpandAll}
 				canCollapseAll={canCollapseAll}
 				treeItemsList={treeItemsList}
@@ -2748,6 +2853,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				onCreateRootFileClick={handleCreateRootFileClick}
 				onCreateRootFolderClick={handleCreateRootFolderClick}
 				onArchiveToggleClick={handleArchiveToggleClick}
+				onUploadFileClick={handleUploadFileClick}
 			/>
 
 			<div className={cn("FilesSidebar-content" satisfies FilesSidebar_ClassNames)}>
@@ -2789,8 +2895,9 @@ if (import.meta.vitest) {
 		return {
 			type: "node",
 			kind: args.kind,
+			fileStorageKind: args.kind === "folder" ? null : "markdown",
 			index: id,
-			parentId: args.parentId,
+			parentId: args.parentId === files_ROOT_ID ? files_ROOT_ID : (args.parentId as app_convex_Id<"files_nodes">),
 			title: args.title,
 			archiveOperationId: args.archiveOperationId,
 			updatedAt: 1,
@@ -2838,6 +2945,7 @@ if (import.meta.vitest) {
 			expect(result).toContainEqual({
 				type: "node",
 				kind: "folder",
+				fileStorageKind: null,
 				index: notesId,
 				parentId: files_ROOT_ID,
 				title: "notes",
@@ -2849,6 +2957,7 @@ if (import.meta.vitest) {
 			expect(result).toContainEqual({
 				type: "node",
 				kind: "folder",
+				fileStorageKind: null,
 				index: projectsId,
 				parentId: notesId,
 				title: "projects",
@@ -2886,6 +2995,7 @@ if (import.meta.vitest) {
 			expect(result).toContainEqual({
 				type: "node",
 				kind: "folder",
+				fileStorageKind: null,
 				index: projectsId,
 				parentId: notes.index,
 				title: "projects",
@@ -2924,6 +3034,7 @@ if (import.meta.vitest) {
 			expect(result).toContainEqual({
 				type: "node",
 				kind: "folder",
+				fileStorageKind: null,
 				index: notesId,
 				parentId: files_ROOT_ID,
 				title: "notes",

@@ -10,6 +10,7 @@ import polar_test from "@convex-dev/polar/test";
 import presence_test from "@convex-dev/presence/test";
 import workpool_test from "@convex-dev/workpool/test";
 import rate_limiter_test from "@convex-dev/rate-limiter/test";
+import r2_test from "@convex-dev/r2/test";
 import {
 	workspaces_db_create,
 	workspaces_db_create_project,
@@ -46,6 +47,7 @@ export function test_convex() {
 	workpool_test.register(t, "billing_workpool_cancellation");
 	workpool_test.register(t, "billing_workpool_usage_event");
 	rate_limiter_test.register(t, "rate_limiter");
+	r2_test.register(t as unknown as Parameters<typeof r2_test.register>[0]);
 	return t;
 }
 
@@ -137,6 +139,7 @@ export const test_mocks = {
 				parentId: test_mocks_hardcoded.files.file_root_1.parentId,
 				name: name,
 				kind: "folder",
+				fileStorageKind: null,
 				path: `/${name}`,
 				version: files_FIRST_VERSION,
 				archiveOperationId: undefined,

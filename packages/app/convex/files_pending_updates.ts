@@ -10,7 +10,7 @@ import { billing_event } from "../server/billing.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
-import { workspaces_db_get_membership_for_user } from "./workspaces.ts";
+import { workspaces_db_get_membership } from "./workspaces.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_db_cancel_pending_update_cleanup_tasks,
@@ -457,7 +457,7 @@ export const upsert_file_pending_update = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -520,7 +520,7 @@ export const persist_file_pending_update_rebased_state = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -696,7 +696,7 @@ export const get_file_pending_update = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -738,7 +738,7 @@ export const list_files_pending_updates = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -769,7 +769,7 @@ export const get_file_pending_update_last_sequence_saved = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -816,7 +816,7 @@ export const save_file_pending_update = mutation({
 		if (!user) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const membership = await workspaces_db_get_membership_for_user(ctx, {
+		const membership = await workspaces_db_get_membership(ctx, {
 			userId: user._id,
 			membershipId: args.membershipId,
 		});

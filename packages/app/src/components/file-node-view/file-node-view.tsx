@@ -64,8 +64,10 @@ import {
 	files_ROOT_ID,
 	files_clear_node_path_cached_validation_messages,
 	files_find_file_stem_end_index,
+	files_format_size,
 	files_get_default_node_name,
 	files_get_node_path_validation,
+	files_get_normalized_node_path_segments,
 	type files_EditorView,
 	type files_TreeItem,
 } from "@/lib/files.ts";
@@ -124,8 +126,7 @@ function get_folder_readme_node_id(
 	return readmeItem?._id ?? null;
 }
 
-const FILE_NODE_VIEW_TOOLBAR_EDITOR_ACTIONS_ID =
-	"app_file_node_view_toolbar_editor_actions" satisfies AppElementId;
+const FILE_NODE_VIEW_TOOLBAR_EDITOR_ACTIONS_ID = "app_file_node_view_toolbar_editor_actions" satisfies AppElementId;
 
 // #region header
 type FileNodeViewHeader_ClassNames =
@@ -375,6 +376,129 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 });
 // #endregion file editor
 
+// #region stored file
+type FileNodeViewStoredFile_ClassNames =
+	| "FileNodeViewStoredFile"
+	| "FileNodeViewStoredFile-header"
+	| "FileNodeViewStoredFile-icon"
+	| "FileNodeViewStoredFile-title-group"
+	| "FileNodeViewStoredFile-title"
+	| "FileNodeViewStoredFile-subtitle"
+	| "FileNodeViewStoredFile-metadata"
+	| "FileNodeViewStoredFile-metadata-row"
+	| "FileNodeViewStoredFile-metadata-label"
+	| "FileNodeViewStoredFile-metadata-value";
+
+type FileNodeViewStoredFile_Props = {
+	node: app_convex_Doc<"files_nodes">;
+	treeItemsList: FileNodeViewContent_Props["treeItemsList"];
+	editorMode: FileEditor_Mode;
+	filesSidebarOpen: boolean;
+	onlineUsers: FileEditor_OnlineUser[];
+};
+
+const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileNodeViewStoredFile_Props) {
+	const { node, treeItemsList, editorMode, filesSidebarOpen, onlineUsers } = props;
+	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
+	const asset = useQuery(app_convex_api.files_content.get_asset_by_source_node, {
+		membershipId,
+		nodeId: node._id,
+	});
+	const shadowItem = treeItemsList?.find((item) => item.type === "node" && item._id === asset?.shadowNodeId);
+	const title = asset?.filename ?? node.name;
+	const subtitle = asset === undefined ? "Loading metadata" : (asset?.contentType ?? "Unknown file type");
+
+	return (
+		<>
+			<FileNodeViewHeaderPortal
+				selectedNodeId={node._id}
+				treeItemsList={treeItemsList}
+				editorMode={editorMode}
+				filesSidebarOpen={filesSidebarOpen}
+				showFileControls={false}
+				onlineUsers={onlineUsers}
+				onEditorModeChange={() => {}}
+			/>
+			<section className={"FileNodeViewStoredFile" satisfies FileNodeViewStoredFile_ClassNames}>
+				<header className={"FileNodeViewStoredFile-header" satisfies FileNodeViewStoredFile_ClassNames}>
+					<MyIcon className={"FileNodeViewStoredFile-icon" satisfies FileNodeViewStoredFile_ClassNames}>
+						<FileText />
+					</MyIcon>
+					<div className={"FileNodeViewStoredFile-title-group" satisfies FileNodeViewStoredFile_ClassNames}>
+						<h1 className={"FileNodeViewStoredFile-title" satisfies FileNodeViewStoredFile_ClassNames}>{title}</h1>
+						<p className={"FileNodeViewStoredFile-subtitle" satisfies FileNodeViewStoredFile_ClassNames}>
+							{subtitle}
+							{asset ? ` · ${files_format_size(asset.size)}` : ""}
+						</p>
+					</div>
+				</header>
+
+				<dl className={"FileNodeViewStoredFile-metadata" satisfies FileNodeViewStoredFile_ClassNames}>
+					<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+						<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+							Filename
+						</dt>
+						<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+							{title}
+						</dd>
+					</div>
+					<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+						<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+							Content type
+						</dt>
+						<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+							{asset?.contentType ?? "Unknown"}
+						</dd>
+					</div>
+					<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+						<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+							Size
+						</dt>
+						<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+							{files_format_size(asset?.size)}
+						</dd>
+					</div>
+					<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+						<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+							R2 bucket
+						</dt>
+						<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+							{asset?.r2Bucket ?? "Unknown"}
+						</dd>
+					</div>
+					<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+						<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+							R2 key
+						</dt>
+						<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+							{asset?.r2Key ?? "Unknown"}
+						</dd>
+					</div>
+					<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+						<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+							Shadow Markdown
+						</dt>
+						<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+							{asset?.shadowNodeId ? (
+								<MyLink
+									to="/w/$workspaceName/$projectName/files"
+									params={{ workspaceName, projectName }}
+									search={{ nodeId: asset.shadowNodeId, view: "plain_text_editor" }}
+								>
+									{shadowItem?.title ?? asset.shadowNodeId}
+								</MyLink>
+							) : (
+								"Unknown"
+							)}
+						</dd>
+					</div>
+				</dl>
+			</section>
+		</>
+	);
+});
+// #endregion stored file
+
 // #region folder
 const FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT = 5;
 
@@ -583,7 +707,9 @@ const FileNodeViewToolbarFolderActions = memo(function FileNodeViewToolbarFolder
 				onClick={() => onCreateNode("file")}
 			>
 				<MyIconButtonIcon
-					className={"FileNodeViewToolbarFolderActions-action-icon" satisfies FileNodeViewToolbarFolderActions_ClassNames}
+					className={
+						"FileNodeViewToolbarFolderActions-action-icon" satisfies FileNodeViewToolbarFolderActions_ClassNames
+					}
 				>
 					<FilePlus />
 				</MyIconButtonIcon>
@@ -596,7 +722,9 @@ const FileNodeViewToolbarFolderActions = memo(function FileNodeViewToolbarFolder
 				onClick={() => onCreateNode("folder")}
 			>
 				<MyIconButtonIcon
-					className={"FileNodeViewToolbarFolderActions-action-icon" satisfies FileNodeViewToolbarFolderActions_ClassNames}
+					className={
+						"FileNodeViewToolbarFolderActions-action-icon" satisfies FileNodeViewToolbarFolderActions_ClassNames
+					}
 				>
 					<FolderPlus />
 				</MyIconButtonIcon>
@@ -711,9 +839,14 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 			setError(nodePathValidation.validationMessage);
 			return;
 		}
+		const normalizedPath = files_get_normalized_node_path_segments({ kind, nameOrPath: trimmedName });
+		if (!normalizedPath || "validationMessage" in normalizedPath) {
+			setError(normalizedPath?.validationMessage ?? `Enter a ${kind} name.`);
+			return;
+		}
 
 		setError(null);
-		onCreateNode({ kind, name: trimmedName })
+		onCreateNode({ kind, name: normalizedPath.normalizedPathSegments.join("/") })
 			.then((serverErrorMessage) => {
 				if (!serverErrorMessage) {
 					closeModal();
@@ -869,10 +1002,7 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 		folderItemId && treeItemsList
 			? treeItemsList
 					.filter(
-						(item) =>
-							item.type === "node" &&
-							item.parentId === folderItemId &&
-							item.archiveOperationId === undefined,
+						(item) => item.type === "node" && item.parentId === folderItemId && item.archiveOperationId === undefined,
 					)
 					.map((child) => child.title)
 			: [];
@@ -1329,6 +1459,18 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		);
 	}
 
+	if (node.kind !== "file" || node.fileStorageKind !== "markdown") {
+		return (
+			<FileNodeViewStoredFile
+				node={node}
+				treeItemsList={treeItemsList}
+				editorMode={editorMode}
+				filesSidebarOpen={filesSidebarOpen}
+				onlineUsers={onlineUsers}
+			/>
+		);
+	}
+
 	return (
 		<FileNodeViewFile
 			node={node}
@@ -1413,17 +1555,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	);
 	const resolvedNodeId = isRootNodeSelected ? files_ROOT_ID : (resolvedNode?._id ?? null);
 	// Keep create actions scoped to the visible folder/root selection; file views use this toolbar only for editor actions.
-	const targetFolderId = isRootNodeSelected
-		? files_ROOT_ID
-		: resolvedNode?.kind === "folder"
-			? resolvedNode._id
-			: null;
+	const targetFolderId = isRootNodeSelected ? files_ROOT_ID : resolvedNode?.kind === "folder" ? resolvedNode._id : null;
 
 	// Treat a folder README as the active editor node so pending-update and sync subscriptions
 	// have the same owner for selected files and folder README editors.
 	const activeEditorNodeId = isRootNodeSelected
 		? get_folder_readme_node_id(treeItemsList, files_ROOT_ID)
-		: resolvedNode?.kind === "file"
+		: resolvedNode && resolvedNode.kind === "file" && resolvedNode.fileStorageKind === "markdown"
 			? resolvedNode._id
 			: resolvedNode?.kind === "folder"
 				? get_folder_readme_node_id(treeItemsList, resolvedNode._id)
@@ -1583,10 +1721,12 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		},
 	);
 
-	const handleEditorPanelReset = useFn<NonNullable<React.ComponentProps<typeof MyPanelGroup>["onLayoutReset"]>>((layout) => {
-		editorPanelLayoutRef.current = layout;
-		setEditorPanelLayout(null);
-	});
+	const handleEditorPanelReset = useFn<NonNullable<React.ComponentProps<typeof MyPanelGroup>["onLayoutReset"]>>(
+		(layout) => {
+			editorPanelLayoutRef.current = layout;
+			setEditorPanelLayout(null);
+		},
+	);
 
 	// If URL has no node id, restore last-open; otherwise default to the root folder.
 	useEffect(() => {

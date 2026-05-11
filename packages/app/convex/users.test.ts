@@ -218,6 +218,7 @@ async function users_test_seed_page(
 		path: `/${args.tag}`,
 		name: args.tag,
 		kind: "file",
+		fileStorageKind: "markdown",
 		version: 0,
 		parentId: "root",
 		createdBy: args.userId,
