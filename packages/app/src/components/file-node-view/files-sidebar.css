@@ -96,6 +96,81 @@
 	}
 	/* #endregion top section */
 
+	/* #region uploads */
+	.FilesSidebarUploads {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+
+		padding: 8px 16px;
+		border-bottom: 1px solid var(--color-fg-02);
+	}
+
+	.FilesSidebarUploads-title {
+		font-size: 0.75rem;
+		font-weight: 500;
+		color: var(--color-fg-07);
+	}
+
+	.FilesSidebarUploads-list {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.FilesSidebarUploadItem {
+		display: grid;
+		grid-template-columns: 18px 1fr;
+		gap: 8px;
+		align-items: start;
+
+		min-width: 0;
+		padding: 6px 0;
+
+		color: var(--color-fg-08);
+	}
+
+	.FilesSidebarUploadItem-icon {
+		width: 16px;
+		height: 16px;
+		margin-top: 1px;
+		color: var(--color-fg-07);
+	}
+
+	.FilesSidebarUploadItem-content {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		min-width: 0;
+	}
+
+	.FilesSidebarUploadItem-name,
+	.FilesSidebarUploadItem-status {
+		min-width: 0;
+
+		contain: content;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.FilesSidebarUploadItem-name {
+		font-size: 0.8125rem;
+		color: var(--color-fg-09);
+	}
+
+	.FilesSidebarUploadItem-status {
+		font-size: 0.75rem;
+		color: var(--color-fg-07);
+	}
+
+	.FilesSidebarUploadItem-failed {
+		.FilesSidebarUploadItem-icon,
+		.FilesSidebarUploadItem-status {
+			color: var(--destructive);
+		}
+	}
+	/* #endregion uploads */
+
 	/* #region header */
 	.FilesSidebarHeader {
 		padding: 0;

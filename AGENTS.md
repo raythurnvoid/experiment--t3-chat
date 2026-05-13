@@ -23,6 +23,25 @@ Examples:
 
 Prefer non-interactive Modal CLI commands and flags when available so Codex does not block on prompts.
 
+## Cloudflare / Wrangler CLI
+
+Use Wrangler through `pnpx` only. Do not install Wrangler globally, and do not use `npx wrangler`.
+
+Examples:
+
+```powershell
+pnpx wrangler login
+pnpx wrangler queues create bonobo-senate-press-r2-upload-events
+pnpx wrangler queues create bonobo-senate-press-r2-upload-events-dlq
+pnpx wrangler deploy --config packages/r2-upload-finalizer/wrangler.jsonc
+pnpx wrangler secret put EVENTS_SECRET --config packages/r2-upload-finalizer/wrangler.jsonc
+pnpx wrangler r2 bucket notification create bonobo-senate-press-files --event-type object-create --queue bonobo-senate-press-r2-upload-events --prefix "workspaces/"
+pnpx wrangler r2 bucket notification list bonobo-senate-press-files
+pnpx wrangler tail bonobo-senate-r2-upload-finalizer
+```
+
+The R2 upload finalizer Worker is documented in [packages/r2-upload-finalizer/README.md](packages/r2-upload-finalizer/README.md).
+
 # Application Architecture
 
 This project uses [Convex](https://convex.dev) as its backend.

@@ -1,0 +1,14 @@
+{
+	"name": "bonobo-senate-r2-upload-finalizer",
+	"private": true,
+	"version": "0.0.0",
+	"license": "Apache-2.0",
+	"type": "module",
+	"scripts": {
+		"deploy": "pnpx wrangler deploy",
+		"dev": "pnpx wrangler dev",
+		"tail": "pnpx wrangler tail",
+		"typecheck": "pnpm --dir ../app exec tsc --project ../r2-upload-finalizer/tsconfig.json --noEmit",
+		"test": "pnpm --dir ../app exec vitest run --config ../r2-upload-finalizer/vitest.config.mjs"
+	}
+}

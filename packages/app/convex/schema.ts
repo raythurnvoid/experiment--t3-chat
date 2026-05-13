@@ -306,6 +306,7 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		createdBy: v.id("users"),
+		parentId: v.optional(v.union(v.id("files_nodes"), v.literal("root"))),
 		r2Bucket: v.string(),
 		r2Key: v.string(),
 		filename: v.string(),
@@ -313,11 +314,32 @@ const app_convex_schema = defineSchema({
 		size: v.optional(v.number()),
 		createdAt: v.number(),
 		expiresAt: v.number(),
+		status: v.optional(
+			v.union(
+				v.literal("pending"),
+				v.literal("uploaded"),
+				v.literal("converting"),
+				v.literal("finalized"),
+				v.literal("failed"),
+			),
+		),
+		uploadedAt: v.optional(v.number()),
+		conversionStartedAt: v.optional(v.number()),
+		conversionAttempts: v.optional(v.number()),
+		failedAt: v.optional(v.number()),
+		failureMessage: v.optional(v.string()),
+		r2EventCloudflareMessageId: v.optional(v.string()),
+		r2EventAction: v.optional(v.string()),
+		r2EventTime: v.optional(v.string()),
+		r2EventSize: v.optional(v.number()),
+		r2EventEtag: v.optional(v.string()),
 		assetId: v.optional(v.id("files_r2_assets")),
 		sourceNodeId: v.optional(v.id("files_nodes")),
 		shadowNodeId: v.optional(v.id("files_nodes")),
 		finalizedAt: v.optional(v.number()),
-	}),
+	})
+		.index("by_r2Bucket_r2Key", ["r2Bucket", "r2Key"])
+		.index("by_workspace_project_status_createdAt", ["workspaceId", "projectId", "status", "createdAt"]),
 	// #endregion files
 
 	// #region chat messages

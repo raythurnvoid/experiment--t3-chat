@@ -1,0 +1,27 @@
+{
+	"$schema": "https://unpkg.com/wrangler/config-schema.json",
+	"name": "bonobo-senate-r2-upload-finalizer",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-05-11",
+	"vars": {
+		"R2_FILES_BUCKET": "bonobo-senate-press-files",
+		"R2_UPLOAD_PREFIX": "workspaces/"
+	},
+	"secrets": {
+		"required": ["CONVEX_HTTP_URL", "EVENTS_SECRET"]
+	},
+	"queues": {
+		"consumers": [
+			{
+				"queue": "bonobo-senate-press-r2-upload-events",
+				"max_batch_size": 10,
+				"max_batch_timeout": 5,
+				"max_retries": 5,
+				"dead_letter_queue": "bonobo-senate-press-r2-upload-events-dlq"
+			}
+		]
+	},
+	"observability": {
+		"enabled": true
+	}
+}

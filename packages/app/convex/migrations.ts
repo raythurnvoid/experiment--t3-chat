@@ -4,6 +4,7 @@ import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import { internalMutation } from "./_generated/server.js";
 import type { access_control_Permission, access_control_Role } from "../shared/access-control.ts";
 import { quotas } from "../shared/quotas.ts";
+import { files_ROOT_ID } from "../server/files.ts";
 import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_ensure_role_permission_grant,
@@ -29,6 +30,15 @@ type LegacyFilesNode = Omit<Doc<"files_nodes">, "_id" | "_creationTime" | "fileS
 	_id: Id<"files_nodes">;
 	_creationTime: number;
 	fileStorageKind?: null | "none" | "markdown" | "r2";
+};
+
+type LegacyFilesUpload = Doc<"files_uploads"> & {
+	parentId?: Doc<"files_nodes">["parentId"];
+	status?: "pending" | "uploaded" | "converting" | "finalized" | "failed";
+	uploadedAt?: number;
+	conversionAttempts?: number;
+	failedAt?: number;
+	failureMessage?: string;
 };
 
 type LegacyWorkspaceWithOwner = Omit<Doc<"workspaces">, "_id" | "_creationTime" | "ownerUserId"> & {
@@ -336,6 +346,37 @@ export const backfill_files_nodes_folder_storage_kind_null = app_migrations.defi
 	},
 });
 
+export const backfill_files_uploads_event_finalization_state = app_migrations.define({
+	table: "files_uploads",
+	migrateOne: async (ctx, upload) => {
+		const legacyUpload = upload as LegacyFilesUpload;
+		if (legacyUpload.parentId !== undefined && legacyUpload.status !== undefined) {
+			return;
+		}
+
+		if (legacyUpload.assetId && legacyUpload.sourceNodeId && legacyUpload.shadowNodeId) {
+			const sourceNode = await ctx.db.get(legacyUpload.sourceNodeId);
+
+			await ctx.db.patch(legacyUpload._id, {
+				parentId: legacyUpload.parentId ?? sourceNode?.parentId ?? files_ROOT_ID,
+				status: "finalized",
+				uploadedAt: legacyUpload.uploadedAt ?? legacyUpload.finalizedAt ?? Date.now(),
+				conversionAttempts: legacyUpload.conversionAttempts ?? 1,
+			});
+			return;
+		}
+
+		await ctx.db.patch(legacyUpload._id, {
+			parentId: legacyUpload.parentId ?? files_ROOT_ID,
+			status: "failed",
+			failedAt: legacyUpload.failedAt ?? Date.now(),
+			failureMessage:
+				legacyUpload.failureMessage ?? "Legacy upload was not finalized; upload the file again to use queue finalization.",
+			conversionAttempts: legacyUpload.conversionAttempts ?? 0,
+		});
+	},
+});
+
 /** Run migrations from the CLI: `pnpm exec convex run migrations:run -- ...` (cwd: packages/app). */
 export const run = app_migrations.runner();
 export const run_remove_billing_usage_snapshots_last_granted_period_start = app_migrations.runner(
@@ -379,4 +420,7 @@ export const run_backfill_files_nodes_file_storage_kind = app_migrations.runner(
 );
 export const run_backfill_files_nodes_folder_storage_kind_null = app_migrations.runner(
 	internal.migrations.backfill_files_nodes_folder_storage_kind_null,
+);
+export const run_backfill_files_uploads_event_finalization_state = app_migrations.runner(
+	internal.migrations.backfill_files_uploads_event_finalization_state,
 );

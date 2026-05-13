@@ -51,6 +51,10 @@ if (!process.env.MODAL_TOKEN) {
 	process.env.MODAL_TOKEN = "MODAL_TOKEN_TEST";
 }
 
+if (!process.env.CLOUDFLARE_EVENTS_SECRET) {
+	process.env.CLOUDFLARE_EVENTS_SECRET = "CLOUDFLARE_EVENTS_SECRET_TEST";
+}
+
 if (!process.env.R2_BUCKET_FILES) {
 	process.env.R2_BUCKET_FILES = "test-files-bucket";
 }

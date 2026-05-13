@@ -1847,6 +1847,67 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 });
 // #endregion top section
 
+// #region uploads
+type FilesSidebarUploads_QueryResult = FunctionReturnType<typeof app_convex_api.r2.list_recent_uploads>;
+type FilesSidebarUploads_Upload = Extract<FilesSidebarUploads_QueryResult, { _yay: unknown }>["_yay"][number];
+
+type FilesSidebarUploads_ClassNames =
+	| "FilesSidebarUploads"
+	| "FilesSidebarUploads-title"
+	| "FilesSidebarUploads-list"
+	| "FilesSidebarUploadItem"
+	| "FilesSidebarUploadItem-icon"
+	| "FilesSidebarUploadItem-content"
+	| "FilesSidebarUploadItem-name"
+	| "FilesSidebarUploadItem-status"
+	| "FilesSidebarUploadItem-failed";
+
+type FilesSidebarUploads_Props = {
+	uploads: FilesSidebarUploads_Upload[];
+};
+
+const FilesSidebarUploads = memo(function FilesSidebarUploads(props: FilesSidebarUploads_Props) {
+	const { uploads } = props;
+	if (uploads.length === 0) {
+		return null;
+	}
+
+	return (
+		<section className={"FilesSidebarUploads" satisfies FilesSidebarUploads_ClassNames}>
+			<div className={"FilesSidebarUploads-title" satisfies FilesSidebarUploads_ClassNames}>Uploads</div>
+			<div className={"FilesSidebarUploads-list" satisfies FilesSidebarUploads_ClassNames}>
+				{uploads.map((upload) => {
+					const isFailed = upload.status === "failed";
+					const statusText = isFailed ? (upload.failureMessage ?? "Failed") : "Processing";
+
+					return (
+						<div
+							key={upload.uploadId}
+							className={cn(
+								"FilesSidebarUploadItem" satisfies FilesSidebarUploads_ClassNames,
+								isFailed && ("FilesSidebarUploadItem-failed" satisfies FilesSidebarUploads_ClassNames),
+							)}
+						>
+							<MyIcon className={"FilesSidebarUploadItem-icon" satisfies FilesSidebarUploads_ClassNames}>
+								{isFailed ? <X /> : <Upload />}
+							</MyIcon>
+							<div className={"FilesSidebarUploadItem-content" satisfies FilesSidebarUploads_ClassNames}>
+								<div className={"FilesSidebarUploadItem-name" satisfies FilesSidebarUploads_ClassNames}>
+									{upload.filename}
+								</div>
+								<div className={"FilesSidebarUploadItem-status" satisfies FilesSidebarUploads_ClassNames}>
+									{statusText}
+								</div>
+							</div>
+						</div>
+					);
+				})}
+			</div>
+		</section>
+	);
+});
+// #endregion uploads
+
 // #region root
 type FilesSidebar_ClassNames = "FilesSidebar" | "FilesSidebar-content";
 
@@ -1889,6 +1950,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const treeItemsList = useQuery(app_convex_api.files_nodes.get_tree_nodes_list, {
 		membershipId,
 	});
+	const recentUploadsResult = useQuery(app_convex_api.r2.list_recent_uploads, {
+		membershipId,
+	});
+	const recentUploads = recentUploadsResult && "_yay" in recentUploadsResult ? recentUploadsResult._yay : [];
 
 	// For some reason the compiler is not auto memoizing this so we need `useMemo`
 	const treeItems = useMemo(() => {
@@ -2671,6 +2736,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		convex
 			.mutation(app_convex_api.r2.generate_upload_url, {
 				membershipId,
+				parentId: parentId === files_ROOT_ID ? files_ROOT_ID : (parentId as app_convex_Id<"files_nodes">),
 				filename,
 				contentType,
 				size: file.size,
@@ -2696,26 +2762,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					return null;
 				}
 
-				const finalized = await convex.action(app_convex_api.files_content.finalize_upload, {
-					membershipId,
-					parentId,
-					uploadId: upload._yay.uploadId,
-				});
-				if (finalized._nay) {
-					console.error("[FilesSidebar.handleUploadFileChange] Failed to finalize upload", {
-						finalized,
-						uploadId: upload._yay.uploadId,
-					});
-					toast.error(finalized._nay.message ?? "Failed to process upload");
-					return null;
-				}
-
-				toast.success("File uploaded");
-				return navigate({
-					to: "/w/$workspaceName/$projectName/files",
-					params: { workspaceName, projectName },
-					search: { nodeId: finalized._yay.sourceNodeId, view },
-				});
+				toast.success("File uploaded. Processing...");
+				return null;
 			})
 			.catch((error) => {
 				console.error("[FilesSidebar.handleUploadFileChange] Error uploading file", { error });
@@ -2857,6 +2905,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			/>
 
 			<div className={cn("FilesSidebar-content" satisfies FilesSidebar_ClassNames)}>
+				<FilesSidebarUploads uploads={recentUploads} />
 				<FilesSidebarTree
 					tree={tree}
 					isTreeLoading={treeItemsList === undefined}
