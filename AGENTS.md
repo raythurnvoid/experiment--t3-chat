@@ -347,8 +347,8 @@ When a helper needs a Convex args object type, keep the type surface as small an
 ```ts
 import type { RegisteredMutation } from "convex/server";
 
-type create_source_and_shadow_files_Result =
-	typeof create_source_and_shadow_files extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+type finalize_upload_conversion_to_markdown_Result =
+	typeof finalize_upload_conversion_to_markdown extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 ```
@@ -356,10 +356,11 @@ type create_source_and_shadow_files_Result =
 - For same-file Convex calls that would otherwise trigger generated API circularity, keep the generated reference direct and cast only the awaited result:
 
 ```ts
-const created = (await ctx.runMutation(internal.files_content.create_source_and_shadow_files, {
-	membershipId: args.membershipId,
-	parentId: args.parentId,
-})) as create_source_and_shadow_files_Result;
+const finalizationResult = (await ctx.runMutation(internal.files_content.finalize_upload_conversion_to_markdown, {
+	uploadId: args.uploadId,
+	markdown: conversion._yay.markdown,
+	converter: conversion._yay.converter,
+})) as finalize_upload_conversion_to_markdown_Result;
 ```
 
 - Do not use implementation details such as `_handler`, do not extract a separate validator just to get a type, and do not create a named args type unless a production API genuinely needs it.

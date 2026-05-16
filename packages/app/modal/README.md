@@ -6,7 +6,7 @@ Local repository rules say not to install or run Python on this machine. Deploy 
 
 ## Runtime Contract
 
-Convex sends:
+Convex sends `POST /markitdown` with:
 
 - `sourceUrl`: short-lived signed R2 download URL
 - `filename`: original filename
@@ -22,6 +22,25 @@ Modal returns:
 - `contentType`
 - `warnings`
 
+`GET /health` returns a basic `{ "ok": true }` health response.
+
+Conversion behavior:
+
+- Uses MarkItDown with plugins disabled.
+- Uses the sanitized filename, extension, and optional MIME type as conversion hints.
+- Downloads from the signed R2 URL with a streamed request.
+- Spools the source stream with an 8 MiB in-memory threshold before spilling to a temporary file.
+- Enforces the source size through `maxBytes`; Convex currently passes 50 MiB.
+- Enforces the Markdown response size through `maxMarkdownCharacters`; Convex currently passes 900,000 characters.
+
+Error statuses:
+
+- `401`: request authorization is missing or does not match the Modal secret.
+- `413`: source file is too large or converted Markdown is too large.
+- `422`: source download failed or MarkItDown could not convert the source.
+- `502`: source fetch request failed before conversion.
+- `500`: converter token is not configured.
+
 ## Configuration
 
 Create a Modal Secret named `BONOBO_SENATE_PRESS` with:
@@ -32,6 +51,8 @@ Set matching Convex environment variables:
 
 - `MODAL_FILE_CONVERTER_URL`: the deployed Modal `/markitdown` endpoint URL
 - `MODAL_TOKEN`: the same token value as `BONOBO_SENATE_PRESS`
+
+Convex calls Modal with `Authorization: Bearer <MODAL_TOKEN>`. Modal compares that value against the `BONOBO_SENATE_PRESS` secret.
 
 ## Deploy
 

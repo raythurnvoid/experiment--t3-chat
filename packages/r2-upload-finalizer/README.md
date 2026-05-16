@@ -34,18 +34,30 @@ The Worker forwards accepted events to Convex at `/api/r2/event`.
 
 Convex returns:
 
-- `200` when the event is ignored, queued, or already finalized.
+- `200` when the event is queued or the upload is already finalized.
 - `202` when another delivery already has conversion queued.
-- `422` when the upload cannot be accepted without retrying.
+- `400` when the event body is invalid.
+- `401` when the shared event secret is missing or wrong.
+- `404` when no upload doc matches the forwarded bucket/key.
+- `500` for unexpected route failures.
 - `503` for retryable Convex-side failures.
 
-The Worker retries only network errors and retryable HTTP statuses. Duplicate delivery is expected; Convex finalization is idempotent.
+The Worker retries only network errors and retryable HTTP statuses: `408`, `409`, `425`, `429`, and `>=500`. It acknowledges non-retryable statuses such as `400`, `401`, and `404`. Duplicate delivery is expected; Convex finalization is idempotent.
+
+Convex owns upload lookup, idempotency, conversion queueing, and finalization. The Worker should stay a narrow event forwarder.
 
 ## Configuration
 
 Convex environment:
 
 - `CLOUDFLARE_EVENTS_SECRET`: shared secret used only by trusted Cloudflare event forwarders for this app.
+
+Convex R2 upload/conversion environment:
+
+- `R2_BUCKET_FILES`: bucket used for uploaded source files.
+- `R2_ENDPOINT`: Cloudflare R2 S3-compatible endpoint.
+- `R2_ACCESS_KEY_ID`: access key for signed upload/download URL generation.
+- `R2_SECRET_ACCESS_KEY`: secret key for signed upload/download URL generation.
 
 Worker vars in `wrangler.jsonc`:
 
@@ -171,7 +183,8 @@ pnpx wrangler queues purge bonobo-senate-press-r2-upload-events-dlq
 ## Troubleshooting
 
 - `401` from Convex means Convex `CLOUDFLARE_EVENTS_SECRET` differs from Worker `EVENTS_SECRET`.
-- `422` from Convex means the event was valid but the upload cannot be accepted.
+- `400` from Convex means the forwarded event body did not match the expected schema.
+- `404` from Convex means the R2 object key did not match any pending upload doc; the Worker treats this as non-retryable.
 - `503` from Convex or network failures are retried and eventually sent to the DLQ after `max_retries`.
 - Events with a wrong bucket or a key outside `workspaces/` are acknowledged without calling Convex.
 - R2 notifications must be created after the queue exists.

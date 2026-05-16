@@ -1,6 +1,6 @@
 ---
 name: ai-chat-agent
-description: Practical guide for the current app chat agent implementation (AI SDK 5 + Convex + files file tools). Use this when implementing or modifying the chat agent, its HTTP routes, thread persistence, tool behavior, files-file semantics, pending-update integration, or OpenCode-inspired edit/search flows.
+description: Practical guide for the current app chat agent implementation (AI SDK 5 + Convex + files tools). Use this when implementing or modifying the chat agent, its HTTP routes, thread persistence, tool behavior, files semantics, pending-update integration, or OpenCode-inspired edit/search flows.
 ---
 
 # Source Of Truth Files
@@ -10,6 +10,8 @@ Primary:
 - `../../../packages/app/convex/ai_chat.ts`
 - `../../../packages/app/server/server-ai-tools.ts`
 - `../../../packages/app/convex/files_nodes.ts`
+- `../../../packages/app/convex/files_content.ts`
+- `../../../packages/app/convex/r2.ts`
 - `../../../packages/app/convex/files_pending_updates.ts`
 - `../../../packages/app/server/files.ts`
 - `../../../packages/app/server/files-markdown-chunking-mastra.ts`
@@ -25,8 +27,10 @@ The current agent is a Convex-backed AI chat runtime that streams AI SDK 5 UI me
 - Thread/message storage: Convex tables for `ai_chat_threads` and `ai_chat_threads_messages_aisdk_5`
 - Tool implementation: `../../../packages/app/server/server-ai-tools.ts`
 - Files node data/query layer: `../../../packages/app/convex/files_nodes.ts`
+- Upload conversion/finalization: `../../../packages/app/convex/files_content.ts`
+- R2 upload/event metadata: `../../../packages/app/convex/r2.ts`
 
-The files is a DB-backed file/folder model. Folders are tree nodes only. Files are Markdown documents with Yjs snapshots/updates, markdown content, markdown chunks, and plain-text chunks. AI tools operate on file nodes only.
+The files system is a DB-backed file/folder model scoped by workspace/project membership. Folders are tree nodes only. Markdown files have Yjs snapshots/updates, Markdown content, Markdown chunks, and plain-text chunks. Uploaded source files preserve the original binary in R2 and currently become agent-readable through generated Markdown shadow files.
 
 # Main Request Flow
 
@@ -68,9 +72,35 @@ The main tool object currently contains:
 
 Important limitation:
 
-- These tools operate on DB-backed files files, not repo files on disk.
+- These tools operate on DB-backed project files, not repo files on disk.
 - The agent does not currently have a general shell/filesystem tool in this chat runtime.
+- The agent does not currently read raw R2 binaries through this toolbelt.
+- `read_file`, `write_file`, and `edit_file` require Markdown-backed file content.
+- Uploaded source nodes may be discoverable through path listing, but are not directly readable unless the tool path resolves to Markdown content.
 - `web_search` uses the server-side Exa integration and should be used for current public facts, docs, release notes, news, and information outside the workspace. Keep workspace file tools first when the answer should come from the user's files.
+
+# Uploaded Source And Shadow Files
+
+Current implementation:
+
+- Uploaded source files are visible `files_nodes` rows with `uploadId` and later `assetId`.
+- The original uploaded binary is preserved in R2.
+- Finalization creates a generated Markdown **shadow file** linked from `files_r2_assets.shadowNodeId`.
+- Shadow files are currently visible as `.shadow.md` Markdown files and can be opened/read like other Markdown-backed files.
+- The generated shadow Markdown includes visible frontmatter/source metadata plus converted Markdown.
+- Shadow Markdown is editable and participates in normal Markdown reads, searches, edits, and pending-update review flows.
+- Editing shadow Markdown does not mutate the original R2 object.
+- The DB upload/asset/source/shadow relationship is authoritative; visible frontmatter is contextual/editable content.
+- `list_files` and `glob_files` may show uploaded source paths because they list file nodes. `read_file`, `grep_files`, `write_file`, and `edit_file` only succeed when the resolved node has Markdown content.
+
+Committed product direction:
+
+- Agents should address converted uploaded files by the source path, not the internal `.shadow.md` path.
+- Future read/search/edit behavior on a converted source path should alias to the editable shadow Markdown.
+- Search results for converted uploads should show the source path while using the shadow Markdown as the searchable representation.
+- Normal tree/list/glob APIs should hide shadow files by default once hidden-shadow behavior is implemented.
+- Native source-file reading is planned for provider-supported files, especially PDFs. The agent should decide when Markdown search/results are enough and when to read the original source file with provider-native capabilities.
+- Original binary download is planned for users but is not implemented today.
 
 # Tool Semantics
 
@@ -78,6 +108,7 @@ Important limitation:
 
 - Reads one Markdown file by absolute path and returns numbered lines.
 - Path must be absolute and resolve to a file node.
+- Current behavior requires the resolved node to have `markdownContentId`; uploaded source paths do not yet alias to their shadows.
 - Output uses line numbers like `00001| ...`.
 - Reads through `internal.files_nodes.get_file_last_available_markdown_content_by_path`.
 - That query overlays the passed `userId` user's pending `unstaged` branch if a pending update exists.
@@ -89,18 +120,21 @@ Important limitation:
 - Uses `internal.files_nodes.list_files`.
 - Supports `ignore`, `maxDepth`, and `limit`.
 - Folder items are marked with a trailing `/` in tool output.
+- Current behavior can list uploaded source nodes and visible shadow files. Future hidden-shadow behavior should omit shadow files and expose source paths.
 
 ## `glob_files`
 
 - Finds file/folder paths by glob pattern.
 - Uses `list_files` under the hood with include filtering.
 - Returns paths sorted by newest `updatedAt` first.
+- Current behavior follows `list_files`, so visible `.shadow.md` paths can appear until hidden-shadow behavior is implemented.
 
 ## `grep_files`
 
 - Regex search over file names plus committed/pending Markdown content.
 - Uses JavaScript `RegExp`.
 - Searches only file nodes; folder nodes are traversed for discovery but not read.
+- Current behavior reads Markdown-backed paths only. Uploaded source paths are not searched directly until source-path aliasing is implemented.
 - Produces grouped line-oriented output similar to ripgrep.
 
 ## `text_search_files`
@@ -109,6 +143,7 @@ Important limitation:
 - Search happens on markdown-derived plain text chunks, not raw markdown syntax.
 - Returned snippets are markdown chunks with line ranges and source character ranges.
 - Current behavior exact-filters candidate chunks with `plainTextChunk.includes(query)` and dedupes by markdown chunk id.
+- Current uploaded-file search comes from shadow Markdown chunks. Future results should report the uploaded source path, not the hidden shadow path.
 
 ## `write_file`
 
@@ -117,6 +152,7 @@ Important limitation:
 - Creates the file path if it does not exist; intermediate path segments become folders.
 - Paths must be real Markdown paths ending in `.md`, for example `/readme.md` or `/docs/setup.md`.
 - Stores the proposed result in `files_pending_updates` through `upsert_file_pending_update_internal`.
+- Current behavior writes Markdown files only. Future source-path aliasing may allow writes to a converted uploaded source path by editing its shadow Markdown.
 
 ## `edit_file`
 
@@ -127,6 +163,7 @@ Important limitation:
 - `replaceAll` is opt-in.
 - Stores modified Markdown in `files_pending_updates`, not live file content.
 - If the user copies text from `read_file`, they must not include line-number prefixes.
+- Current behavior edits Markdown-backed files only. Future source-path aliasing may edit a converted upload's shadow Markdown when the agent targets the source path.
 
 # Pending Update Integration
 
@@ -144,7 +181,7 @@ Writes:
 
 # Current Invariants
 
-1. The agent operates on DB files files, not repo files.
+1. The agent operates on DB-backed project files, not repo files.
 2. Folder nodes are not readable/writable by AI file tools.
 3. File reads are user-scoped because pending overlays are user-scoped.
 4. `write_file` and `edit_file` create pending review state, not direct committed writes.
@@ -153,6 +190,9 @@ Writes:
 7. `grep_files` is the precise regex tool; `glob_files` is the path-discovery tool.
 8. `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
 9. Request messages are persisted before generation; assistant responses are persisted after streaming finishes.
+10. Current tools do not read raw R2 binaries; uploaded content is available through Markdown shadow files.
+11. Future source-path aliasing must preserve the product distinction between the original R2 object and the editable Markdown representation.
+12. `.shadow.md` is a system-reserved implementation suffix; normal agent-facing paths should move toward source paths once shadows are hidden.
 
 # Verification Checklist
 
@@ -164,4 +204,6 @@ Writes:
 - `edit_file` fails on missing/ambiguous single-match replacements.
 - `grep_files` behaves like regex/line search.
 - `text_search_files` behaves like chunk search and returns markdown fragment context.
+- Uploaded source files are not described as raw-binary-readable until a native source-file tool exists.
+- Source/shadow current behavior and planned alias behavior remain documented separately.
 - Tool descriptions stay aligned with actual behavior.
