@@ -103,3 +103,6 @@
 [submodule "references-submodules/react-resizable-panels"]
 	path = references-submodules/react-resizable-panels
 	url = ../../bvaughn/react-resizable-panels.git
+[submodule "references-submodules/file-selector"]
+	path = references-submodules/file-selector
+	url = ../../react-dropzone/file-selector.git

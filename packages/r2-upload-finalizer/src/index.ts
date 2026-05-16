@@ -127,6 +127,12 @@ export async function handle_r2_event_message(
 		};
 	}
 
+	const responseBody = await response.text().catch(() => "");
+	console.warn("Convex R2 event route returned a non-OK response", {
+		status: response.status,
+		body: responseBody,
+	});
+
 	if (is_retryable_convex_status(response.status)) {
 		return {
 			type: "retry",
@@ -145,6 +151,11 @@ export default {
 	async queue(batch: MessageBatch<unknown>, env: Env) {
 		for (const message of batch.messages) {
 			const result = await handle_r2_event_message(message, env);
+			console.log("Processed R2 upload event message", {
+				messageId: message.id,
+				attempts: message.attempts,
+				result,
+			});
 			if (result.type === "retry") {
 				message.retry({ delaySeconds: result.delaySeconds });
 				continue;

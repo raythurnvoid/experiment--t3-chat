@@ -199,6 +199,8 @@ All vendored and reference submodule paths are listed below in this single secti
 
 - [references-submodules/assistant-ui/](references-submodules/assistant-ui) - Assistant UI reference submodule (not used at runtime)
 
+- [references-submodules/file-selector/](references-submodules/file-selector) - file-selector source reference for browser file drag/drop extraction; the app uses the published `file-selector` package at runtime.
+
 - [references-submodules/opencode/](references-submodules/opencode) - OpenCode development platform submodule
 
   - Documentation folders:

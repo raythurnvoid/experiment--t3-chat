@@ -10,6 +10,7 @@ import React, {
 	type ComponentProps,
 } from "react";
 import { toast } from "sonner";
+import { fromEvent, type FileWithPath } from "file-selector";
 import {
 	Archive,
 	ArchiveRestore,
@@ -37,6 +38,7 @@ import {
 	selectionFeature,
 	syncDataLoaderFeature,
 	type FeatureImplementation,
+	type DragTarget,
 	type SelectionDataRef,
 	type TreeConfig,
 	type TreeInstance,
@@ -79,6 +81,7 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, forward_ref, path_extract_segments_from, should_never_happen, sx } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { dom_clear_text_selection } from "@/lib/dom-utils.ts";
+import { Result } from "@/lib/errors-as-values-utils.ts";
 import { useUiInteractedOutside } from "@/lib/ui.tsx";
 import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
 import {
@@ -109,6 +112,60 @@ type TreeItems = {
 	sortedItemsIdsByParentId: Map<string, string[]>;
 	itemById: Map<string, files_TreeItem>;
 };
+
+function has_file_drop(dataTransfer: DataTransfer) {
+	return Array.from(dataTransfer.types).includes("Files");
+}
+
+function has_nested_drop_path(file: FileWithPath) {
+	const plainFilePath = `./${file.name}`;
+	return (
+		(file.path !== undefined && file.path !== plainFilePath) ||
+		(file.relativePath !== undefined && file.relativePath !== plainFilePath)
+	);
+}
+
+async function get_single_dropped_file(dataTransfer: DataTransfer) {
+	if (!has_file_drop(dataTransfer)) {
+		return Result({ _nay: { name: "nay", message: "Drop a file to upload." } });
+	}
+
+	let files: FileWithPath[];
+	try {
+		const droppedItems = await fromEvent({ dataTransfer, type: "drop" });
+		files = droppedItems.filter((item): item is FileWithPath => item instanceof File);
+	} catch (error) {
+		console.error("[FilesSidebar.getSingleDroppedFile] Failed to read dropped file", { error });
+		return Result({ _nay: { name: "nay", message: "Failed to read dropped file.", cause: error } });
+	}
+
+	if (files.some(has_nested_drop_path)) {
+		return Result({ _nay: { name: "nay", message: "Folder uploads are not supported yet." } });
+	}
+	if (files.length === 0) {
+		return Result({ _nay: { name: "nay", message: "Drop a file to upload." } });
+	}
+	if (files.length > 1) {
+		return Result({ _nay: { name: "nay", message: "Drop one file at a time." } });
+	}
+
+	return Result({ _yay: files[0] });
+}
+
+function can_receive_file_drop(args: {
+	dataTransfer: DataTransfer;
+	target: DragTarget<files_TreeItem>;
+	isBusy: boolean;
+	isUploadingFile: boolean;
+}) {
+	if (args.isBusy || args.isUploadingFile || !has_file_drop(args.dataTransfer)) {
+		return false;
+	}
+
+	const targetId = args.target.item.getId();
+	const targetData = args.target.item.getItemData();
+	return targetId === files_ROOT_ID || targetData.kind === "folder";
+}
 
 function get_default_node_name(args: { parentId: string; kind: files_TreeItem["kind"]; treeItems: TreeItems }) {
 	const siblingIds = args.treeItems.sortedItemsIdsByParentId.get(args.parentId) ?? [];
@@ -1248,6 +1305,28 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		itemProps.onDrop?.(event);
 	});
 
+	const handleExternalFileDragOverCapture = useFn<ComponentProps<"div">["onDragOverCapture"]>((event) => {
+		if (itemData.kind !== "file" || !has_file_drop(event.dataTransfer)) {
+			return;
+		}
+
+		// Keep external file drops from being reparented to the file's parent by Headless Tree's sibling fallback.
+		event.preventDefault();
+		event.stopPropagation();
+		event.dataTransfer.dropEffect = "none";
+	});
+
+	const handleExternalFileDropCapture = useFn<ComponentProps<"div">["onDropCapture"]>((event) => {
+		if (itemData.kind !== "file" || !has_file_drop(event.dataTransfer)) {
+			return;
+		}
+
+		event.preventDefault();
+		event.stopPropagation();
+		event.dataTransfer.dropEffect = "none";
+		toast.error("Drop files onto a folder or the root.");
+	});
+
 	return (
 		<>
 			<div
@@ -1264,6 +1343,8 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 				{...({
 					"data-file-id": itemId,
 				} satisfies Partial<FilesSidebarTreeItem_CustomAttributes>)}
+				onDragOverCapture={handleExternalFileDragOverCapture}
+				onDropCapture={handleExternalFileDropCapture}
 			>
 				<FilesSidebarTreeItemPrimaryAction
 					itemProps={itemProps}
@@ -1356,6 +1437,7 @@ type FilesSidebarTree_Props = {
 	selectedNodeId: string | null;
 	selectedNodeIds: Set<string>;
 	isBusy: boolean;
+	isUploadingFile: boolean;
 	pendingActionNodeIds: Set<string>;
 	renameErrorByNodeId: Map<string, string>;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
@@ -1377,6 +1459,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		selectedNodeId,
 		selectedNodeIds,
 		isBusy,
+		isUploadingFile,
 		pendingActionNodeIds,
 		renameErrorByNodeId,
 		onCreateNode,
@@ -1423,7 +1506,9 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 
 	const handleUpdateRootZoneFromDragEvent: NonNullable<FilesSidebarTree_DivProps["onDragOverCapture"]> = (event) => {
 		const draggedItems = tree().getState().dnd?.draggedItems ?? [];
-		if (draggedItems.length === 0) {
+		const isExternalFileDrag =
+			!isBusy && !isUploadingFile && has_file_drop(event.dataTransfer);
+		if (draggedItems.length === 0 && !isExternalFileDrag) {
 			handleSetIsDraggingOverRootZone(false);
 			return;
 		}
@@ -2101,7 +2186,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	/**
 	 * Filtered items ids from search query
 	 */
-	const visibleFileIds = ((/* iife */) => {
+	const visibleFileIds = useMemo(() => {
 		if (!treeItems) {
 			return new Set<string>();
 		}
@@ -2148,7 +2233,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 
 		return result;
-	})();
+	}, [searchQueryDeferred, treeItems]);
 
 	const hasSelectedFileInTree = Boolean(selectedNodeId && visibleFileIds.has(selectedNodeId));
 
@@ -2244,6 +2329,183 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				}
 			})
 			.catch((error) => console.error("[FilesSidebar.moveNodesToParent] Error moving nodes", { error }));
+	});
+
+	const createUploadNodeAndPut = useFn(
+		(args: {
+			file: File;
+			parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
+			filename: string;
+			contentType?: string;
+		}) => {
+			setIsUploadingFile(true);
+			convex
+				.mutation(app_convex_api.files_nodes.create_upload_node, {
+					membershipId,
+					parentId: args.parentId,
+					filename: args.filename,
+					contentType: args.contentType,
+					size: args.file.size,
+				})
+				.then(async (created) => {
+					if (created._nay) {
+						console.error("[FilesSidebar.createUploadNodeAndPut] Failed to create upload node", { created });
+						toast.error(created._nay.message ?? "Failed to prepare upload");
+						return null;
+					}
+
+					setUploadDraft(null);
+					const uploadResponse = await fetch(created._yay.url, {
+						method: "PUT",
+						headers: created._yay.headers,
+						body: args.file,
+					});
+					if (!uploadResponse.ok) {
+						console.error("[FilesSidebar.uploadFile] R2 upload failed", {
+							status: uploadResponse.status,
+							uploadId: created._yay.uploadId,
+							nodeId: created._yay.nodeId,
+						});
+						toast.error("Upload failed before processing could start.");
+						return null;
+					}
+
+					toast.success("File uploaded. Processing...");
+					return null;
+				})
+				.catch((error) => {
+					console.error("[FilesSidebar.createUploadNodeAndPut] Error uploading file", { error });
+					toast.error(error instanceof Error ? error.message : "Failed to upload file");
+				})
+				.finally(() => {
+					setIsUploadingFile(false);
+				});
+		},
+	);
+
+	const uploadFile = useFn(
+		(args: {
+			file: File;
+			parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
+			filename: string;
+			contentType?: string;
+		}) => {
+			if (!treeItems) {
+				console.error(should_never_happen("[FilesSidebar.uploadFile] missing deps", { treeItems }));
+				return;
+			}
+
+			if (!files_sidebar_upload_filename_has_extension(args.filename)) {
+				setUploadDraft({
+					file: args.file,
+					parentId: args.parentId,
+					filename: args.filename,
+					contentType: args.contentType,
+					reason: "missing_extension",
+				});
+				return;
+			}
+
+			const parentItem = treeItems.itemById.get(args.parentId);
+			if (!parentItem || parentItem.kind !== "folder") {
+				console.error("[FilesSidebar.uploadFile] Parent folder not found", { parentId: args.parentId });
+				toast.error("Parent folder not found");
+				return;
+			}
+
+			convex
+				.query(app_convex_api.files_nodes.get_by_path, {
+					membershipId,
+					path: files_sidebar_path_join(parentItem.path, args.filename),
+				})
+				.then((existingNode) => {
+					if (existingNode) {
+						setUploadDraft({
+							file: args.file,
+							parentId: args.parentId,
+							filename: args.filename,
+							contentType: args.contentType,
+							reason: "path_conflict",
+							conflict: {
+								nodeId: existingNode.nodeId,
+								kind: existingNode.kind,
+								name: existingNode.name,
+							},
+						});
+						return;
+					}
+
+					createUploadNodeAndPut(args);
+				})
+				.catch((error) => {
+					console.error("[FilesSidebar.uploadFile] Failed to check upload path", { error });
+					toast.error("Failed to prepare upload");
+				});
+		},
+	);
+
+	const uploadBrowserFile = useFn(
+		(args: {
+			file: File;
+			parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
+		}) => {
+			uploadFile({
+				file: args.file,
+				parentId: args.parentId,
+				filename: files_normalize_upload_file_name(args.file.name),
+				contentType: args.file.type || undefined,
+			});
+		},
+	);
+
+	const canDragForeignDragObjectOver = useFn<
+		NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canDragForeignDragObjectOver"]>
+	>((dataTransfer, target) => {
+		return can_receive_file_drop({
+			dataTransfer,
+			target,
+			isBusy,
+			isUploadingFile,
+		});
+	});
+
+	const canDropForeignDragObject = useFn<
+		NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canDropForeignDragObject"]>
+	>((dataTransfer, target) => {
+		return can_receive_file_drop({
+			dataTransfer,
+			target,
+			isBusy,
+			isUploadingFile,
+		});
+	});
+
+	const handleDropForeignDragObject = useFn<
+		NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["onDropForeignDragObject"]>
+	>(async (dataTransfer, target) => {
+		if (
+			!can_receive_file_drop({
+				dataTransfer,
+				target,
+				isBusy,
+				isUploadingFile,
+			})
+		) {
+			toast.error("Drop files onto a folder or the root.");
+			return;
+		}
+
+		const uploadFileDrop = await get_single_dropped_file(dataTransfer);
+		if (uploadFileDrop._nay) {
+			toast.error(uploadFileDrop._nay.message ?? "Failed to read dropped file.");
+			return;
+		}
+
+		const targetParentId = target.item.getId();
+		uploadBrowserFile({
+			file: uploadFileDrop._yay,
+			parentId: targetParentId === files_ROOT_ID ? files_ROOT_ID : (targetParentId as app_convex_Id<"files_nodes">),
+		});
 	});
 
 	const canRename = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canRename"]>>((item) => {
@@ -2583,6 +2845,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		isItemFolder: (item) => item.getItemData().kind === "folder",
 		canDrag,
 		canDrop,
+		canDragForeignDragObjectOver,
+		canDropForeignDragObject,
+		onDropForeignDragObject: handleDropForeignDragObject,
 		setRenamingItem: handleRenamingItemChange,
 		onDrop: handleDrop,
 		canRename,
@@ -2845,119 +3110,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		setShowArchived((oldValue) => !oldValue);
 	});
 
-	const createUploadNodeAndPut = useFn(
-		(args: {
-			file: File;
-			parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
-			filename: string;
-			contentType?: string;
-		}) => {
-			setIsUploadingFile(true);
-			convex
-				.mutation(app_convex_api.files_nodes.create_upload_node, {
-					membershipId,
-					parentId: args.parentId,
-					filename: args.filename,
-					contentType: args.contentType,
-					size: args.file.size,
-				})
-				.then(async (created) => {
-					if (created._nay) {
-						console.error("[FilesSidebar.createUploadNodeAndPut] Failed to create upload node", { created });
-						toast.error(created._nay.message ?? "Failed to prepare upload");
-						return null;
-					}
-
-					setUploadDraft(null);
-					const uploadResponse = await fetch(created._yay.url, {
-						method: "PUT",
-						headers: created._yay.headers,
-						body: args.file,
-					});
-					if (!uploadResponse.ok) {
-						console.error("[FilesSidebar.uploadFile] R2 upload failed", {
-							status: uploadResponse.status,
-							uploadId: created._yay.uploadId,
-							nodeId: created._yay.nodeId,
-						});
-						toast.error("Upload failed before processing could start.");
-						return null;
-					}
-
-					toast.success("File uploaded. Processing...");
-					return null;
-				})
-				.catch((error) => {
-					console.error("[FilesSidebar.createUploadNodeAndPut] Error uploading file", { error });
-					toast.error(error instanceof Error ? error.message : "Failed to upload file");
-				})
-				.finally(() => {
-					setIsUploadingFile(false);
-				});
-		},
-	);
-
-	const uploadFile = useFn(
-		(args: {
-			file: File;
-			parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
-			filename: string;
-			contentType?: string;
-		}) => {
-			if (!treeItems) {
-				console.error(should_never_happen("[FilesSidebar.uploadFile] missing deps", { treeItems }));
-				return;
-			}
-
-			if (!files_sidebar_upload_filename_has_extension(args.filename)) {
-				setUploadDraft({
-					file: args.file,
-					parentId: args.parentId,
-					filename: args.filename,
-					contentType: args.contentType,
-					reason: "missing_extension",
-				});
-				return;
-			}
-
-			const parentItem = treeItems.itemById.get(args.parentId);
-			if (!parentItem || parentItem.kind !== "folder") {
-				console.error("[FilesSidebar.uploadFile] Parent folder not found", { parentId: args.parentId });
-				toast.error("Parent folder not found");
-				return;
-			}
-
-			convex
-				.query(app_convex_api.files_nodes.get_by_path, {
-					membershipId,
-					path: files_sidebar_path_join(parentItem.path, args.filename),
-				})
-				.then((existingNode) => {
-					if (existingNode) {
-						setUploadDraft({
-							file: args.file,
-							parentId: args.parentId,
-							filename: args.filename,
-							contentType: args.contentType,
-							reason: "path_conflict",
-							conflict: {
-								nodeId: existingNode.nodeId,
-								kind: existingNode.kind,
-								name: existingNode.name,
-							},
-						});
-						return;
-					}
-
-					createUploadNodeAndPut(args);
-				})
-				.catch((error) => {
-					console.error("[FilesSidebar.uploadFile] Failed to check upload path", { error });
-					toast.error("Failed to prepare upload");
-				});
-		},
-	);
-
 	const handleUploadFileClick = useFn(() => {
 		uploadInputRef.current?.click();
 	});
@@ -2977,14 +3129,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			selectedItem.archiveOperationId === undefined
 				? selectedItem._id
 				: files_ROOT_ID;
-		const contentType = file.type || undefined;
-		const filename = files_normalize_upload_file_name(file.name);
 
-		uploadFile({
+		uploadBrowserFile({
 			file,
 			parentId: parentId === files_ROOT_ID ? files_ROOT_ID : (parentId as app_convex_Id<"files_nodes">),
-			filename,
-			contentType,
 		});
 	});
 
@@ -3165,6 +3313,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					selectedNodeId={selectedNodeId}
 					selectedNodeIds={selectedNodeIds}
 					isBusy={isBusy}
+					isUploadingFile={isUploadingFile}
 					pendingActionNodeIds={pendingActionNodeIds}
 					renameErrorByNodeId={renameErrorByNodeId}
 					onCreateNode={handleCreateNodeClick}
@@ -3208,6 +3357,133 @@ if (import.meta.vitest) {
 			updatedBy: "test-user" as app_convex_Id<"users">,
 		};
 	};
+
+	const test_file = (name = "upload.pdf") => {
+		return new File(["content"], name, { type: "application/pdf" });
+	};
+
+	const test_file_from_directory = (name = "upload.pdf") => {
+		const file = test_file(name) as FileWithPath;
+		Object.defineProperty(file, "path", {
+			value: `/folder/${name}`,
+			configurable: true,
+		});
+		return file;
+	};
+
+	const test_data_transfer = (args: {
+		types?: string[];
+		files?: File[];
+		items?: DataTransferItem[];
+	}) => {
+		return {
+			types: args.types ?? ["Files"],
+			files: args.files ?? [],
+			...(args.items ? { items: args.items } : {}),
+		} as unknown as DataTransfer;
+	};
+
+	const test_drag_target = (itemData: files_TreeItem) => {
+		return {
+			item: {
+				getId: () => itemData._id,
+				getItemData: () => itemData,
+			},
+		} as unknown as DragTarget<files_TreeItem>;
+	};
+
+	describe("external file drop helpers", () => {
+		test("detects browser file drags from DataTransfer types", () => {
+			expect(has_file_drop(test_data_transfer({ types: ["Files"] }))).toBe(true);
+			expect(has_file_drop(test_data_transfer({ types: ["text/plain"] }))).toBe(false);
+		});
+
+		test("accepts exactly one dropped file", async () => {
+			const file = test_file();
+			const result = await get_single_dropped_file(
+				test_data_transfer({
+					files: [file],
+				}),
+			);
+
+			expect(result).toEqual({
+				_yay: file,
+			});
+		});
+
+		test("rejects missing files, multiple files, and folders", async () => {
+			await expect(get_single_dropped_file(test_data_transfer({ files: [] }))).resolves.toMatchObject({
+				_nay: { message: "Drop a file to upload." },
+			});
+			await expect(
+				get_single_dropped_file(
+					test_data_transfer({
+						files: [test_file("one.pdf"), test_file("two.pdf")],
+					}),
+				),
+			).resolves.toMatchObject({
+				_nay: { message: "Drop one file at a time." },
+			});
+			await expect(
+				get_single_dropped_file(
+					test_data_transfer({
+						files: [test_file_from_directory()],
+					}),
+				),
+			).resolves.toMatchObject({
+				_nay: { message: "Folder uploads are not supported yet." },
+			});
+		});
+
+		test("allows external file drops only on root and folder targets while idle", () => {
+			const dataTransfer = test_data_transfer({ files: [test_file()] });
+			const folder = test_node({
+				id: "folder_1",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "folder",
+			});
+			const file = test_node({
+				id: "file_1",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				name: "file.md",
+			});
+
+			expect(
+				can_receive_file_drop({
+					dataTransfer,
+					target: test_drag_target(files_create_tree_root()),
+					isBusy: false,
+					isUploadingFile: false,
+				}),
+			).toBe(true);
+			expect(
+				can_receive_file_drop({
+					dataTransfer,
+					target: test_drag_target(folder),
+					isBusy: false,
+					isUploadingFile: false,
+				}),
+			).toBe(true);
+			expect(
+				can_receive_file_drop({
+					dataTransfer,
+					target: test_drag_target(file),
+					isBusy: false,
+					isUploadingFile: false,
+				}),
+			).toBe(false);
+			expect(
+				can_receive_file_drop({
+					dataTransfer,
+					target: test_drag_target(folder),
+					isBusy: false,
+					isUploadingFile: true,
+				}),
+			).toBe(false);
+		});
+	});
 
 	describe("files_sidebar_get_tree_items_list_after_optimistic_rename", () => {
 		test("updates only the DB doc fields for simple renames", () => {

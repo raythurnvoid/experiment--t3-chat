@@ -164,7 +164,7 @@ Tree-item components:
 - `canDrop` guards target kind, self-drop, and descendant-drop.
 - Root and folders can receive drops.
 - Files cannot receive drops.
-- External OS file drops use headless-tree foreign DnD and must reuse the existing Upload file pipeline.
+- External OS file drops use headless-tree foreign DnD for tree targeting and `file-selector` for browser file extraction, then reuse the existing Upload file pipeline.
 - External file drops are accepted only on the root drop zone, folder rows, and empty-folder placeholders.
 - Dropped browser `File` objects are normalized with `files_normalize_upload_file_name`, uploaded through `files_nodes.create_upload_node`, PUT to the signed R2 URL, then processed by the existing R2 event/conversion flow.
 - Keep external upload acceptance file-type neutral. Do not add MIME or extension allowlists beyond the existing uploaded-source requirement that a filename has a real extension.
