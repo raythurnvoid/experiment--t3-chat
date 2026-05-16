@@ -9,7 +9,9 @@ beforeEach(() => {
 		key: customKey ?? "test-upload-key",
 		url: "https://r2.test/upload",
 	}));
-	vi.spyOn(R2.prototype, "getUrl").mockImplementation(async (key: string) => `https://r2.test/${encodeURIComponent(key)}`);
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key: string) => `https://r2.test/${encodeURIComponent(key)}`,
+	);
 });
 
 afterEach(() => {
@@ -77,7 +79,7 @@ describe("files_content.convert_upload_to_markdown", () => {
 			const source = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			const asset = source?.assetId ? await ctx.db.get("files_r2_assets", source.assetId) : null;
 			const oldShadow = await ctx.db.get("files_nodes", existingShadowId);
-			const newShadow = asset ? await ctx.db.get("files_nodes", asset.shadowNodeId) : null;
+			const newShadow = asset?.shadowNodeId ? await ctx.db.get("files_nodes", asset.shadowNodeId) : null;
 			const activeShadowAtPath = await ctx.db
 				.query("files_nodes")
 				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
@@ -112,7 +114,10 @@ describe("files_content.convert_upload_to_markdown", () => {
 			external_id: db.userId,
 			name: "Test User",
 		});
-		vi.stubGlobal("fetch", vi.fn(async () => new Response("failed", { status: 500 })));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response("failed", { status: 500 })),
+		);
 
 		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
 			membershipId: db.membershipId,
@@ -171,7 +176,7 @@ describe("files_content.convert_upload_to_markdown", () => {
 			const nextUploadDoc = await ctx.db.get("files_uploads", upload._yay.uploadId);
 			const source = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			const asset = source?.assetId ? await ctx.db.get("files_r2_assets", source.assetId) : null;
-			const shadow = asset ? await ctx.db.get("files_nodes", asset.shadowNodeId) : null;
+			const shadow = asset?.shadowNodeId ? await ctx.db.get("files_nodes", asset.shadowNodeId) : null;
 			return { nextUploadDoc, source, asset, shadow };
 		});
 		expect(docs.nextUploadDoc?.status).toBe("finalized");

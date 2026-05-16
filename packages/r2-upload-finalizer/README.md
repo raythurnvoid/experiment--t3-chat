@@ -34,8 +34,7 @@ The Worker forwards accepted events to Convex at `/api/r2/event`.
 
 Convex returns:
 
-- `200` when the event is queued or the upload is already finalized.
-- `202` when another delivery already has conversion queued.
+- `204` when the event is acknowledged, including queued work, duplicate in-progress deliveries, and already-finalized uploads.
 - `400` when the event body is invalid.
 - `401` when the shared event secret is missing or wrong.
 - `404` when no upload doc matches the forwarded bucket/key.

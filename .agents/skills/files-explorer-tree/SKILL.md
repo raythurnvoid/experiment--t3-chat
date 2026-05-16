@@ -45,12 +45,12 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - File nodes are leaves. Markdown-backed files open in the editor; uploaded source files currently open stored-file metadata.
 - Clicking a folder opens its folder screen. `FileNodeView` decides whether the selected node renders the folder explorer or the file editor, and folder screens embed an editable child `README.md` when present.
 - Editable Markdown file nodes have `markdownContentId`, Yjs rows, Markdown content, Markdown chunks, plain-text chunks, and snapshots.
-- Uploaded source file nodes have `uploadId` and later `assetId`, preserve the original binary in R2, and do not have `markdownContentId`.
-- Generated shadow files are Markdown file nodes linked from `files_r2_assets.shadowNodeId`; the source node is linked from `files_r2_assets.sourceNodeId`.
+- Uploaded source file nodes have `uploadId` immediately and get `assetId` after the R2 object-create event confirms the source object exists; they preserve the original binary in R2 and do not have `markdownContentId`.
+- Generated shadow files are Markdown file nodes linked from `files_r2_assets.shadowNodeId` after conversion; before conversion finishes, the asset row exists without `shadowNodeId`. The source node is linked from `files_r2_assets.sourceNodeId`.
 - Use the term **shadow file** for these generated Markdown records in engineering docs.
 - `.shadow.md` is system-reserved for generated shadow files. Normal user-created files should avoid that suffix even though current conflict handling can archive an unexpected occupant.
 - Shadow frontmatter/source metadata is visible Markdown content, but the authoritative source/asset relationship is the DB link between source node, upload row, and asset row.
-- Current active upload states are `pending`, `converting`, and `finalized`.
+- Current active upload states are `pending`, `uploaded`, `converting`, and `finalized`.
 - Upload R2 keys use `workspaces/<workspaceId>/projects/<projectId>/nodes/<sourceNodeId>/source`.
 - Upload max is 50 MiB; converted Markdown max is 900,000 characters.
 
@@ -182,10 +182,11 @@ Tree-item components:
 8. Backend returns a signed R2 PUT URL and optional content-type header.
 9. Browser uploads the binary directly to R2.
 10. R2 object-create event flows through the upload finalizer Worker to Convex.
-11. Convex queues Modal conversion and marks the upload `converting`.
-12. Modal converts the R2 object to Markdown.
-13. Convex wraps converted Markdown with visible shadow frontmatter.
-14. Convex creates `<source filename>.shadow.md`, archives any unexpected active occupant of that path, inserts `files_r2_assets`, patches the source with `assetId`, and marks the upload `finalized`.
+11. Convex inserts `files_r2_assets`, patches the source with `assetId`, and marks the upload `uploaded`.
+12. Convex queues Modal conversion and marks the upload `converting`.
+13. Modal converts the R2 object to Markdown.
+14. Convex wraps converted Markdown with visible shadow frontmatter.
+15. Convex creates `<source filename>.shadow.md`, archives any unexpected active occupant of that path, patches `files_r2_assets.shadowNodeId`, and marks the upload `finalized`.
 
 # Headless-Tree Configuration Highlights
 

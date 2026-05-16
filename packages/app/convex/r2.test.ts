@@ -11,7 +11,9 @@ beforeEach(() => {
 		key: customKey ?? "test-upload-key",
 		url: "https://r2.test/upload",
 	}));
-	vi.spyOn(R2.prototype, "getUrl").mockImplementation(async (key: string) => `https://r2.test/${encodeURIComponent(key)}`);
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key: string) => `https://r2.test/${encodeURIComponent(key)}`,
+	);
 });
 
 afterEach(() => {
@@ -52,25 +54,7 @@ function r2_event_args(upload: Doc<"files_uploads">) {
 	};
 }
 
-type R2EventRouteBody =
-	| {
-			type: "in_progress";
-			retryAfterMs: number;
-	  }
-	| {
-			type: "queued";
-			uploadId: string;
-			sourceNodeId: string;
-	  }
-	| {
-			type: "finalized";
-			assetId: string;
-			sourceNodeId: string;
-			shadowNodeId: string;
-	  }
-	| {
-			message: string;
-	  };
+type R2EventRouteBody = { message: string } | null;
 
 async function fetch_r2_event(t: ReturnType<typeof test_convex>, body: ReturnType<typeof r2_event_args>) {
 	const response = await t.fetch("/api/r2/event", {
@@ -82,9 +66,10 @@ async function fetch_r2_event(t: ReturnType<typeof test_convex>, body: ReturnTyp
 		body: JSON.stringify(body),
 	});
 
+	const responseBody = await response.text();
 	return {
 		response,
-		body: (await response.json()) as R2EventRouteBody,
+		body: responseBody ? (JSON.parse(responseBody) as R2EventRouteBody) : null,
 	};
 }
 
@@ -135,13 +120,20 @@ describe("r2 event HTTP route", () => {
 		}
 		const queued = await fetch_r2_event(t, r2_event_args(uploadDoc));
 
-		expect(queued.response.status).toBe(200);
-		expect(queued.body).toMatchObject({
-			type: "queued",
-			uploadId: upload._yay.uploadId,
-			sourceNodeId: upload._yay.nodeId,
-		});
+		expect(queued.response.status).toBe(204);
+		expect(queued.body).toBeNull();
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		const uploadedDocs = await t.run(async (ctx) => {
+			const source = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			const asset = source?.assetId ? await ctx.db.get("files_r2_assets", source.assetId) : null;
+			return { asset, source };
+		});
+		expect(uploadedDocs.source?.assetId).toBe(uploadedDocs.asset?._id);
+		expect(uploadedDocs.asset).toMatchObject({
+			sourceNodeId: upload._yay.nodeId,
+			r2Key: uploadDoc.r2Key,
+		});
+		expect(uploadedDocs.asset?.shadowNodeId).toBeUndefined();
 
 		await t.action(internal.files_content.convert_upload_to_markdown, {
 			uploadId: upload._yay.uploadId,
@@ -151,7 +143,7 @@ describe("r2 event HTTP route", () => {
 			const nextUploadDoc = await ctx.db.get("files_uploads", upload._yay.uploadId);
 			const source = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			const asset = source?.assetId ? await ctx.db.get("files_r2_assets", source.assetId) : null;
-			const shadow = asset ? await ctx.db.get("files_nodes", asset.shadowNodeId) : null;
+			const shadow = asset?.shadowNodeId ? await ctx.db.get("files_nodes", asset.shadowNodeId) : null;
 			return { nextUploadDoc, asset, source, shadow };
 		});
 
@@ -160,6 +152,8 @@ describe("r2 event HTTP route", () => {
 		});
 		expect(docs.nextUploadDoc?.conversionWorkId).toBeUndefined();
 		expect(docs.source?.assetId).toBe(docs.asset?._id);
+		expect(docs.asset?._id).toBe(uploadedDocs.asset?._id);
+		expect(docs.asset?.shadowNodeId).toBe(docs.shadow?._id);
 		expect(docs.asset?.sourceNodeId).toBe(upload._yay.nodeId);
 		expect(docs.source).toMatchObject({
 			parentId: folder._yay.nodeId,
@@ -215,21 +209,18 @@ describe("r2 event HTTP route", () => {
 			attempts: 3,
 		});
 
-		expect(first.response.status).toBe(200);
-		expect(first.body).toMatchObject({ type: "queued" });
-		expect(second.response.status).toBe(202);
-		expect(second.body).toMatchObject({ type: "in_progress" });
-		expect(third.response.status).toBe(200);
-		expect(third.body).toMatchObject({ type: "finalized" });
+		expect(first.response.status).toBe(204);
+		expect(first.body).toBeNull();
+		expect(second.response.status).toBe(204);
+		expect(second.body).toBeNull();
+		expect(third.response.status).toBe(204);
+		expect(third.body).toBeNull();
 		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
 		const assets = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_r2_assets")
 				.withIndex("by_workspace_project_sourceNode", (q) =>
-					q
-						.eq("workspaceId", db.workspaceId)
-						.eq("projectId", db.projectId)
-						.eq("sourceNodeId", upload._yay.nodeId),
+					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("sourceNodeId", upload._yay.nodeId),
 				)
 				.collect(),
 		);

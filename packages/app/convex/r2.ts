@@ -5,13 +5,7 @@ import { R2 } from "@convex-dev/r2";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import { components, internal } from "./_generated/api.js";
-import {
-	httpAction,
-	internalMutation,
-	internalQuery,
-	query,
-	type ActionCtx,
-} from "./_generated/server.js";
+import { httpAction, internalMutation, internalQuery, query, type ActionCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
 import {
 	server_convex_get_user_fallback_to_anonymous,
@@ -174,7 +168,7 @@ export const get_finalized_asset_by_source_node = internalQuery({
 		}
 
 		const asset = await ctx.db.get("files_r2_assets", sourceNode.assetId);
-		if (!asset || asset.sourceNodeId !== sourceNode._id) {
+		if (!asset || asset.sourceNodeId !== sourceNode._id || !asset.shadowNodeId) {
 			return null;
 		}
 
@@ -184,6 +178,89 @@ export const get_finalized_asset_by_source_node = internalQuery({
 
 type r2_get_finalized_asset_by_source_node_Result =
 	typeof get_finalized_asset_by_source_node extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const ensure_uploaded_asset = internalMutation({
+	args: {
+		uploadId: v.id("files_uploads"),
+	},
+	returns: v_result({
+		_yay: doc(app_convex_schema, "files_r2_assets"),
+	}),
+	handler: async (ctx, args) => {
+		const upload = await ctx.db.get("files_uploads", args.uploadId);
+		if (!upload) {
+			return Result({
+				_nay: {
+					message: "Upload doc not found while creating uploaded asset",
+				},
+			});
+		}
+
+		const sourceNode = await ctx.db.get("files_nodes", upload.sourceNodeId);
+		if (!sourceNode) {
+			return Result({
+				_nay: {
+					message: "Source node not found while creating uploaded asset",
+				},
+			});
+		}
+
+		if (sourceNode.assetId) {
+			const asset = await ctx.db.get("files_r2_assets", sourceNode.assetId);
+			if (!asset || asset.sourceNodeId !== sourceNode._id) {
+				return Result({
+					_nay: {
+						message: "Existing uploaded asset did not match source node",
+					},
+				});
+			}
+
+			return Result({ _yay: asset });
+		}
+
+		const now = Date.now();
+		const assetId = await ctx.db.insert("files_r2_assets", {
+			workspaceId: upload.workspaceId,
+			projectId: upload.projectId,
+			r2Bucket: upload.r2Bucket,
+			r2Key: upload.r2Key,
+			filename: upload.filename,
+			...(upload.contentType ? { contentType: upload.contentType } : {}),
+			...(upload.size === undefined ? {} : { size: upload.size }),
+			sourceNodeId: sourceNode._id,
+			createdBy: upload.createdBy,
+			createdAt: now,
+			updatedAt: now,
+		});
+
+		// Treat the R2 event as proof that the source object exists; conversion only attaches the shadow file later.
+		await Promise.all([
+			ctx.db.patch("files_nodes", sourceNode._id, {
+				assetId,
+			}),
+			ctx.db.patch("files_uploads", upload._id, {
+				status: "uploaded",
+				failureMessage: undefined,
+			}),
+		]);
+
+		const asset = await ctx.db.get("files_r2_assets", assetId);
+		if (!asset) {
+			return Result({
+				_nay: {
+					message: "Failed to read uploaded asset after creation",
+				},
+			});
+		}
+
+		return Result({ _yay: asset });
+	},
+});
+
+type r2_ensure_uploaded_asset_Result =
+	typeof ensure_uploaded_asset extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -331,35 +408,40 @@ export function r2_http_routes(router: RouterForConvexModules) {
 									const asset = (await ctx.runQuery(internal.r2.get_finalized_asset_by_source_node, {
 										nodeId: upload._yay.sourceNodeId,
 									})) as r2_get_finalized_asset_by_source_node_Result;
-									if (!asset) {
+									if (!asset?.shadowNodeId) {
+										console.error("Finalized upload asset not found for duplicate R2 event", {
+											uploadId: upload._yay._id,
+											sourceNodeId: upload._yay.sourceNodeId,
+										});
+									} else {
+										// Duplicate R2 events after conversion should not enqueue new work.
 										return {
-											status: 503,
-											body: {
-												message: "Finalized upload asset not found",
-											},
+											status: 204,
+											body: {},
 										} as const;
 									}
+								}
 
-									// Duplicate R2 events after conversion should report the completed asset, not enqueue new work.
+								const uploadedAsset = (await ctx.runMutation(internal.r2.ensure_uploaded_asset, {
+									uploadId: upload._yay._id,
+								})) as r2_ensure_uploaded_asset_Result;
+								if (uploadedAsset._nay) {
+									console.error("Failed to create uploaded asset for R2 event", {
+										uploadId: upload._yay._id,
+										sourceNodeId: upload._yay.sourceNodeId,
+										result: uploadedAsset,
+									});
 									return {
-										status: 200,
-										body: {
-											type: "finalized",
-											assetId: asset._id,
-											sourceNodeId: asset.sourceNodeId,
-											shadowNodeId: asset.shadowNodeId,
-										},
+										status: 204,
+										body: {},
 									} as const;
 								}
 
 								if (upload._yay.conversionWorkId) {
 									// A Workpool id is the durable signal that conversion was already accepted.
 									return {
-										status: 202,
-										body: {
-											type: "in_progress",
-											retryAfterMs: 30_000,
-										},
+										status: 204,
+										body: {},
 									} as const;
 								}
 
@@ -391,12 +473,8 @@ export function r2_http_routes(router: RouterForConvexModules) {
 								}
 
 								return {
-									status: 200,
-									body: {
-										type: "queued",
-										uploadId: upload._yay._id,
-										sourceNodeId: upload._yay.sourceNodeId,
-									},
+									status: 204,
+									body: {},
 								} as const;
 							} catch (error: unknown) {
 								console.error("R2 event HTTP route failed", { error });
@@ -414,6 +492,10 @@ export function r2_http_routes(router: RouterForConvexModules) {
 							method,
 							handler: httpAction(async (ctx, request) => {
 								const result = await handler(ctx, request);
+
+								if (result.status === 204) {
+									return new Response(null, { status: result.status });
+								}
 
 								return Response.json(result.body, result);
 							}),

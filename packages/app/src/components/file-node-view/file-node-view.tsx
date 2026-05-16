@@ -405,17 +405,30 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 		membershipId,
 		nodeId: node._id,
 	});
-	const storedFileMetadataIsLoading = asset === undefined || (asset === null && upload === undefined);
 	const activeAsset = asset ?? null;
-	const activeUpload = asset === null ? (upload ?? null) : null;
-	const shadowItem = treeItemsList?.find((item) => item._id === activeAsset?.shadowNodeId);
+	const assetNeedsUploadStatus = activeAsset !== null && !activeAsset.shadowNodeId;
+	const storedFileMetadataIsLoading =
+		asset === undefined || ((asset === null || assetNeedsUploadStatus) && upload === undefined);
+	const activeUpload = asset === null || assetNeedsUploadStatus ? (upload ?? null) : null;
+	const activeUploadStatusText =
+		activeUpload && !activeAsset?.shadowNodeId
+			? (activeUpload.failureMessage ??
+				(activeUpload.status === "pending"
+					? "Waiting for upload"
+					: activeUpload.status === "uploaded"
+						? "Uploaded. Processing"
+						: "Processing"))
+			: null;
+	const shadowItem = activeAsset?.shadowNodeId
+		? treeItemsList?.find((item) => item._id === activeAsset.shadowNodeId)
+		: undefined;
 	const title = node.name;
 	const subtitle = ((/* iife */) => {
 		if (storedFileMetadataIsLoading) {
 			return "Loading metadata";
 		}
-		if (activeUpload) {
-			return activeUpload.failureMessage ?? (activeUpload.status === "pending" ? "Waiting for upload" : "Processing");
+		if (activeUploadStatusText) {
+			return activeUploadStatusText;
 		}
 
 		return activeAsset?.contentType ?? "Unknown file type";
@@ -462,7 +475,7 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 								Status
 							</dt>
 							<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
-								{activeUpload.failureMessage ?? activeUpload.status}
+								{activeUploadStatusText ?? activeUpload.status}
 							</dd>
 						</div>
 					) : null}
@@ -500,20 +513,22 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 									{activeAsset.r2Key}
 								</dd>
 							</div>
-							<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
-								<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
-									Shadow Markdown
-								</dt>
-								<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
-									<MyLink
-										to="/w/$workspaceName/$projectName/files"
-										params={{ workspaceName, projectName }}
-										search={{ nodeId: activeAsset.shadowNodeId, view: "plain_text_editor" }}
-									>
-										{shadowItem?.name ?? activeAsset.shadowNodeId}
-									</MyLink>
-								</dd>
-							</div>
+							{activeAsset.shadowNodeId ? (
+								<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+									<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+										Shadow Markdown
+									</dt>
+									<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+										<MyLink
+											to="/w/$workspaceName/$projectName/files"
+											params={{ workspaceName, projectName }}
+											search={{ nodeId: activeAsset.shadowNodeId, view: "plain_text_editor" }}
+										>
+											{shadowItem?.name ?? activeAsset.shadowNodeId}
+										</MyLink>
+									</dd>
+								</div>
+							) : null}
 						</>
 					) : null}
 				</dl>

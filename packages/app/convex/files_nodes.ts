@@ -920,7 +920,7 @@ export const create_upload_node = mutation({
 
 			const replacedAsset = existingNode.assetId ? await ctx.db.get("files_r2_assets", existingNode.assetId) : null;
 			await db_archive_nodes(ctx, {
-				nodeIds: [existingNode._id, ...(replacedAsset ? [replacedAsset.shadowNodeId] : [])],
+				nodeIds: [existingNode._id, ...(replacedAsset?.shadowNodeId ? [replacedAsset.shadowNodeId] : [])],
 				updatedBy: userAuth.id,
 				now,
 			});

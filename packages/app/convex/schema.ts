@@ -293,7 +293,8 @@ const app_convex_schema = defineSchema({
 		contentType: v.optional(v.string()),
 		size: v.optional(v.number()),
 		sourceNodeId: v.id("files_nodes"),
-		shadowNodeId: v.id("files_nodes"),
+		/** Generated Markdown shadow file, attached after conversion finishes. */
+		shadowNodeId: v.optional(v.id("files_nodes")),
 		createdBy: v.id("users"),
 		createdAt: v.number(),
 		updatedAt: v.number(),

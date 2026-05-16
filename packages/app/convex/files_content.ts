@@ -70,12 +70,12 @@ function shadow_markdown(args: {
 }
 
 async function convert_object_to_markdown(args: { key: string; filename: string; contentType?: string }) {
-const sourceUrl = await r2_get_download_url({
-	key: args.key,
-	options: {
-		expiresIn: signed_url_expires_seconds,
-	},
-});
+	const sourceUrl = await r2_get_download_url({
+		key: args.key,
+		options: {
+			expiresIn: signed_url_expires_seconds,
+		},
+	});
 
 	let response: Response;
 	try {
@@ -158,13 +158,13 @@ export const finalize_upload_conversion_to_markdown = internalMutation({
 		}
 
 		// Keep queue-driven finalization idempotent because R2 events are delivered at least once.
-		const finalizedAsset = sourceFile.assetId ? await ctx.db.get("files_r2_assets", sourceFile.assetId) : null;
-		if (finalizedAsset && finalizedAsset.sourceNodeId === sourceFile._id) {
+		const existingAsset = sourceFile.assetId ? await ctx.db.get("files_r2_assets", sourceFile.assetId) : null;
+		if (existingAsset && existingAsset.sourceNodeId === sourceFile._id && existingAsset.shadowNodeId) {
 			return Result({
 				_yay: {
-					assetId: finalizedAsset._id,
+					assetId: existingAsset._id,
 					sourceNodeId: sourceFile._id,
-					shadowNodeId: finalizedAsset.shadowNodeId,
+					shadowNodeId: existingAsset.shadowNodeId,
 				},
 			});
 		}
@@ -220,20 +220,29 @@ export const finalize_upload_conversion_to_markdown = internalMutation({
 			return Result({ _nay: shadowFile._nay });
 		}
 
-		const assetId = await ctx.db.insert("files_r2_assets", {
-			workspaceId: upload.workspaceId,
-			projectId: upload.projectId,
-			r2Bucket: upload.r2Bucket,
-			r2Key: upload.r2Key,
-			filename: upload.filename,
-			...(upload.contentType ? { contentType: upload.contentType } : {}),
-			...(upload.size === undefined ? {} : { size: upload.size }),
-			sourceNodeId: sourceFile._id,
-			shadowNodeId: shadowFile._yay,
-			createdBy: upload.createdBy,
-			createdAt: now,
-			updatedAt: now,
-		});
+		const assetId =
+			existingAsset && existingAsset.sourceNodeId === sourceFile._id
+				? existingAsset._id
+				: await ctx.db.insert("files_r2_assets", {
+						workspaceId: upload.workspaceId,
+						projectId: upload.projectId,
+						r2Bucket: upload.r2Bucket,
+						r2Key: upload.r2Key,
+						filename: upload.filename,
+						...(upload.contentType ? { contentType: upload.contentType } : {}),
+						...(upload.size === undefined ? {} : { size: upload.size }),
+						sourceNodeId: sourceFile._id,
+						shadowNodeId: shadowFile._yay,
+						createdBy: upload.createdBy,
+						createdAt: now,
+						updatedAt: now,
+					});
+		if (existingAsset && existingAsset.sourceNodeId === sourceFile._id) {
+			await ctx.db.patch("files_r2_assets", existingAsset._id, {
+				shadowNodeId: shadowFile._yay,
+				updatedAt: now,
+			});
+		}
 
 		await Promise.all([
 			ctx.db.patch("files_nodes", sourceFile._id, {
