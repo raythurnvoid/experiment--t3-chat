@@ -28,6 +28,8 @@ Use this file for reusable `/files` route and editor interaction knowledge.
 - Use `state.appPlaywriterHarness.inspectElement(...)` before clicking the main sidebar when diagnosing navigation clickability.
 - Avoid force-clicking editor or sidebar controls; if a click is blocked, inspect the topmost element at the target point.
 - Editor mode radios are visually represented by labels in the app header. If clicking a radio locator times out because the native input is tiny, click the matching `#app_main_header_content label` instead.
+- Source files and generated `.shadow.md` files share filename prefixes. Use exact role-name locators for per-node action buttons, such as `getByRole("button", { name: "More actions for qa.pdf", exact: true })`, so the source locator does not also match `qa.pdf.shadow.md`.
+- When the folder explorer is visible, it can render a second action button with the same accessible name as the tree action. Scope the locator to the tree/folder row or use `.first()` intentionally after confirming the snapshot.
 
 ## Resize Handle QA
 
@@ -59,6 +61,21 @@ Keep folder/file creation checks as a route-specific recipe. Do not promote this
 - Try creating the same deep file path again and verify `This file already exists.` disables `Create file`.
 - Try creating `deep/path` as a folder and verify `This folder already exists.` disables `Create folder`.
 - Archive the temporary `aaa-pw-qa-*` folder at the end of the flow.
+
+## R2 Upload QA
+
+Keep R2 upload checks as a route-specific recipe. Do not promote this flow into the installed harness unless file upload controls become a generic primitive across routes.
+
+- Fixture asset: `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf`. Keep harness file assets under Git LFS.
+- Bind a single `/files` tab and verify no dedicated Uploads section appears in the files sidebar.
+- From the root folder or a temporary `aaa-pw-qa-*` folder, click `Upload file`, then set the hidden `input[type="file"]` to the fixture path.
+- Verify a normal tree node named `r2-upload-sample.pdf` appears immediately after upload preparation; it should not appear in a separate uploads list.
+- Open the new source node and verify the file panel shows a processing/pending state instead of the converted file until finalization completes.
+- Upload the same fixture to the same folder again and verify the modal title is `File already exists` with `Replace` and `Upload renamed file` actions.
+- Choose `Upload renamed file` with a unique filename such as `r2-upload-sample-<timestamp>.pdf` and verify the renamed source node appears in the normal tree.
+- Repeat the collision flow and choose `Replace`; verify the old active source is archived and the replacement source appears as the active `r2-upload-sample.pdf`.
+- Archive the temporary `aaa-pw-qa-*` folder at the end of the flow.
+- Oversized upload UI checks are hard to drive through Playwriter because `setInputFiles` refuses files larger than 50 MB in extension mode. Prefer backend/unit coverage for the size gate, or use a smaller app-configured size limit in a dedicated test build if browser-level oversized QA becomes required.
 
 
 ## Rapid page-switch presence QA

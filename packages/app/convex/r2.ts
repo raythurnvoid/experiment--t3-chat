@@ -1,496 +1,212 @@
-import { paginationOptsValidator, type RegisteredMutation } from "convex/server";
+import { Workpool } from "@convex-dev/workpool";
+import type { RegisteredMutation, RegisteredQuery, RouteSpec } from "convex/server";
 import { v } from "convex/values";
 import { R2 } from "@convex-dev/r2";
 import { doc } from "convex-helpers/validators";
-import { components } from "./_generated/api.js";
-import { internalMutation, mutation, query } from "./_generated/server.js";
-import type { Doc } from "./_generated/dataModel.js";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
-import { v_result } from "../server/convex-utils.ts";
+import { z } from "zod";
+import { components, internal } from "./_generated/api.js";
+import {
+	httpAction,
+	internalMutation,
+	internalQuery,
+	query,
+	type ActionCtx,
+} from "./_generated/server.js";
+import type { Id } from "./_generated/dataModel.js";
+import {
+	server_convex_get_user_fallback_to_anonymous,
+	server_request_json_parse_and_validate,
+} from "../server/server-utils.ts";
+import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import { files_ROOT_ID } from "../server/files.ts";
 import { workspaces_db_get_membership } from "./workspaces.ts";
 import app_convex_schema from "./schema.ts";
+import type { RouterForConvexModules } from "./http.ts";
+import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 
-/** 15 minutes */
-const r2_files_upload_url_expires_ms = 15 * 60 * 1000;
-const r2_files_upload_conversion_stale_ms = 15 * 60 * 1000;
+if (!process.env.R2_BUCKET_FILES) {
+	throw convex_error({ message: "R2_BUCKET_FILES is not set in Convex env" });
+}
 
-const r2_files = new R2(components.r2, {
-	bucket: process.env.R2_BUCKET_FILES ?? process.env.R2_BUCKET!,
-	endpoint: process.env.R2_ENDPOINT!,
-	accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-	secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
+const R2_BUCKET_FILES = process.env.R2_BUCKET_FILES;
+
+if (!process.env.R2_ENDPOINT) {
+	throw convex_error({ message: "R2_ENDPOINT is not set in Convex env" });
+}
+
+const R2_ENDPOINT = process.env.R2_ENDPOINT;
+
+if (!process.env.R2_ACCESS_KEY_ID) {
+	throw convex_error({ message: "R2_ACCESS_KEY_ID is not set in Convex env" });
+}
+
+const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
+
+if (!process.env.R2_SECRET_ACCESS_KEY) {
+	throw convex_error({ message: "R2_SECRET_ACCESS_KEY is not set in Convex env" });
+}
+
+const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
+
+if (!process.env.CLOUDFLARE_EVENTS_SECRET) {
+	throw convex_error({ message: "CLOUDFLARE_EVENTS_SECRET is not set in Convex env" });
+}
+
+const CLOUDFLARE_EVENTS_SECRET = process.env.CLOUDFLARE_EVENTS_SECRET;
+
+const r2 = new R2(components.r2, {
+	bucket: R2_BUCKET_FILES,
+	endpoint: R2_ENDPOINT,
+	accessKeyId: R2_ACCESS_KEY_ID,
+	secretAccessKey: R2_SECRET_ACCESS_KEY,
 });
 
-const r2_files_metadata_validator = v.object({
-	key: v.string(),
-	sha256: v.optional(v.string()),
-	contentType: v.optional(v.string()),
-	size: v.optional(v.number()),
-	bucket: v.string(),
-	lastModified: v.string(),
-	link: v.string(),
-	url: v.string(),
-	bucketLink: v.string(),
+const r2_upload_conversion_workpool = new Workpool(components.files_upload_conversion_workpool, {
+	maxParallelism: 1,
+	retryActionsByDefault: true,
+	defaultRetryBehavior: {
+		initialBackoffMs: 60 * 1000,
+		base: 1.2,
+		maxAttempts: Number.POSITIVE_INFINITY,
+	} as const,
 });
 
-function r2_files_object_key_prefix(args: { workspaceId: string; projectId: string }) {
-	return `workspaces/${args.workspaceId}/projects/${args.projectId}/`;
+export async function r2_get_download_url(args: {
+	key: Parameters<typeof r2.getUrl>[0];
+	options?: Parameters<typeof r2.getUrl>[1];
+}) {
+	return await r2.getUrl(args.key, {
+		...args.options,
+	});
 }
 
-function r2_files_object_key_belongs_to_membership(
-	key: string,
-	membership: Pick<Doc<"workspaces_projects_users">, "workspaceId" | "projectId">,
-) {
-	return key.startsWith(r2_files_object_key_prefix(membership));
+export function r2_create_upload_key(args: { workspaceId: string; projectId: string; nodeId: Id<"files_nodes"> }) {
+	return `workspaces/${args.workspaceId}/projects/${args.projectId}/nodes/${args.nodeId}/source`;
 }
 
-function r2_files_normalize_content_type(contentType: string | undefined) {
-	const normalized = contentType?.trim();
-	if (!normalized) {
-		return undefined;
-	}
-	if (normalized.length > 255 || /[\r\n]/.test(normalized)) {
-		return undefined;
-	}
-	return normalized;
+export function r2_get_bucket() {
+	return r2.config.bucket;
 }
 
-function r2_files_create_upload_key(args: { workspaceId: string; projectId: string }) {
-	return `${r2_files_object_key_prefix(args)}uploads/${crypto.randomUUID()}`;
+export async function r2_generate_upload_url(key: Parameters<typeof r2.generateUploadUrl>[0]) {
+	return await r2.generateUploadUrl(key);
 }
 
-export const generate_upload_url = mutation({
+export const get_upload_by_bucket_and_key = internalQuery({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
-		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
-		filename: v.string(),
-		contentType: v.optional(v.string()),
-		size: v.number(),
-	},
-	returns: v_result({
-		_yay: v.object({
-			uploadId: v.id("files_uploads"),
-			url: v.string(),
-			headers: v.record(v.string(), v.string()),
-		}),
-	}),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const membership = await workspaces_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		if (args.parentId !== files_ROOT_ID) {
-			const parent = await ctx.db.get(args.parentId);
-			if (
-				!parent ||
-				parent.workspaceId !== membership.workspaceId ||
-				parent.projectId !== membership.projectId ||
-				parent.kind !== "folder" ||
-				parent.archiveOperationId !== undefined
-			) {
-				return Result({ _nay: { message: "Parent file not found" } });
-			}
-		}
-
-		const key = r2_files_create_upload_key({
-			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
-		});
-		const upload = await r2_files.generateUploadUrl(key);
-		const contentType = r2_files_normalize_content_type(args.contentType);
-		const headers: Record<string, string> = contentType ? { "Content-Type": contentType } : {};
-		const now = Date.now();
-		const uploadId = await ctx.db.insert("files_uploads", {
-			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
-			createdBy: membership.userId,
-			parentId: args.parentId,
-			r2Bucket: r2_files.config.bucket,
-			r2Key: upload.key,
-			filename: args.filename,
-			...(contentType ? { contentType } : {}),
-			size: args.size,
-			createdAt: now,
-			expiresAt: now + r2_files_upload_url_expires_ms,
-			status: "pending",
-			conversionAttempts: 0,
-		});
-
-		return Result({
-			_yay: {
-				uploadId,
-				url: upload.url,
-				headers,
-			},
-		});
-	},
-});
-
-/**
- * Called by the temporary manual fallback after the browser uploads the file to R2.
- *
- * Check that the upload row belongs to this user and project, start an R2
- * metadata refresh, and return the upload row data needed for conversion.
- */
-export const prepare_upload_for_finalization = internalMutation({
-	args: {
-		membershipId: v.id("workspaces_projects_users"),
-		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
-		uploadId: v.id("files_uploads"),
+		bucket: v.string(),
+		key: v.string(),
 	},
 	returns: v_result({
 		_yay: doc(app_convex_schema, "files_uploads"),
 	}),
 	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const membership = await workspaces_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const upload = await ctx.db.get("files_uploads", args.uploadId);
-		if (!upload) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (
-			upload.workspaceId !== membership.workspaceId ||
-			upload.projectId !== membership.projectId ||
-			upload.createdBy !== membership.userId
-		) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		if (args.parentId !== files_ROOT_ID) {
-			const parent = await ctx.db.get(args.parentId);
-			if (
-				!parent ||
-				parent.workspaceId !== membership.workspaceId ||
-				parent.projectId !== membership.projectId ||
-				parent.kind !== "folder" ||
-				parent.archiveOperationId !== undefined
-			) {
-				return Result({ _nay: { message: "Parent file not found" } });
-			}
-		}
-		if (upload.expiresAt < Date.now()) {
-			return Result({ _nay: { message: "Upload expired" } });
-		}
-		if (!upload.assetId || !upload.sourceNodeId || !upload.shadowNodeId) {
-			await ctx.db.patch("files_uploads", upload._id, {
-				parentId: upload.parentId ?? args.parentId,
-				status: "converting",
-				uploadedAt: upload.uploadedAt ?? Date.now(),
-				conversionStartedAt: Date.now(),
-				conversionAttempts: (upload.conversionAttempts ?? 0) + 1,
-				failedAt: undefined,
-				failureMessage: undefined,
-			});
-		}
-
-		if (process.env.NODE_ENV !== "test") {
-			await ctx.scheduler.runAfter(0, components.r2.lib.syncMetadata, {
-				key: upload.r2Key,
-				...r2_files.config,
-			});
-		}
-
-		return Result({ _yay: (await ctx.db.get(upload._id)) ?? upload });
-	},
-});
-
-export type r2_prepare_upload_for_finalization_Result =
-	typeof prepare_upload_for_finalization extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-export const prepare_upload_for_r2_event_finalization = internalMutation({
-	args: {
-		cloudflareMessageId: v.string(),
-		action: v.string(),
-		bucket: v.string(),
-		key: v.string(),
-		size: v.optional(v.number()),
-		eTag: v.optional(v.string()),
-		eventTime: v.string(),
-	},
-	returns: v_result({
-		_yay: v.union(
-			v.object({
-				type: v.literal("ignored"),
-				reason: v.string(),
-			}),
-			v.object({
-				type: v.literal("in_progress"),
-				retryAfterMs: v.number(),
-			}),
-			v.object({
-				type: v.literal("already_finalized"),
-				assetId: v.id("files_r2_assets"),
-				sourceNodeId: v.id("files_nodes"),
-				shadowNodeId: v.id("files_nodes"),
-			}),
-			v.object({
-				type: v.literal("claimed"),
-				upload: doc(app_convex_schema, "files_uploads"),
-			}),
-		),
-	}),
-	handler: async (ctx, args) => {
-		if (args.bucket !== r2_files.config.bucket) {
-			return Result({
-				_yay: {
-					type: "ignored",
-					reason: "Bucket does not match configured files bucket",
-				},
-			});
-		}
-
 		const upload = await ctx.db
 			.query("files_uploads")
 			.withIndex("by_r2Bucket_r2Key", (q) => q.eq("r2Bucket", args.bucket).eq("r2Key", args.key))
 			.unique();
+
 		if (!upload) {
 			return Result({
-				_yay: {
-					type: "ignored",
-					reason: "Upload row not found",
-				},
-			});
-		}
-		if (upload.assetId && upload.sourceNodeId && upload.shadowNodeId) {
-			return Result({
-				_yay: {
-					type: "already_finalized",
-					assetId: upload.assetId,
-					sourceNodeId: upload.sourceNodeId,
-					shadowNodeId: upload.shadowNodeId,
-				},
-			});
-		}
-
-		const now = Date.now();
-		if (
-			upload.status === "converting" &&
-			upload.conversionStartedAt !== undefined &&
-			upload.conversionStartedAt > now - r2_files_upload_conversion_stale_ms
-		) {
-			return Result({
-				_yay: {
-					type: "in_progress",
-					retryAfterMs: 30_000,
-				},
-			});
-		}
-
-		await ctx.db.patch(upload._id, {
-			status: "converting",
-			uploadedAt: upload.uploadedAt ?? now,
-			conversionStartedAt: now,
-			conversionAttempts: (upload.conversionAttempts ?? 0) + 1,
-			failedAt: undefined,
-			failureMessage: undefined,
-			r2EventCloudflareMessageId: args.cloudflareMessageId,
-			r2EventAction: args.action,
-			r2EventTime: args.eventTime,
-			...(args.size === undefined ? {} : { r2EventSize: args.size }),
-			...(args.eTag === undefined ? {} : { r2EventEtag: args.eTag }),
-		});
-
-		if (process.env.NODE_ENV !== "test") {
-			await ctx.scheduler.runAfter(0, components.r2.lib.syncMetadata, {
-				key: upload.r2Key,
-				...r2_files.config,
-			});
-		}
-
-		const claimedUpload = await ctx.db.get(upload._id);
-		if (!claimedUpload) {
-			return Result({
 				_nay: {
-					message: "Upload row not found after claim",
+					message: "Upload doc not found",
 				},
 			});
 		}
 
-		return Result({
-			_yay: {
-				type: "claimed",
-				upload: claimedUpload,
-			},
-		});
+		return Result({ _yay: upload });
 	},
 });
 
-export type r2_prepare_upload_for_r2_event_finalization_Result =
-	typeof prepare_upload_for_r2_event_finalization extends RegisteredMutation<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
+export type r2_get_upload_by_bucket_and_key_Result =
+	typeof get_upload_by_bucket_and_key extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
-export const mark_upload_finalization_failed = internalMutation({
+export const get_asset = query({
 	args: {
-		uploadId: v.id("files_uploads"),
-		message: v.string(),
+		membershipId: v.id("workspaces_projects_users"),
+		nodeId: v.id("files_nodes"),
 	},
-	returns: v.null(),
+	returns: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
 	handler: async (ctx, args) => {
-		const upload = await ctx.db.get(args.uploadId);
-		if (!upload || (upload.assetId && upload.sourceNodeId && upload.shadowNodeId)) {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
 			return null;
 		}
 
-		await ctx.db.patch(upload._id, {
-			status: "failed",
-			failedAt: Date.now(),
-			failureMessage: args.message,
-		});
-
-		return null;
-	},
-});
-
-export const list_recent_uploads = query({
-	args: {
-		membershipId: v.id("workspaces_projects_users"),
-	},
-	returns: v_result({
-		_yay: v.array(
-			v.object({
-				uploadId: v.id("files_uploads"),
-				parentId: v.optional(v.union(v.id("files_nodes"), v.literal(files_ROOT_ID))),
-				filename: v.string(),
-				status: v.union(
-					v.literal("pending"),
-					v.literal("uploaded"),
-					v.literal("converting"),
-					v.literal("finalized"),
-					v.literal("failed"),
-				),
-				createdAt: v.number(),
-				uploadedAt: v.optional(v.number()),
-				conversionStartedAt: v.optional(v.number()),
-				failedAt: v.optional(v.number()),
-				failureMessage: v.optional(v.string()),
-			}),
-		),
-	}),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
 		const membership = await workspaces_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
+			return null;
 		}
 
-		const rows = (
-			await Promise.all(
-				(["pending", "uploaded", "converting", "failed"] as const).map((status) =>
-					ctx.db
-						.query("files_uploads")
-						.withIndex("by_workspace_project_status_createdAt", (q) =>
-							q
-								.eq("workspaceId", membership.workspaceId)
-								.eq("projectId", membership.projectId)
-								.eq("status", status),
-						)
-						.order("desc")
-						.take(10),
-				),
-			)
-		)
-			.flat()
-			.sort((a, b) => b.createdAt - a.createdAt)
-			.slice(0, 20);
+		const sourceNode = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!sourceNode ||
+			sourceNode.workspaceId !== membership.workspaceId ||
+			sourceNode.projectId !== membership.projectId ||
+			!sourceNode.assetId
+		) {
+			return null;
+		}
 
-		return Result({
-			_yay: rows.map((upload) => ({
-				uploadId: upload._id,
-				parentId: upload.parentId,
-				filename: upload.filename,
-				status: upload.status ?? "pending",
-				createdAt: upload.createdAt,
-				uploadedAt: upload.uploadedAt,
-				conversionStartedAt: upload.conversionStartedAt,
-				failedAt: upload.failedAt,
-				failureMessage: upload.failureMessage,
-			})),
-		});
+		const asset = await ctx.db.get("files_r2_assets", sourceNode.assetId);
+		if (!asset || asset.sourceNodeId !== sourceNode._id) {
+			return null;
+		}
+
+		return asset;
 	},
 });
 
-export const sync_metadata = mutation({
+export const get_finalized_asset_by_source_node = internalQuery({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
-		key: v.string(),
+		nodeId: v.id("files_nodes"),
 	},
-	returns: v_result({ _yay: v.null() }),
+	returns: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
 	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
+		const sourceNode = await ctx.db.get("files_nodes", args.nodeId);
+		if (!sourceNode?.assetId) {
+			return null;
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		if (!r2_files_object_key_belongs_to_membership(args.key, membership)) {
-			return Result({ _nay: { message: "Unauthorized" } });
+		const asset = await ctx.db.get("files_r2_assets", sourceNode.assetId);
+		if (!asset || asset.sourceNodeId !== sourceNode._id) {
+			return null;
 		}
 
-		if (process.env.NODE_ENV !== "test") {
-			await ctx.scheduler.runAfter(0, components.r2.lib.syncMetadata, {
-				key: args.key,
-				...r2_files.config,
-			});
-		}
-
-		return Result({ _yay: null });
+		return asset;
 	},
 });
 
-export const get_metadata = query({
+type r2_get_finalized_asset_by_source_node_Result =
+	typeof get_finalized_asset_by_source_node extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const get_upload_by_source_node = query({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
-		key: v.string(),
+		nodeId: v.id("files_nodes"),
 	},
-	returns: v_result({
-		_yay: v.object({
-			metadata: v.union(r2_files_metadata_validator, v.null()),
+	returns: v.union(
+		v.object({
+			uploadId: v.id("files_uploads"),
+			filename: v.string(),
+			contentType: v.optional(v.string()),
+			size: v.optional(v.number()),
+			status: v.union(v.literal("pending"), v.literal("uploaded"), v.literal("converting"), v.literal("finalized")),
+			failureMessage: v.optional(v.string()),
 		}),
-	}),
+		v.null(),
+	),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
+			return null;
 		}
 
 		const membership = await workspaces_db_get_membership(ctx, {
@@ -498,86 +214,221 @@ export const get_metadata = query({
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		if (!r2_files_object_key_belongs_to_membership(args.key, membership)) {
-			return Result({ _nay: { message: "Unauthorized" } });
+			return null;
 		}
 
-		const metadata = await r2_files.getMetadata(ctx, args.key);
-		return Result({ _yay: { metadata } });
+		const sourceNode = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!sourceNode ||
+			sourceNode.workspaceId !== membership.workspaceId ||
+			sourceNode.projectId !== membership.projectId ||
+			!sourceNode.uploadId
+		) {
+			return null;
+		}
+
+		const upload = await ctx.db.get("files_uploads", sourceNode.uploadId);
+		if (!upload || upload.sourceNodeId !== sourceNode._id) {
+			return null;
+		}
+
+		return {
+			uploadId: upload._id,
+			filename: upload.filename,
+			contentType: upload.contentType,
+			size: upload.size,
+			status: upload.status,
+			failureMessage: upload.failureMessage,
+		};
 	},
 });
 
-export const list_metadata = query({
+export const set_upload_status = internalMutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
-		paginationOpts: paginationOptsValidator,
+		uploadId: v.id("files_uploads"),
+		status: v.union(v.literal("pending"), v.literal("uploaded"), v.literal("converting"), v.literal("finalized")),
+		conversionWorkId: v.optional(v.union(v.string(), v.null())),
+		failureMessage: v.optional(v.union(v.string(), v.null())),
 	},
-	returns: v_result({
-		_yay: v.object({
-			page: v.array(r2_files_metadata_validator),
-			isDone: v.boolean(),
-			continueCursor: v.string(),
-			splitCursor: v.optional(v.union(v.null(), v.string())),
-			pageStatus: v.optional(v.union(v.null(), v.literal("SplitRecommended"), v.literal("SplitRequired"))),
-		}),
-	}),
+	returns: v.union(doc(app_convex_schema, "files_uploads"), v.null()),
 	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const membership = await workspaces_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
+		await ctx.db.patch("files_uploads", args.uploadId, {
+			status: args.status,
+			...(args.conversionWorkId === undefined ? {} : { conversionWorkId: args.conversionWorkId ?? undefined }),
+			...(args.failureMessage === undefined ? {} : { failureMessage: args.failureMessage ?? undefined }),
 		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
 
-		const metadata = await r2_files.listMetadata(ctx, args.paginationOpts.numItems, args.paginationOpts.cursor);
-		const prefix = r2_files_object_key_prefix(membership);
-		return Result({
-			_yay: {
-				...metadata,
-				page: metadata.page.filter((item) => item.key.startsWith(prefix)),
+		return await ctx.db.get("files_uploads", args.uploadId);
+	},
+});
+
+export type r2_set_upload_status_Result =
+	typeof set_upload_status extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export function r2_http_routes(router: RouterForConvexModules) {
+	return {
+		...((/* iife */ path = "/api/r2/event" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						const bodyValidator = z.object({
+							cloudflareMessageId: z.string(),
+							attempts: z.number(),
+							event: z.object({
+								account: z.string().optional(),
+								action: z.string(),
+								bucket: z.string(),
+								object: z.object({
+									key: z.string(),
+									size: z.number().optional(),
+									eTag: z.string().optional(),
+								}),
+								eventTime: z.string(),
+							}),
+						});
+
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = z.infer<typeof bodyValidator>;
+
+						const handler = async (ctx: ActionCtx, request: Request) => {
+							try {
+								// Accept only the trusted Cloudflare event forwarder for R2 notifications.
+								if (request.headers.get("Authorization") !== `Bearer ${CLOUDFLARE_EVENTS_SECRET}`) {
+									return {
+										status: 401,
+										body: {
+											message: "Unauthenticated",
+										},
+									} as const;
+								}
+
+								const body = await server_request_json_parse_and_validate(request, bodyValidator);
+								if (body._nay) {
+									return {
+										status: 400,
+										body: body._nay,
+									} as const;
+								}
+
+								const upload = (await ctx.runQuery(internal.r2.get_upload_by_bucket_and_key, {
+									bucket: body._yay.event.bucket,
+									key: body._yay.event.object.key,
+								})) as r2_get_upload_by_bucket_and_key_Result;
+								if (upload._nay) {
+									return {
+										status: upload._nay.message === "Upload doc not found" ? 404 : 503,
+										body: {
+											message: upload._nay.message,
+										},
+									} as const;
+								}
+
+								if (upload._yay.status === "finalized") {
+									const asset = (await ctx.runQuery(internal.r2.get_finalized_asset_by_source_node, {
+										nodeId: upload._yay.sourceNodeId,
+									})) as r2_get_finalized_asset_by_source_node_Result;
+									if (!asset) {
+										return {
+											status: 503,
+											body: {
+												message: "Finalized upload asset not found",
+											},
+										} as const;
+									}
+
+									// Duplicate R2 events after conversion should report the completed asset, not enqueue new work.
+									return {
+										status: 200,
+										body: {
+											type: "finalized",
+											assetId: asset._id,
+											sourceNodeId: asset.sourceNodeId,
+											shadowNodeId: asset.shadowNodeId,
+										},
+									} as const;
+								}
+
+								if (upload._yay.conversionWorkId) {
+									// A Workpool id is the durable signal that conversion was already accepted.
+									return {
+										status: 202,
+										body: {
+											type: "in_progress",
+											retryAfterMs: 30_000,
+										},
+									} as const;
+								}
+
+								try {
+									const workId = await r2_upload_conversion_workpool.enqueueAction(
+										ctx,
+										internal.files_content.convert_upload_to_markdown,
+										{
+											uploadId: upload._yay._id,
+										},
+									);
+									await ctx.runMutation(internal.r2.set_upload_status, {
+										uploadId: upload._yay._id,
+										status: "converting",
+										conversionWorkId: String(workId),
+										failureMessage: null,
+									});
+								} catch (error) {
+									console.error("Failed to enqueue R2 upload conversion", {
+										error,
+										uploadId: upload._yay._id,
+									});
+									return {
+										status: 503,
+										body: {
+											message: "Failed to enqueue upload conversion",
+										},
+									} as const;
+								}
+
+								return {
+									status: 200,
+									body: {
+										type: "queued",
+										uploadId: upload._yay._id,
+										sourceNodeId: upload._yay.sourceNodeId,
+									},
+								} as const;
+							} catch (error: unknown) {
+								console.error("R2 event HTTP route failed", { error });
+								return {
+									status: 500,
+									body: {
+										message: "Internal server error",
+									},
+								} as const;
+							}
+						};
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const result = await handler(ctx, request);
+
+								return Response.json(result.body, result);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+						};
+					})(),
+				}))(),
 			},
-		});
-	},
-});
-
-export const delete_object = mutation({
-	args: {
-		membershipId: v.id("workspaces_projects_users"),
-		key: v.string(),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const membership = await workspaces_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		if (!r2_files_object_key_belongs_to_membership(args.key, membership)) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		if (process.env.NODE_ENV !== "test") {
-			await ctx.scheduler.runAfter(0, components.r2.lib.deleteObject, {
-				key: args.key,
-				...r2_files.config,
-			});
-		}
-
-		return Result({ _yay: null });
-	},
-});
+		}))(),
+	};
+}

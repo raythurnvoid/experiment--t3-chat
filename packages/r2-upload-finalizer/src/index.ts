@@ -100,7 +100,7 @@ export async function handle_r2_event_message(
 
 	let response: Response;
 	try {
-		response = await fetch(`${normalize_convex_http_url(env.CONVEX_HTTP_URL)}/api/files/uploads/finalize-from-r2-event`, {
+		response = await fetch(`${normalize_convex_http_url(env.CONVEX_HTTP_URL)}/api/r2/event`, {
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${env.EVENTS_SECRET}`,

@@ -1,6 +1,6 @@
 # R2 Upload Finalizer Worker
 
-This Worker consumes Cloudflare Queue messages emitted by R2 Event Notifications and forwards upload-create events to Convex. Convex remains responsible for upload ownership, Modal conversion, source file creation, and `.shadow.md` creation.
+This Worker consumes Cloudflare Queue messages emitted by R2 Event Notifications and forwards upload-create events to Convex. Convex remains responsible for upload ownership, queueing Modal conversion, and linked `.shadow.md` creation.
 
 Use `pnpx wrangler` for all Cloudflare CLI work in this repo. Do not install Wrangler globally, and do not use `npx wrangler`.
 
@@ -21,7 +21,7 @@ The Worker posts this body to Convex:
 		"action": "object-create",
 		"bucket": "bucket-name",
 		"object": {
-			"key": "workspaces/<workspaceId>/projects/<projectId>/uploads/<uuid>",
+			"key": "workspaces/<workspaceId>/projects/<projectId>/nodes/<sourceNodeId>/source",
 			"size": 123,
 			"eTag": "etag"
 		},
@@ -30,11 +30,13 @@ The Worker posts this body to Convex:
 }
 ```
 
+The Worker forwards accepted events to Convex at `/api/r2/event`.
+
 Convex returns:
 
-- `200` when the event is ignored or finalized.
-- `202` when another delivery already has the upload claimed.
-- `422` when the upload cannot be finalized without retrying.
+- `200` when the event is ignored, queued, or already finalized.
+- `202` when another delivery already has conversion queued.
+- `422` when the upload cannot be accepted without retrying.
 - `503` for retryable Convex-side failures.
 
 The Worker retries only network errors and retryable HTTP statuses. Duplicate delivery is expected; Convex finalization is idempotent.
@@ -169,7 +171,7 @@ pnpx wrangler queues purge bonobo-senate-press-r2-upload-events-dlq
 ## Troubleshooting
 
 - `401` from Convex means Convex `CLOUDFLARE_EVENTS_SECRET` differs from Worker `EVENTS_SECRET`.
-- `422` from Convex means the event was valid but the upload cannot be finalized, usually because the legacy row has no parent or the target file name conflicts.
+- `422` from Convex means the event was valid but the upload cannot be accepted.
 - `503` from Convex or network failures are retried and eventually sent to the DLQ after `max_retries`.
 - Events with a wrong bucket or a key outside `workspaces/` are acknowledged without calling Convex.
 - R2 notifications must be created after the queue exists.

@@ -101,7 +101,8 @@ Tree-item components:
 - File create/rename input canonicalizes path segments in the frontend; backend path creation trusts those segments and only rejects an empty path.
 - Rename input filters draft typing/paste/composition through shared live-name normalization: files allow lowercase letters, digits, `/`, `.`, `-`, `_`; folders allow lowercase letters, digits, `/`, `-`, `_`; adjacent separators are blocked while typing; special file-name casing remains submit-time only.
 - File and folder create/rename reject double-dot names; file names with a non-empty basename and a trailing dot are treated as missing the extension, while invalid extension text such as separators inside the final extension is rejected.
-- File create/rename then applies the Markdown storage contract: extensionless file names get `.md`, and explicit alternate extensions are replaced with `.md`.
+- Markdown file create/rename then applies the Markdown storage contract: extensionless file names get `.md`, and explicit alternate extensions are replaced with `.md`.
+- R2 source file upload/rename preserves the uploaded file extension, requires a real extension, and uses the normal tree node as the visible processing/finalized item instead of a dedicated upload list.
 - File create/rename applies special file-name casing after normalization: `readme`, `readme.md`, and `README.md` store as `README.md`.
 - File rename selects the basename by default so `.md` is not included in the initial edit selection.
 - Rename uses `files.rename_node` with Convex `optimisticUpdate` for immediate title feedback.

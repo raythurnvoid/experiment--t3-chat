@@ -5,6 +5,7 @@ import {
 	path_extract_segments_from,
 	server_path_normalize,
 	server_path_parent_of,
+	path_join,
 	path_name_of,
 	encode_path_segment,
 	decode_path_segment,
@@ -32,6 +33,12 @@ test("server_path_parent_of computes parent correctly", () => {
 	expect(server_path_parent_of("/")).toBe("/");
 	expect(server_path_parent_of("/a")).toBe("/");
 	expect(server_path_parent_of("/a/b")).toBe("/a");
+});
+
+test("path_join handles root without changing the joined segment", () => {
+	expect(path_join("/", "a")).toBe("/a");
+	expect(path_join("/a", "b")).toBe("/a/b");
+	expect(path_join("/a", "b/c")).toBe("/a/b/c");
 });
 
 test("server_path_name_of returns last segment", () => {

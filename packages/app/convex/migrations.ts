@@ -4,7 +4,6 @@ import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import { internalMutation } from "./_generated/server.js";
 import type { access_control_Permission, access_control_Role } from "../shared/access-control.ts";
 import { quotas } from "../shared/quotas.ts";
-import { files_ROOT_ID } from "../server/files.ts";
 import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_ensure_role_permission_grant,
@@ -26,19 +25,10 @@ type NotificationWithCreatedAt = Doc<"notifications"> & {
 	createdAt?: number;
 };
 
-type LegacyFilesNode = Omit<Doc<"files_nodes">, "_id" | "_creationTime" | "fileStorageKind"> & {
-	_id: Id<"files_nodes">;
+type LegacyFilesR2Asset = Omit<Doc<"files_r2_assets">, "_id" | "_creationTime"> & {
+	_id: Id<"files_r2_assets">;
 	_creationTime: number;
-	fileStorageKind?: null | "none" | "markdown" | "r2";
-};
-
-type LegacyFilesUpload = Doc<"files_uploads"> & {
-	parentId?: Doc<"files_nodes">["parentId"];
-	status?: "pending" | "uploaded" | "converting" | "finalized" | "failed";
-	uploadedAt?: number;
-	conversionAttempts?: number;
-	failedAt?: number;
-	failureMessage?: string;
+	conversionStatus?: "uploaded" | "converting" | "converted" | "failed";
 };
 
 type LegacyWorkspaceWithOwner = Omit<Doc<"workspaces">, "_id" | "_creationTime" | "ownerUserId"> & {
@@ -318,62 +308,16 @@ export const remove_notifications_created_at = app_migrations.define({
 	},
 });
 
-export const backfill_files_nodes_file_storage_kind = app_migrations.define({
-	table: "files_nodes",
-	migrateOne: async (ctx, node) => {
-		const legacyNode = node as LegacyFilesNode;
-		if (legacyNode.fileStorageKind !== undefined) {
+export const remove_files_r2_assets_conversion_status = app_migrations.define({
+	table: "files_r2_assets",
+	migrateOne: async (ctx, asset) => {
+		const legacyAsset = asset as LegacyFilesR2Asset;
+		if (legacyAsset.conversionStatus === undefined) {
 			return;
 		}
 
-		await ctx.db.patch("files_nodes", legacyNode._id, {
-			fileStorageKind: legacyNode.kind === "folder" ? null : "markdown",
-		});
-	},
-});
-
-export const backfill_files_nodes_folder_storage_kind_null = app_migrations.define({
-	table: "files_nodes",
-	migrateOne: async (ctx, node) => {
-		const legacyNode = node as LegacyFilesNode;
-		if (legacyNode.fileStorageKind !== "none") {
-			return;
-		}
-
-		await ctx.db.patch("files_nodes", legacyNode._id, {
-			fileStorageKind: null,
-		});
-	},
-});
-
-export const backfill_files_uploads_event_finalization_state = app_migrations.define({
-	table: "files_uploads",
-	migrateOne: async (ctx, upload) => {
-		const legacyUpload = upload as LegacyFilesUpload;
-		if (legacyUpload.parentId !== undefined && legacyUpload.status !== undefined) {
-			return;
-		}
-
-		if (legacyUpload.assetId && legacyUpload.sourceNodeId && legacyUpload.shadowNodeId) {
-			const sourceNode = await ctx.db.get(legacyUpload.sourceNodeId);
-
-			await ctx.db.patch(legacyUpload._id, {
-				parentId: legacyUpload.parentId ?? sourceNode?.parentId ?? files_ROOT_ID,
-				status: "finalized",
-				uploadedAt: legacyUpload.uploadedAt ?? legacyUpload.finalizedAt ?? Date.now(),
-				conversionAttempts: legacyUpload.conversionAttempts ?? 1,
-			});
-			return;
-		}
-
-		await ctx.db.patch(legacyUpload._id, {
-			parentId: legacyUpload.parentId ?? files_ROOT_ID,
-			status: "failed",
-			failedAt: legacyUpload.failedAt ?? Date.now(),
-			failureMessage:
-				legacyUpload.failureMessage ?? "Legacy upload was not finalized; upload the file again to use queue finalization.",
-			conversionAttempts: legacyUpload.conversionAttempts ?? 0,
-		});
+		const { _id, _creationTime, conversionStatus: _conversionStatus, ...next } = legacyAsset;
+		await ctx.db.replace("files_r2_assets", _id, next);
 	},
 });
 
@@ -390,6 +334,9 @@ export const run_remove_billing_usage_snapshots_last_refresh_reason = app_migrat
 );
 export const run_remove_notifications_created_at = app_migrations.runner(
 	internal.migrations.remove_notifications_created_at,
+);
+export const run_remove_files_r2_assets_conversion_status = app_migrations.runner(
+	internal.migrations.remove_files_r2_assets_conversion_status,
 );
 export const run_backfill_workspaces_owner_user_id_from_owner = app_migrations.runner(
 	internal.migrations.backfill_workspaces_owner_user_id_from_owner,
@@ -414,13 +361,4 @@ export const run_cleanup_duplicate_access_control_owner_assignments = app_migrat
 );
 export const run_update_extra_workspaces_quota_max_count_to_2 = app_migrations.runner(
 	internal.migrations.update_extra_workspaces_quota_max_count_to_2,
-);
-export const run_backfill_files_nodes_file_storage_kind = app_migrations.runner(
-	internal.migrations.backfill_files_nodes_file_storage_kind,
-);
-export const run_backfill_files_nodes_folder_storage_kind_null = app_migrations.runner(
-	internal.migrations.backfill_files_nodes_folder_storage_kind_null,
-);
-export const run_backfill_files_uploads_event_finalization_state = app_migrations.runner(
-	internal.migrations.backfill_files_uploads_event_finalization_state,
 );

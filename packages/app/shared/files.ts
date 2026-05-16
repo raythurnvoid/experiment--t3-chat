@@ -1,6 +1,3 @@
-import type { api } from "../convex/_generated/api.js";
-import type { Doc } from "../convex/_generated/dataModel";
-import type { FunctionReturnType } from "convex/server";
 import { StarterKit } from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import { TaskList } from "@tiptap/extension-task-list";
@@ -22,8 +19,8 @@ import { CommentsExtension } from "@liveblocks/react-tiptap";
 import { generateJSON as tiptap_generateJSON_server } from "@tiptap/html/server";
 import { generateJSON as tiptap_generateJSON_browser } from "@tiptap/html";
 import { Result } from "./errors-as-values-utils.ts";
-
-export type files_TreeItem = FunctionReturnType<typeof api.files_nodes.get_tree_nodes_list>[number];
+import type { app_convex_Doc } from "./app-convex.ts";
+import type { Merge } from "type-fest";
 
 export const files_ROOT_ID = "root";
 export const files_FIRST_VERSION = 1;
@@ -31,6 +28,14 @@ export const files_YJS_DOC_KEYS = {
 	richText: "default",
 	plainText: "markdown",
 };
+
+/**
+ * 50 MiB.
+ *
+ * Keep this aligned with the Modal file converter `maxBytes` contract.
+ **/
+export const files_MAX_UPLOADS_BYTES = 50 * 1024 * 1024;
+
 export const files_CREATE_NODE_VALIDATION_MESSAGES = {
 	fileAlreadyExists: "This file already exists.",
 	folderAlreadyExists: "This folder already exists.",
@@ -38,17 +43,50 @@ export const files_CREATE_NODE_VALIDATION_MESSAGES = {
 
 export function files_create_tree_root() {
 	return {
-		type: "root",
+		_id: files_ROOT_ID,
+		workspaceId: "",
+		projectId: "",
 		kind: "folder",
-		fileStorageKind: null,
-		index: files_ROOT_ID,
 		parentId: "",
-		title: "",
+		name: "",
+		path: "/",
+		uploadId: undefined,
+		assetId: undefined,
 		archiveOperationId: undefined,
-		updatedAt: 0,
+		markdownContentId: undefined,
+		yjsLastSequenceId: undefined,
+		yjsSnapshotId: undefined,
+		version: 0,
 		updatedBy: "",
-		_id: null,
-	} satisfies files_TreeItem;
+		updatedAt: 0,
+		createdBy: "",
+		_creationTime: 0,
+	} as const satisfies Merge<
+		app_convex_Doc<"files_nodes">,
+		{
+			_id: typeof files_ROOT_ID;
+			workspaceId: "";
+			projectId: "";
+			parentId: "";
+			name: "";
+			path: "/";
+			version: 0;
+			updatedBy: "";
+			updatedAt: 0;
+			createdBy: "";
+			_creationTime: 0;
+		}
+	>;
+}
+
+export function files_create_tree_items_list_from_nodes(nodes: app_convex_Doc<"files_nodes">[]) {
+	return [files_create_tree_root(), ...nodes];
+}
+
+export type files_TreeItem = ReturnType<typeof files_create_tree_items_list_from_nodes>[number];
+
+export function files_is_node(item: files_TreeItem): item is app_convex_Doc<"files_nodes"> {
+	return item._id !== files_ROOT_ID;
 }
 
 export function files_create_room_id(workspaceId: string, projectId: string, nodeId: string) {
@@ -103,7 +141,7 @@ const FILES_FOLDER_NAME_INPUT_SEPARATOR_REGEX = /^[/_-]$/;
 const FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES = new Set(["readme"]);
 
 export function files_normalize_name_input(args: {
-	kind: Doc<"files_nodes">["kind"];
+	kind: app_convex_Doc<"files_nodes">["kind"];
 	previousText: string;
 	insertedText: string;
 	nextText: string;
@@ -148,7 +186,7 @@ export function files_normalize_name_input(args: {
 	return normalizedText;
 }
 
-export function files_normalize_name(kind: Doc<"files_nodes">["kind"], name: string) {
+export function files_normalize_name(kind: app_convex_Doc<"files_nodes">["kind"], name: string) {
 	if (name.includes("..")) {
 		// Reject double dots because their basename/extension intent is ambiguous.
 		return files_invalid_name_result(kind);
@@ -269,7 +307,7 @@ function files_normalize_file_name_part(part: string) {
 }
 
 export function files_get_normalized_node_path_segments(args: {
-	kind: Doc<"files_nodes">["kind"] | null;
+	kind: app_convex_Doc<"files_nodes">["kind"] | null;
 	nameOrPath: string;
 }) {
 	if (!args.kind) {
@@ -301,7 +339,7 @@ export function files_get_normalized_node_path_segments(args: {
 	return { normalizedPathSegments };
 }
 
-function files_invalid_name_result(kind: Doc<"files_nodes">["kind"]) {
+function files_invalid_name_result(kind: app_convex_Doc<"files_nodes">["kind"]) {
 	// Keep the visible message kind-specific while preserving the shared Result shape.
 	return Result({
 		_nay: {
@@ -311,7 +349,7 @@ function files_invalid_name_result(kind: Doc<"files_nodes">["kind"]) {
 	});
 }
 
-function files_normalize_name_input_character(kind: Doc<"files_nodes">["kind"], character: string) {
+function files_normalize_name_input_character(kind: app_convex_Doc<"files_nodes">["kind"], character: string) {
 	if (FILES_NAME_INPUT_ALPHANUMERIC_REGEX.test(character)) {
 		// Accept lowercase ASCII letters and digits as valid draft characters.
 		return character;
@@ -336,7 +374,7 @@ function files_normalize_name_input_character(kind: Doc<"files_nodes">["kind"], 
 	return "-";
 }
 
-function files_is_name_input_separator(kind: Doc<"files_nodes">["kind"], character: string) {
+function files_is_name_input_separator(kind: app_convex_Doc<"files_nodes">["kind"], character: string) {
 	// Treat dots as file separators, while folder drafts do not allow dots at all.
 	return kind === "file"
 		? FILES_FILE_NAME_INPUT_SEPARATOR_REGEX.test(character)

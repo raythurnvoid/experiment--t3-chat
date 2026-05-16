@@ -118,11 +118,10 @@ async function seed_file_with_markdown(args: {
 		path,
 		name,
 		kind: "file",
-		fileStorageKind: "markdown",
 		version: files_FIRST_VERSION,
 		parentId: files_ROOT_ID,
 		createdBy: userId,
-		updatedBy: String(userId),
+		updatedBy: userId,
 		updatedAt: Date.now(),
 		archiveOperationId: undefined,
 	});

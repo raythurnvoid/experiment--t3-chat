@@ -61,7 +61,7 @@ describe("listRoom", () => {
 				}),
 			]);
 
-			await ctx.db.patch(deletedUser.userId, { deletedAt: Date.now() });
+			await ctx.db.patch("users", deletedUser.userId, { deletedAt: Date.now() });
 
 			return { liveUser, deletedUser };
 		});

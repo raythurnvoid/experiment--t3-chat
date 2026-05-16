@@ -1129,7 +1129,6 @@ export function ai_chat_tool_create_write_file(
 					projectId: ctxData.projectId,
 					userId: ctxData.userId,
 					path,
-					fileStorageKind: "markdown",
 				});
 				if (created._nay) {
 					throw new Error("[server-ai-tools.ai_chat_tool_create_write_file] Error creating file by path", {

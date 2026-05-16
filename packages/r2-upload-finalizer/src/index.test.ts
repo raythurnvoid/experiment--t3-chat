@@ -18,7 +18,7 @@ function r2_event(overrides: Partial<R2EventNotification> = {}) {
 		action: "object-create",
 		bucket: "files-bucket",
 		object: {
-			key: "workspaces/workspace_1/projects/project_1/uploads/upload_1",
+			key: "workspaces/workspace_1/projects/project_1/nodes/source_node_1/source",
 			size: 42,
 			eTag: "etag",
 		},
@@ -54,7 +54,7 @@ describe("handle_r2_event_message", () => {
 			reason: "Convex accepted the event",
 		});
 		expect(fetchMock).toHaveBeenCalledWith(
-			"https://example.convex.site/api/files/uploads/finalize-from-r2-event",
+			"https://example.convex.site/api/r2/event",
 			expect.objectContaining({
 				method: "POST",
 				headers: {

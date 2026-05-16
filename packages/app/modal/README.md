@@ -10,7 +10,7 @@ Convex sends:
 
 - `sourceUrl`: short-lived signed R2 download URL
 - `filename`: original filename
-- `contentType`: optional MIME type
+- `contentType`: optional MIME type used as an additional conversion hint
 - `maxBytes`: source download limit
 - `maxMarkdownCharacters`: response size guard for Convex storage
 
@@ -44,3 +44,11 @@ This repo uses a Docker-wrapped Modal CLI so Python is not installed on the Wind
 ```
 
 Modal credentials are stored outside the repo at `%USERPROFILE%\.modal-cli\.modal.toml`.
+
+## Tests
+
+Run Modal converter unit tests through Docker:
+
+```powershell
+.\packages\app\scripts\modal-test.ps1
+```

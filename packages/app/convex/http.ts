@@ -3,7 +3,7 @@ import { ai_chat_http_routes } from "./ai_chat.ts";
 import { internal } from "./_generated/api.js";
 import { httpAction } from "./_generated/server.js";
 import { files_http_routes } from "./files_nodes.ts";
-import { files_content_http_routes } from "./files_content.ts";
+import { r2_http_routes } from "./r2.ts";
 import { billing_polar } from "./billing.ts";
 import { users_http_routes } from "./users.ts";
 import { corsRouter } from "convex-helpers/server/cors";
@@ -45,7 +45,7 @@ export type RouterForConvexModules = {
 users_http_routes(appCors);
 ai_chat_http_routes(appCors);
 files_http_routes(appCors);
-files_content_http_routes(appCors);
+r2_http_routes(appCors);
 
 appCors.route({
 	path: "/getMessagesByAuthor",

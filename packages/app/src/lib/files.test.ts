@@ -21,24 +21,28 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { Doc as YDoc } from "yjs";
 
 const createTreeItem = (args: {
-	index: string;
+	id: string;
 	parentId: string;
 	kind: files_TreeItem["kind"];
-	title: string;
+	name: string;
+	path?: string;
 	archiveOperationId?: string;
 }) => {
-	const id = args.index as Id<"files_nodes">;
+	const id = args.id as Id<"files_nodes">;
 	return {
-		type: "node",
-		kind: args.kind,
-		index: id,
-		parentId: args.parentId === files_ROOT_ID ? files_ROOT_ID : (args.parentId as Id<"files_nodes">),
-		fileStorageKind: args.kind === "folder" ? null : "markdown",
-		title: args.title,
-		archiveOperationId: args.archiveOperationId,
-		updatedAt: 0,
-		updatedBy: "Test User",
 		_id: id,
+		_creationTime: 0,
+		workspaceId: "workspace",
+		projectId: "project",
+		parentId: args.parentId === files_ROOT_ID ? files_ROOT_ID : (args.parentId as Id<"files_nodes">),
+		path: args.path ?? `/${args.name}`,
+		name: args.name,
+		kind: args.kind,
+		version: 1,
+		archiveOperationId: args.archiveOperationId,
+		createdBy: "test-user" as Id<"users">,
+		updatedAt: 0,
+		updatedBy: "test-user" as Id<"users">,
 	} satisfies files_TreeItem;
 };
 
@@ -54,14 +58,14 @@ describe("files_normalize_upload_file_name", () => {
 
 describe("files_get_node_path_validation_message", () => {
 	const treeItemsList = [
-		createTreeItem({ index: "folder-docs", parentId: "root", kind: "folder", title: "docs" }),
-		createTreeItem({ index: "file-readme", parentId: "folder-docs", kind: "file", title: "README.md" }),
-		createTreeItem({ index: "file-guide", parentId: "folder-docs", kind: "file", title: "guide.md" }),
+		createTreeItem({ id: "folder-docs", parentId: "root", kind: "folder", name: "docs" }),
+		createTreeItem({ id: "file-readme", parentId: "folder-docs", kind: "file", name: "README.md" }),
+		createTreeItem({ id: "file-guide", parentId: "folder-docs", kind: "file", name: "guide.md" }),
 		createTreeItem({
-			index: "archived-file",
+			id: "archived-file",
 			parentId: "folder-docs",
 			kind: "file",
-			title: "archived.md",
+			name: "archived.md",
 			archiveOperationId: "archive-operation",
 		}),
 	] satisfies files_TreeItem[];
@@ -254,8 +258,8 @@ describe("files node path validation cache", () => {
 
 	test("keeps create and rename cache entries separate for the same path", () => {
 		const treeItemsList = [
-			createTreeItem({ index: "folder-docs", parentId: "root", kind: "folder", title: "docs" }),
-			createTreeItem({ index: "file-readme", parentId: "folder-docs", kind: "file", title: "readme.md" }),
+			createTreeItem({ id: "folder-docs", parentId: "root", kind: "folder", name: "docs" }),
+			createTreeItem({ id: "file-readme", parentId: "folder-docs", kind: "file", name: "readme.md" }),
 		] satisfies files_TreeItem[];
 
 		const createValidation = files_get_node_path_validation({

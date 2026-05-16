@@ -8,6 +8,7 @@ import {
 	files_yjs_doc_get_markdown,
 	files_yjs_doc_update_from_markdown,
 	files_CREATE_NODE_VALIDATION_MESSAGES,
+	files_is_node,
 	files_get_normalized_node_path_segments,
 	type files_TreeItem,
 } from "../../shared/files.ts";
@@ -18,7 +19,7 @@ import { should_never_happen, XCustomEvent } from "./utils.ts";
 import type { usePresenceList, usePresenceSessions, usePresenceSessionsData } from "../hooks/presence-hooks.ts";
 import { objects_equal_deep } from "./object.ts";
 import { editor as monaco_editor } from "monaco-editor";
-import { app_convex, type app_convex_Id, app_convex_api } from "@/lib/app-convex-client.ts";
+import { app_convex, type app_convex_Doc, type app_convex_Id, app_convex_api } from "@/lib/app-convex-client.ts";
 import { Result } from "./errors-as-values-utils.ts";
 import { applyUpdate, Doc as YDoc } from "yjs";
 
@@ -180,13 +181,13 @@ export function files_get_node_path_validation_message(args: {
 	let currentParentId = args.parentId;
 	for (const [index, normalizedName] of normalizedPath.normalizedPathSegments.entries()) {
 		const isLeaf = index === normalizedPath.normalizedPathSegments.length - 1;
-		const existingNode = args.treeItemsList.find((item) => {
+		const existingNode = args.treeItemsList.find((item): item is app_convex_Doc<"files_nodes"> => {
 			return (
-				item.type === "node" &&
-				item.index !== args.nodeIdToIgnore &&
+				files_is_node(item) &&
+				item._id !== args.nodeIdToIgnore &&
 				item.parentId === currentParentId &&
 				item.archiveOperationId === undefined &&
-				item.title.trim().toLowerCase() === normalizedName.toLowerCase()
+				item.name.trim().toLowerCase() === normalizedName.toLowerCase()
 			);
 		});
 		if (isLeaf) {
@@ -197,7 +198,7 @@ export function files_get_node_path_validation_message(args: {
 			return null;
 		}
 
-		currentParentId = existingNode.index;
+		currentParentId = existingNode._id;
 	}
 
 	return null;

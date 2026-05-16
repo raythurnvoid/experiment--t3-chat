@@ -16,14 +16,14 @@ import {
 	internalMutation,
 } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { paginationOptsValidator, type RouteSpec } from "convex/server";
+import { paginationOptsValidator, type RegisteredQuery, type RouteSpec } from "convex/server";
 import { generateText, streamText, smoothStream } from "ai";
 import { openai } from "@ai-sdk/openai";
 import {
 	path_extract_segments_from,
 	server_convex_get_user_fallback_to_anonymous,
+	path_join,
 	server_request_json_parse_and_validate,
-	encode_path_segment,
 } from "../server/server-utils.ts";
 import { v, type Infer } from "convex/values";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
@@ -48,6 +48,7 @@ import {
 	files_yjs_doc_create_from_tiptap_editor,
 	files_yjs_compute_diff_update_from_state_vector,
 	files_CREATE_NODE_VALIDATION_MESSAGES,
+	files_MAX_UPLOADS_BYTES,
 } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { minimatch } from "minimatch";
@@ -65,6 +66,7 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import { workspaces_db_get_membership } from "./workspaces.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import { r2_create_upload_key, r2_generate_upload_url, r2_get_bucket } from "./r2.ts";
 
 const files_INLINE_AI_MODEL_ID = "gpt-5-mini" as const;
 const files_HOME_FILE_NAME = "README.md";
@@ -137,16 +139,6 @@ async function files_ingest_inline_ai_usage_event(
 			},
 		],
 	});
-}
-
-function files_materialized_path_join(parentPath: string, nodeName: string) {
-	if (parentPath === "/") {
-		const encodedName = encode_path_segment(nodeName);
-		return encodedName === "" ? "/" : `/${encodedName}`;
-	}
-
-	const encodedName = encode_path_segment(nodeName);
-	return encodedName === "" ? parentPath : `${parentPath}/${encodedName}`;
 }
 
 /**
@@ -448,7 +440,7 @@ async function cascade_file_descendants_path(
 
 		await Promise.all(
 			children.map(async (child) => {
-				const childPath = files_materialized_path_join(frame.parentPath, child.name);
+				const childPath = path_join(frame.parentPath, child.name);
 				await ctx.db.patch("files_nodes", child._id, {
 					path: childPath,
 				});
@@ -461,40 +453,11 @@ async function cascade_file_descendants_path(
 	}
 }
 
-const get_tree_nodes_list_validator = v.array(
-	v.union(
-		v.object({
-			type: v.literal("root"),
-			kind: v.literal("folder"),
-			fileStorageKind: v.null(),
-			index: v.literal(files_ROOT_ID),
-			parentId: v.literal(""),
-			title: doc(app_convex_schema, "files_nodes").fields.name,
-			archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
-			updatedAt: doc(app_convex_schema, "files_nodes").fields.updatedAt,
-			updatedBy: doc(app_convex_schema, "files_nodes").fields.updatedBy,
-			_id: v.null(),
-		}),
-		v.object({
-			type: v.literal("node"),
-			kind: doc(app_convex_schema, "files_nodes").fields.kind,
-			fileStorageKind: doc(app_convex_schema, "files_nodes").fields.fileStorageKind,
-			index: doc(app_convex_schema, "files_nodes").fields._id,
-			parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
-			title: doc(app_convex_schema, "files_nodes").fields.name,
-			archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
-			updatedAt: doc(app_convex_schema, "files_nodes").fields.updatedAt,
-			updatedBy: doc(app_convex_schema, "files_nodes").fields.updatedBy,
-			_id: doc(app_convex_schema, "files_nodes").fields._id,
-		}),
-	),
-);
-
 export const get_tree_nodes_list = query({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 	},
-	returns: get_tree_nodes_list_validator,
+	returns: v.array(doc(app_convex_schema, "files_nodes")),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
@@ -516,35 +479,7 @@ export const get_tree_nodes_list = query({
 			.order("asc")
 			.collect();
 
-		const treeItemsList: Infer<typeof get_tree_nodes_list_validator> = [
-			// We need a root to render a tree, the root node is hardcoded in the code
-			{
-				type: "root",
-				index: files_ROOT_ID,
-				parentId: "",
-				kind: "folder",
-				fileStorageKind: null,
-				title: "Files",
-				archiveOperationId: undefined,
-				updatedAt: 0,
-				updatedBy: "system",
-				_id: null,
-			},
-			...nodes.map((node) => ({
-				type: "node" as const,
-				kind: node.kind,
-				fileStorageKind: node.fileStorageKind,
-				index: node._id,
-				parentId: node.parentId,
-				title: node.name || "Untitled",
-				archiveOperationId: node.archiveOperationId,
-				updatedAt: node.updatedAt,
-				updatedBy: node.updatedBy,
-				_id: node._id,
-			})),
-		];
-
-		return treeItemsList;
+		return nodes;
 	},
 });
 
@@ -557,11 +492,13 @@ async function db_create_node(
 		parentId: Doc<"files_nodes">["parentId"];
 		name: Doc<"files_nodes">["name"];
 		kind: Doc<"files_nodes">["kind"];
-		fileStorageKind: Doc<"files_nodes">["fileStorageKind"];
+		createMarkdownContent: boolean;
+		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 		markdownContent?: Doc<"files_markdown_content">["content"];
+		now?: number;
 	},
 ) {
-	const now = Date.now();
+	const now = args.now ?? Date.now();
 	const parentPath = await resolve_parent_path_from_parent_id(ctx, {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
@@ -576,28 +513,30 @@ async function db_create_node(
 		});
 	}
 
-	const nodePath = files_materialized_path_join(parentPath, args.name);
-	// Check whether an active file already exists for the same path.
-	const activePathConflict = await ctx.db
-		.query("files_nodes")
-		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
-			q
-				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
-				.eq("path", nodePath)
-				.eq("archiveOperationId", undefined),
-		)
-		.first();
-	if (activePathConflict) {
-		return Result({
-			_nay: {
-				name: "nay",
-				message:
-					args.kind === "file"
-						? files_CREATE_NODE_VALIDATION_MESSAGES.fileAlreadyExists
-						: files_CREATE_NODE_VALIDATION_MESSAGES.folderAlreadyExists,
-			},
-		});
+	const nodePath = path_join(parentPath, args.name);
+	if (args.archiveOperationId === undefined) {
+		// Check whether an active file already exists for the same path.
+		const activePathConflict = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("path", nodePath)
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+		if (activePathConflict) {
+			return Result({
+				_nay: {
+					name: "nay",
+					message:
+						args.kind === "file"
+							? files_CREATE_NODE_VALIDATION_MESSAGES.fileAlreadyExists
+							: files_CREATE_NODE_VALIDATION_MESSAGES.folderAlreadyExists,
+				},
+			});
+		}
 	}
 
 	const nodeId = await ctx.db.insert("files_nodes", {
@@ -608,8 +547,7 @@ async function db_create_node(
 		version: files_FIRST_VERSION,
 		name: args.name,
 		kind: args.kind,
-		fileStorageKind: args.fileStorageKind,
-		archiveOperationId: undefined,
+		archiveOperationId: args.archiveOperationId,
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: now,
@@ -619,7 +557,7 @@ async function db_create_node(
 		return Result({ _yay: nodeId });
 	}
 
-	if (args.fileStorageKind === "r2") {
+	if (!args.createMarkdownContent) {
 		return Result({ _yay: nodeId });
 	}
 
@@ -735,8 +673,10 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		parentId: Doc<"files_nodes">["parentId"];
 		path: string;
 		kind: Doc<"files_nodes">["kind"];
-		fileStorageKind: Doc<"files_nodes">["fileStorageKind"];
+		createMarkdownContent: boolean;
+		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 		markdownContent?: Doc<"files_markdown_content">["content"];
+		now: number;
 	},
 ) {
 	let currentParent: Doc<"files_nodes">["parentId"] = args.parentId;
@@ -766,15 +706,18 @@ export async function files_nodes_db_create_node_recursively_at_path(
 				continue;
 			}
 
-			return Result({
-				_nay: {
-					name: "nay",
-					message:
-						kind === "file"
-							? files_CREATE_NODE_VALIDATION_MESSAGES.fileAlreadyExists
-							: files_CREATE_NODE_VALIDATION_MESSAGES.folderAlreadyExists,
-				},
-			});
+			// Archived generated files may share a path with an active replacement.
+			if (args.archiveOperationId === undefined) {
+				return Result({
+					_nay: {
+						name: "nay",
+						message:
+							kind === "file"
+								? files_CREATE_NODE_VALIDATION_MESSAGES.fileAlreadyExists
+								: files_CREATE_NODE_VALIDATION_MESSAGES.folderAlreadyExists,
+					},
+				});
+			}
 		}
 
 		const node = await db_create_node(ctx, {
@@ -784,8 +727,10 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			parentId: currentParent,
 			name,
 			kind,
-			fileStorageKind: isLeaf ? args.fileStorageKind : null,
+			createMarkdownContent: isLeaf ? args.createMarkdownContent : false,
+			archiveOperationId: isLeaf ? args.archiveOperationId : undefined,
 			markdownContent: isLeaf ? args.markdownContent : undefined,
+			now: args.now,
 		});
 
 		if (node._nay) {
@@ -803,12 +748,11 @@ export async function files_nodes_db_create_node_recursively_at_path(
 	throw should_never_happen("nodeId not resolved after node path creation");
 }
 
-export const create_node = mutation({
+export const create_folder_node = mutation({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
 		name: v.string(),
-		kind: v.union(v.literal("folder"), v.literal("file")),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
@@ -830,34 +774,203 @@ export const create_node = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const pathSegments = path_extract_segments_from(args.name);
 		// We trust that the front-end is validating the input correctly.
-		const node =
-			pathSegments.length > 1
-				? await files_nodes_db_create_node_recursively_at_path(ctx, {
-						userId: userAuth.id,
-						workspaceId: membership.workspaceId,
-						projectId: membership.projectId,
-						parentId: args.parentId,
-						path: args.name,
-						kind: args.kind,
-						fileStorageKind: args.kind === "folder" ? null : "markdown",
-					})
-				: await db_create_node(ctx, {
-						userId: userAuth.id,
-						workspaceId: membership.workspaceId,
-						projectId: membership.projectId,
-						parentId: args.parentId,
-						name: args.name,
-						kind: args.kind,
-						fileStorageKind: args.kind === "folder" ? null : "markdown",
-					});
+		const node = await files_nodes_db_create_node_recursively_at_path(ctx, {
+			userId: userAuth.id,
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			parentId: args.parentId,
+			path: args.name,
+			kind: "folder",
+			createMarkdownContent: false,
+			now: Date.now(),
+		});
 
 		if (node._nay) {
 			return node;
 		}
 
 		return Result({ _yay: { nodeId: node._yay } });
+	},
+});
+
+export const create_markdown_node = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+		name: v.string(),
+	},
+	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const membership = await workspaces_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		// We trust that the front-end is validating the input correctly.
+		const node = await files_nodes_db_create_node_recursively_at_path(ctx, {
+			userId: userAuth.id,
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			parentId: args.parentId,
+			path: args.name,
+			kind: "file",
+			createMarkdownContent: true,
+			now: Date.now(),
+		});
+
+		if (node._nay) {
+			return node;
+		}
+
+		return Result({ _yay: { nodeId: node._yay } });
+	},
+});
+
+export const create_upload_node = mutation({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+		filename: v.string(),
+		contentType: v.optional(v.string()),
+		size: v.number(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			uploadId: v.id("files_uploads"),
+			nodeId: v.id("files_nodes"),
+			url: v.string(),
+			headers: v.record(v.string(), v.string()),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const membership = await workspaces_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		if (args.size > files_MAX_UPLOADS_BYTES) {
+			return Result({
+				_nay: {
+					message: "File too large",
+				},
+			});
+		}
+
+		let parentPath = "/";
+		if (args.parentId !== files_ROOT_ID) {
+			const parent = await ctx.db.get("files_nodes", args.parentId);
+			if (
+				!parent ||
+				parent.workspaceId !== membership.workspaceId ||
+				parent.projectId !== membership.projectId ||
+				parent.kind !== "folder" ||
+				parent.archiveOperationId !== undefined
+			) {
+				return Result({ _nay: { message: "Parent folder not found" } });
+			}
+			parentPath = parent.path;
+		}
+
+		const nodePath = path_join(parentPath, args.filename);
+		const existingNode = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", membership.workspaceId)
+					.eq("projectId", membership.projectId)
+					.eq("path", nodePath)
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+		const now = Date.now();
+		if (existingNode) {
+			if (existingNode.kind !== "file") {
+				return Result({
+					_nay: {
+						message: "The path cannot point to a folder",
+					},
+				});
+			}
+
+			const replacedAsset = existingNode.assetId ? await ctx.db.get("files_r2_assets", existingNode.assetId) : null;
+			await db_archive_nodes(ctx, {
+				nodeIds: [existingNode._id, ...(replacedAsset ? [replacedAsset.shadowNodeId] : [])],
+				updatedBy: userAuth.id,
+				now,
+			});
+		}
+
+		const node = await files_nodes_db_create_node_recursively_at_path(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			userId: membership.userId,
+			parentId: args.parentId,
+			path: args.filename,
+			kind: "file",
+			createMarkdownContent: false,
+			now,
+		});
+		if (node._nay) {
+			return Result({ _nay: node._nay });
+		}
+
+		const key = r2_create_upload_key({
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			nodeId: node._yay,
+		});
+		const uploadId = await ctx.db.insert("files_uploads", {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			createdBy: membership.userId,
+			r2Bucket: r2_get_bucket(),
+			r2Key: key,
+			filename: args.filename,
+			...(args.contentType ? { contentType: args.contentType } : {}),
+			size: args.size,
+			status: "pending",
+			sourceNodeId: node._yay,
+		});
+		await ctx.db.patch("files_nodes", node._yay, {
+			uploadId,
+		});
+		const signedUpload = await r2_generate_upload_url(key);
+		const headers: Record<string, string> = args.contentType ? { "Content-Type": args.contentType } : {};
+
+		return Result({
+			_yay: {
+				uploadId,
+				nodeId: node._yay,
+				url: signedUpload.url,
+				headers,
+			},
+		});
 	},
 });
 
@@ -909,7 +1022,7 @@ export const create_file_quick = mutation({
 				parentId: files_ROOT_ID,
 				name: "tmp",
 				kind: "folder",
-				fileStorageKind: null,
+				createMarkdownContent: false,
 			});
 
 			if (tmpNode._nay) {
@@ -930,7 +1043,7 @@ export const create_file_quick = mutation({
 			parentId: tmpNodeId,
 			name: title,
 			kind: "file",
-			fileStorageKind: "markdown",
+			createMarkdownContent: true,
 		});
 
 		if (node._nay) {
@@ -971,10 +1084,6 @@ export const rename_node = mutation({
 		if (!file || file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (file.fileStorageKind === "r2") {
-			return Result({ _nay: { message: "Uploaded source files cannot be renamed" } });
-		}
-
 		if (is_home_file(file)) {
 			// Ignore rename requests for home file
 			return Result({ _yay: null });
@@ -1035,14 +1144,14 @@ export const rename_node = mutation({
 					parentId: targetParentId,
 					name,
 					kind: "folder",
-					fileStorageKind: null,
+					createMarkdownContent: false,
 				});
 				if (folder._nay) {
 					return folder;
 				}
 
 				targetParentId = folder._yay;
-				targetParentPath = files_materialized_path_join(targetParentPath, name);
+				targetParentPath = path_join(targetParentPath, name);
 			}
 
 			const resolvedLeafName = pathSegments.at(-1);
@@ -1064,7 +1173,7 @@ export const rename_node = mutation({
 			leafName = args.name;
 		}
 
-		const renamedPath = files_materialized_path_join(targetParentPath, leafName);
+		const renamedPath = path_join(targetParentPath, leafName);
 		if (file.archiveOperationId === undefined) {
 			// Check whether an active file already exists for the same path.
 			const activePathConflict = await ctx.db
@@ -1092,7 +1201,7 @@ export const rename_node = mutation({
 			parentId: targetParentId,
 			name: leafName,
 			path: renamedPath,
-			updatedBy: userAuth.name,
+			updatedBy: userAuth.id,
 			updatedAt: Date.now(),
 		});
 		await cascade_file_descendants_path(ctx, {
@@ -1152,7 +1261,7 @@ export const move_nodes = mutation({
 				continue;
 			}
 
-			const movedPath = files_materialized_path_join(targetParentPath, file.name);
+			const movedPath = path_join(targetParentPath, file.name);
 			filesToMove.push({ itemId, file, movedPath });
 		}
 
@@ -1214,6 +1323,28 @@ export const move_nodes = mutation({
 	},
 });
 
+// #region Archive nodes
+async function db_archive_nodes(
+	ctx: MutationCtx,
+	args: {
+		nodeIds: Array<Id<"files_nodes">>;
+		updatedBy: Id<"users">;
+		now: number;
+	},
+) {
+	const archiveOperationId = crypto.randomUUID();
+
+	await Promise.all(
+		args.nodeIds.map((nodeId) =>
+			ctx.db.patch("files_nodes", nodeId, {
+				archiveOperationId,
+				updatedBy: args.updatedBy,
+				updatedAt: args.now,
+			}),
+		),
+	);
+}
+
 export const archive_nodes = mutation({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
@@ -1266,7 +1397,6 @@ export const archive_nodes = mutation({
 			return files;
 		}
 
-		const archiveOperationId = crypto.randomUUID();
 		const nodeIdsToArchive = new Set<Id<"files_nodes">>();
 
 		for (const file of files._yay) {
@@ -1302,17 +1432,11 @@ export const archive_nodes = mutation({
 			}
 		}
 
-		const now = Date.now();
-
-		await Promise.all(
-			[...nodeIdsToArchive].map(async (nodeId) => {
-				await ctx.db.patch("files_nodes", nodeId, {
-					archiveOperationId,
-					updatedBy: userAuth.name,
-					updatedAt: now,
-				});
-			}),
-		);
+		await db_archive_nodes(ctx, {
+			nodeIds: [...nodeIdsToArchive],
+			updatedBy: userAuth.id,
+			now: Date.now(),
+		});
 
 		return Result({ _yay: null });
 	},
@@ -1614,7 +1738,7 @@ export const unarchive_nodes = mutation({
 			plans.map(async (plan) =>
 				ctx.db.patch("files_nodes", plan.file._id, {
 					archiveOperationId: undefined,
-					updatedBy: userAuth.name,
+					updatedBy: userAuth.id,
 					updatedAt,
 					...(plan.targetPath !== plan.file.path ? { path: plan.targetPath } : {}),
 					...(plan.targetParentId !== plan.file.parentId ? { parentId: plan.targetParentId } : {}),
@@ -1625,8 +1749,22 @@ export const unarchive_nodes = mutation({
 		return Result({ _yay: null });
 	},
 });
+// #endregion Archive nodes
 
-export const get = query({
+export const get = internalQuery({
+	args: {
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
+	handler: async (ctx, args) => {
+		return await ctx.db.get("files_nodes", args.nodeId);
+	},
+});
+
+export type files_nodes_get_Result =
+	typeof get extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue> ? Awaited<ReturnValue> : never;
+
+export const get_for_membership = query({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 		nodeId: v.string(),
@@ -1659,15 +1797,15 @@ export const get = query({
 	},
 });
 
-export const get_file_by_path = query({
+export const get_by_path = query({
 	args: { membershipId: v.id("workspaces_projects_users"), path: v.string() },
 	returns: v.union(
 		v.object({
-			workspaceId: v.union(v.string(), v.null()),
-			projectId: v.union(v.string(), v.null()),
 			nodeId: v.id("files_nodes"),
 			name: v.string(),
-			archiveOperationId: v.optional(v.string()),
+			kind: doc(app_convex_schema, "files_nodes").fields.kind,
+			uploadId: doc(app_convex_schema, "files_nodes").fields.uploadId,
+			assetId: doc(app_convex_schema, "files_nodes").fields.assetId,
 		}),
 		v.null(),
 	),
@@ -1698,11 +1836,11 @@ export const get_file_by_path = query({
 
 		return file
 			? {
-					workspaceId: file.workspaceId,
-					projectId: file.projectId,
 					nodeId: file._id,
 					name: file.name,
-					archiveOperationId: file.archiveOperationId,
+					kind: file.kind,
+					...(file.uploadId ? { uploadId: file.uploadId } : {}),
+					...(file.assetId ? { assetId: file.assetId } : {}),
 				}
 			: null;
 	},
@@ -1882,10 +2020,7 @@ export const list_files = internalQuery({
 				}
 
 				const child = iteratorItem.value;
-				const childPath =
-					frame.absPath === "/"
-						? `/${encode_path_segment(child.name)}`
-						: `${frame.absPath}/${encode_path_segment(child.name)}`;
+				const childPath = path_join(frame.absPath, child.name);
 
 				// If include pattern is provided, only add items that match the glob
 				if (matchesInclude(childPath)) {
@@ -1964,7 +2099,7 @@ export const get_file_last_available_markdown_content_by_path = internalQuery({
 
 		if (!file) return null;
 		if (file.archiveOperationId !== undefined) return null;
-		if (file.kind !== "file" || file.fileStorageKind !== "markdown") return null;
+		if (file.kind !== "file" || !file.markdownContentId) return null;
 
 		if (!file.markdownContentId) {
 			return null;
@@ -2044,7 +2179,7 @@ export const get_plain_text = query({
 			file.workspaceId !== membership.workspaceId ||
 			file.projectId !== membership.projectId ||
 			file.kind !== "file" ||
-			file.fileStorageKind !== "markdown" ||
+			!file.markdownContentId ||
 			file.archiveOperationId !== undefined
 		) {
 			return null;
@@ -2108,7 +2243,7 @@ export const get_file_last_yjs_sequence = query({
 			file.workspaceId !== membership.workspaceId ||
 			file.projectId !== membership.projectId ||
 			file.kind !== "file" ||
-			file.fileStorageKind !== "markdown"
+			!file.markdownContentId
 		) {
 			return null;
 		}
@@ -2289,7 +2424,6 @@ export const create_file_by_path = internalMutation({
 		projectId: v.string(),
 		userId: v.id("users"),
 		path: v.string(),
-		fileStorageKind: v.union(v.literal("markdown"), v.literal("r2")),
 		markdownContent: v.optional(v.string()),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
@@ -2315,8 +2449,9 @@ export const create_file_by_path = internalMutation({
 			parentId: files_ROOT_ID,
 			path: args.path,
 			kind: "file",
-			fileStorageKind: args.fileStorageKind,
+			createMarkdownContent: true,
 			markdownContent: args.markdownContent,
+			now: Date.now(),
 		});
 		if (node._nay) {
 			return node;
@@ -2404,7 +2539,7 @@ export const create_home_file = mutation({
 			parentId: files_ROOT_ID,
 			name: files_HOME_FILE_NAME,
 			kind: "file",
-			fileStorageKind: "markdown",
+			createMarkdownContent: true,
 		});
 
 		if (result._nay) {
@@ -2666,7 +2801,7 @@ export const yjs_get_doc_last_snapshot = query({
 			node.workspaceId !== membership.workspaceId ||
 			node.projectId !== membership.projectId ||
 			node.kind !== "file" ||
-			node.fileStorageKind !== "markdown"
+			!node.markdownContentId
 		) {
 			return null;
 		}
@@ -2812,7 +2947,7 @@ export const yjs_push_update = mutation({
 		if (file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
-		if (file.kind !== "file" || file.fileStorageKind !== "markdown") {
+		if (file.kind !== "file" || !file.markdownContentId) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
@@ -3338,7 +3473,7 @@ export const restore_snapshot = mutation({
 
 		const now = Date.now();
 		const createdBy = userAuth.id;
-		const updatedBy = userAuth.name;
+		const updatedBy = userAuth.id;
 
 		// Restoring snapshots can be destructive and we defensively store
 		// the current state as a backup snapshot

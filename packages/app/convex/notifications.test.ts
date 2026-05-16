@@ -162,7 +162,7 @@ describe("list_current_notifications", () => {
 				projectId: extraProjectId,
 				userId: target.userId,
 			});
-			await ctx.db.delete(extraProjectId);
+			await ctx.db.delete("workspaces_projects", extraProjectId);
 
 			return notificationId;
 		});
@@ -184,7 +184,7 @@ describe("list_current_notifications", () => {
 					q.eq("active", true).eq("userId", target.userId).eq("workspaceId", target.workspaceId),
 				)
 				.collect();
-			await Promise.all(memberships.map((membership) => ctx.db.delete(membership._id)));
+			await Promise.all(memberships.map((membership) => ctx.db.delete("workspaces_projects_users", membership._id)));
 
 			return notificationId;
 		});

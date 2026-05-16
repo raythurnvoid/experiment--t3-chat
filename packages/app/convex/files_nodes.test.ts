@@ -1,16 +1,18 @@
 import { Workpool } from "@convex-dev/workpool";
-import { afterEach, beforeEach, expect, test, vi, type MockInstance } from "vitest";
+import { R2 } from "@convex-dev/r2";
+import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
-import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
+import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
 import { minimatch } from "minimatch";
 import { server_path_normalize } from "../server/server-utils.ts";
-import { files_FIRST_VERSION, files_ROOT_ID } from "../server/files.ts";
+import { files_FIRST_VERSION, files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 
 let enqueueActionSpy: MockInstance;
+let generateUploadUrlSpy: ReturnType<typeof vi.fn<(customKey?: string) => Promise<{ key: string; url: string }>>>;
 
 beforeEach(() => {
 	// Keep file tests focused on file behavior; billing event enqueue behavior is
@@ -18,6 +20,11 @@ beforeEach(() => {
 	enqueueActionSpy = vi
 		.spyOn(Workpool.prototype, "enqueueAction")
 		.mockResolvedValue("work_file_test_billing_event" as never);
+	generateUploadUrlSpy = vi.fn(async (customKey?: string) => ({
+		key: customKey ?? "test-upload-key",
+		url: "https://r2.test/upload",
+	}));
+	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(generateUploadUrlSpy);
 });
 
 afterEach(() => {
@@ -327,7 +334,6 @@ test("home file path stays immutable on rename and move", async () => {
 			parentId: files_ROOT_ID,
 			name: "README.md",
 			kind: "file",
-			fileStorageKind: "markdown",
 			path: "/README.md",
 			version: files_FIRST_VERSION,
 			archiveOperationId: undefined,
@@ -354,7 +360,7 @@ test("home file path stays immutable on rename and move", async () => {
 	});
 });
 
-test("create_node rejects duplicate active path", async () => {
+test("create_folder_node rejects duplicate active path", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -363,10 +369,9 @@ test("create_node rejects duplicate active path", async () => {
 		name: "Test User",
 	});
 
-	const duplicateCreation = await asUser.mutation(api.files_nodes.create_node, {
+	const duplicateCreation = await asUser.mutation(api.files_nodes.create_folder_node, {
 		parentId: files_ROOT_ID,
 		name: db.files.file_root_1.name,
-		kind: "folder",
 		membershipId: db.membershipId,
 	});
 
@@ -377,7 +382,7 @@ test("create_node rejects duplicate active path", async () => {
 	expect(duplicateCreation._nay.message).toBe("This folder already exists.");
 });
 
-test("create_node preserves caller-provided file names", async () => {
+test("create_markdown_node preserves caller-provided file names", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -386,14 +391,13 @@ test("create_node preserves caller-provided file names", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_node, {
+	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "extensionless-create-file",
-		kind: "file",
 	});
 	if (createdFile._nay) {
-		throw new Error("Expected create_node to preserve caller-provided file name", {
+		throw new Error("Expected create_markdown_node to preserve caller-provided file name", {
 			cause: createdFile._nay,
 		});
 	}
@@ -405,7 +409,7 @@ test("create_node preserves caller-provided file names", async () => {
 	});
 });
 
-test("create_node creates missing folders for nested folder paths", async () => {
+test("create_folder_node creates missing folders for nested folder paths", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -413,15 +417,14 @@ test("create_node creates missing folders for nested folder paths", async () => 
 		external_id: db.files.file_root_1.createdBy,
 		name: "Test User",
 	});
-	const result = await asUser.mutation(api.files_nodes.create_node, {
+	const result = await asUser.mutation(api.files_nodes.create_folder_node, {
 		parentId: files_ROOT_ID,
 		name: "invalid/name",
-		kind: "folder",
 		membershipId: db.membershipId,
 	});
 
 	if (result._nay) {
-		throw new Error("Expected create_node to create the nested folder path", {
+		throw new Error("Expected create_folder_node to create the nested folder path", {
 			cause: result._nay,
 		});
 	}
@@ -443,7 +446,7 @@ test("create_node creates missing folders for nested folder paths", async () => 
 	});
 });
 
-test("create_node creates missing folders for nested file paths", async () => {
+test("create_markdown_node creates missing folders for nested file paths", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -452,14 +455,13 @@ test("create_node creates missing folders for nested file paths", async () => {
 		name: "Test User",
 	});
 
-	const result = await asUser.mutation(api.files_nodes.create_node, {
+	const result = await asUser.mutation(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "notes/projects/plan.md",
-		kind: "file",
 	});
 	if (result._nay) {
-		throw new Error("Expected create_node to create the nested file path", {
+		throw new Error("Expected create_markdown_node to create the nested file path", {
 			cause: result._nay,
 		});
 	}
@@ -496,7 +498,6 @@ test("archived nodes can share path with a new active node", async () => {
 		projectId: db.projectId,
 		userId: db.userId,
 		path: `/${duplicateName}`,
-		fileStorageKind: "markdown",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected initial file creation to succeed");
@@ -507,10 +508,9 @@ test("archived nodes can share path with a new active node", async () => {
 		nodeIds: [createdFile._yay.nodeId],
 	});
 
-	const recreatedFile = await asUser.mutation(api.files_nodes.create_node, {
+	const recreatedFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
 		parentId: files_ROOT_ID,
 		name: duplicateName,
-		kind: "file",
 		membershipId: db.membershipId,
 	});
 	if (recreatedFile._nay) {
@@ -547,7 +547,6 @@ test("create_file_by_path can reuse an existing active file", async () => {
 		projectId: db.projectId,
 		userId: db.userId,
 		path,
-		fileStorageKind: "markdown",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected initial file creation to succeed");
@@ -558,13 +557,277 @@ test("create_file_by_path can reuse an existing active file", async () => {
 		projectId: db.projectId,
 		userId: db.userId,
 		path,
-		fileStorageKind: "markdown",
 	});
 	if (reusedFile._nay) {
 		throw new Error("Expected existing file reuse to succeed");
 	}
 
 	expect(reusedFile._yay.nodeId).toBe(createdFile._yay.nodeId);
+});
+
+describe("files_nodes.get_by_path", () => {
+	test("returns active nodes by path and ignores archived nodes", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const created = await asUser.mutation(api.files_nodes.create_markdown_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			name: "lookup.md",
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		const active = await asUser.query(api.files_nodes.get_by_path, {
+			membershipId: db.membershipId,
+			path: "/lookup.md",
+		});
+		expect(active).toEqual({
+			nodeId: created._yay.nodeId,
+			name: "lookup.md",
+			kind: "file",
+		});
+
+		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [created._yay.nodeId],
+		});
+		if (archived._nay) {
+			throw new Error(archived._nay.message);
+		}
+
+		const missing = await asUser.query(api.files_nodes.get_by_path, {
+			membershipId: db.membershipId,
+			path: "/lookup.md",
+		});
+		expect(missing).toBeNull();
+	});
+});
+
+describe("files_nodes.create_upload_node", () => {
+	test("creates a visible R2 node and uses its id in the R2 key", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "annual-report.pdf",
+			contentType: "application/pdf",
+			size: 1234,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+
+		expect(upload._yay).toMatchObject({
+			url: "https://r2.test/upload",
+			headers: { "Content-Type": "application/pdf" },
+		});
+
+		const docs = await t.run(async (ctx) => {
+			const uploadDoc = await ctx.db.get("files_uploads", upload._yay.uploadId);
+			const source = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			return { uploadDoc, source };
+		});
+		expect(docs.source).toMatchObject({
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			parentId: files_ROOT_ID,
+			name: "annual-report.pdf",
+			kind: "file",
+			uploadId: upload._yay.uploadId,
+		});
+		expect(docs.source?.archiveOperationId).toBeUndefined();
+		expect(docs.uploadDoc).toMatchObject({
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			createdBy: db.userId,
+			r2Bucket: "test-files-bucket",
+			filename: "annual-report.pdf",
+			contentType: "application/pdf",
+			size: 1234,
+			status: "pending",
+			sourceNodeId: upload._yay.nodeId,
+		});
+		expect(docs.uploadDoc?.r2Key).toBe(
+			`workspaces/${db.workspaceId}/projects/${db.projectId}/nodes/${upload._yay.nodeId}/source`,
+		);
+		expect(docs.uploadDoc?.r2Key).not.toContain("annual-report.pdf");
+		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
+			`workspaces/${db.workspaceId}/projects/${db.projectId}/nodes/${upload._yay.nodeId}/source`,
+		);
+	});
+
+	test("rejects folder path conflicts before creating a source node or upload doc", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const existing = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			name: "annual-report.pdf",
+		});
+		if (existing._nay) {
+			throw new Error(existing._nay.message);
+		}
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "annual-report.pdf",
+			contentType: "application/pdf",
+			size: 1234,
+		});
+
+		expect(upload._nay).toMatchObject({ message: "The path cannot point to a folder" });
+		const docs = await t.run(async (ctx) => {
+			const uploads = await ctx.db.query("files_uploads").collect();
+			const uploadedSources = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_kind_name", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId),
+				)
+				.collect()
+				.then((nodes) => nodes.filter((node) => node.uploadId || node.assetId));
+			return { uploads, uploadedSources };
+		});
+		expect(docs.uploads).toHaveLength(0);
+		expect(docs.uploadedSources).toHaveLength(0);
+	});
+
+	test("rejects oversized uploads before creating a visible node", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "too-large.pdf",
+			contentType: "application/pdf",
+			size: files_MAX_UPLOADS_BYTES + 1,
+		});
+
+		expect(upload._nay).toMatchObject({ message: "File too large" });
+		const uploadedSources = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_kind_name", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId),
+				)
+				.collect()
+				.then((nodes) => nodes.filter((node) => node.uploadId || node.assetId)),
+		);
+		expect(uploadedSources).toHaveLength(0);
+	});
+
+	test("replace archives the old source and its linked shadow before creating a new source", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const oldUpload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "replace-me.pdf",
+			contentType: "application/pdf",
+			size: 1024,
+		});
+		if (oldUpload._nay) {
+			throw new Error(oldUpload._nay.message);
+		}
+		const oldShadowNodeId = await t.run(async (ctx) => {
+			const oldUploadDoc = await ctx.db.get("files_uploads", oldUpload._yay.uploadId);
+			if (!oldUploadDoc) {
+				throw new Error("Upload doc not found");
+			}
+
+			const shadowNodeId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				parentId: files_ROOT_ID,
+				name: "replace-me.pdf.shadow.md",
+				kind: "file",
+				path: "/replace-me.pdf.shadow.md",
+			});
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				r2Bucket: oldUploadDoc.r2Bucket,
+				r2Key: oldUploadDoc.r2Key,
+				filename: oldUploadDoc.filename,
+				contentType: oldUploadDoc.contentType,
+				size: oldUploadDoc.size,
+				sourceNodeId: oldUpload._yay.nodeId,
+				shadowNodeId,
+				createdBy: db.userId,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+			await ctx.db.patch("files_nodes", oldUpload._yay.nodeId, {
+				assetId,
+			});
+
+			return shadowNodeId;
+		});
+
+		const replacement = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "replace-me.pdf",
+			contentType: "application/pdf",
+			size: 2048,
+		});
+		if (replacement._nay) {
+			throw new Error(replacement._nay.message);
+		}
+
+		const docs = await t.run(async (ctx) => {
+			const oldSource = await ctx.db.get("files_nodes", oldUpload._yay.nodeId);
+			const oldShadow = await ctx.db.get("files_nodes", oldShadowNodeId);
+			const newSource = await ctx.db.get("files_nodes", replacement._yay.nodeId);
+			const newUpload = await ctx.db.get("files_uploads", replacement._yay.uploadId);
+			return { oldSource, oldShadow, newSource, newUpload };
+		});
+		expect(docs.oldSource?.archiveOperationId).toEqual(expect.any(String));
+		expect(docs.oldShadow?.archiveOperationId).toBe(docs.oldSource?.archiveOperationId);
+		expect(docs.newSource).toMatchObject({
+			name: "replace-me.pdf",
+			uploadId: replacement._yay.uploadId,
+		});
+		expect(docs.newSource?.archiveOperationId).toBeUndefined();
+		expect(docs.newUpload?.r2Key).toBe(
+			`workspaces/${db.workspaceId}/projects/${db.projectId}/nodes/${replacement._yay.nodeId}/source`,
+		);
+	});
 });
 
 test("rename_node returns conflict and keeps original path", async () => {
@@ -607,11 +870,10 @@ test("rename_node preserves caller-provided file names", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_node, {
+	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "rename-source.md",
-		kind: "file",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected source file creation to succeed", {
@@ -646,11 +908,10 @@ test("rename_node creates missing folders for nested file paths", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_node, {
+	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "rename-path-source.md",
-		kind: "file",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected source file creation to succeed", {
@@ -705,7 +966,6 @@ test("rename_node preserves caller-provided nested file names", async () => {
 			parentId: db.files.file_root_1._id,
 			name: "yo.md",
 			kind: "file",
-			fileStorageKind: "markdown",
 			path: `/${db.files.file_root_1.name}/yo.md`,
 			version: files_FIRST_VERSION,
 			archiveOperationId: undefined,
@@ -739,11 +999,10 @@ test("rename_node preserves caller-provided file extensions", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_node, {
+	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "unsupported-source.md",
-		kind: "file",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected source file creation to succeed", {
@@ -815,10 +1074,9 @@ test("move_nodes returns conflict and keeps original path", async () => {
 		name: "Test User",
 	});
 
-	const conflictingSibling = await asUser.mutation(api.files_nodes.create_node, {
+	const conflictingSibling = await asUser.mutation(api.files_nodes.create_folder_node, {
 		parentId: db.files.file_root_2._id,
 		name: db.files.file_root_1_child_1.name,
-		kind: "folder",
 		membershipId: db.membershipId,
 	});
 	if (conflictingSibling._nay) {
@@ -974,7 +1232,6 @@ test("create_file_by_path creates active ancestors instead of reusing archived n
 		projectId: db.projectId,
 		userId: db.userId,
 		path: `/${db.files.file_root_2.name}/new-leaf.md`,
-		fileStorageKind: "markdown",
 	});
 	if (createByPath._nay) {
 		throw new Error("Expected create_file_by_path to succeed with archived duplicate ancestor");
@@ -1262,11 +1519,10 @@ test("membership-scoped file and yjs APIs reject cross-user membership ids", asy
 	}
 	expect(unauthorizedRename._nay.message).toBe("Unauthorized");
 
-	const createdFile = await asOwner.mutation(api.files_nodes.create_node, {
+	const createdFile = await asOwner.mutation(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "membership-yjs-regression.md",
-		kind: "file",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected owner to create regression file");
@@ -1322,11 +1578,10 @@ test("files_tree_write rate limit runs before membership validation", async () =
 	const createdNodeIds: Array<Id<"files_nodes">> = [];
 
 	for (let i = 0; i < 2; i++) {
-		const result = await asUser.mutation(api.files_nodes.create_node, {
+		const result = await asUser.mutation(api.files_nodes.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			name: `tree-rate-limit-${i}.md`,
-			kind: "file",
 		});
 		if (result._nay) {
 			throw new Error(`Expected tree write #${i + 1} to succeed, got: ${result._nay.message}`);
@@ -1394,11 +1649,10 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 		email: "rate-limit-user@example.com",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_node, {
+	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "rate-limit.md",
-		kind: "file",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected owner to create rate-limit file");
@@ -1481,11 +1735,10 @@ test("yjs_push_update rate limit applies to anonymous JWT identities", async () 
 		name: "Anonymous User",
 	});
 
-	const createdFile = await asAnonymous.mutation(api.files_nodes.create_node, {
+	const createdFile = await asAnonymous.mutation(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "rate-limit-anonymous.md",
-		kind: "file",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected anonymous user to create rate-limit file");
@@ -1523,11 +1776,10 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 		email: "restore-credits-user@example.com",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_node, {
+	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "restore-credit.md",
-		kind: "file",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected file creation to succeed before restore credit test");
@@ -1657,11 +1909,10 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		email: "restore-billing-user@example.com",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_node, {
+	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "restore-billing.md",
-		kind: "file",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected file creation to succeed before restore billing test");

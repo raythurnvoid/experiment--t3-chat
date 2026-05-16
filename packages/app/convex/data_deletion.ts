@@ -49,6 +49,20 @@ async function db_purge_workspace_project_content(
 		nodeIds.push(page._id);
 	}
 
+	const filesR2AssetIds: Array<Id<"files_r2_assets">> = [];
+	for await (const doc of ctx.db
+		.query("files_r2_assets")
+		.withIndex("by_workspace_project_r2Key", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
+		filesR2AssetIds.push(doc._id);
+	}
+
+	const filesUploadIds: Array<Id<"files_uploads">> = [];
+	for await (const doc of ctx.db.query("files_uploads")) {
+		if (doc.workspaceId === workspaceId && doc.projectId === projectId) {
+			filesUploadIds.push(doc._id);
+		}
+	}
+
 	const filesYjsSnapshotScheduleIds: Array<Id<"files_yjs_snapshot_schedules">> = [];
 	for (const nodeId of nodeIds) {
 		const sched = await ctx.db
@@ -204,6 +218,10 @@ async function db_purge_workspace_project_content(
 	await Promise.all(filesSnapshotsIds.map((id) => ctx.db.delete("files_snapshots", id)));
 	// files_markdown_content
 	await Promise.all(filesMarkdownContentIds.map((id) => ctx.db.delete("files_markdown_content", id)));
+	// files_r2_assets
+	await Promise.all(filesR2AssetIds.map((id) => ctx.db.delete("files_r2_assets", id)));
+	// files_uploads
+	await Promise.all(filesUploadIds.map((id) => ctx.db.delete("files_uploads", id)));
 	// files
 	await Promise.all(nodeIds.map((id) => ctx.db.delete("files_nodes", id)));
 }

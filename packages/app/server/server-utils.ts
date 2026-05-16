@@ -102,6 +102,10 @@ export function server_path_parent_of(path: string): string {
 	return `/${segments.slice(0, -1).join("/")}`;
 }
 
+export function path_join(parentPath: string, pathSegment: string): string {
+	return parentPath === "/" ? `/${pathSegment}` : `${parentPath}/${pathSegment}`;
+}
+
 export function json_parse_and_validate<T>(json: string, schema: z.ZodSchema<T>) {
 	try {
 		const value = JSON.parse(json);

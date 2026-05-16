@@ -46,6 +46,7 @@ export function test_convex() {
 	workpool_test.register(t, "billing_workpool_bootstrap");
 	workpool_test.register(t, "billing_workpool_cancellation");
 	workpool_test.register(t, "billing_workpool_usage_event");
+	workpool_test.register(t, "files_upload_conversion_workpool");
 	rate_limiter_test.register(t, "rate_limiter");
 	r2_test.register(t as unknown as Parameters<typeof r2_test.register>[0]);
 	return t;
@@ -135,11 +136,10 @@ export const test_mocks = {
 				projectId: test_mocks_hardcoded.project_id.project_1,
 				createdBy: test_mocks_hardcoded.user.user_1.id as Id<"users">,
 				updatedAt: updatedAt,
-				updatedBy: test_mocks_hardcoded.user.user_1.id,
+				updatedBy: test_mocks_hardcoded.user.user_1.id as Id<"users">,
 				parentId: test_mocks_hardcoded.files.file_root_1.parentId,
 				name: name,
 				kind: "folder",
-				fileStorageKind: null,
 				path: `/${name}`,
 				version: files_FIRST_VERSION,
 				archiveOperationId: undefined,

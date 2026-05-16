@@ -17,7 +17,7 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 			version: files_FIRST_VERSION,
 			parentId: files_ROOT_ID,
 			createdBy: userId,
-			updatedBy: String(userId),
+			updatedBy: userId,
 			updatedAt: Date.now(),
 		} as const;
 
@@ -26,7 +26,6 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 			path: "/chunked-page",
 			name: "chunked-page",
 			kind: "file",
-			fileStorageKind: "markdown",
 			archiveOperationId: undefined,
 		});
 		const oldMarkdownChunkId = await ctx.db.insert("files_markdown_chunks", {
