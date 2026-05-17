@@ -49,27 +49,33 @@ export async function files_db_get_yjs_content_and_sequence(
 		nodeId: Id<"files_nodes">;
 	},
 ) {
-	const file = await ctx.db.get("files_nodes", args.nodeId);
-	if (!file || file.workspaceId !== args.workspaceId || file.projectId !== args.projectId) {
+	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	if (!fileNode || fileNode.workspaceId !== args.workspaceId || fileNode.projectId !== args.projectId) {
 		return null;
 	}
 
-	if (!file.yjsSnapshotId || !file.yjsLastSequenceId) {
-		console.error(
-			should_never_happen(
-				"[files_db_get_yjs_content_and_sequence] Missing file.yjsSnapshotId or file.yjsLastSequenceId",
-				{
-					nodeId: args.nodeId,
-					yjsSnapshotId: file.yjsSnapshotId,
-					yjsLastSequenceId: file.yjsLastSequenceId,
-				},
-			),
-		);
-		return null;
+	if (!fileNode.yjsSnapshotId) {
+		const message = "fileNode.yjsSnapshotId is not set";
+		const data = {
+			nodeId: args.nodeId,
+			yjsSnapshotId: fileNode.yjsSnapshotId,
+		};
+		console.error(message, data);
+		throw should_never_happen(message, data);
+	}
+
+	if (!fileNode.yjsLastSequenceId) {
+		const message = "fileNode.yjsLastSequenceId is not set";
+		const data = {
+			nodeId: args.nodeId,
+			yjsLastSequenceId: fileNode.yjsLastSequenceId,
+		};
+		console.error(message, data);
+		throw should_never_happen(message, data);
 	}
 
 	const [yjsSnapshotDoc, yjsUpdatesDocs, yjsLastSequenceDoc] = await Promise.all([
-		ctx.db.get("files_yjs_snapshots", file.yjsSnapshotId),
+		ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
 		ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_workspace_project_file_sequence", (q) =>
@@ -78,34 +84,47 @@ export async function files_db_get_yjs_content_and_sequence(
 			.order("asc")
 			.collect(),
 
-		ctx.db.get("files_yjs_docs_last_sequences", file.yjsLastSequenceId),
+		ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
 	]);
 
 	if (
 		!yjsSnapshotDoc ||
 		yjsSnapshotDoc.workspaceId !== args.workspaceId ||
-		yjsSnapshotDoc.projectId !== args.projectId ||
+		yjsSnapshotDoc.projectId !== args.projectId
+	) {
+		const message = "fileNode.yjsSnapshotId points to a missing or mismatched files_yjs_snapshots doc";
+		const data = {
+			nodeId: args.nodeId,
+			yjsSnapshotId: fileNode.yjsSnapshotId,
+			yjsSnapshotDoc,
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+		};
+		console.error(message, data);
+		throw should_never_happen(message, data);
+	}
+
+	if (
 		!yjsLastSequenceDoc ||
 		yjsLastSequenceDoc.workspaceId !== args.workspaceId ||
 		yjsLastSequenceDoc.projectId !== args.projectId
 	) {
-		console.error(
-			should_never_happen("[files_db_get_yjs_content_and_sequence] Missing yjsSnapshotDoc or yjsLastSequenceDoc", {
-				nodeId: args.nodeId,
-				yjsSnapshotDoc: yjsSnapshotDoc,
-				yjsLastSequenceDoc: yjsLastSequenceDoc,
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-			}),
-		);
-
-		return null;
+		const message = "fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
+		const data = {
+			nodeId: args.nodeId,
+			yjsLastSequenceId: fileNode.yjsLastSequenceId,
+			yjsLastSequenceDoc,
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+		};
+		console.error(message, data);
+		throw should_never_happen(message, data);
 	}
 
 	const incrementalYjsUpdatesDocs = yjsUpdatesDocs.filter((u) => u.sequence > yjsSnapshotDoc.sequence).reverse();
 
 	return {
-		file,
+		file: fileNode,
 		yjsSnapshotDoc,
 		yjsLastSequenceDoc,
 		yjsUpdatesDocs,
@@ -113,7 +132,6 @@ export async function files_db_get_yjs_content_and_sequence(
 		yjsSequence: yjsLastSequenceDoc.lastSequence,
 	};
 }
-
 export async function files_db_get_pending_update(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -173,8 +191,8 @@ export async function files_db_schedule_pending_update_cleanup(
 		delayMs?: number;
 	},
 ) {
-	// Refresh the pending update lifetime on every write. Keep one cleanup task per row
-	// and replace the older scheduled run whenever the row changes.
+	// Refresh the pending update lifetime on every write. Keep one cleanup task per doc
+	// and replace the older scheduled run whenever the doc changes.
 	const [existingCleanupTasks, scheduledFunctionId] = await Promise.all([
 		ctx.db
 			.query("files_pending_updates_cleanup_tasks")

@@ -145,7 +145,7 @@ function files_pending_update_branch_docs_have_changes(args: {
 	});
 }
 
-function files_pending_update_branch_docs_match_existing_row(args: {
+function files_pending_update_branch_docs_match_existing_doc(args: {
 	existingPendingUpdate: app_convex_Doc<"files_pending_updates"> | null;
 	baseYjsSequence: number;
 	baseYjsUpdate: ArrayBuffer;
@@ -281,7 +281,7 @@ async function files_pending_update_upsert_branch_docs(
 	});
 
 	if (
-		files_pending_update_branch_docs_match_existing_row({
+		files_pending_update_branch_docs_match_existing_doc({
 			existingPendingUpdate: args.existingPendingUpdate,
 			baseYjsSequence: args.baseYjsSequence,
 			baseYjsUpdate,
@@ -409,7 +409,7 @@ export const remove_file_pending_update_if_expired = internalMutation({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		// Guard scheduled cleanup with `expectedUpdatedAt`: if the row changed after you
+		// Guard scheduled cleanup with `expectedUpdatedAt`: if the doc changed after you
 		// created the task, treat this run as stale and do not delete the newer pending state.
 		const cleanupTasks = await ctx.db
 			.query("files_pending_updates_cleanup_tasks")
@@ -608,7 +608,7 @@ export const persist_file_pending_update_rebased_state = mutation({
 		}
 
 		if (
-			files_pending_update_branch_docs_match_existing_row({
+			files_pending_update_branch_docs_match_existing_doc({
 				existingPendingUpdate,
 				baseYjsSequence: args.baseYjsSequence,
 				baseYjsUpdate: args.baseYjsUpdate,
@@ -647,7 +647,7 @@ export const persist_file_pending_update_rebased_state = mutation({
 					unstagedBranchYjsUpdate: args.unstagedBranchYjsUpdate,
 					updatedAt: now,
 				}),
-				// Refresh the expiry window from this latest row version because rebasing
+				// Refresh the expiry window from this latest doc version because rebasing
 				// changes the authoritative pending snapshot.
 				files_db_schedule_pending_update_cleanup(ctx, {
 					pendingUpdateId: existingPendingUpdate._id,
@@ -671,7 +671,7 @@ export const persist_file_pending_update_rebased_state = mutation({
 		if (!nextPendingUpdate) {
 			return Result({
 				_nay: {
-					message: "Failed to read persisted rebased pending update row",
+					message: "Failed to read persisted rebased pending update doc",
 				},
 			});
 		}
@@ -842,14 +842,14 @@ export const save_file_pending_update = mutation({
 		if (!pendingUpdate) {
 			return Result({
 				_nay: {
-					message: "Pending update not found",
+					message: "Not found",
 				},
 			});
 		}
 		if (!yjsContent) {
 			return Result({
 				_nay: {
-					message: "File Yjs content not found",
+					message: "Not found",
 				},
 			});
 		}
@@ -884,7 +884,16 @@ export const save_file_pending_update = mutation({
 		if (diffUpdateForLatestFileYjsDoc) {
 			const workspace = await ctx.db.get("workspaces", membership.workspaceId);
 			if (!workspace) {
-				return Result({ _nay: { message: "Workspace not found" } });
+				const message = "membership.workspaceId points to a missing workspaces doc";
+				const data = {
+					membershipId: membership._id,
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					nodeId: args.nodeId,
+					pendingUpdateId: args.pendingUpdateId,
+				};
+				console.error(message, data);
+				throw should_never_happen(message, data);
 			}
 			const billedUserId = billing_pick_billed_user_id({
 				userId: user._id,
@@ -892,11 +901,14 @@ export const save_file_pending_update = mutation({
 			});
 			const billedUser = await ctx.db.get("users", billedUserId);
 			if (!billedUser) {
-				throw should_never_happen("Billed user not found", {
+				const message = "billedUserId points to a missing users doc";
+				const data = {
 					userId: user._id,
 					workspaceId: workspace._id,
 					billedUserId,
-				});
+				};
+				console.error(message, data);
+				throw should_never_happen(message, data);
 			}
 
 			const check = await billing_db_check_credits(ctx, {

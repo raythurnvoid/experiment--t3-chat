@@ -158,7 +158,7 @@ export const get_file_download_target_for_prepare = internalQuery({
 
 		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
 		if (!workspace) {
-			console.error("Membership points to missing workspace", {
+			console.error("membership.workspaceId points to a missing workspaces doc", {
 				membershipId: membership._id,
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
@@ -166,7 +166,7 @@ export const get_file_download_target_for_prepare = internalQuery({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 		if (!workspace.defaultProjectId) {
-			console.error("Membership points to workspace without default project", {
+			console.error("workspace.defaultProjectId is not set", {
 				membershipId: membership._id,
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
@@ -202,7 +202,7 @@ export const get_file_download_target_for_prepare = internalQuery({
 			return Result({ _nay: { message: "Not found" } });
 		}
 		if (fileNode.kind !== "file") {
-			return Result({ _nay: { message: "Cannot download a folder" } });
+			return Result({ _nay: { message: "Not found" } });
 		}
 
 		// Source downloads use the uploaded file node and its finalized R2 asset.
@@ -211,11 +211,14 @@ export const get_file_download_target_for_prepare = internalQuery({
 				return Result({ _nay: { message: "Not found" } });
 			}
 			if (!fileNode.propertiesId) {
-				throw should_never_happen("File node properties ID missing", {
+				const message = "fileNode.propertiesId is not set";
+				const data = {
 					fileNodeId: fileNode._id,
 					workspaceId: fileNode.workspaceId,
 					projectId: fileNode.projectId,
-				});
+				};
+				console.error(message, data);
+				throw should_never_happen(message, data);
 			}
 
 			const [sourceAsset, fileNodeProperties] = await Promise.all([
@@ -223,16 +226,22 @@ export const get_file_download_target_for_prepare = internalQuery({
 				ctx.db.get("files_node_properties", fileNode.propertiesId),
 			]);
 			if (!sourceAsset) {
-				throw should_never_happen("File node asset missing", {
+				const message = "fileNode.assetId points to a missing files_r2_assets doc";
+				const data = {
 					fileNodeId: fileNode._id,
 					assetId: fileNode.assetId,
-				});
+				};
+				console.error(message, data);
+				throw should_never_happen(message, data);
 			}
 			if (!fileNodeProperties) {
-				throw should_never_happen("File node properties missing", {
+				const message = "fileNode.propertiesId points to a missing files_node_properties doc";
+				const data = {
 					fileNodeId: fileNode._id,
 					propertiesId: fileNode.propertiesId,
-				});
+				};
+				console.error(message, data);
+				throw should_never_happen(message, data);
 			}
 
 			return Result({
@@ -248,9 +257,12 @@ export const get_file_download_target_for_prepare = internalQuery({
 
 		// Markdown downloads use the requested Markdown file node directly, including generated shadows.
 		if (!fileNode.propertiesId) {
-			throw should_never_happen("File node properties ID missing", {
+			const message = "fileNode.propertiesId is not set";
+			const data = {
 				fileNodeId: fileNode._id,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		// Return only committed Markdown content; pending editor edits are not downloadable until saved.
@@ -259,23 +271,32 @@ export const get_file_download_target_for_prepare = internalQuery({
 			ctx.db.get("files_node_properties", fileNode.propertiesId),
 		]);
 		if (!markdownContent) {
-			throw should_never_happen("File node markdown content missing", {
+			const message = "fileNode.markdownContentId points to a missing files_markdown_content doc";
+			const data = {
 				fileNodeId: fileNode._id,
 				markdownContentId: fileNode.markdownContentId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 		// Metadata comes from file-node properties so the download UI and prepare path use the same source.
 		if (!fileNodeProperties) {
-			throw should_never_happen("File node properties missing", {
+			const message = "fileNode.propertiesId points to a missing files_node_properties doc";
+			const data = {
 				fileNodeId: fileNode._id,
 				propertiesId: fileNode.propertiesId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 		if (fileNodeProperties.contentType !== ("text/markdown;charset=utf-8" satisfies files_ContentType)) {
-			throw should_never_happen("File properties content type is not Markdown", {
+			const message = "fileNodeProperties.contentType is not Markdown";
+			const data = {
 				fileNodeId: fileNode._id,
 				contentType: fileNodeProperties.contentType,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		return Result({
@@ -451,25 +472,34 @@ export const ensure_uploaded_asset = internalMutation({
 	handler: async (ctx, args) => {
 		const upload = await ctx.db.get("files_uploads", args.uploadId);
 		if (!upload) {
-			throw should_never_happen("Upload doc missing", {
+			const message = "args.uploadId points to a missing files_uploads doc";
+			const data = {
 				uploadId: args.uploadId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		const sourceFileNode = await ctx.db.get("files_nodes", upload.sourceNodeId);
 		if (!sourceFileNode) {
-			throw should_never_happen("Source file node missing", {
+			const message = "upload.sourceNodeId points to a missing files_nodes doc";
+			const data = {
 				uploadId: upload._id,
 				sourceNodeId: upload.sourceNodeId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		const now = Date.now();
 		if (!sourceFileNode.propertiesId) {
-			throw should_never_happen("Source file properties missing", {
+			const message = "sourceFileNode.propertiesId is not set";
+			const data = {
 				uploadId: upload._id,
 				sourceNodeId: sourceFileNode._id,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		await ctx.db.patch("files_node_properties", sourceFileNode.propertiesId, {
@@ -480,11 +510,14 @@ export const ensure_uploaded_asset = internalMutation({
 		if (sourceFileNode.assetId) {
 			const asset = await ctx.db.get("files_r2_assets", sourceFileNode.assetId);
 			if (!asset || asset.sourceNodeId !== sourceFileNode._id) {
-				throw should_never_happen("Existing uploaded asset did not match source file node", {
+				const message = "sourceFileNode.assetId points to a missing or mismatched files_r2_assets doc";
+				const data = {
 					uploadId: upload._id,
 					sourceNodeId: sourceFileNode._id,
 					assetId: sourceFileNode.assetId,
-				});
+				};
+				console.error(message, data);
+				throw should_never_happen(message, data);
 			}
 
 			return Result({ _yay: asset });
@@ -514,10 +547,13 @@ export const ensure_uploaded_asset = internalMutation({
 
 		const asset = await ctx.db.get("files_r2_assets", assetId);
 		if (!asset) {
-			throw should_never_happen("Failed to read uploaded asset after creation", {
+			const message = "assetId points to a missing files_r2_assets doc";
+			const data = {
 				uploadId: upload._id,
 				assetId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		return Result({ _yay: asset });

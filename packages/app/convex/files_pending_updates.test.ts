@@ -212,20 +212,23 @@ async function read_file_markdown_from_yjs(args: {
 	nodeId: Id<"files_nodes">;
 }) {
 	const { ctx, workspaceId, projectId, nodeId } = args;
-	const file = await ctx.db.get("files_nodes", nodeId);
-	if (!file || !file.yjsSnapshotId) {
-		throw new Error("File missing while reading markdown from Yjs");
+	const fileNode = await ctx.db.get("files_nodes", nodeId);
+	if (!fileNode) {
+		throw new Error("nodeId points to a missing files_nodes doc while reading markdown from Yjs");
+	}
+	if (!fileNode.yjsSnapshotId) {
+		throw new Error("fileNode.yjsSnapshotId is not set while reading markdown from Yjs");
 	}
 
-	const snapshot = await ctx.db.get("files_yjs_snapshots", file.yjsSnapshotId);
+	const snapshot = await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId);
 	if (!snapshot) {
-		throw new Error("Snapshot missing while reading markdown from Yjs");
+		throw new Error("fileNode.yjsSnapshotId points to a missing files_yjs_snapshots doc while reading markdown from Yjs");
 	}
 
 	const updates = await ctx.db
 		.query("files_yjs_updates")
 		.withIndex("by_workspace_project_file_sequence", (q) =>
-			q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("nodeId", file._id),
+			q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("nodeId", fileNode._id),
 		)
 		.order("asc")
 		.collect();
@@ -271,24 +274,35 @@ async function read_file_yjs_state(args: {
 	nodeId: Id<"files_nodes">;
 }) {
 	const { ctx, workspaceId, projectId, nodeId } = args;
-	const file = await ctx.db.get("files_nodes", nodeId);
-	if (!file || !file.yjsSnapshotId || !file.yjsLastSequenceId) {
-		throw new Error("File missing while reading Yjs state");
+	const fileNode = await ctx.db.get("files_nodes", nodeId);
+	if (!fileNode) {
+		throw new Error("nodeId points to a missing files_nodes doc while reading Yjs state");
+	}
+	if (!fileNode.yjsSnapshotId) {
+		throw new Error("fileNode.yjsSnapshotId is not set while reading Yjs state");
+	}
+	if (!fileNode.yjsLastSequenceId) {
+		throw new Error("fileNode.yjsLastSequenceId is not set while reading Yjs state");
 	}
 
 	const [snapshot, lastSequenceDoc, updates] = await Promise.all([
-		ctx.db.get("files_yjs_snapshots", file.yjsSnapshotId),
-		ctx.db.get("files_yjs_docs_last_sequences", file.yjsLastSequenceId),
+		ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
+		ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
 		ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_workspace_project_file_sequence", (q) =>
-				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("nodeId", file._id),
+				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("nodeId", fileNode._id),
 			)
 			.order("asc")
 			.collect(),
 	]);
-	if (!snapshot || !lastSequenceDoc) {
-		throw new Error("File Yjs state missing while reading Yjs state");
+	if (!snapshot) {
+		throw new Error("fileNode.yjsSnapshotId points to a missing files_yjs_snapshots doc while reading Yjs state");
+	}
+	if (!lastSequenceDoc) {
+		throw new Error(
+			"fileNode.yjsLastSequenceId points to a missing files_yjs_docs_last_sequences doc while reading Yjs state",
+		);
 	}
 
 	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(snapshot.snapshotUpdate, {
@@ -305,14 +319,19 @@ async function read_file_yjs_state(args: {
 
 async function build_file_diff_update_from_snapshot(args: { ctx: MutationCtx; nodeId: Id<"files_nodes">; markdown: string }) {
 	const { ctx, nodeId, markdown } = args;
-	const file = await ctx.db.get("files_nodes", nodeId);
-	if (!file || !file.yjsSnapshotId) {
-		throw new Error("File missing while preparing diff update from snapshot");
+	const fileNode = await ctx.db.get("files_nodes", nodeId);
+	if (!fileNode) {
+		throw new Error("nodeId points to a missing files_nodes doc while preparing diff update from snapshot");
+	}
+	if (!fileNode.yjsSnapshotId) {
+		throw new Error("fileNode.yjsSnapshotId is not set while preparing diff update from snapshot");
 	}
 
-	const snapshot = await ctx.db.get("files_yjs_snapshots", file.yjsSnapshotId);
+	const snapshot = await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId);
 	if (!snapshot) {
-		throw new Error("Snapshot missing while preparing diff update from snapshot");
+		throw new Error(
+			"fileNode.yjsSnapshotId points to a missing files_yjs_snapshots doc while preparing diff update from snapshot",
+		);
 	}
 
 	const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(snapshot.snapshotUpdate);
@@ -360,7 +379,7 @@ function read_pending_row_markdown_state(args: {
 	});
 
 	if (baseMarkdown._nay || stagedMarkdown._nay || unstagedMarkdown._nay) {
-		throw new Error("Failed to reconstruct pending row markdown");
+		throw new Error("Failed to reconstruct pending doc markdown");
 	}
 
 	return {
@@ -377,7 +396,7 @@ async function list_pending_update_cleanup_tasks(args: { ctx: MutationCtx; pendi
 		.collect();
 }
 
-async function read_pending_update_last_sequence_saved_row(args: {
+async function read_pending_update_last_sequence_saved_doc(args: {
 	ctx: MutationCtx;
 	workspaceId: string;
 	projectId: string;
@@ -577,7 +596,7 @@ describe("upsert_file_pending_update", () => {
 				.first(),
 		);
 		if (!firstPendingRow) {
-			throw new Error("Missing pending row while testing matching pendingUpdateId hint");
+			throw new Error("Missing pending doc while testing matching pendingUpdateId hint");
 		}
 
 		const secondMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nSecond`);
@@ -614,7 +633,7 @@ describe("upsert_file_pending_update", () => {
 		expect(secondPendingRowMarkdownState.unstagedMarkdown).toBe(secondMarkdown);
 	});
 
-	test("upsert_file_pending_update falls back from a stale pendingUpdateId to the current scoped row", async () => {
+	test("upsert_file_pending_update falls back from a stale pendingUpdateId to the current scoped doc", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -654,7 +673,7 @@ describe("upsert_file_pending_update", () => {
 				.first(),
 		);
 		if (!stalePendingRow) {
-			throw new Error("Missing stale pending row while testing fallback");
+			throw new Error("Missing stale pending doc while testing fallback");
 		}
 
 		await upsert_file_pending_update_internal_for_test({
@@ -690,7 +709,7 @@ describe("upsert_file_pending_update", () => {
 				.first(),
 		);
 		if (!currentPendingRow) {
-			throw new Error("Missing current pending row while testing stale fallback");
+			throw new Error("Missing current pending doc while testing stale fallback");
 		}
 		expect(currentPendingRow._id).not.toBe(stalePendingRow._id);
 
@@ -769,7 +788,7 @@ describe("upsert_file_pending_update", () => {
 				.first(),
 		);
 		if (!pendingRow) {
-			throw new Error("Missing pending row after creating an agent proposal");
+			throw new Error("Missing pending doc after creating an agent proposal");
 		}
 
 		const pendingRowMarkdownState = read_pending_row_markdown_state({
@@ -833,7 +852,7 @@ describe("upsert_file_pending_update", () => {
 				.first(),
 		);
 		if (!pendingRow) {
-			throw new Error("Missing pending row after the follow-up agent proposal");
+			throw new Error("Missing pending doc after the follow-up agent proposal");
 		}
 
 		const pendingRowMarkdownState = read_pending_row_markdown_state({
@@ -844,7 +863,7 @@ describe("upsert_file_pending_update", () => {
 		expect(pendingRowMarkdownState.unstagedMarkdown).toBe(secondAgentMarkdown);
 	});
 
-	test("upsert_file_pending_update keeps a pending row for trailing whitespace at EOF", async () => {
+	test("upsert_file_pending_update keeps a pending doc for trailing whitespace at EOF", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -885,7 +904,7 @@ describe("upsert_file_pending_update", () => {
 				.first(),
 		);
 		if (!pendingRow) {
-			throw new Error("Missing pending row after adding trailing whitespace at EOF");
+			throw new Error("Missing pending doc after adding trailing whitespace at EOF");
 		}
 
 		const pendingRowMarkdownState = read_pending_row_markdown_state({
@@ -896,7 +915,7 @@ describe("upsert_file_pending_update", () => {
 		expect(pendingRowMarkdownState.unstagedMarkdown).toBe(whitespaceMarkdown);
 	});
 
-	test("upsert_file_pending_update clears the row when agent changes collapse to base", async () => {
+	test("upsert_file_pending_update clears the doc when agent changes collapse to base", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -948,7 +967,7 @@ describe("upsert_file_pending_update", () => {
 		expect(pendingRow).toBeNull();
 	});
 
-	test("pending update cleanup task follows the latest pending row state", async () => {
+	test("pending update cleanup task follows the latest pending doc state", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -989,7 +1008,7 @@ describe("upsert_file_pending_update", () => {
 				.first(),
 		);
 		if (!firstPendingRow) {
-			throw new Error("Missing first pending row while testing cleanup task scheduling");
+			throw new Error("Missing first pending doc while testing cleanup task scheduling");
 		}
 
 		const firstCleanupTasks = await t.run((ctx) =>
@@ -1027,7 +1046,7 @@ describe("upsert_file_pending_update", () => {
 				.first(),
 		);
 		if (!secondPendingRow) {
-			throw new Error("Missing second pending row while testing cleanup task rescheduling");
+			throw new Error("Missing second pending doc while testing cleanup task rescheduling");
 		}
 
 		const secondCleanupTasks = await t.run((ctx) =>
@@ -1105,7 +1124,7 @@ describe("files_db_reschedule_pending_update_cleanup_for_user", () => {
 				.first(),
 		);
 		if (!pendingRow) {
-			throw new Error("Missing pending row while testing user cleanup reschedule");
+			throw new Error("Missing pending doc while testing user cleanup reschedule");
 		}
 
 		const firstCleanupTask = await t.run(async (ctx) => {
@@ -1185,7 +1204,7 @@ describe("presence.disconnect", () => {
 				.first(),
 		);
 		if (!pendingRow) {
-			throw new Error("Missing pending row while testing last-session disconnect cleanup");
+			throw new Error("Missing pending doc while testing last-session disconnect cleanup");
 		}
 
 		const firstCleanupTask = await t.run(async (ctx) => {
@@ -1272,7 +1291,7 @@ describe("presence.disconnect", () => {
 				.first(),
 		);
 		if (!pendingRow) {
-			throw new Error("Missing pending row while testing multi-session disconnect cleanup");
+			throw new Error("Missing pending doc while testing multi-session disconnect cleanup");
 		}
 
 		const firstCleanupTask = await t.run(async (ctx) => {
@@ -1327,6 +1346,76 @@ describe("presence.disconnect", () => {
 });
 
 describe("save_file_pending_update", () => {
+	test("save_file_pending_update returns Not found when there is no pending doc", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-edits-save-missing-doc",
+				name: "pending-edits-save-missing-doc",
+				markdown: "# Missing doc base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+
+		const saveResult = await asUser.mutation(api.ai_chat.save_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+
+		expect(saveResult._nay?.message).toBe("Not found");
+	});
+
+	test("save_file_pending_update throws when a file points to missing Yjs state", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-edits-save-broken-yjs",
+				name: "pending-edits-save-broken-yjs",
+				markdown: "# Broken Yjs base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+
+		const pendingMarkdown = `${seeded.baseMarkdown}\n\nPending chunk`;
+		const upsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: pendingMarkdown,
+			unstagedMarkdown: pendingMarkdown,
+		});
+		if (upsertResult._nay) {
+			throw new Error(upsertResult._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const file = await ctx.db.get("files_nodes", seeded.nodeId);
+			if (!file?.yjsSnapshotId) {
+				throw new Error("Expected seeded file Yjs snapshot");
+			}
+			await ctx.db.delete("files_yjs_snapshots", file.yjsSnapshotId);
+		});
+
+		await expect(
+			asUser.mutation(api.ai_chat.save_file_pending_update, {
+				membershipId: seeded.membershipId,
+				nodeId: seeded.nodeId,
+			}),
+		).rejects.toThrow("fileNode.yjsSnapshotId points to a missing or mismatched files_yjs_snapshots doc");
+	});
+
 	test("save_file_pending_update blocks Free users at zero credits before saving", async () => {
 		const t = test_convex();
 
@@ -1533,7 +1622,7 @@ describe("save_file_pending_update", () => {
 		expect(savedMarkdown).toContain("Saved anon chunk");
 	});
 
-	test("save_file_pending_update supports partial save and keeps unresolved pending row", async () => {
+	test("save_file_pending_update supports partial save and keeps unresolved pending doc", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -1602,7 +1691,7 @@ describe("save_file_pending_update", () => {
 		expect(yjsUpdatesAfterSave[0]?.createdBy).toBe(seeded.userId);
 
 		const pendingUpdateLastSequenceSaved = await t.run(async (ctx) =>
-			read_pending_update_last_sequence_saved_row({
+			read_pending_update_last_sequence_saved_doc({
 				ctx,
 				workspaceId: seeded.workspaceId,
 				projectId: seeded.projectId,
@@ -1648,7 +1737,7 @@ describe("save_file_pending_update", () => {
 		expect(savedMarkdownAfterPartialSave).not.toContain("Unresolved chunk");
 	});
 
-	test("save_file_pending_update clears pending row when all changes are resolved", async () => {
+	test("save_file_pending_update clears pending doc when all changes are resolved", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -1729,7 +1818,7 @@ describe("save_file_pending_update", () => {
 		expect(savedMarkdownAfterFullSave).toContain("Fully resolved");
 	});
 
-	test("save_file_pending_update falls back from a stale pendingUpdateId to the current scoped row", async () => {
+	test("save_file_pending_update falls back from a stale pendingUpdateId to the current scoped doc", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -1746,7 +1835,7 @@ describe("save_file_pending_update", () => {
 			name: "Test User",
 		});
 
-		const staleMarkdown = `${seeded.baseMarkdown}\n\nStale row`;
+		const staleMarkdown = `${seeded.baseMarkdown}\n\nStale doc`;
 		await upsert_file_pending_update_internal_for_test({
 			t,
 			workspaceId: seeded.workspaceId,
@@ -1770,7 +1859,7 @@ describe("save_file_pending_update", () => {
 				.first(),
 		);
 		if (!stalePendingRow) {
-			throw new Error("Missing stale pending row while testing save fallback");
+			throw new Error("Missing stale pending doc while testing save fallback");
 		}
 
 		await upsert_file_pending_update_internal_for_test({
@@ -1783,7 +1872,7 @@ describe("save_file_pending_update", () => {
 			unstagedMarkdown: seeded.baseMarkdown,
 		});
 
-		const currentMarkdown = `${seeded.baseMarkdown}\n\nCurrent row`;
+		const currentMarkdown = `${seeded.baseMarkdown}\n\nCurrent doc`;
 		await upsert_file_pending_update_internal_for_test({
 			t,
 			workspaceId: seeded.workspaceId,
@@ -1807,7 +1896,7 @@ describe("save_file_pending_update", () => {
 				.first(),
 		);
 		if (!currentPendingRow) {
-			throw new Error("Missing current pending row while testing save fallback");
+			throw new Error("Missing current pending doc while testing save fallback");
 		}
 		expect(currentPendingRow._id).not.toBe(stalePendingRow._id);
 
@@ -1853,10 +1942,10 @@ describe("save_file_pending_update", () => {
 				nodeId: seeded.nodeId,
 			}),
 		);
-		expect(savedMarkdownAfterFallbackSave).toContain("Current row");
+		expect(savedMarkdownAfterFallbackSave).toContain("Current doc");
 	});
 
-	test("save_file_pending_update keeps unresolved row based on saved pending base when remote drift exists", async () => {
+	test("save_file_pending_update keeps unresolved doc based on saved pending base when remote drift exists", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -1908,7 +1997,7 @@ describe("save_file_pending_update", () => {
 		expect(saveResult._yay.newSequence).toBeNull();
 
 		const pendingUpdateLastSequenceSaved = await t.run(async (ctx) =>
-			read_pending_update_last_sequence_saved_row({
+			read_pending_update_last_sequence_saved_doc({
 				ctx,
 				workspaceId: seeded.workspaceId,
 				projectId: seeded.projectId,
@@ -1956,7 +2045,7 @@ describe("save_file_pending_update", () => {
 		expect(savedMarkdownAfterNoStagedSave).not.toContain("Unresolved only");
 	});
 
-	test("save_file_pending_update returns rate-limit _nay and preserves pending row when bucket exhausted", async () => {
+	test("save_file_pending_update returns rate-limit _nay and preserves pending doc when bucket exhausted", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -2185,7 +2274,7 @@ describe("files_pending_updates_last_sequence_saved", () => {
 });
 
 describe("persist_file_pending_update_rebased_state", () => {
-	test("persist_file_pending_update_rebased_state stores the rebased row as the new authoritative pending state", async () => {
+	test("persist_file_pending_update_rebased_state stores the rebased doc as the new authoritative pending state", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -2362,7 +2451,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 			]),
 		);
 		if (!fileAPendingRow || !fileBPendingRow) {
-			throw new Error("Missing pending rows while testing mismatched rebase pendingUpdateId");
+			throw new Error("Missing pending docs while testing mismatched rebase pendingUpdateId");
 		}
 
 		const latestFileState = await t.run(async (ctx) =>
@@ -2439,7 +2528,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 		expect(fileBPendingRowAfterPersistMarkdownState.unstagedMarkdown).toContain("File B current");
 	});
 
-	test("persist_file_pending_update_rebased_state clears the pending row when the rebased branches match the live base", async () => {
+	test("persist_file_pending_update_rebased_state clears the pending doc when the rebased branches match the live base", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -2597,7 +2686,7 @@ describe("remove_file_pending_update_if_expired", () => {
 				.first(),
 		);
 		if (!firstPendingRow) {
-			throw new Error("Missing first pending row while testing stale cleanup");
+			throw new Error("Missing first pending doc while testing stale cleanup");
 		}
 
 		const firstCleanupTask = await t.run(async (ctx) => {
@@ -2694,7 +2783,7 @@ describe("remove_file_pending_update_if_expired", () => {
 				.first(),
 		);
 		if (!pendingRow) {
-			throw new Error("Missing pending row while testing expired cleanup");
+			throw new Error("Missing pending doc while testing expired cleanup");
 		}
 
 		const cleanupTask = await t.run(async (ctx) => {

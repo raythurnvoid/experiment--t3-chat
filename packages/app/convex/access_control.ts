@@ -14,6 +14,7 @@ import { v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 
 export async function access_control_db_ensure_role_assignment(
 	ctx: MutationCtx,
@@ -211,7 +212,7 @@ export async function access_control_db_has_permission(
 	const userId = args.userId;
 
 	if (userId) {
-		// Keep workspace ownership sourced from `workspaces.ownerUserId`; role rows are only the ACL mirror.
+		// Keep workspace ownership sourced from `workspaces.ownerUserId`; role docs are only the ACL mirror.
 		if (userId === args.workspaceOwnerUserId) {
 			return true;
 		}
@@ -349,14 +350,11 @@ export const get_current_user_workspace_permission = query({
 
 		const workspace = await ctx.db.get("workspaces", args.workspaceId);
 		if (!workspace) {
-			console.error("Workspace not found", {
-				workspaceId: args.workspaceId,
-			});
 			return false;
 		}
 
 		if (!workspace.defaultProjectId) {
-			console.error("Workspace default project not found", {
+			console.error("workspace.defaultProjectId is not set", {
 				workspaceId: workspace._id,
 			});
 			return false;
@@ -380,7 +378,7 @@ export const get_current_user_workspace_permission = query({
 		]);
 
 		if (!defaultProject) {
-			console.error("Default project not found", {
+			console.error("workspace.defaultProjectId points to a missing workspaces_projects doc", {
 				workspaceId: workspace._id,
 				defaultProjectId,
 			});
@@ -485,7 +483,7 @@ export const transfer_workspace_ownership = mutation({
 		const now = Date.now();
 		const workspace = await ctx.db.get("workspaces", args.workspaceId);
 		if (!workspace) {
-			return Result({ _nay: { message: "Workspace not found" } });
+			return Result({ _nay: { message: "Not found" } });
 		}
 
 		if (workspace.default) {
@@ -502,11 +500,16 @@ export const transfer_workspace_ownership = mutation({
 
 		const defaultProjectId = workspace.defaultProjectId;
 		if (!defaultProjectId) {
-			return Result({ _nay: { message: "Workspace default project not found" } });
+			const message = "workspace.defaultProjectId is not set";
+			const data = {
+				workspaceId: workspace._id,
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
-		const [ownerAssignments, newOwnerUser, newOwnerHomeMembership, currentOwnerQuota, newOwnerQuota] = await Promise.all(
-			[
+		const [ownerAssignments, newOwnerUser, newOwnerHomeMembership, currentOwnerQuota, newOwnerQuota] =
+			await Promise.all([
 				ctx.db
 					.query("access_control_role_assignments")
 					.withIndex("by_workspace_project_role_user", (q) =>
@@ -532,8 +535,7 @@ export const transfer_workspace_ownership = mutation({
 					quotaName: "extra_workspaces",
 					userId: args.newOwnerUserId,
 				}),
-			],
-		);
+			]);
 
 		if (!newOwnerUser || newOwnerUser.deletedAt != null || !newOwnerHomeMembership) {
 			return Result({ _nay: { message: "New owner must be an active workspace member" } });

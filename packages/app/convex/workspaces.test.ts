@@ -1072,7 +1072,7 @@ describe("create_project", () => {
 			workspaceId: wsResult._yay!.workspaceId,
 			name: "intruder",
 		});
-		expect(result._nay?.message).toBe("Workspace not found");
+		expect(result._nay?.message).toBe("Not found");
 	});
 
 	test("allows creating a non-default project in the default workspace", async () => {

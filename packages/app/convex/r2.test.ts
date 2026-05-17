@@ -524,7 +524,7 @@ describe("r2 file downloads", () => {
 		expect(source._nay?.message).toBe("Not found");
 	});
 
-	test("rejects folder downloads with an explicit message", async () => {
+	test("rejects folder downloads as not found", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -546,7 +546,7 @@ describe("r2 file downloads", () => {
 			membershipId: db.membershipId,
 			fileNodeId: folder._yay.nodeId,
 		});
-		expect(prepared._nay?.message).toBe("Cannot download a folder");
+		expect(prepared._nay?.message).toBe("Not found");
 	});
 
 	test("keeps authorization failures separate from requested file not-found responses", async () => {
@@ -577,11 +577,53 @@ describe("r2 file downloads", () => {
 		});
 		expect(missingWorkspace._nay?.message).toBe("Unauthorized");
 		expect(consoleErrorSpy).toHaveBeenCalledWith(
-			"Membership points to missing workspace",
+			"membership.workspaceId points to a missing workspaces doc",
 			expect.objectContaining({
 				membershipId: db.membershipId,
 				workspaceId: db.workspaceId,
 				projectId: db.projectId,
+			}),
+		);
+
+		const dbWithoutDefaultProject = await t.run(async (ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				workspaceName: "missing-default-ws",
+				projectName: "missing-default-prj",
+			}),
+		);
+		const asOwnerWithoutDefaultProject = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: dbWithoutDefaultProject.userId,
+			name: "Default Project Test User",
+		});
+		const markdownWithoutDefaultProject = await asOwnerWithoutDefaultProject.mutation(
+			api.files_nodes.create_markdown_node,
+			{
+				membershipId: dbWithoutDefaultProject.membershipId,
+				parentId: files_ROOT_ID,
+				name: "missing-default-project.md",
+			},
+		);
+		if (markdownWithoutDefaultProject._nay) {
+			throw new Error(markdownWithoutDefaultProject._nay.message);
+		}
+		await t.run(async (ctx) => {
+			await ctx.db.patch("workspaces", dbWithoutDefaultProject.workspaceId, {
+				defaultProjectId: undefined,
+			});
+		});
+
+		const missingDefaultProject = await asOwnerWithoutDefaultProject.action(api.r2.prepare_file_download_target, {
+			membershipId: dbWithoutDefaultProject.membershipId,
+			fileNodeId: markdownWithoutDefaultProject._yay.nodeId,
+		});
+		expect(missingDefaultProject._nay?.message).toBe("Unauthorized");
+		expect(consoleErrorSpy).toHaveBeenCalledWith(
+			"workspace.defaultProjectId is not set",
+			expect.objectContaining({
+				membershipId: dbWithoutDefaultProject.membershipId,
+				workspaceId: dbWithoutDefaultProject.workspaceId,
+				projectId: dbWithoutDefaultProject.projectId,
 			}),
 		);
 
@@ -644,7 +686,7 @@ describe("r2 file downloads", () => {
 				membershipId: db.membershipId,
 				fileNodeId: upload._yay.nodeId,
 			}),
-		).rejects.toThrow("File node asset missing");
+		).rejects.toThrow("fileNode.assetId points to a missing files_r2_assets doc");
 	});
 
 	test("throws should_never_happen when a Markdown file points to missing content", async () => {
@@ -678,7 +720,7 @@ describe("r2 file downloads", () => {
 				membershipId: db.membershipId,
 				fileNodeId: markdownFile._yay.nodeId,
 			}),
-		).rejects.toThrow("File node markdown content missing");
+		).rejects.toThrow("fileNode.markdownContentId points to a missing files_markdown_content doc");
 	});
 
 	test("throws should_never_happen when a Markdown file points to missing properties", async () => {
@@ -712,7 +754,7 @@ describe("r2 file downloads", () => {
 				membershipId: db.membershipId,
 				fileNodeId: markdownFile._yay.nodeId,
 			}),
-		).rejects.toThrow("File node properties missing");
+		).rejects.toThrow("fileNode.propertiesId points to a missing files_node_properties doc");
 	});
 
 	test("requires the caller membership and asset.read permission", async () => {

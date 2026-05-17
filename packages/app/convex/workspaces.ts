@@ -243,7 +243,7 @@ export async function workspaces_db_create_project(
 	if (!workspace) {
 		return Result({
 			_nay: {
-				message: "Workspace not found",
+				message: "Not found",
 			},
 		});
 	}
@@ -260,7 +260,7 @@ export async function workspaces_db_create_project(
 	if (!hasMembership) {
 		return Result({
 			_nay: {
-				message: "Workspace not found",
+				message: "Not found",
 			},
 		});
 	}
@@ -416,7 +416,7 @@ export const list = query({
 			return workspaces;
 		});
 
-		// Presentation order: default workspace first, then locale-aware name (+ `_id` tiebreaker). Project rows per workspace: workspace primary first (`defaultProjectId` / `default` flag), then the same name rule.
+		// Presentation order: default workspace first, then locale-aware name (+ `_id` tiebreaker). Project docs per workspace: workspace primary first (`defaultProjectId` / `default` flag), then the same name rule.
 		const workspaces = workspaces_list_sort_workspaces(workspacesUnsorted);
 
 		const workspaceIdsProjectsDict = Object.fromEntries(
@@ -426,7 +426,10 @@ export const list = query({
 					const projectIds = projectIdsByWorkspace.get(workspaceId);
 
 					if (!projectIds) {
-						throw should_never_happen("Project ids not found for workspace", { workspaceId });
+						const message = "Project ids not found for workspace";
+						const data = { workspaceId };
+						console.error(message, data);
+						throw should_never_happen(message, data);
 					}
 
 					const projectsPromises = [];
@@ -778,13 +781,16 @@ export const invite_user_to_workspace_project = mutation({
 		}
 
 		if (!workspace || !project || project.workspaceId !== args.workspaceId) {
-			return Result({ _nay: { message: "Project not found" } });
+			return Result({ _nay: { message: "Not found" } });
 		}
 
 		if (!workspace.defaultProjectId) {
-			throw should_never_happen("Workspace default project not found", {
+			const message = "workspace.defaultProjectId is not set";
+			const data = {
 				workspaceId: workspace._id,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 		const defaultProjectId = workspace.defaultProjectId;
 		const isDefaultProject = project._id === defaultProjectId;
@@ -817,7 +823,7 @@ export const invite_user_to_workspace_project = mutation({
 			}),
 		]);
 		if (!currentHomeMembership) {
-			return Result({ _nay: { message: "Project not found" } });
+			return Result({ _nay: { message: "Not found" } });
 		}
 
 		if (!canManageMembers) {
@@ -918,13 +924,16 @@ export const remove_user_from_workspace = mutation({
 
 		const workspace = await ctx.db.get("workspaces", args.workspaceId);
 		if (!workspace) {
-			return Result({ _nay: { message: "Workspace not found" } });
+			return Result({ _nay: { message: "Not found" } });
 		}
 
 		if (!workspace.defaultProjectId) {
-			throw should_never_happen("Workspace default project not found", {
+			const message = "workspace.defaultProjectId is not set";
+			const data = {
 				workspaceId: workspace._id,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 		const defaultProjectId = workspace.defaultProjectId;
 
@@ -952,7 +961,7 @@ export const remove_user_from_workspace = mutation({
 			}),
 		]);
 		if (!currentHomeMembership) {
-			return Result({ _nay: { message: "Workspace not found" } });
+			return Result({ _nay: { message: "Not found" } });
 		}
 
 		if (workspace.default) {
@@ -1008,14 +1017,14 @@ export const remove_user_from_workspace = mutation({
 					q.eq("workspaceId", workspace._id).eq("userId", args.userIdToRemove),
 				)
 				.collect()
-				.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_role_assignments", row._id)))),
+				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
 			ctx.db
 				.query("access_control_permission_grants")
 				.withIndex("by_workspace_user_project_resource_permission", (q) =>
 					q.eq("workspaceId", workspace._id).eq("userId", args.userIdToRemove),
 				)
 				.collect()
-				.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_permission_grants", row._id)))),
+				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
 		]);
 
 		return Result({ _yay: null });
@@ -1165,7 +1174,7 @@ export const set_workspace_billing_mode = mutation({
 
 		const workspace = await ctx.db.get("workspaces", args.workspaceId);
 		if (!workspace) {
-			return Result({ _nay: { message: "Workspace not found" } });
+			return Result({ _nay: { message: "Not found" } });
 		}
 
 		if (workspace.default) {
@@ -1323,8 +1332,8 @@ export const edit_project = mutation({
 				.collect(),
 		]);
 
-		for (const row of [...defaultProjects, ...nonDefaultProjects]) {
-			if (row._id !== args.projectId && row.name === name) {
+		for (const doc of [...defaultProjects, ...nonDefaultProjects]) {
+			if (doc._id !== args.projectId && doc.name === name) {
 				return Result({
 					_nay: {
 						message: "Project name already exists",
@@ -1372,15 +1381,18 @@ export const delete_workspace = mutation({
 		if (!workspace) {
 			return Result({
 				_nay: {
-					message: "Workspace not found",
+					message: "Not found",
 				},
 			});
 		}
 
 		if (!workspace.defaultProjectId) {
-			throw should_never_happen("Workspace default project not found", {
+			const message = "workspace.defaultProjectId is not set";
+			const data = {
 				workspaceId: workspace._id,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 		const defaultProjectId = workspace.defaultProjectId;
 
@@ -1397,7 +1409,7 @@ export const delete_workspace = mutation({
 		if (!workspaceUserLookup) {
 			return Result({
 				_nay: {
-					message: "Workspace not found",
+					message: "Not found",
 				},
 			});
 		}
@@ -1424,7 +1436,7 @@ export const delete_workspace = mutation({
 		}
 
 		const [, , , , userIdsPerProject] = await Promise.all([
-			// Queue one delayed workspace purge row while you remove project memberships in parallel.
+			// Queue one delayed workspace purge doc while you remove project memberships in parallel.
 			data_deletion_db_request(ctx, {
 				userId: userAuth.id,
 				workspaceId: workspace._id,
@@ -1442,12 +1454,12 @@ export const delete_workspace = mutation({
 				.query("access_control_role_assignments")
 				.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", workspace._id))
 				.collect()
-				.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_role_assignments", row._id)))),
+				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
 			ctx.db
 				.query("access_control_permission_grants")
 				.withIndex("by_workspace_project_resource_user_permission", (q) => q.eq("workspaceId", workspace._id))
 				.collect()
-				.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_permission_grants", row._id)))),
+				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
 			ctx.db
 				.query("workspaces_projects")
 				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", workspace._id))
@@ -1550,7 +1562,7 @@ export const delete_project = mutation({
 		if (!project || !workspace || !workspaceUserLookup || !projectUserLookup) {
 			return Result({
 				_nay: {
-					message: "Project not found",
+					message: "Not found",
 				},
 			});
 		}
@@ -1631,14 +1643,14 @@ export const delete_project = mutation({
 					q.eq("workspaceId", workspace._id).eq("projectId", project._id),
 				)
 				.collect()
-				.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_role_assignments", row._id)))),
+				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
 			ctx.db
 				.query("access_control_permission_grants")
 				.withIndex("by_workspace_project_resource_user_permission", (q) =>
 					q.eq("workspaceId", workspace._id).eq("projectId", project._id),
 				)
 				.collect()
-				.then((rows) => Promise.all(rows.map((row) => ctx.db.delete("access_control_permission_grants", row._id)))),
+				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
 		]);
 
 		await ctx.db.delete("workspaces_projects", project._id);

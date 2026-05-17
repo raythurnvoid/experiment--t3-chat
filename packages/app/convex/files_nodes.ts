@@ -293,7 +293,7 @@ export async function db_replace_file_chunks(
 		markdownContent: string;
 	},
 ) {
-	// Delete existing chunk rows.
+	// Delete existing chunk docs.
 	await Promise.all([
 		ctx.db
 			.query("files_plain_text_chunks")
@@ -307,10 +307,10 @@ export async function db_replace_file_chunks(
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
 			)
 			.collect(),
-	]).then(([plainTextChunkRows, markdownChunkRows]) =>
+	]).then(([plainTextChunkDocs, markdownChunkDocs]) =>
 		Promise.all([
-			...plainTextChunkRows.map((row) => ctx.db.delete("files_plain_text_chunks", row._id)),
-			...markdownChunkRows.map((row) => ctx.db.delete("files_markdown_chunks", row._id)),
+			...plainTextChunkDocs.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)),
+			...markdownChunkDocs.map((doc) => ctx.db.delete("files_markdown_chunks", doc._id)),
 		]),
 	);
 
@@ -645,7 +645,7 @@ async function db_create_node(
 		return Result({
 			_nay: {
 				name: "nay",
-				message: "Parent file not found",
+				message: "Not found",
 			},
 		});
 	}
@@ -780,8 +780,8 @@ async function db_create_node(
 			return chunks;
 		}),
 	] as const).catch((error) => {
-		const message = "Failed to create file content rows";
-		console.error("Failed to create file content rows", {
+		const message = "Failed to create file content docs";
+		console.error("Failed to create file content docs", {
 			message,
 			error,
 			workspaceId: args.workspaceId,
@@ -790,7 +790,7 @@ async function db_create_node(
 			nodeId,
 			yjsSequence: initialYjsSequence,
 		});
-		// Throw so Convex rolls back the node and all related file rows created in this mutation.
+		// Throw so Convex rolls back the node and all related file docs created in this mutation.
 		throw convex_error({
 			message,
 			cause: error,
@@ -896,7 +896,10 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		currentParent = node._yay;
 	}
 
-	throw should_never_happen("nodeId not resolved after node path creation");
+	const message = "nodeId not resolved after node path creation";
+	const data = {};
+	console.error(message, data);
+	throw should_never_happen(message, data);
 }
 
 export const create_folder_node = mutation({
@@ -1043,7 +1046,7 @@ export const create_upload_node = mutation({
 				parent.kind !== "folder" ||
 				parent.archiveOperationId !== undefined
 			) {
-				return Result({ _nay: { message: "Parent folder not found" } });
+				return Result({ _nay: { message: "Not found" } });
 			}
 			parentPath = parent.path;
 		}
@@ -1286,7 +1289,7 @@ export const rename_node = mutation({
 						return Result({
 							_nay: {
 								name: "nay",
-								message: "Parent folder not found",
+								message: "Not found",
 							},
 						});
 					}
@@ -1315,7 +1318,10 @@ export const rename_node = mutation({
 
 			const resolvedLeafName = pathSegments.at(-1);
 			if (!resolvedLeafName) {
-				throw should_never_happen("leafName not resolved after path rename");
+				const message = "leafName not resolved after path rename";
+				const data = {};
+				console.error(message, data);
+				throw should_never_happen(message, data);
 			}
 			leafName = resolvedLeafName;
 		} else {
@@ -1821,10 +1827,13 @@ export const unarchive_nodes = mutation({
 						if (shouldMoveToRoot) {
 							const ancestorPathName = path_extract_segments_from(ancestorFile.path).at(-1);
 							if (!ancestorPathName) {
-								throw should_never_happen("Failed to move file to root because path does not include a name segment", {
+								const message = "Failed to move file to root because path does not include a name segment";
+								const data = {
 									nodeId: ancestorFile._id,
 									path: ancestorFile.path,
-								});
+								};
+								console.error(message, data);
+								throw should_never_happen(message, data);
 							}
 							ancestorTargetPath = `/${ancestorPathName}`;
 						}
@@ -1878,14 +1887,17 @@ export const unarchive_nodes = mutation({
 										});
 
 										if (!targetPath) {
-											throw should_never_happen("Failed to rebase descendants files", {
+											const message = "Failed to rebase descendants files";
+											const data = {
 												ancestorNodeId: ancestorFile._id,
 												ancestorPath: ancestorFile.path,
 												ancestorTargetPath,
 												ancestorTargetParentId,
 												descendantNodeId: file._id,
 												descendantFilePath: file.path,
-											});
+											};
+											console.error(message, data);
+											throw should_never_happen(message, data);
 										}
 
 										plans.push({
@@ -2156,7 +2168,7 @@ export const list_files = internalQuery({
 		truncated: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
-		// TODO: when truncating, we truncate the total rows but we don't tell the LLM if we truncated in depth
+		// TODO: when truncating, we truncate the total docs but we don't tell the LLM if we truncated in depth
 		const startNodeId = await db_resolve_tree_node_id_from_path(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
@@ -2435,11 +2447,14 @@ export const get_plain_text = query({
 			.first();
 
 		if (!latestChunkByFile) {
-			throw should_never_happen("Missing plain text chunks for file", {
+			const message = "fileNode._id points to missing files_plain_text_chunks docs";
+			const data = {
 				nodeId: args.nodeId,
 				workspaceId: file.workspaceId,
 				projectId: file.projectId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		const plainTextChunks = await ctx.db
@@ -2474,33 +2489,36 @@ export const get_file_last_yjs_sequence = query({
 			return null;
 		}
 
-		const file = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
 		if (
-			!file ||
-			file.workspaceId !== membership.workspaceId ||
-			file.projectId !== membership.projectId ||
-			file.kind !== "file" ||
-			!file.markdownContentId
+			!fileNode ||
+			fileNode.workspaceId !== membership.workspaceId ||
+			fileNode.projectId !== membership.projectId ||
+			fileNode.kind !== "file" ||
+			!fileNode.markdownContentId
 		) {
 			return null;
 		}
 
-		if (!file.yjsLastSequenceId) {
+		if (!fileNode.yjsLastSequenceId) {
 			return null;
 		}
 
-		const lastYjsSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", file.yjsLastSequenceId).then((doc) => {
-			if (!doc || doc.workspaceId !== file.workspaceId || doc.projectId !== file.projectId) return null;
+		const lastYjsSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId).then((doc) => {
+			if (!doc || doc.workspaceId !== fileNode.workspaceId || doc.projectId !== fileNode.projectId) return null;
 			return doc;
 		});
 
 		if (!lastYjsSequenceDoc) {
-			throw should_never_happen("lastYjsSequenceDoc is not valorized", {
-				workspaceId: file.workspaceId,
-				projectId: file.projectId,
+			const message = "fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
+			const data = {
+				workspaceId: fileNode.workspaceId,
+				projectId: fileNode.projectId,
 				nodeId: args.nodeId,
-				yjsLastSequenceId: file.yjsLastSequenceId,
-			});
+				yjsLastSequenceId: fileNode.yjsLastSequenceId,
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		return { lastSequence: lastYjsSequenceDoc.lastSequence };
@@ -3191,12 +3209,15 @@ export const yjs_push_update = mutation({
 
 		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
 		if (!workspace) {
-			throw should_never_happen("Workspace missing", {
+			const message = "membership.workspaceId points to a missing workspaces doc";
+			const data = {
 				membershipId: membership._id,
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				nodeId: args.nodeId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 		const billedUserId = billing_pick_billed_user_id({
 			userId: user._id,
@@ -3204,11 +3225,14 @@ export const yjs_push_update = mutation({
 		});
 		const billedUser = await ctx.db.get("users", billedUserId);
 		if (!billedUser) {
-			throw should_never_happen("Billed user missing", {
+			const message = "billedUserId points to a missing users doc";
+			const data = {
 				userId: user._id,
 				workspaceId: workspace._id,
 				billedUserId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		const check = await billing_db_check_credits(ctx, {
@@ -3386,10 +3410,13 @@ async function write_markdown_to_yjs_sync(
 	});
 
 	if (headlessEditor._nay) {
-		throw should_never_happen("Could not create headless editor from markdown content", {
+		const message = "Could not create headless editor from markdown content";
+		const data = {
 			nodeId: args.nodeId,
 			nay: headlessEditor._nay,
-		});
+		};
+		console.error(message, data);
+		throw should_never_happen(message, data);
 	}
 
 	const diffUpdate = yjs_compute_diff_update_with_headless_tiptap_editor({
@@ -3461,20 +3488,32 @@ export const update_snapshots = internalMutation({
 		try {
 			const now = Date.now();
 
-			const file = await ctx.db.get("files_nodes", args.nodeId);
+			const fileNode = await ctx.db.get("files_nodes", args.nodeId);
 			if (
-				!file ||
-				file.workspaceId !== args.workspaceId ||
-				file.projectId !== args.projectId ||
-				!file.markdownContentId
+				!fileNode ||
+				fileNode.workspaceId !== args.workspaceId ||
+				fileNode.projectId !== args.projectId
 			) {
-				throw should_never_happen("File missing", {
+				const message = "args.nodeId points to a missing or mismatched files_nodes doc";
+				const data = {
 					nodeId: args.nodeId,
-					file: file,
+					fileNode,
 					workspaceId: args.workspaceId,
 					projectId: args.projectId,
-					markdownContentId: file?.markdownContentId,
-				});
+				};
+				console.error(message, data);
+				throw should_never_happen(message, data);
+			}
+
+			if (!fileNode.markdownContentId) {
+				const message = "fileNode.markdownContentId is not set";
+				const data = {
+					nodeId: args.nodeId,
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+				};
+				console.error(message, data);
+				throw should_never_happen(message, data);
 			}
 
 			// Load latest snapshot
@@ -3487,12 +3526,14 @@ export const update_snapshots = internalMutation({
 				.first();
 
 			if (!yjsSnapshotData) {
-				throw should_never_happen(
-					"yjs_snapshot_data or last_sequence_data are null.\n" + //
-						"The job should start only if the last sequence exists and is greater than 0\n" + //
-						"and only if the yjs snapshot data already exists, the snapshot data should\n" + //
-						"be created with the file",
-				);
+				const message = "fileNode._id points to missing files_yjs_snapshots docs";
+				const data = {
+					nodeId: args.nodeId,
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+				};
+				console.error(message, data);
+				throw should_never_happen(message, data);
 			}
 
 			// Fetch updates since snapshot up to uptoSeq
@@ -3522,7 +3563,7 @@ export const update_snapshots = internalMutation({
 
 			const dbWriteResult = Result_all(
 				await Promise.all([
-					// Write new snapshot row (append-only)
+					// Write new snapshot doc (append-only)
 					ctx.db.patch("files_yjs_snapshots", yjsSnapshotData._id, {
 						sequence,
 						snapshotUpdate: snapshotUpdate,
@@ -3533,7 +3574,7 @@ export const update_snapshots = internalMutation({
 					// Prune compacted updates
 					...updateDataList.map((updateData) => ctx.db.delete("files_yjs_updates", updateData._id)),
 
-					ctx.db.patch("files_markdown_content", file.markdownContentId, {
+					ctx.db.patch("files_markdown_content", fileNode.markdownContentId, {
 						content: markdown._yay,
 						yjsSequence: sequence,
 						updatedBy: "system",
@@ -3541,15 +3582,18 @@ export const update_snapshots = internalMutation({
 					}),
 
 					(async () => {
-						if (!file.propertiesId) {
-							throw should_never_happen("File properties missing", {
+						if (!fileNode.propertiesId) {
+							const message = "fileNode.propertiesId is not set";
+							const data = {
 								nodeId: args.nodeId,
 								workspaceId: args.workspaceId,
 								projectId: args.projectId,
-							});
+							};
+							console.error(message, data);
+							throw should_never_happen(message, data);
 						}
 
-						await ctx.db.patch("files_node_properties", file.propertiesId, {
+						await ctx.db.patch("files_node_properties", fileNode.propertiesId, {
 							workspaceId: args.workspaceId,
 							projectId: args.projectId,
 							fileNodeId: args.nodeId,
@@ -3654,49 +3698,52 @@ export const restore_snapshot = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const [snapshotContent, file] = await Promise.all([
+		const [snapshotContent, fileNode] = await Promise.all([
 			do_get_file_snapshot_content(ctx, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				snapshotId: args.snapshotId,
 			}),
-			ctx.db.get("files_nodes", args.nodeId).then((file) => {
-				if (!file || file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId) {
+			ctx.db.get("files_nodes", args.nodeId).then((fileNode) => {
+				if (!fileNode || fileNode.workspaceId !== membership.workspaceId || fileNode.projectId !== membership.projectId) {
 					return null;
 				}
 
-				return file;
+				return fileNode;
 			}),
 		]);
 
-		if (!snapshotContent || !file || !file.markdownContentId) {
-			const msg = "Not found";
-			console.error(
-				should_never_happen(msg, {
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					nodeId: args.nodeId,
-					snapshotContentNotFound: !snapshotContent,
-					fileNotFound: !file,
-					markdownContentIdNotFound: !file?.markdownContentId,
-				}),
-			);
+		if (!snapshotContent || !fileNode) {
 			return Result({
 				_nay: {
 					name: "nay",
-					message: msg,
+					message: "Not found",
 				},
 			});
 		}
 
-		if (!file.yjsLastSequenceId) {
-			throw should_never_happen("file.yjsLastSequenceId is not set", {
+		if (!fileNode.markdownContentId) {
+			const message = "fileNode.markdownContentId is not set";
+			const data = {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				nodeId: args.nodeId,
-				yjsLastSequenceId: file.yjsLastSequenceId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
+		}
+
+		if (!fileNode.yjsLastSequenceId) {
+			const message = "fileNode.yjsLastSequenceId is not set";
+			const data = {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				nodeId: args.nodeId,
+				yjsLastSequenceId: fileNode.yjsLastSequenceId,
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		const userDoc = await ctx.db.get("users", userAuth.id);
@@ -3706,13 +3753,16 @@ export const restore_snapshot = mutation({
 
 		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
 		if (!workspace) {
-			throw should_never_happen("Workspace missing", {
+			const message = "membership.workspaceId points to a missing workspaces doc";
+			const data = {
 				membershipId: membership._id,
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				snapshotId: args.snapshotId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 		const billedUserId = billing_pick_billed_user_id({
 			userId: userAuth.id,
@@ -3720,11 +3770,14 @@ export const restore_snapshot = mutation({
 		});
 		const billedUser = await ctx.db.get("users", billedUserId);
 		if (!billedUser) {
-			throw should_never_happen("Billed user missing", {
+			const message = "billedUserId points to a missing users doc";
+			const data = {
 				userId: userAuth.id,
 				workspaceId: workspace._id,
 				billedUserId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		const check = await billing_db_check_credits(ctx, {
@@ -3765,7 +3818,7 @@ export const restore_snapshot = mutation({
 				createdBy: createdBy,
 			}),
 
-			ctx.db.patch("files_nodes", file._id, {
+			ctx.db.patch("files_nodes", fileNode._id, {
 				updatedBy: updatedBy,
 				updatedAt: now,
 			}),
@@ -3781,35 +3834,41 @@ export const restore_snapshot = mutation({
 			}),
 		]);
 
-		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", file.yjsLastSequenceId);
+		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
 		if (!yjsLastSequenceDoc) {
-			throw should_never_happen("yjsLastSequenceDoc is not valorized", {
+			const message = "fileNode.yjsLastSequenceId points to a missing files_yjs_docs_last_sequences doc";
+			const data = {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				nodeId: args.nodeId,
-				yjsLastSequenceId: file.yjsLastSequenceId,
+				yjsLastSequenceId: fileNode.yjsLastSequenceId,
 				yjsLastSequenceDoc,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		const restoreFileResult = Result_all(
 			await Promise.all([
-				ctx.db.patch("files_markdown_content", file.markdownContentId, {
+				ctx.db.patch("files_markdown_content", fileNode.markdownContentId, {
 					content: snapshotContent.content,
 					yjsSequence: yjsLastSequenceDoc.lastSequence,
 					updatedBy: updatedBy,
 					updatedAt: now,
 				}),
 				(async () => {
-					if (!file.propertiesId) {
-						throw should_never_happen("File properties missing", {
+					if (!fileNode.propertiesId) {
+						const message = "fileNode.propertiesId is not set";
+						const data = {
 							nodeId: args.nodeId,
 							workspaceId: membership.workspaceId,
 							projectId: membership.projectId,
-						});
+						};
+						console.error(message, data);
+						throw should_never_happen(message, data);
 					}
 
-					await ctx.db.patch("files_node_properties", file.propertiesId, {
+					await ctx.db.patch("files_node_properties", fileNode.propertiesId, {
 						workspaceId: membership.workspaceId,
 						projectId: membership.projectId,
 						fileNodeId: args.nodeId,
@@ -4074,10 +4133,13 @@ export function files_http_routes(router: RouterForConvexModules) {
 								}
 								const billedUser = creditCheck.billedUser;
 								if (!billedUser) {
-									throw should_never_happen("Workspace credit check did not return billed user", {
+									const message = "Workspace credit check did not return billed user";
+									const data = {
 										userId: user._id,
 										workspaceId: membership.workspaceId,
-									});
+									};
+									console.error(message, data);
+									throw should_never_happen(message, data);
 								}
 
 								// Use the Liveblocks contextual shape when editor context is present; the inline popover path

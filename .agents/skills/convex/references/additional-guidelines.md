@@ -164,20 +164,38 @@ Default validation order:
 - Resolve the current app user first.
 - Resolve the membership or owning scope next.
 - Normalize/load the requested resource.
-- Compare resource `workspaceId` and `projectId` against the membership row.
+- Compare resource `workspaceId` and `projectId` against the membership doc.
 - Run any permission checks.
 - Perform DB writes only after these fallible checks pass.
 
 Standard `_nay.message` values for Result-returning handlers:
 
-- `"Unauthenticated"`: Convex auth has no usable current user, or the identity cannot resolve to a `users` row.
+- `"Unauthenticated"`: Convex auth has no usable current user, or the identity cannot resolve to a `users` doc.
 - `"Unauthorized"`: the user is authenticated, but the supplied membership/scope is not valid for that user.
-- `"Not found"`: the requested id is invalid, the requested row is missing, or the requested row is archived when active content is required.
+- `"Not found"`: the requested id is invalid, the requested doc is missing, or the requested doc is archived when active content is required.
 - `"Permission denied"`: the user and resource are valid, but an explicit permission check failed.
 
-If a validated requested resource points to missing server-owned data, treat that as a server bug instead of a user-facing not-found branch. Throw `should_never_happen(...)` with structured ids for missing linked rows such as file properties, asset rows, content rows, scheduled jobs, or other relationships that supported write paths must keep valid.
+If a validated requested resource points to missing server-owned data, treat that as a server bug instead of a user-facing not-found branch. Log the invariant failure with `console.error(message, data)` and then throw `should_never_happen(message, data)` with structured ids for missing linked docs such as file properties, asset docs, content docs, scheduled jobs, or other relationships that supported write paths must keep valid.
 
-When a missing workspace/default project is discovered while setting up authorization from an existing membership row, log structured context and return `"Unauthorized"`. This keeps the authorization boundary generic for callers while still surfacing the impossible state in Convex logs.
+For missing fields that supported write paths must set, use the exact field path in the invariant message: `"fileNode.yjsLastSequenceId is not set"` or `"workspace.defaultProjectId is not set"`. Use `fileNode`, not `file`, when the doc is from `files_nodes`.
+
+When the field is set but points to a missing or mismatched linked doc, say that the field points to the broken link, for example `"fileNode.propertiesId points to a missing files_node_properties doc"`.
+
+Use the same message variable for the explicit log and the thrown error so future logging integrations can hook `console.error` without losing the exact thrown invariant message:
+
+```ts
+const message = "fileNode.yjsLastSequenceId is not set";
+const data = {
+	fileNodeId: fileNode._id,
+	yjsLastSequenceId: fileNode.yjsLastSequenceId,
+};
+console.error(message, data);
+throw should_never_happen(message, data);
+```
+
+Keep the `console.error` data structured instead of embedding ids in the message. Passing the same data again to `should_never_happen(...)` is acceptable; the explicit log is the standard integration point for Sentry or other logging products, while the thrown error preserves the Convex failure path.
+
+When a missing workspace/default project is discovered while setting up authorization from an existing membership doc, log structured context and return `"Unauthorized"`. This keeps the authorization boundary generic for callers while still surfacing the impossible state in Convex logs.
 
 Use domain-specific expected messages only when the caller or UI needs that exact distinction, for example rate-limit messages or user-facing business-rule messages.
 
@@ -186,11 +204,11 @@ Boundary-specific return style:
 - Public queries for authenticated UI screens should usually `throw convex_error({ message: "Unauthenticated" })` when there is no current user, then return `null`, `[]`, or `false` for missing membership, missing resource, or denied access according to the query return shape.
 - Mutations and actions with recoverable failures should return `Result({ _nay: { message: ... } })`.
 - Internal queries may return `Result({ _nay: ... })` when they are serving an action/mutation that needs to preserve expected failure details across the Convex runtime boundary.
-- Internal queries should throw `should_never_happen(...)` for impossible linked-row corruption after the expected auth/resource checks succeed.
+- Internal queries should log with `console.error(message, data)` and throw `should_never_happen(message, data)` for impossible linked-doc corruption after the expected auth/resource checks succeed.
 
 ## Membership-scoped Convex handlers
 
-When a Convex handler is scoped by a membership row (for example `membershipId: v.id("workspaces_projects_users")`), keep the validation flow and error contract consistent:
+When a Convex handler is scoped by a membership doc (for example `membershipId: v.id("workspaces_projects_users")`), keep the validation flow and error contract consistent:
 
 - Put `membershipId` first in `args` and first in call-site object literals.
 - For mutation handlers that can fail recoverably, use `returns: v_result(...)` and return `Result(...)` instead of throwing.
@@ -199,10 +217,10 @@ When a Convex handler is scoped by a membership row (for example `membershipId: 
 - If `membership` is missing, return `_nay.message = "Unauthorized"` (or `null` for nullable queries).
 - If the membership exists but its workspace/default project data is missing during authorization setup, log structured ids and return `_nay.message = "Unauthorized"` unless the function boundary is already using exception semantics.
 - After membership succeeds, normalize/load the requested resource.
-- If the requested thread/message/resource id is invalid or the row does not exist, return `_nay.message = "Not found"` (or `null` for nullable queries).
-- After loading the resource, compare `workspaceId` and `projectId` directly against the membership row. Do not use a helper for these thread-scoped checks.
-- If the resource exists but belongs to a different workspace/project scope than the membership row, return `_nay.message = "Unauthorized"`.
-- After the requested resource is validated, throw `should_never_happen(...)` when a stored linked id points to missing data. Do not collapse broken internal relationships into `"Not found"`.
+- If the requested thread/message/resource id is invalid or the doc does not exist, return `_nay.message = "Not found"` (or `null` for nullable queries).
+- After loading the resource, compare `workspaceId` and `projectId` directly against the membership doc. Do not use a helper for these thread-scoped checks.
+- If the resource exists but belongs to a different workspace/project scope than the membership doc, return `_nay.message = "Unauthorized"`.
+- After the requested resource is validated, log and throw `should_never_happen(message, data)` when a stored linked id points to missing data. Do not collapse broken internal relationships into `"Not found"`.
 - Keep DB writes after these fallible checks so `_nay` returns do not leave partial writes behind.
 
 Small style rule for these handlers:
@@ -406,7 +424,7 @@ const joined = results.filter((r): r is NonNullable<typeof r> => r !== null);
 
 ✅ Prefer “batch then join” when there are duplicates / large lists:
 
-- Query the related table using an index to fetch all needed rows (or a superset).
+- Query the related table using an index to fetch all needed docs (or a superset).
 - Build a `Map`/`Record` keyed by the join key.
 - Map your original list to the joined result using that in-memory map.
 
@@ -428,15 +446,15 @@ if (!anagraphic) return null;
 
 If your code always resolves the relationship via stored ids (rather than querying by a foreign key), you often do **not** need a secondary index for that relationship.
 
-When the caller already has the stored related-document id, use `ctx.db.get`. When the caller only has a foreign key and would need to load a parent document solely to discover the related-document id, prefer a specific single-row index lookup on that foreign key instead. One indexed read is usually better than loading the parent just to do a second primary-key read.
+When the caller already has the stored related-document id, use `ctx.db.get`. When the caller only has a foreign key and would need to load a parent document solely to discover the related-document id, prefer a specific single-doc index lookup on that foreign key instead. One indexed read is usually better than loading the parent just to do a second primary-key read.
 
-## Performance: avoid `collect().find(...)` for single-row lookups
+## Performance: avoid `collect().find(...)` for single-doc lookups
 
 Treat `.collect()` as a heavy read because it materializes the full result set in memory.
 
-- Do not replace a single-row index lookup with `collect().find(...)` when the schema can answer the question directly.
+- Do not replace a single-doc index lookup with `collect().find(...)` when the schema can answer the question directly.
 - Prefer adding or using a more specific index, then finish with `first()`.
-- Avoid `unique()` on normal read paths because it throws when duplicate rows exist. Use it only when throwing on duplicates is the behavior you explicitly want.
+- Avoid `unique()` on normal read paths because it throws when duplicate docs exist. Use it only when throwing on duplicates is the behavior you explicitly want.
 - Keep `collect` + JS filtering only for predicates Convex cannot express cleanly, especially missing optional-field logic.
 
 ## Query cache and composition
@@ -445,7 +463,7 @@ Convex query results are automatically cached by the client and kept consistent 
 
 - Prefer reusing an existing generic query over adding a new narrowly tailored wrapper query that returns nearly the same data.
 - Favor stable, composable query shapes that multiple screens can call with the same args and therefore share the same cache entry.
-- Public queries should usually return domain rows or small reusable domain shapes, not UI-specific view models that join unrelated data only for one screen.
+- Public queries should usually return domain docs or small reusable domain shapes, not UI-specific view models that join unrelated data only for one screen.
 - Do not optimize primarily for "fewer client-side requests". A few extra client-side queries are acceptable, especially when they can run in parallel or hit warm cache.
 - It is often better to compose 2-3 smaller queries in the client than to create one larger query whose cache entry is more specific and gets invalidated or busted more often.
 - Once the client has stable ids, prefer repeated single-id public queries over public batch/list wrapper queries. Single-id query results are lower-level cache primitives that more screens can reuse, and unrelated writes to one item do not invalidate a larger joined list result.

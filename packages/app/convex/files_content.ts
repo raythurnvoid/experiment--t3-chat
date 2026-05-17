@@ -111,17 +111,23 @@ export const finalize_upload_conversion_to_markdown = internalMutation({
 	handler: async (ctx, args) => {
 		const upload = await ctx.db.get("files_uploads", args.uploadId);
 		if (!upload) {
-			throw should_never_happen("R2 upload doc not found during Markdown finalization", {
+			const message = "args.uploadId points to a missing files_uploads doc";
+			const data = {
 				uploadId: args.uploadId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		const sourceFileNode = await ctx.db.get("files_nodes", upload.sourceNodeId);
 		if (!sourceFileNode) {
-			throw should_never_happen("R2 upload source file node not found during Markdown finalization", {
+			const message = "upload.sourceNodeId points to a missing files_nodes doc";
+			const data = {
 				uploadId: args.uploadId,
 				sourceNodeId: upload.sourceNodeId,
-			});
+			};
+			console.error(message, data);
+			throw should_never_happen(message, data);
 		}
 
 		// Keep queue-driven finalization idempotent because R2 events are delivered at least once.
