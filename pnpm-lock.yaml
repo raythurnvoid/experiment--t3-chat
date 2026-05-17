@@ -429,6 +429,9 @@ importers:
       streamdown:
         specifier: ^2.3.0
         version: 2.3.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      string-byte-length:
+        specifier: 3.0.1
+        version: 3.0.1
       tailwind-merge:
         specifier: ^3.3.1
         version: 3.4.0
@@ -3171,6 +3174,8 @@ importers:
       '@tiptap/extension-floating-menu':
         specifier: workspace:^
         version: link:../extension-floating-menu
+
+  packages/r2-upload-finalizer: {}
 
 packages:
 
@@ -18446,6 +18451,10 @@ packages:
     resolution: {integrity: sha512-aqD2Q0144Z+/RqG52NeHEkZauTAUWJO8c6yTftGJKO3Tja5tUgIfmIl6kExvhtxSDP7fXB6DvzkfMpCd/F3G+Q==}
     engines: {node: '>=0.6.19'}
 
+  string-byte-length@3.0.1:
+    resolution: {integrity: sha512-yJ8vP0HMwZ54CcA8S8mKoXbkezpZHANFtmafFo8lGxZThCQcAwRHjdFabuSLgOzxj9OFJcmssmiAvmcOK4O2Hw==}
+    engines: {node: '>=18.18.0'}
+
   string-length@4.0.2:
     resolution: {integrity: sha512-+l6rNN5fYHNhZZy41RXsYptCjA2Igmq4EG7kZAYFQI1E1VTXarr6ZPXBg6eq7Y6eK4FEhY6AJlyuFIb/v/S0VQ==}
     engines: {node: '>=10'}
@@ -25455,7 +25464,7 @@ snapshots:
       '@expo/json-file': 10.0.14
       '@expo/metro': 55.1.1
       '@expo/spawn-async': 1.7.2
-      browserslist: 4.28.1
+      browserslist: 4.28.2
       chalk: 4.1.2
       debug: 4.4.3
       getenv: 2.0.0
@@ -28072,7 +28081,7 @@ snapshots:
   '@react-native/codegen@0.83.6(@babel/core@7.29.0)':
     dependencies:
       '@babel/core': 7.29.0
-      '@babel/parser': 7.29.0
+      '@babel/parser': 7.29.3
       glob: 7.2.3
       hermes-parser: 0.32.0
       invariant: 2.2.4
@@ -41343,6 +41352,8 @@ snapshots:
   strict-event-emitter@0.5.1: {}
 
   string-argv@0.3.2: {}
+
+  string-byte-length@3.0.1: {}
 
   string-length@4.0.2:
     dependencies:

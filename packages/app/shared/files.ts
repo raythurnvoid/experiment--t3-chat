@@ -9,6 +9,7 @@ import { Underline } from "@tiptap/extension-underline";
 import { Highlight } from "@tiptap/extension-highlight";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { marked } from "marked";
+import stringByteLength from "string-byte-length";
 import { Doc as YDoc, diffUpdate, encodeStateAsUpdate, applyUpdate, encodeStateVector } from "yjs";
 import { Editor, Extension, type Extensions } from "@tiptap/core";
 import type { JSONContent as TiptapJSONContent, MarkdownRendererHelpers, RenderContext } from "@tiptap/core";
@@ -32,30 +33,7 @@ export const files_YJS_DOC_KEYS = {
 export type files_ContentType = `text/${"markdown"}${"" | `;charset=${"utf-8"}`}`;
 
 export function files_get_utf8_byte_size(content: string) {
-	let size = 0;
-
-	for (let index = 0; index < content.length; index++) {
-		const codeUnit = content.charCodeAt(index);
-
-		if (codeUnit <= 0x7f) {
-			size += 1;
-		} else if (codeUnit <= 0x7ff) {
-			size += 2;
-		} else if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-			const nextCodeUnit = content.charCodeAt(index + 1);
-			if (nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
-				size += 4;
-				index++;
-			} else {
-				// Match TextEncoder: lone surrogates encode as U+FFFD, which is 3 UTF-8 bytes.
-				size += 3;
-			}
-		} else {
-			size += 3;
-		}
-	}
-
-	return size;
+	return stringByteLength(content);
 }
 
 /**

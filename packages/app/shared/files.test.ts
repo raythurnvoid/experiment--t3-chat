@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	files_find_file_stem_end_index,
 	files_get_normalized_node_path_segments,
+	files_get_utf8_byte_size,
 	files_normalize_markdown_name,
 	files_normalize_name_input,
 	files_normalize_name,
@@ -12,6 +13,146 @@ import {
 	files_yjs_doc_update_from_markdown,
 } from "./files.ts";
 import { Doc as YDoc } from "yjs";
+import stringByteLength from "string-byte-length";
+
+const FILES_UTF8_BYTE_SIZE_TEXT_ENCODER_MIN_LENGTH = 1e2;
+const FILES_UTF8_BYTE_SIZE_CACHE_MAX_MEMORY = 1e5;
+
+// Adapted from string-byte-length's MIT-licensed test corpus:
+// https://github.com/ehmicky/string-byte-length/blob/main/src/helpers/strings.test.js
+const FILES_UTF8_BYTE_SIZE_CHARACTERS = [
+	{ title: "null", string: "\0", size: 1 },
+	{ title: "start of heading", string: "\u0001", size: 1 },
+	{ title: "backspace", string: "\b", size: 1 },
+	{ title: "tab", string: "\t", size: 1 },
+	{ title: "newline", string: "\n", size: 1 },
+	{ title: "ascii letter", string: "a", size: 1 },
+	{ title: "space", string: " ", size: 1 },
+	{ title: "delete", string: "\u007f", size: 1 },
+	{ title: "two-byte lower bound", string: "\u0080", size: 2 },
+	{ title: "two-byte upper bound", string: "\u07ff", size: 2 },
+	{ title: "three-byte lower bound", string: "\u0800", size: 3 },
+	{ title: "three-byte upper bound", string: "\uffff", size: 3 },
+	{ title: "astral lower surrogate pair", string: "\ud800\udc00", size: 4 },
+	{ title: "astral upper surrogate pair", string: "\udbff\udfff", size: 4 },
+	{ title: "astral code point U+10000", string: "\u{10000}", size: 4 },
+	{ title: "astral code point U+1FFFF", string: "\u{1ffff}", size: 4 },
+	{ title: "astral code point U+FFFFF", string: "\u{fffff}", size: 4 },
+	{ title: "invalid high surrogate lower bound", string: "\ud800", size: 3 },
+	{ title: "invalid high surrogate upper bound", string: "\udbff", size: 3 },
+	{ title: "invalid low surrogate lower bound", string: "\udc00", size: 3 },
+	{ title: "invalid low surrogate upper bound", string: "\udfff", size: 3 },
+	{ title: "invalid reversed surrogate pair", string: "\udc00\ud800", size: 6 },
+] satisfies Array<{ title: string; string: string; size: number }>;
+
+const FILES_UTF8_BYTE_SIZE_LONG_SPACE = "_".repeat(FILES_UTF8_BYTE_SIZE_TEXT_ENCODER_MIN_LENGTH);
+const FILES_UTF8_BYTE_SIZE_VERY_LONG_SPACE = "_".repeat(Math.ceil(FILES_UTF8_BYTE_SIZE_CACHE_MAX_MEMORY / 3));
+const FILES_UTF8_BYTE_SIZE_CASES = [
+	{ title: "empty string", string: "", size: 0 },
+	...FILES_UTF8_BYTE_SIZE_CHARACTERS.flatMap(({ title, string, size }) => [
+		{ title, string, size },
+		{ title: `${title} with appended space`, string: `${string} `, size: size + 1 },
+		{ title: `${title} with prepended space`, string: ` ${string}`, size: size + 1 },
+		{
+			title: `${title} with appended long space`,
+			string: `${string}${FILES_UTF8_BYTE_SIZE_LONG_SPACE}`,
+			size: size + FILES_UTF8_BYTE_SIZE_LONG_SPACE.length,
+		},
+		{
+			title: `${title} with prepended long space`,
+			string: `${FILES_UTF8_BYTE_SIZE_LONG_SPACE}${string}`,
+			size: size + FILES_UTF8_BYTE_SIZE_LONG_SPACE.length,
+		},
+		{
+			title: `${title} with appended very long space`,
+			string: `${string}${FILES_UTF8_BYTE_SIZE_VERY_LONG_SPACE}`,
+			size: size + FILES_UTF8_BYTE_SIZE_VERY_LONG_SPACE.length,
+		},
+		{
+			title: `${title} with prepended very long space`,
+			string: `${FILES_UTF8_BYTE_SIZE_VERY_LONG_SPACE}${string}`,
+			size: size + FILES_UTF8_BYTE_SIZE_VERY_LONG_SPACE.length,
+		},
+	]),
+] satisfies Array<{ title: string; string: string; size: number }>;
+
+type StringByteLengthGlobal = typeof globalThis & {
+	Buffer?: {
+		byteLength?: (string: string, encoding?: string) => number;
+	};
+	TextEncoder?: typeof TextEncoder;
+};
+
+async function import_string_byte_length_with_runtime(args: {
+	bufferByteLength: "current" | "removed";
+	textEncoder: "current" | "removed";
+}) {
+	const typedGlobal = globalThis as StringByteLengthGlobal;
+	const buffer = typedGlobal.Buffer;
+	const bufferByteLengthDescriptor = buffer ? Object.getOwnPropertyDescriptor(buffer, "byteLength") : undefined;
+	const textEncoderDescriptor = Object.getOwnPropertyDescriptor(typedGlobal, "TextEncoder");
+
+	try {
+		vi.resetModules();
+		if (args.bufferByteLength === "removed" && buffer) {
+			Reflect.deleteProperty(buffer, "byteLength");
+		}
+		if (args.textEncoder === "removed") {
+			Reflect.deleteProperty(typedGlobal, "TextEncoder");
+		}
+
+		return (await import("string-byte-length")).default;
+	} finally {
+		if (buffer) {
+			if (bufferByteLengthDescriptor) {
+				Object.defineProperty(buffer, "byteLength", bufferByteLengthDescriptor);
+			} else {
+				Reflect.deleteProperty(buffer, "byteLength");
+			}
+		}
+		if (textEncoderDescriptor) {
+			Object.defineProperty(typedGlobal, "TextEncoder", textEncoderDescriptor);
+		} else {
+			Reflect.deleteProperty(typedGlobal, "TextEncoder");
+		}
+		vi.resetModules();
+	}
+}
+
+describe("files_get_utf8_byte_size", () => {
+	test.each(FILES_UTF8_BYTE_SIZE_CASES)("computes UTF-8 byte size for $title", ({ string, size }) => {
+		expect(files_get_utf8_byte_size(string)).toBe(size);
+	});
+
+	test.each(FILES_UTF8_BYTE_SIZE_CASES)("matches TextEncoder for $title", ({ string }) => {
+		expect(files_get_utf8_byte_size(string)).toBe(new TextEncoder().encode(string).byteLength);
+	});
+
+	test.each(FILES_UTF8_BYTE_SIZE_CASES)("matches string-byte-length package for $title", ({ string, size }) => {
+		expect(stringByteLength(string)).toBe(size);
+	});
+});
+
+describe("string-byte-length runtime paths", () => {
+	test.each([
+		["without Buffer.byteLength", { bufferByteLength: "removed", textEncoder: "current" }],
+		["without Buffer.byteLength or TextEncoder", { bufferByteLength: "removed", textEncoder: "removed" }],
+	] satisfies Array<
+		[
+			string,
+			{
+				bufferByteLength: Parameters<typeof import_string_byte_length_with_runtime>[0]["bufferByteLength"];
+				textEncoder: Parameters<typeof import_string_byte_length_with_runtime>[0]["textEncoder"];
+			},
+		]
+	>)("matches the upstream corpus %s", async (_title, runtime) => {
+		const stringByteLengthForRuntime = await import_string_byte_length_with_runtime(runtime);
+
+		for (const { title, string, size } of FILES_UTF8_BYTE_SIZE_CASES) {
+			expect(stringByteLengthForRuntime(string), title).toBe(size);
+		}
+	});
+});
 
 describe("files_find_file_stem_end_index", () => {
 	test.each([
