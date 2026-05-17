@@ -33,8 +33,8 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Backend item types: `"root" | "node"`
 - Node kinds: `"folder" | "file"`
 - Placeholder rows are UI-only render artifacts
-- Current implementation exposes uploaded source files and generated shadow files as normal tree nodes.
-- Committed direction is that converted source files open their Markdown representation and shadow files are hidden from normal tree/table UI.
+- Uploaded source files are normal visible nodes; generated shadow files are hidden from normal tree/table UI.
+- Converted source files open their generated Markdown representation while selection and breadcrumbs stay on the source file node.
 
 # Data Model And Contracts
 
@@ -42,36 +42,30 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - `files_ROOT_ID` and `files_create_tree_root` are in `../../../packages/app/shared/files.ts` and re-exported by `../../../packages/app/src/lib/files.ts`.
 - Backend returns root/node items only; placeholder rows are client-rendered.
 - Folder nodes can have children, expand/collapse, and receive drops.
-- File nodes are leaves. Markdown-backed files open in the editor; uploaded source files currently open stored-file metadata.
+- File nodes are leaves. Markdown-backed files open in the editor; pending uploaded source files open stored-file metadata; converted uploaded source files open the backing Markdown shadow editor.
 - Clicking a folder opens its folder screen. `FileNodeView` decides whether the selected node renders the folder explorer or the file editor, and folder screens embed an editable child `README.md` when present.
 - Editable Markdown file nodes have `markdownContentId`, Yjs rows, Markdown content, Markdown chunks, plain-text chunks, and snapshots.
-- Uploaded source file nodes have `uploadId` immediately and get `assetId` after the R2 object-create event confirms the source object exists; they preserve the original binary in R2 and do not have `markdownContentId`.
-- Generated shadow files are Markdown file nodes linked from `files_r2_assets.shadowNodeId` after conversion; before conversion finishes, the asset row exists without `shadowNodeId`. The source node is linked from `files_r2_assets.sourceNodeId`.
+- Uploaded source file nodes have `uploadId` immediately, get `assetId` after the R2 object-create event confirms the source object exists, and own generated shadows through `shadowFileNodeIds`.
+- Generated shadow files are Markdown file nodes with `shadowSourceFileNodeId` pointing back to the visible shadow source file node. Shadow file nodes keep `shadowFileNodeIds: []`.
+- Assets own uploaded binary metadata and source linkage only; assets do not own shadow relationships.
 - Use the term **shadow file** for these generated Markdown records in engineering docs.
 - `.shadow.md` is system-reserved for generated shadow files. Normal user-created files should avoid that suffix even though current conflict handling can archive an unexpected occupant.
-- Shadow frontmatter/source metadata is visible Markdown content, but the authoritative source/asset relationship is the DB link between source node, upload row, and asset row.
-- Current active upload states are `pending`, `uploaded`, `converting`, and `finalized`.
+- Shadow frontmatter/source metadata is visible Markdown content, but the authoritative source/asset/shadow relationship is the DB link between shadow source file node, upload row, asset row, and shadow file node fields.
+- Upload status is derived in the UI from the raw upload row plus the source file node asset/shadow fields: no source asset is `pending`, a source asset without conversion work is `uploaded`, conversion work or a failure message is `converting`, and a source asset with at least one linked shadow file node is `finalized`.
 - Upload R2 keys use `workspaces/<workspaceId>/projects/<projectId>/nodes/<sourceNodeId>/source`.
 - Upload max is 50 MiB; converted Markdown max is 900,000 characters.
 
 # Uploaded Source And Shadow Files
 
-Current implementation:
-
 - Upload creates a visible source file node immediately.
 - While upload/conversion is pending, opening the source shows stored-file status such as waiting, processing, or `failureMessage`.
-- After finalization, opening the source still shows stored-file metadata and a "Shadow Markdown" link.
-- The generated `.shadow.md` node is visible in the tree and can be opened directly as Markdown.
+- After finalization, opening the source renders the generated Markdown shadow through the normal file editor while the selected node remains the source.
+- The generated `.shadow.md` node is not returned by normal sidebar/list/path queries and is not linked from normal UI.
+- Direct shadow file node-id URLs may resolve by showing the shadow source file node, but normal UI should never expose shadow ids or paths.
 - Replacing an uploaded source archives the old source plus its linked shadow before creating the replacement source.
 - If the source is archived before conversion finishes, finalization creates the shadow file archived with the same archive operation id.
-- Ordinary post-finalization rename, move, archive, and unarchive do not currently fully cascade to the linked shadow.
-
-Committed product direction:
-
-- Opening a converted source file should render the editable Markdown representation.
-- Normal tree/list/glob APIs should hide shadow files by default and expose the source path instead.
-- Source/shadow lifecycle should be source-owned: rename, move, archive, restore, and replace operate on the source/shadow pair.
-- Unarchiving/restoring a source upload should restore its shadow file as the same logical uploaded file.
+- Rename and move keep generated shadow paths following the source path.
+- Archive/unarchive keep `shadowFileNodeIds` intact and include linked shadows with the shadow source file node.
 - Archiving a source upload should keep the original R2 object; permanent purge/delete is a separate future design.
 - Rich-text image uploads should create visible upload nodes next to the document where the image was inserted and use the same R2 source/shadow conversion model.
 - If conversion fails, keep the source file visible with retryable error status rather than archiving it or creating an empty shadow.
@@ -80,7 +74,6 @@ Committed product direction:
 Known gaps:
 
 - Rich-text image upload currently posts to legacy `/api/upload`; that is not the first-party R2 source/shadow upload pipeline.
-- Source path aliasing for read/search/edit is planned, not current.
 - Generated Markdown currently lives in DB-backed Markdown rows; future direction is to store generated Markdown in R2 because large converted Markdown should not live only in DB.
 
 # Main Components
@@ -156,7 +149,6 @@ Tree-item components:
 - Rename uses `files.rename_node` with Convex `optimisticUpdate` for immediate title feedback.
 - The selected file/folder path auto-expands in the sidebar after route changes and path-based create/rename moves so the focused row stays visible.
 - Archive/unarchive uses `files.archive_nodes` / `files.unarchive_nodes`.
-- Current source/shadow lifecycle gap: rename, move, archive, and unarchive of finalized uploaded source nodes do not yet fully update the linked shadow node.
 
 ## Drag And Drop
 
@@ -177,16 +169,16 @@ Tree-item components:
 3. Missing extension or path conflict opens the upload draft modal.
 4. `files_nodes.create_upload_node` validates membership, rate limit, parent folder/root, size, and conflicts.
 5. Backend creates a source file node without Markdown content.
-6. Backend creates a `files_uploads` row with `pending`.
-7. Backend patches the source node with `uploadId`.
+6. Backend creates a `files_uploads` row with upload metadata and source linkage.
+7. Backend patches the source file node with `uploadId`.
 8. Backend returns a signed R2 PUT URL and optional content-type header.
 9. Browser uploads the binary directly to R2.
 10. R2 object-create event flows through the upload finalizer Worker to Convex.
-11. Convex inserts `files_r2_assets`, patches the source with `assetId`, and marks the upload `uploaded`.
-12. Convex queues Modal conversion and marks the upload `converting`.
+11. Convex inserts `files_r2_assets` and patches the source with `assetId`.
+12. Convex queues Modal conversion and stores the conversion work id.
 13. Modal converts the R2 object to Markdown.
 14. Convex wraps converted Markdown with visible shadow frontmatter.
-15. Convex creates `<source filename>.shadow.md`, archives any unexpected active occupant of that path, patches `files_r2_assets.shadowNodeId`, and marks the upload `finalized`.
+15. Convex creates `<source filename>.shadow.md`, archives any unexpected active occupant of that path, patches the shadow source file node `shadowFileNodeIds` and shadow file node `shadowSourceFileNodeId`, and clears conversion work/failure fields.
 
 # Headless-Tree Configuration Highlights
 
@@ -212,7 +204,7 @@ Tree-item components:
 7. Prefer Convex optimistic updates over manual local tree patching.
 8. Do not let file nodes act as folders.
 9. Keep external file drops on the same source/R2/shadow-file lifecycle as the Upload file menu action.
-10. Keep current implementation notes separate from committed source/shadow product direction until the lifecycle and hidden-shadow behavior are implemented.
+10. Keep assets focused on uploaded binaries and nodes focused on source/shadow relationships.
 
 # Verification Checklist
 
@@ -226,9 +218,8 @@ Tree-item components:
 - Rename guards and optimistic rename behavior are correct.
 - Archive/unarchive and archived filter/toggle behavior is correct.
 - DnD allows legal moves, blocks drops onto files, and root-zone feedback works.
-- External file drops onto root/folders create normal uploaded source nodes and eventually a `.shadow.md` file through the R2 conversion flow.
+- External file drops onto root/folders create normal uploaded source file nodes and eventually hidden `.shadow.md` nodes through the R2 conversion flow.
 - External file drops onto file rows do not upload to the file's parent.
 - Multi-file and directory external drops are rejected without creating nodes.
 - Placeholder nodes are never sent to mutations.
-- Current docs should not imply source rename/move/archive/restore already cascade to shadows.
-- Future hidden-shadow docs should expose source paths in normal tree/list/glob results, not internal `.shadow.md` paths.
+- Normal tree/list/glob results expose source paths, not internal `.shadow.md` paths.

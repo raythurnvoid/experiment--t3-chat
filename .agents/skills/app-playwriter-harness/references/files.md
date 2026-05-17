@@ -70,9 +70,9 @@ Keep R2 upload checks as a route-specific recipe. Do not promote this flow into 
 - Bind a single `/files` tab and verify no dedicated Uploads section appears in the files sidebar.
 - From the root folder or a temporary `aaa-pw-qa-*` folder, click `Upload file`, then set the hidden `input[type="file"]` to the fixture path.
 - Verify a normal tree node named `r2-upload-sample.pdf` appears immediately after upload preparation; it should not appear in a separate uploads list.
-- Open the new source node and verify the file panel shows a processing/pending state instead of the converted file until finalization completes.
+- Open the new source file node and verify the file panel shows a processing/pending state instead of the converted file until finalization completes.
 - Upload the same fixture to the same folder again and verify the modal title is `File already exists` with `Replace` and `Upload renamed file` actions.
-- Choose `Upload renamed file` with a unique filename such as `r2-upload-sample-<timestamp>.pdf` and verify the renamed source node appears in the normal tree.
+- Choose `Upload renamed file` with a unique filename such as `r2-upload-sample-<timestamp>.pdf` and verify the renamed source file node appears in the normal tree.
 - Repeat the collision flow and choose `Replace`; verify the old active source is archived and the replacement source appears as the active `r2-upload-sample.pdf`.
 - Archive the temporary `aaa-pw-qa-*` folder at the end of the flow.
 - Oversized upload UI checks are hard to drive through Playwriter because `setInputFiles` refuses files larger than 50 MB in extension mode. Prefer backend/unit coverage for the size gate, or use a smaller app-configured size limit in a dedicated test build if browser-level oversized QA becomes required.

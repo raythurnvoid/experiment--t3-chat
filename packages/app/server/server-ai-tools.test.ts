@@ -212,7 +212,8 @@ test("text_search_files tool: renders line ranges and fragment markers", async (
 test("read_file tool forwards pendingUpdateId and returns it in metadata", async () => {
 	const pendingUpdateId = "pending123";
 	const currentContent = {
-		nodeId: "p123",
+		nodeId: "p123_shadow",
+		displayNodeId: "p123",
 		content: "# Base",
 		pendingUpdateId,
 	};
@@ -249,6 +250,7 @@ test("read_file tool forwards pendingUpdateId and returns it in metadata", async
 	}
 
 	expect(result.metadata.nodeId).toBe("p123");
+	expect(result.metadata.contentNodeId).toBe("p123_shadow");
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 });
 
@@ -257,6 +259,7 @@ test("write_file tool stores pending unstaged branch updates from the agent", as
 	const pendingUpdateId = "pending123";
 	const currentContent = {
 		nodeId,
+		displayNodeId: nodeId,
 		content: "# Base",
 		pendingUpdateId,
 	};
@@ -303,6 +306,7 @@ test("write_file tool stores pending unstaged branch updates from the agent", as
 	});
 
 	expect(result.metadata.nodeId).toBe(nodeId);
+	expect(result.metadata.contentNodeId).toBe(nodeId);
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 	expect(result.metadata.exists).toBe(true);
 });
@@ -367,6 +371,7 @@ test("write_file tool normalizes missing file paths before creating with the age
 	});
 
 	expect(result.metadata.nodeId).toBe(nodeId);
+	expect(result.metadata.contentNodeId).toBe(nodeId);
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 	expect(result.metadata.exists).toBe(false);
 });
@@ -376,6 +381,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	const pendingUpdateId = "pending456";
 	const currentContent = {
 		nodeId,
+		displayNodeId: nodeId,
 		content: "Hello world",
 		pendingUpdateId,
 	};
@@ -427,6 +433,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	});
 
 	expect(result.metadata.nodeId).toBe(nodeId);
+	expect(result.metadata.contentNodeId).toBe(nodeId);
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 	expect(result.metadata.matches).toBe(1);
 	expect(result.metadata.matcher).toBe("simple");

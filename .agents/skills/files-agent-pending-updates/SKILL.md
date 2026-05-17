@@ -63,7 +63,7 @@ Pending updates attach to Markdown-backed `files_nodes` rows.
 
 - Editable Markdown files participate directly in pending review/edit flows.
 - Generated shadow files are Markdown-backed, so they can also participate in pending review/edit flows.
-- Raw uploaded source nodes without `markdownContentId` do not directly participate in pending Markdown edits today.
+- Raw uploaded source file nodes without `markdownContentId` do not directly participate in pending Markdown edits today.
 - Future source-path aliasing for converted uploads should still store pending edits against the underlying shadow Markdown node, not the original R2 object.
 
 # End-To-End Flow

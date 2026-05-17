@@ -3351,6 +3351,7 @@ if (import.meta.vitest) {
 			name: args.name,
 			kind: args.kind,
 			version: 1,
+			shadowFileNodeIds: [],
 			archiveOperationId: args.archiveOperationId,
 			createdBy: "test-user" as app_convex_Id<"users">,
 			updatedAt: 1,

@@ -137,18 +137,18 @@ export const get_asset = query({
 			return null;
 		}
 
-		const sourceNode = await ctx.db.get("files_nodes", args.nodeId);
+		const sourceFileNode = await ctx.db.get("files_nodes", args.nodeId);
 		if (
-			!sourceNode ||
-			sourceNode.workspaceId !== membership.workspaceId ||
-			sourceNode.projectId !== membership.projectId ||
-			!sourceNode.assetId
+			!sourceFileNode ||
+			sourceFileNode.workspaceId !== membership.workspaceId ||
+			sourceFileNode.projectId !== membership.projectId ||
+			!sourceFileNode.assetId
 		) {
 			return null;
 		}
 
-		const asset = await ctx.db.get("files_r2_assets", sourceNode.assetId);
-		if (!asset || asset.sourceNodeId !== sourceNode._id) {
+		const asset = await ctx.db.get("files_r2_assets", sourceFileNode.assetId);
+		if (!asset || asset.sourceNodeId !== sourceFileNode._id) {
 			return null;
 		}
 
@@ -156,19 +156,19 @@ export const get_asset = query({
 	},
 });
 
-export const get_finalized_asset_by_source_node = internalQuery({
+export const get_finalized_asset_by_source_file_node = internalQuery({
 	args: {
 		nodeId: v.id("files_nodes"),
 	},
 	returns: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
 	handler: async (ctx, args) => {
-		const sourceNode = await ctx.db.get("files_nodes", args.nodeId);
-		if (!sourceNode?.assetId) {
+		const sourceFileNode = await ctx.db.get("files_nodes", args.nodeId);
+		if (!sourceFileNode?.assetId) {
 			return null;
 		}
 
-		const asset = await ctx.db.get("files_r2_assets", sourceNode.assetId);
-		if (!asset || asset.sourceNodeId !== sourceNode._id || !asset.shadowNodeId) {
+		const asset = await ctx.db.get("files_r2_assets", sourceFileNode.assetId);
+		if (!asset || asset.sourceNodeId !== sourceFileNode._id || sourceFileNode.shadowFileNodeIds.length === 0) {
 			return null;
 		}
 
@@ -176,8 +176,8 @@ export const get_finalized_asset_by_source_node = internalQuery({
 	},
 });
 
-type r2_get_finalized_asset_by_source_node_Result =
-	typeof get_finalized_asset_by_source_node extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+type r2_get_finalized_asset_by_source_file_node_Result =
+	typeof get_finalized_asset_by_source_file_node extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -198,21 +198,21 @@ export const ensure_uploaded_asset = internalMutation({
 			});
 		}
 
-		const sourceNode = await ctx.db.get("files_nodes", upload.sourceNodeId);
-		if (!sourceNode) {
+		const sourceFileNode = await ctx.db.get("files_nodes", upload.sourceNodeId);
+		if (!sourceFileNode) {
 			return Result({
 				_nay: {
-					message: "Source node not found while creating uploaded asset",
+					message: "Source file node not found while creating uploaded asset",
 				},
 			});
 		}
 
-		if (sourceNode.assetId) {
-			const asset = await ctx.db.get("files_r2_assets", sourceNode.assetId);
-			if (!asset || asset.sourceNodeId !== sourceNode._id) {
+		if (sourceFileNode.assetId) {
+			const asset = await ctx.db.get("files_r2_assets", sourceFileNode.assetId);
+			if (!asset || asset.sourceNodeId !== sourceFileNode._id) {
 				return Result({
 					_nay: {
-						message: "Existing uploaded asset did not match source node",
+						message: "Existing uploaded asset did not match source file node",
 					},
 				});
 			}
@@ -229,7 +229,7 @@ export const ensure_uploaded_asset = internalMutation({
 			filename: upload.filename,
 			...(upload.contentType ? { contentType: upload.contentType } : {}),
 			...(upload.size === undefined ? {} : { size: upload.size }),
-			sourceNodeId: sourceNode._id,
+			sourceNodeId: sourceFileNode._id,
 			createdBy: upload.createdBy,
 			createdAt: now,
 			updatedAt: now,
@@ -237,11 +237,10 @@ export const ensure_uploaded_asset = internalMutation({
 
 		// Treat the R2 event as proof that the source object exists; conversion only attaches the shadow file later.
 		await Promise.all([
-			ctx.db.patch("files_nodes", sourceNode._id, {
+			ctx.db.patch("files_nodes", sourceFileNode._id, {
 				assetId,
 			}),
 			ctx.db.patch("files_uploads", upload._id, {
-				status: "uploaded",
 				failureMessage: undefined,
 			}),
 		]);
@@ -264,22 +263,12 @@ type r2_ensure_uploaded_asset_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-export const get_upload_by_source_node = query({
+export const get_upload_by_source_file_node = query({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 		nodeId: v.id("files_nodes"),
 	},
-	returns: v.union(
-		v.object({
-			uploadId: v.id("files_uploads"),
-			filename: v.string(),
-			contentType: v.optional(v.string()),
-			size: v.optional(v.number()),
-			status: v.union(v.literal("pending"), v.literal("uploaded"), v.literal("converting"), v.literal("finalized")),
-			failureMessage: v.optional(v.string()),
-		}),
-		v.null(),
-	),
+	returns: v.union(doc(app_convex_schema, "files_uploads"), v.null()),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
@@ -294,43 +283,34 @@ export const get_upload_by_source_node = query({
 			return null;
 		}
 
-		const sourceNode = await ctx.db.get("files_nodes", args.nodeId);
+		const sourceFileNode = await ctx.db.get("files_nodes", args.nodeId);
 		if (
-			!sourceNode ||
-			sourceNode.workspaceId !== membership.workspaceId ||
-			sourceNode.projectId !== membership.projectId ||
-			!sourceNode.uploadId
+			!sourceFileNode ||
+			sourceFileNode.workspaceId !== membership.workspaceId ||
+			sourceFileNode.projectId !== membership.projectId ||
+			!sourceFileNode.uploadId
 		) {
 			return null;
 		}
 
-		const upload = await ctx.db.get("files_uploads", sourceNode.uploadId);
-		if (!upload || upload.sourceNodeId !== sourceNode._id) {
+		const upload = await ctx.db.get("files_uploads", sourceFileNode.uploadId);
+		if (!upload || upload.sourceNodeId !== sourceFileNode._id) {
 			return null;
 		}
 
-		return {
-			uploadId: upload._id,
-			filename: upload.filename,
-			contentType: upload.contentType,
-			size: upload.size,
-			status: upload.status,
-			failureMessage: upload.failureMessage,
-		};
+		return upload;
 	},
 });
 
-export const set_upload_status = internalMutation({
+export const update_upload_conversion_state = internalMutation({
 	args: {
 		uploadId: v.id("files_uploads"),
-		status: v.union(v.literal("pending"), v.literal("uploaded"), v.literal("converting"), v.literal("finalized")),
 		conversionWorkId: v.optional(v.union(v.string(), v.null())),
 		failureMessage: v.optional(v.union(v.string(), v.null())),
 	},
 	returns: v.union(doc(app_convex_schema, "files_uploads"), v.null()),
 	handler: async (ctx, args) => {
 		await ctx.db.patch("files_uploads", args.uploadId, {
-			status: args.status,
 			...(args.conversionWorkId === undefined ? {} : { conversionWorkId: args.conversionWorkId ?? undefined }),
 			...(args.failureMessage === undefined ? {} : { failureMessage: args.failureMessage ?? undefined }),
 		});
@@ -339,8 +319,8 @@ export const set_upload_status = internalMutation({
 	},
 });
 
-export type r2_set_upload_status_Result =
-	typeof set_upload_status extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+export type r2_update_upload_conversion_state_Result =
+	typeof update_upload_conversion_state extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -404,22 +384,15 @@ export function r2_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								if (upload._yay.status === "finalized") {
-									const asset = (await ctx.runQuery(internal.r2.get_finalized_asset_by_source_node, {
-										nodeId: upload._yay.sourceNodeId,
-									})) as r2_get_finalized_asset_by_source_node_Result;
-									if (!asset?.shadowNodeId) {
-										console.error("Finalized upload asset not found for duplicate R2 event", {
-											uploadId: upload._yay._id,
-											sourceNodeId: upload._yay.sourceNodeId,
-										});
-									} else {
-										// Duplicate R2 events after conversion should not enqueue new work.
-										return {
-											status: 204,
-											body: {},
-										} as const;
-									}
+								const finalizedAsset = (await ctx.runQuery(internal.r2.get_finalized_asset_by_source_file_node, {
+									nodeId: upload._yay.sourceNodeId,
+								})) as r2_get_finalized_asset_by_source_file_node_Result;
+								if (finalizedAsset) {
+									// Duplicate R2 events after conversion should not enqueue new work.
+									return {
+										status: 204,
+										body: {},
+									} as const;
 								}
 
 								const uploadedAsset = (await ctx.runMutation(internal.r2.ensure_uploaded_asset, {
@@ -453,9 +426,8 @@ export function r2_http_routes(router: RouterForConvexModules) {
 											uploadId: upload._yay._id,
 										},
 									);
-									await ctx.runMutation(internal.r2.set_upload_status, {
+									await ctx.runMutation(internal.r2.update_upload_conversion_state, {
 										uploadId: upload._yay._id,
-										status: "converting",
 										conversionWorkId: String(workId),
 										failureMessage: null,
 									});

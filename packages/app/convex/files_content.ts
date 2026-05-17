@@ -9,7 +9,7 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_nodes_db_create_node_recursively_at_path, type files_nodes_get_Result } from "./files_nodes.ts";
-import { r2_get_download_url, type r2_set_upload_status_Result } from "./r2.ts";
+import { r2_get_download_url, type r2_update_upload_conversion_state_Result } from "./r2.ts";
 
 /** 15 minutes */
 const signed_url_expires_seconds = 15 * 60;
@@ -31,42 +31,8 @@ if (!process.env.MODAL_TOKEN) {
 
 const MODAL_TOKEN = process.env.MODAL_TOKEN;
 
-function yaml_string(value: string) {
-	return JSON.stringify(value);
-}
-
-function shadow_file_name(filename: string) {
+function shadow_file_node_name(filename: string) {
 	return `${filename}.shadow.md`;
-}
-
-function shadow_markdown(args: {
-	filename: string;
-	contentType?: string;
-	size?: number;
-	r2Bucket: string;
-	r2Key: string;
-	converter: string;
-	markdown: string;
-}) {
-	const generatedAt = new Date().toISOString();
-
-	return [
-		"---",
-		"shadow:",
-		"  source:",
-		"    kind: r2",
-		`    bucket: ${yaml_string(args.r2Bucket)}`,
-		`    key: ${yaml_string(args.r2Key)}`,
-		`    filename: ${yaml_string(args.filename)}`,
-		...(args.contentType ? [`    contentType: ${yaml_string(args.contentType)}`] : []),
-		...(args.size === undefined ? [] : [`    size: ${args.size}`]),
-		"  generated:",
-		`    converter: ${yaml_string(args.converter)}`,
-		`    at: ${yaml_string(generatedAt)}`,
-		"---",
-		"",
-		args.markdown,
-	].join("\n");
 }
 
 async function convert_object_to_markdown(args: { key: string; filename: string; contentType?: string }) {
@@ -149,54 +115,63 @@ export const finalize_upload_conversion_to_markdown = internalMutation({
 			});
 		}
 
-		const sourceFile = await ctx.db.get("files_nodes", upload.sourceNodeId);
-		if (!sourceFile) {
-			throw should_never_happen("R2 upload source node not found during Markdown finalization", {
+		const sourceFileNode = await ctx.db.get("files_nodes", upload.sourceNodeId);
+		if (!sourceFileNode) {
+			throw should_never_happen("R2 upload source file node not found during Markdown finalization", {
 				uploadId: args.uploadId,
 				sourceNodeId: upload.sourceNodeId,
 			});
 		}
 
 		// Keep queue-driven finalization idempotent because R2 events are delivered at least once.
-		const existingAsset = sourceFile.assetId ? await ctx.db.get("files_r2_assets", sourceFile.assetId) : null;
-		if (existingAsset && existingAsset.sourceNodeId === sourceFile._id && existingAsset.shadowNodeId) {
+		const existingAsset = sourceFileNode.assetId ? await ctx.db.get("files_r2_assets", sourceFileNode.assetId) : null;
+		const existingShadowFileNodeId = (
+			await Promise.all(
+				sourceFileNode.shadowFileNodeIds.map(async (shadowFileNodeId) => {
+					const shadowFileNode = await ctx.db.get("files_nodes", shadowFileNodeId);
+					if (
+						!shadowFileNode ||
+						shadowFileNode.workspaceId !== sourceFileNode.workspaceId ||
+						shadowFileNode.projectId !== sourceFileNode.projectId ||
+						shadowFileNode.shadowSourceFileNodeId !== sourceFileNode._id ||
+						!shadowFileNode.markdownContentId
+					) {
+						return null;
+					}
+
+					return shadowFileNode._id;
+				}),
+			)
+		).find((shadowFileNodeId) => shadowFileNodeId !== null);
+		if (existingAsset && existingAsset.sourceNodeId === sourceFileNode._id && existingShadowFileNodeId) {
 			return Result({
 				_yay: {
 					assetId: existingAsset._id,
-					sourceNodeId: sourceFile._id,
-					shadowNodeId: existingAsset.shadowNodeId,
+					sourceNodeId: sourceFileNode._id,
+					shadowNodeId: existingShadowFileNodeId,
 				},
 			});
 		}
 
 		const now = Date.now();
 
-		const shadowFileName = shadow_file_name(sourceFile.name);
-		const shadowMarkdown = shadow_markdown({
-			filename: sourceFile.name,
-			contentType: upload.contentType,
-			size: upload.size,
-			r2Bucket: upload.r2Bucket,
-			r2Key: upload.r2Key,
-			converter: args.converter,
-			markdown: args.markdown,
-		});
-		if (sourceFile.archiveOperationId === undefined) {
-			const shadowPath = `${sourceFile.path}.shadow.md`;
-			const existingShadowNode = await ctx.db
+		const shadowFileNodeName = shadow_file_node_name(sourceFileNode.name);
+		if (sourceFileNode.archiveOperationId === undefined) {
+			const shadowFileNodePath = `${sourceFileNode.path}.shadow.md`;
+			const existingShadowFileNode = await ctx.db
 				.query("files_nodes")
 				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 					q
 						.eq("workspaceId", upload.workspaceId)
 						.eq("projectId", upload.projectId)
-						.eq("path", shadowPath)
+						.eq("path", shadowFileNodePath)
 						.eq("archiveOperationId", undefined),
 				)
 				.first();
-			if (existingShadowNode) {
+			if (existingShadowFileNode) {
 				// Supported user flows do not create shadow files;
 				// archive the unexpected occupant so this conversion owns its shadow file.
-				await ctx.db.patch("files_nodes", existingShadowNode._id, {
+				await ctx.db.patch("files_nodes", existingShadowFileNode._id, {
 					archiveOperationId: crypto.randomUUID(),
 					updatedBy: upload.createdBy,
 					updatedAt: now,
@@ -204,24 +179,25 @@ export const finalize_upload_conversion_to_markdown = internalMutation({
 			}
 		}
 
-		const shadowFile = await files_nodes_db_create_node_recursively_at_path(ctx, {
+		const shadowFileNode = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			workspaceId: upload.workspaceId,
 			projectId: upload.projectId,
 			userId: upload.createdBy,
-			parentId: sourceFile.parentId,
-			path: shadowFileName,
+			parentId: sourceFileNode.parentId,
+			path: shadowFileNodeName,
 			kind: "file",
 			createMarkdownContent: true,
-			archiveOperationId: sourceFile.archiveOperationId,
-			markdownContent: shadowMarkdown,
+			archiveOperationId: sourceFileNode.archiveOperationId,
+			shadowSourceFileNodeId: sourceFileNode._id,
+			markdownContent: args.markdown,
 			now,
 		});
-		if (shadowFile._nay) {
-			return Result({ _nay: shadowFile._nay });
+		if (shadowFileNode._nay) {
+			return Result({ _nay: shadowFileNode._nay });
 		}
 
 		const assetId =
-			existingAsset && existingAsset.sourceNodeId === sourceFile._id
+			existingAsset && existingAsset.sourceNodeId === sourceFileNode._id
 				? existingAsset._id
 				: await ctx.db.insert("files_r2_assets", {
 						workspaceId: upload.workspaceId,
@@ -231,25 +207,23 @@ export const finalize_upload_conversion_to_markdown = internalMutation({
 						filename: upload.filename,
 						...(upload.contentType ? { contentType: upload.contentType } : {}),
 						...(upload.size === undefined ? {} : { size: upload.size }),
-						sourceNodeId: sourceFile._id,
-						shadowNodeId: shadowFile._yay,
+						sourceNodeId: sourceFileNode._id,
 						createdBy: upload.createdBy,
 						createdAt: now,
 						updatedAt: now,
 					});
-		if (existingAsset && existingAsset.sourceNodeId === sourceFile._id) {
+		if (existingAsset && existingAsset.sourceNodeId === sourceFileNode._id) {
 			await ctx.db.patch("files_r2_assets", existingAsset._id, {
-				shadowNodeId: shadowFile._yay,
 				updatedAt: now,
 			});
 		}
 
 		await Promise.all([
-			ctx.db.patch("files_nodes", sourceFile._id, {
+			ctx.db.patch("files_nodes", sourceFileNode._id, {
 				assetId,
+				shadowFileNodeIds: [...sourceFileNode.shadowFileNodeIds, shadowFileNode._yay],
 			}),
 			ctx.db.patch("files_uploads", upload._id, {
-				status: "finalized",
 				conversionWorkId: undefined,
 				failureMessage: undefined,
 			}),
@@ -258,8 +232,8 @@ export const finalize_upload_conversion_to_markdown = internalMutation({
 		return Result({
 			_yay: {
 				assetId,
-				sourceNodeId: sourceFile._id,
-				shadowNodeId: shadowFile._yay,
+				sourceNodeId: sourceFileNode._id,
+				shadowNodeId: shadowFileNode._yay,
 			},
 		});
 	},
@@ -280,31 +254,29 @@ export const convert_upload_to_markdown = internalAction({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const upload = (await ctx.runMutation(internal.r2.set_upload_status, {
+		const upload = (await ctx.runMutation(internal.r2.update_upload_conversion_state, {
 			uploadId: args.uploadId,
-			status: "converting",
 			failureMessage: null,
-		})) as r2_set_upload_status_Result;
+		})) as r2_update_upload_conversion_state_Result;
 		if (!upload) {
 			return null;
 		}
 
-		const sourceNode = (await ctx.runQuery(internal.files_nodes.get, {
+		const sourceFileNode = (await ctx.runQuery(internal.files_nodes.get, {
 			nodeId: upload.sourceNodeId,
 		})) as files_nodes_get_Result;
-		if (!sourceNode) {
+		if (!sourceFileNode) {
 			return null;
 		}
 
 		const conversion = await convert_object_to_markdown({
 			key: upload.r2Key,
-			filename: sourceNode.name,
+			filename: sourceFileNode.name,
 			contentType: upload.contentType,
 		});
 		if (conversion._nay) {
-			await ctx.runMutation(internal.r2.set_upload_status, {
+			await ctx.runMutation(internal.r2.update_upload_conversion_state, {
 				uploadId: args.uploadId,
-				status: "converting",
 				failureMessage: conversion._nay.message,
 			});
 			throw convex_error({
@@ -319,9 +291,8 @@ export const convert_upload_to_markdown = internalAction({
 			converter: conversion._yay.converter,
 		})) as finalize_upload_conversion_to_markdown_Result;
 		if (finalizationResult._nay) {
-			await ctx.runMutation(internal.r2.set_upload_status, {
+			await ctx.runMutation(internal.r2.update_upload_conversion_state, {
 				uploadId: args.uploadId,
-				status: "converting",
 				failureMessage: finalizationResult._nay.message,
 			});
 			throw convex_error({

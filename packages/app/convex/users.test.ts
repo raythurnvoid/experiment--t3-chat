@@ -223,6 +223,7 @@ async function users_test_seed_page(
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
+		shadowFileNodeIds: [],
 	});
 
 	await ctx.db.insert("files_markdown_content", {

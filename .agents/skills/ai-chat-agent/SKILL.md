@@ -75,30 +75,28 @@ Important limitation:
 - These tools operate on DB-backed project files, not repo files on disk.
 - The agent does not currently have a general shell/filesystem tool in this chat runtime.
 - The agent does not currently read raw R2 binaries through this toolbelt.
-- `read_file`, `write_file`, and `edit_file` require Markdown-backed file content.
-- Uploaded source nodes may be discoverable through path listing, but are not directly readable unless the tool path resolves to Markdown content.
+- `read_file` and `grep_files` read Markdown-backed content. Converted uploaded source paths resolve to their generated Markdown shadows.
+- `text_search_files` reports the actual Markdown content path that matched; generated shadow file results use their `.shadow.md` paths.
+- Uploaded source file nodes are discoverable through path listing; their raw R2 binaries are not directly read by this toolbelt.
 - `web_search` uses the server-side Exa integration and should be used for current public facts, docs, release notes, news, and information outside the workspace. Keep workspace file tools first when the answer should come from the user's files.
 
 # Uploaded Source And Shadow Files
 
-Current implementation:
-
 - Uploaded source files are visible `files_nodes` rows with `uploadId` and later `assetId`.
 - The original uploaded binary is preserved in R2.
-- Finalization creates a generated Markdown **shadow file** linked from `files_r2_assets.shadowNodeId`.
-- Shadow files are currently visible as `.shadow.md` Markdown files and can be opened/read like other Markdown-backed files.
+- Finalization creates a generated Markdown **shadow file** node with `shadowSourceFileNodeId` pointing to the visible shadow source file node.
+- Shadow source file nodes own their generated shadows through the canonical `shadowFileNodeIds` array.
+- Assets own uploaded binary metadata and source linkage only; assets do not own shadow relationships.
+- Shadow files are hidden from normal tree/list/glob/path surfaces and should not be linked from normal UI.
 - The generated shadow Markdown includes visible frontmatter/source metadata plus converted Markdown.
 - Shadow Markdown is editable and participates in normal Markdown reads, searches, edits, and pending-update review flows.
 - Editing shadow Markdown does not mutate the original R2 object.
 - The DB upload/asset/source/shadow relationship is authoritative; visible frontmatter is contextual/editable content.
-- `list_files` and `glob_files` may show uploaded source paths because they list file nodes. `read_file`, `grep_files`, `write_file`, and `edit_file` only succeed when the resolved node has Markdown content.
-
-Committed product direction:
-
-- Agents should address converted uploaded files by the source path, not the internal `.shadow.md` path.
-- Future read/search/edit behavior on a converted source path should alias to the editable shadow Markdown.
-- Search results for converted uploads should show the source path while using the shadow Markdown as the searchable representation.
-- Normal tree/list/glob APIs should hide shadow files by default once hidden-shadow behavior is implemented.
+- Agents should understand `.shadow.md` files as generated Markdown representations of uploaded source files. For example, `/a.pdf.shadow.md` represents the uploaded source file `/a.pdf`.
+- `list_files` and `glob_files` hide shadows and expose source paths.
+- `read_file("/report.pdf")` reads the current generated Markdown shadow.
+- `text_search_files` searches linked shadow Markdown chunks and reports the real shadow file path that matched.
+- Multiple linked shadows are searchable; explicit plugin shadow selection is not implemented yet.
 - Native source-file reading is planned for provider-supported files, especially PDFs. The agent should decide when Markdown search/results are enough and when to read the original source file with provider-native capabilities.
 - Original binary download is planned for users but is not implemented today.
 
@@ -108,7 +106,7 @@ Committed product direction:
 
 - Reads one Markdown file by absolute path and returns numbered lines.
 - Path must be absolute and resolve to a file node.
-- Current behavior requires the resolved node to have `markdownContentId`; uploaded source paths do not yet alias to their shadows.
+- Converted uploaded source paths resolve to their generated Markdown shadow while tool metadata links back to the shadow source file node.
 - Output uses line numbers like `00001| ...`.
 - Reads through `internal.files_nodes.get_file_last_available_markdown_content_by_path`.
 - That query overlays the passed `userId` user's pending `unstaged` branch if a pending update exists.
@@ -120,21 +118,21 @@ Committed product direction:
 - Uses `internal.files_nodes.list_files`.
 - Supports `ignore`, `maxDepth`, and `limit`.
 - Folder items are marked with a trailing `/` in tool output.
-- Current behavior can list uploaded source nodes and visible shadow files. Future hidden-shadow behavior should omit shadow files and expose source paths.
+- Shadows are filtered by indexed Convex queries, so normal results expose source paths and never `.shadow.md` paths.
 
 ## `glob_files`
 
 - Finds file/folder paths by glob pattern.
 - Uses `list_files` under the hood with include filtering.
 - Returns paths sorted by newest `updatedAt` first.
-- Current behavior follows `list_files`, so visible `.shadow.md` paths can appear until hidden-shadow behavior is implemented.
+- Follows `list_files`, so hidden shadows are omitted and converted uploads appear by source path.
 
 ## `grep_files`
 
 - Regex search over file names plus committed/pending Markdown content.
 - Uses JavaScript `RegExp`.
 - Searches only file nodes; folder nodes are traversed for discovery but not read.
-- Current behavior reads Markdown-backed paths only. Uploaded source paths are not searched directly until source-path aliasing is implemented.
+- Converted uploaded source paths read/search their generated Markdown shadow.
 - Produces grouped line-oriented output similar to ripgrep.
 
 ## `text_search_files`
@@ -143,7 +141,7 @@ Committed product direction:
 - Search happens on markdown-derived plain text chunks, not raw markdown syntax.
 - Returned snippets are markdown chunks with line ranges and source character ranges.
 - Current behavior exact-filters candidate chunks with `plainTextChunk.includes(query)` and dedupes by markdown chunk id.
-- Current uploaded-file search comes from shadow Markdown chunks. Future results should report the uploaded source path, not the hidden shadow path.
+- Uploaded-file search comes from linked shadow Markdown chunks and reports the real shadow path, not the uploaded source path.
 
 ## `write_file`
 
@@ -152,7 +150,7 @@ Committed product direction:
 - Creates the file path if it does not exist; intermediate path segments become folders.
 - Paths must be real Markdown paths ending in `.md`, for example `/readme.md` or `/docs/setup.md`.
 - Stores the proposed result in `files_pending_updates` through `upsert_file_pending_update_internal`.
-- Current behavior writes Markdown files only. Future source-path aliasing may allow writes to a converted uploaded source path by editing its shadow Markdown.
+- `write_file` remains Markdown-path-oriented and is not the normal way to target converted uploaded sources such as PDFs.
 
 ## `edit_file`
 
@@ -163,14 +161,14 @@ Committed product direction:
 - `replaceAll` is opt-in.
 - Stores modified Markdown in `files_pending_updates`, not live file content.
 - If the user copies text from `read_file`, they must not include line-number prefixes.
-- Current behavior edits Markdown-backed files only. Future source-path aliasing may edit a converted upload's shadow Markdown when the agent targets the source path.
+- Converted upload source paths resolve to their editable shadow Markdown; pending updates belong to the shadow content node while UI links point at the shadow source file node.
 
 # Pending Update Integration
 
 Reads:
 
 - `read_file` goes through `get_file_last_available_markdown_content_by_path`.
-- That query checks `files_pending_updates` for `(workspaceId, projectId, userId, nodeId)`.
+- That query resolves source paths to backing content nodes and checks `files_pending_updates` for `(workspaceId, projectId, userId, contentNodeId)`.
 - If a pending row exists, it reconstructs Markdown from the pending `unstaged` branch and returns that instead of committed Markdown.
 
 Writes:
@@ -191,8 +189,8 @@ Writes:
 8. `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
 9. Request messages are persisted before generation; assistant responses are persisted after streaming finishes.
 10. Current tools do not read raw R2 binaries; uploaded content is available through Markdown shadow files.
-11. Future source-path aliasing must preserve the product distinction between the original R2 object and the editable Markdown representation.
-12. `.shadow.md` is a system-reserved implementation suffix; normal agent-facing paths should move toward source paths once shadows are hidden.
+11. Source-path reads must preserve the product distinction between the original R2 object and the editable Markdown representation.
+12. `.shadow.md` is a system-reserved implementation suffix; `list_files` and `glob_files` hide it, while `text_search_files` may expose it because the match came from that generated Markdown content.
 
 # Verification Checklist
 
@@ -205,5 +203,5 @@ Writes:
 - `grep_files` behaves like regex/line search.
 - `text_search_files` behaves like chunk search and returns markdown fragment context.
 - Uploaded source files are not described as raw-binary-readable until a native source-file tool exists.
-- Source/shadow current behavior and planned alias behavior remain documented separately.
+- Converted uploaded files read by source path while using linked Markdown shadows as the backing content; text search reports the actual shadow path for shadow-content matches.
 - Tool descriptions stay aligned with actual behavior.

@@ -85,6 +85,7 @@ async function data_deletion_test_seed_page(
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
+		shadowFileNodeIds: [],
 	});
 
 	await ctx.db.insert("files_markdown_content", {
@@ -650,15 +651,15 @@ describe("process_user_deletion_request", () => {
 				userId: String(deletedUser.userId),
 				nodeId: await ctx.db
 					.query("files_nodes")
-					.withIndex("by_workspace_project_kind_name", (q) =>
-						q
-							.eq("workspaceId", String(created._yay.workspaceId))
-							.eq("projectId", String(created._yay.defaultProjectId))
-							.eq("kind", "file")
-							.eq("name", "shared-page"),
-					)
-					.first()
-					.then((page) => {
+					.collect()
+					.then((pages) => {
+						const page = pages.find(
+							(page) =>
+								page.workspaceId === String(created._yay.workspaceId) &&
+								page.projectId === String(created._yay.defaultProjectId) &&
+								page.kind === "file" &&
+								page.name === "shared-page",
+						);
 						if (!page) {
 							throw new Error("shared page not found");
 						}
@@ -746,14 +747,16 @@ describe("process_user_deletion_request", () => {
 				ctx.db.get("workspaces", sharedWorkspace.workspaceId),
 				ctx.db
 					.query("files_nodes")
-					.withIndex("by_workspace_project_kind_name", (q) =>
-						q
-							.eq("workspaceId", String(sharedWorkspace.workspaceId))
-							.eq("projectId", String(sharedWorkspace.defaultProjectId))
-							.eq("kind", "file")
-							.eq("name", "shared-page"),
-					)
-					.collect(),
+					.collect()
+					.then((pages) =>
+						pages.filter(
+							(page) =>
+								page.workspaceId === String(sharedWorkspace.workspaceId) &&
+								page.projectId === String(sharedWorkspace.defaultProjectId) &&
+								page.kind === "file" &&
+								page.name === "shared-page",
+						),
+					),
 				ctx.db
 					.query("files_nodes")
 					.collect()

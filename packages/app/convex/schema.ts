@@ -118,6 +118,10 @@ const app_convex_schema = defineSchema({
 		uploadId: v.optional(v.id("files_uploads")),
 		/** Finalized asset associated with an uploaded source file. */
 		assetId: v.optional(v.id("files_r2_assets")),
+		/** Present only on generated shadow file nodes; points back to the visible shadow source file node. */
+		shadowSourceFileNodeId: v.optional(v.id("files_nodes")),
+		/** Canonical generated shadow file nodes owned by this shadow source file node. Empty for normal files and shadow file nodes. */
+		shadowFileNodeIds: v.array(v.id("files_nodes")),
 		/** Document version - always 0 for now until versioning is implemented */
 		version: v.number(),
 		/** Archive operation UUID. Undefined means active */
@@ -140,15 +144,28 @@ const app_convex_schema = defineSchema({
 			"name",
 			"archiveOperationId",
 		])
-		.index("by_workspace_project_parent_archiveOperation", [
+		.index("by_workspace_project_path_archiveOperation", ["workspaceId", "projectId", "path", "archiveOperationId"])
+		.index("by_workspace_project_shadowSourceFileNode_kind_name", [
+			"workspaceId",
+			"projectId",
+			"shadowSourceFileNodeId",
+			"kind",
+			"name",
+		])
+		.index("by_workspace_project_path_shadowSourceFileNode_archiveOp", [
+			"workspaceId",
+			"projectId",
+			"path",
+			"shadowSourceFileNodeId",
+			"archiveOperationId",
+		])
+		.index("by_workspace_project_parent_shadowSourceFileNode_archiveOp", [
 			"workspaceId",
 			"projectId",
 			"parentId",
+			"shadowSourceFileNodeId",
 			"archiveOperationId",
-		])
-		.index("by_workspace_project_path_archiveOperation", ["workspaceId", "projectId", "path", "archiveOperationId"])
-		.index("by_workspace_project_archiveOperation_path", ["workspaceId", "projectId", "archiveOperationId", "path"])
-		.index("by_workspace_project_kind_name", ["workspaceId", "projectId", "kind", "name"]),
+		]),
 	/**
 	 * Table to store markdown content for files.
 	 */
@@ -293,15 +310,11 @@ const app_convex_schema = defineSchema({
 		contentType: v.optional(v.string()),
 		size: v.optional(v.number()),
 		sourceNodeId: v.id("files_nodes"),
-		/** Generated Markdown shadow file, attached after conversion finishes. */
-		shadowNodeId: v.optional(v.id("files_nodes")),
 		createdBy: v.id("users"),
 		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_r2Key", ["workspaceId", "projectId", "r2Key"])
-		.index("by_workspace_project_sourceNode", ["workspaceId", "projectId", "sourceNodeId"])
-		.index("by_workspace_project_shadowNode", ["workspaceId", "projectId", "shadowNodeId"]),
+		.index("by_workspace_project_r2Key", ["workspaceId", "projectId", "r2Key"]),
 
 	files_uploads: defineTable({
 		workspaceId: v.string(),
@@ -312,13 +325,11 @@ const app_convex_schema = defineSchema({
 		filename: v.string(),
 		contentType: v.optional(v.string()),
 		size: v.optional(v.number()),
-		status: v.union(v.literal("pending"), v.literal("uploaded"), v.literal("converting"), v.literal("finalized")),
 		conversionWorkId: v.optional(v.string()),
 		failureMessage: v.optional(v.string()),
 		sourceNodeId: v.id("files_nodes"),
 	})
-		.index("by_r2Bucket_r2Key", ["r2Bucket", "r2Key"])
-		.index("by_workspace_project_sourceNode", ["workspaceId", "projectId", "sourceNodeId"]),
+		.index("by_r2Bucket_r2Key", ["r2Bucket", "r2Key"]),
 	// #endregion files
 
 	// #region chat messages

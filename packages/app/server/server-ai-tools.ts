@@ -642,7 +642,8 @@ export function ai_chat_tool_create_read_file(
 				output,
 				metadata: {
 					preview,
-					nodeId: fileContent.nodeId,
+					nodeId: fileContent.displayNodeId,
+					contentNodeId: fileContent.nodeId,
 					pendingUpdateId: fileContent.pendingUpdateId,
 				},
 			};
@@ -961,6 +962,7 @@ export function ai_chat_tool_create_text_search_files(
 			- Searches chunk plain text only (not raw markdown syntax).\
 			- Results are relevance-ranked by Convex and limited to the specified limit.\
 			- Result snippets include chunk line ranges and explicit fragment markers above/below.\
+			- If a result path ends with .shadow.md, it is a generated Markdown representation of an uploaded source file; the source file usually exists at the same path without the .shadow.md suffix.\
 			- Prefer this over grep for general keyword search; use grep for precise regex line matches.`,
 
 		inputSchema: z.object({
@@ -1158,7 +1160,8 @@ export function ai_chat_tool_create_write_file(
 			return {
 				output: exists ? "File overwritten" : "New file created",
 				metadata: {
-					nodeId,
+					nodeId: currentFileContent?.displayNodeId ?? nodeId,
+					contentNodeId: nodeId,
 					pendingUpdateId: nextPendingUpdate?._id ?? null,
 					exists,
 					path,
@@ -1270,7 +1273,8 @@ export function ai_chat_tool_create_edit_file(
 			return {
 				title: normalizedPath,
 				metadata: {
-					nodeId,
+					nodeId: currentFileContent.displayNodeId,
+					contentNodeId: nodeId,
 					pendingUpdateId: nextPendingUpdate?._id ?? null,
 					path: normalizedPath,
 					matches,

@@ -317,6 +317,7 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 
 type FileNodeViewFile_Props = {
 	node: app_convex_Doc<"files_nodes">;
+	editorNodeId?: app_convex_Id<"files_nodes">;
 	treeItemsList: FileNodeViewContent_Props["treeItemsList"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
@@ -333,6 +334,7 @@ type FileNodeViewFile_Props = {
 const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_Props) {
 	const {
 		node,
+		editorNodeId,
 		treeItemsList,
 		pendingUpdateId,
 		serverSequence,
@@ -358,7 +360,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				onEditorModeChange={onEditorModeChange}
 			/>
 			<FileNodeViewFileEditor
-				nodeId={node._id}
+				nodeId={editorNodeId ?? node._id}
 				pendingUpdateId={pendingUpdateId}
 				serverSequence={serverSequence}
 				editorMode={editorMode}
@@ -396,32 +398,29 @@ type FileNodeViewStoredFile_Props = {
 
 const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileNodeViewStoredFile_Props) {
 	const { node, treeItemsList, editorMode, filesSidebarOpen, onlineUsers } = props;
-	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
+	const { membershipId } = AppTenantProvider.useContext();
 	const asset = useQuery(app_convex_api.r2.get_asset, {
 		membershipId,
 		nodeId: node._id,
 	});
-	const upload = useQuery(app_convex_api.r2.get_upload_by_source_node, {
+	const upload = useQuery(app_convex_api.r2.get_upload_by_source_file_node, {
 		membershipId,
 		nodeId: node._id,
 	});
 	const activeAsset = asset ?? null;
-	const assetNeedsUploadStatus = activeAsset !== null && !activeAsset.shadowNodeId;
+	const assetNeedsUploadStatus = activeAsset !== null && node.shadowFileNodeIds.length === 0;
 	const storedFileMetadataIsLoading =
 		asset === undefined || ((asset === null || assetNeedsUploadStatus) && upload === undefined);
 	const activeUpload = asset === null || assetNeedsUploadStatus ? (upload ?? null) : null;
 	const activeUploadStatusText =
-		activeUpload && !activeAsset?.shadowNodeId
+		activeUpload && node.shadowFileNodeIds.length === 0
 			? (activeUpload.failureMessage ??
-				(activeUpload.status === "pending"
-					? "Waiting for upload"
-					: activeUpload.status === "uploaded"
+				(activeUpload.conversionWorkId
+					? "Processing"
+					: activeAsset
 						? "Uploaded. Processing"
-						: "Processing"))
+						: "Waiting for upload"))
 			: null;
-	const shadowItem = activeAsset?.shadowNodeId
-		? treeItemsList?.find((item) => item._id === activeAsset.shadowNodeId)
-		: undefined;
 	const title = node.name;
 	const subtitle = ((/* iife */) => {
 		if (storedFileMetadataIsLoading) {
@@ -475,7 +474,7 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 								Status
 							</dt>
 							<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
-								{activeUploadStatusText ?? activeUpload.status}
+								{activeUploadStatusText}
 							</dd>
 						</div>
 					) : null}
@@ -495,42 +494,6 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 							{files_format_size(storedFileSize)}
 						</dd>
 					</div>
-					{activeAsset ? (
-						<>
-							<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
-								<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
-									R2 bucket
-								</dt>
-								<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
-									{activeAsset.r2Bucket}
-								</dd>
-							</div>
-							<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
-								<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
-									R2 key
-								</dt>
-								<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
-									{activeAsset.r2Key}
-								</dd>
-							</div>
-							{activeAsset.shadowNodeId ? (
-								<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
-									<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
-										Shadow Markdown
-									</dt>
-									<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
-										<MyLink
-											to="/w/$workspaceName/$projectName/files"
-											params={{ workspaceName, projectName }}
-											search={{ nodeId: activeAsset.shadowNodeId, view: "plain_text_editor" }}
-										>
-											{shadowItem?.name ?? activeAsset.shadowNodeId}
-										</MyLink>
-									</dd>
-								</div>
-							) : null}
-						</>
-					) : null}
 				</dl>
 			</section>
 		</>
@@ -1511,6 +1474,27 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 	}
 
 	if (node.kind !== "file" || !node.markdownContentId) {
+		const shadowEditorNodeId = node.kind === "file" ? node.shadowFileNodeIds[0] : undefined;
+		if (shadowEditorNodeId) {
+			return (
+				<FileNodeViewFile
+					node={node}
+					editorNodeId={shadowEditorNodeId}
+					treeItemsList={treeItemsList}
+					pendingUpdateId={pendingUpdateId}
+					serverSequence={serverSequence}
+					editorMode={editorMode}
+					filesSidebarOpen={filesSidebarOpen}
+					presenceStore={presenceStore}
+					onlineUsers={onlineUsers}
+					commentsPortalHost={commentsPortalHost}
+					toolbarPortalHost={toolbarPortalHost}
+					topStickyFloatingSlot={topStickyFloatingSlot}
+					onEditorModeChange={onEditorModeChange}
+				/>
+			);
+		}
+
 		return (
 			<FileNodeViewStoredFile
 				node={node}
@@ -1616,8 +1600,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// have the same owner for selected files and folder README editors.
 	const activeEditorNodeId = isRootNodeSelected
 		? get_folder_readme_node_id(treeItemsList, files_ROOT_ID)
-		: resolvedNode && resolvedNode.kind === "file" && resolvedNode.markdownContentId
-			? resolvedNode._id
+		: resolvedNode && resolvedNode.kind === "file"
+			? (resolvedNode.markdownContentId ? resolvedNode._id : (resolvedNode.shadowFileNodeIds[0] ?? null))
 			: resolvedNode?.kind === "folder"
 				? get_folder_readme_node_id(treeItemsList, resolvedNode._id)
 				: null;

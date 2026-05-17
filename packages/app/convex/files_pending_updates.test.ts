@@ -124,6 +124,7 @@ async function seed_file_with_markdown(args: {
 		updatedBy: userId,
 		updatedAt: Date.now(),
 		archiveOperationId: undefined,
+		shadowFileNodeIds: [],
 	});
 
 	const markdownContentId = await ctx.db.insert("files_markdown_content", {

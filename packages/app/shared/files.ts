@@ -52,6 +52,7 @@ export function files_create_tree_root() {
 		path: "/",
 		uploadId: undefined,
 		assetId: undefined,
+		shadowFileNodeIds: [],
 		archiveOperationId: undefined,
 		markdownContentId: undefined,
 		yjsLastSequenceId: undefined,

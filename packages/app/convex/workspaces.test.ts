@@ -124,6 +124,7 @@ async function workspaces_test_seed_project_scoped_rows(
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
+		shadowFileNodeIds: [],
 	});
 	const markdownContentId = await ctx.db.insert("files_markdown_content", {
 		workspaceId: args.workspaceId,
@@ -2294,6 +2295,7 @@ describe("access_control", () => {
 					createdBy: ownerId,
 					updatedBy: ownerId,
 					updatedAt: now,
+					shadowFileNodeIds: [],
 				}),
 				ctx.db.insert("files_nodes", {
 					workspaceId: String(workspace.workspaceId),
@@ -2306,6 +2308,7 @@ describe("access_control", () => {
 					createdBy: ownerId,
 					updatedBy: ownerId,
 					updatedAt: now,
+					shadowFileNodeIds: [],
 				}),
 			]);
 

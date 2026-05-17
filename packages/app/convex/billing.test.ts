@@ -1721,7 +1721,7 @@ describe("billing get_usage_snapshot", () => {
 			},
 		});
 
-		const syncedAt = Date.now();
+		const now = Date.now();
 		await t.run(async (ctx) => {
 			await ctx.db.insert("billing_usage_snapshots", {
 				userId,
@@ -1740,7 +1740,7 @@ describe("billing get_usage_snapshot", () => {
 					balance: 96,
 					amountDueCents: 250,
 				},
-				lastSyncedAt: syncedAt,
+				lastSyncedAt: now,
 			});
 		});
 
@@ -1760,7 +1760,7 @@ describe("billing get_usage_snapshot", () => {
 		expect(usageSnapshot.meter?.consumedUnits).toBe(4);
 		expect(usageSnapshot.meter?.amountDueCents).toBe(250);
 		expect(usageSnapshot.meter?.balance).toBe(96);
-		expect(usageSnapshot.lastSyncedAt).toBe(syncedAt);
+		expect(usageSnapshot.lastSyncedAt).toBe(now);
 	});
 });
 

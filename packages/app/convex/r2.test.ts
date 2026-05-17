@@ -74,7 +74,7 @@ async function fetch_r2_event(t: ReturnType<typeof test_convex>, body: ReturnTyp
 }
 
 describe("r2 event HTTP route", () => {
-	test("queues by bucket and key, then conversion finalizes the current source node", async () => {
+	test("queues by bucket and key, then conversion finalizes the current source file node", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -133,7 +133,7 @@ describe("r2 event HTTP route", () => {
 			sourceNodeId: upload._yay.nodeId,
 			r2Key: uploadDoc.r2Key,
 		});
-		expect(uploadedDocs.asset?.shadowNodeId).toBeUndefined();
+		expect(uploadedDocs.source?.shadowFileNodeIds).toEqual([]);
 
 		await t.action(internal.files_content.convert_upload_to_markdown, {
 			uploadId: upload._yay.uploadId,
@@ -143,17 +143,16 @@ describe("r2 event HTTP route", () => {
 			const nextUploadDoc = await ctx.db.get("files_uploads", upload._yay.uploadId);
 			const source = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			const asset = source?.assetId ? await ctx.db.get("files_r2_assets", source.assetId) : null;
-			const shadow = asset?.shadowNodeId ? await ctx.db.get("files_nodes", asset.shadowNodeId) : null;
+			const shadowId = source?.shadowFileNodeIds[0];
+			const shadow = shadowId ? await ctx.db.get("files_nodes", shadowId) : null;
 			return { nextUploadDoc, asset, source, shadow };
 		});
 
-		expect(docs.nextUploadDoc).toMatchObject({
-			status: "finalized",
-		});
 		expect(docs.nextUploadDoc?.conversionWorkId).toBeUndefined();
+		expect(docs.nextUploadDoc?.failureMessage).toBeUndefined();
 		expect(docs.source?.assetId).toBe(docs.asset?._id);
 		expect(docs.asset?._id).toBe(uploadedDocs.asset?._id);
-		expect(docs.asset?.shadowNodeId).toBe(docs.shadow?._id);
+		expect(docs.source?.shadowFileNodeIds).toContain(docs.shadow?._id);
 		expect(docs.asset?.sourceNodeId).toBe(upload._yay.nodeId);
 		expect(docs.source).toMatchObject({
 			parentId: folder._yay.nodeId,
@@ -162,6 +161,7 @@ describe("r2 event HTTP route", () => {
 		expect(docs.shadow).toMatchObject({
 			parentId: folder._yay.nodeId,
 			name: "event-renamed.pdf.shadow.md",
+			shadowSourceFileNodeId: upload._yay.nodeId,
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
@@ -219,12 +219,13 @@ describe("r2 event HTTP route", () => {
 		const assets = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_r2_assets")
-				.withIndex("by_workspace_project_sourceNode", (q) =>
-					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("sourceNodeId", upload._yay.nodeId),
+				.withIndex("by_workspace_project_r2Key", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("r2Key", uploadDoc.r2Key),
 				)
 				.collect(),
 		);
 		expect(assets).toHaveLength(1);
+		expect(assets[0]?.sourceNodeId).toBe(upload._yay.nodeId);
 	});
 
 	test("returns not found for events without a matching upload doc", async () => {

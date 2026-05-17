@@ -39,6 +39,7 @@ const createTreeItem = (args: {
 		name: args.name,
 		kind: args.kind,
 		version: 1,
+		shadowFileNodeIds: [],
 		archiveOperationId: args.archiveOperationId,
 		createdBy: "test-user" as Id<"users">,
 		updatedAt: 0,
