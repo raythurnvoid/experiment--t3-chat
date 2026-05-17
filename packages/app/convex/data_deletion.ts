@@ -41,12 +41,16 @@ async function db_purge_workspace_project_content(
 	}
 
 	const nodeIds: Array<Id<"files_nodes">> = [];
+	const filesNodePropertiesIds: Array<Id<"files_node_properties">> = [];
 	for await (const page of ctx.db
 		.query("files_nodes")
 		.withIndex("by_workspace_project_parent_name", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		nodeIds.push(page._id);
+		if (page.propertiesId) {
+			filesNodePropertiesIds.push(page.propertiesId);
+		}
 	}
 
 	const filesR2AssetIds: Array<Id<"files_r2_assets">> = [];
@@ -222,6 +226,8 @@ async function db_purge_workspace_project_content(
 	await Promise.all(filesR2AssetIds.map((id) => ctx.db.delete("files_r2_assets", id)));
 	// files_uploads
 	await Promise.all(filesUploadIds.map((id) => ctx.db.delete("files_uploads", id)));
+	// files_node_properties
+	await Promise.all(filesNodePropertiesIds.map((id) => ctx.db.delete("files_node_properties", id)));
 	// files
 	await Promise.all(nodeIds.map((id) => ctx.db.delete("files_nodes", id)));
 }
@@ -498,8 +504,12 @@ async function db_finalize_deleted_user(
 		affectedWorkspaceIds.add(assignment.workspaceId);
 	}
 
-	await Promise.all(pendingUpdateCleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)));
-	await Promise.all(lastSequenceSaved.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)));
+	await Promise.all(
+		pendingUpdateCleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)),
+	);
+	await Promise.all(
+		lastSequenceSaved.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
+	);
 	await Promise.all(pendingUpdates.map((doc) => ctx.db.delete("files_pending_updates", doc._id)));
 	await Promise.all(membershipsAll.map((doc) => ctx.db.delete("workspaces_projects_users", doc._id)));
 	await Promise.all(accessRoleAssignments.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)));

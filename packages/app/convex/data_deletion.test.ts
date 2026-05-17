@@ -12,7 +12,7 @@ import {
 } from "./workspaces.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { files_create_room_id } from "../shared/files.ts";
+import { files_create_room_id, files_get_utf8_byte_size, type files_ContentType } from "../shared/files.ts";
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -97,6 +97,17 @@ async function data_deletion_test_seed_page(
 		yjsSequence: 0,
 		updatedAt: Date.now(),
 		updatedBy: args.userId,
+	});
+	const propertiesId = await ctx.db.insert("files_node_properties", {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		fileNodeId: nodeId,
+		contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+		size: files_get_utf8_byte_size(`# ${args.tag}`),
+		updatedAt: Date.now(),
+	});
+	await ctx.db.patch("files_nodes", nodeId, {
+		propertiesId,
 	});
 
 	return {
@@ -1048,8 +1059,16 @@ describe("process_workspace_deletion_request", () => {
 		);
 
 		const after = await t.run(async (ctx) => {
-			const [workspaceDoc, defaultProjectDoc, extraProjectDoc, workspaceRequest, projectRequest, files, workspaceQuotaDocs] =
-				await Promise.all([
+			const [
+				workspaceDoc,
+				defaultProjectDoc,
+				extraProjectDoc,
+				workspaceRequest,
+				projectRequest,
+				files,
+				fileProperties,
+				workspaceQuotaDocs,
+			] = await Promise.all([
 					ctx.db.get("workspaces", workspace.workspaceId),
 					ctx.db.get("workspaces_projects", workspace.defaultProjectId),
 					ctx.db.get("workspaces_projects", extraProject.projectId),
@@ -1057,6 +1076,10 @@ describe("process_workspace_deletion_request", () => {
 					ctx.db.get("data_deletion_requests", projectRequestId),
 					ctx.db
 						.query("files_nodes")
+						.collect()
+						.then((rows) => rows.filter((row) => row.workspaceId === String(workspace.workspaceId))),
+					ctx.db
+						.query("files_node_properties")
 						.collect()
 						.then((rows) => rows.filter((row) => row.workspaceId === String(workspace.workspaceId))),
 					ctx.db
@@ -1072,6 +1095,7 @@ describe("process_workspace_deletion_request", () => {
 				workspaceRequest,
 				projectRequest,
 				files,
+				fileProperties,
 				workspaceQuotaDocs,
 			};
 		});
@@ -1082,6 +1106,7 @@ describe("process_workspace_deletion_request", () => {
 		expect(after.workspaceRequest).toBeNull();
 		expect(after.projectRequest).toBeNull();
 		expect(after.files).toHaveLength(0);
+		expect(after.fileProperties).toHaveLength(0);
 		expect(after.workspaceQuotaDocs).toHaveLength(0);
 	});
 });

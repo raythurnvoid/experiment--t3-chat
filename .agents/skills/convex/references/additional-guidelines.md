@@ -155,6 +155,39 @@ Convex already tags backend logs with function/runtime context, so do not prefix
 - If a Convex query truly must throw a typed app-level error, use `convex_error(...)`, not `throw new Error(...)`.
 - Reserve throws for cases where the handler truly needs exception semantics (for example rollback or an external boundary that cannot use `Result`), and prefer `convex_error(...)` over raw `Error` in Convex code.
 
+## Standard validation and expected error messages
+
+Use the same validation order and stable messages for new membership-scoped APIs and when touching old code. Keep messages concise and do not include resource names unless the product surface specifically needs that wording.
+
+Default validation order:
+
+- Resolve the current app user first.
+- Resolve the membership or owning scope next.
+- Normalize/load the requested resource.
+- Compare resource `workspaceId` and `projectId` against the membership row.
+- Run any permission checks.
+- Perform DB writes only after these fallible checks pass.
+
+Standard `_nay.message` values for Result-returning handlers:
+
+- `"Unauthenticated"`: Convex auth has no usable current user, or the identity cannot resolve to a `users` row.
+- `"Unauthorized"`: the user is authenticated, but the supplied membership/scope is not valid for that user.
+- `"Not found"`: the requested id is invalid, the requested row is missing, or the requested row is archived when active content is required.
+- `"Permission denied"`: the user and resource are valid, but an explicit permission check failed.
+
+If a validated requested resource points to missing server-owned data, treat that as a server bug instead of a user-facing not-found branch. Throw `should_never_happen(...)` with structured ids for missing linked rows such as file properties, asset rows, content rows, scheduled jobs, or other relationships that supported write paths must keep valid.
+
+When a missing workspace/default project is discovered while setting up authorization from an existing membership row, log structured context and return `"Unauthorized"`. This keeps the authorization boundary generic for callers while still surfacing the impossible state in Convex logs.
+
+Use domain-specific expected messages only when the caller or UI needs that exact distinction, for example rate-limit messages or user-facing business-rule messages.
+
+Boundary-specific return style:
+
+- Public queries for authenticated UI screens should usually `throw convex_error({ message: "Unauthenticated" })` when there is no current user, then return `null`, `[]`, or `false` for missing membership, missing resource, or denied access according to the query return shape.
+- Mutations and actions with recoverable failures should return `Result({ _nay: { message: ... } })`.
+- Internal queries may return `Result({ _nay: ... })` when they are serving an action/mutation that needs to preserve expected failure details across the Convex runtime boundary.
+- Internal queries should throw `should_never_happen(...)` for impossible linked-row corruption after the expected auth/resource checks succeed.
+
 ## Membership-scoped Convex handlers
 
 When a Convex handler is scoped by a membership row (for example `membershipId: v.id("workspaces_projects_users")`), keep the validation flow and error contract consistent:
@@ -164,22 +197,32 @@ When a Convex handler is scoped by a membership row (for example `membershipId: 
 - For query handlers, prefer `null` on missing access/resource unless the API explicitly uses `Result`.
 - In membership-scoped handlers, load `user` first, then load `membership`.
 - If `membership` is missing, return `_nay.message = "Unauthorized"` (or `null` for nullable queries).
+- If the membership exists but its workspace/default project data is missing during authorization setup, log structured ids and return `_nay.message = "Unauthorized"` unless the function boundary is already using exception semantics.
 - After membership succeeds, normalize/load the requested resource.
 - If the requested thread/message/resource id is invalid or the row does not exist, return `_nay.message = "Not found"` (or `null` for nullable queries).
 - After loading the resource, compare `workspaceId` and `projectId` directly against the membership row. Do not use a helper for these thread-scoped checks.
 - If the resource exists but belongs to a different workspace/project scope than the membership row, return `_nay.message = "Unauthorized"`.
+- After the requested resource is validated, throw `should_never_happen(...)` when a stored linked id points to missing data. Do not collapse broken internal relationships into `"Not found"`.
 - Keep DB writes after these fallible checks so `_nay` returns do not leave partial writes behind.
 
 Small style rule for these handlers:
 
 - Prefer inlining small repeated `Result({ _nay: ... })` returns and small `ctx.runMutation(..., { messages: [...] })` payloads instead of adding tiny local helper functions/variables only to avoid repetition.
 
+## Module-private naming
+
+Do not namespace module-private helpers, types, or constants with the module/file prefix.
+
+- Use prefixes for exported symbols so import sites can see where a symbol comes from.
+- Keep non-exported functions like `authorize_file_download`, not `r2_authorize_file_download`.
+- Keep non-exported types and constants unprefixed too, unless a very local ambiguity makes the shorter name misleading.
+
 ## Inline Convex validators by default
 
 When defining Convex `args`, `returns`, or small derived payload validators, keep the validator expression inline at the registration site.
 
 - Do not store validators in separate local variables just to shorten the function registration.
-- Only move a validator into a separate variable when the user explicitly asks for a reusable validator or when there is an existing production reuse point that genuinely needs the same validator.
+- Start with an inline validator and only move it into a separate symbol when there is a very strong reason, such as the user explicitly asking for a reusable validator or an existing production reuse point that genuinely needs the same validator.
 - Prefer the smallest local shape directly inside `args` / `returns`, even for nested `v.object(...)`, `v.array(...)`, `v.union(...)`, and `v.record(...)` payloads.
 
 ## Fail-fast concurrent Result loop (Result_all + Promise.all)
@@ -341,6 +384,8 @@ Use `v.object({...})` only when you intentionally return a **subset** or a **der
 
 When the user requests code that needs to fetch _many_ related documents (e.g. per item in a list), you must **avoid `await ctx.db...` inside a `for` loop**. Sequential awaits can be much slower.
 
+This guidance is for server-side code that is already processing a server-owned list inside one query, mutation, or action. Do not use it as a reason to create public batch/list APIs when the client already has stable document ids; in that case, prefer reusable single-id queries so the Convex client cache can share and invalidate each document-shaped result independently.
+
 ✅ Prefer concurrent fetches with `Promise.all`:
 
 ```ts
@@ -349,7 +394,7 @@ const results = await Promise.all(
 		const doc = await ctx.db
 			.query("someTable")
 			.withIndex("by_foreign_key", (q) => q.eq("foreignKey", item.foreignKey))
-			.unique();
+			.first();
 
 		if (!doc) return null;
 		return { item, doc };
@@ -383,12 +428,15 @@ if (!anagraphic) return null;
 
 If your code always resolves the relationship via stored ids (rather than querying by a foreign key), you often do **not** need a secondary index for that relationship.
 
+When the caller already has the stored related-document id, use `ctx.db.get`. When the caller only has a foreign key and would need to load a parent document solely to discover the related-document id, prefer a specific single-row index lookup on that foreign key instead. One indexed read is usually better than loading the parent just to do a second primary-key read.
+
 ## Performance: avoid `collect().find(...)` for single-row lookups
 
 Treat `.collect()` as a heavy read because it materializes the full result set in memory.
 
 - Do not replace a single-row index lookup with `collect().find(...)` when the schema can answer the question directly.
-- Prefer adding or using a more specific index, then finish with `first()` or `unique()`.
+- Prefer adding or using a more specific index, then finish with `first()`.
+- Avoid `unique()` on normal read paths because it throws when duplicate rows exist. Use it only when throwing on duplicates is the behavior you explicitly want.
 - Keep `collect` + JS filtering only for predicates Convex cannot express cleanly, especially missing optional-field logic.
 
 ## Query cache and composition
@@ -400,8 +448,9 @@ Convex query results are automatically cached by the client and kept consistent 
 - Public queries should usually return domain rows or small reusable domain shapes, not UI-specific view models that join unrelated data only for one screen.
 - Do not optimize primarily for "fewer client-side requests". A few extra client-side queries are acceptable, especially when they can run in parallel or hit warm cache.
 - It is often better to compose 2-3 smaller queries in the client than to create one larger query whose cache entry is more specific and gets invalidated or busted more often.
+- Once the client has stable ids, prefer repeated single-id public queries over public batch/list wrapper queries. Single-id query results are lower-level cache primitives that more screens can reuse, and unrelated writes to one item do not invalidate a larger joined list result.
+- Avoid public list or batch queries whose only job is joining known ids for one UI. Introduce a combined query only when the combined shape is a real shared domain API, when backend authorization requires resolving the data together, or when the client composition has a concrete measured performance problem.
 - Small waterfalls are acceptable when they preserve better cache reuse and query composability.
-- Only introduce a specialized combined query when the combined shape is a real shared domain API, when backend authorization requires resolving the data together, or when the composition would otherwise create a concrete performance problem.
 - When the UI only needs app-owned profile fields, prefer reusing a generic profile/anagraphic query over creating a "current X view model" query just to reshape the payload.
 
 Practical implication for this repo:

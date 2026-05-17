@@ -118,6 +118,8 @@ const app_convex_schema = defineSchema({
 		uploadId: v.optional(v.id("files_uploads")),
 		/** Finalized asset associated with an uploaded source file. */
 		assetId: v.optional(v.id("files_r2_assets")),
+		/** File metadata row used by the UI and download flows. */
+		propertiesId: v.optional(v.id("files_node_properties")),
 		/** Present only on generated shadow file nodes; points back to the visible shadow source file node. */
 		shadowSourceFileNodeId: v.optional(v.id("files_nodes")),
 		/** Canonical generated shadow file nodes owned by this shadow source file node. Empty for normal files and shadow file nodes. */
@@ -166,6 +168,16 @@ const app_convex_schema = defineSchema({
 			"shadowSourceFileNodeId",
 			"archiveOperationId",
 		]),
+
+	files_node_properties: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		fileNodeId: v.id("files_nodes"),
+		contentType: v.optional(v.string()),
+		size: v.optional(v.number()),
+		updatedAt: v.number(),
+	}).index("by_file_node", ["fileNodeId"]),
+
 	/**
 	 * Table to store markdown content for files.
 	 */
@@ -307,14 +319,11 @@ const app_convex_schema = defineSchema({
 		r2Bucket: v.string(),
 		r2Key: v.string(),
 		filename: v.string(),
-		contentType: v.optional(v.string()),
-		size: v.optional(v.number()),
 		sourceNodeId: v.id("files_nodes"),
 		createdBy: v.id("users"),
 		createdAt: v.number(),
 		updatedAt: v.number(),
-	})
-		.index("by_workspace_project_r2Key", ["workspaceId", "projectId", "r2Key"]),
+	}).index("by_workspace_project_r2Key", ["workspaceId", "projectId", "r2Key"]),
 
 	files_uploads: defineTable({
 		workspaceId: v.string(),
@@ -323,13 +332,10 @@ const app_convex_schema = defineSchema({
 		r2Bucket: v.string(),
 		r2Key: v.string(),
 		filename: v.string(),
-		contentType: v.optional(v.string()),
-		size: v.optional(v.number()),
 		conversionWorkId: v.optional(v.string()),
 		failureMessage: v.optional(v.string()),
 		sourceNodeId: v.id("files_nodes"),
-	})
-		.index("by_r2Bucket_r2Key", ["r2Bucket", "r2Key"]),
+	}).index("by_r2Bucket_r2Key", ["r2Bucket", "r2Key"]),
 	// #endregion files
 
 	// #region chat messages

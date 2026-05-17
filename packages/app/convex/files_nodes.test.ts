@@ -1,12 +1,20 @@
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
+import { encodeStateAsUpdate } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
 import { minimatch } from "minimatch";
 import { server_path_normalize } from "../server/server-utils.ts";
-import { files_FIRST_VERSION, files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
+import {
+	files_FIRST_VERSION,
+	files_MAX_UPLOADS_BYTES,
+	files_ROOT_ID,
+	files_get_utf8_byte_size,
+	files_u8_to_array_buffer,
+	files_yjs_doc_create_from_markdown,
+} from "../server/files.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
@@ -282,7 +290,7 @@ test("node-owned shadows are hidden from visible list queries and discoverable b
 	);
 
 	const [treeNodesList, filesList, indexedShadows] = await Promise.all([
-		asUser.query(api.files_nodes.get_tree_nodes_list, {
+		asUser.query(api.files_nodes.get_file_nodes_list, {
 			membershipId: db.membershipId,
 		}),
 		asUser.query(internal.files_nodes.list_files, {
@@ -589,6 +597,37 @@ test("create_markdown_node preserves caller-provided file names", async () => {
 	});
 });
 
+test("create_markdown_node stores Markdown file properties", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Test User",
+	});
+
+	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "properties.md",
+	});
+	if (createdFile._nay) {
+		throw new Error(createdFile._nay.message);
+	}
+
+	const properties = await t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		return node?.propertiesId ? await ctx.db.get("files_node_properties", node.propertiesId) : null;
+	});
+	expect(properties).toMatchObject({
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		fileNodeId: createdFile._yay.nodeId,
+		contentType: "text/markdown;charset=utf-8",
+		size: 0,
+	});
+});
+
 test("create_folder_node creates missing folders for nested folder paths", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -819,7 +858,8 @@ describe("files_nodes.create_upload_node", () => {
 		const docs = await t.run(async (ctx) => {
 			const uploadDoc = await ctx.db.get("files_uploads", upload._yay.uploadId);
 			const source = await ctx.db.get("files_nodes", upload._yay.nodeId);
-			return { uploadDoc, source };
+			const properties = source?.propertiesId ? await ctx.db.get("files_node_properties", source.propertiesId) : null;
+			return { properties, uploadDoc, source };
 		});
 		expect(docs.source).toMatchObject({
 			workspaceId: db.workspaceId,
@@ -836,9 +876,13 @@ describe("files_nodes.create_upload_node", () => {
 			createdBy: db.userId,
 			r2Bucket: "test-files-bucket",
 			filename: "annual-report.pdf",
+			sourceNodeId: upload._yay.nodeId,
+		});
+		expect(docs.uploadDoc).not.toHaveProperty("contentType");
+		expect(docs.uploadDoc).not.toHaveProperty("size");
+		expect(docs.properties).toMatchObject({
 			contentType: "application/pdf",
 			size: 1234,
-			sourceNodeId: upload._yay.nodeId,
 		});
 		expect(docs.uploadDoc).not.toHaveProperty("status");
 		expect(docs.uploadDoc?.r2Key).toBe(
@@ -885,9 +929,7 @@ describe("files_nodes.create_upload_node", () => {
 				.then((nodes) =>
 					nodes.filter(
 						(node) =>
-							node.workspaceId === db.workspaceId &&
-							node.projectId === db.projectId &&
-							(node.uploadId || node.assetId),
+							node.workspaceId === db.workspaceId && node.projectId === db.projectId && (node.uploadId || node.assetId),
 					),
 				);
 			return { uploads, uploadedSources };
@@ -921,9 +963,7 @@ describe("files_nodes.create_upload_node", () => {
 				.then((nodes) =>
 					nodes.filter(
 						(node) =>
-							node.workspaceId === db.workspaceId &&
-							node.projectId === db.projectId &&
-							(node.uploadId || node.assetId),
+							node.workspaceId === db.workspaceId && node.projectId === db.projectId && (node.uploadId || node.assetId),
 					),
 				),
 		);
@@ -973,8 +1013,6 @@ describe("files_nodes.create_upload_node", () => {
 				r2Bucket: oldUploadDoc.r2Bucket,
 				r2Key: oldUploadDoc.r2Key,
 				filename: oldUploadDoc.filename,
-				contentType: oldUploadDoc.contentType,
-				size: oldUploadDoc.size,
 				sourceNodeId: oldUpload._yay.nodeId,
 				createdBy: db.userId,
 				createdAt: Date.now(),
@@ -1154,12 +1192,12 @@ test("rename_node preserves caller-provided nested file names", async () => {
 			updatedBy: db.userId,
 			parentId: db.files.file_root_1._id,
 			name: "yo.md",
-				kind: "file",
-				path: `/${db.files.file_root_1.name}/yo.md`,
-				version: files_FIRST_VERSION,
-				archiveOperationId: undefined,
-				shadowFileNodeIds: [],
-			}),
+			kind: "file",
+			path: `/${db.files.file_root_1.name}/yo.md`,
+			version: files_FIRST_VERSION,
+			archiveOperationId: undefined,
+			shadowFileNodeIds: [],
+		}),
 	);
 
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
@@ -1939,6 +1977,68 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 	expect(blocked._nay?.message).toBe("Rate limit exceeded");
 });
 
+test("update_snapshots stores Markdown properties from the saved UTF-8 snapshot", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Snapshot Properties User",
+		email: "snapshot-properties-user@example.com",
+	});
+
+	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "snapshot-properties.md",
+	});
+	if (createdFile._nay) {
+		throw new Error(createdFile._nay.message);
+	}
+
+	const markdown = "# Café\n\nEmoji 🙂";
+	const yjsDoc = files_yjs_doc_create_from_markdown({ markdown });
+	if ("_nay" in yjsDoc) {
+		throw new Error(yjsDoc._nay.message);
+	}
+
+	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		membershipId: db.membershipId,
+		nodeId: createdFile._yay.nodeId,
+		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
+		sessionId: "snapshot-properties-session",
+	});
+	yjsDoc.destroy();
+	if (pushResult._nay) {
+		throw new Error(pushResult._nay.message);
+	}
+
+	const snapshotResult = await t.mutation(internal.files_nodes.update_snapshots, {
+		userId: db.userId,
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		nodeId: createdFile._yay.nodeId,
+	});
+	if (snapshotResult._nay) {
+		throw new Error(snapshotResult._nay.message);
+	}
+
+	const saved = await t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		const markdownContent = node?.markdownContentId
+			? await ctx.db.get("files_markdown_content", node.markdownContentId)
+			: null;
+		const properties = node?.propertiesId ? await ctx.db.get("files_node_properties", node.propertiesId) : null;
+		return { markdownContent, properties };
+	});
+	expect(saved.markdownContent?.content).toBe(markdown);
+	expect(saved.properties).toMatchObject({
+		contentType: "text/markdown;charset=utf-8",
+		size: files_get_utf8_byte_size(markdown),
+	});
+});
+
 test("yjs_push_update enforces per-user rate limit and leaves DB untouched on rejection", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -2086,6 +2186,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 		throw new Error("Expected file creation to succeed before restore credit test");
 	}
 
+	const restoredMarkdown = "# restored content\n";
 	const snapshotId = await t.run(async (ctx) => {
 		const usageSnapshot = await ctx.db
 			.query("billing_usage_snapshots")
@@ -2113,7 +2214,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 			projectId: db.projectId,
 			snapshotId: snapshotId,
 			nodeId: createdFile._yay.nodeId,
-			content: "# restored content\n",
+			content: restoredMarkdown,
 		});
 
 		return snapshotId;
@@ -2219,6 +2320,7 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		throw new Error("Expected file creation to succeed before restore billing test");
 	}
 
+	const restoredMarkdown = "# restored content\n";
 	const snapshotId = await t.run(async (ctx) => {
 		const snapshotId = await ctx.db.insert("files_snapshots", {
 			workspaceId: db.workspaceId,
@@ -2232,7 +2334,7 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 			projectId: db.projectId,
 			snapshotId: snapshotId,
 			nodeId: createdFile._yay.nodeId,
-			content: "# restored content\n",
+			content: restoredMarkdown,
 		});
 
 		return snapshotId;
@@ -2249,15 +2351,23 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		throw new Error(`Expected restore to succeed, got: ${restoreResult._nay.message}`);
 	}
 
-	const yjsUpdates = await t.run((ctx) =>
-		ctx.db
-			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_file_sequence", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
-			)
-			.collect(),
-	);
+	const { properties, yjsUpdates } = await t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		return {
+			properties: node?.propertiesId ? await ctx.db.get("files_node_properties", node.propertiesId) : null,
+			yjsUpdates: await ctx.db
+				.query("files_yjs_updates")
+				.withIndex("by_workspace_project_file_sequence", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+				)
+				.collect(),
+		};
+	});
 	expect(yjsUpdates).toHaveLength(1);
+	expect(properties).toMatchObject({
+		contentType: "text/markdown;charset=utf-8",
+		size: files_get_utf8_byte_size(restoredMarkdown),
+	});
 	expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
 		events: [
 			expect.objectContaining({

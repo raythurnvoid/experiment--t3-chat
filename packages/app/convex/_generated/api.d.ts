@@ -15,6 +15,7 @@ import type * as chat_messages from "../chat_messages.js";
 import type * as crons from "../crons.js";
 import type * as data_deletion from "../data_deletion.js";
 import type * as files_content from "../files_content.js";
+import type * as files_node_properties from "../files_node_properties.js";
 import type * as files_nodes from "../files_nodes.js";
 import type * as files_pending_updates from "../files_pending_updates.js";
 import type * as http from "../http.js";
@@ -41,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   data_deletion: typeof data_deletion;
   files_content: typeof files_content;
+  files_node_properties: typeof files_node_properties;
   files_nodes: typeof files_nodes;
   files_pending_updates: typeof files_pending_updates;
   http: typeof http;

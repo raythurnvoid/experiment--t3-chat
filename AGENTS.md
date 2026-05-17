@@ -2,6 +2,7 @@
 
 - Package manager: this repository uses `pnpm`; do not use `npm`.
 - Dev server: do not run `pnpm run dev`; let the user run it manually.
+- Full app lint: run `pnpm --dir packages/app run lint`. The root package does not have a `lint` script, and `pnpm --dir packages/app lint:tsc` is only the TypeScript check, not the full ESLint/React Compiler lint.
 
 ## Modal CLI
 
@@ -74,7 +75,7 @@ The Convex backend handles:
 
 Backend handlers that require a current app user should return or throw `Unauthenticated` when Convex auth has no usable identity or when the resolved id has no row in the `users` table. Keep detailed examples and exceptions in the auth system skill: [.agents/skills/auth-system/SKILL.md](.agents/skills/auth-system/SKILL.md).
 
-For recoverable auth and permission failures, Convex queries should throw, while actions and mutations should return a `_nay` Result.
+For recoverable auth and permission failures, follow the Convex skill's handler-boundary rules: public queries usually throw only for missing current-user auth and otherwise return their nullable/empty shape, while actions and mutations should return a `_nay` Result.
 
 ## Frontend Architecture
 

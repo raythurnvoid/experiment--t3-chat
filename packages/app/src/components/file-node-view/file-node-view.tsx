@@ -51,76 +51,87 @@ import {
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFn, useRenderPromise } from "@/hooks/utils-hooks.ts";
-import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import {
 	files_ROOT_ID,
 	files_clear_node_path_cached_validation_messages,
-	files_create_tree_items_list_from_nodes,
+	files_download_blob,
 	files_find_file_stem_end_index,
 	files_format_size,
 	files_get_default_node_name,
 	files_get_node_path_validation,
 	files_get_normalized_node_path_segments,
-	files_is_node,
 	type files_EditorView,
-	type files_TreeItem,
 } from "@/lib/files.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { cn } from "@/lib/utils.ts";
 import { Link } from "@tanstack/react-router";
-import { useMutation, useQuery } from "convex/react";
-import { Archive, BookOpen, EllipsisVertical, FilePlus, FileText, Folder, FolderPlus, Home } from "lucide-react";
-import React, { memo, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQueries, useQuery } from "convex/react";
+import {
+	Archive,
+	BookOpen,
+	Download,
+	EllipsisVertical,
+	FilePlus,
+	FileText,
+	Folder,
+	FolderPlus,
+	Home,
+} from "lucide-react";
+import React, { memo, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { toast } from "sonner";
 import { FilesSidebar } from "./files-sidebar.tsx";
 
-function get_breadcrumb_path(treeItemsList: files_TreeItem[] | undefined, nodeId: string | null | undefined) {
-	if (!treeItemsList || !nodeId || nodeId === files_ROOT_ID) {
+function get_breadcrumb_path(
+	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined,
+	nodeId: string | null | undefined,
+) {
+	if (!fileNodesList || !nodeId || nodeId === files_ROOT_ID) {
 		return [];
 	}
 
 	const path: app_convex_Doc<"files_nodes">[] = [];
 	let currentId = nodeId;
-	const itemsMap = new Map<string, files_TreeItem>();
+	const nodesMap = new Map<string, app_convex_Doc<"files_nodes">>();
 
-	for (const item of treeItemsList) {
-		itemsMap.set(item._id, item);
-		if (item._id === nodeId) {
-			currentId = item._id;
+	for (const node of fileNodesList) {
+		nodesMap.set(node._id, node);
+		if (node._id === nodeId) {
+			currentId = node._id;
 		}
 	}
 
 	while (currentId !== files_ROOT_ID) {
-		const item = itemsMap.get(currentId);
-		if (!item || !files_is_node(item)) {
+		const node = nodesMap.get(currentId);
+		if (!node) {
 			break;
 		}
 
-		path.unshift(item);
-		currentId = item.parentId;
+		path.unshift(node);
+		currentId = node.parentId;
 	}
 
 	return path;
 }
 
 function get_folder_readme_node_id(
-	treeItemsList: files_TreeItem[] | undefined,
+	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined,
 	folderItemId: string | null | undefined,
 ): app_convex_Id<"files_nodes"> | null {
-	const readmeItem = treeItemsList?.find((item): item is app_convex_Doc<"files_nodes"> => {
+	const readmeNode = fileNodesList?.find((node) => {
 		return (
-			files_is_node(item) &&
-			item.parentId === folderItemId &&
-			item.kind === "file" &&
-			item.archiveOperationId === undefined &&
-			item.name.toLowerCase() === "readme.md"
+			node.parentId === folderItemId &&
+			node.kind === "file" &&
+			node.archiveOperationId === undefined &&
+			node.name.toLowerCase() === "readme.md"
 		);
 	});
 
-	return readmeItem?._id ?? null;
+	return readmeNode?._id ?? null;
 }
 
 const FILE_NODE_VIEW_TOOLBAR_EDITOR_ACTIONS_ID = "app_file_node_view_toolbar_editor_actions" satisfies AppElementId;
@@ -139,7 +150,7 @@ type FileNodeViewHeader_ClassNames =
 
 type FileNodeViewHeader_Props = {
 	selectedNodeId: string | null | undefined;
-	treeItemsList: files_TreeItem[] | undefined;
+	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined;
 	editorMode: FileEditor_Mode;
 	filesSidebarOpen: boolean;
 	showFileControls: boolean;
@@ -150,7 +161,7 @@ type FileNodeViewHeader_Props = {
 const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewHeader_Props) {
 	const {
 		selectedNodeId,
-		treeItemsList,
+		fileNodesList,
 		editorMode,
 		filesSidebarOpen,
 		showFileControls,
@@ -160,7 +171,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 
 	const { workspaceName, projectName } = AppTenantProvider.useContext();
 
-	const breadcrumbPath = get_breadcrumb_path(treeItemsList, selectedNodeId);
+	const breadcrumbPath = get_breadcrumb_path(fileNodesList, selectedNodeId);
 
 	const handleEditorModeChange = useFn((mode: string) => {
 		onEditorModeChange(mode as FileEditor_Mode);
@@ -318,7 +329,7 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 type FileNodeViewFile_Props = {
 	node: app_convex_Doc<"files_nodes">;
 	editorNodeId?: app_convex_Id<"files_nodes">;
-	treeItemsList: FileNodeViewContent_Props["treeItemsList"];
+	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
@@ -335,7 +346,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 	const {
 		node,
 		editorNodeId,
-		treeItemsList,
+		fileNodesList,
 		pendingUpdateId,
 		serverSequence,
 		editorMode,
@@ -352,7 +363,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		<>
 			<FileNodeViewHeaderPortal
 				selectedNodeId={node._id}
-				treeItemsList={treeItemsList}
+				fileNodesList={fileNodesList}
 				editorMode={editorMode}
 				filesSidebarOpen={filesSidebarOpen}
 				showFileControls={true}
@@ -390,15 +401,16 @@ type FileNodeViewStoredFile_ClassNames =
 
 type FileNodeViewStoredFile_Props = {
 	node: app_convex_Doc<"files_nodes">;
-	treeItemsList: FileNodeViewContent_Props["treeItemsList"];
+	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	editorMode: FileEditor_Mode;
 	filesSidebarOpen: boolean;
 	onlineUsers: FileEditor_OnlineUser[];
 };
 
 const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileNodeViewStoredFile_Props) {
-	const { node, treeItemsList, editorMode, filesSidebarOpen, onlineUsers } = props;
+	const { node, fileNodesList, editorMode, filesSidebarOpen, onlineUsers } = props;
 	const { membershipId } = AppTenantProvider.useContext();
+
 	const asset = useQuery(app_convex_api.r2.get_asset, {
 		membershipId,
 		nodeId: node._id,
@@ -407,19 +419,20 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 		membershipId,
 		nodeId: node._id,
 	});
-	const activeAsset = asset ?? null;
-	const assetNeedsUploadStatus = activeAsset !== null && node.shadowFileNodeIds.length === 0;
+	const properties = useQuery(app_convex_api.files_node_properties.get_by_file_node_for_membership, {
+		membershipId,
+		fileNodeId: node._id,
+	});
+	const assetNeedsUploadStatus = Boolean(asset) && node.shadowFileNodeIds.length === 0;
 	const storedFileMetadataIsLoading =
-		asset === undefined || ((asset === null || assetNeedsUploadStatus) && upload === undefined);
+		asset === undefined ||
+		properties === undefined ||
+		((asset === null || assetNeedsUploadStatus) && upload === undefined);
 	const activeUpload = asset === null || assetNeedsUploadStatus ? (upload ?? null) : null;
 	const activeUploadStatusText =
 		activeUpload && node.shadowFileNodeIds.length === 0
 			? (activeUpload.failureMessage ??
-				(activeUpload.conversionWorkId
-					? "Processing"
-					: activeAsset
-						? "Uploaded. Processing"
-						: "Waiting for upload"))
+				(activeUpload.conversionWorkId ? "Processing" : asset ? "Uploaded. Processing" : "Waiting for upload"))
 			: null;
 	const title = node.name;
 	const subtitle = ((/* iife */) => {
@@ -430,15 +443,15 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 			return activeUploadStatusText;
 		}
 
-		return activeAsset?.contentType ?? "Unknown file type";
+		return properties?.contentType ?? "Unknown file type";
 	})();
-	const storedFileSize = activeAsset?.size ?? activeUpload?.size;
+	const storedFileSize = properties?.size;
 
 	return (
 		<>
 			<FileNodeViewHeaderPortal
 				selectedNodeId={node._id}
-				treeItemsList={treeItemsList}
+				fileNodesList={fileNodesList}
 				editorMode={editorMode}
 				filesSidebarOpen={filesSidebarOpen}
 				showFileControls={false}
@@ -483,7 +496,7 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 							Content type
 						</dt>
 						<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
-							{activeAsset?.contentType ?? activeUpload?.contentType ?? "Unknown"}
+							{properties?.contentType ?? "Unknown"}
 						</dd>
 					</div>
 					<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
@@ -508,7 +521,7 @@ type FileNodeViewFolder_ClassNames = "FileNodeViewFolder" | "FileNodeViewFolder-
 
 type FileNodeViewFolder_Props = {
 	folderItemId: app_convex_Doc<"files_nodes">["parentId"];
-	treeItemsList: FileNodeViewContent_Props["treeItemsList"];
+	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
@@ -522,7 +535,7 @@ type FileNodeViewFolder_Props = {
 const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewFolder_Props) {
 	const {
 		folderItemId,
-		treeItemsList,
+		fileNodesList,
 		pendingUpdateId,
 		serverSequence,
 		editorMode,
@@ -541,10 +554,9 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const [isCreatingReadme, setIsCreatingReadme] = useState(false);
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState(() => new Set<string>());
 
-	const childItems = (treeItemsList ?? [])
+	const childItems = (fileNodesList ?? [])
 		.filter(
-			(item): item is app_convex_Doc<"files_nodes"> =>
-				files_is_node(item) && item.parentId === folderItemId && item.archiveOperationId === undefined,
+			(item) => item.parentId === folderItemId && item.archiveOperationId === undefined,
 		)
 		.sort((a, b) => {
 			if (a.kind !== b.kind) {
@@ -557,7 +569,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		? childItems
 		: childItems.slice(0, FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT);
 	const hiddenChildItemsCount = childItems.length - visibleChildItems.length;
-	const readmeNodeId = get_folder_readme_node_id(treeItemsList, folderItemId);
+	const readmeNodeId = get_folder_readme_node_id(fileNodesList, folderItemId);
 
 	const handleShowMoreClick = useFn(() => {
 		setShowAllItems(true);
@@ -637,7 +649,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			/>
 			<FileNodeViewFolderReadme
 				readmeNodeId={readmeNodeId}
-				treeItemsList={treeItemsList}
+				fileNodesList={fileNodesList}
 				isCreatingReadme={isCreatingReadme}
 				onCreateReadmeClick={handleCreateReadmeClick}
 			/>
@@ -689,7 +701,7 @@ type FileNodeViewToolbarFolderActions_ClassNames =
 
 type FileNodeViewToolbarFolderActions_Props = {
 	disabled: boolean;
-	onCreateNode: (kind: files_TreeItem["kind"]) => void;
+	onCreateNode: (kind: app_convex_Doc<"files_nodes">["kind"]) => void;
 };
 
 const FileNodeViewToolbarFolderActions = memo(function FileNodeViewToolbarFolderActions(
@@ -737,15 +749,215 @@ const FileNodeViewToolbarFolderActions = memo(function FileNodeViewToolbarFolder
 	);
 });
 
+// #endregion folder actions
+
+// #region file download action
+type FileNodeViewToolbarFileDownloadAction_ClassNames =
+	| "FileNodeViewToolbarFileDownloadAction"
+	| "FileNodeViewToolbarFileDownloadAction-button"
+	| "FileNodeViewToolbarFileDownloadAction-button-icon";
+
+type FileNodeViewToolbarFileDownloadAction_Props = {
+	node: app_convex_Doc<"files_nodes"> | null | undefined;
+};
+
+const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarFileDownloadAction(
+	props: FileNodeViewToolbarFileDownloadAction_Props,
+) {
+	const { node } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+
+	const downloadCandidates: { fileNodeId: app_convex_Id<"files_nodes">; label: string }[] = [];
+	if (node?.kind === "file") {
+		if (node.markdownContentId) {
+			downloadCandidates.push({
+				fileNodeId: node._id,
+				label: node.name,
+			});
+		} else {
+			if (node.assetId) {
+				downloadCandidates.push({
+					fileNodeId: node._id,
+					label: node.name,
+				});
+			}
+
+			for (const shadowFileNodeId of node.shadowFileNodeIds) {
+				downloadCandidates.push({
+					fileNodeId: shadowFileNodeId,
+					label: node.name,
+				});
+			}
+		}
+	}
+
+	const downloadCandidatePropertiesQueries = Object.fromEntries(
+		downloadCandidates.map((downloadCandidate) => [
+			downloadCandidate.fileNodeId,
+			{
+				query: app_convex_api.files_node_properties.get_by_file_node_for_membership,
+				args: {
+					membershipId,
+					fileNodeId: downloadCandidate.fileNodeId,
+				},
+			},
+		]),
+	);
+	const downloadCandidateProperties = useQueries(downloadCandidatePropertiesQueries);
+	const downloadCandidatePropertiesAreLoading = downloadCandidates.some((downloadCandidate) => {
+		return downloadCandidateProperties[downloadCandidate.fileNodeId] === undefined;
+	});
+
+	const [downloadingFileNodeId, setDownloadingFileNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
+	const isDownloading = downloadingFileNodeId !== null;
+
+	const handleDownload = useFn((fileNodeId: app_convex_Id<"files_nodes">) => {
+		if (!node || isDownloading) {
+			return;
+		}
+
+		setDownloadingFileNodeId(fileNodeId);
+		void app_convex
+			.action(app_convex_api.r2.prepare_file_download_target, {
+				membershipId,
+				fileNodeId,
+			})
+			.then(async (preparedTarget) => {
+				if (preparedTarget._nay) {
+					console.error("[FileNodeViewToolbarFileDownloadAction.handleDownload] Failed to prepare download", {
+						result: preparedTarget,
+						fileNodeId,
+					});
+					toast.error(preparedTarget._nay.message ?? "Failed to prepare download");
+					return;
+				}
+
+				if (preparedTarget._yay.kind === "text") {
+					files_download_blob({
+						blob: new Blob([preparedTarget._yay.content], { type: preparedTarget._yay.contentType }),
+						filename: preparedTarget._yay.filename,
+					});
+					return;
+				}
+
+				const response = await fetch(preparedTarget._yay.url);
+				if (!response.ok) {
+					console.error("[FileNodeViewToolbarFileDownloadAction.handleDownload] Failed to fetch download", {
+						status: response.status,
+						fileNodeId,
+					});
+					toast.error("Failed to download file");
+					return;
+				}
+
+				const responseBlob = await response.blob();
+				files_download_blob({
+					blob: preparedTarget._yay.contentType
+						? responseBlob.slice(0, responseBlob.size, preparedTarget._yay.contentType)
+						: responseBlob,
+					filename: preparedTarget._yay.filename,
+				});
+			})
+			.catch((error) => {
+				console.error("[FileNodeViewToolbarFileDownloadAction.handleDownload] Error downloading file", {
+					error,
+					fileNodeId,
+				});
+				toast.error(error instanceof Error ? error.message : "Failed to download file");
+			})
+			.finally(() => {
+				setDownloadingFileNodeId(null);
+			});
+	});
+
+	if (!node || node.kind !== "file" || downloadCandidates.length === 0 || downloadCandidatePropertiesAreLoading) {
+		return null;
+	}
+
+	const singleCandidate = downloadCandidates[0];
+
+	return (
+		<div
+			role="group"
+			aria-label="Download selected file"
+			className={"FileNodeViewToolbarFileDownloadAction" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames}
+		>
+			{downloadCandidates.length === 1 && singleCandidate ? (
+				<MyButton
+					className={
+						"FileNodeViewToolbarFileDownloadAction-button" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames
+					}
+					variant="ghost"
+					disabled={isDownloading}
+					aria-busy={downloadingFileNodeId === singleCandidate.fileNodeId}
+					onClick={() => handleDownload(singleCandidate.fileNodeId)}
+				>
+					<MyButtonIcon
+						className={
+							"FileNodeViewToolbarFileDownloadAction-button-icon" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames
+						}
+					>
+						<Download />
+					</MyButtonIcon>
+					{singleCandidate.label}
+				</MyButton>
+			) : (
+				<MyMenu>
+					<MyMenuTrigger>
+						<MyButton
+							className={
+								"FileNodeViewToolbarFileDownloadAction-button" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames
+							}
+							variant="ghost"
+							disabled={isDownloading}
+							aria-busy={isDownloading}
+						>
+							<MyButtonIcon
+								className={
+									"FileNodeViewToolbarFileDownloadAction-button-icon" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames
+								}
+							>
+								<Download />
+							</MyButtonIcon>
+							Download
+						</MyButton>
+					</MyMenuTrigger>
+					<MyMenuPopover placement="bottom-start">
+						<MyMenuPopoverContent>
+							{downloadCandidates.map((downloadCandidate) => (
+								<MyMenuItem
+									key={downloadCandidate.fileNodeId}
+									disabled={isDownloading}
+									onClick={() => handleDownload(downloadCandidate.fileNodeId)}
+								>
+									<MyMenuItemContent>
+										<MyMenuItemContentIcon>
+											<Download />
+										</MyMenuItemContentIcon>
+										<MyMenuItemContentPrimary>{downloadCandidate.label}</MyMenuItemContentPrimary>
+									</MyMenuItemContent>
+								</MyMenuItem>
+							))}
+						</MyMenuPopoverContent>
+					</MyMenuPopover>
+				</MyMenu>
+			)}
+		</div>
+	);
+});
+
+// #endregion file download action
+
 type FileNodeViewToolbar_ClassNames = "FileNodeViewToolbar" | "FileNodeViewToolbar-editor-actions";
 
 type FileNodeViewToolbar_Props = {
 	editorActionsRef: React.Ref<HTMLDivElement>;
 	folderActionsSlot: React.ReactNode;
+	fileActionsSlot: React.ReactNode;
 };
 
 const FileNodeViewToolbar = memo(function FileNodeViewToolbar(props: FileNodeViewToolbar_Props) {
-	const { editorActionsRef, folderActionsSlot } = props;
+	const { editorActionsRef, folderActionsSlot, fileActionsSlot } = props;
 
 	return (
 		<div
@@ -754,6 +966,7 @@ const FileNodeViewToolbar = memo(function FileNodeViewToolbar(props: FileNodeVie
 			className={"FileNodeViewToolbar" satisfies FileNodeViewToolbar_ClassNames}
 		>
 			{folderActionsSlot}
+			{fileActionsSlot}
 			<div
 				id={FILE_NODE_VIEW_TOOLBAR_EDITOR_ACTIONS_ID}
 				ref={editorActionsRef}
@@ -772,25 +985,25 @@ type FileNodeViewFolderCreateNodeModal_ClassNames =
 	| "FileNodeViewFolderCreateNodeModal-validation";
 
 type FileNodeViewFolderCreateNodeModal_Ref = {
-	open: (kind: files_TreeItem["kind"]) => void;
+	open: (kind: app_convex_Doc<"files_nodes">["kind"]) => void;
 };
 
 type FileNodeViewFolderCreateNodeModal_Props = {
 	ref: React.Ref<FileNodeViewFolderCreateNodeModal_Ref>;
 	membershipId: app_convex_Id<"workspaces_projects_users">;
 	folderItemId: FileNodeViewFolder_Props["folderItemId"];
-	treeItemsList: FileNodeViewFolder_Props["treeItemsList"];
+	fileNodesList: FileNodeViewFolder_Props["fileNodesList"];
 	siblingNames: Iterable<string>;
 	isCreatingNode: boolean;
-	onCreateNode: (args: { kind: files_TreeItem["kind"]; name: string }) => Promise<string | null>;
+	onCreateNode: (args: { kind: app_convex_Doc<"files_nodes">["kind"]; name: string }) => Promise<string | null>;
 };
 
 const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreateNodeModal(
 	props: FileNodeViewFolderCreateNodeModal_Props,
 ) {
-	const { ref, membershipId, folderItemId, treeItemsList, siblingNames, isCreatingNode, onCreateNode } = props;
+	const { ref, membershipId, folderItemId, fileNodesList, siblingNames, isCreatingNode, onCreateNode } = props;
 
-	const [kind, setKind] = useState<files_TreeItem["kind"] | null>(null);
+	const [kind, setKind] = useState<app_convex_Doc<"files_nodes">["kind"] | null>(null);
 	const [name, setName] = useState("");
 	const [error, setError] = useState<string | null>(null);
 	const inputRef = useRef<HTMLInputElement | null>(null);
@@ -800,7 +1013,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 	const nodePathValidation = files_get_node_path_validation({
 		scopeId: membershipId,
 		parentId: folderItemId,
-		treeItemsList,
+		fileNodesList,
 		kind,
 		nameOrPath: name,
 	});
@@ -990,13 +1203,13 @@ type FileNodeViewToolbarCreateNodeActions_Props = {
 	children: (folderActionsSlot: FileNodeViewToolbar_Props["folderActionsSlot"]) => React.ReactNode;
 	folderItemId: FileNodeViewFolder_Props["folderItemId"] | null;
 	membershipId: app_convex_Id<"workspaces_projects_users">;
-	treeItemsList: FileNodeViewFolder_Props["treeItemsList"];
+	fileNodesList: FileNodeViewFolder_Props["fileNodesList"];
 };
 
 const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCreateNodeActions(
 	props: FileNodeViewToolbarCreateNodeActions_Props,
 ) {
-	const { children, folderItemId, membershipId, treeItemsList } = props;
+	const { children, folderItemId, membershipId, fileNodesList } = props;
 
 	const createFolderNode = useMutation(app_convex_api.files_nodes.create_folder_node);
 	const createMarkdownNode = useMutation(app_convex_api.files_nodes.create_markdown_node);
@@ -1004,16 +1217,15 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 	const [isCreatingNode, setIsCreatingNode] = useState(false);
 
 	const siblingNames =
-		folderItemId && treeItemsList
-			? treeItemsList
+		folderItemId && fileNodesList
+			? fileNodesList
 					.filter(
-						(item): item is app_convex_Doc<"files_nodes"> =>
-							files_is_node(item) && item.parentId === folderItemId && item.archiveOperationId === undefined,
+						(item) => item.parentId === folderItemId && item.archiveOperationId === undefined,
 					)
 					.map((child) => child.name)
 			: [];
 
-	const handleCreateNodeModalOpen = useFn((kind: files_TreeItem["kind"]) => {
+	const handleCreateNodeModalOpen = useFn((kind: app_convex_Doc<"files_nodes">["kind"]) => {
 		if (!folderItemId) {
 			return;
 		}
@@ -1021,7 +1233,7 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 		createNodeModalRef.current?.open(kind);
 	});
 
-	const handleCreateNodeSubmit = useFn((args: { kind: files_TreeItem["kind"]; name: string }) => {
+	const handleCreateNodeSubmit = useFn((args: { kind: app_convex_Doc<"files_nodes">["kind"]; name: string }) => {
 		const { kind, name } = args;
 		if (!folderItemId) {
 			return Promise.resolve("Select a folder before creating a node.");
@@ -1078,7 +1290,7 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 					ref={createNodeModalRef}
 					membershipId={membershipId}
 					folderItemId={folderItemId}
-					treeItemsList={treeItemsList}
+					fileNodesList={fileNodesList}
 					siblingNames={siblingNames}
 					isCreatingNode={isCreatingNode}
 					onCreateNode={handleCreateNodeSubmit}
@@ -1278,13 +1490,13 @@ type FileNodeViewFolderReadme_ClassNames =
 
 type FileNodeViewFolderReadme_Props = {
 	readmeNodeId: app_convex_Id<"files_nodes"> | null;
-	treeItemsList: FileNodeViewContent_Props["treeItemsList"];
+	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	isCreatingReadme: boolean;
 	onCreateReadmeClick: () => void;
 };
 
 const FileNodeViewFolderReadme = memo(function FileNodeViewFolderReadme(props: FileNodeViewFolderReadme_Props) {
-	const { readmeNodeId, treeItemsList, isCreatingReadme, onCreateReadmeClick } = props;
+	const { readmeNodeId, fileNodesList, isCreatingReadme, onCreateReadmeClick } = props;
 
 	return (
 		<section className={"FileNodeViewFolderReadme" satisfies FileNodeViewFolderReadme_ClassNames}>
@@ -1295,7 +1507,7 @@ const FileNodeViewFolderReadme = memo(function FileNodeViewFolderReadme(props: F
 					</MyIcon>
 					<h2 className={"FileNodeViewFolderReadme-title" satisfies FileNodeViewFolderReadme_ClassNames}>README.md</h2>
 				</div>
-			) : treeItemsList === undefined ? (
+			) : fileNodesList === undefined ? (
 				<div className={"FileNodeView-loading-text" satisfies FileNodeView_ClassNames}>Loading...</div>
 			) : (
 				<div className={"FileNodeViewFolderReadme-empty" satisfies FileNodeViewFolderReadme_ClassNames}>
@@ -1383,7 +1595,7 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 type FileNodeViewContent_Props = {
 	selectedNodeId: string | null | undefined;
 	node: app_convex_Doc<"files_nodes"> | null | undefined;
-	treeItemsList: files_TreeItem[] | undefined;
+	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
@@ -1400,7 +1612,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 	const {
 		selectedNodeId,
 		node,
-		treeItemsList,
+		fileNodesList,
 		pendingUpdateId,
 		serverSequence,
 		editorMode,
@@ -1418,7 +1630,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 			<>
 				<FileNodeViewHeaderPortal
 					selectedNodeId={files_ROOT_ID}
-					treeItemsList={treeItemsList}
+					fileNodesList={fileNodesList}
 					editorMode={editorMode}
 					filesSidebarOpen={filesSidebarOpen}
 					showFileControls={true}
@@ -1427,7 +1639,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 				/>
 				<FileNodeViewFolder
 					folderItemId={files_ROOT_ID}
-					treeItemsList={treeItemsList}
+					fileNodesList={fileNodesList}
 					pendingUpdateId={pendingUpdateId}
 					serverSequence={serverSequence}
 					editorMode={editorMode}
@@ -1450,7 +1662,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 			<>
 				<FileNodeViewHeaderPortal
 					selectedNodeId={node._id}
-					treeItemsList={treeItemsList}
+					fileNodesList={fileNodesList}
 					editorMode={editorMode}
 					filesSidebarOpen={filesSidebarOpen}
 					showFileControls={true}
@@ -1459,7 +1671,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 				/>
 				<FileNodeViewFolder
 					folderItemId={node._id}
-					treeItemsList={treeItemsList}
+					fileNodesList={fileNodesList}
 					pendingUpdateId={pendingUpdateId}
 					serverSequence={serverSequence}
 					editorMode={editorMode}
@@ -1480,7 +1692,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 				<FileNodeViewFile
 					node={node}
 					editorNodeId={shadowEditorNodeId}
-					treeItemsList={treeItemsList}
+					fileNodesList={fileNodesList}
 					pendingUpdateId={pendingUpdateId}
 					serverSequence={serverSequence}
 					editorMode={editorMode}
@@ -1498,7 +1710,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		return (
 			<FileNodeViewStoredFile
 				node={node}
-				treeItemsList={treeItemsList}
+				fileNodesList={fileNodesList}
 				editorMode={editorMode}
 				filesSidebarOpen={filesSidebarOpen}
 				onlineUsers={onlineUsers}
@@ -1509,7 +1721,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 	return (
 		<FileNodeViewFile
 			node={node}
-			treeItemsList={treeItemsList}
+			fileNodesList={fileNodesList}
 			pendingUpdateId={pendingUpdateId}
 			serverSequence={serverSequence}
 			editorMode={editorMode}
@@ -1577,11 +1789,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const searchNodeId = searchParams.nodeId;
 	const isRootNodeSelected = searchNodeId === files_ROOT_ID;
 
-	const treeNodesList = useStableQuery(app_convex_api.files_nodes.get_tree_nodes_list, { membershipId });
-	const treeItemsList = useMemo(
-		() => (treeNodesList ? files_create_tree_items_list_from_nodes(treeNodesList) : undefined),
-		[treeNodesList],
-	);
+	const fileNodesList = useStableQuery(app_convex_api.files_nodes.get_file_nodes_list, { membershipId });
 
 	const resolvedNode = useStableQuery(
 		app_convex_api.files_nodes.get_for_membership,
@@ -1599,11 +1807,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// Treat a folder README as the active editor node so pending-update and sync subscriptions
 	// have the same owner for selected files and folder README editors.
 	const activeEditorNodeId = isRootNodeSelected
-		? get_folder_readme_node_id(treeItemsList, files_ROOT_ID)
+		? get_folder_readme_node_id(fileNodesList, files_ROOT_ID)
 		: resolvedNode && resolvedNode.kind === "file"
-			? (resolvedNode.markdownContentId ? resolvedNode._id : (resolvedNode.shadowFileNodeIds[0] ?? null))
+			? resolvedNode.markdownContentId
+				? resolvedNode._id
+				: (resolvedNode.shadowFileNodeIds[0] ?? null)
 			: resolvedNode?.kind === "folder"
-				? get_folder_readme_node_id(treeItemsList, resolvedNode._id)
+				? get_folder_readme_node_id(fileNodesList, resolvedNode._id)
 				: null;
 
 	const allPendingUpdatesResult = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, {
@@ -1817,7 +2027,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			<FileNodeViewContent
 				selectedNodeId={searchNodeId}
 				node={resolvedNode}
-				treeItemsList={treeItemsList}
+				fileNodesList={fileNodesList}
 				pendingUpdateId={currentPendingUpdate?._id}
 				serverSequence={activeEditorServerSequenceData?.lastSequence}
 				editorMode={effectiveView}
@@ -1888,12 +2098,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 							<FileNodeViewToolbarCreateNodeActions
 								membershipId={membershipId}
 								folderItemId={targetFolderId}
-								treeItemsList={treeItemsList}
+								fileNodesList={fileNodesList}
 							>
 								{(folderActionsSlot) => (
 									<FileNodeViewToolbar
 										editorActionsRef={handleToolbarPortalHostChange}
 										folderActionsSlot={folderActionsSlot}
+										fileActionsSlot={<FileNodeViewToolbarFileDownloadAction node={resolvedNode} />}
 									/>
 								)}
 							</FileNodeViewToolbarCreateNodeActions>

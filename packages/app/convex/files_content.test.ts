@@ -2,7 +2,7 @@ import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
-import { files_ROOT_ID } from "../server/files.ts";
+import { files_ROOT_ID, files_get_utf8_byte_size } from "../server/files.ts";
 
 beforeEach(() => {
 	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (customKey?: string) => ({
@@ -45,6 +45,7 @@ describe("files_content.convert_upload_to_markdown", () => {
 			name: "Test User",
 		});
 		vi.stubGlobal("fetch", mock_modal_converter());
+		const convertedMarkdown = "# Converted\n\nPDF body";
 
 		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
 			membershipId: db.membershipId,
@@ -81,6 +82,12 @@ describe("files_content.convert_upload_to_markdown", () => {
 			const oldShadow = await ctx.db.get("files_nodes", existingShadowId);
 			const newShadowId = source?.shadowFileNodeIds[0];
 			const newShadow = newShadowId ? await ctx.db.get("files_nodes", newShadowId) : null;
+			const sourceProperties = source?.propertiesId
+				? await ctx.db.get("files_node_properties", source.propertiesId)
+				: null;
+			const shadowProperties = newShadow?.propertiesId
+				? await ctx.db.get("files_node_properties", newShadow.propertiesId)
+				: null;
 			const activeShadowAtPath = await ctx.db
 				.query("files_nodes")
 				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
@@ -91,17 +98,27 @@ describe("files_content.convert_upload_to_markdown", () => {
 						.eq("archiveOperationId", undefined),
 				)
 				.first();
-			return { uploadDoc, source, asset, oldShadow, newShadow, activeShadowAtPath };
+			return { uploadDoc, source, asset, oldShadow, newShadow, sourceProperties, shadowProperties, activeShadowAtPath };
 		});
 
 		expect(docs.uploadDoc?.conversionWorkId).toBeUndefined();
 		expect(docs.uploadDoc?.failureMessage).toBeUndefined();
 		expect(docs.source?.assetId).toBe(docs.asset?._id);
+		expect(docs.asset).not.toHaveProperty("contentType");
+		expect(docs.asset).not.toHaveProperty("size");
+		expect(docs.sourceProperties).toMatchObject({
+			contentType: "application/pdf",
+			size: 4096,
+		});
 		expect(docs.oldShadow?.archiveOperationId).toEqual(expect.any(String));
 		expect(docs.newShadow?._id).not.toBe(existingShadowId);
 		expect(docs.newShadow).toMatchObject({
 			name: "collision.pdf.shadow.md",
 			shadowSourceFileNodeId: upload._yay.nodeId,
+		});
+		expect(docs.shadowProperties).toMatchObject({
+			contentType: "text/markdown;charset=utf-8",
+			size: files_get_utf8_byte_size(convertedMarkdown),
 		});
 		expect(docs.newShadow?.archiveOperationId).toBeUndefined();
 		expect(docs.activeShadowAtPath?._id).toBe(docs.newShadow?._id);

@@ -9,6 +9,7 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_nodes_db_create_node_recursively_at_path, type files_nodes_get_Result } from "./files_nodes.ts";
+import type { files_node_properties_get_by_file_node_Result } from "./files_node_properties.ts";
 import { r2_get_download_url, type r2_update_upload_conversion_state_Result } from "./r2.ts";
 
 /** 15 minutes */
@@ -205,8 +206,6 @@ export const finalize_upload_conversion_to_markdown = internalMutation({
 						r2Bucket: upload.r2Bucket,
 						r2Key: upload.r2Key,
 						filename: upload.filename,
-						...(upload.contentType ? { contentType: upload.contentType } : {}),
-						...(upload.size === undefined ? {} : { size: upload.size }),
 						sourceNodeId: sourceFileNode._id,
 						createdBy: upload.createdBy,
 						createdAt: now,
@@ -269,10 +268,14 @@ export const convert_upload_to_markdown = internalAction({
 			return null;
 		}
 
+		const sourceFileProperties = (await ctx.runQuery(internal.files_node_properties.get_by_file_node, {
+			fileNodeId: upload.sourceNodeId,
+		})) as files_node_properties_get_by_file_node_Result;
+
 		const conversion = await convert_object_to_markdown({
 			key: upload.r2Key,
 			filename: sourceFileNode.name,
-			contentType: upload.contentType,
+			contentType: sourceFileProperties?.contentType,
 		});
 		if (conversion._nay) {
 			await ctx.runMutation(internal.r2.update_upload_conversion_state, {

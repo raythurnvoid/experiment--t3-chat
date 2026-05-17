@@ -32,6 +32,9 @@ http.route({
 
 ### Validators
 
+- Inline `args`, `returns`, and small derived payload validators at the function registration site by default. Do not create named validator variables just to shorten a registration; move a validator into its own symbol only when there is a very strong reason such as real production reuse or an explicitly requested shared validator.
+- Do not namespace module-private helpers, types, or constants with the module/file prefix. Prefixes are for exported symbols, where imports need origin context.
+
 - Below is an example of an array validator:
 
 ```typescript

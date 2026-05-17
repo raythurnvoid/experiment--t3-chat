@@ -29,6 +29,19 @@ export const files_editor_view_values = ["rich_text_editor", "plain_text_editor"
 
 export type files_EditorView = (typeof files_editor_view_values)[number];
 
+export function files_download_blob(args: { blob: Blob; filename: string }) {
+	const objectUrl = URL.createObjectURL(args.blob);
+	const anchor = document.createElement("a");
+	anchor.href = objectUrl;
+	anchor.download = args.filename;
+	document.body.append(anchor);
+	anchor.click();
+	anchor.remove();
+	setTimeout(() => {
+		URL.revokeObjectURL(objectUrl);
+	}, 0);
+}
+
 /**
  * Return `new-file.md` or `new-folder` for the requested kind, adding an
  * incrementing suffix when one of the provided sibling names already uses it.
@@ -107,14 +120,14 @@ export function files_clear_node_path_cached_validation_messages() {
 
 export function files_get_node_path_validation(args: {
 	scopeId: string;
-	treeItemsList: files_TreeItem[] | undefined;
+	fileNodesList: files_TreeItem[] | undefined;
 	nodeIdToIgnore?: Doc<"files_nodes">["_id"];
 	parentId: Doc<"files_nodes">["parentId"];
 	kind: Doc<"files_nodes">["kind"] | null;
 	nameOrPath: string;
 }) {
 	const validationMessage = files_get_node_path_validation_message({
-		treeItemsList: args.treeItemsList,
+		fileNodesList: args.fileNodesList,
 		nodeIdToIgnore: args.nodeIdToIgnore,
 		parentId: args.parentId,
 		kind: args.kind,
@@ -152,11 +165,11 @@ export function files_get_node_path_validation(args: {
 
 /**
  * Validate a node name or slash-separated path and return the user-facing error.
- * Use `treeItemsList` to detect duplicate leaves in the current folder, including
+ * Use `fileNodesList` to detect duplicate leaves in the current folder, including
  * paths that traverse existing intermediate folders.
  */
 export function files_get_node_path_validation_message(args: {
-	treeItemsList: files_TreeItem[] | undefined;
+	fileNodesList: files_TreeItem[] | undefined;
 	nodeIdToIgnore?: Doc<"files_nodes">["_id"];
 	parentId: Doc<"files_nodes">["parentId"];
 	kind: Doc<"files_nodes">["kind"] | null;
@@ -173,7 +186,7 @@ export function files_get_node_path_validation_message(args: {
 	if ("validationMessage" in normalizedPath) {
 		return normalizedPath.validationMessage;
 	}
-	if (!args.kind || !args.treeItemsList) {
+	if (!args.kind || !args.fileNodesList) {
 		return null;
 	}
 
@@ -181,7 +194,7 @@ export function files_get_node_path_validation_message(args: {
 	let currentParentId = args.parentId;
 	for (const [index, normalizedName] of normalizedPath.normalizedPathSegments.entries()) {
 		const isLeaf = index === normalizedPath.normalizedPathSegments.length - 1;
-		const existingNode = args.treeItemsList.find((item): item is app_convex_Doc<"files_nodes"> => {
+		const existingNode = args.fileNodesList.find((item): item is app_convex_Doc<"files_nodes"> => {
 			return (
 				files_is_node(item) &&
 				item._id !== args.nodeIdToIgnore &&

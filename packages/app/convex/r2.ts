@@ -5,7 +5,7 @@ import { R2 } from "@convex-dev/r2";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import { components, internal } from "./_generated/api.js";
-import { httpAction, internalMutation, internalQuery, query, type ActionCtx } from "./_generated/server.js";
+import { action, httpAction, internalMutation, internalQuery, query, type ActionCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
 import {
 	server_convex_get_user_fallback_to_anonymous,
@@ -13,7 +13,10 @@ import {
 } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 import { workspaces_db_get_membership } from "./workspaces.ts";
+import { access_control_db_has_permission } from "./access_control.ts";
+import type { files_ContentType } from "../server/files.ts";
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
@@ -55,7 +58,7 @@ const r2 = new R2(components.r2, {
 	secretAccessKey: R2_SECRET_ACCESS_KEY,
 });
 
-const r2_upload_conversion_workpool = new Workpool(components.files_upload_conversion_workpool, {
+const upload_conversion_workpool = new Workpool(components.files_upload_conversion_workpool, {
 	maxParallelism: 1,
 	retryActionsByDefault: true,
 	defaultRetryBehavior: {
@@ -98,7 +101,7 @@ export const get_upload_by_bucket_and_key = internalQuery({
 		const upload = await ctx.db
 			.query("files_uploads")
 			.withIndex("by_r2Bucket_r2Key", (q) => q.eq("r2Bucket", args.bucket).eq("r2Key", args.key))
-			.unique();
+			.first();
 
 		if (!upload) {
 			return Result({
@@ -109,6 +112,258 @@ export const get_upload_by_bucket_and_key = internalQuery({
 		}
 
 		return Result({ _yay: upload });
+	},
+});
+
+/**
+ * Resolve one selected download target to the saved data needed to prepare a file download.
+ */
+export const get_file_download_target_for_prepare = internalQuery({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		fileNodeId: v.id("files_nodes"),
+	},
+	returns: v_result({
+		_yay: v.union(
+			v.object({
+				kind: v.literal("source"),
+				filename: v.string(),
+				contentType: v.optional(v.string()),
+				size: v.optional(v.number()),
+				r2Key: v.string(),
+			}),
+			v.object({
+				kind: v.literal("markdown"),
+				filename: v.string(),
+				contentType: v.literal("text/markdown;charset=utf-8" satisfies files_ContentType),
+				size: v.optional(v.number()),
+				content: v.string(),
+			}),
+		),
+	}),
+	handler: async (ctx, args) => {
+		// Check project access before loading file data so missing/existing files are not leaked.
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const membership = await workspaces_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
+		if (!workspace) {
+			console.error("Membership points to missing workspace", {
+				membershipId: membership._id,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+			});
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+		if (!workspace.defaultProjectId) {
+			console.error("Membership points to workspace without default project", {
+				membershipId: membership._id,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				defaultProjectId: workspace.defaultProjectId,
+			});
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const defaultProjectId = workspace.defaultProjectId;
+
+		// Downloads are project assets, so gate both uploaded binaries and saved Markdown snapshots with asset.read.
+		const hasAssetRead = await access_control_db_has_permission(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			defaultProjectId,
+			workspaceOwnerUserId: workspace.ownerUserId,
+			resourceKind: "project",
+			resourceId: membership.projectId,
+			permission: "asset.read",
+			userId: userAuth.id,
+		});
+		if (!hasAssetRead) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// Validate the requested file only after the project-level download permission succeeds.
+		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
+		if (
+			!fileNode ||
+			fileNode.workspaceId !== membership.workspaceId ||
+			fileNode.projectId !== membership.projectId
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (fileNode.kind !== "file") {
+			return Result({ _nay: { message: "Cannot download a folder" } });
+		}
+
+		// Source downloads use the uploaded file node and its finalized R2 asset.
+		if (!fileNode.markdownContentId) {
+			if (!fileNode.assetId) {
+				return Result({ _nay: { message: "Not found" } });
+			}
+			if (!fileNode.propertiesId) {
+				throw should_never_happen("File node properties ID missing", {
+					fileNodeId: fileNode._id,
+					workspaceId: fileNode.workspaceId,
+					projectId: fileNode.projectId,
+				});
+			}
+
+			const [sourceAsset, fileNodeProperties] = await Promise.all([
+				ctx.db.get("files_r2_assets", fileNode.assetId),
+				ctx.db.get("files_node_properties", fileNode.propertiesId),
+			]);
+			if (!sourceAsset) {
+				throw should_never_happen("File node asset missing", {
+					fileNodeId: fileNode._id,
+					assetId: fileNode.assetId,
+				});
+			}
+			if (!fileNodeProperties) {
+				throw should_never_happen("File node properties missing", {
+					fileNodeId: fileNode._id,
+					propertiesId: fileNode.propertiesId,
+				});
+			}
+
+			return Result({
+				_yay: {
+					kind: "source",
+					filename: sourceAsset.filename,
+					...(fileNodeProperties.contentType ? { contentType: fileNodeProperties.contentType } : {}),
+					...(fileNodeProperties.size === undefined ? {} : { size: fileNodeProperties.size }),
+					r2Key: sourceAsset.r2Key,
+				},
+			});
+		}
+
+		// Markdown downloads use the requested Markdown file node directly, including generated shadows.
+		if (!fileNode.propertiesId) {
+			throw should_never_happen("File node properties ID missing", {
+				fileNodeId: fileNode._id,
+			});
+		}
+
+		// Return only committed Markdown content; pending editor edits are not downloadable until saved.
+		const [markdownContent, fileNodeProperties] = await Promise.all([
+			ctx.db.get("files_markdown_content", fileNode.markdownContentId),
+			ctx.db.get("files_node_properties", fileNode.propertiesId),
+		]);
+		if (!markdownContent) {
+			throw should_never_happen("File node markdown content missing", {
+				fileNodeId: fileNode._id,
+				markdownContentId: fileNode.markdownContentId,
+			});
+		}
+		// Metadata comes from file-node properties so the download UI and prepare path use the same source.
+		if (!fileNodeProperties) {
+			throw should_never_happen("File node properties missing", {
+				fileNodeId: fileNode._id,
+				propertiesId: fileNode.propertiesId,
+			});
+		}
+		if (fileNodeProperties.contentType !== ("text/markdown;charset=utf-8" satisfies files_ContentType)) {
+			throw should_never_happen("File properties content type is not Markdown", {
+				fileNodeId: fileNode._id,
+				contentType: fileNodeProperties.contentType,
+			});
+		}
+
+		return Result({
+			_yay: {
+				kind: "markdown",
+				filename: fileNode.name,
+				contentType: fileNodeProperties.contentType,
+				...(fileNodeProperties.size === undefined ? {} : { size: fileNodeProperties.size }),
+				content: markdownContent.content,
+			},
+		});
+	},
+});
+
+type get_file_download_target_for_prepare_Result =
+	typeof get_file_download_target_for_prepare extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Prepare one file download for the browser.
+ *
+ * Markdown is returned as text. Uploaded source files are returned as short-lived signed R2 URLs.
+ */
+export const prepare_file_download_target = action({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		fileNodeId: v.id("files_nodes"),
+	},
+	returns: v_result({
+		_yay: v.union(
+			v.object({
+				kind: v.literal("text"),
+				filename: v.string(),
+				contentType: v.literal("text/markdown;charset=utf-8" satisfies files_ContentType),
+				size: v.optional(v.number()),
+				content: v.string(),
+			}),
+			v.object({
+				kind: v.literal("url"),
+				filename: v.string(),
+				contentType: v.optional(v.string()),
+				size: v.optional(v.number()),
+				url: v.string(),
+			}),
+		),
+	}),
+	handler: async (ctx, args) => {
+		// Run DB authorization and target resolution in Convex, then handle URL signing in the action.
+		const target = (await ctx.runQuery(
+			internal.r2.get_file_download_target_for_prepare,
+			args,
+		)) as get_file_download_target_for_prepare_Result;
+		if (target._nay) {
+			return target;
+		}
+
+		// Markdown content is already in Convex, so the client can download it as a Blob.
+		if (target._yay.kind === "markdown") {
+			return Result({
+				_yay: {
+					kind: "text",
+					filename: target._yay.filename,
+					contentType: target._yay.contentType,
+					...(target._yay.size === undefined ? {} : { size: target._yay.size }),
+					content: target._yay.content,
+				},
+			});
+		}
+
+		// Uploaded source files stay private; expose only a fresh signed URL to the client.
+		const url = await r2_get_download_url({
+			key: target._yay.r2Key,
+			options: {
+				// 15 minutes.
+				expiresIn: 15 * 60,
+			},
+		});
+
+		return Result({
+			_yay: {
+				kind: "url",
+				filename: target._yay.filename,
+				...(target._yay.contentType ? { contentType: target._yay.contentType } : {}),
+				...(target._yay.size === undefined ? {} : { size: target._yay.size }),
+				url,
+			},
+		});
 	},
 });
 
@@ -177,13 +432,18 @@ export const get_finalized_asset_by_source_file_node = internalQuery({
 });
 
 type r2_get_finalized_asset_by_source_file_node_Result =
-	typeof get_finalized_asset_by_source_file_node extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+	typeof get_finalized_asset_by_source_file_node extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
 		? Awaited<ReturnValue>
 		: never;
 
 export const ensure_uploaded_asset = internalMutation({
 	args: {
 		uploadId: v.id("files_uploads"),
+		size: v.number(),
 	},
 	returns: v_result({
 		_yay: doc(app_convex_schema, "files_r2_assets"),
@@ -191,44 +451,51 @@ export const ensure_uploaded_asset = internalMutation({
 	handler: async (ctx, args) => {
 		const upload = await ctx.db.get("files_uploads", args.uploadId);
 		if (!upload) {
-			return Result({
-				_nay: {
-					message: "Upload doc not found while creating uploaded asset",
-				},
+			throw should_never_happen("Upload doc missing", {
+				uploadId: args.uploadId,
 			});
 		}
 
 		const sourceFileNode = await ctx.db.get("files_nodes", upload.sourceNodeId);
 		if (!sourceFileNode) {
-			return Result({
-				_nay: {
-					message: "Source file node not found while creating uploaded asset",
-				},
+			throw should_never_happen("Source file node missing", {
+				uploadId: upload._id,
+				sourceNodeId: upload.sourceNodeId,
 			});
 		}
+
+		const now = Date.now();
+		if (!sourceFileNode.propertiesId) {
+			throw should_never_happen("Source file properties missing", {
+				uploadId: upload._id,
+				sourceNodeId: sourceFileNode._id,
+			});
+		}
+
+		await ctx.db.patch("files_node_properties", sourceFileNode.propertiesId, {
+			size: args.size,
+			updatedAt: now,
+		});
 
 		if (sourceFileNode.assetId) {
 			const asset = await ctx.db.get("files_r2_assets", sourceFileNode.assetId);
 			if (!asset || asset.sourceNodeId !== sourceFileNode._id) {
-				return Result({
-					_nay: {
-						message: "Existing uploaded asset did not match source file node",
-					},
+				throw should_never_happen("Existing uploaded asset did not match source file node", {
+					uploadId: upload._id,
+					sourceNodeId: sourceFileNode._id,
+					assetId: sourceFileNode.assetId,
 				});
 			}
 
 			return Result({ _yay: asset });
 		}
 
-		const now = Date.now();
 		const assetId = await ctx.db.insert("files_r2_assets", {
 			workspaceId: upload.workspaceId,
 			projectId: upload.projectId,
 			r2Bucket: upload.r2Bucket,
 			r2Key: upload.r2Key,
 			filename: upload.filename,
-			...(upload.contentType ? { contentType: upload.contentType } : {}),
-			...(upload.size === undefined ? {} : { size: upload.size }),
 			sourceNodeId: sourceFileNode._id,
 			createdBy: upload.createdBy,
 			createdAt: now,
@@ -247,10 +514,9 @@ export const ensure_uploaded_asset = internalMutation({
 
 		const asset = await ctx.db.get("files_r2_assets", assetId);
 		if (!asset) {
-			return Result({
-				_nay: {
-					message: "Failed to read uploaded asset after creation",
-				},
+			throw should_never_happen("Failed to read uploaded asset after creation", {
+				uploadId: upload._id,
+				assetId,
 			});
 		}
 
@@ -330,20 +596,71 @@ export function r2_http_routes(router: RouterForConvexModules) {
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
 					[method]: ((/* iife */) => {
+						/**
+						 * Cloudflare R2 event notification payload.
+						 *
+						 * @see https://developers.cloudflare.com/r2/buckets/event-notifications/#message-format
+						 */
 						const bodyValidator = z.object({
 							cloudflareMessageId: z.string(),
 							attempts: z.number(),
-							event: z.object({
-								account: z.string().optional(),
-								action: z.string(),
-								bucket: z.string(),
-								object: z.object({
-									key: z.string(),
-									size: z.number().optional(),
-									eTag: z.string().optional(),
+							event: z.discriminatedUnion("action", [
+								z.object({
+									account: z.string().optional(),
+									action: z.literal("PutObject"),
+									bucket: z.string(),
+									object: z.object({
+										key: z.string(),
+										size: z.number(),
+										eTag: z.string().optional(),
+									}),
+									eventTime: z.string(),
 								}),
-								eventTime: z.string(),
-							}),
+								z.object({
+									account: z.string().optional(),
+									action: z.literal("CopyObject"),
+									bucket: z.string(),
+									object: z.object({
+										key: z.string(),
+										size: z.number(),
+										eTag: z.string().optional(),
+									}),
+									eventTime: z.string(),
+								}),
+								z.object({
+									account: z.string().optional(),
+									action: z.literal("CompleteMultipartUpload"),
+									bucket: z.string(),
+									object: z.object({
+										key: z.string(),
+										size: z.number(),
+										eTag: z.string().optional(),
+									}),
+									eventTime: z.string(),
+								}),
+								z.object({
+									account: z.string().optional(),
+									action: z.literal("DeleteObject"),
+									bucket: z.string(),
+									object: z.object({
+										key: z.string(),
+										size: z.undefined().optional(),
+										eTag: z.undefined().optional(),
+									}),
+									eventTime: z.string(),
+								}),
+								z.object({
+									account: z.string().optional(),
+									action: z.literal("LifecycleDeletion"),
+									bucket: z.string(),
+									object: z.object({
+										key: z.string(),
+										size: z.undefined().optional(),
+										eTag: z.undefined().optional(),
+									}),
+									eventTime: z.string(),
+								}),
+							]),
 						});
 
 						type SearchParams = never;
@@ -368,6 +685,13 @@ export function r2_http_routes(router: RouterForConvexModules) {
 									return {
 										status: 400,
 										body: body._nay,
+									} as const;
+								}
+
+								if (body._yay.event.action === "DeleteObject" || body._yay.event.action === "LifecycleDeletion") {
+									return {
+										status: 204,
+										body: {},
 									} as const;
 								}
 
@@ -397,6 +721,7 @@ export function r2_http_routes(router: RouterForConvexModules) {
 
 								const uploadedAsset = (await ctx.runMutation(internal.r2.ensure_uploaded_asset, {
 									uploadId: upload._yay._id,
+									size: body._yay.event.object.size,
 								})) as r2_ensure_uploaded_asset_Result;
 								if (uploadedAsset._nay) {
 									console.error("Failed to create uploaded asset for R2 event", {
@@ -419,7 +744,7 @@ export function r2_http_routes(router: RouterForConvexModules) {
 								}
 
 								try {
-									const workId = await r2_upload_conversion_workpool.enqueueAction(
+									const workId = await upload_conversion_workpool.enqueueAction(
 										ctx,
 										internal.files_content.convert_upload_to_markdown,
 										{

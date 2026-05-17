@@ -49,6 +49,8 @@ import {
 	files_yjs_compute_diff_update_from_state_vector,
 	files_CREATE_NODE_VALIDATION_MESSAGES,
 	files_MAX_UPLOADS_BYTES,
+	files_get_utf8_byte_size,
+	type files_ContentType,
 } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { minimatch } from "minimatch";
@@ -584,7 +586,7 @@ async function db_rebase_shadow_file_nodes_for_source_file_node(
 	return Result({ _yay: null });
 }
 
-export const get_tree_nodes_list = query({
+export const get_file_nodes_list = query({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 	},
@@ -726,7 +728,7 @@ async function db_create_node(
 		initialYjsSnapshotUpdate = files_yjs_create_empty_state_update();
 	}
 
-	const [yjs_snapshot_id, yjs_last_sequence_id, markdown_content_id] = await Promise.all([
+	const [yjs_snapshot_id, yjs_last_sequence_id, markdown_content_id, properties_id] = await Promise.all([
 		ctx.db.insert("files_yjs_snapshots", {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
@@ -751,6 +753,15 @@ async function db_create_node(
 			isArchived: false,
 			yjsSequence: initialYjsSequence,
 			updatedBy: args.userId,
+			updatedAt: now,
+		}),
+		// Store file properties from the saved Markdown snapshot, not unsaved editor state.
+		ctx.db.insert("files_node_properties", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			fileNodeId: nodeId,
+			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			size: files_get_utf8_byte_size(markdownContent),
 			updatedAt: now,
 		}),
 		db_insert_file_chunks(ctx, {
@@ -790,6 +801,7 @@ async function db_create_node(
 		markdownContentId: markdown_content_id,
 		yjsLastSequenceId: yjs_last_sequence_id,
 		yjsSnapshotId: yjs_snapshot_id,
+		propertiesId: properties_id,
 	});
 
 	return Result({ _yay: nodeId });
@@ -1084,19 +1096,28 @@ export const create_upload_node = mutation({
 			projectId: membership.projectId,
 			nodeId: node._yay,
 		});
-		const uploadId = await ctx.db.insert("files_uploads", {
-			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
-			createdBy: membership.userId,
-			r2Bucket: r2_get_bucket(),
-			r2Key: key,
-			filename: args.filename,
-			...(args.contentType ? { contentType: args.contentType } : {}),
-			size: args.size,
-			sourceNodeId: node._yay,
-		});
+		const [uploadId, propertiesId] = await Promise.all([
+			ctx.db.insert("files_uploads", {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				createdBy: membership.userId,
+				r2Bucket: r2_get_bucket(),
+				r2Key: key,
+				filename: args.filename,
+				sourceNodeId: node._yay,
+			}),
+			ctx.db.insert("files_node_properties", {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				fileNodeId: node._yay,
+				...(args.contentType ? { contentType: args.contentType } : {}),
+				size: args.size,
+				updatedAt: now,
+			}),
+		]);
 		await ctx.db.patch("files_nodes", node._yay, {
 			uploadId,
+			propertiesId,
 		});
 		const signedUpload = await r2_generate_upload_url(key);
 		const headers: Record<string, string> = args.contentType ? { "Content-Type": args.contentType } : {};
@@ -3170,7 +3191,12 @@ export const yjs_push_update = mutation({
 
 		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
 		if (!workspace) {
-			return Result({ _nay: { message: "Workspace not found" } });
+			throw should_never_happen("Workspace missing", {
+				membershipId: membership._id,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				nodeId: args.nodeId,
+			});
 		}
 		const billedUserId = billing_pick_billed_user_id({
 			userId: user._id,
@@ -3178,7 +3204,7 @@ export const yjs_push_update = mutation({
 		});
 		const billedUser = await ctx.db.get("users", billedUserId);
 		if (!billedUser) {
-			throw should_never_happen("Billed user not found", {
+			throw should_never_happen("Billed user missing", {
 				userId: user._id,
 				workspaceId: workspace._id,
 				billedUserId,
@@ -3442,7 +3468,7 @@ export const update_snapshots = internalMutation({
 				file.projectId !== args.projectId ||
 				!file.markdownContentId
 			) {
-				throw should_never_happen("file not found", {
+				throw should_never_happen("File missing", {
 					nodeId: args.nodeId,
 					file: file,
 					workspaceId: args.workspaceId,
@@ -3513,6 +3539,25 @@ export const update_snapshots = internalMutation({
 						updatedBy: "system",
 						updatedAt: now,
 					}),
+
+					(async () => {
+						if (!file.propertiesId) {
+							throw should_never_happen("File properties missing", {
+								nodeId: args.nodeId,
+								workspaceId: args.workspaceId,
+								projectId: args.projectId,
+							});
+						}
+
+						await ctx.db.patch("files_node_properties", file.propertiesId, {
+							workspaceId: args.workspaceId,
+							projectId: args.projectId,
+							fileNodeId: args.nodeId,
+							contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+							size: files_get_utf8_byte_size(markdown._yay),
+							updatedAt: now,
+						});
+					})(),
 
 					db_replace_file_chunks(ctx, {
 						workspaceId: args.workspaceId,
@@ -3661,7 +3706,13 @@ export const restore_snapshot = mutation({
 
 		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
 		if (!workspace) {
-			return Result({ _nay: { message: "Workspace not found" } });
+			throw should_never_happen("Workspace missing", {
+				membershipId: membership._id,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				nodeId: args.nodeId,
+				snapshotId: args.snapshotId,
+			});
 		}
 		const billedUserId = billing_pick_billed_user_id({
 			userId: userAuth.id,
@@ -3669,7 +3720,7 @@ export const restore_snapshot = mutation({
 		});
 		const billedUser = await ctx.db.get("users", billedUserId);
 		if (!billedUser) {
-			throw should_never_happen("Billed user not found", {
+			throw should_never_happen("Billed user missing", {
 				userId: userAuth.id,
 				workspaceId: workspace._id,
 				billedUserId,
@@ -3749,6 +3800,24 @@ export const restore_snapshot = mutation({
 					updatedBy: updatedBy,
 					updatedAt: now,
 				}),
+				(async () => {
+					if (!file.propertiesId) {
+						throw should_never_happen("File properties missing", {
+							nodeId: args.nodeId,
+							workspaceId: membership.workspaceId,
+							projectId: membership.projectId,
+						});
+					}
+
+					await ctx.db.patch("files_node_properties", file.propertiesId, {
+						workspaceId: membership.workspaceId,
+						projectId: membership.projectId,
+						fileNodeId: args.nodeId,
+						contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+						size: files_get_utf8_byte_size(snapshotContent.content),
+						updatedAt: now,
+					});
+				})(),
 				db_replace_file_chunks(ctx, {
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,

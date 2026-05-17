@@ -2098,7 +2098,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
 	const selectedFilePathAutoExpandedKeyRef = useRef<string | null>(null);
 
-	const treeNodesList = useQuery(app_convex_api.files_nodes.get_tree_nodes_list, {
+	const treeNodesList = useQuery(app_convex_api.files_nodes.get_file_nodes_list, {
 		membershipId,
 	});
 	const treeItemsList = useMemo(
@@ -2569,7 +2569,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 				const renameValidation = files_get_node_path_validation({
 					scopeId: membershipId,
-					treeItemsList: treeItems?.list,
+					fileNodesList: treeItems?.list,
 					nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
 					parentId: itemData.parentId,
 					kind: itemData.kind,
@@ -2651,7 +2651,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 								return;
 							}
 
-							const treeNodesList = localStore.getQuery(app_convex_api.files_nodes.get_tree_nodes_list, {
+							const treeNodesList = localStore.getQuery(app_convex_api.files_nodes.get_file_nodes_list, {
 								membershipId,
 							});
 							if (!treeNodesList) {
@@ -2673,7 +2673,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							}
 
 							localStore.setQuery(
-								app_convex_api.files_nodes.get_tree_nodes_list,
+								app_convex_api.files_nodes.get_file_nodes_list,
 								{
 									membershipId,
 								},
@@ -2733,7 +2733,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						})
 					: files_get_node_path_validation({
 							scopeId: membershipId,
-							treeItemsList: treeItems?.list,
+							fileNodesList: treeItems?.list,
 							nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
 							parentId: itemData.parentId,
 							kind: itemData.kind,
@@ -2977,7 +2977,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				if (result._nay) {
 					const createNodeValidation = files_get_node_path_validation({
 						scopeId: membershipId,
-						treeItemsList: treeItems.list,
+						fileNodesList: treeItems.list,
 						parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
 						kind,
 						nameOrPath: nextNodeName,

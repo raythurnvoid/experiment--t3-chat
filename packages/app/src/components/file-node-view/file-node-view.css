@@ -287,6 +287,7 @@
 	}
 
 	.FileNodeViewToolbarFolderActions,
+	.FileNodeViewToolbarFileDownloadAction,
 	.FileNodeViewToolbar-editor-actions {
 		display: flex;
 		align-items: center;
@@ -306,7 +307,20 @@
 		overflow-x: visible;
 	}
 
-	.FileNodeViewToolbarFolderActions::after {
+	.FileNodeViewToolbarFileDownloadAction {
+		flex: 0 0 auto;
+
+		padding: 4px 0;
+
+		overflow-x: visible;
+	}
+
+	.FileNodeViewToolbar:not(:has(.FileNodeViewToolbarFolderActions)) .FileNodeViewToolbarFileDownloadAction {
+		padding-left: 18px;
+	}
+
+	.FileNodeViewToolbarFolderActions::after,
+	.FileNodeViewToolbarFileDownloadAction::after {
 		content: "";
 
 		align-self: stretch;
@@ -327,7 +341,8 @@
 		scrollbar-width: initial;
 	}
 
-	.FileNodeViewToolbar:not(:has(.FileNodeViewToolbarFolderActions)) .FileNodeViewToolbar-editor-actions {
+	.FileNodeViewToolbar:not(:has(.FileNodeViewToolbarFolderActions)):not(:has(.FileNodeViewToolbarFileDownloadAction))
+		.FileNodeViewToolbar-editor-actions {
 		padding-left: 18px;
 	}
 
@@ -338,6 +353,17 @@
 	.FileNodeViewToolbarFolderActions-action-icon {
 		width: 20px;
 		height: 20px;
+	}
+
+	.FileNodeViewToolbarFileDownloadAction-button {
+		flex: 0 0 auto;
+		gap: 6px;
+		white-space: nowrap;
+	}
+
+	.FileNodeViewToolbarFileDownloadAction-button-icon {
+		width: 16px;
+		height: 16px;
 	}
 
 	/* #endregion toolbar */

@@ -74,7 +74,7 @@ describe("files_get_node_path_validation_message", () => {
 	test("returns a duplicate folder message for an existing leaf folder", () => {
 		expect(
 			files_get_node_path_validation_message({
-				treeItemsList,
+				fileNodesList: treeItemsList,
 				parentId: files_ROOT_ID,
 				kind: "folder",
 				nameOrPathValidate: "docs",
@@ -85,7 +85,7 @@ describe("files_get_node_path_validation_message", () => {
 	test("returns a duplicate file message for an existing nested file after normalization", () => {
 		expect(
 			files_get_node_path_validation_message({
-				treeItemsList,
+				fileNodesList: treeItemsList,
 				parentId: files_ROOT_ID,
 				kind: "file",
 				nameOrPathValidate: "docs/readme",
@@ -96,7 +96,7 @@ describe("files_get_node_path_validation_message", () => {
 	test("ignores the item currently being renamed", () => {
 		expect(
 			files_get_node_path_validation_message({
-				treeItemsList,
+				fileNodesList: treeItemsList,
 				nodeIdToIgnore: "file-readme" as Id<"files_nodes">,
 				parentId: "folder-docs" as Id<"files_nodes">,
 				kind: "file",
@@ -108,7 +108,7 @@ describe("files_get_node_path_validation_message", () => {
 	test("still checks sibling conflicts when renaming an existing item", () => {
 		expect(
 			files_get_node_path_validation_message({
-				treeItemsList,
+				fileNodesList: treeItemsList,
 				nodeIdToIgnore: "file-readme" as Id<"files_nodes">,
 				parentId: "folder-docs" as Id<"files_nodes">,
 				kind: "file",
@@ -120,7 +120,7 @@ describe("files_get_node_path_validation_message", () => {
 	test("allows paths whose missing folders would be created", () => {
 		expect(
 			files_get_node_path_validation_message({
-				treeItemsList,
+				fileNodesList: treeItemsList,
 				parentId: files_ROOT_ID,
 				kind: "file",
 				nameOrPathValidate: "new-folder/readme",
@@ -131,7 +131,7 @@ describe("files_get_node_path_validation_message", () => {
 	test("ignores archived nodes when checking for duplicates", () => {
 		expect(
 			files_get_node_path_validation_message({
-				treeItemsList,
+				fileNodesList: treeItemsList,
 				parentId: "folder-docs" as Id<"files_nodes">,
 				kind: "file",
 				nameOrPathValidate: "archived.md",
@@ -142,7 +142,7 @@ describe("files_get_node_path_validation_message", () => {
 	test("returns normalized name errors before checking tree conflicts", () => {
 		expect(
 			files_get_node_path_validation_message({
-				treeItemsList,
+				fileNodesList: treeItemsList,
 				parentId: "folder-docs" as Id<"files_nodes">,
 				kind: "file",
 				nameOrPathValidate: "bad.m d",
@@ -243,7 +243,7 @@ describe("files node path validation cache", () => {
 	test("caches messages through the combined validation helper", () => {
 		const validationArgs = {
 			scopeId: "scope-cache-helper",
-			treeItemsList: [] satisfies files_TreeItem[],
+			fileNodesList: [] satisfies files_TreeItem[],
 			parentId: files_ROOT_ID,
 			kind: "file" as const,
 			nameOrPath: "docs/readme",
@@ -265,7 +265,7 @@ describe("files node path validation cache", () => {
 
 		const createValidation = files_get_node_path_validation({
 			scopeId: "scope-cache-create-rename",
-			treeItemsList,
+			fileNodesList: treeItemsList,
 			parentId: "folder-docs" as Id<"files_nodes">,
 			kind: "file",
 			nameOrPath: "readme.md",
@@ -276,7 +276,7 @@ describe("files node path validation cache", () => {
 
 		const renameValidation = files_get_node_path_validation({
 			scopeId: "scope-cache-create-rename",
-			treeItemsList,
+			fileNodesList: treeItemsList,
 			nodeIdToIgnore: "file-readme" as Id<"files_nodes">,
 			parentId: "folder-docs" as Id<"files_nodes">,
 			kind: "file",
