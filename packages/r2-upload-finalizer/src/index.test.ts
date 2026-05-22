@@ -1,10 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import {
-	handle_r2_event_message,
-	type Env,
-	type QueueMessage,
-	type R2EventNotification,
-} from "./index.ts";
+import { handle_r2_event_message, type Env, type QueueMessage, type R2EventNotification } from "./index.ts";
 
 const env = {
 	CONVEX_HTTP_URL: "https://example.convex.site/",
@@ -18,7 +13,7 @@ function r2_event(overrides: Partial<R2EventNotification> = {}) {
 		action: "object-create",
 		bucket: "files-bucket",
 		object: {
-			key: "workspaces/workspace_1/projects/project_1/nodes/source_node_1/source",
+			key: "workspaces/workspace_1/projects/project_1/assets/asset_1",
 			size: 42,
 			eTag: "etag",
 		},

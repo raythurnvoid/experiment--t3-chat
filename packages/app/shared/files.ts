@@ -24,13 +24,20 @@ import type { app_convex_Doc } from "./app-convex.ts";
 import type { Merge } from "type-fest";
 
 export const files_ROOT_ID = "root";
-export const files_FIRST_VERSION = 1;
 export const files_YJS_DOC_KEYS = {
 	richText: "default",
 	plainText: "markdown",
 };
 
-export type files_ContentType = `text/${"markdown"}${"" | `;charset=${"utf-8"}`}`;
+export const files_INITIAL_CONTENT = `\
+# Welcome
+
+You can start editing your document here.`;
+
+export type files_ContentType =
+	| `text/${"markdown"}${"" | `;charset=${"utf-8"}`}`
+	| "application/octet-stream";
+export const files_MAX_MARKDOWN_CHARACTERS = 900_000;
 
 export function files_get_utf8_byte_size(content: string) {
 	return stringByteLength(content);
@@ -57,14 +64,12 @@ export function files_create_tree_root() {
 		parentId: "",
 		name: "",
 		path: "/",
-		uploadId: undefined,
+		contentType: undefined,
 		assetId: undefined,
 		shadowFileNodeIds: [],
 		archiveOperationId: undefined,
-		markdownContentId: undefined,
 		yjsLastSequenceId: undefined,
 		yjsSnapshotId: undefined,
-		version: 0,
 		updatedBy: "",
 		updatedAt: 0,
 		createdBy: "",
@@ -78,7 +83,6 @@ export function files_create_tree_root() {
 			parentId: "";
 			name: "";
 			path: "/";
-			version: 0;
 			updatedBy: "";
 			updatedAt: 0;
 			createdBy: "";

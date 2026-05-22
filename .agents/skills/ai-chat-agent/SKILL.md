@@ -10,7 +10,6 @@ Primary:
 - `../../../packages/app/convex/ai_chat.ts`
 - `../../../packages/app/server/server-ai-tools.ts`
 - `../../../packages/app/convex/files_nodes.ts`
-- `../../../packages/app/convex/files_content.ts`
 - `../../../packages/app/convex/r2.ts`
 - `../../../packages/app/convex/files_pending_updates.ts`
 - `../../../packages/app/server/files.ts`
@@ -27,10 +26,9 @@ The current agent is a Convex-backed AI chat runtime that streams AI SDK 5 UI me
 - Thread/message storage: Convex tables for `ai_chat_threads` and `ai_chat_threads_messages_aisdk_5`
 - Tool implementation: `../../../packages/app/server/server-ai-tools.ts`
 - Files node data/query layer: `../../../packages/app/convex/files_nodes.ts`
-- Upload conversion/finalization: `../../../packages/app/convex/files_content.ts`
-- R2 upload/event metadata: `../../../packages/app/convex/r2.ts`
+- R2 upload/event metadata and source conversion/finalization: `../../../packages/app/convex/r2.ts`
 
-The files system is a DB-backed file/folder model scoped by workspace/project membership. Folders are tree nodes only. Markdown files have Yjs snapshots/updates, Markdown content, Markdown chunks, and plain-text chunks. Uploaded source files preserve the original binary in R2 and currently become agent-readable through generated Markdown shadow files.
+The files system is a DB-backed file/folder model scoped by workspace/project membership. Folders are tree nodes only. Markdown files have Yjs snapshots/updates, R2-backed committed Markdown assets, Markdown chunks, and plain-text chunks. Uploaded source files preserve the original binary in R2 and currently become agent-readable through generated Markdown shadow files.
 
 # Main Request Flow
 
@@ -75,23 +73,23 @@ Important limitation:
 - These tools operate on DB-backed project files, not repo files on disk.
 - The agent does not currently have a general shell/filesystem tool in this chat runtime.
 - The agent does not currently read raw R2 binaries through this toolbelt.
-- `read_file` and `grep_files` read Markdown-backed content. Converted uploaded source paths resolve to their generated Markdown shadows.
+- `read_file` and `grep_files` read Markdown-backed content through Convex actions that overlay pending edits and fetch committed Markdown from R2 when needed. Converted uploaded source paths resolve to their generated Markdown shadows.
 - `text_search_files` reports the actual Markdown content path that matched; generated shadow file results use their `.shadow.md` paths.
 - Uploaded source file nodes are discoverable through path listing; their raw R2 binaries are not directly read by this toolbelt.
 - `web_search` uses the server-side Exa integration and should be used for current public facts, docs, release notes, news, and information outside the workspace. Keep workspace file tools first when the answer should come from the user's files.
 
 # Uploaded Source And Shadow Files
 
-- Uploaded source files are visible `files_nodes` rows with `uploadId` and later `assetId`.
+- Uploaded source files are visible `files_nodes` rows with an `assetId` pointing to the uploaded source R2 asset.
 - The original uploaded binary is preserved in R2.
 - Finalization creates a generated Markdown **shadow file** node with `shadowSourceFileNodeId` pointing to the visible shadow source file node.
 - Shadow source file nodes own their generated shadows through the canonical `shadowFileNodeIds` array.
 - Assets own uploaded binary metadata and source linkage only; assets do not own shadow relationships.
 - Shadow files are hidden from normal tree/list/glob/path surfaces and should not be linked from normal UI.
-- The generated shadow Markdown includes visible frontmatter/source metadata plus converted Markdown.
-- Shadow Markdown is editable and participates in normal Markdown reads, searches, edits, and pending-update review flows.
+- The generated shadow Markdown stores converted Markdown; source/conversion metadata stays in DB/R2 metadata, not visible frontmatter.
+- Shadow Markdown is editable and participates in normal Markdown reads, searches, edits, and pending-update review flows. Its committed Markdown body is materialized to R2; Convex keeps metadata, Yjs/update rows, chunks, and asset pointers.
 - Editing shadow Markdown does not mutate the original R2 object.
-- The DB upload/asset/source/shadow relationship is authoritative; visible frontmatter is contextual/editable content.
+- The DB asset/source/shadow relationship is authoritative; generated shadow Markdown should not be used to store source metadata.
 - Agents should understand `.shadow.md` files as generated Markdown representations of uploaded source files. For example, `/a.pdf.shadow.md` represents the uploaded source file `/a.pdf`.
 - `list_files` and `glob_files` hide shadows and expose source paths.
 - `read_file("/report.pdf")` reads the current generated Markdown shadow.
@@ -108,8 +106,8 @@ Important limitation:
 - Path must be absolute and resolve to a file node.
 - Converted uploaded source paths resolve to their generated Markdown shadow while tool metadata links back to the shadow source file node.
 - Output uses line numbers like `00001| ...`.
-- Reads through `internal.files_nodes.get_file_last_available_markdown_content_by_path`.
-- That query overlays the passed `userId` user's pending `unstaged` branch if a pending update exists.
+- Reads through `internal.files_nodes.get_file_last_available_markdown_content_by_path`, an internal action because committed Markdown may live in R2.
+- That action overlays the passed `userId` user's pending `unstaged` branch if a pending update exists.
 - Missing files may return sibling suggestions from the parent directory.
 
 ## `list_files`
@@ -129,7 +127,7 @@ Important limitation:
 
 ## `grep_files`
 
-- Regex search over file names plus committed/pending Markdown content.
+- Regex search over file names plus committed/pending Markdown content. Committed content is fetched from R2 through the same read action used by `read_file`.
 - Uses JavaScript `RegExp`.
 - Searches only file nodes; folder nodes are traversed for discovery but not read.
 - Converted uploaded source paths read/search their generated Markdown shadow.
@@ -148,8 +146,9 @@ Important limitation:
 - Proposes full Markdown file content for review.
 - Does not directly commit file content.
 - Creates the file path if it does not exist; intermediate path segments become folders.
+- Missing-file creation uses the internal server file path flow and starts from empty committed content; the proposed body lives in the pending update instead of inheriting the UI welcome document.
 - Paths must be real Markdown paths ending in `.md`, for example `/readme.md` or `/docs/setup.md`.
-- Stores the proposed result in `files_pending_updates` through `upsert_file_pending_update_internal`.
+- Stores the proposed result in `files_pending_updates` through `upsert_file_pending_update_internal_action`, which fetches the latest R2-backed base before the mutation writes.
 - `write_file` remains Markdown-path-oriented and is not the normal way to target converted uploaded sources such as PDFs.
 
 ## `edit_file`
@@ -168,12 +167,12 @@ Important limitation:
 Reads:
 
 - `read_file` goes through `get_file_last_available_markdown_content_by_path`.
-- That query resolves source paths to backing content nodes and checks `files_pending_updates` for `(workspaceId, projectId, userId, contentNodeId)`.
+- That action resolves source paths to backing content nodes and checks `files_pending_updates` for `(workspaceId, projectId, userId, contentNodeId)`.
 - If a pending row exists, it reconstructs Markdown from the pending `unstaged` branch and returns that instead of committed Markdown.
 
 Writes:
 
-- `write_file` and `edit_file` call internal mutations in `files_pending_updates`.
+- `write_file` and `edit_file` call action-aware pending-update helpers so the latest R2-backed base Yjs state is resolved before internal mutations write rows.
 - They update the current user's pending `unstaged` branch.
 - The client is expected to open the diff/review UI before live file content changes.
 
@@ -188,7 +187,7 @@ Writes:
 7. `grep_files` is the precise regex tool; `glob_files` is the path-discovery tool.
 8. `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
 9. Request messages are persisted before generation; assistant responses are persisted after streaming finishes.
-10. Current tools do not read raw R2 binaries; uploaded content is available through Markdown shadow files.
+10. Current tools do not read raw uploaded R2 binaries; uploaded content is available through Markdown shadow files, whose committed Markdown is also stored in R2.
 11. Source-path reads must preserve the product distinction between the original R2 object and the editable Markdown representation.
 12. `.shadow.md` is a system-reserved implementation suffix; `list_files` and `glob_files` hide it, while `text_search_files` may expose it because the match came from that generated Markdown content.
 

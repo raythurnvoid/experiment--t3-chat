@@ -4,7 +4,7 @@ import schema from "./schema.ts";
 import { faker } from "@faker-js/faker";
 import { make } from "../src/lib/utils.ts";
 import type { Doc, Id, TableNames } from "./_generated/dataModel";
-import { files_FIRST_VERSION, files_ROOT_ID } from "../server/files.ts";
+import { files_ROOT_ID } from "../server/files.ts";
 import type { MutationCtx } from "./_generated/server";
 import polar_test from "@convex-dev/polar/test";
 import presence_test from "@convex-dev/presence/test";
@@ -46,6 +46,7 @@ export function test_convex() {
 	workpool_test.register(t, "billing_workpool_bootstrap");
 	workpool_test.register(t, "billing_workpool_cancellation");
 	workpool_test.register(t, "billing_workpool_usage_event");
+	workpool_test.register(t, "files_content_materialization_workpool");
 	workpool_test.register(t, "files_upload_conversion_workpool");
 	rate_limiter_test.register(t, "rate_limiter");
 	r2_test.register(t as unknown as Parameters<typeof r2_test.register>[0]);
@@ -141,7 +142,6 @@ export const test_mocks = {
 				name: name,
 				kind: "folder",
 				path: `/${name}`,
-				version: files_FIRST_VERSION,
 				archiveOperationId: undefined,
 				shadowFileNodeIds: [],
 			});

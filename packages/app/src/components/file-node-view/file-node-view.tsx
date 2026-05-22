@@ -51,12 +51,13 @@ import {
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFn, useRenderPromise } from "@/hooks/utils-hooks.ts";
-import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import {
 	files_ROOT_ID,
+	files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
 	files_clear_node_path_cached_validation_messages,
 	files_download_blob,
 	files_find_file_stem_end_index,
@@ -64,12 +65,15 @@ import {
 	files_get_default_node_name,
 	files_get_node_path_validation,
 	files_get_normalized_node_path_segments,
+	type files_ContentType,
 	type files_EditorView,
 } from "@/lib/files.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { cn } from "@/lib/utils.ts";
+import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
+import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { Link } from "@tanstack/react-router";
-import { useMutation, useQueries, useQuery } from "convex/react";
+import { useConvex, useQuery } from "convex/react";
 import {
 	Archive,
 	BookOpen,
@@ -132,6 +136,47 @@ function get_folder_readme_node_id(
 	});
 
 	return readmeNode?._id ?? null;
+}
+
+function can_move_file_node_to_parent(args: {
+	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined;
+	fileNodeId: app_convex_Id<"files_nodes">;
+	targetParentId: app_convex_Doc<"files_nodes">["parentId"];
+}) {
+	const fileNode = args.fileNodesList?.find((candidate) => candidate._id === args.fileNodeId);
+	if (!fileNode || fileNode.archiveOperationId !== undefined) {
+		return false;
+	}
+	if (fileNode._id === args.targetParentId || fileNode.parentId === args.targetParentId) {
+		return false;
+	}
+
+	let nextParentId = args.targetParentId;
+	while (nextParentId !== files_ROOT_ID) {
+		if (nextParentId === fileNode._id) {
+			return false;
+		}
+
+		const nextParent = args.fileNodesList?.find((candidate) => candidate._id === nextParentId);
+		if (!nextParent) {
+			return false;
+		}
+
+		nextParentId = nextParent.parentId;
+	}
+
+	return true;
+}
+
+type FileNodeViewFolderExplorerDragData = Record<string, unknown> & {
+	type: typeof files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE;
+	fileNodeId: app_convex_Id<"files_nodes">;
+};
+
+function is_file_node_view_folder_explorer_drag_data(
+	data: Record<string | symbol, unknown>,
+): data is FileNodeViewFolderExplorerDragData {
+	return data.type === files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE && typeof data.fileNodeId === "string";
 }
 
 const FILE_NODE_VIEW_TOOLBAR_EDITOR_ACTIONS_ID = "app_file_node_view_toolbar_editor_actions" satisfies AppElementId;
@@ -413,27 +458,17 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 
 	const asset = useQuery(app_convex_api.r2.get_asset, {
 		membershipId,
-		nodeId: node._id,
-	});
-	const upload = useQuery(app_convex_api.r2.get_upload_by_source_file_node, {
-		membershipId,
-		nodeId: node._id,
-	});
-	const properties = useQuery(app_convex_api.files_node_properties.get_by_file_node_for_membership, {
-		membershipId,
 		fileNodeId: node._id,
 	});
-	const assetNeedsUploadStatus = Boolean(asset) && node.shadowFileNodeIds.length === 0;
-	const storedFileMetadataIsLoading =
-		asset === undefined ||
-		properties === undefined ||
-		((asset === null || assetNeedsUploadStatus) && upload === undefined);
-	const activeUpload = asset === null || assetNeedsUploadStatus ? (upload ?? null) : null;
+	const storedFileMetadataIsLoading = asset === undefined;
 	const activeUploadStatusText =
-		activeUpload && node.shadowFileNodeIds.length === 0
-			? (activeUpload.failureMessage ??
-				(activeUpload.conversionWorkId ? "Processing" : asset ? "Uploaded. Processing" : "Waiting for upload"))
-			: null;
+		node.shadowFileNodeIds.length > 0
+			? null
+			: !asset?.r2Key
+				? "Waiting for upload"
+				: asset.conversionWorkId
+					? "Processing"
+					: "Uploaded. Processing";
 	const title = node.name;
 	const subtitle = ((/* iife */) => {
 		if (storedFileMetadataIsLoading) {
@@ -443,9 +478,9 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 			return activeUploadStatusText;
 		}
 
-		return properties?.contentType ?? "Unknown file type";
+		return node.contentType ?? "Unknown file type";
 	})();
-	const storedFileSize = properties?.size;
+	const storedFileSize = asset?.size;
 
 	return (
 		<>
@@ -481,7 +516,7 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 							{title}
 						</dd>
 					</div>
-					{activeUpload ? (
+					{activeUploadStatusText ? (
 						<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
 							<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
 								Status
@@ -496,7 +531,7 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 							Content type
 						</dt>
 						<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
-							{properties?.contentType ?? "Unknown"}
+							{node.contentType ?? "Unknown"}
 						</dd>
 					</div>
 					<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
@@ -546,18 +581,14 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		onEditorModeChange,
 	} = props;
 	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
-
-	const createMarkdownNode = useMutation(app_convex_api.files_nodes.create_markdown_node);
-	const archiveNodes = useMutation(app_convex_api.files_nodes.archive_nodes);
+	const convex = useConvex();
 
 	const [showAllItems, setShowAllItems] = useState(false);
 	const [isCreatingReadme, setIsCreatingReadme] = useState(false);
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState(() => new Set<string>());
 
 	const childItems = (fileNodesList ?? [])
-		.filter(
-			(item) => item.parentId === folderItemId && item.archiveOperationId === undefined,
-		)
+		.filter((item) => item.parentId === folderItemId && item.archiveOperationId === undefined)
 		.sort((a, b) => {
 			if (a.kind !== b.kind) {
 				return a.kind === "folder" ? -1 : 1;
@@ -577,11 +608,12 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	const handleCreateReadmeClick = useFn(() => {
 		setIsCreatingReadme(true);
-		createMarkdownNode({
-			membershipId,
-			parentId: folderItemId,
-			name: "README.md",
-		})
+		convex
+			.action(app_convex_api.files_nodes.create_markdown_node, {
+				membershipId,
+				parentId: folderItemId,
+				name: "README.md",
+			})
 			.then((result) => {
 				if (result._nay) {
 					console.error("[FileNodeViewFolder.handleCreateReadmeClick] Failed to create README", {
@@ -603,10 +635,11 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 
 	const handleArchiveNode = useFn((nodeId: app_convex_Id<"files_nodes">) => {
 		setPendingActionNodeIds((current) => new Set(current).add(nodeId));
-		archiveNodes({
-			membershipId,
-			nodeIds: [nodeId],
-		})
+		convex
+			.mutation(app_convex_api.files_nodes.archive_nodes, {
+				membershipId,
+				nodeIds: [nodeId],
+			})
 			.then((result) => {
 				if (result._nay) {
 					console.error("[FileNodeViewFolder.handleArchiveNode] Failed to archive node", {
@@ -630,6 +663,66 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			});
 	});
 
+	const handleCanMoveFileNodeToParent = useFn(
+		(args: { fileNodeId: app_convex_Id<"files_nodes">; targetParentId: app_convex_Doc<"files_nodes">["parentId"] }) => {
+			return can_move_file_node_to_parent({
+				fileNodesList,
+				fileNodeId: args.fileNodeId,
+				targetParentId: args.targetParentId,
+			});
+		},
+	);
+
+	const handleMoveFileNodesToParent = useFn(
+		(args: {
+			fileNodeIds: app_convex_Id<"files_nodes">[];
+			targetParentId: app_convex_Doc<"files_nodes">["parentId"];
+		}) => {
+			const movedFileNodeIds = args.fileNodeIds.filter((fileNodeId) => {
+				return handleCanMoveFileNodeToParent({
+					fileNodeId,
+					targetParentId: args.targetParentId,
+				});
+			});
+			if (movedFileNodeIds.length === 0) {
+				return;
+			}
+
+			setPendingActionNodeIds((current) => new Set([...current, ...movedFileNodeIds]));
+			convex
+				.mutation(app_convex_api.files_nodes.move_nodes, {
+					membershipId,
+					itemIds: movedFileNodeIds,
+					targetParentId: args.targetParentId,
+				})
+				.then((result) => {
+					if (result._nay) {
+						console.error("[FileNodeViewFolder.handleMoveFileNodesToParent] Failed to move nodes", {
+							result,
+							fileNodeIds: movedFileNodeIds,
+							targetParentId: args.targetParentId,
+						});
+					}
+				})
+				.catch((error) => {
+					console.error("[FileNodeViewFolder.handleMoveFileNodesToParent] Error moving nodes", {
+						error,
+						fileNodeIds: movedFileNodeIds,
+						targetParentId: args.targetParentId,
+					});
+				})
+				.finally(() => {
+					setPendingActionNodeIds((current) => {
+						const next = new Set(current);
+						for (const fileNodeId of movedFileNodeIds) {
+							next.delete(fileNodeId);
+						}
+						return next;
+					});
+				});
+		},
+	);
+
 	// Collapse the folder table again when navigating into a different folder.
 	useEffect(() => {
 		setShowAllItems(false);
@@ -645,6 +738,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 				projectName={projectName}
 				pendingActionNodeIds={pendingActionNodeIds}
 				onArchiveNode={handleArchiveNode}
+				canMoveFileNodeToParent={handleCanMoveFileNodeToParent}
+				onMoveFileNodesToParent={handleMoveFileNodesToParent}
 				onShowMoreClick={handleShowMoreClick}
 			/>
 			<FileNodeViewFolderReadme
@@ -765,23 +860,26 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 	props: FileNodeViewToolbarFileDownloadAction_Props,
 ) {
 	const { node } = props;
+
+	const convex = useConvex();
+
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const downloadCandidates: { fileNodeId: app_convex_Id<"files_nodes">; label: string }[] = [];
 	if (node?.kind === "file") {
-		if (node.markdownContentId) {
+		const nodeHasEditableMarkdownState =
+			(node.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) &&
+			node.yjsSnapshotId !== undefined &&
+			node.yjsLastSequenceId !== undefined;
+
+		if (node.assetId) {
 			downloadCandidates.push({
 				fileNodeId: node._id,
 				label: node.name,
 			});
-		} else {
-			if (node.assetId) {
-				downloadCandidates.push({
-					fileNodeId: node._id,
-					label: node.name,
-				});
-			}
+		}
 
+		if (!nodeHasEditableMarkdownState) {
 			for (const shadowFileNodeId of node.shadowFileNodeIds) {
 				downloadCandidates.push({
 					fileNodeId: shadowFileNodeId,
@@ -791,23 +889,6 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 		}
 	}
 
-	const downloadCandidatePropertiesQueries = Object.fromEntries(
-		downloadCandidates.map((downloadCandidate) => [
-			downloadCandidate.fileNodeId,
-			{
-				query: app_convex_api.files_node_properties.get_by_file_node_for_membership,
-				args: {
-					membershipId,
-					fileNodeId: downloadCandidate.fileNodeId,
-				},
-			},
-		]),
-	);
-	const downloadCandidateProperties = useQueries(downloadCandidatePropertiesQueries);
-	const downloadCandidatePropertiesAreLoading = downloadCandidates.some((downloadCandidate) => {
-		return downloadCandidateProperties[downloadCandidate.fileNodeId] === undefined;
-	});
-
 	const [downloadingFileNodeId, setDownloadingFileNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const isDownloading = downloadingFileNodeId !== null;
 
@@ -815,32 +896,25 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 		if (!node || isDownloading) {
 			return;
 		}
+		const downloadCandidate = downloadCandidates.find((candidate) => candidate.fileNodeId === fileNodeId);
 
 		setDownloadingFileNodeId(fileNodeId);
-		void app_convex
-			.action(app_convex_api.r2.prepare_file_download_target, {
+		void convex
+			.action(app_convex_api.r2.create_signed_download_url, {
 				membershipId,
 				fileNodeId,
 			})
-			.then(async (preparedTarget) => {
-				if (preparedTarget._nay) {
-					console.error("[FileNodeViewToolbarFileDownloadAction.handleDownload] Failed to prepare download", {
-						result: preparedTarget,
+			.then(async (signedDownloadUrl) => {
+				if (signedDownloadUrl._nay) {
+					console.error("[FileNodeViewToolbarFileDownloadAction.handleDownload] Failed to create download URL", {
+						result: signedDownloadUrl,
 						fileNodeId,
 					});
-					toast.error(preparedTarget._nay.message ?? "Failed to prepare download");
+					toast.error(signedDownloadUrl._nay.message ?? "Failed to create download URL");
 					return;
 				}
 
-				if (preparedTarget._yay.kind === "text") {
-					files_download_blob({
-						blob: new Blob([preparedTarget._yay.content], { type: preparedTarget._yay.contentType }),
-						filename: preparedTarget._yay.filename,
-					});
-					return;
-				}
-
-				const response = await fetch(preparedTarget._yay.url);
+				const response = await fetch(signedDownloadUrl._yay.url);
 				if (!response.ok) {
 					console.error("[FileNodeViewToolbarFileDownloadAction.handleDownload] Failed to fetch download", {
 						status: response.status,
@@ -852,10 +926,8 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 
 				const responseBlob = await response.blob();
 				files_download_blob({
-					blob: preparedTarget._yay.contentType
-						? responseBlob.slice(0, responseBlob.size, preparedTarget._yay.contentType)
-						: responseBlob,
-					filename: preparedTarget._yay.filename,
+					blob: responseBlob,
+					filename: downloadCandidate?.label ?? node.name,
 				});
 			})
 			.catch((error) => {
@@ -870,7 +942,7 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 			});
 	});
 
-	if (!node || node.kind !== "file" || downloadCandidates.length === 0 || downloadCandidatePropertiesAreLoading) {
+	if (!node || node.kind !== "file" || downloadCandidates.length === 0) {
 		return null;
 	}
 
@@ -1211,17 +1283,15 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 ) {
 	const { children, folderItemId, membershipId, fileNodesList } = props;
 
-	const createFolderNode = useMutation(app_convex_api.files_nodes.create_folder_node);
-	const createMarkdownNode = useMutation(app_convex_api.files_nodes.create_markdown_node);
+	const convex = useConvex();
+
 	const createNodeModalRef = useRef<FileNodeViewFolderCreateNodeModal_Ref | null>(null);
 	const [isCreatingNode, setIsCreatingNode] = useState(false);
 
 	const siblingNames =
 		folderItemId && fileNodesList
 			? fileNodesList
-					.filter(
-						(item) => item.parentId === folderItemId && item.archiveOperationId === undefined,
-					)
+					.filter((item) => item.parentId === folderItemId && item.archiveOperationId === undefined)
 					.map((child) => child.name)
 			: [];
 
@@ -1242,12 +1312,12 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 		setIsCreatingNode(true);
 		const createNodePromise =
 			kind === "folder"
-				? createFolderNode({
+				? convex.mutation(app_convex_api.files_nodes.create_folder_node, {
 						membershipId,
 						parentId: folderItemId,
 						name,
 					})
-				: createMarkdownNode({
+				: convex.action(app_convex_api.files_nodes.create_markdown_node, {
 						membershipId,
 						parentId: folderItemId,
 						name,
@@ -1316,11 +1386,11 @@ const FileNodeViewFolderBody = memo(function FileNodeViewFolderBody(props: FileN
 });
 // #endregion folder body
 
-// #region folder explorer
-type FileNodeViewFolderExplorer_ClassNames =
-	| "FileNodeViewFolderExplorer"
-	| "FileNodeViewFolderExplorer-table"
+// #region folder explorer row
+type FileNodeViewFolderExplorerRow_ClassNames =
 	| "FileNodeViewFolderExplorer-row"
+	| "FileNodeViewFolderExplorer-row-dragging"
+	| "FileNodeViewFolderExplorer-row-drop-target"
 	| "FileNodeViewFolderExplorer-row-action"
 	| "FileNodeViewFolderExplorer-cell"
 	| "FileNodeViewFolderExplorer-cell-name"
@@ -1329,7 +1399,227 @@ type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer-cell-actions"
 	| "FileNodeViewFolderExplorer-link"
 	| "FileNodeViewFolderExplorer-icon"
-	| "FileNodeViewFolderExplorer-more-action"
+	| "FileNodeViewFolderExplorer-more-action";
+
+type FileNodeViewFolderExplorerRow_Props = {
+	child: app_convex_Doc<"files_nodes">;
+	editorMode: FileEditor_Mode;
+	workspaceName: string;
+	projectName: string;
+	isPendingAction: boolean;
+	onArchiveNode: (nodeId: app_convex_Id<"files_nodes">) => void;
+	canMoveFileNodeToParent: (args: {
+		fileNodeId: app_convex_Id<"files_nodes">;
+		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
+	}) => boolean;
+	onMoveFileNodesToParent: (args: {
+		fileNodeIds: app_convex_Id<"files_nodes">[];
+		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
+	}) => void;
+};
+
+const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRow(
+	props: FileNodeViewFolderExplorerRow_Props,
+) {
+	const {
+		child,
+		editorMode,
+		workspaceName,
+		projectName,
+		isPendingAction,
+		onArchiveNode,
+		canMoveFileNodeToParent,
+		onMoveFileNodesToParent,
+	} = props;
+
+	const rowRef = useRef<HTMLDivElement | null>(null);
+	const [isDragging, setIsDragging] = useState(false);
+	const [isDropTarget, setIsDropTarget] = useState(false);
+
+	useEffect(() => {
+		const element = rowRef.current;
+		if (!element) {
+			return;
+		}
+
+		const cleanupFns: Array<() => void> = [];
+
+		if (!isPendingAction) {
+			cleanupFns.push(
+				draggable({
+					element,
+					getInitialData: (): FileNodeViewFolderExplorerDragData => ({
+						type: files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
+						fileNodeId: child._id,
+					}),
+					// Keep folder-table drags compatible with the Headless Tree sidebar foreign-drop path.
+					getInitialDataForExternal: () => ({
+						[files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE]: child._id,
+					}),
+					onDragStart() {
+						setIsDragging(true);
+					},
+					onDrop() {
+						setIsDragging(false);
+					},
+				}),
+			);
+		}
+
+		if (child.kind === "folder" && !isPendingAction) {
+			cleanupFns.push(
+				dropTargetForElements({
+					element,
+					canDrop({ source }) {
+						return (
+							is_file_node_view_folder_explorer_drag_data(source.data) &&
+							canMoveFileNodeToParent({
+								fileNodeId: source.data.fileNodeId,
+								targetParentId: child._id,
+							})
+						);
+					},
+					getDropEffect: () => "move",
+					onDragEnter({ source }) {
+						if (
+							is_file_node_view_folder_explorer_drag_data(source.data) &&
+							canMoveFileNodeToParent({
+								fileNodeId: source.data.fileNodeId,
+								targetParentId: child._id,
+							})
+						) {
+							setIsDropTarget(true);
+						}
+					},
+					onDragLeave() {
+						setIsDropTarget(false);
+					},
+					onDrop({ source }) {
+						setIsDropTarget(false);
+						if (!is_file_node_view_folder_explorer_drag_data(source.data)) {
+							return;
+						}
+						if (
+							!canMoveFileNodeToParent({
+								fileNodeId: source.data.fileNodeId,
+								targetParentId: child._id,
+							})
+						) {
+							return;
+						}
+
+						onMoveFileNodesToParent({
+							fileNodeIds: [source.data.fileNodeId],
+							targetParentId: child._id,
+						});
+					},
+				}),
+			);
+		}
+
+		if (cleanupFns.length === 0) {
+			return;
+		}
+
+		return combine(...cleanupFns);
+	}, [canMoveFileNodeToParent, child._id, child.kind, isPendingAction, onMoveFileNodesToParent]);
+
+	return (
+		<MyGridTableRow
+			ref={rowRef}
+			className={cn(
+				"FileNodeViewFolderExplorer-row" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+				isDragging && ("FileNodeViewFolderExplorer-row-dragging" satisfies FileNodeViewFolderExplorerRow_ClassNames),
+				isDropTarget &&
+					("FileNodeViewFolderExplorer-row-drop-target" satisfies FileNodeViewFolderExplorerRow_ClassNames),
+			)}
+			data-file-node-id={child._id}
+		>
+			<Link
+				aria-label={`Open ${child.name}`}
+				className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
+				to="/w/$workspaceName/$projectName/files"
+				params={{ workspaceName, projectName }}
+				search={{ nodeId: child._id, view: editorMode }}
+				draggable={false}
+			/>
+			<MyGridTableCell
+				className={cn(
+					"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+					"FileNodeViewFolderExplorer-cell-name" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+				)}
+			>
+				<MyIcon className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
+					{child.kind === "folder" ? <Folder /> : <FileText />}
+				</MyIcon>
+				<span className={"FileNodeViewFolderExplorer-link" satisfies FileNodeViewFolderExplorerRow_ClassNames}>
+					{child.name}
+				</span>
+			</MyGridTableCell>
+			<MyGridTableCell
+				className={cn(
+					"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+					"FileNodeViewFolderExplorer-cell-updated-by" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+				)}
+			>
+				{child.updatedBy || "Unknown"}
+			</MyGridTableCell>
+			<MyGridTableCell
+				className={cn(
+					"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+					"FileNodeViewFolderExplorer-cell-updated" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+				)}
+			>
+				{format_relative_time(child.updatedAt)}
+			</MyGridTableCell>
+			<MyGridTableCell
+				className={cn(
+					"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+					"FileNodeViewFolderExplorer-cell-actions" satisfies FileNodeViewFolderExplorerRow_ClassNames,
+				)}
+			>
+				<MyMenu>
+					<MyMenuTrigger>
+						<MyIconButton
+							className={"FileNodeViewFolderExplorer-more-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
+							variant="ghost-highlightable"
+							tooltip="More actions"
+							disabled={isPendingAction}
+							aria-label={`More actions for ${child.name}`}
+						>
+							<MyIconButtonIcon>
+								<EllipsisVertical />
+							</MyIconButtonIcon>
+						</MyIconButton>
+					</MyMenuTrigger>
+					<MyMenuPopover placement="bottom-end" unmountOnHide>
+						<MyMenuPopoverContent>
+							<MyMenuItem
+								variant="destructive"
+								disabled={isPendingAction}
+								hideOnClick
+								onClick={() => onArchiveNode(child._id)}
+							>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<Archive />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Archive</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+						</MyMenuPopoverContent>
+					</MyMenuPopover>
+				</MyMenu>
+			</MyGridTableCell>
+		</MyGridTableRow>
+	);
+});
+// #endregion folder explorer row
+
+// #region folder explorer
+type FileNodeViewFolderExplorer_ClassNames =
+	| "FileNodeViewFolderExplorer"
+	| "FileNodeViewFolderExplorer-table"
 	| "FileNodeViewFolderExplorer-show-more";
 
 type FileNodeViewFolderExplorer_Props = {
@@ -1340,6 +1630,14 @@ type FileNodeViewFolderExplorer_Props = {
 	projectName: string;
 	pendingActionNodeIds: ReadonlySet<string>;
 	onArchiveNode: (nodeId: app_convex_Id<"files_nodes">) => void;
+	canMoveFileNodeToParent: (args: {
+		fileNodeId: app_convex_Id<"files_nodes">;
+		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
+	}) => boolean;
+	onMoveFileNodesToParent: (args: {
+		fileNodeIds: app_convex_Id<"files_nodes">[];
+		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
+	}) => void;
 	onShowMoreClick: () => void;
 };
 
@@ -1352,6 +1650,8 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		projectName,
 		pendingActionNodeIds,
 		onArchiveNode,
+		canMoveFileNodeToParent,
+		onMoveFileNodesToParent,
 		onShowMoreClick,
 	} = props;
 
@@ -1368,94 +1668,20 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 				>
 					<MyGridTableBody>
 						{visibleChildItems.map((child) => {
-							const childNodeId = child._id;
 							const isPendingAction = pendingActionNodeIds.has(child._id);
 
 							return (
-								<MyGridTableRow
+								<FileNodeViewFolderExplorerRow
 									key={child._id}
-									className={"FileNodeViewFolderExplorer-row" satisfies FileNodeViewFolderExplorer_ClassNames}
-								>
-									<Link
-										aria-label={`Open ${child.name}`}
-										className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorer_ClassNames}
-										to="/w/$workspaceName/$projectName/files"
-										params={{ workspaceName, projectName }}
-										search={{ nodeId: child._id, view: editorMode }}
-									/>
-									<MyGridTableCell
-										className={cn(
-											"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorer_ClassNames,
-											"FileNodeViewFolderExplorer-cell-name" satisfies FileNodeViewFolderExplorer_ClassNames,
-										)}
-									>
-										<MyIcon
-											className={"FileNodeViewFolderExplorer-icon" satisfies FileNodeViewFolderExplorer_ClassNames}
-										>
-											{child.kind === "folder" ? <Folder /> : <FileText />}
-										</MyIcon>
-										<span className={"FileNodeViewFolderExplorer-link" satisfies FileNodeViewFolderExplorer_ClassNames}>
-											{child.name}
-										</span>
-									</MyGridTableCell>
-									<MyGridTableCell
-										className={cn(
-											"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorer_ClassNames,
-											"FileNodeViewFolderExplorer-cell-updated-by" satisfies FileNodeViewFolderExplorer_ClassNames,
-										)}
-									>
-										{child.updatedBy || "Unknown"}
-									</MyGridTableCell>
-									<MyGridTableCell
-										className={cn(
-											"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorer_ClassNames,
-											"FileNodeViewFolderExplorer-cell-updated" satisfies FileNodeViewFolderExplorer_ClassNames,
-										)}
-									>
-										{format_relative_time(child.updatedAt)}
-									</MyGridTableCell>
-									<MyGridTableCell
-										className={cn(
-											"FileNodeViewFolderExplorer-cell" satisfies FileNodeViewFolderExplorer_ClassNames,
-											"FileNodeViewFolderExplorer-cell-actions" satisfies FileNodeViewFolderExplorer_ClassNames,
-										)}
-									>
-										<MyMenu>
-											<MyMenuTrigger>
-												<MyIconButton
-													className={
-														"FileNodeViewFolderExplorer-more-action" satisfies FileNodeViewFolderExplorer_ClassNames
-													}
-													variant="ghost-highlightable"
-													tooltip="More actions"
-													disabled={isPendingAction}
-													aria-label={`More actions for ${child.name}`}
-												>
-													<MyIconButtonIcon>
-														<EllipsisVertical />
-													</MyIconButtonIcon>
-												</MyIconButton>
-											</MyMenuTrigger>
-											<MyMenuPopover placement="bottom-end" unmountOnHide>
-												<MyMenuPopoverContent>
-													<MyMenuItem
-														variant="destructive"
-														disabled={isPendingAction}
-														hideOnClick
-														onClick={() => onArchiveNode(childNodeId)}
-													>
-														<MyMenuItemContent>
-															<MyMenuItemContentIcon>
-																<Archive />
-															</MyMenuItemContentIcon>
-															<MyMenuItemContentPrimary>Archive</MyMenuItemContentPrimary>
-														</MyMenuItemContent>
-													</MyMenuItem>
-												</MyMenuPopoverContent>
-											</MyMenuPopover>
-										</MyMenu>
-									</MyGridTableCell>
-								</MyGridTableRow>
+									child={child}
+									editorMode={editorMode}
+									workspaceName={workspaceName}
+									projectName={projectName}
+									isPendingAction={isPendingAction}
+									onArchiveNode={onArchiveNode}
+									canMoveFileNodeToParent={canMoveFileNodeToParent}
+									onMoveFileNodesToParent={onMoveFileNodesToParent}
+								/>
 							);
 						})}
 					</MyGridTableBody>
@@ -1685,8 +1911,14 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		);
 	}
 
-	if (node.kind !== "file" || !node.markdownContentId) {
-		const shadowEditorNodeId = node.kind === "file" ? node.shadowFileNodeIds[0] : undefined;
+	const nodeHasEditableMarkdownState =
+		(node.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) &&
+		node.assetId !== undefined &&
+		node.yjsSnapshotId !== undefined &&
+		node.yjsLastSequenceId !== undefined;
+
+	if (!nodeHasEditableMarkdownState) {
+		const shadowEditorNodeId = node.shadowFileNodeIds[0];
 		if (shadowEditorNodeId) {
 			return (
 				<FileNodeViewFile
@@ -1792,24 +2024,29 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const fileNodesList = useStableQuery(app_convex_api.files_nodes.get_file_nodes_list, { membershipId });
 
 	const resolvedNode = useStableQuery(
-		app_convex_api.files_nodes.get_for_membership,
+		app_convex_api.files_nodes.get_file_node_or_shadow_source_for_membership,
 		searchNodeId && !isRootNodeSelected
 			? {
 					membershipId,
-					nodeId: searchNodeId,
+					fileNodeId: searchNodeId,
 				}
 			: "skip",
 	);
 	const resolvedNodeId = isRootNodeSelected ? files_ROOT_ID : (resolvedNode?._id ?? null);
 	// Keep create actions scoped to the visible folder/root selection; file views use this toolbar only for editor actions.
 	const targetFolderId = isRootNodeSelected ? files_ROOT_ID : resolvedNode?.kind === "folder" ? resolvedNode._id : null;
+	const resolvedNodeHasEditableMarkdownState =
+		resolvedNode?.kind === "file" &&
+		(resolvedNode.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) &&
+		resolvedNode.yjsSnapshotId !== undefined &&
+		resolvedNode.yjsLastSequenceId !== undefined;
 
 	// Treat a folder README as the active editor node so pending-update and sync subscriptions
 	// have the same owner for selected files and folder README editors.
 	const activeEditorNodeId = isRootNodeSelected
 		? get_folder_readme_node_id(fileNodesList, files_ROOT_ID)
 		: resolvedNode && resolvedNode.kind === "file"
-			? resolvedNode.markdownContentId
+			? resolvedNodeHasEditableMarkdownState
 				? resolvedNode._id
 				: (resolvedNode.shadowFileNodeIds[0] ?? null)
 			: resolvedNode?.kind === "folder"

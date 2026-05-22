@@ -73,7 +73,7 @@ test("Result_all infers tuple _yay for mixed values", () => {
 	const createFileRowsResult = Result_all([
 		"yjs_snapshot_id" as const,
 		"yjs_last_sequence_id" as const,
-		"markdown_content_id" as const,
+		"content_asset_id" as const,
 		Result({ _yay: null }),
 	] as const);
 
@@ -81,10 +81,10 @@ test("Result_all infers tuple _yay for mixed values", () => {
 		return;
 	}
 
-	const [yjsSnapshotId, yjsLastSequenceId, markdownContentId, upsertChunksYay] = createFileRowsResult._yay;
+	const [yjsSnapshotId, yjsLastSequenceId, contentAssetId, upsertChunksYay] = createFileRowsResult._yay;
 
 	expectTypeOf(yjsSnapshotId).toEqualTypeOf<"yjs_snapshot_id">();
 	expectTypeOf(yjsLastSequenceId).toEqualTypeOf<"yjs_last_sequence_id">();
-	expectTypeOf(markdownContentId).toEqualTypeOf<"markdown_content_id">();
+	expectTypeOf(contentAssetId).toEqualTypeOf<"content_asset_id">();
 	expectTypeOf(upsertChunksYay).toEqualTypeOf<null>();
 });

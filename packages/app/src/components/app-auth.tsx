@@ -403,8 +403,8 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 					if (signal.aborted) return;
 
 					const handleFatalSigninError = async (args: { toastMessage: string }) => {
-						const message = "Signup/signin failed.";
-						toast.error(message);
+						const errorMessage = "Signup/signin failed.";
+						toast.error(errorMessage);
 						await clerkAuth.signOut().catch((error) => {
 							console.error("AppAuthProvider: Fatal: Clerk signOut failed", error);
 							window.location.reload();
@@ -412,9 +412,9 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 					};
 
 					const handleFatalMissingClerkTokenError = async () => {
-						const message = "Signup/signin failed.";
-						console.error(`AppAuthProvider: ${message} Failed to fetch Clerk token while signed in.`);
-						await handleFatalSigninError({ toastMessage: message });
+						const errorMessage = "Signup/signin failed.";
+						console.error(`AppAuthProvider: ${errorMessage} Failed to fetch Clerk token while signed in.`);
+						await handleFatalSigninError({ toastMessage: errorMessage });
 					};
 
 					if (!clerkTokenData) {
@@ -431,9 +431,9 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 						});
 
 						if (resolveResult._nay) {
-							const message = "Signup/signin failed.";
-							console.error(`AppAuthProvider: ${message} resolve_user failed`, resolveResult._nay);
-							await handleFatalSigninError({ toastMessage: message });
+							const errorMessage = "Signup/signin failed.";
+							console.error(`AppAuthProvider: ${errorMessage} resolve_user failed`, resolveResult._nay);
+							await handleFatalSigninError({ toastMessage: errorMessage });
 							break;
 						}
 
@@ -451,9 +451,9 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 					}
 
 					if (!userId) {
-						const message = "Signup/signin failed.";
-						console.error(`AppAuthProvider: ${message} Missing \`external_id\` in Clerk token.`);
-						await handleFatalSigninError({ toastMessage: message });
+						const errorMessage = "Signup/signin failed.";
+						console.error(`AppAuthProvider: ${errorMessage} Missing \`external_id\` in Clerk token.`);
+						await handleFatalSigninError({ toastMessage: errorMessage });
 						break;
 					}
 

@@ -271,10 +271,6 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		useAiChatStore.setState({ threadById: new Map() });
 	}, [membershipId]);
 
-	useEffect(() => {
-		useAiChatStore.setState({ selectedThreadId: lastOpenThreadId });
-	}, [lastOpenThreadId]);
-
 	const selectedThreadId = useAiChatStore((state) => state.selectedThreadId);
 	const draftSelectedModelId = useAiChatStore((state) => state.draftSelectedModelId);
 	const draftSelectedModeId = useAiChatStore((state) => state.draftSelectedModeId);
@@ -590,40 +586,15 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			});
 	});
 
+	// Keep this as a direct expression: React Compiler memoizes the Chat instance for stable deps,
+	// and `useChat` recreates its subscription when the Chat object identity changes.
 	const unselectedChatInstance = create_chat_instance({
 		chatId: null,
 		prepareSendMessagesRequest: (options) => prepareSendMessagesRequest.current(options),
 		onFinish: (options) => handleChatFinish.current(options),
 	});
 
-	const activeChatInstance = ((/* iife */) => {
-		if (selectedThreadId) {
-			if (session?.chat) {
-				return session.chat;
-			}
-
-			// This happens when a chat is pre-selected from local storage.
-			// should_never_happen("[useAiChatController] Missing `session.chat` for selected thread", {
-			// 	selectedThreadId,
-			// 	hasSession: Boolean(session),
-			// });
-
-			const createdChat = create_chat_instance({
-				chatId: selectedThreadId,
-				prepareSendMessagesRequest: (options) => prepareSendMessagesRequest.current(options),
-				onFinish: (options) => handleChatFinish.current(options),
-			});
-
-			useAiChatStore.actions.setSession(selectedThreadId, (prev) => {
-				const base = prev ?? thread_session_create();
-				return { ...base, ...prev, chat: createdChat };
-			});
-
-			return createdChat;
-		}
-
-		return unselectedChatInstance;
-	})();
+	const activeChatInstance = selectedThreadId ? (session?.chat ?? unselectedChatInstance) : unselectedChatInstance;
 
 	const chat = useChat<ai_chat_AiSdk5UiMessage>({ chat: activeChatInstance });
 
@@ -1165,6 +1136,40 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		}
 		return "loaded" as const;
 	})();
+
+	// Restore the selected session and its Chat object together so `useChat` never sees a selected thread
+	// whose store session is still missing the object identity it subscribes to.
+	useEffect(() => {
+		if (!lastOpenThreadId) {
+			useAiChatStore.setState({ selectedThreadId: null });
+			return;
+		}
+
+		const existingSession = useAiChatStore.actions.getSession(lastOpenThreadId);
+		const nextSession = existingSession?.chat
+			? existingSession
+			: {
+					...thread_session_create(),
+					...existingSession,
+					chat: create_chat_instance({
+						chatId: lastOpenThreadId,
+						prepareSendMessagesRequest: (options) => prepareSendMessagesRequest.current(options),
+						onFinish: (options) => handleChatFinish.current(options),
+					}),
+				};
+
+		useAiChatStore.setState((state) => {
+			const threadById =
+				existingSession === nextSession
+					? state.threadById
+					: new Map(state.threadById).set(lastOpenThreadId, nextSession);
+
+			return {
+				selectedThreadId: lastOpenThreadId,
+				threadById,
+			};
+		});
+	}, [lastOpenThreadId, prepareSendMessagesRequest, handleChatFinish]);
 
 	useEffect(() => {
 		// Clean up optimistic threads that have been persisted.

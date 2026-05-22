@@ -279,6 +279,7 @@ function FileEditorCommentsThreadForm(props: FileEditorCommentsThreadForm_Props)
 					className={"FileEditorCommentsThreadForm-submit-button" satisfies FileEditorCommentsThreadForm_ClassNames}
 					type="submit"
 					variant="default"
+					tooltip="Reply to comment"
 					disabled={isEmpty || isSubmitting}
 				>
 					<MyIconButtonIcon>

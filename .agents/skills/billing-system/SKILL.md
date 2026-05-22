@@ -179,13 +179,15 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 
 ### File-save check and usage event
 
-File saves ([yjs_push_update](../../../packages/app/convex/files_nodes.ts), [save_file_pending_update](../../../packages/app/convex/files_pending_updates.ts), and [restore_snapshot](../../../packages/app/convex/files_nodes.ts)) fail fast before the yjs push or restore write:
+File saves ([yjs_push_update](../../../packages/app/convex/files_nodes.ts), [save_file_pending_update](../../../packages/app/convex/files_pending_updates.ts), and snapshot restore through [restore_snapshot_r2](../../../packages/app/convex/files_nodes.ts) / [restore_snapshot](../../../packages/app/convex/files_nodes.ts)) fail fast before the yjs push or restore write:
 
 1. Resolve `workspace`, optional owner assignment, and `billedUser` inline, then call `billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 })`. When it returns `hasCredits: false`, the caller returns `_nay` with the literal `"Insufficient funds"` message to the frontend.
 2. Run the yjs push; obtain the new sequence.
 3. Emit the existing `billing_event("file_save")` through `billing_ingest_events` with `externalId = composite_id("billing", "file_save", billedUserId, actorUserId, workspaceId, projectId, fileId, yjsSequence)` and literal `metadata.amount: 1`.
 
 For signed-in users there is no local credit debit after save; Polar usage events and subsequent customer-state refreshes are the only path that changes the synced meter. For anonymous users the shared ingest helper applies the same one-cent event locally after a successful save. Snapshot restore bills only when `write_markdown_to_yjs_sync` produced a new Yjs sequence. Do not reintroduce a shared `credits_FILE_SAVE_COST_CENTS` constant for the current one-cent file-save rule; keep the literal at the call sites unless the product rule changes.
+
+R2 content materialization is storage bookkeeping for an already accepted save; it must not emit an additional billing event.
 
 ### Anonymous users
 
@@ -449,9 +451,10 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 - Subscription mirror rows remain Polar-owned during normal account deletion and scheduled cancellation. Clear them only when Polar reports customer deletion through customer deletion webhooks or a `customer.state_changed` payload with `deleted_at`.
 - `billing_usage_snapshots` are mirrored local billing state, not billing authority. Keep them through phase 1 and delete them only during phase 2 of account deletion.
 - Restoring the account during retention enqueues billing bootstrap with `restoreCanceledSubscription: true`. Billing cancels any stored retry row and asks Polar to uncancel the subscription if it is still active/trialing and pending period-end cancellation; if no current subscription remains, bootstrap creates a new `Free` subscription. Do not recreate a paid subscription after the old one has fully ended.
-- Direct admin hard delete now uses `purgeUserRecord` as the single operator flag:
-- `purgeUserRecord: false` keeps the immediate local hard-delete path, keeps the final tombstoned user row, and schedules the same retryable period-end cancellation used by the normal delete flow.
-- `purgeUserRecord: true` cancels any scheduled period-end cancellation first, revokes the subscription immediately, requests immediate Polar customer deletion with `anonymize: false`, and purges the final local tombstone. Polar emits `customer.deleted` for `anonymize: false`; if a future GDPR erasure flow needs `anonymize: true`, treat that as a separate product flow because Polar scrubs PII by updating the customer with `deleted_at` and emits `customer.updated` plus `customer.state_changed` instead. The local Polar customer mapping may briefly remain until Polar reports deletion through `customer.deleted` or a `deleted_at` customer webhook.
+- Direct admin hard delete uses `purgeUserMod` as the single operator flag:
+- `"data"` keeps the immediate local hard-delete path, preserves Clerk and anonymous auth state, keeps the final tombstoned user row, and schedules the same retryable period-end cancellation used by the normal delete flow.
+- `"data_and_auth"` removes Clerk and anonymous auth state while keeping the final tombstoned user row, and schedules the same retryable period-end cancellation used by the normal delete flow.
+- `"data_auth_and_user_record"` cancels any scheduled period-end cancellation first, revokes the subscription immediately, requests immediate Polar customer deletion with `anonymize: false`, and purges the final local tombstone. Polar emits `customer.deleted` for `anonymize: false`; if a future GDPR erasure flow needs `anonymize: true`, treat that as a separate product flow because Polar scrubs PII by updating the customer with `deleted_at` and emits `customer.updated` plus `customer.state_changed` instead. The local Polar customer mapping may briefly remain until Polar reports deletion through `customer.deleted` or a `deleted_at` customer webhook.
 
 # Operational billing rules
 

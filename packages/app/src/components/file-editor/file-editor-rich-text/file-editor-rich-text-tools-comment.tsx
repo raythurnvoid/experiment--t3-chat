@@ -136,6 +136,7 @@ export function FileEditorRichTextToolsComment(props: FileEditorRichTextToolsCom
 						)}
 						type="submit"
 						variant="default"
+						tooltip="Submit comment"
 						disabled={isEmpty || editor?.state.selection.empty || isSubmitting}
 					>
 						<MyIconButtonIcon>

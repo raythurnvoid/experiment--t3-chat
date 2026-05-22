@@ -55,23 +55,23 @@ export async function files_db_get_yjs_content_and_sequence(
 	}
 
 	if (!fileNode.yjsSnapshotId) {
-		const message = "fileNode.yjsSnapshotId is not set";
-		const data = {
+		const errorMessage = "fileNode.yjsSnapshotId is not set";
+		const errorData = {
 			nodeId: args.nodeId,
 			yjsSnapshotId: fileNode.yjsSnapshotId,
 		};
-		console.error(message, data);
-		throw should_never_happen(message, data);
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
 	}
 
 	if (!fileNode.yjsLastSequenceId) {
-		const message = "fileNode.yjsLastSequenceId is not set";
-		const data = {
+		const errorMessage = "fileNode.yjsLastSequenceId is not set";
+		const errorData = {
 			nodeId: args.nodeId,
 			yjsLastSequenceId: fileNode.yjsLastSequenceId,
 		};
-		console.error(message, data);
-		throw should_never_happen(message, data);
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
 	}
 
 	const [yjsSnapshotDoc, yjsUpdatesDocs, yjsLastSequenceDoc] = await Promise.all([
@@ -92,16 +92,16 @@ export async function files_db_get_yjs_content_and_sequence(
 		yjsSnapshotDoc.workspaceId !== args.workspaceId ||
 		yjsSnapshotDoc.projectId !== args.projectId
 	) {
-		const message = "fileNode.yjsSnapshotId points to a missing or mismatched files_yjs_snapshots doc";
-		const data = {
+		const errorMessage = "fileNode.yjsSnapshotId points to a missing or mismatched files_yjs_snapshots doc";
+		const errorData = {
 			nodeId: args.nodeId,
 			yjsSnapshotId: fileNode.yjsSnapshotId,
 			yjsSnapshotDoc,
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 		};
-		console.error(message, data);
-		throw should_never_happen(message, data);
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
 	}
 
 	if (
@@ -109,20 +109,20 @@ export async function files_db_get_yjs_content_and_sequence(
 		yjsLastSequenceDoc.workspaceId !== args.workspaceId ||
 		yjsLastSequenceDoc.projectId !== args.projectId
 	) {
-		const message = "fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
-		const data = {
+		const errorMessage =
+			"fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
+		const errorData = {
 			nodeId: args.nodeId,
 			yjsLastSequenceId: fileNode.yjsLastSequenceId,
 			yjsLastSequenceDoc,
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 		};
-		console.error(message, data);
-		throw should_never_happen(message, data);
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
 	}
 
 	const incrementalYjsUpdatesDocs = yjsUpdatesDocs.filter((u) => u.sequence > yjsSnapshotDoc.sequence).reverse();
-
 	return {
 		file: fileNode,
 		yjsSnapshotDoc,
@@ -142,7 +142,9 @@ export async function files_db_get_pending_update(
 		pendingUpdateId?: Id<"files_pending_updates">;
 	},
 ) {
-	const pendingUpdateById = args.pendingUpdateId ? await ctx.db.get("files_pending_updates", args.pendingUpdateId) : null;
+	const pendingUpdateById = args.pendingUpdateId
+		? await ctx.db.get("files_pending_updates", args.pendingUpdateId)
+		: null;
 	const pendingUpdate =
 		pendingUpdateById &&
 		pendingUpdateById.workspaceId === args.workspaceId &&

@@ -34,6 +34,16 @@ export function date_get_week_start_timestamp(timestamp: number): number {
 }
 
 /**
+ * Get the start of the month (first day, 00:00:00 UTC) for a given timestamp.
+ */
+export function date_get_month_start_timestamp(timestamp: number): number {
+	const date = new Date(timestamp);
+	date.setUTCDate(1);
+	date.setUTCHours(0, 0, 0, 0);
+	return date.getTime();
+}
+
+/**
  * Get the start of the day (00:00:00 UTC) for a given timestamp
  */
 export function date_get_day_start_timestamp(timestamp: number): number {

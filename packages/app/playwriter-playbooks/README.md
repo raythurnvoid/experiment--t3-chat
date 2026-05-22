@@ -22,3 +22,4 @@ Use these playbooks when `@playwright/test` e2e would be too brittle due to chan
 
 - `comment-thread-persistence.md` - create comment + reply, refresh, verify persistence.
 - `files-sidebar-smoke.md` - basic sidebar interaction sanity for `/files`.
+- `r2-file-content-regression.md` - deep R2-backed files, uploads, comments, and agent regression QA.

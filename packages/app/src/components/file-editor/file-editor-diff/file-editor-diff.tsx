@@ -802,7 +802,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		pendingUpdateSyncStatusRef.current = "mutation_in_flight";
 
 		return convex
-			.mutation(api.files_pending_updates.upsert_file_pending_update, {
+			.action(api.files_pending_updates.upsert_file_pending_update, {
 				membershipId,
 				nodeId,
 				pendingUpdateId,
@@ -1462,7 +1462,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				return;
 			}
 
-			const savePendingResult = await convex.mutation(api.files_pending_updates.save_file_pending_update, {
+			const savePendingResult = await convex.action(api.files_pending_updates.save_file_pending_update, {
 				membershipId,
 				nodeId,
 				pendingUpdateId: currentPendingUpdateId,
@@ -1567,7 +1567,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				});
 			}
 
-			const persistRebasedStateResult = await convex.mutation(
+			const persistRebasedStateResult = await convex.action(
 				api.files_pending_updates.persist_file_pending_update_rebased_state,
 				{
 					membershipId,

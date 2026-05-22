@@ -34,7 +34,7 @@ Run Convex commands from the app package directory when the deployment is config
 
 ```powershell
 Push-Location packages/app
-pnpx convex data files_uploads --limit 20 --order desc --format json
+pnpx convex data files_r2_assets --limit 20 --order desc --format json
 Pop-Location
 ```
 

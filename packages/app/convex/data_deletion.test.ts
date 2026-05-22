@@ -1,10 +1,13 @@
-import { describe, expect, test } from "vitest";
+import { R2 } from "@convex-dev/r2";
+import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { presence } from "./presence.ts";
 import { test_convex } from "./setup.test.ts";
 import { data_deletion_db_request } from "../server/data_deletion.ts";
+
+const test = baseTest.sequential;
 import {
 	workspaces_db_create,
 	workspaces_db_create_project,
@@ -12,14 +15,23 @@ import {
 } from "./workspaces.ts";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import { quotas_db_ensure } from "./quotas.ts";
-import { files_create_room_id, files_get_utf8_byte_size, type files_ContentType } from "../shared/files.ts";
+import { files_create_room_id, files_get_utf8_byte_size } from "../shared/files.ts";
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
+beforeEach(() => {
+	vi.useFakeTimers();
+});
+
+afterEach(() => {
+	vi.clearAllTimers();
+	vi.useRealTimers();
+});
+
 async function data_deletion_test_bootstrap_user(
 	ctx: MutationCtx,
-	args: { clerkUserId: string; displayName: string; avatarUrl?: string; email?: string },
+	args: { clerkUserId: string | null; displayName: string; avatarUrl?: string; email?: string },
 ) {
 	const now = Date.now();
 	const userId = await ctx.db.insert("users", {
@@ -80,7 +92,6 @@ async function data_deletion_test_seed_page(
 		path: `/${args.tag}`,
 		name: args.tag,
 		kind: "file",
-		version: 0,
 		parentId: "root",
 		createdBy: args.userId,
 		updatedBy: args.userId,
@@ -88,26 +99,20 @@ async function data_deletion_test_seed_page(
 		shadowFileNodeIds: [],
 	});
 
-	await ctx.db.insert("files_markdown_content", {
+	const markdown = `# ${args.tag}`;
+	const assetId = await ctx.db.insert("files_r2_assets", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
-		nodeId: nodeId,
-		content: `# ${args.tag}`,
-		isArchived: false,
-		yjsSequence: 0,
-		updatedAt: Date.now(),
-		updatedBy: args.userId,
-	});
-	const propertiesId = await ctx.db.insert("files_node_properties", {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		fileNodeId: nodeId,
-		contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-		size: files_get_utf8_byte_size(`# ${args.tag}`),
+		kind: "content",
+		r2Bucket: "test-bucket",
+		r2Key: `workspaces/${args.workspaceId}/projects/${args.projectId}/assets/${nodeId}`,
+		size: files_get_utf8_byte_size(markdown),
+		createdBy: args.userId,
 		updatedAt: Date.now(),
 	});
 	await ctx.db.patch("files_nodes", nodeId, {
-		propertiesId,
+		assetId,
+		contentType: "text/markdown;charset=utf-8",
 	});
 
 	return {
@@ -793,7 +798,7 @@ describe("process_user_deletion_request", () => {
 		});
 
 		expect(afterUserDeletion.user?.deletedAt).toBe(10_001);
-		expect(afterUserDeletion.user?.clerkUserId).toBeNull();
+		expect(afterUserDeletion.user?.clerkUserId).toBe("clerk-user-delete-main");
 		expect(afterUserDeletion.user?.defaultWorkspaceId).toBeUndefined();
 		expect(afterUserDeletion.user?.defaultProjectId).toBeUndefined();
 		expect(afterUserDeletion.anagraphic?.displayName).toBe("Deleted User");
@@ -1066,7 +1071,7 @@ describe("process_workspace_deletion_request", () => {
 				workspaceRequest,
 				projectRequest,
 				files,
-				fileProperties,
+				fileAssets,
 				workspaceQuotaDocs,
 			] = await Promise.all([
 					ctx.db.get("workspaces", workspace.workspaceId),
@@ -1079,9 +1084,11 @@ describe("process_workspace_deletion_request", () => {
 						.collect()
 						.then((rows) => rows.filter((row) => row.workspaceId === String(workspace.workspaceId))),
 					ctx.db
-						.query("files_node_properties")
-						.collect()
-						.then((rows) => rows.filter((row) => row.workspaceId === String(workspace.workspaceId))),
+						.query("files_r2_assets")
+						.withIndex("by_workspace_project", (q) =>
+							q.eq("workspaceId", String(workspace.workspaceId)).eq("projectId", String(workspace.defaultProjectId)),
+						)
+						.collect(),
 					ctx.db
 						.query("quotas")
 						.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", workspace.workspaceId))
@@ -1095,7 +1102,7 @@ describe("process_workspace_deletion_request", () => {
 				workspaceRequest,
 				projectRequest,
 				files,
-				fileProperties,
+				fileAssets,
 				workspaceQuotaDocs,
 			};
 		});
@@ -1106,7 +1113,7 @@ describe("process_workspace_deletion_request", () => {
 		expect(after.workspaceRequest).toBeNull();
 		expect(after.projectRequest).toBeNull();
 		expect(after.files).toHaveLength(0);
-		expect(after.fileProperties).toHaveLength(0);
+		expect(after.fileAssets).toHaveLength(0);
 		expect(after.workspaceQuotaDocs).toHaveLength(0);
 	});
 });
@@ -1149,6 +1156,34 @@ describe("hard_delete_user_data", () => {
 				tag: "direct-user-purge-page",
 			}),
 		);
+		const deletedR2Keys = await t.run(async (ctx) => {
+			const now = Date.now();
+			const markdownR2Key = `content/workspaces/${deletedUser.defaultWorkspaceId}/projects/${deletedUser.defaultProjectId}/nodes/direct-user-purge-page/markdown`;
+			const yjsR2Key = `content/workspaces/${deletedUser.defaultWorkspaceId}/projects/${deletedUser.defaultProjectId}/nodes/direct-user-purge-page/yjs-snapshot`;
+
+			await Promise.all([
+				ctx.db.insert("files_r2_assets", {
+					workspaceId: String(deletedUser.defaultWorkspaceId),
+					projectId: String(deletedUser.defaultProjectId),
+					kind: "content",
+					r2Bucket: "test-bucket",
+					r2Key: markdownR2Key,
+					createdBy: deletedUser.userId,
+					updatedAt: now,
+				}),
+				ctx.db.insert("files_r2_assets", {
+					workspaceId: String(deletedUser.defaultWorkspaceId),
+					projectId: String(deletedUser.defaultProjectId),
+					kind: "yjs_snapshot",
+					r2Bucket: "test-bucket",
+					r2Key: yjsR2Key,
+					createdBy: deletedUser.userId,
+					updatedAt: now,
+				}),
+			]);
+
+			return [markdownR2Key, yjsR2Key] as const;
+		});
 
 		const requestIds = await t.run(async (ctx) => {
 			const userRequestId = await data_deletion_db_request(ctx, {
@@ -1181,6 +1216,7 @@ describe("hard_delete_user_data", () => {
 			};
 		});
 
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
 				userId: deletedUser.userId,
@@ -1188,7 +1224,7 @@ describe("hard_delete_user_data", () => {
 		);
 
 		const after = await t.run(async (ctx) => {
-			const [user, workspace, project, files, userRequest, workspaceRequest, projectRequest, unrelatedProjectRequest] =
+			const [user, workspace, project, files, filesR2Assets, userRequest, workspaceRequest, projectRequest, unrelatedProjectRequest] =
 				await Promise.all([
 					ctx.db.get("users", deletedUser.userId),
 					ctx.db.get("workspaces", deletedUser.defaultWorkspaceId),
@@ -1197,6 +1233,12 @@ describe("hard_delete_user_data", () => {
 						.query("files_nodes")
 						.collect()
 						.then((rows) => rows.filter((row) => row.workspaceId === String(deletedUser.defaultWorkspaceId))),
+					ctx.db
+						.query("files_r2_assets")
+						.withIndex("by_workspace_project", (q) =>
+							q.eq("workspaceId", String(deletedUser.defaultWorkspaceId)).eq("projectId", String(deletedUser.defaultProjectId)),
+						)
+						.collect(),
 					ctx.db.get("data_deletion_requests", requestIds.userRequestId),
 					ctx.db.get("data_deletion_requests", requestIds.workspaceRequestId),
 					ctx.db.get("data_deletion_requests", requestIds.projectRequestId),
@@ -1208,6 +1250,7 @@ describe("hard_delete_user_data", () => {
 				workspace,
 				project,
 				files,
+				filesR2Assets,
 				userRequest,
 				workspaceRequest,
 				projectRequest,
@@ -1216,12 +1259,16 @@ describe("hard_delete_user_data", () => {
 		});
 
 		expect(after.user?.deletedAt).toBeTypeOf("number");
-		expect(after.user?.clerkUserId).toBeNull();
+		expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete-data-direct");
 		expect(after.user?.defaultWorkspaceId).toBeUndefined();
 		expect(after.user?.defaultProjectId).toBeUndefined();
 		expect(after.workspace).toBeNull();
 		expect(after.project).toBeNull();
 		expect(after.files).toHaveLength(0);
+		expect(after.filesR2Assets).toHaveLength(0);
+		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), deletedR2Keys[0]);
+		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), deletedR2Keys[1]);
+		deleteObjectSpy.mockRestore();
 		expect(after.userRequest).toBeNull();
 		expect(after.workspaceRequest).toBeNull();
 		expect(after.projectRequest).toBeNull();
@@ -1296,12 +1343,58 @@ describe("hard_delete_user_data", () => {
 		});
 
 		expect(after.user?.deletedAt).toBe(30_001);
-		expect(after.user?.clerkUserId).toBeNull();
+		expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete-data-initialized");
 		expect(after.request).toBeNull();
 		expect(after.workspace).toBeNull();
 		expect(after.project).toBeNull();
 		expect(after.files).toHaveLength(0);
 		expect(after.snapshots).toHaveLength(0);
+	});
+
+	test("can preserve user auth when the caller keeps the user record", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-data-preserve-auth",
+				displayName: "Hard Delete Data Preserve Auth",
+			}),
+		);
+		const anonymousTokenId = await t.run(async (ctx) => {
+			const tokenId = await ctx.db.insert("users_anon_tokens", {
+				userId: deletedUser.userId,
+				token: "hard-delete-data-preserved-token",
+				updatedAt: 44_444,
+			});
+			await ctx.db.patch("users", deletedUser.userId, {
+				anonymousAuthToken: tokenId,
+			});
+
+			return tokenId;
+		});
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+				userId: deletedUser.userId,
+				deleteUserAuth: false,
+			}),
+		);
+
+		const after = await t.run(async (ctx) => {
+			const [user, anonymousToken] = await Promise.all([
+				ctx.db.get("users", deletedUser.userId),
+				ctx.db.get("users_anon_tokens", anonymousTokenId),
+			]);
+
+			return {
+				user,
+				anonymousToken,
+			};
+		});
+
+		expect(after.user?.deletedAt).toBeTypeOf("number");
+		expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete-data-preserve-auth");
+		expect(after.user?.anonymousAuthToken).toBe(anonymousTokenId);
+		expect(after.anonymousToken?.token).toBe("hard-delete-data-preserved-token");
 	});
 
 	test("keeps shared orphaned projects while deleting the user data directly", async () => {
@@ -1670,8 +1763,8 @@ describe("resolve_user after tombstone", () => {
 				ctx.db.get("data_deletion_requests", requestId!),
 				ctx.db
 					.query("workspaces_projects_users")
-					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser.userId))
-					.collect(),
+					.collect()
+					.then((rows) => rows.filter((row) => row.userId === deletedUser.userId)),
 				ctx.db.get("users_anagraphics", deletedUser.anagraphicId),
 				ctx.db
 					.query("files_nodes")
@@ -1928,7 +2021,7 @@ describe("resolve_user after tombstone", () => {
 
 		expect(result._yay.userId).not.toBe(deletedUser.userId);
 		expect(after.oldUser?.deletedAt).toBe(30_001);
-		expect(after.oldUser?.clerkUserId).toBeNull();
+		expect(after.oldUser?.clerkUserId).toBe("clerk-user-delete-return-non-match");
 		expect(after.newUser?.clerkUserId).toBe("clerk-user-delete-return-non-match-again");
 		expect(after.newUser?.deletedAt).toBeUndefined();
 	});

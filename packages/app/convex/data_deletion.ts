@@ -1,5 +1,6 @@
 import { v } from "convex/values";
-import { internal } from "./_generated/api.js";
+import { Workpool, type WorkId } from "@convex-dev/workpool";
+import { components, internal } from "./_generated/api.js";
 import { internalAction, internalMutation, internalQuery, type MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
@@ -7,11 +8,32 @@ import { data_deletion_db_request } from "../server/data_deletion.ts";
 import { presence } from "./presence.ts";
 import { workspaces_db_ensure_default_workspace_and_project_for_user } from "./workspaces.ts";
 import { quotas_db_get } from "./quotas.ts";
+import { r2_delete_object } from "./r2.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const USER_DELETION_REQUEST_BATCH_SIZE = 20;
 const WORKSPACE_DELETION_REQUEST_BATCH_SIZE = 50;
 const PROJECT_DELETION_REQUEST_BATCH_SIZE = 200;
+
+const files_content_materialization_workpool = new Workpool(components.files_content_materialization_workpool, {
+	maxParallelism: 1,
+	retryActionsByDefault: true,
+	defaultRetryBehavior: {
+		initialBackoffMs: 60 * 1000,
+		base: 1.2,
+		maxAttempts: Number.POSITIVE_INFINITY,
+	} as const,
+});
+
+const files_upload_conversion_workpool = new Workpool(components.files_upload_conversion_workpool, {
+	maxParallelism: 1,
+	retryActionsByDefault: true,
+	defaultRetryBehavior: {
+		initialBackoffMs: 60 * 1000,
+		base: 1.2,
+		maxAttempts: Number.POSITIVE_INFINITY,
+	} as const,
+});
 
 async function db_purge_workspace_project_content(
 	ctx: MutationCtx,
@@ -21,7 +43,7 @@ async function db_purge_workspace_project_content(
 
 	// --- collect ids (read everything first; see TODO on purge for large-tenant limits) ---
 
-	// files_pending_updates (tenant docs + cleanup tasks + file ids used to locate `files_yjs_snapshot_schedules` docs)
+	// files_pending_updates (tenant docs + cleanup tasks + file ids used to locate file-scoped background jobs)
 	const pendingUpdateIds: Array<Id<"files_pending_updates">> = [];
 	for await (const doc of ctx.db.query("files_pending_updates")) {
 		if (doc.workspaceId === workspaceId && doc.projectId === projectId) {
@@ -41,41 +63,39 @@ async function db_purge_workspace_project_content(
 	}
 
 	const nodeIds: Array<Id<"files_nodes">> = [];
-	const filesNodePropertiesIds: Array<Id<"files_node_properties">> = [];
 	for await (const page of ctx.db
 		.query("files_nodes")
 		.withIndex("by_workspace_project_parent_name", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		nodeIds.push(page._id);
-		if (page.propertiesId) {
-			filesNodePropertiesIds.push(page.propertiesId);
-		}
 	}
 
 	const filesR2AssetIds: Array<Id<"files_r2_assets">> = [];
+	const filesR2AssetKeys: string[] = [];
+	const filesUploadConversionJobs: Array<WorkId> = [];
 	for await (const doc of ctx.db
 		.query("files_r2_assets")
-		.withIndex("by_workspace_project_r2Key", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
+		.withIndex("by_workspace_project", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
 		filesR2AssetIds.push(doc._id);
-	}
-
-	const filesUploadIds: Array<Id<"files_uploads">> = [];
-	for await (const doc of ctx.db.query("files_uploads")) {
-		if (doc.workspaceId === workspaceId && doc.projectId === projectId) {
-			filesUploadIds.push(doc._id);
+		if (doc.r2Key) {
+			filesR2AssetKeys.push(doc.r2Key);
+		}
+		if (doc.conversionWorkId) {
+			filesUploadConversionJobs.push(doc.conversionWorkId);
 		}
 	}
 
-	const filesYjsSnapshotScheduleIds: Array<Id<"files_yjs_snapshot_schedules">> = [];
+	const filesContentMaterializationJobs: Array<{
+		_id: Id<"files_content_materialization_jobs">;
+		jobId: WorkId;
+	}> = [];
 	for (const nodeId of nodeIds) {
-		const sched = await ctx.db
-			.query("files_yjs_snapshot_schedules")
+		const materializationJobs = await ctx.db
+			.query("files_content_materialization_jobs")
 			.withIndex("by_file", (q) => q.eq("nodeId", nodeId))
-			.first();
-		if (sched) {
-			filesYjsSnapshotScheduleIds.push(sched._id);
-		}
+			.collect();
+		filesContentMaterializationJobs.push(...materializationJobs.map((job) => ({ _id: job._id, jobId: job.jobId })));
 	}
 
 	// ai_chat_threads_messages_aisdk_5
@@ -160,16 +180,6 @@ async function db_purge_workspace_project_content(
 		filesYjsDocsLastSequencesIds.push(doc._id);
 	}
 
-	// files_snapshots_contents
-	const filesSnapshotsContentsIds: Array<Id<"files_snapshots_contents">> = [];
-	for await (const doc of ctx.db
-		.query("files_snapshots_contents")
-		.withIndex("by_workspace_project_fileSnapshot", (q) =>
-			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
-		)) {
-		filesSnapshotsContentsIds.push(doc._id);
-	}
-
 	// files_snapshots
 	const filesSnapshotsIds: Array<Id<"files_snapshots">> = [];
 	for await (const doc of ctx.db
@@ -180,20 +190,15 @@ async function db_purge_workspace_project_content(
 		filesSnapshotsIds.push(doc._id);
 	}
 
-	// files_markdown_content (full table scan)
-	const filesMarkdownContentIds: Array<Id<"files_markdown_content">> = [];
-	for await (const doc of ctx.db.query("files_markdown_content")) {
-		if (doc.workspaceId === workspaceId && doc.projectId === projectId) {
-			filesMarkdownContentIds.push(doc._id);
-		}
-	}
-
 	// --- delete (same dependency order as before) ---
 
 	// files_pending_updates_cleanup_tasks
 	await Promise.all(pendingUpdateCleanupTaskIds.map((id) => ctx.db.delete("files_pending_updates_cleanup_tasks", id)));
-	// files_yjs_snapshot_schedules
-	await Promise.all(filesYjsSnapshotScheduleIds.map((id) => ctx.db.delete("files_yjs_snapshot_schedules", id)));
+	// files_content_materialization_jobs
+	await Promise.all(filesContentMaterializationJobs.map((job) => files_content_materialization_workpool.cancel(ctx, job.jobId)));
+	await Promise.all(filesContentMaterializationJobs.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)));
+	// files upload conversion work
+	await Promise.all(filesUploadConversionJobs.map((jobId) => files_upload_conversion_workpool.cancel(ctx, jobId)));
 	// ai_chat_threads_messages_aisdk_5
 	await Promise.all(aiChatThreadsMessagesAisdk5Ids.map((id) => ctx.db.delete("ai_chat_threads_messages_aisdk_5", id)));
 	// ai_chat_threads
@@ -216,18 +221,11 @@ async function db_purge_workspace_project_content(
 	await Promise.all(filesYjsUpdatesIds.map((id) => ctx.db.delete("files_yjs_updates", id)));
 	// files_yjs_docs_last_sequences
 	await Promise.all(filesYjsDocsLastSequencesIds.map((id) => ctx.db.delete("files_yjs_docs_last_sequences", id)));
-	// files_snapshots_contents
-	await Promise.all(filesSnapshotsContentsIds.map((id) => ctx.db.delete("files_snapshots_contents", id)));
 	// files_snapshots
 	await Promise.all(filesSnapshotsIds.map((id) => ctx.db.delete("files_snapshots", id)));
-	// files_markdown_content
-	await Promise.all(filesMarkdownContentIds.map((id) => ctx.db.delete("files_markdown_content", id)));
 	// files_r2_assets
+	await Promise.all(filesR2AssetKeys.map((key) => r2_delete_object(ctx, key)));
 	await Promise.all(filesR2AssetIds.map((id) => ctx.db.delete("files_r2_assets", id)));
-	// files_uploads
-	await Promise.all(filesUploadIds.map((id) => ctx.db.delete("files_uploads", id)));
-	// files_node_properties
-	await Promise.all(filesNodePropertiesIds.map((id) => ctx.db.delete("files_node_properties", id)));
 	// files
 	await Promise.all(nodeIds.map((id) => ctx.db.delete("files_nodes", id)));
 }
@@ -438,6 +436,7 @@ async function db_finalize_deleted_user(
 	args: {
 		userId: Id<"users">;
 		now: number;
+		deleteUserAuth?: boolean;
 	},
 ) {
 	const user = await ctx.db.get("users", args.userId);
@@ -462,10 +461,12 @@ async function db_finalize_deleted_user(
 			.query("access_control_role_assignments")
 			.withIndex("by_user_role_workspace_project", (q) => q.eq("userId", user._id))
 			.collect(),
-		ctx.db
-			.query("users_anon_tokens")
-			.withIndex("by_user", (q) => q.eq("userId", user._id))
-			.collect(),
+		args.deleteUserAuth
+			? ctx.db
+					.query("users_anon_tokens")
+					.withIndex("by_user", (q) => q.eq("userId", user._id))
+					.collect()
+			: Promise.resolve([] as Array<Doc<"users_anon_tokens">>),
 		ctx.db
 			.query("files_pending_updates")
 			.withIndex("by_user_page", (q) => q.eq("userId", userIdString))
@@ -518,7 +519,11 @@ async function db_finalize_deleted_user(
 		.withIndex("by_user_workspace_project_resource_permission", (q) => q.eq("userId", user._id))
 		.collect()
 		.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id))));
-	await Promise.all(anonymousAuthTokens.map((doc) => ctx.db.delete("users_anon_tokens", doc._id)));
+	// Keep auth identifiers only for data-only purges; auth purges remove both
+	// the external Clerk pointer and the anonymous token that can mint sessions.
+	if (args.deleteUserAuth) {
+		await Promise.all(anonymousAuthTokens.map((doc) => ctx.db.delete("users_anon_tokens", doc._id)));
+	}
 	await ctx.db
 		.query("quotas")
 		.withIndex("by_user_quotaName", (q) => q.eq("userId", user._id))
@@ -527,8 +532,7 @@ async function db_finalize_deleted_user(
 	await Promise.all(billingUsageSnapshots.map((doc) => ctx.db.delete("billing_usage_snapshots", doc._id)));
 
 	await ctx.db.patch("users", user._id, {
-		clerkUserId: null,
-		anonymousAuthToken: undefined,
+		...(args.deleteUserAuth ? { clerkUserId: null, anonymousAuthToken: undefined } : {}),
 		defaultWorkspaceId: undefined,
 		defaultProjectId: undefined,
 		deletedAt: user.deletedAt ?? args.now,
@@ -831,6 +835,7 @@ export const process_project_deletion_request = internalMutation({
 export const hard_delete_user_data = internalMutation({
 	args: {
 		userId: v.id("users"),
+		deleteUserAuth: v.optional(v.boolean()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -850,6 +855,7 @@ export const hard_delete_user_data = internalMutation({
 		const deleteUserRes = await db_finalize_deleted_user(ctx, {
 			userId: user._id,
 			now: now,
+			deleteUserAuth: args.deleteUserAuth,
 		});
 
 		if (deleteUserRes?.workspacesToDelete) {

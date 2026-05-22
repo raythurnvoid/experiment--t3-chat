@@ -1,15 +1,18 @@
+import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
-import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
+import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { MutationCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
 import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared/billing.ts";
 import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
+
+const test = baseTest;
 import { billing_event } from "../server/billing.ts";
+import { r2_create_asset_key } from "./r2.ts";
 import {
 	files_db_reschedule_pending_update_cleanup_for_user,
-	files_FIRST_VERSION,
 	files_ROOT_ID,
 	files_u8_to_array_buffer,
 	files_yjs_compute_diff_update_from_yjs_doc,
@@ -18,19 +21,40 @@ import {
 	files_yjs_doc_get_markdown,
 	files_yjs_doc_update_from_markdown,
 } from "../server/files.ts";
+import { files_get_utf8_byte_size } from "../shared/files.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 let enqueueActionSpy: MockInstance;
+const r2Objects = new Map<string, string | ArrayBuffer>();
 
 beforeEach(() => {
+	r2Objects.clear();
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+	);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url: string | URL | Request) => {
+			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (!urlString.startsWith("https://r2.test/object?key=")) {
+				return new Response(null, { status: 404 });
+			}
+
+			const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
+			const body = r2Objects.get(key);
+			return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+		}),
+	);
 	// Keep pending-edit tests off the real billing workpool while still letting
 	// focused cases assert whether a file-save event was enqueued.
 	enqueueActionSpy = vi
 		.spyOn(Workpool.prototype, "enqueueAction")
 		.mockResolvedValue("work_pending_update_test_billing_event" as never);
+	vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined as never);
 });
 
 afterEach(() => {
+	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
 });
 
@@ -112,32 +136,6 @@ async function seed_file_with_markdown(args: {
 	const { userId, workspaceId, projectId, membershipId } = membership;
 	await seed_billing_snapshot_for_user(ctx, userId);
 
-	const nodeId = await ctx.db.insert("files_nodes", {
-		workspaceId,
-		projectId,
-		path,
-		name,
-		kind: "file",
-		version: files_FIRST_VERSION,
-		parentId: files_ROOT_ID,
-		createdBy: userId,
-		updatedBy: userId,
-		updatedAt: Date.now(),
-		archiveOperationId: undefined,
-		shadowFileNodeIds: [],
-	});
-
-	const markdownContentId = await ctx.db.insert("files_markdown_content", {
-		workspaceId: workspaceId,
-		projectId: projectId,
-		nodeId: nodeId,
-		content: markdown,
-		isArchived: false,
-		yjsSequence: 0,
-		updatedAt: Date.now(),
-		updatedBy: String(userId),
-	});
-
 	const baseYjsDoc = new YDoc();
 	const baseYjsDocFromMarkdown = files_yjs_doc_update_from_markdown({
 		mut_yjsDoc: baseYjsDoc,
@@ -154,15 +152,63 @@ async function seed_file_with_markdown(args: {
 		throw new Error("Failed to seed base markdown from Yjs doc");
 	}
 
+	const now = Date.now();
+	const markdownAssetId = await ctx.db.insert("files_r2_assets", {
+		workspaceId,
+		projectId,
+		kind: "content",
+		r2Bucket: "test-bucket",
+		size: files_get_utf8_byte_size(baseMarkdownResult._yay),
+		createdBy: userId,
+		updatedAt: now,
+	});
+	const markdownAssetKey = r2_create_asset_key({ workspaceId, projectId, assetId: markdownAssetId });
+	await ctx.db.patch("files_r2_assets", markdownAssetId, {
+		r2Key: markdownAssetKey,
+	});
+	r2Objects.set(markdownAssetKey, baseMarkdownResult._yay);
+
+	const yjsSnapshotUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc));
+	const yjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
+		workspaceId,
+		projectId,
+		kind: "yjs_snapshot",
+		r2Bucket: "test-bucket",
+		size: yjsSnapshotUpdate.byteLength,
+		createdBy: userId,
+		updatedAt: now,
+	});
+	const yjsSnapshotAssetKey = r2_create_asset_key({ workspaceId, projectId, assetId: yjsSnapshotAssetId });
+	await ctx.db.patch("files_r2_assets", yjsSnapshotAssetId, {
+		r2Key: yjsSnapshotAssetKey,
+	});
+	r2Objects.set(yjsSnapshotAssetKey, yjsSnapshotUpdate);
+
+	const nodeId = await ctx.db.insert("files_nodes", {
+		workspaceId,
+		projectId,
+		path,
+		name,
+		kind: "file",
+		contentType: "text/markdown;charset=utf-8",
+		assetId: markdownAssetId,
+		parentId: files_ROOT_ID,
+		createdBy: userId,
+		updatedBy: userId,
+		updatedAt: now,
+		archiveOperationId: undefined,
+		shadowFileNodeIds: [],
+	});
+
 	const snapshotId = await ctx.db.insert("files_yjs_snapshots", {
 		workspaceId: workspaceId,
 		projectId: projectId,
 		nodeId: nodeId,
 		sequence: 0,
-		snapshotUpdate: files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc)),
+		assetId: yjsSnapshotAssetId,
 		createdBy: userId,
 		updatedBy: String(userId),
-		updatedAt: Date.now(),
+		updatedAt: now,
 	});
 
 	const lastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
@@ -173,7 +219,6 @@ async function seed_file_with_markdown(args: {
 	});
 
 	await ctx.db.patch("files_nodes", nodeId, {
-		markdownContentId,
 		yjsSnapshotId: snapshotId,
 		yjsLastSequenceId: lastSequenceId,
 	});
@@ -205,6 +250,35 @@ async function seed_signed_in_file_with_markdown(
 	});
 }
 
+async function read_file_yjs_snapshot_update(args: {
+	ctx: MutationCtx;
+	fileNode: { yjsSnapshotId?: Id<"files_yjs_snapshots"> };
+}) {
+	if (!args.fileNode.yjsSnapshotId) {
+		throw new Error("fileNode.yjsSnapshotId is not set while reading Yjs snapshot");
+	}
+
+	const snapshot = await args.ctx.db.get("files_yjs_snapshots", args.fileNode.yjsSnapshotId);
+	if (!snapshot) {
+		throw new Error("fileNode.yjsSnapshotId points to a missing files_yjs_snapshots doc while reading Yjs snapshot");
+	}
+
+	const snapshotAsset = await args.ctx.db.get("files_r2_assets", snapshot.assetId);
+	if (!snapshotAsset?.r2Key) {
+		throw new Error("snapshot.assetId points to a missing files_r2_assets doc while reading Yjs snapshot");
+	}
+
+	const yjsSnapshotUpdate = r2Objects.get(snapshotAsset.r2Key);
+	if (!(yjsSnapshotUpdate instanceof ArrayBuffer)) {
+		throw new Error("Expected test R2 object for Yjs snapshot");
+	}
+
+	return {
+		snapshot,
+		yjsSnapshotUpdate,
+	};
+}
+
 async function read_file_markdown_from_yjs(args: {
 	ctx: MutationCtx;
 	workspaceId: string;
@@ -216,14 +290,7 @@ async function read_file_markdown_from_yjs(args: {
 	if (!fileNode) {
 		throw new Error("nodeId points to a missing files_nodes doc while reading markdown from Yjs");
 	}
-	if (!fileNode.yjsSnapshotId) {
-		throw new Error("fileNode.yjsSnapshotId is not set while reading markdown from Yjs");
-	}
-
-	const snapshot = await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId);
-	if (!snapshot) {
-		throw new Error("fileNode.yjsSnapshotId points to a missing files_yjs_snapshots doc while reading markdown from Yjs");
-	}
+	const { snapshot, yjsSnapshotUpdate } = await read_file_yjs_snapshot_update({ ctx, fileNode });
 
 	const updates = await ctx.db
 		.query("files_yjs_updates")
@@ -233,7 +300,7 @@ async function read_file_markdown_from_yjs(args: {
 		.order("asc")
 		.collect();
 
-	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(snapshot.snapshotUpdate, {
+	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(yjsSnapshotUpdate, {
 		additionalIncrementalArrayBufferUpdates: updates
 			.filter((update) => update.sequence > snapshot.sequence)
 			.map((update) => update.update),
@@ -285,8 +352,8 @@ async function read_file_yjs_state(args: {
 		throw new Error("fileNode.yjsLastSequenceId is not set while reading Yjs state");
 	}
 
-	const [snapshot, lastSequenceDoc, updates] = await Promise.all([
-		ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
+	const [{ snapshot, yjsSnapshotUpdate }, lastSequenceDoc, updates] = await Promise.all([
+		read_file_yjs_snapshot_update({ ctx, fileNode }),
 		ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
 		ctx.db
 			.query("files_yjs_updates")
@@ -296,16 +363,13 @@ async function read_file_yjs_state(args: {
 			.order("asc")
 			.collect(),
 	]);
-	if (!snapshot) {
-		throw new Error("fileNode.yjsSnapshotId points to a missing files_yjs_snapshots doc while reading Yjs state");
-	}
 	if (!lastSequenceDoc) {
 		throw new Error(
 			"fileNode.yjsLastSequenceId points to a missing files_yjs_docs_last_sequences doc while reading Yjs state",
 		);
 	}
 
-	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(snapshot.snapshotUpdate, {
+	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(yjsSnapshotUpdate, {
 		additionalIncrementalArrayBufferUpdates: updates
 			.filter((update) => update.sequence > snapshot.sequence)
 			.map((update) => update.update),
@@ -323,18 +387,9 @@ async function build_file_diff_update_from_snapshot(args: { ctx: MutationCtx; no
 	if (!fileNode) {
 		throw new Error("nodeId points to a missing files_nodes doc while preparing diff update from snapshot");
 	}
-	if (!fileNode.yjsSnapshotId) {
-		throw new Error("fileNode.yjsSnapshotId is not set while preparing diff update from snapshot");
-	}
+	const { yjsSnapshotUpdate } = await read_file_yjs_snapshot_update({ ctx, fileNode });
 
-	const snapshot = await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId);
-	if (!snapshot) {
-		throw new Error(
-			"fileNode.yjsSnapshotId points to a missing files_yjs_snapshots doc while preparing diff update from snapshot",
-		);
-	}
-
-	const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(snapshot.snapshotUpdate);
+	const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(yjsSnapshotUpdate);
 	const targetYjsDoc = files_yjs_doc_clone({
 		yjsDoc: baseYjsDoc,
 	});
@@ -425,7 +480,7 @@ async function upsert_file_pending_update_internal_for_test(args: {
 	stagedMarkdown?: string;
 	unstagedMarkdown: string;
 }) {
-	return await args.t.mutation(internal.files_pending_updates.upsert_file_pending_update_internal, {
+	return await args.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		userId: args.userId,
@@ -456,7 +511,7 @@ describe("upsert_file_pending_update", () => {
 
 		const changedMarkdown = `${seeded.baseMarkdown}\n\nChanged once`;
 
-		const unresolved = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const unresolved = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -467,7 +522,7 @@ describe("upsert_file_pending_update", () => {
 		}
 		expect(unresolved._yay).toBeNull();
 
-		const ready = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const ready = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: changedMarkdown,
@@ -576,7 +631,7 @@ describe("upsert_file_pending_update", () => {
 		});
 
 		const firstMarkdown = `${seeded.baseMarkdown}\n\nFirst`;
-		await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -600,7 +655,7 @@ describe("upsert_file_pending_update", () => {
 		}
 
 		const secondMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nSecond`);
-		const secondUpsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const secondUpsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			pendingUpdateId: firstPendingRow._id,
@@ -714,7 +769,7 @@ describe("upsert_file_pending_update", () => {
 		expect(currentPendingRow._id).not.toBe(stalePendingRow._id);
 
 		const fallbackMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nFallback`);
-		const fallbackUpsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const fallbackUpsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			pendingUpdateId: stalePendingRow._id,
@@ -765,7 +820,7 @@ describe("upsert_file_pending_update", () => {
 		});
 
 		const agentMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nAgent proposal`);
-		const agentUpsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const agentUpsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			unstagedMarkdown: agentMarkdown,
@@ -818,7 +873,7 @@ describe("upsert_file_pending_update", () => {
 
 		const stagedMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nUser staged`);
 		const firstAgentMarkdown = normalize_pending_update_markdown(`${stagedMarkdown}\n\nAgent proposal`);
-		const stagedPendingUpdateResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const stagedPendingUpdateResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: stagedMarkdown,
@@ -829,7 +884,7 @@ describe("upsert_file_pending_update", () => {
 		}
 
 		const secondAgentMarkdown = normalize_pending_update_markdown(`${firstAgentMarkdown}\n\nAgent follow up`);
-		const secondAgentUpsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const secondAgentUpsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			unstagedMarkdown: secondAgentMarkdown,
@@ -881,7 +936,7 @@ describe("upsert_file_pending_update", () => {
 		});
 
 		const whitespaceMarkdown = seeded.baseMarkdown + " ";
-		const upsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const upsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			unstagedMarkdown: whitespaceMarkdown,
@@ -933,7 +988,7 @@ describe("upsert_file_pending_update", () => {
 		});
 
 		const agentMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nAgent proposal`);
-		const firstAgentUpsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const firstAgentUpsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			unstagedMarkdown: agentMarkdown,
@@ -942,7 +997,7 @@ describe("upsert_file_pending_update", () => {
 			throw new Error(firstAgentUpsertResult._nay.message);
 		}
 
-		const discardAgentUpsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const discardAgentUpsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			unstagedMarkdown: seeded.baseMarkdown,
@@ -985,7 +1040,7 @@ describe("upsert_file_pending_update", () => {
 		});
 
 		const firstMarkdown = `${seeded.baseMarkdown}\n\nCleanup task first`;
-		const firstUpsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const firstUpsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -1023,7 +1078,7 @@ describe("upsert_file_pending_update", () => {
 		await new Promise((resolve) => setTimeout(resolve, 2));
 
 		const secondMarkdown = `${seeded.baseMarkdown}\n\nCleanup task second`;
-		const secondUpsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const secondUpsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: secondMarkdown,
@@ -1101,7 +1156,7 @@ describe("files_db_reschedule_pending_update_cleanup_for_user", () => {
 		});
 
 		const changedMarkdown = `${seeded.baseMarkdown}\n\nReschedule pending`;
-		const upsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const upsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -1181,7 +1236,7 @@ describe("presence.disconnect", () => {
 		});
 
 		const changedMarkdown = `${seeded.baseMarkdown}\n\nDisconnect pending`;
-		const upsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const upsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -1268,7 +1323,7 @@ describe("presence.disconnect", () => {
 		});
 
 		const changedMarkdown = `${seeded.baseMarkdown}\n\nDisconnect multi-session pending`;
-		const upsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const upsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -1363,7 +1418,7 @@ describe("save_file_pending_update", () => {
 			name: "Test User",
 		});
 
-		const saveResult = await asUser.mutation(api.ai_chat.save_file_pending_update, {
+		const saveResult = await asUser.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
@@ -1390,7 +1445,7 @@ describe("save_file_pending_update", () => {
 		});
 
 		const pendingMarkdown = `${seeded.baseMarkdown}\n\nPending chunk`;
-		const upsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const upsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: pendingMarkdown,
@@ -1409,7 +1464,7 @@ describe("save_file_pending_update", () => {
 		});
 
 		await expect(
-			asUser.mutation(api.ai_chat.save_file_pending_update, {
+			asUser.action(api.ai_chat.save_file_pending_update, {
 				membershipId: seeded.membershipId,
 				nodeId: seeded.nodeId,
 			}),
@@ -1449,14 +1504,14 @@ describe("save_file_pending_update", () => {
 			name: "Test User",
 		});
 
-		await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: `${seeded.baseMarkdown}\n\nBlocked chunk`,
 			unstagedMarkdown: `${seeded.baseMarkdown}\n\nBlocked chunk`,
 		});
 
-		const saveResult = await asUser.mutation(api.ai_chat.save_file_pending_update, {
+		const saveResult = await asUser.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
@@ -1466,7 +1521,7 @@ describe("save_file_pending_update", () => {
 				message: "Insufficient funds",
 			},
 		});
-		expect(enqueueActionSpy).not.toHaveBeenCalled();
+		expect(enqueueActionSpy).not.toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, expect.anything());
 
 		const savedMarkdownAfterDeniedSave = await t.run(async (ctx) =>
 			read_file_markdown_from_yjs({
@@ -1525,14 +1580,14 @@ describe("save_file_pending_update", () => {
 			name: "Anonymous User",
 		});
 
-		await asAnonymous.mutation(api.ai_chat.upsert_file_pending_update, {
+		await asAnonymous.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: `${seeded.baseMarkdown}\n\nBlocked anon chunk`,
 			unstagedMarkdown: `${seeded.baseMarkdown}\n\nBlocked anon chunk`,
 		});
 
-		const saveResult = await asAnonymous.mutation(api.ai_chat.save_file_pending_update, {
+		const saveResult = await asAnonymous.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
@@ -1542,7 +1597,7 @@ describe("save_file_pending_update", () => {
 				message: "Insufficient funds",
 			},
 		});
-		expect(enqueueActionSpy).not.toHaveBeenCalled();
+		expect(enqueueActionSpy).not.toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, expect.anything());
 
 		const savedMarkdownAfterDeniedSave = await t.run(async (ctx) =>
 			read_file_markdown_from_yjs({
@@ -1581,14 +1636,14 @@ describe("save_file_pending_update", () => {
 			name: "Anonymous User",
 		});
 
-		await asAnonymous.mutation(api.ai_chat.upsert_file_pending_update, {
+		await asAnonymous.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: `${seeded.baseMarkdown}\n\nSaved anon chunk`,
 			unstagedMarkdown: `${seeded.baseMarkdown}\n\nSaved anon chunk`,
 		});
 
-		const saveResult = await asAnonymous.mutation(api.ai_chat.save_file_pending_update, {
+		const saveResult = await asAnonymous.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
@@ -1600,7 +1655,7 @@ describe("save_file_pending_update", () => {
 		}
 
 		expect(saveResult._yay.newSequence).not.toBeNull();
-		expect(enqueueActionSpy).not.toHaveBeenCalled();
+		expect(enqueueActionSpy).not.toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, expect.anything());
 
 		const usageSnapshot = await t.run((ctx) =>
 			ctx.db
@@ -1641,14 +1696,14 @@ describe("save_file_pending_update", () => {
 
 		const stagedMarkdown = `${seeded.baseMarkdown}\n\nAccepted chunk`;
 		const unstagedMarkdown = `${stagedMarkdown}\n\nUnresolved chunk`;
-		await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown,
 			unstagedMarkdown,
 		});
 
-		const saveResult = await asUser.mutation(api.ai_chat.save_file_pending_update, {
+		const saveResult = await asUser.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
@@ -1764,7 +1819,7 @@ describe("save_file_pending_update", () => {
 		expect(pendingUpdateLastSequenceSavedBeforeFirstSave).toBeNull();
 
 		const resolvedMarkdown = `${seeded.baseMarkdown}\n\nFully resolved`;
-		const upsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const upsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: resolvedMarkdown,
@@ -1774,7 +1829,7 @@ describe("save_file_pending_update", () => {
 			throw new Error(upsertResult._nay.message);
 		}
 
-		const saveResult = await asUser.mutation(api.ai_chat.save_file_pending_update, {
+		const saveResult = await asUser.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
@@ -1900,7 +1955,7 @@ describe("save_file_pending_update", () => {
 		}
 		expect(currentPendingRow._id).not.toBe(stalePendingRow._id);
 
-		const saveResult = await asUser.mutation(api.ai_chat.save_file_pending_update, {
+		const saveResult = await asUser.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			pendingUpdateId: stalePendingRow._id,
@@ -1962,7 +2017,7 @@ describe("save_file_pending_update", () => {
 			name: "Test User",
 		});
 
-		await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -1984,7 +2039,7 @@ describe("save_file_pending_update", () => {
 			sessionId: "remote-session",
 		});
 
-		const saveResult = await asUser.mutation(api.ai_chat.save_file_pending_update, {
+		const saveResult = await asUser.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
@@ -2064,7 +2119,7 @@ describe("save_file_pending_update", () => {
 		});
 
 		const stagedMarkdown = `${seeded.baseMarkdown}\n\nStaged change`;
-		const upsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const upsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown,
@@ -2089,7 +2144,7 @@ describe("save_file_pending_update", () => {
 		expect(pendingBeforeSave).not.toBeNull();
 
 		for (let i = 0; i < 2; i++) {
-			const result = await asUser.mutation(api.ai_chat.save_file_pending_update, {
+			const result = await asUser.action(api.ai_chat.save_file_pending_update, {
 				membershipId: seeded.membershipId,
 				nodeId: seeded.nodeId,
 			});
@@ -2097,20 +2152,19 @@ describe("save_file_pending_update", () => {
 				throw new Error(`Expected pre-exhaust save #${i + 1} to succeed, got: ${result._nay.message}`);
 			}
 
-			await t.run(async (ctx) => {
-				const saveMarkdown = `${seeded.baseMarkdown}\n\nStaged change ${i + 1}`;
-				const upsert = await ctx.runMutation(internal.files_pending_updates.upsert_file_pending_update_internal, {
-					workspaceId: seeded.workspaceId,
-					projectId: seeded.projectId,
-					userId: seeded.userId,
-					nodeId: seeded.nodeId,
-					stagedMarkdown: saveMarkdown,
-					unstagedMarkdown: saveMarkdown,
-				});
-				if (upsert._nay) {
-					throw new Error(upsert._nay.message);
-				}
+			const saveMarkdown = `${seeded.baseMarkdown}\n\nStaged change ${i + 1}`;
+			const upsert = await upsert_file_pending_update_internal_for_test({
+				t,
+				workspaceId: seeded.workspaceId,
+				projectId: seeded.projectId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+				stagedMarkdown: saveMarkdown,
+				unstagedMarkdown: saveMarkdown,
 			});
+			if (upsert._nay) {
+				throw new Error(upsert._nay.message);
+			}
 		}
 
 		const pendingBeforeBlockedSave = await t.run(async (ctx) =>
@@ -2133,7 +2187,7 @@ describe("save_file_pending_update", () => {
 		});
 		expect(lastSequenceSavedBeforeBlockedSave?.lastSequenceSaved).toBe(2);
 
-		const saveResult = await asUser.mutation(api.ai_chat.save_file_pending_update, {
+		const saveResult = await asUser.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
@@ -2214,7 +2268,7 @@ describe("files_pending_updates_last_sequence_saved", () => {
 		);
 		expect(pendingUpdateLastSequenceSavedBeforeChanges).toBeNull();
 
-		await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -2250,7 +2304,7 @@ describe("files_pending_updates_last_sequence_saved", () => {
 			throw new Error("Failed to create unstaged branch while testing save marker non-save paths");
 		}
 
-		const persistResult = await asUser.mutation(api.ai_chat.persist_file_pending_update_rebased_state, {
+		const persistResult = await asUser.action(api.ai_chat.persist_file_pending_update_rebased_state, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			baseYjsSequence: latestFileState.yjsSequence,
@@ -2291,7 +2345,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 			name: "Test User",
 		});
 
-		await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -2335,7 +2389,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 			throw new Error("Failed to create unstaged rebased branch while testing pending update persistence");
 		}
 
-		const persistResult = await asUser.mutation(api.ai_chat.persist_file_pending_update_rebased_state, {
+		const persistResult = await asUser.action(api.ai_chat.persist_file_pending_update_rebased_state, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			baseYjsSequence: latestFileState.yjsSequence,
@@ -2474,7 +2528,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 			throw new Error("Failed to build rebased branch while testing mismatched pendingUpdateId");
 		}
 
-		const persistResult = await asUser.mutation(api.ai_chat.persist_file_pending_update_rebased_state, {
+		const persistResult = await asUser.action(api.ai_chat.persist_file_pending_update_rebased_state, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.fileAId,
 			pendingUpdateId: fileBPendingRow._id,
@@ -2545,7 +2599,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 			name: "Test User",
 		});
 
-		await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -2561,7 +2615,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 			}),
 		);
 
-		const clearResult = await asUser.mutation(api.ai_chat.persist_file_pending_update_rebased_state, {
+		const clearResult = await asUser.action(api.ai_chat.persist_file_pending_update_rebased_state, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			baseYjsSequence: latestFileState.yjsSequence,
@@ -2630,7 +2684,7 @@ describe("persist_file_pending_update_rebased_state", () => {
 			sessionId: "remote-session",
 		});
 
-		const stalePersistResult = await asUser.mutation(api.ai_chat.persist_file_pending_update_rebased_state, {
+		const stalePersistResult = await asUser.action(api.ai_chat.persist_file_pending_update_rebased_state, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			baseYjsSequence: staleFileState.yjsSequence,
@@ -2663,7 +2717,7 @@ describe("remove_file_pending_update_if_expired", () => {
 		});
 
 		const firstMarkdown = `${seeded.baseMarkdown}\n\nCleanup pending first`;
-		const firstUpsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const firstUpsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -2703,7 +2757,7 @@ describe("remove_file_pending_update_if_expired", () => {
 		await new Promise((resolve) => setTimeout(resolve, 2));
 
 		const secondMarkdown = `${seeded.baseMarkdown}\n\nCleanup pending second`;
-		const secondUpsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const secondUpsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: secondMarkdown,
@@ -2760,7 +2814,7 @@ describe("remove_file_pending_update_if_expired", () => {
 		});
 
 		const changedMarkdown = `${seeded.baseMarkdown}\n\nCleanup expired`;
-		const upsertResult = await asUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const upsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -2849,7 +2903,7 @@ describe("membership scoped pending updates", () => {
 			name: "Other User",
 		});
 
-		const unauthorizedUpsert = await asOtherUser.mutation(api.ai_chat.upsert_file_pending_update, {
+		const unauthorizedUpsert = await asOtherUser.action(api.ai_chat.upsert_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			unstagedMarkdown: `${seeded.baseMarkdown}\n\nUnauthorized`,
@@ -2871,7 +2925,7 @@ describe("membership scoped pending updates", () => {
 		});
 		expect(unauthorizedLastSaved).toBeNull();
 
-		const unauthorizedSave = await asOtherUser.mutation(api.ai_chat.save_file_pending_update, {
+		const unauthorizedSave = await asOtherUser.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
@@ -2880,7 +2934,7 @@ describe("membership scoped pending updates", () => {
 		}
 		expect(unauthorizedSave._nay.message).toBe("Unauthorized");
 
-		const unauthorizedPersist = await asOtherUser.mutation(api.ai_chat.persist_file_pending_update_rebased_state, {
+		const unauthorizedPersist = await asOtherUser.action(api.ai_chat.persist_file_pending_update_rebased_state, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 			baseYjsSequence: 0,

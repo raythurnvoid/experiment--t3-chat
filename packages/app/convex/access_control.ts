@@ -500,12 +500,12 @@ export const transfer_workspace_ownership = mutation({
 
 		const defaultProjectId = workspace.defaultProjectId;
 		if (!defaultProjectId) {
-			const message = "workspace.defaultProjectId is not set";
-			const data = {
+			const errorMessage = "workspace.defaultProjectId is not set";
+			const errorData = {
 				workspaceId: workspace._id,
 			};
-			console.error(message, data);
-			throw should_never_happen(message, data);
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
 		}
 
 		const [ownerAssignments, newOwnerUser, newOwnerHomeMembership, currentOwnerQuota, newOwnerQuota] =

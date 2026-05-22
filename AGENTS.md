@@ -3,6 +3,8 @@
 - Package manager: this repository uses `pnpm`; do not use `npm`.
 - Dev server: do not run `pnpm run dev`; let the user run it manually.
 - Full app lint: run `pnpm --dir packages/app run lint`. The root package does not have a `lint` script, and `pnpm --dir packages/app lint:tsc` is only the TypeScript check, not the full ESLint/React Compiler lint.
+- Full app tests: run `pnpm --dir packages/app run test:once` for a one-shot test run.
+- Full app lint and test commands can take up to 20 minutes to complete. Use a long enough timeout when running them through tooling.
 
 ## Modal CLI
 
@@ -201,6 +203,8 @@ All vendored and reference submodule paths are listed below in this single secti
 - [references-submodules/assistant-ui/](references-submodules/assistant-ui) - Assistant UI reference submodule (not used at runtime)
 
 - [references-submodules/file-selector/](references-submodules/file-selector) - file-selector source reference for browser file drag/drop extraction; the app uses the published `file-selector` package at runtime.
+
+- [references-submodules/pragmatic-drag-and-drop/](references-submodules/pragmatic-drag-and-drop) - Pragmatic Drag and Drop source reference; the app uses the published `@atlaskit/pragmatic-drag-and-drop` package at runtime.
 
 - [references-submodules/opencode/](references-submodules/opencode) - OpenCode development platform submodule
 
@@ -569,6 +573,7 @@ For `_nay.message` and throw messages:
 For log messages:
 
 - Start with `[OwnerSymbol.operation]`
+- Exception: in Convex modules under `packages/app/convex/**`, do not prefix log messages with owner/module tags because Convex already tags backend logs with function/runtime context.
 - Keep logs stable and concise; include variable details as structured metadata
 - Do not use `.catch(console.error)` in promise chains; prefer explicit handlers like `.catch((error) => { console.error("[OwnerSymbol.operation] ...", { error, ...context }); })` so failures include operation context
 

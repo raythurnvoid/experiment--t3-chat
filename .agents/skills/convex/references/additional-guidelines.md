@@ -142,10 +142,11 @@ When calling Result-returning helpers:
 
 ## Convex logging format
 
-Convex already tags backend logs with function/runtime context, so do not prefix Convex `console.log`, `console.warn`, or `console.error` messages with manual owner tags like `[OwnerSymbol.operation]`.
+Convex already tags backend logs with function/runtime context, so do not prefix Convex `console.log`, `console.warn`, or `console.error` messages with manual owner tags like `[OwnerSymbol.operation]` or `[r2.create_signed_download_url]`.
 
 - Keep Convex log messages stable and concise.
 - Put ids, errors, `_nay`, and other details in structured metadata objects.
+- Do not include the module/function name in the message; Convex already supplies that context.
 - Treat this as the Convex-specific exception to the app-wide log-prefix convention.
 
 ## Prefer `_nay` / `null` over `throw new Error` in Convex code
@@ -175,25 +176,25 @@ Standard `_nay.message` values for Result-returning handlers:
 - `"Not found"`: the requested id is invalid, the requested doc is missing, or the requested doc is archived when active content is required.
 - `"Permission denied"`: the user and resource are valid, but an explicit permission check failed.
 
-If a validated requested resource points to missing server-owned data, treat that as a server bug instead of a user-facing not-found branch. Log the invariant failure with `console.error(message, data)` and then throw `should_never_happen(message, data)` with structured ids for missing linked docs such as file properties, asset docs, content docs, scheduled jobs, or other relationships that supported write paths must keep valid.
+If a validated requested resource points to missing server-owned data, treat that as a server bug instead of a user-facing not-found branch. Log the invariant failure with `console.error(errorMessage, errorData)` and then throw `should_never_happen(errorMessage, errorData)` with structured ids for missing linked docs such as file properties, asset docs, content docs, scheduled jobs, or other relationships that supported write paths must keep valid.
 
 For missing fields that supported write paths must set, use the exact field path in the invariant message: `"fileNode.yjsLastSequenceId is not set"` or `"workspace.defaultProjectId is not set"`. Use `fileNode`, not `file`, when the doc is from `files_nodes`.
 
-When the field is set but points to a missing or mismatched linked doc, say that the field points to the broken link, for example `"fileNode.propertiesId points to a missing files_node_properties doc"`.
+When the field is set but points to a missing or mismatched linked doc, say that the field points to the broken link, for example `"fileNode.assetId points to a missing files_r2_assets doc"`.
 
 Use the same message variable for the explicit log and the thrown error so future logging integrations can hook `console.error` without losing the exact thrown invariant message:
 
 ```ts
-const message = "fileNode.yjsLastSequenceId is not set";
-const data = {
+const errorMessage = "fileNode.yjsLastSequenceId is not set";
+const errorData = {
 	fileNodeId: fileNode._id,
 	yjsLastSequenceId: fileNode.yjsLastSequenceId,
 };
-console.error(message, data);
-throw should_never_happen(message, data);
+console.error(errorMessage, errorData);
+throw should_never_happen(errorMessage, errorData);
 ```
 
-Keep the `console.error` data structured instead of embedding ids in the message. Passing the same data again to `should_never_happen(...)` is acceptable; the explicit log is the standard integration point for Sentry or other logging products, while the thrown error preserves the Convex failure path.
+Keep the `console.error` data structured instead of embedding ids in the message. Passing the same `errorData` again to `should_never_happen(...)` is acceptable; the explicit log is the standard integration point for Sentry or other logging products, while the thrown error preserves the Convex failure path.
 
 When a missing workspace/default project is discovered while setting up authorization from an existing membership doc, log structured context and return `"Unauthorized"`. This keeps the authorization boundary generic for callers while still surfacing the impossible state in Convex logs.
 
@@ -204,7 +205,7 @@ Boundary-specific return style:
 - Public queries for authenticated UI screens should usually `throw convex_error({ message: "Unauthenticated" })` when there is no current user, then return `null`, `[]`, or `false` for missing membership, missing resource, or denied access according to the query return shape.
 - Mutations and actions with recoverable failures should return `Result({ _nay: { message: ... } })`.
 - Internal queries may return `Result({ _nay: ... })` when they are serving an action/mutation that needs to preserve expected failure details across the Convex runtime boundary.
-- Internal queries should log with `console.error(message, data)` and throw `should_never_happen(message, data)` for impossible linked-doc corruption after the expected auth/resource checks succeed.
+- Internal queries should log with `console.error(errorMessage, errorData)` and throw `should_never_happen(errorMessage, errorData)` for impossible linked-doc corruption after the expected auth/resource checks succeed.
 
 ## Membership-scoped Convex handlers
 
@@ -220,7 +221,7 @@ When a Convex handler is scoped by a membership doc (for example `membershipId: 
 - If the requested thread/message/resource id is invalid or the doc does not exist, return `_nay.message = "Not found"` (or `null` for nullable queries).
 - After loading the resource, compare `workspaceId` and `projectId` directly against the membership doc. Do not use a helper for these thread-scoped checks.
 - If the resource exists but belongs to a different workspace/project scope than the membership doc, return `_nay.message = "Unauthorized"`.
-- After the requested resource is validated, log and throw `should_never_happen(message, data)` when a stored linked id points to missing data. Do not collapse broken internal relationships into `"Not found"`.
+- After the requested resource is validated, log and throw `should_never_happen(errorMessage, errorData)` when a stored linked id points to missing data. Do not collapse broken internal relationships into `"Not found"`.
 - Keep DB writes after these fallible checks so `_nay` returns do not leave partial writes behind.
 
 Small style rule for these handlers:

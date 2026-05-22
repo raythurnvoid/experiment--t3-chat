@@ -1,11 +1,22 @@
-import { query, mutation, internalMutation, internalQuery, type MutationCtx } from "./_generated/server.js";
+import {
+	query,
+	action,
+	internalAction,
+	internalMutation,
+	internalQuery,
+	type ActionCtx,
+	type MutationCtx,
+} from "./_generated/server.js";
+import type { Id } from "./_generated/dataModel.js";
+import type { RegisteredMutation } from "convex/server";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import type { app_convex_Doc } from "../src/lib/app-convex-client.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import app_convex_schema from "./schema.ts";
-import { files_db_yjs_push_update } from "./files_nodes.ts";
+import { api, internal } from "./_generated/api.js";
+import { files_db_yjs_push_update, type get_file_content_materialization_state_Result } from "./files_nodes.ts";
 import { billing_event } from "../server/billing.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
@@ -15,7 +26,6 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_db_cancel_pending_update_cleanup_tasks,
 	files_db_get_pending_update,
-	files_db_get_yjs_content_and_sequence,
 	files_db_schedule_pending_update_cleanup,
 	files_yjs_doc_apply_array_buffer_update,
 	files_yjs_doc_create_from_array_buffer_update,
@@ -26,6 +36,7 @@ import {
 	files_u8_to_array_buffer,
 	files_u8_equals,
 } from "../server/files.ts";
+import { r2_fetch_object_from_bucket } from "./r2.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 function files_pending_update_encode_yjs_state_update(args: { yjsDoc: YDoc }) {
@@ -39,6 +50,55 @@ function files_pending_update_reconstruct_branch_docs(pendingUpdate: app_convex_
 		stagedBranchYjsDoc: files_yjs_doc_create_from_array_buffer_update(pendingUpdate.stagedBranchYjsUpdate),
 		unstagedBranchYjsDoc: files_yjs_doc_create_from_array_buffer_update(pendingUpdate.unstagedBranchYjsUpdate),
 	};
+}
+
+async function files_pending_update_action_get_latest_file_yjs_state(
+	ctx: ActionCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		nodeId: app_convex_Doc<"files_pending_updates">["nodeId"];
+	},
+) {
+	const state = (await ctx.runQuery(
+		internal.files_nodes.get_file_content_materialization_state,
+		args,
+	)) as get_file_content_materialization_state_Result;
+	if (!state) {
+		return Result({
+			_nay: {
+				message: "Not found",
+			},
+		});
+	}
+
+	if (!state.yjsSnapshotAsset.r2Key) {
+		const errorMessage = "yjsSnapshotAsset.r2Key is not set";
+		const errorData = {
+			nodeId: args.nodeId,
+			assetId: state.yjsSnapshotAsset._id,
+		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	const baseSnapshotUpdate = await r2_fetch_object_from_bucket({ key: state.yjsSnapshotAsset.r2Key }).then((response) =>
+		response.arrayBuffer(),
+	);
+	const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(baseSnapshotUpdate, {
+		additionalIncrementalArrayBufferUpdates: state.yjsUpdatesDocs
+			.filter((update) => update.sequence > state.yjsSnapshotDoc.sequence)
+			.map((update) => update.update),
+	});
+
+	return Result({
+		_yay: {
+			baseYjsSequence: state.yjsLastSequenceDoc.lastSequence,
+			baseYjsUpdate: files_pending_update_encode_yjs_state_update({
+				yjsDoc: baseYjsDoc,
+			}),
+		},
+	});
 }
 
 async function files_pending_update_upsert_last_sequence_saved(
@@ -178,6 +238,8 @@ async function files_pending_update_resolve_branch_docs(
 		userId: string;
 		nodeId: app_convex_Doc<"files_pending_updates">["nodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"];
+		baseYjsSequence?: number;
+		baseYjsUpdate?: ArrayBuffer;
 	},
 ) {
 	const existingPendingUpdate = await files_db_get_pending_update(ctx, {
@@ -197,27 +259,22 @@ async function files_pending_update_resolve_branch_docs(
 		});
 	}
 
-	const yjsContent = await files_db_get_yjs_content_and_sequence(ctx, {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		nodeId: args.nodeId,
-	});
-	if (!yjsContent) {
+	const baseYjsSequence = args.baseYjsSequence;
+	const baseYjsUpdate = args.baseYjsUpdate;
+	if (baseYjsSequence === undefined || baseYjsUpdate === undefined) {
 		return Result({
 			_nay: {
-				message: "Failed to resolve file Yjs content while creating pending updates",
+				message: "R2-backed pending update base must be resolved by an action",
 			},
 		});
 	}
 
-	const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshotUpdate, {
-		additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
-	});
+	const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(baseYjsUpdate);
 
 	return Result({
 		_yay: {
 			existingPendingUpdate: null,
-			baseYjsSequence: yjsContent.yjsSequence,
+			baseYjsSequence,
 			baseYjsDoc,
 			stagedBranchYjsDoc: files_yjs_doc_clone({
 				yjsDoc: baseYjsDoc,
@@ -338,6 +395,8 @@ async function files_pending_update_upsert_updates(
 		userId: string;
 		nodeId: app_convex_Doc<"files_pending_updates">["nodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"];
+		baseYjsSequence?: number;
+		baseYjsUpdate?: ArrayBuffer;
 		stagedMarkdown?: string;
 		unstagedMarkdown: string;
 	},
@@ -353,6 +412,8 @@ async function files_pending_update_upsert_updates(
 		userId: args.userId,
 		nodeId: file._id,
 		pendingUpdateId: args.pendingUpdateId,
+		baseYjsSequence: args.baseYjsSequence,
+		baseYjsUpdate: args.baseYjsUpdate,
 	});
 	if (branchDocsResult._nay) {
 		return branchDocsResult;
@@ -441,7 +502,54 @@ export const remove_file_pending_update_if_expired = internalMutation({
 	},
 });
 
-export const upsert_file_pending_update = mutation({
+export const upsert_file_pending_update_in_db = internalMutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		baseYjsSequence: v.optional(v.number()),
+		baseYjsUpdate: v.optional(v.bytes()),
+		stagedMarkdown: v.optional(v.string()),
+		unstagedMarkdown: v.string(),
+	},
+	returns: v_result({
+		_yay: v.null(),
+	}),
+	handler: async (ctx, args) => {
+		return await files_pending_update_upsert_updates(ctx, args);
+	},
+});
+
+export type upsert_file_pending_update_in_db_Result =
+	typeof upsert_file_pending_update_in_db extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+async function action_upsert_file_pending_update_in_db(
+	ctx: ActionCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+		pendingUpdateId?: Id<"files_pending_updates"> | undefined;
+		baseYjsSequence: number;
+		baseYjsUpdate: ArrayBuffer;
+		stagedMarkdown?: string | undefined;
+		unstagedMarkdown: string;
+	},
+) {
+	const result = (await ctx.runMutation(
+		internal.files_pending_updates.upsert_file_pending_update_in_db,
+		args,
+	)) as upsert_file_pending_update_in_db_Result;
+
+	return result;
+}
+
+export const upsert_file_pending_update = action({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 		nodeId: v.id("files_nodes"),
@@ -457,11 +565,10 @@ export const upsert_file_pending_update = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
-			userId: userAuth.id,
+		const membership = await ctx.runQuery(api.workspaces.get_membership, {
 			membershipId: args.membershipId,
 		});
-		if (!membership) {
+		if (!membership || membership.userId !== userAuth.id) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
@@ -470,19 +577,35 @@ export const upsert_file_pending_update = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		return await files_pending_update_upsert_updates(ctx, {
+		const base = await files_pending_update_action_get_latest_file_yjs_state(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			nodeId: args.nodeId,
+		});
+		if (base._nay) {
+			return Result({ _nay: base._nay });
+		}
+
+		const upserted = await action_upsert_file_pending_update_in_db(ctx, {
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
 			userId: userAuth.id,
 			nodeId: args.nodeId,
 			pendingUpdateId: args.pendingUpdateId,
+			baseYjsSequence: base._yay.baseYjsSequence,
+			baseYjsUpdate: base._yay.baseYjsUpdate,
 			stagedMarkdown: args.stagedMarkdown,
 			unstagedMarkdown: args.unstagedMarkdown,
 		});
+		if (upserted._nay) {
+			return Result({ _nay: upserted._nay });
+		}
+
+		return Result({ _yay: null });
 	},
 });
 
-export const upsert_file_pending_update_internal = internalMutation({
+export const upsert_file_pending_update_internal_action = internalAction({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
@@ -496,17 +619,37 @@ export const upsert_file_pending_update_internal = internalMutation({
 		_yay: v.null(),
 	}),
 	handler: async (ctx, args) => {
-		return await files_pending_update_upsert_updates(ctx, args);
+		const base = await files_pending_update_action_get_latest_file_yjs_state(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId: args.nodeId,
+		});
+		if (base._nay) {
+			return Result({ _nay: base._nay });
+		}
+
+		const upserted = await action_upsert_file_pending_update_in_db(ctx, {
+			...args,
+			baseYjsSequence: base._yay.baseYjsSequence,
+			baseYjsUpdate: base._yay.baseYjsUpdate,
+		});
+		if (upserted._nay) {
+			return Result({ _nay: upserted._nay });
+		}
+
+		return Result({ _yay: null });
 	},
 });
 
-export const persist_file_pending_update_rebased_state = mutation({
+export const persist_file_pending_update_rebased_state_in_db = internalMutation({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		baseYjsSequence: v.number(),
 		baseYjsUpdate: v.bytes(),
+		latestBaseYjsSequence: v.number(),
+		latestBaseYjsUpdate: v.bytes(),
 		stagedBranchYjsUpdate: v.bytes(),
 		unstagedBranchYjsUpdate: v.bytes(),
 	},
@@ -528,37 +671,16 @@ export const persist_file_pending_update_rebased_state = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const [existingPendingUpdate, yjsContent] = await Promise.all([
-			files_db_get_pending_update(ctx, {
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				userId: userAuth.id,
-				nodeId: args.nodeId,
-				pendingUpdateId: args.pendingUpdateId,
-			}),
-			files_db_get_yjs_content_and_sequence(ctx, {
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				nodeId: args.nodeId,
-			}),
-		]);
-		if (!yjsContent) {
-			return Result({
-				_nay: {
-					message: "Failed to resolve file Yjs content while persisting pending updates",
-				},
-			});
-		}
-
-		const latestBaseYjsDoc = files_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshotUpdate, {
-			additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
-		});
-		const latestBaseYjsUpdate = files_pending_update_encode_yjs_state_update({
-			yjsDoc: latestBaseYjsDoc,
+		const existingPendingUpdate = await files_db_get_pending_update(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			userId: userAuth.id,
+			nodeId: args.nodeId,
+			pendingUpdateId: args.pendingUpdateId,
 		});
 		if (
-			args.baseYjsSequence !== yjsContent.yjsSequence ||
-			!files_u8_equals(new Uint8Array(args.baseYjsUpdate), new Uint8Array(latestBaseYjsUpdate))
+			args.baseYjsSequence !== args.latestBaseYjsSequence ||
+			!files_u8_equals(new Uint8Array(args.baseYjsUpdate), new Uint8Array(args.latestBaseYjsUpdate))
 		) {
 			return Result({
 				_nay: {
@@ -684,6 +806,86 @@ export const persist_file_pending_update_rebased_state = mutation({
 	},
 });
 
+export type persist_file_pending_update_rebased_state_in_db_Result =
+	typeof persist_file_pending_update_rebased_state_in_db extends RegisteredMutation<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
+async function action_persist_file_pending_update_rebased_state_in_db(
+	ctx: ActionCtx,
+	args: {
+		membershipId: app_convex_Doc<"workspaces_projects_users">["_id"];
+		nodeId: app_convex_Doc<"files_pending_updates">["nodeId"];
+		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"] | undefined;
+		baseYjsSequence: number;
+		baseYjsUpdate: ArrayBuffer;
+		latestBaseYjsSequence: number;
+		latestBaseYjsUpdate: ArrayBuffer;
+		stagedBranchYjsUpdate: ArrayBuffer;
+		unstagedBranchYjsUpdate: ArrayBuffer;
+	},
+) {
+	const result = (await ctx.runMutation(
+		internal.files_pending_updates.persist_file_pending_update_rebased_state_in_db,
+		args,
+	)) as persist_file_pending_update_rebased_state_in_db_Result;
+
+	return result;
+}
+
+export const persist_file_pending_update_rebased_state = action({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeId: v.id("files_nodes"),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		baseYjsSequence: v.number(),
+		baseYjsUpdate: v.bytes(),
+		stagedBranchYjsUpdate: v.bytes(),
+		unstagedBranchYjsUpdate: v.bytes(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			pendingUpdate: v.union(doc(app_convex_schema, "files_pending_updates"), v.null()),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await ctx.runQuery(api.workspaces.get_membership, {
+			membershipId: args.membershipId,
+		});
+		if (!membership || membership.userId !== userAuth.id) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const latestBase = await files_pending_update_action_get_latest_file_yjs_state(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			nodeId: args.nodeId,
+		});
+		if (latestBase._nay) {
+			return Result({ _nay: latestBase._nay });
+		}
+
+		const persisted = await action_persist_file_pending_update_rebased_state_in_db(ctx, {
+			...args,
+			latestBaseYjsSequence: latestBase._yay.baseYjsSequence,
+			latestBaseYjsUpdate: latestBase._yay.baseYjsUpdate,
+		});
+		if (persisted._nay) {
+			return Result({ _nay: persisted._nay });
+		}
+
+		return Result({ _yay: persisted._yay });
+	},
+});
+
 export const get_file_pending_update = query({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
@@ -790,11 +992,13 @@ export const get_file_pending_update_last_sequence_saved = query({
 	},
 });
 
-export const save_file_pending_update = mutation({
+export const save_file_pending_update_in_db = internalMutation({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		baseYjsSequence: v.number(),
+		baseYjsUpdate: v.bytes(),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -824,29 +1028,15 @@ export const save_file_pending_update = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const [pendingUpdate, yjsContent] = await Promise.all([
-			files_db_get_pending_update(ctx, {
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				userId: user._id,
-				nodeId: args.nodeId,
-				pendingUpdateId: args.pendingUpdateId,
-			}),
-			files_db_get_yjs_content_and_sequence(ctx, {
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				nodeId: args.nodeId,
-			}),
-		]);
+		const pendingUpdate = await files_db_get_pending_update(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			userId: user._id,
+			nodeId: args.nodeId,
+			pendingUpdateId: args.pendingUpdateId,
+		});
 
 		if (!pendingUpdate) {
-			return Result({
-				_nay: {
-					message: "Not found",
-				},
-			});
-		}
-		if (!yjsContent) {
 			return Result({
 				_nay: {
 					message: "Not found",
@@ -858,9 +1048,7 @@ export const save_file_pending_update = mutation({
 		const baseYjsDoc = reconstructedBranchDocs.baseYjsDoc;
 		const stagedBranchYjsDoc = reconstructedBranchDocs.stagedBranchYjsDoc;
 		const unstagedBranchYjsDoc = reconstructedBranchDocs.unstagedBranchYjsDoc;
-		const latestFileYjsDoc = files_yjs_doc_create_from_array_buffer_update(yjsContent.yjsSnapshotDoc.snapshotUpdate, {
-			additionalIncrementalArrayBufferUpdates: yjsContent.incrementalYjsUpdatesDocs.map((update) => update.update),
-		});
+		const latestFileYjsDoc = files_yjs_doc_create_from_array_buffer_update(args.baseYjsUpdate);
 
 		const remoteUpdateFromBase = files_yjs_compute_diff_update_from_yjs_doc({
 			yjsDoc: latestFileYjsDoc,
@@ -884,16 +1072,16 @@ export const save_file_pending_update = mutation({
 		if (diffUpdateForLatestFileYjsDoc) {
 			const workspace = await ctx.db.get("workspaces", membership.workspaceId);
 			if (!workspace) {
-				const message = "membership.workspaceId points to a missing workspaces doc";
-				const data = {
+				const errorMessage = "membership.workspaceId points to a missing workspaces doc";
+				const errorData = {
 					membershipId: membership._id,
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,
 					nodeId: args.nodeId,
 					pendingUpdateId: args.pendingUpdateId,
 				};
-				console.error(message, data);
-				throw should_never_happen(message, data);
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
 			}
 			const billedUserId = billing_pick_billed_user_id({
 				userId: user._id,
@@ -901,14 +1089,14 @@ export const save_file_pending_update = mutation({
 			});
 			const billedUser = await ctx.db.get("users", billedUserId);
 			if (!billedUser) {
-				const message = "billedUserId points to a missing users doc";
-				const data = {
+				const errorMessage = "billedUserId points to a missing users doc";
+				const errorData = {
 					userId: user._id,
 					workspaceId: workspace._id,
 					billedUserId,
 				};
-				console.error(message, data);
-				throw should_never_happen(message, data);
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
 			}
 
 			const check = await billing_db_check_credits(ctx, {
@@ -986,7 +1174,7 @@ export const save_file_pending_update = mutation({
 		}
 
 		const now = Date.now();
-		const nextBaseYjsSequence = newSequence ?? yjsContent.yjsSequence;
+		const nextBaseYjsSequence = newSequence ?? args.baseYjsSequence;
 
 		if (unstagedMatchesSavedBase._yay) {
 			await Promise.all([
@@ -1045,5 +1233,73 @@ export const save_file_pending_update = mutation({
 				newSequence,
 			},
 		});
+	},
+});
+
+export type save_file_pending_update_in_db_Result =
+	typeof save_file_pending_update_in_db extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+async function action_save_file_pending_update_in_db(
+	ctx: ActionCtx,
+	args: {
+		membershipId: app_convex_Doc<"workspaces_projects_users">["_id"];
+		nodeId: app_convex_Doc<"files_pending_updates">["nodeId"];
+		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"] | undefined;
+		baseYjsSequence: number;
+		baseYjsUpdate: ArrayBuffer;
+	},
+) {
+	const result = (await ctx.runMutation(
+		internal.files_pending_updates.save_file_pending_update_in_db,
+		args,
+	)) as save_file_pending_update_in_db_Result;
+
+	return result;
+}
+
+export const save_file_pending_update = action({
+	args: {
+		membershipId: v.id("workspaces_projects_users"),
+		nodeId: v.id("files_nodes"),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+	},
+	returns: v_result({
+		_yay: v.object({
+			newSequence: v.union(v.number(), v.null()),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await ctx.runQuery(api.workspaces.get_membership, {
+			membershipId: args.membershipId,
+		});
+		if (!membership || membership.userId !== userAuth.id) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const base = await files_pending_update_action_get_latest_file_yjs_state(ctx, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			nodeId: args.nodeId,
+		});
+		if (base._nay) {
+			return Result({ _nay: base._nay });
+		}
+
+		const saved = await action_save_file_pending_update_in_db(ctx, {
+			...args,
+			baseYjsSequence: base._yay.baseYjsSequence,
+			baseYjsUpdate: base._yay.baseYjsUpdate,
+		});
+		if (saved._nay) {
+			return Result({ _nay: saved._nay });
+		}
+
+		return Result({ _yay: saved._yay });
 	},
 });

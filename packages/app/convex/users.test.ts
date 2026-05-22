@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { Workpool } from "@convex-dev/workpool";
+import { Workpool, type WorkId } from "@convex-dev/workpool";
 import { customersDelete } from "@polar-sh/sdk/funcs/customersDelete.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
 import { UnexpectedClientError } from "@polar-sh/sdk/models/errors/httpclienterrors.js";
@@ -218,23 +218,11 @@ async function users_test_seed_page(
 		path: `/${args.tag}`,
 		name: args.tag,
 		kind: "file",
-		version: 0,
 		parentId: "root",
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
 		shadowFileNodeIds: [],
-	});
-
-	await ctx.db.insert("files_markdown_content", {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		nodeId: nodeId,
-		content: `# ${args.tag}`,
-		isArchived: false,
-		yjsSequence: 0,
-		updatedAt: Date.now(),
-		updatedBy: args.userId,
 	});
 
 	return {
@@ -1834,7 +1822,7 @@ describe("delete_current_user_account", () => {
 });
 
 describe("hard_delete_user_now", () => {
-	test("hard-deletes local user data immediately and schedules period-end cancellation when purgeUserRecord is false", async () => {
+	test("defaults to data-only hard delete and schedules period-end cancellation", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -1925,12 +1913,7 @@ describe("hard_delete_user_now", () => {
 				};
 			});
 
-			expect(fetchSpy).toHaveBeenCalledWith(
-				"https://api.clerk.com/v1/users/clerk-user-hard-delete",
-				expect.objectContaining({
-					method: "DELETE",
-				}),
-			);
+			expect(fetchSpy).not.toHaveBeenCalled();
 			expect(enqueueActionSpy).toHaveBeenCalledWith(
 				expect.anything(),
 				internal.billing.cancel_polar_subscription_at_period_end,
@@ -1947,7 +1930,7 @@ describe("hard_delete_user_now", () => {
 			);
 			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
 			expect(after.user?.deletedAt).toBeTypeOf("number");
-			expect(after.user?.clerkUserId).toBeNull();
+			expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete");
 			expect(after.user?.defaultWorkspaceId).toBeUndefined();
 			expect(after.user?.defaultProjectId).toBeUndefined();
 			expect(after.anagraphic?.displayName).toBe("Hard Delete User");
@@ -1964,7 +1947,7 @@ describe("hard_delete_user_now", () => {
 		}
 	});
 
-	test("fully purges the Polar customer and clears any scheduled billing cancellation when purgeUserRecord is true", async () => {
+	test("fully purges the Polar customer and clears any scheduled billing cancellation when purgeUserMod removes the user record", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -1983,7 +1966,7 @@ describe("hard_delete_user_now", () => {
 		});
 		await t.mutation(internal.billing.upsert_cancel_polar_subscription_job, {
 			userId: seeded.userId,
-			jobId: "work_hard_delete_delete_polar_existing",
+			jobId: "work_hard_delete_delete_polar_existing" as WorkId,
 			updatedAt: 77_777,
 		});
 
@@ -2005,7 +1988,7 @@ describe("hard_delete_user_now", () => {
 		try {
 			await t.action(internal.users.hard_delete_user_now, {
 				userId: seeded.userId,
-				purgeUserRecord: true,
+				purgeUserMod: "data_auth_and_user_record",
 			});
 
 			const after = await t.run(async (ctx) => {
@@ -2081,7 +2064,7 @@ describe("hard_delete_user_now", () => {
 		}
 	});
 
-	test("purges the final user tombstone and removes the Polar customer when purgeUserRecord is true", async () => {
+	test("purges the final user tombstone and removes the Polar customer when purgeUserMod removes the user record", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -2133,7 +2116,7 @@ describe("hard_delete_user_now", () => {
 		try {
 			await t.action(internal.users.hard_delete_user_now, {
 				userId: seeded.userId,
-				purgeUserRecord: true,
+				purgeUserMod: "data_auth_and_user_record",
 			});
 
 			const after = await t.run(async (ctx) => {
@@ -2204,7 +2187,7 @@ describe("hard_delete_user_now", () => {
 		}
 	});
 
-	test("treats Clerk 404 as success and still schedules period-end cancellation when purgeUserRecord is false", async () => {
+	test("treats Clerk 404 as success and still schedules period-end cancellation when purgeUserMod removes auth", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -2244,6 +2227,7 @@ describe("hard_delete_user_now", () => {
 		try {
 			await t.action(internal.users.hard_delete_user_now, {
 				userId: seeded.userId,
+				purgeUserMod: "data_and_auth",
 			});
 
 			const after = await t.run(async (ctx) => {
@@ -2310,7 +2294,7 @@ describe("hard_delete_user_now", () => {
 		}
 	});
 
-	test("throws before local deletion starts when Clerk deletion fails", async () => {
+	test("throws before local deletion starts when Clerk deletion fails during auth purge", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -2350,6 +2334,7 @@ describe("hard_delete_user_now", () => {
 			await expect(
 				t.action(internal.users.hard_delete_user_now, {
 					userId: seeded.userId,
+					purgeUserMod: "data_and_auth",
 				}),
 			).rejects.toThrow("Failed to delete Clerk user");
 
@@ -2436,7 +2421,7 @@ describe("hard_delete_user_now", () => {
 			await expect(
 				t.action(internal.users.hard_delete_user_now, {
 					userId: seeded.userId,
-					purgeUserRecord: true,
+					purgeUserMod: "data_auth_and_user_record",
 				}),
 			).rejects.toThrow("Failed to revoke Polar subscription");
 
@@ -2510,7 +2495,7 @@ describe("hard_delete_user_now", () => {
 			await expect(
 				t.action(internal.users.hard_delete_user_now, {
 					userId: seeded.userId,
-					purgeUserRecord: true,
+					purgeUserMod: "data_auth_and_user_record",
 				}),
 			).rejects.toThrow("Failed to delete Polar customer");
 
@@ -2549,7 +2534,7 @@ describe("hard_delete_user_now", () => {
 		}
 	});
 
-	test("finishes local hard deletion and schedules period-end cancellation when a scheduled deletion was already initialized", async () => {
+	test("finishes data-only hard deletion and schedules period-end cancellation when a scheduled deletion was already initialized", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -2643,12 +2628,7 @@ describe("hard_delete_user_now", () => {
 				};
 			});
 
-			expect(fetchSpy).toHaveBeenCalledWith(
-				"https://api.clerk.com/v1/users/clerk-user-hard-delete-initialized",
-				expect.objectContaining({
-					method: "DELETE",
-				}),
-			);
+			expect(fetchSpy).not.toHaveBeenCalled();
 			expect(enqueueActionSpy).toHaveBeenCalledWith(
 				expect.anything(),
 				internal.billing.cancel_polar_subscription_at_period_end,
@@ -2665,7 +2645,7 @@ describe("hard_delete_user_now", () => {
 			);
 			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
 			expect(after.user?.deletedAt).toBe(88_888);
-			expect(after.user?.clerkUserId).toBeNull();
+			expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete-initialized");
 			expect(after.user?.defaultWorkspaceId).toBeUndefined();
 			expect(after.user?.defaultProjectId).toBeUndefined();
 			expect(after.requests).toHaveLength(0);
@@ -2691,11 +2671,11 @@ describe("hard_delete_user_now", () => {
 
 		await t.action(internal.users.hard_delete_user_now, {
 			userId: seeded.userId,
-			purgeUserRecord: true,
+			purgeUserMod: "data_auth_and_user_record",
 		});
 		await t.action(internal.users.hard_delete_user_now, {
 			userId: seeded.userId,
-			purgeUserRecord: true,
+			purgeUserMod: "data_auth_and_user_record",
 		});
 
 		const after = await t.run(async (ctx) => {
@@ -2796,7 +2776,7 @@ describe("hard_delete_user_now", () => {
 		expect(after.quotas.length).toBeGreaterThan(0);
 	});
 
-	test("skips Clerk deletion for local-only users, hard-deletes local data, and schedules period-end cancellation when purgeUserRecord is false", async () => {
+	test("skips Clerk deletion for local-only users, hard-deletes local data, and schedules period-end cancellation in data-only mode", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_anonymous_user(ctx, {
@@ -2829,6 +2809,18 @@ describe("hard_delete_user_now", () => {
 				}),
 			]),
 		);
+		const anonymousTokenId = await t.run(async (ctx) => {
+			const tokenId = await ctx.db.insert("users_anon_tokens", {
+				userId: seeded.userId,
+				token: "hard-delete-anonymous-token",
+				updatedAt: 44_444,
+			});
+			await ctx.db.patch("users", seeded.userId, {
+				anonymousAuthToken: tokenId,
+			});
+
+			return tokenId;
+		});
 
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
 			new Response(null, {
@@ -2845,9 +2837,10 @@ describe("hard_delete_user_now", () => {
 			});
 
 			const after = await t.run(async (ctx) => {
-				const [user, requests, workspace, project, files, snapshots, customer, subscriptions, billingJob] =
+				const [user, anonymousToken, requests, workspace, project, files, snapshots, customer, subscriptions, billingJob] =
 					await Promise.all([
 						ctx.db.get("users", seeded.userId),
+						ctx.db.get("users_anon_tokens", anonymousTokenId),
 						ctx.db.query("data_deletion_requests").collect(),
 						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
 						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
@@ -2873,6 +2866,7 @@ describe("hard_delete_user_now", () => {
 
 				return {
 					user,
+					anonymousToken,
 					requests,
 					workspace,
 					project,
@@ -2902,6 +2896,8 @@ describe("hard_delete_user_now", () => {
 			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
 			expect(after.user?.deletedAt).toBeTypeOf("number");
 			expect(after.user?.clerkUserId).toBeNull();
+			expect(after.user?.anonymousAuthToken).toBe(anonymousTokenId);
+			expect(after.anonymousToken?.token).toBe("hard-delete-anonymous-token");
 			expect(after.requests).toHaveLength(0);
 			expect(after.workspace).toBeNull();
 			expect(after.project).toBeNull();
@@ -2913,6 +2909,48 @@ describe("hard_delete_user_now", () => {
 		} finally {
 			fetchSpy.mockRestore();
 		}
+	});
+
+	test("removes anonymous auth while keeping the tombstoned user record in data-and-auth mode", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			users_test_bootstrap_anonymous_user(ctx, {
+				displayName: "Hard Delete Anonymous Auth User",
+			}),
+		);
+		const anonymousTokenId = await t.run(async (ctx) => {
+			const tokenId = await ctx.db.insert("users_anon_tokens", {
+				userId: seeded.userId,
+				token: "hard-delete-anonymous-auth-token",
+				updatedAt: 44_445,
+			});
+			await ctx.db.patch("users", seeded.userId, {
+				anonymousAuthToken: tokenId,
+			});
+
+			return tokenId;
+		});
+
+		await t.action(internal.users.hard_delete_user_now, {
+			userId: seeded.userId,
+			purgeUserMod: "data_and_auth",
+		});
+
+		const after = await t.run(async (ctx) => {
+			const [user, anonymousToken] = await Promise.all([
+				ctx.db.get("users", seeded.userId),
+				ctx.db.get("users_anon_tokens", anonymousTokenId),
+			]);
+
+			return {
+				user,
+				anonymousToken,
+			};
+		});
+
+		expect(after.user?.deletedAt).toBeTypeOf("number");
+		expect(after.user?.anonymousAuthToken).toBeUndefined();
+		expect(after.anonymousToken).toBeNull();
 	});
 });
 

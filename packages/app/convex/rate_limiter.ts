@@ -73,7 +73,7 @@ export async function rate_limiter_limit_by_key(
 		return null;
 	}
 
-	console.warn("[rate_limiter.limit] Rate limit exceeded", {
+	console.warn("Rate limit exceeded", {
 		name: args.name,
 		key: args.key,
 		retryAfterMs: limit.retryAfter,

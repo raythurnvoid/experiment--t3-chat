@@ -21,6 +21,8 @@ Use this file for reusable `/files` route and editor interaction knowledge.
 - Rich text content class: `.FileEditorRichText-editor-content`.
 - Folder explorer root: `.FileNodeViewFolderExplorer`.
 - Folder explorer rows: `.FileNodeViewFolderExplorer-row`.
+- Folder explorer drag target state: `.FileNodeViewFolderExplorer-row-drop-target`.
+- Folder explorer dragging source state: `.FileNodeViewFolderExplorer-row-dragging`.
 
 ## Debugging Notes
 
@@ -30,6 +32,7 @@ Use this file for reusable `/files` route and editor interaction knowledge.
 - Editor mode radios are visually represented by labels in the app header. If clicking a radio locator times out because the native input is tiny, click the matching `#app_main_header_content label` instead.
 - Source files and generated `.shadow.md` files share filename prefixes. Use exact role-name locators for per-node action buttons, such as `getByRole("button", { name: "More actions for qa.pdf", exact: true })`, so the source locator does not also match `qa.pdf.shadow.md`.
 - When the folder explorer is visible, it can render a second action button with the same accessible name as the tree action. Scope the locator to the tree/folder row or use `.first()` intentionally after confirming the snapshot.
+- Inline create/rename inputs are often selected by their current value in snapshots. After `fill(...)`, that locator may stop matching before `press("Enter")`; re-locate by the new value, scope to the focused input/modal, or press Enter through `page.keyboard` after confirming focus.
 
 ## Resize Handle QA
 
@@ -62,6 +65,20 @@ Keep folder/file creation checks as a route-specific recipe. Do not promote this
 - Try creating `deep/path` as a folder and verify `This folder already exists.` disables `Create folder`.
 - Archive the temporary `aaa-pw-qa-*` folder at the end of the flow.
 
+## Folder Explorer Drag And Drop QA
+
+Keep folder-table drag/drop checks as a route-specific recipe. The folder table uses Pragmatic Drag and Drop, while the sidebar tree still uses Headless Tree DnD.
+
+- Bind a single `/files` tab and navigate to a folder screen or root folder screen where `.FileNodeViewFolderExplorer` is visible.
+- Create a temporary `aaa-pw-dnd-*` folder with two child folders and at least one Markdown file so the folder table has both draggable files and folder drop targets.
+- Use real Playwright drag gestures: prefer `source.dragTo(target)`; if that is flaky for this table, use `mouse.move`, `mouse.down`, stepped `mouse.move`, and `mouse.up`. Do not use `dispatchEvent`, DOM `element.click()`, or forced clicks.
+- Drag the Markdown file row onto a folder row. Verify the source row leaves the current folder table, then open the target folder and verify the file appears there.
+- Drag one folder row onto another folder row. Verify the moved folder leaves the current folder table and appears inside the target folder.
+- Try dragging a row onto a file row. Verify no move occurs and no `FileNodeViewFolderExplorer-row-drop-target` state is applied to the file row.
+- Try same-parent or self/descendant-style moves when the setup exposes them. Verify no move occurs.
+- While a move is pending, verify the pending row does not start another drag and the more-actions button remains disabled.
+- After folder-table checks, run one sidebar tree move or external file upload drop to confirm the unchanged Headless Tree DnD flow still works.
+
 ## R2 Upload QA
 
 Keep R2 upload checks as a route-specific recipe. Do not promote this flow into the installed harness unless file upload controls become a generic primitive across routes.
@@ -69,6 +86,7 @@ Keep R2 upload checks as a route-specific recipe. Do not promote this flow into 
 - Fixture asset: `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf`. Keep harness file assets under Git LFS.
 - Bind a single `/files` tab and verify no dedicated Uploads section appears in the files sidebar.
 - From the root folder or a temporary `aaa-pw-qa-*` folder, click `Upload file`, then set the hidden `input[type="file"]` to the fixture path.
+- Select the target folder before clicking the sidebar `Upload file` item. If a file is selected, the current sidebar upload flow targets root, which can make same-name collision checks look like duplicate creation in different folders.
 - Verify a normal tree node named `r2-upload-sample.pdf` appears immediately after upload preparation; it should not appear in a separate uploads list.
 - Open the new source file node and verify the file panel shows a processing/pending state instead of the converted file until finalization completes.
 - Upload the same fixture to the same folder again and verify the modal title is `File already exists` with `Replace` and `Upload renamed file` actions.
@@ -76,6 +94,16 @@ Keep R2 upload checks as a route-specific recipe. Do not promote this flow into 
 - Repeat the collision flow and choose `Replace`; verify the old active source is archived and the replacement source appears as the active `r2-upload-sample.pdf`.
 - Archive the temporary `aaa-pw-qa-*` folder at the end of the flow.
 - Oversized upload UI checks are hard to drive through Playwriter because `setInputFiles` refuses files larger than 50 MB in extension mode. Prefer backend/unit coverage for the size gate, or use a smaller app-configured size limit in a dedicated test build if browser-level oversized QA becomes required.
+
+
+## Comments And Agent QA
+
+Keep comments/agent checks as route-specific recipes because they depend on the active editor.
+
+- To create a rich-text comment, focus text in `.FileEditorRichText-editor-content`, select content with keyboard selection, click the bubble `Comment` button, type into `.FileEditorRichTextCommentComposer-editor`, then click `Submit comment`.
+- Verify the comments sidebar shows the new thread under the `Comments` tab and that `Search comments` appears once at least one thread exists.
+- To test file-agent search/read/edit, use a unique token in the selected Markdown file, open the `Agent` tab, and ask the agent to search for that token, read the matching file, and make a small edit. Verify the agent message shows `Search files`, `Read file`, and `Edit file` tool disclosures, then review/apply the pending edit through `[data-testid="review-changes-button"]`.
+- If native editor mode radios time out in Playwriter, click the corresponding `#app_main_header_content label` instead of force-clicking the radio input.
 
 
 ## Rapid page-switch presence QA

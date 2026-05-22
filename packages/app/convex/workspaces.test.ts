@@ -1,4 +1,5 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { R2 } from "@convex-dev/r2";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server.js";
@@ -18,8 +19,17 @@ import {
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { workspaces_DESCRIPTION_MAX_LENGTH, workspaces_NAME_MAX_LENGTH } from "../shared/workspaces.ts";
+import { files_get_utf8_byte_size } from "../server/files.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+beforeEach(() => {
+	vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 async function workspaces_test_seed_default_workspace(ctx: MutationCtx, args: { userId: Id<"users">; now?: number }) {
 	await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
@@ -119,32 +129,25 @@ async function workspaces_test_seed_project_scoped_rows(
 		path: `/${args.tag}-page`,
 		name: `${args.tag}-page`,
 		kind: "file",
-		version: 0,
 		parentId: "root",
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
 		shadowFileNodeIds: [],
 	});
-	const markdownContentId = await ctx.db.insert("files_markdown_content", {
+	const assetId = await ctx.db.insert("files_r2_assets", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
-		nodeId: nodeId,
-		content: `# ${args.tag}`,
-		isArchived: false,
-		yjsSequence: 0,
+		kind: "content",
+		r2Bucket: "test-bucket",
+		r2Key: `content/workspaces/${args.workspaceId}/projects/${args.projectId}/assets/${args.tag}`,
+		size: files_get_utf8_byte_size(`# ${args.tag}`),
+		createdBy: args.userId,
 		updatedAt: Date.now(),
-		updatedBy: args.userId,
-	});
-	const yjsLastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		nodeId: nodeId,
-		lastSequence: 0,
 	});
 	await ctx.db.patch("files_nodes", nodeId, {
-		markdownContentId,
-		yjsLastSequenceId,
+		assetId,
+		contentType: "text/markdown;charset=utf-8",
 	});
 
 	const aiThreadId = await ctx.db.insert("ai_chat_threads", {
@@ -2290,7 +2293,6 @@ describe("access_control", () => {
 					path: "/access-user-grant",
 					name: "access-user-grant",
 					kind: "file",
-					version: 0,
 					parentId: "root",
 					createdBy: ownerId,
 					updatedBy: ownerId,
@@ -2303,7 +2305,6 @@ describe("access_control", () => {
 					path: "/access-public-other",
 					name: "access-public-other",
 					kind: "file",
-					version: 0,
 					parentId: "root",
 					createdBy: ownerId,
 					updatedBy: ownerId,
@@ -3050,7 +3051,7 @@ describe("delete_project", () => {
 				roleAssignments,
 				permissionGrants,
 				files,
-				markdownContent,
+				assets,
 				aiThreads,
 				aiMessages,
 				chatMessages,
@@ -3073,7 +3074,7 @@ describe("delete_project", () => {
 					)
 					.collect(),
 				ctx.db.query("files_nodes").collect(),
-				ctx.db.query("files_markdown_content").collect(),
+				ctx.db.query("files_r2_assets").collect(),
 				ctx.db.query("ai_chat_threads").collect(),
 				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 				ctx.db.query("chat_messages").collect(),
@@ -3099,7 +3100,7 @@ describe("delete_project", () => {
 						row.workspaceId === String(created._yay!.workspaceId) &&
 						row.projectId === String(extraProject._yay!.projectId),
 				),
-				markdownContent: markdownContent.filter(
+				assets: assets.filter(
 					(row) =>
 						row.workspaceId === String(created._yay!.workspaceId) &&
 						row.projectId === String(extraProject._yay!.projectId),
@@ -3128,7 +3129,7 @@ describe("delete_project", () => {
 		expect(after_delete.requests).toHaveLength(1);
 		expect(after_delete.requests[0]?.scope).toBe("project");
 		expect(after_delete.files).toHaveLength(1);
-		expect(after_delete.markdownContent).toHaveLength(1);
+		expect(after_delete.assets).toHaveLength(1);
 		expect(after_delete.aiThreads).toHaveLength(1);
 		expect(after_delete.aiMessages).toHaveLength(1);
 		expect(after_delete.chatMessages).toHaveLength(1);
@@ -3544,10 +3545,10 @@ describe("process_project_deletion_request", () => {
 		);
 
 		const afterPurge = await t.run(async (ctx) => {
-			const [requests, files, markdownContent, aiThreads, aiMessages, chatMessages] = await Promise.all([
+			const [requests, files, assets, aiThreads, aiMessages, chatMessages] = await Promise.all([
 				ctx.db.query("data_deletion_requests").collect(),
 				ctx.db.query("files_nodes").collect(),
-				ctx.db.query("files_markdown_content").collect(),
+				ctx.db.query("files_r2_assets").collect(),
 				ctx.db.query("ai_chat_threads").collect(),
 				ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 				ctx.db.query("chat_messages").collect(),
@@ -3567,12 +3568,12 @@ describe("process_project_deletion_request", () => {
 						row.workspaceId === String(created._yay!.workspaceId) &&
 						row.projectId === String(victimProject._yay!.projectId),
 				),
-				controlMarkdownContent: markdownContent.filter(
+				controlAssets: assets.filter(
 					(row) =>
 						row.workspaceId === String(created._yay!.workspaceId) &&
 						row.projectId === String(created._yay!.defaultProjectId),
 				),
-				victimMarkdownContent: markdownContent.filter(
+				victimAssets: assets.filter(
 					(row) =>
 						row.workspaceId === String(created._yay!.workspaceId) &&
 						row.projectId === String(victimProject._yay!.projectId),
@@ -3612,12 +3613,12 @@ describe("process_project_deletion_request", () => {
 
 		expect(afterPurge.victimRequests).toHaveLength(0);
 		expect(afterPurge.victimPages).toHaveLength(0);
-		expect(afterPurge.victimMarkdownContent).toHaveLength(0);
+		expect(afterPurge.victimAssets).toHaveLength(0);
 		expect(afterPurge.victimAiThreads).toHaveLength(0);
 		expect(afterPurge.victimAiMessages).toHaveLength(0);
 		expect(afterPurge.victimChatMessages).toHaveLength(0);
 		expect(afterPurge.controlPages).toHaveLength(1);
-		expect(afterPurge.controlMarkdownContent).toHaveLength(1);
+		expect(afterPurge.controlAssets).toHaveLength(1);
 		expect(afterPurge.controlAiThreads).toHaveLength(1);
 		expect(afterPurge.controlAiMessages).toHaveLength(1);
 		expect(afterPurge.controlChatMessages).toHaveLength(1);

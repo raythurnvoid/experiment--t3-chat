@@ -106,7 +106,7 @@ Workspace deletion requests are expected to reference an existing workspace. The
 
 ## Content purge coverage (`process_workspace_deletion_request` / `process_project_deletion_request`)
 
-**Included (tenant-scoped by workspace + project):** `files` and related markdown/Yjs/snapshot tables, `ai_chat_threads`, `ai_chat_threads_messages_aisdk_5`, `chat_messages`, `files_pending_updates` (+ cleanup tasks / last-sequence rows).
+**Included (tenant-scoped by workspace + project):** `files` and related markdown/Yjs/snapshot tables, `files_r2_assets` and their R2 objects, `ai_chat_threads`, `ai_chat_threads_messages_aisdk_5`, `chat_messages`, `files_pending_updates` (+ cleanup tasks / last-sequence rows).
 
 **Not present in Convex schema:** there is no `human_thread_messages` table; comments/human threads are not a separate purge target in this codebase today.
 

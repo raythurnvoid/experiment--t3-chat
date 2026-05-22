@@ -86,6 +86,7 @@ import { useUiInteractedOutside } from "@/lib/ui.tsx";
 import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
 import {
 	files_ROOT_ID,
+	files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
 	files_clear_node_path_cached_validation_messages,
 	files_create_tree_items_list_from_nodes,
 	files_create_tree_root,
@@ -95,7 +96,9 @@ import {
 	files_is_node,
 	files_normalize_name_input,
 	files_normalize_name,
+	files_normalize_markdown_name,
 	files_normalize_upload_file_name,
+	type files_ContentType,
 	type files_EditorView,
 	type files_TreeItem,
 } from "@/lib/files.ts";
@@ -115,6 +118,18 @@ type TreeItems = {
 
 function has_file_drop(dataTransfer: DataTransfer) {
 	return Array.from(dataTransfer.types).includes("Files");
+}
+
+function has_file_node_drop(dataTransfer: DataTransfer) {
+	return Array.from(dataTransfer.types).includes(files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE);
+}
+
+function get_file_node_drop_ids(dataTransfer: DataTransfer) {
+	return dataTransfer
+		.getData(files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE)
+		.split("\n")
+		.map((fileNodeId) => fileNodeId.trim())
+		.filter(Boolean);
 }
 
 function has_nested_drop_path(file: FileWithPath) {
@@ -159,6 +174,21 @@ function can_receive_file_drop(args: {
 	isUploadingFile: boolean;
 }) {
 	if (args.isBusy || args.isUploadingFile || !has_file_drop(args.dataTransfer)) {
+		return false;
+	}
+
+	const targetId = args.target.item.getId();
+	const targetData = args.target.item.getItemData();
+	return targetId === files_ROOT_ID || targetData.kind === "folder";
+}
+
+function can_receive_file_node_drop(args: {
+	dataTransfer: DataTransfer;
+	target: DragTarget<files_TreeItem>;
+	isBusy: boolean;
+	isUploadingFile: boolean;
+}) {
+	if (args.isBusy || args.isUploadingFile || !has_file_node_drop(args.dataTransfer)) {
 		return false;
 	}
 
@@ -351,8 +381,7 @@ function get_tree_items_list_after_optimistic_rename(args: {
 	now: number;
 }) {
 	const renamedItem = args.treeItemsList.find(
-		(treeItem): treeItem is app_convex_Doc<"files_nodes"> =>
-			files_is_node(treeItem) && treeItem._id === args.itemId,
+		(treeItem): treeItem is app_convex_Doc<"files_nodes"> => files_is_node(treeItem) && treeItem._id === args.itemId,
 	);
 	if (!renamedItem) {
 		return args.treeItemsList;
@@ -1506,8 +1535,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 
 	const handleUpdateRootZoneFromDragEvent: NonNullable<FilesSidebarTree_DivProps["onDragOverCapture"]> = (event) => {
 		const draggedItems = tree().getState().dnd?.draggedItems ?? [];
-		const isExternalFileDrag =
-			!isBusy && !isUploadingFile && has_file_drop(event.dataTransfer);
+		const isExternalFileDrag = !isBusy && !isUploadingFile && has_file_drop(event.dataTransfer);
 		if (draggedItems.length === 0 && !isExternalFileDrag) {
 			handleSetIsDraggingOverRootZone(false);
 			return;
@@ -1943,6 +1971,7 @@ type FilesSidebarUploadDraft = {
 	parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
 	filename: string;
 	contentType?: string;
+	isMarkdown: boolean;
 	reason: "path_conflict" | "missing_extension";
 	conflict?: {
 		nodeId: app_convex_Id<"files_nodes">;
@@ -1974,10 +2003,17 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 		setFilename(draft?.filename ?? "");
 	}, [draft]);
 
-	const normalizedFilename = files_normalize_upload_file_name(filename);
-	const renameError = files_sidebar_upload_filename_has_extension(normalizedFilename)
-		? null
-		: "Uploaded files must include a file extension.";
+	const normalizedFilenameResult = draft?.isMarkdown
+		? files_normalize_markdown_name(filename)
+		: { _yay: files_normalize_upload_file_name(filename) };
+	const normalizedFilename = normalizedFilenameResult?._yay ?? "";
+	const renameError =
+		normalizedFilenameResult?._nay?.message ??
+		(!draft?.isMarkdown && !files_sidebar_upload_filename_has_extension(normalizedFilename)
+			? "Uploaded files must include a file extension."
+			: draft?.reason === "path_conflict" && normalizedFilename === draft.filename
+				? "Choose a different filename or replace the existing file."
+				: null);
 	const canReplace =
 		draft?.reason === "path_conflict" &&
 		draft.conflict?.kind === "file" &&
@@ -2363,7 +2399,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					if (!uploadResponse.ok) {
 						console.error("[FilesSidebar.uploadFile] R2 upload failed", {
 							status: uploadResponse.status,
-							uploadId: created._yay.uploadId,
+							assetId: created._yay.assetId,
 							nodeId: created._yay.nodeId,
 						});
 						toast.error("Upload failed before processing could start.");
@@ -2389,18 +2425,20 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
 			filename: string;
 			contentType?: string;
+			isMarkdown: boolean;
 		}) => {
 			if (!treeItems) {
 				console.error(should_never_happen("[FilesSidebar.uploadFile] missing deps", { treeItems }));
 				return;
 			}
 
-			if (!files_sidebar_upload_filename_has_extension(args.filename)) {
+			if (!args.isMarkdown && !files_sidebar_upload_filename_has_extension(args.filename)) {
 				setUploadDraft({
 					file: args.file,
 					parentId: args.parentId,
 					filename: args.filename,
 					contentType: args.contentType,
+					isMarkdown: args.isMarkdown,
 					reason: "missing_extension",
 				});
 				return;
@@ -2414,7 +2452,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			}
 
 			convex
-				.query(app_convex_api.files_nodes.get_by_path, {
+				.query(app_convex_api.files_nodes.get_authorized_by_path, {
 					membershipId,
 					path: files_sidebar_path_join(parentItem.path, args.filename),
 				})
@@ -2425,6 +2463,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							parentId: args.parentId,
 							filename: args.filename,
 							contentType: args.contentType,
+							isMarkdown: args.isMarkdown,
 							reason: "path_conflict",
 							conflict: {
 								nodeId: existingNode.nodeId,
@@ -2445,15 +2484,23 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	);
 
 	const uploadBrowserFile = useFn(
-		(args: {
-			file: File;
-			parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
-		}) => {
+		(args: { file: File; parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID }) => {
+			const contentType = args.file.type || undefined;
+			const isMarkdown = contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
+			const filenameResult = isMarkdown
+				? files_normalize_markdown_name(args.file.name)
+				: { _yay: files_normalize_upload_file_name(args.file.name) };
+			if (filenameResult._nay) {
+				toast.error(filenameResult._nay.message ?? "Invalid file name");
+				return;
+			}
+
 			uploadFile({
 				file: args.file,
 				parentId: args.parentId,
-				filename: files_normalize_upload_file_name(args.file.name),
-				contentType: args.file.type || undefined,
+				filename: filenameResult._yay,
+				contentType,
+				isMarkdown,
 			});
 		},
 	);
@@ -2461,28 +2508,93 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const canDragForeignDragObjectOver = useFn<
 		NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canDragForeignDragObjectOver"]>
 	>((dataTransfer, target) => {
-		return can_receive_file_drop({
-			dataTransfer,
-			target,
-			isBusy,
-			isUploadingFile,
-		});
+		return (
+			can_receive_file_drop({
+				dataTransfer,
+				target,
+				isBusy,
+				isUploadingFile,
+			}) ||
+			can_receive_file_node_drop({
+				dataTransfer,
+				target,
+				isBusy,
+				isUploadingFile,
+			})
+		);
 	});
 
 	const canDropForeignDragObject = useFn<
 		NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canDropForeignDragObject"]>
 	>((dataTransfer, target) => {
-		return can_receive_file_drop({
-			dataTransfer,
-			target,
-			isBusy,
-			isUploadingFile,
-		});
+		return (
+			can_receive_file_drop({
+				dataTransfer,
+				target,
+				isBusy,
+				isUploadingFile,
+			}) ||
+			can_receive_file_node_drop({
+				dataTransfer,
+				target,
+				isBusy,
+				isUploadingFile,
+			})
+		);
 	});
 
 	const handleDropForeignDragObject = useFn<
 		NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["onDropForeignDragObject"]>
 	>(async (dataTransfer, target) => {
+		if (
+			can_receive_file_node_drop({
+				dataTransfer,
+				target,
+				isBusy,
+				isUploadingFile,
+			})
+		) {
+			if (!treeItems) {
+				console.error(should_never_happen("[FilesSidebar.handleDropForeignDragObject] missing deps", { treeItems }));
+				return;
+			}
+
+			const targetParentId = target.item.getId();
+			const movedFileNodeIds = get_file_node_drop_ids(dataTransfer).filter((fileNodeId) => {
+				const fileNode = treeItems.itemById.get(fileNodeId);
+				if (!fileNode || !files_is_node(fileNode)) {
+					return false;
+				}
+				if (fileNode._id === targetParentId || fileNode.parentId === targetParentId) {
+					return false;
+				}
+				if (target.item.isDescendentOf(fileNodeId)) {
+					return false;
+				}
+				return true;
+			});
+			if (movedFileNodeIds.length === 0) {
+				return;
+			}
+
+			return convex
+				.mutation(app_convex_api.files_nodes.move_nodes, {
+					membershipId,
+					itemIds: movedFileNodeIds.map((fileNodeId) => fileNodeId as app_convex_Id<"files_nodes">),
+					targetParentId:
+						targetParentId === files_ROOT_ID ? files_ROOT_ID : (targetParentId as app_convex_Id<"files_nodes">),
+				})
+				.then((result) => {
+					if (result._nay) {
+						console.error("[FilesSidebar.handleDropForeignDragObject] Failed to move nodes", { result });
+						return;
+					}
+				})
+				.catch((error) => {
+					console.error("[FilesSidebar.handleDropForeignDragObject] Error moving nodes", { error });
+				});
+		}
+
 		if (
 			!can_receive_file_drop({
 				dataTransfer,
@@ -2537,176 +2649,177 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	 *
 	 * Called by Headless Tree from `completeRenaming()` after the submit path is allowed.
 	 */
-	const handleRename = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["onRename"]>>(
-		(item, value) => {
-			const trimmedValue = value.trim();
-			const itemData = item.getItemData();
-			const itemId = item.getId();
+	const handleRename = useFn<NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["onRename"]>>((item, value) => {
+		const trimmedValue = value.trim();
+		const itemData = item.getItemData();
+		const itemId = item.getId();
 
-			if (!files_is_node(itemData)) {
-				console.error("[FilesSidebar.handleRename] item is not a node", { itemId, itemData });
-				return;
-			}
+		if (!files_is_node(itemData)) {
+			console.error("[FilesSidebar.handleRename] item is not a node", { itemId, itemData });
+			return;
+		}
 
-			if (!trimmedValue) {
-				return;
-			}
+		if (!trimmedValue) {
+			return;
+		}
 
-			const renameData = ((/* iife */) => {
-				if (itemData.assetId || itemData.uploadId) {
-					const renameValidation = files_sidebar_get_uploaded_file_rename_validation({
-						treeItemsList: treeItems?.list,
-						nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
-						parentId: itemData.parentId,
-						nameOrPath: trimmedValue,
-					});
-
-					return {
-						renameValidation,
-						normalizedName: renameValidation.normalizedName,
-					};
-				}
-
-				const renameValidation = files_get_node_path_validation({
-					scopeId: membershipId,
-					fileNodesList: treeItems?.list,
+		const renameData = ((/* iife */) => {
+			if (
+				itemData.assetId &&
+				!(itemData.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false)
+			) {
+				const renameValidation = files_sidebar_get_uploaded_file_rename_validation({
+					treeItemsList: treeItems?.list,
 					nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
 					parentId: itemData.parentId,
-					kind: itemData.kind,
 					nameOrPath: trimmedValue,
 				});
 
-				// Keep path-like renames as folder segments, but canonicalize the final file leaf before Convex creates/moves nodes.
-				const isPathLikeName = trimmedValue.includes("/");
-				const normalizedName = ((/* iife */) => {
-					if (isPathLikeName) {
-						const pathSegments = path_extract_segments_from(trimmedValue);
-						const leafSegment = pathSegments.at(-1);
-						if (!leafSegment) {
-							return null;
-						}
+				return {
+					renameValidation,
+					normalizedName: renameValidation.normalizedName,
+				};
+			}
 
-						if (itemData.kind === "file") {
-							const leafSegmentResult = files_normalize_name(itemData.kind, leafSegment);
-							if (leafSegmentResult._nay) {
-								console.error("[FilesSidebar.handleRename] Invalid path leaf value", {
-									result: leafSegmentResult,
-									itemId,
-								});
-								return null;
-							}
+			const renameValidation = files_get_node_path_validation({
+				scopeId: membershipId,
+				fileNodesList: treeItems?.list,
+				nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
+				parentId: itemData.parentId,
+				kind: itemData.kind,
+				nameOrPath: trimmedValue,
+			});
 
-							pathSegments[pathSegments.length - 1] = leafSegmentResult._yay;
-						}
-
-						return pathSegments.join("/");
-					}
-
-					const normalizedNameResult = files_normalize_name(itemData.kind, trimmedValue);
-					if (normalizedNameResult._nay) {
-						console.error("[FilesSidebar.handleRename] Invalid rename value", { result: normalizedNameResult, itemId });
+			// Keep path-like renames as folder segments, but canonicalize the final file leaf before Convex creates/moves nodes.
+			const isPathLikeName = trimmedValue.includes("/");
+			const normalizedName = ((/* iife */) => {
+				if (isPathLikeName) {
+					const pathSegments = path_extract_segments_from(trimmedValue);
+					const leafSegment = pathSegments.at(-1);
+					if (!leafSegment) {
 						return null;
 					}
 
-					return normalizedNameResult._yay;
-				})();
-
-				return {
-					renameValidation,
-					normalizedName,
-				};
-			})();
-			const { renameValidation, normalizedName } = renameData;
-			const renameError = renameValidation.validationMessage;
-			if (renameError) {
-				renameValidation.cacheValidationMessage(renameError);
-				setRenameError(itemId, renameError);
-				item.setFocused();
-				return;
-			}
-
-			if (normalizedName == null) {
-				return;
-			}
-
-			if (normalizedName === itemData.name) {
-				return;
-			}
-
-			clearRenameError(itemId);
-			item.setFocused();
-			markFileAsPending(itemId);
-			convex
-				.mutation(
-					app_convex_api.files_nodes.rename_node,
-					{
-						membershipId,
-						nodeId: itemId as app_convex_Id<"files_nodes">,
-						name: normalizedName,
-					},
-					{
-						optimisticUpdate: (localStore) => {
-							// Keep cache writes representable as raw `files_nodes` docs; path-like renames may create folders.
-							if (normalizedName.includes("/")) {
-								return;
-							}
-
-							const treeNodesList = localStore.getQuery(app_convex_api.files_nodes.get_file_nodes_list, {
-								membershipId,
-							});
-							if (!treeNodesList) {
-								return;
-							}
-							const treeItemsList = files_create_tree_items_list_from_nodes(treeNodesList);
-							const nextTreeItemsList = get_tree_items_list_after_optimistic_rename({
-								treeItemsList,
+					if (itemData.kind === "file") {
+						const leafSegmentResult = files_normalize_name(itemData.kind, leafSegment);
+						if (leafSegmentResult._nay) {
+							console.error("[FilesSidebar.handleRename] Invalid path leaf value", {
+								result: leafSegmentResult,
 								itemId,
-								normalizedName,
-								now: Date.now(),
 							});
-							const renamedItem = nextTreeItemsList.find(
-								(treeItem): treeItem is app_convex_Doc<"files_nodes"> =>
-									files_is_node(treeItem) && treeItem._id === itemId,
-							);
-							if (!renamedItem) {
-								return;
-							}
+							return null;
+						}
 
-							localStore.setQuery(
-								app_convex_api.files_nodes.get_file_nodes_list,
-								{
-									membershipId,
-								},
-								treeNodesList.map((node) =>
-									node._id === itemId
-										? {
-												...node,
-												name: renamedItem.name,
-												path: renamedItem.path,
-												updatedAt: renamedItem.updatedAt,
-											}
-										: node,
-								),
-							);
-						},
-					},
-				)
-				.then((result) => {
-					if (result._nay) {
-						renameValidation.cacheValidationMessage(result._nay.message);
-						setRenameError(itemId, result._nay.message);
-						console.error("[FilesSidebar.handleRename] Failed to rename node", { result });
+						pathSegments[pathSegments.length - 1] = leafSegmentResult._yay;
 					}
-				})
-				.catch((error) => {
-					console.error("[FilesSidebar.handleRename] Error on rename node", { error });
-				})
-				.finally(() => {
-					unmarkFileAsPending(itemId);
-					files_clear_node_path_cached_validation_messages();
-				});
-		},
-	);
+
+					return pathSegments.join("/");
+				}
+
+				const normalizedNameResult = files_normalize_name(itemData.kind, trimmedValue);
+				if (normalizedNameResult._nay) {
+					console.error("[FilesSidebar.handleRename] Invalid rename value", { result: normalizedNameResult, itemId });
+					return null;
+				}
+
+				return normalizedNameResult._yay;
+			})();
+
+			return {
+				renameValidation,
+				normalizedName,
+			};
+		})();
+		const { renameValidation, normalizedName } = renameData;
+		const renameError = renameValidation.validationMessage;
+		if (renameError) {
+			renameValidation.cacheValidationMessage(renameError);
+			setRenameError(itemId, renameError);
+			item.setFocused();
+			return;
+		}
+
+		if (normalizedName == null) {
+			return;
+		}
+
+		if (normalizedName === itemData.name) {
+			return;
+		}
+
+		clearRenameError(itemId);
+		item.setFocused();
+		markFileAsPending(itemId);
+		convex
+			.mutation(
+				app_convex_api.files_nodes.rename_node,
+				{
+					membershipId,
+					nodeId: itemId as app_convex_Id<"files_nodes">,
+					name: normalizedName,
+				},
+				{
+					optimisticUpdate: (localStore) => {
+						// Keep cache writes representable as raw `files_nodes` docs; path-like renames may create folders.
+						if (normalizedName.includes("/")) {
+							return;
+						}
+
+						const treeNodesList = localStore.getQuery(app_convex_api.files_nodes.get_file_nodes_list, {
+							membershipId,
+						});
+						if (!treeNodesList) {
+							return;
+						}
+						const treeItemsList = files_create_tree_items_list_from_nodes(treeNodesList);
+						const nextTreeItemsList = get_tree_items_list_after_optimistic_rename({
+							treeItemsList,
+							itemId,
+							normalizedName,
+							now: Date.now(),
+						});
+						const renamedItem = nextTreeItemsList.find(
+							(treeItem): treeItem is app_convex_Doc<"files_nodes"> =>
+								files_is_node(treeItem) && treeItem._id === itemId,
+						);
+						if (!renamedItem) {
+							return;
+						}
+
+						localStore.setQuery(
+							app_convex_api.files_nodes.get_file_nodes_list,
+							{
+								membershipId,
+							},
+							treeNodesList.map((node) =>
+								node._id === itemId
+									? {
+											...node,
+											name: renamedItem.name,
+											path: renamedItem.path,
+											updatedAt: renamedItem.updatedAt,
+										}
+									: node,
+							),
+						);
+					},
+				},
+			)
+			.then((result) => {
+				if (result._nay) {
+					renameValidation.cacheValidationMessage(result._nay.message);
+					setRenameError(itemId, result._nay.message);
+					console.error("[FilesSidebar.handleRename] Failed to rename node", { result });
+				}
+			})
+			.catch((error) => {
+				console.error("[FilesSidebar.handleRename] Error on rename node", { error });
+			})
+			.finally(() => {
+				unmarkFileAsPending(itemId);
+				files_clear_node_path_cached_validation_messages();
+			});
+	});
 
 	/**
 	 * Handle Enter while an item is being renamed.
@@ -2723,8 +2836,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const itemId = item.getId();
 		const trimmedValue = currentTree.getRenamingValue().trim();
 		if (files_is_node(itemData) && trimmedValue) {
+			const isMarkdown = itemData.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
 			const renameValidation =
-				itemData.assetId || itemData.uploadId
+				itemData.assetId && !isMarkdown
 					? files_sidebar_get_uploaded_file_rename_validation({
 							treeItemsList: treeItems?.list,
 							nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
@@ -2962,17 +3076,20 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		});
 
 		setIsCreatingFile(true);
-		convex
-			.mutation(
-				kind === "folder"
-					? app_convex_api.files_nodes.create_folder_node
-					: app_convex_api.files_nodes.create_markdown_node,
-				{
-					membershipId,
-					parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
-					name: nextNodeName,
-				},
-			)
+		const createNodePromise =
+			kind === "folder"
+				? convex.mutation(app_convex_api.files_nodes.create_folder_node, {
+						membershipId,
+						parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
+						name: nextNodeName,
+					})
+				: convex.action(app_convex_api.files_nodes.create_markdown_node, {
+						membershipId,
+						parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
+						name: nextNodeName,
+					});
+
+		createNodePromise
 			.then((result) => {
 				if (result._nay) {
 					const createNodeValidation = files_get_node_path_validation({
@@ -3150,6 +3267,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			parentId: uploadDraft.parentId,
 			filename,
 			contentType: uploadDraft.contentType,
+			isMarkdown: uploadDraft.isMarkdown,
 		});
 	});
 
@@ -3350,7 +3468,6 @@ if (import.meta.vitest) {
 			path: args.path ?? `/${args.name}`,
 			name: args.name,
 			kind: args.kind,
-			version: 1,
 			shadowFileNodeIds: [],
 			archiveOperationId: args.archiveOperationId,
 			createdBy: "test-user" as app_convex_Id<"users">,
@@ -3372,11 +3489,7 @@ if (import.meta.vitest) {
 		return file;
 	};
 
-	const test_data_transfer = (args: {
-		types?: string[];
-		files?: File[];
-		items?: DataTransferItem[];
-	}) => {
+	const test_data_transfer = (args: { types?: string[]; files?: File[]; items?: DataTransferItem[] }) => {
 		return {
 			types: args.types ?? ["Files"],
 			files: args.files ?? [],
@@ -3397,6 +3510,17 @@ if (import.meta.vitest) {
 		test("detects browser file drags from DataTransfer types", () => {
 			expect(has_file_drop(test_data_transfer({ types: ["Files"] }))).toBe(true);
 			expect(has_file_drop(test_data_transfer({ types: ["text/plain"] }))).toBe(false);
+		});
+
+		test("detects internal file node drags from DataTransfer types", () => {
+			expect(
+				has_file_node_drop(
+					test_data_transfer({
+						types: [files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE],
+					}),
+				),
+			).toBe(true);
+			expect(has_file_node_drop(test_data_transfer({ types: ["Files"] }))).toBe(false);
 		});
 
 		test("accepts exactly one dropped file", async () => {
@@ -3477,6 +3601,55 @@ if (import.meta.vitest) {
 			).toBe(false);
 			expect(
 				can_receive_file_drop({
+					dataTransfer,
+					target: test_drag_target(folder),
+					isBusy: false,
+					isUploadingFile: true,
+				}),
+			).toBe(false);
+		});
+
+		test("allows internal file node drops only on root and folder targets while idle", () => {
+			const dataTransfer = test_data_transfer({ types: [files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE] });
+			const folder = test_node({
+				id: "folder_1",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "folder",
+			});
+			const file = test_node({
+				id: "file_1",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				name: "file.md",
+			});
+
+			expect(
+				can_receive_file_node_drop({
+					dataTransfer,
+					target: test_drag_target(files_create_tree_root()),
+					isBusy: false,
+					isUploadingFile: false,
+				}),
+			).toBe(true);
+			expect(
+				can_receive_file_node_drop({
+					dataTransfer,
+					target: test_drag_target(folder),
+					isBusy: false,
+					isUploadingFile: false,
+				}),
+			).toBe(true);
+			expect(
+				can_receive_file_node_drop({
+					dataTransfer,
+					target: test_drag_target(file),
+					isBusy: false,
+					isUploadingFile: false,
+				}),
+			).toBe(false);
+			expect(
+				can_receive_file_node_drop({
 					dataTransfer,
 					target: test_drag_target(folder),
 					isBusy: false,

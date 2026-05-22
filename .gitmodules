@@ -106,3 +106,6 @@
 [submodule "references-submodules/file-selector"]
 	path = references-submodules/file-selector
 	url = ../../react-dropzone/file-selector.git
+[submodule "references-submodules/pragmatic-drag-and-drop"]
+	path = references-submodules/pragmatic-drag-and-drop
+	url = ../../atlassian/pragmatic-drag-and-drop.git

@@ -1411,8 +1411,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									body: stream,
 								} as const;
 							} catch (error) {
-								const message = "AI chat stream error";
-								console.error(`${message}:`, error);
+								const errorMessage = "AI chat stream error";
+								console.error(`${errorMessage}:`, error);
 
 								return {
 									status: 500,
@@ -1695,13 +1695,13 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									body: stream,
 								} as const;
 							} catch (error) {
-								const message = "Title generation error";
-								console.error(`${message}:`, error);
+								const errorMessage = "Title generation error";
+								console.error(`${errorMessage}:`, error);
 
 								return {
 									status: 500,
 									body: {
-										message,
+										message: errorMessage,
 										cause:
 											error == null ? undefined : { message: error instanceof Error ? error.message : String(error) },
 									},

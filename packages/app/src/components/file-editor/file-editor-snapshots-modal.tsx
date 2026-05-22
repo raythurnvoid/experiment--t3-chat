@@ -1,7 +1,7 @@
 import "./file-editor-snapshots-modal.css";
 
-import { memo, useState, type Dispatch, type MouseEvent, type SetStateAction } from "react";
-import { useMutation, useQueries, useQuery } from "convex/react";
+import { memo, useEffect, useState, type Dispatch, type MouseEvent, type SetStateAction } from "react";
+import { useConvex, useMutation, useQueries, useQuery } from "convex/react";
 import { toast } from "sonner";
 import { Archive, ArchiveRestore, ChevronLeft, ChevronRight, Clock, FileText } from "lucide-react";
 import { diffWordsWithSpace } from "diff";
@@ -441,6 +441,8 @@ const FileEditorSnapshotsModalPreviewModal = memo(function FileEditorSnapshotsMo
 		onClickPrevious,
 	} = props;
 
+	const convex = useConvex();
+
 	const snapshot = useQuery(
 		app_convex_api.files_nodes.get_file_snapshot,
 		open && selectedSnapshotId
@@ -452,16 +454,72 @@ const FileEditorSnapshotsModalPreviewModal = memo(function FileEditorSnapshotsMo
 			: "skip",
 	);
 
-	const selectedSnapshotContent = useQuery(
-		app_convex_api.files_nodes.get_file_snapshot_content,
-		open && selectedSnapshotId
-			? {
-					membershipId,
+	const [selectedSnapshotContent, setSelectedSnapshotContent] = useState<
+		| {
+				content: string;
+				snapshotId: app_convex_Id<"files_snapshots">;
+				_creationTime: number;
+		  }
+		| null
+		| undefined
+	>(undefined);
+
+	useEffect(() => {
+		if (!open || !selectedSnapshotId) {
+			setSelectedSnapshotContent(undefined);
+			return;
+		}
+
+		const abortController = new AbortController();
+		let didCancel = false;
+		setSelectedSnapshotContent(undefined);
+		convex
+			.action(app_convex_api.files_nodes.create_file_snapshot_content_url, {
+				membershipId,
+				nodeId,
+				snapshotId: selectedSnapshotId,
+			})
+			.then(async (snapshotContentUrl) => {
+				if (didCancel) return;
+				if (!snapshotContentUrl) {
+					setSelectedSnapshotContent(null);
+					return;
+				}
+
+				const response = await fetch(snapshotContentUrl.url, { signal: abortController.signal });
+				if (!response.ok) {
+					throw new Error("Failed to fetch snapshot content", {
+						cause: {
+							status: response.status,
+							nodeId,
+							snapshotId: selectedSnapshotId,
+						},
+					});
+				}
+
+				const content = await response.text();
+				if (didCancel) return;
+				setSelectedSnapshotContent({
+					content,
+					snapshotId: snapshotContentUrl.snapshotId,
+					_creationTime: snapshotContentUrl._creationTime,
+				});
+			})
+			.catch((error) => {
+				if (didCancel || abortController.signal.aborted) return;
+				console.error("[FileEditorSnapshotsModalPreviewModal] Failed to load snapshot content", {
+					error,
 					nodeId,
 					snapshotId: selectedSnapshotId,
-				}
-			: "skip",
-	);
+				});
+				setSelectedSnapshotContent(null);
+			});
+
+		return () => {
+			didCancel = true;
+			abortController.abort();
+		};
+	}, [convex, membershipId, nodeId, open, selectedSnapshotId]);
 
 	const selectedSnapshotMarkdown = selectedSnapshotContent?.content ?? null;
 	const currentMarkdownForSnapshotDiff = selectedSnapshotContent === undefined ? "" : getCurrentMarkdown();
@@ -741,6 +799,8 @@ export type FileEditorSnapshotsModal_Props = {
 export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(props: FileEditorSnapshotsModal_Props) {
 	const { nodeId, sessionId, getCurrentMarkdown, onApplySnapshotMarkdown } = props;
 
+	const convex = useConvex();
+
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const [isListOpen, setIsListOpen] = useState(false);
@@ -798,7 +858,6 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 		return usersDict;
 	})();
 
-	const restoreSnapshot = useMutation(app_convex_api.files_nodes.restore_snapshot);
 	const archiveSnapshot = useMutation(app_convex_api.files_nodes.archive_snapshot);
 	const unarchiveSnapshot = useMutation(app_convex_api.files_nodes.unarchive_snapshot);
 
@@ -816,12 +875,11 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 
 		setIsRestoring(true);
 		Promise.try(async () => {
-			const restoreResult = await restoreSnapshot({
+			const restoreResult = await convex.action(app_convex_api.files_nodes.restore_snapshot_r2, {
 				membershipId,
 				snapshotId: selectedSnapshotId,
 				nodeId: nodeId,
 				sessionId: sessionId,
-				currentMarkdownContent: getCurrentMarkdown(),
 			});
 			if (restoreResult._nay) {
 				console.error("Failed to restore snapshot:", restoreResult._nay);

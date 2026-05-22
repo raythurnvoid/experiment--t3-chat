@@ -25,22 +25,6 @@ type NotificationWithCreatedAt = Doc<"notifications"> & {
 	createdAt?: number;
 };
 
-type LegacyFilesR2Asset = Omit<Doc<"files_r2_assets">, "_id" | "_creationTime"> & {
-	_id: Id<"files_r2_assets">;
-	_creationTime: number;
-	conversionStatus?: "uploaded" | "converting" | "converted" | "failed";
-	shadowNodeId?: Id<"files_nodes">;
-};
-
-type LegacyFilesNode = Omit<Doc<"files_nodes">, "_id" | "_creationTime" | "shadowFileNodeIds"> & {
-	_id: Id<"files_nodes">;
-	_creationTime: number;
-	// Remove the intermediate shadow field names used before the schema settled on explicit file-node terminology.
-	shadowSourceNodeId?: Id<"files_nodes">;
-	shadowNodeIds?: Array<Id<"files_nodes">>;
-	shadowFileNodeIds?: Array<Id<"files_nodes">>;
-};
-
 type LegacyWorkspaceWithOwner = Omit<Doc<"workspaces">, "_id" | "_creationTime" | "ownerUserId"> & {
 	_id: Id<"workspaces">;
 	_creationTime: number;
@@ -318,96 +302,7 @@ export const remove_notifications_created_at = app_migrations.define({
 	},
 });
 
-export const remove_files_r2_assets_conversion_status = app_migrations.define({
-	table: "files_r2_assets",
-	migrateOne: async (ctx, asset) => {
-		const legacyAsset = asset as LegacyFilesR2Asset;
-		if (legacyAsset.conversionStatus === undefined) {
-			return;
-		}
-
-		const { _id, _creationTime, conversionStatus: _conversionStatus, ...next } = legacyAsset;
-		await ctx.db.replace("files_r2_assets", _id, next);
-	},
-});
-
-export const backfill_files_nodes_shadow_file_node_ids = app_migrations.define({
-	table: "files_nodes",
-	migrateOne: async (ctx, node) => {
-		const legacyNode = node as LegacyFilesNode;
-		if (
-			legacyNode.shadowFileNodeIds !== undefined &&
-			legacyNode.shadowNodeIds === undefined &&
-			legacyNode.shadowSourceNodeId === undefined
-		) {
-			return;
-		}
-
-		const {
-			_id,
-			_creationTime,
-			shadowSourceNodeId,
-			shadowNodeIds,
-			shadowSourceFileNodeId,
-			shadowFileNodeIds,
-			...next
-		} = legacyNode;
-		const nextShadowSourceFileNodeId = shadowSourceFileNodeId ?? shadowSourceNodeId;
-		await ctx.db.replace("files_nodes", _id, {
-			...next,
-			...(nextShadowSourceFileNodeId ? { shadowSourceFileNodeId: nextShadowSourceFileNodeId } : {}),
-			shadowFileNodeIds: shadowFileNodeIds ?? shadowNodeIds ?? [],
-		});
-	},
-});
-
-export const backfill_files_node_shadow_links_from_assets = app_migrations.define({
-	table: "files_r2_assets",
-	migrateOne: async (ctx, asset) => {
-		const legacyAsset = asset as LegacyFilesR2Asset;
-		if (legacyAsset.shadowNodeId === undefined) {
-			return;
-		}
-
-		const [sourceFile, shadowFile] = await Promise.all([
-			ctx.db.get("files_nodes", legacyAsset.sourceNodeId),
-			ctx.db.get("files_nodes", legacyAsset.shadowNodeId),
-		]);
-		if (!sourceFile || !shadowFile) {
-			return;
-		}
-
-		const legacySourceFile = sourceFile as LegacyFilesNode;
-		const nextShadowFileNodeIds = legacySourceFile.shadowFileNodeIds ?? legacySourceFile.shadowNodeIds ?? [];
-		await Promise.all([
-			nextShadowFileNodeIds.includes(legacyAsset.shadowNodeId)
-				? null
-					: ctx.db.patch("files_nodes", sourceFile._id, {
-						shadowFileNodeIds: [...nextShadowFileNodeIds, legacyAsset.shadowNodeId],
-					}),
-			ctx.db.patch("files_nodes", shadowFile._id, {
-				shadowSourceFileNodeId: sourceFile._id,
-				shadowFileNodeIds:
-					(shadowFile as LegacyFilesNode).shadowFileNodeIds ?? (shadowFile as LegacyFilesNode).shadowNodeIds ?? [],
-			}),
-		]);
-	},
-});
-
-export const remove_files_r2_assets_shadow_node_id = app_migrations.define({
-	table: "files_r2_assets",
-	migrateOne: async (ctx, asset) => {
-		const legacyAsset = asset as LegacyFilesR2Asset;
-		if (legacyAsset.shadowNodeId === undefined) {
-			return;
-		}
-
-		const { _id, _creationTime, shadowNodeId: _shadowNodeId, ...next } = legacyAsset;
-		await ctx.db.replace("files_r2_assets", _id, next);
-	},
-});
-
-/** Run migrations from the CLI: `pnpm exec convex run migrations:run -- ...` (cwd: packages/app). */
+/** Run migrations from the CLI: `pnpx convex run migrations:run_<migration_name>` (cwd: packages/app). */
 export const run = app_migrations.runner();
 export const run_remove_billing_usage_snapshots_last_granted_period_start = app_migrations.runner(
 	internal.migrations.remove_billing_usage_snapshots_last_granted_period_start,
@@ -420,18 +315,6 @@ export const run_remove_billing_usage_snapshots_last_refresh_reason = app_migrat
 );
 export const run_remove_notifications_created_at = app_migrations.runner(
 	internal.migrations.remove_notifications_created_at,
-);
-export const run_remove_files_r2_assets_conversion_status = app_migrations.runner(
-	internal.migrations.remove_files_r2_assets_conversion_status,
-);
-export const run_backfill_files_nodes_shadow_file_node_ids = app_migrations.runner(
-	internal.migrations.backfill_files_nodes_shadow_file_node_ids,
-);
-export const run_backfill_files_node_shadow_links_from_assets = app_migrations.runner(
-	internal.migrations.backfill_files_node_shadow_links_from_assets,
-);
-export const run_remove_files_r2_assets_shadow_node_id = app_migrations.runner(
-	internal.migrations.remove_files_r2_assets_shadow_node_id,
 );
 export const run_backfill_workspaces_owner_user_id_from_owner = app_migrations.runner(
 	internal.migrations.backfill_workspaces_owner_user_id_from_owner,

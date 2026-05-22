@@ -1,6 +1,6 @@
 import { describe, expect, test, vi, beforeEach, afterEach, type MockInstance } from "vitest";
 import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared/billing.ts";
-import { Workpool } from "@convex-dev/workpool";
+import { Workpool, type WorkId } from "@convex-dev/workpool";
 import { api, components, internal } from "./_generated/api.js";
 import {
 	billing_polar,
@@ -1859,7 +1859,7 @@ describe("billing bootstrap_free_subscription", () => {
 		});
 		await t.mutation(internal.billing.upsert_cancel_polar_subscription_job, {
 			userId,
-			jobId: "work_bootstrap_restore_pending",
+			jobId: "work_bootstrap_restore_pending" as WorkId,
 			updatedAt: 30_001,
 		});
 
@@ -3493,7 +3493,7 @@ describe("billing schedule_polar_subscription_period_end_cancellation", () => {
 
 		await t.mutation(internal.billing.upsert_cancel_polar_subscription_job, {
 			userId,
-			jobId: "work_complete_success",
+			jobId: "work_complete_success" as WorkId,
 			updatedAt: 12_345,
 		});
 
@@ -3519,7 +3519,7 @@ describe("billing schedule_polar_subscription_period_end_cancellation", () => {
 
 		await t.mutation(internal.billing.upsert_cancel_polar_subscription_job, {
 			userId,
-			jobId: "work_complete_failed",
+			jobId: "work_complete_failed" as WorkId,
 			updatedAt: 22_345,
 		});
 
@@ -3545,7 +3545,7 @@ describe("billing schedule_polar_subscription_period_end_cancellation", () => {
 
 		await t.mutation(internal.billing.upsert_cancel_polar_subscription_job, {
 			userId,
-			jobId: "work_complete_new",
+			jobId: "work_complete_new" as WorkId,
 			updatedAt: 32_345,
 		});
 

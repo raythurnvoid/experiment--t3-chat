@@ -72,6 +72,9 @@ importers:
       '@ariakit/react':
         specifier: ^0.4.19
         version: 0.4.20(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@atlaskit/pragmatic-drag-and-drop':
+        specifier: ^1.8.1
+        version: 1.8.1
       '@clerk/backend':
         specifier: ^3.2.3
         version: 3.2.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -3465,6 +3468,9 @@ packages:
 
   '@asamuzakjp/nwsapi@2.3.9':
     resolution: {integrity: sha512-n8GuYSrI9bF7FFZ/SjhwevlHc8xaVlb/7HmHelnc/PZXBD2ZR49NnN9sMMuDdEGPeeRQ5d0hqlSlEpgCX3Wl0Q==}
+
+  '@atlaskit/pragmatic-drag-and-drop@1.8.1':
+    resolution: {integrity: sha512-uXWNPpL8n4OmTVbduH7nq8pk8htqGo/prR5cYEE8sVCPJGAUMWn6lzvWTfI+4VCeQvHiDRODVz4YzH06OVAxhw==}
 
   '@auth/core@0.37.4':
     resolution: {integrity: sha512-HOXJwXWXQRhbBDHlMU0K/6FT1v+wjtzdKhsNg0ZN7/gne6XPsIrjZ4daMcFnbq0Z/vsAbYBinQhhua0d77v7qw==}
@@ -11212,6 +11218,9 @@ packages:
   binary-extensions@2.3.0:
     resolution: {integrity: sha512-Ceh+7ox5qe7LJuLHoY0feh3pHuUDHAcRUeyL2VYghZwfpkNIy/+8Ocg0a3UuSoYzavmylwuLWQOf3hl0jjMMIw==}
     engines: {node: '>=8'}
+
+  bind-event-listener@3.0.0:
+    resolution: {integrity: sha512-PJvH288AWQhKs2v9zyfYdPzlPqf5bXbGMmhmUIY9x4dAUGIWgomO771oBQNwJnMQSnUIXhKu6sgzpBRXTlvb8Q==}
 
   bl@4.1.0:
     resolution: {integrity: sha512-1W07cM9gS6DcLperZfFSj+bWLtaPGSOHWhPiGzXmvVJbRLdG82sH/Kn8EtW1VqWVA54AKf2h5k5BbnIbwF3h6w==}
@@ -20842,6 +20851,12 @@ snapshots:
   '@asamuzakjp/generational-cache@1.0.1': {}
 
   '@asamuzakjp/nwsapi@2.3.9': {}
+
+  '@atlaskit/pragmatic-drag-and-drop@1.8.1':
+    dependencies:
+      '@babel/runtime': 7.28.6
+      bind-event-listener: 3.0.0
+      raf-schd: 4.0.3
 
   '@auth/core@0.37.4':
     dependencies:
@@ -31934,6 +31949,8 @@ snapshots:
   big.js@7.0.1: {}
 
   binary-extensions@2.3.0: {}
+
+  bind-event-listener@3.0.0: {}
 
   bl@4.1.0:
     dependencies:

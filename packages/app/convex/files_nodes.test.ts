@@ -1,6 +1,6 @@
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
-import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
+import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { encodeStateAsUpdate } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -8,9 +8,9 @@ import { math_clamp } from "../shared/shared-utils.ts";
 import { minimatch } from "minimatch";
 import { server_path_normalize } from "../server/server-utils.ts";
 import {
-	files_FIRST_VERSION,
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
+	files_INITIAL_CONTENT,
 	files_get_utf8_byte_size,
 	files_u8_to_array_buffer,
 	files_yjs_doc_create_from_markdown,
@@ -21,6 +21,7 @@ import { billing_PRODUCTS } from "../shared/billing.ts";
 
 let enqueueActionSpy: MockInstance;
 let generateUploadUrlSpy: ReturnType<typeof vi.fn<(customKey?: string) => Promise<{ key: string; url: string }>>>;
+const test = baseTest;
 
 beforeEach(() => {
 	// Keep file tests focused on file behavior; billing event enqueue behavior is
@@ -28,11 +29,14 @@ beforeEach(() => {
 	enqueueActionSpy = vi
 		.spyOn(Workpool.prototype, "enqueueAction")
 		.mockResolvedValue("work_file_test_billing_event" as never);
+	vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined as never);
 	generateUploadUrlSpy = vi.fn(async (customKey?: string) => ({
 		key: customKey ?? "test-upload-key",
 		url: "https://r2.test/upload",
 	}));
 	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(generateUploadUrlSpy);
+	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+	vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 200 })));
 });
 
 afterEach(() => {
@@ -317,7 +321,7 @@ test("node-owned shadows are hidden from visible list queries and discoverable b
 	expect(indexedShadows.map((node) => node._id)).toEqual([shadowNodeId]);
 });
 
-test("resolve_file_id_from_path uses materialized paths", async () => {
+test("get_by_path uses materialized paths", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -330,27 +334,27 @@ test("resolve_file_id_from_path uses materialized paths", async () => {
 	const child1Path = `/${db.files.file_root_1.name}/${db.files.file_root_1_child_1.name}`;
 	const deep1Path = `/${db.files.file_root_1.name}/${db.files.file_root_1_child_1.name}/${db.files.file_root_1_child_1_deep_1.name}`;
 
-	const [root1Id, child1Id, deep1Id] = await Promise.all([
-		asUser.query(internal.files_nodes.resolve_file_id_from_path, {
+	const [root1, child1, deep1] = await Promise.all([
+		asUser.query(internal.files_nodes.get_by_path, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			path: root1Path,
 		}),
-		asUser.query(internal.files_nodes.resolve_file_id_from_path, {
+		asUser.query(internal.files_nodes.get_by_path, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			path: child1Path,
 		}),
-		asUser.query(internal.files_nodes.resolve_file_id_from_path, {
+		asUser.query(internal.files_nodes.get_by_path, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			path: deep1Path,
 		}),
 	]);
 
-	expect(root1Id).toBe(db.files.file_root_1._id);
-	expect(child1Id).toBe(db.files.file_root_1_child_1._id);
-	expect(deep1Id).toBe(db.files.file_root_1_child_1_deep_1._id);
+	expect(root1?._id).toBe(db.files.file_root_1._id);
+	expect(child1?._id).toBe(db.files.file_root_1_child_1._id);
+	expect(deep1?._id).toBe(db.files.file_root_1_child_1_deep_1._id);
 });
 
 test("rename_node updates descendants materialized paths", async () => {
@@ -522,7 +526,6 @@ test("home file path stays immutable on rename and move", async () => {
 			name: "README.md",
 			kind: "file",
 			path: "/README.md",
-			version: files_FIRST_VERSION,
 			archiveOperationId: undefined,
 			shadowFileNodeIds: [],
 		}),
@@ -579,7 +582,7 @@ test("create_markdown_node preserves caller-provided file names", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "extensionless-create-file",
@@ -606,7 +609,7 @@ test("create_markdown_node stores Markdown file properties", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "properties.md",
@@ -615,17 +618,185 @@ test("create_markdown_node stores Markdown file properties", async () => {
 		throw new Error(createdFile._nay.message);
 	}
 
-	const properties = await t.run(async (ctx) => {
+	const saved = await t.run(async (ctx) => {
 		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		return node?.propertiesId ? await ctx.db.get("files_node_properties", node.propertiesId) : null;
+		const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		return { node, asset };
 	});
-	expect(properties).toMatchObject({
+	expect(saved.node).toMatchObject({
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
-		fileNodeId: createdFile._yay.nodeId,
 		contentType: "text/markdown;charset=utf-8",
-		size: 0,
+		assetId: saved.asset?._id,
 	});
+	expect(saved.asset).toMatchObject({
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		kind: "content",
+		r2Bucket: "test-files-bucket",
+		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
+	});
+	expect(saved.asset?.r2Key).toBe(
+		`workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.asset?._id}`,
+	);
+});
+
+test("create_markdown_node seeds initial Yjs content on the server", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Initial Content User",
+	});
+
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "server-initial.md",
+	});
+	if (createdFile._nay) {
+		throw new Error(createdFile._nay.message);
+	}
+
+	const saved = await t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		if (!node?.assetId || !node.yjsLastSequenceId || !node.yjsSnapshotId) {
+			throw new Error("Expected server-seeded Markdown node docs");
+		}
+
+		const [asset, lastSequence, yjsSnapshot, yjsUpdates] = await Promise.all([
+			ctx.db.get("files_r2_assets", node.assetId),
+			ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId),
+			ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId),
+			ctx.db
+				.query("files_yjs_updates")
+				.withIndex("by_workspace_project_file_sequence", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+				)
+				.order("asc")
+				.collect(),
+		]);
+		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
+
+		return { node, asset, lastSequence, yjsSnapshot, yjsSnapshotAsset, yjsUpdates };
+	});
+
+	expect(saved.node.contentType).toBe("text/markdown;charset=utf-8");
+	expect(saved.asset).toMatchObject({
+		kind: "content",
+		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
+	});
+	expect(saved.lastSequence?.lastSequence).toBe(0);
+	expect(saved.yjsSnapshot?.sequence).toBe(0);
+	expect(saved.yjsSnapshotAsset).toMatchObject({
+		kind: "yjs_snapshot",
+	});
+	expect(saved.yjsUpdates).toHaveLength(0);
+});
+
+test("create_markdown_node writes server-seeded initial content to R2", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Initial Materialize User",
+		email: "initial-materialize-user@example.com",
+	});
+	const r2Writes = new Map<string, BodyInit>();
+	generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
+		const key = customKey ?? "test-upload-key";
+		return {
+			key,
+			url: `https://r2.test/upload?key=${encodeURIComponent(key)}`,
+		};
+	});
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+	);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlString.startsWith("https://r2.test/upload") && init?.method === "PUT") {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
+				r2Writes.set(key, init.body ?? "");
+				return new Response(null, { status: 200 });
+			}
+			if (urlString.startsWith("https://r2.test/object?key=")) {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
+				const body = r2Writes.get(key);
+				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+			}
+
+			return new Response(null, { status: 404 });
+		}),
+	);
+
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "server-initial-materialized.md",
+	});
+	if (createdFile._nay) {
+		throw new Error(createdFile._nay.message);
+	}
+
+	const saved = await t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		if (!node?.assetId || !node.yjsSnapshotId) {
+			throw new Error("Expected materialized server-seeded file docs");
+		}
+
+		const asset = await ctx.db.get("files_r2_assets", node.assetId);
+		const yjsSnapshot = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
+		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
+		const yjsUpdates = await ctx.db
+			.query("files_yjs_updates")
+			.withIndex("by_workspace_project_file_sequence", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+			)
+			.collect();
+		const versionSnapshot = await ctx.db
+			.query("files_snapshots")
+			.withIndex("by_workspace_project_file_archivedAt", (q) =>
+				q
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
+					.eq("nodeId", createdFile._yay.nodeId)
+					.eq("archivedAt", -1),
+			)
+			.first();
+		const versionSnapshotAsset = versionSnapshot?.assetId ? await ctx.db.get("files_r2_assets", versionSnapshot.assetId) : null;
+
+		return {
+			asset,
+			yjsSnapshot,
+			yjsSnapshotAsset,
+			yjsUpdates,
+			versionSnapshot,
+			versionSnapshotAsset,
+		};
+	});
+
+	expect(saved.asset).toMatchObject({
+		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.asset?._id}`,
+		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
+	});
+	expect(saved.yjsSnapshot?.sequence).toBe(0);
+	expect(saved.yjsSnapshotAsset).toMatchObject({
+		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.yjsSnapshotAsset?._id}`,
+	});
+	expect(saved.yjsUpdates).toHaveLength(0);
+	expect(saved.versionSnapshot?.nodeId).toBe(createdFile._yay.nodeId);
+	expect(saved.versionSnapshotAsset).toMatchObject({
+		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.versionSnapshotAsset?._id}`,
+		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
+	});
+	expect(r2Writes.get(saved.asset!.r2Key!)).toBe(files_INITIAL_CONTENT);
+	expect(r2Writes.get(saved.versionSnapshotAsset!.r2Key!)).toBe(files_INITIAL_CONTENT);
+	expect(r2Writes.has(saved.yjsSnapshotAsset!.r2Key!)).toBe(true);
 });
 
 test("create_folder_node creates missing folders for nested folder paths", async () => {
@@ -674,7 +845,7 @@ test("create_markdown_node creates missing folders for nested file paths", async
 		name: "Test User",
 	});
 
-	const result = await asUser.mutation(api.files_nodes.create_markdown_node, {
+	const result = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "notes/projects/plan.md",
@@ -712,7 +883,7 @@ test("archived nodes can share path with a new active node", async () => {
 	});
 	const duplicateName = "archived-duplicate-allowed.md";
 
-	const createdFile = await asUser.mutation(internal.files_nodes.create_file_by_path, {
+	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
 		userId: db.userId,
@@ -727,7 +898,7 @@ test("archived nodes can share path with a new active node", async () => {
 		nodeIds: [createdFile._yay.nodeId],
 	});
 
-	const recreatedFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
+	const recreatedFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		parentId: files_ROOT_ID,
 		name: duplicateName,
 		membershipId: db.membershipId,
@@ -761,7 +932,7 @@ test("create_file_by_path can reuse an existing active file", async () => {
 	});
 	const path = "/existing-by-path.md";
 
-	const createdFile = await asUser.mutation(internal.files_nodes.create_file_by_path, {
+	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
 		userId: db.userId,
@@ -771,7 +942,7 @@ test("create_file_by_path can reuse an existing active file", async () => {
 		throw new Error("Expected initial file creation to succeed");
 	}
 
-	const reusedFile = await asUser.mutation(internal.files_nodes.create_file_by_path, {
+	const reusedFile = await asUser.action(internal.files_nodes.create_file_by_path, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
 		userId: db.userId,
@@ -784,7 +955,7 @@ test("create_file_by_path can reuse an existing active file", async () => {
 	expect(reusedFile._yay.nodeId).toBe(createdFile._yay.nodeId);
 });
 
-describe("files_nodes.get_by_path", () => {
+describe("files_nodes.get_authorized_by_path", () => {
 	test("returns active nodes by path and ignores archived nodes", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -794,7 +965,7 @@ describe("files_nodes.get_by_path", () => {
 			name: "Test User",
 		});
 
-		const created = await asUser.mutation(api.files_nodes.create_markdown_node, {
+		const created = await asUser.action(api.files_nodes.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			name: "lookup.md",
@@ -803,7 +974,7 @@ describe("files_nodes.get_by_path", () => {
 			throw new Error(created._nay.message);
 		}
 
-		const active = await asUser.query(api.files_nodes.get_by_path, {
+		const active = await asUser.query(api.files_nodes.get_authorized_by_path, {
 			membershipId: db.membershipId,
 			path: "/lookup.md",
 		});
@@ -811,6 +982,7 @@ describe("files_nodes.get_by_path", () => {
 			nodeId: created._yay.nodeId,
 			name: "lookup.md",
 			kind: "file",
+			assetId: expect.any(String),
 		});
 
 		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
@@ -821,7 +993,7 @@ describe("files_nodes.get_by_path", () => {
 			throw new Error(archived._nay.message);
 		}
 
-		const missing = await asUser.query(api.files_nodes.get_by_path, {
+		const missing = await asUser.query(api.files_nodes.get_authorized_by_path, {
 			membershipId: db.membershipId,
 			path: "/lookup.md",
 		});
@@ -856,10 +1028,9 @@ describe("files_nodes.create_upload_node", () => {
 		});
 
 		const docs = await t.run(async (ctx) => {
-			const uploadDoc = await ctx.db.get("files_uploads", upload._yay.uploadId);
 			const source = await ctx.db.get("files_nodes", upload._yay.nodeId);
-			const properties = source?.propertiesId ? await ctx.db.get("files_node_properties", source.propertiesId) : null;
-			return { properties, uploadDoc, source };
+			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+			return { asset, source };
 		});
 		expect(docs.source).toMatchObject({
 			workspaceId: db.workspaceId,
@@ -867,30 +1038,21 @@ describe("files_nodes.create_upload_node", () => {
 			parentId: files_ROOT_ID,
 			name: "annual-report.pdf",
 			kind: "file",
-			uploadId: upload._yay.uploadId,
+			contentType: "application/pdf",
+			assetId: upload._yay.assetId,
 		});
 		expect(docs.source?.archiveOperationId).toBeUndefined();
-		expect(docs.uploadDoc).toMatchObject({
+		expect(docs.asset).toMatchObject({
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
+			kind: "upload",
 			createdBy: db.userId,
 			r2Bucket: "test-files-bucket",
-			filename: "annual-report.pdf",
-			sourceNodeId: upload._yay.nodeId,
-		});
-		expect(docs.uploadDoc).not.toHaveProperty("contentType");
-		expect(docs.uploadDoc).not.toHaveProperty("size");
-		expect(docs.properties).toMatchObject({
-			contentType: "application/pdf",
 			size: 1234,
 		});
-		expect(docs.uploadDoc).not.toHaveProperty("status");
-		expect(docs.uploadDoc?.r2Key).toBe(
-			`workspaces/${db.workspaceId}/projects/${db.projectId}/nodes/${upload._yay.nodeId}/source`,
-		);
-		expect(docs.uploadDoc?.r2Key).not.toContain("annual-report.pdf");
+		expect(docs.asset?.r2Key).toBeUndefined();
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
-			`workspaces/${db.workspaceId}/projects/${db.projectId}/nodes/${upload._yay.nodeId}/source`,
+			`workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${upload._yay.assetId}`,
 		);
 	});
 
@@ -922,19 +1084,25 @@ describe("files_nodes.create_upload_node", () => {
 
 		expect(upload._nay).toMatchObject({ message: "The path cannot point to a folder" });
 		const docs = await t.run(async (ctx) => {
-			const uploads = await ctx.db.query("files_uploads").collect();
+			const uploadAssets = await ctx.db
+				.query("files_r2_assets")
+				.collect()
+				.then((assets) =>
+					assets.filter(
+						(asset) => asset.workspaceId === db.workspaceId && asset.projectId === db.projectId && asset.kind === "upload",
+					),
+				);
 			const uploadedSources = await ctx.db
 				.query("files_nodes")
 				.collect()
 				.then((nodes) =>
 					nodes.filter(
-						(node) =>
-							node.workspaceId === db.workspaceId && node.projectId === db.projectId && (node.uploadId || node.assetId),
+						(node) => node.workspaceId === db.workspaceId && node.projectId === db.projectId && node.assetId,
 					),
 				);
-			return { uploads, uploadedSources };
+			return { uploadAssets, uploadedSources };
 		});
-		expect(docs.uploads).toHaveLength(0);
+		expect(docs.uploadAssets).toHaveLength(0);
 		expect(docs.uploadedSources).toHaveLength(0);
 	});
 
@@ -962,8 +1130,7 @@ describe("files_nodes.create_upload_node", () => {
 				.collect()
 				.then((nodes) =>
 					nodes.filter(
-						(node) =>
-							node.workspaceId === db.workspaceId && node.projectId === db.projectId && (node.uploadId || node.assetId),
+						(node) => node.workspaceId === db.workspaceId && node.projectId === db.projectId && node.assetId,
 					),
 				),
 		);
@@ -990,11 +1157,16 @@ describe("files_nodes.create_upload_node", () => {
 			throw new Error(oldUpload._nay.message);
 		}
 		const oldShadowNodeId = await t.run(async (ctx) => {
-			const oldUploadDoc = await ctx.db.get("files_uploads", oldUpload._yay.uploadId);
-			if (!oldUploadDoc) {
-				throw new Error("Upload doc not found");
-			}
-
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				kind: "content",
+				r2Bucket: "test-files-bucket",
+				r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/shadow-test-asset`,
+				size: 0,
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			});
 			const shadowNodeId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				workspaceId: db.workspaceId,
@@ -1005,21 +1177,11 @@ describe("files_nodes.create_upload_node", () => {
 				name: "replace-me.pdf.shadow.md",
 				kind: "file",
 				path: "/replace-me.pdf.shadow.md",
+				contentType: "text/markdown;charset=utf-8",
+				assetId,
 				shadowSourceFileNodeId: oldUpload._yay.nodeId,
 			});
-			const assetId = await ctx.db.insert("files_r2_assets", {
-				workspaceId: db.workspaceId,
-				projectId: db.projectId,
-				r2Bucket: oldUploadDoc.r2Bucket,
-				r2Key: oldUploadDoc.r2Key,
-				filename: oldUploadDoc.filename,
-				sourceNodeId: oldUpload._yay.nodeId,
-				createdBy: db.userId,
-				createdAt: Date.now(),
-				updatedAt: Date.now(),
-			});
 			await ctx.db.patch("files_nodes", oldUpload._yay.nodeId, {
-				assetId,
 				shadowFileNodeIds: [shadowNodeId],
 			});
 
@@ -1041,18 +1203,22 @@ describe("files_nodes.create_upload_node", () => {
 			const oldSource = await ctx.db.get("files_nodes", oldUpload._yay.nodeId);
 			const oldShadow = await ctx.db.get("files_nodes", oldShadowNodeId);
 			const newSource = await ctx.db.get("files_nodes", replacement._yay.nodeId);
-			const newUpload = await ctx.db.get("files_uploads", replacement._yay.uploadId);
-			return { oldSource, oldShadow, newSource, newUpload };
+			const newAsset = await ctx.db.get("files_r2_assets", replacement._yay.assetId);
+			return { oldSource, oldShadow, newSource, newAsset };
 		});
 		expect(docs.oldSource?.archiveOperationId).toEqual(expect.any(String));
 		expect(docs.oldShadow?.archiveOperationId).toBe(docs.oldSource?.archiveOperationId);
 		expect(docs.newSource).toMatchObject({
 			name: "replace-me.pdf",
-			uploadId: replacement._yay.uploadId,
+			assetId: replacement._yay.assetId,
 		});
 		expect(docs.newSource?.archiveOperationId).toBeUndefined();
-		expect(docs.newUpload?.r2Key).toBe(
-			`workspaces/${db.workspaceId}/projects/${db.projectId}/nodes/${replacement._yay.nodeId}/source`,
+		expect(docs.newAsset).toMatchObject({
+			kind: "upload",
+			size: 2048,
+		});
+		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
+			`workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${replacement._yay.assetId}`,
 		);
 	});
 });
@@ -1097,7 +1263,7 @@ test("rename_node preserves caller-provided file names", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "rename-source.md",
@@ -1135,7 +1301,7 @@ test("rename_node creates missing folders for nested file paths", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "rename-path-source.md",
@@ -1194,7 +1360,6 @@ test("rename_node preserves caller-provided nested file names", async () => {
 			name: "yo.md",
 			kind: "file",
 			path: `/${db.files.file_root_1.name}/yo.md`,
-			version: files_FIRST_VERSION,
 			archiveOperationId: undefined,
 			shadowFileNodeIds: [],
 		}),
@@ -1227,7 +1392,7 @@ test("rename_node preserves caller-provided file extensions", async () => {
 		name: "Test User",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "unsupported-source.md",
@@ -1520,7 +1685,7 @@ test("unarchive_nodes excludes unrequested ancestors from archive operation", as
 	});
 });
 
-test("resolve_file_id_from_path ignores archived files with duplicate path", async () => {
+test("get_by_path ignores archived files with duplicate path", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -1543,13 +1708,13 @@ test("resolve_file_id_from_path ignores archived files with duplicate path", asy
 		throw new Error("Expected archived rename to succeed");
 	}
 
-	const resolvedRoot1 = await asUser.query(internal.files_nodes.resolve_file_id_from_path, {
+	const resolvedRoot1 = await asUser.query(internal.files_nodes.get_by_path, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
 		path: `/${db.files.file_root_1.name}`,
 	});
 
-	expect(resolvedRoot1).toBe(db.files.file_root_1._id);
+	expect(resolvedRoot1?._id).toBe(db.files.file_root_1._id);
 });
 
 test("create_file_by_path creates active ancestors instead of reusing archived nodes", async () => {
@@ -1566,7 +1731,7 @@ test("create_file_by_path creates active ancestors instead of reusing archived n
 		nodeIds: [db.files.file_root_2._id],
 	});
 
-	const createByPath = await asUser.mutation(internal.files_nodes.create_file_by_path, {
+	const createByPath = await asUser.action(internal.files_nodes.create_file_by_path, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
 		userId: db.userId,
@@ -1858,7 +2023,7 @@ test("membership-scoped file and yjs APIs reject cross-user membership ids", asy
 	}
 	expect(unauthorizedRename._nay.message).toBe("Unauthorized");
 
-	const createdFile = await asOwner.mutation(api.files_nodes.create_markdown_node, {
+	const createdFile = await asOwner.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "membership-yjs-regression.md",
@@ -1873,12 +2038,6 @@ test("membership-scoped file and yjs APIs reject cross-user membership ids", asy
 		showArchived: false,
 	});
 	expect(snapshotsResult.snapshots).toEqual([]);
-
-	const unauthorizedYjsSnapshot = await asOtherUser.query(api.files_nodes.yjs_get_doc_last_snapshot, {
-		membershipId: db.membershipId,
-		nodeId: createdFile._yay.nodeId,
-	});
-	expect(unauthorizedYjsSnapshot).toBeNull();
 
 	const unauthorizedYjsUpdates = await asOtherUser.query(api.files_nodes.yjs_get_incremental_updates, {
 		membershipId: db.membershipId,
@@ -1917,7 +2076,7 @@ test("files_tree_write rate limit runs before membership validation", async () =
 	const createdNodeIds: Array<Id<"files_nodes">> = [];
 
 	for (let i = 0; i < 2; i++) {
-		const result = await asUser.mutation(api.files_nodes.create_markdown_node, {
+		const result = await asUser.action(api.files_nodes.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			name: `tree-rate-limit-${i}.md`,
@@ -1941,15 +2100,48 @@ test("files_tree_write rate limit runs before membership validation", async () =
 test("files_snapshot_write rate limit runs before restore snapshot validation", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
-	const snapshotId = await t.run(async (ctx) =>
-		ctx.db.insert("files_snapshots", {
+	const restoreAssets = await t.run(async (ctx) => {
+		const [snapshotAssetId, currentSnapshotAssetId, restoredSnapshotAssetId] = await Promise.all([
+			ctx.db.insert("files_r2_assets", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/snapshot-rate-limit`,
+				size: 0,
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			}),
+			ctx.db.insert("files_r2_assets", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				size: 0,
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			}),
+			ctx.db.insert("files_r2_assets", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				size: 0,
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			}),
+		]);
+		const snapshotId = await ctx.db.insert("files_snapshots", {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			nodeId: db.files.file_root_1._id,
+			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
-		}),
-	);
+		});
+
+		return { snapshotId, currentSnapshotAssetId, restoredSnapshotAssetId };
+	});
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
 		external_id: db.userId,
@@ -1959,39 +2151,191 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 	for (let i = 0; i < 2; i++) {
 		const result = await asUser.mutation(api.files_nodes.archive_snapshot, {
 			membershipId: db.membershipId,
-			snapshotId,
+			snapshotId: restoreAssets.snapshotId,
 		});
 		if (result._nay) {
 			throw new Error(`Expected snapshot write #${i + 1} to succeed, got: ${result._nay.message}`);
 		}
 	}
 
-	const blocked = await asUser.mutation(api.files_nodes.restore_snapshot, {
+	const blocked = await asUser.mutation(internal.files_nodes.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: db.files.file_root_1._id,
-		snapshotId,
+		snapshotId: restoreAssets.snapshotId,
 		sessionId: "snapshot-rate-limit",
-		currentMarkdownContent: "",
+		snapshotMarkdownContent: "",
+		currentSnapshotAssetId: restoreAssets.currentSnapshotAssetId,
+		currentSnapshotSize: 0,
+		restoredSnapshotAssetId: restoreAssets.restoredSnapshotAssetId,
+		restoredSnapshotSize: 0,
 	});
 
 	expect(blocked._nay?.message).toBe("Rate limit exceeded");
 });
 
-test("update_snapshots stores Markdown properties from the saved UTF-8 snapshot", async () => {
+test("materialize_file_content writes empty Markdown and Yjs snapshots to R2", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Empty Materialize User",
+		email: "empty-materialize-user@example.com",
+	});
+	const r2Writes = new Map<string, BodyInit>();
+	generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
+		const key = customKey ?? "test-upload-key";
+		return {
+			key,
+			url: `https://r2.test/upload?key=${encodeURIComponent(key)}`,
+		};
+	});
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+	);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlString.startsWith("https://r2.test/upload") && init?.method === "PUT") {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
+				r2Writes.set(key, init.body ?? "");
+				return new Response(null, { status: 200 });
+			}
+			if (urlString.startsWith("https://r2.test/object?key=")) {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
+				const body = r2Writes.get(key);
+				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+			}
+
+			return new Response(null, { status: 404 });
+		}),
+	);
+
+	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path: "/empty-materialized.md",
+	});
+	if (createdFile._nay) {
+		throw new Error(createdFile._nay.message);
+	}
+
+	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		nodeId: createdFile._yay.nodeId,
+		userId: db.userId,
+		targetSequence: 0,
+	});
+	if (materialized._nay) {
+		throw new Error(materialized._nay.message);
+	}
+
+	const saved = await t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		if (!node?.assetId || !node.yjsSnapshotId) {
+			throw new Error("Expected materialized empty file docs");
+		}
+		const asset = await ctx.db.get("files_r2_assets", node.assetId);
+		const yjsSnapshot = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
+		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
+		const yjsUpdates = await ctx.db
+			.query("files_yjs_updates")
+			.withIndex("by_workspace_project_file_sequence", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+			)
+			.collect();
+		const versionSnapshots = await ctx.db
+			.query("files_snapshots")
+			.withIndex("by_workspace_project_file_archivedAt", (q) =>
+				q
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
+					.eq("nodeId", createdFile._yay.nodeId)
+					.eq("archivedAt", -1),
+			)
+			.collect();
+		const versionSnapshotAssets = await Promise.all(
+			versionSnapshots.map((snapshot) => ctx.db.get("files_r2_assets", snapshot.assetId)),
+		);
+
+		return {
+			asset,
+			yjsSnapshot,
+			yjsSnapshotAsset,
+			yjsUpdates,
+			versionSnapshots,
+			versionSnapshotAssets,
+		};
+	});
+
+	const versionSnapshotAsset = saved.versionSnapshotAssets.find((asset) => asset?.size === 0);
+	expect(saved.asset).toMatchObject({
+		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.asset?._id}`,
+		size: 0,
+	});
+	expect(saved.yjsSnapshot?.sequence).toBe(0);
+	expect(saved.yjsSnapshotAsset).toMatchObject({
+		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.yjsSnapshotAsset?._id}`,
+	});
+	expect(saved.yjsUpdates).toHaveLength(0);
+	expect(saved.versionSnapshots.length).toBeGreaterThan(0);
+	expect(versionSnapshotAsset).toMatchObject({
+		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${versionSnapshotAsset?._id}`,
+		size: 0,
+	});
+	expect(r2Writes.get(saved.asset!.r2Key!)).toBe("");
+	expect(r2Writes.get(versionSnapshotAsset!.r2Key!)).toBe("");
+	expect(r2Writes.has(saved.yjsSnapshotAsset!.r2Key!)).toBe(true);
+});
+
+test("materialize_file_content writes nonempty Markdown and Yjs snapshots to R2", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
 		external_id: db.userId,
-		name: "Snapshot Properties User",
-		email: "snapshot-properties-user@example.com",
+		name: "Materialize User",
+		email: "materialize-user@example.com",
 	});
+	const r2Writes = new Map<string, BodyInit>();
+	generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
+		const key = customKey ?? "test-upload-key";
+		return {
+			key,
+			url: `https://r2.test/upload?key=${encodeURIComponent(key)}`,
+		};
+	});
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+	);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlString.startsWith("https://r2.test/upload") && init?.method === "PUT") {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
+				r2Writes.set(key, init.body ?? "");
+				return new Response(null, { status: 200 });
+			}
+			if (urlString.startsWith("https://r2.test/object?key=")) {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
+				const body = r2Writes.get(key);
+				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+			}
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
-		membershipId: db.membershipId,
-		parentId: files_ROOT_ID,
-		name: "snapshot-properties.md",
+			return new Response(null, { status: 404 });
+		}),
+	);
+
+	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path: "/materialized.md",
 	});
 	if (createdFile._nay) {
 		throw new Error(createdFile._nay.message);
@@ -2002,41 +2346,339 @@ test("update_snapshots stores Markdown properties from the saved UTF-8 snapshot"
 	if ("_nay" in yjsDoc) {
 		throw new Error(yjsDoc._nay.message);
 	}
-
 	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
 		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
-		sessionId: "snapshot-properties-session",
+		sessionId: "materialize-session",
 	});
 	yjsDoc.destroy();
 	if (pushResult._nay) {
 		throw new Error(pushResult._nay.message);
 	}
 
-	const snapshotResult = await t.mutation(internal.files_nodes.update_snapshots, {
-		userId: db.userId,
+	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
 		nodeId: createdFile._yay.nodeId,
+		userId: db.userId,
+		targetSequence: 1,
 	});
-	if (snapshotResult._nay) {
-		throw new Error(snapshotResult._nay.message);
+	if (materialized._nay) {
+		throw new Error(materialized._nay.message);
 	}
 
 	const saved = await t.run(async (ctx) => {
 		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		const markdownContent = node?.markdownContentId
-			? await ctx.db.get("files_markdown_content", node.markdownContentId)
-			: null;
-		const properties = node?.propertiesId ? await ctx.db.get("files_node_properties", node.propertiesId) : null;
-		return { markdownContent, properties };
+		if (!node?.assetId || !node.yjsSnapshotId) {
+			throw new Error("Expected materialized file docs");
+		}
+		const asset = await ctx.db.get("files_r2_assets", node.assetId);
+		const yjsSnapshot = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
+		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
+		const yjsUpdates = await ctx.db
+			.query("files_yjs_updates")
+			.withIndex("by_workspace_project_file_sequence", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+			)
+			.collect();
+		const versionSnapshots = await ctx.db
+			.query("files_snapshots")
+			.withIndex("by_workspace_project_file_archivedAt", (q) =>
+				q
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
+					.eq("nodeId", createdFile._yay.nodeId)
+					.eq("archivedAt", -1),
+			)
+			.collect();
+		const versionSnapshotAssets = await Promise.all(
+			versionSnapshots.map((snapshot) => ctx.db.get("files_r2_assets", snapshot.assetId)),
+		);
+
+		return {
+			asset,
+			yjsSnapshot,
+			yjsSnapshotAsset,
+			yjsUpdates,
+			versionSnapshots,
+			versionSnapshotAssets,
+		};
 	});
-	expect(saved.markdownContent?.content).toBe(markdown);
-	expect(saved.properties).toMatchObject({
-		contentType: "text/markdown;charset=utf-8",
+
+	const versionSnapshotAsset = saved.versionSnapshotAssets.find((asset) => asset?.size === files_get_utf8_byte_size(markdown));
+	expect(saved.asset).toMatchObject({
+		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.asset?._id}`,
 		size: files_get_utf8_byte_size(markdown),
 	});
+	expect(saved.yjsSnapshot?.sequence).toBe(1);
+	expect(saved.yjsSnapshotAsset).toMatchObject({
+		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.yjsSnapshotAsset?._id}`,
+	});
+	expect(saved.yjsUpdates).toHaveLength(0);
+	expect(saved.versionSnapshots.length).toBeGreaterThan(0);
+	expect(versionSnapshotAsset).toMatchObject({
+		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${versionSnapshotAsset?._id}`,
+		size: files_get_utf8_byte_size(markdown),
+	});
+	expect(r2Writes.get(saved.asset!.r2Key!)).toBe(markdown);
+	expect(r2Writes.get(versionSnapshotAsset!.r2Key!)).toBe(markdown);
+	expect(r2Writes.has(saved.yjsSnapshotAsset!.r2Key!)).toBe(true);
+});
+
+test("create_file_snapshot_content_url returns a signed R2 URL without fetching snapshot Markdown", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Snapshot R2 User",
+	});
+	const snapshotMarkdown = "# R2 snapshot\n\nStored outside Convex.";
+	const getUrlSpy = vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+	);
+
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "snapshot-r2.md",
+	});
+	if (createdFile._nay) {
+		throw new Error(createdFile._nay.message);
+	}
+	const nodeId = createdFile._yay.nodeId;
+	const { snapshotId } = await t.run(async (ctx) => {
+		const r2Key = `content/workspaces/${db.workspaceId}/projects/${db.projectId}/nodes/${nodeId}/versions/42/markdown`;
+		const assetId = await ctx.db.insert("files_r2_assets", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			kind: "content_snapshot",
+			r2Bucket: "test-bucket",
+			r2Key,
+			size: files_get_utf8_byte_size(snapshotMarkdown),
+			createdBy: db.userId,
+			updatedAt: Date.now(),
+		});
+		const snapshotId = await ctx.db.insert("files_snapshots", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			nodeId,
+			assetId,
+			createdBy: db.userId,
+			archivedAt: 0,
+		});
+
+		return { snapshotId };
+	});
+
+	const fetchSpy = vi.fn(async () => {
+		throw new Error("create_file_snapshot_content_url should not fetch from R2");
+	});
+	vi.stubGlobal("fetch", fetchSpy);
+
+	const contentUrl = await asUser.action(api.files_nodes.create_file_snapshot_content_url, {
+		membershipId: db.membershipId,
+		nodeId,
+		snapshotId,
+	});
+	expect(contentUrl).toMatchObject({
+		url: `https://r2.test/object?key=${encodeURIComponent(
+			`content/workspaces/${db.workspaceId}/projects/${db.projectId}/nodes/${nodeId}/versions/42/markdown`,
+		)}`,
+		snapshotId,
+	});
+	expect(getUrlSpy).toHaveBeenCalledWith(
+		`content/workspaces/${db.workspaceId}/projects/${db.projectId}/nodes/${nodeId}/versions/42/markdown`,
+		{ expiresIn: 15 * 60 },
+	);
+	expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+test("create_file_snapshot_content_url fails when a snapshot asset has no R2 key", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Missing Snapshot R2 User",
+	});
+
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "missing-snapshot-r2.md",
+	});
+	if (createdFile._nay) {
+		throw new Error(createdFile._nay.message);
+	}
+	const nodeId = createdFile._yay.nodeId;
+	const { snapshotId } = await t.run(async (ctx) => {
+		const assetId = await ctx.db.insert("files_r2_assets", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			kind: "content_snapshot",
+			r2Bucket: "test-bucket",
+			size: 1,
+			createdBy: db.userId,
+			updatedAt: Date.now(),
+		});
+		const snapshotId = await ctx.db.insert("files_snapshots", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			nodeId,
+			assetId,
+			createdBy: db.userId,
+			archivedAt: 0,
+		});
+
+		return { snapshotId };
+	});
+
+	await expect(
+		asUser.action(api.files_nodes.create_file_snapshot_content_url, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId,
+		}),
+	).rejects.toThrow("snapshot.assetId points to an asset without r2Key");
+});
+
+test("restore_snapshot_r2 restores from R2-backed content without Convex Markdown bodies", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Restore R2 User",
+		email: "restore-r2-user@example.com",
+	});
+	const r2Objects = new Map<string, BodyInit>();
+	generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
+		const key = customKey ?? "test-upload-key";
+		return {
+			key,
+			url: `https://r2.test/upload?key=${encodeURIComponent(key)}`,
+		};
+	});
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+	);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlString.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
+				r2Objects.set(key, init.body ?? "");
+				return new Response(null, { status: 200 });
+			}
+			if (urlString.startsWith("https://r2.test/object?key=")) {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
+				const body = r2Objects.get(key);
+				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+			}
+
+			return new Response(null, { status: 404 });
+		}),
+	);
+
+	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path: "/restore-r2.md",
+	});
+	if (createdFile._nay) {
+		throw new Error(createdFile._nay.message);
+	}
+	const currentMarkdown = "# Current\n\nBefore restore.";
+	const currentYjsDoc = files_yjs_doc_create_from_markdown({ markdown: currentMarkdown });
+	if ("_nay" in currentYjsDoc) {
+		throw new Error(currentYjsDoc._nay.message);
+	}
+	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		membershipId: db.membershipId,
+		nodeId: createdFile._yay.nodeId,
+		update: files_u8_to_array_buffer(encodeStateAsUpdate(currentYjsDoc)),
+		sessionId: "restore-r2-current",
+	});
+	currentYjsDoc.destroy();
+	if (pushResult._nay) {
+		throw new Error(pushResult._nay.message);
+	}
+	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		nodeId: createdFile._yay.nodeId,
+		userId: db.userId,
+		targetSequence: 1,
+	});
+	if (materialized._nay) {
+		throw new Error(materialized._nay.message);
+	}
+
+	const restoredMarkdown = "# Restored\n\nFrom R2 snapshot.";
+	const { snapshotId } = await t.run(async (ctx) => {
+		const snapshotAssetId = await ctx.db.insert("files_r2_assets", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			kind: "content_snapshot",
+			r2Bucket: "test-bucket",
+			size: files_get_utf8_byte_size(restoredMarkdown),
+			createdBy: db.userId,
+			updatedAt: Date.now(),
+		});
+		const snapshotR2Key = `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${snapshotAssetId}`;
+		r2Objects.set(snapshotR2Key, restoredMarkdown);
+		await ctx.db.patch("files_r2_assets", snapshotAssetId, { r2Key: snapshotR2Key });
+		const snapshotId = await ctx.db.insert("files_snapshots", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			nodeId: createdFile._yay.nodeId,
+			assetId: snapshotAssetId,
+			createdBy: db.userId,
+			archivedAt: 0,
+		});
+
+		return { snapshotId };
+	});
+
+	const restoreResult = await asUser.action(api.files_nodes.restore_snapshot_r2, {
+		membershipId: db.membershipId,
+		nodeId: createdFile._yay.nodeId,
+		snapshotId,
+		sessionId: "restore-r2-session",
+	});
+	if (restoreResult._nay) {
+		throw new Error(restoreResult._nay.message);
+	}
+
+	const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path: "/restore-r2.md",
+	});
+	expect(readResult?.content).toBe(restoredMarkdown);
+	const saved = await t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		if (!node?.assetId) {
+			throw new Error("Expected restored node docs");
+		}
+		const asset = await ctx.db.get("files_r2_assets", node.assetId);
+
+		return { asset };
+	});
+	expect(saved.asset?.size).toBe(files_get_utf8_byte_size(restoredMarkdown));
+	const liveMarkdownR2Key = saved.asset?.r2Key;
+	if (!liveMarkdownR2Key) {
+		throw new Error("Expected restored Markdown asset R2 key");
+	}
+	expect(r2Objects.get(liveMarkdownR2Key)).toBe(restoredMarkdown);
+	expect(Array.from(r2Objects.values())).toContain(currentMarkdown);
+	expect(Array.from(r2Objects.values())).toContain(restoredMarkdown);
 });
 
 test("yjs_push_update enforces per-user rate limit and leaves DB untouched on rejection", async () => {
@@ -2050,7 +2692,7 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 		email: "rate-limit-user@example.com",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "rate-limit.md",
@@ -2136,7 +2778,7 @@ test("yjs_push_update rate limit applies to anonymous JWT identities", async () 
 		name: "Anonymous User",
 	});
 
-	const createdFile = await asAnonymous.mutation(api.files_nodes.create_markdown_node, {
+	const createdFile = await asAnonymous.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
 		name: "rate-limit-anonymous.md",
@@ -2177,17 +2819,18 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 		email: "restore-credits-user@example.com",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
-		membershipId: db.membershipId,
-		parentId: files_ROOT_ID,
-		name: "restore-credit.md",
+	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path: "/restore-credit.md",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected file creation to succeed before restore credit test");
 	}
 
 	const restoredMarkdown = "# restored content\n";
-	const snapshotId = await t.run(async (ctx) => {
+	const restoreAssets = await t.run(async (ctx) => {
 		const usageSnapshot = await ctx.db
 			.query("billing_usage_snapshots")
 			.withIndex("by_user", (q) => q.eq("userId", db.userId))
@@ -2202,30 +2845,58 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 			},
 		});
 
+		const [snapshotAssetId, currentSnapshotAssetId, restoredSnapshotAssetId] = await Promise.all([
+			ctx.db.insert("files_r2_assets", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/restore-credit-snapshot`,
+				size: files_get_utf8_byte_size(restoredMarkdown),
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			}),
+			ctx.db.insert("files_r2_assets", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				size: 0,
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			}),
+			ctx.db.insert("files_r2_assets", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				size: files_get_utf8_byte_size(restoredMarkdown),
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			}),
+		]);
 		const snapshotId = await ctx.db.insert("files_snapshots", {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			nodeId: createdFile._yay.nodeId,
+			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
 		});
-		await ctx.db.insert("files_snapshots_contents", {
-			workspaceId: db.workspaceId,
-			projectId: db.projectId,
-			snapshotId: snapshotId,
-			nodeId: createdFile._yay.nodeId,
-			content: restoredMarkdown,
-		});
 
-		return snapshotId;
+		return { snapshotId, currentSnapshotAssetId, restoredSnapshotAssetId };
 	});
 
-	const restoreResult = await asUser.mutation(api.files_nodes.restore_snapshot, {
+	const restoreResult = await asUser.mutation(internal.files_nodes.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
-		snapshotId,
+		snapshotId: restoreAssets.snapshotId,
 		sessionId: "restore-credit-test",
-		currentMarkdownContent: "",
+		snapshotMarkdownContent: restoredMarkdown,
+		currentSnapshotAssetId: restoreAssets.currentSnapshotAssetId,
+		currentSnapshotSize: 0,
+		restoredSnapshotAssetId: restoreAssets.restoredSnapshotAssetId,
+		restoredSnapshotSize: files_get_utf8_byte_size(restoredMarkdown),
 	});
 	expect(restoreResult._nay?.message).toBe("Insufficient funds");
 
@@ -2311,50 +2982,92 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		email: "restore-billing-user@example.com",
 	});
 
-	const createdFile = await asUser.mutation(api.files_nodes.create_markdown_node, {
-		membershipId: db.membershipId,
-		parentId: files_ROOT_ID,
-		name: "restore-billing.md",
+	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path: "/restore-billing.md",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected file creation to succeed before restore billing test");
 	}
 
 	const restoredMarkdown = "# restored content\n";
-	const snapshotId = await t.run(async (ctx) => {
+	const restoreAssets = await t.run(async (ctx) => {
+		const [snapshotAssetId, currentSnapshotAssetId, restoredSnapshotAssetId] = await Promise.all([
+			ctx.db.insert("files_r2_assets", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/restore-billing-snapshot`,
+				size: files_get_utf8_byte_size(restoredMarkdown),
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			}),
+			ctx.db.insert("files_r2_assets", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				size: 0,
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			}),
+			ctx.db.insert("files_r2_assets", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				size: files_get_utf8_byte_size(restoredMarkdown),
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			}),
+		]);
 		const snapshotId = await ctx.db.insert("files_snapshots", {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			nodeId: createdFile._yay.nodeId,
+			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
 		});
-		await ctx.db.insert("files_snapshots_contents", {
-			workspaceId: db.workspaceId,
-			projectId: db.projectId,
-			snapshotId: snapshotId,
-			nodeId: createdFile._yay.nodeId,
-			content: restoredMarkdown,
-		});
 
-		return snapshotId;
+		return { snapshotId, currentSnapshotAssetId, restoredSnapshotAssetId };
 	});
 
-	const restoreResult = await asUser.mutation(api.files_nodes.restore_snapshot, {
+	const restoreResult = await asUser.mutation(internal.files_nodes.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
-		snapshotId,
+		snapshotId: restoreAssets.snapshotId,
 		sessionId: "restore-billing-test",
-		currentMarkdownContent: "",
+		snapshotMarkdownContent: restoredMarkdown,
+		currentSnapshotAssetId: restoreAssets.currentSnapshotAssetId,
+		currentSnapshotSize: 0,
+		restoredSnapshotAssetId: restoreAssets.restoredSnapshotAssetId,
+		restoredSnapshotSize: files_get_utf8_byte_size(restoredMarkdown),
+		restoreUpdate: files_u8_to_array_buffer(
+			encodeStateAsUpdate(
+				(() => {
+					const yjsDoc = files_yjs_doc_create_from_markdown({ markdown: restoredMarkdown });
+					if ("_nay" in yjsDoc) {
+						throw new Error("Expected restored markdown to produce a Yjs doc");
+					}
+
+					return yjsDoc;
+				})(),
+			),
+		),
 	});
 	if (restoreResult._nay) {
 		throw new Error(`Expected restore to succeed, got: ${restoreResult._nay.message}`);
 	}
 
-	const { properties, yjsUpdates } = await t.run(async (ctx) => {
+	const { asset, yjsUpdates } = await t.run(async (ctx) => {
 		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
 		return {
-			properties: node?.propertiesId ? await ctx.db.get("files_node_properties", node.propertiesId) : null,
+			asset,
 			yjsUpdates: await ctx.db
 				.query("files_yjs_updates")
 				.withIndex("by_workspace_project_file_sequence", (q) =>
@@ -2364,8 +3077,8 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		};
 	});
 	expect(yjsUpdates).toHaveLength(1);
-	expect(properties).toMatchObject({
-		contentType: "text/markdown;charset=utf-8",
+	expect(asset).toMatchObject({
+		kind: "content",
 		size: files_get_utf8_byte_size(restoredMarkdown),
 	});
 	expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
@@ -2385,5 +3098,115 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 				}),
 			}),
 		],
+	});
+});
+
+describe("files_nodes.cleanup_old_snapshots", () => {
+	test("keeps newest hourly daily and weekly buckets and deletes pruned R2 assets", async () => {
+		vi.useFakeTimers();
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+
+		try {
+			vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+			const t = test_convex();
+			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+			const nodeId = await t.run(async (ctx) =>
+				ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					workspaceId: db.workspaceId,
+					projectId: db.projectId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId: files_ROOT_ID,
+					name: "retention.md",
+					kind: "file",
+					path: "/retention.md",
+				}),
+			);
+			const insertSnapshot = async (label: string, timestamp: string) => {
+				vi.setSystemTime(new Date(timestamp));
+				return await t.run(async (ctx) => {
+					const r2Key = `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${label}`;
+					const assetId = await ctx.db.insert("files_r2_assets", {
+						workspaceId: db.workspaceId,
+						projectId: db.projectId,
+						kind: "content_snapshot",
+						r2Bucket: "test-bucket",
+						r2Key,
+						size: label.length,
+						createdBy: db.userId,
+						updatedAt: Date.now(),
+					});
+					const snapshotId = await ctx.db.insert("files_snapshots", {
+						workspaceId: db.workspaceId,
+						projectId: db.projectId,
+						nodeId,
+						assetId,
+						createdBy: db.userId,
+						archivedAt: -1,
+					});
+
+					return { snapshotId, assetId, r2Key };
+				});
+			};
+			const outsideScanWindowKept = await insertSnapshot("outside-scan-window-kept", "2025-12-01T12:00:00.000Z");
+			const weeklyDeleted = await insertSnapshot("weekly-deleted", "2026-01-28T12:00:00.000Z");
+			const weeklyKept = await insertSnapshot("weekly-kept", "2026-01-30T12:00:00.000Z");
+			const dailyDeleted = await insertSnapshot("daily-deleted", "2026-02-20T08:00:00.000Z");
+			const dailyKept = await insertSnapshot("daily-kept", "2026-02-20T18:00:00.000Z");
+			const hourlyDeleted = await insertSnapshot("hourly-deleted", "2026-03-05T12:10:00.000Z");
+			const hourlyKept = await insertSnapshot("hourly-kept", "2026-03-05T12:50:00.000Z");
+			const recentKept = await insertSnapshot("recent-kept", "2026-03-09T12:00:00.000Z");
+
+			vi.setSystemTime(new Date("2026-03-10T00:00:00.000Z"));
+			await t.run((ctx) => ctx.runMutation(internal.files_nodes.cleanup_old_snapshots, {}));
+
+			const remaining = await t.run(async (ctx) => {
+				const [snapshots, outsideScanWindowAsset, deletedWeeklyAsset, deletedDailyAsset, deletedHourlyAsset] =
+					await Promise.all([
+						ctx.db
+							.query("files_snapshots")
+							.withIndex("by_workspace_project_file_archivedAt", (q) =>
+								q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", nodeId),
+							)
+							.collect(),
+						ctx.db.get("files_r2_assets", outsideScanWindowKept.assetId),
+						ctx.db.get("files_r2_assets", weeklyDeleted.assetId),
+						ctx.db.get("files_r2_assets", dailyDeleted.assetId),
+						ctx.db.get("files_r2_assets", hourlyDeleted.assetId),
+					]);
+
+				return {
+					snapshotIds: snapshots.map((snapshot) => snapshot._id),
+					outsideScanWindowAsset,
+					deletedWeeklyAsset,
+					deletedDailyAsset,
+					deletedHourlyAsset,
+				};
+			});
+
+			expect(remaining.snapshotIds).toEqual(
+				expect.arrayContaining([
+					outsideScanWindowKept.snapshotId,
+					weeklyKept.snapshotId,
+					dailyKept.snapshotId,
+					hourlyKept.snapshotId,
+					recentKept.snapshotId,
+				]),
+			);
+			expect(remaining.snapshotIds).not.toContain(weeklyDeleted.snapshotId);
+			expect(remaining.snapshotIds).not.toContain(dailyDeleted.snapshotId);
+			expect(remaining.snapshotIds).not.toContain(hourlyDeleted.snapshotId);
+			expect(remaining.outsideScanWindowAsset?._id).toBe(outsideScanWindowKept.assetId);
+			expect(remaining.deletedWeeklyAsset).toBeNull();
+			expect(remaining.deletedDailyAsset).toBeNull();
+			expect(remaining.deletedHourlyAsset).toBeNull();
+			expect(deleteObjectSpy).not.toHaveBeenCalledWith(expect.anything(), outsideScanWindowKept.r2Key);
+			expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), weeklyDeleted.r2Key);
+			expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), dailyDeleted.r2Key);
+			expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), hourlyDeleted.r2Key);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

@@ -66,6 +66,7 @@ const appConvexMock = vi.hoisted(() => {
 	};
 
 	const app_convex = {
+		action: vi.fn(),
 		mutation: vi.fn(),
 		query: vi.fn(),
 		watchQuery: vi.fn(() => watcher),
@@ -75,7 +76,7 @@ const appConvexMock = vi.hoisted(() => {
 		app_convex,
 		app_convex_api: {
 			files_nodes: {
-				yjs_get_doc_last_snapshot: "yjs_get_doc_last_snapshot",
+				yjs_prepare_doc_last_snapshot: "yjs_prepare_doc_last_snapshot",
 				yjs_get_incremental_updates: "yjs_get_incremental_updates",
 				yjs_push_update: "yjs_push_update",
 			},
@@ -93,6 +94,7 @@ const appConvexMock = vi.hoisted(() => {
 			unsubscribe.mockClear();
 			watcher.localQueryResult.mockClear();
 			watcher.onUpdate.mockClear();
+			app_convex.action.mockReset();
 			app_convex.mutation.mockReset();
 			app_convex.query.mockReset();
 			app_convex.watchQuery.mockReset();
@@ -150,9 +152,9 @@ function getRootDoc(provider: LiveblocksYjsProvider) {
 }
 
 async function flushMicrotasks() {
-	await Promise.resolve();
-	await Promise.resolve();
-	await Promise.resolve();
+	for (let i = 0; i < 8; i++) {
+		await Promise.resolve();
+	}
 }
 
 async function advanceTimersByTime(ms: number) {
@@ -162,10 +164,18 @@ async function advanceTimersByTime(ms: number) {
 
 async function createReadyProvider() {
 	const presenceStore = createPresenceStore();
-	appConvexMock.app_convex.query.mockResolvedValue({
-		sequence: 0,
-		snapshotUpdate: createEmptySnapshotUpdate(),
+	const emptySnapshotUpdate = createEmptySnapshotUpdate();
+	appConvexMock.app_convex.action.mockResolvedValue({
+		snapshot: {
+			sequence: 0,
+		},
+		snapshotUrl: "https://r2.test/snapshot",
 	});
+	appConvexMock.app_convex.query.mockResolvedValue(null);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => new Response(emptySnapshotUpdate)),
+	);
 
 	const provider = new LiveblocksYjsProvider({
 		membershipId: "membership_id" as LiveblocksYjsProvider_Args["membershipId"],
@@ -228,6 +238,7 @@ beforeEach(() => {
 afterEach(() => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
 });
 
 afterAll(() => {
@@ -236,6 +247,44 @@ afterAll(() => {
 	} else {
 		delete promiseConstructor.try;
 	}
+});
+
+describe("LiveblocksYjsProvider snapshot sync", () => {
+	test("retries failed R2 snapshot fetches before marking the provider synchronized", async () => {
+		const presenceStore = createPresenceStore();
+		const emptySnapshotUpdate = createEmptySnapshotUpdate();
+		appConvexMock.app_convex.action.mockResolvedValue({
+			snapshot: {
+				sequence: 0,
+			},
+			snapshotUrl: "https://r2.test/snapshot",
+		});
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(null, { status: 503 }))
+			.mockResolvedValueOnce(new Response(emptySnapshotUpdate));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const provider = new LiveblocksYjsProvider({
+			membershipId: "membership_id" as LiveblocksYjsProvider_Args["membershipId"],
+			nodeId: "file_id" as LiveblocksYjsProvider_Args["nodeId"],
+			presenceStore,
+		});
+
+		appConvexMock.emitIncrementalUpdates(null);
+		await flushMicrotasks();
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(provider.getStatus()).toBe("loading");
+
+		await advanceTimersByTime(500);
+
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(2);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(provider.getStatus()).toBe("synchronized");
+
+		provider.destroy();
+	});
 });
 
 describe("LiveblocksYjsProvider outgoing update queue", () => {

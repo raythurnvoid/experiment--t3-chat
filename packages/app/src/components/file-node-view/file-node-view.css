@@ -428,6 +428,7 @@
 
 	.FileNodeViewFolderExplorer-row {
 		font-size: 0.875rem;
+		cursor: grab;
 
 		&:not(:last-child) .FileNodeViewFolderExplorer-cell {
 			border-bottom: 1px solid var(--color-fg-03);
@@ -440,6 +441,18 @@
 		&:has(.FileNodeViewFolderExplorer-row-action:focus-visible) .FileNodeViewFolderExplorer-cell {
 			background: var(--color-base-1-05);
 		}
+
+		&:active {
+			cursor: grabbing;
+		}
+	}
+
+	.FileNodeViewFolderExplorer-row-dragging {
+		filter: opacity(0.6);
+	}
+
+	.FileNodeViewFolderExplorer-row-drop-target .FileNodeViewFolderExplorer-cell {
+		background: var(--color-base-1-06);
 	}
 
 	.FileNodeViewFolderExplorer-row-action {
@@ -644,9 +657,7 @@
 	.FileNodeViewFolder-mode-monaco
 		.FileNodeViewFolderReadmeEditor
 		.FileEditor-layout-embedded.FileEditor-mode-plain-text,
-	.FileNodeViewFolder-mode-monaco
-		.FileNodeViewFolderReadmeEditor
-		.FileEditor-layout-embedded.FileEditor-mode-diff {
+	.FileNodeViewFolder-mode-monaco .FileNodeViewFolderReadmeEditor .FileEditor-layout-embedded.FileEditor-mode-diff {
 		height: max(560px, calc(100cqh - 44px));
 	}
 

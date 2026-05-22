@@ -18,11 +18,13 @@ Use this file for reusable problems that affect app browser QA.
 - Observe with `snapshot()` before clicking.
 - Do not use `{ force: true }`, `dispatchEvent`, or DOM `element.click()` to bypass blockers.
 - For clickability bugs, use `hitTest(...)` or `inspectElement(...)` to identify the topmost element instead of retrying alternate selectors.
+- If a visible button is blocked by a text-only tooltip portal, inspect `document.elementFromPoint(...)` at the button center. Tooltip content and its portal wrapper should have `pointer-events: none`; check `packages/app/src/components/my-tooltip.css` before working around it in Playwriter.
 
 ## App State
 
 - Viewport and sidebar state may persist between sessions through browser storage.
 - Main sidebar open/collapsed state is persisted in localStorage keys documented in `app-map.md`.
+- Rapid files-tree create/move/archive sequences can hit the `files_tree_write` rate limiter. If a create dialog stays open with `Rate limit exceeded`, wait for the retry window, keep the dialog open, and submit the same draft again instead of restarting the flow.
 
 
 ## Closed main sidebar must actually leave layout

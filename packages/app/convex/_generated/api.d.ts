@@ -14,8 +14,6 @@ import type * as billing from "../billing.js";
 import type * as chat_messages from "../chat_messages.js";
 import type * as crons from "../crons.js";
 import type * as data_deletion from "../data_deletion.js";
-import type * as files_content from "../files_content.js";
-import type * as files_node_properties from "../files_node_properties.js";
 import type * as files_nodes from "../files_nodes.js";
 import type * as files_pending_updates from "../files_pending_updates.js";
 import type * as http from "../http.js";
@@ -41,8 +39,6 @@ declare const fullApi: ApiFromModules<{
   chat_messages: typeof chat_messages;
   crons: typeof crons;
   data_deletion: typeof data_deletion;
-  files_content: typeof files_content;
-  files_node_properties: typeof files_node_properties;
   files_nodes: typeof files_nodes;
   files_pending_updates: typeof files_pending_updates;
   http: typeof http;
@@ -89,6 +85,7 @@ export declare const components: {
   billing_workpool_bootstrap: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"billing_workpool_bootstrap">;
   billing_workpool_cancellation: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"billing_workpool_cancellation">;
   billing_workpool_usage_event: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"billing_workpool_usage_event">;
+  files_content_materialization_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"files_content_materialization_workpool">;
   files_upload_conversion_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"files_upload_conversion_workpool">;
   rate_limiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rate_limiter">;
   r2: import("@convex-dev/r2/_generated/component.js").ComponentApi<"r2">;

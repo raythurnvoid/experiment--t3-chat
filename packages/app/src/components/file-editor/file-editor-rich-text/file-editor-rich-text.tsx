@@ -35,7 +35,7 @@ import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
-import { files_get_rich_text_initial_content, files_PresenceStore, files_YJS_DOC_KEYS } from "@/lib/files.ts";
+import { files_PresenceStore, files_YJS_DOC_KEYS } from "@/lib/files.ts";
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { FileEditorRichTextToolsInlineAi } from "./file-editor-rich-text-tools-inline-ai.tsx";
 import { FileEditorRichTextToolsComment } from "./file-editor-rich-text-tools-comment.tsx";
@@ -213,6 +213,16 @@ const FileEditorRichTextBubbleContentDefaultActions = memo(function FileEditorRi
 ) {
 	const { editor, onClickAi, onClickComment } = props;
 
+	const handleActionMouseDown = useFn<MyButton_Props["onMouseDown"]>((event) => {
+		// Keep the editor selection alive while the bubble action handles the click.
+		event.preventDefault();
+	});
+
+	const handleActionPointerDown = useFn<MyButton_Props["onPointerDown"]>((event) => {
+		// Keep the editor selection alive while the bubble action handles the click.
+		event.preventDefault();
+	});
+
 	return (
 		<div
 			className={cn(
@@ -224,6 +234,8 @@ const FileEditorRichTextBubbleContentDefaultActions = memo(function FileEditorRi
 				className={cn(
 					"FileEditorRichTextBubbleContentDefaultActions-button" satisfies FileEditorRichTextBubbleContentDefaultActions_ClassNames,
 				)}
+				onPointerDown={handleActionPointerDown}
+				onMouseDown={handleActionMouseDown}
 				onClick={onClickAi}
 			>
 				<MyButtonIcon
@@ -251,6 +263,8 @@ const FileEditorRichTextBubbleContentDefaultActions = memo(function FileEditorRi
 				className={cn(
 					"FileEditorRichTextBubbleContentDefaultActions-button" satisfies FileEditorRichTextBubbleContentDefaultActions_ClassNames,
 				)}
+				onPointerDown={handleActionPointerDown}
+				onMouseDown={handleActionMouseDown}
 				onClick={onClickComment}
 			>
 				<MyButtonIcon
@@ -729,7 +743,6 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 	const isEditorReady = filesYjs.syncStatus === "synchronizing" || filesYjs.syncStatus === "synchronized";
 
 	const liveblocks = useLiveblocksExtension({
-		initialContent: files_get_rich_text_initial_content(),
 		field: files_YJS_DOC_KEYS.richText,
 		presenceStore,
 		yjsProvider: filesYjs.yjsProvider,
@@ -765,8 +778,8 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 					"FileEditorRichText" satisfies FileEditorRichText_ClassNames,
 					// Due to some weird combination of things, if the EditorContent component is not rendered
 					// it results in it creating the TipTap Editor instance twice causing issues when
-					// settings the initial content, therefore the componet has to be rendered but
-					// hidden via cSS to prevent incomplete content to show while all the things are loading.
+					// the server-owned Yjs state hydrates, therefore the component has to be rendered but
+					// hidden via CSS to prevent incomplete content from showing while all the things are loading.
 					isEditorReady && ("FileEditorRichText-visible" satisfies FileEditorRichText_ClassNames),
 				)}
 			>

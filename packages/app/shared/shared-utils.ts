@@ -84,8 +84,11 @@ function is_convex_runtime() {
 	);
 }
 
-export function should_never_happen(message: LiteralUnion<"Missing deps", string>, data: Record<string, any> = {}) {
-	console.error("[should_never_happen]", message, data);
+export function should_never_happen(
+	errorMessage: LiteralUnion<"Missing deps", string>,
+	errorData: Record<string, any> = {},
+) {
+	console.error("[should_never_happen]", errorMessage, errorData);
 
 	const isDev = ((/* iife */) => {
 		try {
@@ -106,22 +109,22 @@ export function should_never_happen(message: LiteralUnion<"Missing deps", string
 	}
 
 	if (is_convex_runtime()) {
-		let convexData = data;
+		let convexData = errorData;
 		try {
-			convexData = structuredClone(data);
+			convexData = structuredClone(errorData);
 		} catch {}
 
 		return new ConvexError({
-			message: `[should_never_happen] ${message}`,
+			message: `[should_never_happen] ${errorMessage}`,
 			data: convexData as any,
 		});
 	}
 
 	return new Error(
 		"[should_never_happen] " +
-			message +
+			errorMessage +
 			"\n\t" +
-			JSON.stringify(data, (_key, value) => (value === undefined ? "<undefined>" : value), "\t"),
+			JSON.stringify(errorData, (_key, value) => (value === undefined ? "<undefined>" : value), "\t"),
 	);
 }
 

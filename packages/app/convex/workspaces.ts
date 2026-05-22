@@ -426,10 +426,10 @@ export const list = query({
 					const projectIds = projectIdsByWorkspace.get(workspaceId);
 
 					if (!projectIds) {
-						const message = "Project ids not found for workspace";
-						const data = { workspaceId };
-						console.error(message, data);
-						throw should_never_happen(message, data);
+						const errorMessage = "Project ids not found for workspace";
+						const errorData = { workspaceId };
+						console.error(errorMessage, errorData);
+						throw should_never_happen(errorMessage, errorData);
 					}
 
 					const projectsPromises = [];
@@ -785,12 +785,12 @@ export const invite_user_to_workspace_project = mutation({
 		}
 
 		if (!workspace.defaultProjectId) {
-			const message = "workspace.defaultProjectId is not set";
-			const data = {
+			const errorMessage = "workspace.defaultProjectId is not set";
+			const errorData = {
 				workspaceId: workspace._id,
 			};
-			console.error(message, data);
-			throw should_never_happen(message, data);
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
 		}
 		const defaultProjectId = workspace.defaultProjectId;
 		const isDefaultProject = project._id === defaultProjectId;
@@ -928,12 +928,12 @@ export const remove_user_from_workspace = mutation({
 		}
 
 		if (!workspace.defaultProjectId) {
-			const message = "workspace.defaultProjectId is not set";
-			const data = {
+			const errorMessage = "workspace.defaultProjectId is not set";
+			const errorData = {
 				workspaceId: workspace._id,
 			};
-			console.error(message, data);
-			throw should_never_happen(message, data);
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
 		}
 		const defaultProjectId = workspace.defaultProjectId;
 
@@ -1387,12 +1387,12 @@ export const delete_workspace = mutation({
 		}
 
 		if (!workspace.defaultProjectId) {
-			const message = "workspace.defaultProjectId is not set";
-			const data = {
+			const errorMessage = "workspace.defaultProjectId is not set";
+			const errorData = {
 				workspaceId: workspace._id,
 			};
-			console.error(message, data);
-			throw should_never_happen(message, data);
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
 		}
 		const defaultProjectId = workspace.defaultProjectId;
 

@@ -1,5 +1,5 @@
 import { Polar } from "@convex-dev/polar";
-import { Workpool, type WorkId } from "@convex-dev/workpool";
+import { Workpool, vWorkId } from "@convex-dev/workpool";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
 import { customersDelete } from "@polar-sh/sdk/funcs/customersDelete.js";
 import { customerSessionsCreate } from "@polar-sh/sdk/funcs/customerSessionsCreate.js";
@@ -1048,7 +1048,7 @@ export const get_cancel_polar_subscription_job_by_user_id = internalQuery({
 export const upsert_cancel_polar_subscription_job = internalMutation({
 	args: {
 		userId: v.id("users"),
-		jobId: v.string(),
+		jobId: vWorkId,
 		updatedAt: v.number(),
 	},
 	returns: v.null(),
@@ -1118,7 +1118,7 @@ export const complete_polar_subscription_period_end_cancellation = billing_workp
 	},
 });
 
-export async function billing_schedule_polar_subscription_period_end_cancellation(
+export async function billing_action_schedule_polar_subscription_period_end_cancellation(
 	ctx: ActionCtx,
 	args: {
 		userId: Id<"users">;
@@ -1129,7 +1129,7 @@ export async function billing_schedule_polar_subscription_period_end_cancellatio
 		userId: args.userId,
 	});
 	if (existingRow) {
-		await billing_workpool_cancellation.cancel(ctx, existingRow.jobId as WorkId);
+		await billing_workpool_cancellation.cancel(ctx, existingRow.jobId);
 	}
 
 	const jobId = await billing_workpool_cancellation.enqueueAction(
@@ -1153,7 +1153,7 @@ export async function billing_schedule_polar_subscription_period_end_cancellatio
 	return jobId;
 }
 
-export async function billing_cancel_scheduled_polar_subscription_period_end_cancellation(
+export async function billing_action_cancel_scheduled_polar_subscription_period_end_cancellation(
 	ctx: ActionCtx,
 	args: {
 		userId: Id<"users">;
@@ -1166,7 +1166,7 @@ export async function billing_cancel_scheduled_polar_subscription_period_end_can
 		return null;
 	}
 
-	await billing_workpool_cancellation.cancel(ctx, existingRow.jobId as WorkId);
+	await billing_workpool_cancellation.cancel(ctx, existingRow.jobId);
 	await ctx.runMutation(internal.billing.delete_cancel_polar_subscription_job, {
 		userId: args.userId,
 	});
@@ -1181,7 +1181,7 @@ export const schedule_polar_subscription_period_end_cancellation = internalActio
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		await billing_schedule_polar_subscription_period_end_cancellation(ctx, args);
+		await billing_action_schedule_polar_subscription_period_end_cancellation(ctx, args);
 
 		return null;
 	},
@@ -1193,7 +1193,7 @@ export const cancel_scheduled_polar_subscription_period_end_cancellation = inter
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		return await billing_cancel_scheduled_polar_subscription_period_end_cancellation(ctx, args);
+		return await billing_action_cancel_scheduled_polar_subscription_period_end_cancellation(ctx, args);
 	},
 });
 
@@ -1234,7 +1234,7 @@ const billing_workpool_bootstrap = new Workpool(components.billing_workpool_boot
 	retryActionsByDefault: true,
 });
 
-export async function billing_enqueue_free_subscription_bootstrap(
+export async function billing_action_enqueue_free_subscription_bootstrap(
 	ctx: ActionCtx,
 	args: {
 		userId: Id<"users">;
@@ -1300,7 +1300,7 @@ export const bootstrap_free_subscription = internalAction({
 				) {
 					// Account recovery reverses the deletion-triggered period-end
 					// cancellation while Polar still considers the subscription billable.
-					await billing_cancel_scheduled_polar_subscription_period_end_cancellation(ctx, {
+					await billing_action_cancel_scheduled_polar_subscription_period_end_cancellation(ctx, {
 						userId: args.userId,
 					});
 

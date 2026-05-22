@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { vWorkId } from "@convex-dev/workpool";
 import type { ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
 
 const app_convex_schema = defineSchema({
@@ -108,24 +109,27 @@ const app_convex_schema = defineSchema({
 		/** Display name used in path resolution */
 		name: v.string(),
 		kind: v.union(v.literal("folder"), v.literal("file")),
-		/** ID of the markdown content for the file */
-		markdownContentId: v.optional(v.id("files_markdown_content")),
+		/**
+		 * File content type. Folders leave this unset.
+		 *
+		 * Store lowercase media types with optional semicolon parameters, e.g. `text/markdown;charset=utf-8`.
+		 */
+		contentType: v.optional(v.string()),
 		/** ID of the last YJS sequence for the file */
 		yjsLastSequenceId: v.optional(v.id("files_yjs_docs_last_sequences")),
 		/** ID of the last YJS sequence for the file */
 		yjsSnapshotId: v.optional(v.id("files_yjs_snapshots")),
-		/** Current upload associated with an uploaded source file. */
-		uploadId: v.optional(v.id("files_uploads")),
-		/** Finalized asset associated with an uploaded source file. */
 		assetId: v.optional(v.id("files_r2_assets")),
-		/** File metadata row used by the UI and download flows. */
-		propertiesId: v.optional(v.id("files_node_properties")),
-		/** Present only on generated shadow file nodes; points back to the visible shadow source file node. */
+		/**
+		 * Present only on generated shadow file nodes;
+		 * points back to the visible shadow source file node.
+		 **/
 		shadowSourceFileNodeId: v.optional(v.id("files_nodes")),
-		/** Canonical generated shadow file nodes owned by this shadow source file node. Empty for normal files and shadow file nodes. */
+		/**
+		 * Canonical generated shadow file nodes owned by this shadow source file node.
+		 * Empty for normal files and shadow file nodes.
+		 **/
 		shadowFileNodeIds: v.array(v.id("files_nodes")),
-		/** Document version - always 0 for now until versioning is implemented */
-		version: v.number(),
 		/** Archive operation UUID. Undefined means active */
 		archiveOperationId: v.optional(v.string()),
 		/** "root" for root items, otherwise parent folder `_id` */
@@ -167,36 +171,8 @@ const app_convex_schema = defineSchema({
 			"parentId",
 			"shadowSourceFileNodeId",
 			"archiveOperationId",
-		]),
-
-	files_node_properties: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
-		fileNodeId: v.id("files_nodes"),
-		contentType: v.optional(v.string()),
-		size: v.optional(v.number()),
-		updatedAt: v.number(),
-	}).index("by_file_node", ["fileNodeId"]),
-
-	/**
-	 * Table to store markdown content for files.
-	 */
-	files_markdown_content: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
-		nodeId: v.id("files_nodes"),
-		/** Markdown content */
-		content: v.string(),
-		/** Whether document is archived */
-		isArchived: v.boolean(),
-		/** YJS sequence to know the sync status */
-		yjsSequence: v.number(),
-		updatedAt: v.number(),
-		updatedBy: v.string(),
-	}).searchIndex("search_by_content", {
-		searchField: "content",
-		filterFields: ["workspaceId", "projectId", "isArchived"],
-	}),
+		])
+		.index("by_workspace_project_asset", ["workspaceId", "projectId", "assetId"]),
 
 	files_markdown_chunks: defineTable({
 		workspaceId: v.string(),
@@ -245,7 +221,8 @@ const app_convex_schema = defineSchema({
 		projectId: v.string(),
 		nodeId: v.id("files_nodes"),
 		sequence: v.number(),
-		snapshotUpdate: v.bytes(),
+		/** Current R2 asset for the compacted Yjs update. */
+		assetId: v.id("files_r2_assets"),
 		createdBy: v.id("users"),
 		updatedBy: v.string(),
 		updatedAt: v.number(),
@@ -285,18 +262,19 @@ const app_convex_schema = defineSchema({
 		lastSequence: v.number(),
 	}).index("by_workspace_project_file", ["workspaceId", "projectId", "nodeId"]),
 
-	/**
-	 * Internal table to track scheduled YJS snapshot updates.
-	 */
-	files_yjs_snapshot_schedules: defineTable({
+	files_content_materialization_jobs: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
 		nodeId: v.id("files_nodes"),
-		scheduledFunctionId: v.id("_scheduled_functions"),
+		jobId: vWorkId,
+		targetSequence: v.number(),
 	}).index("by_file", ["nodeId"]),
 
 	files_snapshots: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		nodeId: v.id("files_nodes"),
+		assetId: v.id("files_r2_assets"),
 		createdBy: v.id("users"),
 		/**
 		 * Use -1 for snapshots that were never archived, 0 for snapshots that were
@@ -305,37 +283,22 @@ const app_convex_schema = defineSchema({
 		archivedAt: v.number(),
 	}).index("by_workspace_project_file_archivedAt", ["workspaceId", "projectId", "nodeId", "archivedAt"]),
 
-	files_snapshots_contents: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
-		snapshotId: v.id("files_snapshots"),
-		content: v.string(),
-		nodeId: v.id("files_nodes"),
-	}).index("by_workspace_project_fileSnapshot", ["workspaceId", "projectId", "snapshotId"]),
-
 	files_r2_assets: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
+		kind: v.union(v.literal("upload"), v.literal("content"), v.literal("yjs_snapshot"), v.literal("content_snapshot")),
 		r2Bucket: v.string(),
-		r2Key: v.string(),
-		filename: v.string(),
-		sourceNodeId: v.id("files_nodes"),
+		/**
+		 * Present only after the R2 object
+		 * has been confirmed at this deterministic key.
+		 **/
+		r2Key: v.optional(v.string()),
+		size: v.optional(v.number()),
+		etag: v.optional(v.string()),
+		conversionWorkId: v.optional(vWorkId),
 		createdBy: v.id("users"),
-		createdAt: v.number(),
 		updatedAt: v.number(),
-	}).index("by_workspace_project_r2Key", ["workspaceId", "projectId", "r2Key"]),
-
-	files_uploads: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
-		createdBy: v.id("users"),
-		r2Bucket: v.string(),
-		r2Key: v.string(),
-		filename: v.string(),
-		conversionWorkId: v.optional(v.string()),
-		failureMessage: v.optional(v.string()),
-		sourceNodeId: v.id("files_nodes"),
-	}).index("by_r2Bucket_r2Key", ["r2Bucket", "r2Key"]),
+	}).index("by_workspace_project", ["workspaceId", "projectId"]),
 	// #endregion files
 
 	// #region chat messages
@@ -559,7 +522,7 @@ const app_convex_schema = defineSchema({
 	 */
 	billing_cancel_polar_subscription_jobs: defineTable({
 		userId: v.id("users"),
-		jobId: v.string(),
+		jobId: vWorkId,
 		updatedAt: v.number(),
 	}).index("by_user", ["userId"]),
 	// #endregion billing

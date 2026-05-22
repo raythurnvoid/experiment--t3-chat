@@ -1,13 +1,23 @@
-import { Workpool } from "@convex-dev/workpool";
+import { Workpool, vWorkId } from "@convex-dev/workpool";
 import type { RegisteredMutation, RegisteredQuery, RouteSpec } from "convex/server";
 import { v } from "convex/values";
 import { R2 } from "@convex-dev/r2";
 import { doc } from "convex-helpers/validators";
 import { z } from "zod";
 import { components, internal } from "./_generated/api.js";
-import { action, httpAction, internalMutation, internalQuery, query, type ActionCtx } from "./_generated/server.js";
+import {
+	action,
+	httpAction,
+	internalAction,
+	internalMutation,
+	internalQuery,
+	query,
+	type ActionCtx,
+	type MutationCtx,
+} from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
 import {
+	json_parse_and_validate,
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
@@ -15,11 +25,22 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { workspaces_db_get_membership } from "./workspaces.ts";
-import { access_control_db_has_permission } from "./access_control.ts";
-import type { files_ContentType } from "../server/files.ts";
+import {
+	files_MAX_MARKDOWN_CHARACTERS,
+	files_MAX_UPLOADS_BYTES,
+	files_get_utf8_byte_size,
+	type files_ContentType,
+} from "../server/files.ts";
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
+import {
+	db_insert_file_chunks,
+	db_get_file_content_materialization_db_state,
+	files_nodes_create_yjs_snapshot_update_from_markdown,
+	files_nodes_db_create_node_recursively_at_path,
+	files_nodes_db_finalize_markdown_node_creation,
+} from "./files_nodes.ts";
 
 if (!process.env.R2_BUCKET_FILES) {
 	throw convex_error({ message: "R2_BUCKET_FILES is not set in Convex env" });
@@ -51,21 +72,27 @@ if (!process.env.CLOUDFLARE_EVENTS_SECRET) {
 
 const CLOUDFLARE_EVENTS_SECRET = process.env.CLOUDFLARE_EVENTS_SECRET;
 
+if (!process.env.MODAL_FILE_CONVERTER_URL) {
+	throw convex_error({ message: "MODAL_FILE_CONVERTER_URL is not set in Convex env" });
+}
+
+const MODAL_FILE_CONVERTER_URL = process.env.MODAL_FILE_CONVERTER_URL;
+
+if (!process.env.MODAL_TOKEN) {
+	throw convex_error({ message: "MODAL_TOKEN is not set in Convex env" });
+}
+
+const MODAL_TOKEN = process.env.MODAL_TOKEN;
+
+function shadow_file_node_name(filename: string) {
+	return `${filename}.shadow.md`;
+}
+
 const r2 = new R2(components.r2, {
 	bucket: R2_BUCKET_FILES,
 	endpoint: R2_ENDPOINT,
 	accessKeyId: R2_ACCESS_KEY_ID,
 	secretAccessKey: R2_SECRET_ACCESS_KEY,
-});
-
-const upload_conversion_workpool = new Workpool(components.files_upload_conversion_workpool, {
-	maxParallelism: 1,
-	retryActionsByDefault: true,
-	defaultRetryBehavior: {
-		initialBackoffMs: 60 * 1000,
-		base: 1.2,
-		maxAttempts: Number.POSITIVE_INFINITY,
-	} as const,
 });
 
 export async function r2_get_download_url(args: {
@@ -77,10 +104,6 @@ export async function r2_get_download_url(args: {
 	});
 }
 
-export function r2_create_upload_key(args: { workspaceId: string; projectId: string; nodeId: Id<"files_nodes"> }) {
-	return `workspaces/${args.workspaceId}/projects/${args.projectId}/nodes/${args.nodeId}/source`;
-}
-
 export function r2_get_bucket() {
 	return r2.config.bucket;
 }
@@ -89,314 +112,328 @@ export async function r2_generate_upload_url(key: Parameters<typeof r2.generateU
 	return await r2.generateUploadUrl(key);
 }
 
-export const get_upload_by_bucket_and_key = internalQuery({
+export function r2_create_asset_key(args: { workspaceId: string; projectId: string; assetId: Id<"files_r2_assets"> }) {
+	return `workspaces/${args.workspaceId}/projects/${args.projectId}/assets/${args.assetId}`;
+}
+
+function extract_asset_id_from_r2_key(key: string) {
+	const assetId = key.split("/").at(-1);
+
+	return assetId || null;
+}
+
+export const insert_asset = internalMutation({
+	args: {
+		workspaceId: doc(app_convex_schema, "files_r2_assets").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_r2_assets").fields.projectId,
+		kind: doc(app_convex_schema, "files_r2_assets").fields.kind,
+		size: doc(app_convex_schema, "files_r2_assets").fields.size,
+		createdBy: doc(app_convex_schema, "files_r2_assets").fields.createdBy,
+	},
+	returns: v.id("files_r2_assets"),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		return await ctx.db.insert("files_r2_assets", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			kind: args.kind,
+			r2Bucket: r2_get_bucket(),
+			size: args.size,
+			createdBy: args.createdBy,
+			updatedAt: now,
+		});
+	},
+});
+
+export const patch_asset = internalMutation({
+	args: {
+		assetId: v.id("files_r2_assets"),
+		r2Key: doc(app_convex_schema, "files_r2_assets").fields.r2Key,
+		size: doc(app_convex_schema, "files_r2_assets").fields.size,
+		etag: doc(app_convex_schema, "files_r2_assets").fields.etag,
+		conversionWorkId: v.optional(v.union(vWorkId, v.null())),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await ctx.db.patch("files_r2_assets", args.assetId, {
+			...(args.r2Key === undefined ? {} : { r2Key: args.r2Key }),
+			...(args.size === undefined ? {} : { size: args.size }),
+			...(args.etag === undefined ? {} : { etag: args.etag }),
+			...(args.conversionWorkId === undefined ? {} : { conversionWorkId: args.conversionWorkId ?? undefined }),
+			updatedAt: Date.now(),
+		});
+
+		return null;
+	},
+});
+
+export async function r2_put_object(
+	ctx: ActionCtx,
+	args: {
+		key: string;
+		body: BodyInit;
+		contentType?: string;
+	},
+) {
+	// Use signed PUT instead of r2.store() so deterministic content keys remain idempotent across Workpool retries.
+	const upload = await r2_generate_upload_url(args.key);
+	const response = await fetch(upload.url, {
+		method: "PUT",
+		headers: args.contentType ? { "Content-Type": args.contentType } : undefined,
+		body: args.body,
+	});
+	if (!response.ok) {
+		throw convex_error({
+			message: "Failed to write R2 object",
+			cause: {
+				status: response.status,
+				key: args.key,
+			},
+		});
+	}
+
+	await r2.syncMetadata(ctx, args.key);
+}
+
+export async function r2_fetch_object_from_bucket(args: { key: string }) {
+	const url = await r2_get_download_url({
+		key: args.key,
+		options: {
+			expiresIn: 60,
+		},
+	});
+	const response = await fetch(url);
+	if (!response.ok) {
+		throw convex_error({
+			message: "Failed to read R2 object",
+			cause: {
+				status: response.status,
+				key: args.key,
+			},
+		});
+	}
+
+	return response;
+}
+
+export async function r2_delete_object(ctx: MutationCtx, key: string) {
+	await r2.deleteObject(ctx, key);
+}
+
+export const get_asset_by_r2_event_key = internalQuery({
 	args: {
 		bucket: v.string(),
 		key: v.string(),
 	},
 	returns: v_result({
-		_yay: doc(app_convex_schema, "files_uploads"),
+		_yay: doc(app_convex_schema, "files_r2_assets"),
 	}),
 	handler: async (ctx, args) => {
-		const upload = await ctx.db
-			.query("files_uploads")
-			.withIndex("by_r2Bucket_r2Key", (q) => q.eq("r2Bucket", args.bucket).eq("r2Key", args.key))
-			.first();
+		const parsedAssetId = extract_asset_id_from_r2_key(args.key);
+		const assetId = parsedAssetId ? ctx.db.normalizeId("files_r2_assets", parsedAssetId) : null;
+		const asset = assetId ? await ctx.db.get("files_r2_assets", assetId) : null;
 
-		if (!upload) {
+		if (!asset || asset.r2Bucket !== args.bucket) {
 			return Result({
 				_nay: {
-					message: "Upload doc not found",
+					message: "Not found",
 				},
 			});
 		}
 
-		return Result({ _yay: upload });
+		return Result({ _yay: asset });
 	},
 });
 
+type get_asset_by_r2_event_key_Result =
+	typeof get_asset_by_r2_event_key extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const get_asset_by_id = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		assetId: v.id("files_r2_assets"),
+	},
+	returns: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
+	handler: async (ctx, args) => {
+		const asset = await ctx.db.get("files_r2_assets", args.assetId);
+		if (!asset || asset.workspaceId !== args.workspaceId || asset.projectId !== args.projectId) {
+			return null;
+		}
+
+		return asset;
+	},
+});
+
+type get_asset_by_id_Result =
+	typeof get_asset_by_id extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const get_data_for_create_signed_download_url = internalQuery({
+	args: {
+		userId: v.id("users"),
+		membershipId: v.id("workspaces_projects_users"),
+		fileNodeId: v.id("files_nodes"),
+	},
+	returns: v.union(
+		v.object({
+			fileNode: doc(app_convex_schema, "files_nodes"),
+			asset: doc(app_convex_schema, "files_r2_assets"),
+			materializationState: v.union(
+				v.object({
+					fileNode: doc(app_convex_schema, "files_nodes"),
+					yjsSnapshotDoc: doc(app_convex_schema, "files_yjs_snapshots"),
+					yjsLastSequenceDoc: doc(app_convex_schema, "files_yjs_docs_last_sequences"),
+					yjsUpdatesDocs: v.array(doc(app_convex_schema, "files_yjs_updates")),
+					asset: doc(app_convex_schema, "files_r2_assets"),
+					yjsSnapshotAsset: doc(app_convex_schema, "files_r2_assets"),
+				}),
+				v.null(),
+			),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const membership = await workspaces_db_get_membership(ctx, {
+			userId: args.userId,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return null;
+		}
+
+		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
+		if (
+			!fileNode ||
+			fileNode.workspaceId !== membership.workspaceId ||
+			fileNode.projectId !== membership.projectId ||
+			!fileNode.assetId ||
+			!fileNode.contentType
+		) {
+			return null;
+		}
+
+		const assetId = fileNode.assetId;
+		const contentType = fileNode.contentType;
+		const asset = await ctx.db.get("files_r2_assets", assetId);
+		if (!asset || asset.workspaceId !== fileNode.workspaceId || asset.projectId !== fileNode.projectId) {
+			const errorMessage = "fileNode.assetId points to a missing or mismatched files_r2_assets doc";
+			const errorData = {
+				fileNodeId: fileNode._id,
+				assetId,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+
+		return {
+			fileNode,
+			asset,
+			materializationState: contentType.startsWith("text/markdown" satisfies files_ContentType)
+				? await db_get_file_content_materialization_db_state(ctx, {
+						workspaceId: fileNode.workspaceId,
+						projectId: fileNode.projectId,
+						nodeId: fileNode._id,
+					})
+				: null,
+		};
+	},
+});
+
+type get_data_for_create_signed_download_url_Result =
+	typeof get_data_for_create_signed_download_url extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 /**
- * Resolve one selected download target to the saved data needed to prepare a file download.
+ * Return a signed R2 URL for download.
+ *
+ * For Markdown files, ensure the R2 snapshot is up to date before returning the URL.
  */
-export const get_file_download_target_for_prepare = internalQuery({
+export const create_signed_download_url = action({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 		fileNodeId: v.id("files_nodes"),
 	},
 	returns: v_result({
-		_yay: v.union(
-			v.object({
-				kind: v.literal("source"),
-				filename: v.string(),
-				contentType: v.optional(v.string()),
-				size: v.optional(v.number()),
-				r2Key: v.string(),
-			}),
-			v.object({
-				kind: v.literal("markdown"),
-				filename: v.string(),
-				contentType: v.literal("text/markdown;charset=utf-8" satisfies files_ContentType),
-				size: v.optional(v.number()),
-				content: v.string(),
-			}),
-		),
+		_yay: v.object({
+			url: v.string(),
+		}),
 	}),
 	handler: async (ctx, args) => {
-		// Check project access before loading file data so missing/existing files are not leaked.
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const data = (await ctx.runQuery(internal.r2.get_data_for_create_signed_download_url, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
-		if (!workspace) {
-			console.error("membership.workspaceId points to a missing workspaces doc", {
-				membershipId: membership._id,
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-			});
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		if (!workspace.defaultProjectId) {
-			console.error("workspace.defaultProjectId is not set", {
-				membershipId: membership._id,
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				defaultProjectId: workspace.defaultProjectId,
-			});
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const defaultProjectId = workspace.defaultProjectId;
-
-		// Downloads are project assets, so gate both uploaded binaries and saved Markdown snapshots with asset.read.
-		const hasAssetRead = await access_control_db_has_permission(ctx, {
-			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
-			defaultProjectId,
-			workspaceOwnerUserId: workspace.ownerUserId,
-			resourceKind: "project",
-			resourceId: membership.projectId,
-			permission: "asset.read",
-			userId: userAuth.id,
-		});
-		if (!hasAssetRead) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		// Validate the requested file only after the project-level download permission succeeds.
-		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
-		if (
-			!fileNode ||
-			fileNode.workspaceId !== membership.workspaceId ||
-			fileNode.projectId !== membership.projectId
-		) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (fileNode.kind !== "file") {
+			fileNodeId: args.fileNodeId,
+		})) as get_data_for_create_signed_download_url_Result;
+		if (!data) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		// Source downloads use the uploaded file node and its finalized R2 asset.
-		if (!fileNode.markdownContentId) {
-			if (!fileNode.assetId) {
-				return Result({ _nay: { message: "Not found" } });
-			}
-			if (!fileNode.propertiesId) {
-				const message = "fileNode.propertiesId is not set";
-				const data = {
+		const { fileNode, asset, materializationState } = data;
+		if (!fileNode.contentType) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		if (fileNode.contentType.startsWith("text/markdown" satisfies files_ContentType)) {
+			if (!fileNode.yjsSnapshotId || !fileNode.yjsLastSequenceId) {
+				console.warn("Markdown file is missing Yjs pointers", {
 					fileNodeId: fileNode._id,
+					yjsSnapshotId: fileNode.yjsSnapshotId,
+					yjsLastSequenceId: fileNode.yjsLastSequenceId,
+				});
+			} else if (!materializationState) {
+				console.warn("Markdown file materialization state is missing", {
+					fileNodeId: fileNode._id,
+					yjsSnapshotId: fileNode.yjsSnapshotId,
+					yjsLastSequenceId: fileNode.yjsLastSequenceId,
+				});
+			} else if (materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence) {
+				// Try to update the committed Markdown asset, but still allow downloading the current R2 asset if this fails.
+				const materialized = await ctx.runAction(internal.files_nodes.materialize_file_content, {
 					workspaceId: fileNode.workspaceId,
 					projectId: fileNode.projectId,
-				};
-				console.error(message, data);
-				throw should_never_happen(message, data);
+					nodeId: fileNode._id,
+					userId: userAuth.id,
+					targetSequence: materializationState.yjsLastSequenceDoc.lastSequence,
+				});
+				if (materialized._nay) {
+					console.warn("Failed to materialize Markdown before download", {
+						fileNodeId: fileNode._id,
+						nay: materialized._nay,
+					});
+				}
 			}
-
-			const [sourceAsset, fileNodeProperties] = await Promise.all([
-				ctx.db.get("files_r2_assets", fileNode.assetId),
-				ctx.db.get("files_node_properties", fileNode.propertiesId),
-			]);
-			if (!sourceAsset) {
-				const message = "fileNode.assetId points to a missing files_r2_assets doc";
-				const data = {
-					fileNodeId: fileNode._id,
-					assetId: fileNode.assetId,
-				};
-				console.error(message, data);
-				throw should_never_happen(message, data);
-			}
-			if (!fileNodeProperties) {
-				const message = "fileNode.propertiesId points to a missing files_node_properties doc";
-				const data = {
-					fileNodeId: fileNode._id,
-					propertiesId: fileNode.propertiesId,
-				};
-				console.error(message, data);
-				throw should_never_happen(message, data);
-			}
-
-			return Result({
-				_yay: {
-					kind: "source",
-					filename: sourceAsset.filename,
-					...(fileNodeProperties.contentType ? { contentType: fileNodeProperties.contentType } : {}),
-					...(fileNodeProperties.size === undefined ? {} : { size: fileNodeProperties.size }),
-					r2Key: sourceAsset.r2Key,
-				},
-			});
 		}
 
-		// Markdown downloads use the requested Markdown file node directly, including generated shadows.
-		if (!fileNode.propertiesId) {
-			const message = "fileNode.propertiesId is not set";
-			const data = {
-				fileNodeId: fileNode._id,
-			};
-			console.error(message, data);
-			throw should_never_happen(message, data);
+		if (!asset.r2Key) {
+			return Result({ _nay: { message: "Not found" } });
 		}
 
-		// Return only committed Markdown content; pending editor edits are not downloadable until saved.
-		const [markdownContent, fileNodeProperties] = await Promise.all([
-			ctx.db.get("files_markdown_content", fileNode.markdownContentId),
-			ctx.db.get("files_node_properties", fileNode.propertiesId),
-		]);
-		if (!markdownContent) {
-			const message = "fileNode.markdownContentId points to a missing files_markdown_content doc";
-			const data = {
-				fileNodeId: fileNode._id,
-				markdownContentId: fileNode.markdownContentId,
-			};
-			console.error(message, data);
-			throw should_never_happen(message, data);
-		}
-		// Metadata comes from file-node properties so the download UI and prepare path use the same source.
-		if (!fileNodeProperties) {
-			const message = "fileNode.propertiesId points to a missing files_node_properties doc";
-			const data = {
-				fileNodeId: fileNode._id,
-				propertiesId: fileNode.propertiesId,
-			};
-			console.error(message, data);
-			throw should_never_happen(message, data);
-		}
-		if (fileNodeProperties.contentType !== ("text/markdown;charset=utf-8" satisfies files_ContentType)) {
-			const message = "fileNodeProperties.contentType is not Markdown";
-			const data = {
-				fileNodeId: fileNode._id,
-				contentType: fileNodeProperties.contentType,
-			};
-			console.error(message, data);
-			throw should_never_happen(message, data);
-		}
-
-		return Result({
-			_yay: {
-				kind: "markdown",
-				filename: fileNode.name,
-				contentType: fileNodeProperties.contentType,
-				...(fileNodeProperties.size === undefined ? {} : { size: fileNodeProperties.size }),
-				content: markdownContent.content,
-			},
-		});
-	},
-});
-
-type get_file_download_target_for_prepare_Result =
-	typeof get_file_download_target_for_prepare extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-/**
- * Prepare one file download for the browser.
- *
- * Markdown is returned as text. Uploaded source files are returned as short-lived signed R2 URLs.
- */
-export const prepare_file_download_target = action({
-	args: {
-		membershipId: v.id("workspaces_projects_users"),
-		fileNodeId: v.id("files_nodes"),
-	},
-	returns: v_result({
-		_yay: v.union(
-			v.object({
-				kind: v.literal("text"),
-				filename: v.string(),
-				contentType: v.literal("text/markdown;charset=utf-8" satisfies files_ContentType),
-				size: v.optional(v.number()),
-				content: v.string(),
-			}),
-			v.object({
-				kind: v.literal("url"),
-				filename: v.string(),
-				contentType: v.optional(v.string()),
-				size: v.optional(v.number()),
-				url: v.string(),
-			}),
-		),
-	}),
-	handler: async (ctx, args) => {
-		// Run DB authorization and target resolution in Convex, then handle URL signing in the action.
-		const target = (await ctx.runQuery(
-			internal.r2.get_file_download_target_for_prepare,
-			args,
-		)) as get_file_download_target_for_prepare_Result;
-		if (target._nay) {
-			return target;
-		}
-
-		// Markdown content is already in Convex, so the client can download it as a Blob.
-		if (target._yay.kind === "markdown") {
-			return Result({
-				_yay: {
-					kind: "text",
-					filename: target._yay.filename,
-					contentType: target._yay.contentType,
-					...(target._yay.size === undefined ? {} : { size: target._yay.size }),
-					content: target._yay.content,
-				},
-			});
-		}
-
-		// Uploaded source files stay private; expose only a fresh signed URL to the client.
 		const url = await r2_get_download_url({
-			key: target._yay.r2Key,
+			key: asset.r2Key,
 			options: {
 				// 15 minutes.
 				expiresIn: 15 * 60,
 			},
 		});
 
-		return Result({
-			_yay: {
-				kind: "url",
-				filename: target._yay.filename,
-				...(target._yay.contentType ? { contentType: target._yay.contentType } : {}),
-				...(target._yay.size === undefined ? {} : { size: target._yay.size }),
-				url,
-			},
-		});
+		return Result({ _yay: { url } });
 	},
 });
-
-export type r2_get_upload_by_bucket_and_key_Result =
-	typeof get_upload_by_bucket_and_key extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
 
 export const get_asset = query({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 	},
 	returns: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
 	handler: async (ctx, args) => {
@@ -413,18 +450,18 @@ export const get_asset = query({
 			return null;
 		}
 
-		const sourceFileNode = await ctx.db.get("files_nodes", args.nodeId);
+		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
 		if (
-			!sourceFileNode ||
-			sourceFileNode.workspaceId !== membership.workspaceId ||
-			sourceFileNode.projectId !== membership.projectId ||
-			!sourceFileNode.assetId
+			!fileNode ||
+			fileNode.workspaceId !== membership.workspaceId ||
+			fileNode.projectId !== membership.projectId ||
+			!fileNode.assetId
 		) {
 			return null;
 		}
 
-		const asset = await ctx.db.get("files_r2_assets", sourceFileNode.assetId);
-		if (!asset || asset.sourceNodeId !== sourceFileNode._id) {
+		const asset = await ctx.db.get("files_r2_assets", fileNode.assetId);
+		if (!asset || asset.workspaceId !== fileNode.workspaceId || asset.projectId !== fileNode.projectId) {
 			return null;
 		}
 
@@ -432,28 +469,130 @@ export const get_asset = query({
 	},
 });
 
-export const get_finalized_asset_by_source_file_node = internalQuery({
+export const get_file_node_by_asset_id = internalQuery({
 	args: {
-		nodeId: v.id("files_nodes"),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		assetId: v.id("files_r2_assets"),
 	},
-	returns: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
+	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
 	handler: async (ctx, args) => {
-		const sourceFileNode = await ctx.db.get("files_nodes", args.nodeId);
-		if (!sourceFileNode?.assetId) {
-			return null;
-		}
-
-		const asset = await ctx.db.get("files_r2_assets", sourceFileNode.assetId);
-		if (!asset || asset.sourceNodeId !== sourceFileNode._id || sourceFileNode.shadowFileNodeIds.length === 0) {
-			return null;
-		}
-
-		return asset;
+		return await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_asset", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("assetId", args.assetId),
+			)
+			.first();
 	},
 });
 
-type r2_get_finalized_asset_by_source_file_node_Result =
-	typeof get_finalized_asset_by_source_file_node extends RegisteredQuery<
+type get_file_node_by_asset_id_Result =
+	typeof get_file_node_by_asset_id extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Finish an upload conversion after the converted R2 objects are written.
+ *
+ * Create the shadow Markdown node, mark its R2 assets available, link it to the
+ * uploaded node, and clear the conversion job in one mutation.
+ */
+export const finalize_upload_conversion_to_markdown = internalMutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		fileNodeId: v.id("files_nodes"),
+		uploadAssetId: v.id("files_r2_assets"),
+		name: v.string(),
+		markdownContent: v.string(),
+		markdownAssetId: v.id("files_r2_assets"),
+		markdownSize: v.number(),
+		yjsSnapshotAssetId: v.id("files_r2_assets"),
+		yjsSnapshotSize: v.number(),
+		versionSnapshotAssetId: v.id("files_r2_assets"),
+		versionSnapshotSize: v.number(),
+	},
+	returns: v_result({ _yay: v.object({ fileNodeId: v.id("files_nodes") }) }),
+	handler: async (ctx, args) => {
+		// Load the uploaded file node that owns this conversion.
+		const fileNode = (await ctx.db.get("files_nodes", args.fileNodeId))!;
+
+		// Archive an active shadow-path occupant before creating the conversion result.
+		if (fileNode.archiveOperationId === undefined) {
+			const shadowFileNode = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+					q
+						.eq("workspaceId", fileNode.workspaceId)
+						.eq("projectId", fileNode.projectId)
+						.eq("path", `${fileNode.path}.shadow.md`)
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			if (shadowFileNode) {
+				// Supported user flows do not create shadow files; archive the unexpected occupant so conversion owns the shadow path.
+				await ctx.db.patch("files_nodes", shadowFileNode._id, {
+					archiveOperationId: crypto.randomUUID(),
+					updatedBy: fileNode.createdBy,
+					updatedAt: Date.now(),
+				});
+			}
+		}
+
+		// Create the shadow Markdown node from the converted content.
+		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+			userId: args.userId,
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			parentId: fileNode.parentId,
+			path: args.name,
+			kind: "file",
+			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			assetId: args.markdownAssetId,
+			yjsSnapshotAssetId: args.yjsSnapshotAssetId,
+			archiveOperationId: fileNode.archiveOperationId,
+			shadowSourceFileNodeId: fileNode._id,
+			markdownContent: args.markdownContent,
+			now: Date.now(),
+		});
+		if (created._nay) {
+			return created;
+		}
+
+		// Mark the converted R2 objects as available and create the content snapshot row.
+		await files_nodes_db_finalize_markdown_node_creation(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId: created._yay,
+			userId: args.userId,
+			markdownAssetId: args.markdownAssetId,
+			markdownSize: args.markdownSize,
+			yjsSnapshotAssetId: args.yjsSnapshotAssetId,
+			yjsSnapshotSize: args.yjsSnapshotSize,
+			versionSnapshotAssetId: args.versionSnapshotAssetId,
+			versionSnapshotSize: args.versionSnapshotSize,
+		});
+
+		// Link the shadow node back to the upload and clear the conversion job.
+		await Promise.all([
+			ctx.db.patch("files_nodes", fileNode._id, {
+				shadowFileNodeIds: fileNode.shadowFileNodeIds.includes(created._yay)
+					? fileNode.shadowFileNodeIds
+					: [...fileNode.shadowFileNodeIds, created._yay],
+			}),
+			ctx.db.patch("files_r2_assets", args.uploadAssetId, {
+				conversionWorkId: undefined,
+				updatedAt: Date.now(),
+			}),
+		]);
+
+		return Result({ _yay: { fileNodeId: created._yay } });
+	},
+});
+
+type finalize_upload_conversion_to_markdown_Result =
+	typeof finalize_upload_conversion_to_markdown extends RegisteredMutation<
 		infer _Visibility,
 		infer _Args,
 		infer ReturnValue
@@ -461,170 +600,572 @@ type r2_get_finalized_asset_by_source_file_node_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-export const ensure_uploaded_asset = internalMutation({
+export const convert_upload_to_markdown = internalAction({
 	args: {
-		uploadId: v.id("files_uploads"),
-		size: v.number(),
+		workspaceId: v.string(),
+		projectId: v.string(),
+		sourceAssetId: v.id("files_r2_assets"),
 	},
-	returns: v_result({
-		_yay: doc(app_convex_schema, "files_r2_assets"),
-	}),
+	returns: v.null(),
 	handler: async (ctx, args) => {
-		const upload = await ctx.db.get("files_uploads", args.uploadId);
-		if (!upload) {
-			const message = "args.uploadId points to a missing files_uploads doc";
-			const data = {
-				uploadId: args.uploadId,
-			};
-			console.error(message, data);
-			throw should_never_happen(message, data);
-		}
-
-		const sourceFileNode = await ctx.db.get("files_nodes", upload.sourceNodeId);
-		if (!sourceFileNode) {
-			const message = "upload.sourceNodeId points to a missing files_nodes doc";
-			const data = {
-				uploadId: upload._id,
-				sourceNodeId: upload.sourceNodeId,
-			};
-			console.error(message, data);
-			throw should_never_happen(message, data);
-		}
-
-		const now = Date.now();
-		if (!sourceFileNode.propertiesId) {
-			const message = "sourceFileNode.propertiesId is not set";
-			const data = {
-				uploadId: upload._id,
-				sourceNodeId: sourceFileNode._id,
-			};
-			console.error(message, data);
-			throw should_never_happen(message, data);
-		}
-
-		await ctx.db.patch("files_node_properties", sourceFileNode.propertiesId, {
-			size: args.size,
-			updatedAt: now,
-		});
-
-		if (sourceFileNode.assetId) {
-			const asset = await ctx.db.get("files_r2_assets", sourceFileNode.assetId);
-			if (!asset || asset.sourceNodeId !== sourceFileNode._id) {
-				const message = "sourceFileNode.assetId points to a missing or mismatched files_r2_assets doc";
-				const data = {
-					uploadId: upload._id,
-					sourceNodeId: sourceFileNode._id,
-					assetId: sourceFileNode.assetId,
-				};
-				console.error(message, data);
-				throw should_never_happen(message, data);
-			}
-
-			return Result({ _yay: asset });
-		}
-
-		const assetId = await ctx.db.insert("files_r2_assets", {
-			workspaceId: upload.workspaceId,
-			projectId: upload.projectId,
-			r2Bucket: upload.r2Bucket,
-			r2Key: upload.r2Key,
-			filename: upload.filename,
-			sourceNodeId: sourceFileNode._id,
-			createdBy: upload.createdBy,
-			createdAt: now,
-			updatedAt: now,
-		});
-
-		// Treat the R2 event as proof that the source object exists; conversion only attaches the shadow file later.
-		await Promise.all([
-			ctx.db.patch("files_nodes", sourceFileNode._id, {
-				assetId,
+		const [sourceAsset, sourceFileNode] = (await Promise.all([
+			ctx.runQuery(internal.r2.get_asset_by_id, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				assetId: args.sourceAssetId,
 			}),
-			ctx.db.patch("files_uploads", upload._id, {
-				failureMessage: undefined,
+			ctx.runQuery(internal.r2.get_file_node_by_asset_id, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				assetId: args.sourceAssetId,
+			}),
+		])) as [get_asset_by_id_Result, get_file_node_by_asset_id_Result];
+		if (!sourceAsset) {
+			return null;
+		}
+		if (!sourceFileNode) {
+			await ctx.runMutation(internal.r2.patch_asset, {
+				assetId: sourceAsset._id,
+				conversionWorkId: null,
+			});
+			return null;
+		}
+		if (sourceFileNode.shadowFileNodeIds.length > 0) {
+			await ctx.runMutation(internal.r2.patch_asset, {
+				assetId: sourceAsset._id,
+				conversionWorkId: null,
+			});
+			return null;
+		}
+
+		// Give Modal a signed read URL so conversion does not proxy file bytes through Convex.
+		// Trust the R2 event finalizer: it patches r2Key before enqueueing conversion work.
+		const sourceR2Key = sourceAsset.r2Key!;
+		const sourceUrl = await r2_get_download_url({
+			key: sourceR2Key,
+			options: {
+				// Keep the signed URL short-lived; the Workpool job uses it immediately.
+				expiresIn: 15 * 60,
+			},
+		});
+
+		// Ask the converter for Markdown while passing the same limits enforced by the app.
+		let conversionResponse: Response;
+		try {
+			conversionResponse = await fetch(MODAL_FILE_CONVERTER_URL, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${MODAL_TOKEN}`,
+				},
+				body: JSON.stringify({
+					sourceUrl,
+					filename: sourceFileNode.name,
+					contentType: sourceFileNode.contentType,
+					maxBytes: files_MAX_UPLOADS_BYTES,
+					maxMarkdownCharacters: files_MAX_MARKDOWN_CHARACTERS,
+				}),
+			});
+		} catch (error) {
+			console.error("Failed to call Modal file converter", { error, key: sourceR2Key });
+			throw convex_error({
+				message: "Failed to convert uploaded file",
+				cause: {
+					message: "Failed to call Modal file converter",
+				},
+			});
+		}
+
+		const conversionResponseBody = await conversionResponse.text();
+		if (!conversionResponse.ok) {
+			console.error("Modal file converter returned an error", {
+				status: conversionResponse.status,
+				body: conversionResponseBody.slice(0, 1_000),
+				key: sourceR2Key,
+			});
+			throw convex_error({
+				message: "Failed to convert uploaded file",
+				cause: {
+					message: "Modal file converter failed",
+					status: conversionResponse.status,
+				},
+			});
+		}
+
+		// Validate the external payload before using it to create app-owned file data.
+		const conversionPayload = json_parse_and_validate(
+			conversionResponseBody,
+			z.object({
+				markdown: z.string(),
+				converter: z.string(),
+			}),
+		);
+		if (conversionPayload._nay) {
+			console.error("Modal file converter returned an invalid payload", {
+				error: conversionPayload._nay,
+				key: sourceR2Key,
+			});
+			throw convex_error({
+				message: "Failed to convert uploaded file",
+				cause: conversionPayload._nay,
+			});
+		}
+
+		// Keep converted Markdown within the same product limit as first-party Markdown content.
+		if (conversionPayload._yay.markdown.length > files_MAX_MARKDOWN_CHARACTERS) {
+			throw convex_error({
+				message: "Failed to convert uploaded file",
+				cause: {
+					message: "Converted markdown is too large",
+				},
+			});
+		}
+
+		const markdownContent = conversionPayload._yay.markdown;
+		const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown(markdownContent);
+		if (snapshotUpdate._nay) {
+			throw convex_error({
+				message: "Failed to create uploaded file conversion snapshot",
+				cause: snapshotUpdate._nay,
+			});
+		}
+
+		const [markdownAssetId, yjsSnapshotAssetId, versionSnapshotAssetId] = await Promise.all([
+			ctx.runMutation(internal.r2.insert_asset, {
+				workspaceId: sourceFileNode.workspaceId,
+				projectId: sourceFileNode.projectId,
+				kind: "content",
+				size: files_get_utf8_byte_size(markdownContent),
+				createdBy: sourceFileNode.createdBy,
+			}),
+			ctx.runMutation(internal.r2.insert_asset, {
+				workspaceId: sourceFileNode.workspaceId,
+				projectId: sourceFileNode.projectId,
+				kind: "yjs_snapshot",
+				size: snapshotUpdate._yay.byteLength,
+				createdBy: sourceFileNode.createdBy,
+			}),
+			ctx.runMutation(internal.r2.insert_asset, {
+				workspaceId: sourceFileNode.workspaceId,
+				projectId: sourceFileNode.projectId,
+				kind: "content_snapshot",
+				size: files_get_utf8_byte_size(markdownContent),
+				createdBy: sourceFileNode.createdBy,
 			}),
 		]);
 
-		const asset = await ctx.db.get("files_r2_assets", assetId);
-		if (!asset) {
-			const message = "assetId points to a missing files_r2_assets doc";
-			const data = {
-				uploadId: upload._id,
-				assetId,
+		const markdownR2Key = r2_create_asset_key({
+			workspaceId: sourceFileNode.workspaceId,
+			projectId: sourceFileNode.projectId,
+			assetId: markdownAssetId,
+		});
+		const yjsSnapshotR2Key = r2_create_asset_key({
+			workspaceId: sourceFileNode.workspaceId,
+			projectId: sourceFileNode.projectId,
+			assetId: yjsSnapshotAssetId,
+		});
+		const versionSnapshotR2Key = r2_create_asset_key({
+			workspaceId: sourceFileNode.workspaceId,
+			projectId: sourceFileNode.projectId,
+			assetId: versionSnapshotAssetId,
+		});
+
+		await Promise.all([
+			r2_put_object(ctx, {
+				key: markdownR2Key,
+				body: markdownContent,
+				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			}),
+			r2_put_object(ctx, {
+				key: yjsSnapshotR2Key,
+				body: snapshotUpdate._yay,
+				contentType: "application/octet-stream" satisfies files_ContentType,
+			}),
+			r2_put_object(ctx, {
+				key: versionSnapshotR2Key,
+				body: markdownContent,
+				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			}),
+		]);
+
+		const shadowFileName = shadow_file_node_name(sourceFileNode.name);
+		const finalizedConversion = (await ctx.runMutation(internal.r2.finalize_upload_conversion_to_markdown, {
+			workspaceId: sourceFileNode.workspaceId,
+			projectId: sourceFileNode.projectId,
+			userId: sourceFileNode.createdBy,
+			fileNodeId: sourceFileNode._id,
+			uploadAssetId: sourceAsset._id,
+			name: shadowFileName,
+			markdownContent,
+			markdownAssetId,
+			markdownSize: files_get_utf8_byte_size(markdownContent),
+			yjsSnapshotAssetId,
+			yjsSnapshotSize: snapshotUpdate._yay.byteLength,
+			versionSnapshotAssetId,
+			versionSnapshotSize: files_get_utf8_byte_size(markdownContent),
+		})) as finalize_upload_conversion_to_markdown_Result;
+		if (finalizedConversion._nay) {
+			throw convex_error({
+				message: "Failed to finalize uploaded file",
+				cause: finalizedConversion._nay,
+			});
+		}
+
+		return null;
+	},
+});
+
+export const finalize_uploaded_markdown_files = internalMutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		fileNodeId: v.id("files_nodes"),
+		userId: v.id("users"),
+		sourceAssetId: v.id("files_r2_assets"),
+		markdownAssetId: v.id("files_r2_assets"),
+		markdownSize: v.number(),
+		yjsSnapshotAssetId: v.id("files_r2_assets"),
+		yjsSnapshotSize: v.number(),
+		versionSnapshotAssetId: v.id("files_r2_assets"),
+		versionSnapshotSize: v.number(),
+		markdownContent: v.string(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		const [yjsSnapshotId, yjsLastSequenceId] = await Promise.all([
+			ctx.db.insert("files_yjs_snapshots", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: args.fileNodeId,
+				sequence: 0,
+				assetId: args.yjsSnapshotAssetId,
+				createdBy: args.userId,
+				updatedBy: args.userId,
+				updatedAt: now,
+			}),
+			ctx.db.insert("files_yjs_docs_last_sequences", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: args.fileNodeId,
+				lastSequence: 0,
+			}),
+			db_insert_file_chunks(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: args.fileNodeId,
+				yjsSequence: 0,
+				markdownContent: args.markdownContent,
+			}).then((chunks) => {
+				if (chunks._nay) {
+					throw convex_error({
+						message: "Failed to chunk uploaded Markdown file",
+						cause: chunks._nay,
+					});
+				}
+				return chunks;
+			}),
+		] as const).catch((error) => {
+			const errorMessage = "Failed to finalize uploaded Markdown file";
+			console.error(errorMessage, {
+				error,
+				fileNodeId: args.fileNodeId,
+				sourceAssetId: args.sourceAssetId,
+			});
+			throw convex_error({
+				message: errorMessage,
+				cause: error,
+			});
+		});
+
+		await Promise.all([
+			ctx.db.patch("files_nodes", args.fileNodeId, {
+				assetId: args.markdownAssetId,
+				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+				yjsSnapshotId,
+				yjsLastSequenceId,
+				updatedAt: now,
+			}),
+			ctx.db.patch("files_r2_assets", args.sourceAssetId, {
+				conversionWorkId: undefined,
+				updatedAt: now,
+			}),
+			ctx.db.patch("files_r2_assets", args.markdownAssetId, {
+				r2Key: r2_create_asset_key({
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					assetId: args.markdownAssetId,
+				}),
+				size: args.markdownSize,
+				updatedAt: now,
+			}),
+			ctx.db.patch("files_r2_assets", args.yjsSnapshotAssetId, {
+				r2Key: r2_create_asset_key({
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					assetId: args.yjsSnapshotAssetId,
+				}),
+				size: args.yjsSnapshotSize,
+				updatedAt: now,
+			}),
+			ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
+				r2Key: r2_create_asset_key({
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					assetId: args.versionSnapshotAssetId,
+				}),
+				size: args.versionSnapshotSize,
+				updatedAt: now,
+			}),
+			ctx.db.insert("files_snapshots", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: args.fileNodeId,
+				assetId: args.versionSnapshotAssetId,
+				createdBy: args.userId,
+				archivedAt: -1,
+			}),
+		]);
+
+		return Result({ _yay: null });
+	},
+});
+
+type finalize_uploaded_markdown_files_Result =
+	typeof finalize_uploaded_markdown_files extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const finalize_uploaded_markdown_file = internalAction({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		sourceAssetId: v.id("files_r2_assets"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const [sourceAsset, sourceFileNode] = (await Promise.all([
+			ctx.runQuery(internal.r2.get_asset_by_id, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				assetId: args.sourceAssetId,
+			}),
+			ctx.runQuery(internal.r2.get_file_node_by_asset_id, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				assetId: args.sourceAssetId,
+			}),
+		])) as [get_asset_by_id_Result, get_file_node_by_asset_id_Result];
+		if (!sourceAsset) {
+			return null;
+		}
+
+		if (!sourceFileNode) {
+			await ctx.runMutation(internal.r2.patch_asset, {
+				assetId: sourceAsset._id,
+				conversionWorkId: null,
+			});
+			return null;
+		}
+		if (!sourceFileNode.contentType?.startsWith("text/markdown" satisfies files_ContentType)) {
+			return null;
+		}
+		if (sourceFileNode.yjsSnapshotId && sourceFileNode.yjsLastSequenceId) {
+			await ctx.runMutation(internal.r2.patch_asset, {
+				assetId: sourceAsset._id,
+				conversionWorkId: null,
+			});
+			return null;
+		}
+		if (!sourceAsset.r2Key) {
+			const errorMessage = "sourceAsset.r2Key is not set";
+			const errorData = {
+				sourceAssetId: sourceAsset._id,
 			};
-			console.error(message, data);
-			throw should_never_happen(message, data);
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
 		}
 
-		return Result({ _yay: asset });
+		const response = await r2_fetch_object_from_bucket({ key: sourceAsset.r2Key });
+		const markdownContent = await response.text();
+		if (markdownContent.length > files_MAX_MARKDOWN_CHARACTERS) {
+			throw convex_error({
+				message: "Uploaded Markdown file is too large",
+				cause: {
+					sourceAssetId: sourceAsset._id,
+					fileNodeId: sourceFileNode._id,
+				},
+			});
+		}
+
+		const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown(markdownContent);
+		if (snapshotUpdate._nay) {
+			throw convex_error({
+				message: "Failed to create uploaded Markdown snapshot",
+				cause: snapshotUpdate._nay,
+			});
+		}
+
+		// Promote Markdown uploads into normal Markdown-owned assets; downstream reads should not distinguish upload vs app-created files.
+		const [markdownAssetId, yjsSnapshotAssetId, versionSnapshotAssetId] = (await Promise.all([
+			ctx.runMutation(internal.r2.insert_asset, {
+				workspaceId: sourceFileNode.workspaceId,
+				projectId: sourceFileNode.projectId,
+				kind: "content",
+				size: files_get_utf8_byte_size(markdownContent),
+				createdBy: sourceFileNode.createdBy,
+			}),
+			ctx.runMutation(internal.r2.insert_asset, {
+				workspaceId: sourceFileNode.workspaceId,
+				projectId: sourceFileNode.projectId,
+				kind: "yjs_snapshot",
+				size: snapshotUpdate._yay.byteLength,
+				createdBy: sourceFileNode.createdBy,
+			}),
+			ctx.runMutation(internal.r2.insert_asset, {
+				workspaceId: sourceFileNode.workspaceId,
+				projectId: sourceFileNode.projectId,
+				kind: "content_snapshot",
+				size: files_get_utf8_byte_size(markdownContent),
+				createdBy: sourceFileNode.createdBy,
+			}),
+		])) as [Id<"files_r2_assets">, Id<"files_r2_assets">, Id<"files_r2_assets">];
+
+		const markdownR2Key = r2_create_asset_key({
+			workspaceId: sourceFileNode.workspaceId,
+			projectId: sourceFileNode.projectId,
+			assetId: markdownAssetId,
+		});
+		const yjsSnapshotR2Key = r2_create_asset_key({
+			workspaceId: sourceFileNode.workspaceId,
+			projectId: sourceFileNode.projectId,
+			assetId: yjsSnapshotAssetId,
+		});
+		const versionSnapshotR2Key = r2_create_asset_key({
+			workspaceId: sourceFileNode.workspaceId,
+			projectId: sourceFileNode.projectId,
+			assetId: versionSnapshotAssetId,
+		});
+
+		await Promise.all([
+			r2_put_object(ctx, {
+				key: markdownR2Key,
+				body: markdownContent,
+				contentType: sourceFileNode.contentType,
+			}),
+			r2_put_object(ctx, {
+				key: yjsSnapshotR2Key,
+				body: snapshotUpdate._yay,
+				contentType: "application/octet-stream" satisfies files_ContentType,
+			}),
+			r2_put_object(ctx, {
+				key: versionSnapshotR2Key,
+				body: markdownContent,
+				contentType: sourceFileNode.contentType,
+			}),
+		]);
+
+		const finalized = (await ctx.runMutation(internal.r2.finalize_uploaded_markdown_files, {
+			workspaceId: sourceFileNode.workspaceId,
+			projectId: sourceFileNode.projectId,
+			fileNodeId: sourceFileNode._id,
+			userId: sourceFileNode.createdBy,
+			sourceAssetId: sourceAsset._id,
+			markdownAssetId,
+			markdownSize: files_get_utf8_byte_size(markdownContent),
+			yjsSnapshotAssetId,
+			yjsSnapshotSize: snapshotUpdate._yay.byteLength,
+			versionSnapshotAssetId,
+			versionSnapshotSize: files_get_utf8_byte_size(markdownContent),
+			markdownContent,
+		})) as finalize_uploaded_markdown_files_Result;
+		if (finalized._nay) {
+			throw convex_error({
+				message: "Failed to finalize uploaded Markdown file",
+				cause: finalized._nay,
+			});
+		}
+
+		return null;
 	},
 });
 
-type r2_ensure_uploaded_asset_Result =
-	typeof ensure_uploaded_asset extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+export const process_uploaded_asset_event = internalMutation({
+	args: {
+		assetId: v.id("files_r2_assets"),
+		r2Key: v.string(),
+		size: v.number(),
+		etag: v.optional(v.string()),
+	},
+	returns: v_result({
+		_yay: v.object({
+			shouldEnqueueConversion: v.boolean(),
+			shouldFinalizeMarkdown: v.boolean(),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const asset = await ctx.db.get("files_r2_assets", args.assetId);
+		if (!asset) {
+			const errorMessage = "args.assetId points to a missing files_r2_assets doc";
+			const errorData = {
+				assetId: args.assetId,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+
+		const sourceFileNode = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_asset", (q) =>
+				q.eq("workspaceId", asset.workspaceId).eq("projectId", asset.projectId).eq("assetId", asset._id),
+			)
+			.first();
+
+		const now = Date.now();
+		await ctx.db.patch("files_r2_assets", asset._id, {
+			r2Key: args.r2Key,
+			size: args.size,
+			...(args.etag === undefined ? {} : { etag: args.etag }),
+			updatedAt: now,
+		});
+
+		const sourceFileNodeIsMarkdown =
+			sourceFileNode?.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
+		const shouldStartProcessing = asset.conversionWorkId === undefined;
+		return Result({
+			_yay: sourceFileNode
+				? {
+						shouldEnqueueConversion:
+							!sourceFileNodeIsMarkdown &&
+							sourceFileNode.shadowFileNodeIds.length === 0 &&
+							shouldStartProcessing,
+						shouldFinalizeMarkdown:
+							sourceFileNodeIsMarkdown &&
+							(!sourceFileNode.yjsSnapshotId || !sourceFileNode.yjsLastSequenceId) &&
+							shouldStartProcessing,
+					}
+				: {
+						shouldEnqueueConversion: false,
+						shouldFinalizeMarkdown: false,
+					},
+		});
+	},
+});
+
+type process_uploaded_asset_event_Result =
+	typeof process_uploaded_asset_event extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
-export const get_upload_by_source_file_node = query({
-	args: {
-		membershipId: v.id("workspaces_projects_users"),
-		nodeId: v.id("files_nodes"),
-	},
-	returns: v.union(doc(app_convex_schema, "files_uploads"), v.null()),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return null;
-		}
-
-		const membership = await workspaces_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return null;
-		}
-
-		const sourceFileNode = await ctx.db.get("files_nodes", args.nodeId);
-		if (
-			!sourceFileNode ||
-			sourceFileNode.workspaceId !== membership.workspaceId ||
-			sourceFileNode.projectId !== membership.projectId ||
-			!sourceFileNode.uploadId
-		) {
-			return null;
-		}
-
-		const upload = await ctx.db.get("files_uploads", sourceFileNode.uploadId);
-		if (!upload || upload.sourceNodeId !== sourceFileNode._id) {
-			return null;
-		}
-
-		return upload;
-	},
+const upload_conversion_workpool = new Workpool(components.files_upload_conversion_workpool, {
+	maxParallelism: 1,
+	retryActionsByDefault: true,
+	defaultRetryBehavior: {
+		initialBackoffMs: 60 * 1000,
+		base: 1.2,
+		maxAttempts: Number.POSITIVE_INFINITY,
+	} as const,
 });
-
-export const update_upload_conversion_state = internalMutation({
-	args: {
-		uploadId: v.id("files_uploads"),
-		conversionWorkId: v.optional(v.union(v.string(), v.null())),
-		failureMessage: v.optional(v.union(v.string(), v.null())),
-	},
-	returns: v.union(doc(app_convex_schema, "files_uploads"), v.null()),
-	handler: async (ctx, args) => {
-		await ctx.db.patch("files_uploads", args.uploadId, {
-			...(args.conversionWorkId === undefined ? {} : { conversionWorkId: args.conversionWorkId ?? undefined }),
-			...(args.failureMessage === undefined ? {} : { failureMessage: args.failureMessage ?? undefined }),
-		});
-
-		return await ctx.db.get("files_uploads", args.uploadId);
-	},
-});
-
-export type r2_update_upload_conversion_state_Result =
-	typeof update_upload_conversion_state extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
 
 export function r2_http_routes(router: RouterForConvexModules) {
 	return {
@@ -731,39 +1272,37 @@ export function r2_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								const upload = (await ctx.runQuery(internal.r2.get_upload_by_bucket_and_key, {
+								const asset = (await ctx.runQuery(internal.r2.get_asset_by_r2_event_key, {
 									bucket: body._yay.event.bucket,
 									key: body._yay.event.object.key,
-								})) as r2_get_upload_by_bucket_and_key_Result;
-								if (upload._nay) {
+								})) as get_asset_by_r2_event_key_Result;
+								if (asset._nay) {
 									return {
-										status: upload._nay.message === "Upload doc not found" ? 404 : 503,
+										status: asset._nay.message === "Not found" ? 404 : 503,
 										body: {
-											message: upload._nay.message,
+											message: asset._nay.message,
 										},
 									} as const;
 								}
 
-								const finalizedAsset = (await ctx.runQuery(internal.r2.get_finalized_asset_by_source_file_node, {
-									nodeId: upload._yay.sourceNodeId,
-								})) as r2_get_finalized_asset_by_source_file_node_Result;
-								if (finalizedAsset) {
-									// Duplicate R2 events after conversion should not enqueue new work.
+								if (asset._yay.kind !== "upload") {
+									// The finalizer is upload-oriented. Generated objects are written by Convex actions.
 									return {
 										status: 204,
 										body: {},
 									} as const;
 								}
 
-								const uploadedAsset = (await ctx.runMutation(internal.r2.ensure_uploaded_asset, {
-									uploadId: upload._yay._id,
+								const uploadProcessing = (await ctx.runMutation(internal.r2.process_uploaded_asset_event, {
+									assetId: asset._yay._id,
+									r2Key: body._yay.event.object.key,
 									size: body._yay.event.object.size,
-								})) as r2_ensure_uploaded_asset_Result;
-								if (uploadedAsset._nay) {
-									console.error("Failed to create uploaded asset for R2 event", {
-										uploadId: upload._yay._id,
-										sourceNodeId: upload._yay.sourceNodeId,
-										result: uploadedAsset,
+									etag: body._yay.event.object.eTag,
+								})) as process_uploaded_asset_event_Result;
+								if (uploadProcessing._nay) {
+									console.error("Failed to process uploaded asset event", {
+										assetId: asset._yay._id,
+										result: uploadProcessing,
 									});
 									return {
 										status: 204,
@@ -771,7 +1310,7 @@ export function r2_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								if (upload._yay.conversionWorkId) {
+								if (!uploadProcessing._yay.shouldEnqueueConversion && !uploadProcessing._yay.shouldFinalizeMarkdown) {
 									// A Workpool id is the durable signal that conversion was already accepted.
 									return {
 										status: 204,
@@ -780,27 +1319,30 @@ export function r2_http_routes(router: RouterForConvexModules) {
 								}
 
 								try {
-									const workId = await upload_conversion_workpool.enqueueAction(
-										ctx,
-										internal.files_content.convert_upload_to_markdown,
-										{
-											uploadId: upload._yay._id,
-										},
-									);
-									await ctx.runMutation(internal.r2.update_upload_conversion_state, {
-										uploadId: upload._yay._id,
-										conversionWorkId: String(workId),
-										failureMessage: null,
+									const workId = uploadProcessing._yay.shouldFinalizeMarkdown
+										? await upload_conversion_workpool.enqueueAction(ctx, internal.r2.finalize_uploaded_markdown_file, {
+												workspaceId: asset._yay.workspaceId,
+												projectId: asset._yay.projectId,
+												sourceAssetId: asset._yay._id,
+											})
+										: await upload_conversion_workpool.enqueueAction(ctx, internal.r2.convert_upload_to_markdown, {
+												workspaceId: asset._yay.workspaceId,
+												projectId: asset._yay.projectId,
+												sourceAssetId: asset._yay._id,
+											});
+									await ctx.runMutation(internal.r2.patch_asset, {
+										assetId: asset._yay._id,
+										conversionWorkId: workId,
 									});
 								} catch (error) {
-									console.error("Failed to enqueue R2 upload conversion", {
+									console.error("Failed to enqueue R2 upload processing", {
 										error,
-										uploadId: upload._yay._id,
+										assetId: asset._yay._id,
 									});
 									return {
 										status: 503,
 										body: {
-											message: "Failed to enqueue upload conversion",
+											message: "Failed to enqueue upload processing",
 										},
 									} as const;
 								}

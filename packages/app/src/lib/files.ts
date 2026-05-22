@@ -1,7 +1,4 @@
-import type { JSONContent } from "@tiptap/core";
 import {
-	files_tiptap_markdown_to_json,
-	files_tiptap_empty_doc_json,
 	files_yjs_compute_diff_update_from_yjs_doc,
 	files_yjs_doc_clone,
 	files_yjs_doc_create_from_array_buffer_update,
@@ -28,6 +25,8 @@ export * from "../../shared/files.ts";
 export const files_editor_view_values = ["rich_text_editor", "plain_text_editor", "diff_editor"] as const;
 
 export type files_EditorView = (typeof files_editor_view_values)[number];
+
+export const files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE = "application/x-bonobo-senate-press-file-node-id";
 
 export function files_download_blob(args: { blob: Blob; filename: string }) {
 	const objectUrl = URL.createObjectURL(args.blob);
@@ -218,35 +217,6 @@ export function files_get_node_path_validation_message(args: {
 }
 // #endregion node path validation
 
-export const files_INITIAL_CONTENT = `\
-# Welcome
-
-You can start editing your document here.
-`;
-
-export const files_get_rich_text_initial_content = ((/* iife */) => {
-	function value(): JSONContent {
-		const result = files_tiptap_markdown_to_json({
-			markdown: files_INITIAL_CONTENT,
-		});
-
-		if (result._nay) {
-			console.error("[files_get_rich_text_initial_content] Error while creating initial content", {
-				nay: result._nay,
-			});
-			return files_tiptap_empty_doc_json();
-		}
-
-		return result._yay;
-	}
-
-	let cache: ReturnType<typeof value> | undefined;
-
-	return function files_get_initial_content(): JSONContent {
-		return (cache ??= value());
-	};
-})();
-
 export function files_yjs_rebase_branch_with_local_markdown(args: {
 	previousBaseYjsDoc: YDoc;
 	nextBaseYjsDoc: YDoc;
@@ -403,22 +373,35 @@ export async function files_fetch_file_yjs_state_and_markdown(args: {
 	membershipId: app_convex_Id<"workspaces_projects_users">;
 	nodeId: app_convex_Id<"files_nodes">;
 }) {
-	const [yjsSnapshotDoc, yjsUpdatesDocs, yjsLastSequenceDoc] = await Promise.all([
-		app_convex.query(app_convex_api.files_nodes.yjs_get_doc_last_snapshot, args),
+	const [yjsSnapshotTarget, yjsUpdatesDocs, yjsLastSequenceDoc] = await Promise.all([
+		app_convex.action(app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot, args),
 		app_convex
 			.query(app_convex_api.files_nodes.yjs_get_incremental_updates, args)
 			.then((updatesData) => updatesData?.updates ?? []),
 		app_convex.query(app_convex_api.files_nodes.get_file_last_yjs_sequence, args),
 	]);
 
-	if (yjsSnapshotDoc == null) return null;
+	if (yjsSnapshotTarget == null) return null;
+
+	const yjsSnapshotUpdate = await fetch(yjsSnapshotTarget.snapshotUrl).then((response) => {
+		if (!response.ok) {
+			throw new Error("Failed to fetch Yjs snapshot from R2");
+		}
+
+		return response.arrayBuffer();
+	});
+	const yjsSnapshotDoc = yjsSnapshotTarget.snapshot;
 
 	// By default the API returns updates in descending order; normalize to ascending and filter
 	// to only include updates that are after the snapshot.
-	const filteredIncrementalUpdates = yjsUpdatesDocs.filter((u) => u.sequence > yjsSnapshotDoc.sequence).reverse();
+	const filteredIncrementalUpdates = yjsUpdatesDocs
+		.filter((u: app_convex_Doc<"files_yjs_updates">) => u.sequence > yjsSnapshotDoc.sequence)
+		.reverse();
 
-	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(yjsSnapshotDoc.snapshotUpdate, {
-		additionalIncrementalArrayBufferUpdates: filteredIncrementalUpdates.map((u) => u.update),
+	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(yjsSnapshotUpdate, {
+		additionalIncrementalArrayBufferUpdates: filteredIncrementalUpdates.map(
+			(u: app_convex_Doc<"files_yjs_updates">) => u.update,
+		),
 	});
 	const markdown = files_yjs_doc_get_markdown({ yjsDoc });
 

@@ -51,7 +51,7 @@ function RouteTenantWorkspaceProjectLayout() {
 		canCreateHomeFileRef.current = false;
 
 		convex
-			.mutation(app_convex_api.files_nodes.create_home_file, { membershipId: membership._id })
+			.action(app_convex_api.files_nodes.create_home_file, { membershipId: membership._id })
 			.then((result) => {
 				if (result._nay) {
 					console.error("[TenantWorkspaceProjectLayout.create_home_file] Failed to create home file", {

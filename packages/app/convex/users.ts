@@ -32,10 +32,10 @@ import { workspaces_db_ensure_default_workspace_and_project_for_user } from "./w
 import {
 	billing_action_delete_polar_customer_by_user_id,
 	billing_action_revoke_polar_subscription,
-	billing_cancel_scheduled_polar_subscription_period_end_cancellation,
+	billing_action_cancel_scheduled_polar_subscription_period_end_cancellation,
 	billing_db_ensure_anonymous_user_usage_snapshot,
-	billing_enqueue_free_subscription_bootstrap,
-	billing_schedule_polar_subscription_period_end_cancellation,
+	billing_action_enqueue_free_subscription_bootstrap,
+	billing_action_schedule_polar_subscription_period_end_cancellation,
 	billing_polar,
 } from "./billing.ts";
 import { rate_limiter_http_client_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -467,7 +467,7 @@ export const list_account_deletion_blocking_workspaces = internalQuery({
 	},
 });
 
-async function mint_anonymous_jwt(ctx: ActionCtx) {
+async function action_mint_anonymous_jwt(ctx: ActionCtx) {
 	const { userId, tokenId } = await ctx.runMutation(internal.users.create_anonymous_user);
 
 	// Keep JWT signing in the action because Convex queries/mutations cannot use crypto randomness.
@@ -861,7 +861,7 @@ export const delete_current_user_account = action({
 		}
 
 		if (currentSubscription) {
-			await billing_schedule_polar_subscription_period_end_cancellation(ctx, {
+			await billing_action_schedule_polar_subscription_period_end_cancellation(ctx, {
 				userId: user._id,
 				subscriptionId: currentSubscription.id,
 			}).catch((error) => {
@@ -1037,7 +1037,7 @@ export function users_http_routes(router: RouterForConvexModules) {
 								} as const;
 							}
 
-							const { jwt, userId } = await mint_anonymous_jwt(ctx);
+							const { jwt, userId } = await action_mint_anonymous_jwt(ctx);
 							return {
 								status: 200,
 								body: {
@@ -1136,15 +1136,15 @@ export function users_http_routes(router: RouterForConvexModules) {
 								userId: resolveUserResult._yay.userId,
 							});
 							if (clerk_set_external_id_result._nay) {
-								const message = "Failed to set Clerk external_id";
-								console.error("Failed to set Clerk external_id", {
+								const errorMessage = "Failed to set Clerk external_id";
+								console.error(errorMessage, {
 									clerkSetExternalIdResult: clerk_set_external_id_result,
 									clerkUserId,
 									userId: resolveUserResult._yay.userId,
 								});
 								return {
 									status: 401,
-									body: Result({ _nay: { message } }),
+									body: Result({ _nay: { message: errorMessage } }),
 								} as const;
 							}
 
@@ -1159,7 +1159,7 @@ export function users_http_routes(router: RouterForConvexModules) {
 								} as const;
 							}
 
-							await billing_enqueue_free_subscription_bootstrap(ctx, {
+							await billing_action_enqueue_free_subscription_bootstrap(ctx, {
 								userId: resolveUserResult._yay.userId,
 								email: identity.email,
 								name: displayName,
@@ -1242,7 +1242,9 @@ export const purge_deleted_user_tombstone = internalMutation({
 export const hard_delete_user_now = internalAction({
 	args: {
 		userId: v.id("users"),
-		purgeUserRecord: v.optional(v.boolean()),
+		purgeUserMod: v.optional(
+			v.union(v.literal("data"), v.literal("data_and_auth"), v.literal("data_auth_and_user_record")),
+		),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1254,10 +1256,13 @@ export const hard_delete_user_now = internalAction({
 		}
 
 		const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: user._id });
+		// Keep data-only as the default so admin/support purges do not invalidate
+		// the user's Clerk account or anonymous token unless explicitly requested.
+		const purgeUserMod = args.purgeUserMod ?? "data";
+		const purgeAuth = purgeUserMod === "data_and_auth" || purgeUserMod === "data_auth_and_user_record";
+		const purgeUserRecord = purgeUserMod === "data_auth_and_user_record";
 
-		let shouldClearClerkUserId = false;
-
-		if (user.clerkUserId) {
+		if (purgeAuth && user.clerkUserId) {
 			const clerkDeleteUserResult = await delete_clerk_account({
 				clerkUserId: user.clerkUserId,
 			});
@@ -1267,17 +1272,15 @@ export const hard_delete_user_now = internalAction({
 					cause: clerkDeleteUserResult._nay,
 				});
 			}
-
-			shouldClearClerkUserId = true;
 		}
 
-		if (args.purgeUserRecord) {
-			await billing_cancel_scheduled_polar_subscription_period_end_cancellation(ctx, {
+		if (purgeUserRecord) {
+			await billing_action_cancel_scheduled_polar_subscription_period_end_cancellation(ctx, {
 				userId: user._id,
 			});
 		}
 
-		if (args.purgeUserRecord && currentSubscription) {
+		if (purgeUserRecord && currentSubscription) {
 			const revokeSubscriptionResult = await billing_action_revoke_polar_subscription({
 				subscriptionId: currentSubscription.id,
 			});
@@ -1289,7 +1292,7 @@ export const hard_delete_user_now = internalAction({
 			}
 		}
 
-		if (args.purgeUserRecord) {
+		if (purgeUserRecord) {
 			const deletePolarCustomerResult = await billing_action_delete_polar_customer_by_user_id(ctx, {
 				userId: user._id,
 			});
@@ -1301,8 +1304,8 @@ export const hard_delete_user_now = internalAction({
 			}
 		}
 
-		if (!args.purgeUserRecord && currentSubscription) {
-			await billing_schedule_polar_subscription_period_end_cancellation(ctx, {
+		if (!purgeUserRecord && currentSubscription) {
+			await billing_action_schedule_polar_subscription_period_end_cancellation(ctx, {
 				userId: user._id,
 				subscriptionId: currentSubscription.id,
 			}).catch((error) => {
@@ -1316,15 +1319,10 @@ export const hard_delete_user_now = internalAction({
 
 		await ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
 			userId: user._id,
+			deleteUserAuth: purgeAuth,
 		});
 
-		if (shouldClearClerkUserId) {
-			await ctx.runMutation(internal.users.clear_clerk_user_id_after_clerk_delete, {
-				userId: user._id,
-			});
-		}
-
-		if (args.purgeUserRecord) {
+		if (purgeUserRecord) {
 			await ctx.runMutation(internal.users.purge_deleted_user_tombstone, {
 				userId: args.userId,
 			});

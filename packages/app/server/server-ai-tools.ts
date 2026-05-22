@@ -564,7 +564,7 @@ export function ai_chat_tool_create_read_file(
 			const normalizedPath = server_path_normalize(args.path);
 			const pendingUpdateId = args.pendingUpdateId as Id<"files_pending_updates"> | undefined;
 
-			const fileContent = await ctx.runQuery(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+			const fileContent = await ctx.runAction(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				userId: ctxData.userId,
@@ -877,7 +877,7 @@ export function ai_chat_tool_create_grep_files(
 				}
 
 				// Read file content
-				const file = await ctx.runQuery(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+				const file = await ctx.runAction(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
 					path: item.path,
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
@@ -1107,7 +1107,7 @@ export function ai_chat_tool_create_write_file(
 			const path = `/${normalizedPathSegments.normalizedPathSegments.join("/")}`;
 			const pendingUpdateId = args.pendingUpdateId as Id<"files_pending_updates"> | undefined;
 
-			const currentFileContent = await ctx.runQuery(
+			const currentFileContent = await ctx.runAction(
 				internal.files_nodes.get_file_last_available_markdown_content_by_path,
 				{
 					workspaceId: ctxData.workspaceId,
@@ -1126,7 +1126,7 @@ export function ai_chat_tool_create_write_file(
 			let nodeId = currentFileContent?.nodeId;
 
 			if (!nodeId) {
-				const created = await ctx.runMutation(internal.files_nodes.create_file_by_path, {
+				const created = await ctx.runAction(internal.files_nodes.create_file_by_path, {
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
 					userId: ctxData.userId,
@@ -1141,7 +1141,7 @@ export function ai_chat_tool_create_write_file(
 				nodeId = created._yay.nodeId;
 			}
 
-			await ctx.runMutation(internal.files_pending_updates.upsert_file_pending_update_internal, {
+			await ctx.runAction(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				userId: ctxData.userId,
@@ -1224,7 +1224,7 @@ export function ai_chat_tool_create_edit_file(
 				throw new Error(`Invalid path: ${normalizedPath}. Path must be absolute and not root.`);
 			}
 
-			const currentFileContent = await ctx.runQuery(
+			const currentFileContent = await ctx.runAction(
 				internal.files_nodes.get_file_last_available_markdown_content_by_path,
 				{
 					workspaceId: ctxData.workspaceId,
@@ -1254,7 +1254,7 @@ export function ai_chat_tool_create_edit_file(
 
 			const nodeId = currentFileContent.nodeId;
 
-			await ctx.runMutation(internal.files_pending_updates.upsert_file_pending_update_internal, {
+			await ctx.runAction(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				userId: ctxData.userId,

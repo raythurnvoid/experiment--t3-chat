@@ -63,14 +63,14 @@ Pending updates attach to Markdown-backed `files_nodes` rows.
 
 - Editable Markdown files participate directly in pending review/edit flows.
 - Generated shadow files are Markdown-backed, so they can also participate in pending review/edit flows.
-- Raw uploaded source file nodes without `markdownContentId` do not directly participate in pending Markdown edits today.
+- Raw uploaded source file nodes without Markdown Yjs ids do not directly participate in pending Markdown edits today.
 - Future source-path aliasing for converted uploads should still store pending edits against the underlying shadow Markdown node, not the original R2 object.
 
 # End-To-End Flow
 
-1. AI tools in `packages/app/server/server-ai-tools.ts` read file content through `internal.files_nodes.get_file_last_available_markdown_content_by_path`.
+1. AI tools in `packages/app/server/server-ai-tools.ts` read file content through `internal.files_nodes.get_file_last_available_markdown_content_by_path`, an internal action that can fetch committed Markdown from R2.
 2. That read path overlays the current user's pending `unstaged` branch when one exists.
-3. `write_file` and `edit_file` normalize line endings/trailing newline shape, compute a preview diff, and call `internal.files_pending_updates.upsert_file_pending_update_internal`.
+3. `write_file` and `edit_file` normalize line endings/trailing newline shape, compute a preview diff, and call `internal.files_pending_updates.upsert_file_pending_update_internal_action` so the base Yjs state can be fetched from R2 before the mutation writes.
 4. Agent calls omit `stagedMarkdown`, so the backend preserves the current `staged` branch and updates only `unstaged`.
 5. `files_pending_updates` creates or updates a row for `(workspaceId, projectId, userId, nodeId)`.
 6. `FileEditor` queries `list_files_pending_updates` and shows the floating pending banner whenever the user has any pending updates.
@@ -82,10 +82,11 @@ Pending updates attach to Markdown-backed `files_nodes` rows.
 12. `Discard all` copies staged content into unstaged content.
 13. `Save` flushes pending upserts, then calls `save_file_pending_update`.
 14. `save_file_pending_update` writes only the `staged` diff into the live file Yjs stream through `files_db_yjs_push_update`.
-15. The saved-sequence marker is upserted even when the live file already matched the staged branch and no new Yjs packet was inserted.
-16. If `unstaged` now matches the saved live file state, the row is deleted.
-17. If unresolved edits remain, the row stays alive with `base` and `staged` advanced to saved live content.
-18. `Sync` rebases both branches on top of the latest live Yjs state through `persist_file_pending_update_rebased_state`.
+15. The Yjs push records the transactional update immediately and enqueues the content materialization workpool to compact the latest Markdown/Yjs state, write the committed Markdown asset to R2, refresh chunks, and create a version snapshot.
+16. The saved-sequence marker is upserted even when the live file already matched the staged branch and no new Yjs packet was inserted.
+17. If `unstaged` now matches the saved live file state, the row is deleted.
+18. If unresolved edits remain, the row stays alive with `base` and `staged` advanced to saved live content.
+19. `Sync` rebases both branches on top of the latest live Yjs state through `persist_file_pending_update_rebased_state`.
 
 # Backend Responsibilities
 
@@ -96,6 +97,7 @@ Main module:
 Public and internal functions:
 
 - `upsert_file_pending_update`
+- `upsert_file_pending_update_internal_action`
 - `upsert_file_pending_update_internal`
 - `persist_file_pending_update_rebased_state`
 - `get_file_pending_update`
@@ -109,8 +111,8 @@ Important behavior:
 
 - Upsert reconstructs existing branch docs or clones the live file base, projects incoming Markdown into `unstaged`, projects `staged` only when `stagedMarkdown` is provided, and deletes the row if both branches match base.
 - Rebase persistence rejects stale live bases and only accepts rebased state built from the current live file snapshot.
-- Save applies remote drift from base into both branches before saving, persists only the `staged` diff to the live file, writes the saved-sequence marker, and keeps the row alive on partial save.
-- Public mutations are rate-limited after membership validation and before writes.
+- Save applies remote drift from base into both branches before saving, persists only the `staged` diff to the live file, writes the saved-sequence marker, enqueues R2 content materialization, and keeps the row alive on partial save.
+- Public actions/mutations are rate-limited after membership validation and before writes.
 - Saves that push a live Yjs diff must pass the billing credit gate and emit one `file_save` usage event. The billing event name is intentionally unchanged for now to avoid a separate billing taxonomy migration.
 
 # Client Responsibilities

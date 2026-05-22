@@ -21,7 +21,7 @@ The Worker posts this body to Convex:
 		"action": "object-create",
 		"bucket": "bucket-name",
 		"object": {
-			"key": "workspaces/<workspaceId>/projects/<projectId>/nodes/<sourceNodeId>/source",
+			"key": "workspaces/<workspaceId>/projects/<projectId>/assets/<assetId>",
 			"size": 123,
 			"eTag": "etag"
 		},
@@ -37,13 +37,15 @@ Convex returns:
 - `204` when the event is acknowledged, including queued work, duplicate in-progress deliveries, and already-finalized uploads.
 - `400` when the event body is invalid.
 - `401` when the shared event secret is missing or wrong.
-- `404` when no upload doc matches the forwarded bucket/key.
+- `404` when no upload asset matches the forwarded bucket/key.
 - `500` for unexpected route failures.
 - `503` for retryable Convex-side failures.
 
 The Worker retries only network errors and retryable HTTP statuses: `408`, `409`, `425`, `429`, and `>=500`. It acknowledges non-retryable statuses such as `400`, `401`, and `404`. Duplicate delivery is expected; Convex finalization is idempotent.
 
-Convex owns upload lookup, idempotency, conversion queueing, and finalization. The Worker should stay a narrow event forwarder.
+Convex owns asset lookup, upload-kind filtering, idempotency, conversion queueing, and finalization. The Worker should stay a narrow event forwarder.
+
+All first-party file assets use the `workspaces/.../assets/<assetId>` key shape and can flow through this Worker. Convex uses `files_r2_assets.kind` to process only upload assets; generated Markdown, Yjs snapshots, and content snapshots are acknowledged without upload finalization work.
 
 ## Configuration
 
@@ -183,7 +185,7 @@ pnpx wrangler queues purge bonobo-senate-press-r2-upload-events-dlq
 
 - `401` from Convex means Convex `CLOUDFLARE_EVENTS_SECRET` differs from Worker `EVENTS_SECRET`.
 - `400` from Convex means the forwarded event body did not match the expected schema.
-- `404` from Convex means the R2 object key did not match any pending upload doc; the Worker treats this as non-retryable.
+- `404` from Convex means the R2 object key did not match any upload asset; the Worker treats this as non-retryable.
 - `503` from Convex or network failures are retried and eventually sent to the DLQ after `max_retries`.
 - Events with a wrong bucket or a key outside `workspaces/` are acknowledged without calling Convex.
 - R2 notifications must be created after the queue exists.
