@@ -107,6 +107,16 @@ import { format_relative_time } from "@/lib/date.ts";
 type FilesSidebarTree_Shared = () => TreeInstance<files_TreeItem>;
 type FilesSidebarTreeItem_Instance = ReturnType<TreeInstance<files_TreeItem>["getItemInstance"]>;
 
+type DropZone =
+	| { kind: "root" }
+	| {
+			kind: "folder";
+			top: string;
+			height: string;
+	  };
+
+const ROW_HEIGHT_PX = 44;
+
 // #region helpers
 type TreeItems = {
 	list: files_TreeItem[] | undefined;
@@ -195,6 +205,76 @@ function can_receive_file_node_drop(args: {
 	const targetId = args.target.item.getId();
 	const targetData = args.target.item.getItemData();
 	return targetId === files_ROOT_ID || targetData.kind === "folder";
+}
+
+function get_files_sidebar_tree_drop_zone(args: {
+	renderedTreeItems: FilesSidebarTreeItem_Instance[];
+	activeDropTargetId: string | null;
+	isDraggingOverRootZone: boolean;
+	isSearchActive: boolean;
+}) {
+	if (args.isDraggingOverRootZone) {
+		return { kind: "root" } satisfies DropZone;
+	}
+
+	if (!args.activeDropTargetId) {
+		return undefined;
+	}
+
+	// Count rendered placeholder rows too so the dotted subtree range matches the visible tree.
+	const rowModels: {
+		item: FilesSidebarTreeItem_Instance;
+		itemRowIndex: number;
+		placeholderRowIndex: number | undefined;
+		depth: number;
+	}[] = [];
+	let rowIndex = 0;
+	let activeItemIndex = -1;
+
+	for (let itemIndex = 0; itemIndex < args.renderedTreeItems.length; itemIndex++) {
+		const item = args.renderedTreeItems[itemIndex]!;
+		const itemData = item.getItemData();
+		const itemId = item.getId();
+		const itemRowIndex = rowIndex;
+		const hasPlaceholderRow =
+			!args.isSearchActive && itemData.kind === "folder" && item.getChildren().length === 0 && item.isExpanded();
+
+		rowModels.push({
+			item,
+			itemRowIndex,
+			placeholderRowIndex: hasPlaceholderRow ? itemRowIndex + 1 : undefined,
+			depth: item.getItemMeta().level,
+		});
+
+		if (itemId === args.activeDropTargetId) {
+			activeItemIndex = itemIndex;
+		}
+
+		rowIndex += hasPlaceholderRow ? 2 : 1;
+	}
+
+	const activeItemRowModel = rowModels[activeItemIndex];
+	if (!activeItemRowModel || activeItemRowModel.item.getItemData().kind !== "folder") {
+		return undefined;
+	}
+
+	const startRowIndex = activeItemRowModel.itemRowIndex;
+	let endRowIndex = activeItemRowModel.placeholderRowIndex ?? activeItemRowModel.itemRowIndex;
+
+	// Keep the folder target as the whole visible subtree; collapsed descendants are represented by the folder row.
+	for (const rowModel of rowModels.slice(activeItemIndex + 1)) {
+		if (rowModel.depth <= activeItemRowModel.depth) {
+			break;
+		}
+
+		endRowIndex = rowModel.placeholderRowIndex ?? rowModel.itemRowIndex;
+	}
+
+	return {
+		kind: "folder",
+		top: `${startRowIndex * ROW_HEIGHT_PX}px`,
+		height: `${(endRowIndex - startRowIndex + 1) * ROW_HEIGHT_PX}px`,
+	} satisfies DropZone;
 }
 
 function get_default_node_name(args: { parentId: string; kind: files_TreeItem["kind"]; treeItems: TreeItems }) {
@@ -1169,7 +1249,6 @@ const FilesSidebarTreeItemPlaceholder = memo(function FilesSidebarTreeItemPlaceh
 type FilesSidebarTreeItem_ClassNames =
 	| "FilesSidebarTreeItem"
 	| "FilesSidebarTreeItem-content-navigated"
-	| "FilesSidebarTreeItem-content-dragging-target"
 	| "FilesSidebarTreeItem-content-archived"
 	| "FilesSidebarTreeItem-content-renaming";
 
@@ -1230,7 +1309,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	const isNavigated = selectedNodeId === itemId;
 	const isPending = isBusy || pendingActionNodeIds.has(itemId);
 	const isFocused = useVal(() => item.isFocused());
-	const isDragTarget = useVal(() => item.isDraggingOver());
 	const isExpanded = useVal(() => item.isExpanded());
 
 	const depth = useVal(() => item.getItemMeta().level);
@@ -1370,7 +1448,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 				className={cn(
 					"FilesSidebarTreeItem" satisfies FilesSidebarTreeItem_ClassNames,
 					isNavigated && ("FilesSidebarTreeItem-content-navigated" satisfies FilesSidebarTreeItem_ClassNames),
-					isDragTarget && ("FilesSidebarTreeItem-content-dragging-target" satisfies FilesSidebarTreeItem_ClassNames),
 					isArchived && ("FilesSidebarTreeItem-content-archived" satisfies FilesSidebarTreeItem_ClassNames),
 					isRenaming && ("FilesSidebarTreeItem-content-renaming" satisfies FilesSidebarTreeItem_ClassNames),
 				)}
@@ -1458,12 +1535,85 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 });
 // #endregion tree item
 
+// #region tree drop zone area
+type FilesSidebarTreeDropZoneArea_ClassNames =
+	| "FilesSidebarTreeDropZoneArea"
+	| "FilesSidebarTreeDropZoneArea-root"
+	| "FilesSidebarTreeDropZoneArea-folder";
+
+type FilesSidebarTreeDropZoneArea_CssVars = {
+	"--FilesSidebarTreeDropZoneArea-top": string;
+	"--FilesSidebarTreeDropZoneArea-height": string;
+};
+
+type FilesSidebarTreeDropZoneArea_Props = {
+	dropZone: DropZone;
+};
+
+const FilesSidebarTreeDropZoneArea = memo(function FilesSidebarTreeDropZoneArea(
+	props: FilesSidebarTreeDropZoneArea_Props,
+) {
+	const { dropZone } = props;
+
+	return (
+		<div
+			className={cn(
+				"FilesSidebarTreeDropZoneArea" satisfies FilesSidebarTreeDropZoneArea_ClassNames,
+				dropZone.kind === "root" &&
+					("FilesSidebarTreeDropZoneArea-root" satisfies FilesSidebarTreeDropZoneArea_ClassNames),
+				dropZone.kind === "folder" &&
+					("FilesSidebarTreeDropZoneArea-folder" satisfies FilesSidebarTreeDropZoneArea_ClassNames),
+			)}
+			style={
+				dropZone.kind === "folder"
+					? sx({
+							"--FilesSidebarTreeDropZoneArea-top": dropZone.top,
+							"--FilesSidebarTreeDropZoneArea-height": dropZone.height,
+						} satisfies Partial<FilesSidebarTreeDropZoneArea_CssVars>)
+					: undefined
+			}
+			aria-hidden="true"
+		/>
+	);
+});
+// #endregion tree drop zone area
+
+// #region tree drop zone indicator
+type FilesSidebarTreeDropZoneIndicator_ClassNames =
+	| "FilesSidebarTreeDropZoneIndicator"
+	| "FilesSidebarTreeDropZoneIndicator-label"
+	| "FilesSidebarTreeDropZoneIndicator-icon";
+
+type FilesSidebarTreeDropZoneIndicator_Props = {
+	kind: DropZone["kind"];
+};
+
+const FilesSidebarTreeDropZoneIndicator = memo(function FilesSidebarTreeDropZoneIndicator(
+	props: FilesSidebarTreeDropZoneIndicator_Props,
+) {
+	const { kind } = props;
+	const label = kind === "root" ? "Drop at root" : "Drop into folder";
+
+	return (
+		<div
+			className={"FilesSidebarTreeDropZoneIndicator" satisfies FilesSidebarTreeDropZoneIndicator_ClassNames}
+			aria-hidden="true"
+		>
+			<div className={"FilesSidebarTreeDropZoneIndicator-label" satisfies FilesSidebarTreeDropZoneIndicator_ClassNames}>
+				<MyIcon
+					className={"FilesSidebarTreeDropZoneIndicator-icon" satisfies FilesSidebarTreeDropZoneIndicator_ClassNames}
+				>
+					<Upload />
+				</MyIcon>
+				<span>{label}</span>
+			</div>
+		</div>
+	);
+});
+// #endregion tree drop zone indicator
+
 // #region tree
-type FilesSidebarTree_ClassNames =
-	| "FilesSidebarTree"
-	| "FilesSidebarTree-dragging"
-	| "FilesSidebarTree-dragging-root-target"
-	| "FilesSidebarTree-empty-state";
+type FilesSidebarTree_ClassNames = "FilesSidebarTree" | "FilesSidebarTree-dragging" | "FilesSidebarTree-empty-state";
 
 type FilesSidebarTree_Props = {
 	tree: FilesSidebarTree_Shared;
@@ -1508,11 +1658,21 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		onUnarchive,
 	} = props;
 	const isTreeDragging = (tree().getState().dnd?.draggedItems?.length ?? 0) > 0;
+	const renderedTreeItems = tree().getItems();
+	const treeContainerProps = tree().getContainerProps("files_nodes");
 
 	const [treeElement, setTreeElement] = useState<HTMLDivElement | null>(null);
 	const isTreeFocusedRef = useRef(false);
 	const [isDraggingOverRootZone, setIsDraggingOverRootZone] = useState(false);
 	const isDraggingOverRootZoneRef = useRef(false);
+	const activeDropTargetId = tree().getState().dnd?.draggingOverItem?.getId() ?? null;
+
+	const dropZone = get_files_sidebar_tree_drop_zone({
+		renderedTreeItems,
+		activeDropTargetId,
+		isDraggingOverRootZone,
+		isSearchActive,
+	});
 
 	useUiInteractedOutside(treeElement, () => {
 		if (!isTreeFocusedRef.current) {
@@ -1600,9 +1760,9 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 			className={cn(
 				"FilesSidebarTree" satisfies FilesSidebarTree_ClassNames,
 				isTreeDragging && ("FilesSidebarTree-dragging" satisfies FilesSidebarTree_ClassNames),
-				isDraggingOverRootZone && ("FilesSidebarTree-dragging-root-target" satisfies FilesSidebarTree_ClassNames),
 			)}
-			{...tree().getContainerProps("files_nodes")}
+			{...treeContainerProps}
+			style={treeContainerProps.style}
 			onFocus={handleFocus}
 			onBlur={handleBlur}
 			onDragEnterCapture={handleDragEnterCapture}
@@ -1612,6 +1772,12 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 			onDropCapture={handleDropCapture}
 		>
 			<AssistiveTreeDescription tree={tree()} />
+			{dropZone ? (
+				<>
+					<FilesSidebarTreeDropZoneArea dropZone={dropZone} />
+					<FilesSidebarTreeDropZoneIndicator kind={dropZone.kind} />
+				</>
+			) : null}
 
 			{isTreeLoading ? (
 				<div className={cn("FilesSidebarTree-empty-state" satisfies FilesSidebarTree_ClassNames)}>Loading files...</div>
@@ -1622,32 +1788,30 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 							{isSearchActive ? "No files match your search." : "No files yet."}
 						</div>
 					) : null}
-					{tree()
-						.getItems()
-						.map((item) => {
-							const itemId = item.getId();
-							return (
-								<FilesSidebarTreeItem
-									key={itemId}
-									tree={tree}
-									item={item}
-									displayNameByUserId={displayNameByUserId}
-									trackActiveFileIds={trackActiveFileIds}
-									selectedNodeId={selectedNodeId}
-									isSelected={selectedNodeIds.has(itemId)}
-									isSearchActive={isSearchActive}
-									isBusy={isBusy}
-									pendingActionNodeIds={pendingActionNodeIds}
-									renameError={renameErrorByNodeId.get(itemId)}
-									isTreeDragging={isTreeDragging}
-									onCreateNode={onCreateNode}
-									onStartRename={onStartRename}
-									onRenameErrorClear={onRenameErrorClear}
-									onArchive={onArchive}
-									onUnarchive={onUnarchive}
-								/>
-							);
-						})}
+					{renderedTreeItems.map((item) => {
+						const itemId = item.getId();
+						return (
+							<FilesSidebarTreeItem
+								key={itemId}
+								tree={tree}
+								item={item}
+								displayNameByUserId={displayNameByUserId}
+								trackActiveFileIds={trackActiveFileIds}
+								selectedNodeId={selectedNodeId}
+								isSelected={selectedNodeIds.has(itemId)}
+								isSearchActive={isSearchActive}
+								isBusy={isBusy}
+								pendingActionNodeIds={pendingActionNodeIds}
+								renameError={renameErrorByNodeId.get(itemId)}
+								isTreeDragging={isTreeDragging}
+								onCreateNode={onCreateNode}
+								onStartRename={onStartRename}
+								onRenameErrorClear={onRenameErrorClear}
+								onArchive={onArchive}
+								onUnarchive={onUnarchive}
+							/>
+						);
+					})}
 				</>
 			)}
 		</div>

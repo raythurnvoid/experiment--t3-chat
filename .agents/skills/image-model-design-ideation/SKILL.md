@@ -132,6 +132,19 @@ Accepted direction for the current app:
 
 For follow-up prompts, ask the image model to show both folder and file navigated states, plus navigated+keyboard-focus combinations, because indentation can make a marker look aligned for one node type and wrong for another.
 
+## Files Sidebar Drop Zone Lessons
+
+When ideating Files sidebar drag/drop states, keep the prompt grounded in the real app tokens and current browser screenshots. Include the current row height, folder indentation, root/sidebar borders, tree rails, selected row styling, and the exact `app.css` token values under consideration.
+
+Accepted constraints for the current app:
+
+- Use the existing orange accent family for valid root/folder drop targets, especially `--color-accent-06` for dotted enclosure borders and `--color-accent-07` for indicator text/icon.
+- Highlight folder drops as the whole visible folder subtree, not only the target folder row.
+- Keep depth/tree guide lines neutral; do not color them as part of the drop target.
+- Avoid white safe areas, glowing rectangles, gradients, halo borders, or new palette values unless the user explicitly asks for a new visual language.
+- If an upload/drop label can overlap nearby file text, make the indicator itself dark, translucent, and blurred instead of adding a separate outer safe-area layer or reserving extra row height.
+- Ask the image model to call out anti-patterns explicitly when a previous design was rejected, then verify the implementation screenshot against those rejected traits.
+
 ## Pressed Surface And Shadow Decisions
 
 When ideating pressed buttons, icon buttons, cards, tabs, or list items:

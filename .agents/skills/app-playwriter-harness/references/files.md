@@ -79,6 +79,18 @@ Keep folder-table drag/drop checks as a route-specific recipe. The folder table 
 - While a move is pending, verify the pending row does not start another drag and the more-actions button remains disabled.
 - After folder-table checks, run one sidebar tree move or external file upload drop to confirm the unchanged Headless Tree DnD flow still works.
 
+## Sidebar Tree Drop Zone Visual QA
+
+Keep sidebar drop-zone checks as a route-specific recipe because they depend on Headless Tree drag state, the `/files` sidebar layout, and the fixed 44px tree rows.
+
+- Bind a single `/files` tab and create or reuse a visible nested tree like `new-folder/drop-child/drop-grandchild/test.md`, plus a root-level `README.md`.
+- Capture a baseline screenshot before dragging so visual comparison has the normal tree rails, selected row, folder indentation, and root/sidebar borders.
+- Verify root drops by dragging over the empty tree area: the full tree/root area should show one orange dotted enclosure and a compact `Drop at root` indicator.
+- Verify folder drops at depth 0, depth 1, and depth 2/collapsed folders: the orange dotted enclosure should cover the target folder row plus the whole visible subtree, not only the target row.
+- Verify invalid file-row drops: hovering a file row must not show the folder/root drop-zone visual or upload into the file's parent.
+- Inspect computed styles for `.FilesSidebarTreeDropZoneArea` and `.FilesSidebarTreeDropZoneIndicator-label`. The indicator should be transparent and blurred with no glow, and the dotted area should use the app accent token.
+- Check the accessibility snapshot while the indicator is visible. The visual indicator is `aria-hidden`; the snapshot should still expose the normal `files_nodes` tree and treeitems without an extra button, link, or duplicate drop-zone label.
+
 ## R2 Upload QA
 
 Keep R2 upload checks as a route-specific recipe. Do not promote this flow into the installed harness unless file upload controls become a generic primitive across routes.

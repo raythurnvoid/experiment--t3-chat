@@ -108,6 +108,16 @@ Provide:
 
 Ask whether the progression reads correctly and what a still image cannot prove.
 
+## Files Sidebar Drop Zone Review
+
+When verifying Files sidebar drop-zone screenshots, provide the accepted visual constraints in the prompt instead of relying on previous chat context:
+
+- root and folder drops should share an orange dotted enclosure based on existing app accent tokens
+- folder drops should cover the visible folder subtree, not only the folder row
+- depth/tree guide lines should stay neutral
+- any overlapping indicator should itself be dark, translucent, and blurred without a separate outer safe-area layer
+- reject white safe areas, glow, gradients, colored rails, and one-row-only folder highlights unless the user explicitly changed direction
+
 ## Box Model And Pressed Surface Review
 
 Use this review shape for active/pressed controls, rim complaints, shadow-depth changes, and small icon buttons.
