@@ -112,6 +112,26 @@ For interaction-heavy UI, ask the image model to make explicit policy decisions:
 
 Use still images for visual policy and browser evidence for motion, timing, and event handling.
 
+## Files Sidebar Selection Marker Lessons
+
+When ideating Files sidebar tree selection, do not use bold text as the primary selected/navigated signal. Bold changes text metrics, creates jitter across folder/file names, and competes with dense metadata.
+
+Accepted direction for the current app:
+
+- Use a stable row-left accent rail for navigated rows.
+- Keep all row text at regular `font-weight: 400`; do not change font size, row height, or icon spacing.
+- Make non-selected idle row text one shade quieter than before (`--color-fg-07`), then restore hover and selected text to the navigated-row lightness (`--color-fg-10`) so filenames do not feel too dim during pointer exploration.
+- Preserve the existing selected row fill as the surface state, then layer the accent rail as a marker.
+- Place the rail at the far left of the selected row surface rather than following folder/file indentation.
+- Use the app accent token for the accepted rail direction: `--color-accent-06` / `oklch(0.628 0.113 42)`.
+- Use a small vertical pill marker: about `3px` wide, `28px` tall in a `44px` row, fully rounded.
+- Treat keyboard focus as a separate top-layer outline using the existing focus token. Keep the rail below the focus layer, but offset it inside the focused surface enough that the ring stays continuous and the rail remains visible.
+- Idle/non-renaming titles are implemented through a disabled transparent input; remove readonly/disabled title input chrome completely so the item name reads as plain text. Keep the input box transparent with no border, outline, or shadow outside rename mode, and make the disabled title control inherit the row color so selected and idle filenames have the same contrast relationship as their icons.
+- Hover-only and focus-only rows should not show the rail; the rail belongs to the navigated/current route state.
+- Menu/open action states should not replace or obscure the rail.
+
+For follow-up prompts, ask the image model to show both folder and file navigated states, plus navigated+keyboard-focus combinations, because indentation can make a marker look aligned for one node type and wrong for another.
+
 ## Pressed Surface And Shadow Decisions
 
 When ideating pressed buttons, icon buttons, cards, tabs, or list items:
