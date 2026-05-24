@@ -3157,6 +3157,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					return;
 				}
 
+				// Mirror non-modifier tree clicks so programmatic create moves the visible selection too.
+				tree().setSelectedItems([result._yay.nodeId]);
+				tree().getDataRef<SelectionDataRef>().current.selectUpToAnchorId = result._yay.nodeId;
+
 				return navigate({
 					to: "/w/$workspaceName/$projectName/files",
 					params: { workspaceName, projectName },
