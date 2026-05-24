@@ -1,5 +1,8 @@
 @layer common_components {
-	/* MyComboboxInput reuses MyInputArea, MyInputControl, MyInputIcon, and MyInputBox classes from my-input.css */
+	/*
+	MyComboboxInput reuses MyInputArea, MyInputControl,
+	MyInputIcon, and MyInputBox classes from my-input.css
+	*/
 	.MyComboboxInput {
 		position: relative;
 	}
@@ -9,15 +12,17 @@
 		outline-color: var(--color-fg-12);
 	}
 
-	/* Invalid state ring - matches MyInput invalid behavior */
-	.MyComboboxInput:has([aria-invalid="true"], :user-invalid) .MyInputBox {
+	/* Visible invalid state ring - matches MyInput invalid behavior */
+	.MyComboboxInput.userInvalid .MyInputBox,
+	.MyComboboxInput:has([aria-invalid="true"]) .MyInputBox {
 		border-color: var(--destructive);
 		box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.2);
 	}
 
 	/* Dark mode invalid state */
 	@media (prefers-color-scheme: dark) {
-		.MyComboboxInput:has([aria-invalid="true"], :user-invalid) .MyInputBox {
+		.MyComboboxInput.userInvalid .MyInputBox,
+		.MyComboboxInput:has([aria-invalid="true"]) .MyInputBox {
 			box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.4);
 		}
 	}

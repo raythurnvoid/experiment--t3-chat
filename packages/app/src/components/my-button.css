@@ -20,7 +20,9 @@
 		font-size: 0.875rem;
 		font-weight: 500;
 
-		transition: background-color 0.1s linear;
+		transition:
+			background-color 0.1s linear,
+			box-shadow 0.1s linear;
 
 		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			cursor: pointer;
@@ -71,18 +73,21 @@
 
 	.MyButton-variant-accent {
 		color: var(--color-fg-11);
-		background: var(--color-accent-01);
+		background: linear-gradient(var(--color-accent-02), var(--color-accent-01));
 		border-color: var(--color-accent-02);
-		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
+		box-shadow:
+			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 12%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-accent-06) 15%, transparent),
+			0 3px 8px color-mix(in oklch, black 35%, transparent);
 
 		&:not(:is(:disabled, .MyButton-state-disabled)) {
 			&:focus-visible {
-				background: var(--color-accent-02);
+				background: linear-gradient(var(--color-accent-03), var(--color-accent-02));
 			}
 
 			&:hover {
 				color: var(--color-fg-12);
-				background: var(--color-accent-02);
+				background: linear-gradient(var(--color-accent-03), var(--color-accent-02));
 
 				&:not(:focus-visible) {
 					border-color: var(--color-accent-03);
@@ -90,7 +95,10 @@
 			}
 
 			&:active {
-				background: var(--color-accent-03);
+				background: linear-gradient(var(--color-accent-04), var(--color-accent-03));
+				box-shadow:
+					inset 0 2px 4px color-mix(in oklch, black 30%, transparent),
+					inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 6%, transparent);
 
 				&:not(:focus-visible) {
 					border-color: var(--color-accent-04);
@@ -102,6 +110,7 @@
 			color: var(--color-fg-04);
 			background: var(--color-base-1-03);
 			border-color: var(--color-base-1-03);
+			box-shadow: none;
 		}
 
 		&[aria-expanded="true"] {
@@ -125,6 +134,9 @@
 			&:active {
 				background: var(--color-red-08);
 				color: var(--color-fg-12);
+				box-shadow:
+					inset 0 2px 4px color-mix(in oklch, black 28%, transparent),
+					inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
 			}
 		}
 
@@ -136,6 +148,9 @@
 
 				&:active {
 					background: var(--color-red-07);
+					box-shadow:
+						inset 0 2px 4px color-mix(in oklch, black 28%, transparent),
+						inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
 				}
 			}
 		}
@@ -148,65 +163,42 @@
 	}
 
 	.MyButton-variant-outline {
-		color: var(--color-fg-07);
-		background: var(--color-base-1-03);
-		border-color: var(--color-fg-04);
-		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
+		color: var(--color-fg-08);
+		background: linear-gradient(var(--color-base-1-04), var(--color-base-1-03));
+		border-color: var(--color-base-1-09);
+		box-shadow:
+			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
+			0 2px 4px black;
 
 		&:not(:is(:disabled, .MyButton-state-disabled)) {
-			&:hover {
+			&:hover:not(:active) {
 				color: var(--color-fg-10);
-				background: var(--color-base-1-04);
-
-				&:not(:focus-visible) {
-					border-color: var(--color-fg-05);
-				}
+				background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
+				border-color: var(--color-base-1-10);
+				box-shadow:
+					inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+					inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
+					0 2px 4px black;
 			}
 
 			&:focus-visible {
 				color: var(--color-fg-10);
-				background: var(--color-base-1-04);
+				background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
+				border-color: var(--color-base-1-10);
+				box-shadow:
+					inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+					inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
+					0 2px 4px black;
 			}
 
 			&:active {
-				&:not(:focus-visible) {
-					border-color: var(--color-fg-06);
-				}
-
-				color: var(--color-fg-12);
-			}
-		}
-
-		&:is(:disabled, .MyButton-state-disabled) {
-			color: var(--color-fg-04);
-			background: var(--color-base-1-03);
-			border-color: var(--color-base-1-03);
-		}
-
-		&[aria-expanded="true"] {
-			border-color: var(--color-fg-06);
-			color: var(--color-fg-08);
-		}
-	}
-
-	.MyButton-variant-outline_destructive {
-		color: var(--color-red-08);
-		background: var(--color-base-1-03);
-		border-color: var(--color-red-05);
-		box-shadow: 0 1px 1px 0 rgb(0 0 0 / 0.04);
-
-		&:not(:is(:disabled, .MyButton-state-disabled)) {
-			&:hover,
-			&:focus-visible {
-				color: var(--color-red-09);
-				background: var(--color-red-02);
-				border-color: var(--color-red-06);
-			}
-
-			&:active {
-				background: var(--color-red-02);
-				border-color: var(--color-red-07);
-				color: var(--color-red-10);
+				background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+				color: var(--color-fg-11);
+				border-color: var(--color-base-1-11);
+				box-shadow:
+					inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
+					inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
 			}
 		}
 
@@ -218,8 +210,54 @@
 		}
 
 		&[aria-expanded="true"] {
-			border-color: var(--color-red-08);
+			color: var(--color-fg-08);
+			border-color: var(--color-base-1-12);
+			box-shadow:
+				inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+				inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
+				0 2px 4px color-mix(in oklch, black 30%, transparent);
+		}
+	}
+
+	.MyButton-variant-outline_destructive {
+		padding: 8px 12px;
+		border-width: 0;
+		color: var(--color-red-08);
+		background: var(--color-base-1-03);
+		box-shadow:
+			inset 0 0 0 2px var(--color-red-05),
+			0 1px 1px 0 rgb(0 0 0 / 0.04);
+
+		&:not(:is(:disabled, .MyButton-state-disabled)) {
+			&:hover,
+			&:focus-visible {
+				color: var(--color-red-09);
+				background: var(--color-red-02);
+				box-shadow:
+					inset 0 0 0 2px var(--color-red-06),
+					0 1px 1px 0 rgb(0 0 0 / 0.04);
+			}
+
+			&:active {
+				background: var(--color-red-02);
+				color: var(--color-red-10);
+				box-shadow:
+					inset 0 2px 0 color-mix(in oklch, black 24%, transparent),
+					inset 0 0 0 2px var(--color-red-07);
+			}
+		}
+
+		&:is(:disabled, .MyButton-state-disabled) {
+			color: var(--color-fg-04);
+			background: var(--color-base-1-03);
+			box-shadow: none;
+		}
+
+		&[aria-expanded="true"] {
 			color: var(--color-red-11);
+			box-shadow:
+				inset 0 0 0 2px var(--color-red-08),
+				0 1px 1px 0 rgb(0 0 0 / 0.04);
 		}
 	}
 
@@ -238,6 +276,9 @@
 			&:active {
 				background: var(--color-base-1-10);
 				color: var(--color-fg-12);
+				box-shadow:
+					inset 0 2px 4px color-mix(in oklch, black 28%, transparent),
+					inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
 			}
 		}
 	}
@@ -335,22 +376,32 @@
 
 	.MyButton-variant-ghost-highlightable {
 		background: transparent;
+		border-width: 0;
+		padding: 8px 12px;
 
 		&:not(:is(:disabled, .MyButton-state-disabled)) {
-			&:hover,
-			&:focus-visible {
-				background: var(--color-base-1-07);
-				color: var(--color-fg-10);
+			&:is(:hover, :focus-visible):not(:active),
+			&[aria-expanded="true"] {
+				background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+				color: var(--color-fg-11);
+				box-shadow:
+					inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+					inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 70%, transparent),
+					0 4px 10px color-mix(in oklch, black 38%, transparent);
 			}
 
 			&:active {
-				background: var(--color-base-1-08);
+				background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
 				color: var(--color-fg-12);
+				box-shadow:
+					inset 0 2px 4px color-mix(in oklch, black 32%, transparent),
+					inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
 			}
 		}
 
 		&:is(:disabled, .MyButton-state-disabled) {
 			color: var(--color-fg-04);
+			box-shadow: none;
 		}
 	}
 

@@ -1,0 +1,123 @@
+---
+name: image-model-design-ideation
+description: Use the image model for UI/UX design ideation in this app, including screenshot-based critique, color and CSS token selection, visual alternatives, interaction-state exploration, and extracting implementation guidance from generated references. Use when the user asks to use the image tool/model for product design, compare current UI against available tokens, decide colors/spacing/borders/shadows, or turn generated design guidance into app CSS or component changes.
+---
+
+# Image Model Design Ideation
+
+Use this skill when the image model should help make or critique a visual product-design decision before implementation.
+
+## Non-Negotiables
+
+- Use the image model when the user explicitly asks for it.
+- Tell the user plainly if a prior answer did not actually use the image model.
+- Treat every image-model prompt as a complete, fresh design brief. The image model does not reliably remember previous prompts, screenshots, feedback, accepted decisions, rejected ideas, generated images, or code context.
+- Re-read relevant CSS, token files, and components immediately before prompting when the user says values changed.
+- Inspect generated output before summarizing it. If labels are unreadable, crowded, or contradictory, re-prompt with a smaller comparison.
+- Do not stop at image generation. After the generated image is available, continue by inspecting it and returning a written recommendation so the user never has to read the image annotations themselves.
+- Treat image-model guidance as design intent. Map it back to real app tokens, components, and CSS yourself before editing code.
+
+## Core Workflow
+
+1. Gather the current visual and code context.
+   - Use the user's screenshot, a fresh app screenshot, or both.
+   - Read the relevant component CSS and global token definitions.
+   - Capture current implementation values separately from available candidate values.
+   - Include important neighboring visual elements, such as selected states, badges, disabled buttons, surfaces, and outer borders.
+2. Build a complete image-model prompt.
+   - Include the screenshot and the exact current CSS values.
+   - Include candidate tokens with values, not token names alone.
+   - State which visual decision is being made.
+   - Ask for a verdict, rationale, hierarchy check, and implementation note.
+   - Ask the model to compare against the current implementation, not just pick an ideal value in isolation.
+3. Generate focused outputs.
+	- Prefer one decision per image, such as divider color, selected-border color, button contrast, spacing density, or hover state.
+	- Generate multiple images when comparing interaction states, competing visual directions, or dense token choices. Do not artificially collapse the exploration into one image when separate variants would make the decision clearer.
+	- When multiple images are useful, separate them by purpose, such as a broad option board first and a focused final-spec board second.
+	- Use fewer candidates when text readability matters.
+	- Ask for large labels and a concise recommendation.
+4. Inspect and translate.
+   - Open the generated image.
+   - Read the visible verdict and callouts.
+   - Decide whether the recommendation is coherent with the app's actual tokens and hierarchy.
+   - If implementation should change, identify the exact declarations to update.
+5. Report before editing unless the user already asked to proceed.
+   - Always provide the recommendation in normal text; never require the user to read or interpret the generated image.
+   - Summarize the image model's recommendation in text.
+   - Compare it to current code values.
+   - Say whether token definitions need to change or only token usages need to change.
+   - Mention generated image paths only when useful.
+6. Implement narrowly when approved.
+   - Re-read touched files first.
+   - Change only the accepted CSS/component values.
+   - Do not alter token definitions unless the recommendation truly requires a system-wide token change.
+   - Verify with `git diff` and a targeted search.
+
+## Prompt Checklist
+
+Every prompt for color, spacing, or UI hierarchy should include:
+
+- product surface and target component
+- current screenshot or generated reference image
+- current implementation tokens and CSS usages
+- available token names and raw values
+- relevant theme, usually dark mode for this app unless the task says otherwise
+- selected, hover, disabled, and empty states if they affect the decision
+- hard constraints, such as "do not change layout" or "only choose from existing tokens"
+- expected output: `verdict`, `compare with current`, `recommended token`, `why not the alternatives`, and `implementation note`
+
+## Color And Token Decisions
+
+For token selection tasks:
+
+- Prefer existing tokens over new token definitions.
+- Compare against nearby hierarchy, not only local contrast.
+- Distinguish structural borders from interactive borders. Structural dividers should usually be quieter than selected, focus, or accent borders.
+- Check whether the current token is intentionally stronger for accessibility or merely visually heavy.
+- Ask the image model to rank the current value and candidates, then make a keep/change verdict.
+- Use foreground and accent tokens only when the UI element is semantic or interactive enough to justify that emphasis.
+
+Example prompt shape:
+
+```text
+Use this screenshot and the current CSS/token values to recommend the best existing token for [specific UI element].
+
+Current implementation:
+- Surface: --color-base-...
+- Outer border: --color-base-...
+- Current [element]: --color-base-...
+- Selected/accent state: --color-accent-...
+
+Available candidates:
+- --color-base-...: oklch(...)
+- --color-base-...: oklch(...)
+- --color-base-...: oklch(...)
+
+Compare the current value against the candidates. Choose "keep current" or "change to ...".
+Prioritize visual hierarchy, clarity, and consistency with nearby borders. Do not propose new tokens.
+Make the output readable and include a final implementation note.
+```
+
+## Interaction And Layout Decisions
+
+For interaction-heavy UI, ask the image model to make explicit policy decisions:
+
+- normal, hover, active, focus, selected, invalid, disabled, and loading states
+- keyboard behavior
+- whether invalid actions clamp, block, merge, snap, cancel, or ask for confirmation
+- what message appears and what state is stored
+- undo/redo implications when relevant
+
+Use still images for visual policy and browser evidence for motion, timing, and event handling.
+
+## Output Contract
+
+When using this skill, return:
+
+- whether the image model was used
+- what screenshots and code values were included
+- whether generated output was inspected
+- the image model's recommendation
+- the comparison against current code
+- the exact implementation change, if any
+- what lint, type-check, or test commands were run, or that they were skipped

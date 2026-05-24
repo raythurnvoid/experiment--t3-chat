@@ -91,6 +91,15 @@ export function workspaces_name_validate(name: string) {
 		});
 	}
 
+	if (trimmed.endsWith("-")) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: "Name cannot end with a hyphen",
+			},
+		});
+	}
+
 	if (!workspace_project_name_regex.test(trimmed)) {
 		return Result({
 			_nay: {

@@ -1,10 +1,10 @@
 import "./my-input.css";
 import type { ComponentPropsWithRef } from "react";
-import { createContext, memo, use } from "react";
+import { createContext, memo, use, useLayoutEffect, useRef } from "react";
 import type { ExtractStrict } from "type-fest";
 
 import { useUiId } from "@/lib/ui.tsx";
-import { cn, type XCustomEventLike } from "@/lib/utils.ts";
+import { cn, forward_ref, type XCustomEventLike } from "@/lib/utils.ts";
 import { MyIcon } from "./my-icon.tsx";
 
 // #region context
@@ -189,19 +189,38 @@ export type MyInputControl_ClassNames = "MyInputControl";
 export type MyInputControl_Props = Omit<
 	ComponentPropsWithRef<"input">,
 	ExtractStrict<keyof ComponentPropsWithRef<"input">, "size" | "id">
->;
+> & {
+	validationMessage?: string;
+};
 
 export const MyInputControl = memo(function MyInputControl(props: MyInputControl_Props) {
-	const { ref, className, ...rest } = props;
+	const { ref, className, validationMessage, ...rest } = props;
 
 	const context = use(MyInputContext);
 	if (!context) {
 		throw new Error("MyInputControl must be used within MyInput");
 	}
 
+	const inputRef = useRef<HTMLInputElement>(null);
+
+	useLayoutEffect(() => {
+		const inputElement = inputRef.current;
+		if (!inputElement) {
+			return;
+		}
+
+		// Keep DOM validity live even when the visible error waits for blur or submit.
+		inputElement.setCustomValidity(validationMessage ?? "");
+		return () => {
+			inputElement.setCustomValidity("");
+		};
+	}, [validationMessage]);
+
 	return (
 		<input
-			ref={ref}
+			ref={(inst) => {
+				forward_ref(inst, ref, inputRef);
+			}}
 			id={context.inputId}
 			className={cn("MyInputControl" satisfies MyInputControl_ClassNames, className)}
 			{...rest}
@@ -216,19 +235,38 @@ export type MyInputTextAreaControl_ClassNames = "MyInputTextAreaControl";
 export type MyInputTextAreaControl_Props = Omit<
 	ComponentPropsWithRef<"textarea">,
 	ExtractStrict<keyof ComponentPropsWithRef<"textarea">, "id">
->;
+> & {
+	validationMessage?: string;
+};
 
 export const MyInputTextAreaControl = memo(function MyInputTextAreaControl(props: MyInputTextAreaControl_Props) {
-	const { ref, className, ...rest } = props;
+	const { ref, className, validationMessage, ...rest } = props;
 
 	const context = use(MyInputContext);
 	if (!context) {
 		throw new Error("MyInputTextAreaControl must be used within MyInput");
 	}
 
+	const textAreaRef = useRef<HTMLTextAreaElement>(null);
+
+	useLayoutEffect(() => {
+		const textAreaElement = textAreaRef.current;
+		if (!textAreaElement) {
+			return;
+		}
+
+		// Keep DOM validity live even when the visible error waits for blur or submit.
+		textAreaElement.setCustomValidity(validationMessage ?? "");
+		return () => {
+			textAreaElement.setCustomValidity("");
+		};
+	}, [validationMessage]);
+
 	return (
 		<textarea
-			ref={ref}
+			ref={(inst) => {
+				forward_ref(inst, ref, textAreaRef);
+			}}
 			id={context.inputId}
 			className={cn("MyInputTextAreaControl" satisfies MyInputTextAreaControl_ClassNames, className)}
 			{...rest}
@@ -242,10 +280,11 @@ type MyInput_ClassNames = "MyInput" | "MyInput-variant-surface" | "MyInput-varia
 
 export type MyInput_Props = ComponentPropsWithRef<"div"> & {
 	variant?: "default" | "surface" | "transparent";
+	displayValidationMessage?: string;
 };
 
 export const MyInput = memo(function MyInput(props: MyInput_Props) {
-	const { className, variant = "default", children, ...rest } = props;
+	const { className, variant = "default", displayValidationMessage, children, ...rest } = props;
 
 	const rootId = useUiId("MyInput");
 	const inputId = `${rootId}-input`;
@@ -267,6 +306,7 @@ export const MyInput = memo(function MyInput(props: MyInput_Props) {
 					"MyInput" satisfies MyInput_ClassNames,
 					variant === "surface" && ("MyInput-variant-surface" satisfies MyInput_ClassNames),
 					variant === "transparent" && ("MyInput-variant-transparent" satisfies MyInput_ClassNames),
+					displayValidationMessage && "userInvalid",
 					className,
 				)}
 				{...rest}

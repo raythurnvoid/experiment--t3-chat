@@ -76,10 +76,13 @@ describe("workspaces_name_validate", () => {
 		expect(workspaces_name_validate(name)._yay).toBe(name);
 	});
 
-	test("rejects leading digit, trailing dash, or double hyphen in normalized input", () => {
+	test("rejects leading digit or double hyphen in normalized input", () => {
 		expect(workspaces_name_validate("1ab")._nay?.message).toBe("Invalid name");
-		expect(workspaces_name_validate("ab-")._nay?.message).toBe("Invalid name");
 		expect(workspaces_name_validate("a--b")._nay?.message).toBe("Invalid name");
+	});
+
+	test("explains names that end with a hyphen", () => {
+		expect(workspaces_name_validate("ab-")._nay?.message).toBe("Name cannot end with a hyphen");
 	});
 });
 

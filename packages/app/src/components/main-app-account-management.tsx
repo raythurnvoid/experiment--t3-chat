@@ -852,7 +852,6 @@ const MainAppAccountManagementSecurity = memo(function MainAppAccountManagementS
 type MainAppAccountManagement_ClassNames =
 	| "MainAppAccountManagement"
 	| "MainAppAccountManagement-header-content"
-	| "MainAppAccountManagement-header-description"
 	| "MainAppAccountManagement-body"
 	| "MainAppAccountManagement-side-tab"
 	| "MainAppAccountManagement-panels"
@@ -997,9 +996,7 @@ const MainAppAccountManagementContent = memo(function MainAppAccountManagementCo
 					<MyModalHeader>
 						<div className={"MainAppAccountManagement-header-content" satisfies MainAppAccountManagement_ClassNames}>
 							<MyModalHeading>Manage account</MyModalHeading>
-							<MyModalDescription
-								className={"MainAppAccountManagement-header-description" satisfies MainAppAccountManagement_ClassNames}
-							>
+							<MyModalDescription>
 								Manage your profile, security settings, sessions, and account deletion from the app.
 							</MyModalDescription>
 						</div>

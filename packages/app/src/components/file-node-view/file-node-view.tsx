@@ -1200,7 +1200,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 		nodePathValidation.cacheValidationMessage(nodePathValidation.validationMessage);
 	}, [nodePathValidation.validationCacheKey, nodePathValidation.validationMessage]);
 
-	// Use native validity for invalid styling while keeping the app helper text as the visible message.
+	// Keep native validity and the explicit visible-invalid class in sync with the app helper.
 	useLayoutEffect(() => {
 		const input = inputRef.current;
 		if (!input) {
@@ -1228,7 +1228,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 					<div
 						className={"FileNodeViewFolderCreateNodeModal-field" satisfies FileNodeViewFolderCreateNodeModal_ClassNames}
 					>
-						<MyInput variant="surface">
+						<MyInput className={cn(displayedValidationMessage && "userInvalid")} variant="surface">
 							<MyInputLabel>Name</MyInputLabel>
 							<MyInputArea>
 								<MyInputBox />
@@ -1238,7 +1238,6 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 									required
 									value={name}
 									disabled={isCreatingNode}
-									aria-invalid={Boolean(displayedValidationMessage)}
 									onChange={handleNameChange}
 								/>
 							</MyInputArea>

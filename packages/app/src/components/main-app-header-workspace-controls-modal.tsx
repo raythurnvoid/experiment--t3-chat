@@ -4,20 +4,19 @@ import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import {
 	memo,
 	useEffect,
+	useImperativeHandle,
 	useId,
 	useRef,
 	useState,
-	type ClipboardEventHandler,
-	type CompositionEventHandler,
+	type ComponentPropsWithoutRef,
 	type Dispatch,
-	type InputEventHandler,
+	type Ref,
 	type RefObject,
 	type ReactNode,
 	type SetStateAction,
-	type SubmitEventHandler,
 } from "react";
 import {
-	Briefcase,
+	Building2,
 	ChevronRight,
 	CircleHelp,
 	CreditCard,
@@ -28,7 +27,7 @@ import {
 	Trash2,
 } from "lucide-react";
 
-import { useFn } from "@/hooks/utils-hooks.ts";
+import { useFn, useLiveRef } from "@/hooks/utils-hooks.ts";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -73,6 +72,45 @@ import {
 } from "@/lib/workspaces.ts";
 import { cn } from "@/lib/utils.ts";
 import { quotas } from "../../shared/quotas.ts";
+
+function is_rejected_name_message(validationMessage: string) {
+	return validationMessage === "Workspace name already exists" || validationMessage === "Project name already exists";
+}
+
+// Use canonical submit values so autofix-only edits do not enable Save.
+function get_canonical_name_value(value: string) {
+	return workspaces_name_autofix(value);
+}
+
+function get_canonical_description_value(value: string) {
+	const validatedDescription = workspaces_description_normalize(value);
+
+	return validatedDescription._nay ? value.trim() : validatedDescription._yay;
+}
+
+function validate_name_field_input(
+	el: HTMLInputElement,
+	canonicalName: string,
+	rejectedValueMessagesMap: Map<string, string>,
+) {
+	const normalized = workspaces_name_autofix(el.value, { trim_trailing_hyphens: false });
+	if (el.value !== normalized) {
+		el.value = normalized;
+	}
+
+	const validated = workspaces_name_validate(normalized);
+	const rejectedValueMessage = validated._yay ? rejectedValueMessagesMap.get(canonicalName) : undefined;
+	const validationMessage = validated._nay?.message ?? (validated._yay ? rejectedValueMessage : undefined);
+
+	return { validationMessage };
+}
+
+function validate_description_field_input(el: HTMLInputElement) {
+	const validated = workspaces_description_normalize(el.value);
+	const validationMessage = validated._nay?.message;
+
+	return { validationMessage };
+}
 
 // #region list item model
 export type MainAppHeaderWorkspaceSwitcherModal_ListItem = {
@@ -144,6 +182,10 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 	const { item } = props;
 
 	const handleSelect = useFn(() => {
+		if (item.isCurrent) {
+			return;
+		}
+
 		item.onSelect();
 	});
 
@@ -179,6 +221,8 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 				variant="ghost-highlightable"
 				data-selected={isCurrent || undefined}
 				aria-current={isCurrent ? "true" : undefined}
+				aria-disabled={isCurrent || undefined}
+				tabIndex={isCurrent ? -1 : undefined}
 				onClick={handleSelect}
 			>
 				{isCurrent && (
@@ -574,119 +618,443 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 );
 // #endregion select pane
 
-// #region modal form helpers
-function should_block_name_retry(message: string) {
-	return message === "Workspace name already exists" || message === "Project name already exists";
-}
+// #region create edit form field
+type MainAppHeaderWorkspaceCreateEditFormField_ClassNames =
+	| "MainAppHeaderWorkspaceCreateEditFormField-label-optional"
+	| "MainAppHeaderWorkspaceCreateEditFormField-helper-row"
+	| "MainAppHeaderWorkspaceCreateEditFormField-helper-message"
+	| "MainAppHeaderWorkspaceCreateEditFormField-helper-counter"
+	| "MainAppHeaderWorkspaceCreateEditFormField-helper-state-error";
 
-type MainAppHeaderWorkspaceCreateEditFormFields_Props = {
-	nameInputRef: RefObject<HTMLInputElement | null>;
-	descriptionInputRef: RefObject<HTMLInputElement | null>;
-	kind: "project" | "workspace";
-	nameFieldLabel: string;
-	isNameValid: boolean;
-	isNameNonEmpty: boolean;
-	isDescriptionValid: boolean;
+type MainAppHeaderWorkspaceCreateEditFormField_Props = {
+	validationMessage?: string;
+	displayValidationMessage?: string;
+	inputRef: RefObject<HTMLInputElement | null>;
+	label: ReactNode;
+	placeholder: string;
+	draftValueLength: number;
+	required?: boolean;
+	minLength?: number;
+	maxLength: number;
+	helperText?: string;
+	isHelperTextInvalid?: boolean;
 	isSubmitting: boolean;
-	nameMessage?: string;
-	descriptionMessage?: string;
-	onNameCompositionEnd: CompositionEventHandler<HTMLInputElement>;
-	onNameInput: InputEventHandler<HTMLInputElement>;
-	onNamePaste: ClipboardEventHandler<HTMLInputElement>;
-	onDescriptionInput: InputEventHandler<HTMLInputElement>;
+	onCompositionEnd?: ComponentPropsWithoutRef<"input">["onCompositionEnd"];
+	onBlur?: ComponentPropsWithoutRef<"input">["onBlur"];
+	onInvalid?: ComponentPropsWithoutRef<"input">["onInvalid"];
+	onInput: NonNullable<ComponentPropsWithoutRef<"input">["onInput"]>;
+	onPaste?: ComponentPropsWithoutRef<"input">["onPaste"];
 };
 
-const MainAppHeaderWorkspaceCreateEditFormFields = memo(function MainAppHeaderWorkspaceCreateEditFormFields(
-	props: MainAppHeaderWorkspaceCreateEditFormFields_Props,
+const MainAppHeaderWorkspaceCreateEditFormField = memo(function MainAppHeaderWorkspaceCreateEditFormField(
+	props: MainAppHeaderWorkspaceCreateEditFormField_Props,
 ) {
 	const {
-		nameInputRef,
-		descriptionInputRef,
-		kind,
-		nameFieldLabel,
-		isNameValid,
-		isNameNonEmpty,
-		isDescriptionValid,
+		validationMessage,
+		displayValidationMessage,
+		inputRef,
+		label,
+		placeholder,
+		draftValueLength,
+		required,
+		minLength,
+		maxLength,
+		helperText,
+		isHelperTextInvalid = false,
 		isSubmitting,
-		nameMessage,
-		descriptionMessage,
-		onNameCompositionEnd,
-		onNameInput,
-		onNamePaste,
-		onDescriptionInput,
+		onCompositionEnd,
+		onBlur,
+		onInvalid,
+		onInput,
+		onPaste,
 	} = props;
 
 	return (
-		<>
-			<MyInput variant="surface">
-				<MyInputLabel>{nameFieldLabel}</MyInputLabel>
-				<MyInputArea>
-					<MyInputBox />
-					<MyInputControl
-						ref={nameInputRef}
-						type="text"
-						autoComplete="off"
-						defaultValue=""
-						maxLength={workspaces_NAME_MAX_LENGTH}
-						placeholder={kind === "workspace" ? "acme-labs" : "my-project"}
-						aria-invalid={!isNameValid && isNameNonEmpty}
-						disabled={isSubmitting}
-						onCompositionEnd={onNameCompositionEnd}
-						onInput={onNameInput}
-						onPaste={onNamePaste}
-					/>
-				</MyInputArea>
-				<MyInputHelperText
+		<MyInput displayValidationMessage={displayValidationMessage} variant="surface">
+			<MyInputLabel>{label}</MyInputLabel>
+			<MyInputArea>
+				<MyInputBox />
+				<MyInputControl
+					ref={inputRef}
+					validationMessage={validationMessage}
+					type="text"
+					autoComplete="off"
+					defaultValue=""
+					required={required}
+					minLength={minLength}
+					maxLength={maxLength}
+					placeholder={placeholder}
+					disabled={isSubmitting}
+					onCompositionEnd={onCompositionEnd}
+					onBlur={onBlur}
+					onInvalid={onInvalid}
+					onInput={onInput}
+					onPaste={onPaste}
+				/>
+			</MyInputArea>
+			<MyInputHelperText
+				className={cn(
+					"MainAppHeaderWorkspaceCreateEditFormField-helper-row" satisfies MainAppHeaderWorkspaceCreateEditFormField_ClassNames,
+				)}
+			>
+				<span
 					className={cn(
-						nameMessage &&
-							("MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames),
+						"MainAppHeaderWorkspaceCreateEditFormField-helper-message" satisfies MainAppHeaderWorkspaceCreateEditFormField_ClassNames,
+						isHelperTextInvalid &&
+							("MainAppHeaderWorkspaceCreateEditFormField-helper-state-error" satisfies MainAppHeaderWorkspaceCreateEditFormField_ClassNames),
 					)}
 				>
-					{nameMessage ??
-						`Use ${workspaces_NAME_MIN_LENGTH}-${workspaces_NAME_MAX_LENGTH} characters. Lowercase letters and hyphens only (kebab-case).`}
-				</MyInputHelperText>
-			</MyInput>
-
-			<MyInput variant="surface">
-				<MyInputLabel>Description</MyInputLabel>
-				<MyInputArea>
-					<MyInputBox />
-					<MyInputControl
-						ref={descriptionInputRef}
-						type="text"
-						autoComplete="off"
-						defaultValue=""
-						maxLength={workspaces_DESCRIPTION_MAX_LENGTH}
-						placeholder={kind === "workspace" ? "What is this workspace used for?" : "What is this project used for?"}
-						aria-invalid={!isDescriptionValid}
-						disabled={isSubmitting}
-						onInput={onDescriptionInput}
-					/>
-				</MyInputArea>
-				<MyInputHelperText
+					{helperText}
+				</span>
+				<span
 					className={cn(
-						descriptionMessage &&
-							("MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames),
+						"MainAppHeaderWorkspaceCreateEditFormField-helper-counter" satisfies MainAppHeaderWorkspaceCreateEditFormField_ClassNames,
 					)}
 				>
-					{descriptionMessage ?? `Optional. Plain text, up to ${workspaces_DESCRIPTION_MAX_LENGTH} characters.`}
-				</MyInputHelperText>
-			</MyInput>
-		</>
+					{draftValueLength}/{maxLength}
+				</span>
+			</MyInputHelperText>
+		</MyInput>
 	);
 });
-// #endregion modal form helpers
+// #endregion create edit form field
+
+// #region create edit name field
+type MainAppHeaderWorkspaceNameField_Ref = {
+	setRejectedNameValidationMessage: (name: string, validationMessage: string) => void;
+};
+
+type MainAppHeaderWorkspaceNameField_Props = {
+	ref: Ref<MainAppHeaderWorkspaceNameField_Ref>;
+	resetKey: string;
+	initialValue: string;
+	kind: "project" | "workspace";
+	label: ReactNode;
+	submitValidationMessage?: string;
+	isSubmitting: boolean;
+	onValidationStateChange: (state: { validationMessage?: string; canonicalValue: string }) => void;
+	onUserInput: () => void;
+};
+
+const MainAppHeaderWorkspaceNameField = memo(function MainAppHeaderWorkspaceNameField(
+	props: MainAppHeaderWorkspaceNameField_Props,
+) {
+	const {
+		ref,
+		resetKey,
+		initialValue,
+		kind,
+		label,
+		submitValidationMessage,
+		isSubmitting,
+		onValidationStateChange,
+		onUserInput,
+	} = props;
+
+	const inputRef = useRef<HTMLInputElement>(null);
+	const rejectedNameMessagesMapRef = useRef<Map<string, string>>(new Map());
+	const onValidationStateChangeRef = useLiveRef(onValidationStateChange);
+	const [validationMessage, setValidationMessage] = useState<string | undefined>(undefined);
+	const [fieldDisplayValidationMessage, setFieldDisplayValidationMessage] = useState<string | undefined>(undefined);
+	const [draftValueLength, setDraftValueLength] = useState(0);
+
+	const validateInput = useFn((el: HTMLInputElement) => {
+		const canonicalName = get_canonical_name_value(el.value);
+		const validationResult = validate_name_field_input(el, canonicalName, rejectedNameMessagesMapRef.current);
+
+		setValidationMessage(validationResult.validationMessage);
+		setDraftValueLength(el.value.length);
+		onValidationStateChangeRef.current({
+			validationMessage: validationResult.validationMessage,
+			canonicalValue: canonicalName,
+		});
+		if (fieldDisplayValidationMessage !== undefined) {
+			setFieldDisplayValidationMessage(validationResult.validationMessage);
+		}
+
+		return validationResult;
+	});
+
+	const revealCurrentMessage = useFn((el: HTMLInputElement) => {
+		const validationResult = validateInput(el);
+		setFieldDisplayValidationMessage(validationResult.validationMessage);
+	});
+
+	const handleInput = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onInput"]>>((event) => {
+		const el = event.currentTarget;
+		const native = event.nativeEvent;
+		if ("isComposing" in native && (native as InputEvent).isComposing) {
+			return;
+		}
+
+		// Covers insertFromPaste, insertFromDrop, insertText, and delete-*: el.value already includes the edit (onPaste uses preventDefault and normalizes without relying on this).
+		validateInput(el);
+		onUserInput();
+	});
+
+	const handlePaste = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onPaste"]>>((event) => {
+		const pasted = event.clipboardData.getData("text/plain");
+		if (pasted === "") {
+			return;
+		}
+
+		event.preventDefault();
+		const el = event.currentTarget;
+		const start = el.selectionStart ?? el.value.length;
+		const end = el.selectionEnd ?? el.value.length;
+		el.value = el.value.slice(0, start) + pasted + el.value.slice(end);
+		validateInput(el);
+		onUserInput();
+
+		queueMicrotask(() => {
+			const pos = el.value.length;
+			el.setSelectionRange(pos, pos);
+		});
+	});
+
+	const handleCompositionEnd = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onCompositionEnd"]>>((event) => {
+		validateInput(event.currentTarget);
+		onUserInput();
+	});
+
+	const handleBlur = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onBlur"]>>((event) => {
+		revealCurrentMessage(event.currentTarget);
+	});
+
+	const handleInvalid = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onInvalid"]>>((event) => {
+		event.preventDefault();
+		revealCurrentMessage(event.currentTarget);
+	});
+
+	useEffect(() => {
+		rejectedNameMessagesMapRef.current.clear();
+		setValidationMessage(undefined);
+		setFieldDisplayValidationMessage(undefined);
+
+		const el = inputRef.current;
+		if (!el) {
+			const validated = workspaces_name_validate(
+				workspaces_name_autofix(initialValue, { trim_trailing_hyphens: false }),
+			);
+			setValidationMessage(validated._nay?.message);
+			setDraftValueLength(initialValue.length);
+			onValidationStateChangeRef.current({
+				validationMessage: validated._nay?.message,
+				canonicalValue: get_canonical_name_value(initialValue),
+			});
+			return;
+		}
+
+		el.value = initialValue;
+		const canonicalName = get_canonical_name_value(el.value);
+		const validationResult = validate_name_field_input(el, canonicalName, rejectedNameMessagesMapRef.current);
+		setValidationMessage(validationResult.validationMessage);
+		setDraftValueLength(el.value.length);
+		onValidationStateChangeRef.current({
+			validationMessage: validationResult.validationMessage,
+			canonicalValue: canonicalName,
+		});
+	}, [initialValue, onValidationStateChangeRef, resetKey]);
+
+	useImperativeHandle(
+		ref,
+		() => ({
+			setRejectedNameValidationMessage: (name, rejectedNameValidationMessage) => {
+				rejectedNameMessagesMapRef.current.set(name, rejectedNameValidationMessage);
+
+				const el = inputRef.current;
+				if (!el) {
+					return;
+				}
+
+				const canonicalName = get_canonical_name_value(el.value);
+				const validationResult = validate_name_field_input(el, canonicalName, rejectedNameMessagesMapRef.current);
+				setValidationMessage(validationResult.validationMessage);
+				setDraftValueLength(el.value.length);
+				onValidationStateChangeRef.current({
+					validationMessage: validationResult.validationMessage,
+					canonicalValue: canonicalName,
+				});
+				setFieldDisplayValidationMessage(validationResult.validationMessage);
+			},
+		}),
+		[onValidationStateChangeRef, ref],
+	);
+
+	const displayValidationMessage = submitValidationMessage ?? fieldDisplayValidationMessage;
+	const showValidationErrorMessage =
+		displayValidationMessage != null &&
+		displayValidationMessage !== "Name cannot be empty" &&
+		displayValidationMessage !== "Name must be at least 3 characters";
+	const helperText = showValidationErrorMessage
+		? displayValidationMessage
+		: `Min ${workspaces_NAME_MIN_LENGTH} characters`;
+
+	return (
+		<MainAppHeaderWorkspaceCreateEditFormField
+			validationMessage={validationMessage}
+			displayValidationMessage={displayValidationMessage}
+			inputRef={inputRef}
+			label={label}
+			placeholder={kind === "workspace" ? "acme-labs" : "my-project"}
+			draftValueLength={draftValueLength}
+			required
+			minLength={workspaces_NAME_MIN_LENGTH}
+			maxLength={workspaces_NAME_MAX_LENGTH}
+			helperText={helperText}
+			isHelperTextInvalid={Boolean(displayValidationMessage)}
+			isSubmitting={isSubmitting}
+			onCompositionEnd={handleCompositionEnd}
+			onBlur={handleBlur}
+			onInvalid={handleInvalid}
+			onInput={handleInput}
+			onPaste={handlePaste}
+		/>
+	);
+});
+// #endregion create edit name field
+
+// #region create edit description field
+type MainAppHeaderWorkspaceDescriptionField_Ref = {
+	setServerValidationMessage: (validationMessage: string) => void;
+};
+
+type MainAppHeaderWorkspaceDescriptionField_Props = {
+	ref: Ref<MainAppHeaderWorkspaceDescriptionField_Ref>;
+	resetKey: string;
+	initialValue: string;
+	kind: "project" | "workspace";
+	isSubmitting: boolean;
+	onValidationStateChange: (state: { validationMessage?: string; canonicalValue: string }) => void;
+};
+
+const MainAppHeaderWorkspaceDescriptionField = memo(function MainAppHeaderWorkspaceDescriptionField(
+	props: MainAppHeaderWorkspaceDescriptionField_Props,
+) {
+	const { ref, resetKey, initialValue, kind, isSubmitting, onValidationStateChange } = props;
+
+	const inputRef = useRef<HTMLInputElement>(null);
+	const onValidationStateChangeRef = useLiveRef(onValidationStateChange);
+	const [validationMessage, setValidationMessage] = useState<string | undefined>(undefined);
+	const [displayValidationMessage, setDisplayValidationMessage] = useState<string | undefined>(undefined);
+	const [draftValueLength, setDraftValueLength] = useState(0);
+
+	const validateInput = useFn((el: HTMLInputElement) => {
+		const canonicalDescription = get_canonical_description_value(el.value);
+		const validationResult = validate_description_field_input(el);
+
+		setValidationMessage(validationResult.validationMessage);
+		setDraftValueLength(el.value.length);
+		onValidationStateChangeRef.current({
+			validationMessage: validationResult.validationMessage,
+			canonicalValue: canonicalDescription,
+		});
+		if (displayValidationMessage !== undefined) {
+			setDisplayValidationMessage(validationResult.validationMessage);
+		}
+
+		return validationResult;
+	});
+
+	const revealCurrentMessage = useFn((el: HTMLInputElement) => {
+		const validationResult = validateInput(el);
+		setDisplayValidationMessage(validationResult.validationMessage);
+	});
+
+	const handleInput = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onInput"]>>((event) => {
+		validateInput(event.currentTarget);
+	});
+
+	const handleBlur = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onBlur"]>>((event) => {
+		revealCurrentMessage(event.currentTarget);
+	});
+
+	const handleInvalid = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onInvalid"]>>((event) => {
+		event.preventDefault();
+		revealCurrentMessage(event.currentTarget);
+	});
+
+	useEffect(() => {
+		setValidationMessage(undefined);
+		setDisplayValidationMessage(undefined);
+
+		const el = inputRef.current;
+		if (!el) {
+			const validated = workspaces_description_normalize(initialValue);
+			setValidationMessage(validated._nay?.message);
+			setDraftValueLength(initialValue.length);
+			onValidationStateChangeRef.current({
+				validationMessage: validated._nay?.message,
+				canonicalValue: get_canonical_description_value(initialValue),
+			});
+			return;
+		}
+
+		el.value = initialValue;
+		const canonicalDescription = get_canonical_description_value(el.value);
+		const validationResult = validate_description_field_input(el);
+		setValidationMessage(validationResult.validationMessage);
+		setDraftValueLength(el.value.length);
+		onValidationStateChangeRef.current({
+			validationMessage: validationResult.validationMessage,
+			canonicalValue: canonicalDescription,
+		});
+	}, [initialValue, onValidationStateChangeRef, resetKey]);
+
+	useImperativeHandle(
+		ref,
+		() => ({
+			setServerValidationMessage: (serverValidationMessage) => {
+				setValidationMessage(serverValidationMessage);
+				onValidationStateChangeRef.current({
+					validationMessage: serverValidationMessage,
+					canonicalValue: inputRef.current ? get_canonical_description_value(inputRef.current.value) : "",
+				});
+				setDisplayValidationMessage(serverValidationMessage);
+			},
+		}),
+		[onValidationStateChangeRef, ref],
+	);
+
+	return (
+		<MainAppHeaderWorkspaceCreateEditFormField
+			validationMessage={validationMessage}
+			displayValidationMessage={displayValidationMessage}
+			inputRef={inputRef}
+			label={
+				<>
+					Description{" "}
+					<span
+						className={cn(
+							"MainAppHeaderWorkspaceCreateEditFormField-label-optional" satisfies MainAppHeaderWorkspaceCreateEditFormField_ClassNames,
+						)}
+					>
+						(optional)
+					</span>
+				</>
+			}
+			placeholder={kind === "workspace" ? "What is this workspace used for?" : "What is this project used for?"}
+			draftValueLength={draftValueLength}
+			maxLength={workspaces_DESCRIPTION_MAX_LENGTH}
+			helperText={displayValidationMessage}
+			isHelperTextInvalid={Boolean(displayValidationMessage)}
+			isSubmitting={isSubmitting}
+			onBlur={handleBlur}
+			onInvalid={handleInvalid}
+			onInput={handleInput}
+		/>
+	);
+});
+// #endregion create edit description field
 
 // #region create modal
 
 type MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalCreateModal"
 	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-sub"
-	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-header-content"
 	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-body"
 	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form"
-	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-form"
-	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error";
+	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-form";
 
 type MainAppHeaderWorkspaceSwitcherModalCreateModal_Props = {
 	open: boolean;
@@ -730,88 +1098,51 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 
 		const createFormDomId = `MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form-${useId().replace(/:/g, "")}`;
 
-		const nameInputRef = useRef<HTMLInputElement>(null);
-		const descriptionInputRef = useRef<HTMLInputElement>(null);
-		const nameBlockedMessagesRef = useRef<Map<string, string>>(new Map());
+		const nameFieldRef = useRef<MainAppHeaderWorkspaceNameField_Ref>(null);
+		const descriptionFieldRef = useRef<MainAppHeaderWorkspaceDescriptionField_Ref>(null);
 		const [isNameValid, setIsNameValid] = useState(false);
-		const [isNameNonEmpty, setIsNameNonEmpty] = useState(false);
 		const [isDescriptionValid, setIsDescriptionValid] = useState(true);
-		const [nameValidationMessage, setNameValidationMessage] = useState<string | undefined>(undefined);
-		const [submitMessage, setSubmitMessage] = useState<string | undefined>(undefined);
-		const [descriptionMessage, setDescriptionMessage] = useState<string | undefined>(undefined);
+		const [nameCanonicalValue, setNameCanonicalValue] = useState("");
+		const [descriptionCanonicalValue, setDescriptionCanonicalValue] = useState("");
+		const [submitValidationMessage, setSubmitValidationMessage] = useState<string | undefined>(undefined);
 		const [isSubmitting, setIsSubmitting] = useState(false);
 
-		const syncNameValueForSubmit = useFn((el: HTMLInputElement) => {
-			const normalized = workspaces_name_autofix(el.value, { trim_trailing_hyphens: false });
-			if (el.value !== normalized) {
-				el.value = normalized;
-			}
+		const createFormResetKey = open ? `open:${kind}` : `closed:${kind}`;
 
-			setIsNameNonEmpty(normalized.length > 0);
+		const handleNameValidationStateChange = useFn<MainAppHeaderWorkspaceNameField_Props["onValidationStateChange"]>(
+			(state) => {
+				setIsNameValid(!state.validationMessage);
+				setNameCanonicalValue(state.canonicalValue);
+			},
+		);
 
-			const validated = workspaces_name_validate(normalized);
-			const blockedMessage = validated._nay ? undefined : nameBlockedMessagesRef.current.get(validated._yay);
-
-			setNameValidationMessage(validated._nay?.message ?? blockedMessage);
-			setIsNameValid(!validated._nay && !blockedMessage);
+		const handleDescriptionValidationStateChange = useFn<
+			MainAppHeaderWorkspaceDescriptionField_Props["onValidationStateChange"]
+		>((state) => {
+			setIsDescriptionValid(!state.validationMessage);
+			setDescriptionCanonicalValue(state.canonicalValue);
 		});
 
-		const applyNameInputToControl = useFn((el: HTMLInputElement) => {
-			syncNameValueForSubmit(el);
-			setSubmitMessage(undefined);
+		const handleNameUserInput = useFn(() => {
+			setSubmitValidationMessage(undefined);
 		});
 
-		const syncDescriptionValueForSubmit = useFn((el: HTMLInputElement) => {
-			const validated = workspaces_description_normalize(el.value);
-
-			setDescriptionMessage(validated._nay?.message);
-			setIsDescriptionValid(!validated._nay);
-		});
-
-		const applyDescriptionInputToControl = useFn((el: HTMLInputElement) => {
-			syncDescriptionValueForSubmit(el);
-		});
-
-		const handleFormSubmit = useFn<SubmitEventHandler<HTMLFormElement>>((event) => {
+		const handleFormSubmit = useFn<NonNullable<ComponentPropsWithoutRef<"form">["onSubmit"]>>((event) => {
 			event.preventDefault();
 			if (isSubmitting) {
 				return;
 			}
 
-			const el = nameInputRef.current;
-			if (!el) {
+			if (!event.currentTarget.checkValidity()) {
 				return;
 			}
 
-			const descriptionEl = descriptionInputRef.current;
-			if (!descriptionEl) {
-				return;
-			}
-
-			syncNameValueForSubmit(el);
-			const canonicalName = workspaces_name_autofix(el.value);
-			el.value = canonicalName;
-			const validated = workspaces_name_validate(canonicalName);
-			if (validated._nay) {
-				return;
-			}
-
-			const name = validated._yay;
-			if (nameBlockedMessagesRef.current.has(name)) {
-				return;
-			}
-
-			syncDescriptionValueForSubmit(descriptionEl);
-			const descriptionValidated = workspaces_description_normalize(descriptionEl.value);
-			if (descriptionValidated._nay) {
-				setDescriptionMessage(descriptionValidated._nay.message);
-				return;
-			}
-			const description = descriptionValidated._yay;
+			const name = nameCanonicalValue;
+			const description = descriptionCanonicalValue;
 
 			void (async (/* iife */) => {
 				setIsSubmitting(true);
-				setSubmitMessage(undefined);
+				setSubmitValidationMessage(undefined);
 
 				if (kind === "workspace") {
 					const result = await createWorkspace({ name, description });
@@ -822,14 +1153,13 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 
 					if (result._nay) {
 						if (result._nay.message === "Workspace quota reached") {
-							setSubmitMessage(quotas.extra_workspaces.disabledReason);
+							setSubmitValidationMessage(quotas.extra_workspaces.disabledReason);
 						} else if (result._nay.message === "Description is too long") {
-							setDescriptionMessage(result._nay.message);
-						} else if (should_block_name_retry(result._nay.message)) {
-							nameBlockedMessagesRef.current.set(name, result._nay.message);
-							syncNameValueForSubmit(el);
+							descriptionFieldRef.current?.setServerValidationMessage(result._nay.message);
+						} else if (is_rejected_name_message(result._nay.message)) {
+							nameFieldRef.current?.setRejectedNameValidationMessage(name, result._nay.message);
 						} else {
-							setSubmitMessage(result._nay.message);
+							setSubmitValidationMessage(result._nay.message);
 						}
 						return;
 					}
@@ -854,14 +1184,13 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 
 				if (result._nay) {
 					if (result._nay.message === "Project quota reached") {
-						setSubmitMessage(quotas.extra_projects.disabledReason);
+						setSubmitValidationMessage(quotas.extra_projects.disabledReason);
 					} else if (result._nay.message === "Description is too long") {
-						setDescriptionMessage(result._nay.message);
-					} else if (should_block_name_retry(result._nay.message)) {
-						nameBlockedMessagesRef.current.set(name, result._nay.message);
-						syncNameValueForSubmit(el);
+						descriptionFieldRef.current?.setServerValidationMessage(result._nay.message);
+					} else if (is_rejected_name_message(result._nay.message)) {
+						nameFieldRef.current?.setRejectedNameValidationMessage(name, result._nay.message);
 					} else {
-						setSubmitMessage(result._nay.message);
+						setSubmitValidationMessage(result._nay.message);
 					}
 					return;
 				}
@@ -887,44 +1216,6 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 				});
 		});
 
-		const handleNameInput = useFn<InputEventHandler<HTMLInputElement>>((event) => {
-			const el = event.currentTarget;
-			const native = event.nativeEvent;
-			if ("isComposing" in native && (native as InputEvent).isComposing) {
-				return;
-			}
-
-			// Covers insertFromPaste, insertFromDrop, insertText, and delete-*: el.value already includes the edit (onPaste uses preventDefault and normalizes without relying on this).
-			applyNameInputToControl(el);
-		});
-
-		const handleNamePaste = useFn<ClipboardEventHandler<HTMLInputElement>>((event) => {
-			const pasted = event.clipboardData.getData("text/plain");
-			if (pasted === "") {
-				return;
-			}
-
-			event.preventDefault();
-			const el = event.currentTarget;
-			const start = el.selectionStart ?? el.value.length;
-			const end = el.selectionEnd ?? el.value.length;
-			el.value = el.value.slice(0, start) + pasted + el.value.slice(end);
-			applyNameInputToControl(el);
-
-			queueMicrotask(() => {
-				const pos = el.value.length;
-				el.setSelectionRange(pos, pos);
-			});
-		});
-
-		const handleNameCompositionEnd = useFn<CompositionEventHandler<HTMLInputElement>>((event) => {
-			applyNameInputToControl(event.currentTarget);
-		});
-
-		const handleDescriptionInput = useFn<InputEventHandler<HTMLInputElement>>((event) => {
-			applyDescriptionInputToControl(event.currentTarget);
-		});
-
 		const handleCreateModalCancel = useFn(() => {
 			setOpen(false);
 		});
@@ -934,24 +1225,11 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 				return;
 			}
 
-			nameBlockedMessagesRef.current.clear();
-			setNameValidationMessage(undefined);
-			setSubmitMessage(undefined);
-			setDescriptionMessage(undefined);
-
-			const el = nameInputRef.current;
-			if (el) {
-				el.value = "";
-			}
-
-			const descriptionEl = descriptionInputRef.current;
-			if (descriptionEl) {
-				descriptionEl.value = "";
-			}
-
+			setSubmitValidationMessage(undefined);
 			setIsNameValid(false);
-			setIsNameNonEmpty(false);
 			setIsDescriptionValid(true);
+			setNameCanonicalValue("");
+			setDescriptionCanonicalValue("");
 		}, [open, kind]);
 
 		const dialogTitle = kind === "workspace" ? "Create workspace" : "Create project";
@@ -966,13 +1244,7 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 					)}
 				>
 					<MyModalHeader>
-						<div
-							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalCreateModal-header-content" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
-							)}
-						>
-							<MyModalHeading>{dialogTitle}</MyModalHeading>
-						</div>
+						<MyModalHeading>{dialogTitle}</MyModalHeading>
 					</MyModalHeader>
 
 					<MyModalScrollableArea
@@ -993,21 +1265,24 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 									"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-form" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
 								)}
 							>
-								<MainAppHeaderWorkspaceCreateEditFormFields
-									nameInputRef={nameInputRef}
-									descriptionInputRef={descriptionInputRef}
+								<MainAppHeaderWorkspaceNameField
+									ref={nameFieldRef}
+									resetKey={createFormResetKey}
+									initialValue=""
 									kind={kind}
-									nameFieldLabel={nameFieldLabel}
-									isNameValid={isNameValid}
-									isNameNonEmpty={isNameNonEmpty}
-									isDescriptionValid={isDescriptionValid}
+									label={nameFieldLabel}
+									submitValidationMessage={submitValidationMessage}
 									isSubmitting={isSubmitting}
-									nameMessage={submitMessage ?? nameValidationMessage}
-									descriptionMessage={descriptionMessage}
-									onNameCompositionEnd={handleNameCompositionEnd}
-									onNameInput={handleNameInput}
-									onNamePaste={handleNamePaste}
-									onDescriptionInput={handleDescriptionInput}
+									onValidationStateChange={handleNameValidationStateChange}
+									onUserInput={handleNameUserInput}
+								/>
+								<MainAppHeaderWorkspaceDescriptionField
+									ref={descriptionFieldRef}
+									resetKey={createFormResetKey}
+									initialValue=""
+									kind={kind}
+									isSubmitting={isSubmitting}
+									onValidationStateChange={handleDescriptionValidationStateChange}
 								/>
 							</div>
 						</form>
@@ -1055,111 +1330,56 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 
 	const editFormDomId = `MainAppHeaderWorkspaceSwitcherModalEditModal-form-${useId().replace(/:/g, "")}`;
 
-	const nameInputRef = useRef<HTMLInputElement>(null);
-	const descriptionInputRef = useRef<HTMLInputElement>(null);
-	const nameBlockedMessagesRef = useRef<Map<string, string>>(new Map());
-	const initialCanonicalNameRef = useRef<string>("");
-	const initialDescriptionRef = useRef<string>("");
+	const nameFieldRef = useRef<MainAppHeaderWorkspaceNameField_Ref>(null);
+	const descriptionFieldRef = useRef<MainAppHeaderWorkspaceDescriptionField_Ref>(null);
 	const [isNameValid, setIsNameValid] = useState(false);
-	const [isNameNonEmpty, setIsNameNonEmpty] = useState(false);
 	const [isDescriptionValid, setIsDescriptionValid] = useState(true);
-	const [isUnchanged, setIsUnchanged] = useState(true);
-	const [nameValidationMessage, setNameValidationMessage] = useState<string | undefined>(undefined);
-	const [submitMessage, setSubmitMessage] = useState<string | undefined>(undefined);
-	const [descriptionMessage, setDescriptionMessage] = useState<string | undefined>(undefined);
+	const [nameCanonicalValue, setNameCanonicalValue] = useState("");
+	const [descriptionCanonicalValue, setDescriptionCanonicalValue] = useState("");
+	const [submitValidationMessage, setSubmitValidationMessage] = useState<string | undefined>(undefined);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 
-	const syncUnchangedState = useFn(() => {
-		const el = nameInputRef.current;
-		const descriptionEl = descriptionInputRef.current;
-		if (!el || !descriptionEl) {
-			return;
-		}
+	const initialCanonicalName = target ? get_canonical_name_value(target.initialName) : "";
+	const initialCanonicalDescription = target ? get_canonical_description_value(target.initialDescription) : "";
+	const isUnchanged =
+		target === null ||
+		(nameCanonicalValue === initialCanonicalName && descriptionCanonicalValue === initialCanonicalDescription);
+	const editFormResetKey = target
+		? `${target.kind}:${target.id}:${target.initialName}:${target.initialDescription}`
+		: "closed";
 
-		const canonicalName = workspaces_name_autofix(el.value);
-		const validatedName = workspaces_name_validate(canonicalName);
-		const canonicalNameForCompare = validatedName._nay ? canonicalName : validatedName._yay;
+	const handleNameValidationStateChange = useFn<MainAppHeaderWorkspaceNameField_Props["onValidationStateChange"]>(
+		(state) => {
+			setIsNameValid(!state.validationMessage);
+			setNameCanonicalValue(state.canonicalValue);
+		},
+	);
 
-		const validatedDescription = workspaces_description_normalize(descriptionEl.value);
-		const normalizedDescription = validatedDescription._nay ? descriptionEl.value.trim() : validatedDescription._yay;
-
-		setIsUnchanged(
-			canonicalNameForCompare === initialCanonicalNameRef.current &&
-				normalizedDescription === initialDescriptionRef.current,
-		);
+	const handleDescriptionValidationStateChange = useFn<
+		MainAppHeaderWorkspaceDescriptionField_Props["onValidationStateChange"]
+	>((state) => {
+		setIsDescriptionValid(!state.validationMessage);
+		setDescriptionCanonicalValue(state.canonicalValue);
 	});
 
-	const syncNameValueForSubmit = useFn((el: HTMLInputElement) => {
-		const normalized = workspaces_name_autofix(el.value, { trim_trailing_hyphens: false });
-		if (el.value !== normalized) {
-			el.value = normalized;
-		}
-
-		setIsNameNonEmpty(normalized.length > 0);
-
-		const validated = workspaces_name_validate(normalized);
-		const blockedMessage = validated._nay ? undefined : nameBlockedMessagesRef.current.get(validated._yay);
-
-		setNameValidationMessage(validated._nay?.message ?? blockedMessage);
-		setIsNameValid(!validated._nay && !blockedMessage);
-		syncUnchangedState();
+	const handleNameUserInput = useFn(() => {
+		setSubmitValidationMessage(undefined);
 	});
 
-	const applyNameInputToControl = useFn((el: HTMLInputElement) => {
-		syncNameValueForSubmit(el);
-		setSubmitMessage(undefined);
-	});
-
-	const syncDescriptionValueForSubmit = useFn((el: HTMLInputElement) => {
-		const validated = workspaces_description_normalize(el.value);
-		setDescriptionMessage(validated._nay?.message);
-		setIsDescriptionValid(!validated._nay);
-		syncUnchangedState();
-	});
-
-	const applyDescriptionInputToControl = useFn((el: HTMLInputElement) => {
-		syncDescriptionValueForSubmit(el);
-	});
-
-	const handleFormSubmit = useFn<SubmitEventHandler<HTMLFormElement>>((event) => {
+	const handleFormSubmit = useFn<NonNullable<ComponentPropsWithoutRef<"form">["onSubmit"]>>((event) => {
 		event.preventDefault();
 		if (isSubmitting || !target) {
 			return;
 		}
 
-		const el = nameInputRef.current;
-		if (!el) {
+		if (!event.currentTarget.checkValidity()) {
 			return;
 		}
 
-		const descriptionEl = descriptionInputRef.current;
-		if (!descriptionEl) {
-			return;
-		}
+		const name = nameCanonicalValue;
+		const description = descriptionCanonicalValue;
 
-		syncNameValueForSubmit(el);
-		const canonicalName = workspaces_name_autofix(el.value);
-		el.value = canonicalName;
-		const validated = workspaces_name_validate(canonicalName);
-		if (validated._nay) {
-			return;
-		}
-
-		const name = validated._yay;
-		if (nameBlockedMessagesRef.current.has(name)) {
-			return;
-		}
-
-		syncDescriptionValueForSubmit(descriptionEl);
-		const descriptionValidated = workspaces_description_normalize(descriptionEl.value);
-		if (descriptionValidated._nay) {
-			setDescriptionMessage(descriptionValidated._nay.message);
-			return;
-		}
-
-		const description = descriptionValidated._yay;
-
-		if (name === initialCanonicalNameRef.current && description === initialDescriptionRef.current) {
+		if (name === initialCanonicalName && description === initialCanonicalDescription) {
 			setTarget(null);
 			return;
 		}
@@ -1168,7 +1388,7 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 
 		void (async (/* iife */) => {
 			setIsSubmitting(true);
-			setSubmitMessage(undefined);
+			setSubmitValidationMessage(undefined);
 
 			if (activeTarget.kind === "workspace") {
 				const result = await editWorkspace({
@@ -1184,12 +1404,11 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 
 				if (result._nay) {
 					if (result._nay.message === "Description is too long") {
-						setDescriptionMessage(result._nay.message);
-					} else if (should_block_name_retry(result._nay.message)) {
-						nameBlockedMessagesRef.current.set(name, result._nay.message);
-						syncNameValueForSubmit(el);
+						descriptionFieldRef.current?.setServerValidationMessage(result._nay.message);
+					} else if (is_rejected_name_message(result._nay.message)) {
+						nameFieldRef.current?.setRejectedNameValidationMessage(name, result._nay.message);
 					} else {
-						setSubmitMessage(result._nay.message);
+						setSubmitValidationMessage(result._nay.message);
 					}
 					return;
 				}
@@ -1220,12 +1439,11 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 
 			if (result._nay) {
 				if (result._nay.message === "Description is too long") {
-					setDescriptionMessage(result._nay.message);
-				} else if (should_block_name_retry(result._nay.message)) {
-					nameBlockedMessagesRef.current.set(name, result._nay.message);
-					syncNameValueForSubmit(el);
+					descriptionFieldRef.current?.setServerValidationMessage(result._nay.message);
+				} else if (is_rejected_name_message(result._nay.message)) {
+					nameFieldRef.current?.setRejectedNameValidationMessage(name, result._nay.message);
 				} else {
-					setSubmitMessage(result._nay.message);
+					setSubmitValidationMessage(result._nay.message);
 				}
 				return;
 			}
@@ -1252,43 +1470,6 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 			});
 	});
 
-	const handleNameInput = useFn<InputEventHandler<HTMLInputElement>>((event) => {
-		const el = event.currentTarget;
-		const native = event.nativeEvent;
-		if ("isComposing" in native && (native as InputEvent).isComposing) {
-			return;
-		}
-
-		applyNameInputToControl(el);
-	});
-
-	const handleNamePaste = useFn<ClipboardEventHandler<HTMLInputElement>>((event) => {
-		const pasted = event.clipboardData.getData("text/plain");
-		if (pasted === "") {
-			return;
-		}
-
-		event.preventDefault();
-		const el = event.currentTarget;
-		const start = el.selectionStart ?? el.value.length;
-		const end = el.selectionEnd ?? el.value.length;
-		el.value = el.value.slice(0, start) + pasted + el.value.slice(end);
-		applyNameInputToControl(el);
-
-		queueMicrotask(() => {
-			const pos = el.value.length;
-			el.setSelectionRange(pos, pos);
-		});
-	});
-
-	const handleNameCompositionEnd = useFn<CompositionEventHandler<HTMLInputElement>>((event) => {
-		applyNameInputToControl(event.currentTarget);
-	});
-
-	const handleDescriptionInput = useFn<InputEventHandler<HTMLInputElement>>((event) => {
-		applyDescriptionInputToControl(event.currentTarget);
-	});
-
 	const handleEditModalCancel = useFn(() => {
 		setTarget(null);
 	});
@@ -1305,32 +1486,9 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 			return;
 		}
 
-		nameBlockedMessagesRef.current.clear();
-		setNameValidationMessage(undefined);
-		setSubmitMessage(undefined);
-		setDescriptionMessage(undefined);
-
-		const validatedInitial = workspaces_name_validate(workspaces_name_autofix(target.initialName));
-		initialCanonicalNameRef.current = validatedInitial._nay
-			? workspaces_name_autofix(target.initialName)
-			: validatedInitial._yay;
-
-		const validatedInitialDescription = workspaces_description_normalize(target.initialDescription);
-		initialDescriptionRef.current = validatedInitialDescription._nay
-			? target.initialDescription.trim()
-			: validatedInitialDescription._yay;
-
-		const el = nameInputRef.current;
-		if (el) {
-			el.value = target.initialName;
-			applyNameInputToControl(el);
-		}
-
-		const descriptionEl = descriptionInputRef.current;
-		if (descriptionEl) {
-			descriptionEl.value = target.initialDescription;
-			applyDescriptionInputToControl(descriptionEl);
-		}
+		setSubmitValidationMessage(undefined);
+		setNameCanonicalValue(get_canonical_name_value(target.initialName));
+		setDescriptionCanonicalValue(get_canonical_description_value(target.initialDescription));
 	}, [target]);
 
 	const dialogTitle = target ? (target.kind === "workspace" ? "Edit workspace" : "Edit project") : "Edit";
@@ -1346,13 +1504,7 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 				)}
 			>
 				<MyModalHeader>
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalCreateModal-header-content" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
-						)}
-					>
-						<MyModalHeading>{dialogTitle}</MyModalHeading>
-					</div>
+					<MyModalHeading>{dialogTitle}</MyModalHeading>
 				</MyModalHeader>
 
 				<MyModalScrollableArea
@@ -1373,21 +1525,24 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 								"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-form" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
 							)}
 						>
-							<MainAppHeaderWorkspaceCreateEditFormFields
-								nameInputRef={nameInputRef}
-								descriptionInputRef={descriptionInputRef}
+							<MainAppHeaderWorkspaceNameField
+								ref={nameFieldRef}
+								resetKey={editFormResetKey}
+								initialValue={target?.initialName ?? ""}
 								kind={target?.kind ?? "workspace"}
-								nameFieldLabel={nameFieldLabel}
-								isNameValid={isNameValid}
-								isNameNonEmpty={isNameNonEmpty}
-								isDescriptionValid={isDescriptionValid}
+								label={nameFieldLabel}
+								submitValidationMessage={submitValidationMessage}
 								isSubmitting={isSubmitting}
-								nameMessage={submitMessage ?? nameValidationMessage}
-								descriptionMessage={descriptionMessage}
-								onNameCompositionEnd={handleNameCompositionEnd}
-								onNameInput={handleNameInput}
-								onNamePaste={handleNamePaste}
-								onDescriptionInput={handleDescriptionInput}
+								onValidationStateChange={handleNameValidationStateChange}
+								onUserInput={handleNameUserInput}
+							/>
+							<MainAppHeaderWorkspaceDescriptionField
+								ref={descriptionFieldRef}
+								resetKey={editFormResetKey}
+								initialValue={target?.initialDescription ?? ""}
+								kind={target?.kind ?? "workspace"}
+								isSubmitting={isSubmitting}
+								onValidationStateChange={handleDescriptionValidationStateChange}
 							/>
 						</div>
 					</form>
@@ -1604,8 +1759,6 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHea
 // #region root
 type MainAppHeaderWorkspaceSwitcherModal_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModal"
-	| "MainAppHeaderWorkspaceSwitcherModal-header-content"
-	| "MainAppHeaderWorkspaceSwitcherModal-header-description"
 	| "MainAppHeaderWorkspaceSwitcherModal-body"
 	| "MainAppHeaderWorkspaceSwitcherModal-summary"
 	| "MainAppHeaderWorkspaceSwitcherModal-summary-label"
@@ -1721,20 +1874,8 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 				className={cn("MainAppHeaderWorkspaceSwitcherModal" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames)}
 			>
 				<MyModalHeader>
-					<div
-						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModal-header-content" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
-						)}
-					>
-						<MyModalHeading>Workspace</MyModalHeading>
-						<MyModalDescription
-							className={
-								"MainAppHeaderWorkspaceSwitcherModal-header-description" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames
-							}
-						>
-							Select a workspace to list its projects, choose a project, then click Switch.
-						</MyModalDescription>
-					</div>
+					<MyModalHeading>Workspaces and projects</MyModalHeading>
+					<MyModalDescription>Switch workspaces, choose a project, or manage settings.</MyModalDescription>
 				</MyModalHeader>
 
 				<div
@@ -1793,7 +1934,7 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 							quotaFraction={workspaceQuotaFraction}
 							quotaTooltip={workspaceQuotaTooltip}
 							onCreate={handleOpenCreateWorkspaceDialog}
-							icon={<Briefcase />}
+							icon={<Building2 />}
 						/>
 
 						<MainAppHeaderWorkspaceSwitcherModalSelectPane

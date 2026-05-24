@@ -8,22 +8,8 @@
 
 		max-width: 640px;
 		width: min(94vw, 640px);
-
-		background: var(--color-base-1-03);
-
-		border-color: var(--color-base-1-08);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModal-header-content {
-		display: grid;
-		gap: 4px;
-
-		max-width: 400px;
-	}
-
-	.MainAppHeaderWorkspaceSwitcherModal-header-description {
-		color: var(--color-fg-07);
-	}
 	/* #endregion root */
 
 	/* #region body */
@@ -42,7 +28,7 @@
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModal-summary {
-		font-size: 0.75em;
+		font-size: 0.875rem;
 
 		text-box-trim: trim-both;
 		text-box-edge: cap alphabetic;
@@ -55,7 +41,7 @@
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModal-summary-value {
-		color: var(--color-fg-09);
+		color: var(--color-fg-11);
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModal-summary-chevron {
@@ -94,17 +80,6 @@
 	.MyModalPopover.MainAppHeaderWorkspaceSwitcherModalCreateModal-sub {
 		max-width: 440px;
 		width: min(94vw, 440px);
-
-		background: var(--color-base-1-03);
-
-		border-color: var(--color-base-1-08);
-	}
-
-	.MainAppHeaderWorkspaceSwitcherModalCreateModal-header-content {
-		display: grid;
-		gap: 4px;
-
-		max-width: 400px;
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form {
@@ -121,20 +96,54 @@
 		flex-direction: column;
 		gap: 8px;
 
-		.MyInputHelperText.MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-helper-state-error {
-			color: var(--color-red-09);
+		.MyInput:not(.userInvalid):not(:has([aria-invalid="true"])) .MyInputBox {
+			border-color: var(--color-base-1-05);
+		}
+
+		.MyInputHelperText {
+			color: var(--color-fg-07);
 		}
 	}
 	/* #endregion create modal */
+
+	/* #region create edit form field */
+	.MainAppHeaderWorkspaceCreateEditFormField-label-optional {
+		color: var(--color-fg-07);
+	}
+
+	.MainAppHeaderWorkspaceCreateEditFormField-helper-row {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+
+		min-height: 1.25em;
+	}
+
+	.MainAppHeaderWorkspaceCreateEditFormField-helper-message {
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.MainAppHeaderWorkspaceCreateEditFormField-helper-state-error {
+		color: var(--color-red-09);
+	}
+
+	.MainAppHeaderWorkspaceCreateEditFormField-helper-counter {
+		flex-shrink: 0;
+		margin-left: auto;
+
+		color: var(--color-fg-07);
+	}
+	/* #endregion create edit form field */
 
 	/* #region billing modal */
 	.MyModalPopover.MainAppHeaderWorkspaceSwitcherModalBillingModal {
 		max-width: 420px;
 		width: min(94vw, 420px);
-
-		background: var(--color-base-1-03);
-
-		border-color: var(--color-base-1-08);
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalBillingModal-body {
@@ -208,7 +217,7 @@
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead-icon {
 		flex-shrink: 0;
 
-		color: var(--color-fg-06);
+		color: var(--color-fg-08);
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row {
@@ -227,7 +236,7 @@
 		display: flex;
 		align-items: baseline;
 
-		color: var(--color-fg-06);
+		color: var(--color-fg-08);
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead-quota {
@@ -236,7 +245,7 @@
 		align-items: center;
 		gap: 2px;
 
-		color: var(--color-fg-05);
+		color: var(--color-fg-06);
 
 		text-box-trim: trim-both;
 		text-box-edge: cap alphabetic;
@@ -245,7 +254,7 @@
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead-help {
 		flex-shrink: 0;
 
-		color: var(--color-fg-05);
+		color: var(--color-fg-06);
 
 		font-size: 12px;
 	}
@@ -295,6 +304,7 @@
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) auto;
 		grid-template-rows: auto auto;
+		align-content: center;
 		align-items: center;
 
 		padding: 0;
@@ -303,7 +313,7 @@
 		min-height: 58px;
 
 		column-gap: 8px;
-		row-gap: 0;
+		row-gap: 2px;
 
 		border-radius: 8px;
 	}
@@ -340,7 +350,8 @@
 		contain: content;
 
 		font-weight: 500;
-		color: var(--color-fg-09);
+		line-height: 1.15;
+		color: var(--color-fg-10);
 
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -381,7 +392,7 @@
 		line-clamp: 2;
 
 		font-size: 0.875em;
-		line-height: 1.35;
+		line-height: 1.25;
 		color: var(--color-fg-08);
 	}
 
@@ -411,8 +422,9 @@
 		grid-row: 1 / -1;
 
 		align-items: center;
+		align-content: center;
 		justify-content: start;
-		gap: 0;
+		gap: 2px 0;
 
 		width: 100%;
 		height: 100%;
@@ -430,14 +442,50 @@
 		/* for the subgrid to work paint, layout and size containment cannot be used */
 		contain: style;
 
-		&[data-selected]:not(:hover):not(:focus-visible) {
-			background: var(--color-base-1-04);
+		&[aria-disabled="true"] {
+			cursor: default;
 		}
 
-		&:hover,
-		&:focus-visible {
+		&[data-selected] {
+			background: linear-gradient(var(--color-base-1-04), var(--color-base-1-03));
+			box-shadow:
+				inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+				inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 60%, transparent),
+				0 2px 4px color-mix(in oklch, black 35%, transparent);
+
 			.MainAppHeaderWorkspaceSwitcherModalListItem-label {
 				color: var(--color-fg-11);
+			}
+
+			.MainAppHeaderWorkspaceSwitcherModalListItem-description {
+				color: var(--color-fg-09);
+			}
+		}
+
+		&:not([aria-disabled="true"]):is(:hover, :focus-visible) {
+			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+			box-shadow:
+				inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+				inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 70%, transparent),
+				0 4px 10px color-mix(in oklch, black 38%, transparent);
+
+			.MainAppHeaderWorkspaceSwitcherModalListItem-label {
+				color: var(--color-fg-11);
+			}
+
+			.MainAppHeaderWorkspaceSwitcherModalListItem-description {
+				color: var(--color-fg-10);
+			}
+		}
+
+		&:not([aria-disabled="true"]):active {
+			background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
+			box-shadow:
+				inset 0 2px 4px color-mix(in oklch, black 32%, transparent),
+				inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
+
+			.MainAppHeaderWorkspaceSwitcherModalListItem-label {
+				color: var(--color-fg-12);
 			}
 
 			.MainAppHeaderWorkspaceSwitcherModalListItem-description {

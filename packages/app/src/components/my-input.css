@@ -21,7 +21,7 @@
 	/* #region helper text */
 	.MyInputHelperText {
 		display: block;
-		font-size: 0.75em;
+		font-size: 0.8125rem;
 		color: var(--color-fg-05);
 
 		padding: 0 12px 0 12px;
@@ -63,7 +63,8 @@
 			background: transparent;
 		}
 
-		.MyInput:has([aria-invalid="true"], :invalid, :user-invalid) & {
+		.MyInput.userInvalid &,
+		.MyInput:has([aria-invalid="true"]) & {
 			border-color: var(--color-red-09);
 			outline-color: var(--color-red-09);
 			box-shadow: none;

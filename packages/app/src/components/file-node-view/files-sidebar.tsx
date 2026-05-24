@@ -825,7 +825,7 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 			return;
 		}
 
-		// Use native validity for :invalid styling while keeping the app tooltip as the visible message.
+		// Keep native validity and the explicit visible-invalid class in sync with the app tooltip.
 		inputElement.setCustomValidity(isRenaming ? (renameError ?? "") : "");
 		return () => {
 			inputElement.setCustomValidity("");
@@ -865,7 +865,10 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 
 	const input = (
 		<MyInput
-			className={"FilesSidebarTreeItemTitle" satisfies FilesSidebarTreeItemTitle_ClassNames}
+			className={cn(
+				"FilesSidebarTreeItemTitle" satisfies FilesSidebarTreeItemTitle_ClassNames,
+				isRenaming && renameError && "userInvalid",
+			)}
 			variant="transparent"
 		>
 			<MyInputBox />
