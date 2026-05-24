@@ -74,7 +74,7 @@
 		align-items: center;
 
 		border-radius: 999px;
-		outline: 1px solid transparent;
+		outline: none;
 		background-color: var(--color-base-alt-1-09);
 		box-shadow:
 			inset 0 1px 1px oklch(1 0 0 / 0.08),
@@ -85,8 +85,7 @@
 
 		transition:
 			background-color 0.1s linear,
-			box-shadow 0.1s linear,
-			outline-color 0.1s linear;
+			box-shadow 0.1s linear;
 	}
 
 	.MyPanelResizeHandleGrip-icon {
@@ -127,7 +126,6 @@
 
 	.MyPanelResizeHandle[data-resize-handle-state="hover"] .MyPanelResizeHandleGrip-pill,
 	.MyPanelResizeHandle:has(.MyPanelResizeHandleGrip:hover) .MyPanelResizeHandleGrip-pill {
-		outline-color: var(--color-base-alt-1-12);
 		background-color: var(--color-base-alt-1-11);
 		box-shadow:
 			inset 0 1px 1px oklch(1 0 0 / 0.12),
@@ -144,7 +142,6 @@
 	.MyPanelResizeHandle[data-resize-handle-state="drag"] .MyPanelResizeHandleGrip-pill,
 	.MyPanelResizeHandle:active .MyPanelResizeHandleGrip-pill,
 	.MyPanelResizeHandle:has(.MyPanelResizeHandleGrip:active) .MyPanelResizeHandleGrip-pill {
-		outline-color: var(--color-fg-09);
 		background-color: var(--color-base-alt-1-12);
 	}
 	/* #endregion handle grip */
