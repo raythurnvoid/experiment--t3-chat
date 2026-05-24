@@ -141,12 +141,10 @@ const app_convex_schema = defineSchema({
 		/** timestamp in milliseconds when document was last updated */
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_parent_name", ["workspaceId", "projectId", "parentId", "name"])
-		.index("by_workspace_project_parent_kind_name_archiveOperation", [
+		.index("by_workspace_project_parent_name_archiveOperation", [
 			"workspaceId",
 			"projectId",
 			"parentId",
-			"kind",
 			"name",
 			"archiveOperationId",
 		])

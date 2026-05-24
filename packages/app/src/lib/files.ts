@@ -4,7 +4,6 @@ import {
 	files_yjs_doc_create_from_array_buffer_update,
 	files_yjs_doc_get_markdown,
 	files_yjs_doc_update_from_markdown,
-	files_CREATE_NODE_VALIDATION_MESSAGES,
 	files_is_node,
 	files_get_normalized_node_path_segments,
 	type files_TreeItem,
@@ -71,12 +70,6 @@ export function files_get_default_node_name(args: {
 
 // #region node path validation
 const cachedNodePathValidationMessages = new Map<string, string>();
-
-function get_node_kind_conflict_message(args: { kind: Doc<"files_nodes">["kind"] }) {
-	return args.kind === "file"
-		? files_CREATE_NODE_VALIDATION_MESSAGES.fileAlreadyExists
-		: files_CREATE_NODE_VALIDATION_MESSAGES.folderAlreadyExists;
-}
 
 /**
  * Build the cache key for path validation failures.
@@ -203,7 +196,11 @@ export function files_get_node_path_validation_message(args: {
 			);
 		});
 		if (isLeaf) {
-			return existingNode ? get_node_kind_conflict_message({ kind: args.kind }) : null;
+			return existingNode
+				? args.kind === "file"
+					? "This file already exists."
+					: "This folder already exists."
+				: null;
 		}
 
 		if (!existingNode || existingNode.kind !== "folder") {

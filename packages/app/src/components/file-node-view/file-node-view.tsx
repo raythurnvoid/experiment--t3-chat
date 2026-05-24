@@ -67,6 +67,7 @@ import {
 	files_get_normalized_node_path_segments,
 	type files_ContentType,
 	type files_EditorView,
+	type files_SpecialFileName,
 } from "@/lib/files.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { cn } from "@/lib/utils.ts";
@@ -131,7 +132,7 @@ function get_folder_readme_node_id(
 			node.parentId === folderItemId &&
 			node.kind === "file" &&
 			node.archiveOperationId === undefined &&
-			node.name.toLowerCase() === "readme.md"
+			node.name.toLowerCase() === ("README.md" satisfies files_SpecialFileName).toLowerCase()
 		);
 	});
 
@@ -612,7 +613,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			.action(app_convex_api.files_nodes.create_markdown_node, {
 				membershipId,
 				parentId: folderItemId,
-				name: "README.md",
+				name: "README.md" satisfies files_SpecialFileName,
 			})
 			.then((result) => {
 				if (result._nay) {

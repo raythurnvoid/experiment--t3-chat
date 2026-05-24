@@ -65,7 +65,7 @@ async function db_purge_workspace_project_content(
 	const nodeIds: Array<Id<"files_nodes">> = [];
 	for await (const page of ctx.db
 		.query("files_nodes")
-		.withIndex("by_workspace_project_parent_name", (q) =>
+		.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		nodeIds.push(page._id);

@@ -573,6 +573,140 @@ test("create_folder_node rejects duplicate active path", async () => {
 	expect(duplicateCreation._nay.message).toBe("This folder already exists.");
 });
 
+test("create_folder_node rejects active file at leaf path", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Test User",
+	});
+
+	await t.run(async (ctx) =>
+		ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			parentId: files_ROOT_ID,
+			name: "notes",
+			kind: "file",
+			path: "/notes",
+		}),
+	);
+
+	const result = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "notes",
+	});
+
+	if (result._yay) {
+		throw new Error("Expected folder creation to fail when a file already owns the path");
+	}
+	expect(result._nay.message).toBe("This folder already exists.");
+});
+
+test("create_folder_node rejects active file at intermediate path without creating descendants", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Test User",
+	});
+
+	const fileNodeId = await t.run(async (ctx) =>
+		ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			parentId: files_ROOT_ID,
+			name: "notes",
+			kind: "file",
+			path: "/notes",
+		}),
+	);
+
+	const result = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "notes/child",
+	});
+
+	if (result._yay) {
+		throw new Error("Expected folder creation to fail when an intermediate path is a file");
+	}
+	expect(result._nay.message).toBe("This folder already exists.");
+
+	await t.run(async (ctx) => {
+		const existingFile = await ctx.db.get("files_nodes", fileNodeId);
+		const child = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
+					.eq("path", "/notes/child")
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+
+		expect(existingFile?.kind).toBe("file");
+		expect(child).toBeNull();
+	});
+});
+
+test("create_folder_node reuses active intermediate folders", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.files.file_root_1.createdBy,
+		name: "Test User",
+	});
+
+	const result = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: `${db.files.file_root_1.name}/new-child`,
+	});
+
+	if (result._nay) {
+		throw new Error("Expected create_folder_node to reuse the existing intermediate folder", {
+			cause: result._nay,
+		});
+	}
+
+	await t.run(async (ctx) => {
+		const folder = await ctx.db.get("files_nodes", result._yay.nodeId);
+		const rootFolders = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
+					.eq("parentId", files_ROOT_ID)
+					.eq("name", db.files.file_root_1.name)
+					.eq("archiveOperationId", undefined),
+			)
+			.collect()
+			.then((nodes) => nodes.filter((node) => node.kind === "folder"));
+
+		expect(folder).toMatchObject({
+			name: "new-child",
+			path: `/${db.files.file_root_1.name}/new-child`,
+			parentId: db.files.file_root_1._id,
+			kind: "folder",
+		});
+		expect(rootFolders).toHaveLength(1);
+		expect(rootFolders[0]?._id).toBe(db.files.file_root_1._id);
+	});
+});
+
 test("create_markdown_node preserves caller-provided file names", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));

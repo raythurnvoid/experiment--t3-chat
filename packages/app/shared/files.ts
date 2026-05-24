@@ -34,9 +34,12 @@ export const files_INITIAL_CONTENT = `\
 
 You can start editing your document here.`;
 
-export type files_ContentType =
-	| `text/${"markdown"}${"" | `;charset=${"utf-8"}`}`
-	| "application/octet-stream";
+export type files_ContentType = `text/${"markdown"}${"" | `;charset=${"utf-8"}`}` | "application/octet-stream";
+
+export type files_SpecialFileName = "README.md";
+
+export type files_InlineAiModelId = "gpt-5-mini";
+
 export const files_MAX_MARKDOWN_CHARACTERS = 900_000;
 
 export function files_get_utf8_byte_size(content: string) {
@@ -49,11 +52,6 @@ export function files_get_utf8_byte_size(content: string) {
  * Keep this aligned with the Modal file converter `maxBytes` contract.
  **/
 export const files_MAX_UPLOADS_BYTES = 50 * 1024 * 1024;
-
-export const files_CREATE_NODE_VALIDATION_MESSAGES = {
-	fileAlreadyExists: "This file already exists.",
-	folderAlreadyExists: "This folder already exists.",
-} as const;
 
 export function files_create_tree_root() {
 	return {
@@ -150,7 +148,10 @@ const FILES_NAME_INPUT_ALPHANUMERIC_REGEX = /^[a-z0-9]$/;
 const FILES_FILE_NAME_INPUT_SEPARATOR_REGEX = /^[/._-]$/;
 const FILES_FOLDER_NAME_INPUT_SEPARATOR_REGEX = /^[/_-]$/;
 // Keep special Markdown file basenames in their conventional case after the general lowercase normalization.
-const FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES = new Set(["readme"]);
+type files_SpecialFileBaseName = files_SpecialFileName extends `${infer BaseName}.${string}`
+	? BaseName
+	: files_SpecialFileName;
+const FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES = new Set(["readme" satisfies Lowercase<files_SpecialFileBaseName>]);
 
 export function files_normalize_name_input(args: {
 	kind: app_convex_Doc<"files_nodes">["kind"];

@@ -18,12 +18,7 @@ import {
 	internalMutation,
 } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import {
-	paginationOptsValidator,
-	type RegisteredMutation,
-	type RegisteredQuery,
-	type RouteSpec,
-} from "convex/server";
+import { paginationOptsValidator, type RegisteredMutation, type RegisteredQuery, type RouteSpec } from "convex/server";
 import { Workpool } from "@convex-dev/workpool";
 import { generateText, streamText, smoothStream } from "ai";
 import { openai } from "@ai-sdk/openai";
@@ -56,10 +51,11 @@ import {
 	files_yjs_doc_update_from_markdown,
 	files_yjs_doc_create_from_tiptap_editor,
 	files_yjs_compute_diff_update_from_state_vector,
-	files_CREATE_NODE_VALIDATION_MESSAGES,
 	files_MAX_UPLOADS_BYTES,
 	files_get_utf8_byte_size,
 	type files_ContentType,
+	type files_SpecialFileName,
+	type files_InlineAiModelId,
 } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { minimatch } from "minimatch";
@@ -87,11 +83,6 @@ import {
 	r2_delete_object,
 } from "./r2.ts";
 
-const files_INLINE_AI_MODEL_ID = "gpt-5-mini" as const;
-const files_HOME_FILE_NAME = "README.md";
-// Keep recognizing home files created before special file-name casing normalized them to README.md.
-const files_LEGACY_HOME_FILE_NAME = "readme.md";
-
 const files_content_materialization_workpool = new Workpool(components.files_content_materialization_workpool, {
 	maxParallelism: 1,
 	retryActionsByDefault: true,
@@ -108,7 +99,7 @@ function files_compute_token_usage_cost_cents(args: { modelId: string; inputToke
 		case "gpt-4.1-nano":
 			return args.inputTokens * 0.00001 + args.outputTokens * 0.00004;
 		case "gpt-5.4-mini":
-		case files_INLINE_AI_MODEL_ID:
+		case ("gpt-5-mini" satisfies files_InlineAiModelId):
 		default:
 			return args.inputTokens * 0.00003 + args.outputTokens * 0.00015;
 	}
@@ -150,7 +141,7 @@ async function files_ingest_inline_ai_usage_event(
 					),
 					metadata: {
 						amount: files_compute_token_usage_cost_cents({
-							modelId: files_INLINE_AI_MODEL_ID,
+							modelId: "gpt-5-mini" satisfies files_InlineAiModelId,
 							inputTokens: args.inputTokens,
 							outputTokens: args.outputTokens,
 						}),
@@ -158,7 +149,7 @@ async function files_ingest_inline_ai_usage_event(
 						billedUserId: args.billedUser._id,
 						workspaceId: args.workspaceId,
 						projectId: args.projectId,
-						modelId: files_INLINE_AI_MODEL_ID,
+						modelId: "gpt-5-mini" satisfies files_InlineAiModelId,
 						inputTokens: args.inputTokens,
 						outputTokens: args.outputTokens,
 						threadId: "inline_ai",
@@ -219,43 +210,25 @@ function is_home_file(node: Pick<Doc<"files_nodes">, "parentId" | "name" | "kind
 function is_home_file(node: Partial<Pick<Doc<"files_nodes">, "path" | "parentId" | "name" | "kind">>) {
 	return (
 		node.kind === "file" &&
-		(node.path === `/${files_HOME_FILE_NAME}` ||
-			node.path === `/${files_LEGACY_HOME_FILE_NAME}` ||
-			(node.parentId === files_ROOT_ID &&
-				(node.name === files_HOME_FILE_NAME || node.name === files_LEGACY_HOME_FILE_NAME)))
+		(node.path === `/${"README.md" satisfies files_SpecialFileName}` ||
+			(node.parentId === files_ROOT_ID && node.name === ("README.md" satisfies files_SpecialFileName)))
 	);
 }
 
 async function db_get_home_file(ctx: QueryCtx | MutationCtx, args: { workspaceId: string; projectId: string }) {
 	const homeFile = await ctx.db
 		.query("files_nodes")
-		.withIndex("by_workspace_project_parent_kind_name_archiveOperation", (q) =>
+		.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
 				.eq("parentId", files_ROOT_ID)
-				.eq("kind", "file")
-				.eq("name", files_HOME_FILE_NAME)
+				.eq("name", "README.md" satisfies files_SpecialFileName)
 				.eq("archiveOperationId", undefined),
 		)
 		.first();
 
-	if (homeFile) {
-		return homeFile;
-	}
-
-	return ctx.db
-		.query("files_nodes")
-		.withIndex("by_workspace_project_parent_kind_name_archiveOperation", (q) =>
-			q
-				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
-				.eq("parentId", files_ROOT_ID)
-				.eq("kind", "file")
-				.eq("name", files_LEGACY_HOME_FILE_NAME)
-				.eq("archiveOperationId", undefined),
-		)
-		.first();
+	return homeFile?.kind === "file" ? homeFile : null;
 }
 
 export async function db_insert_file_chunks(
@@ -519,7 +492,7 @@ async function cascade_file_descendants_path(
 
 		const children = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_parent_name", (q) =>
+			.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("parentId", frame.parentId),
 			)
 			.collect();
@@ -701,7 +674,7 @@ export const get_file_nodes_list = query({
 	},
 });
 
-async function db_create_node(
+async function db_insert_node(
 	ctx: MutationCtx,
 	args: {
 		userId: Id<"users">;
@@ -709,6 +682,7 @@ async function db_create_node(
 		projectId: string;
 		parentId: Doc<"files_nodes">["parentId"];
 		name: Doc<"files_nodes">["name"];
+		path: Doc<"files_nodes">["path"];
 		kind: Doc<"files_nodes">["kind"];
 		contentType?: Doc<"files_nodes">["contentType"];
 		assetId?: Id<"files_r2_assets">;
@@ -716,55 +690,14 @@ async function db_create_node(
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 		shadowSourceFileNodeId?: Id<"files_nodes">;
 		markdownContent?: string;
-		now?: number;
+		now: number;
 	},
 ) {
-	const now = args.now ?? Date.now();
-	const parentPath = await resolve_parent_path_from_parent_id(ctx, {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		parentId: args.parentId,
-	});
-	if (parentPath == null) {
-		return Result({
-			_nay: {
-				name: "nay",
-				message: "Not found",
-			},
-		});
-	}
-
-	const nodePath = path_join(parentPath, args.name);
-	if (args.archiveOperationId === undefined) {
-		// Check whether an active file already exists for the same path.
-		const activePathConflict = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("path", nodePath)
-					.eq("archiveOperationId", undefined),
-			)
-			.first();
-		if (activePathConflict) {
-			return Result({
-				_nay: {
-					name: "nay",
-					message:
-						args.kind === "file"
-							? files_CREATE_NODE_VALIDATION_MESSAGES.fileAlreadyExists
-							: files_CREATE_NODE_VALIDATION_MESSAGES.folderAlreadyExists,
-				},
-			});
-		}
-	}
-
 	const nodeId = await ctx.db.insert("files_nodes", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		parentId: args.parentId,
-		path: nodePath,
+		path: args.path,
 		name: args.name,
 		kind: args.kind,
 		contentType: args.contentType,
@@ -774,7 +707,7 @@ async function db_create_node(
 		shadowFileNodeIds: [],
 		createdBy: args.userId,
 		updatedBy: args.userId,
-		updatedAt: now,
+		updatedAt: args.now,
 	});
 
 	if (args.kind === "folder") {
@@ -819,7 +752,7 @@ async function db_create_node(
 			assetId: args.yjsSnapshotAssetId,
 			createdBy: args.userId,
 			updatedBy: args.userId,
-			updatedAt: now,
+			updatedAt: args.now,
 		}),
 		ctx.db.insert("files_yjs_docs_last_sequences", {
 			workspaceId: args.workspaceId,
@@ -893,6 +826,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 ) {
 	let currentParent: Doc<"files_nodes">["parentId"] = args.parentId;
 	const pathSegments = path_extract_segments_from(args.path);
+	let currentParentPath: string | null = args.parentId === files_ROOT_ID ? "/" : null;
 
 	// Walk segments in order because each child lookup needs the previous folder id.
 	for (const [i, name] of pathSegments.entries()) {
@@ -900,22 +834,32 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		const kind: Doc<"files_nodes">["kind"] = isLeaf ? args.kind : "folder";
 		const existing = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_parent_kind_name_archiveOperation", (q) =>
+			.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
 					.eq("parentId", currentParent)
-					.eq("kind", kind)
 					.eq("name", name)
 					.eq("archiveOperationId", undefined),
 			)
 			.first();
 
+		let path: string;
 		if (existing) {
-			// Reuse active intermediate folders, but keep leaf creation as a real create.
 			if (!isLeaf) {
-				currentParent = existing._id;
-				continue;
+				// Reuse active intermediate folders, but reject files that already own the path.
+				if (existing.kind === "folder") {
+					currentParent = existing._id;
+					currentParentPath = existing.path;
+					continue;
+				}
+
+				return Result({
+					_nay: {
+						name: "nay",
+						message: "This folder already exists.",
+					},
+				});
 			}
 
 			// Archived generated files may share a path with an active replacement.
@@ -923,21 +867,37 @@ export async function files_nodes_db_create_node_recursively_at_path(
 				return Result({
 					_nay: {
 						name: "nay",
-						message:
-							kind === "file"
-								? files_CREATE_NODE_VALIDATION_MESSAGES.fileAlreadyExists
-								: files_CREATE_NODE_VALIDATION_MESSAGES.folderAlreadyExists,
+						message: kind === "file" ? "This file already exists." : "This folder already exists.",
 					},
 				});
 			}
+			path = existing.path;
+		} else {
+			if (currentParentPath == null) {
+				currentParentPath = await resolve_parent_path_from_parent_id(ctx, {
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					parentId: currentParent,
+				});
+				if (currentParentPath == null) {
+					return Result({
+						_nay: {
+							name: "nay",
+							message: "Not found",
+						},
+					});
+				}
+			}
+			path = path_join(currentParentPath, name);
 		}
 
-		const node = await db_create_node(ctx, {
+		const node = await db_insert_node(ctx, {
 			userId: args.userId,
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			parentId: currentParent,
 			name,
+			path,
 			kind,
 			contentType: isLeaf ? args.contentType : undefined,
 			assetId: isLeaf ? args.assetId : undefined,
@@ -958,6 +918,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		}
 
 		currentParent = node._yay;
+		currentParentPath = path;
 	}
 
 	const errorMessage = "nodeId not resolved after node path creation";
@@ -1358,14 +1319,14 @@ export const create_upload_node = mutation({
 			parentPath = parent.path;
 		}
 
-		const nodePath = path_join(parentPath, args.filename);
+		const path = path_join(parentPath, args.filename);
 		const existingNode = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_workspace_project_path_shadowSourceFileNode_archiveOp", (q) =>
 				q
 					.eq("workspaceId", membership.workspaceId)
 					.eq("projectId", membership.projectId)
-					.eq("path", nodePath)
+					.eq("path", path)
 					.eq("shadowSourceFileNodeId", undefined)
 					.eq("archiveOperationId", undefined),
 			)
@@ -1469,31 +1430,20 @@ export const rename_node = mutation({
 		const pathSegments = path_extract_segments_from(args.name);
 		// Resolve the target first so simple and nested renames share one conflict/write path.
 		let targetParentId = file.parentId;
-		let targetParentPath: string;
+		let targetParentPath: string | null;
 		let leafName: string;
 
 		if (pathSegments.length > 1) {
-			// Treat slash-delimited names as a move into created/reused parent folders.
-			const parentPath = await resolve_parent_path_from_parent_id(ctx, {
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				parentId: file.parentId,
-			});
-			if (parentPath == null) {
-				return Result({ _yay: null });
-			}
-
-			targetParentPath = parentPath;
+			targetParentPath = file.parentId === files_ROOT_ID ? "/" : null;
 			// We trust that the front-end is validating the input correctly.
 			for (const name of pathSegments.slice(0, -1)) {
 				const existing = await ctx.db
 					.query("files_nodes")
-					.withIndex("by_workspace_project_parent_kind_name_archiveOperation", (q) =>
+					.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
 						q
 							.eq("workspaceId", membership.workspaceId)
 							.eq("projectId", membership.projectId)
 							.eq("parentId", targetParentId)
-							.eq("kind", "folder")
 							.eq("name", name)
 							.eq("archiveOperationId", undefined),
 					)
@@ -1509,25 +1459,48 @@ export const rename_node = mutation({
 						});
 					}
 
-					targetParentId = existing._id;
-					targetParentPath = existing.path;
-					continue;
+					if (existing.kind === "folder") {
+						targetParentId = existing._id;
+						targetParentPath = existing.path;
+						continue;
+					}
+
+					return Result({
+						_nay: {
+							name: "nay",
+							message: "This folder already exists.",
+						},
+					});
 				}
 
-				const folder = await db_create_node(ctx, {
+				if (targetParentPath == null) {
+					targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
+						workspaceId: membership.workspaceId,
+						projectId: membership.projectId,
+						parentId: targetParentId,
+					});
+					if (targetParentPath == null) {
+						return Result({ _yay: null });
+					}
+				}
+
+				const folderPath = path_join(targetParentPath, name);
+				const folder = await db_insert_node(ctx, {
 					userId: userAuth.id,
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,
 					parentId: targetParentId,
 					name,
+					path: folderPath,
 					kind: "folder",
+					now: Date.now(),
 				});
 				if (folder._nay) {
 					return folder;
 				}
 
 				targetParentId = folder._yay;
-				targetParentPath = path_join(targetParentPath, name);
+				targetParentPath = folderPath;
 			}
 
 			const resolvedLeafName = pathSegments.at(-1);
@@ -1552,20 +1525,33 @@ export const rename_node = mutation({
 			leafName = args.name;
 		}
 
+		if (targetParentPath == null) {
+			const parentPath = await resolve_parent_path_from_parent_id(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				parentId: targetParentId,
+			});
+			if (parentPath == null) {
+				return Result({ _yay: null });
+			}
+			targetParentPath = parentPath;
+		}
+
 		const renamedPath = path_join(targetParentPath, leafName);
 		if (file.archiveOperationId === undefined) {
-			// Check whether an active file already exists for the same path.
-			const activePathConflict = await ctx.db
+			// Check whether an active sibling already owns the target name.
+			const activeSiblingConflict = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
 					q
 						.eq("workspaceId", membership.workspaceId)
 						.eq("projectId", membership.projectId)
-						.eq("path", renamedPath)
+						.eq("parentId", targetParentId)
+						.eq("name", leafName)
 						.eq("archiveOperationId", undefined),
 				)
 				.first();
-			if (activePathConflict && activePathConflict._id !== args.nodeId) {
+			if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
 				return Result({
 					_nay: {
 						name: "nay",
@@ -2653,7 +2639,8 @@ export async function db_get_file_content_materialization_db_state(
 		yjsLastSequenceDoc.projectId !== args.projectId ||
 		yjsLastSequenceDoc.nodeId !== args.nodeId
 	) {
-		const errorMessage = "fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
+		const errorMessage =
+			"fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
 		const errorData = {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
@@ -3046,7 +3033,8 @@ export const get_file_last_yjs_sequence = query({
 			});
 
 		if (!lastYjsSequenceDoc) {
-			const errorMessage = "fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
+			const errorMessage =
+				"fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
 			const errorData = {
 				workspaceId: fileNode.workspaceId,
 				projectId: fileNode.projectId,
@@ -3347,7 +3335,7 @@ export const create_home_file = action({
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
 			parentId: files_ROOT_ID,
-			name: files_HOME_FILE_NAME,
+			name: "README.md" satisfies files_SpecialFileName,
 			// Keep the auto-created home file consistent with user-created Markdown files.
 			markdownContent: files_INITIAL_CONTENT,
 		});
@@ -4211,7 +4199,9 @@ export const finalize_file_content_materialization = internalMutation({
 		);
 
 		if (dbWriteResult._nay) {
-			const errorMessage = "Failed to materialize file content" satisfies NonNullable<(typeof args)["_errors"]>["message"];
+			const errorMessage = "Failed to materialize file content" satisfies NonNullable<
+				(typeof args)["_errors"]
+			>["message"];
 			console.error(errorMessage, {
 				dbWriteResult,
 			});
@@ -5158,7 +5148,7 @@ export function files_http_routes(router: RouterForConvexModules) {
 
 								if (context) {
 									const result = await generateText({
-										model: openai(files_INLINE_AI_MODEL_ID),
+										model: openai("gpt-5-mini" satisfies files_InlineAiModelId),
 										system: systemPrompt,
 										messages: [
 											{
@@ -5192,7 +5182,7 @@ export function files_http_routes(router: RouterForConvexModules) {
 
 								// Generate streaming completion using AI SDK v5 UI message stream response
 								const result = streamText({
-									model: openai(files_INLINE_AI_MODEL_ID),
+									model: openai("gpt-5-mini" satisfies files_InlineAiModelId),
 									system: systemPrompt,
 									messages: [
 										{
