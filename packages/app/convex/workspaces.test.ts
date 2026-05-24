@@ -294,7 +294,7 @@ describe("create_workspace", () => {
 		expect(userQuota?.usedCount).toBe(1);
 		expect(userQuota?.maxCount).toBe(2);
 		expect(workspaceQuota?.usedCount).toBe(0);
-		expect(workspaceQuota?.maxCount).toBe(1);
+		expect(workspaceQuota?.maxCount).toBe(5);
 	});
 
 	test("rejects names that are still invalid after autofix", async () => {
@@ -728,7 +728,7 @@ describe("workspaces_db_ensure_default_workspace_and_project_for_user", () => {
 		expect(rows.userQuota?.usedCount).toBe(0);
 		expect(rows.userQuota?.maxCount).toBe(2);
 		expect(rows.workspaceQuota?.usedCount).toBe(0);
-		expect(rows.workspaceQuota?.maxCount).toBe(1);
+		expect(rows.workspaceQuota?.maxCount).toBe(5);
 	});
 
 	test("creates exactly one personal/home default during anonymous user bootstrap", async () => {
@@ -1105,7 +1105,7 @@ describe("create_project", () => {
 		expect(result._yay?.name).toBe("docs");
 	});
 
-	test("rejects creating a second non-default project in the same workspace", async () => {
+	test("rejects creating a sixth non-default project in the same workspace", async () => {
 		const t = test_convex();
 		const userId = await t.run((ctx) =>
 			ctx.db.insert("users", {
@@ -1122,19 +1122,30 @@ describe("create_project", () => {
 		const created = await t.run((ctx) => workspaces_test_seed_default_workspace(ctx, { userId }));
 		expect(created._yay).toBeTruthy();
 
-		const first = await asUser.mutation(api.workspaces.create_project, {
-			description: "",
-			workspaceId: created._yay!.workspaceId,
-			name: "docs",
-		});
-		expect(first._yay).toBeTruthy();
+		for (const name of ["docs", "board", "roadmap", "tasks", "notes"]) {
+			const result = await t.run((ctx) =>
+				workspaces_db_create_project(ctx, {
+					userId,
+					description: "",
+					workspaceId: created._yay!.workspaceId,
+					name,
+					now: Date.now(),
+				}),
+			);
+			if (result._nay) {
+				throw new Error("Failed to seed sixth-project quota test", {
+					cause: result._nay,
+				});
+			}
+			expect(result._yay?.name).toBe(name);
+		}
 
-		const second = await asUser.mutation(api.workspaces.create_project, {
+		const sixth = await asUser.mutation(api.workspaces.create_project, {
 			description: "",
 			workspaceId: created._yay!.workspaceId,
-			name: "board",
+			name: "archive",
 		});
-		expect(second._nay?.message).toBe("Project quota reached");
+		expect(sixth._nay?.message).toBe("Project quota reached");
 	});
 
 	test("does not let a shared member bypass the extra-project quota", async () => {
@@ -1172,19 +1183,23 @@ describe("create_project", () => {
 		}
 		expect(sharedWorkspace._yay).toBeTruthy();
 
-		const extraProject = await t.run((ctx) =>
-			workspaces_db_create_project(ctx, {
-				userId: ownerId,
-				description: "",
-				workspaceId: sharedWorkspace._yay!.workspaceId,
-				name: "docs",
-				now: Date.now(),
-			}),
-		);
-		if (extraProject._nay) {
-			throw new Error(extraProject._nay.message);
+		for (const name of ["docs", "board", "roadmap", "tasks", "notes"]) {
+			const extraProject = await t.run((ctx) =>
+				workspaces_db_create_project(ctx, {
+					userId: ownerId,
+					description: "",
+					workspaceId: sharedWorkspace._yay!.workspaceId,
+					name,
+					now: Date.now(),
+				}),
+			);
+			if (extraProject._nay) {
+				throw new Error("Failed to seed shared project quota test", {
+					cause: extraProject._nay,
+				});
+			}
+			expect(extraProject._yay?.name).toBe(name);
 		}
-		expect(extraProject._yay).toBeTruthy();
 
 		const shareResult = await owner.mutation(api.workspaces.invite_user_to_workspace_project, {
 			workspaceId: sharedWorkspace._yay!.workspaceId,
@@ -1196,12 +1211,12 @@ describe("create_project", () => {
 		const result = await member.mutation(api.workspaces.create_project, {
 			description: "",
 			workspaceId: sharedWorkspace._yay!.workspaceId,
-			name: "board",
+			name: "archive",
 		});
 		expect(result._nay?.message).toBe("Project quota reached");
 	});
 
-	test("keeps exactly one workspace quota doc while creating the extra project", async () => {
+	test("keeps exactly one workspace quota doc while creating extra projects", async () => {
 		const t = test_convex();
 		const userId = await t.run((ctx) =>
 			ctx.db.insert("users", {
@@ -1237,18 +1252,33 @@ describe("create_project", () => {
 		expect(before).toHaveLength(1);
 		expect(before[0]?.usedCount).toBe(0);
 
-		const created = await asUser.mutation(api.workspaces.create_project, {
-			description: "",
-			workspaceId: workspaceResult._yay!.workspaceId,
-			name: "lazy-seeded-project",
-		});
-		expect(created._yay).toBeTruthy();
+		for (const name of ["lazy-seeded-project", "seeded-two", "seeded-three", "seeded-four", "seeded-five"]) {
+			const created = await t.run((ctx) =>
+				workspaces_db_create_project(ctx, {
+					userId,
+					description: "",
+					workspaceId: workspaceResult._yay!.workspaceId,
+					name,
+					now: Date.now(),
+				}),
+			);
+			if (created._nay) {
+				throw new Error("Failed to seed workspace quota doc test", {
+					cause: created._nay,
+				});
+			}
+			expect(created._yay?.name).toBe(name);
+		}
 
-		const blocked = await asUser.mutation(api.workspaces.create_project, {
-			description: "",
-			workspaceId: workspaceResult._yay!.workspaceId,
-			name: "seeded-two",
-		});
+		const blocked = await t.run((ctx) =>
+			workspaces_db_create_project(ctx, {
+				userId,
+				description: "",
+				workspaceId: workspaceResult._yay!.workspaceId,
+				name: "seeded-six",
+				now: Date.now(),
+			}),
+		);
 		expect(blocked._nay?.message).toBe("Project quota reached");
 
 		const after = await t.run(async (ctx) =>
@@ -1258,8 +1288,8 @@ describe("create_project", () => {
 		);
 		expect(after).toHaveLength(1);
 		expect(after[0]?._id).toBe(before[0]?._id);
-		expect(after[0]?.usedCount).toBe(1);
-		expect(after[0]?.maxCount).toBe(1);
+		expect(after[0]?.usedCount).toBe(5);
+		expect(after[0]?.maxCount).toBe(5);
 	});
 });
 
@@ -4338,7 +4368,7 @@ describe("quotas.get", () => {
 			quotaName: "extra_projects",
 			workspaceId: created._yay!.workspaceId,
 			usedCount: 1,
-			maxCount: 1,
+			maxCount: 5,
 		});
 	});
 });

@@ -2,7 +2,7 @@
 	const fs = require("node:fs");
 	const path = require("node:path");
 
-	const VERSION = "0.2.0";
+	const VERSION = "0.2.1";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	const MEMORY_FILES = new Set([
 		"app-map.md",
@@ -163,10 +163,22 @@
 						style: {
 							display: style.display,
 							visibility: style.visibility,
+							overflowX: style.overflowX,
+							overflowY: style.overflowY,
 							pointerEvents: style.pointerEvents,
 							position: style.position,
 							zIndex: style.zIndex,
 							opacity: style.opacity,
+						},
+						scroll: {
+							left: Math.round(element.scrollLeft),
+							top: Math.round(element.scrollTop),
+							width: element.scrollWidth,
+							height: element.scrollHeight,
+							clientWidth: element.clientWidth,
+							clientHeight: element.clientHeight,
+							canScrollX: element.scrollWidth > element.clientWidth,
+							canScrollY: element.scrollHeight > element.clientHeight,
 						},
 						inert: element.inert === true || element.hasAttribute("inert"),
 						ariaHidden: element.getAttribute("aria-hidden"),
@@ -249,10 +261,22 @@
 						style: {
 							display: style.display,
 							visibility: style.visibility,
+							overflowX: style.overflowX,
+							overflowY: style.overflowY,
 							pointerEvents: style.pointerEvents,
 							position: style.position,
 							zIndex: style.zIndex,
 							opacity: style.opacity,
+						},
+						scroll: {
+							left: Math.round(element.scrollLeft),
+							top: Math.round(element.scrollTop),
+							width: element.scrollWidth,
+							height: element.scrollHeight,
+							clientWidth: element.clientWidth,
+							clientHeight: element.clientHeight,
+							canScrollX: element.scrollWidth > element.clientWidth,
+							canScrollY: element.scrollHeight > element.clientHeight,
 						},
 						inert: element.inert === true || element.hasAttribute("inert"),
 						ariaHidden: element.getAttribute("aria-hidden"),

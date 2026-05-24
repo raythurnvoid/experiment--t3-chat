@@ -570,6 +570,10 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 	>((args) => {
 		return app_convex.mutation(app_convex_api.workspaces.set_workspace_billing_mode, args);
 	});
+	const workspaceControlsButtonLabel =
+		workspaces === undefined
+			? "Open workspace and project switcher. Current workspace and project are loading."
+			: `Open workspace and project switcher. Current workspace: ${currentWorkspaceName}. Current project: ${currentProjectName}.`;
 
 	useEffect(() => {
 		if (!isOpen) {
@@ -591,6 +595,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 				<MyButton
 					className={"MainAppHeaderWorkspaceControls" satisfies MainAppHeaderWorkspaceControls_ClassNames}
 					variant="default"
+					aria-label={workspaceControlsButtonLabel}
 				>
 					<span
 						className={cn(

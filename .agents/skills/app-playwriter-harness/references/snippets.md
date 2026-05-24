@@ -34,6 +34,14 @@ pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.observe({ l
 pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.inspectElement({ selector: '[aria-label]', attribute: { name: 'aria-label', value: 'Main navigation' }, actionSelector: 'a, button, [role=link], [role=button]', localStorageKeys: ['app_state::sidebar::main_app_open', 'app_state::sidebar::main_app_collapsed'] });"
 ```
 
+## Inspect Workspace Switcher Lists
+
+Open the header switcher by its accessible name, then inspect the project list scroll metrics.
+
+```powershell
+pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/' }); await state.page.getByRole('button', { name: /Open workspace and project switcher/i }).click(); await state.appPlaywriterHarness.observe({ label: 'workspace switcher', search: /Workspaces and projects|Create workspace|Create project/i }); await state.appPlaywriterHarness.inspectElement({ selector: '.MainAppHeaderWorkspaceSwitcherModalSelectPane[aria-label=\"Projects\"]', actionSelector: 'button, [role=button]', computedStyles: [{ name: 'project list', selector: '.MainAppHeaderWorkspaceSwitcherModalSelectList', properties: ['maxHeight', 'overflowY', 'scrollbarGutter'] }] });"
+```
+
 ## Files Folder Create QA
 
 See the Files Folder Create QA recipe in `references/files.md`. Keep the full flow there because it is route-specific.

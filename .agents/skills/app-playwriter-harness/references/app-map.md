@@ -20,6 +20,14 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 - Closed sidebar state uses `.MySidebar-state-closed`.
 - Collapsed main sidebar state uses `.MainAppSidebar-state-collapsed`.
 
+## Workspace / Project Switcher
+
+- Header switcher button accessible name starts with `Open workspace and project switcher`.
+- Switcher dialog heading: `Workspaces and projects`.
+- Workspace pane selector: `.MainAppHeaderWorkspaceSwitcherModalSelectPane[aria-label="Workspaces"]`.
+- Project pane selector: `.MainAppHeaderWorkspaceSwitcherModalSelectPane[aria-label="Projects"]`.
+- Pane lists use `.MainAppHeaderWorkspaceSwitcherModalSelectList` and expose scroll metrics through `inspectElement(...)`.
+
 ## Stable App Element IDs
 
 - `root`

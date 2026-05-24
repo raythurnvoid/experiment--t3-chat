@@ -174,12 +174,13 @@ type MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames =
 
 export type MainAppHeaderWorkspaceSwitcherModalListItem_Props = {
 	item: MainAppHeaderWorkspaceSwitcherModal_ListItem;
+	kind: "project" | "workspace";
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainAppHeaderWorkspaceSwitcherModalListItem(
 	props: MainAppHeaderWorkspaceSwitcherModalListItem_Props,
 ) {
-	const { item } = props;
+	const { item, kind } = props;
 
 	const handleSelect = useFn(() => {
 		if (item.isCurrent) {
@@ -205,6 +206,10 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 	const isDefault = Boolean(item.isDefault);
 	const canDelete = !isDefault && Boolean(item.onDelete);
 	const showMenu = Boolean(item.onManageBilling || item.onEdit || item.onDelete);
+	const itemKindLabel = kind === "workspace" ? "workspace" : "project";
+	const itemActionLabel = `${itemKindLabel}: ${item.label}`;
+	const selectLabel = isCurrent ? `Current ${itemActionLabel}` : `Select ${itemActionLabel}`;
+	const moreActionsLabel = `More actions for ${itemActionLabel}`;
 
 	return (
 		<li
@@ -220,6 +225,7 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 				type="button"
 				variant="ghost-highlightable"
 				data-selected={isCurrent || undefined}
+				aria-label={selectLabel}
 				aria-current={isCurrent ? "true" : undefined}
 				aria-disabled={isCurrent || undefined}
 				tabIndex={isCurrent ? -1 : undefined}
@@ -279,7 +285,7 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 									"MainAppHeaderWorkspaceSwitcherModalListItem-action" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
 								)}
 								variant="ghost-highlightable"
-								tooltip="More actions"
+								tooltip={moreActionsLabel}
 							>
 								<MyIconButtonIcon>
 									<EllipsisVertical />
@@ -289,17 +295,17 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 						<MyMenuPopover>
 							<MyMenuPopoverContent>
 								{item.onManageBilling ? (
-									<MyMenuItem onClick={handleManageBilling}>
+									<MyMenuItem aria-label={`Manage billing for ${itemActionLabel}`} onClick={handleManageBilling}>
 										<MyMenuItemContent>
 											<MyMenuItemContentIcon>
 												<CreditCard />
 											</MyMenuItemContentIcon>
-											<MyMenuItemContentPrimary>Manage</MyMenuItemContentPrimary>
+											<MyMenuItemContentPrimary>Manage billing</MyMenuItemContentPrimary>
 										</MyMenuItemContent>
 									</MyMenuItem>
 								) : null}
 								{item.onEdit ? (
-									<MyMenuItem onClick={handleEdit}>
+									<MyMenuItem aria-label={`Edit ${itemActionLabel}`} onClick={handleEdit}>
 										<MyMenuItemContent>
 											<MyMenuItemContentIcon>
 												<Pencil />
@@ -309,7 +315,12 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 									</MyMenuItem>
 								) : null}
 								{item.onDelete ? (
-									<MyMenuItem variant="destructive" disabled={!canDelete} onClick={handleDelete}>
+									<MyMenuItem
+										aria-label={`Delete ${itemActionLabel}`}
+										variant="destructive"
+										disabled={!canDelete}
+										onClick={handleDelete}
+									>
 										<MyMenuItemContent>
 											<MyMenuItemContentIcon>
 												<Trash2 />
@@ -342,6 +353,8 @@ type MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames =
 
 export type MainAppHeaderWorkspaceSwitcherModalSelectHead_Props = {
 	title: string;
+	titleId: string;
+	kind: "project" | "workspace";
 	createDisabled?: boolean;
 	createDisabledReason?: string;
 	quotaFraction?: string;
@@ -352,9 +365,20 @@ export type MainAppHeaderWorkspaceSwitcherModalSelectHead_Props = {
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectHead(props: MainAppHeaderWorkspaceSwitcherModalSelectHead_Props) {
-		const { title, createDisabled, createDisabledReason, quotaFraction, quotaTooltip, onCreate, iconSlot } = props;
+		const {
+			title,
+			titleId,
+			kind,
+			createDisabled,
+			createDisabledReason,
+			quotaFraction,
+			quotaTooltip,
+			onCreate,
+			iconSlot,
+		} = props;
 
 		const createDisabledTooltip = createDisabled ? createDisabledReason : undefined;
+		const createLabel = kind === "workspace" ? "Create workspace" : "Create project";
 
 		return (
 			<div
@@ -381,13 +405,14 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 								"MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
 							)}
 						>
-							<div
+							<h2
+								id={titleId}
 								className={cn(
 									"MainAppHeaderWorkspaceSwitcherModalSelectHead-title" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
 								)}
 							>
 								{title}
-							</div>
+							</h2>
 							<MyTooltip placement="bottom">
 								<MyTooltipInfoTrigger>
 									<span
@@ -417,13 +442,14 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 								"MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
 							)}
 						>
-							<div
+							<h2
+								id={titleId}
 								className={cn(
 									"MainAppHeaderWorkspaceSwitcherModalSelectHead-title" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
 								)}
 							>
 								{title}
-							</div>
+							</h2>
 							{quotaFraction ? (
 								<span
 									className={cn(
@@ -451,6 +477,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 									type="button"
 									disabled
 									variant="ghost-highlightable"
+									aria-label={createLabel}
 									onClick={onCreate}
 								>
 									<Plus aria-hidden />
@@ -470,6 +497,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 						type="button"
 						disabled={Boolean(createDisabled)}
 						variant="ghost-highlightable"
+						aria-label={createLabel}
 						onClick={onCreate}
 					>
 						<Plus aria-hidden />
@@ -487,12 +515,13 @@ type MainAppHeaderWorkspaceSwitcherModalSelectList_ClassNames = "MainAppHeaderWo
 
 export type MainAppHeaderWorkspaceSwitcherModalSelectList_Props = {
 	myFocusSyncKey: string;
+	ariaLabel: string;
 	children: ReactNode;
 };
 
 export const MainAppHeaderWorkspaceSwitcherModalSelectList = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectList(props: MainAppHeaderWorkspaceSwitcherModalSelectList_Props) {
-		const { myFocusSyncKey, children } = props;
+		const { myFocusSyncKey, ariaLabel, children } = props;
 
 		const [list, setList] = useState<HTMLUListElement | null>(null);
 		const focusRef = useRef<MyFocus | null>(null);
@@ -523,6 +552,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectList = memo(
 					"MainAppHeaderWorkspaceSwitcherModalSelectList" satisfies MainAppHeaderWorkspaceSwitcherModalSelectList_ClassNames,
 					"MyFocus-container" satisfies MyFocus_ClassNames,
 				)}
+				aria-label={ariaLabel}
 			>
 				{children}
 			</ul>
@@ -534,6 +564,8 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectList = memo(
 // #region select pane list
 export type MainAppHeaderWorkspaceSwitcherModalSelectPaneList_Props = {
 	dialogOpen: boolean;
+	title: string;
+	kind: "project" | "workspace";
 	items: MainAppHeaderWorkspaceSwitcherModalSelectPane_Props["items"];
 	selectedItemId: string;
 };
@@ -542,15 +574,16 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPaneList = memo(
 	function MainAppHeaderWorkspaceSwitcherModalSelectPaneList(
 		props: MainAppHeaderWorkspaceSwitcherModalSelectPaneList_Props,
 	) {
-		const { dialogOpen, items, selectedItemId } = props;
+		const { dialogOpen, title, kind, items, selectedItemId } = props;
 
 		const myFocusSyncKey = `${dialogOpen}:${selectedItemId}:${items.map((item) => item.id).join(",")}`;
 
 		return (
-			<MainAppHeaderWorkspaceSwitcherModalSelectList myFocusSyncKey={myFocusSyncKey}>
+			<MainAppHeaderWorkspaceSwitcherModalSelectList myFocusSyncKey={myFocusSyncKey} ariaLabel={`${title} list`}>
 				{items.map((item) => (
 					<MainAppHeaderWorkspaceSwitcherModalListItem
 						key={item.id}
+						kind={kind}
 						item={{ ...item, isCurrent: item.id === selectedItemId }}
 					/>
 				))}
@@ -566,6 +599,7 @@ type MainAppHeaderWorkspaceSwitcherModalSelectPane_ClassNames = "MainAppHeaderWo
 export type MainAppHeaderWorkspaceSwitcherModalSelectPane_Props = {
 	dialogOpen: boolean;
 	title: string;
+	kind: "project" | "workspace";
 	items: Omit<MainAppHeaderWorkspaceSwitcherModal_ListItem, "isCurrent">[];
 	selectedItemId: string;
 	createDisabled?: boolean;
@@ -581,6 +615,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 		const {
 			dialogOpen,
 			title,
+			kind,
 			items,
 			selectedItemId,
 			createDisabled,
@@ -590,15 +625,19 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 			onCreate,
 			icon,
 		} = props;
+		const titleId = `MainAppHeaderWorkspaceSwitcherModalSelectPane-title-${kind}-${useId().replace(/:/g, "")}`;
 
 		return (
 			<section
 				className={cn(
 					"MainAppHeaderWorkspaceSwitcherModalSelectPane" satisfies MainAppHeaderWorkspaceSwitcherModalSelectPane_ClassNames,
 				)}
+				aria-label={title}
 			>
 				<MainAppHeaderWorkspaceSwitcherModalSelectHead
 					title={title}
+					titleId={titleId}
+					kind={kind}
 					createDisabled={createDisabled}
 					createDisabledReason={createDisabledReason}
 					quotaFraction={quotaFraction}
@@ -609,6 +648,8 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 
 				<MainAppHeaderWorkspaceSwitcherModalSelectPaneList
 					dialogOpen={dialogOpen}
+					title={title}
+					kind={kind}
 					items={items}
 					selectedItemId={selectedItemId}
 				/>
@@ -1941,6 +1982,7 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 						<MainAppHeaderWorkspaceSwitcherModalSelectPane
 							dialogOpen={dialogOpen}
 							title="Workspaces"
+							kind="workspace"
 							items={workspaceItems}
 							selectedItemId={draftWorkspaceId}
 							createDisabled={createWorkspaceDisabled}
@@ -1954,6 +1996,7 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 						<MainAppHeaderWorkspaceSwitcherModalSelectPane
 							dialogOpen={dialogOpen}
 							title="Projects"
+							kind="project"
 							items={projectItems}
 							selectedItemId={draftProjectId}
 							createDisabled={createProjectDisabled}

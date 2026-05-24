@@ -9,8 +9,8 @@ export const quotas = {
 	},
 	extra_projects: {
 		disabledReason:
-			"This workspace already has its extra project. Each workspace can contain only 2 projects total, including home",
-		maxCount: 1,
+			"This workspace already has 6 projects. Each workspace can contain up to 6 projects total, including home",
+		maxCount: 5,
 		tooltip_explanation:
 			"Includes the default home project and any extra projects this workspace allows. The fraction is how many projects this workspace has out of the maximum total.",
 	},

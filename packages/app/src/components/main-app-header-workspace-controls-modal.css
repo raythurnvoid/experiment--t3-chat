@@ -6,8 +6,9 @@
 
 		min-height: 0;
 
-		max-width: 640px;
-		width: min(94vw, 640px);
+		max-width: 720px;
+		width: min(94vw, 720px);
+		max-height: 92vh;
 	}
 
 	/* #endregion root */
@@ -236,7 +237,10 @@
 		display: flex;
 		align-items: baseline;
 
+		margin: 0;
+
 		color: var(--color-fg-08);
+		font-size: inherit;
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalSelectHead-quota {
@@ -282,8 +286,12 @@
 		flex: 1 1 auto;
 
 		min-height: 0;
+		/* Reserve five full rows; the sixth row should create the list scrollbar. */
+		height: 298px;
+		max-height: 298px;
 
 		overflow-y: auto;
+		scrollbar-gutter: stable;
 	}
 	/* #endregion select list */
 
