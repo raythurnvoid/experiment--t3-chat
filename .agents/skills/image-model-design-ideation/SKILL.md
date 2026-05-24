@@ -24,6 +24,7 @@ Use this skill when the image model should help make or critique a visual produc
    - Read the relevant component CSS and global token definitions.
    - Capture current implementation values separately from available candidate values.
    - Include important neighboring visual elements, such as selected states, badges, disabled buttons, surfaces, and outer borders.
+   - For border, shadow, active/pressed, hover, and focus decisions, include live computed values for `background`, `box-shadow`, `border`, `border-width`, `padding`, `box-sizing`, `background-clip`, `border-radius`, and component dimensions. A transparent real border can still create a visible rim and change where inset shadows start.
 2. Build a complete image-model prompt.
    - Include the screenshot and the exact current CSS values.
    - Include candidate tokens with values, not token names alone.
@@ -60,6 +61,7 @@ Every prompt for color, spacing, or UI hierarchy should include:
 - product surface and target component
 - current screenshot or generated reference image
 - current implementation tokens and CSS usages
+- live computed box-model and paint values when judging shadows, borders, or pressed states
 - available token names and raw values
 - relevant theme, usually dark mode for this app unless the task says otherwise
 - selected, hover, disabled, and empty states if they affect the decision
@@ -109,6 +111,16 @@ For interaction-heavy UI, ask the image model to make explicit policy decisions:
 - undo/redo implications when relevant
 
 Use still images for visual policy and browser evidence for motion, timing, and event handling.
+
+## Pressed Surface And Shadow Decisions
+
+When ideating pressed buttons, icon buttons, cards, tabs, or list items:
+
+- Ask whether the pressed state reads as a surface being pressed, not as a hole, black patch, or unrelated material.
+- Compare the full state recipe, not only the shadow: fill gradient, text/icon color, real border, shadow, radius, padding, and dimensions all affect the result.
+- Call out whether the design uses a real border or an inset/fake border. Real borders reserve space and can prevent inset shadows from visually reaching the outer edge.
+- For small icon buttons, verify the target remains the intended size after border or padding changes.
+- Use the closest accepted component state as the visual reference, such as the workspace/project active list item when aligning other pressed controls.
 
 ## Output Contract
 

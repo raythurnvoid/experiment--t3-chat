@@ -15,6 +15,7 @@ The image model does not reliably remember earlier screenshots, generated refere
    - Use Playwriter or the Browser plugin to screenshot the live app.
    - Prefer a full modal/page screenshot when surrounding hierarchy matters.
    - Also capture a component crop when fine details such as shadows, borders, alignment, or icon centering matter.
+   - For visual issues involving color, border, rim, shadow, pressed state, or layout constraints, capture the live computed CSS and dimensions. Include values such as `background`, `box-shadow`, `border`, `border-width`, `padding`, `box-sizing`, `background-clip`, `border-radius`, `width`, and `height`.
 2. Locate or create the desired reference.
    - Use the exact generated-image path, user-provided screenshot, or accepted mockup path when available.
    - If the reference came from chat or an earlier image generation, include it again in the current image-model request.
@@ -31,6 +32,7 @@ The image model does not reliably remember earlier screenshots, generated refere
    - Open the generated image path.
    - Read the embedded verdict and callouts.
    - If the report is dense, illegible, or role-inverted, regenerate with fewer callouts and larger text.
+   - If the report contradicts the live screenshot or computed browser facts, do not implement the hallucinated finding. Re-prompt with the live measurements as ground truth and ask the model to judge only remaining visual gaps.
 6. Translate the report into code.
    - Treat image-model CSS as approximate visual intent.
    - Map recommendations to this repo's real components, CSS files, and tokens.
@@ -106,6 +108,22 @@ Provide:
 
 Ask whether the progression reads correctly and what a still image cannot prove.
 
+## Box Model And Pressed Surface Review
+
+Use this review shape for active/pressed controls, rim complaints, shadow-depth changes, and small icon buttons.
+
+Provide:
+- current active/pressed screenshot crop
+- accepted reference state screenshot, if one exists
+- live computed `background`, `box-shadow`, `border`, `border-width`, `padding`, `box-sizing`, `background-clip`, `border-radius`, `width`, and `height`
+- expected material rule, such as "no real border", "no outer shadow while active", or "inset shadow should affect the whole visible surface"
+
+Ask:
+- whether any visible edge is a real unwanted border/rim or only normal antialiasing/material edge
+- whether inset shadows visually start inside a reserved border area
+- whether the pressed state reads like the same material as the reference, scaled to the current component
+- whether padding or size compensation is needed after border changes
+
 ## Guideline Extraction
 
 Use after accepting a generated design but before implementing.
@@ -123,6 +141,8 @@ Map the guidance to real app tokens and CSS yourself.
 - Always include screenshots in the current image-model request; do not say "use the previous image".
 - Keep browser screenshots and generated reports in known artifact paths.
 - Prefer component crops for tiny controls and full-page screenshots for hierarchy.
+- Treat live browser measurements as ground truth. Image-model reports can redraw or simplify screenshots and may invent wrapping, rims, borders, or constraints that are not present.
+- When a report is useful but stale because it analyzed the pre-fix screenshot, run a second verifier pass with the post-fix screenshot before declaring success.
 - Ask the model to ignore unrelated page regions.
 - Ask for large readable labels in generated reports.
 - Inspect generated output before summarizing it.
