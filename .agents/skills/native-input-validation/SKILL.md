@@ -66,16 +66,18 @@ For text inputs that validate while the user types, separate live validation fro
 - Store the validation message in a ref when the message is only needed for blur/submit reveal.
 - Keep one display validation message per field, for example `displayValidationMessage`.
 - Keep `validationMessage` separate from `displayValidationMessage`; the former drives native DOM validity through the control, the latter drives helper text and `.userInvalid` through the root.
+- Track whether the user actually edited the field before revealing the display validation message. Focus-only interactions, such as opening a modal and pressing Cancel, may blur an untouched required input; keep `validationMessage` live for state and accessibility, but do not copy it into `displayValidationMessage` until the field is dirty.
 - Use `form.checkValidity()` when the form should ask native constraint validation whether any child control is invalid without showing browser validation popups. Use `reportValidity()` only when native browser popups are explicitly desired.
 - Do not rely on the browser firing `invalid` when a field blurs. Reveal app helper text from blur/submit handlers; native `invalid` events are for constraint-validation attempts such as form validation.
 - Apply the `userInvalid` class only when the app-owned error is visible. This mirrors native `:user-invalid` naming while keeping live native validity separate from visual error timing.
 - Keep `[aria-invalid="true"]` supported in shared input CSS for non-native controls and legacy callers, but do not add `aria-invalid` to native inputs just to style the error.
-- On input, update the live ref and validity state. Refresh the display validation message only if that field is already showing an error.
-- On blur or failed submit, reveal the error by copying the live ref into UI state.
+- On input, mark the field dirty, update the live ref and validity state. Refresh the display validation message only if that field is already showing an error.
+- On blur or failed submit, reveal the error by copying the live ref into UI state only when the field is dirty or the product explicitly wants submit-time errors for untouched fields.
 - On successful submit, modal close, target switch, or flow reset, clear both the live ref and UI state.
 
 ```tsx
 const nameValidationMessageRef = useRef<string | undefined>(undefined);
+const isNameDirtyRef = useRef(false);
 const [nameMessage, setNameMessage] = useState<string | undefined>(undefined);
 
 const syncNameInput = useFn((input: HTMLInputElement) => {
@@ -89,9 +91,16 @@ const syncNameInput = useFn((input: HTMLInputElement) => {
 	}
 });
 
+const handleNameInput = useFn<InputEventHandler<HTMLInputElement>>((event) => {
+	isNameDirtyRef.current = true;
+	syncNameInput(event.currentTarget);
+});
+
 const handleNameBlur = useFn<FocusEventHandler<HTMLInputElement>>((event) => {
 	syncNameInput(event.currentTarget);
-	setNameMessage(nameValidationMessageRef.current);
+	if (isNameDirtyRef.current) {
+		setNameMessage(nameValidationMessageRef.current);
+	}
 });
 ```
 

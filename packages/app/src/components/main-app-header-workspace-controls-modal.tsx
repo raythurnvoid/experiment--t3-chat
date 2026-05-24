@@ -754,6 +754,8 @@ const MainAppHeaderWorkspaceNameField = memo(function MainAppHeaderWorkspaceName
 	const inputRef = useRef<HTMLInputElement>(null);
 	const rejectedNameMessagesMapRef = useRef<Map<string, string>>(new Map());
 	const onValidationStateChangeRef = useLiveRef(onValidationStateChange);
+	// Keep native validity live, but don't show red UI for focus-only blur from modal controls.
+	const isDirtyRef = useRef(false);
 	const [validationMessage, setValidationMessage] = useState<string | undefined>(undefined);
 	const [fieldDisplayValidationMessage, setFieldDisplayValidationMessage] = useState<string | undefined>(undefined);
 	const [draftValueLength, setDraftValueLength] = useState(0);
@@ -777,7 +779,9 @@ const MainAppHeaderWorkspaceNameField = memo(function MainAppHeaderWorkspaceName
 
 	const revealCurrentMessage = useFn((el: HTMLInputElement) => {
 		const validationResult = validateInput(el);
-		setFieldDisplayValidationMessage(validationResult.validationMessage);
+		if (isDirtyRef.current) {
+			setFieldDisplayValidationMessage(validationResult.validationMessage);
+		}
 	});
 
 	const handleInput = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onInput"]>>((event) => {
@@ -788,6 +792,7 @@ const MainAppHeaderWorkspaceNameField = memo(function MainAppHeaderWorkspaceName
 		}
 
 		// Covers insertFromPaste, insertFromDrop, insertText, and delete-*: el.value already includes the edit (onPaste uses preventDefault and normalizes without relying on this).
+		isDirtyRef.current = true;
 		validateInput(el);
 		onUserInput();
 	});
@@ -803,6 +808,7 @@ const MainAppHeaderWorkspaceNameField = memo(function MainAppHeaderWorkspaceName
 		const start = el.selectionStart ?? el.value.length;
 		const end = el.selectionEnd ?? el.value.length;
 		el.value = el.value.slice(0, start) + pasted + el.value.slice(end);
+		isDirtyRef.current = true;
 		validateInput(el);
 		onUserInput();
 
@@ -813,6 +819,7 @@ const MainAppHeaderWorkspaceNameField = memo(function MainAppHeaderWorkspaceName
 	});
 
 	const handleCompositionEnd = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onCompositionEnd"]>>((event) => {
+		isDirtyRef.current = true;
 		validateInput(event.currentTarget);
 		onUserInput();
 	});
@@ -827,6 +834,7 @@ const MainAppHeaderWorkspaceNameField = memo(function MainAppHeaderWorkspaceName
 	});
 
 	useEffect(() => {
+		isDirtyRef.current = false;
 		rejectedNameMessagesMapRef.current.clear();
 		setValidationMessage(undefined);
 		setFieldDisplayValidationMessage(undefined);
@@ -935,6 +943,8 @@ const MainAppHeaderWorkspaceDescriptionField = memo(function MainAppHeaderWorksp
 
 	const inputRef = useRef<HTMLInputElement>(null);
 	const onValidationStateChangeRef = useLiveRef(onValidationStateChange);
+	// Keep native validity live, but don't show red UI for focus-only blur from modal controls.
+	const isDirtyRef = useRef(false);
 	const [validationMessage, setValidationMessage] = useState<string | undefined>(undefined);
 	const [displayValidationMessage, setDisplayValidationMessage] = useState<string | undefined>(undefined);
 	const [draftValueLength, setDraftValueLength] = useState(0);
@@ -958,10 +968,13 @@ const MainAppHeaderWorkspaceDescriptionField = memo(function MainAppHeaderWorksp
 
 	const revealCurrentMessage = useFn((el: HTMLInputElement) => {
 		const validationResult = validateInput(el);
-		setDisplayValidationMessage(validationResult.validationMessage);
+		if (isDirtyRef.current) {
+			setDisplayValidationMessage(validationResult.validationMessage);
+		}
 	});
 
 	const handleInput = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onInput"]>>((event) => {
+		isDirtyRef.current = true;
 		validateInput(event.currentTarget);
 	});
 
@@ -975,6 +988,7 @@ const MainAppHeaderWorkspaceDescriptionField = memo(function MainAppHeaderWorksp
 	});
 
 	useEffect(() => {
+		isDirtyRef.current = false;
 		setValidationMessage(undefined);
 		setDisplayValidationMessage(undefined);
 
