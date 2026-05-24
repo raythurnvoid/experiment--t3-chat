@@ -863,7 +863,10 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 		};
 	}, [isRenaming, kind]);
 
-	const input = (
+	return (
+		<MyTooltip open={isRenaming && Boolean(renameError)} placement="bottom-start">
+			{/* Keep the tooltip anchor out of tab order; focus belongs to the treeitem or active rename input. */}
+			<MyTooltipTrigger tabIndex={-1}>
 		<MyInput
 			className={cn(
 				"FilesSidebarTreeItemTitle" satisfies FilesSidebarTreeItemTitle_ClassNames,
@@ -876,11 +879,13 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 				{...(isRenaming ? renameInputProps : null)}
 				ref={handleRenameInputRef}
 				className={"FilesSidebarTreeItemTitle-input" satisfies FilesSidebarTreeItemTitle_ClassNames}
-				readOnly={!isRenaming}
+						// Disable the idle input so it cannot receive focus outside rename mode.
+				disabled={!isRenaming}
 				tabIndex={isRenaming ? undefined : -1}
 				value={value}
-				// Hide the idle readonly title input; the treeitem owns the accessible row name until rename mode starts.
+				// Hide the idle title input; the treeitem owns the accessible row name until rename mode starts.
 				{...(isRenaming ? {} : { inert: true })}
+						aria-label={isRenaming ? `Rename ${title}` : undefined}
 				aria-hidden={isRenaming ? undefined : true}
 				onBlur={handleRenameInputBlur}
 				onBeforeInput={isRenaming ? handleRenameInputBeforeInput : undefined}
@@ -889,11 +894,7 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 				onPaste={isRenaming ? handleRenameInputPaste : undefined}
 			/>
 		</MyInput>
-	);
-
-	return (
-		<MyTooltip open={isRenaming && Boolean(renameError)} placement="bottom-start">
-			<MyTooltipTrigger>{input}</MyTooltipTrigger>
+			</MyTooltipTrigger>
 			{renameError ? <MyTooltipContent variant="error">{renameError}</MyTooltipContent> : null}
 		</MyTooltip>
 	);

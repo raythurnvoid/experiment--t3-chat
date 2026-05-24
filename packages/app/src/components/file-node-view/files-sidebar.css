@@ -451,8 +451,9 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 
-		&[readonly] {
+		&:disabled {
 			pointer-events: none;
+			opacity: 1;
 		}
 	}
 	/* #endregion tree item title */
