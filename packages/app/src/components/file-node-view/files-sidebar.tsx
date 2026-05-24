@@ -28,7 +28,7 @@ import {
 	CopyMinus,
 	CopyPlus,
 } from "lucide-react";
-import { useConvex, useQuery } from "convex/react";
+import { useConvex, useQueries, useQuery } from "convex/react";
 import {
 	dragAndDropFeature,
 	expandAllFeature,
@@ -867,33 +867,33 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 		<MyTooltip open={isRenaming && Boolean(renameError)} placement="bottom-start">
 			{/* Keep the tooltip anchor out of tab order; focus belongs to the treeitem or active rename input. */}
 			<MyTooltipTrigger tabIndex={-1}>
-		<MyInput
-			className={cn(
-				"FilesSidebarTreeItemTitle" satisfies FilesSidebarTreeItemTitle_ClassNames,
-				isRenaming && renameError && "userInvalid",
-			)}
-			variant="transparent"
-		>
-			<MyInputBox />
-			<MyInputControl
-				{...(isRenaming ? renameInputProps : null)}
-				ref={handleRenameInputRef}
-				className={"FilesSidebarTreeItemTitle-input" satisfies FilesSidebarTreeItemTitle_ClassNames}
+				<MyInput
+					className={cn(
+						"FilesSidebarTreeItemTitle" satisfies FilesSidebarTreeItemTitle_ClassNames,
+						isRenaming && renameError && "userInvalid",
+					)}
+					variant="transparent"
+				>
+					<MyInputBox />
+					<MyInputControl
+						{...(isRenaming ? renameInputProps : null)}
+						ref={handleRenameInputRef}
+						className={"FilesSidebarTreeItemTitle-input" satisfies FilesSidebarTreeItemTitle_ClassNames}
 						// Disable the idle input so it cannot receive focus outside rename mode.
-				disabled={!isRenaming}
-				tabIndex={isRenaming ? undefined : -1}
-				value={value}
-				// Hide the idle title input; the treeitem owns the accessible row name until rename mode starts.
-				{...(isRenaming ? {} : { inert: true })}
+						disabled={!isRenaming}
+						tabIndex={isRenaming ? undefined : -1}
+						value={value}
+						// Hide the idle title input; the treeitem owns the accessible row name until rename mode starts.
+						{...(isRenaming ? {} : { inert: true })}
 						aria-label={isRenaming ? `Rename ${title}` : undefined}
-				aria-hidden={isRenaming ? undefined : true}
-				onBlur={handleRenameInputBlur}
-				onBeforeInput={isRenaming ? handleRenameInputBeforeInput : undefined}
-				onChange={isRenaming ? handleRenameInputChange : undefined}
-				onCompositionEnd={isRenaming ? handleRenameInputCompositionEnd : undefined}
-				onPaste={isRenaming ? handleRenameInputPaste : undefined}
-			/>
-		</MyInput>
+						aria-hidden={isRenaming ? undefined : true}
+						onBlur={handleRenameInputBlur}
+						onBeforeInput={isRenaming ? handleRenameInputBeforeInput : undefined}
+						onChange={isRenaming ? handleRenameInputChange : undefined}
+						onCompositionEnd={isRenaming ? handleRenameInputCompositionEnd : undefined}
+						onPaste={isRenaming ? handleRenameInputPaste : undefined}
+					/>
+				</MyInput>
 			</MyTooltipTrigger>
 			{renameError ? <MyTooltipContent variant="error">{renameError}</MyTooltipContent> : null}
 		</MyTooltip>
@@ -940,7 +940,7 @@ type FilesSidebarTreeItemPrimaryAction_ClassNames = "FilesSidebarTreeItemPrimary
 type FilesSidebarTreeItemPrimaryAction_Props = {
 	itemProps: ReturnType<FilesSidebarTreeItem_Instance["getProps"]>;
 	updatedAt: files_TreeItem["updatedAt"];
-	updatedBy: files_TreeItem["updatedBy"];
+	updatedByDisplayName: string;
 	isPending: boolean;
 	isSelected: boolean;
 	isTreeDragging: boolean;
@@ -951,9 +951,10 @@ type FilesSidebarTreeItemPrimaryAction_Props = {
 const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrimaryAction(
 	props: FilesSidebarTreeItemPrimaryAction_Props,
 ) {
-	const { itemProps, updatedAt, updatedBy, isPending, isSelected, isTreeDragging, isFocused, ariaLabel } = props;
+	const { itemProps, updatedAt, updatedByDisplayName, isPending, isSelected, isTreeDragging, isFocused, ariaLabel } =
+		props;
 
-	const tooltipContent = `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the " })} by ${updatedBy || "Unknown"}`;
+	const tooltipContent = `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the " })} by ${updatedByDisplayName}`;
 
 	return (
 		<MyPrimaryAction
@@ -1184,6 +1185,7 @@ type FilesSidebarTreeItem_Props = {
 	/** Necessary to ensure the item is re-rendered when the tree is updated */
 	tree: FilesSidebarTree_Shared;
 	item: FilesSidebarTreeItem_Instance;
+	displayNameByUserId: Map<string, string>;
 	trackActiveFileIds: Set<string>;
 	selectedNodeId: string | null;
 	isSelected: boolean;
@@ -1202,6 +1204,7 @@ type FilesSidebarTreeItem_Props = {
 const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSidebarTreeItem_Props) {
 	const {
 		item,
+		displayNameByUserId,
 		trackActiveFileIds,
 		selectedNodeId,
 		isSelected,
@@ -1256,7 +1259,8 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		return result.reverse();
 	});
 
-	const metaText = `${format_relative_time(itemData.updatedAt)} ${itemData.updatedBy || "Unknown"}`;
+	const updatedByDisplayName = displayNameByUserId.get(itemData.updatedBy) ?? "Unknown";
+	const metaText = `${format_relative_time(itemData.updatedAt)} · ${updatedByDisplayName}`;
 	const shouldRenderPlaceholder = !isSearchActive && itemData.kind === "folder" && !hasChildren && isExpanded;
 	const label = isArchived ? `${itemData.name} archived` : itemData.name;
 
@@ -1382,7 +1386,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 				<FilesSidebarTreeItemPrimaryAction
 					itemProps={itemProps}
 					updatedAt={itemData.updatedAt}
-					updatedBy={itemData.updatedBy}
+					updatedByDisplayName={updatedByDisplayName}
 					isPending={isPending}
 					isSelected={isSelected}
 					isTreeDragging={isTreeDragging}
@@ -1466,6 +1470,7 @@ type FilesSidebarTree_Props = {
 	isTreeLoading: boolean;
 	showEmptyState: boolean;
 	isSearchActive: boolean;
+	displayNameByUserId: Map<string, string>;
 	trackActiveFileIds: Set<string>;
 	selectedNodeId: string | null;
 	selectedNodeIds: Set<string>;
@@ -1488,6 +1493,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		isTreeLoading,
 		showEmptyState,
 		isSearchActive,
+		displayNameByUserId,
 		trackActiveFileIds,
 		selectedNodeId,
 		selectedNodeIds,
@@ -1625,6 +1631,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 									key={itemId}
 									tree={tree}
 									item={item}
+									displayNameByUserId={displayNameByUserId}
 									trackActiveFileIds={trackActiveFileIds}
 									selectedNodeId={selectedNodeId}
 									isSelected={selectedNodeIds.has(itemId)}
@@ -2146,7 +2153,47 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		[treeNodesList],
 	);
 
-	// For some reason the compiler is not auto memoizing this so we need `useMemo`
+	// Resolve updater ids through shared anagraphic queries; React Compiler memoizes these derived values.
+	const updatedByUserIds = ((/* iife */) => {
+		const result = new Set<app_convex_Id<"users">>();
+		for (const item of treeItemsList ?? []) {
+			if (files_is_node(item)) {
+				result.add(item.updatedBy);
+			}
+		}
+		return [...result];
+	})();
+
+	const updatedByAnagraphicQueryResults = useQueries(
+		Object.fromEntries(
+			updatedByUserIds.map((userId) => [
+				userId,
+				{
+					query: app_convex_api.users.get_anagraphic,
+					args: { userId },
+				},
+			]),
+		),
+	);
+
+	const displayNameByUserId = ((/* iife */) => {
+		const result = new Map<string, string>();
+		for (const userId of updatedByUserIds) {
+			const queryResult = updatedByAnagraphicQueryResults[userId];
+			if (queryResult === undefined || queryResult instanceof Error || queryResult === null) {
+				continue;
+			}
+
+			const displayName = queryResult.displayName.trim();
+			if (displayName) {
+				result.set(userId, displayName);
+			}
+		}
+		return result;
+	})();
+
+	// Keep this manual memo: React Compiler otherwise fuses the tree index with `canExpandAll`
+	// and rebuilds the full tree whenever `expandedItems` changes.
 	const treeItems = useMemo(() => {
 		if (!treeItemsList) {
 			return undefined;
@@ -3431,6 +3478,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					isTreeLoading={treeItemsList === undefined}
 					showEmptyState={showEmptyState}
 					isSearchActive={isSearchActive}
+					displayNameByUserId={displayNameByUserId}
 					trackActiveFileIds={trackActiveFileIds}
 					selectedNodeId={selectedNodeId}
 					selectedNodeIds={selectedNodeIds}
