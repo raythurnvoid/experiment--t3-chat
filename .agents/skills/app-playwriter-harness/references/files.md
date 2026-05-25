@@ -102,6 +102,138 @@ Keep row-surface checks as a lightweight Playwriter/manual recipe because they v
 - Inspect computed styles for the primary action: `borderWidth` should be `0px`, `outlineStyle` should be `none`, and no transparent rim should appear between the row edge and the shadowed surface.
 - Confirm secondary action buttons still use their existing button styling and do not inherit the row-surface treatment.
 
+## Sidebar Tree Selection Context QA
+
+Keep selection-context checks as a route-specific Playwriter recipe. The behavior depends on Headless Tree state, TanStack route state, portaled menus, and browser focus/pointer events, so prefer this recipe over committed browser tests or mocked tree instances.
+
+- Bind a single `/files` tab and clear the search box.
+- Ensure the route is on a non-root `nodeId`; if it is missing or `root`, click the first visible `.FilesSidebarTreeItemPrimaryAction` and wait for the URL `nodeId` to match that row's `data-file-id`.
+- Read selected rows with `.FilesSidebarTreeItem[data-file-id]:has(.FilesSidebarTreeItemPrimaryAction[aria-selected="true"])`.
+- Control-click a non-navigated visible row and verify at least two selected ids are visible.
+- Click the Search files input. The selected ids should reconcile to exactly `[nodeId]`.
+- Recreate the multi-selection, open a row `More actions` menu, and verify the multi-selection remains visible while the menu is open. Then click Search files and verify it reconciles to `[nodeId]`.
+- Recreate the multi-selection, open the top `More options` menu, and verify the multi-selection remains visible while the menu is open. Then click Search files and verify it reconciles to `[nodeId]`.
+- Recreate the multi-selection and click empty whitespace inside `.FilesSidebarTree`, below the last visible row when space is available. The selected ids should reconcile to exactly `[nodeId]`.
+- Navigate to `nodeId=root`, Control-click two visible rows, then click Search files or empty tree whitespace. The selected ids should become `[]`.
+- Do not click archive/delete menu items during this check.
+
+Reusable script shape:
+
+```powershell
+$scriptPath = Join-Path $env:TEMP 'playwriter-files-sidebar-selection-context-check.js'
+@'
+await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/files' });
+state.page.setDefaultTimeout(10000);
+
+const treeRows = state.page.locator(".FilesSidebarTreeItem[data-file-id]");
+const searchInput = state.page.locator('input[placeholder="Search files"]').first();
+await treeRows.first().waitFor({ timeout: 10000 });
+await searchInput.fill("");
+
+async function selectedIds() {
+	const selectedRows = state.page.locator('.FilesSidebarTreeItem[data-file-id]:has(.FilesSidebarTreeItemPrimaryAction[aria-selected="true"])');
+	const ids = [];
+	const count = await selectedRows.count();
+	for (let index = 0; index < count; index++) {
+		ids.push(await selectedRows.nth(index).getAttribute("data-file-id"));
+	}
+	return ids;
+}
+
+async function waitForNodeId(expectedNodeId) {
+	for (let attempt = 0; attempt < 40; attempt++) {
+		if (new URL(state.page.url()).searchParams.get("nodeId") === expectedNodeId) return;
+		await state.page.waitForTimeout(100);
+	}
+	throw new Error(`Expected URL nodeId ${expectedNodeId}, got ${state.page.url()}`);
+}
+
+async function expectSelectedIds(expectedIds, label) {
+	await state.page.waitForTimeout(250);
+	const actualIds = await selectedIds();
+	console.log(label, actualIds);
+	if (JSON.stringify(actualIds) !== JSON.stringify(expectedIds)) {
+		throw new Error(`${label}: expected ${JSON.stringify(expectedIds)}, got ${JSON.stringify(actualIds)}.`);
+	}
+}
+
+async function firstNonNavigatedRow(navigatedId) {
+	const count = await treeRows.count();
+	for (let index = 0; index < count; index++) {
+		const row = treeRows.nth(index);
+		const id = await row.getAttribute("data-file-id");
+		if (id && id !== navigatedId) return row;
+	}
+	throw new Error("No non-navigated row is available.");
+}
+
+let navigatedId = new URL(state.page.url()).searchParams.get("nodeId");
+if (!navigatedId || navigatedId === "root") {
+	const firstRow = treeRows.first();
+	const firstRowId = await firstRow.getAttribute("data-file-id");
+	if (!firstRowId) throw new Error("Could not read the first row id.");
+	await firstRow.locator(".FilesSidebarTreeItemPrimaryAction").click();
+	await waitForNodeId(firstRowId);
+	navigatedId = firstRowId;
+}
+
+async function createMultiSelection() {
+	const row = await firstNonNavigatedRow(navigatedId);
+	const rowId = await row.getAttribute("data-file-id");
+	await row.locator(".FilesSidebarTreeItemPrimaryAction").click({ modifiers: ["Control"] });
+	const ids = await selectedIds();
+	if (!rowId || ids.length < 2 || !ids.includes(navigatedId) || !ids.includes(rowId)) {
+		throw new Error(`Expected navigated row ${navigatedId} and Control-click row ${rowId} to be selected, got ${JSON.stringify(ids)}.`);
+	}
+	return { row, rowId };
+}
+
+await createMultiSelection();
+await searchInput.click();
+await expectSelectedIds([navigatedId], "Search input reconciles to navigated row");
+
+const rowMenuSelection = await createMultiSelection();
+await rowMenuSelection.row.hover();
+await rowMenuSelection.row.locator(".FilesSidebarTreeItemMoreAction").first().click();
+await state.page.locator('[data-files-sidebar-tree-context][role="menu"]').first().waitFor({ timeout: 5000 });
+if ((await selectedIds()).length < 2) throw new Error("Expected row menu to keep multi-selection visible.");
+await searchInput.click();
+await expectSelectedIds([navigatedId], "Leaving row menu reconciles to navigated row");
+
+await createMultiSelection();
+await state.page.locator(".FilesSidebarTopSectionMoreAction").first().click();
+await state.page.locator('[data-files-sidebar-tree-context][role="menu"]').first().waitFor({ timeout: 5000 });
+if ((await selectedIds()).length < 2) throw new Error("Expected top menu to keep multi-selection visible.");
+await searchInput.click();
+await expectSelectedIds([navigatedId], "Leaving top menu reconciles to navigated row");
+
+await createMultiSelection();
+const treeBox = await state.page.locator(".FilesSidebarTree").first().boundingBox();
+const lastRowBox = await treeRows.last().boundingBox();
+if (treeBox && lastRowBox && treeBox.y + treeBox.height > lastRowBox.y + lastRowBox.height + 24) {
+	await state.page.mouse.click(treeBox.x + treeBox.width / 2, Math.min(treeBox.y + treeBox.height - 12, lastRowBox.y + lastRowBox.height + 24));
+	await expectSelectedIds([navigatedId], "Tree whitespace reconciles to navigated row");
+} else {
+	console.log("Skipped tree whitespace click because no empty tree area is visible.");
+}
+
+const rootUrl = new URL(state.page.url());
+rootUrl.searchParams.set("nodeId", "root");
+rootUrl.searchParams.delete("view");
+await state.page.goto(rootUrl.toString(), { waitUntil: "commit" });
+await treeRows.first().waitFor({ timeout: 10000 });
+await searchInput.fill("");
+await treeRows.first().locator(".FilesSidebarTreeItemPrimaryAction").click({ modifiers: ["Control"] });
+await treeRows.nth(1).locator(".FilesSidebarTreeItemPrimaryAction").click({ modifiers: ["Control"] });
+if ((await selectedIds()).length < 2) throw new Error("Expected temporary root multi-selection before reset.");
+await searchInput.click();
+await expectSelectedIds([], "Root route outside interaction clears selection");
+
+state.page.removeAllListeners();
+'@ | Set-Content -LiteralPath $scriptPath -Encoding utf8
+pnpx playwriter -s $session -f $scriptPath --timeout 90000
+```
+
 ## R2 Upload QA
 
 Keep R2 upload checks as a route-specific recipe. Do not promote this flow into the installed harness unless file upload controls become a generic primitive across routes.

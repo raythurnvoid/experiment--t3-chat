@@ -82,7 +82,7 @@ import { cn, forward_ref, path_extract_segments_from, should_never_happen, sx } 
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { dom_clear_text_selection } from "@/lib/dom-utils.ts";
 import { Result } from "@/lib/errors-as-values-utils.ts";
-import { useUiInteractedOutside } from "@/lib/ui.tsx";
+import { useGlobalEventList } from "@/lib/global-event.tsx";
 import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
 import {
 	files_ROOT_ID,
@@ -123,6 +123,11 @@ type DropZoneRow = {
 };
 
 const ROW_HEIGHT_PX = 44;
+const FILES_SIDEBAR_SELECTION_CONTEXT_EVENTS: Array<"pointerdown" | "focusin"> = ["pointerdown", "focusin"];
+
+type FilesSidebarTreeContext_CustomAttributes = {
+	"data-files-sidebar-tree-context": "";
+};
 
 // #region helpers
 type TreeItems = {
@@ -451,6 +456,18 @@ function sort_children(args: { children: string[]; itemById: Map<string, files_T
 	});
 }
 
+function files_sidebar_target_is_in_selection_context(target: EventTarget | null) {
+	if (!(target instanceof Element)) {
+		return false;
+	}
+
+	return Boolean(
+		target.closest(
+			`[${"data-files-sidebar-tree-context" satisfies keyof FilesSidebarTreeContext_CustomAttributes}]`,
+		),
+	);
+}
+
 // #endregion helpers
 
 // #region optimistic tree rename
@@ -653,7 +670,12 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 					</MyIconButtonIcon>
 				</MyIconButton>
 			</MyMenuTrigger>
-			<MyMenuPopover unmountOnHide>
+			<MyMenuPopover
+				{...({
+					"data-files-sidebar-tree-context": "",
+				} satisfies Partial<FilesSidebarTreeContext_CustomAttributes>)}
+				unmountOnHide
+			>
 				<MyMenuPopoverContent>
 					<MyMenuItem disabled={!canRename} hideOnClick onClick={handleRenameClick}>
 						<MyMenuItemContent>
@@ -1456,8 +1478,9 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					"--FilesSidebarTreeItem-content-depth": depth,
 				} satisfies Partial<FilesSidebar_CssVars>)}
 				{...({
+					"data-files-sidebar-tree-context": "",
 					"data-file-id": itemId,
-				} satisfies Partial<FilesSidebarTreeItem_CustomAttributes>)}
+				} satisfies Partial<FilesSidebarTreeContext_CustomAttributes & FilesSidebarTreeItem_CustomAttributes>)}
 				onDragOverCapture={handleExternalFileDragOverCapture}
 				onDropCapture={handleExternalFileDropCapture}
 			>
@@ -1662,8 +1685,6 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 	const renderedTreeItems = tree().getItems();
 	const treeContainerProps = tree().getContainerProps("files_nodes");
 
-	const [treeElement, setTreeElement] = useState<HTMLDivElement | null>(null);
-	const isTreeFocusedRef = useRef(false);
 	const [isDraggingOverRootZone, setIsDraggingOverRootZone] = useState(false);
 	const isDraggingOverRootZoneRef = useRef(false);
 	const activeDropTargetId = tree().getState().dnd?.draggingOverItem?.getId() ?? null;
@@ -1684,26 +1705,6 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		activeDropTargetId,
 		isDraggingOverRootZone,
 	});
-
-	useUiInteractedOutside(treeElement, () => {
-		if (!isTreeFocusedRef.current) {
-			return;
-		}
-		tree().setSelectedItems([]);
-	});
-
-	const handleFocus = () => {
-		isTreeFocusedRef.current = true;
-	};
-
-	const handleBlur: NonNullable<FilesSidebarTree_DivProps["onBlur"]> = (event) => {
-		const nextFocusedElement = event.relatedTarget;
-		if (event.currentTarget.contains(nextFocusedElement)) {
-			return;
-		}
-
-		isTreeFocusedRef.current = false;
-	};
 
 	const handleSetIsDraggingOverRootZone = (nextValue: FilesSidebarTree_Props["isBusy"]) => {
 		if (isDraggingOverRootZoneRef.current === nextValue) {
@@ -1767,15 +1768,12 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 
 	return (
 		<div
-			ref={setTreeElement}
 			className={cn(
 				"FilesSidebarTree" satisfies FilesSidebarTree_ClassNames,
 				isTreeDragging && ("FilesSidebarTree-dragging" satisfies FilesSidebarTree_ClassNames),
 			)}
 			{...treeContainerProps}
 			style={treeContainerProps.style}
-			onFocus={handleFocus}
-			onBlur={handleBlur}
 			onDragEnterCapture={handleDragEnterCapture}
 			onDragOverCapture={handleDragOverCapture}
 			onDragLeaveCapture={handleDragLeaveCapture}
@@ -1987,7 +1985,13 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 					</MyIconButtonIcon>
 				</MyIconButton>
 			</MyMenuTrigger>
-			<MyMenuPopover placement="bottom-end" unmountOnHide>
+			<MyMenuPopover
+				{...({
+					"data-files-sidebar-tree-context": "",
+				} satisfies Partial<FilesSidebarTreeContext_CustomAttributes>)}
+				placement="bottom-end"
+				unmountOnHide
+			>
 				<MyMenuPopoverContent>
 					{isMultiSelectionActive ? (
 						<MyMenuItem variant="destructive" disabled={isBusy} hideOnClick onClick={handleArchiveSelectionClick}>
@@ -2089,7 +2093,12 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 
 			<FilesSidebarSearch onSearchQueryChange={onSearchQueryChange} />
 
-			<div className={cn("FilesSidebarTopSection-actions" satisfies FilesSidebarTopSection_ClassNames)}>
+			<div
+				className={cn("FilesSidebarTopSection-actions" satisfies FilesSidebarTopSection_ClassNames)}
+				{...({
+					"data-files-sidebar-tree-context": "",
+				} satisfies Partial<FilesSidebarTreeContext_CustomAttributes>)}
+			>
 				{selectedNodeIdsCount > 1 ? (
 					<div
 						className={cn("FilesSidebarTopSection-multi-selection-counter" satisfies FilesSidebarTopSection_ClassNames)}
@@ -3142,11 +3151,50 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		},
 	);
 
-	const selectedItemsBeforeCancelledDragRef = useRef<string[] | null>(null);
-	const [dragSelectionRestoreFeature] = useState(
+	const isInternalTreeDragActiveRef = useRef(false);
+	const reconcileTreeSelectionToNavigatedNode = useFn((treeInstance: TreeInstance<files_TreeItem>) => {
+		const selectableNavigatedNodeId =
+			selectedNodeId && selectedNodeId !== files_ROOT_ID && visibleFileIds.has(selectedNodeId) ? selectedNodeId : null;
+		const selectionDataRef = treeInstance.getDataRef<SelectionDataRef>();
+		const selectedItemIds = treeInstance.getState().selectedItems ?? [];
+
+		if (!selectableNavigatedNodeId) {
+			if (selectedItemIds.length === 0 && !selectionDataRef.current.selectUpToAnchorId) {
+				return;
+			}
+
+			selectionDataRef.current.selectUpToAnchorId = null;
+			treeInstance.setSelectedItems([]);
+			return;
+		}
+
+		if (
+			selectedItemIds.length === 1 &&
+			selectedItemIds[0] === selectableNavigatedNodeId &&
+			selectionDataRef.current.selectUpToAnchorId === selectableNavigatedNodeId
+		) {
+			return;
+		}
+
+		// Keep drag cleanup aligned with the route-owned navigated row, not Headless Tree's temporary drag source.
+		selectionDataRef.current.selectUpToAnchorId = selectableNavigatedNodeId;
+		treeInstance.setSelectedItems([selectableNavigatedNodeId]);
+		treeInstance.getItemInstance(selectableNavigatedNodeId).setFocused();
+	});
+
+	const reconcileTreeSelectionToNavigatedNodeAfterInternalDrag = useFn((treeInstance: TreeInstance<files_TreeItem>) => {
+		if (!isInternalTreeDragActiveRef.current) {
+			return;
+		}
+
+		isInternalTreeDragActiveRef.current = false;
+		reconcileTreeSelectionToNavigatedNode(treeInstance);
+	});
+
+	const [dragSelectionReconcileFeature] = useState(
 		() =>
 			({
-				key: "files-sidebar-drag-selection-restore",
+				key: "files-sidebar-drag-selection-reconcile",
 
 				treeInstance: {
 					getContainerProps: ({ tree, prev }, treeLabel) => {
@@ -3155,26 +3203,24 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						return {
 							...prevProps,
 							onDrop: (event: DragEvent) => {
-								prevProps.onDrop?.(event);
-								if (event.defaultPrevented) {
-									selectedItemsBeforeCancelledDragRef.current = null;
-								}
+								return Promise.resolve(prevProps.onDrop?.(event)).finally(() => {
+									reconcileTreeSelectionToNavigatedNodeAfterInternalDrag(tree);
+								});
 							},
 						};
 					},
 				},
 
 				itemInstance: {
-					getProps: ({ prev }) => {
+					getProps: ({ tree, prev }) => {
 						const prevProps = prev?.() ?? {};
 
 						return {
 							...prevProps,
 							onDrop: (event: DragEvent) => {
-								prevProps.onDrop?.(event);
-								if (event.defaultPrevented) {
-									selectedItemsBeforeCancelledDragRef.current = null;
-								}
+								return Promise.resolve(prevProps.onDrop?.(event)).finally(() => {
+									reconcileTreeSelectionToNavigatedNodeAfterInternalDrag(tree);
+								});
 							},
 						};
 					},
@@ -3185,25 +3231,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						return {
 							...prevProps,
 							onDragStart: (event: DragEvent) => {
-								// Headless Tree temporarily selects an unselected drag source; keep the previous app selection for cancelled drags.
-								selectedItemsBeforeCancelledDragRef.current = tree.getState().selectedItems ?? [];
+								isInternalTreeDragActiveRef.current = true;
 								prevProps.onDragStart?.(event);
 								if (event.defaultPrevented) {
-									selectedItemsBeforeCancelledDragRef.current = null;
+									isInternalTreeDragActiveRef.current = false;
 								}
 							},
 							onDragEnd: (event: DragEvent) => {
 								prevProps.onDragEnd?.(event);
-								if (event.dataTransfer?.dropEffect === "none") {
-									const selectedItemsBeforeCancelledDrag = selectedItemsBeforeCancelledDragRef.current;
-									selectedItemsBeforeCancelledDragRef.current = null;
-									if (selectedItemsBeforeCancelledDrag) {
-										tree.setSelectedItems(selectedItemsBeforeCancelledDrag);
-									}
-									return;
-								}
-
-								selectedItemsBeforeCancelledDragRef.current = null;
+								reconcileTreeSelectionToNavigatedNodeAfterInternalDrag(tree);
 							},
 						};
 					},
@@ -3278,7 +3314,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			dragAndDropFeature,
 			renamingFeature,
 			expandAllFeature,
-			dragSelectionRestoreFeature,
+			dragSelectionReconcileFeature,
 			clickBehaviorFeature,
 			propMemoizationFeature,
 		],
@@ -3314,6 +3350,19 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			.map((item) => item.getId()),
 	);
 	const selectionAnchorNodeId = tree().getDataRef<SelectionDataRef>().current.selectUpToAnchorId ?? null;
+
+	useGlobalEventList(
+		FILES_SIDEBAR_SELECTION_CONTEXT_EVENTS,
+		(event) => {
+			// Keep multi-selection scoped to tree work; outside context returns the sidebar to the route-owned row.
+			if (files_sidebar_target_is_in_selection_context(event.target)) {
+				return;
+			}
+
+			reconcileTreeSelectionToNavigatedNode(tree());
+		},
+		{ capture: true },
+	);
 
 	/**
 	 * The files ids used as the source for active tree tracks.
@@ -4019,6 +4068,41 @@ if (import.meta.vitest) {
 					isUploadingFile: true,
 				}),
 			).toBe(false);
+		});
+	});
+
+	describe("files_sidebar_target_is_in_selection_context", () => {
+		test("keeps marked elements and their descendants inside selection context", () => {
+			const element = document.createElement("div");
+			const child = document.createElement("button");
+			element.setAttribute(
+				"data-files-sidebar-tree-context" satisfies keyof FilesSidebarTreeContext_CustomAttributes,
+				"",
+			);
+			element.append(child);
+
+			expect(files_sidebar_target_is_in_selection_context(element)).toBe(true);
+			expect(files_sidebar_target_is_in_selection_context(child)).toBe(true);
+		});
+
+		test("treats tree whitespace as outside selection context", () => {
+			const treeElement = document.createElement("div");
+			const whitespaceChild = document.createElement("div");
+			treeElement.className = "FilesSidebarTree" satisfies FilesSidebarTree_ClassNames;
+			treeElement.append(whitespaceChild);
+
+			expect(files_sidebar_target_is_in_selection_context(treeElement)).toBe(false);
+			expect(files_sidebar_target_is_in_selection_context(whitespaceChild)).toBe(false);
+		});
+
+		test("treats unrelated sidebar and page interactions as outside selection context", () => {
+			const searchInput = document.createElement("input");
+			searchInput.className = "FilesSidebarSearch" satisfies FilesSidebarSearch_ClassNames;
+			const pageElement = document.createElement("main");
+
+			expect(files_sidebar_target_is_in_selection_context(searchInput)).toBe(false);
+			expect(files_sidebar_target_is_in_selection_context(pageElement)).toBe(false);
+			expect(files_sidebar_target_is_in_selection_context(null)).toBe(false);
 		});
 	});
 
