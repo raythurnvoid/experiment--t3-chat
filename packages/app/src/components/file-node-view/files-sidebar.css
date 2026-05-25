@@ -160,12 +160,10 @@
 
 	.FilesSidebarTree:not(:has(.FilesSidebarTreeItemTitle-input:focus)) {
 		.FilesSidebarTreeItem.FilesSidebarTreeItem-content-navigated {
-			color: var(--color-fg-10);
-		}
+			color: var(--color-fg-11);
 
-		&:focus-within {
-			.FilesSidebarTreeItem.FilesSidebarTreeItem-content-navigated {
-				color: var(--color-fg-11);
+			.FilesSidebarTreeItemMetaLabel-text {
+				color: var(--color-fg-10);
 			}
 		}
 	}
@@ -277,15 +275,35 @@
 		grid-template-columns: auto 1fr auto;
 
 		&:has(> .FilesSidebarTreeItemPrimaryAction:is(:hover, :focus-visible)) {
-			color: var(--color-fg-10);
+			color: var(--color-fg-11);
+
+			.FilesSidebarTreeItemMetaLabel-text {
+				color: var(--color-fg-10);
+			}
 		}
 
 		&:has(> .FilesSidebarTreeItemPrimaryAction[data-selected]) {
-			color: var(--color-fg-10);
+			color: var(--color-fg-11);
+
+			.FilesSidebarTreeItemMetaLabel-text {
+				color: var(--color-fg-10);
+			}
 		}
 
 		&:has(> .FilesSidebarTreeItemPrimaryAction[data-focused]) {
-			color: var(--color-fg-10);
+			color: var(--color-fg-11);
+
+			.FilesSidebarTreeItemMetaLabel-text {
+				color: var(--color-fg-10);
+			}
+		}
+
+		&:has(> .FilesSidebarTreeItemPrimaryAction:not(:disabled):active) {
+			color: var(--color-fg-12);
+
+			.FilesSidebarTreeItemMetaLabel-text {
+				color: var(--color-fg-11);
+			}
 		}
 
 		&.FilesSidebarTreeItem-content-navigated::before {
@@ -319,6 +337,10 @@
 		&.FilesSidebarTreeItem-content-archived {
 			text-decoration: line-through;
 			color: var(--color-fg-06);
+
+			.FilesSidebarTreeItemMetaLabel-text {
+				color: var(--color-fg-05);
+			}
 		}
 	}
 
@@ -344,7 +366,7 @@
 	.FilesSidebarTreeItemMetaLabel-text {
 		font-size: 0.75rem;
 		line-height: 1rem;
-		color: var(--muted-foreground);
+		color: var(--color-fg-06);
 
 		contain: content;
 		text-overflow: ellipsis;
