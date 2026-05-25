@@ -1930,24 +1930,44 @@ type FilesSidebarTopSectionMoreAction_Props = {
 	className: string;
 	isBusy: boolean;
 	isUploadingFile: boolean;
+	isMultiSelectionActive: boolean;
+	selectedNodeIdsCount: number;
 	archivedCount: number;
 	showArchived: boolean;
 	onArchiveToggleClick: () => void;
+	onArchiveSelectionClick: () => void;
 	onUploadFileClick: () => void;
 };
 
 const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMoreAction(
 	props: FilesSidebarTopSectionMoreAction_Props,
 ) {
-	const { className, isBusy, isUploadingFile, archivedCount, showArchived, onArchiveToggleClick, onUploadFileClick } =
-		props;
+	const {
+		className,
+		isBusy,
+		isUploadingFile,
+		isMultiSelectionActive,
+		selectedNodeIdsCount,
+		archivedCount,
+		showArchived,
+		onArchiveToggleClick,
+		onArchiveSelectionClick,
+		onUploadFileClick,
+	} = props;
 
 	const archivedItemsLabel = `${showArchived ? "Hide" : "Show"} ${archivedCount} ${
 		archivedCount === 1 ? "item" : "items"
 	} archived`;
+	const selectedItemsArchiveLabel = `Archive ${selectedNodeIdsCount} selected ${
+		selectedNodeIdsCount === 1 ? "item" : "items"
+	}`;
 
 	const handleArchiveToggleClick = useFn(() => {
 		onArchiveToggleClick();
+	});
+
+	const handleArchiveSelectionClick = useFn<MyMenuItem_Props["onClick"]>(() => {
+		onArchiveSelectionClick();
 	});
 
 	return (
@@ -1969,25 +1989,38 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 			</MyMenuTrigger>
 			<MyMenuPopover placement="bottom-end" unmountOnHide>
 				<MyMenuPopoverContent>
-					<MyMenuCheckboxItem
-						name="showArchivedFiles"
-						checked={showArchived}
-						disabled={isBusy || archivedCount === 0}
-						onClick={handleArchiveToggleClick}
-					>
-						<MyMenuItemContent>
-							<MyMenuCheckboxItemControl checked={showArchived} disabled={isBusy || archivedCount === 0} />
-							<MyMenuItemContentPrimary>{archivedItemsLabel}</MyMenuItemContentPrimary>
-						</MyMenuItemContent>
-					</MyMenuCheckboxItem>
-					<MyMenuItem disabled={isBusy || isUploadingFile} onClick={onUploadFileClick}>
-						<MyMenuItemContent>
-							<MyMenuItemContentIcon>
-								<Upload />
-							</MyMenuItemContentIcon>
-							<MyMenuItemContentPrimary>Upload file</MyMenuItemContentPrimary>
-						</MyMenuItemContent>
-					</MyMenuItem>
+					{isMultiSelectionActive ? (
+						<MyMenuItem variant="destructive" disabled={isBusy} hideOnClick onClick={handleArchiveSelectionClick}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<Archive />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>{selectedItemsArchiveLabel}</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+					) : (
+						<>
+							<MyMenuCheckboxItem
+								name="showArchivedFiles"
+								checked={showArchived}
+								disabled={isBusy || archivedCount === 0}
+								onClick={handleArchiveToggleClick}
+							>
+								<MyMenuItemContent>
+									<MyMenuCheckboxItemControl checked={showArchived} disabled={isBusy || archivedCount === 0} />
+									<MyMenuItemContentPrimary>{archivedItemsLabel}</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuCheckboxItem>
+							<MyMenuItem disabled={isBusy || isUploadingFile} onClick={onUploadFileClick}>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<Upload />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Upload file</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+						</>
+					)}
 				</MyMenuPopoverContent>
 			</MyMenuPopover>
 		</MyMenu>
@@ -2021,6 +2054,7 @@ type FilesSidebarTopSection_Props = {
 	onCreateRootFileClick: () => void;
 	onCreateRootFolderClick: () => void;
 	onArchiveToggleClick: () => void;
+	onArchiveSelectionClick: () => void;
 	onUploadFileClick: () => void;
 };
 
@@ -2042,6 +2076,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		onCreateRootFileClick,
 		onCreateRootFolderClick,
 		onArchiveToggleClick,
+		onArchiveSelectionClick,
 		onUploadFileClick,
 	} = props;
 
@@ -2139,9 +2174,12 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 						className={cn("FilesSidebarTopSection-actions-icon-button" satisfies FilesSidebarTopSection_ClassNames)}
 						isBusy={isBusy}
 						isUploadingFile={isUploadingFile}
+						isMultiSelectionActive={selectedNodeIdsCount > 1}
+						selectedNodeIdsCount={selectedNodeIdsCount}
 						archivedCount={archivedCount}
 						showArchived={showArchived}
 						onArchiveToggleClick={onArchiveToggleClick}
+						onArchiveSelectionClick={onArchiveSelectionClick}
 						onUploadFileClick={onUploadFileClick}
 					/>
 				</div>
@@ -3473,6 +3511,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			});
 	});
 
+	const handleArchiveSelectionClick = useFn(() => {
+		const firstSelectedNodeId = selectedNodeIds.values().next().value;
+		if (!firstSelectedNodeId) {
+			return;
+		}
+
+		handleArchive(firstSelectedNodeId);
+	});
+
 	const handleUnarchive = useFn<FilesSidebarTree_Props["onUnarchive"]>((nodeId) => {
 		markFileAsPending(nodeId);
 		convex
@@ -3718,6 +3765,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				onCreateRootFileClick={handleCreateRootFileClick}
 				onCreateRootFolderClick={handleCreateRootFolderClick}
 				onArchiveToggleClick={handleArchiveToggleClick}
+				onArchiveSelectionClick={handleArchiveSelectionClick}
 				onUploadFileClick={handleUploadFileClick}
 			/>
 
@@ -4105,9 +4153,7 @@ if (import.meta.vitest) {
 				itemsIdsByParentId: new Map<string, Set<string>>([
 					[files_ROOT_ID, new Set<string>([activeFolder._id, archivedFolder._id])],
 				]),
-				sortedItemsIdsByParentId: new Map<string, string[]>([
-					[files_ROOT_ID, [activeFolder._id, archivedFolder._id]],
-				]),
+				sortedItemsIdsByParentId: new Map<string, string[]>([[files_ROOT_ID, [activeFolder._id, archivedFolder._id]]]),
 				itemById: new Map<string, files_TreeItem>([
 					[root._id, root],
 					[activeFolder._id, activeFolder],
