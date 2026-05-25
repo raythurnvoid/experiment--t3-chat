@@ -250,7 +250,7 @@
 	/* #region tree item */
 	.FilesSidebarTreeItem,
 	.FilesSidebarTreeItemPlaceholder {
-		--FilesSidebarTreeItem-track-inset-left: 23px;
+		--FilesSidebarTreeItem-track-inset-left: 25px;
 
 		contain: strict;
 		height: 44px;
@@ -429,7 +429,7 @@
 		top: 50%;
 		left: 0;
 
-		width: 4px;
+		width: 2px;
 		border-top: 1px solid currentColor;
 	}
 
@@ -440,7 +440,7 @@
 			content: "";
 			position: absolute;
 			top: 0;
-			left: 0;
+			left: -1px;
 
 			height: 50%;
 			border-left: 1px solid currentColor;
