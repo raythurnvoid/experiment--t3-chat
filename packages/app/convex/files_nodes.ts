@@ -99,7 +99,7 @@ function files_compute_token_usage_cost_cents(args: { modelId: string; inputToke
 		case "gpt-4.1-nano":
 			return args.inputTokens * 0.00001 + args.outputTokens * 0.00004;
 		case "gpt-5.4-mini":
-		case ("gpt-5-mini" satisfies files_InlineAiModelId):
+		case "gpt-5-mini" satisfies files_InlineAiModelId:
 		default:
 			return args.inputTokens * 0.00003 + args.outputTokens * 0.00015;
 	}
@@ -647,15 +647,14 @@ export const get_file_nodes_list = query({
 	},
 	returns: v.array(doc(app_convex_schema, "files_nodes")),
 	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const [userAuth, membership] = await Promise.all([
+			server_convex_get_user_fallback_to_anonymous(ctx),
+			ctx.db.get("workspaces_projects_users", args.membershipId),
+		]);
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
+		if (!membership || membership.userId !== userAuth.id || membership.active === false) {
 			return [];
 		}
 
@@ -832,6 +831,18 @@ export async function files_nodes_db_create_node_recursively_at_path(
 	for (const [i, name] of pathSegments.entries()) {
 		const isLeaf = i === pathSegments.length - 1;
 		const kind: Doc<"files_nodes">["kind"] = isLeaf ? args.kind : "folder";
+
+		// Start the parent-path lookup before the child conflict read
+		// so non-root creates wait on one DB round trip instead of two.
+		const parentPathPromise =
+			currentParentPath == null
+				? resolve_parent_path_from_parent_id(ctx, {
+						workspaceId: args.workspaceId,
+						projectId: args.projectId,
+						parentId: currentParent,
+					})
+				: null;
+
 		const existing = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
@@ -846,6 +857,9 @@ export async function files_nodes_db_create_node_recursively_at_path(
 
 		let path: string;
 		if (existing) {
+			if (parentPathPromise) {
+				await parentPathPromise;
+			}
 			if (!isLeaf) {
 				// Reuse active intermediate folders, but reject files that already own the path.
 				if (existing.kind === "folder") {
@@ -874,11 +888,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			path = existing.path;
 		} else {
 			if (currentParentPath == null) {
-				currentParentPath = await resolve_parent_path_from_parent_id(ctx, {
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
-					parentId: currentParent,
-				});
+				currentParentPath = await parentPathPromise;
 				if (currentParentPath == null) {
 					return Result({
 						_nay: {
@@ -935,21 +945,24 @@ export const create_folder_node = mutation({
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		const userAuthPromise = server_convex_get_user_fallback_to_anonymous(ctx);
+		const membershipPromise = ctx.db.get("workspaces_projects_users", args.membershipId);
+
+		const userAuth = await userAuthPromise;
 		if (!userAuth) {
+			await membershipPromise;
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
+		const [rateLimit, membership] = await Promise.all([
+			rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id }),
+			membershipPromise,
+		]);
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
+		if (!membership || membership.userId !== userAuth.id || membership.active === false) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
