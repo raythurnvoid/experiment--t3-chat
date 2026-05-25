@@ -258,11 +258,12 @@
 	.FilesSidebarTreeItem,
 	.FilesSidebarTreeItemPlaceholder {
 		contain: layout style size;
-		height: 44px;
+		height: 45px;
 
 		color: var(--color-fg-07);
 
-		contain-intrinsic-height: auto 44px;
+		content-visibility: auto;
+		contain-intrinsic-height: auto 45px;
 	}
 
 	.FilesSidebarTreeItem {
@@ -318,14 +319,6 @@
 		box-shadow: none;
 
 		contain: layout style size;
-
-		&[data-selected],
-		&:not(:disabled):hover,
-		&:not(:disabled):focus-visible,
-		&:not(:disabled):active {
-			background: transparent;
-			box-shadow: none;
-		}
 
 		&[data-selected] > .FilesSidebarTreeItemPrimaryAction-surface,
 		&:not(:disabled):focus-visible:not(:active) > .FilesSidebarTreeItemPrimaryAction-surface {
@@ -415,14 +408,13 @@
 	/* #region tree item primary content */
 	.FilesSidebarTreeItemPrimaryContent {
 		position: relative;
-		top: 2px;
+		top: 2.5px;
 
 		grid-row: 1;
 		grid-column: 2;
 
 		display: flex;
 		gap: 1px;
-		align-self: end;
 		align-items: center;
 
 		font-size: 0.875rem;
@@ -491,10 +483,8 @@
 
 		/* Keep leaf rows reserving the same twistie column as folder rows so tree contents align like VS Code. */
 		width: calc((var(--FilesSidebarTreeItem-content-depth) * 20px) + 44px);
-		height: 44px;
+		height: 45px;
 		padding-left: calc((var(--FilesSidebarTreeItem-content-depth) * 20px) + 8px);
-
-		place-content: center;
 
 		/* Let the arrow button's hover shadow paint over the adjacent content column. */
 		contain: layout style;
@@ -518,11 +508,11 @@
 		grid-column: 2;
 
 		display: flex;
-		align-self: start;
 		align-items: center;
 		padding-inline: 4px;
 
 		min-width: 0; /* Allow shrinking */
+		height: 16px;
 
 		pointer-events: none;
 
@@ -551,7 +541,7 @@
 		align-items: center;
 		justify-content: end;
 		padding-right: 16px;
-		height: 44px;
+		height: 45px;
 
 		contain: layout style;
 	}
