@@ -127,6 +127,9 @@ const FILES_SIDEBAR_SELECTION_CONTEXT_EVENTS: Array<"pointerdown" | "focusin"> =
 
 type CustomAttributes = {
 	"data-files-sidebar-tree-context": "";
+};
+
+type FilesSidebarTreeItem_CustomAttributes = {
 	"data-file-id": string;
 };
 
@@ -142,426 +145,10 @@ function has_file_drop(dataTransfer: DataTransfer) {
 	return Array.from(dataTransfer.types).includes("Files");
 }
 
-function has_file_node_drop(dataTransfer: DataTransfer) {
-	return Array.from(dataTransfer.types).includes(files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE);
-}
-
-function get_file_node_drop_ids(dataTransfer: DataTransfer) {
-	return dataTransfer
-		.getData(files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE)
-		.split("\n")
-		.map((fileNodeId) => fileNodeId.trim())
-		.filter(Boolean);
-}
-
-function has_nested_drop_path(file: FileWithPath) {
-	const plainFilePath = `./${file.name}`;
-	return (
-		(file.path !== undefined && file.path !== plainFilePath) ||
-		(file.relativePath !== undefined && file.relativePath !== plainFilePath)
-	);
-}
-
-async function get_single_dropped_file(dataTransfer: DataTransfer) {
-	if (!has_file_drop(dataTransfer)) {
-		return Result({ _nay: { name: "nay", message: "Drop a file to upload." } });
-	}
-
-	let files: FileWithPath[];
-	try {
-		const droppedItems = await fromEvent({ dataTransfer, type: "drop" });
-		files = droppedItems.filter((item): item is FileWithPath => item instanceof File);
-	} catch (error) {
-		console.error("[FilesSidebar.getSingleDroppedFile] Failed to read dropped file", { error });
-		return Result({ _nay: { name: "nay", message: "Failed to read dropped file.", cause: error } });
-	}
-
-	if (files.some(has_nested_drop_path)) {
-		return Result({ _nay: { name: "nay", message: "Folder uploads are not supported yet." } });
-	}
-	if (files.length === 0) {
-		return Result({ _nay: { name: "nay", message: "Drop a file to upload." } });
-	}
-	if (files.length > 1) {
-		return Result({ _nay: { name: "nay", message: "Drop one file at a time." } });
-	}
-
-	return Result({ _yay: files[0] });
-}
-
-function can_receive_file_drop(args: {
-	dataTransfer: DataTransfer;
-	target: DragTarget<files_TreeItem>;
-	isBusy: boolean;
-	isUploadingFile: boolean;
-}) {
-	if (args.isBusy || args.isUploadingFile || !has_file_drop(args.dataTransfer)) {
-		return false;
-	}
-
-	const targetId = args.target.item.getId();
-	const targetData = args.target.item.getItemData();
-	return targetId === files_ROOT_ID || targetData.kind === "folder";
-}
-
-function can_receive_file_node_drop(args: {
-	dataTransfer: DataTransfer;
-	target: DragTarget<files_TreeItem>;
-	isBusy: boolean;
-	isUploadingFile: boolean;
-}) {
-	if (args.isBusy || args.isUploadingFile || !has_file_node_drop(args.dataTransfer)) {
-		return false;
-	}
-
-	const targetId = args.target.item.getId();
-	const targetData = args.target.item.getItemData();
-	return targetId === files_ROOT_ID || targetData.kind === "folder";
-}
-
-function get_files_sidebar_tree_drop_zone(args: {
-	rows: DropZoneRow[];
-	activeDropTargetId: string | null;
-	isDraggingOverRootZone: boolean;
-}) {
-	if (args.isDraggingOverRootZone) {
-		return { kind: "root" } satisfies DropZone;
-	}
-
-	if (!args.activeDropTargetId) {
-		return undefined;
-	}
-
-	// Count rendered placeholder rows too so the dotted subtree range matches the visible tree.
-	const rowModels: {
-		row: DropZoneRow;
-		itemRowIndex: number;
-		placeholderRowIndex: number | undefined;
-	}[] = [];
-	let rowIndex = 0;
-	let activeItemIndex = -1;
-
-	for (let itemIndex = 0; itemIndex < args.rows.length; itemIndex++) {
-		const row = args.rows[itemIndex]!;
-		const itemRowIndex = rowIndex;
-
-		rowModels.push({
-			row,
-			itemRowIndex,
-			placeholderRowIndex: row.hasPlaceholderRow ? itemRowIndex + 1 : undefined,
-		});
-
-		if (row.id === args.activeDropTargetId) {
-			activeItemIndex = itemIndex;
-		}
-
-		rowIndex += row.hasPlaceholderRow ? 2 : 1;
-	}
-
-	const activeItemRowModel = rowModels[activeItemIndex];
-	if (!activeItemRowModel || activeItemRowModel.row.kind !== "folder") {
-		return undefined;
-	}
-
-	const startRowIndex = activeItemRowModel.itemRowIndex;
-	let endRowIndex = activeItemRowModel.placeholderRowIndex ?? activeItemRowModel.itemRowIndex;
-
-	// Keep the folder target as the whole visible subtree; collapsed descendants are represented by the folder row.
-	for (const rowModel of rowModels.slice(activeItemIndex + 1)) {
-		if (rowModel.row.depth <= activeItemRowModel.row.depth) {
-			break;
-		}
-
-		endRowIndex = rowModel.placeholderRowIndex ?? rowModel.itemRowIndex;
-	}
-
-	return {
-		kind: "folder",
-		top: `${startRowIndex * ROW_HEIGHT_PX}px`,
-		height: `${(endRowIndex - startRowIndex + 1) * ROW_HEIGHT_PX}px`,
-	} satisfies DropZone;
-}
-
-function get_files_sidebar_tree_drop_zone_item_ids(args: {
-	rows: DropZoneRow[];
-	activeDropTargetId: string | null;
-	isDraggingOverRootZone: boolean;
-}) {
-	if (args.isDraggingOverRootZone) {
-		return new Set(args.rows.map((row) => row.id));
-	}
-
-	if (!args.activeDropTargetId) {
-		return new Set<string>();
-	}
-
-	const activeItemIndex = args.rows.findIndex((row) => row.id === args.activeDropTargetId);
-	const activeRow = args.rows[activeItemIndex];
-	if (!activeRow || activeRow.kind !== "folder") {
-		return new Set<string>();
-	}
-
-	const itemIds = new Set<string>([activeRow.id]);
-	for (const row of args.rows.slice(activeItemIndex + 1)) {
-		if (row.depth <= activeRow.depth) {
-			break;
-		}
-
-		itemIds.add(row.id);
-	}
-
-	return itemIds;
-}
-
-function get_files_sidebar_tree_drag_hover_state(args: {
-	rows: DropZoneRow[];
-	hasDraggedItems: boolean;
-	isFileDrag: boolean;
-	isExternalFileDrag: boolean;
-	isPointerOverTreeItem: boolean;
-	hoveredItemId: string | null;
-}) {
-	// Keep the tri-state explicit: undefined delegates to Headless Tree, null suppresses stale invalid targets.
-	if (!args.hasDraggedItems && !args.isExternalFileDrag) {
-		return {
-			isDraggingOverRootZone: false,
-			activeExternalFileDropTargetId: args.isFileDrag ? null : undefined,
-		};
-	}
-
-	if (!args.isPointerOverTreeItem) {
-		return {
-			isDraggingOverRootZone: true,
-			activeExternalFileDropTargetId: args.isExternalFileDrag ? null : undefined,
-		};
-	}
-
-	if (!args.isExternalFileDrag) {
-		return {
-			isDraggingOverRootZone: false,
-			activeExternalFileDropTargetId: undefined,
-		};
-	}
-
-	const hoveredRow = args.rows.find((row) => row.id === args.hoveredItemId);
-	return {
-		isDraggingOverRootZone: false,
-		activeExternalFileDropTargetId: hoveredRow?.kind === "folder" ? hoveredRow.id : null,
-	};
-}
-
-function get_default_node_name(args: { parentId: string; kind: files_TreeItem["kind"]; treeItems: TreeItems }) {
-	const siblingIds = args.treeItems.sortedItemsIdsByParentId.get(args.parentId) ?? [];
-	const activeSiblingNames = new Set<string>();
-
-	for (const siblingId of siblingIds) {
-		const siblingItem = args.treeItems.itemById.get(siblingId);
-		if (!siblingItem || siblingItem._id === files_ROOT_ID) {
-			continue;
-		}
-		if (siblingItem.archiveOperationId !== undefined) {
-			continue;
-		}
-
-		activeSiblingNames.add(siblingItem.name);
-	}
-
-	return files_get_default_node_name({ kind: args.kind, siblingNames: activeSiblingNames });
-}
-
-function get_protected_markdown_extension_start(args: {
-	kind: files_TreeItem["kind"];
-	value: string;
-	selectionStart: number;
-	selectionEnd: number;
-}) {
-	// Locate the storage extension so live basename edits can ignore the protected suffix.
-	const extensionStart = args.value.length - ".md".length;
-	if (
-		args.kind === "file" &&
-		args.value.endsWith(".md") &&
-		args.selectionStart <= extensionStart &&
-		args.selectionEnd <= extensionStart
-	) {
-		// Ignore `.md` separator adjacency when the edit is fully inside the basename.
-		return extensionStart;
-	}
-
-	// Normalize edits that touch the extension against the full remaining value.
-	return args.value.length;
-}
-
-function normalize_rename_input_value(args: { kind: files_TreeItem["kind"]; value: string }) {
-	if (args.kind === "file" && args.value.endsWith(".md")) {
-		// Preserve the protected Markdown extension and sanitize only the editable basename.
-		const extensionStart = args.value.length - ".md".length;
-		return `${files_normalize_name_input({
-			kind: args.kind,
-			previousText: "",
-			insertedText: args.value.slice(0, extensionStart),
-			nextText: "",
-		})}.md`;
-	}
-
-	// Sanitize the whole current value for folders and non-canonical file drafts.
-	return files_normalize_name_input({
-		kind: args.kind,
-		previousText: "",
-		insertedText: args.value,
-		nextText: "",
-	});
-}
-
-function files_sidebar_upload_filename_has_extension(filename: string) {
+function upload_filename_has_real_extension(filename: string) {
 	const extensionSeparatorIndex = filename.lastIndexOf(".");
 	return extensionSeparatorIndex > 0 && extensionSeparatorIndex < filename.length - 1;
 }
-
-function files_sidebar_path_join(parentPath: string, pathSegment: string) {
-	return parentPath === "/" ? `/${pathSegment}` : `${parentPath}/${pathSegment}`;
-}
-
-function files_sidebar_get_uploaded_file_rename_validation(args: {
-	treeItemsList: files_TreeItem[] | undefined;
-	nodeIdToIgnore?: app_convex_Id<"files_nodes">;
-	parentId: app_convex_Doc<"files_nodes">["parentId"];
-	nameOrPath: string;
-}) {
-	const pathSegments = path_extract_segments_from(args.nameOrPath.trim());
-	if (pathSegments.length === 0) {
-		return {
-			normalizedName: null,
-			validationMessage: null,
-			cacheValidationMessage: (_message?: string) => {},
-		};
-	}
-
-	const normalizedPathSegments: string[] = [];
-	for (const [index, pathSegment] of pathSegments.entries()) {
-		const isLeaf = index === pathSegments.length - 1;
-		if (isLeaf) {
-			const normalizedFileName = files_normalize_upload_file_name(pathSegment);
-			if (!files_sidebar_upload_filename_has_extension(normalizedFileName)) {
-				return {
-					normalizedName: null,
-					validationMessage: "Uploaded files must include a file extension.",
-					cacheValidationMessage: (_message?: string) => {},
-				};
-			}
-
-			normalizedPathSegments.push(normalizedFileName);
-			continue;
-		}
-
-		const normalizedFolderName = files_normalize_name("folder", pathSegment);
-		if (normalizedFolderName._nay) {
-			return {
-				normalizedName: null,
-				validationMessage: normalizedFolderName._nay.message,
-				cacheValidationMessage: (_message?: string) => {},
-			};
-		}
-
-		normalizedPathSegments.push(normalizedFolderName._yay);
-	}
-
-	let currentParentId = args.parentId;
-	for (const [index, normalizedName] of normalizedPathSegments.entries()) {
-		const isLeaf = index === normalizedPathSegments.length - 1;
-		const existingNode = args.treeItemsList?.find((item): item is app_convex_Doc<"files_nodes"> => {
-			return (
-				files_is_node(item) &&
-				item._id !== args.nodeIdToIgnore &&
-				item.parentId === currentParentId &&
-				item.archiveOperationId === undefined &&
-				item.name.trim().toLowerCase() === normalizedName.toLowerCase()
-			);
-		});
-		if (isLeaf) {
-			return {
-				normalizedName: normalizedPathSegments.join("/"),
-				validationMessage: existingNode ? "This file already exists." : null,
-				cacheValidationMessage: (_message?: string) => {},
-			};
-		}
-
-		if (!existingNode || existingNode.kind !== "folder") {
-			return {
-				normalizedName: normalizedPathSegments.join("/"),
-				validationMessage: null,
-				cacheValidationMessage: (_message?: string) => {},
-			};
-		}
-
-		currentParentId = existingNode._id;
-	}
-
-	return {
-		normalizedName: normalizedPathSegments.join("/"),
-		validationMessage: null,
-		cacheValidationMessage: (_message?: string) => {},
-	};
-}
-
-function sort_children(args: { children: string[]; itemById: Map<string, files_TreeItem> }) {
-	return [...args.children].sort((a, b) => {
-		const itemA = args.itemById.get(a);
-		const itemB = args.itemById.get(b);
-		if (!itemA || !itemB) {
-			return 0;
-		}
-
-		if (itemA.kind !== itemB.kind) {
-			return itemA.kind === "folder" ? -1 : 1;
-		}
-
-		const nameA = itemA.name || "";
-		const nameB = itemB.name || "";
-		return nameA.localeCompare(nameB, undefined, {
-			numeric: true,
-			sensitivity: "base",
-		});
-	});
-}
-
-function files_sidebar_target_is_in_selection_context(target: EventTarget | null) {
-	if (!(target instanceof Element)) {
-		return false;
-	}
-
-	return Boolean(target.closest(`[${"data-files-sidebar-tree-context" satisfies keyof CustomAttributes}]`));
-}
-
-// #region optimistic tree rename
-function get_tree_items_list_after_optimistic_rename(args: {
-	treeItemsList: files_TreeItem[];
-	itemId: string;
-	normalizedName: string;
-	now: number;
-}) {
-	const renamedItem = args.treeItemsList.find(
-		(treeItem): treeItem is app_convex_Doc<"files_nodes"> => files_is_node(treeItem) && treeItem._id === args.itemId,
-	);
-	if (!renamedItem) {
-		return args.treeItemsList;
-	}
-
-	const parent = args.treeItemsList.find((candidate) => candidate._id === renamedItem.parentId);
-
-	return args.treeItemsList.map((treeItem) => {
-		if (files_is_node(treeItem) && treeItem._id === args.itemId) {
-			return {
-				...treeItem,
-				name: args.normalizedName,
-				...(parent ? { path: files_sidebar_path_join(parent.path, args.normalizedName) } : {}),
-				updatedAt: args.now,
-			};
-		}
-		return treeItem;
-	});
-}
-
-// #endregion optimistic tree rename
 
 // #region tree item icon
 type FilesSidebarTreeItemIcon_ClassNames = "FilesSidebarTreeItemIcon";
@@ -819,6 +406,49 @@ const FilesSidebarTreeItemArrow = memo(function FilesSidebarTreeItemArrow(props:
 // #endregion tree item arrow
 
 // #region tree item title
+function get_protected_markdown_extension_start(args: {
+	kind: files_TreeItem["kind"];
+	value: string;
+	selectionStart: number;
+	selectionEnd: number;
+}) {
+	// Locate the storage extension so live basename edits can ignore the protected suffix.
+	const extensionStart = args.value.length - ".md".length;
+	if (
+		args.kind === "file" &&
+		args.value.endsWith(".md") &&
+		args.selectionStart <= extensionStart &&
+		args.selectionEnd <= extensionStart
+	) {
+		// Ignore `.md` separator adjacency when the edit is fully inside the basename.
+		return extensionStart;
+	}
+
+	// Normalize edits that touch the extension against the full remaining value.
+	return args.value.length;
+}
+
+function normalize_rename_input_value(args: { kind: files_TreeItem["kind"]; value: string }) {
+	if (args.kind === "file" && args.value.endsWith(".md")) {
+		// Preserve the protected Markdown extension and sanitize only the editable basename.
+		const extensionStart = args.value.length - ".md".length;
+		return `${files_normalize_name_input({
+			kind: args.kind,
+			previousText: "",
+			insertedText: args.value.slice(0, extensionStart),
+			nextText: "",
+		})}.md`;
+	}
+
+	// Sanitize the whole current value for folders and non-canonical file drafts.
+	return files_normalize_name_input({
+		kind: args.kind,
+		previousText: "",
+		insertedText: args.value,
+		nextText: "",
+	});
+}
+
 type FilesSidebarTreeItemTitle_ClassNames = "FilesSidebarTreeItemTitle" | "FilesSidebarTreeItemTitle-input";
 
 type FilesSidebarTreeItemTitle_Props = {
@@ -1787,6 +1417,137 @@ const FilesSidebarTreeDropZoneIndicator = memo(function FilesSidebarTreeDropZone
 // #endregion tree drop zone indicator
 
 // #region tree
+function get_tree_drop_zone(args: {
+	rows: DropZoneRow[];
+	activeDropTargetId: string | null;
+	isDraggingOverRootZone: boolean;
+}) {
+	if (args.isDraggingOverRootZone) {
+		return { kind: "root" } satisfies DropZone;
+	}
+
+	if (!args.activeDropTargetId) {
+		return undefined;
+	}
+
+	// Count rendered placeholder rows too so the dotted subtree range matches the visible tree.
+	const rowModels: {
+		row: DropZoneRow;
+		itemRowIndex: number;
+		placeholderRowIndex: number | undefined;
+	}[] = [];
+	let rowIndex = 0;
+	let activeItemIndex = -1;
+
+	for (let itemIndex = 0; itemIndex < args.rows.length; itemIndex++) {
+		const row = args.rows[itemIndex]!;
+		const itemRowIndex = rowIndex;
+
+		rowModels.push({
+			row,
+			itemRowIndex,
+			placeholderRowIndex: row.hasPlaceholderRow ? itemRowIndex + 1 : undefined,
+		});
+
+		if (row.id === args.activeDropTargetId) {
+			activeItemIndex = itemIndex;
+		}
+
+		rowIndex += row.hasPlaceholderRow ? 2 : 1;
+	}
+
+	const activeItemRowModel = rowModels[activeItemIndex];
+	if (!activeItemRowModel || activeItemRowModel.row.kind !== "folder") {
+		return undefined;
+	}
+
+	const startRowIndex = activeItemRowModel.itemRowIndex;
+	let endRowIndex = activeItemRowModel.placeholderRowIndex ?? activeItemRowModel.itemRowIndex;
+
+	// Keep the folder target as the whole visible subtree; collapsed descendants are represented by the folder row.
+	for (const rowModel of rowModels.slice(activeItemIndex + 1)) {
+		if (rowModel.row.depth <= activeItemRowModel.row.depth) {
+			break;
+		}
+
+		endRowIndex = rowModel.placeholderRowIndex ?? rowModel.itemRowIndex;
+	}
+
+	return {
+		kind: "folder",
+		top: `${startRowIndex * ROW_HEIGHT_PX}px`,
+		height: `${(endRowIndex - startRowIndex + 1) * ROW_HEIGHT_PX}px`,
+	} satisfies DropZone;
+}
+
+function get_tree_drop_zone_item_ids(args: {
+	rows: DropZoneRow[];
+	activeDropTargetId: string | null;
+	isDraggingOverRootZone: boolean;
+}) {
+	if (args.isDraggingOverRootZone) {
+		return new Set(args.rows.map((row) => row.id));
+	}
+
+	if (!args.activeDropTargetId) {
+		return new Set<string>();
+	}
+
+	const activeItemIndex = args.rows.findIndex((row) => row.id === args.activeDropTargetId);
+	const activeRow = args.rows[activeItemIndex];
+	if (!activeRow || activeRow.kind !== "folder") {
+		return new Set<string>();
+	}
+
+	const itemIds = new Set<string>([activeRow.id]);
+	for (const row of args.rows.slice(activeItemIndex + 1)) {
+		if (row.depth <= activeRow.depth) {
+			break;
+		}
+
+		itemIds.add(row.id);
+	}
+
+	return itemIds;
+}
+
+function get_tree_drag_hover_state(args: {
+	rows: DropZoneRow[];
+	hasDraggedItems: boolean;
+	isFileDrag: boolean;
+	isExternalFileDrag: boolean;
+	isPointerOverTreeItem: boolean;
+	hoveredItemId: string | null;
+}) {
+	// Keep the tri-state explicit: undefined delegates to Headless Tree, null suppresses stale invalid targets.
+	if (!args.hasDraggedItems && !args.isExternalFileDrag) {
+		return {
+			isDraggingOverRootZone: false,
+			activeExternalFileDropTargetId: args.isFileDrag ? null : undefined,
+		};
+	}
+
+	if (!args.isPointerOverTreeItem) {
+		return {
+			isDraggingOverRootZone: true,
+			activeExternalFileDropTargetId: args.isExternalFileDrag ? null : undefined,
+		};
+	}
+
+	if (!args.isExternalFileDrag) {
+		return {
+			isDraggingOverRootZone: false,
+			activeExternalFileDropTargetId: undefined,
+		};
+	}
+
+	const hoveredRow = args.rows.find((row) => row.id === args.hoveredItemId);
+	return {
+		isDraggingOverRootZone: false,
+		activeExternalFileDropTargetId: hoveredRow?.kind === "folder" ? hoveredRow.id : null,
+	};
+}
+
 type FilesSidebarTree_ClassNames = "FilesSidebarTree" | "FilesSidebarTree-dragging" | "FilesSidebarTree-empty-state";
 
 type FilesSidebarTree_Props = {
@@ -1858,12 +1619,12 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		} satisfies DropZoneRow;
 	});
 
-	const dropZone = get_files_sidebar_tree_drop_zone({
+	const dropZone = get_tree_drop_zone({
 		rows: dropZoneRows,
 		activeDropTargetId,
 		isDraggingOverRootZone,
 	});
-	const dropZoneItemIds = get_files_sidebar_tree_drop_zone_item_ids({
+	const dropZoneItemIds = get_tree_drop_zone_item_ids({
 		rows: dropZoneRows,
 		activeDropTargetId,
 		isDraggingOverRootZone,
@@ -1897,7 +1658,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 				: null;
 		const treeRootElement = event.currentTarget;
 		const isPointerOverTreeItem = hoveredItemElement instanceof Element && treeRootElement.contains(hoveredItemElement);
-		const dragHoverState = get_files_sidebar_tree_drag_hover_state({
+		const dragHoverState = get_tree_drag_hover_state({
 			rows: dropZoneRows,
 			hasDraggedItems: draggedItems.length > 0,
 			isFileDrag,
@@ -2425,7 +2186,7 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 	const normalizedFilename = normalizedFilenameResult?._yay ?? "";
 	const renameError =
 		normalizedFilenameResult?._nay?.message ??
-		(!draft?.isMarkdown && !files_sidebar_upload_filename_has_extension(normalizedFilename)
+		(!draft?.isMarkdown && !upload_filename_has_real_extension(normalizedFilename)
 			? "Uploaded files must include a file extension."
 			: draft?.reason === "path_conflict" && normalizedFilename === draft.filename
 				? "Choose a different filename or replace the existing file."
@@ -2511,6 +2272,247 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 // #endregion upload conflict modal
 
 // #region root
+function has_file_node_drop(dataTransfer: DataTransfer) {
+	return Array.from(dataTransfer.types).includes(files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE);
+}
+
+function get_file_node_drop_ids(dataTransfer: DataTransfer) {
+	return dataTransfer
+		.getData(files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE)
+		.split("\n")
+		.map((fileNodeId) => fileNodeId.trim())
+		.filter(Boolean);
+}
+
+async function get_single_dropped_file(dataTransfer: DataTransfer) {
+	if (!has_file_drop(dataTransfer)) {
+		return Result({ _nay: { name: "nay", message: "Drop a file to upload." } });
+	}
+
+	let files: FileWithPath[];
+	try {
+		const droppedItems = await fromEvent({ dataTransfer, type: "drop" });
+		files = droppedItems.filter((item): item is FileWithPath => item instanceof File);
+	} catch (error) {
+		console.error("[FilesSidebar.getSingleDroppedFile] Failed to read dropped file", { error });
+		return Result({ _nay: { name: "nay", message: "Failed to read dropped file.", cause: error } });
+	}
+
+	if (
+		files.some((file) => {
+			const plainFilePath = `./${file.name}`;
+
+			// Treat any file-selector path beyond the bare file name as a nested directory drop.
+			return (
+				(file.path !== undefined && file.path !== plainFilePath) ||
+				(file.relativePath !== undefined && file.relativePath !== plainFilePath)
+			);
+		})
+	) {
+		return Result({ _nay: { name: "nay", message: "Folder uploads are not supported yet." } });
+	}
+	if (files.length === 0) {
+		return Result({ _nay: { name: "nay", message: "Drop a file to upload." } });
+	}
+	if (files.length > 1) {
+		return Result({ _nay: { name: "nay", message: "Drop one file at a time." } });
+	}
+
+	return Result({ _yay: files[0] });
+}
+
+function can_receive_file_drop(args: {
+	dataTransfer: DataTransfer;
+	target: DragTarget<files_TreeItem>;
+	isBusy: boolean;
+	isUploadingFile: boolean;
+}) {
+	if (args.isBusy || args.isUploadingFile || !has_file_drop(args.dataTransfer)) {
+		return false;
+	}
+
+	const targetId = args.target.item.getId();
+	const targetData = args.target.item.getItemData();
+	return targetId === files_ROOT_ID || targetData.kind === "folder";
+}
+
+function can_receive_file_node_drop(args: {
+	dataTransfer: DataTransfer;
+	target: DragTarget<files_TreeItem>;
+	isBusy: boolean;
+	isUploadingFile: boolean;
+}) {
+	if (args.isBusy || args.isUploadingFile || !has_file_node_drop(args.dataTransfer)) {
+		return false;
+	}
+
+	const targetId = args.target.item.getId();
+	const targetData = args.target.item.getItemData();
+	return targetId === files_ROOT_ID || targetData.kind === "folder";
+}
+
+function get_default_node_name(args: { parentId: string; kind: files_TreeItem["kind"]; treeItems: TreeItems }) {
+	const siblingIds = args.treeItems.sortedItemsIdsByParentId.get(args.parentId) ?? [];
+	const activeSiblingNames = new Set<string>();
+
+	for (const siblingId of siblingIds) {
+		const siblingItem = args.treeItems.itemById.get(siblingId);
+		if (!siblingItem || siblingItem._id === files_ROOT_ID) {
+			continue;
+		}
+		if (siblingItem.archiveOperationId !== undefined) {
+			continue;
+		}
+
+		activeSiblingNames.add(siblingItem.name);
+	}
+
+	return files_get_default_node_name({ kind: args.kind, siblingNames: activeSiblingNames });
+}
+
+function join_file_node_path(parentPath: string, pathSegment: string) {
+	return parentPath === "/" ? `/${pathSegment}` : `${parentPath}/${pathSegment}`;
+}
+
+function get_uploaded_file_rename_validation(args: {
+	treeItemsList: files_TreeItem[] | undefined;
+	nodeIdToIgnore?: app_convex_Id<"files_nodes">;
+	parentId: app_convex_Doc<"files_nodes">["parentId"];
+	nameOrPath: string;
+}) {
+	const pathSegments = path_extract_segments_from(args.nameOrPath.trim());
+	if (pathSegments.length === 0) {
+		return {
+			normalizedName: null,
+			validationMessage: null,
+			cacheValidationMessage: (_message?: string) => {},
+		};
+	}
+
+	const normalizedPathSegments: string[] = [];
+	for (const [index, pathSegment] of pathSegments.entries()) {
+		const isLeaf = index === pathSegments.length - 1;
+		if (isLeaf) {
+			const normalizedFileName = files_normalize_upload_file_name(pathSegment);
+			if (!upload_filename_has_real_extension(normalizedFileName)) {
+				return {
+					normalizedName: null,
+					validationMessage: "Uploaded files must include a file extension.",
+					cacheValidationMessage: (_message?: string) => {},
+				};
+			}
+
+			normalizedPathSegments.push(normalizedFileName);
+			continue;
+		}
+
+		const normalizedFolderName = files_normalize_name("folder", pathSegment);
+		if (normalizedFolderName._nay) {
+			return {
+				normalizedName: null,
+				validationMessage: normalizedFolderName._nay.message,
+				cacheValidationMessage: (_message?: string) => {},
+			};
+		}
+
+		normalizedPathSegments.push(normalizedFolderName._yay);
+	}
+
+	let currentParentId = args.parentId;
+	for (const [index, normalizedName] of normalizedPathSegments.entries()) {
+		const isLeaf = index === normalizedPathSegments.length - 1;
+		const existingNode = args.treeItemsList?.find((item): item is app_convex_Doc<"files_nodes"> => {
+			return (
+				files_is_node(item) &&
+				item._id !== args.nodeIdToIgnore &&
+				item.parentId === currentParentId &&
+				item.archiveOperationId === undefined &&
+				item.name.trim().toLowerCase() === normalizedName.toLowerCase()
+			);
+		});
+		if (isLeaf) {
+			return {
+				normalizedName: normalizedPathSegments.join("/"),
+				validationMessage: existingNode ? "This file already exists." : null,
+				cacheValidationMessage: (_message?: string) => {},
+			};
+		}
+
+		if (!existingNode || existingNode.kind !== "folder") {
+			return {
+				normalizedName: normalizedPathSegments.join("/"),
+				validationMessage: null,
+				cacheValidationMessage: (_message?: string) => {},
+			};
+		}
+
+		currentParentId = existingNode._id;
+	}
+
+	return {
+		normalizedName: normalizedPathSegments.join("/"),
+		validationMessage: null,
+		cacheValidationMessage: (_message?: string) => {},
+	};
+}
+
+function sort_children(args: { children: string[]; itemById: Map<string, files_TreeItem> }) {
+	return [...args.children].sort((a, b) => {
+		const itemA = args.itemById.get(a);
+		const itemB = args.itemById.get(b);
+		if (!itemA || !itemB) {
+			return 0;
+		}
+
+		if (itemA.kind !== itemB.kind) {
+			return itemA.kind === "folder" ? -1 : 1;
+		}
+
+		const nameA = itemA.name || "";
+		const nameB = itemB.name || "";
+		return nameA.localeCompare(nameB, undefined, {
+			numeric: true,
+			sensitivity: "base",
+		});
+	});
+}
+
+function is_selection_context_target(target: EventTarget | null) {
+	if (!(target instanceof Element)) {
+		return false;
+	}
+
+	return Boolean(target.closest(`[${"data-files-sidebar-tree-context" satisfies keyof CustomAttributes}]`));
+}
+
+function get_tree_items_list_after_optimistic_rename(args: {
+	treeItemsList: files_TreeItem[];
+	itemId: string;
+	normalizedName: string;
+	now: number;
+}) {
+	const renamedItem = args.treeItemsList.find(
+		(treeItem): treeItem is app_convex_Doc<"files_nodes"> => files_is_node(treeItem) && treeItem._id === args.itemId,
+	);
+	if (!renamedItem) {
+		return args.treeItemsList;
+	}
+
+	const parent = args.treeItemsList.find((candidate) => candidate._id === renamedItem.parentId);
+
+	return args.treeItemsList.map((treeItem) => {
+		if (files_is_node(treeItem) && treeItem._id === args.itemId) {
+			return {
+				...treeItem,
+				name: args.normalizedName,
+				...(parent ? { path: join_file_node_path(parent.path, args.normalizedName) } : {}),
+				updatedAt: args.now,
+			};
+		}
+		return treeItem;
+	});
+}
+
 type FilesSidebar_ClassNames = "FilesSidebar" | "FilesSidebar-content";
 
 export type FilesSidebar_Props = {
@@ -2888,7 +2890,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				return;
 			}
 
-			if (!args.isMarkdown && !files_sidebar_upload_filename_has_extension(args.filename)) {
+			if (!args.isMarkdown && !upload_filename_has_real_extension(args.filename)) {
 				setUploadDraft({
 					file: args.file,
 					parentId: args.parentId,
@@ -2910,7 +2912,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			convex
 				.query(app_convex_api.files_nodes.get_authorized_by_path, {
 					membershipId,
-					path: files_sidebar_path_join(parentItem.path, args.filename),
+					path: join_file_node_path(parentItem.path, args.filename),
 				})
 				.then((existingNode) => {
 					if (existingNode) {
@@ -3124,7 +3126,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				itemData.assetId &&
 				!(itemData.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false)
 			) {
-				const renameValidation = files_sidebar_get_uploaded_file_rename_validation({
+				const renameValidation = get_uploaded_file_rename_validation({
 					treeItemsList: treeItems?.list,
 					nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
 					parentId: itemData.parentId,
@@ -3295,7 +3297,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			const isMarkdown = itemData.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
 			const renameValidation =
 				itemData.assetId && !isMarkdown
-					? files_sidebar_get_uploaded_file_rename_validation({
+					? get_uploaded_file_rename_validation({
 							treeItemsList: treeItems?.list,
 							nodeIdToIgnore: itemId as app_convex_Id<"files_nodes">,
 							parentId: itemData.parentId,
@@ -3538,7 +3540,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		FILES_SIDEBAR_SELECTION_CONTEXT_EVENTS,
 		(event) => {
 			// Keep multi-selection scoped to tree work; outside context returns the sidebar to the route-owned row.
-			if (files_sidebar_target_is_in_selection_context(event.target)) {
+			if (is_selection_context_target(event.target)) {
 				return;
 			}
 
@@ -4254,15 +4256,15 @@ if (import.meta.vitest) {
 		});
 	});
 
-	describe("files_sidebar_target_is_in_selection_context", () => {
+	describe("is_selection_context_target", () => {
 		test("keeps marked elements and their descendants inside selection context", () => {
 			const element = document.createElement("div");
 			const child = document.createElement("button");
 			element.setAttribute("data-files-sidebar-tree-context" satisfies keyof CustomAttributes, "");
 			element.append(child);
 
-			expect(files_sidebar_target_is_in_selection_context(element)).toBe(true);
-			expect(files_sidebar_target_is_in_selection_context(child)).toBe(true);
+			expect(is_selection_context_target(element)).toBe(true);
+			expect(is_selection_context_target(child)).toBe(true);
 		});
 
 		test("treats tree whitespace as outside selection context", () => {
@@ -4271,8 +4273,8 @@ if (import.meta.vitest) {
 			treeElement.className = "FilesSidebarTree" satisfies FilesSidebarTree_ClassNames;
 			treeElement.append(whitespaceChild);
 
-			expect(files_sidebar_target_is_in_selection_context(treeElement)).toBe(false);
-			expect(files_sidebar_target_is_in_selection_context(whitespaceChild)).toBe(false);
+			expect(is_selection_context_target(treeElement)).toBe(false);
+			expect(is_selection_context_target(whitespaceChild)).toBe(false);
 		});
 
 		test("treats unrelated sidebar and page interactions as outside selection context", () => {
@@ -4280,16 +4282,16 @@ if (import.meta.vitest) {
 			searchInput.className = "FilesSidebarSearch" satisfies FilesSidebarSearch_ClassNames;
 			const pageElement = document.createElement("main");
 
-			expect(files_sidebar_target_is_in_selection_context(searchInput)).toBe(false);
-			expect(files_sidebar_target_is_in_selection_context(pageElement)).toBe(false);
-			expect(files_sidebar_target_is_in_selection_context(null)).toBe(false);
+			expect(is_selection_context_target(searchInput)).toBe(false);
+			expect(is_selection_context_target(pageElement)).toBe(false);
+			expect(is_selection_context_target(null)).toBe(false);
 		});
 	});
 
-	describe("get_files_sidebar_tree_drop_zone", () => {
+	describe("get_tree_drop_zone", () => {
 		test("returns the root drop zone independently from row geometry", () => {
 			expect(
-				get_files_sidebar_tree_drop_zone({
+				get_tree_drop_zone({
 					rows: [],
 					activeDropTargetId: null,
 					isDraggingOverRootZone: true,
@@ -4301,14 +4303,14 @@ if (import.meta.vitest) {
 			const rows = [test_drop_zone_row({ id: "file", kind: "file", depth: 0 })];
 
 			expect(
-				get_files_sidebar_tree_drop_zone({
+				get_tree_drop_zone({
 					rows,
 					activeDropTargetId: null,
 					isDraggingOverRootZone: false,
 				}),
 			).toBeUndefined();
 			expect(
-				get_files_sidebar_tree_drop_zone({
+				get_tree_drop_zone({
 					rows,
 					activeDropTargetId: "file",
 					isDraggingOverRootZone: false,
@@ -4325,7 +4327,7 @@ if (import.meta.vitest) {
 			];
 
 			expect(
-				get_files_sidebar_tree_drop_zone({
+				get_tree_drop_zone({
 					rows,
 					activeDropTargetId: "folder",
 					isDraggingOverRootZone: false,
@@ -4346,7 +4348,7 @@ if (import.meta.vitest) {
 			];
 
 			expect(
-				get_files_sidebar_tree_drop_zone({
+				get_tree_drop_zone({
 					rows,
 					activeDropTargetId: "child",
 					isDraggingOverRootZone: false,
@@ -4366,7 +4368,7 @@ if (import.meta.vitest) {
 			];
 
 			expect(
-				get_files_sidebar_tree_drop_zone({
+				get_tree_drop_zone({
 					rows,
 					activeDropTargetId: "empty-child",
 					isDraggingOverRootZone: false,
@@ -4382,7 +4384,7 @@ if (import.meta.vitest) {
 			const rows = [test_drop_zone_row({ id: "folder", kind: "folder", depth: 0 })];
 
 			expect(
-				get_files_sidebar_tree_drop_zone({
+				get_tree_drop_zone({
 					rows,
 					activeDropTargetId: "folder",
 					isDraggingOverRootZone: false,
@@ -4395,7 +4397,7 @@ if (import.meta.vitest) {
 		});
 	});
 
-	describe("get_files_sidebar_tree_drop_zone_item_ids", () => {
+	describe("get_tree_drop_zone_item_ids", () => {
 		test("returns every visible row for the root drop zone", () => {
 			const rows = [
 				test_drop_zone_row({ id: "folder", kind: "folder", depth: 0 }),
@@ -4404,7 +4406,7 @@ if (import.meta.vitest) {
 			];
 
 			expect(
-				get_files_sidebar_tree_drop_zone_item_ids({
+				get_tree_drop_zone_item_ids({
 					rows,
 					activeDropTargetId: null,
 					isDraggingOverRootZone: true,
@@ -4421,7 +4423,7 @@ if (import.meta.vitest) {
 			];
 
 			expect(
-				get_files_sidebar_tree_drop_zone_item_ids({
+				get_tree_drop_zone_item_ids({
 					rows,
 					activeDropTargetId: "child",
 					isDraggingOverRootZone: false,
@@ -4433,14 +4435,14 @@ if (import.meta.vitest) {
 			const rows = [test_drop_zone_row({ id: "file", kind: "file", depth: 0 })];
 
 			expect(
-				get_files_sidebar_tree_drop_zone_item_ids({
+				get_tree_drop_zone_item_ids({
 					rows,
 					activeDropTargetId: null,
 					isDraggingOverRootZone: false,
 				}),
 			).toEqual(new Set());
 			expect(
-				get_files_sidebar_tree_drop_zone_item_ids({
+				get_tree_drop_zone_item_ids({
 					rows,
 					activeDropTargetId: "file",
 					isDraggingOverRootZone: false,
@@ -4449,7 +4451,7 @@ if (import.meta.vitest) {
 		});
 	});
 
-	describe("get_files_sidebar_tree_drag_hover_state", () => {
+	describe("get_tree_drag_hover_state", () => {
 		const rows = [
 			test_drop_zone_row({ id: "folder-a", kind: "folder", depth: 0 }),
 			test_drop_zone_row({ id: "folder-b", kind: "folder", depth: 1 }),
@@ -4457,7 +4459,7 @@ if (import.meta.vitest) {
 		];
 
 		const get_external_file_hover_state = (hoveredItemId: string | null) => {
-			return get_files_sidebar_tree_drag_hover_state({
+			return get_tree_drag_hover_state({
 				rows,
 				hasDraggedItems: false,
 				isFileDrag: true,
@@ -4488,7 +4490,7 @@ if (import.meta.vitest) {
 
 		test("delegates to Headless Tree for internal tree drags", () => {
 			expect(
-				get_files_sidebar_tree_drag_hover_state({
+				get_tree_drag_hover_state({
 					rows,
 					hasDraggedItems: true,
 					isFileDrag: false,
@@ -4501,7 +4503,7 @@ if (import.meta.vitest) {
 				activeExternalFileDropTargetId: undefined,
 			});
 			expect(
-				get_files_sidebar_tree_drag_hover_state({
+				get_tree_drag_hover_state({
 					rows,
 					hasDraggedItems: true,
 					isFileDrag: false,
@@ -4517,7 +4519,7 @@ if (import.meta.vitest) {
 
 		test("suppresses stale Headless Tree targets for blocked external file drags", () => {
 			expect(
-				get_files_sidebar_tree_drag_hover_state({
+				get_tree_drag_hover_state({
 					rows,
 					hasDraggedItems: false,
 					isFileDrag: true,
@@ -4566,10 +4568,10 @@ if (import.meta.vitest) {
 		});
 	});
 
-	describe("files_sidebar_get_uploaded_file_rename_validation", () => {
+	describe("get_uploaded_file_rename_validation", () => {
 		test("normalizes upload file names while preserving the extension", () => {
 			expect(
-				files_sidebar_get_uploaded_file_rename_validation({
+				get_uploaded_file_rename_validation({
 					treeItemsList: undefined,
 					parentId: files_ROOT_ID,
 					nameOrPath: "Annual Report 2026.PDF",
@@ -4583,7 +4585,7 @@ if (import.meta.vitest) {
 		test("requires an uploaded file extension", () => {
 			for (const nameOrPath of ["file", "file."]) {
 				expect(
-					files_sidebar_get_uploaded_file_rename_validation({
+					get_uploaded_file_rename_validation({
 						treeItemsList: undefined,
 						parentId: files_ROOT_ID,
 						nameOrPath,
@@ -4612,7 +4614,7 @@ if (import.meta.vitest) {
 			});
 
 			expect(
-				files_sidebar_get_uploaded_file_rename_validation({
+				get_uploaded_file_rename_validation({
 					treeItemsList: [root, folder, file],
 					parentId: files_ROOT_ID,
 					nameOrPath: "docs/report.pdf",
@@ -4640,7 +4642,7 @@ if (import.meta.vitest) {
 			});
 
 			expect(
-				files_sidebar_get_uploaded_file_rename_validation({
+				get_uploaded_file_rename_validation({
 					treeItemsList: [root, folder, file],
 					nodeIdToIgnore: file._id,
 					parentId: folder._id,
@@ -4694,7 +4696,7 @@ if (import.meta.vitest) {
 		});
 	});
 
-	describe("files_sidebar_get_tree_items_list_after_optimistic_rename", () => {
+	describe("get_tree_items_list_after_optimistic_rename", () => {
 		test("updates only the DB doc fields for simple renames", () => {
 			const root = files_create_tree_root();
 			const file = test_node({
