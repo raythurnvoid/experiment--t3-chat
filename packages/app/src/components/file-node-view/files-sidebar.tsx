@@ -129,7 +129,6 @@ type FilesSidebarTreeContext_CustomAttributes = {
 	"data-files-sidebar-tree-context": "";
 };
 
-// #region helpers
 type TreeItems = {
 	list: files_TreeItem[] | undefined;
 	itemsIds: Set<string>;
@@ -462,13 +461,9 @@ function files_sidebar_target_is_in_selection_context(target: EventTarget | null
 	}
 
 	return Boolean(
-		target.closest(
-			`[${"data-files-sidebar-tree-context" satisfies keyof FilesSidebarTreeContext_CustomAttributes}]`,
-		),
+		target.closest(`[${"data-files-sidebar-tree-context" satisfies keyof FilesSidebarTreeContext_CustomAttributes}]`),
 	);
 }
-
-// #endregion helpers
 
 // #region optimistic tree rename
 function get_tree_items_list_after_optimistic_rename(args: {
@@ -1190,15 +1185,19 @@ type FilesSidebarTreeItemTrack_ClassNames =
 	| "FilesSidebarTreeItemTrack"
 	| "FilesSidebarTreeItemTrack-guide"
 	| "FilesSidebarTreeItemTrack-guide-depth-zero"
-	| "FilesSidebarTreeItemTrack-guide-active";
+	| "FilesSidebarTreeItemTrack-guide-active"
+	| "FilesSidebarTreeItemTrack-guide-terminal"
+	| "FilesSidebarTreeItemTrack-guide-hidden";
 
 type FilesSidebarTreeItemTrack_Props = {
 	trackFileIds: string[];
 	trackActiveFileIds: Set<string>;
+	terminalTrackFileId?: string;
+	hiddenTrackFileIds?: Set<string>;
 };
 
 const FilesSidebarTreeItemTrack = memo(function FilesSidebarTreeItemTrack(props: FilesSidebarTreeItemTrack_Props) {
-	const { trackFileIds, trackActiveFileIds } = props;
+	const { trackFileIds, trackActiveFileIds, terminalTrackFileId, hiddenTrackFileIds } = props;
 
 	return (
 		<div className={"FilesSidebarTreeItemTrack" satisfies FilesSidebarTreeItemTrack_ClassNames} aria-hidden="true">
@@ -1211,6 +1210,10 @@ const FilesSidebarTreeItemTrack = memo(function FilesSidebarTreeItemTrack(props:
 							("FilesSidebarTreeItemTrack-guide-depth-zero" satisfies FilesSidebarTreeItemTrack_ClassNames),
 						trackActiveFileIds.has(ancestorId) &&
 							("FilesSidebarTreeItemTrack-guide-active" satisfies FilesSidebarTreeItemTrack_ClassNames),
+						terminalTrackFileId === ancestorId &&
+							("FilesSidebarTreeItemTrack-guide-terminal" satisfies FilesSidebarTreeItemTrack_ClassNames),
+						hiddenTrackFileIds?.has(ancestorId) &&
+							("FilesSidebarTreeItemTrack-guide-hidden" satisfies FilesSidebarTreeItemTrack_ClassNames),
 					)}
 				/>
 			))}
@@ -1230,6 +1233,7 @@ type FilesSidebarTreeItemPlaceholder_Props = {
 	itemId: string;
 	ancestorIds: string[];
 	trackActiveFileIds: Set<string>;
+	hiddenTrackFileIds: Set<string>;
 	onDragEnter: ComponentProps<"div">["onDragEnter"];
 	onDragOver: ComponentProps<"div">["onDragOver"];
 	onDragLeave: ComponentProps<"div">["onDragLeave"];
@@ -1239,7 +1243,8 @@ type FilesSidebarTreeItemPlaceholder_Props = {
 const FilesSidebarTreeItemPlaceholder = memo(function FilesSidebarTreeItemPlaceholder(
 	props: FilesSidebarTreeItemPlaceholder_Props,
 ) {
-	const { itemId, ancestorIds, trackActiveFileIds, onDragEnter, onDragOver, onDragLeave, onDrop } = props;
+	const { itemId, ancestorIds, trackActiveFileIds, hiddenTrackFileIds, onDragEnter, onDragOver, onDragLeave, onDrop } =
+		props;
 
 	const trackFileIds = [...ancestorIds, itemId];
 	const placeholderDepth = trackFileIds.length;
@@ -1262,13 +1267,36 @@ const FilesSidebarTreeItemPlaceholder = memo(function FilesSidebarTreeItemPlaceh
 				<FilesSidebarTreeItemIcon kind="folder" />
 				<span>No files inside</span>
 			</div>
-			<FilesSidebarTreeItemTrack trackFileIds={trackFileIds} trackActiveFileIds={trackActiveFileIds} />
+			<FilesSidebarTreeItemTrack
+				trackFileIds={trackFileIds}
+				trackActiveFileIds={trackActiveFileIds}
+				terminalTrackFileId={itemId}
+				hiddenTrackFileIds={hiddenTrackFileIds}
+			/>
 		</div>
 	);
 });
 // #endregion tree item placeholder
 
 // #region tree item
+function tree_item_get_hidden_track_file_ids_for_descendants(item?: FilesSidebarTreeItem_Instance) {
+	const result = new Set<string>();
+
+	let child = item;
+	let parent = child?.getParent();
+	while (child && parent && parent.getId() !== files_ROOT_ID) {
+		// Hide ancestor guide lines once the branch occupying that depth has already ended.
+		if (parent.getChildren().at(-1)?.getId() === child.getId()) {
+			result.add(parent.getId());
+		}
+
+		child = parent;
+		parent = parent.getParent();
+	}
+
+	return result;
+}
+
 type FilesSidebarTreeItem_ClassNames =
 	| "FilesSidebarTreeItem"
 	| "FilesSidebarTreeItem-content-navigated"
@@ -1359,6 +1387,15 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 		return result.reverse();
 	});
+	const terminalTrackFileId = useVal(() => {
+		const parent = item.getParent();
+		if (!parent || parent.getId() === files_ROOT_ID || parent.getChildren().at(-1)?.getId() !== itemId) {
+			return undefined;
+		}
+
+		return parent.getId();
+	});
+	const hiddenTrackFileIds = useVal(() => tree_item_get_hidden_track_file_ids_for_descendants(item.getParent()));
 
 	const updatedByDisplayName = displayNameByUserId.get(itemData.updatedBy) ?? "Unknown";
 	const metaText = `${format_relative_time(itemData.updatedAt)} · ${updatedByDisplayName}`;
@@ -1540,7 +1577,12 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					onUnarchive={handleUnarchiveClick}
 				/>
 
-				<FilesSidebarTreeItemTrack trackFileIds={ancestorIds} trackActiveFileIds={trackActiveFileIds} />
+				<FilesSidebarTreeItemTrack
+					trackFileIds={ancestorIds}
+					trackActiveFileIds={trackActiveFileIds}
+					terminalTrackFileId={terminalTrackFileId}
+					hiddenTrackFileIds={hiddenTrackFileIds}
+				/>
 			</div>
 
 			{shouldRenderPlaceholder ? (
@@ -1548,6 +1590,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					itemId={itemId}
 					ancestorIds={ancestorIds}
 					trackActiveFileIds={trackActiveFileIds}
+					hiddenTrackFileIds={hiddenTrackFileIds}
 					onDragEnter={handlePlaceholderDragEnter}
 					onDragOver={handlePlaceholderDragOver}
 					onDragLeave={handlePlaceholderDragLeave}

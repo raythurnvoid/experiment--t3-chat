@@ -268,7 +268,8 @@
 	.FilesSidebarTreeItem {
 		--FilesSidebarTreeItem-content-indent-left: calc(
 			(((var(--FilesSidebarTreeItem-content-depth) + 1) * 12px) - 4px) -
-				var(--FilesSidebarTreeItem-content-depth-zero-indent-left-adjustment)
+				var(--FilesSidebarTreeItem-content-depth-zero-indent-left-adjustment) +
+				(min(max(var(--FilesSidebarTreeItem-content-depth) - 1, 0), 1) * 8px)
 		);
 
 		display: grid;
@@ -310,7 +311,7 @@
 			/* Keep navigated state visible without bold text changing row metrics. */
 			content: "";
 			position: absolute;
-			z-index: 1;
+			z-index: 3;
 			left: 12px;
 			top: 8px;
 
@@ -318,7 +319,7 @@
 			height: 28px;
 			border-radius: 999px;
 
-			background: var(--color-accent-06);
+			background: var(--color-accent-07);
 			pointer-events: none;
 		}
 
@@ -326,7 +327,6 @@
 			/* Keep keyboard focus above the navigated rail and readonly title chrome. */
 			content: "";
 			position: absolute;
-			z-index: 2;
 			inset: 0 16px 0 8px;
 
 			border-radius: 8px;
@@ -424,9 +424,37 @@
 	}
 
 	.FilesSidebarTreeItemTrack-guide {
+		position: relative;
+
+		color: var(--color-fg-03);
+
 		width: 12px;
 		height: 100%;
-		border-left: 2px solid color-mix(in oklch, var(--color-fg-07) 45%, transparent);
+		border-left: 1px solid currentColor;
+	}
+
+	.FilesSidebarTreeItemTrack-guide:last-child::after {
+		content: "";
+		position: absolute;
+		top: 50%;
+		left: -1px;
+
+		width: 9px;
+		border-top: 1px solid currentColor;
+	}
+
+	.FilesSidebarTreeItemTrack-guide-terminal {
+		border-left-color: transparent;
+
+		&::before {
+			content: "";
+			position: absolute;
+			top: 0;
+			left: -1px;
+
+			height: 50%;
+			border-left: 1px solid currentColor;
+		}
 	}
 
 	.FilesSidebarTreeItemTrack-guide-depth-zero {
@@ -434,7 +462,11 @@
 	}
 
 	.FilesSidebarTreeItemTrack-guide-active {
-		border-color: color-mix(in oklch, var(--color-fg-10) 60%, transparent);
+		color: var(--color-fg-06);
+	}
+
+	.FilesSidebarTreeItemTrack-guide-hidden {
+		color: transparent;
 	}
 	/* #endregion tree item track */
 
