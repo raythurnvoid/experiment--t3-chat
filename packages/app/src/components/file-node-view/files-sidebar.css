@@ -149,6 +149,7 @@
 	/* #region tree */
 	.FilesSidebarTree {
 		flex: 1;
+		padding-block: 2px;
 	}
 
 	.FilesSidebarTree-empty-state {
@@ -162,8 +163,16 @@
 		.FilesSidebarTreeItem.FilesSidebarTreeItem-content-navigated {
 			color: var(--color-fg-11);
 
-			.FilesSidebarTreeItemMetaLabel-text {
+			.FilesSidebarTreeItemSecondaryContent-text {
 				color: var(--color-fg-10);
+			}
+		}
+
+		.FilesSidebarTreeItem.FilesSidebarTreeItem-content-navigated:has(
+				> .FilesSidebarTreeItemPrimaryAction:is(:hover, :focus-visible, [data-selected])
+			) {
+			.FilesSidebarTreeItemSecondaryContent-text {
+				color: var(--color-fg-09);
 			}
 		}
 	}
@@ -190,7 +199,6 @@
 	/* #region tree drop zone */
 	.FilesSidebarTreeDropZoneArea {
 		position: absolute;
-		z-index: 0;
 		left: 8px;
 		right: 16px;
 
@@ -212,7 +220,6 @@
 
 	.FilesSidebarTreeDropZoneIndicator {
 		position: absolute;
-		z-index: 1;
 		bottom: 64px;
 		left: 50%;
 		transform: translateX(-50%);
@@ -250,80 +257,48 @@
 	/* #region tree item */
 	.FilesSidebarTreeItem,
 	.FilesSidebarTreeItemPlaceholder {
-		--FilesSidebarTreeItem-track-inset-left: 25px;
-
-		contain: strict;
+		contain: layout style size;
 		height: 44px;
 
 		color: var(--color-fg-07);
-		padding: 0 16px 0 8px;
 
-		content-visibility: auto;
 		contain-intrinsic-height: auto 44px;
 	}
 
 	.FilesSidebarTreeItem {
-		--FilesSidebarTreeItem-content-indent-left: calc(var(--FilesSidebarTreeItem-content-depth) * 20px);
-
 		display: grid;
 		grid-template-columns: auto 1fr auto;
+		grid-template-rows: auto auto;
 
 		&:has(> .FilesSidebarTreeItemPrimaryAction:is(:hover, :focus-visible)) {
 			color: var(--color-fg-11);
 
-			.FilesSidebarTreeItemMetaLabel-text {
-				color: var(--color-fg-10);
+			.FilesSidebarTreeItemSecondaryContent-text {
+				color: var(--color-fg-09);
 			}
 		}
 
 		&:has(> .FilesSidebarTreeItemPrimaryAction[data-selected]) {
 			color: var(--color-fg-11);
 
-			.FilesSidebarTreeItemMetaLabel-text {
-				color: var(--color-fg-10);
+			.FilesSidebarTreeItemSecondaryContent-text {
+				color: var(--color-fg-09);
 			}
 		}
 
 		&:has(> .FilesSidebarTreeItemPrimaryAction:not(:disabled):active) {
 			color: var(--color-fg-12);
 
-			.FilesSidebarTreeItemMetaLabel-text {
+			.FilesSidebarTreeItemSecondaryContent-text {
 				color: var(--color-fg-11);
 			}
-		}
-
-		&.FilesSidebarTreeItem-content-navigated::before {
-			/* Keep navigated state visible without bold text changing row metrics. */
-			content: "";
-			position: absolute;
-			z-index: 1;
-			left: 12px;
-			top: 8px;
-
-			width: 3px;
-			height: 28px;
-			border-radius: 999px;
-
-			background: var(--color-accent-07);
-			pointer-events: none;
-		}
-
-		&:has(> .FilesSidebarTreeItemPrimaryAction:focus-visible)::after {
-			/* Keep keyboard focus above the navigated rail and readonly title chrome. */
-			content: "";
-			position: absolute;
-			inset: 0 16px 0 8px;
-
-			border-radius: 8px;
-			box-shadow: inset 0 0 0 2px var(--color-fg-12);
-			pointer-events: none;
 		}
 
 		&.FilesSidebarTreeItem-content-archived {
 			text-decoration: line-through;
 			color: var(--color-fg-06);
 
-			.FilesSidebarTreeItemMetaLabel-text {
+			.FilesSidebarTreeItemSecondaryContent-text {
 				color: var(--color-fg-05);
 			}
 		}
@@ -331,16 +306,222 @@
 
 	/* #endregion tree item */
 
-	/* #region tree item meta label */
-	.FilesSidebarTreeItemMetaLabel {
+	/* #region tree item primary action */
+	.FilesSidebarTreeItemPrimaryAction {
+		/* Use the row-level focus ring instead of MyPrimaryAction's transparent border so shadows reach the edge. */
+		position: absolute;
+		inset: 0;
+		border-width: 0;
+		border-radius: 8px;
+		outline: none;
+		background: transparent;
+		box-shadow: none;
+
+		contain: layout style size;
+
+		&[data-selected],
+		&:not(:disabled):hover,
+		&:not(:disabled):focus-visible,
+		&:not(:disabled):active {
+			background: transparent;
+			box-shadow: none;
+		}
+
+		&[data-selected] > .FilesSidebarTreeItemPrimaryAction-surface,
+		&:not(:disabled):focus-visible:not(:active) > .FilesSidebarTreeItemPrimaryAction-surface {
+			box-shadow:
+				inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+				inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 70%, transparent),
+				0 4px 10px color-mix(in oklch, black 38%, transparent);
+		}
+
+		&[data-selected] > .FilesSidebarTreeItemPrimaryAction-surface {
+			background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
+		}
+
+		&:not(:disabled):hover:not(:active):not(:focus-visible):not([data-selected])
+			> .FilesSidebarTreeItemPrimaryAction-surface {
+			background: linear-gradient(var(--color-base-1-04), var(--color-base-1-03));
+			box-shadow:
+				inset 0 1px 0 oklch(1 0 0 / 0.06),
+				inset 0 -1px 0 oklch(0.18 0.002 85 / 0.58),
+				0 3px 8px oklch(0 0 0 / 0.26);
+		}
+
+		&:not(:disabled):focus-visible:not(:active) > .FilesSidebarTreeItemPrimaryAction-surface {
+			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+			outline: 2px solid var(--color-fg-12);
+		}
+
+		&:not(:disabled):active > .FilesSidebarTreeItemPrimaryAction-surface {
+			background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
+			box-shadow:
+				inset 0 2px 4px color-mix(in oklch, black 32%, transparent),
+				inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
+		}
+	}
+
+	.FilesSidebarTreeItemPrimaryAction-surface {
+		position: absolute;
+		inset: 0.5px 16px 0.5px 8px;
+
+		border-radius: 8px;
+		outline: none;
+		pointer-events: none;
+	}
+
+	.FilesSidebarTreeItem > .FilesSidebarTreeItemPrimaryAction-drop-zone-included,
+	.FilesSidebarTreeItem > .FilesSidebarTreeItemPrimaryAction-drop-zone-included[data-selected],
+	.FilesSidebarTreeItem
+		> .FilesSidebarTreeItemPrimaryAction-drop-zone-included:not(:disabled):is(:focus-visible, :active) {
+		background: transparent;
+		box-shadow: none;
+	}
+
+	.FilesSidebarTreeItem
+		> .FilesSidebarTreeItemPrimaryAction-drop-zone-included
+		> .FilesSidebarTreeItemPrimaryAction-surface,
+	.FilesSidebarTreeItem
+		> .FilesSidebarTreeItemPrimaryAction-drop-zone-included[data-selected]
+		> .FilesSidebarTreeItemPrimaryAction-surface,
+	.FilesSidebarTreeItem
+		> .FilesSidebarTreeItemPrimaryAction-drop-zone-included:not(:disabled):is(:focus-visible, :active)
+		> .FilesSidebarTreeItemPrimaryAction-surface {
+		/* Keep row state surfaces from covering the active drop-zone enclosure. */
+		background: transparent;
+		box-shadow: none;
+	}
+
+	.FilesSidebarTreeItem-content-renaming {
+		/*
+				Disable pointer events for the primary action while renaming 
+				otherwise the user cannot select text in the input.
+				*/
+		> .FilesSidebarTreeItemPrimaryAction {
+			pointer-events: none;
+		}
+
+		/*
+				Enable pointer events for the primary content while renaming
+				so the user can select text in the input that is a descendant
+				of the primary content.
+				*/
+		> .FilesSidebarTreeItemPrimaryContent {
+			pointer-events: auto;
+		}
+	}
+	/* #endregion tree item primary action */
+
+	/* #region tree item primary content */
+	.FilesSidebarTreeItemPrimaryContent {
+		position: relative;
+		top: 2px;
+
+		grid-row: 1;
+		grid-column: 2;
+
+		display: flex;
+		gap: 1px;
+		align-self: end;
+		align-items: center;
+
+		font-size: 0.875rem;
+		outline: none;
+
+		min-width: 0;
+		height: 28px;
+
+		pointer-events: none;
+
+		contain: content;
+	}
+	/* #endregion tree item primary content */
+
+	/* #region tree item icon */
+	.FilesSidebarTreeItemIcon {
+		width: 16px;
+		height: 16px;
+	}
+	/* #endregion tree item icon */
+
+	/* #region tree item title */
+	.FilesSidebarTreeItemTitle {
+		display: flex;
+		flex: 1;
+		min-width: 0;
+		width: 100%;
+
+		color: inherit;
+		line-height: 1;
+
+		&:has(.FilesSidebarTreeItemTitle-input:disabled) {
+			.MyInputBox {
+				border-color: transparent;
+				background: transparent;
+				box-shadow: none;
+			}
+		}
+	}
+
+	.FilesSidebarTreeItemTitle-input {
+		flex: 1;
+		min-width: 0;
+		contain: content;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		padding: 0 3px;
+
+		color: inherit;
+		font-size: inherit;
+		line-height: inherit;
+
+		height: 22px;
+
+		&:disabled {
+			pointer-events: none;
+			opacity: 1;
+		}
+	}
+	/* #endregion tree item title */
+
+	/* #region tree item arrow */
+	.FilesSidebarTreeItemArrow {
+		grid-row: 1 / 3;
+		grid-column: 1;
+
+		/* Keep leaf rows reserving the same twistie column as folder rows so tree contents align like VS Code. */
+		width: calc((var(--FilesSidebarTreeItem-content-depth) * 20px) + 44px);
+		height: 44px;
+		padding-left: calc((var(--FilesSidebarTreeItem-content-depth) * 20px) + 8px);
+
+		place-content: center;
+
+		/* Let the arrow button's hover shadow paint over the adjacent content column. */
+		contain: layout style;
+
+		display: flex;
+		align-items: center;
+		justify-content: center;
+
+		> .FilesSidebarTreeItemArrow-icon-button {
+			pointer-events: auto;
+		}
+	}
+	/* #endregion tree item arrow */
+
+	/* #region tree item secondary content */
+	.FilesSidebarTreeItemSecondaryContent {
+		position: relative;
+		top: -4px;
+
 		grid-row: 2;
 		grid-column: 2;
 
 		display: flex;
+		align-self: start;
 		align-items: center;
 		padding-inline: 4px;
 
-		height: 100%;
 		min-width: 0; /* Allow shrinking */
 
 		pointer-events: none;
@@ -348,7 +529,7 @@
 		contain: content;
 	}
 
-	.FilesSidebarTreeItemMetaLabel-text {
+	.FilesSidebarTreeItemSecondaryContent-text {
 		font-size: 0.75rem;
 		line-height: 1rem;
 		color: var(--color-fg-06);
@@ -359,7 +540,7 @@
 		user-select: none;
 		min-width: 0;
 	}
-	/* #endregion tree item meta label */
+	/* #endregion tree item secondary content */
 
 	/* #region tree item actions */
 	.FilesSidebarTreeItemActions {
@@ -369,16 +550,33 @@
 		display: flex;
 		align-items: center;
 		justify-content: end;
+		padding-right: 16px;
+		height: 44px;
 
 		contain: layout style;
 	}
 	/* #endregion tree item actions */
 
+	/* #region tree item secondary action */
+	.FilesSidebarTreeItemSecondaryAction {
+		display: inline-flex;
+	}
+	/* #endregion tree item secondary action */
+
+	/* #region tree item secondary action create file */
+	.FilesSidebarTreeItemSecondaryActionCreateFile {
+		display: inline-flex;
+	}
+	/* #endregion tree item secondary action create file */
+
+	/* #region tree item more action */
+	.FilesSidebarTreeItemMoreAction {
+		display: inline-flex;
+	}
+	/* #endregion tree item more action */
+
 	/* #region tree item placeholder */
 	.FilesSidebarTreeItemPlaceholder {
-		--FilesSidebarTreeItem-content-depth: var(--FilesSidebarTreeItemPlaceholder-depth);
-		--FilesSidebarTreeItem-content-indent-left: calc((var(--FilesSidebarTreeItem-content-depth) * 20px) + 36px);
-
 		display: flex;
 		gap: 8px;
 		align-items: center;
@@ -389,7 +587,16 @@
 		user-select: none;
 
 		> .FilesSidebarTreeItemPrimaryContent {
-			padding-left: var(--FilesSidebarTreeItem-content-indent-left);
+			top: 0;
+
+			/*
+			Keep this equal to the regular row's 1px
+			content gap plus the title input's 3px inline padding.
+			*/
+			gap: 4px;
+			align-self: center;
+
+			padding-left: calc((var(--FilesSidebarTreeItemPlaceholder-depth) * 20px) + 44px);
 		}
 	}
 	/* #endregion tree item placeholder */
@@ -397,7 +604,7 @@
 	/* #region tree item track */
 	.FilesSidebarTreeItemTrack {
 		position: absolute;
-		inset: 0 auto 0 var(--FilesSidebarTreeItem-track-inset-left);
+		inset: 0 auto 0 25px;
 
 		display: flex;
 		width: 100%;
@@ -448,178 +655,19 @@
 	}
 	/* #endregion tree item track */
 
-	/* #region tree item primary action */
-	.FilesSidebarTreeItemPrimaryAction {
-		grid-row: 1 / 4;
-		grid-column: 1 / 4;
+	/* #region tree item navigated rail */
+	.FilesSidebarTreeItemNavigatedRail {
+		/* Keep this near the end of the row DOM so paint order handles layering. */
+		position: absolute;
+		left: 12px;
+		top: 9px;
 
-		/* Use the row-level focus ring instead of MyPrimaryAction's transparent border so shadows reach the edge. */
-		border-width: 0;
-		border-radius: 8px;
-		outline: none;
+		width: 3px;
+		height: 28px;
+		border-radius: 999px;
 
-		contain: strict;
-
-		&[data-selected],
-		&:not(:disabled):focus-visible:not(:active) {
-			box-shadow:
-				inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
-				inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 70%, transparent),
-				0 4px 10px color-mix(in oklch, black 38%, transparent);
-		}
-
-		&[data-selected] {
-			background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
-		}
-
-		&:not(:disabled):hover:not(:active):not(:focus-visible):not([data-selected]) {
-			background: transparent;
-			box-shadow: none;
-		}
-
-		&:not(:disabled):focus-visible:not(:active) {
-			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
-		}
-
-		&:not(:disabled):active {
-			background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
-			box-shadow:
-				inset 0 2px 4px color-mix(in oklch, black 32%, transparent),
-				inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
-		}
-	}
-
-	.FilesSidebarTreeItem > .FilesSidebarTreeItemPrimaryAction-drop-zone-included,
-	.FilesSidebarTreeItem > .FilesSidebarTreeItemPrimaryAction-drop-zone-included[data-selected],
-	.FilesSidebarTreeItem
-		> .FilesSidebarTreeItemPrimaryAction-drop-zone-included:not(:disabled):is(:focus-visible, :active) {
-		/* Keep row state surfaces from covering the active drop-zone enclosure. */
-		background: transparent;
-		box-shadow: none;
-	}
-
-	.FilesSidebarTreeItem-content-renaming {
-		/*
-		Disable pointer events for the primary action while renaming 
-		otherwise the user cannot select text in the input.
-		*/
-		> .FilesSidebarTreeItemPrimaryAction {
-			pointer-events: none;
-		}
-
-		/*
-		Enable pointer events for the primary content while renaming
-		so the user can select text in the input that is a descendant
-		of the primary content.
-		*/
-		> .FilesSidebarTreeItemPrimaryContent {
-			pointer-events: auto;
-		}
-	}
-	/* #endregion tree item primary action */
-
-	/* #region tree item secondary action */
-	.FilesSidebarTreeItemSecondaryAction {
-		display: inline-flex;
-	}
-	/* #endregion tree item secondary action */
-
-	/* #region tree item secondary action create file */
-	.FilesSidebarTreeItemSecondaryActionCreateFile {
-		display: inline-flex;
-	}
-	/* #endregion tree item secondary action create file */
-
-	/* #region tree item more action */
-	.FilesSidebarTreeItemMoreAction {
-		display: inline-flex;
-	}
-	/* #endregion tree item more action */
-
-	/* #region tree item arrow */
-	.FilesSidebarTreeItemArrow {
-		grid-row: 1 / 3;
-		grid-column: 1;
-
-		/* Keep leaf rows reserving the same twistie column as folder rows so tree contents align like VS Code. */
-		width: 36px;
-		margin-left: var(--FilesSidebarTreeItem-content-indent-left);
-
-		place-content: center;
-
-		/* Let the arrow button's hover shadow paint over the adjacent content column. */
-		contain: layout style;
-
-		display: flex;
-		align-items: center;
-		justify-content: center;
-
-		> .FilesSidebarTreeItemArrow-icon-button {
-			pointer-events: auto;
-		}
-	}
-	/* #endregion tree item arrow */
-
-	/* #region tree item primary content */
-	.FilesSidebarTreeItemPrimaryContent {
-		grid-row: 1;
-		grid-column: 2;
-
-		display: flex;
-		gap: 4px;
-		align-items: center;
-
-		font-size: 0.875rem;
-		outline: none;
-
-		min-width: 0;
-
+		background: var(--color-accent-07);
 		pointer-events: none;
-
-		contain: content;
 	}
-
-	/* #endregion tree item primary content */
-
-	/* #region tree item icon */
-	.FilesSidebarTreeItemIcon {
-		width: 16px;
-		height: 16px;
-	}
-	/* #endregion tree item icon */
-
-	/* #region tree item title */
-	.FilesSidebarTreeItemTitle {
-		display: flex;
-		flex: 1;
-		min-width: 0;
-		width: 100%;
-
-		color: inherit;
-
-		&:has(.FilesSidebarTreeItemTitle-input:disabled) {
-			.MyInputBox {
-				border-color: transparent;
-			}
-
-			.FilesSidebarTreeItemTitle-input {
-				color: inherit;
-			}
-		}
-	}
-
-	.FilesSidebarTreeItemTitle-input {
-		flex: 1;
-		min-width: 0;
-
-		contain: content;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-
-		&:disabled {
-			pointer-events: none;
-			opacity: 1;
-		}
-	}
-	/* #endregion tree item title */
+	/* #endregion tree item navigated rail */
 }

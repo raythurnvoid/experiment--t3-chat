@@ -81,7 +81,7 @@ Keep folder-table drag/drop checks as a route-specific recipe. The folder table 
 
 ## Sidebar Tree Drop Zone Visual QA
 
-Keep sidebar drop-zone checks as a route-specific recipe because they depend on Headless Tree drag state, the `/files` sidebar layout, and the fixed 44px tree rows.
+Keep sidebar drop-zone checks as a route-specific recipe because they depend on Headless Tree drag state, the `/files` sidebar layout, and the fixed 45px tree row slots.
 
 - Bind a single `/files` tab and create or reuse a visible nested tree like `new-folder/drop-child/drop-grandchild/test.md`, plus a root-level `README.md`.
 - Capture a baseline screenshot before dragging so visual comparison has the normal tree rails, selected row, folder indentation, and root/sidebar borders.

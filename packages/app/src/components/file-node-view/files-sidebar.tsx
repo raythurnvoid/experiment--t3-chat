@@ -122,7 +122,7 @@ type DropZoneRow = {
 	hasPlaceholderRow: boolean;
 };
 
-const ROW_HEIGHT_PX = 44;
+const ROW_HEIGHT_PX = 45;
 const FILES_SIDEBAR_SELECTION_CONTEXT_EVENTS: Array<"pointerdown" | "focusin"> = ["pointerdown", "focusin"];
 
 type CustomAttributes = {
@@ -1101,7 +1101,8 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 // #region tree item primary action
 type FilesSidebarTreeItemPrimaryAction_ClassNames =
 	| "FilesSidebarTreeItemPrimaryAction"
-	| "FilesSidebarTreeItemPrimaryAction-drop-zone-included";
+	| "FilesSidebarTreeItemPrimaryAction-drop-zone-included"
+	| "FilesSidebarTreeItemPrimaryAction-surface";
 
 type FilesSidebarTreeItemPrimaryAction_Props = {
 	itemProps: ReturnType<FilesSidebarTreeItem_Instance["getProps"]>;
@@ -1148,32 +1149,45 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 			data-focused={isFocused || undefined}
 			aria-selected={isSelected ? "true" : "false"}
 			aria-label={ariaLabel}
-		></MyPrimaryAction>
+		>
+			<span
+				className={"FilesSidebarTreeItemPrimaryAction-surface" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames}
+				aria-hidden="true"
+			/>
+		</MyPrimaryAction>
 	);
 });
 // #endregion tree item primary action
 
-// #region tree item meta label
-type FilesSidebarTreeItemMetaLabel_ClassNames = "FilesSidebarTreeItemMetaLabel" | "FilesSidebarTreeItemMetaLabel-text";
+// #region tree item secondary content
+type FilesSidebarTreeItemSecondaryContent_ClassNames =
+	| "FilesSidebarTreeItemSecondaryContent"
+	| "FilesSidebarTreeItemSecondaryContent-text";
 
-type FilesSidebarTreeItemMetaLabel_Props = {
-	metaText: string;
+type FilesSidebarTreeItemSecondaryContent_Props = {
+	secondaryText: string;
 };
 
-const FilesSidebarTreeItemMetaLabel = memo(function FilesSidebarTreeItemMetaLabel(
-	props: FilesSidebarTreeItemMetaLabel_Props,
+const FilesSidebarTreeItemSecondaryContent = memo(function FilesSidebarTreeItemSecondaryContent(
+	props: FilesSidebarTreeItemSecondaryContent_Props,
 ) {
-	const { metaText } = props;
+	const { secondaryText } = props;
 
 	return (
-		<div className={"FilesSidebarTreeItemMetaLabel" satisfies FilesSidebarTreeItemMetaLabel_ClassNames}>
-			<div className={"FilesSidebarTreeItemMetaLabel-text" satisfies FilesSidebarTreeItemMetaLabel_ClassNames}>
-				{metaText}
+		<div
+			className={"FilesSidebarTreeItemSecondaryContent" satisfies FilesSidebarTreeItemSecondaryContent_ClassNames}
+		>
+			<div
+				className={
+					"FilesSidebarTreeItemSecondaryContent-text" satisfies FilesSidebarTreeItemSecondaryContent_ClassNames
+				}
+			>
+				{secondaryText}
 			</div>
 		</div>
 	);
 });
-// #endregion tree item meta label
+// #endregion tree item secondary content
 
 // #region tree item actions
 type FilesSidebarTreeItemActions_ClassNames = "FilesSidebarTreeItemActions";
@@ -1387,7 +1401,8 @@ type FilesSidebarTreeItem_ClassNames =
 	| "FilesSidebarTreeItem"
 	| "FilesSidebarTreeItem-content-navigated"
 	| "FilesSidebarTreeItem-content-archived"
-	| "FilesSidebarTreeItem-content-renaming";
+	| "FilesSidebarTreeItem-content-renaming"
+	| "FilesSidebarTreeItemNavigatedRail";
 
 type FilesSidebar_CssVars = {
 	"--FilesSidebarTreeItem-content-depth": number;
@@ -1617,6 +1632,13 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					ariaLabel={label}
 				/>
 
+				<FilesSidebarTreeItemTrack
+					trackFileIds={ancestorIds}
+					trackActiveFileIds={trackActiveFileIds}
+					terminalTrackFileId={terminalTrackFileId}
+					hiddenTrackFileIds={hiddenTrackFileIds}
+				/>
+
 				<FilesSidebarTreeItemPrimaryContent
 					title={itemData.name}
 					kind={itemData.kind}
@@ -1641,7 +1663,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					/>
 				)}
 
-				<FilesSidebarTreeItemMetaLabel metaText={metaText} />
+				<FilesSidebarTreeItemSecondaryContent secondaryText={metaText} />
 
 				<FilesSidebarTreeItemActions
 					kind={itemData.kind}
@@ -1662,12 +1684,12 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					onUnarchive={handleUnarchiveClick}
 				/>
 
-				<FilesSidebarTreeItemTrack
-					trackFileIds={ancestorIds}
-					trackActiveFileIds={trackActiveFileIds}
-					terminalTrackFileId={terminalTrackFileId}
-					hiddenTrackFileIds={hiddenTrackFileIds}
-				/>
+				{isNavigated ? (
+					<div
+						className={"FilesSidebarTreeItemNavigatedRail" satisfies FilesSidebarTreeItem_ClassNames}
+						aria-hidden="true"
+					/>
+				) : null}
 			</div>
 
 			{shouldRenderPlaceholder ? (
@@ -1942,13 +1964,6 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 			onDropCapture={handleDropCapture}
 		>
 			<AssistiveTreeDescription tree={tree()} />
-			{dropZone ? (
-				<>
-					<FilesSidebarTreeDropZoneArea dropZone={dropZone} />
-					<FilesSidebarTreeDropZoneIndicator kind={dropZone.kind} />
-				</>
-			) : null}
-
 			{isTreeLoading ? (
 				<div className={cn("FilesSidebarTree-empty-state" satisfies FilesSidebarTree_ClassNames)}>Loading files...</div>
 			) : (
@@ -1985,6 +2000,12 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 					})}
 				</>
 			)}
+			{dropZone ? (
+				<>
+					<FilesSidebarTreeDropZoneArea dropZone={dropZone} />
+					<FilesSidebarTreeDropZoneIndicator kind={dropZone.kind} />
+				</>
+			) : null}
 		</div>
 	);
 });
@@ -4312,7 +4333,7 @@ if (import.meta.vitest) {
 			).toEqual({
 				kind: "folder",
 				top: "0px",
-				height: "132px",
+				height: "135px",
 			});
 		});
 
@@ -4332,8 +4353,8 @@ if (import.meta.vitest) {
 				}),
 			).toEqual({
 				kind: "folder",
-				top: "44px",
-				height: "88px",
+				top: "45px",
+				height: "90px",
 			});
 		});
 
@@ -4352,8 +4373,8 @@ if (import.meta.vitest) {
 				}),
 			).toEqual({
 				kind: "folder",
-				top: "44px",
-				height: "88px",
+				top: "45px",
+				height: "90px",
 			});
 		});
 
@@ -4369,7 +4390,7 @@ if (import.meta.vitest) {
 			).toEqual({
 				kind: "folder",
 				top: "0px",
-				height: "44px",
+				height: "45px",
 			});
 		});
 	});

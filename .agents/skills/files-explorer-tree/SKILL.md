@@ -98,7 +98,7 @@ Tree-item components:
 - `FilesSidebarTreeItemIcon`
 - `FilesSidebarTreeItemPrimaryContent`
 - `FilesSidebarTreeItemPrimaryAction`
-- `FilesSidebarTreeItemMetaLabel`
+- `FilesSidebarTreeItemSecondaryContent`
 - `FilesSidebarTreeItemActions`
 - `FilesSidebarTreeItemSecondaryAction`
 - `FilesSidebarTreeItemSecondaryActionCreateFile`
