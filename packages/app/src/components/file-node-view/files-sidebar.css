@@ -284,6 +284,10 @@
 			color: var(--color-fg-10);
 		}
 
+		&:has(> .FilesSidebarTreeItemPrimaryAction[data-focused]) {
+			color: var(--color-fg-10);
+		}
+
 		&.FilesSidebarTreeItem-content-navigated::before {
 			/* Keep navigated state visible without bold text changing row metrics. */
 			content: "";
@@ -417,9 +421,29 @@
 		grid-row: 1 / 4;
 		grid-column: 1 / 4;
 
+		/* Use the row-level focus ring instead of MyPrimaryAction's transparent border so shadows reach the edge. */
+		border-width: 0;
 		border-radius: 8px;
+		outline: none;
 
 		contain: strict;
+
+		&[data-selected],
+		&[data-focused],
+		&:not(:disabled):is(:hover, :focus-visible):not(:active) {
+			background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+			box-shadow:
+				inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+				inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 70%, transparent),
+				0 4px 10px color-mix(in oklch, black 38%, transparent);
+		}
+
+		&:not(:disabled):active {
+			background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
+			box-shadow:
+				inset 0 2px 4px color-mix(in oklch, black 32%, transparent),
+				inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
+		}
 	}
 
 	.FilesSidebarTreeItem-content-renaming {

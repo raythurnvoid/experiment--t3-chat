@@ -91,6 +91,17 @@ Keep sidebar drop-zone checks as a route-specific recipe because they depend on 
 - Inspect computed styles for `.FilesSidebarTreeDropZoneArea` and `.FilesSidebarTreeDropZoneIndicator-label`. The indicator should be transparent and blurred with no glow, and the dotted area should use the app accent token.
 - Check the accessibility snapshot while the indicator is visible. The visual indicator is `aria-hidden`; the snapshot should still expose the normal `files_nodes` tree and treeitems without an extra button, link, or duplicate drop-zone label.
 
+## Sidebar Tree Row Surface Visual QA
+
+Keep row-surface checks as a lightweight Playwriter/manual recipe because they verify CSS state styling without needing committed browser tests.
+
+- Bind a single `/files` tab and inspect a visible `.FilesSidebarTreeItemPrimaryAction`.
+- Verify idle, not-selected, not-focused rows have no elevated gradient surface.
+- Verify selected rows, Headless Tree focused rows from arrow-key navigation, hovered rows, and focus-visible rows use the elevated gradient surface.
+- Verify active/pressed rows use the darker pressed gradient and inset-only shadow.
+- Inspect computed styles for the primary action: `borderWidth` should be `0px`, `outlineStyle` should be `none`, and no transparent rim should appear between the row edge and the shadowed surface.
+- Confirm secondary action buttons still use their existing button styling and do not inherit the row-surface treatment.
+
 ## R2 Upload QA
 
 Keep R2 upload checks as a route-specific recipe. Do not promote this flow into the installed harness unless file upload controls become a generic primitive across routes.

@@ -1045,6 +1045,7 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 			tooltip={tooltipContent}
 			tooltipTimeout={2000}
 			tooltipDisabled={isTreeDragging}
+			data-focused={isFocused || undefined}
 			aria-selected={isSelected ? "true" : "false"}
 			aria-label={ariaLabel}
 		></MyPrimaryAction>
@@ -3103,6 +3104,75 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		},
 	);
 
+	const selectedItemsBeforeCancelledDragRef = useRef<string[] | null>(null);
+	const [dragSelectionRestoreFeature] = useState(
+		() =>
+			({
+				key: "files-sidebar-drag-selection-restore",
+
+				treeInstance: {
+					getContainerProps: ({ tree, prev }, treeLabel) => {
+						const prevProps = prev?.(treeLabel) ?? {};
+
+						return {
+							...prevProps,
+							onDrop: (event: DragEvent) => {
+								prevProps.onDrop?.(event);
+								if (event.defaultPrevented) {
+									selectedItemsBeforeCancelledDragRef.current = null;
+								}
+							},
+						};
+					},
+				},
+
+				itemInstance: {
+					getProps: ({ prev }) => {
+						const prevProps = prev?.() ?? {};
+
+						return {
+							...prevProps,
+							onDrop: (event: DragEvent) => {
+								prevProps.onDrop?.(event);
+								if (event.defaultPrevented) {
+									selectedItemsBeforeCancelledDragRef.current = null;
+								}
+							},
+						};
+					},
+
+					getDragHandleProps: ({ tree, prev }) => {
+						const prevProps = prev?.() ?? {};
+
+						return {
+							...prevProps,
+							onDragStart: (event: DragEvent) => {
+								// Headless Tree temporarily selects an unselected drag source; keep the previous app selection for cancelled drags.
+								selectedItemsBeforeCancelledDragRef.current = tree.getState().selectedItems ?? [];
+								prevProps.onDragStart?.(event);
+								if (event.defaultPrevented) {
+									selectedItemsBeforeCancelledDragRef.current = null;
+								}
+							},
+							onDragEnd: (event: DragEvent) => {
+								prevProps.onDragEnd?.(event);
+								if (event.dataTransfer?.dropEffect === "none") {
+									const selectedItemsBeforeCancelledDrag = selectedItemsBeforeCancelledDragRef.current;
+									selectedItemsBeforeCancelledDragRef.current = null;
+									if (selectedItemsBeforeCancelledDrag) {
+										tree.setSelectedItems(selectedItemsBeforeCancelledDrag);
+									}
+									return;
+								}
+
+								selectedItemsBeforeCancelledDragRef.current = null;
+							},
+						};
+					},
+				},
+			}) satisfies FeatureImplementation<files_TreeItem>,
+	);
+
 	const [clickBehaviorFeature] = useState(
 		() =>
 			({
@@ -3170,6 +3240,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			dragAndDropFeature,
 			renamingFeature,
 			expandAllFeature,
+			dragSelectionRestoreFeature,
 			clickBehaviorFeature,
 			propMemoizationFeature,
 		],
