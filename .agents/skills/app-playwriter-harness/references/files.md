@@ -96,8 +96,10 @@ Keep sidebar drop-zone checks as a route-specific recipe because they depend on 
 Keep row-surface checks as a lightweight Playwriter/manual recipe because they verify CSS state styling without needing committed browser tests.
 
 - Bind a single `/files` tab and inspect a visible `.FilesSidebarTreeItemPrimaryAction`.
-- Verify idle, not-selected, not-focused rows have no elevated gradient surface.
-- Verify selected rows, Headless Tree focused rows from arrow-key navigation, hovered rows, and focus-visible rows use the elevated gradient surface.
+- Verify idle, not-selected rows have no elevated gradient surface.
+- Verify selected rows and focus-visible keyboard rows use the elevated gradient surface.
+- Verify hover brightens text without using the selected surface.
+- Verify internal Headless Tree focus alone does not keep the selected surface after a pointer Ctrl-click toggles a row off.
 - Verify active/pressed rows use the darker pressed gradient and inset-only shadow.
 - Inspect computed styles for the primary action: `borderWidth` should be `0px`, `outlineStyle` should be `none`, and no transparent rim should appear between the row edge and the shadowed surface.
 - Confirm secondary action buttons still use their existing button styling and do not inherit the row-surface treatment.
