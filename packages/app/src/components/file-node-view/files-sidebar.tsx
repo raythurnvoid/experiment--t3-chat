@@ -125,8 +125,9 @@ type DropZoneRow = {
 const ROW_HEIGHT_PX = 44;
 const FILES_SIDEBAR_SELECTION_CONTEXT_EVENTS: Array<"pointerdown" | "focusin"> = ["pointerdown", "focusin"];
 
-type FilesSidebarTreeContext_CustomAttributes = {
+type CustomAttributes = {
 	"data-files-sidebar-tree-context": "";
+	"data-file-id": string;
 };
 
 type TreeItems = {
@@ -312,6 +313,43 @@ function get_files_sidebar_tree_drop_zone_item_ids(args: {
 	return itemIds;
 }
 
+function get_files_sidebar_tree_drag_hover_state(args: {
+	rows: DropZoneRow[];
+	hasDraggedItems: boolean;
+	isFileDrag: boolean;
+	isExternalFileDrag: boolean;
+	isPointerOverTreeItem: boolean;
+	hoveredItemId: string | null;
+}) {
+	// Keep the tri-state explicit: undefined delegates to Headless Tree, null suppresses stale invalid targets.
+	if (!args.hasDraggedItems && !args.isExternalFileDrag) {
+		return {
+			isDraggingOverRootZone: false,
+			activeExternalFileDropTargetId: args.isFileDrag ? null : undefined,
+		};
+	}
+
+	if (!args.isPointerOverTreeItem) {
+		return {
+			isDraggingOverRootZone: true,
+			activeExternalFileDropTargetId: args.isExternalFileDrag ? null : undefined,
+		};
+	}
+
+	if (!args.isExternalFileDrag) {
+		return {
+			isDraggingOverRootZone: false,
+			activeExternalFileDropTargetId: undefined,
+		};
+	}
+
+	const hoveredRow = args.rows.find((row) => row.id === args.hoveredItemId);
+	return {
+		isDraggingOverRootZone: false,
+		activeExternalFileDropTargetId: hoveredRow?.kind === "folder" ? hoveredRow.id : null,
+	};
+}
+
 function get_default_node_name(args: { parentId: string; kind: files_TreeItem["kind"]; treeItems: TreeItems }) {
 	const siblingIds = args.treeItems.sortedItemsIdsByParentId.get(args.parentId) ?? [];
 	const activeSiblingNames = new Set<string>();
@@ -491,9 +529,7 @@ function files_sidebar_target_is_in_selection_context(target: EventTarget | null
 		return false;
 	}
 
-	return Boolean(
-		target.closest(`[${"data-files-sidebar-tree-context" satisfies keyof FilesSidebarTreeContext_CustomAttributes}]`),
-	);
+	return Boolean(target.closest(`[${"data-files-sidebar-tree-context" satisfies keyof CustomAttributes}]`));
 }
 
 // #region optimistic tree rename
@@ -699,7 +735,7 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 			<MyMenuPopover
 				{...({
 					"data-files-sidebar-tree-context": "",
-				} satisfies Partial<FilesSidebarTreeContext_CustomAttributes>)}
+				} satisfies Partial<CustomAttributes>)}
 				unmountOnHide
 			>
 				<MyMenuPopoverContent>
@@ -1099,14 +1135,17 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 	return (
 		<MyPrimaryAction
 			{...itemProps}
-			className={"FilesSidebarTreeItemPrimaryAction" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames}
+			className={cn(
+				"FilesSidebarTreeItemPrimaryAction" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames,
+				isDropZoneIncluded &&
+					("FilesSidebarTreeItemPrimaryAction-drop-zone-included" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames),
+			)}
 			selected={isSelected}
 			disabled={isPending && !isFocused}
 			tooltip={tooltipContent}
 			tooltipTimeout={2000}
 			tooltipDisabled={isTreeDragging}
 			data-focused={isFocused || undefined}
-			data-drop-zone-included={isDropZoneIncluded || undefined}
 			aria-selected={isSelected ? "true" : "false"}
 			aria-label={ariaLabel}
 		></MyPrimaryAction>
@@ -1299,6 +1338,9 @@ const FilesSidebarTreeItemPlaceholder = memo(function FilesSidebarTreeItemPlaceh
 			style={sx({
 				"--FilesSidebarTreeItemPlaceholder-depth": placeholderDepth,
 			} satisfies Partial<FilesSidebarTreeItemPlaceholder_CssVars>)}
+			{...({
+				"data-file-id": itemId,
+			} satisfies Partial<FilesSidebarTreeItem_CustomAttributes>)}
 			onDragEnter={onDragEnter}
 			onDragOver={onDragOver}
 			onDragLeave={onDragLeave}
@@ -1346,10 +1388,6 @@ type FilesSidebarTreeItem_ClassNames =
 	| "FilesSidebarTreeItem-content-navigated"
 	| "FilesSidebarTreeItem-content-archived"
 	| "FilesSidebarTreeItem-content-renaming";
-
-type FilesSidebarTreeItem_CustomAttributes = {
-	"data-file-id": string;
-};
 
 type FilesSidebar_CssVars = {
 	"--FilesSidebarTreeItem-content-depth": number;
@@ -1563,7 +1601,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 				{...({
 					"data-files-sidebar-tree-context": "",
 					"data-file-id": itemId,
-				} satisfies Partial<FilesSidebarTreeContext_CustomAttributes & FilesSidebarTreeItem_CustomAttributes>)}
+				} satisfies Partial<CustomAttributes & FilesSidebarTreeItem_CustomAttributes>)}
 				onDragOverCapture={handleExternalFileDragOverCapture}
 				onDropCapture={handleExternalFileDropCapture}
 			>
@@ -1777,7 +1815,15 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 
 	const [isDraggingOverRootZone, setIsDraggingOverRootZone] = useState(false);
 	const isDraggingOverRootZoneRef = useRef(false);
-	const activeDropTargetId = tree().getState().dnd?.draggingOverItem?.getId() ?? null;
+	// Use undefined to fall back to Headless Tree, and null to suppress stale targets over invalid file rows.
+	const [activeExternalFileDropTargetId, setActiveExternalFileDropTargetId] = useState<string | null | undefined>(
+		undefined,
+	);
+
+	const activeExternalFileDropTargetIdRef = useRef<string | null | undefined>(undefined);
+	const headlessActiveDropTargetId = tree().getState().dnd?.draggingOverItem?.getId() ?? null;
+	const activeDropTargetId =
+		activeExternalFileDropTargetId === undefined ? headlessActiveDropTargetId : activeExternalFileDropTargetId;
 	const dropZoneRows = renderedTreeItems.map((item) => {
 		const itemData = item.getItemData();
 
@@ -1810,22 +1856,39 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		setIsDraggingOverRootZone(nextValue);
 	};
 
-	const handleUpdateRootZoneFromDragEvent: NonNullable<FilesSidebarTree_DivProps["onDragOverCapture"]> = (event) => {
-		const draggedItems = tree().getState().dnd?.draggedItems ?? [];
-		const isExternalFileDrag = !isBusy && !isUploadingFile && has_file_drop(event.dataTransfer);
-		if (draggedItems.length === 0 && !isExternalFileDrag) {
-			handleSetIsDraggingOverRootZone(false);
+	const handleSetActiveExternalFileDropTargetId = (nextValue: string | null | undefined) => {
+		if (activeExternalFileDropTargetIdRef.current === nextValue) {
 			return;
 		}
 
+		activeExternalFileDropTargetIdRef.current = nextValue;
+		setActiveExternalFileDropTargetId(nextValue);
+	};
+
+	const handleUpdateRootZoneFromDragEvent: NonNullable<FilesSidebarTree_DivProps["onDragOverCapture"]> = (event) => {
+		const draggedItems = tree().getState().dnd?.draggedItems ?? [];
+		const isFileDrag = has_file_drop(event.dataTransfer);
+		const isExternalFileDrag = !isBusy && !isUploadingFile && isFileDrag;
 		const hoveredItemElement =
 			event.target instanceof Element
 				? event.target.closest(".FilesSidebarTreeItem, .FilesSidebarTreeItemPlaceholder")
 				: null;
 		const treeRootElement = event.currentTarget;
-
 		const isPointerOverTreeItem = hoveredItemElement instanceof Element && treeRootElement.contains(hoveredItemElement);
-		handleSetIsDraggingOverRootZone(!isPointerOverTreeItem);
+		const dragHoverState = get_files_sidebar_tree_drag_hover_state({
+			rows: dropZoneRows,
+			hasDraggedItems: draggedItems.length > 0,
+			isFileDrag,
+			isExternalFileDrag,
+			isPointerOverTreeItem,
+			hoveredItemId:
+				hoveredItemElement instanceof Element
+					? hoveredItemElement.getAttribute("data-file-id" satisfies keyof FilesSidebarTreeItem_CustomAttributes)
+					: null,
+		});
+
+		handleSetIsDraggingOverRootZone(dragHoverState.isDraggingOverRootZone);
+		handleSetActiveExternalFileDropTargetId(dragHoverState.activeExternalFileDropTargetId);
 	};
 
 	const handleDragEnterCapture: NonNullable<FilesSidebarTree_DivProps["onDragEnterCapture"]> = (event) => {
@@ -1843,14 +1906,17 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		}
 
 		handleSetIsDraggingOverRootZone(false);
+		handleSetActiveExternalFileDropTargetId(undefined);
 	};
 
 	const handleDragEndCapture = () => {
 		handleSetIsDraggingOverRootZone(false);
+		handleSetActiveExternalFileDropTargetId(undefined);
 	};
 
 	const handleDropCapture = () => {
 		handleSetIsDraggingOverRootZone(false);
+		handleSetActiveExternalFileDropTargetId(undefined);
 	};
 
 	useEffect(() => {
@@ -2084,7 +2150,7 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 			<MyMenuPopover
 				{...({
 					"data-files-sidebar-tree-context": "",
-				} satisfies Partial<FilesSidebarTreeContext_CustomAttributes>)}
+				} satisfies Partial<CustomAttributes>)}
 				placement="bottom-end"
 				unmountOnHide
 			>
@@ -2193,7 +2259,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 				className={cn("FilesSidebarTopSection-actions" satisfies FilesSidebarTopSection_ClassNames)}
 				{...({
 					"data-files-sidebar-tree-context": "",
-				} satisfies Partial<FilesSidebarTreeContext_CustomAttributes>)}
+				} satisfies Partial<CustomAttributes>)}
 			>
 				{selectedNodeIdsCount > 1 ? (
 					<div
@@ -4171,10 +4237,7 @@ if (import.meta.vitest) {
 		test("keeps marked elements and their descendants inside selection context", () => {
 			const element = document.createElement("div");
 			const child = document.createElement("button");
-			element.setAttribute(
-				"data-files-sidebar-tree-context" satisfies keyof FilesSidebarTreeContext_CustomAttributes,
-				"",
-			);
+			element.setAttribute("data-files-sidebar-tree-context" satisfies keyof CustomAttributes, "");
 			element.append(child);
 
 			expect(files_sidebar_target_is_in_selection_context(element)).toBe(true);
@@ -4307,6 +4370,143 @@ if (import.meta.vitest) {
 				kind: "folder",
 				top: "0px",
 				height: "44px",
+			});
+		});
+	});
+
+	describe("get_files_sidebar_tree_drop_zone_item_ids", () => {
+		test("returns every visible row for the root drop zone", () => {
+			const rows = [
+				test_drop_zone_row({ id: "folder", kind: "folder", depth: 0 }),
+				test_drop_zone_row({ id: "child", kind: "file", depth: 1 }),
+				test_drop_zone_row({ id: "sibling", kind: "file", depth: 0 }),
+			];
+
+			expect(
+				get_files_sidebar_tree_drop_zone_item_ids({
+					rows,
+					activeDropTargetId: null,
+					isDraggingOverRootZone: true,
+				}),
+			).toEqual(new Set(["folder", "child", "sibling"]));
+		});
+
+		test("returns a folder row and visible descendants until depth returns", () => {
+			const rows = [
+				test_drop_zone_row({ id: "folder", kind: "folder", depth: 0 }),
+				test_drop_zone_row({ id: "child", kind: "folder", depth: 1 }),
+				test_drop_zone_row({ id: "grandchild-file", kind: "file", depth: 2 }),
+				test_drop_zone_row({ id: "sibling", kind: "file", depth: 0 }),
+			];
+
+			expect(
+				get_files_sidebar_tree_drop_zone_item_ids({
+					rows,
+					activeDropTargetId: "child",
+					isDraggingOverRootZone: false,
+				}),
+			).toEqual(new Set(["child", "grandchild-file"]));
+		});
+
+		test("returns no rows when no valid folder drop target is active", () => {
+			const rows = [test_drop_zone_row({ id: "file", kind: "file", depth: 0 })];
+
+			expect(
+				get_files_sidebar_tree_drop_zone_item_ids({
+					rows,
+					activeDropTargetId: null,
+					isDraggingOverRootZone: false,
+				}),
+			).toEqual(new Set());
+			expect(
+				get_files_sidebar_tree_drop_zone_item_ids({
+					rows,
+					activeDropTargetId: "file",
+					isDraggingOverRootZone: false,
+				}),
+			).toEqual(new Set());
+		});
+	});
+
+	describe("get_files_sidebar_tree_drag_hover_state", () => {
+		const rows = [
+			test_drop_zone_row({ id: "folder-a", kind: "folder", depth: 0 }),
+			test_drop_zone_row({ id: "folder-b", kind: "folder", depth: 1 }),
+			test_drop_zone_row({ id: "file-b", kind: "file", depth: 2 }),
+		];
+
+		const get_external_file_hover_state = (hoveredItemId: string | null) => {
+			return get_files_sidebar_tree_drag_hover_state({
+				rows,
+				hasDraggedItems: false,
+				isFileDrag: true,
+				isExternalFileDrag: true,
+				isPointerOverTreeItem: hoveredItemId !== null,
+				hoveredItemId,
+			});
+		};
+
+		test("re-arms a folder target after hovering over an invalid child file row", () => {
+			expect(get_external_file_hover_state("folder-a")).toEqual({
+				isDraggingOverRootZone: false,
+				activeExternalFileDropTargetId: "folder-a",
+			});
+			expect(get_external_file_hover_state("folder-b")).toEqual({
+				isDraggingOverRootZone: false,
+				activeExternalFileDropTargetId: "folder-b",
+			});
+			expect(get_external_file_hover_state("file-b")).toEqual({
+				isDraggingOverRootZone: false,
+				activeExternalFileDropTargetId: null,
+			});
+			expect(get_external_file_hover_state("folder-b")).toEqual({
+				isDraggingOverRootZone: false,
+				activeExternalFileDropTargetId: "folder-b",
+			});
+		});
+
+		test("delegates to Headless Tree for internal tree drags", () => {
+			expect(
+				get_files_sidebar_tree_drag_hover_state({
+					rows,
+					hasDraggedItems: true,
+					isFileDrag: false,
+					isExternalFileDrag: false,
+					isPointerOverTreeItem: true,
+					hoveredItemId: "file-b",
+				}),
+			).toEqual({
+				isDraggingOverRootZone: false,
+				activeExternalFileDropTargetId: undefined,
+			});
+			expect(
+				get_files_sidebar_tree_drag_hover_state({
+					rows,
+					hasDraggedItems: true,
+					isFileDrag: false,
+					isExternalFileDrag: false,
+					isPointerOverTreeItem: false,
+					hoveredItemId: null,
+				}),
+			).toEqual({
+				isDraggingOverRootZone: true,
+				activeExternalFileDropTargetId: undefined,
+			});
+		});
+
+		test("suppresses stale Headless Tree targets for blocked external file drags", () => {
+			expect(
+				get_files_sidebar_tree_drag_hover_state({
+					rows,
+					hasDraggedItems: false,
+					isFileDrag: true,
+					isExternalFileDrag: false,
+					isPointerOverTreeItem: true,
+					hoveredItemId: "folder-a",
+				}),
+			).toEqual({
+				isDraggingOverRootZone: false,
+				activeExternalFileDropTargetId: null,
 			});
 		});
 	});
