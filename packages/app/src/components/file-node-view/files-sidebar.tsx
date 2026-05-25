@@ -281,6 +281,37 @@ function get_files_sidebar_tree_drop_zone(args: {
 	} satisfies DropZone;
 }
 
+function get_files_sidebar_tree_drop_zone_item_ids(args: {
+	rows: DropZoneRow[];
+	activeDropTargetId: string | null;
+	isDraggingOverRootZone: boolean;
+}) {
+	if (args.isDraggingOverRootZone) {
+		return new Set(args.rows.map((row) => row.id));
+	}
+
+	if (!args.activeDropTargetId) {
+		return new Set<string>();
+	}
+
+	const activeItemIndex = args.rows.findIndex((row) => row.id === args.activeDropTargetId);
+	const activeRow = args.rows[activeItemIndex];
+	if (!activeRow || activeRow.kind !== "folder") {
+		return new Set<string>();
+	}
+
+	const itemIds = new Set<string>([activeRow.id]);
+	for (const row of args.rows.slice(activeItemIndex + 1)) {
+		if (row.depth <= activeRow.depth) {
+			break;
+		}
+
+		itemIds.add(row.id);
+	}
+
+	return itemIds;
+}
+
 function get_default_node_name(args: { parentId: string; kind: files_TreeItem["kind"]; treeItems: TreeItems }) {
 	const siblingIds = args.treeItems.sortedItemsIdsByParentId.get(args.parentId) ?? [];
 	const activeSiblingNames = new Set<string>();
@@ -1032,7 +1063,9 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 // #endregion tree item primary content
 
 // #region tree item primary action
-type FilesSidebarTreeItemPrimaryAction_ClassNames = "FilesSidebarTreeItemPrimaryAction";
+type FilesSidebarTreeItemPrimaryAction_ClassNames =
+	| "FilesSidebarTreeItemPrimaryAction"
+	| "FilesSidebarTreeItemPrimaryAction-drop-zone-included";
 
 type FilesSidebarTreeItemPrimaryAction_Props = {
 	itemProps: ReturnType<FilesSidebarTreeItem_Instance["getProps"]>;
@@ -1040,6 +1073,7 @@ type FilesSidebarTreeItemPrimaryAction_Props = {
 	updatedByDisplayName: string;
 	isPending: boolean;
 	isSelected: boolean;
+	isDropZoneIncluded: boolean;
 	isTreeDragging: boolean;
 	isFocused: boolean;
 	ariaLabel: string;
@@ -1048,8 +1082,17 @@ type FilesSidebarTreeItemPrimaryAction_Props = {
 const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrimaryAction(
 	props: FilesSidebarTreeItemPrimaryAction_Props,
 ) {
-	const { itemProps, updatedAt, updatedByDisplayName, isPending, isSelected, isTreeDragging, isFocused, ariaLabel } =
-		props;
+	const {
+		itemProps,
+		updatedAt,
+		updatedByDisplayName,
+		isPending,
+		isSelected,
+		isDropZoneIncluded,
+		isTreeDragging,
+		isFocused,
+		ariaLabel,
+	} = props;
 
 	const tooltipContent = `Updated ${format_relative_time(updatedAt, { prefixForDatesPast7Days: "the " })} by ${updatedByDisplayName}`;
 
@@ -1063,6 +1106,7 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 			tooltipTimeout={2000}
 			tooltipDisabled={isTreeDragging}
 			data-focused={isFocused || undefined}
+			data-drop-zone-included={isDropZoneIncluded || undefined}
 			aria-selected={isSelected ? "true" : "false"}
 			aria-label={ariaLabel}
 		></MyPrimaryAction>
@@ -1321,6 +1365,7 @@ type FilesSidebarTreeItem_Props = {
 	isSelected: boolean;
 	isSearchActive: boolean;
 	isBusy: boolean;
+	isDropZoneIncluded: boolean;
 	pendingActionNodeIds: Set<string>;
 	renameError: string | undefined;
 	isTreeDragging: boolean;
@@ -1340,6 +1385,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		isSelected,
 		isSearchActive,
 		isBusy,
+		isDropZoneIncluded,
 		pendingActionNodeIds,
 		renameError,
 		isTreeDragging,
@@ -1527,6 +1573,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					updatedByDisplayName={updatedByDisplayName}
 					isPending={isPending}
 					isSelected={isSelected}
+					isDropZoneIncluded={isDropZoneIncluded}
 					isTreeDragging={isTreeDragging}
 					isFocused={isFocused}
 					ariaLabel={label}
@@ -1748,6 +1795,11 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		activeDropTargetId,
 		isDraggingOverRootZone,
 	});
+	const dropZoneItemIds = get_files_sidebar_tree_drop_zone_item_ids({
+		rows: dropZoneRows,
+		activeDropTargetId,
+		isDraggingOverRootZone,
+	});
 
 	const handleSetIsDraggingOverRootZone = (nextValue: FilesSidebarTree_Props["isBusy"]) => {
 		if (isDraggingOverRootZoneRef.current === nextValue) {
@@ -1851,6 +1903,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 								trackActiveFileIds={trackActiveFileIds}
 								selectedNodeId={selectedNodeId}
 								isSelected={selectedNodeIds.has(itemId)}
+								isDropZoneIncluded={dropZoneItemIds.has(itemId)}
 								isSearchActive={isSearchActive}
 								isBusy={isBusy}
 								pendingActionNodeIds={pendingActionNodeIds}

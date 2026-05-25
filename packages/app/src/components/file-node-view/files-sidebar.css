@@ -500,6 +500,20 @@
 		}
 	}
 
+	.FilesSidebarTreeItem > .FilesSidebarTreeItemPrimaryAction-drop-zone-included,
+	.FilesSidebarTreeItem > .FilesSidebarTreeItemPrimaryAction-drop-zone-included[data-selected],
+	.FilesSidebarTreeItem > .FilesSidebarTreeItemPrimaryAction-drop-zone-included[data-focused],
+	.FilesSidebarTreeItem
+		> .FilesSidebarTreeItemPrimaryAction-drop-zone-included:not(:disabled):is(
+			:hover,
+			:focus-visible,
+			:active
+		) {
+		/* Keep row state surfaces from covering the active drop-zone enclosure. */
+		background: transparent;
+		box-shadow: none;
+	}
+
 	.FilesSidebarTreeItem-content-renaming {
 		/*
 		Disable pointer events for the primary action while renaming 
