@@ -250,10 +250,7 @@
 	/* #region tree item */
 	.FilesSidebarTreeItem,
 	.FilesSidebarTreeItemPlaceholder {
-		--FilesSidebarTreeItem-content-depth-zero-indent-left-adjustment: calc(
-			(1 - min(var(--FilesSidebarTreeItem-content-depth), 1)) * 8px
-		);
-		--FilesSidebarTreeItem-track-inset-left: 24px;
+		--FilesSidebarTreeItem-track-inset-left: 23px;
 
 		contain: strict;
 		height: 44px;
@@ -266,10 +263,7 @@
 	}
 
 	.FilesSidebarTreeItem {
-		--FilesSidebarTreeItem-content-indent-left: calc(
-			(var(--FilesSidebarTreeItem-content-depth) * 20px) +
-				(min(var(--FilesSidebarTreeItem-content-depth), 1) * 2px)
-		);
+		--FilesSidebarTreeItem-content-indent-left: calc(var(--FilesSidebarTreeItem-content-depth) * 20px);
 
 		display: grid;
 		grid-template-columns: auto 1fr auto;
@@ -391,10 +385,7 @@
 	/* #region tree item placeholder */
 	.FilesSidebarTreeItemPlaceholder {
 		--FilesSidebarTreeItem-content-depth: var(--FilesSidebarTreeItemPlaceholder-depth);
-		--FilesSidebarTreeItem-content-indent-left: calc(
-			(var(--FilesSidebarTreeItem-content-depth) * 20px) +
-				(min(var(--FilesSidebarTreeItem-content-depth), 1) * 2px) + 36px
-		);
+		--FilesSidebarTreeItem-content-indent-left: calc((var(--FilesSidebarTreeItem-content-depth) * 20px) + 36px);
 
 		display: flex;
 		gap: 8px;
@@ -436,9 +427,9 @@
 		content: "";
 		position: absolute;
 		top: 50%;
-		left: -1px;
+		left: 0;
 
-		width: 9px;
+		width: 4px;
 		border-top: 1px solid currentColor;
 	}
 
@@ -449,7 +440,7 @@
 			content: "";
 			position: absolute;
 			top: 0;
-			left: -1px;
+			left: 0;
 
 			height: 50%;
 			border-left: 1px solid currentColor;
@@ -554,7 +545,8 @@
 
 		place-content: center;
 
-		contain: content;
+		/* Let the arrow button's hover shadow paint over the adjacent content column. */
+		contain: layout style;
 
 		display: flex;
 		align-items: center;

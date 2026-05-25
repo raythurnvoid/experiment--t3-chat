@@ -32,6 +32,10 @@
 			cursor: default;
 		}
 
+		&:not(:is(:disabled, .MyButton-state-disabled)):is(:hover, :focus, [data-focused]) {
+			z-index: 1;
+		}
+
 		&:focus-visible {
 			outline-color: var(--color-fg-12);
 		}
