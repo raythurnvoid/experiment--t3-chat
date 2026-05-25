@@ -306,6 +306,18 @@ When product requirements or business logic change, update the relevant spec ski
 
 You must not use `any` to bypass typescript errors unless the user is asking for it.
 
+## Simplicity and necessity
+
+Treat code as a liability and keep the implementation as direct as the problem allows.
+
+- Use the least code that fully solves the real problem.
+- Treat every new line, branch, helper, abstraction, normalization step, fallback, and defensive check as a cost that must be justified by a concrete need.
+- Prefer direct code over flexible code, local code over abstract code, and obvious code over clever code.
+- Avoid unnecessary indirection.
+- Do not add wrapper functions, pass-through helpers, adapter layers, generic abstractions, and extracted modules when they only rename or forward data.
+- Prefer inline local code over a helper when the helper does not remove real complexity, hide a necessary external-system detail, or enable meaningful reuse.
+- When adding any abstraction, be ready to explain the concrete benefit in the current change.
+
 ## Trust application invariants
 
 When changing application code, default to trusting the product invariants enforced by the app's public queries, mutations, routes, and other supported entrypoints.

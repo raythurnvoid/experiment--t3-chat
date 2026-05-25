@@ -115,6 +115,13 @@ type DropZone =
 			height: string;
 	  };
 
+type DropZoneRow = {
+	id: string;
+	kind: files_TreeItem["kind"];
+	depth: number;
+	hasPlaceholderRow: boolean;
+};
+
 const ROW_HEIGHT_PX = 44;
 
 // #region helpers
@@ -208,10 +215,9 @@ function can_receive_file_node_drop(args: {
 }
 
 function get_files_sidebar_tree_drop_zone(args: {
-	renderedTreeItems: FilesSidebarTreeItem_Instance[];
+	rows: DropZoneRow[];
 	activeDropTargetId: string | null;
 	isDraggingOverRootZone: boolean;
-	isSearchActive: boolean;
 }) {
 	if (args.isDraggingOverRootZone) {
 		return { kind: "root" } satisfies DropZone;
@@ -223,38 +229,32 @@ function get_files_sidebar_tree_drop_zone(args: {
 
 	// Count rendered placeholder rows too so the dotted subtree range matches the visible tree.
 	const rowModels: {
-		item: FilesSidebarTreeItem_Instance;
+		row: DropZoneRow;
 		itemRowIndex: number;
 		placeholderRowIndex: number | undefined;
-		depth: number;
 	}[] = [];
 	let rowIndex = 0;
 	let activeItemIndex = -1;
 
-	for (let itemIndex = 0; itemIndex < args.renderedTreeItems.length; itemIndex++) {
-		const item = args.renderedTreeItems[itemIndex]!;
-		const itemData = item.getItemData();
-		const itemId = item.getId();
+	for (let itemIndex = 0; itemIndex < args.rows.length; itemIndex++) {
+		const row = args.rows[itemIndex]!;
 		const itemRowIndex = rowIndex;
-		const hasPlaceholderRow =
-			!args.isSearchActive && itemData.kind === "folder" && item.getChildren().length === 0 && item.isExpanded();
 
 		rowModels.push({
-			item,
+			row,
 			itemRowIndex,
-			placeholderRowIndex: hasPlaceholderRow ? itemRowIndex + 1 : undefined,
-			depth: item.getItemMeta().level,
+			placeholderRowIndex: row.hasPlaceholderRow ? itemRowIndex + 1 : undefined,
 		});
 
-		if (itemId === args.activeDropTargetId) {
+		if (row.id === args.activeDropTargetId) {
 			activeItemIndex = itemIndex;
 		}
 
-		rowIndex += hasPlaceholderRow ? 2 : 1;
+		rowIndex += row.hasPlaceholderRow ? 2 : 1;
 	}
 
 	const activeItemRowModel = rowModels[activeItemIndex];
-	if (!activeItemRowModel || activeItemRowModel.item.getItemData().kind !== "folder") {
+	if (!activeItemRowModel || activeItemRowModel.row.kind !== "folder") {
 		return undefined;
 	}
 
@@ -263,7 +263,7 @@ function get_files_sidebar_tree_drop_zone(args: {
 
 	// Keep the folder target as the whole visible subtree; collapsed descendants are represented by the folder row.
 	for (const rowModel of rowModels.slice(activeItemIndex + 1)) {
-		if (rowModel.depth <= activeItemRowModel.depth) {
+		if (rowModel.row.depth <= activeItemRowModel.row.depth) {
 			break;
 		}
 
@@ -1666,12 +1666,22 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 	const [isDraggingOverRootZone, setIsDraggingOverRootZone] = useState(false);
 	const isDraggingOverRootZoneRef = useRef(false);
 	const activeDropTargetId = tree().getState().dnd?.draggingOverItem?.getId() ?? null;
+	const dropZoneRows = renderedTreeItems.map((item) => {
+		const itemData = item.getItemData();
+
+		return {
+			id: item.getId(),
+			kind: itemData.kind,
+			depth: item.getItemMeta().level,
+			hasPlaceholderRow:
+				!isSearchActive && itemData.kind === "folder" && item.getChildren().length === 0 && item.isExpanded(),
+		} satisfies DropZoneRow;
+	});
 
 	const dropZone = get_files_sidebar_tree_drop_zone({
-		renderedTreeItems,
+		rows: dropZoneRows,
 		activeDropTargetId,
 		isDraggingOverRootZone,
-		isSearchActive,
 	});
 
 	useUiInteractedOutside(treeElement, () => {
@@ -3726,6 +3736,20 @@ if (import.meta.vitest) {
 		} as unknown as DragTarget<files_TreeItem>;
 	};
 
+	const test_drop_zone_row = (args: {
+		id: string;
+		kind: files_TreeItem["kind"];
+		depth: number;
+		hasPlaceholderRow?: boolean;
+	}): DropZoneRow => {
+		return {
+			id: args.id,
+			kind: args.kind,
+			depth: args.depth,
+			hasPlaceholderRow: args.hasPlaceholderRow ?? false,
+		};
+	};
+
 	describe("external file drop helpers", () => {
 		test("detects browser file drags from DataTransfer types", () => {
 			expect(has_file_drop(test_data_transfer({ types: ["Files"] }))).toBe(true);
@@ -3876,6 +3900,279 @@ if (import.meta.vitest) {
 					isUploadingFile: true,
 				}),
 			).toBe(false);
+		});
+	});
+
+	describe("get_files_sidebar_tree_drop_zone", () => {
+		test("returns the root drop zone independently from row geometry", () => {
+			expect(
+				get_files_sidebar_tree_drop_zone({
+					rows: [],
+					activeDropTargetId: null,
+					isDraggingOverRootZone: true,
+				}),
+			).toEqual({ kind: "root" });
+		});
+
+		test("returns no drop zone when nothing valid is targeted", () => {
+			const rows = [test_drop_zone_row({ id: "file", kind: "file", depth: 0 })];
+
+			expect(
+				get_files_sidebar_tree_drop_zone({
+					rows,
+					activeDropTargetId: null,
+					isDraggingOverRootZone: false,
+				}),
+			).toBeUndefined();
+			expect(
+				get_files_sidebar_tree_drop_zone({
+					rows,
+					activeDropTargetId: "file",
+					isDraggingOverRootZone: false,
+				}),
+			).toBeUndefined();
+		});
+
+		test("covers a folder row and all visible descendants until depth returns", () => {
+			const rows = [
+				test_drop_zone_row({ id: "folder", kind: "folder", depth: 0 }),
+				test_drop_zone_row({ id: "child", kind: "folder", depth: 1 }),
+				test_drop_zone_row({ id: "grandchild-file", kind: "file", depth: 2 }),
+				test_drop_zone_row({ id: "sibling", kind: "file", depth: 0 }),
+			];
+
+			expect(
+				get_files_sidebar_tree_drop_zone({
+					rows,
+					activeDropTargetId: "folder",
+					isDraggingOverRootZone: false,
+				}),
+			).toEqual({
+				kind: "folder",
+				top: "0px",
+				height: "132px",
+			});
+		});
+
+		test("positions nested folder drop zones by their visible row offset", () => {
+			const rows = [
+				test_drop_zone_row({ id: "folder", kind: "folder", depth: 0 }),
+				test_drop_zone_row({ id: "child", kind: "folder", depth: 1 }),
+				test_drop_zone_row({ id: "grandchild-file", kind: "file", depth: 2 }),
+				test_drop_zone_row({ id: "sibling", kind: "file", depth: 0 }),
+			];
+
+			expect(
+				get_files_sidebar_tree_drop_zone({
+					rows,
+					activeDropTargetId: "child",
+					isDraggingOverRootZone: false,
+				}),
+			).toEqual({
+				kind: "folder",
+				top: "44px",
+				height: "88px",
+			});
+		});
+
+		test("includes an expanded empty-folder placeholder in the drop zone height", () => {
+			const rows = [
+				test_drop_zone_row({ id: "folder", kind: "folder", depth: 0 }),
+				test_drop_zone_row({ id: "empty-child", kind: "folder", depth: 1, hasPlaceholderRow: true }),
+				test_drop_zone_row({ id: "sibling", kind: "file", depth: 0 }),
+			];
+
+			expect(
+				get_files_sidebar_tree_drop_zone({
+					rows,
+					activeDropTargetId: "empty-child",
+					isDraggingOverRootZone: false,
+				}),
+			).toEqual({
+				kind: "folder",
+				top: "44px",
+				height: "88px",
+			});
+		});
+
+		test("treats collapsed folders as a single visible row", () => {
+			const rows = [test_drop_zone_row({ id: "folder", kind: "folder", depth: 0 })];
+
+			expect(
+				get_files_sidebar_tree_drop_zone({
+					rows,
+					activeDropTargetId: "folder",
+					isDraggingOverRootZone: false,
+				}),
+			).toEqual({
+				kind: "folder",
+				top: "0px",
+				height: "44px",
+			});
+		});
+	});
+
+	describe("get_default_node_name", () => {
+		test("ignores archived siblings when picking the next default name", () => {
+			const root = files_create_tree_root();
+			const activeFolder = test_node({
+				id: "active_folder",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "new-folder",
+			});
+			const archivedFolder = test_node({
+				id: "archived_folder",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "new-folder-1",
+				archiveOperationId: "archive_operation",
+			});
+			const treeItems = {
+				list: [root, activeFolder, archivedFolder],
+				itemsIds: new Set<string>([root._id, activeFolder._id, archivedFolder._id]),
+				itemsIdsByParentId: new Map<string, Set<string>>([
+					[files_ROOT_ID, new Set<string>([activeFolder._id, archivedFolder._id])],
+				]),
+				sortedItemsIdsByParentId: new Map<string, string[]>([
+					[files_ROOT_ID, [activeFolder._id, archivedFolder._id]],
+				]),
+				itemById: new Map<string, files_TreeItem>([
+					[root._id, root],
+					[activeFolder._id, activeFolder],
+					[archivedFolder._id, archivedFolder],
+				]),
+			} satisfies TreeItems;
+
+			expect(get_default_node_name({ parentId: files_ROOT_ID, kind: "folder", treeItems })).toBe("new-folder-1");
+		});
+	});
+
+	describe("files_sidebar_get_uploaded_file_rename_validation", () => {
+		test("normalizes upload file names while preserving the extension", () => {
+			expect(
+				files_sidebar_get_uploaded_file_rename_validation({
+					treeItemsList: undefined,
+					parentId: files_ROOT_ID,
+					nameOrPath: "Annual Report 2026.PDF",
+				}),
+			).toMatchObject({
+				normalizedName: "annual-report-2026.pdf",
+				validationMessage: null,
+			});
+		});
+
+		test("requires an uploaded file extension", () => {
+			for (const nameOrPath of ["file", "file."]) {
+				expect(
+					files_sidebar_get_uploaded_file_rename_validation({
+						treeItemsList: undefined,
+						parentId: files_ROOT_ID,
+						nameOrPath,
+					}),
+				).toMatchObject({
+					normalizedName: null,
+					validationMessage: "Uploaded files must include a file extension.",
+				});
+			}
+		});
+
+		test("detects nested upload conflicts through existing folders", () => {
+			const root = files_create_tree_root();
+			const folder = test_node({
+				id: "folder_docs",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "docs",
+			});
+			const file = test_node({
+				id: "file_report",
+				parentId: folder._id,
+				kind: "file",
+				name: "report.pdf",
+				path: "/docs/report.pdf",
+			});
+
+			expect(
+				files_sidebar_get_uploaded_file_rename_validation({
+					treeItemsList: [root, folder, file],
+					parentId: files_ROOT_ID,
+					nameOrPath: "docs/report.pdf",
+				}),
+			).toMatchObject({
+				normalizedName: "docs/report.pdf",
+				validationMessage: "This file already exists.",
+			});
+		});
+
+		test("ignores the file currently being renamed", () => {
+			const root = files_create_tree_root();
+			const folder = test_node({
+				id: "folder_docs",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "docs",
+			});
+			const file = test_node({
+				id: "file_report",
+				parentId: folder._id,
+				kind: "file",
+				name: "report.pdf",
+				path: "/docs/report.pdf",
+			});
+
+			expect(
+				files_sidebar_get_uploaded_file_rename_validation({
+					treeItemsList: [root, folder, file],
+					nodeIdToIgnore: file._id,
+					parentId: folder._id,
+					nameOrPath: "report.pdf",
+				}),
+			).toMatchObject({
+				normalizedName: "report.pdf",
+				validationMessage: null,
+			});
+		});
+	});
+
+	describe("sort_children", () => {
+		test("sorts folders before files with case-insensitive numeric name ordering", () => {
+			const folderAlpha = test_node({
+				id: "folder_alpha",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "Alpha",
+			});
+			const folderBeta = test_node({
+				id: "folder_beta",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "beta",
+			});
+			const fileTwo = test_node({
+				id: "file_two",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				name: "File-2.md",
+			});
+			const fileTen = test_node({
+				id: "file_ten",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				name: "file-10.md",
+			});
+
+			expect(
+				sort_children({
+					children: [fileTen._id, folderBeta._id, fileTwo._id, folderAlpha._id],
+					itemById: new Map<string, files_TreeItem>([
+						[fileTen._id, fileTen],
+						[folderBeta._id, folderBeta],
+						[fileTwo._id, fileTwo],
+						[folderAlpha._id, folderAlpha],
+					]),
+				}),
+			).toEqual([folderAlpha._id, folderBeta._id, fileTwo._id, fileTen._id]);
 		});
 	});
 
