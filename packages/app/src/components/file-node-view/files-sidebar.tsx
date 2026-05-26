@@ -47,7 +47,7 @@ import { AssistiveTreeDescription } from "@headless-tree/react";
 import { useTree } from "@headless-tree/react/react-compiler";
 import { useNavigate } from "@tanstack/react-router";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
-import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
+import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputHelperText, MyInputIcon } from "@/components/my-input.tsx";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink } from "@/components/my-link.tsx";
@@ -2159,8 +2159,13 @@ type FilesSidebarUploadDraft = {
 
 type FilesSidebarUploadConflictModal_ClassNames =
 	| "FilesSidebarUploadConflictModal"
+	| "FilesSidebarUploadConflictModal-body"
+	| "FilesSidebarUploadConflictModal-description-filename"
 	| "FilesSidebarUploadConflictModal-form"
-	| "FilesSidebarUploadConflictModal-error";
+	| "FilesSidebarUploadConflictModal-helper-row"
+	| "FilesSidebarUploadConflictModal-helper-message"
+	| "FilesSidebarUploadConflictModal-helper-state-error"
+	| "FilesSidebarUploadConflictModal-name-field-state-attention";
 
 type FilesSidebarUploadConflictModal_Props = {
 	draft: FilesSidebarUploadDraft | null;
@@ -2169,6 +2174,42 @@ type FilesSidebarUploadConflictModal_Props = {
 	onRename: (filename: string) => void;
 	onReplace: () => void;
 };
+
+function get_upload_conflict_modal_state(args: { draft: FilesSidebarUploadDraft | null; filename: string }) {
+	const normalizedFilenameResult = args.draft?.isMarkdown
+		? files_normalize_markdown_name(args.filename)
+		: { _yay: files_normalize_upload_file_name(args.filename) };
+	const normalizedFilename = normalizedFilenameResult?._yay ?? "";
+	const invalidFilenameMessage =
+		normalizedFilenameResult?._nay?.message ??
+		(!args.draft?.isMarkdown && !upload_filename_has_real_extension(normalizedFilename)
+			? "Uploaded files must include a file extension."
+			: undefined);
+	const pathConflictMessage =
+		args.draft?.reason === "path_conflict" && normalizedFilename === args.draft.filename
+			? args.draft.conflict?.kind === "file"
+				? "Choose a different filename or replace the existing file."
+				: "Choose a different filename."
+			: undefined;
+	const helperText =
+		invalidFilenameMessage ?? pathConflictMessage ?? "This file will be uploaded with the specified filename.";
+	const showReplace =
+		args.draft?.reason === "path_conflict" &&
+		args.draft.conflict?.kind === "file" &&
+		normalizedFilename === args.draft.filename;
+	const showAttentionState = !invalidFilenameMessage && Boolean(pathConflictMessage);
+	const uploadBlockingMessage = invalidFilenameMessage ?? pathConflictMessage;
+
+	return {
+		normalizedFilename,
+		invalidFilenameMessage,
+		pathConflictMessage,
+		helperText,
+		showReplace,
+		showAttentionState,
+		uploadBlockingMessage,
+	};
+}
 
 const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflictModal(
 	props: FilesSidebarUploadConflictModal_Props,
@@ -2180,22 +2221,15 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 		setFilename(draft?.filename ?? "");
 	}, [draft]);
 
-	const normalizedFilenameResult = draft?.isMarkdown
-		? files_normalize_markdown_name(filename)
-		: { _yay: files_normalize_upload_file_name(filename) };
-	const normalizedFilename = normalizedFilenameResult?._yay ?? "";
-	const renameError =
-		normalizedFilenameResult?._nay?.message ??
-		(!draft?.isMarkdown && !upload_filename_has_real_extension(normalizedFilename)
-			? "Uploaded files must include a file extension."
-			: draft?.reason === "path_conflict" && normalizedFilename === draft.filename
-				? "Choose a different filename or replace the existing file."
-				: null);
-	const canReplace =
-		draft?.reason === "path_conflict" &&
-		draft.conflict?.kind === "file" &&
-		normalizedFilename === draft.filename &&
-		!isUploading;
+	const {
+		normalizedFilename,
+		invalidFilenameMessage,
+		pathConflictMessage,
+		helperText,
+		showReplace,
+		showAttentionState,
+		uploadBlockingMessage,
+	} = get_upload_conflict_modal_state({ draft, filename });
 
 	const handleOpenChange = useFn((open: boolean) => {
 		if (!open && !isUploading) {
@@ -2209,7 +2243,7 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 
 	const handleSubmit = useFn<ComponentProps<"form">["onSubmit"]>((event) => {
 		event.preventDefault();
-		if (!draft || renameError || isUploading) {
+		if (!draft || uploadBlockingMessage || isUploading) {
 			return;
 		}
 
@@ -2221,10 +2255,6 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 	}
 
 	const title = draft.reason === "path_conflict" ? "File already exists" : "Rename upload";
-	const description =
-		draft.reason === "path_conflict"
-			? `A ${draft.conflict?.kind ?? "file"} named ${draft.conflict?.name ?? draft.filename} already exists.`
-			: "Uploaded files need a real filename extension before they can be created.";
 
 	return (
 		<MyModal open={draft !== null} setOpen={handleOpenChange}>
@@ -2233,35 +2263,80 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 			>
 				<MyModalHeader>
 					<MyModalHeading>{title}</MyModalHeading>
-					<MyModalDescription>{description}</MyModalDescription>
+					<MyModalDescription>
+						{draft.reason === "path_conflict" ? (
+							<>
+								A {draft.conflict?.kind ?? "file"} named{" "}
+								<strong
+									className={
+										"FilesSidebarUploadConflictModal-description-filename" satisfies FilesSidebarUploadConflictModal_ClassNames
+									}
+								>
+									{draft.conflict?.name ?? draft.filename}
+								</strong>{" "}
+								already exists.
+							</>
+						) : (
+							"Uploaded files need a real filename extension before they can be created."
+						)}
+					</MyModalDescription>
 				</MyModalHeader>
 				<form
 					className={"FilesSidebarUploadConflictModal-form" satisfies FilesSidebarUploadConflictModal_ClassNames}
 					onSubmit={handleSubmit}
 				>
-					<MyInput variant="surface">
-						<MyInputArea>
-							<MyInputBox />
-							<MyInputControl autoFocus value={filename} onChange={handleFilenameChange} />
-						</MyInputArea>
-					</MyInput>
-					{renameError ? (
-						<p className={"FilesSidebarUploadConflictModal-error" satisfies FilesSidebarUploadConflictModal_ClassNames}>
-							{renameError}
-						</p>
-					) : null}
+					<div className={"FilesSidebarUploadConflictModal-body" satisfies FilesSidebarUploadConflictModal_ClassNames}>
+						<MyInput
+							className={cn(
+								showAttentionState &&
+									("FilesSidebarUploadConflictModal-name-field-state-attention" satisfies FilesSidebarUploadConflictModal_ClassNames),
+							)}
+							displayValidationMessage={invalidFilenameMessage}
+							variant="surface"
+						>
+							<MyInputArea>
+								<MyInputBox />
+								<MyInputControl
+									autoFocus
+									aria-label="Filename"
+									autoComplete="off"
+									value={filename}
+									disabled={isUploading}
+									validationMessage={invalidFilenameMessage}
+									onChange={handleFilenameChange}
+								/>
+							</MyInputArea>
+							<MyInputHelperText
+								className={
+									"FilesSidebarUploadConflictModal-helper-row" satisfies FilesSidebarUploadConflictModal_ClassNames
+								}
+								aria-live="polite"
+							>
+								<span
+									className={cn(
+										"FilesSidebarUploadConflictModal-helper-message" satisfies FilesSidebarUploadConflictModal_ClassNames,
+										(invalidFilenameMessage || pathConflictMessage) &&
+											("FilesSidebarUploadConflictModal-helper-state-error" satisfies FilesSidebarUploadConflictModal_ClassNames),
+									)}
+								>
+									{helperText}
+								</span>
+							</MyInputHelperText>
+						</MyInput>
+					</div>
 					<MyModalFooter>
-						<MyModalCloseTrigger disabled={isUploading}>
-							<MyButton variant="ghost">Cancel</MyButton>
-						</MyModalCloseTrigger>
-						{draft.reason === "path_conflict" && draft.conflict?.kind === "file" ? (
-							<MyButton type="button" variant="outline_destructive" disabled={!canReplace} onClick={onReplace}>
+						<MyButton type="button" variant="outline" disabled={isUploading} onClick={onClose}>
+							Cancel
+						</MyButton>
+						{showReplace ? (
+							<MyButton type="button" variant="destructive" disabled={isUploading} onClick={onReplace}>
 								Replace
 							</MyButton>
-						) : null}
-						<MyButton type="submit" disabled={Boolean(renameError) || isUploading}>
-							Upload renamed file
-						</MyButton>
+						) : (
+							<MyButton type="submit" variant="accent" disabled={Boolean(uploadBlockingMessage) || isUploading}>
+								Upload
+							</MyButton>
+						)}
 					</MyModalFooter>
 				</form>
 				<MyModalCloseTrigger disabled={isUploading} />
@@ -4063,6 +4138,33 @@ if (import.meta.vitest) {
 		return new File(["content"], name, { type: "application/pdf" });
 	};
 
+	const test_upload_draft = (args?: {
+		filename?: string;
+		reason?: FilesSidebarUploadDraft["reason"];
+		conflictKind?: files_TreeItem["kind"];
+		conflictName?: string;
+	}) => {
+		const filename = args?.filename ?? "report.pdf";
+		const reason = args?.reason ?? "path_conflict";
+		return {
+			file: test_file(filename),
+			parentId: files_ROOT_ID,
+			filename,
+			contentType: "application/pdf",
+			isMarkdown: false,
+			reason,
+			...(reason === "path_conflict"
+				? {
+						conflict: {
+							nodeId: "conflict_node" as app_convex_Id<"files_nodes">,
+							kind: args?.conflictKind ?? "file",
+							name: args?.conflictName ?? filename,
+						},
+					}
+				: {}),
+		} satisfies FilesSidebarUploadDraft;
+	};
+
 	const test_file_from_directory = (name = "upload.pdf") => {
 		const file = test_file(name) as FileWithPath;
 		Object.defineProperty(file, "path", {
@@ -4565,6 +4667,82 @@ if (import.meta.vitest) {
 			} satisfies TreeItems;
 
 			expect(get_default_node_name({ parentId: files_ROOT_ID, kind: "folder", treeItems })).toBe("new-folder-1");
+		});
+	});
+
+	describe("get_upload_conflict_modal_state", () => {
+		test("treats an exact file conflict as a replace attention state", () => {
+			const message = "Choose a different filename or replace the existing file.";
+
+			expect(
+				get_upload_conflict_modal_state({
+					draft: test_upload_draft({ filename: "report.pdf" }),
+					filename: "report.pdf",
+				}),
+			).toEqual({
+				normalizedFilename: "report.pdf",
+				invalidFilenameMessage: undefined,
+				pathConflictMessage: message,
+				helperText: message,
+				showReplace: true,
+				showAttentionState: true,
+				uploadBlockingMessage: message,
+			});
+		});
+
+		test("switches to upload when the conflicting file is renamed", () => {
+			expect(
+				get_upload_conflict_modal_state({
+					draft: test_upload_draft({ filename: "report.pdf" }),
+					filename: "Report Copy.PDF",
+				}),
+			).toEqual({
+				normalizedFilename: "report-copy.pdf",
+				invalidFilenameMessage: undefined,
+				pathConflictMessage: undefined,
+				helperText: "This file will be uploaded with the specified filename.",
+				showReplace: false,
+				showAttentionState: false,
+				uploadBlockingMessage: undefined,
+			});
+		});
+
+		test("keeps missing upload extensions as native invalid input", () => {
+			const message = "Uploaded files must include a file extension.";
+
+			expect(
+				get_upload_conflict_modal_state({
+					draft: test_upload_draft({ filename: "report", reason: "missing_extension" }),
+					filename: "report",
+				}),
+			).toEqual({
+				normalizedFilename: "report",
+				invalidFilenameMessage: message,
+				pathConflictMessage: undefined,
+				helperText: message,
+				showReplace: false,
+				showAttentionState: false,
+				uploadBlockingMessage: message,
+			});
+		});
+
+		test("blocks folder conflicts without offering replace", () => {
+			const message = "Choose a different filename.";
+
+			expect(
+				get_upload_conflict_modal_state({
+					draft: test_upload_draft({ filename: "report.pdf", conflictKind: "folder" }),
+					filename: "report.pdf",
+				}),
+			).toEqual({
+				normalizedFilename: "report.pdf",
+				invalidFilenameMessage: undefined,
+				pathConflictMessage: message,
+				helperText: message,
+				showReplace: false,
+				showAttentionState: true,
+				uploadBlockingMessage: message,
+			});
 		});
 	});
 

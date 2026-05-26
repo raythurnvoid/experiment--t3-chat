@@ -98,19 +98,60 @@
 
 	/* #region upload conflict modal */
 	.FilesSidebarUploadConflictModal {
-		width: min(420px, calc(100vw - 32px));
+		width: min(500px, calc(100vw - 32px));
+	}
+
+	.FilesSidebarUploadConflictModal-description-filename {
+		font-weight: 500;
+		color: inherit;
 	}
 
 	.FilesSidebarUploadConflictModal-form {
 		display: flex;
 		flex-direction: column;
-		gap: 10px;
 	}
 
-	.FilesSidebarUploadConflictModal-error {
-		margin: 0;
-		color: var(--destructive);
-		font-size: 0.8125rem;
+	.FilesSidebarUploadConflictModal-body {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		padding: 12px 20px;
+
+		.MyInput:not(.userInvalid):not(:has([aria-invalid="true"])) .MyInputBox {
+			border-color: var(--color-base-1-05);
+		}
+
+		.MyInputHelperText {
+			color: var(--color-fg-07);
+		}
+	}
+
+	.FilesSidebarUploadConflictModal-body
+		.FilesSidebarUploadConflictModal-name-field-state-attention:not(.userInvalid):not(:has([aria-invalid="true"]))
+		.MyInputBox {
+		border-color: var(--color-red-09);
+		outline-color: var(--color-red-09);
+		box-shadow: none;
+	}
+
+	.FilesSidebarUploadConflictModal-helper-row {
+		display: flex;
+		align-items: baseline;
+
+		min-height: 1.25em;
+	}
+
+	.FilesSidebarUploadConflictModal-helper-message {
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.FilesSidebarUploadConflictModal-helper-state-error {
+		color: var(--color-red-09);
 	}
 	/* #endregion upload conflict modal */
 
