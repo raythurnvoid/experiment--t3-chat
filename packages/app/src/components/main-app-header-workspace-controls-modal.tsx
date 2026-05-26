@@ -22,6 +22,7 @@ import {
 	CreditCard,
 	EllipsisVertical,
 	FolderKanban,
+	Info,
 	Pencil,
 	Plus,
 	Trash2,
@@ -60,6 +61,11 @@ import {
 	MyModalPopover,
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
+import {
+	MyRadioCard,
+	MyRadioCardDescription,
+	MyRadioCardLabel,
+} from "@/components/my-radio-card.tsx";
 import { MyTooltip, MyTooltipContent, MyTooltipInfoTrigger, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
@@ -120,7 +126,8 @@ export type MainAppHeaderWorkspaceSwitcherModal_ListItem = {
 	description: string;
 	isCurrent?: boolean;
 	isDefault?: boolean;
-	billingBadge?: string;
+	ownershipBadge?: "personal" | "owner" | "member";
+	billingBadge?: "members_pay" | "my_balance" | "owner_pays";
 	onManageBilling?: () => void;
 	onEdit?: () => void;
 	onDelete?: () => void;
@@ -167,6 +174,8 @@ type MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-primary"
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-label-row"
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-label"
+	| "MainAppHeaderWorkspaceSwitcherModalListItem-badge"
+	| "MainAppHeaderWorkspaceSwitcherModalListItem-ownership-badge"
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-billing-badge"
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-description"
 	| "MainAppHeaderWorkspaceSwitcherModalListItem-actions"
@@ -211,6 +220,22 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 	const itemActionLabel = `${itemKindLabel}: ${item.label}`;
 	const selectLabel = isCurrent ? `Current ${itemActionLabel}` : `Select ${itemActionLabel}`;
 	const moreActionsLabel = `More actions for ${itemActionLabel}`;
+	const ownershipBadgeLabel =
+		item.ownershipBadge === "personal"
+			? "Personal"
+			: item.ownershipBadge === "owner"
+				? "Owner"
+				: item.ownershipBadge === "member"
+					? "Member"
+					: null;
+	const billingBadgeLabel =
+		item.billingBadge === "members_pay"
+			? "Members pay"
+			: item.billingBadge === "my_balance"
+				? "My balance"
+				: item.billingBadge === "owner_pays"
+					? "Owner pays"
+					: null;
 
 	return (
 		<li
@@ -251,13 +276,24 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 					>
 						{item.label}
 					</div>
-					{item.billingBadge ? (
+					{ownershipBadgeLabel ? (
 						<span
 							className={cn(
+								"MainAppHeaderWorkspaceSwitcherModalListItem-badge" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+								"MainAppHeaderWorkspaceSwitcherModalListItem-ownership-badge" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+							)}
+						>
+							{ownershipBadgeLabel}
+						</span>
+					) : null}
+					{billingBadgeLabel ? (
+						<span
+							className={cn(
+								"MainAppHeaderWorkspaceSwitcherModalListItem-badge" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
 								"MainAppHeaderWorkspaceSwitcherModalListItem-billing-badge" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
 							)}
 						>
-							{item.billingBadge}
+							{billingBadgeLabel}
 						</span>
 					) : null}
 				</div>
@@ -1623,7 +1659,6 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 });
 // #endregion edit modal
 
-// #region billing modal
 type MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalBillingModal"
 	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-body"
@@ -1631,8 +1666,68 @@ type MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames =
 	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-option"
 	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-option-title"
 	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-option-description"
+	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-note"
+	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-note-icon"
+	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-note-copy"
 	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-message";
 
+// #region billing modal option
+type MainAppHeaderWorkspaceSwitcherModalBillingModalOption_Props = {
+	name: string;
+	value: "user" | "workspace_owner";
+	checked: boolean;
+	disabled: boolean;
+	title: string;
+	description: string;
+	onChange: NonNullable<ComponentPropsWithoutRef<"input">["onChange"]>;
+};
+
+const MainAppHeaderWorkspaceSwitcherModalBillingModalOption = memo(
+	function MainAppHeaderWorkspaceSwitcherModalBillingModalOption(
+		props: MainAppHeaderWorkspaceSwitcherModalBillingModalOption_Props,
+	) {
+		const { name, value, checked, disabled, title, description, onChange } = props;
+
+		const optionId = `${name}-option-${useId()}`;
+		const radioId = `${optionId}-radio`;
+		const descriptionId = `${optionId}-description`;
+
+		return (
+			<MyRadioCard
+				className={cn(
+					"MainAppHeaderWorkspaceSwitcherModalBillingModal-option" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+				)}
+				id={radioId}
+				name={name}
+				value={value}
+				checked={checked}
+				disabled={disabled}
+				aria-describedby={descriptionId}
+				onChange={onChange}
+			>
+				<MyRadioCardLabel
+					htmlFor={radioId}
+					className={cn(
+						"MainAppHeaderWorkspaceSwitcherModalBillingModal-option-title" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+					)}
+				>
+					{title}
+				</MyRadioCardLabel>
+				<MyRadioCardDescription
+					id={descriptionId}
+					className={cn(
+						"MainAppHeaderWorkspaceSwitcherModalBillingModal-option-description" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+					)}
+				>
+					{description}
+				</MyRadioCardDescription>
+			</MyRadioCard>
+		);
+	},
+);
+// #endregion billing modal option
+
+// #region billing modal
 type MainAppHeaderWorkspaceSwitcherModalBillingModal_Props = {
 	target: MainAppHeaderWorkspaceSwitcherModal_BillingTarget | null;
 	setTarget: Dispatch<SetStateAction<MainAppHeaderWorkspaceSwitcherModal_BillingTarget | null>>;
@@ -1645,6 +1740,8 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHea
 	props: MainAppHeaderWorkspaceSwitcherModalBillingModal_Props,
 ) {
 	const { target, setTarget, setWorkspaceBillingMode } = props;
+
+	const billingModeRadioName = `MainAppHeaderWorkspaceSwitcherModalBillingModal-${useId()}`;
 
 	const [selectedMode, setSelectedMode] = useState<"user" | "workspace_owner">("user");
 	const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1662,6 +1759,14 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHea
 
 	const handleCancel = useFn(() => {
 		setTarget(null);
+	});
+
+	const handleBillingModeChange = useFn<NonNullable<ComponentPropsWithoutRef<"input">["onChange"]>>((event) => {
+		if (!event.currentTarget.checked) {
+			return;
+		}
+
+		setSelectedMode(event.currentTarget.value as "user" | "workspace_owner");
 	});
 
 	const handleSave = useFn(() => {
@@ -1719,7 +1824,9 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHea
 			>
 				<MyModalHeader>
 					<MyModalHeading>Workspace billing</MyModalHeading>
-					<MyModalDescription>{target ? target.workspaceName : "Workspace"}</MyModalDescription>
+					<MyModalDescription>
+						Choose who pays for usage in {target ? target.workspaceName : "this workspace"}.
+					</MyModalDescription>
 				</MyModalHeader>
 
 				<MyModalScrollableArea
@@ -1731,57 +1838,48 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHea
 						className={cn(
 							"MainAppHeaderWorkspaceSwitcherModalBillingModal-options" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
 						)}
+						role="radiogroup"
+						aria-label="Workspace billing source"
+						aria-disabled={isSubmitting || undefined}
 					>
-						<MyButton
-							type="button"
-							variant="ghost-highlightable"
+						<MainAppHeaderWorkspaceSwitcherModalBillingModalOption
+							name={billingModeRadioName}
+							value="user"
+							checked={selectedMode === "user"}
+							disabled={isSubmitting}
+							onChange={handleBillingModeChange}
+							title="Bill each member"
+							description="Each member uses their own balance for their activity."
+						/>
+						<MainAppHeaderWorkspaceSwitcherModalBillingModalOption
+							name={billingModeRadioName}
+							value="workspace_owner"
+							checked={selectedMode === "workspace_owner"}
+							disabled={isSubmitting}
+							onChange={handleBillingModeChange}
+							title="Bill my balance"
+							description="All workspace usage is charged to your balance."
+						/>
+					</div>
+					<div
+						role="note"
+						className={cn(
+							"MainAppHeaderWorkspaceSwitcherModalBillingModal-note" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+						)}
+					>
+						<Info
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalBillingModal-option" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+								"MainAppHeaderWorkspaceSwitcherModalBillingModal-note-icon" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
 							)}
-							data-selected={selectedMode === "user" || undefined}
-							aria-pressed={selectedMode === "user"}
-							onClick={() => setSelectedMode("user")}
-						>
-							<span
-								className={cn(
-									"MainAppHeaderWorkspaceSwitcherModalBillingModal-option-title" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
-								)}
-							>
-								User billing
-							</span>
-							<span
-								className={cn(
-									"MainAppHeaderWorkspaceSwitcherModalBillingModal-option-description" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
-								)}
-							>
-								Each member spends their own balance.
-							</span>
-						</MyButton>
-						<MyButton
-							type="button"
-							variant="ghost-highlightable"
+							aria-hidden
+						/>
+						<span
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalBillingModal-option" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+								"MainAppHeaderWorkspaceSwitcherModalBillingModal-note-copy" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
 							)}
-							data-selected={selectedMode === "workspace_owner" || undefined}
-							aria-pressed={selectedMode === "workspace_owner"}
-							onClick={() => setSelectedMode("workspace_owner")}
 						>
-							<span
-								className={cn(
-									"MainAppHeaderWorkspaceSwitcherModalBillingModal-option-title" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
-								)}
-							>
-								Owner billing
-							</span>
-							<span
-								className={cn(
-									"MainAppHeaderWorkspaceSwitcherModalBillingModal-option-description" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
-								)}
-							>
-								Workspace usage spends the owner balance.
-							</span>
-						</MyButton>
+							This setting applies to all future usage in this workspace. You can change it again at any time.
+						</span>
 					</div>
 					{message ? (
 						<div
@@ -1799,7 +1897,7 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHea
 						Cancel
 					</MyButton>
 					<MyButton type="button" variant="accent" disabled={isSubmitting || isUnchanged} onClick={handleSave}>
-						{isSubmitting ? "Saving…" : "Save"}
+						{isSubmitting ? "Saving…" : "Save changes"}
 					</MyButton>
 				</MyModalFooter>
 

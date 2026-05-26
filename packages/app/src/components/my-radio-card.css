@@ -1,0 +1,142 @@
+@layer common_components {
+	/* #region label */
+	.MyRadioCardLabel {
+		min-width: 0;
+	}
+	/* #endregion label */
+
+	/* #region description */
+	.MyRadioCardDescription {
+		min-width: 0;
+	}
+	/* #endregion description */
+
+	/* #region root */
+	.MyRadioCard {
+		position: relative;
+
+		display: grid;
+
+		width: 100%;
+
+		border-radius: 8px;
+
+		cursor: pointer;
+	}
+
+	.MyRadioCard:where(:has(> .MyRadioCard-control:checked)) {
+		cursor: default;
+		pointer-events: none;
+	}
+
+	.MyRadioCard:where(:has(> .MyRadioCard-control:disabled)) {
+		cursor: not-allowed;
+	}
+
+	.MyRadioCard-control {
+		grid-row: 1;
+		grid-column: 1;
+
+		z-index: 1;
+
+		width: 100%;
+		height: 100%;
+		margin: 0;
+
+		appearance: none;
+		border-radius: inherit;
+
+		cursor: inherit;
+		filter: opacity(0);
+	}
+
+	.MyRadioCard:where(:has(> .MyRadioCard-control:checked)) > .MyRadioCard-control {
+		pointer-events: none;
+	}
+
+	.MyRadioCard-surface {
+		grid-row: 1;
+		grid-column: 1;
+
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		align-items: start;
+		gap: 12px;
+
+		width: 100%;
+		min-height: 72px;
+		padding: 12px 14px;
+
+		border: 1px solid var(--color-base-1-08);
+		border-radius: inherit;
+		outline: none;
+
+		background: transparent;
+		box-shadow: none;
+
+		pointer-events: none;
+
+		transition:
+			background-color 0.1s linear,
+			border-color 0.1s linear,
+			box-shadow 0.1s linear,
+			filter 0.1s linear;
+	}
+
+	.MyRadioCard-surface > .MyRadioSurface {
+		margin-top: 1px;
+	}
+
+	.MyRadioCard-content {
+		display: grid;
+		gap: 5px;
+
+		min-width: 0;
+	}
+
+	.MyRadioCard:where(:has(> .MyRadioCard-control:checked)) > .MyRadioCard-surface {
+		border-color: var(--color-accent-06);
+	}
+
+	.MyRadioCard:where(:has(> .MyRadioCard-control:checked)) > .MyRadioCard-surface > .MyRadioSurface {
+		border-color: var(--color-accent-06);
+		background: color-mix(in oklch, var(--color-accent-01) 45%, var(--color-base-1-03));
+	}
+
+	.MyRadioCard:where(:has(> .MyRadioCard-control:checked))
+		> .MyRadioCard-surface
+		> .MyRadioSurface
+		> .MyRadioSurface-dot {
+		transform: scale(1);
+	}
+
+	.MyRadioCard:not(:has(> .MyRadioCard-control:checked)):not(
+			:has(> .MyRadioCard-control:disabled)
+		):hover:not(:active)
+		> .MyRadioCard-surface {
+		background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+		box-shadow:
+			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 70%, transparent),
+			0 4px 10px color-mix(in oklch, black 38%, transparent);
+	}
+
+	.MyRadioCard:not(:has(> .MyRadioCard-control:checked)):not(
+			:has(> .MyRadioCard-control:disabled)
+		):active
+		> .MyRadioCard-surface {
+		background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
+		box-shadow:
+			inset 0 2px 4px color-mix(in oklch, black 32%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
+	}
+
+	.MyRadioCard:where(:has(> .MyRadioCard-control:focus-visible)) > .MyRadioCard-surface {
+		outline: 2px solid var(--color-fg-12);
+	}
+
+	.MyRadioCard:where(:has(> .MyRadioCard-control:disabled)) > .MyRadioCard-surface {
+		filter: opacity(0.65);
+	}
+	/* #endregion root */
+}

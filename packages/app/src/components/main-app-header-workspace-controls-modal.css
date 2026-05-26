@@ -143,8 +143,8 @@
 
 	/* #region billing modal */
 	.MyModalPopover.MainAppHeaderWorkspaceSwitcherModalBillingModal {
-		max-width: 420px;
-		width: min(94vw, 420px);
+		max-width: 460px;
+		width: min(94vw, 460px);
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalBillingModal-body {
@@ -158,23 +158,7 @@
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalBillingModal-option {
-		display: grid;
-		justify-items: start;
-		gap: 4px;
-
 		width: 100%;
-		height: auto;
-		padding: 10px 12px;
-
-		border: 1px solid transparent;
-		border-radius: 8px;
-
-		text-align: left;
-
-		&[data-selected] {
-			border-color: var(--color-accent-06);
-			background: var(--color-accent-02);
-		}
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalBillingModal-option-title {
@@ -187,6 +171,34 @@
 		color: var(--color-fg-07);
 
 		font-size: 0.875em;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalBillingModal-note {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		align-items: start;
+		gap: 12px;
+
+		margin: 14px 0 0;
+		padding: 12px 14px;
+
+		border-radius: 8px;
+
+		color: var(--color-fg-07);
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalBillingModal-note-icon {
+		width: 18px;
+		height: 18px;
+
+		color: var(--color-fg-07);
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalBillingModal-note-copy {
+		min-width: 0;
+
+		font-size: 0.875em;
+		line-height: 1.35;
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalBillingModal-message {
@@ -346,6 +358,7 @@
 		grid-row: 1;
 
 		min-width: 0;
+		overflow: hidden;
 
 		display: flex;
 		align-items: center;
@@ -353,6 +366,7 @@
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalListItem-label {
+		flex: 0 1 auto;
 		min-width: 0;
 
 		contain: content;
@@ -366,23 +380,32 @@
 		white-space: nowrap;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalListItem-billing-badge {
+	.MainAppHeaderWorkspaceSwitcherModalListItem-badge {
 		display: inline-flex;
 		flex-shrink: 0;
 		align-items: center;
-
-		height: 18px;
-		padding: 0 5px;
+		gap: 4px;
 
 		border: 1px solid var(--color-base-1-08);
-		border-radius: 6px;
+		border-radius: 999px;
 
 		background: var(--color-base-1-04);
-		color: var(--color-fg-07);
+		color: var(--color-fg-09);
 
-		font-size: 0.6875em;
+		font-size: 0.75rem;
 		font-weight: 500;
 		line-height: 1;
+		white-space: nowrap;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalListItem-ownership-badge {
+		height: 20px;
+		padding: 0 8px;
+	}
+
+	.MainAppHeaderWorkspaceSwitcherModalListItem-billing-badge {
+		height: 20px;
+		padding: 0 8px;
 	}
 
 	.MainAppHeaderWorkspaceSwitcherModalListItem-description {

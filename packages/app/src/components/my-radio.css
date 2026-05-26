@@ -1,0 +1,59 @@
+@layer common_components {
+	/* #region root */
+	.MyRadio {
+		display: inline-grid;
+		place-content: center;
+
+		width: 18px;
+		height: 18px;
+		margin: 0;
+
+		appearance: none;
+		border: 1px solid var(--color-fg-07);
+		border-radius: 999px;
+
+		background: var(--color-base-1-03);
+
+		cursor: pointer;
+
+		transition:
+			background-color 0.1s linear,
+			border-color 0.1s linear,
+			filter 0.1s linear;
+	}
+
+	.MyRadio::before {
+		content: "";
+
+		width: 8px;
+		height: 8px;
+
+		border-radius: inherit;
+
+		background: var(--color-accent-06);
+
+		transform: scale(0);
+		transition:
+			background-color 0.1s linear,
+			transform 0.1s linear;
+	}
+
+	.MyRadio:checked {
+		border-color: var(--color-accent-06);
+		background: color-mix(in oklch, var(--color-accent-01) 45%, var(--color-base-1-03));
+	}
+
+	.MyRadio:checked::before {
+		transform: scale(1);
+	}
+
+	.MyRadio:focus-visible {
+		outline: 2px solid var(--color-fg-12);
+	}
+
+	.MyRadio:disabled {
+		cursor: not-allowed;
+		filter: opacity(0.65);
+	}
+	/* #endregion root */
+}

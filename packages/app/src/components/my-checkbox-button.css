@@ -1,4 +1,12 @@
 @layer common_components {
+	/* #region icon */
+	.MyCheckboxButtonIcon {
+		width: 1rem;
+		height: 1rem;
+	}
+	/* #endregion icon */
+
+	/* #region root */
 	.MyCheckboxButton:where(:has(> .MyCheckboxButton-control:focus-visible), .MyCheckboxButton-state-focus-visible) {
 		outline-color: var(--color-fg-12);
 	}
@@ -89,9 +97,5 @@
 		visibility: visible;
 		transform: scale(1);
 	}
-
-	.MyCheckboxButtonIcon {
-		width: 1rem;
-		height: 1rem;
-	}
+	/* #endregion root */
 }

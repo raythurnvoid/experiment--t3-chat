@@ -8,6 +8,35 @@ import { MyIcon } from "@/components/my-icon.tsx";
 import type { MyButton_ClassNames } from "@/components/my-button.tsx";
 import { cn } from "@/lib/utils.ts";
 
+// #region icon
+export type MyCheckboxButtonIcon_ClassNames = "MyCheckboxButtonIcon";
+
+export type MyCheckboxButtonIcon_Props = ComponentPropsWithRef<"span"> & {
+	ref?: Ref<HTMLSpanElement>;
+	id?: string;
+	className?: string;
+	innerHtml?: string;
+	children?: ReactNode;
+};
+
+export const MyCheckboxButtonIcon = memo(function MyCheckboxButtonIcon(props: MyCheckboxButtonIcon_Props) {
+	const { ref, id, className, innerHtml, children, ...rest } = props;
+
+	return (
+		<MyIcon
+			ref={ref}
+			id={id}
+			className={cn("MyCheckboxButtonIcon" satisfies MyCheckboxButtonIcon_ClassNames, className)}
+			innerHtml={innerHtml}
+			{...rest}
+		>
+			{children}
+		</MyIcon>
+	);
+});
+// #endregion icon
+
+// #region root
 export type MyCheckboxButton_ClassNames =
 	| "MyCheckboxButton"
 	| "MyCheckboxButton-state-checked"
@@ -19,9 +48,13 @@ export type MyCheckboxButton_ClassNames =
 
 export type MyCheckboxButton_Props = Omit<
 	ComponentPropsWithRef<"input">,
-	"type" | "children" | "className" | "style"
+	"type" | "children" | "className" | "name" | "style"
 > & {
 	ref?: Ref<HTMLInputElement>;
+	/**
+	 * Keep the checkbox group name unique across the app, for example by deriving it from React `useId()`.
+	 */
+	name?: string;
 	className?: string;
 	style?: ComponentPropsWithRef<"label">["style"];
 	inputClassName?: string;
@@ -82,29 +115,4 @@ export const MyCheckboxButton = memo(function MyCheckboxButton(props: MyCheckbox
 		</label>
 	);
 });
-
-export type MyCheckboxButtonIcon_ClassNames = "MyCheckboxButtonIcon";
-
-export type MyCheckboxButtonIcon_Props = ComponentPropsWithRef<"span"> & {
-	ref?: Ref<HTMLSpanElement>;
-	id?: string;
-	className?: string;
-	innerHtml?: string;
-	children?: ReactNode;
-};
-
-export const MyCheckboxButtonIcon = memo(function MyCheckboxButtonIcon(props: MyCheckboxButtonIcon_Props) {
-	const { ref, id, className, innerHtml, children, ...rest } = props;
-
-	return (
-		<MyIcon
-			ref={ref}
-			id={id}
-			className={cn("MyCheckboxButtonIcon" satisfies MyCheckboxButtonIcon_ClassNames, className)}
-			innerHtml={innerHtml}
-			{...rest}
-		>
-			{children}
-		</MyIcon>
-	);
-});
+// #endregion root

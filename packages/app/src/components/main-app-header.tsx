@@ -248,6 +248,7 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 					currentUserWorkspaceRoleResult instanceof Error || currentUserWorkspaceRoleResult === undefined
 						? null
 						: currentUserWorkspaceRoleResult;
+				const ownsWorkspace = !w.default && w.ownerUserId === auth.userId;
 				const primaryProject = workspaceList
 					? app_tenant_primary_project_for_workspace({
 							workspace: w,
@@ -264,11 +265,14 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 						isPrimaryProject: false,
 					}),
 					isDefault: w.default,
+					ownershipBadge: w.default ? "personal" : ownsWorkspace ? "owner" : "member",
 					billingBadge: w.default
-						? "Personal"
-						: w.billingMode === "workspace_owner"
-							? "Owner billing"
-							: "User billing",
+						? undefined
+						: w.billingMode === "user"
+							? "members_pay"
+							: ownsWorkspace
+								? "my_balance"
+								: "owner_pays",
 					onManageBilling:
 						w.default || currentUserWorkspaceRole !== "owner"
 							? undefined

@@ -350,10 +350,9 @@
 
 	/* #region tree item primary action */
 	.FilesSidebarTreeItemPrimaryAction {
-		/* Use the row-level focus ring instead of MyPrimaryAction's transparent border so shadows reach the edge. */
+		/* Use the row surface for focus/selection so shadows reach the full tree item edge. */
 		position: absolute;
 		inset: 0;
-		border-width: 0;
 		border-radius: 8px;
 		outline: none;
 		background: transparent;

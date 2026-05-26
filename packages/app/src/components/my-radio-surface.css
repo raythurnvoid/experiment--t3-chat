@@ -1,0 +1,55 @@
+@layer common_components {
+	/* #region root */
+	.MyRadioSurface {
+		display: inline-grid;
+		place-content: center;
+		flex: none;
+
+		width: 18px;
+		height: 18px;
+
+		border: 1px solid var(--color-fg-07);
+		border-radius: 999px;
+
+		background: var(--color-base-1-03);
+
+		pointer-events: none;
+
+		transition:
+			background-color 0.1s linear,
+			border-color 0.1s linear,
+			filter 0.1s linear;
+	}
+
+	.MyRadioSurface-dot {
+		width: 8px;
+		height: 8px;
+
+		border-radius: inherit;
+
+		background: var(--color-accent-06);
+
+		transform: scale(0);
+		transition:
+			background-color 0.1s linear,
+			transform 0.1s linear;
+	}
+
+	.MyRadioSurface-state-checked {
+		border-color: var(--color-accent-06);
+		background: color-mix(in oklch, var(--color-accent-01) 45%, var(--color-base-1-03));
+	}
+
+	.MyRadioSurface-state-checked > .MyRadioSurface-dot {
+		transform: scale(1);
+	}
+
+	.MyRadioSurface-state-focus-visible {
+		outline: 2px solid var(--color-fg-12);
+	}
+
+	.MyRadioSurface-state-disabled {
+		filter: opacity(0.65);
+	}
+	/* #endregion root */
+}
