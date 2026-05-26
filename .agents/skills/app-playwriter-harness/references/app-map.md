@@ -24,9 +24,13 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 
 - Header switcher button accessible name starts with `Open workspace and project switcher`.
 - Switcher dialog heading: `Workspaces and projects`.
+- Switcher close button accessible name: `Close workspace switcher`.
+- Workspace billing close button accessible name: `Close workspace billing dialog`.
 - Workspace pane selector: `.MainAppHeaderWorkspaceSwitcherModalSelectPane[aria-label="Workspaces"]`.
 - Project pane selector: `.MainAppHeaderWorkspaceSwitcherModalSelectPane[aria-label="Projects"]`.
 - Pane lists use `.MainAppHeaderWorkspaceSwitcherModalSelectList` and expose scroll metrics through `inspectElement(...)`.
+- Row primary actions use `Select workspace: <name>` / `Select project: <name>`.
+- Row overflow menus use `More actions for workspace: <name>` / `More actions for project: <name>`.
 
 ## Stable App Element IDs
 

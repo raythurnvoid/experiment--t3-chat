@@ -170,17 +170,18 @@ export type MyModalCloseTrigger_Props = Omit<
 	ExtractStrict<keyof Ariakit.DialogDismissProps, "children" | "render">
 > & {
 	children?: Ariakit.DialogDismissProps["render"];
+	tooltip?: string;
 };
 
 export const MyModalCloseTrigger = memo(function MyModalCloseTrigger(props: MyModalCloseTrigger_Props) {
-	const { className, children, ...rest } = props;
+	const { className, children, tooltip = "Close", ...rest } = props;
 
 	return (
 		<Ariakit.DialogDismiss
 			className={cn("MyModalCloseTrigger" satisfies MyModalCloseTrigger_ClassNames, className)}
 			render={
 				children ?? (
-					<MyIconButton variant="ghost-highlightable" tooltip="Close">
+					<MyIconButton variant="ghost-highlightable" tooltip={tooltip}>
 						<X />
 					</MyIconButton>
 				)

@@ -42,6 +42,14 @@ Open the header switcher by its accessible name, then inspect the project list s
 pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/' }); await state.page.getByRole('button', { name: /Open workspace and project switcher/i }).click(); await state.appPlaywriterHarness.observe({ label: 'workspace switcher', search: /Workspaces and projects|Create workspace|Create project/i }); await state.appPlaywriterHarness.inspectElement({ selector: '.MainAppHeaderWorkspaceSwitcherModalSelectPane[aria-label=\"Projects\"]', actionSelector: 'button, [role=button]', computedStyles: [{ name: 'project list', selector: '.MainAppHeaderWorkspaceSwitcherModalSelectList', properties: ['maxHeight', 'overflowY', 'scrollbarGutter'] }] });"
 ```
 
+## Close Workspace Switcher
+
+Use the specific close label so the file sidebar and nested modal close buttons do not make the locator ambiguous.
+
+```powershell
+pnpx playwriter -s $session --% -e "await state.page.getByRole('button', { name: 'Close workspace switcher' }).click(); await state.appPlaywriterHarness.observe({ label: 'after closing workspace switcher', search: /Open workspace and project switcher/i });"
+```
+
 ## Files Folder Create QA
 
 See the Files Folder Create QA recipe in `references/files.md`. Keep the full flow there because it is route-specific.

@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 
 import { useFn, useLiveRef } from "@/hooks/utils-hooks.ts";
+import { MyPrimaryAction } from "@/components/my-action.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -217,14 +218,12 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 				"MainAppHeaderWorkspaceSwitcherModalListItem" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
 			)}
 		>
-			<MyButton
+			<MyPrimaryAction
 				className={cn(
 					"MainAppHeaderWorkspaceSwitcherModalListItem-primary" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
 					"MyFocus-row" satisfies MyFocus_ClassNames,
 				)}
-				type="button"
-				variant="ghost-highlightable"
-				data-selected={isCurrent || undefined}
+				selected={isCurrent}
 				aria-label={selectLabel}
 				aria-current={isCurrent ? "true" : undefined}
 				aria-disabled={isCurrent || undefined}
@@ -270,7 +269,7 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 				>
 					{descriptionText}
 				</div>
-			</MyButton>
+			</MyPrimaryAction>
 
 			{showMenu ? (
 				<div
@@ -1357,7 +1356,7 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 						</MyButton>
 					</MyModalFooter>
 
-					<MyModalCloseTrigger />
+					<MyModalCloseTrigger tooltip={`Close ${dialogTitle.toLowerCase()} dialog`} />
 				</MyModalPopover>
 			</MyModal>
 		);
@@ -1617,7 +1616,7 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 					</MyButton>
 				</MyModalFooter>
 
-				<MyModalCloseTrigger />
+				<MyModalCloseTrigger tooltip={`Close ${dialogTitle.toLowerCase()} dialog`} />
 			</MyModalPopover>
 		</MyModal>
 	);
@@ -2022,7 +2021,7 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 					</MyButton>
 				</MyModalFooter>
 
-				<MyModalCloseTrigger />
+				<MyModalCloseTrigger tooltip="Close workspace switcher" />
 				<MainAppHeaderWorkspaceSwitcherModalCreateModal
 					open={createDialogOpen}
 					setOpen={setCreateDialogOpen}
