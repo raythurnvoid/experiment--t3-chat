@@ -1,7 +1,7 @@
 import "./file-editor-sidebar.css";
 import { memo, type Ref } from "react";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
-import { FileEditorSidebarAgent } from "@/components/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx";
+import { FileEditorSidebarAgent } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";

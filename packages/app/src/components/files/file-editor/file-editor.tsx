@@ -16,9 +16,9 @@ import {
 	type files_EditorView,
 } from "@/lib/files.ts";
 import { ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
-import { MyButton } from "../my-button.tsx";
-import { MyIcon } from "../my-icon.tsx";
-import { MyIconButton } from "../my-icon-button.tsx";
+import { MyButton } from "../../my-button.tsx";
+import { MyIcon } from "../../my-icon.tsx";
+import { MyIconButton } from "../../my-icon-button.tsx";
 import { FileEditorRichTextSkeleton } from "./file-editor-rich-text/file-editor-rich-text-skeleton.tsx";
 import {
 	usePresence,

@@ -25,13 +25,13 @@ import {
 	EditorCommandList,
 } from "novel";
 import { cn } from "@/lib/utils.ts";
-import type { MyPopoverContent_ClassNames } from "../../my-popover.tsx";
+import type { MyPopoverContent_ClassNames } from "../../../my-popover.tsx";
 import type {
 	MyMenuItem_ClassNames,
 	MyMenuItemContentIcon_ClassNames,
 	MyMenuItemContentPrimary_ClassNames,
 	MyMenuItemContentSecondary_ClassNames,
-} from "../../my-menu.tsx";
+} from "../../../my-menu.tsx";
 
 export type FileEditorRichTextToolsSlashCommand_ClassNames =
 	| "FileEditorRichTextToolsSlashCommand"

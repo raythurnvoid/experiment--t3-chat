@@ -41,13 +41,13 @@ import { FileEditorRichTextToolsInlineAi } from "./file-editor-rich-text-tools-i
 import { FileEditorRichTextToolsComment } from "./file-editor-rich-text-tools-comment.tsx";
 import { Sparkles, MessageSquarePlus } from "lucide-react";
 import { FileEditorRichTextDragHandle } from "./file-editor-rich-text-drag-handle.tsx";
-import type { EditorBubbleProps } from "../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
-import { bubbleMenuReevaluateVisibility } from "../../../../vendor/tiptap/packages/extension-bubble-menu/src/index.ts";
-import { useFn, useRenderPromise } from "../../../hooks/utils-hooks.ts";
+import type { EditorBubbleProps } from "../../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
+import { bubbleMenuReevaluateVisibility } from "../../../../../vendor/tiptap/packages/extension-bubble-menu/src/index.ts";
+import { useFn, useRenderPromise } from "../../../../hooks/utils-hooks.ts";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFilesYjs, type files_Yjs } from "@/hooks/files-hooks.ts";
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
-import { global_event_listen_all } from "../../../lib/global-event.tsx";
+import { global_event_listen_all } from "../../../../lib/global-event.tsx";
 import { FileEditorRichTextSkeleton } from "./file-editor-rich-text-skeleton.tsx";
 
 type SyncStatus = YjsSyncStatus;

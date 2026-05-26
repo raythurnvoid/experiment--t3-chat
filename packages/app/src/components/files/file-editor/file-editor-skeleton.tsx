@@ -1,5 +1,5 @@
 import "./file-editor-skeleton.css";
-import { cn } from "../../lib/utils.ts";
+import { cn } from "../../../lib/utils.ts";
 
 export type FileEditorSkeleton_ClassNames =
 	| "FileEditorSkeleton"

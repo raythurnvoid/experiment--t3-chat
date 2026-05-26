@@ -12,9 +12,9 @@ import { format_relative_time } from "@/lib/date.ts";
 import { useUiId } from "@/lib/ui.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, should_never_happen } from "@/lib/utils.ts";
-import { MyButton, MyButtonIcon } from "../my-button.tsx";
-import { MyIconButton, MyIconButtonIcon } from "../my-icon-button.tsx";
-import { MyLabel } from "../my-label.tsx";
+import { MyButton, MyButtonIcon } from "../../my-button.tsx";
+import { MyIconButton, MyIconButtonIcon } from "../../my-icon-button.tsx";
+import { MyLabel } from "../../my-label.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -23,10 +23,10 @@ import {
 	MyModalHeading,
 	MyModalPopover,
 	MyModalScrollableArea,
-} from "../my-modal.tsx";
-import { MySkeleton } from "../my-skeleton.tsx";
-import { MySwitch } from "../my-switch.tsx";
-import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "../my-tooltip.tsx";
+} from "../../my-modal.tsx";
+import { MySkeleton } from "../../my-skeleton.tsx";
+import { MySwitch } from "../../my-switch.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "../../my-tooltip.tsx";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 

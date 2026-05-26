@@ -1,8 +1,8 @@
 import "./file-node-view.css";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
-import { FileEditorSidebar } from "@/components/file-editor/file-editor-sidebar/file-editor-sidebar.tsx";
-import { FileEditorPresence } from "@/components/file-editor/file-editor-presence.tsx";
+import { FileEditorSidebar } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar.tsx";
+import { FileEditorPresence } from "@/components/files/file-editor/file-editor-presence.tsx";
 import {
 	FileEditor,
 	FileEditorPendingUpdatesFloating,
@@ -11,8 +11,8 @@ import {
 	type FileEditor_OnlineUser,
 	type FileEditorPresenceSupplier_Props,
 	type FileEditor_Props,
-} from "@/components/file-editor/file-editor.tsx";
-import { FilesSidebarToggle } from "@/components/files-sidebar-toggle.tsx";
+} from "@/components/files/file-editor/file-editor.tsx";
+import { FilesSidebarToggle } from "../files-sidebar-toggle.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
@@ -88,7 +88,7 @@ import {
 import React, { memo, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
-import { FilesSidebar } from "./files-sidebar.tsx";
+import { FilesSidebar } from "../files-sidebar.tsx";
 
 function get_breadcrumb_path(
 	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined,

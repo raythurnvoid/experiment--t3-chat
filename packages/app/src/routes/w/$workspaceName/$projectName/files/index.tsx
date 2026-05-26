@@ -1,4 +1,4 @@
-import { FileNodeView, type FileNodeView_Props } from "@/components/file-node-view/file-node-view.tsx";
+import { FileNodeView, type FileNodeView_Props } from "@/components/files/file-node-view/file-node-view.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { files_editor_view_values } from "@/lib/files.ts";

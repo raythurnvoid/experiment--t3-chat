@@ -34,7 +34,7 @@ import {
 import { getThreadIdsFromEditorState } from "@liveblocks/react-tiptap";
 import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
-import { Result } from "../../../lib/errors-as-values-utils.ts";
+import { Result } from "../../../../lib/errors-as-values-utils.ts";
 import { FileEditorDiffSkeleton } from "./file-editor-diff-skeleton.tsx";
 import { FileEditorMonacoTopViewZone } from "../file-editor-monaco-top-view-zone.tsx";
 

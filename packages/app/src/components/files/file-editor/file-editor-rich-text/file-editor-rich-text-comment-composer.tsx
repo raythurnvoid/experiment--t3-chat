@@ -12,8 +12,8 @@ import {
 	files_get_tiptap_shared_extensions,
 	files_tiptap_empty_doc_json,
 	files_tiptap_markdown_to_json,
-} from "../../../lib/files.ts";
-import type { MyInputTextAreaControl_ClassNames } from "../../my-input.tsx";
+} from "../../../../lib/files.ts";
+import type { MyInputTextAreaControl_ClassNames } from "../../../my-input.tsx";
 
 export type FileEditorRichTextCommentComposer_ClassNames =
 	| "FileEditorRichTextCommentComposer"

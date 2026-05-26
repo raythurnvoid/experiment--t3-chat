@@ -46,7 +46,7 @@ import type {
 	FileEditorRichText_FgColorCssVarKeys,
 	FileEditorRichText_BgColorCssVarKeys,
 } from "./file-editor-rich-text.tsx";
-import type { MyIconButton_ClassNames } from "../../my-icon-button.tsx";
+import type { MyIconButton_ClassNames } from "../../../my-icon-button.tsx";
 
 type TipTapNode = NonNullable<NonNullable<Parameters<NonNullable<EditorDragHandleProps["onNodeChange"]>>>[0]["node"]>;
 

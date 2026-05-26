@@ -14,7 +14,7 @@ import {
 import { useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import { toast } from "sonner";
-import { app_fetch_main_api_url } from "../../../lib/fetch.ts";
+import { app_fetch_main_api_url } from "../../../../lib/fetch.ts";
 import {
 	MyCombobox,
 	MyComboboxInput,

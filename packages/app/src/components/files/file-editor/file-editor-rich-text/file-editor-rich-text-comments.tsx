@@ -2,7 +2,7 @@
 import "./file-editor-rich-text-comments.css";
 import { AnchoredThreads, AnchoredThreadsItem } from "@liveblocks/react-tiptap";
 import type { Editor } from "@tiptap/react";
-import type { chat_messages_Thread } from "../../../lib/chat-messages.ts";
+import type { chat_messages_Thread } from "../../../../lib/chat-messages.ts";
 import {
 	FileEditorCommentsFilterInput,
 	FileEditorCommentsThread,

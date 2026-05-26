@@ -12,7 +12,7 @@ import {
 	MyAvatarSkeleton,
 } from "@/components/my-avatar.tsx";
 import { useQuery, useMutation } from "convex/react";
-import type { Id } from "../../../convex/_generated/dataModel.js";
+import type { Id } from "../../../../convex/_generated/dataModel.js";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { ArrowUp, Check } from "lucide-react";
