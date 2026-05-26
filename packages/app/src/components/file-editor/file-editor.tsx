@@ -5,7 +5,7 @@ import React, { useState, useImperativeHandle, type Ref, useEffect, useRef } fro
 import { FileEditorPlainText } from "./file-editor-plain-text/file-editor-plain-text.tsx";
 import { FileEditorPlainTextSkeleton } from "./file-editor-plain-text/file-editor-plain-text-skeleton.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { cn } from "@/lib/utils.ts";
+import { cn, sx } from "@/lib/utils.ts";
 import { FileEditorDiff } from "./file-editor-diff/file-editor-diff.tsx";
 import { useMutation } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
@@ -359,6 +359,7 @@ type FileEditorRender_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	editorMode: FileEditor_Mode;
+	topSafeArea?: number;
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
@@ -373,6 +374,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 		nodeId,
 		pendingUpdateId,
 		editorMode,
+		topSafeArea,
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
@@ -416,6 +418,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}
 				serverSequence={serverSequence}
+				topSafeArea={topSafeArea}
 				onExit={onDiffExit}
 				topStickyFloatingSlot={topStickyFloatingSlot}
 				topViewZoneSlot={topViewZoneSlot}
@@ -430,6 +433,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}
 			serverSequence={serverSequence}
+			topSafeArea={topSafeArea}
 			topStickyFloatingSlot={topStickyFloatingSlot}
 			topViewZoneSlot={topViewZoneSlot}
 		/>
@@ -449,14 +453,16 @@ export type FileEditor_ClassNames =
 	| "FileEditor-mode-rich-text"
 	| "FileEditor-editor-area";
 
-export type FileEditor_Layout = "route" | "embedded";
+type FileEditor_CssVars = {
+	"--FileEditor-top-safe-area": string;
+};
 
 type FileEditorInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
-	layout: FileEditor_Layout;
+	topSafeArea?: number;
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
@@ -472,7 +478,7 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		pendingUpdateId,
 		serverSequence,
 		editorMode,
-		layout,
+		topSafeArea,
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
@@ -492,10 +498,11 @@ function FileEditorInner(props: FileEditorInner_Props) {
 	});
 
 	const getCatchBoundaryResetKey = useFn(() => 0);
+	const hasTopSafeArea = topSafeArea != null && topSafeArea > 0;
 
 	const renderHostStyle =
 		editorMode === "rich_text_editor"
-			? layout === "embedded"
+			? !hasTopSafeArea
 				? {
 						flex: "0 0 auto",
 						minHeight: 0,
@@ -527,11 +534,14 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		<div
 			className={cn(
 				"FileEditor" satisfies FileEditor_ClassNames,
-				layout === "embedded"
-					? ("FileEditor-layout-embedded" satisfies FileEditor_ClassNames)
-					: ("FileEditor-layout-route" satisfies FileEditor_ClassNames),
+				hasTopSafeArea
+					? ("FileEditor-layout-route" satisfies FileEditor_ClassNames)
+					: ("FileEditor-layout-embedded" satisfies FileEditor_ClassNames),
 				editorModeClass,
 			)}
+			style={sx({
+				"--FileEditor-top-safe-area": `${topSafeArea ?? 0}px`,
+			} satisfies Partial<FileEditor_CssVars>)}
 			role="region"
 			aria-label="File editor"
 		>
@@ -549,6 +559,7 @@ function FileEditorInner(props: FileEditorInner_Props) {
 							nodeId={nodeId}
 							pendingUpdateId={pendingUpdateId}
 							editorMode={editorMode}
+							topSafeArea={topSafeArea}
 							presenceStore={presenceStore}
 							commentsPortalHost={commentsPortalHost}
 							toolbarPortalHost={toolbarPortalHost}
@@ -574,7 +585,7 @@ export type FileEditor_Props = {
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
-	layout?: FileEditor_Layout;
+	topSafeArea?: number;
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
@@ -590,7 +601,7 @@ export function FileEditor(props: FileEditor_Props) {
 		pendingUpdateId,
 		serverSequence,
 		editorMode,
-		layout = "route",
+		topSafeArea,
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
@@ -613,7 +624,7 @@ export function FileEditor(props: FileEditor_Props) {
 			pendingUpdateId={pendingUpdateId}
 			serverSequence={serverSequence}
 			editorMode={editorMode}
-			layout={layout}
+			topSafeArea={topSafeArea}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}

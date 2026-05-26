@@ -895,8 +895,8 @@ export function FileEditorRichText(props: FileEditorRichText_Props) {
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
 					toolbarPortalHost={toolbarPortalHost}
-					topStickyFloatingSlot={topStickyFloatingSlot}
 					{...rest}
+					topStickyFloatingSlot={topStickyFloatingSlot}
 				/>
 			) : (
 				<FileEditorRichTextSkeleton />

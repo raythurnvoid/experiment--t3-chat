@@ -40,6 +40,7 @@ type FileEditorMonacoTopViewZone_ClassNames = "FileEditorMonacoTopViewZone" | "F
 
 type FileEditorMonacoTopViewZone_Props = {
 	editor: monaco_editor.IStandaloneCodeEditor | null;
+	topViewZoneGap: number;
 	children?: ReactNode;
 };
 
@@ -52,7 +53,7 @@ type FileEditorMonacoTopViewZone_Props = {
 export const FileEditorMonacoTopViewZone = memo(function FileEditorMonacoTopViewZone(
 	props: FileEditorMonacoTopViewZone_Props,
 ) {
-	const { editor, children } = props;
+	const { editor, topViewZoneGap, children } = props;
 
 	const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
 	const zoneRef = useRef<{
@@ -231,11 +232,10 @@ export const FileEditorMonacoTopViewZone = memo(function FileEditorMonacoTopView
 				syncHostLayout();
 
 				const contentHeight = currentZone.contentNode.firstElementChild?.getBoundingClientRect().height ?? 0;
-				const topPaddingHeight = editor.getOption(monaco_editor.EditorOption.padding).bottom / 2;
-				// Keep a smaller gap after the file list; the larger safe area belongs above the file list.
+				// Use the caller's top safe-area gap so folder README editors do not inherit the route reserve.
 				const nextHeight = Math.max(
 					1,
-					Math.ceil(Math.max(contentHeight, currentZone.contentNode.scrollHeight) + topPaddingHeight),
+					Math.ceil(Math.max(contentHeight, currentZone.contentNode.scrollHeight) + topViewZoneGap),
 				);
 				if (currentZone.heightInPx === nextHeight) {
 					return;
@@ -288,7 +288,7 @@ export const FileEditorMonacoTopViewZone = memo(function FileEditorMonacoTopView
 				});
 			}
 		};
-	}, [editor, hasChildren]);
+	}, [editor, hasChildren, topViewZoneGap]);
 
 	return portalHost && hasChildren ? createPortal(children, portalHost) : null;
 });

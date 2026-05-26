@@ -46,11 +46,11 @@ type FileEditorPlainTextToolbarActions_Props = {
 	isSaveDebouncing: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
 	sessionId: string;
+	toolbarPortalHost: HTMLElement;
 	getCurrentMarkdown: () => string;
 	onApplySnapshotMarkdown: (markdown: string) => void;
 	onClickSave: () => void;
 	onClickSync: () => void;
-	toolbarPortalHost: HTMLElement;
 };
 
 const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolbarActions(
@@ -62,11 +62,11 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 		isSaveDebouncing,
 		nodeId,
 		sessionId,
+		toolbarPortalHost,
 		getCurrentMarkdown,
 		onApplySnapshotMarkdown,
 		onClickSave,
 		onClickSync,
-		toolbarPortalHost,
 	} = props;
 
 	return createPortal(
@@ -77,13 +77,17 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 		>
 			<MyButton
 				variant="ghost"
-				className={cn("FileEditorPlainTextToolbarActions-button" satisfies FileEditorPlainTextToolbarActions_ClassNames)}
+				className={cn(
+					"FileEditorPlainTextToolbarActions-button" satisfies FileEditorPlainTextToolbarActions_ClassNames,
+				)}
 				disabled={isSaveDisabled}
 				aria-busy={isSaveDebouncing}
 				onClick={onClickSave}
 			>
 				<MyButtonIcon
-					className={cn("FileEditorPlainTextToolbarActions-icon" satisfies FileEditorPlainTextToolbarActions_ClassNames)}
+					className={cn(
+						"FileEditorPlainTextToolbarActions-icon" satisfies FileEditorPlainTextToolbarActions_ClassNames,
+					)}
 				>
 					{isSaveDebouncing ? <MySpinner aria-label="Checking" /> : <Save />}
 				</MyButtonIcon>
@@ -91,12 +95,16 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 			</MyButton>
 			<MyButton
 				variant="ghost"
-				className={cn("FileEditorPlainTextToolbarActions-button" satisfies FileEditorPlainTextToolbarActions_ClassNames)}
+				className={cn(
+					"FileEditorPlainTextToolbarActions-button" satisfies FileEditorPlainTextToolbarActions_ClassNames,
+				)}
 				disabled={isSyncDisabled}
 				onClick={onClickSync}
 			>
 				<MyButtonIcon
-					className={cn("FileEditorPlainTextToolbarActions-icon" satisfies FileEditorPlainTextToolbarActions_ClassNames)}
+					className={cn(
+						"FileEditorPlainTextToolbarActions-icon" satisfies FileEditorPlainTextToolbarActions_ClassNames,
+					)}
 				>
 					<RefreshCcw />
 				</MyButtonIcon>
@@ -148,6 +156,7 @@ type FileEditorPlainTextInner_Props = {
 		mut_yjsDoc: YDoc;
 		yjsSequence: number;
 	};
+	topSafeArea?: number;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
@@ -160,6 +169,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const {
 		initialData,
 		nodeId,
+		topSafeArea,
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
@@ -196,6 +206,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const activeServerSequence = serverSequence ?? initialData.yjsSequence;
 	const isSyncDisabled = isSyncing || isSaving || workingYjsDocSequence === activeServerSequence;
 	const hasTopViewZoneSlot = topViewZoneSlot != null && topViewZoneSlot !== false;
+	const editorTopPadding = Math.max(16, topSafeArea ?? 0);
 
 	const hoistingContainer = document.getElementById("app_monaco_hoisting_container" satisfies AppElementId);
 	const editorOptions = ((/* iife */) => {
@@ -203,6 +214,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			overflowWidgetsDomNode: hoistingContainer ?? undefined,
 			fixedOverflowWidgets: true,
 			fontSize: 16,
+			lineHeight: 22,
 			wordWrap: "on",
 			scrollBeyondLastLine: false,
 			minimap: { enabled: false },
@@ -211,7 +223,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			// auto behaviour does not work well with the top view zone.
 			scrollbar: { vertical: "visible" },
 
-			padding: { top: hasTopViewZoneSlot ? 0 : 32, bottom: 64 },
+			padding: { top: hasTopViewZoneSlot ? 0 : editorTopPadding, bottom: 64 },
 			model: initialEditorModel,
 		} satisfies NonNullable<EditorProps["options"]>;
 	})();
@@ -567,11 +579,11 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					isSaveDebouncing={isSaveDebouncing}
 					nodeId={nodeId}
 					sessionId={presenceStore.localSessionId}
+					toolbarPortalHost={toolbarPortalHost}
 					getCurrentMarkdown={getCurrentMarkdown}
 					onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
 					onClickSave={handleClickSave}
 					onClickSync={handleClickSync}
-					toolbarPortalHost={toolbarPortalHost}
 				/>
 				<FileEditorPlainTextTopStickyFloatingContainer topStickyFloatingSlot={topStickyFloatingSlot} />
 				<div className={"FileEditorPlainText-editor" satisfies FileEditorPlainText_ClassNames}>
@@ -584,7 +596,9 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 								options={editorOptions}
 								onMount={handleOnMount}
 							/>
-							<FileEditorMonacoTopViewZone editor={mountedEditor}>{topViewZoneSlot}</FileEditorMonacoTopViewZone>
+							<FileEditorMonacoTopViewZone editor={mountedEditor} topViewZoneGap={editorTopPadding}>
+								{topViewZoneSlot}
+							</FileEditorMonacoTopViewZone>
 						</>
 					)}
 				</div>
@@ -601,6 +615,7 @@ export type FileEditorPlainText_Props = {
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
 	serverSequence?: number;
+	topSafeArea?: number;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 };
@@ -612,6 +627,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 		commentsPortalHost,
 		toolbarPortalHost,
 		serverSequence,
+		topSafeArea,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
@@ -645,6 +661,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 						}
 					: { markdown: "", mut_yjsDoc: new YDoc(), yjsSequence: 0 }
 			}
+			topSafeArea={topSafeArea}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}

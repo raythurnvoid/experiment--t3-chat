@@ -14,8 +14,9 @@
 		align-items: center;
 		gap: 4px;
 
+		flex: 0 0 auto;
 		min-width: 0;
-		contain: inline-size layout style;
+		contain: layout style;
 	}
 
 	.FileEditorPlainTextToolbarActions-button {

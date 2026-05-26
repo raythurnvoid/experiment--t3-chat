@@ -10,7 +10,7 @@ import { editor as monaco_editor, Range as monaco_Range } from "monaco-editor";
 import { useConvex, useQuery } from "convex/react";
 import { api } from "@/../convex/_generated/api.js";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { cn, should_never_happen, type CSSPropertiesX } from "@/lib/utils.ts";
+import { cn, should_never_happen, sx } from "@/lib/utils.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import type { files_PresenceStore } from "@/lib/files.ts";
@@ -55,6 +55,7 @@ type FileEditorDiffToolbarActions_Props = {
 	isDiscardAllDisabled: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
 	sessionId: string;
+	toolbarPortalHost: HTMLElement;
 	getCurrentMarkdown: () => string;
 	onApplySnapshotMarkdown: (markdown: string) => void;
 	onClickSave: () => void;
@@ -62,7 +63,6 @@ type FileEditorDiffToolbarActions_Props = {
 	onClickAcceptAll: () => void;
 	onClickAcceptAllAndSave: () => void;
 	onClickDiscardAll: () => void;
-	toolbarPortalHost: HTMLElement;
 };
 
 const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
@@ -76,6 +76,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 		isDiscardAllDisabled,
 		nodeId,
 		sessionId,
+		toolbarPortalHost,
 		getCurrentMarkdown,
 		onApplySnapshotMarkdown,
 		onClickSave,
@@ -83,7 +84,6 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 		onClickAcceptAll,
 		onClickAcceptAllAndSave,
 		onClickDiscardAll,
-		toolbarPortalHost,
 	} = props;
 
 	return createPortal(
@@ -412,6 +412,7 @@ export type FileEditorDiff_Props = {
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
 	serverSequence?: number;
+	topSafeArea?: number;
 	onExit: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
@@ -493,6 +494,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		isSaving,
 		isSyncing,
 		isSyncDisabled,
+		topSafeArea,
 		onSave,
 		onClickSync,
 		topStickyFloatingSlot,
@@ -556,6 +558,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	const isAcceptAllAndSaveDisabled = isSaving || isSyncing || !hasUnstagedChanges;
 	const isDiscardAllDisabled = isSaving || isSyncing || !hasUnstagedChanges;
 	const hasTopViewZoneSlot = topViewZoneSlot != null && topViewZoneSlot !== false;
+	const editorTopPadding = Math.max(16, topSafeArea ?? 0);
 	const diffEditorOptions = ((/* iife */) => {
 		return {
 			overflowWidgetsDomNode: hoistingContainer,
@@ -568,11 +571,12 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			renderGutterMenu: false,
 			fixedOverflowWidgets: true,
 			fontSize: 16,
+			lineHeight: 22,
 			wordWrap: "on",
 			scrollBeyondLastLine: false,
 			minimap: { enabled: false },
 			scrollbar: { vertical: "visible" },
-			padding: { top: hasTopViewZoneSlot ? 0 : 32, bottom: 64 },
+			padding: { top: hasTopViewZoneSlot ? 0 : editorTopPadding, bottom: 64 },
 
 			lineNumbers: "on",
 			renderLineHighlight: "all",
@@ -1326,11 +1330,9 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			<div
 				className={cn("FileEditorDiff" satisfies FileEditorDiff_ClassNames, className)}
 				aria-label="File diff editor"
-				style={{
-					...({
-						"--FileEditorDiff-anchor-name": anchorName,
-					} satisfies Partial<FileEditorDiff_CssVars> as CSSPropertiesX),
-				}}
+				style={sx({
+					"--FileEditorDiff-anchor-name": anchorName,
+				} satisfies Partial<FileEditorDiff_CssVars>)}
 			>
 				<FileEditorDiffToolbarActions
 					isSaveDisabled={isSaveDisabled}
@@ -1340,6 +1342,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 					isDiscardAllDisabled={isDiscardAllDisabled}
 					nodeId={nodeId}
 					sessionId={presenceStore.localSessionId}
+					toolbarPortalHost={toolbarPortalHost}
 					getCurrentMarkdown={getCurrentMarkdown}
 					onApplySnapshotMarkdown={handleApplySnapshotMarkdown}
 					onClickSave={handleClickSave}
@@ -1347,7 +1350,6 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 					onClickAcceptAll={handleClickAcceptAll}
 					onClickAcceptAllAndSave={handleClickAcceptAllAndSave}
 					onClickDiscardAll={handleClickDiscardAll}
-					toolbarPortalHost={toolbarPortalHost}
 				/>
 				<FileEditorDiffTopStickyFloatingContainer topStickyFloatingSlot={topStickyFloatingSlot} />
 				<div className={"FileEditorDiff-editor" satisfies FileEditorDiff_ClassNames}>
@@ -1365,7 +1367,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 						keepCurrentModifiedModel={true}
 						options={diffEditorOptions}
 					/>
-					<FileEditorMonacoTopViewZone editor={mountedModifiedEditor}>
+					<FileEditorMonacoTopViewZone editor={mountedModifiedEditor} topViewZoneGap={editorTopPadding}>
 						{topViewZoneSlot}
 					</FileEditorMonacoTopViewZone>
 				</div>

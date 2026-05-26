@@ -8,7 +8,6 @@ import {
 	FileEditorPendingUpdatesFloating,
 	FileEditorPresenceSupplier,
 	type FileEditor_Mode,
-	type FileEditor_Layout,
 	type FileEditor_OnlineUser,
 	type FileEditorPresenceSupplier_Props,
 	type FileEditor_Props,
@@ -70,7 +69,7 @@ import {
 	type files_SpecialFileName,
 } from "@/lib/files.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
-import { cn } from "@/lib/utils.ts";
+import { cn, sx } from "@/lib/utils.ts";
 import { combine } from "@atlaskit/pragmatic-drag-and-drop/combine";
 import { draggable, dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { Link } from "@tanstack/react-router";
@@ -331,13 +330,12 @@ type FileNodeViewFileEditor_Props = {
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
-	layout?: FileEditor_Layout;
+	topSafeArea?: number;
 	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
-	topStickyFloatingSlot?: React.ReactNode;
-	topViewZoneSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	topViewZoneSlot?: React.ReactNode;
 };
 
 const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileNodeViewFileEditor_Props) {
@@ -346,13 +344,12 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 		pendingUpdateId,
 		serverSequence,
 		editorMode,
-		layout,
+		topSafeArea,
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
-		topStickyFloatingSlot,
-		topViewZoneSlot,
 		onEditorModeChange,
+		topViewZoneSlot,
 	} = props;
 
 	return (
@@ -361,13 +358,12 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 			pendingUpdateId={pendingUpdateId}
 			serverSequence={serverSequence}
 			editorMode={editorMode}
-			layout={layout}
+			topSafeArea={topSafeArea}
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}
-			topStickyFloatingSlot={topStickyFloatingSlot}
-			topViewZoneSlot={topViewZoneSlot}
 			onEditorModeChange={onEditorModeChange}
+			topViewZoneSlot={topViewZoneSlot}
 		/>
 	);
 });
@@ -378,13 +374,13 @@ type FileNodeViewFile_Props = {
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
+	topSafeArea: number;
 	editorMode: FileEditor_Mode;
 	filesSidebarOpen: boolean;
 	presenceStore: FileEditor_Props["presenceStore"];
 	onlineUsers: FileEditor_OnlineUser[];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
-	topStickyFloatingSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
 };
 
@@ -395,13 +391,13 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		fileNodesList,
 		pendingUpdateId,
 		serverSequence,
+		topSafeArea,
 		editorMode,
 		filesSidebarOpen,
 		presenceStore,
 		onlineUsers,
 		commentsPortalHost,
 		toolbarPortalHost,
-		topStickyFloatingSlot,
 		onEditorModeChange,
 	} = props;
 
@@ -420,11 +416,11 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				nodeId={editorNodeId ?? node._id}
 				pendingUpdateId={pendingUpdateId}
 				serverSequence={serverSequence}
+				topSafeArea={topSafeArea}
 				editorMode={editorMode}
 				presenceStore={presenceStore}
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}
-				topStickyFloatingSlot={topStickyFloatingSlot}
 				onEditorModeChange={onEditorModeChange}
 			/>
 		</>
@@ -560,11 +556,11 @@ type FileNodeViewFolder_Props = {
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
+	topSafeArea: number;
 	editorMode: FileEditor_Mode;
 	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
-	topStickyFloatingSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
 };
 
@@ -574,11 +570,11 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		fileNodesList,
 		pendingUpdateId,
 		serverSequence,
+		topSafeArea,
 		editorMode,
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
-		topStickyFloatingSlot,
 		onEditorModeChange,
 	} = props;
 	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
@@ -730,7 +726,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	}, [folderItemId]);
 
 	const folderBrowserContent = (
-		<FileNodeViewFolderBody>
+		<FileNodeViewFolderBody topSafeArea={topSafeArea}>
 			<FileNodeViewFolderExplorer
 				visibleChildItems={visibleChildItems}
 				hiddenChildItemsCount={hiddenChildItemsCount}
@@ -738,8 +734,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 				workspaceName={workspaceName}
 				projectName={projectName}
 				pendingActionNodeIds={pendingActionNodeIds}
-				onArchiveNode={handleArchiveNode}
 				canMoveFileNodeToParent={handleCanMoveFileNodeToParent}
+				onArchiveNode={handleArchiveNode}
 				onMoveFileNodesToParent={handleMoveFileNodesToParent}
 				onShowMoreClick={handleShowMoreClick}
 			/>
@@ -761,9 +757,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			presenceStore={presenceStore}
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}
-			topStickyFloatingSlot={topStickyFloatingSlot}
-			topViewZoneSlot={editorMode !== "rich_text_editor" ? folderBrowserContent : undefined}
 			onEditorModeChange={onEditorModeChange}
+			topViewZoneSlot={editorMode !== "rich_text_editor" ? folderBrowserContent : undefined}
 		/>
 	) : null;
 
@@ -1021,7 +1016,10 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 
 // #endregion file download action
 
-type FileNodeViewToolbar_ClassNames = "FileNodeViewToolbar" | "FileNodeViewToolbar-editor-actions";
+type FileNodeViewToolbar_ClassNames =
+	| "FileNodeViewToolbar"
+	| "FileNodeViewToolbar-surface"
+	| "FileNodeViewToolbar-editor-actions";
 
 type FileNodeViewToolbar_Props = {
 	editorActionsRef: React.Ref<HTMLDivElement>;
@@ -1033,18 +1031,20 @@ const FileNodeViewToolbar = memo(function FileNodeViewToolbar(props: FileNodeVie
 	const { editorActionsRef, folderActionsSlot, fileActionsSlot } = props;
 
 	return (
-		<div
-			role="toolbar"
-			aria-label="File actions"
-			className={"FileNodeViewToolbar" satisfies FileNodeViewToolbar_ClassNames}
-		>
-			{folderActionsSlot}
-			{fileActionsSlot}
+		<div className={"FileNodeViewToolbar" satisfies FileNodeViewToolbar_ClassNames}>
 			<div
-				id={FILE_NODE_VIEW_TOOLBAR_EDITOR_ACTIONS_ID}
-				ref={editorActionsRef}
-				className={"FileNodeViewToolbar-editor-actions" satisfies FileNodeViewToolbar_ClassNames}
-			></div>
+				role="toolbar"
+				aria-label="File actions"
+				className={"FileNodeViewToolbar-surface" satisfies FileNodeViewToolbar_ClassNames}
+			>
+				{folderActionsSlot}
+				{fileActionsSlot}
+				<div
+					id={FILE_NODE_VIEW_TOOLBAR_EDITOR_ACTIONS_ID}
+					ref={editorActionsRef}
+					className={"FileNodeViewToolbar-editor-actions" satisfies FileNodeViewToolbar_ClassNames}
+				></div>
+			</div>
 		</div>
 	);
 });
@@ -1375,14 +1375,28 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 // #region folder body
 type FileNodeViewFolderBody_ClassNames = "FileNodeViewFolderBody";
 
+type FileNodeViewFolderBody_CssVars = {
+	"--FileNodeViewFolderBody-top-safe-area": string;
+};
+
 type FileNodeViewFolderBody_Props = {
+	topSafeArea: number;
 	children: React.ReactNode;
 };
 
 const FileNodeViewFolderBody = memo(function FileNodeViewFolderBody(props: FileNodeViewFolderBody_Props) {
-	const { children } = props;
+	const { topSafeArea, children } = props;
 
-	return <div className={"FileNodeViewFolderBody" satisfies FileNodeViewFolderBody_ClassNames}>{children}</div>;
+	return (
+		<div
+			className={"FileNodeViewFolderBody" satisfies FileNodeViewFolderBody_ClassNames}
+			style={sx({
+				"--FileNodeViewFolderBody-top-safe-area": `${topSafeArea}px`,
+			} satisfies Partial<FileNodeViewFolderBody_CssVars>)}
+		>
+			{children}
+		</div>
+	);
 });
 // #endregion folder body
 
@@ -1407,11 +1421,11 @@ type FileNodeViewFolderExplorerRow_Props = {
 	workspaceName: string;
 	projectName: string;
 	isPendingAction: boolean;
-	onArchiveNode: (nodeId: app_convex_Id<"files_nodes">) => void;
 	canMoveFileNodeToParent: (args: {
 		fileNodeId: app_convex_Id<"files_nodes">;
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
 	}) => boolean;
+	onArchiveNode: (nodeId: app_convex_Id<"files_nodes">) => void;
 	onMoveFileNodesToParent: (args: {
 		fileNodeIds: app_convex_Id<"files_nodes">[];
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
@@ -1427,8 +1441,8 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 		workspaceName,
 		projectName,
 		isPendingAction,
-		onArchiveNode,
 		canMoveFileNodeToParent,
+		onArchiveNode,
 		onMoveFileNodesToParent,
 	} = props;
 
@@ -1629,11 +1643,11 @@ type FileNodeViewFolderExplorer_Props = {
 	workspaceName: string;
 	projectName: string;
 	pendingActionNodeIds: ReadonlySet<string>;
-	onArchiveNode: (nodeId: app_convex_Id<"files_nodes">) => void;
 	canMoveFileNodeToParent: (args: {
 		fileNodeId: app_convex_Id<"files_nodes">;
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
 	}) => boolean;
+	onArchiveNode: (nodeId: app_convex_Id<"files_nodes">) => void;
 	onMoveFileNodesToParent: (args: {
 		fileNodeIds: app_convex_Id<"files_nodes">[];
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
@@ -1649,8 +1663,8 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		workspaceName,
 		projectName,
 		pendingActionNodeIds,
-		onArchiveNode,
 		canMoveFileNodeToParent,
+		onArchiveNode,
 		onMoveFileNodesToParent,
 		onShowMoreClick,
 	} = props;
@@ -1678,8 +1692,8 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 									workspaceName={workspaceName}
 									projectName={projectName}
 									isPendingAction={isPendingAction}
-									onArchiveNode={onArchiveNode}
 									canMoveFileNodeToParent={canMoveFileNodeToParent}
+									onArchiveNode={onArchiveNode}
 									onMoveFileNodesToParent={onMoveFileNodesToParent}
 								/>
 							);
@@ -1775,9 +1789,8 @@ type FileNodeViewFolderReadmeEditor_Props = {
 	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
-	topStickyFloatingSlot?: React.ReactNode;
-	topViewZoneSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	topViewZoneSlot?: React.ReactNode;
 };
 
 const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEditor(
@@ -1791,9 +1804,8 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
-		topStickyFloatingSlot,
-		topViewZoneSlot,
 		onEditorModeChange,
+		topViewZoneSlot,
 	} = props;
 
 	return (
@@ -1804,13 +1816,11 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 				pendingUpdateId={pendingUpdateId}
 				serverSequence={serverSequence}
 				editorMode={editorMode}
-				layout="embedded"
 				presenceStore={presenceStore}
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}
-				topStickyFloatingSlot={topStickyFloatingSlot}
-				topViewZoneSlot={topViewZoneSlot}
 				onEditorModeChange={onEditorModeChange}
+				topViewZoneSlot={topViewZoneSlot}
 			/>
 		</div>
 	);
@@ -1824,13 +1834,13 @@ type FileNodeViewContent_Props = {
 	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
+	topSafeArea: number;
 	editorMode: FileEditor_Mode;
 	filesSidebarOpen: boolean;
 	presenceStore: FileEditor_Props["presenceStore"];
 	onlineUsers: FileEditor_OnlineUser[];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
-	topStickyFloatingSlot?: React.ReactNode;
 	onEditorModeChange: (mode: FileEditor_Mode) => void;
 };
 
@@ -1841,13 +1851,13 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		fileNodesList,
 		pendingUpdateId,
 		serverSequence,
+		topSafeArea,
 		editorMode,
 		filesSidebarOpen,
 		presenceStore,
 		onlineUsers,
 		commentsPortalHost,
 		toolbarPortalHost,
-		topStickyFloatingSlot,
 		onEditorModeChange,
 	} = props;
 
@@ -1868,11 +1878,11 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					fileNodesList={fileNodesList}
 					pendingUpdateId={pendingUpdateId}
 					serverSequence={serverSequence}
+					topSafeArea={topSafeArea}
 					editorMode={editorMode}
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
 					toolbarPortalHost={toolbarPortalHost}
-					topStickyFloatingSlot={topStickyFloatingSlot}
 					onEditorModeChange={onEditorModeChange}
 				/>
 			</>
@@ -1900,11 +1910,11 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					fileNodesList={fileNodesList}
 					pendingUpdateId={pendingUpdateId}
 					serverSequence={serverSequence}
+					topSafeArea={topSafeArea}
 					editorMode={editorMode}
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
 					toolbarPortalHost={toolbarPortalHost}
-					topStickyFloatingSlot={topStickyFloatingSlot}
 					onEditorModeChange={onEditorModeChange}
 				/>
 			</>
@@ -1927,13 +1937,13 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					fileNodesList={fileNodesList}
 					pendingUpdateId={pendingUpdateId}
 					serverSequence={serverSequence}
+					topSafeArea={topSafeArea}
 					editorMode={editorMode}
 					filesSidebarOpen={filesSidebarOpen}
 					presenceStore={presenceStore}
 					onlineUsers={onlineUsers}
 					commentsPortalHost={commentsPortalHost}
 					toolbarPortalHost={toolbarPortalHost}
-					topStickyFloatingSlot={topStickyFloatingSlot}
 					onEditorModeChange={onEditorModeChange}
 				/>
 			);
@@ -1956,18 +1966,42 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 			fileNodesList={fileNodesList}
 			pendingUpdateId={pendingUpdateId}
 			serverSequence={serverSequence}
+			topSafeArea={topSafeArea}
 			editorMode={editorMode}
 			filesSidebarOpen={filesSidebarOpen}
 			presenceStore={presenceStore}
 			onlineUsers={onlineUsers}
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}
-			topStickyFloatingSlot={topStickyFloatingSlot}
 			onEditorModeChange={onEditorModeChange}
 		/>
 	);
 });
 // #endregion content
+
+// #region top sticky floating container
+type FileNodeViewTopStickyFloatingContainer_ClassNames = "FileNodeViewTopStickyFloatingContainer";
+
+type FileNodeViewTopStickyFloatingContainer_Props = {
+	children: React.ReactNode;
+};
+
+const FileNodeViewTopStickyFloatingContainer = memo(function FileNodeViewTopStickyFloatingContainer(
+	props: FileNodeViewTopStickyFloatingContainer_Props,
+) {
+	const { children } = props;
+
+	return (
+		<div
+			className={
+				"FileNodeViewTopStickyFloatingContainer" satisfies FileNodeViewTopStickyFloatingContainer_ClassNames
+			}
+		>
+			{children}
+		</div>
+	);
+});
+// #endregion top sticky floating container
 
 // #region root
 type FileNodeView_ClassNames =
@@ -2083,6 +2117,10 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	});
 
 	const pendingUpdates = allPendingUpdatesResult ?? [];
+	const hasPendingUpdates = pendingUpdates.length > 0;
+	// 44px = 40px for the floating content area plus 4px of spacing.
+	// The toolbar already includes its scrollbar gutter.
+	const topSafeArea = hasPendingUpdates ? 44 : 0;
 	const currentPendingUpdateIndex = activeEditorNodeId
 		? pendingUpdates.findIndex((pendingUpdate) => pendingUpdate.nodeId === activeEditorNodeId)
 		: -1;
@@ -2143,7 +2181,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	});
 
 	const topStickyFloatingSlot =
-		pendingUpdates.length > 0 ? (
+		hasPendingUpdates ? (
 			<FileEditorPendingUpdatesFloating
 				updatedAt={currentPendingUpdate?.updatedAt}
 				showReviewButton={hasCurrentPendingUpdates && effectiveView !== "diff_editor"}
@@ -2267,13 +2305,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				fileNodesList={fileNodesList}
 				pendingUpdateId={currentPendingUpdate?._id}
 				serverSequence={activeEditorServerSequenceData?.lastSequence}
+				topSafeArea={topSafeArea}
 				editorMode={effectiveView}
 				filesSidebarOpen={filesSidebarOpen}
 				presenceStore={presenceProps.presenceStore}
 				onlineUsers={presenceProps.onlineUsers}
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}
-				topStickyFloatingSlot={topStickyFloatingSlot}
 				onEditorModeChange={navigateToView}
 			/>
 		) : searchNodeId ? (
@@ -2345,6 +2383,11 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 									/>
 								)}
 							</FileNodeViewToolbarCreateNodeActions>
+							{topStickyFloatingSlot ? (
+								<FileNodeViewTopStickyFloatingContainer>
+									{topStickyFloatingSlot}
+								</FileNodeViewTopStickyFloatingContainer>
+							) : null}
 							{/* Wait for the toolbar action slot before mounting editor content so editor portals receive a host. */}
 							{toolbarPortalHost && activeEditorNodeId ? (
 								<FileEditorPresenceSupplier userId={authenticated.userId} nodeId={activeEditorNodeId}>
