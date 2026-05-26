@@ -51,7 +51,7 @@ import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
 import { cn, json_strigify_ensured, path_name_of, sx } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { MyButtonIcon, type MyButton_ClassNames } from "../my-button.tsx";
+import { MyButton, MyButtonIcon, type MyButton_ClassNames } from "../my-button.tsx";
 
 // #region tool chip
 type AiChatMessagePartToolChip_ClassNames = "AiChatMessagePartToolChip";
@@ -1344,6 +1344,42 @@ const AiChatMessageBubble = memo(function AiChatMessageBubble(props: AiChatMessa
 });
 // #endregion bubble
 
+// #region user message send error
+type AiChatMessageUserSendError_ClassNames =
+	| "AiChatMessageUserSendError"
+	| "AiChatMessageUserSendError-text"
+	| "AiChatMessageUserSendError-retry";
+
+type AiChatMessageUserSendError_Props = {
+	message: string;
+	onRetry: () => void;
+};
+
+const AiChatMessageUserSendError = memo(function AiChatMessageUserSendError(
+	props: AiChatMessageUserSendError_Props,
+) {
+	const { message, onRetry } = props;
+
+	return (
+		<div className={"AiChatMessageUserSendError" satisfies AiChatMessageUserSendError_ClassNames}>
+			<span
+				className={"AiChatMessageUserSendError-text" satisfies AiChatMessageUserSendError_ClassNames}
+				role="alert"
+			>
+				{message}
+			</span>
+			<MyButton
+				className={"AiChatMessageUserSendError-retry" satisfies AiChatMessageUserSendError_ClassNames}
+				variant="outline_destructive"
+				onClick={onRetry}
+			>
+				Retry
+			</MyButton>
+		</div>
+	);
+});
+// #endregion user message send error
+
 // #region user message
 export type AiChatMessageUser_ClassNames =
 	| "AiChatMessageUser"
@@ -1354,6 +1390,7 @@ export type AiChatMessageUser_ClassNames =
 	| "AiChatMessageUser-edit-button-box"
 	| "AiChatMessageUser-content-composer"
 	| "AiChatMessageUser-actions"
+	| "AiChatMessageUser-actions-main"
 	| "AiChatMessageUser-action-button"
 	| "AiChatMessageUser-action-icon"
 	| "AiChatMessageUser-branch-controls"
@@ -1371,6 +1408,7 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	isRunning: boolean;
 	isEditing: boolean;
 	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
+	sendErrorText?: string | undefined;
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
@@ -1379,6 +1417,7 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	onEditStart: AiChatMessage_Props["onEditStart"];
 	onEditCancel: AiChatMessage_Props["onEditCancel"];
 	onEditSubmit: AiChatMessage_Props["onEditSubmit"];
+	onMessageRetrySend: AiChatMessage_Props["onMessageRetrySend"];
 	onSelectBranchAnchor: AiChatMessage_Props["onSelectBranchAnchor"];
 };
 
@@ -1394,6 +1433,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		isRunning,
 		isEditing,
 		messagesChildrenByParentId,
+		sendErrorText,
 		onToolOutput,
 		onToolResumeStream,
 		onToolStop,
@@ -1402,6 +1442,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		onEditStart,
 		onEditCancel,
 		onEditSubmit,
+		onMessageRetrySend,
 		onSelectBranchAnchor,
 		...rest
 	} = props;
@@ -1443,6 +1484,14 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		onEditSubmit({ value });
 	});
 	const handleEditValueChange = useFn<AiChatComposer_Props["onValueChange"]>(() => {});
+
+	const handleRetrySend = useFn(() => {
+		if (!selectedThreadId || !text) {
+			return;
+		}
+
+		onMessageRetrySend({ threadId: selectedThreadId, messageId: message.id, value: text });
+	});
 
 	const handleBranchSwitch = (direction: "prev" | "next") => {
 		if (isRunning) {
@@ -1530,38 +1579,43 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 					</button>
 				)}
 				<div className={"AiChatMessageUser-actions" satisfies AiChatMessageUser_ClassNames} hidden={isEditing}>
-					<CopyIconButton
-						className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
-						iconClassName={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames}
-						variant="ghost-highlightable"
-						tooltipCopy="Copy message"
-						text={text ?? undefined}
-					/>
-					{showBranchControls && (
-						<div className={"AiChatMessageUser-branch-controls" satisfies AiChatMessageUser_ClassNames}>
-							<MyIconButton
-								className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
-								variant="ghost-highlightable"
-								tooltip="Previous variant"
-								disabled={isRunning}
-								onClick={handleBranchPrev}
-							>
-								<ChevronLeft className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
-							</MyIconButton>
-							<span className={"AiChatMessageUser-branch-label" satisfies AiChatMessageUser_ClassNames}>
-								{branchLabel}
-							</span>
-							<MyIconButton
-								className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
-								variant="ghost-highlightable"
-								tooltip="Next variant"
-								disabled={isRunning}
-								onClick={handleBranchNext}
-							>
-								<ChevronRight className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
-							</MyIconButton>
-						</div>
+					{sendErrorText && (
+						<AiChatMessageUserSendError message={sendErrorText} onRetry={handleRetrySend} />
 					)}
+					<div className={"AiChatMessageUser-actions-main" satisfies AiChatMessageUser_ClassNames}>
+						<CopyIconButton
+							className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
+							iconClassName={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames}
+							variant="ghost-highlightable"
+							tooltipCopy="Copy message"
+							text={text ?? undefined}
+						/>
+						{showBranchControls && (
+							<div className={"AiChatMessageUser-branch-controls" satisfies AiChatMessageUser_ClassNames}>
+								<MyIconButton
+									className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
+									variant="ghost-highlightable"
+									tooltip="Previous variant"
+									disabled={isRunning}
+									onClick={handleBranchPrev}
+								>
+									<ChevronLeft className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
+								</MyIconButton>
+								<span className={"AiChatMessageUser-branch-label" satisfies AiChatMessageUser_ClassNames}>
+									{branchLabel}
+								</span>
+								<MyIconButton
+									className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
+									variant="ghost-highlightable"
+									tooltip="Next variant"
+									disabled={isRunning}
+									onClick={handleBranchNext}
+								>
+									<ChevronRight className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
+								</MyIconButton>
+							</div>
+						)}
+					</div>
 				</div>
 			</AiChatMessageBubble>
 		</AiChatMessageContainer>
@@ -1820,6 +1874,7 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	isRunning: boolean;
 	isEditing: boolean;
 	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
+	sendErrorText?: string | undefined;
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
@@ -1829,6 +1884,7 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	onEditCancel: () => void;
 	onEditSubmit: (args: { value: string }) => void;
 	onMessageRegenerate: (args: { threadId: string; messageId: string }) => void;
+	onMessageRetrySend: (args: { threadId: string; messageId: string; value: string }) => void;
 	onMessageBranchChat: (args: { threadId: string; messageId?: string }) => void;
 	onSelectBranchAnchor: (threadId: string, anchorId: string) => void;
 };
@@ -1850,6 +1906,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		isRunning,
 		isEditing,
 		messagesChildrenByParentId,
+		sendErrorText,
 		onToolOutput,
 		onToolResumeStream,
 		onToolStop,
@@ -1859,6 +1916,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		onEditCancel,
 		onEditSubmit,
 		onMessageRegenerate,
+		onMessageRetrySend,
 		onMessageBranchChat,
 		onSelectBranchAnchor,
 		...rest
@@ -1889,7 +1947,9 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 				onEditStart={onEditStart}
 				onEditCancel={onEditCancel}
 				onEditSubmit={onEditSubmit}
+				onMessageRetrySend={onMessageRetrySend}
 				onSelectBranchAnchor={onSelectBranchAnchor}
+				sendErrorText={sendErrorText}
 				{...rest}
 			/>
 		);

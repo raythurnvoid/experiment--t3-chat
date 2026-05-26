@@ -217,6 +217,7 @@ type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	onEditSubmit: AiChatMessage_Props["onEditSubmit"];
 	onClickSuggestion: (action: string) => void;
 	onMessageRegenerate: AiChatMessage_Props["onMessageRegenerate"];
+	onMessageRetrySend: AiChatMessage_Props["onMessageRetrySend"];
 	onMessageBranchChat: AiChatMessage_Props["onMessageBranchChat"];
 	onSelectBranchAnchor: AiChatMessage_Props["onSelectBranchAnchor"];
 };
@@ -245,6 +246,7 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 		onEditSubmit,
 		onClickSuggestion,
 		onMessageRegenerate,
+		onMessageRetrySend,
 		onMessageBranchChat,
 		onSelectBranchAnchor,
 		...rest
@@ -261,7 +263,19 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 	// we cannot rely on `messageCount === 0` because we might have optimistic message,
 	// stored that might prevent the skeleton from being shown.
 	const shouldShowSkeleton = status === "loading" && !isRunning;
-	const streamErrorText = error ? "An error occurred during the generation" : null;
+	const failedSendMessageId = ((/* iife */) => {
+		if (!error || isRunning) {
+			return null;
+		}
+
+		const latestMessage = activeBranchMessages.list.at(-1);
+		if (latestMessage?.role !== "user") {
+			return null;
+		}
+
+		return latestMessage.id;
+	})();
+	const streamErrorText = error && !failedSendMessageId ? "An error occurred during the generation" : null;
 
 	const handleSuggestionClick = useFn<AiChatMessagesList_Props["onClickSuggestion"]>((action) => {
 		onClickSuggestion(action);
@@ -304,8 +318,10 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 						onEditCancel={onEditCancel}
 						onEditSubmit={onEditSubmit}
 						onMessageRegenerate={onMessageRegenerate}
+						onMessageRetrySend={onMessageRetrySend}
 						onMessageBranchChat={onMessageBranchChat}
 						onSelectBranchAnchor={onSelectBranchAnchor}
+						sendErrorText={message.id === failedSendMessageId ? "Message failed to send." : undefined}
 					/>
 				))
 			)}
@@ -485,6 +501,14 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		}
 
 		controller.regenerate(args.threadId, args.messageId);
+	});
+
+	const handleMessageRetrySend = useFn<AiChatMessagesList_Props["onMessageRetrySend"]>((args) => {
+		if (!selectedThreadId || args.threadId !== selectedThreadId) {
+			return;
+		}
+
+		controller.sendUserText(args.threadId, args.value, { messageId: args.messageId });
 	});
 
 	const handleMessageBranchChat = useFn<AiChatMessagesList_Props["onMessageBranchChat"]>((args) => {
@@ -775,6 +799,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 						onToolStop={controller.stop}
 						onClickSuggestion={handleClickSuggestion}
 						onMessageRegenerate={handleMessageRegenerate}
+						onMessageRetrySend={handleMessageRetrySend}
 						onMessageBranchChat={handleMessageBranchChat}
 						onSelectBranchAnchor={controller.selectBranchAnchor}
 					/>

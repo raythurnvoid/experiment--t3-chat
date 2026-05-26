@@ -150,12 +150,54 @@
 		grid-column: 1;
 		grid-row: 2;
 
+		flex-wrap: wrap;
+		justify-content: flex-start;
+		gap: 8px 12px;
+
 		justify-self: end;
 		width: max-content;
 
 		padding: 0px 10px 10px 0px;
 	}
+
+	.AiChatMessageUser-actions:has(.AiChatMessageUserSendError) {
+		justify-self: stretch;
+		width: auto;
+
+		padding: 0px 10px 10px 10px;
+	}
+
+	.AiChatMessageUser-actions-main {
+		display: inline-flex;
+		align-items: center;
+		flex-wrap: wrap;
+	}
 	/* #endregion user message */
+
+	/* #region user message send error */
+	.AiChatMessageUserSendError {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.AiChatMessageUserSendError-text {
+		color: var(--color-red-10);
+
+		font-size: 0.8125rem;
+		line-height: 1.25;
+		white-space: nowrap;
+	}
+
+	.AiChatMessageUserSendError-retry {
+		height: 28px;
+		padding: 3px 8px;
+
+		font-size: 0.8125rem;
+		line-height: 1;
+	}
+	/* #endregion user message send error */
 
 	/* #region markdown user */
 	.AiChatMessagePartMarkdownUser {

@@ -51,6 +51,7 @@ Non-obvious runtime details:
 
 - Ask mode keeps the full tool registry for UI-message validation, but removes `write_file` and `edit_file` from `activeTools`.
 - User messages are persisted before generation so they survive aborts/stopped generations.
+- Pre-stream send failures, such as rate-limit or credit-gate HTTP failures, remain transient client state in AI SDK `chat.error`; the UI shows inline feedback on the failed user message and retries by resubmitting that same user message without appending a duplicate.
 - Thread/file access is scoped by a `membershipId` row that determines the effective workspace/project scope.
 - Auth falls back to an anonymous user identity when a signed-in identity is unavailable.
 - The chat HTTP action resolves the current app `users` row once and passes `user._id` into AI file tools; file-tool internals should use that id instead of re-reading auth from Convex context.
@@ -190,6 +191,7 @@ Writes:
 10. Current tools do not read raw uploaded R2 binaries; uploaded content is available through Markdown shadow files, whose committed Markdown is also stored in R2.
 11. Source-path reads must preserve the product distinction between the original R2 object and the editable Markdown representation.
 12. `.shadow.md` is a system-reserved implementation suffix; `list_files` and `glob_files` hide it, while `text_search_files` may expose it because the match came from that generated Markdown content.
+13. Client-side failed-send feedback is not persisted; retry keeps the existing failed user message as the final chat message and resubmits it in place.
 
 # Verification Checklist
 
