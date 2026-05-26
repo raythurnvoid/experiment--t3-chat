@@ -2470,6 +2470,9 @@ export const list_files = internalQuery({
 								.eq("archiveOperationId", undefined),
 						)
 						[Symbol.asyncIterator]();
+				// Keep the iterator on the frame immediately so file children and
+				// non-matching children do not restart sibling traversal from the first row.
+				frame.iterator = iterator;
 
 				const iteratorItem = await iterator.next();
 
@@ -2514,8 +2517,6 @@ export const list_files = internalQuery({
 				const nextDepth = frame.depth + 1;
 				// less or equal `maxDepth` to allow the extra depth iteration
 				if (child.kind === "folder" && nextDepth <= maxDepth + 1) {
-					// Set frame on parent frame to resume iteration
-					frame.iterator = iterator;
 					stack.push({
 						parentId: child._id,
 						absPath: childPath,

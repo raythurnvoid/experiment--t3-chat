@@ -559,7 +559,9 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	const isDiscardAllDisabled = isSaving || isSyncing || !hasUnstagedChanges;
 	const hasTopViewZoneSlot = topViewZoneSlot != null && topViewZoneSlot !== false;
 	const editorTopPadding = Math.max(16, topSafeArea ?? 0);
-	const diffEditorOptions = ((/* iife */) => {
+	// Keep construction-only Monaco options stable because @monaco-editor/react deep-clones
+	// option updates and DOM references in these options are cyclic.
+	const [diffEditorOptions] = useState(() => {
 		return {
 			overflowWidgetsDomNode: hoistingContainer,
 			originalEditable: false,
@@ -576,13 +578,13 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			scrollBeyondLastLine: false,
 			minimap: { enabled: false },
 			scrollbar: { vertical: "visible" },
-			padding: { top: hasTopViewZoneSlot ? 0 : editorTopPadding, bottom: 64 },
+			padding: { top: 0, bottom: 64 },
 
 			lineNumbers: "on",
 			renderLineHighlight: "all",
 			renderLineHighlightOnlyWhenFocus: true,
 		} satisfies NonNullable<DiffEditorProps["options"]>;
-	})();
+	});
 
 	const updateThreadIds = (markdown: string) => {
 		const headlessEditor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
@@ -1368,7 +1370,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 						options={diffEditorOptions}
 					/>
 					<FileEditorMonacoTopViewZone editor={mountedModifiedEditor} topViewZoneGap={editorTopPadding}>
-						{topViewZoneSlot}
+						{hasTopViewZoneSlot ? topViewZoneSlot : <div aria-hidden={true} />}
 					</FileEditorMonacoTopViewZone>
 				</div>
 			</div>

@@ -148,6 +148,60 @@ async function seed_file_shadow_pair(
 	return { sourceNodeId, shadowNodeId };
 }
 
+async function seed_file_first_list_fixture(ctx: MutationCtx) {
+	const membership = await test_mocks_fill_db_with.membership(ctx);
+	const fixtureFolderId = await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		workspaceId: membership.workspaceId,
+		projectId: membership.projectId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: files_ROOT_ID,
+		name: "fixture",
+		kind: "folder",
+		path: "/fixture",
+		updatedAt: 1,
+	});
+	await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		workspaceId: membership.workspaceId,
+		projectId: membership.projectId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: fixtureFolderId,
+		name: "00-source.md",
+		kind: "file",
+		path: "/fixture/00-source.md",
+		updatedAt: 2,
+	});
+	const nestedFolderId = await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		workspaceId: membership.workspaceId,
+		projectId: membership.projectId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: fixtureFolderId,
+		name: "nested",
+		kind: "folder",
+		path: "/fixture/nested",
+		updatedAt: 3,
+	});
+	await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		workspaceId: membership.workspaceId,
+		projectId: membership.projectId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: nestedFolderId,
+		name: "glob-target.md",
+		kind: "file",
+		path: "/fixture/nested/glob-target.md",
+		updatedAt: 4,
+	});
+
+	return membership;
+}
+
 test("list_files", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -273,6 +327,64 @@ test("list_files_new", async () => {
 		kind: "folder",
 		updatedAt: db.files.file_root_1_child_1.updatedAt,
 		depthTruncated: true,
+	});
+});
+
+describe("list_files", () => {
+	test("continues sibling traversal after a file child", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_file_first_list_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const result = await asUser.query(internal.files_nodes.list_files, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/fixture",
+			maxDepth: 10,
+			limit: 10,
+		});
+
+		expect(result.truncated).toBe(false);
+		expect(result.items.map((item) => item.path)).toEqual([
+			"/fixture/00-source.md",
+			"/fixture/nested",
+			"/fixture/nested/glob-target.md",
+		]);
+	});
+
+	test("finds include matches after non-matching file siblings", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_file_first_list_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const result = await asUser.query(internal.files_nodes.list_files, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/fixture",
+			maxDepth: 10,
+			limit: 10,
+			include: "**/glob-target.md",
+		});
+
+		expect(result).toEqual({
+			items: [
+				{
+					path: "/fixture/nested/glob-target.md",
+					kind: "file",
+					updatedAt: 4,
+					depthTruncated: false,
+				},
+			],
+			truncated: false,
+		});
 	});
 });
 

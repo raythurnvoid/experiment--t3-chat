@@ -209,7 +209,9 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const editorTopPadding = Math.max(16, topSafeArea ?? 0);
 
 	const hoistingContainer = document.getElementById("app_monaco_hoisting_container" satisfies AppElementId);
-	const editorOptions = ((/* iife */) => {
+	// Keep construction-only Monaco options stable because @monaco-editor/react deep-clones
+	// option updates and DOM references in these options are cyclic.
+	const [editorOptions] = useState(() => {
 		return {
 			overflowWidgetsDomNode: hoistingContainer ?? undefined,
 			fixedOverflowWidgets: true,
@@ -223,10 +225,9 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			// auto behaviour does not work well with the top view zone.
 			scrollbar: { vertical: "visible" },
 
-			padding: { top: hasTopViewZoneSlot ? 0 : editorTopPadding, bottom: 64 },
-			model: initialEditorModel,
+			padding: { top: 0, bottom: 64 },
 		} satisfies NonNullable<EditorProps["options"]>;
-	})();
+	});
 
 	const updateThreadIds = (markdown: string) => {
 		const headlessEditor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
@@ -553,6 +554,9 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const handleOnMount = useFn<EditorProps["onMount"]>((editor) => {
 		editorRef.current = editor;
 		setMountedEditor(editor);
+		const prevModel = editor.getModel();
+		editor.setModel(initialEditorModel);
+		prevModel?.dispose();
 		modelRef.current = initialEditorModel;
 		updateDirtyBaseline(initialData.markdown);
 		updateThreadIds(initialData.markdown);
@@ -597,7 +601,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 								onMount={handleOnMount}
 							/>
 							<FileEditorMonacoTopViewZone editor={mountedEditor} topViewZoneGap={editorTopPadding}>
-								{topViewZoneSlot}
+								{hasTopViewZoneSlot ? topViewZoneSlot : <div aria-hidden={true} />}
 							</FileEditorMonacoTopViewZone>
 						</>
 					)}

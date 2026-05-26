@@ -21,6 +21,8 @@ vi.mock("exa-js", () => ({
 	},
 }));
 import {
+	ai_chat_tool_create_glob_files,
+	ai_chat_tool_create_grep_files,
 	ai_chat_tool_create_list_files,
 	ai_chat_tool_create_read_file,
 	ai_chat_tool_create_text_search_files,
@@ -148,6 +150,102 @@ test("list_files tool: execute renders files and folders, applies ignore, and ca
 			"/docs/guides/ (...)\n" + //
 			"/docs/tutorial.md",
 	);
+});
+
+test("glob_files tool: executes traversal with include pattern and sorts newest matches first", async () => {
+	const listReturn = {
+		items: [
+			{ path: "/docs/old-target.md", kind: "file", updatedAt: 10, depthTruncated: false },
+			{ path: "/docs/new-target.md", kind: "file", updatedAt: 20, depthTruncated: false },
+		],
+		truncated: false,
+	};
+
+	const { ctx, runQuery } = makeCtx(async (_ref, _args) => listReturn);
+	const tool = ai_chat_tool_create_glob_files(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_glob_files>[1],
+	);
+	const result = await tool.execute?.(
+		{ pattern: "**/*target.md", path: "/docs", limit: 20 },
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	expect(runQuery).toHaveBeenCalledTimes(1);
+	const [, args] = runQuery.mock.calls[0]!;
+	expect(args).toEqual({
+		path: "/docs",
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		maxDepth: 10,
+		limit: 20,
+		include: "**/*target.md",
+	});
+	expect(result.metadata).toEqual({ count: 2, truncated: false });
+	expect(result.output).toBe("/docs/new-target.md\n/docs/old-target.md");
+});
+
+test("grep_files tool: searches markdown content for listed file nodes", async () => {
+	const listReturn = {
+		items: [
+			{ path: "/docs", kind: "folder", updatedAt: 20, depthTruncated: false },
+			{ path: "/docs/readme.md", kind: "file", updatedAt: 10, depthTruncated: false },
+		],
+		truncated: false,
+	};
+
+	const { ctx, runQuery, runAction } = makeCtx(async (_ref, _args) => listReturn, {
+		runActionImpl: async () => ({
+			nodeId: "readme",
+			displayNodeId: "readme",
+			content: "# Title\nneedle here",
+			pendingUpdateId: undefined,
+		}),
+	});
+	const tool = ai_chat_tool_create_grep_files(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_grep_files>[1],
+	);
+	const result = await tool.execute?.(
+		{ pattern: "needle", path: "/docs", maxDepth: 5, limit: 50 },
+		{ toolCallId: "test", messages: [] },
+	);
+
+	if (!result) {
+		throw new Error("`result` is undefined");
+	}
+	if (!isNotAsyncIterable(result)) {
+		throw new Error("`result` is AsyncIterable but expected sync object");
+	}
+
+	expect(runQuery).toHaveBeenCalledTimes(1);
+	const [, queryArgs] = runQuery.mock.calls[0]!;
+	expect(queryArgs).toEqual({
+		path: "/docs",
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		maxDepth: 5,
+		limit: 50,
+		include: undefined,
+	});
+	expect(runAction).toHaveBeenCalledTimes(1);
+	const [, actionArgs] = runAction.mock.calls[0]!;
+	expect(actionArgs).toEqual({
+		path: "/docs/readme.md",
+		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+		projectId: test_mocks_hardcoded.project_id.project_1,
+		userId: server_ai_tools_test_user_id,
+	});
+	expect(result.metadata).toEqual({ matches: 1, truncated: false });
+	expect(result.output).toContain("/docs/readme.md:");
+	expect(result.output).toContain("Line 3: needle here");
 });
 
 test("text_search_files tool: renders line ranges and fragment markers", async () => {
