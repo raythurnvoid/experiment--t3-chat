@@ -1106,6 +1106,16 @@ export const finalize_uploaded_markdown_file = internalAction({
 	},
 });
 
+const upload_conversion_workpool = new Workpool(components.files_upload_conversion_workpool, {
+	maxParallelism: 1,
+	retryActionsByDefault: true,
+	defaultRetryBehavior: {
+		initialBackoffMs: 60 * 1000,
+		base: 1.2,
+		maxAttempts: Number.POSITIVE_INFINITY,
+	} as const,
+});
+
 export const process_uploaded_asset_event = internalMutation({
 	args: {
 		assetId: v.id("files_r2_assets"),
@@ -1113,15 +1123,7 @@ export const process_uploaded_asset_event = internalMutation({
 		size: v.number(),
 		etag: v.optional(v.string()),
 	},
-	returns: v_result({
-		_yay: v.object({
-			processingStep: v.union(
-				v.literal("convert_upload_to_markdown"),
-				v.literal("finalize_uploaded_markdown"),
-				v.null(),
-			),
-		}),
-	}),
+	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const asset = await ctx.db.get("files_r2_assets", args.assetId);
 		if (!asset) {
@@ -1149,20 +1151,12 @@ export const process_uploaded_asset_event = internalMutation({
 		});
 
 		if (asset.kind !== "upload") {
-			return Result({
-				_yay: {
-					processingStep: null,
-				},
-			});
+			return Result({ _yay: null });
 		}
 
 		const shouldStartProcessing = asset.conversionWorkId === undefined;
 		if (!shouldStartProcessing) {
-			return Result({
-				_yay: {
-					processingStep: null,
-				},
-			});
+			return Result({ _yay: null });
 		}
 		if (
 			!sourceFileNode ||
@@ -1173,22 +1167,36 @@ export const process_uploaded_asset_event = internalMutation({
 				conversionWorkId: null,
 				updatedAt: now,
 			});
-			return Result({
-				_yay: {
-					processingStep: null,
-				},
-			});
+			return Result({ _yay: null });
 		}
 
 		const sourceFileNodeIsMarkdown =
 			sourceFileNode.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
-		return Result({
-			_yay: {
-				processingStep: sourceFileNodeIsMarkdown
-					? "finalize_uploaded_markdown"
-					: "convert_upload_to_markdown",
-			},
-		});
+		try {
+			const workId = sourceFileNodeIsMarkdown
+				? await upload_conversion_workpool.enqueueAction(ctx, internal.r2.finalize_uploaded_markdown_file, {
+						workspaceId: asset.workspaceId,
+						projectId: asset.projectId,
+						sourceAssetId: asset._id,
+					})
+				: await upload_conversion_workpool.enqueueAction(ctx, internal.r2.convert_upload_to_markdown, {
+						workspaceId: asset.workspaceId,
+						projectId: asset.projectId,
+						sourceAssetId: asset._id,
+					});
+
+			await ctx.db.patch("files_r2_assets", asset._id, {
+				conversionWorkId: workId,
+				updatedAt: now,
+			});
+			return Result({ _yay: null });
+		} catch (error) {
+			console.error("Failed to enqueue R2 upload processing", {
+				error,
+				assetId: asset._id,
+			});
+			return Result({ _nay: { name: "nay", message: "Failed to enqueue upload processing" } });
+		}
 	},
 });
 
@@ -1196,16 +1204,6 @@ type process_uploaded_asset_event_Result =
 	typeof process_uploaded_asset_event extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
-
-const upload_conversion_workpool = new Workpool(components.files_upload_conversion_workpool, {
-	maxParallelism: 1,
-	retryActionsByDefault: true,
-	defaultRetryBehavior: {
-		initialBackoffMs: 60 * 1000,
-		base: 1.2,
-		maxAttempts: Number.POSITIVE_INFINITY,
-	} as const,
-});
 
 export function r2_http_routes(router: RouterForConvexModules) {
 	return {
@@ -1345,48 +1343,14 @@ export function r2_http_routes(router: RouterForConvexModules) {
 										result: uploadProcessing,
 									});
 									return {
-										status: 204,
-										body: {},
-									} as const;
-								}
-
-								if (uploadProcessing._yay.processingStep === null) {
-									// The upload is already in flight or terminal; the asset row is the durable pipeline signal.
-									return {
-										status: 204,
-										body: {},
-									} as const;
-								}
-
-								try {
-									const workId = uploadProcessing._yay.processingStep === "finalize_uploaded_markdown"
-										? await upload_conversion_workpool.enqueueAction(ctx, internal.r2.finalize_uploaded_markdown_file, {
-												workspaceId: asset._yay.workspaceId,
-												projectId: asset._yay.projectId,
-												sourceAssetId: asset._yay._id,
-											})
-										: await upload_conversion_workpool.enqueueAction(ctx, internal.r2.convert_upload_to_markdown, {
-												workspaceId: asset._yay.workspaceId,
-												projectId: asset._yay.projectId,
-												sourceAssetId: asset._yay._id,
-											});
-									await ctx.runMutation(internal.r2.patch_asset, {
-										assetId: asset._yay._id,
-										conversionWorkId: workId,
-									});
-								} catch (error) {
-									console.error("Failed to enqueue R2 upload processing", {
-										error,
-										assetId: asset._yay._id,
-									});
-									return {
 										status: 503,
 										body: {
-											message: "Failed to enqueue upload processing",
+											message: uploadProcessing._nay.message,
 										},
 									} as const;
 								}
 
+								// The mutation owns idempotency and enqueues any needed upload work.
 								return {
 									status: 204,
 									body: {},
