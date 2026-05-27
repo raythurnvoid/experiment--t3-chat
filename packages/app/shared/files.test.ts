@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	files_find_file_stem_end_index,
+	files_get_upload_pipeline_state,
 	files_get_normalized_node_path_segments,
 	files_get_utf8_byte_size,
+	files_node_has_editable_yjs_state,
 	files_normalize_markdown_name,
 	files_normalize_name_input,
 	files_normalize_name,
@@ -14,6 +16,8 @@ import {
 } from "./files.ts";
 import { Doc as YDoc } from "yjs";
 import stringByteLength from "string-byte-length";
+import type { WorkId } from "@convex-dev/workpool";
+import type { app_convex_Doc } from "./app-convex.ts";
 
 const FILES_UTF8_BYTE_SIZE_TEXT_ENCODER_MIN_LENGTH = 1e2;
 const FILES_UTF8_BYTE_SIZE_CACHE_MAX_MEMORY = 1e5;
@@ -164,6 +168,58 @@ describe("files_find_file_stem_end_index", () => {
 		["", 0],
 	])("finds the stem end in %s", (fileName, expected) => {
 		expect(files_find_file_stem_end_index({ fileName })).toBe(expected);
+	});
+});
+
+describe("files_get_upload_pipeline_state", () => {
+	test.each(
+		[
+			[null, "not_applicable"],
+			[{ kind: "content", r2Key: "content-key" }, "not_applicable"],
+			[{ kind: "upload" }, "waiting_for_upload"],
+			[{ kind: "upload", conversionWorkId: null }, "terminal"],
+			[{ kind: "upload", r2Key: "upload-key" }, "pending_processing"],
+			[{ kind: "upload", r2Key: "upload-key", conversionWorkId: "work_1" as WorkId }, "processing"],
+			[{ kind: "upload", r2Key: "upload-key", conversionWorkId: null }, "terminal"],
+		] satisfies Array<
+			[Parameters<typeof files_get_upload_pipeline_state>[0], ReturnType<typeof files_get_upload_pipeline_state>]
+		>,
+	)("returns expected state for case %#", (asset, expected) => {
+		expect(files_get_upload_pipeline_state(asset)).toBe(expected);
+	});
+});
+
+describe("files_node_has_editable_yjs_state", () => {
+	const assetId = "asset" as NonNullable<app_convex_Doc<"files_nodes">["assetId"]>;
+	const yjsSnapshotId = "snapshot" as NonNullable<app_convex_Doc<"files_nodes">["yjsSnapshotId"]>;
+	const yjsLastSequenceId = "sequence" as NonNullable<app_convex_Doc<"files_nodes">["yjsLastSequenceId"]>;
+
+	test("requires a file with an asset and both Yjs pointers", () => {
+		expect(
+			files_node_has_editable_yjs_state({
+				kind: "file",
+				assetId,
+				yjsSnapshotId,
+				yjsLastSequenceId,
+			}),
+		).toBe(true);
+
+		expect(
+			files_node_has_editable_yjs_state({
+				kind: "file",
+				assetId,
+				yjsSnapshotId,
+				yjsLastSequenceId: undefined,
+			}),
+		).toBe(false);
+		expect(
+			files_node_has_editable_yjs_state({
+				kind: "folder",
+				assetId,
+				yjsSnapshotId,
+				yjsLastSequenceId,
+			}),
+		).toBe(false);
 	});
 });
 

@@ -53,6 +53,7 @@ import {
 	files_yjs_compute_diff_update_from_state_vector,
 	files_MAX_UPLOADS_BYTES,
 	files_get_utf8_byte_size,
+	files_node_has_editable_yjs_state,
 	type files_ContentType,
 	type files_SpecialFileName,
 	type files_InlineAiModelId,
@@ -2552,13 +2553,7 @@ export async function db_get_file_content_materialization_db_state(
 		return null;
 	}
 
-	if (
-		fileNode.kind !== "file" ||
-		!(fileNode.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) ||
-		fileNode.assetId === undefined ||
-		fileNode.yjsSnapshotId === undefined ||
-		fileNode.yjsLastSequenceId === undefined
-	) {
+	if (!files_node_has_editable_yjs_state(fileNode)) {
 		return null;
 	}
 
@@ -2752,39 +2747,17 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 
 		if (!file || file.kind !== "file") return null;
 
-		const shadowFileNodes =
-			file.kind === "file" &&
-			(file.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) &&
-			file.assetId !== undefined &&
-			file.yjsSnapshotId !== undefined &&
-			file.yjsLastSequenceId !== undefined
-				? []
-				: await db_get_shadow_file_nodes_for_source_file_node(ctx, file);
-		const contentFile =
-			file.kind === "file" &&
-			(file.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) &&
-			file.assetId !== undefined &&
-			file.yjsSnapshotId !== undefined &&
-			file.yjsLastSequenceId !== undefined
-				? file
-				: (shadowFileNodes.find(
-						(shadowFileNode) =>
-							shadowFileNode.archiveOperationId === undefined &&
-							shadowFileNode.kind === "file" &&
-							(shadowFileNode.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) &&
-							shadowFileNode.assetId !== undefined &&
-							shadowFileNode.yjsSnapshotId !== undefined &&
-							shadowFileNode.yjsLastSequenceId !== undefined,
-					) ?? null);
+		const shadowFileNodes = files_node_has_editable_yjs_state(file)
+			? []
+			: await db_get_shadow_file_nodes_for_source_file_node(ctx, file);
+		const contentFile = files_node_has_editable_yjs_state(file)
+			? file
+			: (shadowFileNodes.find(
+					(shadowFileNode) =>
+						shadowFileNode.archiveOperationId === undefined && files_node_has_editable_yjs_state(shadowFileNode),
+				) ?? null);
 
-		if (
-			!contentFile ||
-			contentFile.kind !== "file" ||
-			!(contentFile.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) ||
-			contentFile.assetId === undefined ||
-			contentFile.yjsSnapshotId === undefined ||
-			contentFile.yjsLastSequenceId === undefined
-		) {
+		if (!files_node_has_editable_yjs_state(contentFile)) {
 			return null;
 		}
 
@@ -2960,11 +2933,7 @@ export const get_plain_text = query({
 			!file ||
 			file.workspaceId !== membership.workspaceId ||
 			file.projectId !== membership.projectId ||
-			file.kind !== "file" ||
-			!(file.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) ||
-			file.assetId === undefined ||
-			file.yjsSnapshotId === undefined ||
-			file.yjsLastSequenceId === undefined ||
+			!files_node_has_editable_yjs_state(file) ||
 			file.archiveOperationId !== undefined
 		) {
 			return null;
@@ -3026,11 +2995,7 @@ export const get_file_last_yjs_sequence = query({
 			!fileNode ||
 			fileNode.workspaceId !== membership.workspaceId ||
 			fileNode.projectId !== membership.projectId ||
-			fileNode.kind !== "file" ||
-			!(fileNode.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) ||
-			fileNode.assetId === undefined ||
-			fileNode.yjsSnapshotId === undefined ||
-			fileNode.yjsLastSequenceId === undefined
+			!files_node_has_editable_yjs_state(fileNode)
 		) {
 			return null;
 		}
@@ -3853,13 +3818,7 @@ export const yjs_push_update = mutation({
 		if (file.workspaceId !== membership.workspaceId || file.projectId !== membership.projectId) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
-		if (
-			file.kind !== "file" ||
-			!(file.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) ||
-			file.assetId === undefined ||
-			file.yjsSnapshotId === undefined ||
-			file.yjsLastSequenceId === undefined
-		) {
+		if (!files_node_has_editable_yjs_state(file)) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
@@ -4398,13 +4357,7 @@ export const restore_snapshot = internalMutation({
 			});
 		}
 
-		if (
-			fileNode.kind !== "file" ||
-			!(fileNode.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) ||
-			fileNode.assetId === undefined ||
-			fileNode.yjsSnapshotId === undefined ||
-			fileNode.yjsLastSequenceId === undefined
-		) {
+		if (!files_node_has_editable_yjs_state(fileNode)) {
 			return Result({
 				_nay: {
 					name: "nay",

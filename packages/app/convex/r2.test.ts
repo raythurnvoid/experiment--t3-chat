@@ -81,7 +81,9 @@ function stub_r2_and_modal_fetch(args: { markdown?: string; modalStatus?: number
 
 			if (url.startsWith("https://r2.test/object/")) {
 				const bytes = r2Objects.get(key_from_r2_url(url));
-				return bytes ? new Response(bytes_to_response_body(bytes), { status: 200 }) : new Response(null, { status: 404 });
+				return bytes
+					? new Response(bytes_to_response_body(bytes), { status: 200 })
+					: new Response(null, { status: 404 });
 			}
 
 			if (url === process.env.MODAL_FILE_CONVERTER_URL) {
@@ -360,13 +362,16 @@ describe("r2 asset content", () => {
 		}
 
 		const pendingMarkdown = "# Pending edit\n\nThis content is still in the agent draft.";
-		const upsertResult = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
-			workspaceId: db.workspaceId,
-			projectId: db.projectId,
-			userId: db.userId,
-			nodeId: created._yay.nodeId,
-			unstagedMarkdown: pendingMarkdown,
-		});
+		const upsertResult = await asUser.action(
+			internal.files_pending_updates.upsert_file_pending_update_internal_action,
+			{
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				userId: db.userId,
+				nodeId: created._yay.nodeId,
+				unstagedMarkdown: pendingMarkdown,
+			},
+		);
 		if (upsertResult._nay) {
 			throw new Error(upsertResult._nay.message);
 		}
@@ -540,8 +545,178 @@ describe("r2 asset content", () => {
 		expect(docs.shadowNode?.contentType).toBe("text/markdown;charset=utf-8");
 		expect(docs.shadowAsset?.kind).toBe("content");
 		expect(docs.shadowAsset?.r2Key ? r2_text(docs.shadowAsset.r2Key) : null).toBe("# Converted\n\nPDF body");
-		expect(docs.nextSourceAsset?.conversionWorkId).toBeUndefined();
+		expect(docs.nextSourceAsset?.conversionWorkId).toBeNull();
+
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_r2_assets", upload._yay.assetId, {
+				conversionWorkId: undefined,
+				updatedAt: Date.now(),
+			});
+		});
+		vi.mocked(Workpool.prototype.enqueueAction).mockClear();
+
+		const duplicateResponse = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_2",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: sourceAsset.r2Bucket,
+					object: {
+						key: sourceAssetR2Key,
+						size: 4096,
+						eTag: "etag_2",
+					},
+					eventTime: "2026-05-11T00:01:00.000Z",
+				},
+			}),
+		});
+		expect(duplicateResponse.status).toBe(204);
+		expect(Workpool.prototype.enqueueAction).not.toHaveBeenCalled();
+
+		const duplicateAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		expect(duplicateAsset?.etag).toBe("etag_2");
+		expect(duplicateAsset?.conversionWorkId).toBeNull();
 	});
+
+	test("finalizes uploaded Markdown into editable content and marks the upload terminal", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "uploaded.md",
+			contentType: "text/markdown;charset=utf-8",
+			size: 1024,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const sourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!sourceAsset) {
+			throw new Error("Expected upload asset");
+		}
+		const sourceAssetR2Key = expected_asset_key({
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			assetId: sourceAsset._id,
+		});
+		const markdownContent = "# Uploaded\n\nMarkdown body";
+		r2Objects.set(sourceAssetR2Key, new TextEncoder().encode(markdownContent));
+
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_markdown",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: sourceAsset.r2Bucket,
+					object: {
+						key: sourceAssetR2Key,
+						size: 1024,
+						eTag: "etag_markdown",
+					},
+					eventTime: "2026-05-11T00:00:00.000Z",
+				},
+			}),
+		});
+		expect(response.status).toBe(204);
+
+		const uploadedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		expect(uploadedAsset?.conversionWorkId).toBe("work_asset_refactor");
+
+		await asUser.action(internal.r2.finalize_uploaded_markdown_file, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			sourceAssetId: upload._yay.assetId,
+		});
+
+		const docs = await t.run(async (ctx) => {
+			const sourceNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			const sourceAsset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+			const contentAsset = sourceNode?.assetId ? await ctx.db.get("files_r2_assets", sourceNode.assetId) : null;
+
+			return { sourceNode, sourceAsset, contentAsset };
+		});
+
+		expect(docs.sourceNode?.assetId).not.toBe(upload._yay.assetId);
+		expect(docs.sourceNode?.contentType).toBe("text/markdown;charset=utf-8");
+		expect(docs.sourceNode?.yjsSnapshotId).toEqual(expect.any(String));
+		expect(docs.sourceNode?.yjsLastSequenceId).toEqual(expect.any(String));
+		expect(docs.contentAsset?.kind).toBe("content");
+		expect(docs.contentAsset?.r2Key ? r2_text(docs.contentAsset.r2Key) : null).toBe(markdownContent);
+		expect(docs.sourceAsset?.conversionWorkId).toBeNull();
+	});
+
+	test.each([413, 422])(
+		"marks Modal %s conversion responses terminal without creating a shadow",
+		async (modalStatus) => {
+			stub_r2_and_modal_fetch({ modalStatus });
+
+			const t = test_convex();
+			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				external_id: db.userId,
+				name: "Test User",
+			});
+
+			const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				filename: "archive.rar",
+				contentType: "application/vnd.rar",
+				size: 1024,
+			});
+			if (upload._nay) {
+				throw new Error(upload._nay.message);
+			}
+			await t.run(async (ctx) =>
+				ctx.db.patch("files_r2_assets", upload._yay.assetId, {
+					r2Key: expected_asset_key({
+						workspaceId: db.workspaceId,
+						projectId: db.projectId,
+						assetId: upload._yay.assetId,
+					}),
+					conversionWorkId: "work_asset_refactor" as WorkId,
+					updatedAt: Date.now(),
+				}),
+			);
+
+			await asUser.action(internal.r2.convert_upload_to_markdown, {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				sourceAssetId: upload._yay.assetId,
+			});
+
+			const docs = await t.run(async (ctx) => {
+				const sourceNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+				const nextSourceAsset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+
+				return { sourceNode, nextSourceAsset };
+			});
+
+			expect(docs.sourceNode?.shadowFileNodeIds).toHaveLength(0);
+			expect(docs.sourceNode?.assetId).toBe(upload._yay.assetId);
+			expect(docs.nextSourceAsset?.conversionWorkId).toBeNull();
+		},
+	);
 
 	test("archives an active shadow-path occupant before creating the conversion shadow", async () => {
 		const t = test_convex();

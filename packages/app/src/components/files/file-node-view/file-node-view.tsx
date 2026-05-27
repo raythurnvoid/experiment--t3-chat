@@ -64,7 +64,8 @@ import {
 	files_get_default_node_name,
 	files_get_node_path_validation,
 	files_get_normalized_node_path_segments,
-	type files_ContentType,
+	files_get_upload_pipeline_state,
+	files_node_has_editable_yjs_state,
 	type files_EditorView,
 	type files_SpecialFileName,
 } from "@/lib/files.ts";
@@ -136,6 +137,25 @@ function get_folder_readme_node_id(
 	});
 
 	return readmeNode?._id ?? null;
+}
+
+function get_first_editable_shadow_node_id(
+	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined,
+	node: app_convex_Doc<"files_nodes"> | null | undefined,
+): app_convex_Id<"files_nodes"> | null {
+	if (!fileNodesList || node?.kind !== "file") {
+		return null;
+	}
+
+	const shadowFileNodeIds = new Set(node.shadowFileNodeIds);
+	return (
+		fileNodesList.find(
+			(fileNode) =>
+				shadowFileNodeIds.has(fileNode._id) &&
+				fileNode.archiveOperationId === undefined &&
+				files_node_has_editable_yjs_state(fileNode),
+		)?._id ?? null
+	);
 }
 
 function can_move_file_node_to_parent(args: {
@@ -458,14 +478,23 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 		fileNodeId: node._id,
 	});
 	const storedFileMetadataIsLoading = asset === undefined;
-	const activeUploadStatusText =
-		node.shadowFileNodeIds.length > 0
-			? null
-			: !asset?.r2Key
-				? "Waiting for upload"
-				: asset.conversionWorkId
-					? "Processing"
-					: "Uploaded. Processing";
+	const activeUploadStatusText = ((/* iife */) => {
+		if (storedFileMetadataIsLoading) {
+			return null;
+		}
+
+		switch (files_get_upload_pipeline_state(asset)) {
+			case "waiting_for_upload":
+				return "Waiting for upload";
+			case "pending_processing":
+				return "Pending processing";
+			case "processing":
+				return "Processing";
+			case "terminal":
+			case "not_applicable":
+				return null;
+		}
+	})();
 	const title = node.name;
 	const subtitle = ((/* iife */) => {
 		if (storedFileMetadataIsLoading) {
@@ -863,11 +892,6 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 
 	const downloadCandidates: { fileNodeId: app_convex_Id<"files_nodes">; label: string }[] = [];
 	if (node?.kind === "file") {
-		const nodeHasEditableMarkdownState =
-			(node.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) &&
-			node.yjsSnapshotId !== undefined &&
-			node.yjsLastSequenceId !== undefined;
-
 		if (node.assetId) {
 			downloadCandidates.push({
 				fileNodeId: node._id,
@@ -875,7 +899,7 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 			});
 		}
 
-		if (!nodeHasEditableMarkdownState) {
+		if (!files_node_has_editable_yjs_state(node)) {
 			for (const shadowFileNodeId of node.shadowFileNodeIds) {
 				downloadCandidates.push({
 					fileNodeId: shadowFileNodeId,
@@ -1921,14 +1945,8 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		);
 	}
 
-	const nodeHasEditableMarkdownState =
-		(node.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) &&
-		node.assetId !== undefined &&
-		node.yjsSnapshotId !== undefined &&
-		node.yjsLastSequenceId !== undefined;
-
-	if (!nodeHasEditableMarkdownState) {
-		const shadowEditorNodeId = node.shadowFileNodeIds[0];
+	if (!files_node_has_editable_yjs_state(node)) {
+		const shadowEditorNodeId = get_first_editable_shadow_node_id(fileNodesList, node);
 		if (shadowEditorNodeId) {
 			return (
 				<FileNodeViewFile
@@ -1993,9 +2011,7 @@ const FileNodeViewTopStickyFloatingContainer = memo(function FileNodeViewTopStic
 
 	return (
 		<div
-			className={
-				"FileNodeViewTopStickyFloatingContainer" satisfies FileNodeViewTopStickyFloatingContainer_ClassNames
-			}
+			className={"FileNodeViewTopStickyFloatingContainer" satisfies FileNodeViewTopStickyFloatingContainer_ClassNames}
 		>
 			{children}
 		</div>
@@ -2069,20 +2085,16 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const resolvedNodeId = isRootNodeSelected ? files_ROOT_ID : (resolvedNode?._id ?? null);
 	// Keep create actions scoped to the visible folder/root selection; file views use this toolbar only for editor actions.
 	const targetFolderId = isRootNodeSelected ? files_ROOT_ID : resolvedNode?.kind === "folder" ? resolvedNode._id : null;
-	const resolvedNodeHasEditableMarkdownState =
-		resolvedNode?.kind === "file" &&
-		(resolvedNode.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false) &&
-		resolvedNode.yjsSnapshotId !== undefined &&
-		resolvedNode.yjsLastSequenceId !== undefined;
+	const resolvedNodeHasEditableYjsState = files_node_has_editable_yjs_state(resolvedNode);
 
 	// Treat a folder README as the active editor node so pending-update and sync subscriptions
 	// have the same owner for selected files and folder README editors.
 	const activeEditorNodeId = isRootNodeSelected
 		? get_folder_readme_node_id(fileNodesList, files_ROOT_ID)
 		: resolvedNode && resolvedNode.kind === "file"
-			? resolvedNodeHasEditableMarkdownState
+			? resolvedNodeHasEditableYjsState
 				? resolvedNode._id
-				: (resolvedNode.shadowFileNodeIds[0] ?? null)
+				: get_first_editable_shadow_node_id(fileNodesList, resolvedNode)
 			: resolvedNode?.kind === "folder"
 				? get_folder_readme_node_id(fileNodesList, resolvedNode._id)
 				: null;
@@ -2180,18 +2192,17 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		handleNavigatePendingUpdatesDirection("next");
 	});
 
-	const topStickyFloatingSlot =
-		hasPendingUpdates ? (
-			<FileEditorPendingUpdatesFloating
-				updatedAt={currentPendingUpdate?.updatedAt}
-				showReviewButton={hasCurrentPendingUpdates && effectiveView !== "diff_editor"}
-				reviewPagerLabel={reviewPagerLabel}
-				canNavigate={canNavigatePendingUpdates}
-				onReviewChanges={handleReviewPendingUpdates}
-				onNavigatePrevious={handleNavigatePendingUpdatesPrevious}
-				onNavigateNext={handleNavigatePendingUpdatesNext}
-			/>
-		) : null;
+	const topStickyFloatingSlot = hasPendingUpdates ? (
+		<FileEditorPendingUpdatesFloating
+			updatedAt={currentPendingUpdate?.updatedAt}
+			showReviewButton={hasCurrentPendingUpdates && effectiveView !== "diff_editor"}
+			reviewPagerLabel={reviewPagerLabel}
+			canNavigate={canNavigatePendingUpdates}
+			onReviewChanges={handleReviewPendingUpdates}
+			onNavigatePrevious={handleNavigatePendingUpdatesPrevious}
+			onNavigateNext={handleNavigatePendingUpdatesNext}
+		/>
+	) : null;
 
 	const handleArchive = useFn<React.ComponentProps<typeof FilesSidebar>["onArchive"]>((itemId) => {
 		// When the selected node is archived, leave the user on the root folder instead of a stale node id.
@@ -2384,9 +2395,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 								)}
 							</FileNodeViewToolbarCreateNodeActions>
 							{topStickyFloatingSlot ? (
-								<FileNodeViewTopStickyFloatingContainer>
-									{topStickyFloatingSlot}
-								</FileNodeViewTopStickyFloatingContainer>
+								<FileNodeViewTopStickyFloatingContainer>{topStickyFloatingSlot}</FileNodeViewTopStickyFloatingContainer>
 							) : null}
 							{/* Wait for the toolbar action slot before mounting editor content so editor portals receive a host. */}
 							{toolbarPortalHost && activeEditorNodeId ? (

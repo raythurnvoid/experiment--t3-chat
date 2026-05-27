@@ -29,6 +29,7 @@ import {
 	files_MAX_MARKDOWN_CHARACTERS,
 	files_MAX_UPLOADS_BYTES,
 	files_get_utf8_byte_size,
+	files_node_has_editable_yjs_state,
 	type files_ContentType,
 } from "../server/files.ts";
 import app_convex_schema from "./schema.ts";
@@ -159,7 +160,7 @@ export const patch_asset = internalMutation({
 			...(args.r2Key === undefined ? {} : { r2Key: args.r2Key }),
 			...(args.size === undefined ? {} : { size: args.size }),
 			...(args.etag === undefined ? {} : { etag: args.etag }),
-			...(args.conversionWorkId === undefined ? {} : { conversionWorkId: args.conversionWorkId ?? undefined }),
+			...(args.conversionWorkId === undefined ? {} : { conversionWorkId: args.conversionWorkId }),
 			updatedAt: Date.now(),
 		});
 
@@ -317,7 +318,6 @@ export const get_data_for_create_signed_download_url = internalQuery({
 		}
 
 		const assetId = fileNode.assetId;
-		const contentType = fileNode.contentType;
 		const asset = await ctx.db.get("files_r2_assets", assetId);
 		if (!asset || asset.workspaceId !== fileNode.workspaceId || asset.projectId !== fileNode.projectId) {
 			const errorMessage = "fileNode.assetId points to a missing or mismatched files_r2_assets doc";
@@ -332,7 +332,7 @@ export const get_data_for_create_signed_download_url = internalQuery({
 		return {
 			fileNode,
 			asset,
-			materializationState: contentType.startsWith("text/markdown" satisfies files_ContentType)
+			materializationState: files_node_has_editable_yjs_state(fileNode)
 				? await db_get_file_content_materialization_db_state(ctx, {
 						workspaceId: fileNode.workspaceId,
 						projectId: fileNode.projectId,
@@ -344,7 +344,11 @@ export const get_data_for_create_signed_download_url = internalQuery({
 });
 
 type get_data_for_create_signed_download_url_Result =
-	typeof get_data_for_create_signed_download_url extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+	typeof get_data_for_create_signed_download_url extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -383,7 +387,7 @@ export const create_signed_download_url = action({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		if (fileNode.contentType.startsWith("text/markdown" satisfies files_ContentType)) {
+		if (files_node_has_editable_yjs_state(fileNode)) {
 			if (!fileNode.yjsSnapshotId || !fileNode.yjsLastSequenceId) {
 				console.warn("Markdown file is missing Yjs pointers", {
 					fileNodeId: fileNode._id,
@@ -582,7 +586,7 @@ export const finalize_upload_conversion_to_markdown = internalMutation({
 					: [...fileNode.shadowFileNodeIds, created._yay],
 			}),
 			ctx.db.patch("files_r2_assets", args.uploadAssetId, {
-				conversionWorkId: undefined,
+				conversionWorkId: null,
 				updatedAt: Date.now(),
 			}),
 		]);
@@ -678,6 +682,15 @@ export const convert_upload_to_markdown = internalAction({
 
 		const conversionResponseBody = await conversionResponse.text();
 		if (!conversionResponse.ok) {
+			if (conversionResponse.status === 413 || conversionResponse.status === 422) {
+				// Modal reached a deterministic no-Markdown outcome; leave the upload as a stored file.
+				await ctx.runMutation(internal.r2.patch_asset, {
+					assetId: sourceAsset._id,
+					conversionWorkId: null,
+				});
+				return null;
+			}
+
 			console.error("Modal file converter returned an error", {
 				status: conversionResponse.status,
 				body: conversionResponseBody.slice(0, 1_000),
@@ -887,7 +900,7 @@ export const finalize_uploaded_markdown_files = internalMutation({
 				updatedAt: now,
 			}),
 			ctx.db.patch("files_r2_assets", args.sourceAssetId, {
-				conversionWorkId: undefined,
+				conversionWorkId: null,
 				updatedAt: now,
 			}),
 			ctx.db.patch("files_r2_assets", args.markdownAssetId, {
@@ -968,9 +981,13 @@ export const finalize_uploaded_markdown_file = internalAction({
 			return null;
 		}
 		if (!sourceFileNode.contentType?.startsWith("text/markdown" satisfies files_ContentType)) {
+			await ctx.runMutation(internal.r2.patch_asset, {
+				assetId: sourceAsset._id,
+				conversionWorkId: null,
+			});
 			return null;
 		}
-		if (sourceFileNode.yjsSnapshotId && sourceFileNode.yjsLastSequenceId) {
+		if (files_node_has_editable_yjs_state(sourceFileNode)) {
 			await ctx.runMutation(internal.r2.patch_asset, {
 				assetId: sourceAsset._id,
 				conversionWorkId: null,
@@ -989,13 +1006,12 @@ export const finalize_uploaded_markdown_file = internalAction({
 		const response = await r2_fetch_object_from_bucket({ key: sourceAsset.r2Key });
 		const markdownContent = await response.text();
 		if (markdownContent.length > files_MAX_MARKDOWN_CHARACTERS) {
-			throw convex_error({
-				message: "Uploaded Markdown file is too large",
-				cause: {
-					sourceAssetId: sourceAsset._id,
-					fileNodeId: sourceFileNode._id,
-				},
+			// Treat over-limit Markdown uploads as processed stored files; retrying cannot make the content smaller.
+			await ctx.runMutation(internal.r2.patch_asset, {
+				assetId: sourceAsset._id,
+				conversionWorkId: null,
 			});
+			return null;
 		}
 
 		const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown(markdownContent);
@@ -1099,8 +1115,11 @@ export const process_uploaded_asset_event = internalMutation({
 	},
 	returns: v_result({
 		_yay: v.object({
-			shouldEnqueueConversion: v.boolean(),
-			shouldFinalizeMarkdown: v.boolean(),
+			processingStep: v.union(
+				v.literal("convert_upload_to_markdown"),
+				v.literal("finalize_uploaded_markdown"),
+				v.null(),
+			),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -1129,25 +1148,46 @@ export const process_uploaded_asset_event = internalMutation({
 			updatedAt: now,
 		});
 
-		const sourceFileNodeIsMarkdown =
-			sourceFileNode?.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
+		if (asset.kind !== "upload") {
+			return Result({
+				_yay: {
+					processingStep: null,
+				},
+			});
+		}
+
 		const shouldStartProcessing = asset.conversionWorkId === undefined;
+		if (!shouldStartProcessing) {
+			return Result({
+				_yay: {
+					processingStep: null,
+				},
+			});
+		}
+		if (
+			!sourceFileNode ||
+			sourceFileNode.shadowFileNodeIds.length > 0 ||
+			files_node_has_editable_yjs_state(sourceFileNode)
+		) {
+			await ctx.db.patch("files_r2_assets", asset._id, {
+				conversionWorkId: null,
+				updatedAt: now,
+			});
+			return Result({
+				_yay: {
+					processingStep: null,
+				},
+			});
+		}
+
+		const sourceFileNodeIsMarkdown =
+			sourceFileNode.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
 		return Result({
-			_yay: sourceFileNode
-				? {
-						shouldEnqueueConversion:
-							!sourceFileNodeIsMarkdown &&
-							sourceFileNode.shadowFileNodeIds.length === 0 &&
-							shouldStartProcessing,
-						shouldFinalizeMarkdown:
-							sourceFileNodeIsMarkdown &&
-							(!sourceFileNode.yjsSnapshotId || !sourceFileNode.yjsLastSequenceId) &&
-							shouldStartProcessing,
-					}
-				: {
-						shouldEnqueueConversion: false,
-						shouldFinalizeMarkdown: false,
-					},
+			_yay: {
+				processingStep: sourceFileNodeIsMarkdown
+					? "finalize_uploaded_markdown"
+					: "convert_upload_to_markdown",
+			},
 		});
 	},
 });
@@ -1310,8 +1350,8 @@ export function r2_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								if (!uploadProcessing._yay.shouldEnqueueConversion && !uploadProcessing._yay.shouldFinalizeMarkdown) {
-									// A Workpool id is the durable signal that conversion was already accepted.
+								if (uploadProcessing._yay.processingStep === null) {
+									// The upload is already in flight or terminal; the asset row is the durable pipeline signal.
 									return {
 										status: 204,
 										body: {},
@@ -1319,7 +1359,7 @@ export function r2_http_routes(router: RouterForConvexModules) {
 								}
 
 								try {
-									const workId = uploadProcessing._yay.shouldFinalizeMarkdown
+									const workId = uploadProcessing._yay.processingStep === "finalize_uploaded_markdown"
 										? await upload_conversion_workpool.enqueueAction(ctx, internal.r2.finalize_uploaded_markdown_file, {
 												workspaceId: asset._yay.workspaceId,
 												projectId: asset._yay.projectId,

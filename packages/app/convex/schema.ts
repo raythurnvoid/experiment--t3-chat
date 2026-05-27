@@ -293,7 +293,7 @@ const app_convex_schema = defineSchema({
 		r2Key: v.optional(v.string()),
 		size: v.optional(v.number()),
 		etag: v.optional(v.string()),
-		conversionWorkId: v.optional(vWorkId),
+		conversionWorkId: v.optional(v.union(vWorkId, v.null())),
 		createdBy: v.id("users"),
 		updatedAt: v.number(),
 	}).index("by_workspace_project", ["workspaceId", "projectId"]),

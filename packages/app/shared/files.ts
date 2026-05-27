@@ -135,6 +135,59 @@ export function files_format_size(size: number | undefined) {
 	}).format(size / (1024 * 1024));
 }
 
+export type files_UploadPipelineState =
+	| "not_applicable"
+	| "waiting_for_upload"
+	| "pending_processing"
+	| "processing"
+	| "terminal";
+
+type files_UploadPipelineAsset = Pick<app_convex_Doc<"files_r2_assets">, "kind" | "r2Key"> & {
+	conversionWorkId?: app_convex_Doc<"files_r2_assets">["conversionWorkId"] | null;
+};
+
+// Use the upload asset row as the pipeline signal; editor availability is a separate Yjs/shadow outcome.
+export function files_get_upload_pipeline_state(
+	asset: files_UploadPipelineAsset | null | undefined,
+): files_UploadPipelineState {
+	if (!asset || asset.kind !== "upload") {
+		return "not_applicable";
+	}
+	if (asset.conversionWorkId === null) {
+		return "terminal";
+	}
+	if (!asset.r2Key) {
+		return "waiting_for_upload";
+	}
+	if (asset.conversionWorkId !== undefined) {
+		return "processing";
+	}
+
+	return "pending_processing";
+}
+
+type FileNodeFieldsForEditability = Pick<
+	app_convex_Doc<"files_nodes">,
+	"kind" | "assetId" | "yjsSnapshotId" | "yjsLastSequenceId"
+>;
+
+export function files_node_has_editable_yjs_state<Node extends FileNodeFieldsForEditability | null | undefined>(
+	node: Node,
+): node is NonNullable<Node> & {
+	kind: "file";
+	assetId: NonNullable<FileNodeFieldsForEditability["assetId"]>;
+	yjsSnapshotId: NonNullable<FileNodeFieldsForEditability["yjsSnapshotId"]>;
+	yjsLastSequenceId: NonNullable<FileNodeFieldsForEditability["yjsLastSequenceId"]>;
+} {
+	// Treat Yjs pointers as the editor-ready signal instead of inferring readiness from MIME metadata.
+	return (
+		node?.kind === "file" &&
+		node.assetId !== undefined &&
+		node.yjsSnapshotId !== undefined &&
+		node.yjsLastSequenceId !== undefined
+	);
+}
+
 // #region file name normalization
 const FILES_NORMALIZED_NAME_PART_REGEX = /^(?!.*--)(?!.*__)[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/;
 const FILES_DIACRITIC_MARKS_REGEX = /\p{Mark}/gu;

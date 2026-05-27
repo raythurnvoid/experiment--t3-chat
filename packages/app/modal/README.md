@@ -28,6 +28,7 @@ Conversion behavior:
 
 - Uses MarkItDown with plugins disabled.
 - Uses the sanitized filename, extension, and optional MIME type as conversion hints.
+- Convex may call this endpoint for uploaded source files without MIME allowlisting; deterministic non-success responses such as `413` or `422` mark the upload terminal and leave it as a stored file.
 - Downloads from the signed R2 URL with a streamed request.
 - Spools the source stream with an 8 MiB in-memory threshold before spilling to a temporary file.
 - Enforces the source size through `maxBytes`; Convex currently passes 50 MiB.

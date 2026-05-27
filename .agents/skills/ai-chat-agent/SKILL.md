@@ -83,7 +83,8 @@ Important limitation:
 
 - Uploaded source files are visible `files_nodes` rows with an `assetId` pointing to the uploaded source R2 asset.
 - The original uploaded binary is preserved in R2.
-- Finalization creates a generated Markdown **shadow file** node with `shadowSourceFileNodeId` pointing to the visible shadow source file node.
+- Successful source-to-Markdown conversion creates a generated Markdown **shadow file** node with `shadowSourceFileNodeId` pointing to the visible shadow source file node.
+- Upload processing is tracked by `files_r2_assets.conversionWorkId`: `undefined` means the upload is not accepted into processing yet, a Workpool id means processing is accepted/in flight/retrying, and `null` means terminal. Deterministic converter non-success, such as Modal `413` or `422`, is terminal and leaves the original stored file/download view without creating a placeholder Markdown shadow.
 - Shadow source file nodes own their generated shadows through the canonical `shadowFileNodeIds` array.
 - Assets own uploaded binary metadata and source linkage only; assets do not own shadow relationships.
 - Shadow files are hidden from normal tree/list/glob/path surfaces and should not be linked from normal UI.
