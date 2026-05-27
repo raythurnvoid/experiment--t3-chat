@@ -4040,6 +4040,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		tree().getItemInstance(nextFocusedItemId).setFocused();
 	}, [visibleFileIds, selectedNodeId]);
 
+	// Keep the URL-owned selected node as the single selected tree row; root/home means no tree row is selected.
+	useLayoutEffect(() => {
+		reconcileTreeSelectionToNavigatedNode(tree());
+	}, [selectedNodeId, visibleFileIds]);
+
 	return (
 		<aside className={"FilesSidebar" satisfies FilesSidebar_ClassNames}>
 			<input
