@@ -2307,7 +2307,7 @@ describe("hard_delete_user_now", () => {
 			expect(after.requests).toHaveLength(0);
 			expect(after.workspace).toBeNull();
 			expect(after.project).toBeNull();
-			expect(after.snapshots).toHaveLength(0);
+			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_404");
 			expect(after.subscriptions).toHaveLength(1);
 			expect(after.billingJob?.jobId).toBe("work_hard_delete_404");

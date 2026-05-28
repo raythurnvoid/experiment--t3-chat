@@ -1246,6 +1246,21 @@ export async function billing_action_enqueue_free_subscription_bootstrap(
 	return await billing_workpool_bootstrap.enqueueAction(ctx, internal.billing.bootstrap_free_subscription, args);
 }
 
+export const has_usage_snapshot = internalQuery({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const usageSnapshot = await ctx.db
+			.query("billing_usage_snapshots")
+			.withIndex("by_user", (q) => q.eq("userId", args.userId))
+			.first();
+
+		return usageSnapshot != null;
+	},
+});
+
 export const bootstrap_free_subscription = internalAction({
 	args: {
 		userId: v.id("users"),
@@ -1323,6 +1338,14 @@ export const bootstrap_free_subscription = internalAction({
 					});
 				}
 
+				const hasUsageSnapshot = await ctx.runQuery(internal.billing.has_usage_snapshot, {
+					userId: args.userId,
+				});
+				if (!hasUsageSnapshot) {
+					// Bootstrap only replays Polar state as a targeted repair when
+					// the local usage snapshot is missing while a subscription mirror exists.
+					await action_refresh_from_polar_customer_state(ctx, { userId: args.userId });
+				}
 				return;
 			}
 
@@ -1369,6 +1392,15 @@ export const bootstrap_free_subscription = internalAction({
 			await ctx.runMutation(components.polar.lib.createSubscription, {
 				subscription: convertToDatabaseSubscription(createSubscriptionResult.value),
 			});
+
+			const hasUsageSnapshot = await ctx.runQuery(internal.billing.has_usage_snapshot, {
+				userId: args.userId,
+			});
+			if (!hasUsageSnapshot) {
+				// Bootstrap only replays Polar state as a targeted repair when
+				// the local usage snapshot is missing after creating the local mirror.
+				await action_refresh_from_polar_customer_state(ctx, { userId: args.userId });
+			}
 		});
 		if (bootstrapResult._nay) {
 			console.error("Failed to bootstrap Free subscription", {
@@ -1748,6 +1780,28 @@ export const apply_polar_customer_state_refresh = internalMutation({
 	},
 });
 
+async function action_refresh_from_polar_customer_state(ctx: ActionCtx, args: { userId: Id<"users"> }) {
+	const sdkState = await billing_polar.getCustomerState(ctx, { userId: args.userId });
+	if (!sdkState) {
+		console.info("refresh_from_polar_customer_state: no Polar customer for user", {
+			userId: args.userId,
+		});
+		return null;
+	}
+	const now = Date.now();
+	await ctx.runMutation(internal.billing.apply_polar_customer_state_refresh, {
+		state: billing_polar_sdk_to_db_data(sdkState),
+		syncedAt: now,
+	});
+	console.info("refresh_from_polar_customer_state ok", {
+		userId: args.userId,
+		polarCustomerId: sdkState.id,
+		activeSubscriptionsCount: sdkState.activeSubscriptions.length,
+		syncedAt: now,
+	});
+	return null;
+}
+
 /**
  * Admin-only replay of live `CustomerState` through the normal refresh flow.
  * Same-period replays are safe because the helper skips duplicate grants.
@@ -1758,25 +1812,7 @@ export const refresh_from_polar_customer_state = internalAction({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const sdkState = await billing_polar.getCustomerState(ctx, { userId: args.userId });
-		if (!sdkState) {
-			console.info("refresh_from_polar_customer_state: no Polar customer for user", {
-				userId: args.userId,
-			});
-			return null;
-		}
-		const now = Date.now();
-		await ctx.runMutation(internal.billing.apply_polar_customer_state_refresh, {
-			state: billing_polar_sdk_to_db_data(sdkState),
-			syncedAt: now,
-		});
-		console.info("refresh_from_polar_customer_state ok", {
-			userId: args.userId,
-			polarCustomerId: sdkState.id,
-			activeSubscriptionsCount: sdkState.activeSubscriptions.length,
-			syncedAt: now,
-		});
-		return null;
+		return await action_refresh_from_polar_customer_state(ctx, args);
 	},
 });
 

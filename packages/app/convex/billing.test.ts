@@ -1765,6 +1765,10 @@ describe("billing get_usage_snapshot", () => {
 });
 
 describe("billing bootstrap_free_subscription", () => {
+	beforeEach(() => {
+		vi.spyOn(billing_polar, "getCustomerState").mockResolvedValue(null);
+	});
+
 	test("creates a Polar customer and Free subscription for a newly resolved user", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
@@ -1813,7 +1817,7 @@ describe("billing bootstrap_free_subscription", () => {
 		expect(subscription?.productId).toBe(polarProductId);
 	});
 
-	test("skips bootstrap when the user already has a current subscription", async () => {
+	test("skips bootstrap and Polar refresh when the user already has synced local state", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
 		await seed_free_product(t, {
@@ -1829,6 +1833,12 @@ describe("billing bootstrap_free_subscription", () => {
 			subscriptionId: "sub_bootstrap_existing",
 			polarProductId: polarProProductId,
 		});
+		await seed_billing_usage_snapshot(t, {
+			userId,
+			polarProductId: polarProProductId,
+			balanceCents: 500,
+		});
+		const getCustomerStateSpy = vi.spyOn(billing_polar, "getCustomerState");
 
 		const result = await t.action(internal.billing.bootstrap_free_subscription, {
 			userId,
@@ -1839,6 +1849,79 @@ describe("billing bootstrap_free_subscription", () => {
 		expect(result).toBeNull();
 		expect(customersCreateMock).not.toHaveBeenCalled();
 		expect(subscriptionsCreateMock).not.toHaveBeenCalled();
+		expect(getCustomerStateSpy).not.toHaveBeenCalled();
+	});
+
+	test("recreates a missing usage snapshot when an existing subscription is found", async () => {
+		const t = test_convex();
+		const userId = await seed_signed_in_user_id(t);
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "billing_bootstrap_existing_missing_snapshot_free_product",
+		});
+		await seed_subscription(t, {
+			userId,
+			customerId: "cust_bootstrap_existing_missing_snapshot",
+			subscriptionId: "sub_bootstrap_existing_missing_snapshot",
+			polarProductId,
+		});
+		const getCustomerStateSpy = vi.spyOn(billing_polar, "getCustomerState").mockResolvedValue(
+			create_polar_customer_state({
+				customerId: "cust_bootstrap_existing_missing_snapshot",
+				userId,
+				productId: polarProductId,
+				subscriptionId: "sub_bootstrap_existing_missing_snapshot",
+				currentPeriodStart: "2026-04-13T03:20:38.364Z",
+				currentPeriodEnd: "2026-05-13T03:20:38.364Z",
+			}),
+		);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_bootstrap_existing_missing_snapshot" as never);
+		vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-04-13T03:20:41.064Z"));
+
+		const result = await t.action(internal.billing.bootstrap_free_subscription, {
+			userId,
+			email: "bootstrap-existing-missing-snapshot@test.local",
+			name: "Bootstrap Existing Missing Snapshot User",
+		});
+
+		const usageSnapshot = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+
+		const freeRecurringCents = billing_PRODUCTS.Free.recurringCreditsCents;
+		expect(result).toBeNull();
+		expect(customersCreateMock).not.toHaveBeenCalled();
+		expect(subscriptionsCreateMock).not.toHaveBeenCalled();
+		expect(getCustomerStateSpy).toHaveBeenCalledWith(expect.anything(), { userId });
+		expect(usageSnapshot).not.toBeNull();
+		expect(usageSnapshot!.polarCustomerId).toBe("cust_bootstrap_existing_missing_snapshot");
+		expect(usageSnapshot!.subscription).toEqual({
+			id: "sub_bootstrap_existing_missing_snapshot",
+			productId: polarProductId,
+			currency: "eur",
+			currentPeriodStart: "2026-04-13T03:20:38.364Z",
+			currentPeriodEnd: "2026-05-13T03:20:38.364Z",
+		});
+		expect(usageSnapshot!.meter).toEqual({
+			id: "meter_press_usage",
+			consumedUnits: -freeRecurringCents,
+			creditedUnits: 0,
+			balance: freeRecurringCents,
+			amountDueCents: 0,
+		});
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
+			events: [
+				expect.objectContaining({
+					name: "monthly_credit",
+					externalCustomerId: userId,
+					externalId: `monthly_credit::${userId}::sub_bootstrap_existing_missing_snapshot::2026-04-13T03:20:38.364Z`,
+				}),
+			],
+		});
 	});
 
 	test("restores a recovered account subscription that is pending period-end cancellation", async () => {

@@ -688,14 +688,23 @@ describe("process_user_deletion_request", () => {
 			return created._yay;
 		});
 
-		await t.run((ctx) =>
-			data_deletion_test_seed_page(ctx, {
-				userId: deletedUser.userId,
-				workspaceId: String(deletedUser.defaultWorkspaceId),
-				projectId: String(deletedUser.defaultProjectId),
-				tag: "personal-page",
-			}),
-		);
+		await t.run(async (ctx) => {
+			await Promise.all([
+				data_deletion_test_seed_page(ctx, {
+					userId: deletedUser.userId,
+					workspaceId: String(deletedUser.defaultWorkspaceId),
+					projectId: String(deletedUser.defaultProjectId),
+					tag: "personal-page",
+				}),
+				ctx.db.insert("billing_usage_snapshots", {
+					userId: deletedUser.userId,
+					polarCustomerId: "cust_process_user_retained",
+					subscription: null,
+					meter: null,
+					lastSyncedAt: 66_666,
+				}),
+			]);
+		});
 
 		const requestId = await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.init_user_deletion, {
@@ -732,6 +741,7 @@ describe("process_user_deletion_request", () => {
 				sharedWorkspaceDoc,
 				sharedPages,
 				personalPages,
+				snapshots,
 			] = await Promise.all([
 				ctx.db.get("users", deletedUser.userId),
 				ctx.db.get("users_anagraphics", deletedUser.anagraphicId),
@@ -776,6 +786,10 @@ describe("process_user_deletion_request", () => {
 					.query("files_nodes")
 					.collect()
 					.then((rows) => rows.filter((row) => row.workspaceId === String(deletedUser.defaultWorkspaceId))),
+				ctx.db
+					.query("billing_usage_snapshots")
+					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+					.collect(),
 			]);
 
 			return {
@@ -793,6 +807,7 @@ describe("process_user_deletion_request", () => {
 				sharedWorkspaceDoc,
 				sharedPages,
 				personalPages,
+				snapshots,
 			};
 		});
 
@@ -813,6 +828,7 @@ describe("process_user_deletion_request", () => {
 		expect(afterUserDeletion.sharedWorkspaceDoc?._id).toBe(sharedWorkspace.workspaceId);
 		expect(afterUserDeletion.purgeRequests).toHaveLength(0);
 		expect(afterUserDeletion.sharedPages).toHaveLength(1);
+		expect(afterUserDeletion.snapshots).toHaveLength(1);
 	});
 
 	test("clears user quota docs when the queued request runs after the user doc is gone", async () => {
@@ -1717,7 +1733,7 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.unrelatedProjectRequest?._id).toBe(requestIds.unrelatedProjectRequestId);
 	});
 
-	test("finishes a user whose scheduled deletion was already initialized", async () => {
+	test("finishes a user whose scheduled deletion was already initialized and preserves billing snapshots by default", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -1790,7 +1806,49 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.workspace).toBeNull();
 		expect(after.project).toBeNull();
 		expect(after.files).toHaveLength(0);
-		expect(after.snapshots).toHaveLength(0);
+		expect(after.snapshots).toHaveLength(1);
+	});
+
+	test("deletes billing snapshots only when finalization is explicitly purging billing state", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-data-delete-billing",
+				displayName: "Hard Delete Data Delete Billing",
+			}),
+		);
+
+		await t.run(async (ctx) => {
+			await Promise.all([
+				ctx.runMutation(internal.data_deletion.init_user_deletion, {
+					userId: deletedUser.userId,
+					nowTs: 30_501,
+				}),
+				ctx.db.insert("billing_usage_snapshots", {
+					userId: deletedUser.userId,
+					polarCustomerId: "cust_delete_billing_state",
+					subscription: null,
+					meter: null,
+					lastSyncedAt: 77_501,
+				}),
+			]);
+		});
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
+				userId: deletedUser.userId,
+				deleteBillingState: true,
+			}),
+		);
+
+		const snapshots = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+				.collect(),
+		);
+
+		expect(snapshots).toHaveLength(0);
 	});
 
 	test("can preserve user auth when the caller keeps the user record", async () => {

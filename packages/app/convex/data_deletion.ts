@@ -466,6 +466,7 @@ async function db_finalize_deleted_user(
 		userId: Id<"users">;
 		now: number;
 		deleteUserAuth?: boolean;
+		deleteBillingState?: boolean;
 	},
 ) {
 	const user = await ctx.db.get("users", args.userId);
@@ -504,10 +505,12 @@ async function db_finalize_deleted_user(
 			.query("files_pending_updates_last_sequence_saved")
 			.withIndex("by_user_page", (q) => q.eq("userId", userIdString))
 			.collect(),
-		ctx.db
-			.query("billing_usage_snapshots")
-			.withIndex("by_user", (q) => q.eq("userId", user._id))
-			.collect(),
+		args.deleteBillingState
+			? ctx.db
+					.query("billing_usage_snapshots")
+					.withIndex("by_user", (q) => q.eq("userId", user._id))
+					.collect()
+			: Promise.resolve([] as Array<Doc<"billing_usage_snapshots">>),
 	]);
 
 	const pendingUpdateCleanupTasks = (
@@ -558,7 +561,12 @@ async function db_finalize_deleted_user(
 		.withIndex("by_user_quotaName", (q) => q.eq("userId", user._id))
 		.collect()
 		.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("quotas", doc._id))));
-	await Promise.all(billingUsageSnapshots.map((doc) => ctx.db.delete("billing_usage_snapshots", doc._id)));
+	if (args.deleteBillingState) {
+		// Keep Polar usage snapshots whenever the user row remains. Active and
+		// canceling subscription mirrors depend on this row during account recovery
+		// and root billing bootstrap.
+		await Promise.all(billingUsageSnapshots.map((doc) => ctx.db.delete("billing_usage_snapshots", doc._id)));
+	}
 
 	await ctx.db.patch("users", user._id, {
 		...(args.deleteUserAuth ? { clerkUserId: null, anonymousAuthToken: undefined } : {}),
@@ -1282,6 +1290,7 @@ export const finalize_user_deletion_data = internalMutation({
 	args: {
 		userId: v.id("users"),
 		deleteUserAuth: v.optional(v.boolean()),
+		deleteBillingState: v.optional(v.boolean()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1302,6 +1311,7 @@ export const finalize_user_deletion_data = internalMutation({
 			userId: user._id,
 			now: now,
 			deleteUserAuth: args.deleteUserAuth,
+			deleteBillingState: args.deleteBillingState,
 		});
 
 		if (deleteUserRes?.workspacesToDelete) {

@@ -1326,6 +1326,7 @@ export const hard_delete_user_now = internalAction({
 		await ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
 			userId: user._id,
 			deleteUserAuth: purgeAuth,
+			deleteBillingState: purgeUserRecord,
 		});
 
 		if (purgeUserRecord) {
