@@ -139,25 +139,6 @@ function get_folder_readme_node_id(
 	return readmeNode?._id ?? null;
 }
 
-function get_first_editable_shadow_node_id(
-	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined,
-	node: app_convex_Doc<"files_nodes"> | null | undefined,
-): app_convex_Id<"files_nodes"> | null {
-	if (!fileNodesList || node?.kind !== "file") {
-		return null;
-	}
-
-	const shadowFileNodeIds = new Set(node.shadowFileNodeIds);
-	return (
-		fileNodesList.find(
-			(fileNode) =>
-				shadowFileNodeIds.has(fileNode._id) &&
-				fileNode.archiveOperationId === undefined &&
-				files_node_has_editable_yjs_state(fileNode),
-		)?._id ?? null
-	);
-}
-
 function can_move_file_node_to_parent(args: {
 	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined;
 	fileNodeId: app_convex_Id<"files_nodes">;
@@ -200,6 +181,7 @@ function is_file_node_view_folder_explorer_drag_data(
 }
 
 const FILE_NODE_VIEW_TOOLBAR_EDITOR_ACTIONS_ID = "app_file_node_view_toolbar_editor_actions" satisfies AppElementId;
+const FILE_NODE_VIEW_TOP_SAFE_AREA = 44;
 
 // #region header
 type FileNodeViewHeader_ClassNames =
@@ -897,15 +879,6 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 				fileNodeId: node._id,
 				label: node.name,
 			});
-		}
-
-		if (!files_node_has_editable_yjs_state(node)) {
-			for (const shadowFileNodeId of node.shadowFileNodeIds) {
-				downloadCandidates.push({
-					fileNodeId: shadowFileNodeId,
-					label: node.name,
-				});
-			}
 		}
 	}
 
@@ -1946,27 +1919,6 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 	}
 
 	if (!files_node_has_editable_yjs_state(node)) {
-		const shadowEditorNodeId = get_first_editable_shadow_node_id(fileNodesList, node);
-		if (shadowEditorNodeId) {
-			return (
-				<FileNodeViewFile
-					node={node}
-					editorNodeId={shadowEditorNodeId}
-					fileNodesList={fileNodesList}
-					pendingUpdateId={pendingUpdateId}
-					serverSequence={serverSequence}
-					topSafeArea={topSafeArea}
-					editorMode={editorMode}
-					filesSidebarOpen={filesSidebarOpen}
-					presenceStore={presenceStore}
-					onlineUsers={onlineUsers}
-					commentsPortalHost={commentsPortalHost}
-					toolbarPortalHost={toolbarPortalHost}
-					onEditorModeChange={onEditorModeChange}
-				/>
-			);
-		}
-
 		return (
 			<FileNodeViewStoredFile
 				node={node}
@@ -2074,7 +2026,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const fileNodesList = useStableQuery(app_convex_api.files_nodes.get_file_nodes_list, { membershipId });
 
 	const resolvedNode = useStableQuery(
-		app_convex_api.files_nodes.get_file_node_or_shadow_source_for_membership,
+		app_convex_api.files_nodes.get_file_node_for_membership,
 		searchNodeId && !isRootNodeSelected
 			? {
 					membershipId,
@@ -2094,7 +2046,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		: resolvedNode && resolvedNode.kind === "file"
 			? resolvedNodeHasEditableYjsState
 				? resolvedNode._id
-				: get_first_editable_shadow_node_id(fileNodesList, resolvedNode)
+				: null
 			: resolvedNode?.kind === "folder"
 				? get_folder_readme_node_id(fileNodesList, resolvedNode._id)
 				: null;
@@ -2131,8 +2083,9 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const pendingUpdates = allPendingUpdatesResult ?? [];
 	const hasPendingUpdates = pendingUpdates.length > 0;
 	// 44px = 40px for the floating content area plus 4px of spacing.
-	// The toolbar already includes its scrollbar gutter.
-	const topSafeArea = hasPendingUpdates ? 44 : 0;
+	// Keep this reserve visible even without pending updates so folder and file content
+	// start below the route toolbar with the same top breathing room.
+	const topSafeArea = FILE_NODE_VIEW_TOP_SAFE_AREA;
 	const currentPendingUpdateIndex = activeEditorNodeId
 		? pendingUpdates.findIndex((pendingUpdate) => pendingUpdate.nodeId === activeEditorNodeId)
 		: -1;

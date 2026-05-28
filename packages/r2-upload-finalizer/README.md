@@ -1,6 +1,6 @@
 # R2 Upload Finalizer Worker
 
-This Worker consumes Cloudflare Queue messages emitted by R2 Event Notifications and forwards upload-create events to Convex. Convex remains responsible for upload ownership, queueing Modal conversion, and linked `.shadow.md` creation.
+This Worker consumes Cloudflare Queue messages emitted by R2 Event Notifications and forwards upload-create events to Convex. Convex remains responsible for upload ownership, queueing Modal conversion, and generated sibling file creation.
 
 Use `pnpx wrangler` for all Cloudflare CLI work in this repo. Do not install Wrangler globally, and do not use `npx wrangler`.
 

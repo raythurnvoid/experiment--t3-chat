@@ -62,9 +62,9 @@ The authoritative identity is per user and per file node. Two users can each hav
 Pending updates attach to Markdown-backed `files_nodes` rows.
 
 - Editable Markdown files participate directly in pending review/edit flows.
-- Generated shadow files are Markdown-backed, so they can also participate in pending review/edit flows.
+- Generated upload outputs are Markdown-backed ordinary files, so they can also participate in pending review/edit flows once finalized.
 - Raw uploaded source file nodes without Markdown Yjs ids do not directly participate in pending Markdown edits today.
-- Future source-path aliasing for converted uploads should still store pending edits against the underlying shadow Markdown node, not the original R2 object.
+- Uploaded source paths do not alias to generated outputs; pending edits attach to the exact Markdown file node being edited.
 
 # End-To-End Flow
 

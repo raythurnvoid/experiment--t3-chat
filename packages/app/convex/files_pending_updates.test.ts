@@ -197,7 +197,6 @@ async function seed_file_with_markdown(args: {
 		updatedBy: userId,
 		updatedAt: now,
 		archiveOperationId: undefined,
-		shadowFileNodeIds: [],
 	});
 
 	const snapshotId = await ctx.db.insert("files_yjs_snapshots", {

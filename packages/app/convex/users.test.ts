@@ -222,7 +222,6 @@ async function users_test_seed_page(
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
-		shadowFileNodeIds: [],
 	});
 
 	return {
@@ -1822,7 +1821,7 @@ describe("delete_current_user_account", () => {
 });
 
 describe("hard_delete_user_now", () => {
-	test("defaults to data-only hard delete and schedules period-end cancellation", async () => {
+	test("defaults to data-only reset and preserves the live account shell", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -1872,38 +1871,72 @@ describe("hard_delete_user_now", () => {
 			});
 
 			const after = await t.run(async (ctx) => {
-				const [user, anagraphic, workspace, project, requests, files, snapshots, customer, subscriptions, billingJob] =
-					await Promise.all([
-						ctx.db.get("users", seeded.userId),
-						ctx.db.get("users_anagraphics", seeded.anagraphicId),
-						ctx.db.get("workspaces", seeded.defaultWorkspaceId),
-						ctx.db.get("workspaces_projects", seeded.defaultProjectId),
-						ctx.db.query("data_deletion_requests").collect(),
-						ctx.db
-							.query("files_nodes")
-							.collect()
-							.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
-						ctx.db
-							.query("billing_usage_snapshots")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
-							.collect(),
-						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-							userId: seeded.userId,
-						}),
-						ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
-							userId: seeded.userId,
-						}),
-						ctx.db
-							.query("billing_cancel_polar_subscription_jobs")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
-							.first(),
-					]);
+				const [
+					user,
+					anagraphic,
+					workspace,
+					project,
+					membership,
+					ownerRole,
+					requests,
+					files,
+					snapshots,
+					customer,
+					subscriptions,
+					billingJob,
+				] = await Promise.all([
+					ctx.db.get("users", seeded.userId),
+					ctx.db.get("users_anagraphics", seeded.anagraphicId),
+					ctx.db.get("workspaces", seeded.defaultWorkspaceId),
+					ctx.db.get("workspaces_projects", seeded.defaultProjectId),
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_active_user_workspace_project", (q) =>
+							q
+								.eq("active", true)
+								.eq("userId", seeded.userId)
+								.eq("workspaceId", seeded.defaultWorkspaceId)
+								.eq("projectId", seeded.defaultProjectId),
+						)
+						.first(),
+					ctx.db
+						.query("access_control_role_assignments")
+						.withIndex("by_workspace_project_user_role", (q) =>
+							q
+								.eq("workspaceId", seeded.defaultWorkspaceId)
+								.eq("projectId", seeded.defaultProjectId)
+								.eq("userId", seeded.userId)
+								.eq("role", "owner"),
+						)
+						.first(),
+					ctx.db.query("data_deletion_requests").collect(),
+					ctx.db
+						.query("files_nodes")
+						.collect()
+						.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
+					ctx.db
+						.query("billing_usage_snapshots")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.collect(),
+					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+						userId: seeded.userId,
+					}),
+					ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
+						userId: seeded.userId,
+					}),
+					ctx.db
+						.query("billing_cancel_polar_subscription_jobs")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.first(),
+				]);
 
 				return {
 					user,
 					anagraphic,
 					workspace,
 					project,
+					membership,
+					ownerRole,
 					requests,
 					files,
 					snapshots,
@@ -1914,34 +1947,23 @@ describe("hard_delete_user_now", () => {
 			});
 
 			expect(fetchSpy).not.toHaveBeenCalled();
-			expect(enqueueActionSpy).toHaveBeenCalledWith(
-				expect.anything(),
-				internal.billing.cancel_polar_subscription_at_period_end,
-				{
-					userId: seeded.userId,
-					subscriptionId: "sub_users_hard_delete",
-				},
-				{
-					context: {
-						userId: seeded.userId,
-					},
-					onComplete: internal.billing.complete_polar_subscription_period_end_cancellation,
-				},
-			);
+			expect(enqueueActionSpy).not.toHaveBeenCalled();
 			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
-			expect(after.user?.deletedAt).toBeTypeOf("number");
+			expect(after.user?.deletedAt).toBeUndefined();
 			expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete");
-			expect(after.user?.defaultWorkspaceId).toBeUndefined();
-			expect(after.user?.defaultProjectId).toBeUndefined();
+			expect(after.user?.defaultWorkspaceId).toBe(seeded.defaultWorkspaceId);
+			expect(after.user?.defaultProjectId).toBe(seeded.defaultProjectId);
 			expect(after.anagraphic?.displayName).toBe("Hard Delete User");
-			expect(after.workspace).toBeNull();
-			expect(after.project).toBeNull();
+			expect(after.workspace?._id).toBe(seeded.defaultWorkspaceId);
+			expect(after.project?._id).toBe(seeded.defaultProjectId);
+			expect(after.membership?._id).toBeDefined();
+			expect(after.ownerRole?._id).toBeDefined();
 			expect(after.requests).toHaveLength(0);
 			expect(after.files).toHaveLength(0);
-			expect(after.snapshots).toHaveLength(0);
+			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_hard_delete");
 			expect(after.subscriptions).toHaveLength(1);
-			expect(after.billingJob?.jobId).toBe("work_hard_delete");
+			expect(after.billingJob).toBeNull();
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -2534,7 +2556,7 @@ describe("hard_delete_user_now", () => {
 		}
 	});
 
-	test("finishes data-only hard deletion and schedules period-end cancellation when a scheduled deletion was already initialized", async () => {
+	test("resets a user whose scheduled deletion was already initialized", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -2629,33 +2651,20 @@ describe("hard_delete_user_now", () => {
 			});
 
 			expect(fetchSpy).not.toHaveBeenCalled();
-			expect(enqueueActionSpy).toHaveBeenCalledWith(
-				expect.anything(),
-				internal.billing.cancel_polar_subscription_at_period_end,
-				{
-					userId: seeded.userId,
-					subscriptionId: "sub_users_hard_delete_initialized",
-				},
-				{
-					context: {
-						userId: seeded.userId,
-					},
-					onComplete: internal.billing.complete_polar_subscription_period_end_cancellation,
-				},
-			);
+			expect(enqueueActionSpy).not.toHaveBeenCalled();
 			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
-			expect(after.user?.deletedAt).toBe(88_888);
+			expect(after.user?.deletedAt).toBeUndefined();
 			expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete-initialized");
-			expect(after.user?.defaultWorkspaceId).toBeUndefined();
-			expect(after.user?.defaultProjectId).toBeUndefined();
+			expect(after.user?.defaultWorkspaceId).toBe(seeded.defaultWorkspaceId);
+			expect(after.user?.defaultProjectId).toBe(seeded.defaultProjectId);
 			expect(after.requests).toHaveLength(0);
-			expect(after.workspace).toBeNull();
-			expect(after.project).toBeNull();
+			expect(after.workspace?._id).toBe(seeded.defaultWorkspaceId);
+			expect(after.project?._id).toBe(seeded.defaultProjectId);
 			expect(after.files).toHaveLength(0);
-			expect(after.snapshots).toHaveLength(0);
+			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_initialized");
 			expect(after.subscriptions).toHaveLength(1);
-			expect(after.billingJob?.jobId).toBe("work_hard_delete_initialized");
+			expect(after.billingJob).toBeNull();
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -2776,7 +2785,7 @@ describe("hard_delete_user_now", () => {
 		expect(after.quotas.length).toBeGreaterThan(0);
 	});
 
-	test("skips Clerk deletion for local-only users, hard-deletes local data, and schedules period-end cancellation in data-only mode", async () => {
+	test("resets local-only users without deleting anonymous auth", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_anonymous_user(ctx, {
@@ -2879,33 +2888,20 @@ describe("hard_delete_user_now", () => {
 			});
 
 			expect(fetchSpy).not.toHaveBeenCalled();
-			expect(enqueueActionSpy).toHaveBeenCalledWith(
-				expect.anything(),
-				internal.billing.cancel_polar_subscription_at_period_end,
-				{
-					userId: seeded.userId,
-					subscriptionId: "sub_users_hard_delete_anonymous",
-				},
-				{
-					context: {
-						userId: seeded.userId,
-					},
-					onComplete: internal.billing.complete_polar_subscription_period_end_cancellation,
-				},
-			);
+			expect(enqueueActionSpy).not.toHaveBeenCalled();
 			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
-			expect(after.user?.deletedAt).toBeTypeOf("number");
+			expect(after.user?.deletedAt).toBeUndefined();
 			expect(after.user?.clerkUserId).toBeNull();
 			expect(after.user?.anonymousAuthToken).toBe(anonymousTokenId);
 			expect(after.anonymousToken?.token).toBe("hard-delete-anonymous-token");
 			expect(after.requests).toHaveLength(0);
-			expect(after.workspace).toBeNull();
-			expect(after.project).toBeNull();
+			expect(after.workspace?._id).toBe(seeded.defaultWorkspaceId);
+			expect(after.project?._id).toBe(seeded.defaultProjectId);
 			expect(after.files).toHaveLength(0);
-			expect(after.snapshots).toHaveLength(0);
+			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_anonymous");
 			expect(after.subscriptions).toHaveLength(1);
-			expect(after.billingJob?.jobId).toBe("work_hard_delete_anonymous");
+			expect(after.billingJob).toBeNull();
 		} finally {
 			fetchSpy.mockRestore();
 		}

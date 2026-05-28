@@ -6,9 +6,20 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
 import { data_deletion_db_request } from "../server/data_deletion.ts";
 import { presence } from "./presence.ts";
-import { workspaces_db_ensure_default_workspace_and_project_for_user } from "./workspaces.ts";
-import { quotas_db_get } from "./quotas.ts";
+import {
+	workspaces_db_create,
+	workspaces_db_ensure_default_workspace_and_project_for_user,
+} from "./workspaces.ts";
+import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { r2_delete_object } from "./r2.ts";
+import { workspaces_DEFAULT_WORKSPACE_NAME } from "../shared/workspaces.ts";
+import { convex_error } from "../server/convex-utils.ts";
+import {
+	access_control_project_role_permission_grants,
+	access_control_db_ensure_role_assignment,
+	access_control_db_ensure_role_permission_grant,
+	access_control_workspace_role_permission_grants,
+} from "./access_control.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const USER_DELETION_REQUEST_BATCH_SIZE = 20;
@@ -195,8 +206,12 @@ async function db_purge_workspace_project_content(
 	// files_pending_updates_cleanup_tasks
 	await Promise.all(pendingUpdateCleanupTaskIds.map((id) => ctx.db.delete("files_pending_updates_cleanup_tasks", id)));
 	// files_content_materialization_jobs
-	await Promise.all(filesContentMaterializationJobs.map((job) => files_content_materialization_workpool.cancel(ctx, job.jobId)));
-	await Promise.all(filesContentMaterializationJobs.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)));
+	await Promise.all(
+		filesContentMaterializationJobs.map((job) => files_content_materialization_workpool.cancel(ctx, job.jobId)),
+	);
+	await Promise.all(
+		filesContentMaterializationJobs.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
+	);
 	// files upload conversion work
 	await Promise.all(filesUploadConversionJobs.map((jobId) => files_upload_conversion_workpool.cancel(ctx, jobId)));
 	// ai_chat_threads_messages_aisdk_5
@@ -300,6 +315,20 @@ async function db_delete_workspace(
 	}
 
 	await Promise.all([
+		ctx.db
+			.query("notifications")
+			.withIndex("by_workspace_user_read", (q) => q.eq("workspaceId", args.workspaceId))
+			.collect()
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("notifications", doc._id)))),
+		Promise.all(
+			projects.map((project) =>
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_project_user_active", (q) => q.eq("projectId", project._id))
+					.collect()
+					.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("workspaces_projects_users", doc._id)))),
+			),
+		),
 		ctx.db
 			.query("workspaces_projects")
 			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId))
@@ -519,8 +548,8 @@ async function db_finalize_deleted_user(
 		.withIndex("by_user_workspace_project_resource_permission", (q) => q.eq("userId", user._id))
 		.collect()
 		.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id))));
-	// Keep auth identifiers only for data-only purges; auth purges remove both
-	// the external Clerk pointer and the anonymous token that can mint sessions.
+	// Keep auth identifiers for auth-preserving deletion finalization; auth purges
+	// remove both the external Clerk pointer and the anonymous token that can mint sessions.
 	if (args.deleteUserAuth) {
 		await Promise.all(anonymousAuthTokens.map((doc) => ctx.db.delete("users_anon_tokens", doc._id)));
 	}
@@ -832,7 +861,424 @@ export const process_project_deletion_request = internalMutation({
 	},
 });
 
+async function db_delete_project_shell(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
+	},
+) {
+	await db_purge_workspace_project_content(ctx, args);
+
+	await Promise.all([
+		ctx.db
+			.query("notifications")
+			.withIndex("by_workspace_project_user", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
+			)
+			.collect()
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("notifications", doc._id)))),
+		ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_project_user_active", (q) => q.eq("projectId", args.projectId))
+			.collect()
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("workspaces_projects_users", doc._id)))),
+		ctx.db
+			.query("access_control_role_assignments")
+			.withIndex("by_workspace_project_user_role", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
+			)
+			.collect()
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
+		ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_workspace_project_resource_user_permission", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
+			)
+			.collect()
+			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
+	]);
+
+	await Promise.all([
+		ctx.db.delete("workspaces_projects", args.projectId),
+		db_delete_data_deletion_requests(ctx, {
+			scope: "project",
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+		}),
+	]);
+}
+
 export const hard_delete_user_data = internalMutation({
+	args: {
+		userId: v.id("users"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const user = await ctx.db.get("users", args.userId);
+		if (!user) {
+			return null;
+		}
+
+		const now = Date.now();
+		// Ensure the user's workspace quota row exists before reusing or recreating
+		// the personal default tenant.
+		await quotas_db_ensure(ctx, {
+			quotaName: "extra_workspaces",
+			userId: user._id,
+			now,
+		});
+
+		// Prefer the existing personal/home shell when it is still a valid default
+		// tenant; creating a replacement is only for tombstoned or broken shells.
+		const [workspace, project] =
+			user.defaultWorkspaceId && user.defaultProjectId
+				? await Promise.all([
+						ctx.db.get("workspaces", user.defaultWorkspaceId),
+						ctx.db.get("workspaces_projects", user.defaultProjectId),
+					])
+				: [null, null];
+		const membership =
+			workspace && project
+				? await ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_user_workspace_project_active", (q) =>
+							q.eq("userId", user._id).eq("workspaceId", workspace._id).eq("projectId", project._id),
+						)
+						.first()
+				: null;
+		let defaultTenant: { workspaceId: Id<"workspaces">; defaultProjectId: Id<"workspaces_projects"> };
+
+		if (workspace?.default && project && project.workspaceId === workspace._id && membership) {
+			// Restore the access shell that account-deletion finalization removes.
+			// Data reset keeps the account live, so reuse the old default tenant but
+			// make its quota, membership, owner role, and seeded grants usable again
+			// before purging only the tenant content below.
+			await quotas_db_ensure(ctx, {
+				quotaName: "extra_projects",
+				workspaceId: workspace._id,
+				now,
+			});
+			const memberships = await ctx.db
+				.query("workspaces_projects_users")
+				.withIndex("by_user_workspace_project_active", (q) =>
+					q.eq("userId", user._id).eq("workspaceId", workspace._id).eq("projectId", project._id),
+				)
+				.collect();
+			const activeMembership = memberships.find((membership) => membership.active !== false);
+			if (!activeMembership) {
+				const inactiveMembership = memberships[0];
+				if (inactiveMembership) {
+					await ctx.db.patch("workspaces_projects_users", inactiveMembership._id, {
+						active: true,
+						updatedAt: now,
+					});
+				} else {
+					await ctx.db.insert("workspaces_projects_users", {
+						workspaceId: workspace._id,
+						projectId: project._id,
+						userId: user._id,
+						active: true,
+						updatedAt: now,
+					});
+				}
+			} else if (activeMembership.active !== true) {
+				await ctx.db.patch("workspaces_projects_users", activeMembership._id, {
+					active: true,
+					updatedAt: now,
+				});
+			}
+
+			await access_control_db_ensure_role_assignment(ctx, {
+				workspaceId: workspace._id,
+				projectId: project._id,
+				userId: user._id,
+				role: "owner",
+				now,
+			});
+
+			for (const grant of access_control_workspace_role_permission_grants) {
+				await access_control_db_ensure_role_permission_grant(ctx, {
+					workspaceId: workspace._id,
+					projectId: project._id,
+					resourceKind: "workspace",
+					resourceId: String(workspace._id),
+					role: grant.role,
+					permission: grant.permission,
+					now,
+				});
+			}
+
+			for (const grant of access_control_project_role_permission_grants) {
+				await access_control_db_ensure_role_permission_grant(ctx, {
+					workspaceId: workspace._id,
+					projectId: project._id,
+					resourceKind: "project",
+					resourceId: String(project._id),
+					role: grant.role,
+					permission: grant.permission,
+					now,
+				});
+			}
+			defaultTenant = {
+				workspaceId: workspace._id,
+				defaultProjectId: project._id,
+			};
+		} else {
+			// If the old default tenant shell is gone or no longer valid, create a
+			// fresh personal home tenant before deleting reset-owned data.
+			const created = await workspaces_db_create(ctx, {
+				userId: user._id,
+				name: workspaces_DEFAULT_WORKSPACE_NAME,
+				description: "",
+				now,
+				default: true,
+			});
+			if (created._nay) {
+				throw convex_error({
+					message: "Failed to create default workspace for user reset",
+					cause: created._nay,
+				});
+			}
+			defaultTenant = {
+				workspaceId: created._yay.workspaceId,
+				defaultProjectId: created._yay.defaultProjectId,
+			};
+		}
+
+		// Data hard-delete is an explicit admin reset path for auth-preserved
+		// user shells. Keep auth/profile/billing state and restore the default tenant.
+		await Promise.all([
+			ctx.db.patch("users", user._id, {
+				defaultWorkspaceId: defaultTenant.workspaceId,
+				defaultProjectId: defaultTenant.defaultProjectId,
+				deletedAt: undefined,
+			}),
+			// Cancel every queued deletion owned by this user. A data hard-delete restores
+			// the live account, so stale workspace/project requests from an earlier
+			// tombstone must not later purge the rebuilt tenant shell.
+			ctx.db
+				.query("data_deletion_requests")
+				.withIndex("by_user", (q) => q.eq("userId", user._id))
+				.collect()
+				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("data_deletion_requests", doc._id)))),
+		]);
+
+		// Keep the default home project shell live, but remove every content row
+		// inside it so the reset account opens into a clean, usable workspace.
+		await db_purge_workspace_project_content(ctx, {
+			workspaceId: defaultTenant.workspaceId,
+			projectId: defaultTenant.defaultProjectId,
+		});
+		await Promise.all([
+			db_delete_data_deletion_requests(ctx, {
+				scope: "workspace",
+				workspaceId: defaultTenant.workspaceId,
+			}),
+			db_delete_data_deletion_requests(ctx, {
+				scope: "project",
+				workspaceId: defaultTenant.workspaceId,
+				projectId: defaultTenant.defaultProjectId,
+			}),
+		]);
+
+		const defaultWorkspaceProjects = await ctx.db
+			.query("workspaces_projects")
+			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", defaultTenant.workspaceId))
+			.collect();
+		let deletedPersonalExtraProjectsCount = 0;
+		// Extra projects under the personal workspace are user-owned data for this
+		// reset flow. Leave only the primary home project behind.
+		for (const project of defaultWorkspaceProjects) {
+			if (project._id === defaultTenant.defaultProjectId || project.default) {
+				continue;
+			}
+
+			await db_delete_project_shell(ctx, {
+				workspaceId: defaultTenant.workspaceId,
+				projectId: project._id,
+			});
+			deletedPersonalExtraProjectsCount += 1;
+		}
+		if (deletedPersonalExtraProjectsCount > 0) {
+			// Direct shell deletion bypasses the queued project-deletion mutation,
+			// so mirror the quota release here.
+			await quotas_db_ensure(ctx, {
+				quotaName: "extra_projects",
+				workspaceId: defaultTenant.workspaceId,
+				now,
+			});
+			const quota = await quotas_db_get(ctx, {
+				quotaName: "extra_projects",
+				workspaceId: defaultTenant.workspaceId,
+			});
+			await ctx.db.patch("quotas", quota._id, {
+				usedCount: Math.max(0, quota.usedCount - deletedPersonalExtraProjectsCount),
+				updatedAt: now,
+			});
+		}
+
+		const memberships = await ctx.db
+			.query("workspaces_projects_users")
+			.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", user._id))
+			.collect();
+		const workspaceIdsToReview = new Set<Id<"workspaces">>();
+		// Review non-default tenants from both directions: memberships catch shared
+		// workspaces, while ownership catches rows left after prior deletion attempts.
+		for (const membership of memberships) {
+			if (membership.active !== false && membership.workspaceId !== defaultTenant.workspaceId) {
+				workspaceIdsToReview.add(membership.workspaceId);
+			}
+		}
+
+		const ownedWorkspaces = await ctx.db
+			.query("workspaces")
+			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", user._id))
+			.collect();
+		for (const workspace of ownedWorkspaces) {
+			if (!workspace.default && workspace._id !== defaultTenant.workspaceId) {
+				workspaceIdsToReview.add(workspace._id);
+			}
+		}
+
+		let deletedOwnedWorkspacesCount = 0;
+		for (const workspaceId of workspaceIdsToReview) {
+			const workspace = await ctx.db.get("workspaces", workspaceId);
+			if (!workspace || workspace.default) {
+				continue;
+			}
+
+			const projects = await ctx.db
+				.query("workspaces_projects")
+				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", workspace._id))
+				.collect();
+			let hasOtherActiveUser = false;
+			// Check each project for an active member other than the reset user.
+			for (const project of projects) {
+				const [activeUserBefore, activeUserAfter] = await Promise.all([
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_active_workspace_project_user", (q) =>
+							q.eq("active", true).eq("workspaceId", workspace._id).eq("projectId", project._id).lt("userId", user._id),
+						)
+						.first(),
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_active_workspace_project_user", (q) =>
+							q.eq("active", true).eq("workspaceId", workspace._id).eq("projectId", project._id).gt("userId", user._id),
+						)
+						.first(),
+				]);
+				if (activeUserBefore || activeUserAfter) {
+					hasOtherActiveUser = true;
+					break;
+				}
+			}
+
+			if (workspace.ownerUserId === user._id && !hasOtherActiveUser) {
+				// An owned workspace with no other active users is effectively private
+				// data for this account, so delete the whole tenant shell immediately.
+				const { projectRequestsToDelete } = await db_delete_workspace(ctx, {
+					workspaceId: workspace._id,
+				});
+
+				await Promise.all([
+					db_delete_data_deletion_requests(ctx, {
+						scope: "workspace",
+						workspaceId: workspace._id,
+					}),
+					...projectRequestsToDelete.map((projectRequest) =>
+						db_delete_data_deletion_requests(ctx, {
+							scope: "project",
+							workspaceId: projectRequest.workspaceId,
+							projectId: projectRequest.projectId,
+						}),
+					),
+				]);
+				deletedOwnedWorkspacesCount += 1;
+				continue;
+			}
+
+			let deletedSharedExtraProjectsCount = 0;
+			// In shared workspaces, preserve the workspace/home roster and only delete
+			// extra projects that have no active member other than the reset user.
+			for (const project of projects) {
+				if (project.default || project._id === workspace.defaultProjectId) {
+					continue;
+				}
+
+				const [resetUserMembership, activeUserBefore, activeUserAfter] = await Promise.all([
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_active_user_workspace_project", (q) =>
+							q.eq("active", true).eq("userId", user._id).eq("workspaceId", workspace._id).eq("projectId", project._id),
+						)
+						.first(),
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_active_workspace_project_user", (q) =>
+							q.eq("active", true).eq("workspaceId", workspace._id).eq("projectId", project._id).lt("userId", user._id),
+						)
+						.first(),
+					ctx.db
+						.query("workspaces_projects_users")
+						.withIndex("by_active_workspace_project_user", (q) =>
+							q.eq("active", true).eq("workspaceId", workspace._id).eq("projectId", project._id).gt("userId", user._id),
+						)
+						.first(),
+				]);
+				if (!resetUserMembership || activeUserBefore || activeUserAfter) {
+					continue;
+				}
+
+				await db_delete_project_shell(ctx, {
+					workspaceId: workspace._id,
+					projectId: project._id,
+				});
+				deletedSharedExtraProjectsCount += 1;
+			}
+			if (deletedSharedExtraProjectsCount > 0) {
+				// Match the shared workspace quota to the project shells removed
+				// above; the normal queued worker is not involved in this reset path.
+				await quotas_db_ensure(ctx, {
+					quotaName: "extra_projects",
+					workspaceId: workspace._id,
+					now,
+				});
+				const quota = await quotas_db_get(ctx, {
+					quotaName: "extra_projects",
+					workspaceId: workspace._id,
+				});
+				await ctx.db.patch("quotas", quota._id, {
+					usedCount: Math.max(0, quota.usedCount - deletedSharedExtraProjectsCount),
+					updatedAt: now,
+				});
+			}
+		}
+
+		if (deletedOwnedWorkspacesCount > 0) {
+			// Owned workspaces deleted inline must release the user's extra-workspace
+			// quota immediately because no workspace deletion request will run later.
+			await quotas_db_ensure(ctx, {
+				quotaName: "extra_workspaces",
+				userId: user._id,
+				now,
+			});
+			const quota = await quotas_db_get(ctx, {
+				quotaName: "extra_workspaces",
+				userId: user._id,
+			});
+			await ctx.db.patch("quotas", quota._id, {
+				usedCount: Math.max(0, quota.usedCount - deletedOwnedWorkspacesCount),
+				updatedAt: now,
+			});
+		}
+
+		return null;
+	},
+});
+
+export const finalize_user_deletion_data = internalMutation({
 	args: {
 		userId: v.id("users"),
 		deleteUserAuth: v.optional(v.boolean()),

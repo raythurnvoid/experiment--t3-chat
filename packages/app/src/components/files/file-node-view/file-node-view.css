@@ -433,7 +433,7 @@
 		gap: 16px;
 
 		/*
-		Keep the folder browser content below the pending-changes floating UI.
+		Keep the folder browser content below the route toolbar safe area.
 		Use a component-owned safe-area variable so the route can calculate the
 		exact shared top reserve in JavaScript and pass it down.
 		*/

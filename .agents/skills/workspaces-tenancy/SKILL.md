@@ -104,6 +104,10 @@ Workspace deletion requests are expected to reference an existing workspace. The
 
 **Auth identity:** `server_convex_get_user_fallback_to_anonymous` only reads the JWT; it does not load `users` or gate on `deletedAt`. Enforce soft-delete or missing-user rules in specific handlers if required.
 
+## Data-only account reset
+
+`users.hard_delete_user_now` with omitted `purgeUserMod` or `"data"` is a live reset, not account deletion. It preserves the auth-capable `users` row, profile, billing state, default `personal` workspace, and default `home` project. It cancels queued deletion requests owned by the reset user so stale user/workspace/project purge rows cannot run after the live account is restored. It purges content inside `home`, deletes extra projects under `personal`, deletes owned non-default workspaces only when no other active user belongs to that workspace, and deletes extra shared projects only when the reset user is the sole active member of that project.
+
 ## Content purge coverage (`process_workspace_deletion_request` / `process_project_deletion_request`)
 
 **Included (tenant-scoped by workspace + project):** `files` and related markdown/Yjs/snapshot tables, `files_r2_assets` and their R2 objects, `ai_chat_threads`, `ai_chat_threads_messages_aisdk_5`, `chat_messages`, `files_pending_updates` (+ cleanup tasks / last-sequence rows).
@@ -129,7 +133,7 @@ Workspace deletion requests are expected to reference an existing workspace. The
 - `packages/app/convex/access_control.ts` — public access-control API plus role assignment helpers, seeded grants, effective permission checks, and ownership transfer.
 - `packages/app/server/data_deletion.ts` — shared `data_deletion_db_request` helper and `data_deletion_RequestScope`.
 - `packages/app/convex/users.ts` — bootstrap calls to `ensure`.
-- `packages/app/convex/data_deletion.ts` — `init_user_deletion`, automatic owned-workspace deletion queueing, `process_user_deletion_request`, `process_workspace_deletion_request`, `process_project_deletion_request`, `process_deletion_requests`, `list_deletion_request_ids_by_scope`.
+- `packages/app/convex/data_deletion.ts` — `hard_delete_user_data` for live data resets, `finalize_user_deletion_data` for tombstone/deletion finalization, `init_user_deletion`, automatic owned-workspace deletion queueing, `process_user_deletion_request`, `process_workspace_deletion_request`, `process_project_deletion_request`, `process_deletion_requests`, `list_deletion_request_ids_by_scope`.
 - `packages/app/convex/notifications.ts` — in-app invite notifications.
 - `packages/app/convex/schema.ts` — `workspaces`, `workspaces_projects`, `workspaces_projects_users`, `access_control_role_assignments`, `access_control_permission_grants`, `notifications`, `data_deletion_requests`, `users.defaultWorkspaceId` / `defaultProjectId`.
 - `packages/app/shared/access-control.ts` — shared role, permission, principal-kind, and resource-kind types.

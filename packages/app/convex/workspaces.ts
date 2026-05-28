@@ -2,7 +2,6 @@ import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel";
-import type { access_control_Permission, access_control_Role } from "../shared/access-control.ts";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
@@ -17,44 +16,14 @@ import {
 } from "../shared/workspaces.ts";
 import app_convex_schema from "./schema.ts";
 import {
+	access_control_project_role_permission_grants,
 	access_control_db_ensure_role_assignment,
 	access_control_db_ensure_role_permission_grant,
 	access_control_db_has_permission,
+	access_control_workspace_role_permission_grants,
 } from "./access_control.ts";
 import { data_deletion_db_request } from "../server/data_deletion.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-
-const access_control_workspace_role_permission_grants = [
-	{ role: "admin", permission: "workspace.update" },
-	{ role: "admin", permission: "workspace.members.manage" },
-	{ role: "admin", permission: "project.create" },
-	{ role: "admin", permission: "project.update" },
-	{ role: "admin", permission: "project.delete" },
-	{ role: "admin", permission: "project.members.manage" },
-	{ role: "admin", permission: "asset.read" },
-	{ role: "admin", permission: "asset.write" },
-	{ role: "admin", permission: "workspace.roles.manage" },
-	{ role: "admin", permission: "asset.permissions.manage" },
-	{ role: "member", permission: "workspace.update" },
-	{ role: "member", permission: "project.create" },
-	{ role: "member", permission: "project.update" },
-	{ role: "member", permission: "project.delete" },
-	{ role: "member", permission: "asset.read" },
-	{ role: "member", permission: "asset.write" },
-] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
-
-const access_control_project_role_permission_grants = [
-	{ role: "admin", permission: "project.update" },
-	{ role: "admin", permission: "project.delete" },
-	{ role: "admin", permission: "project.members.manage" },
-	{ role: "admin", permission: "asset.read" },
-	{ role: "admin", permission: "asset.write" },
-	{ role: "admin", permission: "asset.permissions.manage" },
-	{ role: "member", permission: "project.update" },
-	{ role: "member", permission: "project.delete" },
-	{ role: "member", permission: "asset.read" },
-	{ role: "member", permission: "asset.write" },
-] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
 
 /**
  * Autofix then validate a workspace or project name.

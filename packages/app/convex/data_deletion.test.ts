@@ -96,7 +96,6 @@ async function data_deletion_test_seed_page(
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
-		shadowFileNodeIds: [],
 	});
 
 	const markdown = `# ${args.tag}`;
@@ -1119,6 +1118,449 @@ describe("process_workspace_deletion_request", () => {
 });
 
 describe("hard_delete_user_data", () => {
+	test("preserves the live default tenant while purging reset-owned content and disposable tenants", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-live",
+				displayName: "Reset Live",
+			}),
+		);
+		const unrelatedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-unrelated",
+				displayName: "Reset Unrelated",
+			}),
+		);
+
+		const seeded = await t.run(async (ctx) => {
+			await data_deletion_test_seed_page(ctx, {
+				userId: user.userId,
+				workspaceId: String(user.defaultWorkspaceId),
+				projectId: String(user.defaultProjectId),
+				tag: "reset-default-page",
+			});
+
+			const extraProject = await workspaces_db_create_project(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				name: "reset-personal-extra",
+				description: "",
+				now: Date.now(),
+			});
+			if (extraProject._nay) {
+				throw new Error(extraProject._nay.message);
+			}
+			await data_deletion_test_seed_page(ctx, {
+				userId: user.userId,
+				workspaceId: String(user.defaultWorkspaceId),
+				projectId: String(extraProject._yay.projectId),
+				tag: "reset-personal-extra-page",
+			});
+
+			const ownedWorkspace = await workspaces_db_create(ctx, {
+				userId: user.userId,
+				name: "reset-owned-ws",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (ownedWorkspace._nay) {
+				throw new Error(ownedWorkspace._nay.message);
+			}
+			await data_deletion_test_seed_page(ctx, {
+				userId: user.userId,
+				workspaceId: String(ownedWorkspace._yay.workspaceId),
+				projectId: String(ownedWorkspace._yay.defaultProjectId),
+				tag: "reset-owned-workspace-page",
+			});
+
+			const userRequestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				scope: "user",
+			});
+			const defaultWorkspaceRequestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				scope: "workspace",
+			});
+			const defaultProjectRequestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				projectId: user.defaultProjectId,
+				scope: "project",
+			});
+			const unrelatedRequestId = await data_deletion_db_request(ctx, {
+				userId: unrelatedUser.userId,
+				workspaceId: unrelatedUser.defaultWorkspaceId,
+				projectId: unrelatedUser.defaultProjectId,
+				scope: "project",
+			});
+
+			return {
+				extraProjectId: extraProject._yay.projectId,
+				ownedWorkspaceId: ownedWorkspace._yay.workspaceId,
+				ownedDefaultProjectId: ownedWorkspace._yay.defaultProjectId,
+				userRequestId,
+				defaultWorkspaceRequestId,
+				defaultProjectRequestId,
+				unrelatedRequestId,
+			};
+		});
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+				userId: user.userId,
+			}),
+		);
+
+		const after = await t.run(async (ctx) => {
+			const [
+				userDoc,
+				defaultWorkspace,
+				defaultProject,
+				defaultMembership,
+				defaultOwnerRole,
+				defaultWorkspaceGrants,
+				defaultProjectFiles,
+				extraProject,
+				ownedWorkspace,
+				ownedDefaultProject,
+				personalProjectQuota,
+				userWorkspaceQuota,
+				userRequest,
+				defaultWorkspaceRequest,
+				defaultProjectRequest,
+				resetUserRequests,
+				unrelatedRequest,
+			] = await Promise.all([
+				ctx.db.get("users", user.userId),
+				ctx.db.get("workspaces", user.defaultWorkspaceId),
+				ctx.db.get("workspaces_projects", user.defaultProjectId),
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_active_user_workspace_project", (q) =>
+						q
+							.eq("active", true)
+							.eq("userId", user.userId)
+							.eq("workspaceId", user.defaultWorkspaceId)
+							.eq("projectId", user.defaultProjectId),
+					)
+					.first(),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_workspace_project_user_role", (q) =>
+						q
+							.eq("workspaceId", user.defaultWorkspaceId)
+							.eq("projectId", user.defaultProjectId)
+							.eq("userId", user.userId)
+							.eq("role", "owner"),
+					)
+					.first(),
+				ctx.db
+					.query("access_control_permission_grants")
+					.withIndex("by_workspace_project_resource_role_permission", (q) =>
+						q
+							.eq("workspaceId", user.defaultWorkspaceId)
+							.eq("projectId", user.defaultProjectId)
+							.eq("resourceKind", "workspace")
+							.eq("resourceId", String(user.defaultWorkspaceId))
+							.eq("principalKind", "role"),
+					)
+					.collect(),
+				ctx.db
+					.query("files_nodes")
+					.collect()
+					.then((rows) =>
+						rows.filter(
+							(row) =>
+								row.workspaceId === String(user.defaultWorkspaceId) &&
+								row.projectId === String(user.defaultProjectId),
+						),
+					),
+				ctx.db.get("workspaces_projects", seeded.extraProjectId),
+				ctx.db.get("workspaces", seeded.ownedWorkspaceId),
+				ctx.db.get("workspaces_projects", seeded.ownedDefaultProjectId),
+				ctx.db
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) =>
+						q.eq("workspaceId", user.defaultWorkspaceId).eq("quotaName", "extra_projects"),
+					)
+					.first(),
+				ctx.db
+					.query("quotas")
+					.withIndex("by_user_quotaName", (q) =>
+						q.eq("userId", user.userId).eq("quotaName", "extra_workspaces"),
+					)
+					.first(),
+				ctx.db.get("data_deletion_requests", seeded.userRequestId),
+				ctx.db.get("data_deletion_requests", seeded.defaultWorkspaceRequestId),
+				ctx.db.get("data_deletion_requests", seeded.defaultProjectRequestId),
+				ctx.db
+					.query("data_deletion_requests")
+					.withIndex("by_user", (q) => q.eq("userId", user.userId))
+					.collect(),
+				ctx.db.get("data_deletion_requests", seeded.unrelatedRequestId),
+			]);
+
+			return {
+				userDoc,
+				defaultWorkspace,
+				defaultProject,
+				defaultMembership,
+				defaultOwnerRole,
+				defaultWorkspaceGrants,
+				defaultProjectFiles,
+				extraProject,
+				ownedWorkspace,
+				ownedDefaultProject,
+				personalProjectQuota,
+				userWorkspaceQuota,
+				userRequest,
+				defaultWorkspaceRequest,
+				defaultProjectRequest,
+				resetUserRequests,
+				unrelatedRequest,
+			};
+		});
+
+		expect(after.userDoc?.deletedAt).toBeUndefined();
+		expect(after.userDoc?.clerkUserId).toBe("clerk-user-reset-live");
+		expect(after.userDoc?.defaultWorkspaceId).toBe(user.defaultWorkspaceId);
+		expect(after.userDoc?.defaultProjectId).toBe(user.defaultProjectId);
+		expect(after.defaultWorkspace?._id).toBe(user.defaultWorkspaceId);
+		expect(after.defaultProject?._id).toBe(user.defaultProjectId);
+		expect(after.defaultMembership?._id).toBeDefined();
+		expect(after.defaultOwnerRole?._id).toBeDefined();
+		expect(after.defaultWorkspaceGrants.length).toBeGreaterThan(0);
+		expect(after.defaultProjectFiles).toHaveLength(0);
+		expect(after.extraProject).toBeNull();
+		expect(after.ownedWorkspace).toBeNull();
+		expect(after.ownedDefaultProject).toBeNull();
+		expect(after.personalProjectQuota?.usedCount).toBe(0);
+		expect(after.userWorkspaceQuota?.usedCount).toBe(0);
+		expect(after.userRequest).toBeNull();
+		expect(after.defaultWorkspaceRequest).toBeNull();
+		expect(after.defaultProjectRequest).toBeNull();
+		expect(after.resetUserRequests).toHaveLength(0);
+		expect(after.unrelatedRequest?._id).toBe(seeded.unrelatedRequestId);
+	});
+
+	test("restores a previously auth-preserved tombstoned user to a fresh default tenant", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-tombstone",
+				displayName: "Reset Tombstone",
+			}),
+		);
+		const tokenId = await t.run(async (ctx) => {
+			const tokenId = await ctx.db.insert("users_anon_tokens", {
+				userId: user.userId,
+				token: "reset-tombstone-token",
+				updatedAt: 12_345,
+			});
+			await ctx.db.patch("users", user.userId, {
+				anonymousAuthToken: tokenId,
+			});
+			return tokenId;
+		});
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
+				userId: user.userId,
+				deleteUserAuth: false,
+			}),
+		);
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+				userId: user.userId,
+			}),
+		);
+
+		const after = await t.run(async (ctx) => {
+			const userDoc = await ctx.db.get("users", user.userId);
+			const [workspace, project, membership, userQuota, anonymousToken] =
+				userDoc?.defaultWorkspaceId && userDoc.defaultProjectId
+					? await Promise.all([
+							ctx.db.get("workspaces", userDoc.defaultWorkspaceId),
+							ctx.db.get("workspaces_projects", userDoc.defaultProjectId),
+							ctx.db
+								.query("workspaces_projects_users")
+								.withIndex("by_active_user_workspace_project", (q) =>
+									q
+										.eq("active", true)
+										.eq("userId", user.userId)
+										.eq("workspaceId", userDoc.defaultWorkspaceId!)
+										.eq("projectId", userDoc.defaultProjectId!),
+								)
+								.first(),
+							ctx.db
+								.query("quotas")
+								.withIndex("by_user_quotaName", (q) =>
+									q.eq("userId", user.userId).eq("quotaName", "extra_workspaces"),
+								)
+								.first(),
+							ctx.db.get("users_anon_tokens", tokenId),
+						])
+					: [null, null, null, null, null];
+
+			return {
+				userDoc,
+				workspace,
+				project,
+				membership,
+				userQuota,
+				anonymousToken,
+			};
+		});
+
+		expect(after.userDoc?.deletedAt).toBeUndefined();
+		expect(after.userDoc?.clerkUserId).toBe("clerk-user-reset-tombstone");
+		expect(after.userDoc?.anonymousAuthToken).toBe(tokenId);
+		expect(after.anonymousToken?.token).toBe("reset-tombstone-token");
+		expect(after.userDoc?.defaultWorkspaceId).toBeDefined();
+		expect(after.userDoc?.defaultWorkspaceId).not.toBe(user.defaultWorkspaceId);
+		expect(after.userDoc?.defaultProjectId).toBeDefined();
+		expect(after.userDoc?.defaultProjectId).not.toBe(user.defaultProjectId);
+		expect(after.workspace?.default).toBe(true);
+		expect(after.project?.default).toBe(true);
+		expect(after.membership?._id).toBeDefined();
+		expect(after.userQuota?.quotaName).toBe("extra_workspaces");
+	});
+
+	test("preserves shared workspaces and only deletes reset-user-only extra projects", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-shared",
+				displayName: "Reset Shared",
+			}),
+		);
+		const collaborator = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-shared-collaborator",
+				displayName: "Reset Shared Collaborator",
+			}),
+		);
+
+		const shared = await t.run(async (ctx) => {
+			const workspace = await workspaces_db_create(ctx, {
+				userId: user.userId,
+				name: "reset-shared-ws",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (workspace._nay) {
+				throw new Error(workspace._nay.message);
+			}
+
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: workspace._yay.workspaceId,
+				projectId: workspace._yay.defaultProjectId,
+				userId: collaborator.userId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+
+			const soloProject = await workspaces_db_create_project(ctx, {
+				userId: user.userId,
+				workspaceId: workspace._yay.workspaceId,
+				name: "reset-solo-project",
+				description: "",
+				now: Date.now(),
+			});
+			if (soloProject._nay) {
+				throw new Error(soloProject._nay.message);
+			}
+
+			const sharedProject = await workspaces_db_create_project(ctx, {
+				userId: user.userId,
+				workspaceId: workspace._yay.workspaceId,
+				name: "reset-shared-project",
+				description: "",
+				now: Date.now(),
+			});
+			if (sharedProject._nay) {
+				throw new Error(sharedProject._nay.message);
+			}
+			await ctx.db.insert("workspaces_projects_users", {
+				workspaceId: workspace._yay.workspaceId,
+				projectId: sharedProject._yay.projectId,
+				userId: collaborator.userId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+
+			await Promise.all([
+				data_deletion_test_seed_page(ctx, {
+					userId: user.userId,
+					workspaceId: String(workspace._yay.workspaceId),
+					projectId: String(soloProject._yay.projectId),
+					tag: "reset-solo-project-page",
+				}),
+				data_deletion_test_seed_page(ctx, {
+					userId: user.userId,
+					workspaceId: String(workspace._yay.workspaceId),
+					projectId: String(sharedProject._yay.projectId),
+					tag: "reset-shared-project-page",
+				}),
+			]);
+
+			return {
+				workspaceId: workspace._yay.workspaceId,
+				defaultProjectId: workspace._yay.defaultProjectId,
+				soloProjectId: soloProject._yay.projectId,
+				sharedProjectId: sharedProject._yay.projectId,
+			};
+		});
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+				userId: user.userId,
+			}),
+		);
+
+		const after = await t.run(async (ctx) => {
+			const [workspace, defaultProject, soloProject, sharedProject, sharedProjectFiles, projectQuota] = await Promise.all([
+				ctx.db.get("workspaces", shared.workspaceId),
+				ctx.db.get("workspaces_projects", shared.defaultProjectId),
+				ctx.db.get("workspaces_projects", shared.soloProjectId),
+				ctx.db.get("workspaces_projects", shared.sharedProjectId),
+				ctx.db
+					.query("files_nodes")
+					.collect()
+					.then((rows) => rows.filter((row) => row.projectId === String(shared.sharedProjectId))),
+				ctx.db
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) =>
+						q.eq("workspaceId", shared.workspaceId).eq("quotaName", "extra_projects"),
+					)
+					.first(),
+			]);
+
+			return {
+				workspace,
+				defaultProject,
+				soloProject,
+				sharedProject,
+				sharedProjectFiles,
+				projectQuota,
+			};
+		});
+
+		expect(after.workspace?._id).toBe(shared.workspaceId);
+		expect(after.defaultProject?._id).toBe(shared.defaultProjectId);
+		expect(after.soloProject).toBeNull();
+		expect(after.sharedProject?._id).toBe(shared.sharedProjectId);
+		expect(after.sharedProjectFiles).toHaveLength(1);
+		expect(after.projectQuota?.usedCount).toBe(1);
+	});
+});
+
+describe("finalize_user_deletion_data", () => {
 	test("directly purges local data and only clears matching request rows", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
@@ -1218,7 +1660,7 @@ describe("hard_delete_user_data", () => {
 
 		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
 				userId: deletedUser.userId,
 			}),
 		);
@@ -1311,7 +1753,7 @@ describe("hard_delete_user_data", () => {
 		);
 
 		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
 				userId: deletedUser.userId,
 			}),
 		);
@@ -1373,7 +1815,7 @@ describe("hard_delete_user_data", () => {
 		});
 
 		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
 				userId: deletedUser.userId,
 				deleteUserAuth: false,
 			}),
@@ -1459,7 +1901,7 @@ describe("hard_delete_user_data", () => {
 		);
 
 		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
 				userId: deletedUser.userId,
 			}),
 		);
@@ -2188,7 +2630,7 @@ describe("resolve_user after tombstone", () => {
 		const recoveryEmail = "returning-user-purge@test.local";
 
 		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
 				userId: deletedUser.userId,
 			}),
 		);

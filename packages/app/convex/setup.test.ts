@@ -143,7 +143,6 @@ export const test_mocks = {
 				kind: "folder",
 				path: `/${name}`,
 				archiveOperationId: undefined,
-				shadowFileNodeIds: [],
 			});
 		};
 

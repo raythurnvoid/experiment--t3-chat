@@ -4131,7 +4131,6 @@ if (import.meta.vitest) {
 			path: args.path ?? `/${args.name}`,
 			name: args.name,
 			kind: args.kind,
-			shadowFileNodeIds: [],
 			archiveOperationId: args.archiveOperationId,
 			createdBy: "test-user" as app_convex_Id<"users">,
 			updatedAt: 1,

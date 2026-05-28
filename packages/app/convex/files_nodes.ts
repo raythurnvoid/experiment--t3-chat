@@ -399,12 +399,11 @@ export const get_by_path = internalQuery({
 
 		return await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_shadowSourceFileNode_archiveOp", (q) =>
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
 					.eq("path", args.path)
-					.eq("shadowSourceFileNodeId", undefined)
 					.eq("archiveOperationId", undefined),
 			)
 			.first();
@@ -419,12 +418,11 @@ async function db_resolve_tree_node_id_from_path(
 
 	const fileByMaterializedPath = await ctx.db
 		.query("files_nodes")
-		.withIndex("by_workspace_project_path_shadowSourceFileNode_archiveOp", (q) =>
+		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
 				.eq("path", args.path)
-				.eq("shadowSourceFileNodeId", undefined)
 				.eq("archiveOperationId", undefined),
 		)
 		.first();
@@ -513,135 +511,6 @@ async function cascade_file_descendants_path(
 	}
 }
 
-/**
- * Rebase a shadow file node path when its source file node moves or is renamed.
- *
- * The shadow keeps the suffix generated from the old source path and follows the source to its next path.
- */
-function shadow_path_rebase(args: {
-	oldSourceFileNodePath: string;
-	nextSourceFileNodePath: string;
-	shadowFileNodePath: string;
-}) {
-	if (!args.shadowFileNodePath.startsWith(args.oldSourceFileNodePath)) {
-		return args.shadowFileNodePath;
-	}
-
-	// Preserve the generated suffix so future multiple shadows can keep following the source path.
-	return `${args.nextSourceFileNodePath}${args.shadowFileNodePath.slice(args.oldSourceFileNodePath.length)}`;
-}
-
-/**
- * Rebase a shadow file node name when its source file node is renamed.
- *
- * Only return a name when the generated shadow suffix is local to the file name, not a nested path segment.
- */
-function shadow_name_rebase(args: {
-	oldSourceFileNodePath: string;
-	nextSourceFileNodeName: string;
-	shadowFileNodePath: string;
-}) {
-	if (!args.shadowFileNodePath.startsWith(args.oldSourceFileNodePath)) {
-		return null;
-	}
-
-	const suffix = args.shadowFileNodePath.slice(args.oldSourceFileNodePath.length);
-	if (suffix.includes("/")) {
-		return null;
-	}
-
-	return `${args.nextSourceFileNodeName}${suffix}`;
-}
-
-async function db_get_shadow_file_nodes_for_source_file_node(
-	ctx: QueryCtx | MutationCtx,
-	sourceFileNode: Doc<"files_nodes">,
-) {
-	return (
-		await Promise.all(
-			sourceFileNode.shadowFileNodeIds.map(async (shadowFileNodeId) => {
-				const shadowFileNode = await ctx.db.get("files_nodes", shadowFileNodeId);
-				if (
-					!shadowFileNode ||
-					shadowFileNode.workspaceId !== sourceFileNode.workspaceId ||
-					shadowFileNode.projectId !== sourceFileNode.projectId ||
-					shadowFileNode.shadowSourceFileNodeId !== sourceFileNode._id
-				) {
-					return null;
-				}
-
-				return shadowFileNode;
-			}),
-		)
-	).filter((shadowFileNode): shadowFileNode is Doc<"files_nodes"> => shadowFileNode !== null);
-}
-
-async function db_rebase_shadow_file_nodes_for_source_file_node(
-	ctx: MutationCtx,
-	args: {
-		sourceFileNode: Doc<"files_nodes">;
-		nextParentId: Doc<"files_nodes">["parentId"];
-		nextSourceFileNodeName: string;
-		nextSourceFileNodePath: string;
-		updatedBy: Id<"users">;
-		updatedAt: number;
-	},
-) {
-	const shadowFileNodes = await db_get_shadow_file_nodes_for_source_file_node(ctx, args.sourceFileNode);
-	const shadowFileNodeIds = new Set(shadowFileNodes.map((shadowFileNode) => shadowFileNode._id));
-	const nextShadowFileNodePathById = new Map<Id<"files_nodes">, string>();
-
-	for (const shadowFileNode of shadowFileNodes) {
-		const nextShadowFileNodePath = shadow_path_rebase({
-			oldSourceFileNodePath: args.sourceFileNode.path,
-			nextSourceFileNodePath: args.nextSourceFileNodePath,
-			shadowFileNodePath: shadowFileNode.path,
-		});
-		const activePathConflict = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
-				q
-					.eq("workspaceId", args.sourceFileNode.workspaceId)
-					.eq("projectId", args.sourceFileNode.projectId)
-					.eq("path", nextShadowFileNodePath)
-					.eq("archiveOperationId", undefined),
-			)
-			.first();
-		if (activePathConflict && !shadowFileNodeIds.has(activePathConflict._id)) {
-			return Result({
-				_nay: {
-					name: "nay",
-					message: "Path already exists",
-				},
-			});
-		}
-
-		nextShadowFileNodePathById.set(shadowFileNode._id, nextShadowFileNodePath);
-	}
-
-	await Promise.all(
-		shadowFileNodes.map((shadowFileNode) => {
-			const nextPath = nextShadowFileNodePathById.get(shadowFileNode._id) ?? shadowFileNode.path;
-			const nextName =
-				shadow_name_rebase({
-					oldSourceFileNodePath: args.sourceFileNode.path,
-					nextSourceFileNodeName: args.nextSourceFileNodeName,
-					shadowFileNodePath: shadowFileNode.path,
-				}) ?? shadowFileNode.name;
-
-			return ctx.db.patch("files_nodes", shadowFileNode._id, {
-				parentId: args.nextParentId,
-				name: nextName,
-				path: nextPath,
-				updatedBy: args.updatedBy,
-				updatedAt: args.updatedAt,
-			});
-		}),
-	);
-
-	return Result({ _yay: null });
-}
-
 export const get_file_nodes_list = query({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
@@ -661,11 +530,8 @@ export const get_file_nodes_list = query({
 
 		const nodes = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_shadowSourceFileNode_kind_name", (q) =>
-				q
-					.eq("workspaceId", membership.workspaceId)
-					.eq("projectId", membership.projectId)
-					.eq("shadowSourceFileNodeId", undefined),
+			.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
+				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId),
 			)
 			.order("asc")
 			.collect();
@@ -688,7 +554,6 @@ async function db_insert_node(
 		assetId?: Id<"files_r2_assets">;
 		yjsSnapshotAssetId?: Id<"files_r2_assets">;
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
-		shadowSourceFileNodeId?: Id<"files_nodes">;
 		markdownContent?: string;
 		now: number;
 	},
@@ -703,8 +568,6 @@ async function db_insert_node(
 		contentType: args.contentType,
 		assetId: args.assetId,
 		archiveOperationId: args.archiveOperationId,
-		shadowSourceFileNodeId: args.shadowSourceFileNodeId,
-		shadowFileNodeIds: [],
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: args.now,
@@ -819,7 +682,6 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		assetId?: Id<"files_r2_assets">;
 		yjsSnapshotAssetId?: Id<"files_r2_assets">;
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
-		shadowSourceFileNodeId?: Id<"files_nodes">;
 		markdownContent?: string;
 		now: number;
 	},
@@ -914,7 +776,6 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			assetId: isLeaf ? args.assetId : undefined,
 			yjsSnapshotAssetId: isLeaf ? args.yjsSnapshotAssetId : undefined,
 			archiveOperationId: isLeaf ? args.archiveOperationId : undefined,
-			shadowSourceFileNodeId: isLeaf ? args.shadowSourceFileNodeId : undefined,
 			markdownContent: isLeaf ? args.markdownContent : undefined,
 			now: args.now,
 		});
@@ -997,7 +858,6 @@ export const create_markdown_file_node = internalMutation({
 		markdownAssetId: v.id("files_r2_assets"),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),
 		archiveOperationId: v.optional(v.string()),
-		shadowSourceFileNodeId: v.optional(v.id("files_nodes")),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
@@ -1012,7 +872,6 @@ export const create_markdown_file_node = internalMutation({
 			assetId: args.markdownAssetId,
 			yjsSnapshotAssetId: args.yjsSnapshotAssetId,
 			archiveOperationId: args.archiveOperationId,
-			shadowSourceFileNodeId: args.shadowSourceFileNodeId,
 			markdownContent: args.markdownContent,
 			now: Date.now(),
 		});
@@ -1128,7 +987,6 @@ async function action_create_markdown_node(
 		name: string;
 		markdownContent: string;
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
-		shadowSourceFileNodeId?: Id<"files_nodes">;
 	},
 ): Promise<action_create_markdown_node_Result> {
 	const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown(args.markdownContent);
@@ -1186,7 +1044,6 @@ async function action_create_markdown_node(
 		markdownAssetId: markdownAssetId,
 		yjsSnapshotAssetId,
 		archiveOperationId: args.archiveOperationId,
-		shadowSourceFileNodeId: args.shadowSourceFileNodeId,
 	})) as create_markdown_file_node_Result;
 	if (created._nay) {
 		return created;
@@ -1336,12 +1193,11 @@ export const create_upload_node = mutation({
 		const path = path_join(parentPath, args.filename);
 		const existingNode = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_shadowSourceFileNode_archiveOp", (q) =>
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 				q
 					.eq("workspaceId", membership.workspaceId)
 					.eq("projectId", membership.projectId)
 					.eq("path", path)
-					.eq("shadowSourceFileNodeId", undefined)
 					.eq("archiveOperationId", undefined),
 			)
 			.first();
@@ -1356,7 +1212,7 @@ export const create_upload_node = mutation({
 			}
 
 			await db_archive_nodes(ctx, {
-				nodeIds: [existingNode._id, ...existingNode.shadowFileNodeIds],
+				nodeIds: [existingNode._id],
 				updatedBy: userAuth.id,
 				now,
 			});
@@ -1576,17 +1432,6 @@ export const rename_node = mutation({
 		}
 
 		const now = Date.now();
-		const shadowFileNodesRebase = await db_rebase_shadow_file_nodes_for_source_file_node(ctx, {
-			sourceFileNode: file,
-			nextParentId: targetParentId,
-			nextSourceFileNodeName: leafName,
-			nextSourceFileNodePath: renamedPath,
-			updatedBy: userAuth.id,
-			updatedAt: now,
-		});
-		if (shadowFileNodesRebase._nay) {
-			return shadowFileNodesRebase;
-		}
 
 		// Update the node once and then rebase descendants under the new materialized path.
 		await ctx.db.patch("files_nodes", args.nodeId, {
@@ -1698,18 +1543,6 @@ export const move_nodes = mutation({
 
 		const now = Date.now();
 		for (const fileToMove of filesToMove) {
-			const shadowFileNodesRebase = await db_rebase_shadow_file_nodes_for_source_file_node(ctx, {
-				sourceFileNode: fileToMove.file,
-				nextParentId: args.targetParentId,
-				nextSourceFileNodeName: fileToMove.file.name,
-				nextSourceFileNodePath: fileToMove.movedPath,
-				updatedBy: userAuth.id,
-				updatedAt: now,
-			});
-			if (shadowFileNodesRebase._nay) {
-				return shadowFileNodesRebase;
-			}
-
 			await ctx.db.patch("files_nodes", fileToMove.itemId, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
@@ -1815,17 +1648,6 @@ export const archive_nodes = mutation({
 			}
 
 			nodeIdsToArchive.add(file._id);
-			for (const shadowFileNodeId of file.shadowFileNodeIds) {
-				const shadowFileNode = await ctx.db.get("files_nodes", shadowFileNodeId);
-				if (
-					shadowFileNode &&
-					shadowFileNode.workspaceId === membership.workspaceId &&
-					shadowFileNode.projectId === membership.projectId &&
-					shadowFileNode.archiveOperationId === undefined
-				) {
-					nodeIdsToArchive.add(shadowFileNode._id);
-				}
-			}
 
 			// All descendants file needs to be archived too
 			const descendantsPathPrefix = `${file.path}/`;
@@ -1914,14 +1736,6 @@ export const unarchive_nodes = mutation({
 		}
 
 		const filesToUnarchive = [...files._yay];
-		for (const file of files._yay) {
-			const shadowFileNodes = await db_get_shadow_file_nodes_for_source_file_node(ctx, file);
-			for (const shadowFileNode of shadowFileNodes) {
-				if (shadowFileNode.archiveOperationId !== undefined) {
-					filesToUnarchive.push(shadowFileNode);
-				}
-			}
-		}
 
 		// Find the top most shared ancestor for each file requested.
 		const topMostSharedAncestorsByPath = new Map<string, Doc<"files_nodes">>();
@@ -2183,7 +1997,7 @@ export const unarchive_nodes = mutation({
 });
 // #endregion Archive nodes
 
-export const get_file_node_or_shadow_source_for_membership = query({
+export const get_file_node_for_membership = query({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 		fileNodeId: v.string(),
@@ -2226,32 +2040,14 @@ export const get_file_node_or_shadow_source_for_membership = query({
 			return null;
 		}
 
-		let fileNodeToReturn = await ctx.db.get("files_nodes", fileNodeId).then((fileNode) => {
+		const fileNode = await ctx.db.get("files_nodes", fileNodeId).then((fileNode) => {
 			if (!fileNode || fileNode.workspaceId !== membership.workspaceId || fileNode.projectId !== membership.projectId) {
 				return null;
 			}
 
 			return fileNode;
 		});
-		if (!fileNodeToReturn) {
-			return null;
-		}
-
-		if (fileNodeToReturn.shadowSourceFileNodeId) {
-			fileNodeToReturn = await ctx.db.get("files_nodes", fileNodeToReturn.shadowSourceFileNodeId).then((fileNode) => {
-				if (
-					!fileNode ||
-					fileNode.workspaceId !== membership.workspaceId ||
-					fileNode.projectId !== membership.projectId
-				) {
-					return null;
-				}
-
-				return fileNode;
-			});
-		}
-
-		return fileNodeToReturn;
+		return fileNode;
 	},
 });
 
@@ -2284,12 +2080,11 @@ export const get_authorized_by_path = query({
 				? null
 				: await ctx.db
 						.query("files_nodes")
-						.withIndex("by_workspace_project_path_shadowSourceFileNode_archiveOp", (q) =>
+						.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 							q
 								.eq("workspaceId", membership.workspaceId)
 								.eq("projectId", membership.projectId)
 								.eq("path", args.path)
-								.eq("shadowSourceFileNodeId", undefined)
 								.eq("archiveOperationId", undefined),
 						)
 						.first();
@@ -2324,12 +2119,11 @@ export const read_dir = internalQuery({
 
 		const children = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_parent_shadowSourceFileNode_archiveOp", (q) =>
+			.withIndex("by_workspace_project_parent_archiveOperation_name", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
 					.eq("parentId", nodeId)
-					.eq("shadowSourceFileNodeId", undefined)
 					.eq("archiveOperationId", undefined),
 			)
 			.collect();
@@ -2351,12 +2145,11 @@ export const get_file_info_for_list_dir_pagination = internalQuery({
 		// TODO: do not use paginate
 		const result = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_parent_shadowSourceFileNode_archiveOp", (q) =>
+			.withIndex("by_workspace_project_parent_archiveOperation_name", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
 					.eq("parentId", args.parentId)
-					.eq("shadowSourceFileNodeId", undefined)
 					.eq("archiveOperationId", undefined),
 			)
 			.paginate({
@@ -2462,12 +2255,11 @@ export const list_files = internalQuery({
 					frame.iterator ??
 					ctx.db
 						.query("files_nodes")
-						.withIndex("by_workspace_project_parent_shadowSourceFileNode_archiveOp", (q) =>
+						.withIndex("by_workspace_project_parent_archiveOperation_name", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
 								.eq("parentId", frame.parentId)
-								.eq("shadowSourceFileNodeId", undefined)
 								.eq("archiveOperationId", undefined),
 						)
 						[Symbol.asyncIterator]();
@@ -2735,29 +2527,18 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 				? null
 				: await ctx.db
 						.query("files_nodes")
-						.withIndex("by_workspace_project_path_shadowSourceFileNode_archiveOp", (q) =>
+						.withIndex("by_workspace_project_path_archiveOperation", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
 								.eq("path", args.path)
-								.eq("shadowSourceFileNodeId", undefined)
 								.eq("archiveOperationId", undefined),
 						)
 						.first();
 
 		if (!file || file.kind !== "file") return null;
 
-		const shadowFileNodes = files_node_has_editable_yjs_state(file)
-			? []
-			: await db_get_shadow_file_nodes_for_source_file_node(ctx, file);
-		const contentFile = files_node_has_editable_yjs_state(file)
-			? file
-			: (shadowFileNodes.find(
-					(shadowFileNode) =>
-						shadowFileNode.archiveOperationId === undefined && files_node_has_editable_yjs_state(shadowFileNode),
-				) ?? null);
-
-		if (!files_node_has_editable_yjs_state(contentFile)) {
+		if (!files_node_has_editable_yjs_state(file)) {
 			return null;
 		}
 
@@ -2769,7 +2550,7 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 			pendingUpdateById.workspaceId === args.workspaceId &&
 			pendingUpdateById.projectId === args.projectId &&
 			pendingUpdateById.userId === args.userId &&
-			pendingUpdateById.nodeId === contentFile._id
+			pendingUpdateById.nodeId === file._id
 				? pendingUpdateById
 				: await ctx.db
 						.query("files_pending_updates")
@@ -2778,7 +2559,7 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
 								.eq("userId", args.userId)
-								.eq("nodeId", contentFile._id),
+								.eq("nodeId", file._id),
 						)
 						.first();
 		if (pendingUpdate) {
@@ -2793,7 +2574,7 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 				return {
 					content: markdown._yay,
 					asset: null,
-					nodeId: contentFile._id,
+					nodeId: file._id,
 					displayNodeId: file._id,
 					pendingUpdateId: pendingUpdate._id,
 					materializationState: null,
@@ -2802,13 +2583,13 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 
 			console.error("Failed to reconstruct markdown from files_pending_updates", {
 				nay: markdown._nay,
-				nodeId: contentFile._id,
+				nodeId: file._id,
 			});
 		}
 
-		const asset = contentFile.assetId
+		const asset = file.assetId
 			? await ctx.db
-					.get("files_r2_assets", contentFile.assetId)
+					.get("files_r2_assets", file.assetId)
 					.then((asset) =>
 						asset && asset.workspaceId === args.workspaceId && asset.projectId === args.projectId ? asset : null,
 					)
@@ -2819,12 +2600,12 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 			: await db_get_file_content_materialization_db_state(ctx, {
 					workspaceId: args.workspaceId,
 					projectId: args.projectId,
-					nodeId: contentFile._id,
+					nodeId: file._id,
 				});
 
 		return {
 			asset,
-			nodeId: contentFile._id,
+			nodeId: file._id,
 			displayNodeId: file._id,
 			pendingUpdateId: pendingUpdate?._id ?? null,
 			materializationState,

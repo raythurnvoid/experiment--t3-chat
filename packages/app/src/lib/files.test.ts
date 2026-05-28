@@ -38,7 +38,6 @@ const createTreeItem = (args: {
 		path: args.path ?? `/${args.name}`,
 		name: args.name,
 		kind: args.kind,
-		shadowFileNodeIds: [],
 		archiveOperationId: args.archiveOperationId,
 		createdBy: "test-user" as Id<"users">,
 		updatedAt: 0,
@@ -51,8 +50,8 @@ describe("files_normalize_upload_file_name", () => {
 		expect(files_normalize_upload_file_name("Annual Report 2026.PDF")).toBe("annual-report-2026.pdf");
 	});
 
-	test("flattens path-like names and repeated dots", () => {
-		expect(files_normalize_upload_file_name("C:\\Uploads\\Résumé..Final.PDF")).toBe("resume-final.pdf");
+	test("uses the last path segment and preserves non-adjacent dots", () => {
+		expect(files_normalize_upload_file_name("C:\\Uploads\\Résumé..Final.PDF")).toBe("resume.final.pdf");
 	});
 });
 

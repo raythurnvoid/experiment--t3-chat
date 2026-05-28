@@ -962,7 +962,7 @@ export function ai_chat_tool_create_text_search_files(
 			- Searches chunk plain text only (not raw markdown syntax).\
 			- Results are relevance-ranked by Convex and limited to the specified limit.\
 			- Result snippets include chunk line ranges and explicit fragment markers above/below.\
-			- If a result path ends with .shadow.md, it is a generated Markdown representation of an uploaded source file; the source file usually exists at the same path without the .shadow.md suffix.\
+			- Generated Markdown outputs from uploads are ordinary visible files, so read the exact result path returned here.\
 			- Prefer this over grep for general keyword search; use grep for precise regex line matches.`,
 
 		inputSchema: z.object({

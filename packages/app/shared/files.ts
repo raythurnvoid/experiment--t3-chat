@@ -64,7 +64,6 @@ export function files_create_tree_root() {
 		path: "/",
 		contentType: undefined,
 		assetId: undefined,
-		shadowFileNodeIds: [],
 		archiveOperationId: undefined,
 		yjsLastSequenceId: undefined,
 		yjsSnapshotId: undefined,
@@ -146,24 +145,24 @@ type files_UploadPipelineAsset = Pick<app_convex_Doc<"files_r2_assets">, "kind" 
 	conversionWorkId?: app_convex_Doc<"files_r2_assets">["conversionWorkId"] | null;
 };
 
-// Use the upload asset row as the pipeline signal; editor availability is a separate Yjs/shadow outcome.
+// Use asset conversion state as the pipeline signal; editor availability is a separate Yjs outcome.
 export function files_get_upload_pipeline_state(
 	asset: files_UploadPipelineAsset | null | undefined,
 ): files_UploadPipelineState {
-	if (!asset || asset.kind !== "upload") {
+	if (!asset) {
 		return "not_applicable";
 	}
 	if (asset.conversionWorkId === null) {
 		return "terminal";
 	}
-	if (!asset.r2Key) {
-		return "waiting_for_upload";
-	}
 	if (asset.conversionWorkId !== undefined) {
 		return "processing";
 	}
+	if (asset.kind === "upload" && !asset.r2Key) {
+		return "waiting_for_upload";
+	}
 
-	return "pending_processing";
+	return asset.kind === "upload" ? "pending_processing" : "not_applicable";
 }
 
 type FileNodeFieldsForEditability = Pick<
@@ -189,17 +188,19 @@ export function files_node_has_editable_yjs_state<Node extends FileNodeFieldsFor
 }
 
 // #region file name normalization
-const FILES_NORMALIZED_NAME_PART_REGEX = /^(?!.*--)(?!.*__)[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/;
+const FILES_NORMALIZED_DOTTED_NAME_REGEX = /^(?!.*[._-]{2})[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
 const FILES_DIACRITIC_MARKS_REGEX = /\p{Mark}/gu;
 const FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX = /[^a-z0-9_-]+/g;
+const FILES_UNSUPPORTED_DOTTED_NAME_CHARACTERS_REGEX = /[^a-z0-9._-]+/g;
 const FILES_REPEATED_DASH_REGEX = /-+/g;
 const FILES_REPEATED_UNDERSCORE_REGEX = /_+/g;
-const FILES_EDGE_DASH_OR_UNDERSCORE_REGEX = /^[-_]+|[-_]+$/g;
+const FILES_MIXED_SEPARATOR_SEQUENCE_REGEX = /[._-]{2,}/g;
+const FILES_EDGE_SEPARATOR_REGEX = /^[._-]+|[._-]+$/g;
 const FILES_PATH_SEPARATOR_REGEX = /[\\/]+/g;
 const FILES_TRAILING_DOTS_REGEX = /\.+$/g;
 const FILES_NAME_INPUT_ALPHANUMERIC_REGEX = /^[a-z0-9]$/;
 const FILES_FILE_NAME_INPUT_SEPARATOR_REGEX = /^[/._-]$/;
-const FILES_FOLDER_NAME_INPUT_SEPARATOR_REGEX = /^[/_-]$/;
+const FILES_FOLDER_NAME_INPUT_SEPARATOR_REGEX = /^[/._-]$/;
 // Keep special Markdown file basenames in their conventional case after the general lowercase normalization.
 type files_SpecialFileBaseName = files_SpecialFileName extends `${infer BaseName}.${string}`
 	? BaseName
@@ -260,19 +261,20 @@ export function files_normalize_name(kind: app_convex_Doc<"files_nodes">["kind"]
 
 	if (kind === "folder") {
 		// Keep already-canonical folder names on a cheap fast path; pasted path-like names take the slower cleanup route.
-		if (FILES_NORMALIZED_NAME_PART_REGEX.test(name)) {
+		if (FILES_NORMALIZED_DOTTED_NAME_REGEX.test(name)) {
 			return Result({ _yay: name });
 		}
 
-		// Normalize folder names as extensionless parts and trim edge separators.
+		// Treat dots as regular internal separators for folders, but keep path separators as cleanup input.
 		const normalizedName = name
 			.normalize("NFKD")
 			.replace(FILES_DIACRITIC_MARKS_REGEX, "")
 			.toLowerCase()
-			.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
+			.replace(FILES_UNSUPPORTED_DOTTED_NAME_CHARACTERS_REGEX, "-")
 			.replace(FILES_REPEATED_DASH_REGEX, "-")
 			.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
-			.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "");
+			.replace(FILES_MIXED_SEPARATOR_SEQUENCE_REGEX, "-")
+			.replace(FILES_EDGE_SEPARATOR_REGEX, "");
 
 		return Result({ _yay: normalizedName || "untitled" });
 	}
@@ -353,7 +355,7 @@ function files_normalize_file_name_parts(args: {
 	}
 
 	const extension = parts.at(-1) || null;
-	const baseName = parts.slice(0, -1).filter(Boolean).join("-") || args.fallbackBaseName;
+	const baseName = parts.slice(0, -1).filter(Boolean).join(".") || args.fallbackBaseName;
 	if (!extension) {
 		return { baseName, extension: null };
 	}
@@ -369,7 +371,8 @@ function files_normalize_file_name_part(part: string) {
 		.replace(FILES_UNSUPPORTED_NAME_PART_CHARACTERS_REGEX, "-")
 		.replace(FILES_REPEATED_DASH_REGEX, "-")
 		.replace(FILES_REPEATED_UNDERSCORE_REGEX, "_")
-		.replace(FILES_EDGE_DASH_OR_UNDERSCORE_REGEX, "");
+		.replace(FILES_MIXED_SEPARATOR_SEQUENCE_REGEX, "-")
+		.replace(FILES_EDGE_SEPARATOR_REGEX, "");
 }
 
 export function files_get_normalized_node_path_segments(args: {
@@ -426,8 +429,8 @@ function files_normalize_name_input_character(kind: app_convex_Doc<"files_nodes"
 		return "/";
 	}
 
-	if (kind === "file" && character === ".") {
-		// Allow files to type an extension separator; folders turn dots into separators.
+	if (character === ".") {
+		// Allow dots as ordinary filename and folder-name separators.
 		return character;
 	}
 
@@ -441,7 +444,7 @@ function files_normalize_name_input_character(kind: app_convex_Doc<"files_nodes"
 }
 
 function files_is_name_input_separator(kind: app_convex_Doc<"files_nodes">["kind"], character: string) {
-	// Treat dots as file separators, while folder drafts do not allow dots at all.
+	// Treat dots as regular separators for both files and folders.
 	return kind === "file"
 		? FILES_FILE_NAME_INPUT_SEPARATOR_REGEX.test(character)
 		: FILES_FOLDER_NAME_INPUT_SEPARATOR_REGEX.test(character);

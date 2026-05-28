@@ -133,7 +133,6 @@ async function workspaces_test_seed_project_scoped_rows(
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
-		shadowFileNodeIds: [],
 	});
 	const assetId = await ctx.db.insert("files_r2_assets", {
 		workspaceId: args.workspaceId,
@@ -621,13 +620,13 @@ describe("create_workspace", () => {
 				clerkUserId: "clerk-user-quota-seed-workspace",
 			}),
 		);
+		await workspaces_test_bootstrap_user(t, { userId });
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: userId,
 			name: "Test User",
 			email: "workspaces-test-user@test.local",
 		});
-		await workspaces_test_bootstrap_user(t, { userId });
 
 		const before = await t.run(async (ctx) =>
 			(await ctx.db.query("quotas").collect()).filter(
@@ -1223,12 +1222,6 @@ describe("create_project", () => {
 				clerkUserId: "clerk-user-quota-seed-project",
 			}),
 		);
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: userId,
-			name: "Test User",
-			email: "workspaces-test-user@test.local",
-		});
 		await workspaces_test_bootstrap_user(t, { userId });
 
 		const workspaceResult = await t.run((ctx) =>
@@ -2327,7 +2320,6 @@ describe("access_control", () => {
 					createdBy: ownerId,
 					updatedBy: ownerId,
 					updatedAt: now,
-					shadowFileNodeIds: [],
 				}),
 				ctx.db.insert("files_nodes", {
 					workspaceId: String(workspace.workspaceId),
@@ -2339,7 +2331,6 @@ describe("access_control", () => {
 					createdBy: ownerId,
 					updatedBy: ownerId,
 					updatedAt: now,
-					shadowFileNodeIds: [],
 				}),
 			]);
 

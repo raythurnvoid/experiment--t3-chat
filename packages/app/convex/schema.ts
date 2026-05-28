@@ -120,17 +120,7 @@ const app_convex_schema = defineSchema({
 		/** ID of the last YJS sequence for the file */
 		yjsSnapshotId: v.optional(v.id("files_yjs_snapshots")),
 		assetId: v.optional(v.id("files_r2_assets")),
-		/**
-		 * Present only on generated shadow file nodes;
-		 * points back to the visible shadow source file node.
-		 **/
-		shadowSourceFileNodeId: v.optional(v.id("files_nodes")),
-		/**
-		 * Canonical generated shadow file nodes owned by this shadow source file node.
-		 * Empty for normal files and shadow file nodes.
-		 **/
-		shadowFileNodeIds: v.array(v.id("files_nodes")),
-		/** Archive operation UUID. Undefined means active */
+		/** Archive Operation UUID. Undefined means active */
 		archiveOperationId: v.optional(v.string()),
 		/** "root" for root items, otherwise parent folder `_id` */
 		parentId: v.union(v.id("files_nodes"), v.literal("root")),
@@ -148,28 +138,14 @@ const app_convex_schema = defineSchema({
 			"name",
 			"archiveOperationId",
 		])
-		.index("by_workspace_project_path_archiveOperation", ["workspaceId", "projectId", "path", "archiveOperationId"])
-		.index("by_workspace_project_shadowSourceFileNode_kind_name", [
-			"workspaceId",
-			"projectId",
-			"shadowSourceFileNodeId",
-			"kind",
-			"name",
-		])
-		.index("by_workspace_project_path_shadowSourceFileNode_archiveOp", [
-			"workspaceId",
-			"projectId",
-			"path",
-			"shadowSourceFileNodeId",
-			"archiveOperationId",
-		])
-		.index("by_workspace_project_parent_shadowSourceFileNode_archiveOp", [
+		.index("by_workspace_project_parent_archiveOperation_name", [
 			"workspaceId",
 			"projectId",
 			"parentId",
-			"shadowSourceFileNodeId",
 			"archiveOperationId",
+			"name",
 		])
+		.index("by_workspace_project_path_archiveOperation", ["workspaceId", "projectId", "path", "archiveOperationId"])
 		.index("by_workspace_project_asset", ["workspaceId", "projectId", "assetId"]),
 
 	files_markdown_chunks: defineTable({

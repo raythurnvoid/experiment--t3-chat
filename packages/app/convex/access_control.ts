@@ -16,6 +16,38 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
+export const access_control_workspace_role_permission_grants = [
+	{ role: "admin", permission: "workspace.update" },
+	{ role: "admin", permission: "workspace.members.manage" },
+	{ role: "admin", permission: "project.create" },
+	{ role: "admin", permission: "project.update" },
+	{ role: "admin", permission: "project.delete" },
+	{ role: "admin", permission: "project.members.manage" },
+	{ role: "admin", permission: "asset.read" },
+	{ role: "admin", permission: "asset.write" },
+	{ role: "admin", permission: "workspace.roles.manage" },
+	{ role: "admin", permission: "asset.permissions.manage" },
+	{ role: "member", permission: "workspace.update" },
+	{ role: "member", permission: "project.create" },
+	{ role: "member", permission: "project.update" },
+	{ role: "member", permission: "project.delete" },
+	{ role: "member", permission: "asset.read" },
+	{ role: "member", permission: "asset.write" },
+] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
+
+export const access_control_project_role_permission_grants = [
+	{ role: "admin", permission: "project.update" },
+	{ role: "admin", permission: "project.delete" },
+	{ role: "admin", permission: "project.members.manage" },
+	{ role: "admin", permission: "asset.read" },
+	{ role: "admin", permission: "asset.write" },
+	{ role: "admin", permission: "asset.permissions.manage" },
+	{ role: "member", permission: "project.update" },
+	{ role: "member", permission: "project.delete" },
+	{ role: "member", permission: "asset.read" },
+	{ role: "member", permission: "asset.write" },
+] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
+
 export async function access_control_db_ensure_role_assignment(
 	ctx: MutationCtx,
 	args: {

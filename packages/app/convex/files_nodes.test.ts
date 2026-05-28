@@ -36,7 +36,10 @@ beforeEach(() => {
 	}));
 	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(generateUploadUrlSpy);
 	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
-	vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 200 })));
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => new Response(null, { status: 200 })),
+	);
 });
 
 afterEach(() => {
@@ -102,50 +105,6 @@ async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"user
 		},
 		lastSyncedAt: Date.now(),
 	});
-}
-
-async function seed_file_shadow_pair(
-	ctx: MutationCtx,
-	args: {
-		workspaceId: string;
-		projectId: string;
-		userId: Id<"users">;
-		parentId?: Id<"files_nodes"> | typeof files_ROOT_ID;
-		sourceName?: string;
-		sourcePath?: string;
-	},
-) {
-	const sourceName = args.sourceName ?? "report.pdf";
-	const sourcePath = args.sourcePath ?? `/${sourceName}`;
-	const parentId = args.parentId ?? files_ROOT_ID;
-	const sourceNodeId = await ctx.db.insert("files_nodes", {
-		...test_mocks.files.base(),
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		createdBy: args.userId,
-		updatedBy: args.userId,
-		parentId,
-		name: sourceName,
-		kind: "file",
-		path: sourcePath,
-	});
-	const shadowNodeId = await ctx.db.insert("files_nodes", {
-		...test_mocks.files.base(),
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		createdBy: args.userId,
-		updatedBy: args.userId,
-		parentId,
-		name: `${sourceName}.shadow.md`,
-		kind: "file",
-		path: `${sourcePath}.shadow.md`,
-		shadowSourceFileNodeId: sourceNodeId,
-	});
-	await ctx.db.patch("files_nodes", sourceNodeId, {
-		shadowFileNodeIds: [shadowNodeId],
-	});
-
-	return { sourceNodeId, shadowNodeId };
 }
 
 async function seed_file_first_list_fixture(ctx: MutationCtx) {
@@ -388,7 +347,7 @@ describe("list_files", () => {
 	});
 });
 
-test("node-owned shadows are hidden from visible list queries and discoverable by source index", async () => {
+test("generated sibling file is visible in tree and list queries", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({
@@ -397,15 +356,31 @@ test("node-owned shadows are hidden from visible list queries and discoverable b
 		name: "Test User",
 	});
 
-	const { sourceNodeId, shadowNodeId } = await t.run(async (ctx) =>
-		seed_file_shadow_pair(ctx, {
+	const { sourceNodeId, markdownNodeId } = await t.run(async (ctx) => {
+		const sharedNode = {
+			...test_mocks.files.base(),
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			userId: db.userId,
-		}),
-	);
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			parentId: files_ROOT_ID as typeof files_ROOT_ID,
+			kind: "file" as const,
+		};
+		const sourceNodeId = await ctx.db.insert("files_nodes", {
+			...sharedNode,
+			name: "report.pdf",
+			path: "/report.pdf",
+		});
+		const markdownNodeId = await ctx.db.insert("files_nodes", {
+			...sharedNode,
+			name: "report.pdf.md",
+			path: "/report.pdf.md",
+		});
 
-	const [treeNodesList, filesList, indexedShadows] = await Promise.all([
+		return { sourceNodeId, markdownNodeId };
+	});
+
+	const [treeNodesList, filesList] = await Promise.all([
 		asUser.query(api.files_nodes.get_file_nodes_list, {
 			membershipId: db.membershipId,
 		}),
@@ -416,21 +391,12 @@ test("node-owned shadows are hidden from visible list queries and discoverable b
 			maxDepth: 10,
 			limit: 100,
 		}),
-		t.run(async (ctx) =>
-			ctx.db
-				.query("files_nodes")
-				.withIndex("by_workspace_project_shadowSourceFileNode_kind_name", (q) =>
-					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("shadowSourceFileNodeId", sourceNodeId),
-				)
-				.collect(),
-		),
 	]);
 
-	expect(treeNodesList.map((node) => node._id)).toContain(sourceNodeId);
-	expect(treeNodesList.map((node) => node._id)).not.toContain(shadowNodeId);
-	expect(filesList.items.map((item) => item.path)).toContain("/report.pdf");
-	expect(filesList.items.map((item) => item.path)).not.toContain("/report.pdf.shadow.md");
-	expect(indexedShadows.map((node) => node._id)).toEqual([shadowNodeId]);
+	const treeNodeIds = treeNodesList.map((node) => node._id);
+	expect(treeNodeIds).toContain(sourceNodeId);
+	expect(treeNodeIds).toContain(markdownNodeId);
+	expect(filesList.items.map((item) => item.path)).toEqual(expect.arrayContaining(["/report.pdf", "/report.pdf.md"]));
 });
 
 test("get_by_path uses materialized paths", async () => {
@@ -500,7 +466,7 @@ test("rename_node updates descendants materialized paths", async () => {
 	});
 });
 
-test("rename_node keeps linked shadow paths following the source", async () => {
+test("rename_node leaves generated siblings independent from the source", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({
@@ -508,13 +474,32 @@ test("rename_node keeps linked shadow paths following the source", async () => {
 		external_id: db.userId,
 		name: "Test User",
 	});
-	const { sourceNodeId, shadowNodeId } = await t.run(async (ctx) =>
-		seed_file_shadow_pair(ctx, {
+	const { sourceNodeId, generatedNodeId } = await t.run(async (ctx) => {
+		const sourceNodeId = await ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			userId: db.userId,
-		}),
-	);
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			parentId: files_ROOT_ID as typeof files_ROOT_ID,
+			name: "report.pdf",
+			kind: "file",
+			path: "/report.pdf",
+		});
+		const generatedNodeId = await ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			parentId: files_ROOT_ID as typeof files_ROOT_ID,
+			name: "report.pdf.md",
+			kind: "file",
+			path: "/report.pdf.md",
+		});
+
+		return { sourceNodeId, generatedNodeId };
+	});
 
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
@@ -522,22 +507,21 @@ test("rename_node keeps linked shadow paths following the source", async () => {
 		name: "renamed.pdf",
 	});
 	if (renameResult._nay) {
-		throw new Error("Expected source rename with shadow to succeed", {
+		throw new Error("Expected source rename with generated sibling to succeed", {
 			cause: renameResult._nay,
 		});
 	}
 
 	const docs = await t.run(async (ctx) => {
 		const source = await ctx.db.get("files_nodes", sourceNodeId);
-		const shadow = await ctx.db.get("files_nodes", shadowNodeId);
-		return { source, shadow };
+		const generated = await ctx.db.get("files_nodes", generatedNodeId);
+		return { source, generated };
 	});
 	expect(docs.source?.path).toBe("/renamed.pdf");
-	expect(docs.shadow).toMatchObject({
+	expect(docs.generated).toMatchObject({
 		parentId: files_ROOT_ID,
-		name: "renamed.pdf.shadow.md",
-		path: "/renamed.pdf.shadow.md",
-		shadowSourceFileNodeId: sourceNodeId,
+		name: "report.pdf.md",
+		path: "/report.pdf.md",
 	});
 });
 
@@ -569,7 +553,7 @@ test("move_nodes updates descendants materialized paths", async () => {
 	});
 });
 
-test("move_nodes keeps linked shadow paths following the source", async () => {
+test("move_nodes leaves generated siblings independent from the source", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({
@@ -585,13 +569,32 @@ test("move_nodes keeps linked shadow paths following the source", async () => {
 	if (targetFolder._nay) {
 		throw new Error(targetFolder._nay.message);
 	}
-	const { sourceNodeId, shadowNodeId } = await t.run(async (ctx) =>
-		seed_file_shadow_pair(ctx, {
+	const { sourceNodeId, generatedNodeId } = await t.run(async (ctx) => {
+		const sourceNodeId = await ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			userId: db.userId,
-		}),
-	);
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			parentId: files_ROOT_ID,
+			name: "report.pdf",
+			kind: "file",
+			path: "/report.pdf",
+		});
+		const generatedNodeId = await ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			parentId: files_ROOT_ID,
+			name: "report.pdf.md",
+			kind: "file",
+			path: "/report.pdf.md",
+		});
+
+		return { sourceNodeId, generatedNodeId };
+	});
 
 	const moveResult = await asUser.mutation(api.files_nodes.move_nodes, {
 		membershipId: db.membershipId,
@@ -599,22 +602,21 @@ test("move_nodes keeps linked shadow paths following the source", async () => {
 		targetParentId: targetFolder._yay.nodeId,
 	});
 	if (moveResult._nay) {
-		throw new Error("Expected source move with shadow to succeed", {
+		throw new Error("Expected source move with generated sibling to succeed", {
 			cause: moveResult._nay,
 		});
 	}
 
 	const docs = await t.run(async (ctx) => {
 		const source = await ctx.db.get("files_nodes", sourceNodeId);
-		const shadow = await ctx.db.get("files_nodes", shadowNodeId);
-		return { source, shadow };
+		const generated = await ctx.db.get("files_nodes", generatedNodeId);
+		return { source, generated };
 	});
 	expect(docs.source?.path).toBe("/received/report.pdf");
-	expect(docs.shadow).toMatchObject({
-		parentId: targetFolder._yay.nodeId,
-		name: "report.pdf.shadow.md",
-		path: "/received/report.pdf.shadow.md",
-		shadowSourceFileNodeId: sourceNodeId,
+	expect(docs.generated).toMatchObject({
+		parentId: files_ROOT_ID,
+		name: "report.pdf.md",
+		path: "/report.pdf.md",
 	});
 });
 
@@ -639,7 +641,6 @@ test("home file path stays immutable on rename and move", async () => {
 			kind: "file",
 			path: "/README.md",
 			archiveOperationId: undefined,
-			shadowFileNodeIds: [],
 		}),
 	);
 
@@ -882,9 +883,7 @@ test("create_markdown_node stores Markdown file properties", async () => {
 		r2Bucket: "test-files-bucket",
 		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
 	});
-	expect(saved.asset?.r2Key).toBe(
-		`workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.asset?._id}`,
-	);
+	expect(saved.asset?.r2Key).toBe(`workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.asset?._id}`);
 });
 
 test("create_markdown_node seeds initial Yjs content on the server", async () => {
@@ -1014,7 +1013,9 @@ test("create_markdown_node writes server-seeded initial content to R2", async ()
 					.eq("archivedAt", -1),
 			)
 			.first();
-		const versionSnapshotAsset = versionSnapshot?.assetId ? await ctx.db.get("files_r2_assets", versionSnapshot.assetId) : null;
+		const versionSnapshotAsset = versionSnapshot?.assetId
+			? await ctx.db.get("files_r2_assets", versionSnapshot.assetId)
+			: null;
 
 		return {
 			asset,
@@ -1335,7 +1336,8 @@ describe("files_nodes.create_upload_node", () => {
 				.collect()
 				.then((assets) =>
 					assets.filter(
-						(asset) => asset.workspaceId === db.workspaceId && asset.projectId === db.projectId && asset.kind === "upload",
+						(asset) =>
+							asset.workspaceId === db.workspaceId && asset.projectId === db.projectId && asset.kind === "upload",
 					),
 				);
 			const uploadedSources = await ctx.db
@@ -1383,7 +1385,7 @@ describe("files_nodes.create_upload_node", () => {
 		expect(uploadedSources).toHaveLength(0);
 	});
 
-	test("replace archives the old source and its linked shadow before creating a new source", async () => {
+	test("replace archives only the conflicting upload source", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -1402,36 +1404,30 @@ describe("files_nodes.create_upload_node", () => {
 		if (oldUpload._nay) {
 			throw new Error(oldUpload._nay.message);
 		}
-		const oldShadowNodeId = await t.run(async (ctx) => {
+		const generatedNodeId = await t.run(async (ctx) => {
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				workspaceId: db.workspaceId,
 				projectId: db.projectId,
 				kind: "content",
 				r2Bucket: "test-files-bucket",
-				r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/shadow-test-asset`,
+				r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/generated-test-asset`,
 				size: 0,
 				createdBy: db.userId,
 				updatedAt: Date.now(),
 			});
-			const shadowNodeId = await ctx.db.insert("files_nodes", {
+			return await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				workspaceId: db.workspaceId,
 				projectId: db.projectId,
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				parentId: files_ROOT_ID,
-				name: "replace-me.pdf.shadow.md",
+				name: "replace-me.pdf.md",
 				kind: "file",
-				path: "/replace-me.pdf.shadow.md",
+				path: "/replace-me.pdf.md",
 				contentType: "text/markdown;charset=utf-8",
 				assetId,
-				shadowSourceFileNodeId: oldUpload._yay.nodeId,
 			});
-			await ctx.db.patch("files_nodes", oldUpload._yay.nodeId, {
-				shadowFileNodeIds: [shadowNodeId],
-			});
-
-			return shadowNodeId;
 		});
 
 		const replacement = await asUser.mutation(api.files_nodes.create_upload_node, {
@@ -1447,13 +1443,17 @@ describe("files_nodes.create_upload_node", () => {
 
 		const docs = await t.run(async (ctx) => {
 			const oldSource = await ctx.db.get("files_nodes", oldUpload._yay.nodeId);
-			const oldShadow = await ctx.db.get("files_nodes", oldShadowNodeId);
+			const generated = await ctx.db.get("files_nodes", generatedNodeId);
 			const newSource = await ctx.db.get("files_nodes", replacement._yay.nodeId);
 			const newAsset = await ctx.db.get("files_r2_assets", replacement._yay.assetId);
-			return { oldSource, oldShadow, newSource, newAsset };
+			return { oldSource, generated, newSource, newAsset };
 		});
 		expect(docs.oldSource?.archiveOperationId).toEqual(expect.any(String));
-		expect(docs.oldShadow?.archiveOperationId).toBe(docs.oldSource?.archiveOperationId);
+		expect(docs.generated).toMatchObject({
+			name: "replace-me.pdf.md",
+			path: "/replace-me.pdf.md",
+		});
+		expect(docs.generated?.archiveOperationId).toBeUndefined();
 		expect(docs.newSource).toMatchObject({
 			name: "replace-me.pdf",
 			assetId: replacement._yay.assetId,
@@ -1607,7 +1607,6 @@ test("rename_node preserves caller-provided nested file names", async () => {
 			kind: "file",
 			path: `/${db.files.file_root_1.name}/yo.md`,
 			archiveOperationId: undefined,
-			shadowFileNodeIds: [],
 		}),
 	);
 
@@ -1781,7 +1780,7 @@ test("unarchive_nodes returns conflict when active file already has the same pat
 	});
 });
 
-test("archive_nodes and unarchive_nodes keep linked shadows with their source", async () => {
+test("archive_nodes and unarchive_nodes leave root generated siblings independent from the source", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({
@@ -1789,13 +1788,29 @@ test("archive_nodes and unarchive_nodes keep linked shadows with their source", 
 		external_id: db.userId,
 		name: "Test User",
 	});
-	const { sourceNodeId, shadowNodeId } = await t.run(async (ctx) =>
-		seed_file_shadow_pair(ctx, {
+	const { sourceNodeId, generatedNodeId } = await t.run(async (ctx) => {
+		const sharedNode = {
+			...test_mocks.files.base(),
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			userId: db.userId,
-		}),
-	);
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			parentId: files_ROOT_ID as typeof files_ROOT_ID,
+			kind: "file" as const,
+		};
+		const sourceNodeId = await ctx.db.insert("files_nodes", {
+			...sharedNode,
+			name: "report.pdf",
+			path: "/report.pdf",
+		});
+		const generatedNodeId = await ctx.db.insert("files_nodes", {
+			...sharedNode,
+			name: "report.pdf.md",
+			path: "/report.pdf.md",
+		});
+
+		return { sourceNodeId, generatedNodeId };
+	});
 
 	await asUser.mutation(api.files_nodes.archive_nodes, {
 		membershipId: db.membershipId,
@@ -1804,12 +1819,11 @@ test("archive_nodes and unarchive_nodes keep linked shadows with their source", 
 
 	const archivedDocs = await t.run(async (ctx) => {
 		const source = await ctx.db.get("files_nodes", sourceNodeId);
-		const shadow = await ctx.db.get("files_nodes", shadowNodeId);
-		return { source, shadow };
+		const generated = await ctx.db.get("files_nodes", generatedNodeId);
+		return { source, generated };
 	});
 	expect(archivedDocs.source?.archiveOperationId).toEqual(expect.any(String));
-	expect(archivedDocs.shadow?.archiveOperationId).toBe(archivedDocs.source?.archiveOperationId);
-	expect(archivedDocs.source?.shadowFileNodeIds).toEqual([shadowNodeId]);
+	expect(archivedDocs.generated?.archiveOperationId).toBeUndefined();
 
 	await asUser.mutation(api.files_nodes.unarchive_nodes, {
 		membershipId: db.membershipId,
@@ -1818,16 +1832,14 @@ test("archive_nodes and unarchive_nodes keep linked shadows with their source", 
 
 	const unarchivedDocs = await t.run(async (ctx) => {
 		const source = await ctx.db.get("files_nodes", sourceNodeId);
-		const shadow = await ctx.db.get("files_nodes", shadowNodeId);
-		return { source, shadow };
+		const generated = await ctx.db.get("files_nodes", generatedNodeId);
+		return { source, generated };
 	});
 	expect(unarchivedDocs.source?.archiveOperationId).toBeUndefined();
-	expect(unarchivedDocs.shadow?.archiveOperationId).toBeUndefined();
-	expect(unarchivedDocs.source?.shadowFileNodeIds).toEqual([shadowNodeId]);
-	expect(unarchivedDocs.shadow?.shadowSourceFileNodeId).toBe(sourceNodeId);
+	expect(unarchivedDocs.generated?.archiveOperationId).toBeUndefined();
 });
 
-test("archive_nodes and unarchive_nodes keep descendant shadows with archived folders", async () => {
+test("archive_nodes and unarchive_nodes include generated siblings as normal folder descendants", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({
@@ -1835,7 +1847,7 @@ test("archive_nodes and unarchive_nodes keep descendant shadows with archived fo
 		external_id: db.userId,
 		name: "Test User",
 	});
-	const { folderId, sourceNodeId, shadowNodeId } = await t.run(async (ctx) => {
+	const { folderId, sourceNodeId, generatedNodeId } = await t.run(async (ctx) => {
 		const folderId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
 			workspaceId: db.workspaceId,
@@ -1847,15 +1859,27 @@ test("archive_nodes and unarchive_nodes keep descendant shadows with archived fo
 			kind: "folder",
 			path: "/folder",
 		});
-		const shadowPair = await seed_file_shadow_pair(ctx, {
+		const sharedNode = {
+			...test_mocks.files.base(),
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			userId: db.userId,
+			createdBy: db.userId,
+			updatedBy: db.userId,
 			parentId: folderId,
-			sourcePath: "/folder/report.pdf",
+			kind: "file" as const,
+		};
+		const sourceNodeId = await ctx.db.insert("files_nodes", {
+			...sharedNode,
+			name: "report.pdf",
+			path: "/folder/report.pdf",
+		});
+		const generatedNodeId = await ctx.db.insert("files_nodes", {
+			...sharedNode,
+			name: "report.pdf.md",
+			path: "/folder/report.pdf.md",
 		});
 
-		return { folderId, ...shadowPair };
+		return { folderId, sourceNodeId, generatedNodeId };
 	});
 
 	await asUser.mutation(api.files_nodes.archive_nodes, {
@@ -1866,13 +1890,12 @@ test("archive_nodes and unarchive_nodes keep descendant shadows with archived fo
 	const archivedDocs = await t.run(async (ctx) => {
 		const folder = await ctx.db.get("files_nodes", folderId);
 		const source = await ctx.db.get("files_nodes", sourceNodeId);
-		const shadow = await ctx.db.get("files_nodes", shadowNodeId);
-		return { folder, source, shadow };
+		const generated = await ctx.db.get("files_nodes", generatedNodeId);
+		return { folder, source, generated };
 	});
 	expect(archivedDocs.folder?.archiveOperationId).toEqual(expect.any(String));
 	expect(archivedDocs.source?.archiveOperationId).toBe(archivedDocs.folder?.archiveOperationId);
-	expect(archivedDocs.shadow?.archiveOperationId).toBe(archivedDocs.folder?.archiveOperationId);
-	expect(archivedDocs.source?.shadowFileNodeIds).toEqual([shadowNodeId]);
+	expect(archivedDocs.generated?.archiveOperationId).toBe(archivedDocs.folder?.archiveOperationId);
 
 	await asUser.mutation(api.files_nodes.unarchive_nodes, {
 		membershipId: db.membershipId,
@@ -1882,17 +1905,15 @@ test("archive_nodes and unarchive_nodes keep descendant shadows with archived fo
 	const unarchivedDocs = await t.run(async (ctx) => {
 		const folder = await ctx.db.get("files_nodes", folderId);
 		const source = await ctx.db.get("files_nodes", sourceNodeId);
-		const shadow = await ctx.db.get("files_nodes", shadowNodeId);
-		return { folder, source, shadow };
+		const generated = await ctx.db.get("files_nodes", generatedNodeId);
+		return { folder, source, generated };
 	});
 	expect(unarchivedDocs.folder?.archiveOperationId).toBeUndefined();
 	expect(unarchivedDocs.source?.archiveOperationId).toBeUndefined();
-	expect(unarchivedDocs.shadow?.archiveOperationId).toBeUndefined();
-	expect(unarchivedDocs.source?.shadowFileNodeIds).toEqual([shadowNodeId]);
-	expect(unarchivedDocs.shadow?.shadowSourceFileNodeId).toBe(sourceNodeId);
+	expect(unarchivedDocs.generated?.archiveOperationId).toBeUndefined();
 });
 
-test("unarchive_nodes excludes unrequested ancestors from archive operation", async () => {
+test("unarchive_nodes excludes unrequested ancestors from Archive Operation", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -2652,7 +2673,9 @@ test("materialize_file_content writes nonempty Markdown and Yjs snapshots to R2"
 		};
 	});
 
-	const versionSnapshotAsset = saved.versionSnapshotAssets.find((asset) => asset?.size === files_get_utf8_byte_size(markdown));
+	const versionSnapshotAsset = saved.versionSnapshotAssets.find(
+		(asset) => asset?.size === files_get_utf8_byte_size(markdown),
+	);
 	expect(saved.asset).toMatchObject({
 		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.asset?._id}`,
 		size: files_get_utf8_byte_size(markdown),
@@ -2681,9 +2704,9 @@ test("create_file_snapshot_content_url returns a signed R2 URL without fetching 
 		name: "Snapshot R2 User",
 	});
 	const snapshotMarkdown = "# R2 snapshot\n\nStored outside Convex.";
-	const getUrlSpy = vi.spyOn(R2.prototype, "getUrl").mockImplementation(
-		async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
-	);
+	const getUrlSpy = vi
+		.spyOn(R2.prototype, "getUrl")
+		.mockImplementation(async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`);
 
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,

@@ -67,15 +67,27 @@ function RouteTenantWorkspaceProjectLayout() {
 	}, [convex, homeFile, membership]);
 
 	if (membership === undefined) {
-		return <div>Loading workspace…</div>;
+		return (
+			<main role="status" aria-live="polite" aria-label="Workspace loading">
+				Loading workspace
+			</main>
+		);
 	}
 
 	if (membership === null) {
-		return <div>You do not have access to this workspace/project.</div>;
+		return (
+			<main role="alert" aria-label="Workspace access denied">
+				You do not have access to this workspace/project.
+			</main>
+		);
 	}
 
 	if (!homeFileIdForMembership) {
-		return <div>Preparing workspace…</div>;
+		return (
+			<main role="status" aria-live="polite" aria-label="Workspace preparing">
+				Preparing workspace
+			</main>
+		);
 	}
 
 	const workspaceId = membership.workspaceId;

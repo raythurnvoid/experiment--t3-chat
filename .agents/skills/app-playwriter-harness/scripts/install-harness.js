@@ -2,7 +2,7 @@
 	const fs = require("node:fs");
 	const path = require("node:path");
 
-	const VERSION = "0.2.1";
+	const VERSION = "0.3.0";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	const MEMORY_FILES = new Set([
 		"app-map.md",
@@ -113,6 +113,161 @@
 		const logs = await getLatestLogs({ page: targetPage, search, count });
 		console.log(logs);
 		return logs;
+	}
+
+	function normalizeSearch(search) {
+		if (!search) return /error|warn|fail/i;
+		if (search instanceof RegExp) return search;
+		return new RegExp(String(search), "i");
+	}
+
+	function stopConsoleCapture() {
+		const capture = state.appPlaywriterHarness?.consoleCapture;
+		if (!capture) {
+			return { stopped: false };
+		}
+
+		capture.page.off("console", capture.consoleListener);
+		capture.page.off("pageerror", capture.pageErrorListener);
+		state.appPlaywriterHarness.consoleCapture = undefined;
+
+		const result = { stopped: true, count: capture.entries.length };
+		console.log(JSON.stringify(result, null, 2));
+		return result;
+	}
+
+	function startConsoleCapture({ search = /error|warn|fail/i } = {}) {
+		stopConsoleCapture();
+
+		const targetPage = getHarnessPage();
+		const searchPattern = normalizeSearch(search);
+		const entries = [];
+		const consoleListener = (msg) => {
+			const entry = {
+				type: msg.type(),
+				text: msg.text(),
+				location: msg.location(),
+				timestamp: new Date().toISOString(),
+			};
+			if (searchPattern.test(entry.text)) entries.push(entry);
+		};
+		const pageErrorListener = (error) => {
+			const entry = {
+				type: "pageerror",
+				text: error?.message || String(error),
+				location: null,
+				timestamp: new Date().toISOString(),
+			};
+			if (searchPattern.test(entry.text)) entries.push(entry);
+		};
+
+		targetPage.on("console", consoleListener);
+		targetPage.on("pageerror", pageErrorListener);
+		state.appPlaywriterHarness.consoleCapture = {
+			page: targetPage,
+			search: String(searchPattern),
+			entries,
+			consoleListener,
+			pageErrorListener,
+		};
+
+		const result = { started: true, search: String(searchPattern), url: targetPage.url() };
+		console.log(JSON.stringify(result, null, 2));
+		return result;
+	}
+
+	function readConsoleCapture({ count = 50 } = {}) {
+		const capture = state.appPlaywriterHarness?.consoleCapture;
+		const entries = capture ? capture.entries.slice(-count) : [];
+		console.log(JSON.stringify(entries, null, 2));
+		return entries;
+	}
+
+	async function authSummary() {
+		const targetPage = getHarnessPage();
+		const result = await targetPage.evaluate(async () => {
+			function readJwtPayload(token) {
+				if (!token) return null;
+				const part = token.split(".")[1];
+				if (!part) return null;
+
+				try {
+					const padded = part.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(part.length / 4) * 4, "=");
+					return JSON.parse(atob(padded));
+				} catch {
+					return null;
+				}
+			}
+
+			const clerk = window.Clerk;
+			let clerkTokenPayload = null;
+			if (clerk?.session?.getToken) {
+				const token = await clerk.session.getToken({ template: "convex" }).catch(() => null);
+				clerkTokenPayload = readJwtPayload(token);
+			}
+
+			const authLocalStorageKeys = Object.keys(localStorage)
+				.filter((key) => key.includes("app::auth") || key.toLowerCase().includes("clerk"))
+				.sort();
+
+			return {
+				hasClerk: Boolean(clerk),
+				hasSession: Boolean(clerk?.session),
+				hasToken: Boolean(clerkTokenPayload),
+				external_id: clerkTokenPayload?.external_id || null,
+				sub: clerkTokenPayload?.sub || null,
+				email: clerkTokenPayload?.email || null,
+				hasAnonymousUserId: localStorage.getItem("app::auth::anonymous_token_user_id") !== null,
+				hasAnonymousToken: localStorage.getItem("app::auth::anonymous_token") !== null,
+				authLocalStorageKeys,
+			};
+		});
+
+		console.log(JSON.stringify(result, null, 2));
+		return result;
+	}
+
+	async function waitForUrlIncludes({ urlIncludes, timeout = 10000 } = {}) {
+		if (!urlIncludes) {
+			throw new Error("waitForUrlIncludes requires urlIncludes");
+		}
+
+		const targetPage = getHarnessPage();
+		await targetPage.waitForURL((url) => url.href.includes(urlIncludes), { timeout });
+		const result = { url: targetPage.url(), matched: urlIncludes };
+		console.log(JSON.stringify(result, null, 2));
+		return result;
+	}
+
+	async function observeRoute({ label = "route", search } = {}) {
+		const targetPage = getHarnessPage();
+		const content = await snapshot({
+			page: targetPage,
+			search,
+			showDiffSinceLastCall: false,
+		});
+		const consoleEntries = readConsoleCapture({ count: 50 });
+		const result = {
+			label,
+			url: targetPage.url(),
+			title: await targetPage.title().catch(() => ""),
+			observedAt: new Date().toISOString(),
+			consoleEntries,
+			content: String(content).slice(0, 2000),
+		};
+		console.log(JSON.stringify(
+			{
+				label: result.label,
+				url: result.url,
+				title: result.title,
+				observedAt: result.observedAt,
+				consoleEntryCount: consoleEntries.length,
+			},
+			null,
+			2,
+		));
+		console.log(content);
+		return result;
 	}
 
 	async function hitTest({ x, y }) {
@@ -409,10 +564,17 @@
 		page: state.appPlaywriterHarness?.page || state.t3ChatHarness?.page || state.page || page,
 		boundUrl: state.appPlaywriterHarness?.boundUrl || state.t3ChatHarness?.boundUrl,
 		observations: state.appPlaywriterHarness?.observations || state.t3ChatHarness?.observations || [],
+		consoleCapture: state.appPlaywriterHarness?.consoleCapture,
 		tabs,
 		bindOpenTab,
 		observe,
 		latestLogs,
+		startConsoleCapture,
+		readConsoleCapture,
+		stopConsoleCapture,
+		authSummary,
+		waitForUrlIncludes,
+		observeRoute,
 		hitTest,
 		inspectElement,
 		appendMemory,

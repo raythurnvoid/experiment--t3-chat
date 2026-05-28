@@ -74,7 +74,12 @@ function RootLayoutInner() {
 
 function RootLayoutAuthState() {
 	return (
-		<div className={cn("RootLayoutAuthState" satisfies RootLayout_ClassNames)}>
+		<div
+			className={cn("RootLayoutAuthState" satisfies RootLayout_ClassNames)}
+			role="status"
+			aria-live="polite"
+			aria-label="Preparing workspace"
+		>
 			<div className={cn("RootLayoutAuthState-panel" satisfies RootLayout_ClassNames)}>
 				<Logo className={"RootLayoutAuthState-logo" satisfies RootLayout_ClassNames} />
 				<MySpinner

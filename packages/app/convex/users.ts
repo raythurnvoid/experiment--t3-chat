@@ -1255,10 +1255,16 @@ export const hard_delete_user_now = internalAction({
 			return null;
 		}
 
-		const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: user._id });
-		// Keep data-only as the default so admin/support purges do not invalidate
-		// the user's Clerk account or anonymous token unless explicitly requested.
 		const purgeUserMod = args.purgeUserMod ?? "data";
+		if (purgeUserMod === "data") {
+			// Treat data mode as a live account reset; keep it out of the account-deletion billing/auth cleanup below.
+			await ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+				userId: user._id,
+			});
+			return null;
+		}
+
+		const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: user._id });
 		const purgeAuth = purgeUserMod === "data_and_auth" || purgeUserMod === "data_auth_and_user_record";
 		const purgeUserRecord = purgeUserMod === "data_auth_and_user_record";
 
@@ -1317,7 +1323,7 @@ export const hard_delete_user_now = internalAction({
 			});
 		}
 
-		await ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+		await ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
 			userId: user._id,
 			deleteUserAuth: purgeAuth,
 		});

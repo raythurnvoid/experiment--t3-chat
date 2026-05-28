@@ -30,7 +30,7 @@ Use this file for reusable `/files` route and editor interaction knowledge.
 - Use `state.appPlaywriterHarness.inspectElement(...)` before clicking the main sidebar when diagnosing navigation clickability.
 - Avoid force-clicking editor or sidebar controls; if a click is blocked, inspect the topmost element at the target point.
 - Editor mode radios are visually represented by labels in the app header. If clicking a radio locator times out because the native input is tiny, click the matching `#app_main_header_content label` instead.
-- Source files and generated `.shadow.md` files share filename prefixes. Use exact role-name locators for per-node action buttons, such as `getByRole("button", { name: "More actions for qa.pdf", exact: true })`, so the source locator does not also match `qa.pdf.shadow.md`.
+- Uploaded source files and generated `.md` output files share filename prefixes. Use exact role-name locators for per-node action buttons, such as `getByRole("button", { name: "More actions for qa.pdf", exact: true })`, so the source locator does not also match `qa.pdf.md`.
 - When the folder explorer is visible, it can render a second action button with the same accessible name as the tree action. Scope the locator to the tree/folder row or use `.first()` intentionally after confirming the snapshot.
 - Inline create/rename inputs are often selected by their current value in snapshots. After `fill(...)`, that locator may stop matching before `press("Enter")`; re-locate by the new value, scope to the focused input/modal, or press Enter through `page.keyboard` after confirming focus.
 
@@ -251,6 +251,19 @@ Keep R2 upload checks as a route-specific recipe. Do not promote this flow into 
 - Repeat the collision flow and choose `Replace`; verify the old active source is archived and the replacement source appears as the active `r2-upload-sample.pdf`.
 - Archive the temporary `aaa-pw-qa-*` folder at the end of the flow.
 - Oversized upload UI checks are hard to drive through Playwriter because `setInputFiles` refuses files larger than 50 MB in extension mode. Prefer backend/unit coverage for the size gate, or use a smaller app-configured size limit in a dedicated test build if browser-level oversized QA becomes required.
+
+## Generated PDF Siblings QA
+
+Use this recipe for the PDF-generated sibling files flow that replaced hidden generated-file behavior.
+
+- Create a temporary folder named `aaa-pw-generated-<timestamp>` and upload `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf` as `r2-upload-playwriter-<timestamp>.pdf`.
+- Verify the folder explorer shows exactly these visible regular files in lexicographic order: `<name>.pdf`, `<name>.pdf.md`.
+- Open `<name>.pdf` and verify the selected URL `nodeId` is the visible source node, the panel shows stored metadata such as `application/pdf` and size, and converted Markdown text is absent.
+- Open `<name>.pdf.md` in rich mode and verify the normal rich editor mounts with converted content such as `Generative artificial intelligence` or `large language model`.
+- Switch the generated Markdown file to Markdown and Diff modes through the header labels. Only `view` should change; `nodeId` must stay the generated file id. In Diff mode, wait for `[aria-label="File diff editor"]` because Monaco text can appear a few seconds after the route changes.
+- Confirm there is no legacy hidden-file wording, legacy generated-file suffix, accordion/select UI, or localStorage key from the old hidden-file selection behavior.
+- Query Convex after finalization and confirm both `files_nodes` are regular file nodes under the folder, the PDF source asset remains `kind: "upload"`, the generated Markdown asset is `kind: "content"`, and all relevant `conversionWorkId` values are `null`.
+- Archive the temporary folder from the UI and verify the folder plus all descendants share one `archiveOperationId`.
 
 
 ## Comments And Agent QA

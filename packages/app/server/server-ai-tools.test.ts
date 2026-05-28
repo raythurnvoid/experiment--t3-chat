@@ -314,7 +314,7 @@ test("text_search_files tool: renders line ranges and fragment markers", async (
 test("read_file tool forwards pendingUpdateId and returns it in metadata", async () => {
 	const pendingUpdateId = "pending123";
 	const currentContent = {
-		nodeId: "p123_shadow",
+		nodeId: "p123",
 		displayNodeId: "p123",
 		content: "# Base",
 		pendingUpdateId,
@@ -353,7 +353,7 @@ test("read_file tool forwards pendingUpdateId and returns it in metadata", async
 	}
 
 	expect(result.metadata.nodeId).toBe("p123");
-	expect(result.metadata.contentNodeId).toBe("p123_shadow");
+	expect(result.metadata.contentNodeId).toBe("p123");
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 });
 

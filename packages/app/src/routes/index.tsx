@@ -30,7 +30,11 @@ const IndexRedirect = memo(function IndexRedirect() {
 		});
 	}, [list, navigate]);
 
-	return <div>Redirecting…</div>;
+	return (
+		<main role="status" aria-live="polite" aria-label="Workspace redirect">
+			Redirecting to workspace
+		</main>
+	);
 });
 
 const Route = createFileRoute("/")({

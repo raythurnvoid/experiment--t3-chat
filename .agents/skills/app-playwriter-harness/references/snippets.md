@@ -10,6 +10,32 @@ $session = ($sessionOutput | Select-String -Pattern "Session (\d+) created").Mat
 if (-not $session) { $session = ($sessionOutput | Select-Object -Last 1).Trim() }
 ```
 
+When Playwriter reports multiple Edge profiles, create the session with the explicit profile key:
+
+```powershell
+pnpx playwriter session new --browser profile:22d27012fb891135
+```
+
+## Recover Missing Extension Connection
+
+Use this when the Playwriter extension looks active in the browser but `pnpx playwriter browser list` says `No browsers detected`.
+
+```powershell
+Start-Process -FilePath pnpx -ArgumentList @('playwriter','serve','--host','localhost','--replace') -WindowStyle Hidden
+Start-Sleep -Seconds 3
+pnpx playwriter browser list
+```
+
+If no extension is still detected, start a managed Edge profile with Playwriter's bundled extension and create a session from the reported `install:Edge:<id>` key:
+
+```powershell
+$profile = Join-Path $env:TEMP 'playwriter-t3-chat-profile'
+$edge = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+pnpx playwriter browser start $edge --user-data-dir $profile --headed
+pnpx playwriter browser list
+pnpx playwriter session new --browser install:Edge:<id>
+```
+
 ## Install Harness
 
 ```powershell
@@ -26,6 +52,20 @@ pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab
 
 ```powershell
 pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.observe({ label: 'files route', search: /Files|Chat|Review|Toolbar/i });"
+```
+
+## Startup Redirect QA
+
+Use this after installing the harness and binding the localhost tab. The console capture is filtered so noisy extension/browser logs do not hide app startup failures.
+
+```powershell
+pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: 'localhost:5173' }); await state.appPlaywriterHarness.startConsoleCapture({ search: /IndexRedirect|Missing default|Unauthenticated|workspace|error/i }); await state.page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded' }); await state.appPlaywriterHarness.waitForUrlIncludes({ urlIncludes: '/w/personal/home/files', timeout: 15000 }); await state.appPlaywriterHarness.observeRoute({ label: 'post-reset startup', search: /Files|Open workspace|Preparing workspace|Redirecting/i }); await state.appPlaywriterHarness.authSummary();"
+```
+
+## Read Captured Console
+
+```powershell
+pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.readConsoleCapture({ count: 50 });"
 ```
 
 ## Inspect Main Left Nav
@@ -53,6 +93,22 @@ pnpx playwriter -s $session --% -e "await state.page.getByRole('button', { name:
 ## Files Folder Create QA
 
 See the Files Folder Create QA recipe in `references/files.md`. Keep the full flow there because it is route-specific.
+
+## Long Playwriter Script From Temp File
+
+Use a temp file for generated PDF sibling QA or any flow with many assertions. This avoids PowerShell quote parsing issues, especially with selectors containing quotes or JavaScript regexes.
+
+```powershell
+$scriptPath = Join-Path $env:TEMP 'playwriter-generated-pdf-qa.js'
+@'
+const fs = require("node:fs");
+const path = require("node:path");
+// Assign state.page, install network listeners, and run the QA flow here.
+'@ | Set-Content -LiteralPath $scriptPath -Encoding utf8
+pnpx playwriter -s $session -f $scriptPath --timeout 180000
+```
+
+For generated PDF sibling QA, see `references/files.md` and use fixture `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf`.
 
 ## Inspect Files Resize Handle
 
