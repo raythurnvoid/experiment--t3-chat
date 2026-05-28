@@ -201,7 +201,7 @@ export async function files_db_schedule_pending_update_cleanup(
 			.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
 			.collect(),
 		ctx.scheduler.runAfter(
-			args.delayMs ?? 4 * 60 * 60 * 1000,
+			args.delayMs ?? 4 * 60 * 60 * 1000, // 4 hours
 			internal.files_pending_updates.remove_file_pending_update_if_expired,
 			{
 				pendingUpdateId: args.pendingUpdateId,

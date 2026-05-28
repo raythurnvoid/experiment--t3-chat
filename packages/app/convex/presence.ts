@@ -285,7 +285,7 @@ export const disconnect = mutation({
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,
 					userId: userAuth.id,
-					delayMs: 30_000,
+					delayMs: 10 * 60 * 1000, // 10 minutes
 				});
 			}),
 		);
