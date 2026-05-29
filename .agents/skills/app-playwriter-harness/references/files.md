@@ -32,7 +32,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Content root: `.FileEditorRichText-editor-content-root`.
 - Editable content: `.FileEditorRichText-editor-content`.
 - Comments region: `getByRole("complementary", { name: "Document comments" })`.
-- Comments filter: `#app_file_editor_rich_text_anchored_comments_filter`.
+- Comments filter: `getByRole("searchbox", { name: "Search document comments" })` scoped within the comments region.
 - Anchored comment item: `.FileEditorRichTextAnchoredComments-thread-container`.
 
 ### Diff And Pending Edits
@@ -72,7 +72,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 Use this after changing rich-text comments layout.
 
 - Select `#app_file_editor_sidebar_tabs_comments`.
-- Read `getBoundingClientRect().y` for `#app_file_editor_rich_text_anchored_comments_filter`.
+- Read `getBoundingClientRect().y` for `getByRole("searchbox", { name: "Search document comments" })` scoped within `getByRole("complementary", { name: "Document comments" })`.
 - Set `.FileNodeView-editor-area.scrollTop` to a larger value.
 - Verify the filter `y` stays stable while `.FileEditorRichTextAnchoredComments-thread-container` moves.
 - Verify the filter has an opaque background so comments do not show underneath it.

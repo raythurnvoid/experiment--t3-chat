@@ -64,8 +64,7 @@ export type FileEditorRichTextAnchoredComments_ClassNames =
 	| "FileEditorRichTextAnchoredComments"
 	| "FileEditorRichTextAnchoredComments-empty"
 	| "FileEditorRichTextAnchoredComments-anchored-elements-container"
-	| "FileEditorRichTextAnchoredComments-thread-container"
-	| "FileEditorRichTextAnchoredComments-filter";
+	| "FileEditorRichTextAnchoredComments-thread-container";
 
 export type FileEditorRichTextAnchoredComments_Props = {
 	editor: Editor;
@@ -88,7 +87,10 @@ export function FileEditorRichTextAnchoredComments(props: FileEditorRichTextAnch
 	// )
 
 	return (
-		<aside className={"FileEditorRichTextAnchoredComments" satisfies FileEditorRichTextAnchoredComments_ClassNames}>
+		<aside
+			aria-label="Document comments"
+			className={"FileEditorRichTextAnchoredComments" satisfies FileEditorRichTextAnchoredComments_ClassNames}
+		>
 			{!threads || threads.length === 0 ? (
 				<div
 					className={"FileEditorRichTextAnchoredComments-empty" satisfies FileEditorRichTextAnchoredComments_ClassNames}
@@ -96,22 +98,22 @@ export function FileEditorRichTextAnchoredComments(props: FileEditorRichTextAnch
 					No comments yet
 				</div>
 			) : (
-				<AnchoredThreads
-					className={
-						"FileEditorRichTextAnchoredComments-anchored-elements-container" satisfies FileEditorRichTextAnchoredComments_ClassNames
-					}
-					editor={editor}
-					threads={filteredThreads}
-				>
+				<>
 					<FileEditorCommentsFilterInput
-						className={
-							"FileEditorRichTextAnchoredComments-filter" satisfies FileEditorRichTextAnchoredComments_ClassNames
-						}
 						value={query}
+						ariaLabel="Search document comments"
 						onValueChange={setQuery}
 					/>
-					<FileEditorRichTextAnchoredCommentsThreadsList threads={filteredThreads} onClick={handleThreadClick} />
-				</AnchoredThreads>
+					<AnchoredThreads
+						className={
+							"FileEditorRichTextAnchoredComments-anchored-elements-container" satisfies FileEditorRichTextAnchoredComments_ClassNames
+						}
+						editor={editor}
+						threads={filteredThreads}
+					>
+						<FileEditorRichTextAnchoredCommentsThreadsList threads={filteredThreads} onClick={handleThreadClick} />
+					</AnchoredThreads>
+				</>
 			)}
 		</aside>
 	);

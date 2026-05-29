@@ -55,6 +55,7 @@ export function FileEditorCommentsFilterInput(props: FileEditorCommentsFilterInp
 	return (
 		<MyInput
 			id={id}
+			variant="surface"
 			className={cn("FileEditorCommentsFilterInput" satisfies FileEditorCommentsFilterInput_ClassNames, className)}
 		>
 			<MyInputArea>
@@ -265,7 +266,10 @@ function FileEditorCommentsThreadForm(props: FileEditorCommentsThreadForm_Props)
 			className={"FileEditorCommentsThreadForm" satisfies FileEditorCommentsThreadForm_ClassNames}
 			onSubmit={handleSubmit}
 		>
-			<MyInput className={"FileEditorCommentsThreadForm-input" satisfies FileEditorCommentsThreadForm_ClassNames}>
+			<MyInput
+				variant="surface"
+				className={"FileEditorCommentsThreadForm-input" satisfies FileEditorCommentsThreadForm_ClassNames}
+			>
 				<MyInputBox />
 				<MyInputArea>
 					<FileEditorRichTextCommentComposer
@@ -310,7 +314,7 @@ function FileEditorCommentsThreadResolveButton(props: FileEditorCommentsThreadRe
 	return (
 		<MyIconButton
 			className={"FileEditorCommentsThreadResolveButton" satisfies FileEditorCommentsThreadResolveButton_ClassNames}
-			variant="ghost-highlightable"
+			variant="outline"
 			tooltip="Mark as resolved"
 			aria-busy={isArchiving}
 			disabled={isArchiving}

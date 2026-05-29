@@ -113,10 +113,27 @@
 	}
 
 	.FileEditorCommentsThread {
-		background-color: var(--color-base-1-01);
-		border: 1px solid var(--color-fg-02);
-		filter: opacity(0.8);
+		/*
+		Use base (not base-alt): in-panel list cards on the neutral editor sidebar surface,
+		same family as files tree rows, outline buttons, and modal list items.
+		*/
+		--FileEditorCommentsThread-elevated-shadow:
+			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
+			0 2px 4px black;
+		--FileEditorCommentsThread-pressed-shadow:
+			inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
+
+		border: 1px solid var(--color-base-1-09);
+		background: linear-gradient(var(--color-base-1-04), var(--color-base-1-03));
+		box-shadow: var(--FileEditorCommentsThread-elevated-shadow);
 		contain: content;
+
+		transition:
+			background 0.1s linear,
+			border-color 0.1s linear,
+			box-shadow 0.1s linear;
 	}
 
 	.FileEditorCommentsThread-summary {
@@ -125,7 +142,8 @@
 		margin: -1px;
 
 		&:focus-visible {
-			outline-color: var(--color-fg-12);
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: -2px;
 		}
 	}
 
@@ -136,14 +154,133 @@
 		gap: 12px;
 	}
 
-	.FileEditorCommentsThread:hover,
-	.FileEditorCommentsThread-active {
-		background-color: var(--color-base-1-02);
-		filter: opacity(1);
+	.FileEditorCommentsThread:not(.FileEditorCommentsThread-active):hover:not(
+			:has(
+				.FileEditorCommentsThreadMessage-actions:is(:hover, :focus-within),
+				.FileEditorCommentsThreadForm:is(:hover, :focus-within)
+			)
+		) {
+		border-color: var(--color-base-1-10);
+		background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
+		box-shadow: var(--FileEditorCommentsThread-elevated-shadow);
+	}
+
+	.FileEditorCommentsThread:not(.FileEditorCommentsThread-active):has(
+			.FileEditorCommentsThread-summary:focus-visible
+		):not(
+			:has(
+				.FileEditorCommentsThreadMessage-actions:focus-within,
+				.FileEditorCommentsThreadForm:focus-within
+			)
+		) {
+		border-color: var(--color-base-1-10);
+		background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
+		box-shadow: var(--FileEditorCommentsThread-elevated-shadow);
+	}
+
+	.FileEditorCommentsThread:not(.FileEditorCommentsThread-active):has(
+			.FileEditorCommentsThread-summary:active
+		):not(:has(.FileEditorCommentsThreadMessage-actions:active)) {
+		border-color: var(--color-base-1-11);
+		background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+		box-shadow: var(--FileEditorCommentsThread-pressed-shadow);
 	}
 
 	.FileEditorCommentsThread-active {
-		border-color: var(--color-accent-01);
+		--FileEditorCommentsThread-elevated-shadow:
+			inset 0 1px 0 color-mix(in oklch, var(--color-accent-07) 40%, var(--color-fg-11)),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
+			0 2px 4px black,
+			0 0 0 1px color-mix(in oklch, var(--color-accent-06) 24%, transparent);
+
+		border-color: var(--color-accent-06);
+		background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+		box-shadow: var(--FileEditorCommentsThread-elevated-shadow);
+	}
+
+	.FileEditorCommentsThread-active:has(.FileEditorCommentsThread-summary:active) {
+		border-color: var(--color-accent-06);
+		background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
+		box-shadow: var(--FileEditorCommentsThread-pressed-shadow);
+	}
+
+	.FileEditorCommentsThread-active .FileEditorCommentsThread-content {
+		padding: 12px 12px 0;
+		gap: 0;
+	}
+
+	.FileEditorCommentsThread-active .FileEditorCommentsThread-messages {
+		padding-bottom: 12px;
+	}
+
+	.FileEditorCommentsThread-active
+		.FileEditorCommentsThread-messages
+		> .FileEditorCommentsThreadMessage:not(:first-child),
+	.FileEditorCommentsThread-active .FileEditorCommentsThread-messages > .FileEditorCommentsThreadSkeleton {
+		padding-top: 12px;
+		margin-top: 4px;
+		border-top: 1px solid var(--color-base-1-07);
+	}
+
+	.FileEditorCommentsThread-active
+		.FileEditorCommentsThread-messages
+		> .FileEditorCommentsThreadMessage:not(:first-child) {
+		padding-left: 12px;
+		margin-left: 15px;
+		border-left: 2px solid color-mix(in oklch, var(--color-accent-06) 45%, var(--color-base-1-06));
+	}
+
+	.FileEditorCommentsThread-active .FileEditorCommentsThread-no-messages-placeholder {
+		margin-top: 8px;
+		padding: 12px;
+		height: auto;
+		min-height: 44px;
+
+		border-radius: 6px;
+		border: 1px dashed var(--color-base-1-08);
+		background: linear-gradient(var(--color-base-1-02), var(--color-base-1-01));
+		box-shadow: inset 0 2px 4px color-mix(in oklch, black 28%, transparent);
+		color: var(--color-fg-06);
+	}
+
+	.FileEditorCommentsThread-active .FileEditorCommentsThreadForm {
+		margin: 0 -12px;
+		padding: 10px;
+
+		border-top: 1px solid var(--color-base-1-07);
+		border-radius: 0 0 7px 7px;
+		background: linear-gradient(var(--color-base-1-02), var(--color-base-1-01));
+		box-shadow: inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
+	}
+
+	.FileEditorCommentsThread-active .FileEditorCommentsThreadForm-input {
+		padding: 0;
+	}
+
+	.FileEditorCommentsFilterInput {
+		width: 100%;
+	}
+
+	.FileEditorCommentsFilterInput:not(.userInvalid):not(:has([aria-invalid="true"])) .MyInputBox,
+	.FileEditorCommentsThreadForm-input:not(.userInvalid):not(:has([aria-invalid="true"])) .MyInputBox {
+		/* Sunken field: darker than the raised comment cards sitting on base-1-03/04. */
+		border-color: var(--color-base-1-02);
+		box-shadow:
+			inset 0 2px 4px color-mix(in oklch, black 35%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 4%, transparent);
+	}
+
+	.FileEditorCommentsFilterInput:has(:where(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible))
+		.MyInputBox,
+	.FileEditorCommentsThreadForm-input:has(
+			:where(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible)
+		)
+		.MyInputBox {
+		border-color: var(--color-base-1-05);
+		box-shadow:
+			inset 0 2px 4px color-mix(in oklch, black 28%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 6%, transparent),
+			0 0 0 1px var(--color-fg-12);
 	}
 
 	.FileEditorCommentsThread-messages {

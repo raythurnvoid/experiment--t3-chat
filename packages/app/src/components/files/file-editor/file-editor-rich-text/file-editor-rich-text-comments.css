@@ -29,10 +29,25 @@
 
 		& > * {
 			position: absolute;
+			z-index: 0;
 			transform: translate3d(0px, var(--lb-tiptap-anchored-threads-top, 0px), 0px);
 			top: 0;
 			width: 100%;
 			padding-bottom: 12px;
 		}
+	}
+
+	.FileEditorRichTextAnchoredComments > .FileEditorCommentsFilterInput {
+		/* Keep the filter under the sticky sidebar tabs while anchored comments scroll with the document. */
+		position: sticky;
+		top: 60px;
+		z-index: 1;
+		transform: none;
+
+		background: linear-gradient(var(--color-base-1-03), var(--color-base-1-02));
+		border-bottom: 1px solid var(--color-base-1-05);
+		box-shadow:
+			0 -16px 0 16px var(--color-base-1-03),
+			0 6px 10px color-mix(in oklch, black 30%, transparent);
 	}
 }
