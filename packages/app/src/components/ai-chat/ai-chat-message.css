@@ -370,7 +370,7 @@
 
 		border-radius: 6px;
 
-		&:has(.AiChatMessagePartToolTextAreaSection-textarea:focus-visible) {
+		&:has(.AiChatMessagePartToolTextAreaSection-textarea:focus) {
 			outline-color: var(--color-fg-12);
 		}
 	}
@@ -415,6 +415,9 @@
 
 		background: transparent;
 		white-space: pre;
+
+		/* Keep the section wrapper focus ring, matching MyInput's control/box split. */
+		outline: none;
 	}
 	/* #endregion tool textarea section */
 

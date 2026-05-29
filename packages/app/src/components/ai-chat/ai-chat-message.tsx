@@ -280,6 +280,7 @@ const AiChatMessagePartToolTextAreaSection = memo(function AiChatMessagePartTool
 				{label}
 			</h6>
 			<TextMonospaceBlock
+				aria-label={label}
 				className={
 					"AiChatMessagePartToolTextAreaSection-textarea" satisfies AiChatMessagePartToolTextAreaSection_ClassNames
 				}
@@ -632,6 +633,7 @@ const AiChatMessagePartToolWritePage = memo(function AiChatMessagePartToolWriteP
 			{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
 			{output ? (
 				<DiffMonospaceBlock
+					aria-label={`${title} diff preview`}
 					className={"AiChatMessagePartToolWritePage-diff" satisfies AiChatMessagePartToolWritePage_ClassNames}
 					diffText={output}
 					stickToBottom={
@@ -641,6 +643,7 @@ const AiChatMessagePartToolWritePage = memo(function AiChatMessagePartToolWriteP
 				/>
 			) : (
 				<TextMonospaceBlock
+					aria-label={`${title} content preview`}
 					className={"AiChatMessagePartToolWritePage-diff" satisfies AiChatMessagePartToolWritePage_ClassNames}
 					text={deferredContent}
 					stickToBottom={toolState === "input-streaming" || toolState === "input-available"}
