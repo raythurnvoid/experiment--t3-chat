@@ -99,6 +99,13 @@
 			background-color: var(--color-base-1-03);
 		}
 	}
+
+	.FileNodeView-editor-sidebar-panel:has(.FileEditorSidebar-panel[data-open="true"] .FileEditorSidebarAgent) {
+		/* Keep only the Agent tab pinned; comments stay on the shared editor scroll surface. */
+		position: sticky;
+		top: 0;
+		align-self: start;
+	}
 	/* #endregion root */
 
 	/* #region header */
