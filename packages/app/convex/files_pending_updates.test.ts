@@ -26,6 +26,9 @@ import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 let enqueueActionSpy: MockInstance;
 const r2Objects = new Map<string, string | ArrayBuffer>();
+// Keep the automatic presence timeout from firing during these tests; convex-test
+// scheduled functions can otherwise race past the active transaction and leak an unhandled rejection.
+const presenceHeartbeatIntervalMs = 60 * 60 * 1000;
 
 beforeEach(() => {
 	r2Objects.clear();
@@ -1277,7 +1280,7 @@ describe("presence.disconnect", () => {
 			roomId,
 			userId: seeded.userId,
 			sessionId: "session-last",
-			interval: 1_000,
+			interval: presenceHeartbeatIntervalMs,
 		});
 
 		await asUser.mutation(api.presence.disconnect, {
@@ -1364,13 +1367,13 @@ describe("presence.disconnect", () => {
 			roomId,
 			userId: seeded.userId,
 			sessionId: "session-first",
-			interval: 1_000,
+			interval: presenceHeartbeatIntervalMs,
 		});
 		await asUser.mutation(api.presence.heartbeat, {
 			roomId,
 			userId: seeded.userId,
 			sessionId: "session-second",
-			interval: 1_000,
+			interval: presenceHeartbeatIntervalMs,
 		});
 
 		await asUser.mutation(api.presence.disconnect, {
