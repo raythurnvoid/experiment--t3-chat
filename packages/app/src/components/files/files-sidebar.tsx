@@ -71,6 +71,7 @@ import {
 	MyMenuItemContent,
 	MyMenuItemContentIcon,
 	MyMenuItemContentPrimary,
+	MyMenuItemsGroup,
 	MyMenuPopover,
 	MyMenuPopoverContent,
 	MyMenuTrigger,
@@ -346,7 +347,7 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 			>
 				<MyMenuPopoverContent>
 					{kind === "folder" ? (
-						<>
+						<MyMenuItemsGroup>
 							<MyMenuItem
 								className={cn(
 									"FilesSidebarTreeItemMoreAction-menu-create-action" satisfies FilesSidebarTreeItemMoreAction_ClassNames,
@@ -381,26 +382,28 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 									<MyMenuItemContentPrimary>Add folder</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuItem>
-						</>
+						</MyMenuItemsGroup>
 					) : null}
-					<MyMenuItem hideOnClick onClick={onCopy}>
-						<MyMenuItemContent>
-							<MyMenuItemContentIcon>
-								<Copy />
-							</MyMenuItemContentIcon>
-							<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
-						</MyMenuItemContent>
-					</MyMenuItem>
-					<MyMenuItem disabled={!canRename} hideOnClick onClick={handleRenameClick}>
-						<MyMenuItemContent>
-							<MyMenuItemContentIcon>
-								<Edit2 />
-							</MyMenuItemContentIcon>
-							<MyMenuItemContentPrimary>Rename</MyMenuItemContentPrimary>
-						</MyMenuItemContent>
-					</MyMenuItem>
-					{kind === "folder" && (
-						<>
+					<MyMenuItemsGroup separator={kind === "folder"}>
+						<MyMenuItem hideOnClick onClick={onCopy}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<Copy />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+						<MyMenuItem disabled={!canRename} hideOnClick onClick={handleRenameClick}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<Edit2 />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Rename</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+					</MyMenuItemsGroup>
+					{kind === "folder" ? (
+						<MyMenuItemsGroup separator>
 							<MyMenuItem disabled={!canExpandSubtree} hideOnClick onClick={onExpandSubtree}>
 								<MyMenuItemContent>
 									<MyMenuItemContentIcon>
@@ -417,18 +420,20 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 									<MyMenuItemContentPrimary>Collapse subtree</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuItem>
-						</>
-					)}
-					<MyMenuItem
-						variant={isArchived ? "default" : "destructive"}
-						hideOnClick
-						onClick={handleArchiveUnarchiveClick}
-					>
-						<MyMenuItemContent>
-							<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
-							<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Archive"}</MyMenuItemContentPrimary>
-						</MyMenuItemContent>
-					</MyMenuItem>
+						</MyMenuItemsGroup>
+					) : null}
+					<MyMenuItemsGroup separator>
+						<MyMenuItem
+							variant={isArchived ? "default" : "destructive"}
+							hideOnClick
+							onClick={handleArchiveUnarchiveClick}
+						>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Archive"}</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+					</MyMenuItemsGroup>
 				</MyMenuPopoverContent>
 			</MyMenuPopover>
 		</MyMenu>
