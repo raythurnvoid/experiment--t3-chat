@@ -1,285 +1,168 @@
-# Files Browser Notes
+# Files Route Playwriter Notes
 
-Use this file for reusable `/files` route and editor interaction knowledge.
+Use this file as a quick testing map for `/files`. Keep it short and selector-oriented. If a check needs a large script, write a temporary script during the task instead of pasting it here.
 
-## Route
+## Route Basics
 
 - Route shape: `/w/:workspaceName/:projectName/files?nodeId=<id>`.
-- `nodeId=root` opens the root folder browser. Folder node ids open the folder browser, and file node ids open the file editor.
-- Optional `view` search param selects editor mode:
-  - `rich_text_editor`
-  - `plain_text_editor`
-  - `diff_editor`
+- `nodeId=root` opens the root folder browser.
+- Folder node ids open the folder browser; file node ids open the editor.
+- Optional `view` values: `rich_text_editor`, `plain_text_editor`, `diff_editor`.
+
+## First Checks
+
+- Bind with `state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/files" })`.
+- Confirm route/UI with `state.appPlaywriterHarness.observe({ search: /Files|Comments|Agent|Review|Toolbar/i })`.
+- If the app is blank, read logs before retrying: `getLatestLogs({ page: state.page, search: /error|failed|not defined|syntax/i, count: 30 })`.
+- Do not force-click editor/sidebar controls. If a click is blocked, inspect the target or hit-test the point.
 
 ## Stable Selectors
+
+### Layout And Scroll
+
+- Files route scroll owner: `.FileNodeView-editor-area`.
+- Content panel: `.FileNodeView-content-panel`.
+- Sidebar panel: `.FileNodeView-editor-sidebar-panel`.
+- Comments tab: `#app_file_editor_sidebar_tabs_comments`.
+- Agent tab: `#app_file_editor_sidebar_tabs_agent`.
+
+### Rich Text
+
+- Toolbar: `[role="toolbar"][aria-label="Toolbar"]`.
+- Content root: `.FileEditorRichText-editor-content-root`.
+- Editable content: `.FileEditorRichText-editor-content`.
+- Comments region: `getByRole("complementary", { name: "Document comments" })`.
+- Comments filter: `#app_file_editor_rich_text_anchored_comments_filter`.
+- Anchored comment item: `.FileEditorRichTextAnchoredComments-thread-container`.
+
+### Diff And Pending Edits
 
 - Pending updates banner: `[data-testid="pending-edits-banner"]`.
 - Review changes button: `[data-testid="review-changes-button"]`.
 - Diff editor root: `[aria-label="File diff editor"]`.
-- Diff editor toolbar group: `[aria-label="Diff editor actions"]`.
-- Diff editor save: `getByRole("button", { name: "Save staged changes" })`.
-- Diff editor accept all: `getByRole("button", { name: "Accept all pending changes" })`.
-- Diff editor accept all + save: `getByRole("button", { name: "Accept all pending changes and save" })`.
-- Rich text toolbar: `[role="toolbar"][aria-label="Toolbar"]`.
-- Rich text content root class: `.FileEditorRichText-editor-content-root`.
-- Rich text content class: `.FileEditorRichText-editor-content`.
+- Diff editor toolbar: `[aria-label="Diff editor actions"]`.
+- Save staged changes: `getByRole("button", { name: "Save staged changes" })`.
+- Accept all: `getByRole("button", { name: "Accept all pending changes" })`.
+- Accept all and save: `getByRole("button", { name: "Accept all pending changes and save" })`.
+
+### Sidebar And Folder Browser
+
+- Sidebar tree rows: `.FilesSidebarTreeItem[data-file-id]`.
+- Sidebar selected rows: `.FilesSidebarTreeItem[data-file-id]:has(.FilesSidebarTreeItemPrimaryAction[aria-selected="true"])`.
+- Sidebar row primary action: `.FilesSidebarTreeItemPrimaryAction`.
+- Sidebar row more action: `.FilesSidebarTreeItemMoreAction`.
+- Sidebar context menu: `[data-files-sidebar-tree-context][role="menu"]`.
 - Folder explorer root: `.FileNodeViewFolderExplorer`.
 - Folder explorer rows: `.FileNodeViewFolderExplorer-row`.
-- Folder explorer drag target state: `.FileNodeViewFolderExplorer-row-drop-target`.
-- Folder explorer dragging source state: `.FileNodeViewFolderExplorer-row-dragging`.
+- Folder table drop target state: `.FileNodeViewFolderExplorer-row-drop-target`.
+- Folder table dragging state: `.FileNodeViewFolderExplorer-row-dragging`.
 
-## Debugging Notes
+## Common Gotchas
 
-- Start with `state.appPlaywriterHarness.observe({ search: /Files|Chat|Review|Toolbar/i })` to confirm the route and major controls.
-- Use `state.appPlaywriterHarness.inspectElement(...)` before clicking the main sidebar when diagnosing navigation clickability.
-- Avoid force-clicking editor or sidebar controls; if a click is blocked, inspect the topmost element at the target point.
-- Editor mode radios are visually represented by labels in the app header. If clicking a radio locator times out because the native input is tiny, click the matching `#app_main_header_content label` instead.
-- Uploaded source files and generated `.md` output files share filename prefixes. Use exact role-name locators for per-node action buttons, such as `getByRole("button", { name: "More actions for qa.pdf", exact: true })`, so the source locator does not also match `qa.pdf.md`.
-- When the folder explorer is visible, it can render a second action button with the same accessible name as the tree action. Scope the locator to the tree/folder row or use `.first()` intentionally after confirming the snapshot.
-- Inline create/rename inputs are often selected by their current value in snapshots. After `fill(...)`, that locator may stop matching before `press("Enter")`; re-locate by the new value, scope to the focused input/modal, or press Enter through `page.keyboard` after confirming focus.
+- Editor mode radios are small native inputs. If a radio locator times out, click the matching `#app_main_header_content label`.
+- Uploaded source files and generated `.md` siblings can share filename prefixes. Use exact role-name locators for per-node actions, such as `getByRole("button", { name: "More actions for qa.pdf", exact: true })`.
+- The folder explorer and sidebar tree can expose duplicate action names. Scope to the owning tree row, folder row, or panel before clicking.
+- Inline create/rename inputs may stop matching by old value after `fill(...)`; re-locate by the new value or use `page.keyboard.press("Enter")` after confirming focus.
+- Use real drag gestures for drag/drop checks. Do not use `dispatchEvent`, DOM `element.click()`, or forced clicks.
 
-## Resize Handle QA
+## High-Value Recipes
 
-Keep resize-handle checks as recipe snippets instead of installed harness helpers. The useful checks are:
+### Sticky Comments Filter
 
-- inspect `.MyPanelResizeHandle[aria-label="Resize files sidebar"]`
-- read `.MyPanelResizeHandleGrip-pill` background and outline colors
-- read `.MyPanelResizeHandleGrip-icon` stroke/color/z-index
-- hit-test the center of `.MyPanelResizeHandleGrip` and confirm the cursor is `ew-resize`
-- drag both the regular handle track and the larger grip hit area, then double-click reset
+Use this after changing rich-text comments layout.
 
-Generic inspection command:
+- Select `#app_file_editor_sidebar_tabs_comments`.
+- Read `getBoundingClientRect().y` for `#app_file_editor_rich_text_anchored_comments_filter`.
+- Set `.FileNodeView-editor-area.scrollTop` to a larger value.
+- Verify the filter `y` stays stable while `.FileEditorRichTextAnchoredComments-thread-container` moves.
+- Verify the filter has an opaque background so comments do not show underneath it.
 
-```powershell
-pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/files' }); await state.appPlaywriterHarness.inspectElement({ selector: '.MyPanelResizeHandle', attribute: { name: 'aria-label', value: 'Resize files sidebar' }, computedStyles: [{ name: 'pill', selector: '.MyPanelResizeHandleGrip-pill', properties: ['backgroundColor', 'outlineColor', 'outlineWidth'] }, { name: 'icon', selector: '.MyPanelResizeHandleGrip-icon', properties: ['stroke', 'color', 'zIndex'] }], hitTargets: [{ name: 'grip center', selector: '.MyPanelResizeHandleGrip' }] });"
-```
+### Sticky Agent Panel
 
-## Folder Create QA
+Use this after changing the right sidebar, tabs, panel group, or chat layout.
 
-Keep folder/file creation checks as a route-specific recipe. Do not promote this flow into the installed harness unless it becomes generic across routes.
+- On `Comments`, `.FileNodeView-editor-sidebar-panel` should be `position: static` and move with `.FileNodeView-editor-area` page scroll.
+- On `Agent`, `.FileNodeView-editor-sidebar-panel` should be `position: sticky` and keep a stable `y` during page scroll.
+- Verify `.AiChatComposer` remains visible near the bottom of the viewport after scrolling.
 
-- Bind a single `/files` tab and verify no extra Playwriter-enabled tabs open during the flow.
-- From the root folder, click `New folder in current folder`.
-- Verify the default folder name matches `new-folder` or `new-folder-<n>` and the whole value is selected.
-- Create a temporary folder with a unique `aaa-pw-qa-*` name and verify the route does not navigate.
-- Open the temporary folder and verify the empty-folder toolbar exposes `New file in current folder` and `New folder in current folder`.
-- Click `New file in current folder`, verify the default file name matches `new-file.md` or `new-file-<n>.md`, and verify only the basename is selected.
-- Create `deep/path/example.md`, verify the route does not navigate, and verify a top-level `deep` folder row appears.
-- Try creating the same deep file path again and verify `This file already exists.` disables `Create file`.
-- Try creating `deep/path` as a folder and verify `This folder already exists.` disables `Create folder`.
-- Archive the temporary `aaa-pw-qa-*` folder at the end of the flow.
+### Create File Or Folder
 
-## Folder Explorer Drag And Drop QA
+- Bind one `/files` tab and use a unique `aaa-pw-qa-*` temporary folder.
+- Create a folder from root; verify the default name is selected and the route does not unexpectedly navigate.
+- Inside the temp folder, create a file and verify the basename selection for `new-file.md`.
+- Try duplicate deep paths: duplicate file should show `This file already exists.`, duplicate folder should show `This folder already exists.`.
+- Archive the temp folder when done.
 
-Keep folder-table drag/drop checks as a route-specific recipe. The folder table uses Pragmatic Drag and Drop, while the sidebar tree still uses Headless Tree DnD.
+### Sidebar Selection Context
 
-- Bind a single `/files` tab and navigate to a folder screen or root folder screen where `.FileNodeViewFolderExplorer` is visible.
-- Create a temporary `aaa-pw-dnd-*` folder with two child folders and at least one Markdown file so the folder table has both draggable files and folder drop targets.
-- Use real Playwright drag gestures: prefer `source.dragTo(target)`; if that is flaky for this table, use `mouse.move`, `mouse.down`, stepped `mouse.move`, and `mouse.up`. Do not use `dispatchEvent`, DOM `element.click()`, or forced clicks.
-- Drag the Markdown file row onto a folder row. Verify the source row leaves the current folder table, then open the target folder and verify the file appears there.
-- Drag one folder row onto another folder row. Verify the moved folder leaves the current folder table and appears inside the target folder.
-- Try dragging a row onto a file row. Verify no move occurs and no `FileNodeViewFolderExplorer-row-drop-target` state is applied to the file row.
-- Try same-parent or self/descendant-style moves when the setup exposes them. Verify no move occurs.
-- While a move is pending, verify the pending row does not start another drag and the more-actions button remains disabled.
-- After folder-table checks, run one sidebar tree move or external file upload drop to confirm the unchanged Headless Tree DnD flow still works.
+Use this when changing tree focus, context menus, selection, or route sync.
 
-## Sidebar Tree Drop Zone Visual QA
-
-Keep sidebar drop-zone checks as a route-specific recipe because they depend on Headless Tree drag state, the `/files` sidebar layout, and the fixed 45px tree row slots.
-
-- Bind a single `/files` tab and create or reuse a visible nested tree like `new-folder/drop-child/drop-grandchild/test.md`, plus a root-level `README.md`.
-- Capture a baseline screenshot before dragging so visual comparison has the normal tree rails, selected row, folder indentation, and root/sidebar borders.
-- Verify root drops by dragging over the empty tree area: the full tree/root area should show one orange dotted enclosure and a compact `Drop at root` indicator.
-- Verify folder drops at depth 0, depth 1, and depth 2/collapsed folders: the orange dotted enclosure should cover the target folder row plus the whole visible subtree, not only the target row.
-- Verify invalid file-row drops: hovering a file row must not show the folder/root drop-zone visual or upload into the file's parent.
-- Inspect computed styles for `.FilesSidebarTreeDropZoneArea` and `.FilesSidebarTreeDropZoneIndicator-label`. The indicator should be transparent and blurred with no glow, and the dotted area should use the app accent token.
-- Check the accessibility snapshot while the indicator is visible. The visual indicator is `aria-hidden`; the snapshot should still expose the normal `files_nodes` tree and treeitems without an extra button, link, or duplicate drop-zone label.
-
-## Sidebar Tree Row Surface Visual QA
-
-Keep row-surface checks as a lightweight Playwriter/manual recipe because they verify CSS state styling without needing committed browser tests.
-
-- Bind a single `/files` tab and inspect a visible `.FilesSidebarTreeItemPrimaryAction`.
-- Verify idle, not-selected rows have no elevated gradient surface.
-- Verify selected rows and focus-visible keyboard rows use the elevated gradient surface.
-- Verify hover brightens text without using the selected surface.
-- Verify internal Headless Tree focus alone does not keep the selected surface after a pointer Ctrl-click toggles a row off.
-- Verify active/pressed rows use the darker pressed gradient and inset-only shadow.
-- Inspect computed styles for the primary action: `borderWidth` should be `0px`, `outlineStyle` should be `none`, and no transparent rim should appear between the row edge and the shadowed surface.
-- Confirm secondary action buttons still use their existing button styling and do not inherit the row-surface treatment.
-
-## Sidebar Tree Selection Context QA
-
-Keep selection-context checks as a route-specific Playwriter recipe. The behavior depends on Headless Tree state, TanStack route state, portaled menus, and browser focus/pointer events, so prefer this recipe over committed browser tests or mocked tree instances.
-
-- Bind a single `/files` tab and clear the search box.
-- Ensure the route is on a non-root `nodeId`; if it is missing or `root`, click the first visible `.FilesSidebarTreeItemPrimaryAction` and wait for the URL `nodeId` to match that row's `data-file-id`.
-- Read selected rows with `.FilesSidebarTreeItem[data-file-id]:has(.FilesSidebarTreeItemPrimaryAction[aria-selected="true"])`.
-- Control-click a non-navigated visible row and verify at least two selected ids are visible.
-- Click the Search files input. The selected ids should reconcile to exactly `[nodeId]`.
-- Recreate the multi-selection, open a row `More actions` menu, and verify the multi-selection remains visible while the menu is open. Then click Search files and verify it reconciles to `[nodeId]`.
-- Recreate the multi-selection, open the top `More options` menu, and verify the multi-selection remains visible while the menu is open. Then click Search files and verify it reconciles to `[nodeId]`.
-- Recreate the multi-selection and click empty whitespace inside `.FilesSidebarTree`, below the last visible row when space is available. The selected ids should reconcile to exactly `[nodeId]`.
-- Navigate to `nodeId=root`, Control-click two visible rows, then click Search files or empty tree whitespace. The selected ids should become `[]`.
+- Ensure URL has a non-root `nodeId`; if needed, click a visible `.FilesSidebarTreeItemPrimaryAction`.
+- Control-click a second row and verify selected rows include both ids.
+- Click Search files or empty tree whitespace; selection should reconcile to `[nodeId]`.
+- Open a row menu and the top more-options menu; multi-selection should remain visible while each menu is open.
+- On `nodeId=root`, outside interactions should clear temporary multi-selection to `[]`.
 - Do not click archive/delete menu items during this check.
 
-Reusable script shape:
+### Folder Table Drag And Drop
+
+- Create or reuse a folder with two child folders and at least one Markdown file.
+- Drag a file row onto a folder row; verify it leaves the source table and appears in the target folder.
+- Drag a folder row onto another folder row; verify the moved folder appears inside the target.
+- Drag onto a file row; verify no move and no `.FileNodeViewFolderExplorer-row-drop-target`.
+- While a move is pending, verify the row cannot start another drag and its more-actions button is disabled.
+
+### Sidebar Drop Zone Visuals
+
+- Use a nested tree such as `new-folder/drop-child/drop-grandchild/test.md`.
+- Drag over root empty space and folders at multiple depths.
+- Valid folder/root drops should show the orange dotted enclosure; invalid file-row drops should not.
+- The drop indicator should be `aria-hidden`; accessibility snapshots should still expose only the normal `files_nodes` tree and treeitems.
+
+### Sidebar Row Surface Visuals
+
+- Inspect `.FilesSidebarTreeItemPrimaryAction`.
+- Idle unselected rows should have no elevated selected surface.
+- Selected and focus-visible rows should use the elevated surface.
+- Hover should brighten text without applying the selected surface.
+- Active/pressed rows should use the darker pressed surface and inset-only shadow.
+- Secondary action buttons should keep button styling and not inherit row-surface styles.
+
+### R2 Upload And PDF Siblings
+
+- Fixture: `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf`.
+- Select the target folder before clicking sidebar `Upload file`; file-selected uploads may target root.
+- After upload prep, the source PDF should appear as a normal tree node.
+- During processing, the source file panel should show pending/processing metadata, not converted Markdown.
+- Same-folder duplicate upload should show `File already exists` with `Replace` and `Upload renamed file`.
+- After conversion, folder explorer should show visible regular siblings in order: `<name>.pdf`, `<name>.pdf.md`.
+- Opening `<name>.pdf.md` should mount the normal rich editor with converted content.
+
+### File Agent Search Read Edit
+
+- Put or find a unique token in the selected Markdown file.
+- Open `Agent` and ask it to search for the token, read the file, and make a small edit.
+- Verify `Search files`, `Read file`, and `Edit file` tool disclosures appear.
+- Review/apply via `[data-testid="review-changes-button"]`.
+
+### Presence Stress
+
+- Make sure presence is enabled in the left sidebar.
+- Click between two sibling file treeitems 10+ times.
+- Wait 8-10 seconds for presence heartbeats/disconnects.
+- Check logs for `presence:disconnect`, `presence:heartbeat`, `Rate limit exceeded`, `should_never_happen`, and `currentPresenceData`.
+
+## Script Pattern
+
+For anything longer than a one-liner, prefer a temp file:
 
 ```powershell
-$scriptPath = Join-Path $env:TEMP 'playwriter-files-sidebar-selection-context-check.js'
+$scriptPath = Join-Path $env:TEMP 'playwriter-files-check.js'
 @'
-await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/files' });
+await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/files" });
 state.page.setDefaultTimeout(10000);
-
-const treeRows = state.page.locator(".FilesSidebarTreeItem[data-file-id]");
-const searchInput = state.page.locator('input[placeholder="Search files"]').first();
-await treeRows.first().waitFor({ timeout: 10000 });
-await searchInput.fill("");
-
-async function selectedIds() {
-	const selectedRows = state.page.locator('.FilesSidebarTreeItem[data-file-id]:has(.FilesSidebarTreeItemPrimaryAction[aria-selected="true"])');
-	const ids = [];
-	const count = await selectedRows.count();
-	for (let index = 0; index < count; index++) {
-		ids.push(await selectedRows.nth(index).getAttribute("data-file-id"));
-	}
-	return ids;
-}
-
-async function waitForNodeId(expectedNodeId) {
-	for (let attempt = 0; attempt < 40; attempt++) {
-		if (new URL(state.page.url()).searchParams.get("nodeId") === expectedNodeId) return;
-		await state.page.waitForTimeout(100);
-	}
-	throw new Error(`Expected URL nodeId ${expectedNodeId}, got ${state.page.url()}`);
-}
-
-async function expectSelectedIds(expectedIds, label) {
-	await state.page.waitForTimeout(250);
-	const actualIds = await selectedIds();
-	console.log(label, actualIds);
-	if (JSON.stringify(actualIds) !== JSON.stringify(expectedIds)) {
-		throw new Error(`${label}: expected ${JSON.stringify(expectedIds)}, got ${JSON.stringify(actualIds)}.`);
-	}
-}
-
-async function firstNonNavigatedRow(navigatedId) {
-	const count = await treeRows.count();
-	for (let index = 0; index < count; index++) {
-		const row = treeRows.nth(index);
-		const id = await row.getAttribute("data-file-id");
-		if (id && id !== navigatedId) return row;
-	}
-	throw new Error("No non-navigated row is available.");
-}
-
-let navigatedId = new URL(state.page.url()).searchParams.get("nodeId");
-if (!navigatedId || navigatedId === "root") {
-	const firstRow = treeRows.first();
-	const firstRowId = await firstRow.getAttribute("data-file-id");
-	if (!firstRowId) throw new Error("Could not read the first row id.");
-	await firstRow.locator(".FilesSidebarTreeItemPrimaryAction").click();
-	await waitForNodeId(firstRowId);
-	navigatedId = firstRowId;
-}
-
-async function createMultiSelection() {
-	const row = await firstNonNavigatedRow(navigatedId);
-	const rowId = await row.getAttribute("data-file-id");
-	await row.locator(".FilesSidebarTreeItemPrimaryAction").click({ modifiers: ["Control"] });
-	const ids = await selectedIds();
-	if (!rowId || ids.length < 2 || !ids.includes(navigatedId) || !ids.includes(rowId)) {
-		throw new Error(`Expected navigated row ${navigatedId} and Control-click row ${rowId} to be selected, got ${JSON.stringify(ids)}.`);
-	}
-	return { row, rowId };
-}
-
-await createMultiSelection();
-await searchInput.click();
-await expectSelectedIds([navigatedId], "Search input reconciles to navigated row");
-
-const rowMenuSelection = await createMultiSelection();
-await rowMenuSelection.row.hover();
-await rowMenuSelection.row.locator(".FilesSidebarTreeItemMoreAction").first().click();
-await state.page.locator('[data-files-sidebar-tree-context][role="menu"]').first().waitFor({ timeout: 5000 });
-if ((await selectedIds()).length < 2) throw new Error("Expected row menu to keep multi-selection visible.");
-await searchInput.click();
-await expectSelectedIds([navigatedId], "Leaving row menu reconciles to navigated row");
-
-await createMultiSelection();
-await state.page.locator(".FilesSidebarTopSectionMoreAction").first().click();
-await state.page.locator('[data-files-sidebar-tree-context][role="menu"]').first().waitFor({ timeout: 5000 });
-if ((await selectedIds()).length < 2) throw new Error("Expected top menu to keep multi-selection visible.");
-await searchInput.click();
-await expectSelectedIds([navigatedId], "Leaving top menu reconciles to navigated row");
-
-await createMultiSelection();
-const treeBox = await state.page.locator(".FilesSidebarTree").first().boundingBox();
-const lastRowBox = await treeRows.last().boundingBox();
-if (treeBox && lastRowBox && treeBox.y + treeBox.height > lastRowBox.y + lastRowBox.height + 24) {
-	await state.page.mouse.click(treeBox.x + treeBox.width / 2, Math.min(treeBox.y + treeBox.height - 12, lastRowBox.y + lastRowBox.height + 24));
-	await expectSelectedIds([navigatedId], "Tree whitespace reconciles to navigated row");
-} else {
-	console.log("Skipped tree whitespace click because no empty tree area is visible.");
-}
-
-const rootUrl = new URL(state.page.url());
-rootUrl.searchParams.set("nodeId", "root");
-rootUrl.searchParams.delete("view");
-await state.page.goto(rootUrl.toString(), { waitUntil: "commit" });
-await treeRows.first().waitFor({ timeout: 10000 });
-await searchInput.fill("");
-await treeRows.first().locator(".FilesSidebarTreeItemPrimaryAction").click({ modifiers: ["Control"] });
-await treeRows.nth(1).locator(".FilesSidebarTreeItemPrimaryAction").click({ modifiers: ["Control"] });
-if ((await selectedIds()).length < 2) throw new Error("Expected temporary root multi-selection before reset.");
-await searchInput.click();
-await expectSelectedIds([], "Root route outside interaction clears selection");
-
+// Task-specific checks here.
 state.page.removeAllListeners();
 '@ | Set-Content -LiteralPath $scriptPath -Encoding utf8
 pnpx playwriter -s $session -f $scriptPath --timeout 90000
 ```
-
-## R2 Upload QA
-
-Keep R2 upload checks as a route-specific recipe. Do not promote this flow into the installed harness unless file upload controls become a generic primitive across routes.
-
-- Fixture asset: `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf`. Keep harness file assets under Git LFS.
-- Bind a single `/files` tab and verify no dedicated Uploads section appears in the files sidebar.
-- From the root folder or a temporary `aaa-pw-qa-*` folder, click `Upload file`, then set the hidden `input[type="file"]` to the fixture path.
-- Select the target folder before clicking the sidebar `Upload file` item. If a file is selected, the current sidebar upload flow targets root, which can make same-name collision checks look like duplicate creation in different folders.
-- Verify a normal tree node named `r2-upload-sample.pdf` appears immediately after upload preparation; it should not appear in a separate uploads list.
-- Open the new source file node and verify the file panel shows a processing/pending state instead of the converted file until finalization completes.
-- Upload the same fixture to the same folder again and verify the modal title is `File already exists` with `Replace` and `Upload renamed file` actions.
-- Choose `Upload renamed file` with a unique filename such as `r2-upload-sample-<timestamp>.pdf` and verify the renamed source file node appears in the normal tree.
-- Repeat the collision flow and choose `Replace`; verify the old active source is archived and the replacement source appears as the active `r2-upload-sample.pdf`.
-- Archive the temporary `aaa-pw-qa-*` folder at the end of the flow.
-- Oversized upload UI checks are hard to drive through Playwriter because `setInputFiles` refuses files larger than 50 MB in extension mode. Prefer backend/unit coverage for the size gate, or use a smaller app-configured size limit in a dedicated test build if browser-level oversized QA becomes required.
-
-## Generated PDF Siblings QA
-
-Use this recipe for the PDF-generated sibling files flow that replaced hidden generated-file behavior.
-
-- Create a temporary folder named `aaa-pw-generated-<timestamp>` and upload `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf` as `r2-upload-playwriter-<timestamp>.pdf`.
-- Verify the folder explorer shows exactly these visible regular files in lexicographic order: `<name>.pdf`, `<name>.pdf.md`.
-- Open `<name>.pdf` and verify the selected URL `nodeId` is the visible source node, the panel shows stored metadata such as `application/pdf` and size, and converted Markdown text is absent.
-- Open `<name>.pdf.md` in rich mode and verify the normal rich editor mounts with converted content such as `Generative artificial intelligence` or `large language model`.
-- Switch the generated Markdown file to Markdown and Diff modes through the header labels. Only `view` should change; `nodeId` must stay the generated file id. In Diff mode, wait for `[aria-label="File diff editor"]` because Monaco text can appear a few seconds after the route changes.
-- Confirm there is no legacy hidden-file wording, legacy generated-file suffix, accordion/select UI, or localStorage key from the old hidden-file selection behavior.
-- Query Convex after finalization and confirm both `files_nodes` are regular file nodes under the folder, the PDF source asset remains `kind: "upload"`, the generated Markdown asset is `kind: "content"`, and all relevant `conversionWorkId` values are `null`.
-- Archive the temporary folder from the UI and verify the folder plus all descendants share one `archiveOperationId`.
-
-
-## Comments And Agent QA
-
-Keep comments/agent checks as route-specific recipes because they depend on the active editor.
-
-- To create a rich-text comment, focus text in `.FileEditorRichText-editor-content`, select content with keyboard selection, click the bubble `Comment` button, type into `.FileEditorRichTextCommentComposer-editor`, then click `Submit comment`.
-- Verify the comments sidebar shows the new thread under the `Comments` tab and that `Search comments` appears once at least one thread exists.
-- To test file-agent search/read/edit, use a unique token in the selected Markdown file, open the `Agent` tab, and ask the agent to search for that token, read the matching file, and make a small edit. Verify the agent message shows `Search files`, `Read file`, and `Edit file` tool disclosures, then review/apply the pending edit through `[data-testid="review-changes-button"]`.
-- If native editor mode radios time out in Playwriter, click the corresponding `#app_main_header_content label` instead of force-clicking the radio input.
-
-
-## Rapid page-switch presence QA
-
-For /files presence regressions, first make sure presence is enabled (left sidebar Presence region shows online users plus a Disable button). A reliable stress flow is to use treeitem locators for two sibling files, e.g. role=treeitem[name="setup"] and role=treeitem[name="readme"], click them back and forth 10+ times, then wait ~8-10s for presence heartbeats/disconnects. Check console/pageerror logs for presence:disconnect, presence:heartbeat, Rate limit exceeded, should_never_happen, and currentPresenceData. If the requested workspace tab is not Playwriter-enabled, bind any enabled localhost /files tab and navigate it to the target route instead of asking for a new tab.

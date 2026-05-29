@@ -48,7 +48,14 @@ import { AssistiveTreeDescription } from "@headless-tree/react";
 import { useTree } from "@headless-tree/react/react-compiler";
 import { useNavigate } from "@tanstack/react-router";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
-import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputHelperText, MyInputIcon } from "@/components/my-input.tsx";
+import {
+	MyInput,
+	MyInputArea,
+	MyInputBox,
+	MyInputControl,
+	MyInputHelperText,
+	MyInputIcon,
+} from "@/components/my-input.tsx";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink } from "@/components/my-link.tsx";
@@ -79,7 +86,14 @@ import {
 	MyModalPopover,
 } from "@/components/my-modal.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { cn, copy_to_clipboard, forward_ref, path_extract_segments_from, should_never_happen, sx } from "@/lib/utils.ts";
+import {
+	cn,
+	copy_to_clipboard,
+	forward_ref,
+	path_extract_segments_from,
+	should_never_happen,
+	sx,
+} from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { dom_clear_text_selection } from "@/lib/dom-utils.ts";
 import { Result } from "@/lib/errors-as-values-utils.ts";
@@ -245,7 +259,10 @@ const FilesSidebarTreeItemSecondaryActionCreateFile = memo(function FilesSidebar
 // #endregion tree item secondary action create file
 
 // #region tree item more action
-type FilesSidebarTreeItemMoreAction_ClassNames = "FilesSidebarTreeItemMoreAction";
+type FilesSidebarTreeItemMoreAction_ClassNames =
+	| "FilesSidebarTreeItemMoreAction"
+	| "FilesSidebarTreeItemMoreAction-menu-create-action"
+	| "FilesSidebarTreeItemMoreAction-menu-create-action-visible";
 
 type FilesSidebarTreeItemMoreAction_Props = {
 	kind: files_TreeItem["kind"];
@@ -256,6 +273,9 @@ type FilesSidebarTreeItemMoreAction_Props = {
 	canRename: boolean;
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
+	expandedFolderActionsVisible: boolean;
+	onCreateFile: () => void;
+	onCreateFolder: () => void;
 	onCopy: () => void;
 	onRename: () => void;
 	onExpandSubtree: () => void;
@@ -276,6 +296,9 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 		canRename,
 		canExpandSubtree,
 		canCollapseSubtree,
+		expandedFolderActionsVisible,
+		onCreateFile,
+		onCreateFolder,
 		onCopy,
 		onRename,
 		onExpandSubtree,
@@ -285,11 +308,8 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 	} = props;
 	const isArchived = archiveOperationId !== undefined;
 
-	const handleCopyClick = useFn<MyMenuItem_Props["onClick"]>(() => {
-		onCopy();
-	});
-
 	const handleRenameClick = useFn<MyMenuItem_Props["onClick"]>(() => {
+		// Let Ariakit finish closing the menu and restoring focus before Headless Tree enters rename mode.
 		setTimeout(() => {
 			onRename();
 		}, 0);
@@ -301,14 +321,6 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 		} else {
 			onArchive();
 		}
-	});
-
-	const handleExpandSubtreeClick = useFn<MyMenuItem_Props["onClick"]>(() => {
-		onExpandSubtree();
-	});
-
-	const handleCollapseSubtreeClick = useFn<MyMenuItem_Props["onClick"]>(() => {
-		onCollapseSubtree();
 	});
 
 	return (
@@ -333,7 +345,45 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 				unmountOnHide
 			>
 				<MyMenuPopoverContent>
-					<MyMenuItem hideOnClick onClick={handleCopyClick}>
+					{kind === "folder" ? (
+						<>
+							<MyMenuItem
+								className={cn(
+									"FilesSidebarTreeItemMoreAction-menu-create-action" satisfies FilesSidebarTreeItemMoreAction_ClassNames,
+									expandedFolderActionsVisible &&
+										("FilesSidebarTreeItemMoreAction-menu-create-action-visible" satisfies FilesSidebarTreeItemMoreAction_ClassNames),
+								)}
+								aria-label={`Add file to ${label}`}
+								hideOnClick
+								onClick={onCreateFile}
+							>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<FilePlus />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Add file</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+							<MyMenuItem
+								className={cn(
+									"FilesSidebarTreeItemMoreAction-menu-create-action" satisfies FilesSidebarTreeItemMoreAction_ClassNames,
+									expandedFolderActionsVisible &&
+										("FilesSidebarTreeItemMoreAction-menu-create-action-visible" satisfies FilesSidebarTreeItemMoreAction_ClassNames),
+								)}
+								aria-label={`Add folder to ${label}`}
+								hideOnClick
+								onClick={onCreateFolder}
+							>
+								<MyMenuItemContent>
+									<MyMenuItemContentIcon>
+										<FolderPlus />
+									</MyMenuItemContentIcon>
+									<MyMenuItemContentPrimary>Add folder</MyMenuItemContentPrimary>
+								</MyMenuItemContent>
+							</MyMenuItem>
+						</>
+					) : null}
+					<MyMenuItem hideOnClick onClick={onCopy}>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>
 								<Copy />
@@ -351,7 +401,7 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 					</MyMenuItem>
 					{kind === "folder" && (
 						<>
-							<MyMenuItem disabled={!canExpandSubtree} hideOnClick onClick={handleExpandSubtreeClick}>
+							<MyMenuItem disabled={!canExpandSubtree} hideOnClick onClick={onExpandSubtree}>
 								<MyMenuItemContent>
 									<MyMenuItemContentIcon>
 										<CopyPlus />
@@ -359,7 +409,7 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 									<MyMenuItemContentPrimary>Expand subtree</MyMenuItemContentPrimary>
 								</MyMenuItemContent>
 							</MyMenuItem>
-							<MyMenuItem disabled={!canCollapseSubtree} hideOnClick onClick={handleCollapseSubtreeClick}>
+							<MyMenuItem disabled={!canCollapseSubtree} hideOnClick onClick={onCollapseSubtree}>
 								<MyMenuItemContent>
 									<MyMenuItemContentIcon>
 										<CopyMinus />
@@ -819,9 +869,7 @@ const FilesSidebarTreeItemSecondaryContent = memo(function FilesSidebarTreeItemS
 	const { secondaryText } = props;
 
 	return (
-		<div
-			className={"FilesSidebarTreeItemSecondaryContent" satisfies FilesSidebarTreeItemSecondaryContent_ClassNames}
-		>
+		<div className={"FilesSidebarTreeItemSecondaryContent" satisfies FilesSidebarTreeItemSecondaryContent_ClassNames}>
 			<div
 				className={
 					"FilesSidebarTreeItemSecondaryContent-text" satisfies FilesSidebarTreeItemSecondaryContent_ClassNames
@@ -847,6 +895,7 @@ type FilesSidebarTreeItemActions_Props = {
 	canRename: FilesSidebarTreeItemMoreAction_Props["canRename"];
 	canExpandSubtree: FilesSidebarTreeItemMoreAction_Props["canExpandSubtree"];
 	canCollapseSubtree: FilesSidebarTreeItemMoreAction_Props["canCollapseSubtree"];
+	expandedFolderActionsVisible: FilesSidebarTreeItemMoreAction_Props["expandedFolderActionsVisible"];
 	onCreateFile: FilesSidebarTreeItemSecondaryAction_Props["onClick"];
 	onCreateFolder: FilesSidebarTreeItemSecondaryAction_Props["onClick"];
 	onCopy: FilesSidebarTreeItemMoreAction_Props["onCopy"];
@@ -870,6 +919,7 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 		canRename,
 		canExpandSubtree,
 		canCollapseSubtree,
+		expandedFolderActionsVisible,
 		onCreateFile,
 		onCreateFolder,
 		onCopy,
@@ -913,6 +963,9 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 				canRename={canRename}
 				canExpandSubtree={canExpandSubtree}
 				canCollapseSubtree={canCollapseSubtree}
+				expandedFolderActionsVisible={expandedFolderActionsVisible}
+				onCreateFile={onCreateFile}
+				onCreateFolder={onCreateFolder}
 				onCopy={onCopy}
 				onRename={onRename}
 				onExpandSubtree={onExpandSubtree}
@@ -1070,6 +1123,7 @@ type FilesSidebarTreeItem_Props = {
 	pendingActionNodeIds: Set<string>;
 	renameError: string | undefined;
 	isTreeDragging: boolean;
+	expandedFolderActionsVisible: boolean;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -1090,6 +1144,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		pendingActionNodeIds,
 		renameError,
 		isTreeDragging,
+		expandedFolderActionsVisible,
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
@@ -1329,6 +1384,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					canRename={canRename}
 					canExpandSubtree={canExpandSubtree}
 					canCollapseSubtree={canCollapseSubtree}
+					expandedFolderActionsVisible={expandedFolderActionsVisible}
 					onCreateFile={handleCreateFileClick}
 					onCreateFolder={handleCreateFolderClick}
 					onCopy={handleCopyClick}
@@ -1573,7 +1629,13 @@ function get_tree_drag_hover_state(args: {
 	};
 }
 
-type FilesSidebarTree_ClassNames = "FilesSidebarTree" | "FilesSidebarTree-dragging" | "FilesSidebarTree-empty-state";
+const FilesSidebarTree_COMPACT_ACTIONS_MAX_WIDTH = 300;
+
+type FilesSidebarTree_ClassNames =
+	| "FilesSidebarTree"
+	| "FilesSidebarTree-dragging"
+	| "FilesSidebarTree-empty-state"
+	| "FilesSidebarTree-folder-actions-expanded";
 
 type FilesSidebarTree_Props = {
 	tree: FilesSidebarTree_Shared;
@@ -1617,9 +1679,17 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		onArchive,
 		onUnarchive,
 	} = props;
+
+	const treeContainerProps = tree().getContainerProps("files_nodes");
+	const { ref: treeContainerRef, ...treeContainerRest } = treeContainerProps;
+
+	const [expandedFolderActionsVisible, setExpandedFolderActionsVisible] = useState(false);
+
 	const isTreeDragging = (tree().getState().dnd?.draggedItems?.length ?? 0) > 0;
 	const renderedTreeItems = tree().getItems();
-	const treeContainerProps = tree().getContainerProps("files_nodes");
+
+	const treeRootElementRef = useRef<HTMLDivElement | null>(null);
+	const treeRootResizeObserverRef = useRef<ResizeObserver | null>(null);
 
 	const [isDraggingOverRootZone, setIsDraggingOverRootZone] = useState(false);
 	const isDraggingOverRootZoneRef = useRef(false);
@@ -1727,6 +1797,31 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		handleSetActiveExternalFileDropTargetId(undefined);
 	};
 
+	const handleTreeRootRef = useFn((element: HTMLDivElement | null) => {
+		forward_ref(element, treeContainerRef);
+		if (treeRootElementRef.current === element) {
+			return;
+		}
+
+		treeRootResizeObserverRef.current?.disconnect();
+		treeRootResizeObserverRef.current = null;
+		treeRootElementRef.current = element;
+
+		if (!element) {
+			setExpandedFolderActionsVisible(false);
+			return;
+		}
+
+		const updateExpandedFolderActionsVisible = () => {
+			setExpandedFolderActionsVisible(element.clientWidth < FilesSidebarTree_COMPACT_ACTIONS_MAX_WIDTH);
+		};
+		updateExpandedFolderActionsVisible();
+
+		const resizeObserver = new ResizeObserver(updateExpandedFolderActionsVisible);
+		resizeObserver.observe(element);
+		treeRootResizeObserverRef.current = resizeObserver;
+	});
+
 	useEffect(() => {
 		if (isTreeDragging) {
 			return;
@@ -1737,11 +1832,14 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 
 	return (
 		<div
+			ref={handleTreeRootRef}
 			className={cn(
 				"FilesSidebarTree" satisfies FilesSidebarTree_ClassNames,
 				isTreeDragging && ("FilesSidebarTree-dragging" satisfies FilesSidebarTree_ClassNames),
+				expandedFolderActionsVisible &&
+					("FilesSidebarTree-folder-actions-expanded" satisfies FilesSidebarTree_ClassNames),
 			)}
-			{...treeContainerProps}
+			{...treeContainerRest}
 			style={treeContainerProps.style}
 			onDragEnterCapture={handleDragEnterCapture}
 			onDragOverCapture={handleDragOverCapture}
@@ -1776,6 +1874,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 								pendingActionNodeIds={pendingActionNodeIds}
 								renameError={renameErrorByNodeId.get(itemId)}
 								isTreeDragging={isTreeDragging}
+								expandedFolderActionsVisible={expandedFolderActionsVisible}
 								onCreateNode={onCreateNode}
 								onStartRename={onStartRename}
 								onRenameErrorClear={onRenameErrorClear}

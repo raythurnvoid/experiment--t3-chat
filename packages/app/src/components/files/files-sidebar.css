@@ -597,11 +597,23 @@
 	.FilesSidebarTreeItemSecondaryActionCreateFile {
 		display: inline-flex;
 	}
+
+	.FilesSidebarTree-folder-actions-expanded .FilesSidebarTreeItemSecondaryActionCreateFile {
+		display: none;
+	}
 	/* #endregion tree item secondary action create file */
 
 	/* #region tree item more action */
 	.FilesSidebarTreeItemMoreAction {
 		display: inline-flex;
+	}
+
+	.FilesSidebarTreeItemMoreAction-menu-create-action {
+		display: none;
+	}
+
+	.FilesSidebarTreeItemMoreAction-menu-create-action-visible {
+		display: flex;
 	}
 	/* #endregion tree item more action */
 
