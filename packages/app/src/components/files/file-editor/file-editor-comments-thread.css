@@ -1,4 +1,12 @@
 @layer components {
+	.FileEditorCommentsFilterInput {
+		width: 100%;
+
+		box-shadow:
+			0 -16px 0 16px var(--color-base-1-03),
+			0 6px 10px color-mix(in oklch, black 30%, transparent);
+	}
+
 	.FileEditorCommentsThreadMessage {
 		display: grid;
 		grid-template:
@@ -120,12 +128,12 @@
 		--FileEditorCommentsThread-elevated-shadow:
 			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
 			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
-			0 2px 4px black;
+			0 2px 8px color-mix(in oklch, black 24%, transparent);
 		--FileEditorCommentsThread-pressed-shadow:
 			inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
 			inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
 
-		border: 1px solid var(--color-base-1-09);
+		border: 1px solid var(--color-base-1-08);
 		background: linear-gradient(var(--color-base-1-04), var(--color-base-1-03));
 		box-shadow: var(--FileEditorCommentsThread-elevated-shadow);
 		contain: content;
@@ -154,33 +162,17 @@
 		gap: 12px;
 	}
 
-	.FileEditorCommentsThread:not(.FileEditorCommentsThread-active):hover:not(
-			:has(
-				.FileEditorCommentsThreadMessage-actions:is(:hover, :focus-within),
-				.FileEditorCommentsThreadForm:is(:hover, :focus-within)
-			)
-		) {
-		border-color: var(--color-base-1-10);
+	.FileEditorCommentsThread:not(.FileEditorCommentsThread-active):has(
+			.FileEditorCommentsThread-summary:is(:hover, :focus-visible)
+		):not(:has(.FileEditorCommentsThreadMessage-actions:is(:hover, :focus-within))) {
+		border-color: var(--color-base-1-09);
 		background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
 		box-shadow: var(--FileEditorCommentsThread-elevated-shadow);
 	}
 
-	.FileEditorCommentsThread:not(.FileEditorCommentsThread-active):has(
-			.FileEditorCommentsThread-summary:focus-visible
-		):not(
-			:has(
-				.FileEditorCommentsThreadMessage-actions:focus-within,
-				.FileEditorCommentsThreadForm:focus-within
-			)
+	.FileEditorCommentsThread:not(.FileEditorCommentsThread-active):has(.FileEditorCommentsThread-summary:active):not(
+			:has(.FileEditorCommentsThreadMessage-actions:active)
 		) {
-		border-color: var(--color-base-1-10);
-		background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
-		box-shadow: var(--FileEditorCommentsThread-elevated-shadow);
-	}
-
-	.FileEditorCommentsThread:not(.FileEditorCommentsThread-active):has(
-			.FileEditorCommentsThread-summary:active
-		):not(:has(.FileEditorCommentsThreadMessage-actions:active)) {
 		border-color: var(--color-base-1-11);
 		background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
 		box-shadow: var(--FileEditorCommentsThread-pressed-shadow);
@@ -188,19 +180,18 @@
 
 	.FileEditorCommentsThread-active {
 		--FileEditorCommentsThread-elevated-shadow:
-			inset 0 1px 0 color-mix(in oklch, var(--color-accent-07) 40%, var(--color-fg-11)),
+			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
 			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
-			0 2px 4px black,
-			0 0 0 1px color-mix(in oklch, var(--color-accent-06) 24%, transparent);
+			0 2px 8px color-mix(in oklch, black 24%, transparent);
 
-		border-color: var(--color-accent-06);
-		background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+		border-color: var(--color-base-1-09);
+		background: linear-gradient(var(--color-base-1-04), var(--color-base-1-03));
 		box-shadow: var(--FileEditorCommentsThread-elevated-shadow);
 	}
 
 	.FileEditorCommentsThread-active:has(.FileEditorCommentsThread-summary:active) {
-		border-color: var(--color-accent-06);
-		background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
+		border-color: var(--color-base-1-10);
+		background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
 		box-shadow: var(--FileEditorCommentsThread-pressed-shadow);
 	}
 
@@ -237,9 +228,9 @@
 		min-height: 44px;
 
 		border-radius: 6px;
-		border: 1px dashed var(--color-base-1-08);
+		border: 1px dashed var(--color-base-1-07);
 		background: linear-gradient(var(--color-base-1-02), var(--color-base-1-01));
-		box-shadow: inset 0 2px 4px color-mix(in oklch, black 28%, transparent);
+		box-shadow: inset 0 2px 4px color-mix(in oklch, black 24%, transparent);
 		color: var(--color-fg-06);
 	}
 
@@ -247,7 +238,7 @@
 		margin: 0 -12px;
 		padding: 10px;
 
-		border-top: 1px solid var(--color-base-1-07);
+		border-top: 1px solid var(--color-base-1-06);
 		border-radius: 0 0 7px 7px;
 		background: linear-gradient(var(--color-base-1-02), var(--color-base-1-01));
 		box-shadow: inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
@@ -255,32 +246,6 @@
 
 	.FileEditorCommentsThread-active .FileEditorCommentsThreadForm-input {
 		padding: 0;
-	}
-
-	.FileEditorCommentsFilterInput {
-		width: 100%;
-	}
-
-	.FileEditorCommentsFilterInput:not(.userInvalid):not(:has([aria-invalid="true"])) .MyInputBox,
-	.FileEditorCommentsThreadForm-input:not(.userInvalid):not(:has([aria-invalid="true"])) .MyInputBox {
-		/* Sunken field: darker than the raised comment cards sitting on base-1-03/04. */
-		border-color: var(--color-base-1-02);
-		box-shadow:
-			inset 0 2px 4px color-mix(in oklch, black 35%, transparent),
-			inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 4%, transparent);
-	}
-
-	.FileEditorCommentsFilterInput:has(:where(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible))
-		.MyInputBox,
-	.FileEditorCommentsThreadForm-input:has(
-			:where(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible)
-		)
-		.MyInputBox {
-		border-color: var(--color-base-1-05);
-		box-shadow:
-			inset 0 2px 4px color-mix(in oklch, black 28%, transparent),
-			inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 6%, transparent),
-			0 0 0 1px var(--color-fg-12);
 	}
 
 	.FileEditorCommentsThread-messages {

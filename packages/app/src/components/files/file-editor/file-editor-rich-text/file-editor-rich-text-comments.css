@@ -43,11 +43,5 @@
 		top: 60px;
 		z-index: 1;
 		transform: none;
-
-		background: linear-gradient(var(--color-base-1-03), var(--color-base-1-02));
-		border-bottom: 1px solid var(--color-base-1-05);
-		box-shadow:
-			0 -16px 0 16px var(--color-base-1-03),
-			0 6px 10px color-mix(in oklch, black 30%, transparent);
 	}
 }
