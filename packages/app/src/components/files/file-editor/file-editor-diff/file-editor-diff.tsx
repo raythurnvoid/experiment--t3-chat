@@ -99,7 +99,9 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				disabled={isSaveDisabled}
 				onClick={onClickSave}
 			>
-				<MyButtonIcon className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}>
+				<MyButtonIcon
+					className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}
+				>
 					<Save />
 				</MyButtonIcon>
 				Save
@@ -111,7 +113,9 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				disabled={isSyncDisabled}
 				onClick={onClickSync}
 			>
-				<MyButtonIcon className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}>
+				<MyButtonIcon
+					className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}
+				>
 					<RefreshCcw />
 				</MyButtonIcon>
 				Sync
@@ -126,7 +130,9 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				disabled={isAcceptAllDisabled}
 				onClick={onClickAcceptAll}
 			>
-				<MyButtonIcon className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}>
+				<MyButtonIcon
+					className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}
+				>
 					<CheckCheck />
 				</MyButtonIcon>
 				Accept all
@@ -141,7 +147,9 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				disabled={isAcceptAllAndSaveDisabled}
 				onClick={onClickAcceptAllAndSave}
 			>
-				<MyButtonIcon className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}>
+				<MyButtonIcon
+					className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}
+				>
 					<SaveAll />
 				</MyButtonIcon>
 				Accept all + save
@@ -156,7 +164,9 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				disabled={isDiscardAllDisabled}
 				onClick={onClickDiscardAll}
 			>
-				<MyButtonIcon className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}>
+				<MyButtonIcon
+					className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}
+				>
 					<Trash2 />
 				</MyButtonIcon>
 				Discard all
@@ -402,36 +412,61 @@ type RemoteEditorContentState = {
 	yjsSequence: number;
 };
 
-type FileEditorDiff_ClassNames = "FileEditorDiff" | "FileEditorDiff-editor" | "FileEditorDiff-anchor";
+function file_editor_diff_editor_base_yjs_sequence(args: {
+	pendingUpdate: object | null | undefined;
+	fileContentYjsSequence: number | undefined;
+	remoteYjsSequence: number | undefined;
+	lastSequenceSaved: number | undefined;
+}) {
+	if (args.pendingUpdate != null) {
+		return args.remoteYjsSequence;
+	}
 
-type FileEditorDiff_CssVars = {
-	"--FileEditorDiff-anchor-name": string;
-};
+	const sequenceCandidates = [args.fileContentYjsSequence, args.remoteYjsSequence, args.lastSequenceSaved].filter(
+		(sequence): sequence is number => sequence != null,
+	);
 
-export type FileEditorDiff_Props = {
-	className?: string;
-	nodeId: app_convex_Id<"files_nodes">;
-	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
-	presenceStore: files_PresenceStore;
-	threadId?: string;
-	commentsPortalHost: HTMLElement | null;
-	toolbarPortalHost: HTMLElement;
-	serverSequence?: number;
-	topSafeArea?: number;
-	onExit: () => void;
-	topStickyFloatingSlot?: React.ReactNode;
-	topViewZoneSlot?: React.ReactNode;
-};
+	if (sequenceCandidates.length === 0) {
+		return undefined;
+	}
 
-type FileEditorDiffInner_Props = FileEditorDiff_Props & {
-	hoistingContainer: HTMLElement;
-	editorContentState: RemoteEditorContentState;
-	isSaving: boolean;
+	return Math.max(...sequenceCandidates);
+}
+
+function file_editor_diff_is_sync_disabled(args: {
 	isSyncing: boolean;
-	isSyncDisabled: boolean;
-	onSave: (args: { flushPendingUpdateUpsertIfNeeded: () => Promise<boolean> }) => void;
-	onClickSync: (editorValues: { stagedMarkdown: string; unstagedMarkdown: string }) => void;
-};
+	isSaving: boolean;
+	serverSequence: number | null | undefined;
+	editorBaseYjsSequence: number | undefined;
+}) {
+	return (
+		args.isSyncing ||
+		args.isSaving ||
+		args.serverSequence == null ||
+		args.editorBaseYjsSequence == null ||
+		args.serverSequence <= args.editorBaseYjsSequence
+	);
+}
+
+function file_editor_diff_should_apply_live_file_content_state(args: {
+	pendingUpdate: object | null | undefined;
+	isSaving: boolean;
+	fileContentYjsSequence: number | undefined;
+	lastSequenceSaved: number | undefined;
+}) {
+	if (args.pendingUpdate != null || args.isSaving || args.fileContentYjsSequence == null) {
+		return false;
+	}
+
+	// Keep the post-save editor state until the fetched live file has caught up to
+	// the sequence that save just committed. Content shape is not a staleness signal:
+	// an empty file is a valid live state when its sequence is current.
+	if (args.lastSequenceSaved != null && args.fileContentYjsSequence < args.lastSequenceSaved) {
+		return false;
+	}
+
+	return true;
+}
 
 function editor_content_states_match(left: RemoteEditorContentState, right: RemoteEditorContentState) {
 	return (
@@ -485,6 +520,37 @@ function create_editor_content_state_from_file_content_data(
 		yjsSequence: fileContentData.yjsSequence,
 	} satisfies RemoteEditorContentState;
 }
+
+type FileEditorDiff_ClassNames = "FileEditorDiff" | "FileEditorDiff-editor" | "FileEditorDiff-anchor";
+
+type FileEditorDiff_CssVars = {
+	"--FileEditorDiff-anchor-name": string;
+};
+
+export type FileEditorDiff_Props = {
+	className?: string;
+	nodeId: app_convex_Id<"files_nodes">;
+	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	presenceStore: files_PresenceStore;
+	threadId?: string;
+	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
+	serverSequence?: number;
+	topSafeArea?: number;
+	onExit: () => void;
+	topStickyFloatingSlot?: React.ReactNode;
+	topViewZoneSlot?: React.ReactNode;
+};
+
+type FileEditorDiffInner_Props = FileEditorDiff_Props & {
+	hoistingContainer: HTMLElement;
+	editorContentState: RemoteEditorContentState;
+	isSaving: boolean;
+	isSyncing: boolean;
+	isSyncDisabled: boolean;
+	onSave: (args: { flushPendingUpdateUpsertIfNeeded: () => Promise<boolean> }) => void;
+	onClickSync: (editorValues: { stagedMarkdown: string; unstagedMarkdown: string }) => void;
+};
 
 const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 	const {
@@ -1416,10 +1482,13 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		nodeId,
 		pendingUpdateId,
 	});
-	const pendingUpdateLastSequenceSaved = useQuery(api.files_pending_updates.get_file_pending_update_last_sequence_saved, {
-		membershipId,
-		nodeId,
-	});
+	const pendingUpdateLastSequenceSaved = useQuery(
+		api.files_pending_updates.get_file_pending_update_last_sequence_saved,
+		{
+			membershipId,
+			nodeId,
+		},
+	);
 
 	const [fileContentData, setFileContentData] = useState<
 		Awaited<ReturnType<typeof files_fetch_file_yjs_state_and_markdown>> | undefined
@@ -1429,36 +1498,21 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	);
 	const [isSaving, setIsSaving] = useState(false);
 	const [isSyncing, setIsSyncing] = useState(false);
-	const [savedLiveYjsSequence, setSavedLiveYjsSequence] = useState<number | null>(null);
 	const currentPendingUpdateId = pendingUpdate?._id ?? pendingUpdateId;
 
-	// Sync rebases onto a newer live file. Enable only when the server sequence is
-	// ahead of the editor base, not on transient mismatches during save convergence.
-	const editorBaseYjsSequence = ((/* iife */) => {
-		if (pendingUpdate != null) {
-			return remoteEditorContentState?.yjsSequence;
-		}
+	const editorBaseYjsSequence = file_editor_diff_editor_base_yjs_sequence({
+		pendingUpdate,
+		fileContentYjsSequence: fileContentData?.yjsSequence,
+		remoteYjsSequence: remoteEditorContentState?.yjsSequence,
+		lastSequenceSaved: pendingUpdateLastSequenceSaved?.lastSequenceSaved,
+	});
 
-		const sequenceCandidates = [
-			fileContentData?.yjsSequence,
-			remoteEditorContentState?.yjsSequence,
-			pendingUpdateLastSequenceSaved?.lastSequenceSaved,
-			savedLiveYjsSequence,
-		].filter((sequence): sequence is number => sequence != null);
-
-		if (sequenceCandidates.length === 0) {
-			return undefined;
-		}
-
-		return Math.max(...sequenceCandidates);
-	})();
-
-	const isSyncDisabled =
-		isSyncing ||
-		isSaving ||
-		serverSequence == null ||
-		editorBaseYjsSequence == null ||
-		serverSequence <= editorBaseYjsSequence;
+	const isSyncDisabled = file_editor_diff_is_sync_disabled({
+		isSyncing,
+		isSaving,
+		serverSequence,
+		editorBaseYjsSequence,
+	});
 
 	/**
 	 * The container for the tiptap hoisted elements.
@@ -1504,10 +1558,6 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				return;
 			}
 
-			if (savePendingResult._yay.newSequence != null) {
-				setSavedLiveYjsSequence(savePendingResult._yay.newSequence);
-			}
-
 			const [nextFileContentData] = await Promise.allSettled([
 				files_fetch_file_yjs_state_and_markdown({
 					membershipId,
@@ -1524,7 +1574,19 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			]);
 
 			if (nextFileContentData.status === "fulfilled") {
-				setFileContentData(nextFileContentData.value);
+				const nextValue = nextFileContentData.value;
+				if (
+					nextValue &&
+					savePendingResult._yay.newSequence != null &&
+					nextValue.yjsSequence < savePendingResult._yay.newSequence
+				) {
+					// Keep the current editor state until a real live snapshot catches up.
+					// Do not bump stale content to the saved sequence; that would make old
+					// markdown look authoritative and can leave the editor dirty after save.
+					return;
+				} else {
+					setFileContentData(nextValue);
+				}
 			}
 		})()
 			.catch((error) => {
@@ -1660,7 +1722,6 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 
 	// Reset state when `nodeId` changes
 	useLayoutEffect(() => {
-		setSavedLiveYjsSequence(null);
 		setFileContentData(undefined);
 		setRemoteEditorContentState(undefined);
 		setIsSaving(false);
@@ -1801,9 +1862,14 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			return;
 		}
 
-		// Save can delete the pending row before `handleSave` refreshes `fileContentData`.
-		// Keep the current remote/editor content until that fetch lands.
-		if (isSaving) {
+		if (
+			!file_editor_diff_should_apply_live_file_content_state({
+				pendingUpdate,
+				isSaving,
+				fileContentYjsSequence: fileContentData.yjsSequence,
+				lastSequenceSaved: pendingUpdateLastSequenceSaved?.lastSequenceSaved,
+			})
+		) {
 			setIsSyncing(false);
 			return;
 		}
@@ -1814,21 +1880,19 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			return;
 		}
 
-		// Guard against stale `fileContentData` snapshots that would blank the editor.
-		if (
-			nextRemoteEditorContentState.stagedMarkdown.length === 0 &&
-			remoteEditorContentState.stagedMarkdown.length > 0
-		) {
-			setIsSyncing(false);
-			return;
-		}
-
 		if (!editor_content_states_match(remoteEditorContentState, nextRemoteEditorContentState)) {
 			setRemoteEditorContentState(nextRemoteEditorContentState);
 		}
 
 		setIsSyncing(false);
-	}, [fileContentData, isSaving, nodeId, pendingUpdate, remoteEditorContentState]);
+	}, [
+		fileContentData,
+		isSaving,
+		nodeId,
+		pendingUpdate,
+		pendingUpdateLastSequenceSaved?.lastSequenceSaved,
+		remoteEditorContentState,
+	]);
 
 	// Keep this hardcoded while debugging the diff editor loading state.
 	const forceLoading = false;
@@ -1862,3 +1926,109 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	);
 });
 // #endregion root
+
+// #region tests
+if (import.meta.vitest) {
+	const { describe, expect, test } = import.meta.vitest;
+
+	describe("file_editor_diff_sync_gate", () => {
+		test("does not enable sync during post-save convergence window", () => {
+			const duringSave = file_editor_diff_is_sync_disabled({
+				isSyncing: false,
+				isSaving: true,
+				serverSequence: 6,
+				editorBaseYjsSequence: file_editor_diff_editor_base_yjs_sequence({
+					pendingUpdate: null,
+					fileContentYjsSequence: 5,
+					remoteYjsSequence: 5,
+					lastSequenceSaved: 6,
+				}),
+			});
+			expect(duringSave).toBe(true);
+
+			const afterSaveBeforeFetch = file_editor_diff_is_sync_disabled({
+				isSyncing: false,
+				isSaving: false,
+				serverSequence: 6,
+				editorBaseYjsSequence: file_editor_diff_editor_base_yjs_sequence({
+					pendingUpdate: null,
+					fileContentYjsSequence: 5,
+					remoteYjsSequence: 5,
+					lastSequenceSaved: 6,
+				}),
+			});
+			expect(afterSaveBeforeFetch).toBe(true);
+
+			const afterSaveWithBumpedFile = file_editor_diff_is_sync_disabled({
+				isSyncing: false,
+				isSaving: false,
+				serverSequence: 6,
+				editorBaseYjsSequence: file_editor_diff_editor_base_yjs_sequence({
+					pendingUpdate: null,
+					fileContentYjsSequence: 6,
+					remoteYjsSequence: 5,
+					lastSequenceSaved: 6,
+				}),
+			});
+			expect(afterSaveWithBumpedFile).toBe(true);
+		});
+
+		test("enables sync only when server sequence is ahead of editor base", () => {
+			const hasRemoteDrift = file_editor_diff_is_sync_disabled({
+				isSyncing: false,
+				isSaving: false,
+				serverSequence: 7,
+				editorBaseYjsSequence: file_editor_diff_editor_base_yjs_sequence({
+					pendingUpdate: { _id: "pending" },
+					fileContentYjsSequence: 6,
+					remoteYjsSequence: 6,
+					lastSequenceSaved: 6,
+				}),
+			});
+			expect(hasRemoteDrift).toBe(false);
+
+			const inSync = file_editor_diff_is_sync_disabled({
+				isSyncing: false,
+				isSaving: false,
+				serverSequence: 6,
+				editorBaseYjsSequence: file_editor_diff_editor_base_yjs_sequence({
+					pendingUpdate: null,
+					fileContentYjsSequence: 6,
+					remoteYjsSequence: 6,
+					lastSequenceSaved: 6,
+				}),
+			});
+			expect(inSync).toBe(true);
+		});
+
+		test("applies live file content only after post-save sequence convergence", () => {
+			const stalePostSaveFetch = file_editor_diff_should_apply_live_file_content_state({
+				pendingUpdate: null,
+				isSaving: false,
+				fileContentYjsSequence: 5,
+				lastSequenceSaved: 6,
+			});
+			expect(stalePostSaveFetch).toBe(false);
+
+			const currentPostSaveFetch = file_editor_diff_should_apply_live_file_content_state({
+				pendingUpdate: null,
+				isSaving: false,
+				fileContentYjsSequence: 6,
+				lastSequenceSaved: 6,
+			});
+			expect(currentPostSaveFetch).toBe(true);
+		});
+
+		test("does not reject legitimate empty live content by content shape", () => {
+			const shouldApplyEmptyContentAtCurrentSequence = file_editor_diff_should_apply_live_file_content_state({
+				pendingUpdate: null,
+				isSaving: false,
+				fileContentYjsSequence: 7,
+				lastSequenceSaved: 6,
+			});
+
+			expect(shouldApplyEmptyContentAtCurrentSequence).toBe(true);
+		});
+	});
+}
+// #endregion tests

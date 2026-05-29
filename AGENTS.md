@@ -1,9 +1,11 @@
 # Terminal and Tooling Constraints
 
 - Package manager: this repository uses `pnpm`; do not use `npm`.
+- VERY IMPORTANT Node runtime rule: run every command that executes Node.js through Vite Plus so commands use the repo-pinned Node version from `.node-version` instead of Cursor's bundled Node. Do not run bare `node`, `pnpm`, `pnpx`, `tsx`, `vite`, `vitest`, `convex`, or package scripts directly from the Cursor shell.
+- Use `vp env exec ...` for Node-backed commands. Examples: `vp env exec node -v`, `vp env exec pnpm --dir packages/app run test:once`, `vp env exec pnpm --dir packages/app exec vitest run --project src path/to/test.ts`, `vp env exec pnpx wrangler ...`.
 - Dev server: do not run `pnpm run dev`; let the user run it manually.
-- Full app lint: run `pnpm --dir packages/app run lint`. The root package does not have a `lint` script, and `pnpm --dir packages/app lint:tsc` is only the TypeScript check, not the full ESLint/React Compiler lint.
-- Full app tests: run `pnpm --dir packages/app run test:once` for a one-shot test run.
+- Full app lint: run `vp env exec pnpm --dir packages/app run lint`. The root package does not have a `lint` script, and `pnpm --dir packages/app lint:tsc` is only the TypeScript check, not the full ESLint/React Compiler lint.
+- Full app tests: run `vp env exec pnpm --dir packages/app run test:once` for a one-shot test run.
 - Full app lint and test commands can take up to 20 minutes to complete. Use a long enough timeout when running them through tooling.
 
 ## Modal CLI
@@ -28,19 +30,19 @@ Prefer non-interactive Modal CLI commands and flags when available so Codex does
 
 ## Cloudflare / Wrangler CLI
 
-Use Wrangler through `pnpx` only. Do not install Wrangler globally, and do not use `npx wrangler`.
+Use Wrangler through Vite Plus + `pnpx` only. Do not install Wrangler globally, and do not use `npx wrangler`.
 
 Examples:
 
 ```powershell
-pnpx wrangler login
-pnpx wrangler queues create bonobo-senate-press-r2-upload-events
-pnpx wrangler queues create bonobo-senate-press-r2-upload-events-dlq
-pnpx wrangler deploy --config packages/r2-upload-finalizer/wrangler.jsonc
-pnpx wrangler secret put EVENTS_SECRET --config packages/r2-upload-finalizer/wrangler.jsonc
-pnpx wrangler r2 bucket notification create bonobo-senate-press-files --event-type object-create --queue bonobo-senate-press-r2-upload-events --prefix "workspaces/"
-pnpx wrangler r2 bucket notification list bonobo-senate-press-files
-pnpx wrangler tail bonobo-senate-r2-upload-finalizer
+vp env exec pnpx wrangler login
+vp env exec pnpx wrangler queues create bonobo-senate-press-r2-upload-events
+vp env exec pnpx wrangler queues create bonobo-senate-press-r2-upload-events-dlq
+vp env exec pnpx wrangler deploy --config packages/r2-upload-finalizer/wrangler.jsonc
+vp env exec pnpx wrangler secret put EVENTS_SECRET --config packages/r2-upload-finalizer/wrangler.jsonc
+vp env exec pnpx wrangler r2 bucket notification create bonobo-senate-press-files --event-type object-create --queue bonobo-senate-press-r2-upload-events --prefix "workspaces/"
+vp env exec pnpx wrangler r2 bucket notification list bonobo-senate-press-files
+vp env exec pnpx wrangler tail bonobo-senate-r2-upload-finalizer
 ```
 
 The R2 upload finalizer Worker is documented in [packages/r2-upload-finalizer/README.md](packages/r2-upload-finalizer/README.md).

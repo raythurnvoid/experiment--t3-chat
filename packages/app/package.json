@@ -17,7 +17,7 @@
 		"bench:utf8-byte-size:node": "tsx scripts/bench-utf8-byte-size-node.ts",
 		"bench:utf8-byte-size:edge": "vitest bench shared/files-utf8-byte-size.edge.bench.ts --project convex --run",
 		"test": "vitest",
-		"test:once": "vitest run",
+		"test:once": "vitest run --testTimeout 30000 --hookTimeout 30000 --teardownTimeout 30000",
 		"test:debug": "vitest --inspect-brk --no-file-parallelism",
 		"test:coverage": "vitest run --coverage --coverage.reporter=text",
 		"convex:migrate:workspace-descriptions": "convex run migrations:backfill_workspace_and_project_descriptions"

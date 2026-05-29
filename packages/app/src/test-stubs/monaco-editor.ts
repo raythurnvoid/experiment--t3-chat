@@ -7,4 +7,6 @@ export const editor = {
 			setEOL() {},
 		};
 	},
+	defineTheme() {},
+	setTheme() {},
 };

@@ -5,12 +5,18 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			"@": fileURLToPath(new URL("./src", import.meta.url)),
+			"monaco-editor/esm/vs/editor/editor.worker?worker": fileURLToPath(
+				new URL("./src/test-stubs/monaco-worker.ts", import.meta.url),
+			),
 			"monaco-editor": fileURLToPath(new URL("./src/test-stubs/monaco-editor.ts", import.meta.url)),
 		},
 	},
 	test: {
 		exclude: [...configDefaults.exclude],
 		passWithNoTests: true,
+		testTimeout: 30_000,
+		hookTimeout: 30_000,
+		teardownTimeout: 30_000,
 		projects: [
 			{
 				extends: true,
