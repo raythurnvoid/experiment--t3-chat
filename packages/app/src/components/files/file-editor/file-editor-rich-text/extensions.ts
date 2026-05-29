@@ -105,4 +105,5 @@ export const defaultExtensions = [
 	sharedExtensions.textAlign,
 	sharedExtensions.typography,
 	sharedExtensions.horizontalRule,
+	sharedExtensions.frontmatter,
 ];

@@ -54,8 +54,7 @@
 		Add a large bottom safe area so the shared FileNodeView scroller can move
 		the final editable block above bubble menus and anchored comment cards.
 		*/
-		padding: max(16px, var(--FileEditor-top-safe-area, 0px)) 64px var(--FileEditorRichText-safe-bottom-padding)
-			64px;
+		padding: max(16px, var(--FileEditor-top-safe-area, 0px)) 64px var(--FileEditorRichText-safe-bottom-padding) 64px;
 
 		color: var(--FileEditorRichText-text-color-fg-default);
 
@@ -103,6 +102,19 @@
 			}
 
 			color: var(--FileEditorRichText-text-color-fg-default);
+		}
+
+		pre[data-frontmatter] {
+			margin: 0 0 16px 0;
+			padding: 12px 16px;
+			border-left: 3px solid var(--color-base-1-08);
+			background-color: var(--color-base-1-03);
+			border-radius: 4px;
+			font-family: var(--font-family-mono, ui-monospace, SFMono-Regular, monospace);
+			font-size: 13px;
+			line-height: 1.5;
+			white-space: pre-wrap;
+			color: var(--color-fg-04);
 		}
 
 		/*

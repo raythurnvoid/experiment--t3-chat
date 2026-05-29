@@ -11,7 +11,7 @@ import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { marked } from "marked";
 import stringByteLength from "string-byte-length";
 import { Doc as YDoc, diffUpdate, encodeStateAsUpdate, applyUpdate, encodeStateVector } from "yjs";
-import { Editor, Extension, type Extensions } from "@tiptap/core";
+import { Editor, Extension, Node, type Extensions } from "@tiptap/core";
 import type { JSONContent as TiptapJSONContent, MarkdownRendererHelpers, RenderContext } from "@tiptap/core";
 import { yXmlFragmentToProseMirrorRootNode } from "@tiptap/y-tiptap";
 import { updateYFragment } from "y-prosemirror";
@@ -490,6 +490,34 @@ const files_marked = ((/* iife */) => {
 		instance.use({
 			extensions: [
 				{
+					// YAML-style frontmatter. Recognized only at the start of the root
+					// document token stream so nested list/blockquote content keeps its
+					// normal Markdown meaning. The emitted HTML round-trips through
+					// `files_frontmatter_node.parseHTML` -> Tiptap JSON -> `renderMarkdown`.
+					name: "frontmatter",
+					level: "block",
+					start(src) {
+						return src.startsWith("---\n") ? 0 : -1;
+					},
+					tokenizer(this: { lexer: { tokens: unknown } }, src, tokens) {
+						if (tokens !== this.lexer.tokens) return undefined;
+						if (tokens && tokens.length > 0) return undefined;
+						if (!src.startsWith("---\n")) return undefined;
+						const match = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(src);
+						if (!match) return undefined;
+						return {
+							type: "frontmatter",
+							raw: match[0],
+							text: match[1],
+						};
+					},
+					renderer(token) {
+						const text = (token as { text?: string }).text ?? "";
+						const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+						return `<pre data-frontmatter>${escaped}</pre>`;
+					},
+				},
+				{
 					name: "taskList",
 					renderer(token) {
 						const taskListToken = token as {
@@ -652,6 +680,48 @@ export function files_tiptap_html_to_json(args: { html: string; extensions?: Ext
 
 	return json;
 }
+
+// #region frontmatter
+// The frontmatter parser lives inside `files_marked()` above as a custom marked
+// block tokenizer. This Node is the Tiptap end of the round-trip: it picks up
+// the `<pre data-frontmatter>` HTML emitted by marked and re-emits the YAML
+// fence when serializing back to markdown.
+export const files_frontmatter_node = Node.create({
+	name: "frontmatter",
+	// Above `codeBlock` (default priority 100) so `<pre data-frontmatter>` is
+	// picked up by this node instead of being parsed as a generic code block.
+	priority: 1000,
+	group: "block",
+	atom: true,
+	selectable: true,
+	defining: true,
+
+	addAttributes() {
+		return {
+			text: {
+				default: "",
+				parseHTML: (element) => element.textContent ?? "",
+				renderHTML: () => ({}),
+			},
+		};
+	},
+
+	parseHTML() {
+		return [{ tag: "pre[data-frontmatter]" }];
+	},
+
+	renderHTML({ node }) {
+		return ["pre", { "data-frontmatter": "" }, node.attrs.text];
+	},
+
+	renderMarkdown(node) {
+		const text = typeof node.attrs?.text === "string" ? node.attrs.text : "";
+		// The doc renderer joins block-level siblings with "\n\n",
+		// so frontmatter must not emit its own trailing newlines.
+		return `---\n${text}\n---`;
+	},
+});
+// #endregion frontmatter
 
 export function files_tiptap_markdown_to_json(args: {
 	markdown: string;
@@ -1060,6 +1130,7 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 					class: "mt-4 mb-6 border-t border-muted-foreground",
 				},
 			}),
+			frontmatter: files_frontmatter_node,
 			liveblocksComments: CommentsExtension,
 		};
 	}

@@ -716,3 +716,128 @@ describe("files_yjs_doc_update_from_markdown", () => {
 		expect(markdownResult._yay).toBe("# Base\n\n ");
 	});
 });
+
+describe("frontmatter parsing via marked", () => {
+	test("emits <pre data-frontmatter> for leading YAML frontmatter", () => {
+		const html = files_parse_markdown_to_html("---\nfoo: bar\n---\n\nBody");
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+		expect(html._yay).toContain("<pre data-frontmatter>foo: bar</pre>");
+	});
+
+	test("escapes HTML special chars inside the frontmatter body", () => {
+		const html = files_parse_markdown_to_html('---\nfrom: "Marcus Dane <marcus@example.com>"\n---\n');
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+		expect(html._yay).toContain(
+			'<pre data-frontmatter>from: "Marcus Dane &lt;marcus@example.com&gt;"</pre>',
+		);
+	});
+
+	test("does not match a non-leading ---...--- block", () => {
+		const html = files_parse_markdown_to_html("Some text.\n\n---\nfoo: bar\n---\n\nMore text.");
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+		expect(html._yay).not.toContain("data-frontmatter");
+	});
+
+	test("does not close on a line that only starts with ---", () => {
+		const html = files_parse_markdown_to_html("---\nfoo: bar\n---not-a-closing-marker\n\nBody");
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+		expect(html._yay).not.toContain("data-frontmatter");
+	});
+
+	test("does not match frontmatter-like content inside a list item", () => {
+		const html = files_parse_markdown_to_html("- ---\n  foo: bar\n  ---");
+		if (html._nay) throw new Error("Expected markdown parse to succeed", { cause: html._nay });
+		expect(html._yay).not.toContain("data-frontmatter");
+	});
+});
+
+describe("frontmatter round-trip through Yjs", () => {
+	test("preserves the AI-style mail frontmatter and body byte-for-byte", () => {
+		const input = [
+			"---",
+			'to: ["ops@company.example"]',
+			'cc: ["security@company.example","engineering@company.example"]',
+			'from: "Marcus Dane <marcus.dane@company.example>"',
+			'subject: "Access logs review — suspected burst"',
+			'date: "2026-03-13"',
+			'messageId: "<aurorareef-20260313-md-1@company.example>"',
+			'threadId: "aurorareef-access-logs"',
+			"---",
+			"",
+			"Hi team,",
+			"",
+			"We're seeing a short burst of failed authentication events around the `gateway-aurora` edge.",
+		].join("\n");
+
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_markdown({
+			markdown: input,
+			mut_yjsDoc: yjsDoc,
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected frontmatter+body markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_markdown({ yjsDoc });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		expect(markdownResult._yay).toBe(input);
+	});
+
+	test("preserves a frontmatter-only document", () => {
+		const input = '---\nfoo: bar\nbaz: "qux"\n---';
+
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_markdown({
+			markdown: input,
+			mut_yjsDoc: yjsDoc,
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected frontmatter-only markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_markdown({ yjsDoc });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		// ProseMirror appends a trailing empty paragraph so the document remains
+		// editable when its only block is an atom; the markdown renderer surfaces
+		// that as `\n\n` after the closing fence. A second round-trip is stable.
+		expect(markdownResult._yay).toBe(`${input}\n\n`);
+	});
+
+	test("does not invent a frontmatter node for a body-only document", () => {
+		const input = "# Heading\n\nBody text";
+
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_markdown({
+			markdown: input,
+			mut_yjsDoc: yjsDoc,
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected body-only markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_markdown({ yjsDoc });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		expect(markdownResult._yay).toBe(input);
+	});
+});
