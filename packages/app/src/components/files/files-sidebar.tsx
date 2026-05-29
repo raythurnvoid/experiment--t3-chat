@@ -16,6 +16,7 @@ import {
 	ArchiveRestore,
 	ChevronDown,
 	ChevronRight,
+	Copy,
 	EllipsisVertical,
 	Edit2,
 	FilePlus,
@@ -78,7 +79,7 @@ import {
 	MyModalPopover,
 } from "@/components/my-modal.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { cn, forward_ref, path_extract_segments_from, should_never_happen, sx } from "@/lib/utils.ts";
+import { cn, copy_to_clipboard, forward_ref, path_extract_segments_from, should_never_happen, sx } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { dom_clear_text_selection } from "@/lib/dom-utils.ts";
 import { Result } from "@/lib/errors-as-values-utils.ts";
@@ -255,6 +256,7 @@ type FilesSidebarTreeItemMoreAction_Props = {
 	canRename: boolean;
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
+	onCopy: () => void;
 	onRename: () => void;
 	onExpandSubtree: () => void;
 	onCollapseSubtree: () => void;
@@ -274,6 +276,7 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 		canRename,
 		canExpandSubtree,
 		canCollapseSubtree,
+		onCopy,
 		onRename,
 		onExpandSubtree,
 		onCollapseSubtree,
@@ -281,6 +284,10 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 		onUnarchive,
 	} = props;
 	const isArchived = archiveOperationId !== undefined;
+
+	const handleCopyClick = useFn<MyMenuItem_Props["onClick"]>(() => {
+		onCopy();
+	});
 
 	const handleRenameClick = useFn<MyMenuItem_Props["onClick"]>(() => {
 		setTimeout(() => {
@@ -326,6 +333,14 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 				unmountOnHide
 			>
 				<MyMenuPopoverContent>
+					<MyMenuItem hideOnClick onClick={handleCopyClick}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Copy />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
 					<MyMenuItem disabled={!canRename} hideOnClick onClick={handleRenameClick}>
 						<MyMenuItemContent>
 							<MyMenuItemContentIcon>
@@ -834,6 +849,7 @@ type FilesSidebarTreeItemActions_Props = {
 	canCollapseSubtree: FilesSidebarTreeItemMoreAction_Props["canCollapseSubtree"];
 	onCreateFile: FilesSidebarTreeItemSecondaryAction_Props["onClick"];
 	onCreateFolder: FilesSidebarTreeItemSecondaryAction_Props["onClick"];
+	onCopy: FilesSidebarTreeItemMoreAction_Props["onCopy"];
 	onRename: FilesSidebarTreeItemMoreAction_Props["onRename"];
 	onExpandSubtree: FilesSidebarTreeItemMoreAction_Props["onExpandSubtree"];
 	onCollapseSubtree: FilesSidebarTreeItemMoreAction_Props["onCollapseSubtree"];
@@ -856,6 +872,7 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 		canCollapseSubtree,
 		onCreateFile,
 		onCreateFolder,
+		onCopy,
 		onRename,
 		onExpandSubtree,
 		onCollapseSubtree,
@@ -896,6 +913,7 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 				canRename={canRename}
 				canExpandSubtree={canExpandSubtree}
 				canCollapseSubtree={canCollapseSubtree}
+				onCopy={onCopy}
 				onRename={onRename}
 				onExpandSubtree={onExpandSubtree}
 				onCollapseSubtree={onCollapseSubtree}
@@ -1139,6 +1157,12 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		onCreateNode(itemId, "folder");
 	});
 
+	const handleCopyClick = useFn<FilesSidebarTreeItemMoreAction_Props["onCopy"]>(() => {
+		copy_to_clipboard({ text: itemData.path }).catch((error) => {
+			console.error("[FilesSidebarTreeItem.handleCopyClick] Failed to copy path", { error, itemId });
+		});
+	});
+
 	const handleRenameClick = useFn<FilesSidebarTreeItemMoreAction_Props["onRename"]>(() => {
 		onStartRename(itemId);
 	});
@@ -1307,6 +1331,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					canCollapseSubtree={canCollapseSubtree}
 					onCreateFile={handleCreateFileClick}
 					onCreateFolder={handleCreateFolderClick}
+					onCopy={handleCopyClick}
 					onRename={handleRenameClick}
 					onExpandSubtree={handleExpandSubtreeClick}
 					onCollapseSubtree={handleCollapseSubtreeClick}

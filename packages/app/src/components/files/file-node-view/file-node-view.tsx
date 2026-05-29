@@ -15,6 +15,7 @@ import {
 import { FilesSidebarToggle } from "../files-sidebar-toggle.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
+import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyButtonGroup, MyButtonGroupItem } from "@/components/my-button-group.tsx";
 import { MyGridTable, MyGridTableBody, MyGridTableCell, MyGridTableRow } from "@/components/my-grid-table.tsx";
@@ -292,6 +293,13 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									</React.Fragment>
 								);
 							})}
+							<li>
+								<CopyIconButton
+									variant="ghost-highlightable"
+									tooltipCopy="Copy path"
+									text={breadcrumbPath.at(-1)?.path}
+								/>
+							</li>
 						</>
 					) : (
 						<li className={cn("FileNodeViewHeader-breadcrumb-segment-current" satisfies FileNodeViewHeader_ClassNames)}>
