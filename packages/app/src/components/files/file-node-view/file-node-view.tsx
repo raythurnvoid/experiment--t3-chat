@@ -2095,7 +2095,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const canNavigatePendingUpdates =
 		pendingUpdates.length > 1 || (pendingUpdates.length === 1 && !hasCurrentPendingUpdates);
 	const reviewPagerLabel = hasCurrentPendingUpdates
-		? `Review ${activePendingUpdateIndex + 1} of ${pendingUpdates.length}`
+		? `${activePendingUpdateIndex + 1} of ${pendingUpdates.length}`
 		: "Review pending updates";
 
 	const handleReviewPendingUpdates = useFn(() => {

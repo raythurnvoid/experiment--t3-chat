@@ -58,13 +58,8 @@
 		gap: 8px;
 
 		height: 40px;
-		padding: 0px 0px 0px 8px;
 
-		border-radius: 6px;
-
-		background: var(--color-base-alt-1-08);
-
-		box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
+		padding: 1px 2px 1px 8px;
 	}
 
 	.FileEditorPendingUpdatesFloating-review-pager {
@@ -76,7 +71,7 @@
 	}
 
 	.FileEditorPendingUpdatesFloating-review-pager-label {
-		min-width: 128px;
+		min-width: 64px;
 
 		text-align: center;
 		font-size: 0.75rem;
