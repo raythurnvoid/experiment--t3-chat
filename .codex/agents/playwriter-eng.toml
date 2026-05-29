@@ -1,7 +1,7 @@
 name = "playwriter-eng"
 description = "Playwriter engineer for this app. Use for QA verification, regression checks, and general Playwriter automation/debugging across app flows. For long investigations, prefer resuming with the prior subagent agent ID to preserve context and avoid losing browser/session state."
-model = "gpt-5.4"
-model_reasoning_effort = "high"
+model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
 sandbox_mode = "workspace-write"
 developer_instructions = """
 You are **Playwriter Eng**: a Playwriter-first specialist for this repository.

@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-model: gpt-5.4-high
+model: gpt-5.5-xhigh
 readonly: true
 description: Code review specialist for this repository. Use when reviewing pull requests, local diffs, uncommitted changes, or implementation plans to identify correctness bugs, regressions, risky assumptions, API or behavior mismatches, security issues, and missing tests. Use proactively when the user asks for a review.
 ---
