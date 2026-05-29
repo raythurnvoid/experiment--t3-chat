@@ -95,6 +95,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 			<MyButton
 				variant="ghost"
 				className={cn("FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames)}
+				aria-label="Save staged changes"
 				disabled={isSaveDisabled}
 				onClick={onClickSave}
 			>
@@ -106,6 +107,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 			<MyButton
 				variant="ghost"
 				className={cn("FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames)}
+				aria-label="Sync with live file"
 				disabled={isSyncDisabled}
 				onClick={onClickSync}
 			>
@@ -120,6 +122,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 					"FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames,
 					"FileEditorDiffToolbarActions-button-accept-all" satisfies FileEditorDiffToolbarActions_ClassNames,
 				)}
+				aria-label="Accept all pending changes"
 				disabled={isAcceptAllDisabled}
 				onClick={onClickAcceptAll}
 			>
@@ -134,6 +137,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 					"FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames,
 					"FileEditorDiffToolbarActions-button-accept-all-and-save" satisfies FileEditorDiffToolbarActions_ClassNames,
 				)}
+				aria-label="Accept all pending changes and save"
 				disabled={isAcceptAllAndSaveDisabled}
 				onClick={onClickAcceptAllAndSave}
 			>
@@ -148,6 +152,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 					"FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames,
 					"FileEditorDiffToolbarActions-button-discard-all" satisfies FileEditorDiffToolbarActions_ClassNames,
 				)}
+				aria-label="Discard all pending changes"
 				disabled={isDiscardAllDisabled}
 				onClick={onClickDiscardAll}
 			>
@@ -1768,16 +1773,34 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			return;
 		}
 
+		// Save can delete the pending row before `handleSave` refreshes `fileContentData`.
+		// Keep the current remote/editor content until that fetch lands.
+		if (isSaving) {
+			setIsSyncing(false);
+			return;
+		}
+
 		const nextRemoteEditorContentState = create_editor_content_state_from_file_content_data(fileContentData);
+		if (!nextRemoteEditorContentState) {
+			setIsSyncing(false);
+			return;
+		}
+
+		// Guard against stale `fileContentData` snapshots that would blank the editor.
 		if (
-			nextRemoteEditorContentState &&
-			!editor_content_states_match(remoteEditorContentState, nextRemoteEditorContentState)
+			nextRemoteEditorContentState.stagedMarkdown.length === 0 &&
+			remoteEditorContentState.stagedMarkdown.length > 0
 		) {
+			setIsSyncing(false);
+			return;
+		}
+
+		if (!editor_content_states_match(remoteEditorContentState, nextRemoteEditorContentState)) {
 			setRemoteEditorContentState(nextRemoteEditorContentState);
 		}
 
 		setIsSyncing(false);
-	}, [fileContentData, nodeId, pendingUpdate, remoteEditorContentState]);
+	}, [fileContentData, isSaving, nodeId, pendingUpdate, remoteEditorContentState]);
 
 	// Keep this hardcoded while debugging the diff editor loading state.
 	const forceLoading = false;

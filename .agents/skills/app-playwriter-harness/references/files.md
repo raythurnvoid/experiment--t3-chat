@@ -16,6 +16,10 @@ Use this file for reusable `/files` route and editor interaction knowledge.
 - Pending updates banner: `[data-testid="pending-edits-banner"]`.
 - Review changes button: `[data-testid="review-changes-button"]`.
 - Diff editor root: `[aria-label="File diff editor"]`.
+- Diff editor toolbar group: `[aria-label="Diff editor actions"]`.
+- Diff editor save: `getByRole("button", { name: "Save staged changes" })`.
+- Diff editor accept all: `getByRole("button", { name: "Accept all pending changes" })`.
+- Diff editor accept all + save: `getByRole("button", { name: "Accept all pending changes and save" })`.
 - Rich text toolbar: `[role="toolbar"][aria-label="Toolbar"]`.
 - Rich text content root class: `.FileEditorRichText-editor-content-root`.
 - Rich text content class: `.FileEditorRichText-editor-content`.
