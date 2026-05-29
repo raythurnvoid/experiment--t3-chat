@@ -1429,13 +1429,36 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	);
 	const [isSaving, setIsSaving] = useState(false);
 	const [isSyncing, setIsSyncing] = useState(false);
+	const [savedLiveYjsSequence, setSavedLiveYjsSequence] = useState<number | null>(null);
 	const currentPendingUpdateId = pendingUpdate?._id ?? pendingUpdateId;
+
+	// Sync rebases onto a newer live file. Enable only when the server sequence is
+	// ahead of the editor base, not on transient mismatches during save convergence.
+	const editorBaseYjsSequence = ((/* iife */) => {
+		if (pendingUpdate != null) {
+			return remoteEditorContentState?.yjsSequence;
+		}
+
+		const sequenceCandidates = [
+			fileContentData?.yjsSequence,
+			remoteEditorContentState?.yjsSequence,
+			pendingUpdateLastSequenceSaved?.lastSequenceSaved,
+			savedLiveYjsSequence,
+		].filter((sequence): sequence is number => sequence != null);
+
+		if (sequenceCandidates.length === 0) {
+			return undefined;
+		}
+
+		return Math.max(...sequenceCandidates);
+	})();
 
 	const isSyncDisabled =
 		isSyncing ||
+		isSaving ||
 		serverSequence == null ||
-		remoteEditorContentState == null ||
-		remoteEditorContentState.yjsSequence === serverSequence;
+		editorBaseYjsSequence == null ||
+		serverSequence <= editorBaseYjsSequence;
 
 	/**
 	 * The container for the tiptap hoisted elements.
@@ -1479,6 +1502,10 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			if (savePendingResult._nay) {
 				toast.error(savePendingResult._nay.message ?? "Failed to save pending updates");
 				return;
+			}
+
+			if (savePendingResult._yay.newSequence != null) {
+				setSavedLiveYjsSequence(savePendingResult._yay.newSequence);
 			}
 
 			const [nextFileContentData] = await Promise.allSettled([
@@ -1633,6 +1660,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 
 	// Reset state when `nodeId` changes
 	useLayoutEffect(() => {
+		setSavedLiveYjsSequence(null);
 		setFileContentData(undefined);
 		setRemoteEditorContentState(undefined);
 		setIsSaving(false);
