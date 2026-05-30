@@ -44,13 +44,13 @@ await state.qaPage.locator(".FileEditorRichText-editor-content").first().click()
 ```
 
 ```js
-await state.qaPage.locator(".FileEditorRichTextToolsComment .FileEditorRichTextCommentComposer-editor").first().fill(state.rootComment); await state.qaPage.locator(".FileEditorRichTextToolsComment-submit-button").first().click();
+await state.qaPage.locator(".FileEditorRichTextToolsComment .FileEditorCommentsComposerControl-editor").first().fill(state.rootComment); await state.qaPage.locator(".FileEditorCommentsComposer-submit-button").first().click();
 ```
 
 ## Step 5 - Reply in thread
 
 ```js
-await state.qaPage.locator(".FileEditorCommentsThread-summary").filter({ hasText: state.rootComment }).first().click(); await state.qaPage.locator(".FileEditorCommentsThreadForm .FileEditorRichTextCommentComposer-editor").first().fill(state.replyComment); await state.qaPage.locator(".FileEditorCommentsThreadForm-submit-button").first().click();
+await state.qaPage.locator(".FileEditorCommentsThread-summary").filter({ hasText: state.rootComment }).first().click(); await state.qaPage.locator(".FileEditorCommentsThreadForm .FileEditorCommentsComposerControl-editor").first().fill(state.replyComment); await state.qaPage.locator(".FileEditorCommentsComposer-submit-button").first().click();
 ```
 
 ## Step 6 - Refresh and verify persistence

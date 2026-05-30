@@ -10,17 +10,4 @@
 	.FileEditorRichTextToolsComment-form {
 		margin: -1px -1px 0 -1px;
 	}
-
-	.FileEditorRichTextToolsComment-input {
-		position: relative;
-
-		display: flex;
-		gap: 4px;
-
-		padding: 4px;
-	}
-
-	.FileEditorRichTextToolsComment-submit-button {
-		align-self: end;
-	}
 }

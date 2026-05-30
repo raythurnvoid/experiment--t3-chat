@@ -1,4 +1,107 @@
 @layer components {
+	/* #region root */
+	.FileEditorCommentsThread,
+	.FileEditorCommentsThread-summary {
+		border-radius: 8px;
+	}
+
+	.FileEditorCommentsThread {
+		/*
+		Use base (not base-alt): in-panel list cards on the neutral editor sidebar surface,
+		same family as files tree rows, outline buttons, and modal list items.
+		*/
+		--FileEditorCommentsThread-elevated-shadow:
+			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
+			0 2px 8px color-mix(in oklch, black 24%, transparent);
+		--FileEditorCommentsThread-pressed-shadow:
+			inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
+
+		border: 1px solid var(--color-base-1-07);
+		background: linear-gradient(var(--color-base-1-04), var(--color-base-1-03));
+		box-shadow: var(--FileEditorCommentsThread-elevated-shadow);
+		contain: content;
+
+		transition:
+			background 0.1s linear,
+			border-color 0.1s linear,
+			box-shadow 0.1s linear;
+	}
+
+	.FileEditorCommentsThread-summary {
+		padding: 11px;
+		border: 2px solid transparent;
+		margin: -1px;
+
+		&:focus-visible {
+			outline: 2px solid var(--color-fg-12);
+			outline-offset: -2px;
+		}
+	}
+
+	.FileEditorCommentsThread-content {
+		padding: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.FileEditorCommentsThread-active .FileEditorCommentsThread-content {
+		padding: 12px 12px 0;
+		gap: 0;
+	}
+
+	.FileEditorCommentsThread-messages {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
+
+	.FileEditorCommentsThread-active .FileEditorCommentsThread-messages {
+		padding-bottom: 12px;
+	}
+
+	.FileEditorCommentsThread-active
+		.FileEditorCommentsThread-messages
+		> .FileEditorCommentsThreadMessage:not(:first-child),
+	.FileEditorCommentsThread-active .FileEditorCommentsThread-messages > .FileEditorCommentsThreadSkeleton {
+		padding-top: 12px;
+		margin-top: 4px;
+		border-top: 1px solid var(--color-base-1-07);
+	}
+
+	.FileEditorCommentsThread-active
+		.FileEditorCommentsThread-messages
+		> .FileEditorCommentsThreadMessage:not(:first-child) {
+		padding-left: 12px;
+		margin-left: 15px;
+		border-left: 2px solid color-mix(in oklch, var(--color-accent-06) 45%, var(--color-base-1-06));
+	}
+
+	.FileEditorCommentsThread-no-messages-placeholder {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--color-fg-07);
+		height: 49px;
+	}
+
+	.FileEditorCommentsThread-active .FileEditorCommentsThread-no-messages-placeholder {
+		margin-top: 8px;
+		padding: 12px;
+		height: auto;
+		min-height: 44px;
+
+		border-radius: 6px;
+		border: 1px dashed var(--color-base-1-07);
+		background: linear-gradient(var(--color-base-1-02), var(--color-base-1-01));
+		box-shadow: inset 0 2px 4px color-mix(in oklch, black 24%, transparent);
+		color: var(--color-fg-06);
+	}
+	/* #endregion root */
+
+	/* #region filter input */
 	.FileEditorCommentsFilterInput {
 		width: 100%;
 
@@ -6,7 +109,9 @@
 			0 -16px 0 16px var(--color-base-1-03),
 			0 6px 10px color-mix(in oklch, black 30%, transparent);
 	}
+	/* #endregion filter input */
 
+	/* #region message */
 	.FileEditorCommentsThreadMessage {
 		display: grid;
 		grid-template:
@@ -63,29 +168,35 @@
 		justify-content: flex-end;
 		align-items: flex-start;
 	}
+	/* #endregion message */
 
+	/* #region message content */
 	.FileEditorCommentsThreadMessageContent {
 		grid-area: content;
 		line-height: 1.5;
 	}
+	/* #endregion message content */
 
+	/* #region form */
 	.FileEditorCommentsThreadForm {
 		margin: -1px -1px 0 -1px;
 	}
 
-	.FileEditorCommentsThreadForm-input {
-		position: relative;
+	.FileEditorCommentsThread-active .FileEditorCommentsThreadForm {
+		margin: 0 -12px;
+		padding: 10px;
 
-		display: flex;
-		gap: 4px;
-
-		padding: 4px;
+		border-top: 1px solid var(--color-base-1-06);
+		border-radius: 0 0 7px 7px;
 	}
 
-	.FileEditorCommentsThreadForm-submit-button {
-		align-self: end;
-	}
+	/* #endregion form */
 
+	/* #region resolve button */
+	/* FileEditorCommentsThreadResolveButton — no owned styles; uses MyIconButton. */
+	/* #endregion resolve button */
+
+	/* #region skeleton */
 	.FileEditorCommentsThreadSkeleton {
 		display: grid;
 		grid-template:
@@ -114,58 +225,13 @@
 		height: 24px;
 		width: 80%;
 	}
+	/* #endregion skeleton */
 
-	.FileEditorCommentsThread,
-	.FileEditorCommentsThread-summary {
-		border-radius: 8px;
-	}
-
-	.FileEditorCommentsThread {
-		/*
-		Use base (not base-alt): in-panel list cards on the neutral editor sidebar surface,
-		same family as files tree rows, outline buttons, and modal list items.
-		*/
-		--FileEditorCommentsThread-elevated-shadow:
-			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
-			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
-			0 2px 8px color-mix(in oklch, black 24%, transparent);
-		--FileEditorCommentsThread-pressed-shadow:
-			inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
-			inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
-
-		border: 1px solid var(--color-base-1-08);
-		background: linear-gradient(var(--color-base-1-04), var(--color-base-1-03));
-		box-shadow: var(--FileEditorCommentsThread-elevated-shadow);
-		contain: content;
-
-		transition:
-			background 0.1s linear,
-			border-color 0.1s linear,
-			box-shadow 0.1s linear;
-	}
-
-	.FileEditorCommentsThread-summary {
-		padding: 11px;
-		border: 2px solid transparent;
-		margin: -1px;
-
-		&:focus-visible {
-			outline: 2px solid var(--color-fg-12);
-			outline-offset: -2px;
-		}
-	}
-
-	.FileEditorCommentsThread-content {
-		padding: 12px;
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-
+	/* #region touch */
 	.FileEditorCommentsThread:not(.FileEditorCommentsThread-active):has(
 			.FileEditorCommentsThread-summary:is(:hover, :focus-visible)
 		):not(:has(.FileEditorCommentsThreadMessage-actions:is(:hover, :focus-within))) {
-		border-color: var(--color-base-1-09);
+		border-color: var(--color-base-1-07);
 		background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
 		box-shadow: var(--FileEditorCommentsThread-elevated-shadow);
 	}
@@ -173,7 +239,7 @@
 	.FileEditorCommentsThread:not(.FileEditorCommentsThread-active):has(.FileEditorCommentsThread-summary:active):not(
 			:has(.FileEditorCommentsThreadMessage-actions:active)
 		) {
-		border-color: var(--color-base-1-11);
+		border-color: var(--color-base-1-07);
 		background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
 		box-shadow: var(--FileEditorCommentsThread-pressed-shadow);
 	}
@@ -184,81 +250,15 @@
 			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
 			0 2px 8px color-mix(in oklch, black 24%, transparent);
 
-		border-color: var(--color-base-1-09);
+		border-color: var(--color-base-1-07);
 		background: linear-gradient(var(--color-base-1-04), var(--color-base-1-03));
 		box-shadow: var(--FileEditorCommentsThread-elevated-shadow);
 	}
 
 	.FileEditorCommentsThread-active:has(.FileEditorCommentsThread-summary:active) {
-		border-color: var(--color-base-1-10);
+		border-color: var(--color-base-1-07);
 		background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
 		box-shadow: var(--FileEditorCommentsThread-pressed-shadow);
 	}
-
-	.FileEditorCommentsThread-active .FileEditorCommentsThread-content {
-		padding: 12px 12px 0;
-		gap: 0;
-	}
-
-	.FileEditorCommentsThread-active .FileEditorCommentsThread-messages {
-		padding-bottom: 12px;
-	}
-
-	.FileEditorCommentsThread-active
-		.FileEditorCommentsThread-messages
-		> .FileEditorCommentsThreadMessage:not(:first-child),
-	.FileEditorCommentsThread-active .FileEditorCommentsThread-messages > .FileEditorCommentsThreadSkeleton {
-		padding-top: 12px;
-		margin-top: 4px;
-		border-top: 1px solid var(--color-base-1-07);
-	}
-
-	.FileEditorCommentsThread-active
-		.FileEditorCommentsThread-messages
-		> .FileEditorCommentsThreadMessage:not(:first-child) {
-		padding-left: 12px;
-		margin-left: 15px;
-		border-left: 2px solid color-mix(in oklch, var(--color-accent-06) 45%, var(--color-base-1-06));
-	}
-
-	.FileEditorCommentsThread-active .FileEditorCommentsThread-no-messages-placeholder {
-		margin-top: 8px;
-		padding: 12px;
-		height: auto;
-		min-height: 44px;
-
-		border-radius: 6px;
-		border: 1px dashed var(--color-base-1-07);
-		background: linear-gradient(var(--color-base-1-02), var(--color-base-1-01));
-		box-shadow: inset 0 2px 4px color-mix(in oklch, black 24%, transparent);
-		color: var(--color-fg-06);
-	}
-
-	.FileEditorCommentsThread-active .FileEditorCommentsThreadForm {
-		margin: 0 -12px;
-		padding: 10px;
-
-		border-top: 1px solid var(--color-base-1-06);
-		border-radius: 0 0 7px 7px;
-		background: linear-gradient(var(--color-base-1-02), var(--color-base-1-01));
-		box-shadow: inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
-	}
-
-	.FileEditorCommentsThread-active .FileEditorCommentsThreadForm-input {
-		padding: 0;
-	}
-
-	.FileEditorCommentsThread-messages {
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-
-	.FileEditorCommentsThread-no-messages-placeholder {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: var(--color-fg-07);
-		height: 49px;
-	}
+	/* #endregion touch */
 }

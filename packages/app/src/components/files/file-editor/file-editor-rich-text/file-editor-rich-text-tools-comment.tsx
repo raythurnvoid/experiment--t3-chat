@@ -6,23 +6,16 @@ import { useEditor } from "novel";
 import { useState, useEffect, type ComponentProps, useRef } from "react";
 import { toast } from "sonner";
 import { useMutation } from "convex/react";
-import { MyInput, MyInputBox, MyInputArea } from "@/components/my-input.tsx";
-import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
-import { ArrowUp } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import {
-	FileEditorRichTextCommentComposer,
-	type FileEditorRichTextCommentComposer_Props,
-	type FileEditorRichTextCommentComposer_Ref,
-} from "./file-editor-rich-text-comment-composer.tsx";
+	FileEditorCommentsComposer,
+	type FileEditorCommentsComposerControl_Ref,
+	type FileEditorCommentsComposer_Props,
+} from "../file-editor-comments-composer.tsx";
 
-export type FileEditorRichTextToolsComment_ClassNames =
-	| "FileEditorRichTextToolsComment"
-	| "FileEditorRichTextToolsComment-form"
-	| "FileEditorRichTextToolsComment-input"
-	| "FileEditorRichTextToolsComment-submit-button";
+export type FileEditorRichTextToolsComment_ClassNames = "FileEditorRichTextToolsComment" | "FileEditorRichTextToolsComment-form";
 
 export type FileEditorRichTextToolsComment_Props = {
 	onClose: () => void;
@@ -40,15 +33,15 @@ export function FileEditorRichTextToolsComment(props: FileEditorRichTextToolsCom
 	const [isSubmitting, setIsSubmitting] = useState(false);
 
 	const formRef = useRef<HTMLFormElement>(null);
-	const composerRef = useRef<FileEditorRichTextCommentComposer_Ref>(null);
+	const composerControlRef = useRef<FileEditorCommentsComposerControl_Ref>(null);
 
-	const handleChange: FileEditorRichTextCommentComposer_Props["onChange"] = () => {
-		if (!composerRef.current) return;
+	const handleChange: FileEditorCommentsComposer_Props["onChange"] = () => {
+		if (!composerControlRef.current) return;
 
-		setIsEmpty(composerRef.current?.isEmpty());
+		setIsEmpty(composerControlRef.current?.isEmpty());
 	};
 
-	const handleComposerEnter: FileEditorRichTextCommentComposer_Props["onEnter"] = () => {
+	const handleComposerEnter: FileEditorCommentsComposer_Props["onEnter"] = () => {
 		if (!formRef.current) return;
 
 		formRef.current.requestSubmit();
@@ -57,7 +50,7 @@ export function FileEditorRichTextToolsComment(props: FileEditorRichTextToolsCom
 	const handleSubmit: ComponentProps<"form">["onSubmit"] = async (e) => {
 		e?.preventDefault();
 
-		if (!editor || !composerRef.current) {
+		if (!editor || !composerControlRef.current) {
 			return;
 		}
 
@@ -72,7 +65,7 @@ export function FileEditorRichTextToolsComment(props: FileEditorRichTextToolsCom
 			return;
 		}
 
-		const markdownContent = composerRef.current.getMarkdownContent();
+		const markdownContent = composerControlRef.current.getMarkdownContent();
 
 		setIsSubmitting(true);
 
@@ -89,7 +82,7 @@ export function FileEditorRichTextToolsComment(props: FileEditorRichTextToolsCom
 
 				editor.chain().focus().addComment(result._yay.threadId).run();
 
-				composerRef.current?.clear();
+				composerControlRef.current?.clear();
 				setIsEmpty(true);
 
 				onClose();
@@ -117,33 +110,15 @@ export function FileEditorRichTextToolsComment(props: FileEditorRichTextToolsCom
 				className={cn("FileEditorRichTextToolsComment-form" satisfies FileEditorRichTextToolsComment_ClassNames)}
 				onSubmit={handleSubmit}
 			>
-				<MyInput
-					className={cn("FileEditorRichTextToolsComment-input" satisfies FileEditorRichTextToolsComment_ClassNames)}
-				>
-					<MyInputBox />
-					<MyInputArea>
-						<FileEditorRichTextCommentComposer
-							ref={composerRef}
-							autoFocus
-							disabled={editor?.state.selection.empty || isSubmitting}
-							onChange={handleChange}
-							onEnter={handleComposerEnter}
-						/>
-					</MyInputArea>
-					<MyIconButton
-						className={cn(
-							"FileEditorRichTextToolsComment-submit-button" satisfies FileEditorRichTextToolsComment_ClassNames,
-						)}
-						type="submit"
-						variant="default"
-						tooltip="Submit comment"
-						disabled={isEmpty || editor?.state.selection.empty || isSubmitting}
-					>
-						<MyIconButtonIcon>
-							<ArrowUp />
-						</MyIconButtonIcon>
-					</MyIconButton>
-				</MyInput>
+				<FileEditorCommentsComposer
+					controlRef={composerControlRef}
+					autoFocus
+					disabled={editor?.state.selection.empty || isSubmitting}
+					onChange={handleChange}
+					onEnter={handleComposerEnter}
+					submitTooltip="Submit comment"
+					submitDisabled={isEmpty || editor?.state.selection.empty || isSubmitting}
+				/>
 			</form>
 		</div>
 	);

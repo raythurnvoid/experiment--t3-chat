@@ -15,15 +15,15 @@ import { useQuery, useMutation } from "convex/react";
 import type { Id } from "../../../../convex/_generated/dataModel.js";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
-import { ArrowUp, Check } from "lucide-react";
+import { Check } from "lucide-react";
 import { toast } from "sonner";
 import { MyInput, MyInputArea, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
 import {
-	FileEditorRichTextCommentComposer,
-	type FileEditorRichTextCommentComposer_Props,
-	type FileEditorRichTextCommentComposer_Ref,
-} from "./file-editor-rich-text/file-editor-rich-text-comment-composer.tsx";
+	FileEditorCommentsComposer,
+	type FileEditorCommentsComposerControl_Ref,
+	type FileEditorCommentsComposer_Props,
+} from "./file-editor-comments-composer.tsx";
 import { useRenderPromise } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -178,36 +178,33 @@ function FileEditorCommentsThreadMessage(props: FileEditorCommentsThreadMessage_
 // #endregion message
 
 // #region form
-type FileEditorCommentsThreadForm_ClassNames =
-	| "FileEditorCommentsThreadForm"
-	| "FileEditorCommentsThreadForm-input"
-	| "FileEditorCommentsThreadForm-submit-button";
+type FileEditorCommentsThreadForm_ClassNames = "FileEditorCommentsThreadForm";
 
 type FileEditorCommentsThreadForm_Props = {
 	threadId: Id<"chat_messages">;
-	composerRef?: Ref<FileEditorRichTextCommentComposer_Ref>;
+	composerControlRef: Ref<FileEditorCommentsComposerControl_Ref>;
 	onSubmit?: () => void;
 };
 
 function FileEditorCommentsThreadForm(props: FileEditorCommentsThreadForm_Props) {
-	const { threadId, onSubmit } = props;
+	const { threadId, onSubmit, composerControlRef: composerControlRefProp } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const addMessage = useMutation(app_convex_api.chat_messages.chat_messages_add);
 
-	const composerRef = useRef<FileEditorRichTextCommentComposer_Ref | null>(null);
+	const composerControlRef = useRef<FileEditorCommentsComposerControl_Ref | null>(null);
 	const formRef = useRef<HTMLFormElement>(null);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [isEmpty, setIsEmpty] = useState(true);
 
-	const handleChange: FileEditorRichTextCommentComposer_Props["onChange"] = () => {
-		if (!composerRef.current) return;
+	const handleChange: FileEditorCommentsComposer_Props["onChange"] = () => {
+		if (!composerControlRef.current) return;
 
-		setIsEmpty(composerRef.current?.isEmpty());
+		setIsEmpty(composerControlRef.current?.isEmpty());
 	};
 
-	const handleComposerEnter: FileEditorRichTextCommentComposer_Props["onEnter"] = () => {
+	const handleComposerEnter: FileEditorCommentsComposer_Props["onEnter"] = () => {
 		if (!formRef.current) return;
 
 		formRef.current.requestSubmit();
@@ -216,7 +213,7 @@ function FileEditorCommentsThreadForm(props: FileEditorCommentsThreadForm_Props)
 	const handleSubmit: ComponentProps<"form">["onSubmit"] = async (e) => {
 		e?.preventDefault();
 
-		if (!composerRef.current) {
+		if (!composerControlRef.current) {
 			return;
 		}
 
@@ -225,7 +222,7 @@ function FileEditorCommentsThreadForm(props: FileEditorCommentsThreadForm_Props)
 			return;
 		}
 
-		const markdownContent = composerRef.current.getMarkdownContent();
+		const markdownContent = composerControlRef.current.getMarkdownContent();
 
 		if (!threadId) {
 			toast.error("Thread ID is missing.");
@@ -246,7 +243,7 @@ function FileEditorCommentsThreadForm(props: FileEditorCommentsThreadForm_Props)
 					return;
 				}
 
-				composerRef.current?.clear();
+				composerControlRef.current?.clear();
 				setIsEmpty(true);
 				onSubmit?.();
 			})
@@ -266,31 +263,14 @@ function FileEditorCommentsThreadForm(props: FileEditorCommentsThreadForm_Props)
 			className={"FileEditorCommentsThreadForm" satisfies FileEditorCommentsThreadForm_ClassNames}
 			onSubmit={handleSubmit}
 		>
-			<MyInput
-				variant="surface"
-				className={"FileEditorCommentsThreadForm-input" satisfies FileEditorCommentsThreadForm_ClassNames}
-			>
-				<MyInputBox />
-				<MyInputArea>
-					<FileEditorRichTextCommentComposer
-						ref={(inst) => forward_ref(inst, composerRef, props.composerRef)}
-						disabled={isSubmitting}
-						onChange={handleChange}
-						onEnter={handleComposerEnter}
-					/>
-				</MyInputArea>
-				<MyIconButton
-					className={"FileEditorCommentsThreadForm-submit-button" satisfies FileEditorCommentsThreadForm_ClassNames}
-					type="submit"
-					variant="default"
-					tooltip="Reply to comment"
-					disabled={isEmpty || isSubmitting}
-				>
-					<MyIconButtonIcon>
-						<ArrowUp />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			</MyInput>
+			<FileEditorCommentsComposer
+				controlRef={(inst) => forward_ref(inst, composerControlRef, composerControlRefProp)}
+				disabled={isSubmitting}
+				onChange={handleChange}
+				onEnter={handleComposerEnter}
+				submitTooltip="Reply to comment"
+				submitDisabled={isEmpty || isSubmitting}
+			/>
 		</form>
 	);
 }
@@ -378,7 +358,7 @@ export function FileEditorCommentsThread(props: FileEditorCommentsThread_Props) 
 
 	const renderPromise = useRenderPromise();
 
-	const composerRef = useRef<FileEditorRichTextCommentComposer_Ref | null>(null);
+	const composerControlRef = useRef<FileEditorCommentsComposerControl_Ref | null>(null);
 
 	const archiveThread = useMutation(app_convex_api.chat_messages.chat_messages_archive);
 
@@ -406,7 +386,7 @@ export function FileEditorCommentsThread(props: FileEditorCommentsThread_Props) 
 			renderPromise
 				.wait()
 				.then(() => {
-					composerRef.current?.focus();
+					composerControlRef.current?.focus();
 				})
 				.catch((error) => {
 					console.error("[FileEditorCommentsThread.handleToggle] Error focusing composer", { error });
@@ -528,7 +508,7 @@ export function FileEditorCommentsThread(props: FileEditorCommentsThread_Props) 
 					}
 				</div>
 
-				{open && thread.id && <FileEditorCommentsThreadForm composerRef={composerRef} threadId={thread.id} />}
+				{open && thread.id && <FileEditorCommentsThreadForm composerControlRef={composerControlRef} threadId={thread.id} />}
 			</div>
 		</details>
 	);

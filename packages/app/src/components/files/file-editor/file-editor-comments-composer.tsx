@@ -1,4 +1,4 @@
-import "./file-editor-rich-text-comment-composer.css";
+import "./file-editor-comments-composer.css";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { isNodeEmpty, type Editor, type FocusPosition } from "@tiptap/core";
 import { Placeholder } from "@tiptap/extension-placeholder";
@@ -6,28 +6,32 @@ import { Paragraph } from "@tiptap/extension-paragraph";
 import { Document } from "@tiptap/extension-document";
 import { Text } from "@tiptap/extension-text";
 import { useEffect, useState, useImperativeHandle, type Ref } from "react";
+import { ArrowUp } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { useLiveRef } from "@/hooks/utils-hooks.ts";
 import {
 	files_get_tiptap_shared_extensions,
 	files_tiptap_empty_doc_json,
 	files_tiptap_markdown_to_json,
-} from "../../../../lib/files.ts";
-import type { MyInputTextAreaControl_ClassNames } from "../../../my-input.tsx";
+} from "../../../lib/files.ts";
+import { MyInput, MyInputArea, MyInputBox } from "../../my-input.tsx";
+import type { MyInputTextAreaControl_ClassNames } from "../../my-input.tsx";
+import { MyIconButton, MyIconButtonIcon } from "../../my-icon-button.tsx";
 
-export type FileEditorRichTextCommentComposer_ClassNames =
-	| "FileEditorRichTextCommentComposer"
-	| "FileEditorRichTextCommentComposer-editor";
+// #region control
+type FileEditorCommentsComposerControl_ClassNames =
+	| "FileEditorCommentsComposerControl"
+	| "FileEditorCommentsComposerControl-editor";
 
-export interface FileEditorRichTextCommentComposer_Ref {
+export interface FileEditorCommentsComposerControl_Ref {
 	getMarkdownContent: () => string;
 	clear: () => void;
 	isEmpty: () => boolean;
 	focus: (position?: FocusPosition) => boolean;
 }
 
-export type FileEditorRichTextCommentComposer_Props = {
-	ref?: Ref<FileEditorRichTextCommentComposer_Ref>;
+type FileEditorCommentsComposerControl_Props = {
+	ref: Ref<FileEditorCommentsComposerControl_Ref>;
 	className?: string;
 	initialValue?: string;
 	placeholder?: string;
@@ -37,7 +41,7 @@ export type FileEditorRichTextCommentComposer_Props = {
 	onEnter?: () => void;
 };
 
-export function FileEditorRichTextCommentComposer(props: FileEditorRichTextCommentComposer_Props) {
+function FileEditorCommentsComposerControl(props: FileEditorCommentsComposerControl_Props) {
 	const {
 		ref,
 		className,
@@ -95,7 +99,7 @@ export function FileEditorRichTextCommentComposer(props: FileEditorRichTextComme
 			editorProps: {
 				attributes: {
 					class: cn(
-						"FileEditorRichTextCommentComposer-editor" satisfies FileEditorRichTextCommentComposer_ClassNames,
+						"FileEditorCommentsComposerControl-editor" satisfies FileEditorCommentsComposerControl_ClassNames,
 						"MyInputTextAreaControl" satisfies MyInputTextAreaControl_ClassNames,
 					),
 					"aria-label": placeholder,
@@ -114,16 +118,13 @@ export function FileEditorRichTextCommentComposer(props: FileEditorRichTextComme
 					});
 
 					if (json._nay) {
-						console.error(
-							"[FileEditorRichTextCommentComposer.onCreate] Error while setting initial value",
-							json._nay,
-						);
+						console.error("[FileEditorCommentsComposerControl.onCreate] Error while setting initial value", json._nay);
 						editor.commands.setContent(files_tiptap_empty_doc_json());
 					} else {
 						editor.commands.setContent(json._yay);
 					}
 				} catch (error) {
-					console.error("[FileEditorRichTextCommentComposer.onCreate] Failed to set initial value:", error);
+					console.error("[FileEditorCommentsComposerControl.onCreate] Failed to set initial value:", error);
 				}
 			},
 		};
@@ -131,7 +132,6 @@ export function FileEditorRichTextCommentComposer(props: FileEditorRichTextComme
 
 	const editor = useEditor(editorProps, []);
 
-	// Update disabled state
 	useEffect(() => {
 		if (editor) {
 			editor.setEditable(!disabled, false);
@@ -152,14 +152,78 @@ export function FileEditorRichTextCommentComposer(props: FileEditorRichTextComme
 		},
 	}));
 
+	if (!editor) {
+		return null;
+	}
+
 	return (
-		<div
-			className={cn(
-				"FileEditorRichTextCommentComposer" satisfies FileEditorRichTextCommentComposer_ClassNames,
-				className,
-			)}
-		>
-			{editor && <EditorContent editor={editor} />}
-		</div>
+		<EditorContent
+			editor={editor}
+			className={cn("FileEditorCommentsComposerControl" satisfies FileEditorCommentsComposerControl_ClassNames, className)}
+		/>
 	);
 }
+// #endregion control
+
+// #region root
+export type FileEditorCommentsComposer_ClassNames = "FileEditorCommentsComposer" | "FileEditorCommentsComposer-submit-button";
+
+export type FileEditorCommentsComposer_Props = {
+	controlRef: Ref<FileEditorCommentsComposerControl_Ref>;
+	className?: string;
+	initialValue?: string;
+	placeholder?: string;
+	autoFocus?: FocusPosition;
+	disabled?: boolean;
+	onChange?: () => void;
+	onEnter?: () => void;
+	submitTooltip: string;
+	submitDisabled: boolean;
+};
+
+export function FileEditorCommentsComposer(props: FileEditorCommentsComposer_Props) {
+	const {
+		controlRef,
+		className,
+		initialValue,
+		placeholder,
+		autoFocus,
+		disabled,
+		onChange,
+		onEnter,
+		submitTooltip,
+		submitDisabled,
+	} = props;
+
+	return (
+		<MyInput
+			variant="surface"
+			className={cn("FileEditorCommentsComposer" satisfies FileEditorCommentsComposer_ClassNames, className)}
+		>
+			<MyInputBox />
+			<MyInputArea>
+				<FileEditorCommentsComposerControl
+					ref={controlRef}
+					initialValue={initialValue}
+					placeholder={placeholder}
+					autoFocus={autoFocus}
+					disabled={disabled}
+					onChange={onChange}
+					onEnter={onEnter}
+				/>
+			</MyInputArea>
+			<MyIconButton
+				className={"FileEditorCommentsComposer-submit-button" satisfies FileEditorCommentsComposer_ClassNames}
+				type="submit"
+				variant="default-embedded"
+				tooltip={submitTooltip}
+				disabled={submitDisabled}
+			>
+				<MyIconButtonIcon>
+					<ArrowUp />
+				</MyIconButtonIcon>
+			</MyIconButton>
+		</MyInput>
+	);
+}
+// #endregion root
