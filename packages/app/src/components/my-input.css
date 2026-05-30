@@ -2,6 +2,8 @@
 	/* #region root */
 	.MyInput {
 		contain: content;
+
+		display: flex;
 	}
 	/* #endregion root */
 
@@ -31,13 +33,21 @@
 	/* #region icon */
 	.MyInputIcon {
 		color: var(--color-fg-05);
+
+		&:first-child {
+			margin-left: 12px;
+		}
+
+		&:last-child {
+			margin-right: 12px;
+		}
 	}
 	/* #endregion icon */
 
-	/* #region box */
+	/* #region background */
+	.MyInputBackground,
 	.MyInputBox {
 		position: absolute;
-		z-index: -1;
 		inset: 0;
 
 		width: 100%;
@@ -45,49 +55,87 @@
 
 		pointer-events: none;
 
-		background: var(--color-base-1-05);
-
-		border: 1px solid var(--color-base-1-07);
-		outline-offset: -2px;
 		border-radius: 6px;
+	}
 
-		.MyInput:has(:where(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible)) & {
-			outline-color: var(--color-fg-12);
-		}
+	.MyInputBackground {
+		background: var(--color-base-1-01);
 
-		.MyInput-variant-surface & {
-			background: var(--color-base-1-01);
+		.MyInput-variant-floating & {
+			background: var(--color-base-alt-1-02);
 		}
 
 		.MyInput-variant-transparent & {
 			background: transparent;
 		}
+	}
+	/* #endregion background */
+
+	/* #region box */
+	.MyInputBox {
+		border: 1px solid var(--color-base-1-07);
+		outline: 2px solid transparent;
+		outline-offset: -2px;
+
+		background: transparent;
+
+		z-index: 1;
+
+		.MyInput:has(:where(.MyInputControl:focus-visible, .MyInputTextAreaControl:focus-visible)) & {
+			outline-color: var(--color-fg-12);
+		}
+
+		.MyInput-variant-floating & {
+			border-color: var(--color-base-alt-1-09);
+		}
+
+		.MyInput-variant-transparent & {
+			border-color: transparent;
+		}
 
 		.MyInput.userInvalid &,
-		.MyInput:has([aria-invalid="true"]) & {
+		.MyInput:has(:where(.MyInputControl, .MyInputTextAreaControl)[aria-invalid="true"]) & {
 			border-color: var(--color-red-09);
 			outline-color: var(--color-red-09);
-			box-shadow: none;
 		}
 	}
 	/* #endregion box */
 
 	/* #region area */
 	.MyInputArea {
-		position: relative;
+		contain: layout;
 
 		display: flex;
 		align-items: center;
-		gap: 12px;
 
+		flex: 1;
+		min-width: 0;
 		width: 100%;
 		min-height: 36px;
 
-		padding: 4px 12px;
-
 		cursor: text;
+
+		.MyInputControl {
+			padding: 4px 12px;
+		}
+
+		.MyInputTextAreaControl {
+			padding: 14px 12px;
+		}
 	}
 	/* #endregion area */
+
+	/* #region actions */
+	.MyInputActions {
+		flex-shrink: 0;
+		align-self: center;
+	}
+
+	.MyInput:has(.MyInputTextAreaControl) .MyInputActions {
+		margin: 0 8px 8px 0;
+		align-self: end;
+	}
+	/* #endregion actions */
 
 	/* #region control */
 	.MyInputControl,
@@ -136,22 +184,14 @@
 	}
 
 	.MyInputControl {
-		/*
-		The `size of InputArea` less the `padding`.
-		36px - 8px
-		*/
-		height: 28px;
+		height: 36px;
 	}
 	/* #endregion control */
 
 	/* #region textarea control */
 	.MyInputTextAreaControl {
 		height: auto;
-		/*
-		The `size of InputArea` less the `padding`.
-		36px - 8px
-		*/
-		min-height: 28px;
+		min-height: 1lh;
 		resize: vertical;
 	}
 	/* #endregion textarea control */

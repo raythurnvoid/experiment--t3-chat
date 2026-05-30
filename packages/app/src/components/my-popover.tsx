@@ -1,9 +1,11 @@
+import "./my-floating-card.css";
 import "./my-popover.css";
 import * as Ariakit from "@ariakit/react";
 import { memo } from "react";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
+import type { MyFloatingCard_ClassNames } from "@/components/my-floating-card.tsx";
 
 export type MyPopover_ClassNames = "MyPopover";
 
@@ -49,7 +51,11 @@ export const MyPopoverContent = memo(function MyPopoverContent(props: MyPopoverC
 
 	return (
 		<Ariakit.Popover
-			className={cn("MyPopoverContent" satisfies MyPopoverContent_ClassNames, className)}
+			className={cn(
+				"MyPopoverContent" satisfies MyPopoverContent_ClassNames,
+				"MyFloatingCard" satisfies MyFloatingCard_ClassNames,
+				className,
+			)}
 			portal={portal}
 			portalElement={portalElement ?? appHoistingContainer ?? undefined}
 			gutter={gutter}

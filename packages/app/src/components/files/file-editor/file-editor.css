@@ -18,11 +18,13 @@
 		overflow-y: auto;
 
 		contain: strict;
-		container: FileEditor-editor-area / size;
 	}
 
 	.FileEditor-mode-rich-text .FileEditor-editor-area {
-		/* FileNodeView owns the shared editor/comments scroll surface. */
+		/*
+		Let rich text content define the editor height so the comments
+		panel reserves matching scroll space for anchored threads.
+		*/
 		overflow: visible;
 		contain: inline-size style;
 	}

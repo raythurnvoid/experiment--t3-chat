@@ -18,6 +18,7 @@ import { app_fetch_main_api_url } from "../../../../lib/fetch.ts";
 import {
 	MyCombobox,
 	MyComboboxInput,
+	MyComboboxInputBackground,
 	MyComboboxInputBox,
 	MyComboboxInputArea,
 	MyComboboxInputControl,
@@ -142,7 +143,7 @@ function FileEditorRichTextToolsInlineAiInputArea(props: FileEditorRichTextTools
 					"FileEditorRichTextToolsInlineAiInputArea-input" satisfies FileEditorRichTextToolsInlineAiInputArea_ClassNames,
 				)}
 			>
-				<MyComboboxInputBox />
+				<MyComboboxInputBackground />
 				<MyComboboxInputArea>
 					<MyComboboxInputControl
 						className={cn(
@@ -159,6 +160,7 @@ function FileEditorRichTextToolsInlineAiInputArea(props: FileEditorRichTextTools
 						<ArrowUp />
 					</MyIconButtonIcon>
 				</MyIconButton>
+				<MyComboboxInputBox />
 			</MyComboboxInput>
 		</div>
 	);

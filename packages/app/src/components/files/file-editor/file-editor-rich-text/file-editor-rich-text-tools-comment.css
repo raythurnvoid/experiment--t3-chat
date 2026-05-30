@@ -1,13 +1,30 @@
 @layer components {
-	.FileEditorRichTextToolsComment {
+	/* #region root */
+	.FileEditorRichTextToolsComment-popover-content {
 		width: 350px;
+		padding: 0;
+
+		/* Let the floating MyInput box provide chrome, like the link popover. */
+		border: none;
+		background: transparent;
+		box-shadow: none;
+	}
+	/* #endregion root */
+
+	/* #region form */
+	.FileEditorRichTextToolsCommentForm {
+		position: relative;
 
 		display: flex;
-		flex-direction: column;
-		gap: 8px;
-	}
+		gap: 4px;
+		width: 100%;
 
-	.FileEditorRichTextToolsComment-form {
-		margin: -1px -1px 0 -1px;
+		/* Match link form: MyInput background/box position against the form, not the composer wrapper. */
+		> .FileEditorCommentsComposer {
+			flex: 1;
+			contain: style;
+			position: static;
+		}
 	}
+	/* #endregion form */
 }

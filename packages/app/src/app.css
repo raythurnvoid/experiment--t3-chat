@@ -535,7 +535,13 @@
 		}
 
 		p {
-			margin: 0.2em 0;
+			&:not(:first-child) {
+				margin-top: 0.2em;
+			}
+
+			&:not(:last-child) {
+				margin-bottom: 0.2em;
+			}
 		}
 
 		ul {

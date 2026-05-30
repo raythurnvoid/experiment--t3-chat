@@ -39,7 +39,7 @@ import { files_PresenceStore, files_YJS_DOC_KEYS } from "@/lib/files.ts";
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { FileEditorRichTextToolsInlineAi } from "./file-editor-rich-text-tools-inline-ai.tsx";
 import { FileEditorRichTextToolsComment } from "./file-editor-rich-text-tools-comment.tsx";
-import { Sparkles, MessageSquarePlus } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { FileEditorRichTextDragHandle } from "./file-editor-rich-text-drag-handle.tsx";
 import type { EditorBubbleProps } from "../../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
 import { bubbleMenuReevaluateVisibility } from "../../../../../vendor/tiptap/packages/extension-bubble-menu/src/index.ts";
@@ -205,13 +205,12 @@ export type FileEditorRichTextBubbleContentDefaultActions_ClassNames =
 type FileEditorRichTextBubbleContentDefaultActions_Props = {
 	editor: Editor;
 	onClickAi: MyButton_Props["onClick"];
-	onClickComment: MyButton_Props["onClick"];
 };
 
 const FileEditorRichTextBubbleContentDefaultActions = memo(function FileEditorRichTextBubbleContentDefaultActions(
 	props: FileEditorRichTextBubbleContentDefaultActions_Props,
 ) {
-	const { editor, onClickAi, onClickComment } = props;
+	const { editor, onClickAi } = props;
 
 	const handleActionMouseDown = useFn<MyButton_Props["onMouseDown"]>((event) => {
 		// Keep the editor selection alive while the bubble action handles the click.
@@ -258,24 +257,7 @@ const FileEditorRichTextBubbleContentDefaultActions = memo(function FileEditorRi
 			<MySeparator orientation="vertical" />
 			<FileEditorRichTextToolsColorSelector editor={editor} />
 			<MySeparator orientation="vertical" />
-			<MyButton
-				variant="ghost"
-				className={cn(
-					"FileEditorRichTextBubbleContentDefaultActions-button" satisfies FileEditorRichTextBubbleContentDefaultActions_ClassNames,
-				)}
-				onPointerDown={handleActionPointerDown}
-				onMouseDown={handleActionMouseDown}
-				onClick={onClickComment}
-			>
-				<MyButtonIcon
-					className={cn(
-						"FileEditorRichTextBubbleContentDefaultActions-icon" satisfies FileEditorRichTextBubbleContentDefaultActions_ClassNames,
-					)}
-				>
-					<MessageSquarePlus />
-				</MyButtonIcon>
-				Comment
-			</MyButton>
+			<FileEditorRichTextToolsComment editor={editor} />
 		</div>
 	);
 });
@@ -283,29 +265,16 @@ const FileEditorRichTextBubbleContentDefaultActions = memo(function FileEditorRi
 type FileEditorRichTextBubbleContent_Props = {
 	editor: Editor;
 	openAi: boolean;
-	openComment: boolean;
 	portalElement: HTMLElement | null;
 	onPortalRef: (inst: HTMLDivElement | null) => void;
 	onClickAi: MyButton_Props["onClick"];
-	onClickComment: MyButton_Props["onClick"];
 	onDiscardAi: () => void;
-	onCloseComment: () => void;
 };
 
 const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleContent(
 	props: FileEditorRichTextBubbleContent_Props,
 ) {
-	const {
-		editor,
-		openAi,
-		openComment,
-		portalElement,
-		onPortalRef,
-		onClickAi,
-		onClickComment,
-		onDiscardAi,
-		onCloseComment,
-	} = props;
+	const { editor, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } = props;
 
 	return (
 		<div
@@ -313,13 +282,8 @@ const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleCo
 			className={cn("FileEditorRichTextBubbleContent" satisfies FileEditorRichTextBubbleContent_ClassNames)}
 		>
 			{openAi && <FileEditorRichTextToolsInlineAi editor={editor} onDiscard={onDiscardAi} />}
-			{openComment && <FileEditorRichTextToolsComment onClose={onCloseComment} />}
-			{!openAi && !openComment && portalElement ? (
-				<FileEditorRichTextBubbleContentDefaultActions
-					editor={editor}
-					onClickAi={onClickAi}
-					onClickComment={onClickComment}
-				/>
+			{!openAi && portalElement ? (
+				<FileEditorRichTextBubbleContentDefaultActions editor={editor} onClickAi={onClickAi} />
 			) : null}
 		</div>
 	);
@@ -365,7 +329,6 @@ export const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(p
 	const [portalElement, setPortalElement] = useState<HTMLElement | null>(null);
 	const [rendered, setRendered] = useState(true);
 
-	const [openComment, setOpenComment] = useState(false);
 	const [openAi, setOpenAi] = useState(false);
 
 	const renderPromise = useRenderPromise();
@@ -424,7 +387,6 @@ export const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(p
 		setRendered(true);
 
 		setOpenAi(false);
-		setOpenComment(false);
 
 		FileEditorRichText.clearDecorationHighlightProperly(editor);
 	});
@@ -457,27 +419,8 @@ export const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(p
 			});
 	});
 
-	const handleClickComment = useFn<MyButton_Props["onClick"]>(() => {
-		setOpenComment(true);
-
-		// Recalculate the bubble menu position after the comment component is rendered
-		renderPromise
-			.wait()
-			.then(() => {
-				updateBubbleMenuPosition();
-			})
-			.catch((error) => {
-				console.error("[FileEditorRichText.handleClickComment] Error updating bubble menu position", { error });
-			});
-	});
-
 	const handleDiscardAi = useFn(() => {
 		setOpenAi(false);
-	});
-
-	const handleCloseComment = useFn(() => {
-		setOpenComment(false);
-		setRendered(false);
 	});
 
 	const handlePortalElementRef = useFn((inst: HTMLDivElement | null) => {
@@ -636,13 +579,10 @@ export const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(p
 			<FileEditorRichTextBubbleContent
 				editor={editor}
 				openAi={openAi}
-				openComment={openComment}
 				portalElement={portalElement}
 				onPortalRef={handlePortalElementRef}
 				onClickAi={handleClickAi}
-				onClickComment={handleClickComment}
 				onDiscardAi={handleDiscardAi}
-				onCloseComment={handleCloseComment}
 			/>
 		</EditorBubble>
 	) : null;

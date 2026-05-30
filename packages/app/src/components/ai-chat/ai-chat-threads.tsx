@@ -21,7 +21,7 @@ import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
-import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
+import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
 import { MyLabel } from "@/components/my-label.tsx";
 import {
 	MyMenu,
@@ -140,11 +140,10 @@ const AiChatThreadsSearch = memo(function AiChatThreadsSearch(props: AiChatThrea
 	return (
 		<MyInput
 			className={cn("AiChatThreadsSearch" satisfies AiChatThreadsSearch_ClassNames)}
-			variant="surface"
 			role="search"
 		>
+			<MyInputBackground />
 			<MyInputArea>
-				<MyInputBox />
 				<MyInputIcon>
 					<Search />
 				</MyInputIcon>
@@ -157,6 +156,7 @@ const AiChatThreadsSearch = memo(function AiChatThreadsSearch(props: AiChatThrea
 					onChange={onSearchChange}
 				/>
 			</MyInputArea>
+			<MyInputBox />
 		</MyInput>
 	);
 });

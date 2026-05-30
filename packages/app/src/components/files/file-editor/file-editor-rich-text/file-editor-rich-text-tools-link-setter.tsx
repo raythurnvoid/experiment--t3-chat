@@ -5,7 +5,14 @@ import { useEditorState, type Editor } from "@tiptap/react";
 import { MyPopover, MyPopoverTrigger, MyPopoverContent } from "@/components/my-popover.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
-import { MyInput, MyInputBox, MyInputArea, MyInputControl } from "@/components/my-input.tsx";
+import {
+	MyInput,
+	MyInputActions,
+	MyInputArea,
+	MyInputBackground,
+	MyInputBox,
+	MyInputControl,
+} from "@/components/my-input.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
 import { FileEditorRichText } from "./file-editor-rich-text.tsx";
@@ -34,7 +41,8 @@ function getUrlFromString(str: string) {
 // #region form
 type FileEditorRichTextToolsLinkSetterForm_ClassNames =
 	| "FileEditorRichTextToolsLinkSetterForm"
-	| "FileEditorRichTextToolsLinkSetterForm-input";
+	| "FileEditorRichTextToolsLinkSetterForm-input"
+	| "FileEditorRichTextToolsLinkSetterForm-submit-button";
 
 type FileEditorRichTextToolsLinkSetterForm_Props = {
 	inputRef: React.RefObject<HTMLInputElement | null>;
@@ -53,11 +61,12 @@ const FileEditorRichTextToolsLinkSetterForm = memo(function FileEditorRichTextTo
 			className={cn("FileEditorRichTextToolsLinkSetterForm" satisfies FileEditorRichTextToolsLinkSetterForm_ClassNames)}
 		>
 			<MyInput
+				variant="floating"
 				className={cn(
 					"FileEditorRichTextToolsLinkSetterForm-input" satisfies FileEditorRichTextToolsLinkSetterForm_ClassNames,
 				)}
 			>
-				<MyInputBox />
+				<MyInputBackground />
 				<MyInputArea>
 					<MyInputControl
 						ref={inputRef}
@@ -67,20 +76,23 @@ const FileEditorRichTextToolsLinkSetterForm = memo(function FileEditorRichTextTo
 						defaultValue={activeHref || ""}
 					/>
 				</MyInputArea>
+				<MyInputActions>
+					{activeHref ? (
+						<MyIconButton variant="destructive" type="submit" name="delete" tooltip="Remove link">
+							<MyIconButtonIcon>
+								<Trash />
+							</MyIconButtonIcon>
+						</MyIconButton>
+					) : (
+						<MyIconButton variant="default-embedded" type="submit" tooltip="Apply link">
+							<MyIconButtonIcon>
+								<Check />
+							</MyIconButtonIcon>
+						</MyIconButton>
+					)}
+				</MyInputActions>
+				<MyInputBox />
 			</MyInput>
-			{activeHref ? (
-				<MyIconButton variant="destructive" type="submit" name="delete" tooltip="Remove link">
-					<MyIconButtonIcon>
-						<Trash />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			) : (
-				<MyIconButton variant="default" type="submit" tooltip="Apply link">
-					<MyIconButtonIcon>
-						<Check />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			)}
 		</form>
 	);
 });

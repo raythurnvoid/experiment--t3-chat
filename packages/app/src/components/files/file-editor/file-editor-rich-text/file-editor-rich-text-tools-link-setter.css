@@ -13,20 +13,19 @@
 	.FileEditorRichTextToolsLinkSetter-popover-content {
 		width: 240px;
 		padding: 0;
+		border: none;
 	}
 	/* #endregion root */
 
 	/* #region form */
 	.FileEditorRichTextToolsLinkSetterForm {
-		display: flex;
-		gap: 4px;
-		padding: 4px;
+		position: relative;
 
-		align-items: center;
+		width: 100%;
 	}
 
 	.FileEditorRichTextToolsLinkSetterForm-input {
-		flex: 1;
+		width: 100%;
 		contain: style;
 	}
 	/* #endregion form */

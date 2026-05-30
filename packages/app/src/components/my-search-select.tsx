@@ -4,7 +4,7 @@ import * as Ariakit from "@ariakit/react";
 import { memo } from "react";
 import type { ExtractStrict } from "type-fest";
 
-import { MyInput, MyInputArea, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
+import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
 import {
 	MySelect,
 	MySelectItem,
@@ -70,8 +70,8 @@ export const MySearchSelectSearch = memo(function MySearchSelectSearch(props: My
 
 	return (
 		<div className={cn("MySearchSelectSearch" satisfies MySearchSelectSearch_ClassNames, className)}>
-			<MyInput variant="surface">
-				<MyInputBox />
+			<MyInput>
+				<MyInputBackground />
 				<MyInputArea>
 					<Ariakit.Combobox
 						autoFocus={autoFocus}
@@ -84,6 +84,7 @@ export const MySearchSelectSearch = memo(function MySearchSelectSearch(props: My
 						}}
 					/>
 				</MyInputArea>
+				<MyInputBox />
 			</MyInput>
 		</div>
 	);

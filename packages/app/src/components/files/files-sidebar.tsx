@@ -51,6 +51,7 @@ import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import {
 	MyInput,
 	MyInputArea,
+	MyInputBackground,
 	MyInputBox,
 	MyInputControl,
 	MyInputHelperText,
@@ -738,7 +739,7 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 					)}
 					variant="transparent"
 				>
-					<MyInputBox />
+					<MyInputBackground />
 					<MyInputControl
 						{...(isRenaming ? renameInputProps : null)}
 						ref={handleRenameInputRef}
@@ -757,6 +758,7 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 						onCompositionEnd={isRenaming ? handleRenameInputCompositionEnd : undefined}
 						onPaste={isRenaming ? handleRenameInputPaste : undefined}
 					/>
+					<MyInputBox />
 				</MyInput>
 			</MyTooltipTrigger>
 			{renameError ? <MyTooltipContent variant="error">{renameError}</MyTooltipContent> : null}
@@ -1923,14 +1925,15 @@ const FilesSidebarSearch = memo(function FilesSidebarSearch(props: FilesSidebarS
 	}, [searchQueryDebounced]);
 
 	return (
-		<MyInput className={cn("FilesSidebarSearch" satisfies FilesSidebarSearch_ClassNames)} variant="surface">
+		<MyInput className={cn("FilesSidebarSearch" satisfies FilesSidebarSearch_ClassNames)}>
+			<MyInputBackground />
 			<MyInputArea>
-				<MyInputBox />
 				<MyInputIcon>
 					<Search />
 				</MyInputIcon>
 				<MyInputControl placeholder="Search files" value={searchQuery} onChange={handleInputChange} />
 			</MyInputArea>
+			<MyInputBox />
 		</MyInput>
 	);
 });
@@ -2421,10 +2424,9 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 									("FilesSidebarUploadConflictModal-name-field-state-attention" satisfies FilesSidebarUploadConflictModal_ClassNames),
 							)}
 							displayValidationMessage={invalidFilenameMessage}
-							variant="surface"
 						>
+							<MyInputBackground />
 							<MyInputArea>
-								<MyInputBox />
 								<MyInputControl
 									autoFocus
 									aria-label="Filename"
@@ -2435,6 +2437,7 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 									onChange={handleFilenameChange}
 								/>
 							</MyInputArea>
+							<MyInputBox />
 							<MyInputHelperText
 								className={
 									"FilesSidebarUploadConflictModal-helper-row" satisfies FilesSidebarUploadConflictModal_ClassNames

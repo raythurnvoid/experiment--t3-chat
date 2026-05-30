@@ -2,10 +2,14 @@
 // a very similar way
 
 import "./file-editor-rich-text-tools-comment.css";
-import { useEditor } from "novel";
-import { useState, useEffect, type ComponentProps, useRef } from "react";
+import { MessageSquarePlus } from "lucide-react";
+import { memo, useState, useEffect, useRef, type ComponentProps } from "react";
 import { toast } from "sonner";
 import { useMutation } from "convex/react";
+import { useEditorState, type Editor } from "@tiptap/react";
+import { MyPopover, MyPopoverTrigger, MyPopoverContent } from "@/components/my-popover.tsx";
+import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -15,30 +19,95 @@ import {
 	type FileEditorCommentsComposer_Props,
 } from "../file-editor-comments-composer.tsx";
 
-export type FileEditorRichTextToolsComment_ClassNames = "FileEditorRichTextToolsComment" | "FileEditorRichTextToolsComment-form";
+// #region form
+type FileEditorRichTextToolsCommentForm_ClassNames = "FileEditorRichTextToolsCommentForm";
 
-export type FileEditorRichTextToolsComment_Props = {
-	onClose: () => void;
+type FileEditorRichTextToolsCommentForm_Props = {
+	formRef: React.RefObject<HTMLFormElement | null>;
+	composerControlRef: React.RefObject<FileEditorCommentsComposerControl_Ref | null>;
+	isEmpty: boolean;
+	isSubmitting: boolean;
+	isSelectionEmpty: boolean;
+	onChange: FileEditorCommentsComposer_Props["onChange"];
+	onEnter: FileEditorCommentsComposer_Props["onEnter"];
+	onSubmit: ComponentProps<"form">["onSubmit"];
 };
 
-export function FileEditorRichTextToolsComment(props: FileEditorRichTextToolsComment_Props) {
-	const { onClose } = props;
+const FileEditorRichTextToolsCommentForm = memo(function FileEditorRichTextToolsCommentForm(
+	props: FileEditorRichTextToolsCommentForm_Props,
+) {
+	const { formRef, composerControlRef, isEmpty, isSubmitting, isSelectionEmpty, onChange, onEnter, onSubmit } = props;
+
+	return (
+		<form
+			ref={formRef}
+			className={cn("FileEditorRichTextToolsCommentForm" satisfies FileEditorRichTextToolsCommentForm_ClassNames)}
+			aria-label="New document comment"
+			onSubmit={onSubmit}
+		>
+			<FileEditorCommentsComposer
+				variant="floating"
+				controlRef={composerControlRef}
+				disabled={isSelectionEmpty || isSubmitting}
+				submitTooltip="Submit comment"
+				submitDisabled={isEmpty || isSelectionEmpty || isSubmitting}
+				ariaLabel="Add comment to selection"
+				onChange={onChange}
+				onEnter={onEnter}
+			/>
+		</form>
+	);
+});
+// #endregion form
+
+// #region root
+export type FileEditorRichTextToolsComment_ClassNames =
+	| "FileEditorRichTextToolsComment"
+	| "FileEditorRichTextToolsComment-trigger-button"
+	| "FileEditorRichTextToolsComment-popover-content";
+
+export type FileEditorRichTextToolsComment_Props = {
+	editor: Editor;
+};
+
+type FileEditorRichTextToolsCommentInner_Props = FileEditorRichTextToolsComment_Props & {
+	isSelectionEmpty: boolean;
+};
+
+const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextToolsCommentInner(
+	props: FileEditorRichTextToolsCommentInner_Props,
+) {
+	const { editor, isSelectionEmpty } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const createCommentsThread = useMutation(app_convex_api.chat_messages.chat_messages_threads_create);
 
-	const { editor } = useEditor();
+	const [open, setOpen] = useState(false);
 	const [isEmpty, setIsEmpty] = useState(true);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 
 	const formRef = useRef<HTMLFormElement>(null);
 	const composerControlRef = useRef<FileEditorCommentsComposerControl_Ref>(null);
+	const openRef = useRef(false);
+
+	const doSetOpen = useFn((next: boolean | ((prev: boolean) => boolean)) => {
+		const prev = openRef.current;
+		const nextOpen = typeof next === "function" ? next(prev) : next;
+
+		openRef.current = nextOpen;
+		setOpen(nextOpen);
+
+		if (!nextOpen && prev) {
+			composerControlRef.current?.clear();
+			setIsEmpty(true);
+		}
+	});
 
 	const handleChange: FileEditorCommentsComposer_Props["onChange"] = () => {
 		if (!composerControlRef.current) return;
 
-		setIsEmpty(composerControlRef.current?.isEmpty());
+		setIsEmpty(composerControlRef.current.isEmpty());
 	};
 
 	const handleComposerEnter: FileEditorCommentsComposer_Props["onEnter"] = () => {
@@ -47,10 +116,10 @@ export function FileEditorRichTextToolsComment(props: FileEditorRichTextToolsCom
 		formRef.current.requestSubmit();
 	};
 
-	const handleSubmit: ComponentProps<"form">["onSubmit"] = async (e) => {
-		e?.preventDefault();
+	const handleSubmit = useFn<NonNullable<ComponentProps<"form">["onSubmit"]>>(async (e) => {
+		e.preventDefault();
 
-		if (!editor || !composerControlRef.current) {
+		if (!composerControlRef.current) {
 			return;
 		}
 
@@ -69,7 +138,6 @@ export function FileEditorRichTextToolsComment(props: FileEditorRichTextToolsCom
 
 		setIsSubmitting(true);
 
-		// Create a new root message (thread) in Convex
 		createCommentsThread({
 			membershipId,
 			content: markdownContent.trim(),
@@ -85,7 +153,7 @@ export function FileEditorRichTextToolsComment(props: FileEditorRichTextToolsCom
 				composerControlRef.current?.clear();
 				setIsEmpty(true);
 
-				onClose();
+				doSetOpen(false);
 			})
 			.catch((err) => {
 				console.error(err);
@@ -94,34 +162,79 @@ export function FileEditorRichTextToolsComment(props: FileEditorRichTextToolsCom
 			.finally(() => {
 				setIsSubmitting(false);
 			});
-	};
+	});
 
-	// Auto-close if selection becomes empty
+	// Autofocus only when the popover opens (not on every render).
 	useEffect(() => {
-		if (editor?.state.selection.empty) {
-			onClose();
+		if (!open) {
+			return;
 		}
-	}, [editor?.state.selection.empty, onClose]);
+
+		const focusTimeout = setTimeout(() => {
+			composerControlRef.current?.focus();
+		});
+
+		return () => {
+			clearTimeout(focusTimeout);
+		};
+	}, [open]);
 
 	return (
 		<div className={cn("FileEditorRichTextToolsComment" satisfies FileEditorRichTextToolsComment_ClassNames)}>
-			<form
-				ref={formRef}
-				className={cn("FileEditorRichTextToolsComment-form" satisfies FileEditorRichTextToolsComment_ClassNames)}
-				aria-label="New document comment"
-				onSubmit={handleSubmit}
-			>
-				<FileEditorCommentsComposer
-					controlRef={composerControlRef}
-					autoFocus
-					disabled={editor?.state.selection.empty || isSubmitting}
-					submitTooltip="Submit comment"
-					submitDisabled={isEmpty || editor?.state.selection.empty || isSubmitting}
-					ariaLabel="Add comment to selection"
-					onChange={handleChange}
-					onEnter={handleComposerEnter}
-				/>
-			</form>
+			<MyPopover open={open} setOpen={doSetOpen} placement="bottom-end">
+				<MyPopoverTrigger>
+					<MyButton
+						className={cn(
+							"FileEditorRichTextToolsComment-trigger-button" satisfies FileEditorRichTextToolsComment_ClassNames,
+						)}
+						variant="ghost"
+						aria-label="Add comment"
+					>
+						<MyButtonIcon>
+							<MessageSquarePlus />
+						</MyButtonIcon>
+						Comment
+					</MyButton>
+				</MyPopoverTrigger>
+				<MyPopoverContent
+					className={cn(
+						"FileEditorRichTextToolsComment-popover-content" satisfies FileEditorRichTextToolsComment_ClassNames,
+					)}
+					gutter={10}
+				>
+					<FileEditorRichTextToolsCommentForm
+						formRef={formRef}
+						composerControlRef={composerControlRef}
+						isEmpty={isEmpty}
+						isSubmitting={isSubmitting}
+						isSelectionEmpty={isSelectionEmpty}
+						onChange={handleChange}
+						onEnter={handleComposerEnter}
+						onSubmit={handleSubmit}
+					/>
+				</MyPopoverContent>
+			</MyPopover>
 		</div>
 	);
-}
+});
+
+export const FileEditorRichTextToolsComment = memo(function FileEditorRichTextToolsComment(
+	props: FileEditorRichTextToolsComment_Props,
+) {
+	// Required to allow re-renders to access latest values via tiptap functions
+	"use no memo";
+
+	const { editor } = props;
+
+	const editorState = useEditorState({
+		editor,
+		selector: ({ editor: currentEditor }) => {
+			return {
+				isSelectionEmpty: currentEditor.state.selection.empty,
+			};
+		},
+	});
+
+	return <FileEditorRichTextToolsCommentInner editor={editor} isSelectionEmpty={editorState.isSelectionEmpty} />;
+});
+// #endregion root

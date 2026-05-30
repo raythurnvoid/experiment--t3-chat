@@ -17,7 +17,7 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { Check } from "lucide-react";
 import { toast } from "sonner";
-import { MyInput, MyInputArea, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
+import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl } from "@/components/my-input.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
 import {
 	FileEditorCommentsComposer,
@@ -55,11 +55,10 @@ export function FileEditorCommentsFilterInput(props: FileEditorCommentsFilterInp
 	return (
 		<MyInput
 			id={id}
-			variant="surface"
 			className={cn("FileEditorCommentsFilterInput" satisfies FileEditorCommentsFilterInput_ClassNames, className)}
 		>
+			<MyInputBackground />
 			<MyInputArea>
-				<MyInputBox />
 				<MyInputControl
 					aria-label={ariaLabel}
 					placeholder={placeholder}
@@ -68,6 +67,7 @@ export function FileEditorCommentsFilterInput(props: FileEditorCommentsFilterInp
 					onChange={(e) => onValueChange(e.target.value)}
 				/>
 			</MyInputArea>
+			<MyInputBox />
 		</MyInput>
 	);
 }
@@ -510,7 +510,9 @@ export function FileEditorCommentsThread(props: FileEditorCommentsThread_Props) 
 					}
 				</div>
 
-				{open && thread.id && <FileEditorCommentsThreadForm composerControlRef={composerControlRef} threadId={thread.id} />}
+				{open && thread.id && (
+					<FileEditorCommentsThreadForm composerControlRef={composerControlRef} threadId={thread.id} />
+				)}
 			</div>
 		</details>
 	);

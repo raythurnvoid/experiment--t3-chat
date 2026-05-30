@@ -112,6 +112,9 @@ vi.mock("@/components/my-input.tsx", () => ({
 	MyInputArea: function MyInputArea(props: { children?: ReactNode }) {
 		return <div>{props.children}</div>;
 	},
+	MyInputBackground: function MyInputBackground() {
+		return null;
+	},
 	MyInputBox: function MyInputBox() {
 		return null;
 	},

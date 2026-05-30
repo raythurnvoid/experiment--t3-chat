@@ -23,6 +23,7 @@ import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx"
 import {
 	MyInput,
 	MyInputArea,
+	MyInputBackground,
 	MyInputBox,
 	MyInputControl,
 	MyInputHelperText,
@@ -1234,10 +1235,10 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 					<div
 						className={"FileNodeViewFolderCreateNodeModal-field" satisfies FileNodeViewFolderCreateNodeModal_ClassNames}
 					>
-						<MyInput className={cn(displayedValidationMessage && "userInvalid")} variant="surface">
+						<MyInput className={cn(displayedValidationMessage && "userInvalid")}>
 							<MyInputLabel>Name</MyInputLabel>
+							<MyInputBackground />
 							<MyInputArea>
-								<MyInputBox />
 								<MyInputControl
 									ref={inputRef}
 									autoFocus
@@ -1247,6 +1248,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 									onChange={handleNameChange}
 								/>
 							</MyInputArea>
+							<MyInputBox />
 							<MyInputHelperText
 								className={
 									"FileNodeViewFolderCreateNodeModal-validation" satisfies FileNodeViewFolderCreateNodeModal_ClassNames

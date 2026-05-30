@@ -45,6 +45,7 @@ import {
 } from "@/components/my-menu.tsx";
 import {
 	MyInput,
+	MyInputBackground,
 	MyInputBox,
 	MyInputArea,
 	MyInputControl,
@@ -746,10 +747,10 @@ const MainAppHeaderWorkspaceCreateEditFormField = memo(function MainAppHeaderWor
 	} = props;
 
 	return (
-		<MyInput displayValidationMessage={displayValidationMessage} variant="surface">
+		<MyInput displayValidationMessage={displayValidationMessage}>
 			<MyInputLabel>{label}</MyInputLabel>
+			<MyInputBackground />
 			<MyInputArea>
-				<MyInputBox />
 				<MyInputControl
 					ref={inputRef}
 					validationMessage={validationMessage}
@@ -768,6 +769,7 @@ const MainAppHeaderWorkspaceCreateEditFormField = memo(function MainAppHeaderWor
 					onPaste={onPaste}
 				/>
 			</MyInputArea>
+			<MyInputBox />
 			<MyInputHelperText
 				className={cn(
 					"MainAppHeaderWorkspaceCreateEditFormField-helper-row" satisfies MainAppHeaderWorkspaceCreateEditFormField_ClassNames,

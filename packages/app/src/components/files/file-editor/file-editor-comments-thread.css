@@ -104,10 +104,6 @@
 	/* #region filter input */
 	.FileEditorCommentsFilterInput {
 		width: 100%;
-
-		box-shadow:
-			0 -16px 0 16px var(--color-base-1-03),
-			0 6px 10px color-mix(in oklch, black 30%, transparent);
 	}
 	/* #endregion filter input */
 
@@ -186,7 +182,7 @@
 		margin: 0 -12px;
 		padding: 10px;
 
-		border-top: 1px solid var(--color-base-1-06);
+		border-top: 1px solid var(--color-base-1-07);
 		border-radius: 0 0 7px 7px;
 	}
 

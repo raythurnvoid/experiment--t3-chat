@@ -9,9 +9,11 @@ import type {
 	MyInputArea_ClassNames,
 	MyInputControl_ClassNames,
 	MyInputIcon_ClassNames,
+	MyInputBackground_ClassNames,
 	MyInputBox_ClassNames,
 } from "./my-input.tsx";
 
+// #region input
 export type MyCombobox_ClassNames = "MyCombobox";
 
 export type MyCombobox_Props = Ariakit.ComboboxProviderProps;
@@ -49,6 +51,26 @@ export const MyComboboxInput = memo(function MyComboboxInput(props: MyComboboxIn
 		<div className={cn("MyComboboxInput" satisfies MyComboboxInput_ClassNames, className)} {...rest}>
 			{children}
 		</div>
+	);
+});
+
+export type MyComboboxInputBackground_ClassNames = "MyComboboxInputBackground";
+
+export type MyComboboxInputBackground_Props = ComponentPropsWithRef<"div">;
+
+export const MyComboboxInputBackground = memo(function MyComboboxInputBackground(props: MyComboboxInputBackground_Props) {
+	const { ref, className, ...rest } = props;
+
+	return (
+		<div
+			ref={ref}
+			className={cn(
+				"MyComboboxInputBackground" satisfies MyComboboxInputBackground_ClassNames,
+				"MyInputBackground" satisfies MyInputBackground_ClassNames,
+				className,
+			)}
+			{...rest}
+		/>
 	);
 });
 
@@ -180,7 +202,9 @@ export const MyComboboxInputControl = memo(function MyComboboxInputControl(props
 		/>
 	);
 });
+// #endregion input
 
+// #region popover
 export type MyComboboxList_ClassNames = "MyComboboxList";
 
 export type MyComboboxList_Props = Ariakit.ComboboxListProps;
@@ -356,3 +380,4 @@ export const MyComboboxCancel = memo(function MyComboboxCancel(props: MyCombobox
 		</Ariakit.ComboboxCancel>
 	);
 });
+// #endregion popover

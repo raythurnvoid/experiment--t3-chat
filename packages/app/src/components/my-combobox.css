@@ -1,7 +1,8 @@
 @layer common_components {
+	/* #region input */
 	/*
 	MyComboboxInput reuses MyInputArea, MyInputControl,
-	MyInputIcon, and MyInputBox classes from my-input.css
+	MyInputIcon, MyInputBackground, and MyInputBox classes from my-input.css
 	*/
 	.MyComboboxInput {
 		position: relative;
@@ -9,12 +10,12 @@
 
 	/* Focus ring for combobox input - matches MyInput focus behavior */
 	.MyComboboxInput:has(.MyInputControl:focus-visible) .MyInputBox {
-		outline-color: var(--color-fg-12);
+		outline: 2px solid var(--color-fg-12);
 	}
 
 	/* Visible invalid state ring - matches MyInput invalid behavior */
 	.MyComboboxInput.userInvalid .MyInputBox,
-	.MyComboboxInput:has([aria-invalid="true"]) .MyInputBox {
+	.MyComboboxInput:has(.MyInputControl[aria-invalid="true"]) .MyInputBox {
 		border-color: var(--destructive);
 		box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.2);
 	}
@@ -22,11 +23,28 @@
 	/* Dark mode invalid state */
 	@media (prefers-color-scheme: dark) {
 		.MyComboboxInput.userInvalid .MyInputBox,
-		.MyComboboxInput:has([aria-invalid="true"]) .MyInputBox {
+		.MyComboboxInput:has(.MyInputControl[aria-invalid="true"]) .MyInputBox {
 			box-shadow: 0 0 0 3px oklch(from var(--destructive) l c h / 0.4);
 		}
 	}
 
+	.MyComboboxInputBox {
+		outline-offset: -1px;
+	}
+
+	.MyComboboxLabel {
+		padding: 8px 8px 4px 8px;
+		font-size: 0.75em;
+		font-weight: 500;
+		color: var(--color-fg-07);
+
+		@media (prefers-color-scheme: dark) {
+			color: var(--color-fg-05);
+		}
+	}
+	/* #endregion input */
+
+	/* #region popover */
 	.MyComboboxList {
 		position: relative;
 
@@ -63,10 +81,6 @@
 
 	.MyComboboxPopoverContent {
 		padding: 4px;
-	}
-
-	.MyComboboxInputBox {
-		outline-offset: -1px;
 	}
 
 	.MyComboboxItem {
@@ -110,18 +124,6 @@
 		color: var(--muted-foreground);
 	}
 
-	/* Combobox label */
-	.MyComboboxLabel {
-		padding: 8px 8px 4px 8px;
-		font-size: 0.75em;
-		font-weight: 500;
-		color: var(--color-fg-07);
-
-		@media (prefers-color-scheme: dark) {
-			color: var(--color-fg-05);
-		}
-	}
-
 	.MyComboboxGroup-separator {
 		margin-top: 12px;
 		border-top: 1px solid var(--color-base-1-10);
@@ -153,4 +155,5 @@
 			color: var(--color-fg-12);
 		}
 	}
+	/* #endregion popover */
 }

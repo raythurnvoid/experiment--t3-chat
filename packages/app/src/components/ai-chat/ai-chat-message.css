@@ -142,6 +142,7 @@
 		}
 	}
 
+	.AiChatMessageUser-content-composer .MyInputBackground,
 	.AiChatMessageUser-content-composer .MyInputBox {
 		border-radius: 16px;
 	}

@@ -26,6 +26,7 @@ import { MyIconButton } from "@/components/my-icon-button.tsx";
 import {
 	MyInput,
 	MyInputArea,
+	MyInputBackground,
 	MyInputBox,
 	type MyInputArea_Props,
 	type MyInputControl_ClassNames,
@@ -381,8 +382,8 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			onSubmit={handleSubmit}
 			{...rest}
 		>
-			<MyInput className={"AiChatComposer-editor" satisfies AiChatComposer_ClassNames} variant="surface">
-				<MyInputBox />
+			<MyInput className={"AiChatComposer-editor" satisfies AiChatComposer_ClassNames}>
+				<MyInputBackground />
 				<MyInputArea
 					className={"AiChatComposer-editor-area" satisfies AiChatComposer_ClassNames}
 					focusForwarding
@@ -393,6 +394,7 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 						className={"AiChatComposer-editor-content-container" satisfies AiChatComposer_ClassNames}
 					/>
 				</MyInputArea>
+				<MyInputBox />
 			</MyInput>
 
 			<div className={"AiChatComposer-configurations" satisfies AiChatComposer_ClassNames}>

@@ -64,10 +64,14 @@ function RootLayoutInner() {
 		<>
 			<Outlet />
 			<AppTanStackRouterDevTools />
-			<div id={"app_hoisting_container" satisfies AppElementId}></div>
 			<div id={"app_tiptap_hoisting_container" satisfies AppElementId}></div>
 			{/* The monaco hoisting container requires the monaco-editor class to style the widgets */}
 			<div id={"app_monaco_hoisting_container" satisfies AppElementId} className="monaco-editor"></div>
+			{/*
+			This must be at the bottom to ensure that regular floating elements
+			opened from tiptap and monaco floating elements are shown on top.
+			*/}
+			<div id={"app_hoisting_container" satisfies AppElementId}></div>
 		</>
 	);
 }
@@ -101,8 +105,14 @@ function RootLayout() {
 	const convexAuth = useConvexAuth();
 	const shouldWaitForBillingBootstrap =
 		auth.isLoaded && auth.isAuthenticated && convexAuth.isAuthenticated && auth.isAnonymous === false;
-	const billingSubscription = useQuery(app_convex_api.billing.get_current_user_subscription, shouldWaitForBillingBootstrap ? {} : "skip");
-	const billingUsageSnapshot = useQuery(app_convex_api.billing.get_usage_snapshot, shouldWaitForBillingBootstrap ? {} : "skip");
+	const billingSubscription = useQuery(
+		app_convex_api.billing.get_current_user_subscription,
+		shouldWaitForBillingBootstrap ? {} : "skip",
+	);
+	const billingUsageSnapshot = useQuery(
+		app_convex_api.billing.get_usage_snapshot,
+		shouldWaitForBillingBootstrap ? {} : "skip",
+	);
 	const isBillingBootstrapLoading =
 		shouldWaitForBillingBootstrap &&
 		billing_is_loading({

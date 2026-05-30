@@ -124,11 +124,13 @@
 	}
 
 	.FilesSidebarUploadConflictModal-body
-		.FilesSidebarUploadConflictModal-name-field-state-attention:not(.userInvalid):not(:has([aria-invalid="true"]))
+		.FilesSidebarUploadConflictModal-name-field-state-attention:not(.userInvalid):not(
+			:has(.MyInputControl[aria-invalid="true"])
+		) {
 		.MyInputBox {
-		border-color: var(--color-red-09);
-		outline-color: var(--color-red-09);
-		box-shadow: none;
+			border-color: var(--color-red-09);
+			outline: 2px solid var(--color-red-09);
+		}
 	}
 
 	.FilesSidebarUploadConflictModal-helper-row {
@@ -483,10 +485,12 @@
 		line-height: 1;
 
 		&:has(.FilesSidebarTreeItemTitle-input:disabled) {
+			.MyInputBackground {
+				background: transparent;
+			}
+
 			.MyInputBox {
 				border-color: transparent;
-				background: transparent;
-				box-shadow: none;
 			}
 		}
 	}

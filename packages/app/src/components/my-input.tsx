@@ -95,6 +95,22 @@ export const MyInputIcon = memo(function MyInputIcon(props: MyInputIcon_Props) {
 });
 // #endregion icon
 
+// #region background
+export type MyInputBackground_ClassNames = "MyInputBackground";
+
+export type MyInputBackground_Props = ComponentPropsWithRef<"div">;
+
+export const MyInputBackground = memo(function MyInputBackground(props: MyInputBackground_Props) {
+	const { ref, className, children, ...rest } = props;
+
+	return (
+		<div ref={ref} className={cn("MyInputBackground" satisfies MyInputBackground_ClassNames, className)} {...rest}>
+			{children}
+		</div>
+	);
+});
+// #endregion background
+
 // #region box
 export type MyInputBox_ClassNames = "MyInputBox";
 
@@ -182,6 +198,27 @@ export const MyInputArea = memo(function MyInputArea(props: MyInputArea_Props) {
 	);
 });
 // #endregion area
+
+// #region actions
+export type MyInputActions_ClassNames = "MyInputActions";
+
+export type MyInputActions_Props = ComponentPropsWithRef<"div">;
+
+export const MyInputActions = memo(function MyInputActions(props: MyInputActions_Props) {
+	const { ref, className, children, ...rest } = props;
+
+	const context = use(MyInputContext);
+	if (!context) {
+		throw new Error("MyInputActions must be used within MyInput");
+	}
+
+	return (
+		<div ref={ref} className={cn("MyInputActions" satisfies MyInputActions_ClassNames, className)} {...rest}>
+			{children}
+		</div>
+	);
+});
+// #endregion actions
 
 // #region control
 export type MyInputControl_ClassNames = "MyInputControl";
@@ -276,15 +313,20 @@ export const MyInputTextAreaControl = memo(function MyInputTextAreaControl(props
 // #endregion textarea control
 
 // #region root
-type MyInput_ClassNames = "MyInput" | "MyInput-variant-surface" | "MyInput-variant-transparent";
+type MyInput_ClassNames = "MyInput" | "MyInput-variant-floating" | "MyInput-variant-transparent";
 
 export type MyInput_Props = ComponentPropsWithRef<"div"> & {
-	variant?: "default" | "surface" | "transparent";
+	/**
+	 * `floating` is for a standalone popover surface where the input is the only control inside
+	 * (for example link setter or bubble comment composer). It uses the same border and outer
+	 * elevation as `MyMenuPopover` / `MyFloatingCard`.
+	 */
+	variant?: "surface" | "floating" | "transparent";
 	displayValidationMessage?: string;
 };
 
 export const MyInput = memo(function MyInput(props: MyInput_Props) {
-	const { className, variant = "default", displayValidationMessage, children, ...rest } = props;
+	const { className, variant = "surface", displayValidationMessage, children, ...rest } = props;
 
 	const rootId = useUiId("MyInput");
 	const inputId = `${rootId}-input`;
@@ -304,7 +346,7 @@ export const MyInput = memo(function MyInput(props: MyInput_Props) {
 				id={rootId}
 				className={cn(
 					"MyInput" satisfies MyInput_ClassNames,
-					variant === "surface" && ("MyInput-variant-surface" satisfies MyInput_ClassNames),
+					variant === "floating" && ("MyInput-variant-floating" satisfies MyInput_ClassNames),
 					variant === "transparent" && ("MyInput-variant-transparent" satisfies MyInput_ClassNames),
 					displayValidationMessage && "userInvalid",
 					className,

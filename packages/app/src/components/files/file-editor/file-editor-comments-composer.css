@@ -1,22 +1,4 @@
 @layer components {
-	/* #region root */
-	.FileEditorCommentsComposer {
-		position: relative;
-
-		display: flex;
-		gap: 4px;
-	}
-
-	.FileEditorCommentsComposer-submit-button {
-		align-self: end;
-
-		margin-right: 2px;
-		margin-bottom: 2px;
-
-		border-radius: 4px;
-	}
-	/* #endregion root */
-
 	/* #region control */
 	.FileEditorCommentsComposerControl {
 		align-self: start;
@@ -26,20 +8,6 @@
 		> div,
 		.FileEditorCommentsComposerControl-editor {
 			width: inherit;
-		}
-	}
-
-	.FileEditorCommentsComposerControl-editor {
-		padding: 4px 0;
-
-		&.MyInputTextAreaControl {
-			resize: none;
-		}
-
-		/* Show placeholder only when the entire editor is empty */
-		p {
-			margin: 0;
-			min-height: 1lh;
 		}
 	}
 	/* #endregion control */

@@ -14,7 +14,14 @@ import {
 	files_tiptap_empty_doc_json,
 	files_tiptap_markdown_to_json,
 } from "../../../lib/files.ts";
-import { MyInput, MyInputArea, MyInputBox } from "../../my-input.tsx";
+import {
+	MyInput,
+	MyInputActions,
+	MyInputArea,
+	MyInputBackground,
+	MyInputBox,
+	type MyInput_Props,
+} from "../../my-input.tsx";
 import type { MyInputTextAreaControl_ClassNames } from "../../my-input.tsx";
 import { MyIconButton, MyIconButtonIcon } from "../../my-icon-button.tsx";
 
@@ -168,10 +175,11 @@ function FileEditorCommentsComposerControl(props: FileEditorCommentsComposerCont
 // #endregion control
 
 // #region root
-export type FileEditorCommentsComposer_ClassNames = "FileEditorCommentsComposer" | "FileEditorCommentsComposer-submit-button";
+export type FileEditorCommentsComposer_ClassNames = "FileEditorCommentsComposer";
 
 export type FileEditorCommentsComposer_Props = {
 	controlRef: Ref<FileEditorCommentsComposerControl_Ref>;
+	variant?: MyInput_Props["variant"];
 	className?: string;
 	initialValue?: string;
 	placeholder?: string;
@@ -187,6 +195,7 @@ export type FileEditorCommentsComposer_Props = {
 export function FileEditorCommentsComposer(props: FileEditorCommentsComposer_Props) {
 	const {
 		controlRef,
+		variant,
 		className,
 		initialValue,
 		placeholder,
@@ -201,10 +210,10 @@ export function FileEditorCommentsComposer(props: FileEditorCommentsComposer_Pro
 
 	return (
 		<MyInput
-			variant="surface"
+			variant={variant}
 			className={cn("FileEditorCommentsComposer" satisfies FileEditorCommentsComposer_ClassNames, className)}
 		>
-			<MyInputBox />
+			<MyInputBackground />
 			<MyInputArea>
 				<FileEditorCommentsComposerControl
 					ref={controlRef}
@@ -217,17 +226,19 @@ export function FileEditorCommentsComposer(props: FileEditorCommentsComposer_Pro
 					onEnter={onEnter}
 				/>
 			</MyInputArea>
-			<MyIconButton
-				className={"FileEditorCommentsComposer-submit-button" satisfies FileEditorCommentsComposer_ClassNames}
-				type="submit"
-				variant="default-embedded"
-				tooltip={submitTooltip}
-				disabled={submitDisabled}
-			>
-				<MyIconButtonIcon>
-					<ArrowUp />
-				</MyIconButtonIcon>
-			</MyIconButton>
+			<MyInputActions>
+				<MyIconButton
+					type="submit"
+					variant="default-embedded"
+					tooltip={submitTooltip}
+					disabled={submitDisabled}
+				>
+					<MyIconButtonIcon>
+						<ArrowUp />
+					</MyIconButtonIcon>
+				</MyIconButton>
+			</MyInputActions>
+			<MyInputBox />
 		</MyInput>
 	);
 }

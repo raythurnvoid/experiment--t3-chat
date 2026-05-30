@@ -10,7 +10,7 @@ import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
-import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputLabel } from "@/components/my-input.tsx";
+import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl, MyInputLabel } from "@/components/my-input.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -335,10 +335,10 @@ const RouteUsersInviteModal = memo(function RouteUsersInviteModal(props: RouteUs
 				</MyModalHeader>
 
 				<div className={"RouteUsersInviteModal-form" satisfies RouteUsersInviteModal_ClassNames}>
-					<MyInput variant="surface">
+					<MyInput>
 						<MyInputLabel>Email</MyInputLabel>
+						<MyInputBackground />
 						<MyInputArea>
-							<MyInputBox />
 							<MyInputControl
 								type="email"
 								value={inviteEmail}
@@ -347,6 +347,7 @@ const RouteUsersInviteModal = memo(function RouteUsersInviteModal(props: RouteUs
 								onChange={(event) => onInviteEmailChange(event.currentTarget.value)}
 							/>
 						</MyInputArea>
+						<MyInputBox />
 					</MyInput>
 
 					<MySelect
@@ -429,10 +430,10 @@ const RouteUsersTransferModal = memo(function RouteUsersTransferModal(props: Rou
 				</MyModalHeader>
 
 				<div className={"RouteUsersTransferModal-form" satisfies RouteUsersTransferModal_ClassNames}>
-					<MyInput variant="surface">
+					<MyInput>
 						<MyInputLabel>Confirmation</MyInputLabel>
+						<MyInputBackground />
 						<MyInputArea>
-							<MyInputBox />
 							<MyInputControl
 								value={transferConfirmation}
 								placeholder="TRANSFER"
@@ -440,6 +441,7 @@ const RouteUsersTransferModal = memo(function RouteUsersTransferModal(props: Rou
 								onChange={(event) => onTransferConfirmationChange(event.currentTarget.value)}
 							/>
 						</MyInputArea>
+						<MyInputBox />
 					</MyInput>
 				</div>
 

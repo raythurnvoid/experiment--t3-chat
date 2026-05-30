@@ -1,13 +1,12 @@
 @layer components {
 	.FileEditorRichTextAnchoredComments {
+		/*
+		Fill the comments host so sticky search and empty states can pin
+		while the shared editor scroller moves.
+		*/
+		flex: 1 0 auto;
 		position: relative;
 		padding: 16px;
-
-		/*
-		Necessary to ensure that if there are no comments,
-		the message remains sticky when scrolling.
-		*/
-		min-height: 100cqh;
 	}
 
 	.FileEditorRichTextAnchoredComments-empty {
@@ -40,8 +39,7 @@
 	.FileEditorRichTextAnchoredComments > .FileEditorCommentsFilterInput {
 		/* Keep the filter under the sticky sidebar tabs while anchored comments scroll with the document. */
 		position: sticky;
-		top: 60px;
+		top: 77px;
 		z-index: 1;
-		transform: none;
 	}
 }

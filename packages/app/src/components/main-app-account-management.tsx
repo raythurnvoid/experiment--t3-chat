@@ -11,7 +11,7 @@ import { BillingAccountManagementPanel } from "@/components/billing/billing-acco
 import { MyAvatar, MyAvatarFallback, MyAvatarImage } from "@/components/my-avatar.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyCheckboxButton, MyCheckboxButtonIcon } from "@/components/my-checkbox-button.tsx";
-import { MyInput, MyInputArea, MyInputBox, MyInputControl, MyInputLabel } from "@/components/my-input.tsx";
+import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl, MyInputLabel } from "@/components/my-input.tsx";
 import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
 import {
 	MyModal,
@@ -508,10 +508,10 @@ const MainAppAccountManagementDeleteAccount = memo(function MainAppAccountManage
 					void handleDelete();
 				}}
 			>
-				<MyInput variant="surface">
+				<MyInput>
 					<MyInputLabel>Confirmation</MyInputLabel>
+					<MyInputBackground />
 					<MyInputArea>
-						<MyInputBox />
 						<MyInputControl
 							type="text"
 							value={confirmationText}
@@ -522,6 +522,7 @@ const MainAppAccountManagementDeleteAccount = memo(function MainAppAccountManage
 							}}
 						/>
 					</MyInputArea>
+					<MyInputBox />
 				</MyInput>
 				<MyButton
 					type="submit"
