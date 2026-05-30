@@ -53,25 +53,37 @@
 
 	/* Variants */
 	.MyButton-variant-default {
-		background: var(--color-base-1-07);
 		color: var(--color-fg-10);
+		background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
+		box-shadow:
+			inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+			inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
+			0 2px 4px black;
 
 		&:not(:is(:disabled, .MyButton-state-disabled)) {
-			&:hover,
-			&:focus-visible {
-				background: var(--color-base-1-08);
+			&:is(:hover, :focus-visible):not(:active),
+			&[aria-expanded="true"] {
 				color: var(--color-fg-11);
+				background: linear-gradient(var(--color-base-1-08), var(--color-base-1-07));
+				box-shadow:
+					inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+					inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
+					0 2px 4px black;
 			}
 
 			&:active {
-				background: var(--color-base-1-09);
 				color: var(--color-fg-12);
+				background: linear-gradient(var(--color-base-1-09), var(--color-base-1-08));
+				box-shadow:
+					inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
+					inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 10%, transparent);
 			}
 		}
 
 		&:is(:disabled, .MyButton-state-disabled) {
-			background: var(--color-base-1-04);
 			color: var(--color-fg-03);
+			background: var(--color-base-1-04);
+			box-shadow: none;
 		}
 	}
 
@@ -176,17 +188,8 @@
 			0 2px 4px black;
 
 		&:not(:is(:disabled, .MyButton-state-disabled)) {
-			&:hover:not(:active) {
-				color: var(--color-fg-10);
-				background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
-				border-color: var(--color-base-1-10);
-				box-shadow:
-					inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
-					inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
-					0 2px 4px black;
-			}
-
-			&:focus-visible {
+			&:is(:hover, :focus-visible):not(:active),
+			&[aria-expanded="true"] {
 				color: var(--color-fg-10);
 				background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
 				border-color: var(--color-base-1-10);
@@ -211,15 +214,6 @@
 			background: var(--color-base-1-03);
 			border-color: var(--color-base-1-03);
 			box-shadow: none;
-		}
-
-		&[aria-expanded="true"] {
-			color: var(--color-fg-08);
-			border-color: var(--color-base-1-12);
-			box-shadow:
-				inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
-				inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 50%, transparent),
-				0 2px 4px color-mix(in oklch, black 30%, transparent);
 		}
 	}
 
