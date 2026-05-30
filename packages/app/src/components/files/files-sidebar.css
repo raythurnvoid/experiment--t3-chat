@@ -118,10 +118,6 @@
 
 		padding: 12px 20px;
 
-		.MyInput:not(.userInvalid):not(:has([aria-invalid="true"])) .MyInputBox {
-			border-color: var(--color-base-1-05);
-		}
-
 		.MyInputHelperText {
 			color: var(--color-fg-07);
 		}

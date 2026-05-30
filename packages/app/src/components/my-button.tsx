@@ -10,6 +10,7 @@ export type MyButton_ClassNames =
 	| "MyButton"
 	| "MyButton-state-disabled"
 	| "MyButton-variant-default"
+	| "MyButton-variant-default-embedded"
 	| "MyButton-variant-accent"
 	| "MyButton-variant-destructive"
 	| "MyButton-variant-outline"
@@ -30,6 +31,7 @@ export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 	type?: ComponentPropsWithRef<"button">["type"];
 	variant?:
 		| "default"
+		| "default-embedded"
 		| "accent"
 		| "destructive"
 		| "outline"
@@ -77,6 +79,8 @@ export const MyButton = memo(function MyButton(props: MyButton_Props) {
 			className={cn(
 				"MyButton" satisfies MyButton_ClassNames,
 				variant === "default" && ("MyButton-variant-default" satisfies MyButton_ClassNames),
+				variant === "default-embedded" &&
+					("MyButton-variant-default-embedded" satisfies MyButton_ClassNames),
 				variant === "accent" && ("MyButton-variant-accent" satisfies MyButton_ClassNames),
 				variant === "destructive" && ("MyButton-variant-destructive" satisfies MyButton_ClassNames),
 				variant === "outline" && ("MyButton-variant-outline" satisfies MyButton_ClassNames),
