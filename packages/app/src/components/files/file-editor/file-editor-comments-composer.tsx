@@ -37,6 +37,7 @@ type FileEditorCommentsComposerControl_Props = {
 	placeholder?: string;
 	autoFocus?: FocusPosition;
 	disabled?: boolean;
+	ariaLabel: string;
 	onChange?: () => void;
 	onEnter?: () => void;
 };
@@ -46,9 +47,10 @@ function FileEditorCommentsComposerControl(props: FileEditorCommentsComposerCont
 		ref,
 		className,
 		initialValue,
-		placeholder = "Add a comment",
+		placeholder,
 		autoFocus = false,
 		disabled = false,
+		ariaLabel,
 		onChange,
 		onEnter,
 	} = props;
@@ -102,7 +104,7 @@ function FileEditorCommentsComposerControl(props: FileEditorCommentsComposerCont
 						"FileEditorCommentsComposerControl-editor" satisfies FileEditorCommentsComposerControl_ClassNames,
 						"MyInputTextAreaControl" satisfies MyInputTextAreaControl_ClassNames,
 					),
-					"aria-label": placeholder,
+					"aria-label": ariaLabel,
 				},
 			},
 			onUpdate: () => {
@@ -175,10 +177,11 @@ export type FileEditorCommentsComposer_Props = {
 	placeholder?: string;
 	autoFocus?: FocusPosition;
 	disabled?: boolean;
-	onChange?: () => void;
-	onEnter?: () => void;
 	submitTooltip: string;
 	submitDisabled: boolean;
+	ariaLabel: string;
+	onChange?: () => void;
+	onEnter?: () => void;
 };
 
 export function FileEditorCommentsComposer(props: FileEditorCommentsComposer_Props) {
@@ -189,10 +192,11 @@ export function FileEditorCommentsComposer(props: FileEditorCommentsComposer_Pro
 		placeholder,
 		autoFocus,
 		disabled,
-		onChange,
-		onEnter,
 		submitTooltip,
 		submitDisabled,
+		ariaLabel,
+		onChange,
+		onEnter,
 	} = props;
 
 	return (
@@ -208,6 +212,7 @@ export function FileEditorCommentsComposer(props: FileEditorCommentsComposer_Pro
 					placeholder={placeholder}
 					autoFocus={autoFocus}
 					disabled={disabled}
+					ariaLabel={ariaLabel}
 					onChange={onChange}
 					onEnter={onEnter}
 				/>

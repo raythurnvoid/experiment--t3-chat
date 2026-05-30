@@ -40,17 +40,21 @@ const richBtn = state.qaPage.getByRole("button", { name: /^Rich$/ }).first(); if
 ## Step 4 - Create root comment
 
 ```js
-await state.qaPage.locator(".FileEditorRichText-editor-content").first().click(); await state.qaPage.keyboard.press("Control+A"); await state.qaPage.getByRole("button", { name: "Comment" }).click();
+await state.qaPage.locator(".FileEditorRichText-editor-content").first().click(); await state.qaPage.keyboard.press("Control+A"); await state.qaPage.keyboard.type("Playwriter comment anchor text."); await state.qaPage.keyboard.press("Shift+Home"); await state.qaPage.getByRole("button", { name: "Comment" }).click();
 ```
 
 ```js
-await state.qaPage.locator(".FileEditorRichTextToolsComment .FileEditorCommentsComposerControl-editor").first().fill(state.rootComment); await state.qaPage.locator(".FileEditorCommentsComposer-submit-button").first().click();
+const newCommentForm = state.qaPage.getByRole("form", { name: "New document comment" }); await newCommentForm.locator('[contenteditable="true"][aria-label="Add comment to selection"]').fill(state.rootComment); await newCommentForm.getByRole("button", { name: "Submit comment" }).click();
 ```
 
 ## Step 5 - Reply in thread
 
 ```js
-await state.qaPage.locator(".FileEditorCommentsThread-summary").filter({ hasText: state.rootComment }).first().click(); await state.qaPage.locator(".FileEditorCommentsThreadForm .FileEditorCommentsComposerControl-editor").first().fill(state.replyComment); await state.qaPage.locator(".FileEditorCommentsComposer-submit-button").first().click();
+await state.qaPage.locator(".FileEditorCommentsThread-summary").filter({ hasText: state.rootComment }).first().click();
+```
+
+```js
+const replyForm = state.qaPage.getByRole("form", { name: "Reply to comment" }); await replyForm.locator('[contenteditable="true"][aria-label="Reply to comment"]').fill(state.replyComment); await replyForm.getByRole("button", { name: "Reply to comment" }).click();
 ```
 
 ## Step 6 - Refresh and verify persistence

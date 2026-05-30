@@ -26,24 +26,13 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Comments tab: `#app_file_editor_sidebar_tabs_comments`.
 - Agent tab: `#app_file_editor_sidebar_tabs_agent`.
 
-### Rich Text
+### File Node View
 
-- Toolbar: `[role="toolbar"][aria-label="Toolbar"]`.
-- Content root: `.FileEditorRichText-editor-content-root`.
-- Editable content: `.FileEditorRichText-editor-content`.
+- Detailed editor-surface notes: [file-node-view.md](file-node-view.md).
+- Rich text editable content: `.FileEditorRichText-editor-content`.
 - Comments region: `getByRole("complementary", { name: "Document comments" })`.
-- Comments filter: `getByRole("searchbox", { name: "Search document comments" })` scoped within the comments region.
-- Anchored comment item: `.FileEditorRichTextAnchoredComments-thread-container`.
-
-### Diff And Pending Edits
-
-- Pending updates banner: `[data-testid="pending-edits-banner"]`.
-- Review changes button: `[data-testid="review-changes-button"]`.
 - Diff editor root: `[aria-label="File diff editor"]`.
-- Diff editor toolbar: `[aria-label="Diff editor actions"]`.
-- Save staged changes: `getByRole("button", { name: "Save staged changes" })`.
-- Accept all: `getByRole("button", { name: "Accept all pending changes" })`.
-- Accept all and save: `getByRole("button", { name: "Accept all pending changes and save" })`.
+- Review changes button: `[data-testid="review-changes-button"]`.
 
 ### Sidebar And Folder Browser
 

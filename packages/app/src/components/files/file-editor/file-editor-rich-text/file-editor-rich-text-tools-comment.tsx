@@ -108,16 +108,18 @@ export function FileEditorRichTextToolsComment(props: FileEditorRichTextToolsCom
 			<form
 				ref={formRef}
 				className={cn("FileEditorRichTextToolsComment-form" satisfies FileEditorRichTextToolsComment_ClassNames)}
+				aria-label="New document comment"
 				onSubmit={handleSubmit}
 			>
 				<FileEditorCommentsComposer
 					controlRef={composerControlRef}
 					autoFocus
 					disabled={editor?.state.selection.empty || isSubmitting}
-					onChange={handleChange}
-					onEnter={handleComposerEnter}
 					submitTooltip="Submit comment"
 					submitDisabled={isEmpty || editor?.state.selection.empty || isSubmitting}
+					ariaLabel="Add comment to selection"
+					onChange={handleChange}
+					onEnter={handleComposerEnter}
 				/>
 			</form>
 		</div>

@@ -63,6 +63,7 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 ## References
 
 - Read `references/app-map.md` for stable app routes, landmarks, and selectors.
-- Read `references/files.md` for `/files` editor and sidebar notes.
+- Read `references/files.md` for `/files` route and file/sidebar basics.
+- Read `references/file-node-view.md` for selected-file editor surfaces, comments, diff, and right-sidebar workflows.
 - Read `references/known-hazards.md` before debugging browser interaction failures.
 - Read `references/snippets.md` for short Playwriter commands.

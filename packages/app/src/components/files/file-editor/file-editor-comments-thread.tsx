@@ -261,15 +261,17 @@ function FileEditorCommentsThreadForm(props: FileEditorCommentsThreadForm_Props)
 		<form
 			ref={formRef}
 			className={"FileEditorCommentsThreadForm" satisfies FileEditorCommentsThreadForm_ClassNames}
+			aria-label="Reply to comment"
 			onSubmit={handleSubmit}
 		>
 			<FileEditorCommentsComposer
 				controlRef={(inst) => forward_ref(inst, composerControlRef, composerControlRefProp)}
 				disabled={isSubmitting}
-				onChange={handleChange}
-				onEnter={handleComposerEnter}
 				submitTooltip="Reply to comment"
 				submitDisabled={isEmpty || isSubmitting}
+				ariaLabel="Reply to comment"
+				onChange={handleChange}
+				onEnter={handleComposerEnter}
 			/>
 		</form>
 	);
