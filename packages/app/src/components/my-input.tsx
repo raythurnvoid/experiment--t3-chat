@@ -319,7 +319,7 @@ export type MyInput_Props = ComponentPropsWithRef<"div"> & {
 	/**
 	 * `floating` is for a standalone popover surface where the input is the only control inside
 	 * (for example link setter or bubble comment composer). It uses the same border and outer
-	 * elevation as `MyMenuPopover` / `MyFloatingCard`.
+	 * elevation as `MyMenuPopover` / `MyFloatingSurface`.
 	 */
 	variant?: "surface" | "floating" | "transparent";
 	displayValidationMessage?: string;

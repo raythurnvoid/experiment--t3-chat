@@ -30,6 +30,13 @@ export type MyButton_Props = ComponentPropsWithRef<"button"> & {
 	id?: string;
 	className?: string;
 	type?: ComponentPropsWithRef<"button">["type"];
+	/**
+	 * `floating` is for buttons placed inside a `MyFloatingSurface` (for example the
+	 * bubble menu actions or a sticky scroll-to-bottom). It uses the same border and
+	 * outer elevation as `MyMenuPopover` / `MyFloatingSurface`. Apply a `-1px` margin
+	 * to the button so its border overlaps the surface border and the two outlines
+	 * blend into a single floating edge instead of stacking.
+	 */
 	variant?:
 		| "default"
 		| "default-embedded"

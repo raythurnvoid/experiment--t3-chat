@@ -17,7 +17,7 @@ import {
 } from "@/lib/files.ts";
 import { ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
 import { MyButton } from "../../my-button.tsx";
-import { MyFloatingCard } from "../../my-floating-card.tsx";
+import { MyFloatingSurface } from "../../my-floating-surface.tsx";
 import { MyIcon } from "../../my-icon.tsx";
 import { MyIconButton } from "../../my-icon-button.tsx";
 import { FileEditorRichTextSkeleton } from "./file-editor-rich-text/file-editor-rich-text-skeleton.tsx";
@@ -60,7 +60,7 @@ export function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdates
 	});
 
 	return (
-		<MyFloatingCard
+		<MyFloatingSurface
 			className={cn("FileEditorPendingUpdatesFloating" satisfies FileEditorPendingUpdatesFloating_ClassNames)}
 			role="status"
 			aria-live="polite"
@@ -117,7 +117,7 @@ export function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdates
 					<ChevronRight />
 				</MyIconButton>
 			</div>
-		</MyFloatingCard>
+		</MyFloatingSurface>
 	);
 }
 // #endregion pending updates floating

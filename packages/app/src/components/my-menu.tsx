@@ -1,4 +1,4 @@
-import "./my-floating-card.css";
+import "./my-floating-surface.css";
 import "./my-menu.css";
 import * as Ariakit from "@ariakit/react";
 import { memo } from "react";

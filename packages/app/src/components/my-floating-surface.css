@@ -1,6 +1,6 @@
 @layer common_components {
 	/* #region root */
-	:is(.MyFloatingCard, .MyMenuPopover) {
+	:is(.MyFloatingSurface, .MyMenuPopover) {
 		position: relative;
 
 		border-radius: 6px;

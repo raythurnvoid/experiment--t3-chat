@@ -37,7 +37,7 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { files_PresenceStore, files_YJS_DOC_KEYS } from "@/lib/files.ts";
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
-import { MyFloatingCard } from "@/components/my-floating-card.tsx";
+import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { FileEditorRichTextToolsInlineAi } from "./file-editor-rich-text-tools-inline-ai.tsx";
 import { FileEditorRichTextToolsComment } from "./file-editor-rich-text-tools-comment.tsx";
 import { Sparkles } from "lucide-react";
@@ -275,7 +275,7 @@ const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleCo
 	const { editor, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } = props;
 
 	return (
-		<MyFloatingCard
+		<MyFloatingSurface
 			ref={onPortalRef}
 			className={cn("FileEditorRichTextBubbleContent" satisfies FileEditorRichTextBubbleContent_ClassNames)}
 		>
@@ -283,7 +283,7 @@ const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleCo
 			{!openAi && portalElement ? (
 				<FileEditorRichTextBubbleContentActions editor={editor} onClickAi={onClickAi} />
 			) : null}
-		</MyFloatingCard>
+		</MyFloatingSurface>
 	);
 });
 // #endregion bubble content
