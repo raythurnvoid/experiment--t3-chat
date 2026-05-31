@@ -1,16 +1,16 @@
 /* #region root */
 .FileEditorRichTextToolsTextStyles {
-	display: flex;
-}
-
-.FileEditorRichTextToolsTextStyles .MyIconButtonIcon {
-	width: 20px;
-	height: 20px;
+	display: contents;
 }
 /* #endregion root */
 
 /* #region text style toggle */
 .FileEditorRichTextToolsTextStyleToggle-active {
 	color: var(--color-accent-06);
+}
+
+.FileEditorRichTextToolsTextStyles .MyIconButtonIcon {
+	width: 20px;
+	height: 20px;
 }
 /* #endregion text style toggle */

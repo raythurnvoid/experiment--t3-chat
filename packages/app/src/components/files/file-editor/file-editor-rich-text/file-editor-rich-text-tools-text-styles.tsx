@@ -1,5 +1,5 @@
 import "./file-editor-rich-text-tools-text-styles.css";
-import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
+import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { BoldIcon, CodeIcon, ItalicIcon, StrikethroughIcon, UnderlineIcon } from "lucide-react";
 import { memo } from "react";
@@ -62,6 +62,7 @@ type FileEditorRichTextToolsTextStyleToggle_ClassNames = "FileEditorRichTextTool
 
 type FileEditorRichTextToolsTextStyleToggle_Props = {
 	editor: Editor;
+	buttonVariant: MyIconButton_Props["variant"];
 	icon: ItemState["icon"];
 	isActive: ItemState["isActive"];
 	tooltip: ItemState["tooltip"];
@@ -71,7 +72,7 @@ type FileEditorRichTextToolsTextStyleToggle_Props = {
 const FileEditorRichTextToolsTextStyleToggle = memo(function FileEditorRichTextToolsTextStyleToggle(
 	props: FileEditorRichTextToolsTextStyleToggle_Props,
 ) {
-	const { editor, icon: Icon, isActive, tooltip, onSelect } = props;
+	const { editor, buttonVariant, icon: Icon, isActive, tooltip, onSelect } = props;
 
 	const handleClick = useFn(() => {
 		onSelect(editor);
@@ -79,7 +80,7 @@ const FileEditorRichTextToolsTextStyleToggle = memo(function FileEditorRichTextT
 
 	return (
 		<MyIconButton
-			variant="ghost"
+			variant={buttonVariant}
 			tooltip={tooltip}
 			onClick={handleClick}
 			className={cn(
@@ -100,6 +101,7 @@ export type FileEditorRichTextToolsTextStyles_ClassNames = "FileEditorRichTextTo
 
 export type FileEditorRichTextToolsTextStyles_Props = {
 	editor: Editor;
+	buttonVariant?: MyIconButton_Props["variant"];
 };
 
 type FileEditorRichTextToolsTextStylesInner_Props = FileEditorRichTextToolsTextStyles_Props & {
@@ -109,7 +111,7 @@ type FileEditorRichTextToolsTextStylesInner_Props = FileEditorRichTextToolsTextS
 const FileEditorRichTextToolsTextStylesInner = memo(function FileEditorRichTextToolsTextStylesInner(
 	props: FileEditorRichTextToolsTextStylesInner_Props,
 ) {
-	const { editor, itemStates } = props;
+	const { editor, buttonVariant = "ghost", itemStates } = props;
 
 	return (
 		<div className={cn("FileEditorRichTextToolsTextStyles" satisfies FileEditorRichTextToolsTextStyles_ClassNames)}>
@@ -117,6 +119,7 @@ const FileEditorRichTextToolsTextStylesInner = memo(function FileEditorRichTextT
 				<FileEditorRichTextToolsTextStyleToggle
 					key={item.name}
 					editor={editor}
+					buttonVariant={buttonVariant}
 					icon={item.icon}
 					isActive={item.isActive}
 					tooltip={item.tooltip}
@@ -133,7 +136,7 @@ export const FileEditorRichTextToolsTextStyles = memo(function FileEditorRichTex
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor } = props;
+	const { editor, buttonVariant = "ghost" } = props;
 
 	// Subscribe to the derived text-style states so formatting transactions rerender immediately.
 	const itemActiveStates = useEditorState({
@@ -148,6 +151,6 @@ export const FileEditorRichTextToolsTextStyles = memo(function FileEditorRichTex
 		isActive: itemActiveStates[index] ?? false,
 	}));
 
-	return <FileEditorRichTextToolsTextStylesInner editor={editor} itemStates={itemStates} />;
+	return <FileEditorRichTextToolsTextStylesInner editor={editor} buttonVariant={buttonVariant} itemStates={itemStates} />;
 });
 // #endregion root

@@ -28,7 +28,7 @@ import {
 	MySelectItemContentIcon,
 	type MySelectItem_Props,
 } from "@/components/my-select.tsx";
-import { MyButton } from "@/components/my-button.tsx";
+import { MyButton, type MyButton_Props } from "@/components/my-button.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
 import "./file-editor-rich-text-tools-node-selector.css";
@@ -168,6 +168,7 @@ const FileEditorRichTextToolsNodeSelectorItem = memo(function FileEditorRichText
 // #region root
 export type FileEditorRichTextToolsNodeSelector_Props = {
 	editor: Editor;
+	buttonVariant?: MyButton_Props["variant"];
 	setDecorationHighlightOnOpen?: boolean;
 };
 
@@ -181,7 +182,7 @@ type FileEditorRichTextToolsNodeSelectorInner_Props = FileEditorRichTextToolsNod
 const FileEditorRichTextToolsNodeSelectorInner = memo(function FileEditorRichTextToolsNodeSelectorInner(
 	props: FileEditorRichTextToolsNodeSelectorInner_Props,
 ) {
-	const { editor, activeItemName, setDecorationHighlightOnOpen = false } = props;
+	const { editor, activeItemName, buttonVariant = "ghost", setDecorationHighlightOnOpen = false } = props;
 
 	const [open, setOpen] = useState(false);
 
@@ -236,7 +237,7 @@ const FileEditorRichTextToolsNodeSelectorInner = memo(function FileEditorRichTex
 				<MySelectTrigger>
 					<MyButton
 						ref={triggerButtonRef}
-						variant="ghost"
+						variant={buttonVariant}
 						aria-label={`Block format: ${activeItemName || "Select format"}`}
 						{...(setDecorationHighlightOnOpen
 							? ({ "data-app-set-decoration-highlight": "" } satisfies Partial<FileEditorRichText_CustomAttributes>)
@@ -267,7 +268,7 @@ export const FileEditorRichTextToolsNodeSelector = memo(function FileEditorRichT
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, setDecorationHighlightOnOpen = false } = props;
+	const { editor, buttonVariant = "ghost", setDecorationHighlightOnOpen = false } = props;
 
 	// Subscribe to the derived active node label so block transforms rerender immediately.
 	const activeItemName = useEditorState({
@@ -281,6 +282,7 @@ export const FileEditorRichTextToolsNodeSelector = memo(function FileEditorRichT
 		<FileEditorRichTextToolsNodeSelectorInner
 			editor={editor}
 			activeItemName={activeItemName}
+			buttonVariant={buttonVariant}
 			setDecorationHighlightOnOpen={setDecorationHighlightOnOpen}
 		/>
 	);

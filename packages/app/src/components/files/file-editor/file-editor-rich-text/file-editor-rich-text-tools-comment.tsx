@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { useMutation } from "convex/react";
 import { useEditorState, type Editor } from "@tiptap/react";
 import { MyPopover, MyPopoverTrigger, MyPopoverContent } from "@/components/my-popover.tsx";
-import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
@@ -68,6 +68,7 @@ export type FileEditorRichTextToolsComment_ClassNames =
 
 export type FileEditorRichTextToolsComment_Props = {
 	editor: Editor;
+	buttonVariant?: MyButton_Props["variant"];
 };
 
 type FileEditorRichTextToolsCommentInner_Props = FileEditorRichTextToolsComment_Props & {
@@ -77,7 +78,7 @@ type FileEditorRichTextToolsCommentInner_Props = FileEditorRichTextToolsComment_
 const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextToolsCommentInner(
 	props: FileEditorRichTextToolsCommentInner_Props,
 ) {
-	const { editor, isSelectionEmpty } = props;
+	const { editor, buttonVariant = "ghost", isSelectionEmpty } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -187,7 +188,7 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 						className={cn(
 							"FileEditorRichTextToolsComment-trigger-button" satisfies FileEditorRichTextToolsComment_ClassNames,
 						)}
-						variant="ghost"
+						variant={buttonVariant}
 						aria-label="Add comment"
 					>
 						<MyButtonIcon>
@@ -224,7 +225,7 @@ export const FileEditorRichTextToolsComment = memo(function FileEditorRichTextTo
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor } = props;
+	const { editor, buttonVariant = "ghost" } = props;
 
 	const editorState = useEditorState({
 		editor,
@@ -235,6 +236,12 @@ export const FileEditorRichTextToolsComment = memo(function FileEditorRichTextTo
 		},
 	});
 
-	return <FileEditorRichTextToolsCommentInner editor={editor} isSelectionEmpty={editorState.isSelectionEmpty} />;
+	return (
+		<FileEditorRichTextToolsCommentInner
+			editor={editor}
+			buttonVariant={buttonVariant}
+			isSelectionEmpty={editorState.isSelectionEmpty}
+		/>
+	);
 });
 // #endregion root

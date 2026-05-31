@@ -3,7 +3,7 @@ import { Check, Trash, LinkIcon } from "lucide-react";
 import { memo, useState, useEffect, useRef } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
 import { MyPopover, MyPopoverTrigger, MyPopoverContent } from "@/components/my-popover.tsx";
-import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import {
 	MyInput,
@@ -108,6 +108,7 @@ export type FileEditorRichTextToolsLinkSetter_ClassNames =
 
 export type FileEditorRichTextToolsLinkSetter_Props = {
 	editor: Editor;
+	buttonVariant?: MyButton_Props["variant"];
 	setDecorationHighlightOnOpen?: boolean;
 };
 
@@ -119,7 +120,7 @@ type FileEditorRichTextToolsLinkSetterInner_Props = FileEditorRichTextToolsLinkS
 const FileEditorRichTextToolsLinkSetterInner = memo(function FileEditorRichTextToolsLinkSetterInner(
 	props: FileEditorRichTextToolsLinkSetterInner_Props,
 ) {
-	const { editor, activeHref, isLinkActive, setDecorationHighlightOnOpen = false } = props;
+	const { editor, activeHref, isLinkActive, buttonVariant = "ghost", setDecorationHighlightOnOpen = false } = props;
 
 	const [open, setOpen] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
@@ -204,7 +205,7 @@ const FileEditorRichTextToolsLinkSetterInner = memo(function FileEditorRichTextT
 							isLinkActive &&
 								("FileEditorRichTextToolsLinkSetter-trigger-button-active" satisfies FileEditorRichTextToolsLinkSetter_ClassNames),
 						)}
-						variant="ghost"
+						variant={buttonVariant}
 						aria-label={isLinkActive ? "Edit link" : "Add link"}
 						{...(setDecorationHighlightOnOpen
 							? ({ "data-app-set-decoration-highlight": "" } satisfies Partial<FileEditorRichText_CustomAttributes>)
@@ -235,7 +236,7 @@ export const FileEditorRichTextToolsLinkSetter = memo(function FileEditorRichTex
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, setDecorationHighlightOnOpen = false } = props;
+	const { editor, buttonVariant = "ghost", setDecorationHighlightOnOpen = false } = props;
 
 	// Subscribe to the derived link state so mark changes rerender immediately.
 	const editorState = useEditorState({
@@ -253,6 +254,7 @@ export const FileEditorRichTextToolsLinkSetter = memo(function FileEditorRichTex
 			editor={editor}
 			activeHref={editorState.activeHref}
 			isLinkActive={editorState.isLinkActive}
+			buttonVariant={buttonVariant}
 			setDecorationHighlightOnOpen={setDecorationHighlightOnOpen}
 		/>
 	);

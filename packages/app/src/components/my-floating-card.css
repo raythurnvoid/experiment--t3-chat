@@ -4,7 +4,7 @@
 		position: relative;
 
 		border-radius: 6px;
-		border: 1px solid var(--color-base-alt-1-04);
+		border: 1px solid var(--color-base-alt-1-08);
 
 		background: linear-gradient(var(--color-base-alt-1-06), var(--color-base-alt-1-05));
 		color: var(--color-fg-11);

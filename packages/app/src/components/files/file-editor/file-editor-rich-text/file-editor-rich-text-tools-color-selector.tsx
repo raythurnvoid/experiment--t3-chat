@@ -16,7 +16,7 @@ import {
 	MySelectItemsGroup,
 	MySelectItemsGroupText,
 } from "@/components/my-select.tsx";
-import { MyButton } from "@/components/my-button.tsx";
+import { MyButton, type MyButton_Props } from "@/components/my-button.tsx";
 import { cn, sx } from "@/lib/utils.ts";
 import { useFn, useForceRender } from "@/hooks/utils-hooks.ts";
 import {
@@ -300,6 +300,7 @@ export type FileEditorRichTextToolsColorSelector_ClassNames =
 
 export type FileEditorRichTextToolsColorSelector_Props = {
 	editor: Editor;
+	buttonVariant?: MyButton_Props["variant"];
 	setDecorationHighlightOnOpen?: boolean;
 };
 
@@ -313,8 +314,15 @@ type FileEditorRichTextToolsColorSelectorInner_Props = FileEditorRichTextToolsCo
 const FileEditorRichTextToolsColorSelectorInner = memo(function FileEditorRichTextToolsColorSelectorInner(
 	props: FileEditorRichTextToolsColorSelectorInner_Props,
 ) {
-	const { editor, activeColor, activeBackground, onColorSelect, onHighlightSelect, setDecorationHighlightOnOpen = false } =
-		props;
+	const {
+		editor,
+		activeColor,
+		activeBackground,
+		buttonVariant = "ghost",
+		onColorSelect,
+		onHighlightSelect,
+		setDecorationHighlightOnOpen = false,
+	} = props;
 
 	const [open, setOpen] = useState(false);
 
@@ -367,7 +375,7 @@ const FileEditorRichTextToolsColorSelectorInner = memo(function FileEditorRichTe
 				<MySelectTrigger>
 					<MyButton
 						ref={triggerButtonRef}
-						variant="ghost"
+						variant={buttonVariant}
 						aria-label="Text color and highlight"
 						{...(setDecorationHighlightOnOpen
 							? ({ "data-app-set-decoration-highlight": "" } satisfies Partial<FileEditorRichText_CustomAttributes>)
@@ -407,7 +415,7 @@ export const FileEditorRichTextToolsColorSelector = memo(function FileEditorRich
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, setDecorationHighlightOnOpen = false } = props;
+	const { editor, buttonVariant = "ghost", setDecorationHighlightOnOpen = false } = props;
 
 	// Subscribe to the derived color state so mark changes rerender immediately.
 	const editorState = useEditorState({
@@ -462,6 +470,7 @@ export const FileEditorRichTextToolsColorSelector = memo(function FileEditorRich
 			editor={editor}
 			activeColor={activeColor}
 			activeBackground={activeBackground}
+			buttonVariant={buttonVariant}
 			onColorSelect={handleColorSelect}
 			onHighlightSelect={handleHighlightSelect}
 			setDecorationHighlightOnOpen={setDecorationHighlightOnOpen}

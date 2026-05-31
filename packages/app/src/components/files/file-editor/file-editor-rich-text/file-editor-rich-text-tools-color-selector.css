@@ -1,4 +1,14 @@
 @layer components {
+	/* #region root */
+	.FileEditorRichTextToolsColorSelector {
+		display: contents;
+	}
+
+	.FileEditorRichTextToolsColorSelector .MyButton {
+		width: 60px;
+	}
+	/* #endregion root */
+
 	/* #region preview */
 	.FileEditorRichTextToolsColorSelectorPreview {
 		border-radius: 4px;
@@ -23,6 +33,12 @@
 	}
 	/* #endregion preview */
 
+	/* #region popover */
+	.FileEditorRichTextToolsColorSelector-popover {
+		width: 200px;
+	}
+	/* #endregion popover */
+
 	/* #region item */
 	.FileEditorRichTextToolsColorSelectorItem {
 		cursor: pointer;
@@ -33,17 +49,4 @@
 		height: 16px;
 	}
 	/* #endregion item */
-
-	/* #region list */
-	/* #endregion list */
-
-	/* #region root */
-	.FileEditorRichTextToolsColorSelector .MyButton {
-		width: 60px;
-	}
-
-	.FileEditorRichTextToolsColorSelector-popover {
-		width: 200px;
-	}
-	/* #endregion root */
 }

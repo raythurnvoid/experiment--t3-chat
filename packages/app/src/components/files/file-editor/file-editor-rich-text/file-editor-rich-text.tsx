@@ -37,6 +37,7 @@ import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { files_PresenceStore, files_YJS_DOC_KEYS } from "@/lib/files.ts";
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
+import { MyFloatingCard } from "@/components/my-floating-card.tsx";
 import { FileEditorRichTextToolsInlineAi } from "./file-editor-rich-text-tools-inline-ai.tsx";
 import { FileEditorRichTextToolsComment } from "./file-editor-rich-text-tools-comment.tsx";
 import { Sparkles } from "lucide-react";
@@ -118,7 +119,9 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 		<>
 			<MyBadge
 				variant="secondary"
-				className={cn("FileEditorRichTextToolbarActions-status-badge" satisfies FileEditorRichTextToolbarActions_ClassNames)}
+				className={cn(
+					"FileEditorRichTextToolbarActions-status-badge" satisfies FileEditorRichTextToolbarActions_ClassNames,
+				)}
 			>
 				{/*
 					If syncChanged it's false then force to show "Saved" because when the
@@ -193,22 +196,19 @@ const FileEditorRichTextTopStickyFloatingContainer = memo(function FileEditorRic
 });
 // #endregion top sticky floating container
 
-// #region bubble content
+// #region bubble content actions
+export type FileEditorRichTextBubbleContentActions_ClassNames =
+	| "FileEditorRichTextBubbleContentActions"
+	| "FileEditorRichTextBubbleContentActions-button"
+	| "FileEditorRichTextBubbleContentActions-icon";
 
-export type FileEditorRichTextBubbleContent_ClassNames = "FileEditorRichTextBubbleContent";
-
-export type FileEditorRichTextBubbleContentDefaultActions_ClassNames =
-	| "FileEditorRichTextBubbleContentDefaultActions"
-	| "FileEditorRichTextBubbleContentDefaultActions-button"
-	| "FileEditorRichTextBubbleContentDefaultActions-icon";
-
-type FileEditorRichTextBubbleContentDefaultActions_Props = {
+type FileEditorRichTextBubbleContentActions_Props = {
 	editor: Editor;
 	onClickAi: MyButton_Props["onClick"];
 };
 
-const FileEditorRichTextBubbleContentDefaultActions = memo(function FileEditorRichTextBubbleContentDefaultActions(
-	props: FileEditorRichTextBubbleContentDefaultActions_Props,
+const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextBubbleContentActions(
+	props: FileEditorRichTextBubbleContentActions_Props,
 ) {
 	const { editor, onClickAi } = props;
 
@@ -225,13 +225,13 @@ const FileEditorRichTextBubbleContentDefaultActions = memo(function FileEditorRi
 	return (
 		<div
 			className={cn(
-				"FileEditorRichTextBubbleContentDefaultActions" satisfies FileEditorRichTextBubbleContentDefaultActions_ClassNames,
+				"FileEditorRichTextBubbleContentActions" satisfies FileEditorRichTextBubbleContentActions_ClassNames,
 			)}
 		>
 			<MyButton
-				variant="ghost"
+				variant="floating"
 				className={cn(
-					"FileEditorRichTextBubbleContentDefaultActions-button" satisfies FileEditorRichTextBubbleContentDefaultActions_ClassNames,
+					"FileEditorRichTextBubbleContentActions-button" satisfies FileEditorRichTextBubbleContentActions_ClassNames,
 				)}
 				onPointerDown={handleActionPointerDown}
 				onMouseDown={handleActionMouseDown}
@@ -239,28 +239,26 @@ const FileEditorRichTextBubbleContentDefaultActions = memo(function FileEditorRi
 			>
 				<MyButtonIcon
 					className={cn(
-						"FileEditorRichTextBubbleContentDefaultActions-icon" satisfies FileEditorRichTextBubbleContentDefaultActions_ClassNames,
+						"FileEditorRichTextBubbleContentActions-icon" satisfies FileEditorRichTextBubbleContentActions_ClassNames,
 					)}
 				>
 					<Sparkles />
 				</MyButtonIcon>
 				Ask AI
 			</MyButton>
-			<MySeparator orientation="vertical" />
-			<FileEditorRichTextToolsNodeSelector editor={editor} />
-			<MySeparator orientation="vertical" />
-			<FileEditorRichTextToolsLinkSetter editor={editor} />
-			<MySeparator orientation="vertical" />
-			<FileEditorRichTextToolsMathToggle editor={editor} />
-			<MySeparator orientation="vertical" />
-			<FileEditorRichTextToolsTextStyles editor={editor} />
-			<MySeparator orientation="vertical" />
-			<FileEditorRichTextToolsColorSelector editor={editor} />
-			<MySeparator orientation="vertical" />
-			<FileEditorRichTextToolsComment editor={editor} />
+			<FileEditorRichTextToolsNodeSelector editor={editor} buttonVariant="floating" />
+			<FileEditorRichTextToolsLinkSetter editor={editor} buttonVariant="floating" />
+			<FileEditorRichTextToolsMathToggle editor={editor} buttonVariant="floating" />
+			<FileEditorRichTextToolsTextStyles editor={editor} buttonVariant="floating" />
+			<FileEditorRichTextToolsColorSelector editor={editor} buttonVariant="floating" />
+			<FileEditorRichTextToolsComment editor={editor} buttonVariant="floating" />
 		</div>
 	);
 });
+// #endregion bubble content actions
+
+// #region bubble content
+export type FileEditorRichTextBubbleContent_ClassNames = "FileEditorRichTextBubbleContent";
 
 type FileEditorRichTextBubbleContent_Props = {
 	editor: Editor;
@@ -277,15 +275,15 @@ const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleCo
 	const { editor, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } = props;
 
 	return (
-		<div
+		<MyFloatingCard
 			ref={onPortalRef}
 			className={cn("FileEditorRichTextBubbleContent" satisfies FileEditorRichTextBubbleContent_ClassNames)}
 		>
 			{openAi && <FileEditorRichTextToolsInlineAi editor={editor} onDiscard={onDiscardAi} />}
 			{!openAi && portalElement ? (
-				<FileEditorRichTextBubbleContentDefaultActions editor={editor} onClickAi={onClickAi} />
+				<FileEditorRichTextBubbleContentActions editor={editor} onClickAi={onClickAi} />
 			) : null}
-		</div>
+		</MyFloatingCard>
 	);
 });
 // #endregion bubble content

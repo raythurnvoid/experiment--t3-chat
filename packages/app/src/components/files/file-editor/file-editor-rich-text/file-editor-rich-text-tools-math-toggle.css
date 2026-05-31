@@ -1,14 +1,14 @@
 @layer components {
 	.FileEditorRichTextToolsMathToggle {
-		display: flex;
+		display: contents;
+	}
+
+	.FileEditorRichTextToolsMathToggle-active {
+		color: var(--color-accent-06);
 	}
 
 	.FileEditorRichTextToolsMathToggle .MyIconButtonIcon {
 		width: 20px;
 		height: 20px;
-	}
-
-	.FileEditorRichTextToolsMathToggle-active {
-		color: var(--color-accent-06);
 	}
 }

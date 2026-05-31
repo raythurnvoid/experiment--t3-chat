@@ -1,5 +1,5 @@
 import "./file-editor-rich-text-tools-math-toggle.css";
-import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
+import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
 import { SigmaIcon } from "lucide-react";
@@ -12,6 +12,7 @@ export type FileEditorRichTextToolsMathToggle_ClassNames =
 
 export type FileEditorRichTextToolsMathToggle_Props = {
 	editor: Editor;
+	buttonVariant?: MyIconButton_Props["variant"];
 };
 
 type FileEditorRichTextToolsMathToggleInner_Props = FileEditorRichTextToolsMathToggle_Props & {
@@ -21,7 +22,7 @@ type FileEditorRichTextToolsMathToggleInner_Props = FileEditorRichTextToolsMathT
 const FileEditorRichTextToolsMathToggleInner = memo(function FileEditorRichTextToolsMathToggleInner(
 	props: FileEditorRichTextToolsMathToggleInner_Props,
 ) {
-	const { editor, isActive } = props;
+	const { editor, buttonVariant = "ghost", isActive } = props;
 
 	const handleClick = useFn(() => {
 		if (isActive) {
@@ -39,7 +40,7 @@ const FileEditorRichTextToolsMathToggleInner = memo(function FileEditorRichTextT
 	return (
 		<div className={cn("FileEditorRichTextToolsMathToggle" satisfies FileEditorRichTextToolsMathToggle_ClassNames)}>
 			<MyIconButton
-				variant="ghost"
+				variant={buttonVariant}
 				tooltip={isActive ? "Remove math formatting" : "Apply math formatting"}
 				onClick={handleClick}
 				className={cn(
@@ -61,7 +62,7 @@ export const FileEditorRichTextToolsMathToggle = memo(function FileEditorRichTex
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor } = props;
+	const { editor, buttonVariant = "ghost" } = props;
 
 	// Subscribe to the derived math state so mark changes rerender immediately.
 	const isActive = useEditorState({
@@ -71,5 +72,5 @@ export const FileEditorRichTextToolsMathToggle = memo(function FileEditorRichTex
 		},
 	});
 
-	return <FileEditorRichTextToolsMathToggleInner editor={editor} isActive={isActive} />;
+	return <FileEditorRichTextToolsMathToggleInner editor={editor} buttonVariant={buttonVariant} isActive={isActive} />;
 });

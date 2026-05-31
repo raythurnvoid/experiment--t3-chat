@@ -1,5 +1,9 @@
 @layer components {
 	/* #region root */
+	.FileEditorRichTextToolsNodeSelector {
+		display: contents;
+	}
+
 	.FileEditorRichTextToolsNodeSelector .MyButton {
 		width: 140px;
 		justify-content: space-between;
