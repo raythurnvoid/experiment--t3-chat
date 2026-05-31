@@ -20,6 +20,16 @@ It is used for scraping/reading documentation and source code during development
 - Packages: `references-submodules/ai/packages/` - Core SDK packages
 - AI chatbot template: `references-submodules/ai-chatbot` - Vercel AI Chatbot reference app/template
 
+# Bash And Sandbox References
+
+These repositories are checked out here as submodules for reading shell-tooling, Postgres-backed filesystem, and sandbox implementation patterns.
+
+- bash-gres: `references-submodules/bash-gres`
+- postgres-vfs: `references-submodules/postgres-vfs`
+- just-bash: `references-submodules/just-bash`
+- bash-tool: `references-submodules/bash-tool`
+- Convex sandbox: `references-submodules/convex-sandbox`
+
 # Convex
 
 The Convex repositories are checked out here as submodules so they can be updated easily when needed.

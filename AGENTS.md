@@ -208,6 +208,59 @@ All vendored and reference submodule paths are listed below in this single secti
 
 - [references-submodules/pragmatic-drag-and-drop/](references-submodules/pragmatic-drag-and-drop) - Pragmatic Drag and Drop source reference; the app uses the published `@atlaskit/pragmatic-drag-and-drop` package at runtime.
 
+- [references-submodules/bash-gres/](references-submodules/bash-gres) - PostgreSQL-backed virtual filesystem for AI agents that implements the `just-bash` `IFileSystem` interface.
+
+  - Documentation folders:
+    - [README.md](references-submodules/bash-gres/README.md) - Filesystem API, Postgres setup, workspace isolation, copy-on-write versions, and search features
+  - Examples folders:
+    - [examples/nextjs/](references-submodules/bash-gres/examples/nextjs) - Next.js integration example
+  - Package folders:
+    - [lib/](references-submodules/bash-gres/lib) - Core TypeScript implementation
+    - [app/](references-submodules/bash-gres/app) - Demo application
+
+- [references-submodules/postgres-vfs/](references-submodules/postgres-vfs) - PostgreSQL-backed multi-tenant virtual filesystem and bash tool layer for AI agents.
+
+  - Documentation folders:
+    - [README.md](references-submodules/postgres-vfs/README.md) - Architecture, database schema, search, bash-tool integration, and web UI guide
+    - [diagrams/](references-submodules/postgres-vfs/diagrams) - Architecture and UI reference images
+  - Examples folders:
+    - [examples/](references-submodules/postgres-vfs/examples) - Agent simulation, bash-tool, and demo scripts
+  - Package folders:
+    - [src/](references-submodules/postgres-vfs/src) - Package source
+
+- [references-submodules/just-bash/](references-submodules/just-bash) - TypeScript bash interpreter with an in-memory virtual filesystem, Unix command implementations, custom commands, and optional runtime integrations.
+
+  - Documentation folders:
+    - [README.md](references-submodules/just-bash/README.md) - Monorepo overview
+    - [THREAT_MODEL.md](references-submodules/just-bash/THREAT_MODEL.md) - Security model and sandbox assumptions
+    - [packages/just-bash/README.md](references-submodules/just-bash/packages/just-bash/README.md) - Core package usage and supported commands
+    - [packages/just-bash-executor/README.md](references-submodules/just-bash/packages/just-bash-executor/README.md) - Experimental executor/tool integration package
+  - Examples folders:
+    - [examples/](references-submodules/just-bash/examples) - Bash agent, executor tools, custom command, CJS consumer, and website examples
+  - Package folders:
+    - [packages/just-bash/](references-submodules/just-bash/packages/just-bash) - Core bash interpreter package
+    - [packages/just-bash-executor/](references-submodules/just-bash/packages/just-bash-executor) - Tool invocation companion package
+
+- [references-submodules/bash-tool/](references-submodules/bash-tool) - AI SDK-compatible bash, readFile, and writeFile tools for agents using `just-bash` or a VM sandbox.
+
+  - Documentation folders:
+    - [README.md](references-submodules/bash-tool/README.md) - Tool API, sandbox options, upload behavior, and advanced usage
+  - Examples folders:
+    - [examples/skills-tool/](references-submodules/bash-tool/examples/skills-tool) - Skill discovery plus bash-tool example for AI SDK agents
+  - Package folders:
+    - [src/](references-submodules/bash-tool/src) - Package source
+
+- [references-submodules/convex-sandbox/](references-submodules/convex-sandbox) - Convex-backed persistent bash sandbox prototype using `just-bash`, Convex storage, and optional `@convex-dev/agent` tool calling.
+
+  - Documentation folders:
+    - [README.md](references-submodules/convex-sandbox/README.md) - Execution flow, filesystem hydration, mutation tracking, persistence, and data model
+  - Application folders:
+    - [app/](references-submodules/convex-sandbox/app) - Next.js frontend
+    - [components/](references-submodules/convex-sandbox/components) - UI components
+    - [lib/](references-submodules/convex-sandbox/lib) - Shared app utilities
+  - Backend folders:
+    - [convex/](references-submodules/convex-sandbox/convex) - Convex schema, actions, storage-backed sandbox execution, and agent wiring
+
 - [references-submodules/opencode/](references-submodules/opencode) - OpenCode development platform submodule
 
   - Documentation folders:

@@ -109,3 +109,18 @@
 [submodule "references-submodules/pragmatic-drag-and-drop"]
 	path = references-submodules/pragmatic-drag-and-drop
 	url = ../../atlassian/pragmatic-drag-and-drop.git
+[submodule "references-submodules/bash-gres"]
+	path = references-submodules/bash-gres
+	url = ../../marcoripa96/bash-gres.git
+[submodule "references-submodules/postgres-vfs"]
+	path = references-submodules/postgres-vfs
+	url = ../../sumedhkhodke/postgres-vfs.git
+[submodule "references-submodules/just-bash"]
+	path = references-submodules/just-bash
+	url = ../../vercel-labs/just-bash.git
+[submodule "references-submodules/bash-tool"]
+	path = references-submodules/bash-tool
+	url = ../../vercel-labs/bash-tool.git
+[submodule "references-submodules/convex-sandbox"]
+	path = references-submodules/convex-sandbox
+	url = ../../wantpinow/convex-sandbox.git
