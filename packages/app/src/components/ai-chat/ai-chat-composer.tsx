@@ -1,7 +1,7 @@
 import "./ai-chat-composer.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { ExtractStrict } from "type-fest";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import Document from "@tiptap/extension-document";
@@ -99,7 +99,7 @@ export type AiChatComposer_Props = Omit<
 	onClose?: (event: React.KeyboardEvent<HTMLFormElement>) => void;
 };
 
-export function AiChatComposer(props: AiChatComposer_Props) {
+export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer_Props) {
 	const {
 		ref,
 		id,
@@ -487,4 +487,4 @@ export function AiChatComposer(props: AiChatComposer_Props) {
 			</div>
 		</form>
 	);
-}
+});

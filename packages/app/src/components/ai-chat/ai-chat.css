@@ -92,6 +92,15 @@
 		height: 0px;
 	}
 
+	.AiChatThread-scroll-to-bottom-card {
+		display: flex;
+
+		.MyButton-variant-floating {
+			/* Overlap the button border with the floating card border so they blend. */
+			margin: -1px;
+		}
+	}
+
 	.AiChatThread-scroll-to-bottom-icon {
 		width: 16px;
 		height: 16px;

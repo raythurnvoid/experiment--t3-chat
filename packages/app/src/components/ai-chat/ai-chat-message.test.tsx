@@ -65,7 +65,7 @@ function renderMessage(args: {
 			selectedModeId="ask"
 			isRunning={false}
 			isEditing={false}
-			messagesChildrenByParentId={new Map()}
+			branchAnchorIds={[args.message.id]}
 			onToolOutput={vi.fn()}
 			onToolResumeStream={vi.fn()}
 			onToolStop={vi.fn()}

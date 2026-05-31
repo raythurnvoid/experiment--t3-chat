@@ -9,6 +9,7 @@ import "./ai-chat-markdown.css";
 // import { useAutoRevertingState } from "@/hooks/utils-hooks.ts";
 // import { cn, copy_to_clipboard } from "@/lib/utils.ts";
 
+import { memo } from "react";
 import { defaultRemarkPlugins, Streamdown } from "streamdown";
 import { cn } from "@/lib/utils.ts";
 import type { AppClassName } from "../../lib/dom-utils.ts";
@@ -211,7 +212,7 @@ export type AiChatMarkdown_Props = {
 	replaceNewLineToBr?: boolean;
 };
 
-export function AiChatMarkdown(props: AiChatMarkdown_Props) {
+export const AiChatMarkdown = memo(function AiChatMarkdown(props: AiChatMarkdown_Props) {
 	const { markdown, replaceNewLineToBr, className } = props;
 
 	const remarkPlugins = [
@@ -238,7 +239,7 @@ export function AiChatMarkdown(props: AiChatMarkdown_Props) {
 			</Streamdown>
 		</div>
 	);
-}
+});
 
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest;

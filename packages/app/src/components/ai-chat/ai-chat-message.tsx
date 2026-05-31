@@ -1358,17 +1358,12 @@ type AiChatMessageUserSendError_Props = {
 	onRetry: () => void;
 };
 
-const AiChatMessageUserSendError = memo(function AiChatMessageUserSendError(
-	props: AiChatMessageUserSendError_Props,
-) {
+const AiChatMessageUserSendError = memo(function AiChatMessageUserSendError(props: AiChatMessageUserSendError_Props) {
 	const { message, onRetry } = props;
 
 	return (
 		<div className={"AiChatMessageUserSendError" satisfies AiChatMessageUserSendError_ClassNames}>
-			<span
-				className={"AiChatMessageUserSendError-text" satisfies AiChatMessageUserSendError_ClassNames}
-				role="alert"
-			>
+			<span className={"AiChatMessageUserSendError-text" satisfies AiChatMessageUserSendError_ClassNames} role="alert">
 				{message}
 			</span>
 			<MyButton
@@ -1410,7 +1405,7 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	selectedModeId: ai_chat_ModeId;
 	isRunning: boolean;
 	isEditing: boolean;
-	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
+	branchAnchorIds: string[];
 	sendErrorText?: string | undefined;
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
@@ -1435,7 +1430,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		selectedModeId,
 		isRunning,
 		isEditing,
-		messagesChildrenByParentId,
+		branchAnchorIds,
 		sendErrorText,
 		onToolOutput,
 		onToolResumeStream,
@@ -1450,23 +1445,11 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		...rest
 	} = props;
 
-	const branchMetadata = ((/* iife */) => {
-		const siblings = messagesChildrenByParentId.get(message.metadata?.convexParentId ?? null) ?? [];
-		const currentIndex = siblings.indexOf(message);
-
-		return {
-			variantIndex: currentIndex,
-			variantCount: siblings.length,
-			variantAnchorIds: siblings.map((sibling) => sibling.id),
-		} satisfies AiChatMessage_BranchMetadata;
-	})();
-
 	const text = ai_chat_get_message_text(message);
 
 	const canEdit = !isRunning && Boolean(text);
 
-	const showBranchControls = Boolean(branchMetadata && branchMetadata.variantCount > 1);
-	const branchLabel = branchMetadata ? `${branchMetadata.variantIndex + 1}/${branchMetadata.variantCount}` : "";
+	const branchIndex = branchAnchorIds.indexOf(message.id);
 	const showEditButton = !isEditing && Boolean(selectedThreadId) && canEdit;
 
 	const handleStartEdit = useFn(() => {
@@ -1504,16 +1487,13 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 			return;
 		}
 
-		const navCount = branchMetadata.variantAnchorIds.length;
+		const navCount = branchAnchorIds.length;
 		if (navCount <= 1) {
 			return;
 		}
 
-		const nextIndex =
-			direction === "prev"
-				? (branchMetadata.variantIndex - 1 + navCount) % navCount
-				: (branchMetadata.variantIndex + 1) % navCount;
-		const nextAnchorId = branchMetadata.variantAnchorIds[nextIndex];
+		const nextIndex = direction === "prev" ? (branchIndex - 1 + navCount) % navCount : (branchIndex + 1) % navCount;
+		const nextAnchorId = branchAnchorIds[nextIndex];
 		if (!nextAnchorId) {
 			return;
 		}
@@ -1582,9 +1562,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 					</button>
 				)}
 				<div className={"AiChatMessageUser-actions" satisfies AiChatMessageUser_ClassNames} hidden={isEditing}>
-					{sendErrorText && (
-						<AiChatMessageUserSendError message={sendErrorText} onRetry={handleRetrySend} />
-					)}
+					{sendErrorText && <AiChatMessageUserSendError message={sendErrorText} onRetry={handleRetrySend} />}
 					<div className={"AiChatMessageUser-actions-main" satisfies AiChatMessageUser_ClassNames}>
 						<CopyIconButton
 							className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
@@ -1593,24 +1571,24 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 							tooltipCopy="Copy message"
 							text={text ?? undefined}
 						/>
-						{showBranchControls && (
+						{branchAnchorIds.length > 1 && (
 							<div className={"AiChatMessageUser-branch-controls" satisfies AiChatMessageUser_ClassNames}>
 								<MyIconButton
 									className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
 									variant="ghost-highlightable"
-									tooltip="Previous variant"
+									tooltip="Previous branch"
 									disabled={isRunning}
 									onClick={handleBranchPrev}
 								>
 									<ChevronLeft className={"AiChatMessageUser-action-icon" satisfies AiChatMessageUser_ClassNames} />
 								</MyIconButton>
 								<span className={"AiChatMessageUser-branch-label" satisfies AiChatMessageUser_ClassNames}>
-									{branchLabel}
+									{`${branchIndex + 1}/${branchAnchorIds.length}`}
 								</span>
 								<MyIconButton
 									className={"AiChatMessageUser-action-button" satisfies AiChatMessageUser_ClassNames}
 									variant="ghost-highlightable"
-									tooltip="Next variant"
+									tooltip="Next branch"
 									disabled={isRunning}
 									onClick={handleBranchNext}
 								>
@@ -1646,7 +1624,7 @@ type AiChatMessageAgent_Props = ComponentPropsWithRef<"div"> & {
 	selectedThreadId: string | null;
 	isRunning: boolean;
 	isEditing: boolean;
-	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
+	branchAnchorIds: string[];
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
@@ -1664,7 +1642,7 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 		selectedThreadId,
 		isRunning,
 		isEditing,
-		messagesChildrenByParentId,
+		branchAnchorIds,
 		onToolOutput,
 		onToolResumeStream,
 		onToolStop,
@@ -1674,20 +1652,10 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 		...rest
 	} = props;
 
-	const branchMetadata = ((/* iife */) => {
-		const siblings = messagesChildrenByParentId.get(message.metadata?.convexParentId ?? null) ?? [];
-		const currentIndex = siblings.indexOf(message);
-
-		return {
-			variantIndex: currentIndex,
-			variantCount: siblings.length,
-			variantAnchorIds: siblings.map((sibling) => sibling.id),
-		} satisfies AiChatMessage_BranchMetadata;
-	})();
-
 	// TODO: Allow copying tool data even when there is no message text.
 	const text = ai_chat_get_message_text(message);
 	const streamErrorText = message.metadata?.status === "errored" ? "An error occurred during the generation" : null;
+	const branchIndex = branchAnchorIds.indexOf(message.id);
 
 	const handleReload = useFn(() => {
 		if (!selectedThreadId) {
@@ -1711,16 +1679,13 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 			return;
 		}
 
-		const navCount = branchMetadata.variantAnchorIds.length;
+		const navCount = branchAnchorIds.length;
 		if (navCount <= 1) {
 			return;
 		}
 
-		const nextIndex =
-			direction === "prev"
-				? (branchMetadata.variantIndex - 1 + navCount) % navCount
-				: (branchMetadata.variantIndex + 1) % navCount;
-		const nextAnchorId = branchMetadata.variantAnchorIds[nextIndex];
+		const nextIndex = direction === "prev" ? (branchIndex - 1 + navCount) % navCount : (branchIndex + 1) % navCount;
+		const nextAnchorId = branchAnchorIds[nextIndex];
 		if (!nextAnchorId) {
 			return;
 		}
@@ -1735,9 +1700,6 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 	const handleBranchNext = useFn(() => {
 		handleBranchSwitch("next");
 	});
-
-	const showBranchControls = branchMetadata.variantCount > 1;
-	const branchLabel = `${branchMetadata.variantIndex + 1}/${branchMetadata.variantCount}`;
 
 	return (
 		<AiChatMessageContainer
@@ -1774,24 +1736,24 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 					>
 						<GitBranch className={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames} />
 					</MyIconButton>
-					{showBranchControls && (
+					{branchAnchorIds.length > 1 && (
 						<div className={"AiChatMessageAgent-branch-controls" satisfies AiChatMessageAgent_ClassNames}>
 							<MyIconButton
 								className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
 								variant="ghost"
-								tooltip="Previous variant"
+								tooltip="Previous branch"
 								disabled={isRunning}
 								onClick={handleBranchPrev}
 							>
 								<ChevronLeft className={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames} />
 							</MyIconButton>
 							<span className={"AiChatMessageAgent-branch-label" satisfies AiChatMessageAgent_ClassNames}>
-								{branchLabel}
+								{`${branchIndex + 1}/${branchAnchorIds.length}`}
 							</span>
 							<MyIconButton
 								className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
 								variant="ghost"
-								tooltip="Next variant"
+								tooltip="Next branch"
 								disabled={isRunning}
 								onClick={handleBranchNext}
 							>
@@ -1826,7 +1788,6 @@ type AiChatMessageSystem_Props = ComponentPropsWithRef<"div"> & {
 	selectedThreadId: string | null;
 	isRunning: boolean;
 	isEditing: boolean;
-	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
@@ -1857,12 +1818,6 @@ const AiChatMessageSystem = memo(function AiChatMessageSystem(props: AiChatMessa
 // #endregion system message
 
 // #region message
-type AiChatMessage_BranchMetadata = {
-	variantIndex: number;
-	variantCount: number;
-	variantAnchorIds: string[];
-};
-
 export type AiChatMessage_ClassNames = "AiChatMessage";
 
 export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
@@ -1876,7 +1831,7 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	selectedModeId: ai_chat_ModeId;
 	isRunning: boolean;
 	isEditing: boolean;
-	messagesChildrenByParentId: AiChatController["messagesChildrenByParentId"];
+	branchAnchorIds: string[];
 	sendErrorText?: string | undefined;
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
@@ -1908,7 +1863,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		selectedModeId,
 		isRunning,
 		isEditing,
-		messagesChildrenByParentId,
+		branchAnchorIds,
 		sendErrorText,
 		onToolOutput,
 		onToolResumeStream,
@@ -1941,7 +1896,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 				selectedModeId={selectedModeId}
 				isRunning={isRunning}
 				isEditing={isEditing}
-				messagesChildrenByParentId={messagesChildrenByParentId}
+				branchAnchorIds={branchAnchorIds}
 				onSelectedModelIdChange={onSelectedModelIdChange}
 				onSelectedModeIdChange={onSelectedModeIdChange}
 				onToolOutput={onToolOutput}
@@ -1972,7 +1927,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 				selectedThreadId={selectedThreadId}
 				isRunning={isRunning}
 				isEditing={isEditing}
-				messagesChildrenByParentId={messagesChildrenByParentId}
+				branchAnchorIds={branchAnchorIds}
 				onToolOutput={onToolOutput}
 				onToolResumeStream={onToolResumeStream}
 				onToolStop={onToolStop}
@@ -1997,7 +1952,6 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 			selectedThreadId={selectedThreadId}
 			isRunning={isRunning}
 			isEditing={isEditing}
-			messagesChildrenByParentId={messagesChildrenByParentId}
 			onToolOutput={onToolOutput}
 			onToolResumeStream={onToolResumeStream}
 			onToolStop={onToolStop}

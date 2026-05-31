@@ -11,7 +11,7 @@ import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { get_id_generator, should_never_happen } from "@/lib/utils.ts";
-import { useLiveRef } from "./utils-hooks.ts";
+import { useFn, useLiveRef } from "./utils-hooks.ts";
 import { generate_id } from "../lib/utils.ts";
 import {
 	type ai_chat_AiSdk5UiMessage,
@@ -55,6 +55,31 @@ type ChatRequestMetadata = {
 type ThreadChatOnFinish = Parameters<ChatOnFinishCallback<ai_chat_AiSdk5UiMessage>>[0] & {
 	chatId: string;
 };
+
+type MessageChildIdsByParentIdCacheEntry = {
+	topologyKey: string;
+	value: Map<string | null, string[]>;
+};
+
+const AI_CHAT_DERIVED_CACHE_CLEAR_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Cache persisted Convex messages by their final message id so query refreshes do not recreate old UIMessage objects.
+ * Persisted chat messages are append-only today: editing creates a new branch message, and streaming lives in pending state.
+ */
+const persistedUiMessageById = new Map<string, ai_chat_AiSdk5UiMessage>();
+
+/**
+ * Keep one stable parent -> children topology map while token chunks change only message content.
+ * Branch controls depend on parent ids and child ids, so stream-only updates can reuse the previous map reference.
+ */
+const messageChildIdsByParentIdCache = new Map<"current", MessageChildIdsByParentIdCacheEntry>();
+
+/**
+ * Share one cache cleanup interval across every mounted chat controller.
+ */
+let cacheClearIntervalId: ReturnType<typeof setInterval> | undefined;
+let cacheClearIntervalConsumerCount = 0;
 
 const useAiChatStore = ((/* iife */) => {
 	const store = create(() => ({
@@ -267,10 +292,6 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		`app_state::ai_chat_last_open::scope::${membershipId}`,
 	);
 
-	useEffect(() => {
-		useAiChatStore.setState({ threadById: new Map() });
-	}, [membershipId]);
-
 	const selectedThreadId = useAiChatStore((state) => state.selectedThreadId);
 	const draftSelectedModelId = useAiChatStore((state) => state.draftSelectedModelId);
 	const draftSelectedModeId = useAiChatStore((state) => state.draftSelectedModeId);
@@ -363,7 +384,8 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		for (const message of persistedThreadMessages.messages) {
 			// Convert DB message to AI SDK UI message
 			const dbMessageContent = message.content as ai_chat_AiSdk5UiMessage;
-			const uiMessage = {
+			const cachedUiMessage = persistedUiMessageById.get(message._id);
+			const uiMessage = cachedUiMessage ?? ({
 				id: message._id,
 				role: dbMessageContent.role,
 				parts: dbMessageContent.parts,
@@ -373,7 +395,13 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 					convexParentId: message.parentId,
 					parentClientGeneratedId: dbMessageContent.metadata?.parentClientGeneratedId ?? null,
 				} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
-			} satisfies ai_chat_AiSdk5UiMessage;
+			} satisfies ai_chat_AiSdk5UiMessage);
+
+			// Persisted AI messages are append-only today; editing creates a new branch message.
+			// If persisted rows become stream-updated later, replace this id-only cache with a versioned key.
+			if (!cachedUiMessage) {
+				persistedUiMessageById.set(message._id, uiMessage);
+			}
 
 			result.mapById.set(message._id, uiMessage);
 
@@ -597,6 +625,8 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	const activeChatInstance = selectedThreadId ? (session?.chat ?? unselectedChatInstance) : unselectedChatInstance;
 
 	const chat = useChat<ai_chat_AiSdk5UiMessage>({ chat: activeChatInstance });
+	const chatRef = useLiveRef(chat);
+	const activeChatInstanceIdRef = useLiveRef(activeChatInstance.id);
 
 	const pendingMessagesLookup = ((/* iife */) => {
 		const result = {
@@ -721,18 +751,37 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		};
 	})();
 
-	const messagesChildrenByParentId = ((/* iife */) => {
-		const result = new Map<string | null, ai_chat_AiSdk5UiMessage[]>();
+	const messageChildIdsByParentId = ((/* iife */) => {
+		const result = new Map<string | null, string[]>();
 
 		if (persistedMessagesLookup) {
 			for (const [parentId, children] of persistedMessagesLookup.childrenByParentId.entries()) {
-				result.set(parentId, children.toReversed());
+				result.set(
+					parentId,
+					children.toReversed().map((child) => child.id),
+				);
 			}
 		}
 
 		for (const [parentId, children] of pendingMessagesLookup.childrenByParentId.entries()) {
-			result.set(parentId, [...(result.get(parentId) ?? []), ...children.toReversed()]);
+			result.set(parentId, [
+				...(result.get(parentId) ?? []),
+				...children.toReversed().map((child) => child.id),
+			]);
 		}
+
+		// Branch controls depend on parent/child topology, not token content in the streaming message.
+		const topologyKey = Array.from(result.entries())
+			.map(([parentId, childIds]) => `${parentId ?? "root"}:${childIds.join(",")}`)
+			.join("|");
+		const cachedMessageChildIdsByParentId = messageChildIdsByParentIdCache.get("current");
+		if (cachedMessageChildIdsByParentId?.topologyKey === topologyKey) {
+			return cachedMessageChildIdsByParentId.value;
+		}
+		messageChildIdsByParentIdCache.set("current", {
+			topologyKey,
+			value: result,
+		});
 
 		return result;
 	})();
@@ -1113,14 +1162,14 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		});
 	};
 
-	const stop = () => {
-		chat.stop().catch((error) => {
+	const stop = useFn(() => {
+		chatRef.current.stop().catch((error) => {
 			console.error("[useAiChatController.stop] Failed to stop chat", {
 				error,
-				chatId: activeChatInstance.id,
+				chatId: activeChatInstanceIdRef.current,
 			});
 		});
-	};
+	});
 
 	const isRunning = chat.status === "submitted" || chat.status === "streaming";
 
@@ -1136,6 +1185,31 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		}
 		return "loaded" as const;
 	})();
+
+	useEffect(() => {
+		useAiChatStore.setState({ threadById: new Map() });
+		persistedUiMessageById.clear();
+		messageChildIdsByParentIdCache.clear();
+	}, [membershipId]);
+
+	useEffect(() => {
+		cacheClearIntervalConsumerCount += 1;
+		if (!cacheClearIntervalId) {
+			cacheClearIntervalId = setInterval(() => {
+				// Clear process-local derived caches periodically so long-lived tabs don't retain every visited message forever.
+				persistedUiMessageById.clear();
+				messageChildIdsByParentIdCache.clear();
+			}, AI_CHAT_DERIVED_CACHE_CLEAR_INTERVAL_MS);
+		}
+
+		return () => {
+			cacheClearIntervalConsumerCount -= 1;
+			if (cacheClearIntervalConsumerCount === 0 && cacheClearIntervalId) {
+				clearInterval(cacheClearIntervalId);
+				cacheClearIntervalId = undefined;
+			}
+		};
+	}, []);
 
 	// Restore the selected session and its Chat object together so `useChat` never sees a selected thread
 	// whose store session is still missing the object identity it subscribes to.
@@ -1245,7 +1319,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		isRunning,
 		error: chat.error,
 		activeBranchMessages,
-		messagesChildrenByParentId,
+		messageChildIdsByParentId,
 
 		startNewChat,
 		branchChat,
