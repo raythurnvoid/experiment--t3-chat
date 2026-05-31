@@ -48,7 +48,7 @@ import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
 import { useUiId } from "@/lib/ui.tsx";
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
 import { type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { ai_chat_is_optimistic_thread, type AiChatController } from "@/hooks/ai-chat-hooks.tsx";
+import { ai_chat_is_optimistic_thread, type AiChatThreadListController } from "@/hooks/ai-chat-hooks.tsx";
 
 const ai_chat_threads_RESULTS_LIST_ID = "ai_chat_threads_results_list";
 
@@ -449,8 +449,8 @@ type AiChatThreadsResults_Props = ComponentPropsWithRef<"section"> & {
 	className?: string;
 	searchQuery: string;
 	paginatedThreads:
-		| AiChatController["currentThreadsWithOptimistic"]["unarchived"]
-		| AiChatController["currentThreadsWithOptimistic"]["archived"]
+		| AiChatThreadListController["currentThreadsWithOptimistic"]["unarchived"]
+		| AiChatThreadListController["currentThreadsWithOptimistic"]["archived"]
 		| null;
 	streamingTitleByThreadId: Record<string, string | undefined>;
 	selectedThreadId: string | null;
@@ -573,7 +573,7 @@ const AiChatThreadsResults = memo(function AiChatThreadsResults(props: AiChatThr
 export type AiChatThreads_ClassNames = "AiChatThreads";
 
 export type AiChatThreads_Props = MySidebar_Props & {
-	paginatedThreads: AiChatController["currentThreadsWithOptimistic"];
+	paginatedThreads: AiChatThreadListController["currentThreadsWithOptimistic"];
 	streamingTitleByThreadId: Record<string, string | undefined>;
 	selectedThreadId: string | null;
 	onClose?: () => void;

@@ -1,8 +1,8 @@
 import "./ai-chat.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
-import { memo, useState, useEffect, useRef, useDeferredValue } from "react";
-import { useFn, useThrottle } from "@/hooks/utils-hooks.ts";
+import { memo, useState, useEffect, useRef, useDeferredValue, useLayoutEffect } from "react";
+import { useFn, useLiveRef, useThrottle } from "@/hooks/utils-hooks.ts";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { ArrowDown, PanelLeft } from "lucide-react";
 
@@ -15,7 +15,19 @@ import { dom_find_first_element_overflowing_element, dom_TypedAttributeAccessor 
 import { cn } from "@/lib/utils.ts";
 import { useUiStickToBottom } from "@/lib/ui.tsx";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
-import { useAiChatController, type AiChatController } from "@/hooks/ai-chat-hooks.tsx";
+import {
+	AiChatRuntimeActionsContext,
+	useAiChatThreadRuntime,
+	useAiChatThreadListController,
+	useAiChatThreadActiveMessageIds,
+	useAiChatThreadAnchorId,
+	useAiChatThreadEditingMessageId,
+	useAiChatThreadIsRunning,
+	useAiChatThreadStatus,
+	useAiChatThreadStreamErrorText,
+	type AiChatThreadRuntime,
+	type AiChatRuntimeActions,
+} from "@/hooks/ai-chat-hooks.tsx";
 import {
 	AiChatComposer,
 	type AiChatComposer_ClassNames,
@@ -25,7 +37,6 @@ import {
 	AiChatMessage,
 	type AiChatMessage_ClassNames,
 	type AiChatMessage_CustomAttributes,
-	type AiChatMessage_Props,
 	type AiChatMessageUser_ClassNames,
 } from "@/components/ai-chat/ai-chat-message.tsx";
 
@@ -193,7 +204,6 @@ const AiChatThreadError = memo(function AiChatThreadError(props: AiChatThreadErr
 
 // #region message list
 type AiChatMessagesList_ClassNames = "AiChatMessageList" | "AiChatMessageList-error";
-const AI_CHAT_EMPTY_BRANCH_ANCHOR_IDS: string[] = [];
 
 type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
@@ -201,27 +211,9 @@ type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	className?: string;
 
 	selectedThreadId: string | null;
-	selectedModelId: AiChatController["selectedModelId"];
-	selectedModeId: AiChatController["selectedModeId"];
-	activeBranchMessages: ReturnType<typeof useAiChatController>["activeBranchMessages"];
-	messageChildIdsByParentId: ReturnType<typeof useAiChatController>["messageChildIdsByParentId"];
-	isRunning: boolean;
-	status: AiChatController["status"];
-	error: AiChatController["error"];
-	editingMessageId: string | null;
-	onToolOutput: AiChatMessage_Props["onToolOutput"];
-	onToolResumeStream: AiChatMessage_Props["onToolResumeStream"];
-	onToolStop: AiChatMessage_Props["onToolStop"];
-	onSelectedModelIdChange: AiChatMessage_Props["onSelectedModelIdChange"];
-	onSelectedModeIdChange: AiChatMessage_Props["onSelectedModeIdChange"];
-	onEditStart: AiChatMessage_Props["onEditStart"];
-	onEditCancel: AiChatMessage_Props["onEditCancel"];
-	onEditSubmit: AiChatMessage_Props["onEditSubmit"];
+	selectedModelId: AiChatThreadRuntime["selectedModelId"];
+	selectedModeId: AiChatThreadRuntime["selectedModeId"];
 	onClickSuggestion: (action: string) => void;
-	onMessageRegenerate: AiChatMessage_Props["onMessageRegenerate"];
-	onMessageRetrySend: AiChatMessage_Props["onMessageRetrySend"];
-	onMessageBranchChat: AiChatMessage_Props["onMessageBranchChat"];
-	onSelectBranchAnchor: AiChatMessage_Props["onSelectBranchAnchor"];
 };
 
 const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessagesList_Props) {
@@ -232,52 +224,24 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 		selectedThreadId,
 		selectedModelId,
 		selectedModeId,
-		activeBranchMessages,
-		messageChildIdsByParentId,
-		isRunning,
-		status,
-		error,
-		editingMessageId,
-		onSelectedModelIdChange,
-		onSelectedModeIdChange,
-		onToolOutput,
-		onToolResumeStream,
-		onToolStop,
-		onEditStart,
-		onEditCancel,
-		onEditSubmit,
 		onClickSuggestion,
-		onMessageRegenerate,
-		onMessageRetrySend,
-		onMessageBranchChat,
-		onSelectBranchAnchor,
 		...rest
 	} = props;
 
-	const deferredActiveBranchMessagesList = useDeferredValue(activeBranchMessages.list);
-	const throttledMessagesList = useThrottle(deferredActiveBranchMessagesList, 100);
-	const deferredMessageChildIdsByParentId = useDeferredValue(messageChildIdsByParentId);
-	const throttledMessageChildIdsByParentId = useThrottle(deferredMessageChildIdsByParentId, 100);
+	const activeMessageIds = useAiChatThreadActiveMessageIds(selectedThreadId);
+	const deferredActiveMessageIds = useDeferredValue(activeMessageIds);
+	const throttledMessageIds = useThrottle(deferredActiveMessageIds, 100);
+	const status = useAiChatThreadStatus(selectedThreadId);
+	const isRunning = useAiChatThreadIsRunning(selectedThreadId);
+	const streamErrorText = useAiChatThreadStreamErrorText(selectedThreadId);
+	const activeBranchAnchorId = useAiChatThreadAnchorId(selectedThreadId);
 
-	const messageCount = activeBranchMessages.list.length;
+	const messageCount = activeMessageIds.length;
 
 	// Make sure to always show the skeleton when switching between threads,
 	// we cannot rely on `messageCount === 0` because we might have optimistic message,
 	// stored that might prevent the skeleton from being shown.
 	const shouldShowSkeleton = status === "loading" && !isRunning;
-	const failedSendMessageId = ((/* iife */) => {
-		if (!error || isRunning) {
-			return null;
-		}
-
-		const latestMessage = activeBranchMessages.list.at(-1);
-		if (latestMessage?.role !== "user") {
-			return null;
-		}
-
-		return latestMessage.id;
-	})();
-	const streamErrorText = error && !failedSendMessageId ? "An error occurred during the generation" : null;
 
 	const handleSuggestionClick = useFn<AiChatMessagesList_Props["onClickSuggestion"]>((action) => {
 		onClickSuggestion(action);
@@ -287,7 +251,7 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 		<div
 			// Ensure the list is unmounted when the thread or branch anchor is changed
 			// or when the branch is switched
-			key={`${selectedThreadId ?? "new"}:${activeBranchMessages.anchorId ?? "root"}`}
+			key={`${selectedThreadId ?? "new"}:${activeBranchAnchorId ?? "root"}`}
 			ref={ref}
 			id={id}
 			className={cn("AiChatMessageList" satisfies AiChatMessagesList_ClassNames, className)}
@@ -298,37 +262,17 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 			) : messageCount === 0 ? (
 				<AiChatWelcome onClickSuggestion={handleSuggestionClick} />
 			) : (
-				throttledMessagesList.map((message, index) => {
-					const branchAnchorIds =
-						throttledMessageChildIdsByParentId.get(message.metadata?.convexParentId ?? null) ??
-						AI_CHAT_EMPTY_BRANCH_ANCHOR_IDS;
-
+				throttledMessageIds.map((messageId, index) => {
 					return (
 						<AiChatMessage
 							// index is better in this case because the messages follow a static order
 							// and this will prevent them from being unmounted when the message is
 							// persisted after stream
 							key={index}
-							message={message}
+							messageId={messageId}
 							selectedThreadId={selectedThreadId}
 							selectedModelId={selectedModelId}
 							selectedModeId={selectedModeId}
-							isRunning={isRunning}
-							isEditing={editingMessageId === message.id}
-							branchAnchorIds={branchAnchorIds}
-							onSelectedModelIdChange={onSelectedModelIdChange}
-							onSelectedModeIdChange={onSelectedModeIdChange}
-							onToolOutput={onToolOutput}
-							onToolResumeStream={onToolResumeStream}
-							onToolStop={onToolStop}
-							onEditStart={onEditStart}
-							onEditCancel={onEditCancel}
-							onEditSubmit={onEditSubmit}
-							onMessageRegenerate={onMessageRegenerate}
-							onMessageRetrySend={onMessageRetrySend}
-							onMessageBranchChat={onMessageBranchChat}
-							onSelectBranchAnchor={onSelectBranchAnchor}
-							sendErrorText={message.id === failedSendMessageId ? "Message failed to send." : undefined}
 						/>
 					);
 				})
@@ -347,7 +291,7 @@ const AUTO_SCROLL_BOTTOM_MARGIN = 1;
 type useAutoScroll_Props = {
 	scrollEl: HTMLElement | null;
 	contentEl: HTMLDivElement | null;
-	controller: AiChatController;
+	controller: AiChatThreadRuntime;
 	enable?: boolean;
 };
 
@@ -432,7 +376,7 @@ export type AiChatThread_ClassNames =
 
 export type AiChatThread_Props = {
 	variant?: AiChatThread_Variant;
-	controller: AiChatController;
+	controller: AiChatThreadRuntime;
 	scrollableContainer: HTMLElement | null;
 };
 
@@ -443,11 +387,69 @@ export type AiChatThread_CustomAttributes = {
 export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props) {
 	const { variant = "default", controller, scrollableContainer } = props;
 
-	const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 	const selectedThreadId = controller.selectedThreadId;
 	const selectedModelId = controller.selectedModelId;
 	const selectedModeId = controller.selectedModeId;
+	const editingMessageId = useAiChatThreadEditingMessageId(selectedThreadId);
 	const initialComposerValue = controller.session?.draftComposerText ?? "";
+	const controllerRef = useLiveRef(controller);
+
+	useLayoutEffect(() => {
+		controller.syncRenderState();
+	});
+
+	const [runtimeActions] = useState<AiChatRuntimeActions>(() => {
+		const isThreadRunning = (threadId: string) => {
+			const controller = controllerRef.current;
+			return controller.selectedThreadId === threadId && controller.isRunning;
+		};
+
+		return {
+			addToolOutput: ((...args: Parameters<AiChatRuntimeActions["addToolOutput"]>) =>
+				controllerRef.current.addToolOutput(...args)) as AiChatRuntimeActions["addToolOutput"],
+			resumeStream: ((...args: Parameters<AiChatRuntimeActions["resumeStream"]>) =>
+				controllerRef.current.resumeStream(...args)) as AiChatRuntimeActions["resumeStream"],
+			stop: () => {
+				controllerRef.current.stop();
+			},
+			setSelectedModelId: (modelId) => {
+				controllerRef.current.setSelectedModelId(modelId);
+			},
+			setSelectedModeId: (modeId) => {
+				controllerRef.current.setSelectedModeId(modeId);
+			},
+			sendUserText: (threadId, value, options) => {
+				if (isThreadRunning(threadId)) {
+					return;
+				}
+				controllerRef.current.sendUserText(threadId, value, options);
+			},
+			regenerate: (threadId, messageId) => {
+				if (isThreadRunning(threadId)) {
+					return;
+				}
+				controllerRef.current.regenerate(threadId, messageId);
+			},
+			branchChat: (threadId, messageId) => {
+				if (isThreadRunning(threadId)) {
+					return;
+				}
+				controllerRef.current.branchChat(threadId, messageId);
+			},
+			selectBranchAnchor: (threadId, anchorId) => {
+				if (isThreadRunning(threadId)) {
+					return;
+				}
+				controllerRef.current.selectBranchAnchor(threadId, anchorId);
+			},
+			setEditingMessageId: (threadId, messageId) => {
+				if (messageId && isThreadRunning(threadId)) {
+					return;
+				}
+				controllerRef.current.setEditingMessageId(threadId, messageId);
+			},
+		};
+	});
 
 	const [messagesListEl, setMessagesListEl] = useState<HTMLDivElement | null>(null);
 
@@ -504,35 +506,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		}
 	});
 
-	const handleMessageRegenerate = useFn<AiChatMessagesList_Props["onMessageRegenerate"]>((args) => {
-		if (!selectedThreadId || args.threadId !== selectedThreadId) {
-			return;
-		}
-
-		controller.regenerate(args.threadId, args.messageId);
-	});
-
-	const handleMessageRetrySend = useFn<AiChatMessagesList_Props["onMessageRetrySend"]>((args) => {
-		if (!selectedThreadId || args.threadId !== selectedThreadId) {
-			return;
-		}
-
-		controller.sendUserText(args.threadId, args.value, { messageId: args.messageId });
-	});
-
-	const handleMessageBranchChat = useFn<AiChatMessagesList_Props["onMessageBranchChat"]>((args) => {
-		if (!selectedThreadId || args.threadId !== selectedThreadId) {
-			return;
-		}
-
-		controller.branchChat(args.threadId, args.messageId);
-	});
-
-	const handleSelectBranchAnchor = useFn<AiChatMessagesList_Props["onSelectBranchAnchor"]>((threadId, anchorId) => {
-		controller.selectBranchAnchor(threadId, anchorId);
-	});
-
-	const handleEditStart = useFn<AiChatMessagesList_Props["onEditStart"]>((args) => {
+	const handleEditStart = useFn((args: { messageId: string; parentId: string | null }) => {
 		if (!selectedThreadId) {
 			return;
 		}
@@ -540,28 +514,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 			return;
 		}
 		controller.selectBranchAnchor(selectedThreadId, args.parentId);
-		setEditingMessageId(args.messageId);
-	});
-
-	const handleEditCancel = useFn<AiChatMessagesList_Props["onEditCancel"]>(() => {
-		setEditingMessageId(null);
-	});
-
-	const handleEditSubmit = useFn<AiChatMessagesList_Props["onEditSubmit"]>((args) => {
-		if (!selectedThreadId) {
-			return;
-		}
-		const editingId = editingMessageId;
-		if (!editingId) {
-			return;
-		}
-		const value = args.value;
-		if (!value) {
-			return;
-		}
-
-		controller.sendUserText(selectedThreadId, value, { messageId: editingId });
-		setEditingMessageId(null);
+		controller.setEditingMessageId(selectedThreadId, args.messageId);
 	});
 
 	const handleKeyDown = useFn<ComponentPropsWithRef<"div">["onKeyDown"]>((event) => {
@@ -617,7 +570,9 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 			do {
 				if (isComposerInFocus) {
 					if (event.key === "Escape" && editingMessageId) {
-						setEditingMessageId(null);
+						if (selectedThreadId) {
+							controller.setEditingMessageId(selectedThreadId, null);
+						}
 						elToFocus = event.currentTarget.querySelector<HTMLElement>(
 							`.${"AiChatThread-composer" satisfies AiChatThread_ClassNames} .${"AiChatComposer-editor-content" satisfies AiChatComposer_ClassNames}`,
 						);
@@ -643,7 +598,9 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							: null;
 
 						if (elToFocus) {
-							setEditingMessageId(null);
+							if (selectedThreadId) {
+								controller.setEditingMessageId(selectedThreadId, null);
+							}
 						}
 					} else if (event.key === "ArrowDown" && editingMessageId) {
 						const shouldNavigateDown = useAppGlobalStore.getState().ai_chat_composer_selection_collapsed_and_at_end;
@@ -674,7 +631,9 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 						);
 
 						if (elToFocus) {
-							setEditingMessageId(null);
+							if (selectedThreadId) {
+								controller.setEditingMessageId(selectedThreadId, null);
+							}
 						}
 					}
 				} else if (isEditButtonInFocus) {
@@ -785,70 +744,63 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 				: {}) satisfies Partial<AiChatThread_CustomAttributes>)}
 			onKeyDown={handleKeyDown}
 		>
-			<CatchBoundary
-				getResetKey={getCatchBoundaryResetKey}
-				errorComponent={AiChatThreadError}
-				onCatch={handleCatchBoundaryError}
-			>
-				<div className={"AiChatThread-content" satisfies AiChatThread_ClassNames}>
-					<AiChatMessagesList
-						ref={setMessagesListEl}
-						selectedThreadId={selectedThreadId}
-						selectedModelId={selectedModelId}
-						selectedModeId={selectedModeId}
-						activeBranchMessages={controller.activeBranchMessages}
-						messageChildIdsByParentId={controller.messageChildIdsByParentId}
-						isRunning={controller.isRunning}
-						status={controller.status}
-						error={controller.error}
-						editingMessageId={editingMessageId}
-						onSelectedModelIdChange={handleSelectedModelIdChange}
-						onSelectedModeIdChange={handleSelectedModeIdChange}
-						onEditStart={handleEditStart}
-						onEditCancel={handleEditCancel}
-						onEditSubmit={handleEditSubmit}
-						onToolOutput={controller.addToolOutput}
-						onToolResumeStream={controller.resumeStream}
-						onToolStop={controller.stop}
-						onClickSuggestion={handleClickSuggestion}
-						onMessageRegenerate={handleMessageRegenerate}
-						onMessageRetrySend={handleMessageRetrySend}
-						onMessageBranchChat={handleMessageBranchChat}
-						onSelectBranchAnchor={handleSelectBranchAnchor}
-					/>
-				</div>
-				<div className={"AiChatThread-scroll-to-bottom" satisfies AiChatThread_ClassNames}>
-					<MyFloatingSurface
-						className={"AiChatThread-scroll-to-bottom-card" satisfies AiChatThread_ClassNames}
-						hidden={isAtBottom}
-					>
-						<MyIconButton variant="floating" tooltip="Scroll to bottom" onClick={handleScrollToBottom}>
-							<ArrowDown className={"AiChatThread-scroll-to-bottom-icon" satisfies AiChatThread_ClassNames} />
-						</MyIconButton>
-					</MyFloatingSurface>
-				</div>
-				<div className={"AiChatThread-composer" satisfies AiChatThread_ClassNames}>
-					<AiChatComposer
-						key={selectedThreadId ?? "new"}
-						canCancel={controller.isRunning}
-						isRunning={controller.isRunning}
-						initialValue={initialComposerValue}
-						selectedModelId={selectedModelId}
-						selectedModeId={selectedModeId}
-						onValueChange={handleComposerValueChange}
-						onSelectedModelIdChange={handleSelectedModelIdChange}
-						onSelectedModeIdChange={handleSelectedModeIdChange}
-						onSubmit={handleComposerSubmit}
-						onCancel={handleComposerCancel}
-					/>
-				</div>
-			</CatchBoundary>
+			<AiChatRuntimeActionsContext.Provider value={runtimeActions}>
+				<CatchBoundary
+					getResetKey={getCatchBoundaryResetKey}
+					errorComponent={AiChatThreadError}
+					onCatch={handleCatchBoundaryError}
+				>
+					<div className={"AiChatThread-content" satisfies AiChatThread_ClassNames}>
+						<AiChatMessagesList
+							ref={setMessagesListEl}
+							selectedThreadId={selectedThreadId}
+							selectedModelId={selectedModelId}
+							selectedModeId={selectedModeId}
+							onClickSuggestion={handleClickSuggestion}
+						/>
+					</div>
+					<div className={"AiChatThread-scroll-to-bottom" satisfies AiChatThread_ClassNames}>
+						<MyFloatingSurface
+							className={"AiChatThread-scroll-to-bottom-card" satisfies AiChatThread_ClassNames}
+							hidden={isAtBottom}
+						>
+							<MyIconButton variant="floating" tooltip="Scroll to bottom" onClick={handleScrollToBottom}>
+								<ArrowDown className={"AiChatThread-scroll-to-bottom-icon" satisfies AiChatThread_ClassNames} />
+							</MyIconButton>
+						</MyFloatingSurface>
+					</div>
+					<div className={"AiChatThread-composer" satisfies AiChatThread_ClassNames}>
+						<AiChatComposer
+							key={selectedThreadId ?? "new"}
+							canCancel={controller.isRunning}
+							isRunning={controller.isRunning}
+							initialValue={initialComposerValue}
+							selectedModelId={selectedModelId}
+							selectedModeId={selectedModeId}
+							onValueChange={handleComposerValueChange}
+							onSelectedModelIdChange={handleSelectedModelIdChange}
+							onSelectedModeIdChange={handleSelectedModeIdChange}
+							onSubmit={handleComposerSubmit}
+							onCancel={handleComposerCancel}
+						/>
+					</div>
+				</CatchBoundary>
+			</AiChatRuntimeActionsContext.Provider>
 		</div>
 	);
 });
 // #endregion thread
 
 // #region root
+const AiChatThreadRuntimePanel = memo(function AiChatThreadRuntimePanel(props: {
+	scrollableContainer: HTMLElement | null;
+}) {
+	const { scrollableContainer } = props;
+	const controller = useAiChatThreadRuntime();
+
+	return <AiChatThread controller={controller} scrollableContainer={scrollableContainer} />;
+});
+
 type AiChat_ClassNames =
 	| "AiChat"
 	| "AiChat-main"
@@ -867,7 +819,7 @@ type AiChat_Props = ComponentPropsWithRef<"div"> & {
 export const AiChat = memo(function AiChat(props: AiChat_Props) {
 	const { ref, id, className, ...rest } = props;
 
-	const controller = useAiChatController();
+	const controller = useAiChatThreadListController();
 	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(true);
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
 
@@ -917,7 +869,7 @@ export const AiChat = memo(function AiChat(props: AiChat_Props) {
 						</div>
 					)}
 					<div ref={setScrollableContainer} className={"AiChat-thread-content" satisfies AiChat_ClassNames}>
-						<AiChatThread controller={controller} scrollableContainer={scrollableContainer} />
+						<AiChatThreadRuntimePanel scrollableContainer={scrollableContainer} />
 					</div>
 				</div>
 			</div>

@@ -42,7 +42,15 @@ import {
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
-import type { AiChatController } from "@/hooks/ai-chat-hooks.tsx";
+import {
+	useAiChatMessage,
+	useAiChatMessageBranchSiblingIds,
+	useAiChatMessageIsEditing,
+	useAiChatMessageIsRunning,
+	useAiChatMessageSendErrorText,
+	useAiChatRuntimeActions,
+	type AiChatRuntimeActions,
+} from "@/hooks/ai-chat-hooks.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
 import { AiChatMarkdown, type AiChatMarkdown_Props } from "@/components/ai-chat/ai-chat-markdown.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
@@ -994,9 +1002,9 @@ type AiChatMessagePart_Props = {
 	part: ai_chat_AiSdk5UiMessage["parts"][number];
 	message: ai_chat_AiSdk5UiMessage;
 	isChatRunning: boolean;
-	onToolOutput: AiChatController["addToolOutput"];
-	onToolResumeStream: AiChatController["resumeStream"];
-	onToolStop: AiChatController["stop"];
+	onToolOutput: AiChatRuntimeActions["addToolOutput"];
+	onToolResumeStream: AiChatRuntimeActions["resumeStream"];
+	onToolStop: AiChatRuntimeActions["stop"];
 };
 
 const AiChatMessagePart = memo(function AiChatMessagePart(props: AiChatMessagePart_Props) {
@@ -1405,18 +1413,18 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	selectedModeId: ai_chat_ModeId;
 	isRunning: boolean;
 	isEditing: boolean;
-	branchAnchorIds: string[];
+	branchAnchorIds: readonly string[];
 	sendErrorText?: string | undefined;
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
 	onSelectedModelIdChange: AiChatComposer_Props["onSelectedModelIdChange"];
 	onSelectedModeIdChange: AiChatComposer_Props["onSelectedModeIdChange"];
-	onEditStart: AiChatMessage_Props["onEditStart"];
-	onEditCancel: AiChatMessage_Props["onEditCancel"];
-	onEditSubmit: AiChatMessage_Props["onEditSubmit"];
-	onMessageRetrySend: AiChatMessage_Props["onMessageRetrySend"];
-	onSelectBranchAnchor: AiChatMessage_Props["onSelectBranchAnchor"];
+	onEditStart: (args: { messageId: string; parentId: string | null }) => void;
+	onEditCancel: () => void;
+	onEditSubmit: (args: { value: string }) => void;
+	onMessageRetrySend: (args: { threadId: string; messageId: string; value: string }) => void;
+	onSelectBranchAnchor: (threadId: string, anchorId: string) => void;
 };
 
 const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUser_Props) {
@@ -1524,6 +1532,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 			>
 				<div className={"AiChatMessageUser-content-container" satisfies AiChatMessageUser_ClassNames}>
 					<AiChatMessageContent
+						key={message.id}
 						message={message}
 						isChatRunning={isRunning}
 						onToolOutput={onToolOutput}
@@ -1624,13 +1633,13 @@ type AiChatMessageAgent_Props = ComponentPropsWithRef<"div"> & {
 	selectedThreadId: string | null;
 	isRunning: boolean;
 	isEditing: boolean;
-	branchAnchorIds: string[];
+	branchAnchorIds: readonly string[];
 	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
 	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
 	onToolStop: AiChatMessageContent_Props["onToolStop"];
-	onMessageRegenerate: AiChatMessage_Props["onMessageRegenerate"];
-	onMessageBranchChat: AiChatMessage_Props["onMessageBranchChat"];
-	onSelectBranchAnchor: AiChatMessage_Props["onSelectBranchAnchor"];
+	onMessageRegenerate: (args: { threadId: string; messageId: string }) => void;
+	onMessageBranchChat: (args: { threadId: string; messageId?: string }) => void;
+	onSelectBranchAnchor: (threadId: string, anchorId: string) => void;
 };
 
 const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessageAgent_Props) {
@@ -1710,6 +1719,7 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 		>
 			<AiChatMessageBubble className={"AiChatMessageAgent-bubble" satisfies AiChatMessageAgent_ClassNames}>
 				<AiChatMessageContent
+					key={message.id}
 					message={message}
 					isChatRunning={isRunning}
 					onToolOutput={onToolOutput}
@@ -1805,6 +1815,7 @@ const AiChatMessageSystem = memo(function AiChatMessageSystem(props: AiChatMessa
 		>
 			<AiChatMessageBubble className={"AiChatMessageSystem-bubble" satisfies AiChatMessageSystem_ClassNames}>
 				<AiChatMessageContent
+					key={message.id}
 					message={message}
 					isChatRunning={isRunning}
 					onToolOutput={onToolOutput}
@@ -1825,26 +1836,10 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	id?: string;
 	className?: string;
 
-	message: ai_chat_AiSdk5UiMessage;
+	messageId: string;
 	selectedThreadId: string | null;
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
-	isRunning: boolean;
-	isEditing: boolean;
-	branchAnchorIds: string[];
-	sendErrorText?: string | undefined;
-	onToolOutput: AiChatMessageContent_Props["onToolOutput"];
-	onToolResumeStream: AiChatMessageContent_Props["onToolResumeStream"];
-	onToolStop: AiChatMessageContent_Props["onToolStop"];
-	onSelectedModelIdChange: AiChatComposer_Props["onSelectedModelIdChange"];
-	onSelectedModeIdChange: AiChatComposer_Props["onSelectedModeIdChange"];
-	onEditStart: (args: { messageId: string; parentId: string | null }) => void;
-	onEditCancel: () => void;
-	onEditSubmit: (args: { value: string }) => void;
-	onMessageRegenerate: (args: { threadId: string; messageId: string }) => void;
-	onMessageRetrySend: (args: { threadId: string; messageId: string; value: string }) => void;
-	onMessageBranchChat: (args: { threadId: string; messageId?: string }) => void;
-	onSelectBranchAnchor: (threadId: string, anchorId: string) => void;
 };
 
 export type AiChatMessage_CustomAttributes = {
@@ -1857,28 +1852,74 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		ref,
 		id,
 		className,
-		message,
+		messageId,
 		selectedThreadId,
 		selectedModelId,
 		selectedModeId,
-		isRunning,
-		isEditing,
-		branchAnchorIds,
-		sendErrorText,
-		onToolOutput,
-		onToolResumeStream,
-		onToolStop,
-		onSelectedModelIdChange,
-		onSelectedModeIdChange,
-		onEditStart,
-		onEditCancel,
-		onEditSubmit,
-		onMessageRegenerate,
-		onMessageRetrySend,
-		onMessageBranchChat,
-		onSelectBranchAnchor,
 		...rest
 	} = props;
+
+	const message = useAiChatMessage(messageId);
+	const isRunning = useAiChatMessageIsRunning(selectedThreadId, messageId);
+	const isEditing = useAiChatMessageIsEditing(selectedThreadId, messageId);
+	const branchAnchorIds = useAiChatMessageBranchSiblingIds(messageId);
+	const sendErrorText = useAiChatMessageSendErrorText(selectedThreadId, messageId);
+	// Keep command handlers in stable context so stream chunks update row state without changing every row prop.
+	const actions = useAiChatRuntimeActions();
+
+	const handleSelectedModelIdChange = useFn<AiChatComposer_Props["onSelectedModelIdChange"]>((value) => {
+		actions.setSelectedModelId(value);
+	});
+
+	const handleSelectedModeIdChange = useFn<AiChatComposer_Props["onSelectedModeIdChange"]>((value) => {
+		actions.setSelectedModeId(value);
+	});
+
+	const handleEditStart = useFn((args: { messageId: string; parentId: string | null }) => {
+		if (!selectedThreadId) {
+			return;
+		}
+
+		actions.selectBranchAnchor(selectedThreadId, args.parentId);
+		actions.setEditingMessageId(selectedThreadId, args.messageId);
+	});
+
+	const handleEditCancel = useFn(() => {
+		if (!selectedThreadId) {
+			return;
+		}
+
+		actions.setEditingMessageId(selectedThreadId, null);
+	});
+
+	const handleEditSubmit = useFn((args: { value: string }) => {
+		if (!selectedThreadId || !args.value) {
+			return;
+		}
+
+		actions.sendUserText(selectedThreadId, args.value, { messageId });
+		actions.setEditingMessageId(selectedThreadId, null);
+	});
+
+	const handleMessageRegenerate = useFn((args: { threadId: string; messageId: string }) => {
+		actions.regenerate(args.threadId, args.messageId);
+	});
+
+	const handleMessageRetrySend = useFn((args: { threadId: string; messageId: string; value: string }) => {
+		actions.sendUserText(args.threadId, args.value, { messageId: args.messageId });
+	});
+
+	const handleMessageBranchChat = useFn((args: { threadId: string; messageId?: string }) => {
+		actions.branchChat(args.threadId, args.messageId);
+	});
+
+	const handleSelectBranchAnchor = useFn((threadId: string, anchorId: string) => {
+		actions.selectBranchAnchor(threadId, anchorId);
+	});
+
+	if (!message) {
+		return null;
+	}
 
 	if (message.role === "user") {
 		return (
@@ -1897,16 +1938,16 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 				isRunning={isRunning}
 				isEditing={isEditing}
 				branchAnchorIds={branchAnchorIds}
-				onSelectedModelIdChange={onSelectedModelIdChange}
-				onSelectedModeIdChange={onSelectedModeIdChange}
-				onToolOutput={onToolOutput}
-				onToolResumeStream={onToolResumeStream}
-				onToolStop={onToolStop}
-				onEditStart={onEditStart}
-				onEditCancel={onEditCancel}
-				onEditSubmit={onEditSubmit}
-				onMessageRetrySend={onMessageRetrySend}
-				onSelectBranchAnchor={onSelectBranchAnchor}
+				onSelectedModelIdChange={handleSelectedModelIdChange}
+				onSelectedModeIdChange={handleSelectedModeIdChange}
+				onToolOutput={actions.addToolOutput}
+				onToolResumeStream={actions.resumeStream}
+				onToolStop={actions.stop}
+				onEditStart={handleEditStart}
+				onEditCancel={handleEditCancel}
+				onEditSubmit={handleEditSubmit}
+				onMessageRetrySend={handleMessageRetrySend}
+				onSelectBranchAnchor={handleSelectBranchAnchor}
 				sendErrorText={sendErrorText}
 				{...rest}
 			/>
@@ -1928,12 +1969,12 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 				isRunning={isRunning}
 				isEditing={isEditing}
 				branchAnchorIds={branchAnchorIds}
-				onToolOutput={onToolOutput}
-				onToolResumeStream={onToolResumeStream}
-				onToolStop={onToolStop}
-				onMessageRegenerate={onMessageRegenerate}
-				onMessageBranchChat={onMessageBranchChat}
-				onSelectBranchAnchor={onSelectBranchAnchor}
+				onToolOutput={actions.addToolOutput}
+				onToolResumeStream={actions.resumeStream}
+				onToolStop={actions.stop}
+				onMessageRegenerate={handleMessageRegenerate}
+				onMessageBranchChat={handleMessageBranchChat}
+				onSelectBranchAnchor={handleSelectBranchAnchor}
 				{...rest}
 			/>
 		);
@@ -1950,13 +1991,13 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 			} satisfies Partial<AiChatMessage_CustomAttributes>)}
 			message={message}
 			selectedThreadId={selectedThreadId}
-			isRunning={isRunning}
-			isEditing={isEditing}
-			onToolOutput={onToolOutput}
-			onToolResumeStream={onToolResumeStream}
-			onToolStop={onToolStop}
-			{...rest}
-		/>
+		isRunning={isRunning}
+		isEditing={isEditing}
+		onToolOutput={actions.addToolOutput}
+		onToolResumeStream={actions.resumeStream}
+		onToolStop={actions.stop}
+		{...rest}
+	/>
 	);
 });
 // #endregion message

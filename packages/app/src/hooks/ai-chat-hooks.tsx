@@ -1,6 +1,6 @@
 import { Chat, useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls, type ChatOnFinishCallback } from "ai";
-import { useEffect, useMemo } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo } from "react";
 import { useMutation, usePaginatedQuery, useQuery } from "convex/react";
 import { create } from "zustand";
 
@@ -56,12 +56,27 @@ type ThreadChatOnFinish = Parameters<ChatOnFinishCallback<ai_chat_AiSdk5UiMessag
 	chatId: string;
 };
 
-type MessageChildIdsByParentIdCacheEntry = {
-	topologyKey: string;
-	value: Map<string | null, string[]>;
+type AiChatThreadRenderStatus = "idle" | "loading" | "loaded";
+
+type AiChatUseChatResult = ReturnType<typeof useChat<ai_chat_AiSdk5UiMessage>>;
+
+type AiChatStoreState = {
+	selectedThreadId: string | null;
+	draftSelectedModelId: ai_chat_ModelId;
+	draftSelectedModeId: ai_chat_ModeId;
+	threadById: Map<string, ThreadSession>;
+	messageById: Map<string, ai_chat_AiSdk5UiMessage>;
+	activeMessageIdsByThreadId: Map<string, readonly string[]>;
+	branchSiblingIdsByMessageId: Map<string, readonly string[]>;
+	runningMessageIdByThreadId: Map<string, string | null>;
+	sendErrorMessageIdByThreadId: Map<string, string | null>;
+	streamErrorTextByThreadId: Map<string, string | null>;
+	threadStatusByThreadId: Map<string, AiChatThreadRenderStatus>;
+	editingMessageIdByThreadId: Map<string, string | null>;
 };
 
 const AI_CHAT_DERIVED_CACHE_CLEAR_INTERVAL_MS = 60 * 60 * 1000;
+const AI_CHAT_EMPTY_MESSAGE_IDS: readonly string[] = [];
 
 /**
  * Cache persisted Convex messages by their final message id so query refreshes do not recreate old UIMessage objects.
@@ -70,23 +85,63 @@ const AI_CHAT_DERIVED_CACHE_CLEAR_INTERVAL_MS = 60 * 60 * 1000;
 const persistedUiMessageById = new Map<string, ai_chat_AiSdk5UiMessage>();
 
 /**
- * Keep one stable parent -> children topology map while token chunks change only message content.
- * Branch controls depend on parent ids and child ids, so stream-only updates can reuse the previous map reference.
- */
-const messageChildIdsByParentIdCache = new Map<"current", MessageChildIdsByParentIdCacheEntry>();
-
-/**
  * Share one cache cleanup interval across every mounted chat controller.
  */
 let cacheClearIntervalId: ReturnType<typeof setInterval> | undefined;
 let cacheClearIntervalConsumerCount = 0;
 
+export type AiChatRuntimeActions = {
+	addToolOutput: AiChatUseChatResult["addToolOutput"];
+	resumeStream: AiChatUseChatResult["resumeStream"];
+	stop: () => void;
+	setSelectedModelId: (modelId: ai_chat_ModelId) => void;
+	setSelectedModeId: (modeId: ai_chat_ModeId) => void;
+	sendUserText: (threadId: string, value: string, options?: { messageId?: string }) => void;
+	regenerate: (threadId: string, messageId: string) => void;
+	branchChat: (threadId: string, messageId?: string) => void;
+	selectBranchAnchor: (threadId: string, anchorId: string | null) => void;
+	setEditingMessageId: (threadId: string, messageId: string | null) => void;
+};
+
+export const AiChatRuntimeActionsContext = createContext<AiChatRuntimeActions | null>(null);
+
+export function useAiChatRuntimeActions() {
+	const actions = useContext(AiChatRuntimeActionsContext);
+	if (!actions) {
+		throw new Error("useAiChatRuntimeActions must be used inside AiChatRuntimeActionsProvider");
+	}
+
+	return actions;
+}
+
+function readonly_string_arrays_equal(a: readonly string[] | undefined, b: readonly string[]) {
+	if (!a || a.length !== b.length) {
+		return false;
+	}
+
+	for (let i = 0; i < a.length; i += 1) {
+		if (a[i] !== b[i]) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
 const useAiChatStore = ((/* iife */) => {
-	const store = create(() => ({
+	const store = create<AiChatStoreState>(() => ({
 		selectedThreadId: null as string | null,
-		draftSelectedModelId: ai_chat_DEFAULT_MODEL_ID as string,
-		draftSelectedModeId: ai_chat_DEFAULT_MODE_ID as string,
+		draftSelectedModelId: ai_chat_DEFAULT_MODEL_ID,
+		draftSelectedModeId: ai_chat_DEFAULT_MODE_ID,
 		threadById: new Map(),
+		messageById: new Map(),
+		activeMessageIdsByThreadId: new Map(),
+		branchSiblingIdsByMessageId: new Map(),
+		runningMessageIdByThreadId: new Map(),
+		sendErrorMessageIdByThreadId: new Map(),
+		streamErrorTextByThreadId: new Map(),
+		threadStatusByThreadId: new Map(),
+		editingMessageIdByThreadId: new Map(),
 	}));
 
 	return Object.assign(store, {
@@ -119,9 +174,219 @@ const useAiChatStore = ((/* iife */) => {
 					return { threadById };
 				});
 			},
+			setEditingMessageId(threadId: string, messageId: string | null) {
+				store.setState((state) => {
+					if ((state.editingMessageIdByThreadId.get(threadId) ?? null) === messageId) {
+						return state;
+					}
+
+					const editingMessageIdByThreadId = new Map(state.editingMessageIdByThreadId);
+					editingMessageIdByThreadId.set(threadId, messageId);
+					return { editingMessageIdByThreadId };
+				});
+			},
+			clearRenderState() {
+				store.setState({
+					messageById: new Map(),
+					activeMessageIdsByThreadId: new Map(),
+					branchSiblingIdsByMessageId: new Map(),
+					runningMessageIdByThreadId: new Map(),
+					sendErrorMessageIdByThreadId: new Map(),
+					streamErrorTextByThreadId: new Map(),
+					threadStatusByThreadId: new Map(),
+					editingMessageIdByThreadId: new Map(),
+				});
+			},
+			syncThreadRenderState(args: {
+				threadId: string | null;
+				status: AiChatThreadRenderStatus;
+				messages: readonly ai_chat_AiSdk5UiMessage[];
+				branchSiblingIdsByParentId: Map<string | null, readonly string[]>;
+				isRunning: boolean;
+				hasError: boolean;
+			}) {
+				const { threadId } = args;
+				if (!threadId) {
+					return;
+				}
+
+				store.setState((state) => {
+					let changed = false;
+
+					let messageById = state.messageById;
+					for (const message of args.messages) {
+						if (messageById.get(message.id) === message) {
+							continue;
+						}
+
+						if (messageById === state.messageById) {
+							messageById = new Map(messageById);
+						}
+						messageById.set(message.id, message);
+						changed = true;
+					}
+
+					const nextActiveMessageIds = args.messages.map((message) => message.id);
+					let activeMessageIdsByThreadId = state.activeMessageIdsByThreadId;
+					if (!readonly_string_arrays_equal(activeMessageIdsByThreadId.get(threadId), nextActiveMessageIds)) {
+						activeMessageIdsByThreadId = new Map(activeMessageIdsByThreadId);
+						activeMessageIdsByThreadId.set(threadId, nextActiveMessageIds);
+						changed = true;
+					}
+
+					let branchSiblingIdsByMessageId = state.branchSiblingIdsByMessageId;
+					for (const siblingIds of args.branchSiblingIdsByParentId.values()) {
+						const stableSiblingIds =
+							siblingIds.find((messageId) =>
+								readonly_string_arrays_equal(branchSiblingIdsByMessageId.get(messageId), siblingIds),
+							) ?? null;
+						const nextSiblingIds = stableSiblingIds
+							? (branchSiblingIdsByMessageId.get(stableSiblingIds) ?? siblingIds)
+							: siblingIds;
+
+						for (const messageId of siblingIds) {
+							if (branchSiblingIdsByMessageId.get(messageId) === nextSiblingIds) {
+								continue;
+							}
+
+							if (branchSiblingIdsByMessageId === state.branchSiblingIdsByMessageId) {
+								branchSiblingIdsByMessageId = new Map(branchSiblingIdsByMessageId);
+							}
+							branchSiblingIdsByMessageId.set(messageId, nextSiblingIds);
+							changed = true;
+						}
+					}
+
+					const runningMessageId = args.isRunning ? (nextActiveMessageIds.at(-1) ?? null) : null;
+					let runningMessageIdByThreadId = state.runningMessageIdByThreadId;
+					if ((runningMessageIdByThreadId.get(threadId) ?? null) !== runningMessageId) {
+						runningMessageIdByThreadId = new Map(runningMessageIdByThreadId);
+						runningMessageIdByThreadId.set(threadId, runningMessageId);
+						changed = true;
+					}
+
+					const latestMessage = args.messages.at(-1);
+					const sendErrorMessageId =
+						args.hasError && !args.isRunning && latestMessage?.role === "user" ? latestMessage.id : null;
+					let sendErrorMessageIdByThreadId = state.sendErrorMessageIdByThreadId;
+					if ((sendErrorMessageIdByThreadId.get(threadId) ?? null) !== sendErrorMessageId) {
+						sendErrorMessageIdByThreadId = new Map(sendErrorMessageIdByThreadId);
+						sendErrorMessageIdByThreadId.set(threadId, sendErrorMessageId);
+						changed = true;
+					}
+
+					const streamErrorText =
+						args.hasError && !sendErrorMessageId ? "An error occurred during the generation" : null;
+					let streamErrorTextByThreadId = state.streamErrorTextByThreadId;
+					if ((streamErrorTextByThreadId.get(threadId) ?? null) !== streamErrorText) {
+						streamErrorTextByThreadId = new Map(streamErrorTextByThreadId);
+						streamErrorTextByThreadId.set(threadId, streamErrorText);
+						changed = true;
+					}
+
+					let threadStatusByThreadId = state.threadStatusByThreadId;
+					if ((threadStatusByThreadId.get(threadId) ?? "idle") !== args.status) {
+						threadStatusByThreadId = new Map(threadStatusByThreadId);
+						threadStatusByThreadId.set(threadId, args.status);
+						changed = true;
+					}
+
+					if (!changed) {
+						return state;
+					}
+
+					return {
+						messageById,
+						activeMessageIdsByThreadId,
+						branchSiblingIdsByMessageId,
+						runningMessageIdByThreadId,
+						sendErrorMessageIdByThreadId,
+						streamErrorTextByThreadId,
+						threadStatusByThreadId,
+					};
+				});
+			},
 		},
 	});
 })();
+
+export function useAiChatSelectedThreadId() {
+	return useAiChatStore((state) => state.selectedThreadId);
+}
+
+export function useAiChatThreadSession(threadId: string | null) {
+	return useAiChatStore((state) => (threadId ? (state.threadById.get(threadId) ?? null) : null));
+}
+
+export function useAiChatThreadActiveMessageIds(threadId: string | null) {
+	return useAiChatStore((state) =>
+		threadId ? (state.activeMessageIdsByThreadId.get(threadId) ?? AI_CHAT_EMPTY_MESSAGE_IDS) : AI_CHAT_EMPTY_MESSAGE_IDS,
+	);
+}
+
+export function useAiChatMessage(messageId: string) {
+	return useAiChatStore((state) => state.messageById.get(messageId) ?? null);
+}
+
+export function useAiChatMessageBranchSiblingIds(messageId: string) {
+	return useAiChatStore((state) => state.branchSiblingIdsByMessageId.get(messageId) ?? AI_CHAT_EMPTY_MESSAGE_IDS);
+}
+
+export function useAiChatMessageIsRunning(threadId: string | null, messageId: string) {
+	return useAiChatStore((state) => {
+		if (!threadId) {
+			return false;
+		}
+
+		return state.runningMessageIdByThreadId.get(threadId) === messageId;
+	});
+}
+
+export function useAiChatThreadIsRunning(threadId: string | null) {
+	return useAiChatStore((state) => {
+		if (!threadId) {
+			return false;
+		}
+
+		return Boolean(state.runningMessageIdByThreadId.get(threadId));
+	});
+}
+
+export function useAiChatMessageSendErrorText(threadId: string | null, messageId: string) {
+	return useAiChatStore((state) => {
+		if (!threadId || state.sendErrorMessageIdByThreadId.get(threadId) !== messageId) {
+			return undefined;
+		}
+
+		return "Message failed to send.";
+	});
+}
+
+export function useAiChatThreadStreamErrorText(threadId: string | null) {
+	return useAiChatStore((state) => (threadId ? (state.streamErrorTextByThreadId.get(threadId) ?? null) : null));
+}
+
+export function useAiChatThreadStatus(threadId: string | null) {
+	return useAiChatStore((state) => (threadId ? (state.threadStatusByThreadId.get(threadId) ?? "idle") : "idle"));
+}
+
+export function useAiChatMessageIsEditing(threadId: string | null, messageId: string) {
+	return useAiChatStore((state) => {
+		if (!threadId) {
+			return false;
+		}
+
+		return state.editingMessageIdByThreadId.get(threadId) === messageId;
+	});
+}
+
+export function useAiChatThreadEditingMessageId(threadId: string | null) {
+	return useAiChatStore((state) => (threadId ? (state.editingMessageIdByThreadId.get(threadId) ?? null) : null));
+}
+
+export function useAiChatThreadAnchorId(threadId: string | null) {
+	return useAiChatStore((state) => (threadId ? state.threadById.get(threadId)?.anchorId : undefined));
+}
 
 function create_optimistic_thread(tenant: { workspaceId: string; projectId: string }): ai_chat_Thread {
 	const clientId = generate_id("ai_thread");
@@ -282,10 +547,505 @@ function create_chat_instance(args: ThreadChatArgs) {
 
 export type useAiChatController_Props = {
 	includeArchived?: boolean;
+	restoreSelection?: boolean;
+	manageThreadListState?: boolean;
 };
+
+export type useAiChatThreadListController_Props = {
+	includeArchived?: boolean;
+};
+
+export const useAiChatThreadListController = (props?: useAiChatThreadListController_Props) => {
+	const includeArchived = props?.includeArchived ?? true;
+
+	const { membershipId, workspaceId, projectId } = AppTenantProvider.useContext();
+	const [lastOpenThreadId, setLastOpenThreadId] = useAppLocalStorageStateValue(
+		`app_state::ai_chat_last_open::scope::${membershipId}`,
+	);
+
+	const selectedThreadId = useAiChatStore((state) => state.selectedThreadId);
+	const draftSelectedModelId = useAiChatStore((state) => state.draftSelectedModelId);
+	const draftSelectedModeId = useAiChatStore((state) => state.draftSelectedModeId);
+	const threadById = useAiChatStore((state) => state.threadById);
+	const session = useAiChatStore((state) =>
+		selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null,
+	);
+
+	const threads = usePaginatedQuery(
+		app_convex_api.ai_chat.threads_list,
+		{ membershipId, archived: false },
+		{ initialNumItems: 100 },
+	);
+
+	const archivedThreads = usePaginatedQuery(
+		app_convex_api.ai_chat.threads_list,
+		includeArchived ? { membershipId, archived: true } : "skip",
+		{ initialNumItems: 100 },
+	);
+
+	const updateThread = useMutation(app_convex_api.ai_chat.thread_update);
+	const branchThread = useMutation(app_convex_api.ai_chat.thread_branch);
+	const addThreadMessages = useMutation(app_convex_api.ai_chat.thread_messages_add);
+
+	const selectedModelId = selectedThreadId ? (session?.selectedModelId ?? draftSelectedModelId) : draftSelectedModelId;
+	const selectedModeId = selectedThreadId ? (session?.selectedModeId ?? draftSelectedModeId) : draftSelectedModeId;
+
+	/** Necessary to manage optimistic threads and their swtch to persisted threads. */
+	const threadIdByClientGeneratedId = ((/* iife */) => {
+		const result = new Map<string, string>();
+		for (const thread of threads.results) {
+			result.set(thread.clientGeneratedId, thread._id);
+		}
+		return result;
+	})();
+
+	const optimisticThreads = ((/* iife */) => {
+		const result: Array<ai_chat_Thread> = [];
+		for (const session of threadById.values()) {
+			if (session.optimisticThread && !threadIdByClientGeneratedId.has(session.optimisticThread._id)) {
+				result.push(session.optimisticThread);
+			}
+		}
+		return result;
+	})();
+
+	const currentThreadsWithOptimistic = ((/* iife */) => {
+		const unarchived = {
+			...threads,
+			results: [...optimisticThreads, ...threads.results],
+		};
+
+		const archived = includeArchived ? archivedThreads : null;
+
+		return {
+			unarchived,
+			archived,
+		} as const;
+	})();
+
+	const streamingTitleByThreadId = useMemo(() => {
+		const result: Record<string, string | undefined> = {};
+		for (const [threadId, session] of threadById.entries()) {
+			if (session.streamingTitle) {
+				result[threadId] = session.streamingTitle;
+			}
+		}
+		return result;
+	}, [threadById]);
+
+	const prepareSendMessagesRequest = useLiveRef<
+		NonNullable<DefaultChatTransport<ai_chat_AiSdk5UiMessage>["prepareSendMessagesRequest"]>
+	>(async (options) => {
+		return (async (/* iife */) => {
+			const headers = new Headers(options.headers);
+			headers.set("Accept", "text/event-stream");
+
+			const token = await AppAuthProvider.getToken();
+			if (token) {
+				headers.set("Authorization", `Bearer ${token}`);
+			}
+
+			const messagesToAppend = options.trigger === "regenerate-message" ? [] : options.messages.slice(-1);
+			const parentId =
+				options.trigger === "regenerate-message"
+					? options.messages.at(-1)?.id
+					: (messagesToAppend.at(-1)?.metadata?.convexParentId ?? null);
+			const metadata = options.requestMetadata as ChatRequestMetadata;
+			const storeState = useAiChatStore.getState();
+			const requestSession = storeState.threadById.get(options.id);
+			const requestSelectedModelId = requestSession?.selectedModelId;
+			const requestSelectedModeId = requestSession?.selectedModeId;
+			const modelForRequest = requestSelectedModelId && ai_chat_is_model_id(requestSelectedModelId)
+				? requestSelectedModelId
+				: storeState.draftSelectedModelId;
+			const modeForRequest = requestSelectedModeId && ai_chat_is_mode_id(requestSelectedModeId)
+				? requestSelectedModeId
+				: storeState.draftSelectedModeId;
+
+			const requestBody = {
+				...options.body,
+				model: modelForRequest,
+				mode: modeForRequest,
+				threadId: metadata.isOptimistic ? undefined : options.id,
+				clientGeneratedThreadId: metadata.isOptimistic ? options.id : undefined,
+				messages: messagesToAppend,
+				trigger: options.trigger,
+				parentId,
+				membershipId,
+			} satisfies api_schemas_Main["/api/chat"]["POST"]["body"];
+
+			return {
+				api: options.api,
+				body: requestBody,
+				credentials: "omit" satisfies RequestCredentials,
+				headers,
+			} as const;
+		})().catch((error) =>
+			Promise.reject(
+				should_never_happen("Failed to prepare send messages request", {
+					error,
+					options,
+				}),
+			),
+		);
+	});
+
+	const handleChatFinish = useLiveRef<(options: ThreadChatOnFinish) => void>((options) => {
+		if (!options.isAbort) {
+			return;
+		}
+
+		if (options.message.role !== "assistant") {
+			return;
+		}
+
+		if (options.message.metadata?.convexId || !message_has_visible_parts(options.message)) {
+			return;
+		}
+
+		const session = useAiChatStore.actions.getSession(options.chatId);
+		const threadId =
+			session?.optimisticThread && options.chatId === session.optimisticThread._id
+				? null
+				: (options.chatId as app_convex_Id<"ai_chat_threads">);
+
+		if (!threadId) {
+			return;
+		}
+
+		addThreadMessages({
+			membershipId,
+			threadId,
+			parentId: options.message.metadata?.convexParentId ?? null,
+			messages: [
+				{
+					clientGeneratedMessageId: options.message.id,
+					content: strip_provider_metadata_from_message_parts(options.message),
+				},
+			],
+		})
+			.then((result) => {
+				if (result._nay) {
+					console.error("[useAiChatThreadListController.handleChatFinish] Failed to persist aborted assistant message", {
+						result,
+						threadId,
+						messageId: options.message.id,
+					});
+				}
+			})
+			.catch((error) => {
+				console.error("[useAiChatThreadListController.handleChatFinish] Failed to persist aborted assistant message", {
+					error,
+					threadId,
+					messageId: options.message.id,
+				});
+			});
+	});
+
+	const createThreadChat = (chatId: string | null) => {
+		return create_chat_instance({
+			chatId,
+			prepareSendMessagesRequest: (options) => prepareSendMessagesRequest.current(options),
+			onFinish: (options) => handleChatFinish.current(options),
+		});
+	};
+
+	const startNewChat = (message?: string) => {
+		const nextSelectedModelId = selectedModelId;
+		const nextSelectedModeId = selectedModeId;
+		const optimisticThread = create_optimistic_thread({ workspaceId, projectId });
+		const optimisticChat = createThreadChat(optimisticThread._id);
+		useAiChatStore.actions.setSession(optimisticThread._id, () => {
+			return thread_session_create({
+				optimisticThread: optimisticThread,
+				chat: optimisticChat,
+				selectedModelId: nextSelectedModelId,
+				selectedModeId: nextSelectedModeId,
+			});
+		});
+		useAiChatStore.setState(() => ({
+			selectedThreadId: optimisticThread._id,
+			draftSelectedModelId: nextSelectedModelId,
+			draftSelectedModeId: nextSelectedModeId,
+		}));
+
+		if (message?.trim()) {
+			optimisticChat.sendMessage(
+				{
+					role: "user",
+					parts: [{ type: "text", text: message }],
+					metadata: {
+						convexParentId: null,
+						parentClientGeneratedId: null,
+						selectedModelId: nextSelectedModelId,
+						selectedModeId: nextSelectedModeId,
+					} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
+				},
+				{
+					metadata: {
+						isOptimistic: true,
+					} satisfies ChatRequestMetadata,
+				},
+			);
+		}
+
+		return optimisticThread._id;
+	};
+
+	const branchChat = (threadId: string, messageId?: string) => {
+		branchThread({ membershipId, threadId, ...(messageId ? { messageId } : {}) })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[useAiChatThreadListController.branchChat] Branch failed", { result, threadId, messageId });
+					return;
+				}
+
+				selectThread(result._yay.threadId);
+			})
+			.catch((error) => {
+				console.error("[useAiChatThreadListController.branchChat] Error branching chat", { error, threadId, messageId });
+			});
+	};
+
+	const selectThread = (threadId: string) => {
+		let session = useAiChatStore.actions.getSession(threadId);
+		if (!session) {
+			session = useAiChatStore.actions.setSession(threadId, () => {
+				return thread_session_create();
+			});
+		}
+
+		if (!session?.chat) {
+			const threadChat = createThreadChat(threadId);
+			useAiChatStore.actions.setSession(threadId, (prev) => {
+				const base = prev ?? thread_session_create();
+				return { ...base, ...prev, chat: threadChat };
+			});
+		}
+
+		if (!session?.optimisticThread) {
+			setLastOpenThreadId(threadId);
+		}
+
+		useAiChatStore.setState(() => {
+			return { selectedThreadId: threadId };
+		});
+	};
+
+	const setThreadStarred = (threadId: string, starred: boolean) => {
+		void updateThread({ threadId, membershipId, starred })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[useAiChatThreadListController.setThreadStarred] Failed to update thread star", {
+						result,
+						threadId,
+						starred,
+					});
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[useAiChatThreadListController.setThreadStarred] Unexpected error updating thread star", {
+					error,
+					threadId,
+					starred,
+				});
+			});
+	};
+
+	const archiveThread = (threadId: string, isArchived: boolean) => {
+		const storeSelectedThreadId = useAiChatStore.getState().selectedThreadId;
+		const session = useAiChatStore.actions.getSession(threadId);
+
+		if (session?.optimisticThread) {
+			if (!isArchived) {
+				return;
+			}
+			if (storeSelectedThreadId === threadId) {
+				useAiChatStore.setState(() => ({ selectedThreadId: null }));
+			}
+			useAiChatStore.actions.deleteSession(threadId);
+			return;
+		}
+
+		void updateThread({ membershipId, threadId, isArchived })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[useAiChatThreadListController.archiveThread] Failed to update archive status", {
+						result,
+						threadId,
+						isArchived,
+					});
+					return;
+				}
+
+				if (isArchived && storeSelectedThreadId === threadId) {
+					useAiChatStore.setState(() => ({ selectedThreadId: null }));
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[useAiChatThreadListController.archiveThread] Unexpected error updating archive status", {
+					error,
+					threadId,
+					isArchived,
+				});
+			});
+	};
+
+	const removeOptimisticThread = (threadId: string) => {
+		const session = useAiChatStore.actions.getSession(threadId);
+		if (!session?.optimisticThread) {
+			return;
+		}
+		const storeSelectedThreadId = useAiChatStore.getState().selectedThreadId;
+		if (storeSelectedThreadId === threadId) {
+			useAiChatStore.setState(() => ({ selectedThreadId: null }));
+		}
+		useAiChatStore.actions.deleteSession(threadId);
+	};
+
+	useEffect(() => {
+		useAiChatStore.setState({ threadById: new Map() });
+		persistedUiMessageById.clear();
+	}, [membershipId]);
+
+	useEffect(() => {
+		cacheClearIntervalConsumerCount += 1;
+		if (!cacheClearIntervalId) {
+			cacheClearIntervalId = setInterval(() => {
+				// Clear process-local persisted-message cache periodically so long-lived tabs don't retain every visited row forever.
+				persistedUiMessageById.clear();
+			}, AI_CHAT_DERIVED_CACHE_CLEAR_INTERVAL_MS);
+		}
+
+		return () => {
+			cacheClearIntervalConsumerCount -= 1;
+			if (cacheClearIntervalConsumerCount === 0 && cacheClearIntervalId) {
+				clearInterval(cacheClearIntervalId);
+				cacheClearIntervalId = undefined;
+			}
+		};
+	}, []);
+
+	useEffect(() => {
+		const storeSelectedThreadId = useAiChatStore.getState().selectedThreadId;
+		const selectedSession = storeSelectedThreadId ? useAiChatStore.actions.getSession(storeSelectedThreadId) : null;
+		if (selectedSession?.optimisticThread) {
+			return;
+		}
+
+		if (!lastOpenThreadId) {
+			useAiChatStore.setState({ selectedThreadId: null });
+			return;
+		}
+
+		const existingSession = useAiChatStore.actions.getSession(lastOpenThreadId);
+		const nextSession = existingSession?.chat
+			? existingSession
+			: {
+					...thread_session_create(),
+					...existingSession,
+					chat: createThreadChat(lastOpenThreadId),
+				};
+
+		useAiChatStore.setState((state) => {
+			const threadById =
+				existingSession === nextSession
+					? state.threadById
+					: new Map(state.threadById).set(lastOpenThreadId, nextSession);
+
+			return {
+				selectedThreadId: lastOpenThreadId,
+				threadById,
+			};
+		});
+	}, [lastOpenThreadId, prepareSendMessagesRequest, handleChatFinish, selectedThreadId]);
+
+	useEffect(() => {
+		for (const session of threadById.values()) {
+			if (!session.optimisticThread) continue;
+
+			const optimisticThreadId = session.optimisticThread._id;
+
+			const threadId = threadIdByClientGeneratedId.get(optimisticThreadId);
+			if (threadId) {
+				const persistedSession = useAiChatStore.actions.getSession(threadId);
+				if (!persistedSession) {
+					useAiChatStore.actions.setSession(threadId, () => {
+						if (!session.chat) {
+							return;
+						}
+
+						// @ts-expect-error: Overwrite the readonly chat id to the persisted thread id.
+						session.chat.id = threadId;
+						return { ...session, optimisticThread: undefined };
+					});
+				} else {
+					if (session.selectedModelId !== undefined && persistedSession.selectedModelId === undefined) {
+						useAiChatStore.actions.setSession(threadId, (prev) => {
+							if (!prev || prev.selectedModelId !== undefined) {
+								return;
+							}
+
+							return {
+								...prev,
+								selectedModelId: session.selectedModelId,
+							};
+						});
+					}
+
+					if (session.selectedModeId !== undefined && persistedSession.selectedModeId === undefined) {
+						useAiChatStore.actions.setSession(threadId, (prev) => {
+							if (!prev || prev.selectedModeId !== undefined) {
+								return;
+							}
+
+							return {
+								...prev,
+								selectedModeId: session.selectedModeId,
+							};
+						});
+					}
+				}
+
+				useAiChatStore.actions.deleteSession(optimisticThreadId);
+
+				if (useAiChatStore.getState().selectedThreadId === optimisticThreadId) {
+					setLastOpenThreadId(threadId);
+				}
+
+				useAiChatStore.setState((prev) => {
+					if (prev.selectedThreadId === optimisticThreadId) {
+						return { ...prev, selectedThreadId: threadId };
+					}
+
+					return prev;
+				});
+			}
+		}
+	}, [threads.results]);
+
+	return {
+		selectedThreadId,
+		selectedModelId,
+		selectedModeId,
+		session,
+		currentThreadsWithOptimistic,
+		streamingTitleByThreadId,
+		startNewChat,
+		branchChat,
+		selectThread,
+		setThreadStarred,
+		archiveThread,
+		removeOptimisticThread,
+	};
+};
+
+export type AiChatThreadListController = ReturnType<typeof useAiChatThreadListController>;
 
 export const useAiChatController = (props?: useAiChatController_Props) => {
 	const includeArchived = props?.includeArchived ?? true;
+	const restoreSelection = props?.restoreSelection ?? true;
+	const manageThreadListState = props?.manageThreadListState ?? true;
 
 	const { membershipId, workspaceId, projectId } = AppTenantProvider.useContext();
 	const [lastOpenThreadId, setLastOpenThreadId] = useAppLocalStorageStateValue(
@@ -770,19 +1530,6 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			]);
 		}
 
-		// Branch controls depend on parent/child topology, not token content in the streaming message.
-		const topologyKey = Array.from(result.entries())
-			.map(([parentId, childIds]) => `${parentId ?? "root"}:${childIds.join(",")}`)
-			.join("|");
-		const cachedMessageChildIdsByParentId = messageChildIdsByParentIdCache.get("current");
-		if (cachedMessageChildIdsByParentId?.topologyKey === topologyKey) {
-			return cachedMessageChildIdsByParentId.value;
-		}
-		messageChildIdsByParentIdCache.set("current", {
-			topologyKey,
-			value: result,
-		});
-
 		return result;
 	})();
 
@@ -828,6 +1575,8 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				},
 			);
 		}
+
+		return optimisticThread._id;
 	};
 
 	const branchChat = (threadId: string, messageId?: string) => {
@@ -1186,11 +1935,27 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		return "loaded" as const;
 	})();
 
+	useLayoutEffect(() => {
+		// Sync after every committed runtime render: AI SDK chat state can update through mutable Chat internals,
+		// so dependency identity is not a reliable signal for every message/topology change.
+		useAiChatStore.actions.syncThreadRenderState({
+			threadId: selectedThreadId,
+			status,
+			messages: activeBranchMessages.list,
+			branchSiblingIdsByParentId: messageChildIdsByParentId,
+			isRunning,
+			hasError: Boolean(chat.error),
+		});
+	});
+
 	useEffect(() => {
+		if (!manageThreadListState) {
+			return;
+		}
+
 		useAiChatStore.setState({ threadById: new Map() });
 		persistedUiMessageById.clear();
-		messageChildIdsByParentIdCache.clear();
-	}, [membershipId]);
+	}, [membershipId, manageThreadListState]);
 
 	useEffect(() => {
 		cacheClearIntervalConsumerCount += 1;
@@ -1198,7 +1963,6 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 			cacheClearIntervalId = setInterval(() => {
 				// Clear process-local derived caches periodically so long-lived tabs don't retain every visited message forever.
 				persistedUiMessageById.clear();
-				messageChildIdsByParentIdCache.clear();
 			}, AI_CHAT_DERIVED_CACHE_CLEAR_INTERVAL_MS);
 		}
 
@@ -1214,6 +1978,16 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 	// Restore the selected session and its Chat object together so `useChat` never sees a selected thread
 	// whose store session is still missing the object identity it subscribes to.
 	useEffect(() => {
+		if (!restoreSelection || !manageThreadListState) {
+			return;
+		}
+
+		const storeSelectedThreadId = useAiChatStore.getState().selectedThreadId;
+		const selectedSession = storeSelectedThreadId ? useAiChatStore.actions.getSession(storeSelectedThreadId) : null;
+		if (selectedSession?.optimisticThread) {
+			return;
+		}
+
 		if (!lastOpenThreadId) {
 			useAiChatStore.setState({ selectedThreadId: null });
 			return;
@@ -1243,9 +2017,20 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				threadById,
 			};
 		});
-	}, [lastOpenThreadId, prepareSendMessagesRequest, handleChatFinish]);
+	}, [
+		lastOpenThreadId,
+		prepareSendMessagesRequest,
+		handleChatFinish,
+		selectedThreadId,
+		restoreSelection,
+		manageThreadListState,
+	]);
 
 	useEffect(() => {
+		if (!manageThreadListState) {
+			return;
+		}
+
 		// Clean up optimistic threads that have been persisted.
 		for (const session of threadById.values()) {
 			if (!session.optimisticThread) continue;
@@ -1257,6 +2042,11 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				const persistedSession = useAiChatStore.actions.getSession(threadId);
 				if (!persistedSession) {
 					useAiChatStore.actions.setSession(threadId, () => {
+						if (!session.chat) {
+							return;
+						}
+
+						// @ts-expect-error: Overwrite the readonly chat id to the persisted thread id.
 						session.chat.id = threadId;
 						return { ...session, optimisticThread: undefined };
 					});
@@ -1304,7 +2094,7 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 				});
 			}
 		}
-	}, [threads.results]);
+	}, [threads.results, manageThreadListState]);
 
 	return {
 		selectedThreadId,
@@ -1332,13 +2122,30 @@ export const useAiChatController = (props?: useAiChatController_Props) => {
 		setComposerValue,
 		setSelectedModelId,
 		setSelectedModeId,
+		setEditingMessageId: (threadId: string, messageId: string | null) => {
+			useAiChatStore.actions.setEditingMessageId(threadId, messageId);
+		},
 		sendUserText,
 		regenerate,
 		stop,
 		resumeStream: chat.resumeStream,
 		addToolOutput: chat.addToolOutput,
 		setMessages: chat.setMessages,
+		syncRenderState: () => {
+			useAiChatStore.actions.syncThreadRenderState({
+				threadId: selectedThreadId,
+				status,
+				messages: activeBranchMessages.list,
+				branchSiblingIdsByParentId: messageChildIdsByParentId,
+				isRunning,
+				hasError: Boolean(chat.error),
+			});
+		},
 	};
 };
 
 export type AiChatController = ReturnType<typeof useAiChatController>;
+
+export const useAiChatThreadRuntime = (props?: useAiChatController_Props) =>
+	useAiChatController({ ...props, restoreSelection: false, manageThreadListState: false });
+export type AiChatThreadRuntime = ReturnType<typeof useAiChatThreadRuntime>;

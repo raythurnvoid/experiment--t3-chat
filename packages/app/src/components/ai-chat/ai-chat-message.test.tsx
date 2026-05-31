@@ -5,6 +5,39 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { ai_chat_AiSdk5UiMessage } from "@/lib/ai-chat.ts";
 import { AiChatMessage } from "./ai-chat-message.tsx";
 
+const hookMocks = vi.hoisted(() => {
+	return {
+		messageById: new Map<string, ai_chat_AiSdk5UiMessage>(),
+		branchSiblingIdsByMessageId: new Map<string, readonly string[]>(),
+		runningMessageId: null as string | null,
+		editingMessageId: null as string | null,
+		sendErrorMessageId: null as string | null,
+		actions: {
+			addToolOutput: vi.fn(),
+			resumeStream: vi.fn(),
+			stop: vi.fn(),
+			setSelectedModelId: vi.fn(),
+			setSelectedModeId: vi.fn(),
+			sendUserText: vi.fn(),
+			regenerate: vi.fn(),
+			branchChat: vi.fn(),
+			selectBranchAnchor: vi.fn(),
+			setEditingMessageId: vi.fn(),
+		},
+	};
+});
+
+vi.mock("@/hooks/ai-chat-hooks.tsx", () => ({
+	useAiChatMessage: (messageId: string) => hookMocks.messageById.get(messageId) ?? null,
+	useAiChatMessageBranchSiblingIds: (messageId: string) =>
+		hookMocks.branchSiblingIdsByMessageId.get(messageId) ?? [messageId],
+	useAiChatMessageIsEditing: (_threadId: string | null, messageId: string) => hookMocks.editingMessageId === messageId,
+	useAiChatMessageIsRunning: (_threadId: string | null, messageId: string) => hookMocks.runningMessageId === messageId,
+	useAiChatMessageSendErrorText: (_threadId: string | null, messageId: string) =>
+		hookMocks.sendErrorMessageId === messageId ? "Message failed to send." : undefined,
+	useAiChatRuntimeActions: () => hookMocks.actions,
+}));
+
 vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 	AiChatComposer: function AiChatComposer() {
 		return <form />;
@@ -50,64 +83,64 @@ function createAssistantErrorMessage() {
 	} satisfies ai_chat_AiSdk5UiMessage;
 }
 
+function createAssistantMessage(args?: { id?: string; text?: string; parentId?: string | null }) {
+	return {
+		id: args?.id ?? "msg_assistant",
+		role: "assistant",
+		parts: args?.text ? [{ type: "text", text: args.text }] : [],
+		metadata: {
+			convexParentId: args?.parentId ?? "msg_user_failed",
+			parentClientGeneratedId: null,
+		},
+	} satisfies ai_chat_AiSdk5UiMessage;
+}
+
 function renderMessage(args: {
 	message: ai_chat_AiSdk5UiMessage;
-	sendErrorText?: string | undefined;
-	onMessageRetrySend?: ((args: { threadId: string; messageId: string; value: string }) => void) | undefined;
+	sendError?: boolean | undefined;
+	branchSiblingIds?: readonly string[] | undefined;
+	isEditing?: boolean | undefined;
+	isRunning?: boolean | undefined;
 }) {
-	const onMessageRetrySend = args.onMessageRetrySend ?? vi.fn();
+	hookMocks.messageById.set(args.message.id, args.message);
+	hookMocks.branchSiblingIdsByMessageId.set(args.message.id, args.branchSiblingIds ?? [args.message.id]);
+	hookMocks.editingMessageId = args.isEditing ? args.message.id : null;
+	hookMocks.runningMessageId = args.isRunning ? args.message.id : null;
+	hookMocks.sendErrorMessageId = args.sendError ? args.message.id : null;
 
 	render(
 		<AiChatMessage
-			message={args.message}
+			messageId={args.message.id}
 			selectedThreadId="thread_1"
 			selectedModelId="gpt-5.4-nano"
 			selectedModeId="ask"
-			isRunning={false}
-			isEditing={false}
-			branchAnchorIds={[args.message.id]}
-			onToolOutput={vi.fn()}
-			onToolResumeStream={vi.fn()}
-			onToolStop={vi.fn()}
-			onSelectedModelIdChange={vi.fn()}
-			onSelectedModeIdChange={vi.fn()}
-			onEditStart={vi.fn()}
-			onEditCancel={vi.fn()}
-			onEditSubmit={vi.fn()}
-			onMessageRegenerate={vi.fn()}
-			onMessageRetrySend={onMessageRetrySend}
-			onMessageBranchChat={vi.fn()}
-			onSelectBranchAnchor={vi.fn()}
-			sendErrorText={args.sendErrorText}
 		/>,
 	);
-
-	return { onMessageRetrySend };
 }
 
 describe("AiChatMessage", () => {
 	afterEach(() => {
 		cleanup();
 		vi.clearAllMocks();
+		hookMocks.messageById.clear();
+		hookMocks.branchSiblingIdsByMessageId.clear();
+		hookMocks.runningMessageId = null;
+		hookMocks.editingMessageId = null;
+		hookMocks.sendErrorMessageId = null;
 	});
 
 	test("renders failed-send feedback on a user message and retries the same message", () => {
-		const onMessageRetrySend = vi.fn();
-
 		renderMessage({
 			message: createUserMessage(),
-			sendErrorText: "Message failed to send.",
-			onMessageRetrySend,
+			sendError: true,
 		});
 
 		expect(screen.getByRole("alert").textContent).toBe("Message failed to send.");
 
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
-		expect(onMessageRetrySend).toHaveBeenCalledWith({
-			threadId: "thread_1",
+		expect(hookMocks.actions.sendUserText).toHaveBeenCalledWith("thread_1", "Can you summarize my project notes?", {
 			messageId: "msg_user_failed",
-			value: "Can you summarize my project notes?",
 		});
 	});
 
@@ -119,5 +152,55 @@ describe("AiChatMessage", () => {
 		expect(screen.getByText("An error occurred during the generation")).not.toBeNull();
 		expect(screen.queryByText("Message failed to send.")).toBeNull();
 		expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+	});
+
+	test("switches to the next branch from branch controls", () => {
+		renderMessage({
+			message: createAssistantMessage({ id: "msg_assistant_a", text: "First branch" }),
+			branchSiblingIds: ["msg_assistant_a", "msg_assistant_b"],
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Next branch" }));
+
+		expect(hookMocks.actions.selectBranchAnchor).toHaveBeenCalledWith("thread_1", "msg_assistant_b");
+	});
+
+	test("starts editing a user message on edit click", () => {
+		renderMessage({
+			message: createUserMessage(),
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+
+		expect(hookMocks.actions.selectBranchAnchor).toHaveBeenCalledWith("thread_1", null);
+		expect(hookMocks.actions.setEditingMessageId).toHaveBeenCalledWith("thread_1", "msg_user_failed");
+	});
+
+	test("regenerates an assistant response", () => {
+		renderMessage({
+			message: createAssistantMessage({ id: "msg_assistant", text: "A response" }),
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Regenerate response" }));
+
+		expect(hookMocks.actions.regenerate).toHaveBeenCalledWith("thread_1", "msg_assistant");
+	});
+
+	test("enables copy only when a message has text", () => {
+		renderMessage({
+			message: createUserMessage(),
+		});
+
+		expect(screen.getByRole<HTMLButtonElement>("button", { name: "Copy message" }).disabled).toBe(false);
+
+		cleanup();
+		hookMocks.messageById.clear();
+		hookMocks.branchSiblingIdsByMessageId.clear();
+
+		renderMessage({
+			message: createAssistantMessage({ id: "msg_assistant_empty" }),
+		});
+
+		expect(screen.getByRole<HTMLButtonElement>("button", { name: "Copy message" }).disabled).toBe(true);
 	});
 });
