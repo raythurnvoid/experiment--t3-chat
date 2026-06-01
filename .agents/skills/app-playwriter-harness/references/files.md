@@ -134,6 +134,48 @@ Use this when changing tree focus, context menus, selection, or route sync.
 - Verify `Search files`, `Read file`, and `Edit file` tool disclosures appear.
 - Review/apply via `[data-testid="review-changes-button"]`.
 
+### File Agent Just Bash
+
+Use this after changing the AI bash tool, tool rendering, or agent file-access configuration.
+
+- Bind one `/files` tab and navigate to `/w/personal/home/files` if needed.
+- Open `#app_file_editor_sidebar_tabs_agent`.
+- Start a new chat from the sidebar chat controls.
+- Pace sequential sends and handle `429` responses by waiting for `retryAfterMs` and using the visible `Retry` button.
+- Send a broad file-listing prompt such as `List all files in the system using bash`; verify the assistant uses a Bash disclosure and lists the mounted app file tree without explaining host-machine access limits.
+- Send prompts that force separate bash tool calls for `pwd`, `ls /home/cloud-usr/w/personal/home`, `cat /home/cloud-usr/w/personal/home/<known-md-path>`, `search --limit 5 <known-token>`, and `grep -Rn <known-token> /home/cloud-usr/w/personal/home`.
+- For search regressions, use a token known to appear in several Markdown files and verify the result includes every expected path up to the requested limit, not just the top indexed search hit.
+- Send `cd /home/cloud-usr/w/personal/home/<known-folder>` and then a second prompt asking for `pwd`; verify the second bash result uses the persisted cwd.
+- In Agent mode, ask it to create a timestamped folder with `mkdir /home/cloud-usr/w/personal/home/playwriter-ai-chat-qa-<timestamp>`; verify the new turn shows a Bash disclosure and does not show a `create_folder` tool.
+- In Ask mode, ask it to try `mkdir /home/cloud-usr/w/personal/home/playwriter-ai-chat-ask-denied-<timestamp>`; verify bash reports that durable folder creation belongs in Agent mode and no folder appears.
+- Ask it to try `echo nope > /home/cloud-usr/w/personal/home/agent-bash-qa.md`; verify the bash result reports a read-only filesystem error.
+- Ask it to make one real Markdown edit; verify the new turn uses `write_file` or `edit_file`, not a bash write under the project mount.
+- Inspect the latest assistant tool parts and verify new turns do not show legacy `Read file`, `List files`, `Glob files`, `Grep files`, or `Search files` disclosures unless they came from older transcript history.
+
+### File Agent Corpus Generation
+
+Use this when creating many QA files through the app agent.
+
+- Use fresh chats for each small batch so model context stays clean.
+- Keep each prompt to 3-4 `write_file` paths. Larger batches can make the assistant claim success before every file is actually persisted.
+- After clicking `New chat`, verify the selected `.AiChatThread[data-thread-id]` starts with `ai_thread-` before sending. If the selected tab immediately reverts to an older persisted id, debug the optimistic tab cleanup before continuing.
+- Include a unique batch token in every requested file, but treat the Convex file-node query as the source of truth for count and paths.
+- Query actual file nodes after every batch with `app_convex.query(app_convex_api.files_nodes.get_file_nodes_list, { membershipId })`; do not rely on assistant summary text or visible tool previews for the final count.
+- Repair missing files in separate one-file chats instead of resending a large batch.
+
+### AI Chat Parent Id Race
+
+Use this after changing chat send, stop, branch, pending-message, or parent-id logic.
+
+- Bind one `/files` tab, open `#app_file_editor_sidebar_tabs_agent`, and capture `/api/chat` requests with `page.route("**/api/chat", ...)`.
+- Start a fresh chat with `getByRole("button", { name: "New chat", exact: true })`; the open chat drag handle can otherwise match the same text.
+- Send a prompt that starts with a unique marker and produces a long visible answer, for example `Start with <marker>, then write 80 numbered lines. Do not use tools.`
+- Wait until the marker appears, click `Stop generating`, immediately type a follow-up, and inspect `getByRole("button", { name: "Send message" })`.
+- Expected immediate state: Send is disabled and no second `/api/chat` request is created while the parent is still unsafe.
+- Expected recovery state: Send remains disabled while the selected thread is still the optimistic `ai_thread-*` id, then becomes enabled after the live query swaps the UI to the persisted Convex thread and parent message.
+- The UI must not create a follow-up request before that recovery state. After recovery, the follow-up request should use a persisted parent id and must not return `409` with `Parent message is not available yet`.
+- A `429` is the chat rate limiter, not this race. Wait for the retry window and rerun or retry the same message; do not count it as a parent-id failure.
+
 ### Presence Stress
 
 - Make sure presence is enabled in the left sidebar.

@@ -32,6 +32,7 @@ import {
 } from "@/components/my-tabs.tsx";
 import {
 	ai_chat_is_optimistic_thread,
+	type AiChatOptimisticThreadId,
 	type AiChatThreadListController,
 	useAiChatThreadListController,
 	useAiChatThreadRuntime,
@@ -39,11 +40,7 @@ import {
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import {
-	app_local_storage_set_value,
-	type storage_local_ValueByKey,
-	useAppLocalStorageValue,
-} from "@/lib/storage.ts";
+import { app_local_storage_set_value, type storage_local_ValueByKey, useAppLocalStorageValue } from "@/lib/storage.ts";
 import { cn } from "@/lib/utils.ts";
 
 const DROPPABLE_ID = "file_editor_sidebar_agent_tabs";
@@ -345,6 +342,7 @@ type FileEditorSidebarAgentHeader_Props = {
 	selectedChatTabId: string;
 	currentThreads: AiChatThreadListController["currentThreadsWithOptimistic"]["unarchived"]["results"];
 	appHoistingContainer: HTMLElement | null;
+	onOptimisticThreadCreated: (threadId: AiChatOptimisticThreadId) => void;
 };
 
 const FileEditorSidebarAgentHeader = memo(function FileEditorSidebarAgentHeader(
@@ -357,6 +355,7 @@ const FileEditorSidebarAgentHeader = memo(function FileEditorSidebarAgentHeader(
 		selectedChatTabId,
 		currentThreads,
 		appHoistingContainer,
+		onOptimisticThreadCreated,
 	} = props;
 
 	return (
@@ -374,6 +373,7 @@ const FileEditorSidebarAgentHeader = memo(function FileEditorSidebarAgentHeader(
 				openTabs={openTabs}
 				membershipId={membershipId}
 				currentThreads={currentThreads}
+				onOptimisticThreadCreated={onOptimisticThreadCreated}
 			/>
 		</div>
 	);
@@ -388,16 +388,15 @@ type FileEditorSidebarAgentHeaderActions_Props = {
 	openTabs: storage_local_ValueByKey[`app_state::file_editor_sidebar_open_tabs::scope::${string}`];
 	membershipId: string;
 	currentThreads: AiChatThreadListController["currentThreadsWithOptimistic"]["unarchived"]["results"];
+	onOptimisticThreadCreated: (threadId: AiChatOptimisticThreadId) => void;
 };
 
 const FileEditorSidebarAgentHeaderActions = memo(function FileEditorSidebarAgentHeaderActions(
 	props: FileEditorSidebarAgentHeaderActions_Props,
 ) {
-	const { controller, openTabs, membershipId, currentThreads } = props;
-	const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` =
-		`app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
-	const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` =
-		`app_state::file_editor_sidebar_open_tabs::scope::${membershipId}`;
+	const { controller, openTabs, membershipId, currentThreads, onOptimisticThreadCreated } = props;
+	const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` = `app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
+	const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` = `app_state::file_editor_sidebar_open_tabs::scope::${membershipId}`;
 
 	const handleBeforeSelectThread = useFn((threadId: string) => {
 		const inOpenTabs = openTabs.some((t) => t.id === threadId);
@@ -408,15 +407,13 @@ const FileEditorSidebarAgentHeaderActions = memo(function FileEditorSidebarAgent
 		});
 		app_local_storage_set_value(selectedTabStorageKey, threadId);
 		if (!inOpenTabs) {
-			app_local_storage_set_value(openTabsStorageKey, (previousTabs) => [
-				...previousTabs,
-				{ id: threadId, title },
-			]);
+			app_local_storage_set_value(openTabsStorageKey, (previousTabs) => [...previousTabs, { id: threadId, title }]);
 		}
 	});
 
 	const handleNewChat = () => {
 		const threadId = controller.startNewChat();
+		onOptimisticThreadCreated(threadId);
 		app_local_storage_set_value(selectedTabStorageKey, threadId);
 		app_local_storage_set_value(openTabsStorageKey, (previousTabs) => {
 			if (previousTabs.some((tab) => tab.id === threadId)) {
@@ -466,18 +463,9 @@ type FileEditorSidebarAgentHeaderTabs_Props = {
 const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHeaderTabs(
 	props: FileEditorSidebarAgentHeaderTabs_Props,
 ) {
-	const {
-		controller,
-		openTabs,
-		membershipId,
-		selectedChatTabId,
-		currentThreads,
-		appHoistingContainer,
-	} = props;
-	const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` =
-		`app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
-	const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` =
-		`app_state::file_editor_sidebar_open_tabs::scope::${membershipId}`;
+	const { controller, openTabs, membershipId, selectedChatTabId, currentThreads, appHoistingContainer } = props;
+	const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` = `app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
+	const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` = `app_state::file_editor_sidebar_open_tabs::scope::${membershipId}`;
 
 	const handleDragEnd = useFn((result: DropResult) => {
 		const { destination, source } = result;
@@ -514,6 +502,8 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 		}
 
 		app_local_storage_set_value(openTabsStorageKey, nextOpenTabs);
+		// Remove the client-only session too; otherwise closed New chat tabs can be resurrected from optimistic state.
+		controller.removeOptimisticThread(threadId);
 	});
 
 	return (
@@ -539,16 +529,16 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 										<Draggable key={entry.id} draggableId={entry.id} index={index}>
 											{(draggableProvided, draggableSnapshot) => {
 												const draggableTab = (
-														<MyTabsTabSurface
-															ref={draggableProvided.innerRef}
-															{...draggableProvided.draggableProps}
-															variant="bordered"
-															{...({
-																"data-ai-chat-thread-id": entry.id,
-															} satisfies Partial<FileEditorSidebarAgentHeaderTabs_CustomAttributes>)}
-															className={cn(
-																"FileEditorSidebarAgentHeaderTabs-tab" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
-															)}
+													<MyTabsTabSurface
+														ref={draggableProvided.innerRef}
+														{...draggableProvided.draggableProps}
+														variant="bordered"
+														{...({
+															"data-ai-chat-thread-id": entry.id,
+														} satisfies Partial<FileEditorSidebarAgentHeaderTabs_CustomAttributes>)}
+														className={cn(
+															"FileEditorSidebarAgentHeaderTabs-tab" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
+														)}
 													>
 														<MyTabsTabPrimaryAction
 															id={entry.id}
@@ -567,6 +557,7 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 
 														<span
 															{...draggableProvided.dragHandleProps}
+															aria-label={`Drag chat tab: ${entry.title}`}
 															className={cn(
 																"FileEditorSidebarAgentHeaderTabs-tab-handle" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
 																"MyButton" satisfies MyButton_ClassNames,
@@ -639,7 +630,7 @@ const FileEditorSidebarAgentChatThread = memo(function FileEditorSidebarAgentCha
 	scrollableContainer: HTMLElement | null;
 }) {
 	const { scrollableContainer } = props;
-	const controller = useAiChatThreadRuntime({ includeArchived: false });
+	const controller = useAiChatThreadRuntime();
 
 	return <AiChatThread variant="sidebar" controller={controller} scrollableContainer={scrollableContainer} />;
 });
@@ -654,31 +645,40 @@ export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props
 	const { membershipId } = AppTenantProvider.useContext();
 	const controller = useAiChatThreadListController({ includeArchived: false });
 	const hasAutoStartedRef = useRef(false);
+	const mountedOptimisticThreadIdsRef = useRef(new Set<string>());
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
 	const rootSelectedTab = useAppLocalStorageValue("app_state::files_last_tab");
-	const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` =
-		`app_state::file_editor_sidebar_open_tabs::scope::${membershipId}`;
-	const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` =
-		`app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
+	const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` = `app_state::file_editor_sidebar_open_tabs::scope::${membershipId}`;
+	const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` = `app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
 	const openTabs = useAppLocalStorageValue(openTabsStorageKey);
 	const selectedAgentTab = useAppLocalStorageValue(selectedTabStorageKey);
 	const currentThreads = controller.currentThreadsWithOptimistic.unarchived.results;
 	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
 
+	const selectedStoredOpenTab = openTabs.find((tab) => tab.id === selectedAgentTab);
+	const selectedControllerOpenTab = openTabs.find((tab) => tab.id === controller.selectedThreadId);
+
+	// Keep the sidebar tab selection authoritative inside this panel. The chat
+	// controller catches up below; otherwise global last-open restoration can
+	// briefly write a stale thread id back into sidebar storage.
 	const selectedChatTabId =
-		(controller.selectedThreadId && openTabs.find((tab) => tab.id === controller.selectedThreadId)?.id) ??
-		openTabs.find((tab) => tab.id === selectedAgentTab)?.id ??
+		selectedStoredOpenTab?.id ??
+		selectedControllerOpenTab?.id ??
 		openTabs.at(-1)?.id ??
 		controller.selectedThreadId ??
 		NEW_CHAT_TAB_ID;
+
+	const rememberOptimisticThreadId = useFn((threadId: AiChatOptimisticThreadId) => {
+		mountedOptimisticThreadIdsRef.current.add(threadId);
+	});
 
 	// Start a new chat only when the Agent root tab is actually active.
 	useEffect(() => {
 		if (rootSelectedTab === rootTabId && !hasAutoStartedRef.current && !controller.selectedThreadId) {
 			hasAutoStartedRef.current = true;
-			controller.startNewChat();
+			rememberOptimisticThreadId(controller.startNewChat());
 		}
-	}, [rootSelectedTab, rootTabId, controller.selectedThreadId, controller]);
+	}, [rootSelectedTab, rootTabId, controller.selectedThreadId, controller, rememberOptimisticThreadId]);
 
 	// Replace optimistic open-tab ids with their persisted thread ids once the thread is upgraded.
 	useEffect(() => {
@@ -748,11 +748,14 @@ export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props
 			currentThreads.map((thread) => (ai_chat_is_optimistic_thread(thread) ? undefined : thread.clientGeneratedId)),
 		);
 		const nextOpenTabs = openTabs.filter((tab) => {
-			if (!tab.id.startsWith("ai_thread-")) {
+			if (!mountedOptimisticThreadIdsRef.current.has(tab.id)) {
 				return true;
 			}
 
-			return currentThreadIds.has(tab.id) || persistedClientGeneratedThreadIds.has(tab.id);
+			return (
+				currentThreadIds.has(tab.id) ||
+				persistedClientGeneratedThreadIds.has(tab.id)
+			);
 		});
 		if (nextOpenTabs.length === openTabs.length) {
 			return;
@@ -790,7 +793,7 @@ export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props
 		const selectedOptimisticThread = currentThreads.find((thread) => {
 			return thread._id === selectedChatTabId && ai_chat_is_optimistic_thread(thread);
 		});
-		if (selectedChatTabId.startsWith("ai_thread-") && !selectedOptimisticThread) {
+		if (mountedOptimisticThreadIdsRef.current.has(selectedChatTabId) && !selectedOptimisticThread) {
 			return;
 		}
 
@@ -801,6 +804,18 @@ export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props
 	useEffect(() => {
 		const threadId = controller.selectedThreadId;
 		if (!threadId) {
+			return;
+		}
+		if (threadId !== selectedChatTabId) {
+			return;
+		}
+
+		const persistedSelectedThread = currentThreads.find((thread) => {
+			return !ai_chat_is_optimistic_thread(thread) && thread.clientGeneratedId === threadId && thread._id !== threadId;
+		});
+		if (persistedSelectedThread) {
+			app_local_storage_set_value(selectedTabStorageKey, persistedSelectedThread._id);
+			controller.selectThread(persistedSelectedThread._id);
 			return;
 		}
 
@@ -831,10 +846,7 @@ export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props
 				currentThreads,
 				streamingTitleByThreadId: controller.streamingTitleByThreadId,
 			});
-			app_local_storage_set_value(openTabsStorageKey, (previousTabs) => [
-				...previousTabs,
-				{ id: threadId, title },
-			]);
+			app_local_storage_set_value(openTabsStorageKey, (previousTabs) => [...previousTabs, { id: threadId, title }]);
 			app_local_storage_set_value(selectedTabStorageKey, threadId);
 			return;
 		}
@@ -847,6 +859,7 @@ export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props
 		controller.streamingTitleByThreadId,
 		openTabs,
 		selectedAgentTab,
+		selectedChatTabId,
 		currentThreads,
 		openTabsStorageKey,
 		selectedTabStorageKey,
@@ -894,6 +907,7 @@ export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props
 					selectedChatTabId={selectedChatTabId}
 					currentThreads={currentThreads}
 					appHoistingContainer={appHoistingContainer}
+					onOptimisticThreadCreated={rememberOptimisticThreadId}
 				/>
 				<MyTabsPanels className={cn("FileEditorSidebarAgent-chat-area" satisfies FileEditorSidebarAgent_ClassNames)}>
 					<MyTabsPanel

@@ -1,5 +1,5 @@
 import { test_mocks_hardcoded } from "../convex/setup.test.ts";
-import { test, expect, vi } from "vitest";
+import { describe, test, expect, vi } from "vitest";
 import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
 
@@ -21,18 +21,17 @@ vi.mock("exa-js", () => ({
 	},
 }));
 import {
+	ai_chat_tool_create_bash,
 	ai_chat_tool_create_glob_files,
 	ai_chat_tool_create_grep_files,
 	ai_chat_tool_create_list_files,
 	ai_chat_tool_create_read_file,
-	ai_chat_tool_create_text_search_files,
 	ai_chat_tool_create_write_file,
 	ai_chat_tool_create_edit_file,
 	ai_chat_tool_create_web_search,
 	replace_once_or_all,
 } from "./server-ai-tools.ts";
 import { has_defined_property } from "../shared/shared-utils.ts";
-import { files_chunk_BITMASK_FLAGS } from "./files-markdown-chunking-mastra.ts";
 
 type server_ai_tools_test_user_identity = NonNullable<Awaited<ReturnType<ActionCtx["auth"]["getUserIdentity"]>>>;
 
@@ -41,8 +40,11 @@ const server_ai_tools_test_user_id = test_mocks_hardcoded.user.user_1.id as Id<"
 const server_ai_tools_test_ctx_data = {
 	workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
 	projectId: test_mocks_hardcoded.project_id.project_1,
+	workspaceName: "personal",
+	projectName: "home",
 	userId: server_ai_tools_test_user_id,
 } as const;
+const server_ai_tools_test_app_files_mount = "/home/cloud-usr/w/personal/home";
 
 const server_ai_tools_test_user_identity_default = {
 	issuer: "https://clerk.test",
@@ -83,6 +85,56 @@ const makeCtx = (
 function isNotAsyncIterable<T>(value: T | AsyncIterable<T>): value is T {
 	return !Symbol.asyncIterator || !(Symbol.asyncIterator in Object(value));
 }
+
+describe("ai_chat_tool_create_bash", () => {
+	test("forwards execution to the bash action after thread resolution", async () => {
+		const { ctx, runAction } = makeCtx(async () => null, {
+			runActionImpl: async () => ({
+				title: `exit 0 · ${server_ai_tools_test_app_files_mount}`,
+				output: "$ pwd",
+				stdout: `${server_ai_tools_test_app_files_mount}\n`,
+				stderr: "",
+				metadata: {
+					command: "pwd",
+					cwd: server_ai_tools_test_app_files_mount,
+					nextCwd: server_ai_tools_test_app_files_mount,
+					exitCode: 0,
+					stdoutTruncated: false,
+					stderrTruncated: false,
+					stdoutLength: server_ai_tools_test_app_files_mount.length + 1,
+					stderrLength: 0,
+					pathIndexTruncated: false,
+				},
+			}),
+		});
+		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
+			getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+			allowAppFileTreeMkdir: true,
+		});
+
+		const result = await tool.execute?.({ command: "pwd" }, { toolCallId: "test", messages: [] });
+
+		if (!result) {
+			throw new Error("`result` is undefined");
+		}
+		if (!isNotAsyncIterable(result)) {
+			throw new Error("`result` is AsyncIterable but expected sync object");
+		}
+
+		expect(result.stdout).toBe(`${server_ai_tools_test_app_files_mount}\n`);
+		expect(runAction).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				command: "pwd",
+				threadId: "thread_1",
+				userId: server_ai_tools_test_user_id,
+				workspaceName: "personal",
+				projectName: "home",
+				allowAppFileTreeMkdir: true,
+			}),
+		);
+	});
+});
 
 test("list_files tool: inputSchema defaults", () => {
 	const { ctx } = makeCtx(async () => ({ items: [], truncated: false }));
@@ -246,69 +298,6 @@ test("grep_files tool: searches markdown content for listed file nodes", async (
 	expect(result.metadata).toEqual({ matches: 1, truncated: false });
 	expect(result.output).toContain("/docs/readme.md:");
 	expect(result.output).toContain("Line 3: needle here");
-});
-
-test("text_search_files tool: renders line ranges and fragment markers", async () => {
-	const searchReturn = {
-		items: [
-			{
-				path: "/docs/code-guide.md",
-				markdownChunk: "```ts\nconst value = 1;\n```",
-				chunkIndex: 2,
-				startIndex: 900,
-				endIndex: 925,
-				lineStart: 41,
-				lineEnd: 43,
-				chunkFlags:
-					files_chunk_BITMASK_FLAGS.isCode |
-					files_chunk_BITMASK_FLAGS.hasMoreFragmentContentAbove |
-					files_chunk_BITMASK_FLAGS.hasMoreFragmentContentBelow,
-				hasChunkAbove: true,
-				hasChunkBelow: true,
-			},
-			{
-				path: "/docs/table-guide.md",
-				markdownChunk: "| a | b |\n|---|---|\n| 1 | 2 |",
-				chunkIndex: 1,
-				startIndex: 120,
-				endIndex: 151,
-				lineStart: 10,
-				lineEnd: 12,
-				chunkFlags: files_chunk_BITMASK_FLAGS.isTable | files_chunk_BITMASK_FLAGS.hasMoreFragmentContentBelow,
-				hasChunkAbove: false,
-				hasChunkBelow: true,
-			},
-		],
-	};
-
-	const { ctx, runQuery } = makeCtx(async (_ref, _args) => searchReturn);
-	const tool = ai_chat_tool_create_text_search_files(
-		ctx,
-		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_text_search_files>[1],
-	);
-	const result = await tool.execute?.({ query: "value", limit: 20 }, { toolCallId: "test", messages: [] });
-
-	if (!result) {
-		throw new Error("`result` is undefined");
-	}
-	if (!isNotAsyncIterable(result)) {
-		throw new Error("`result` is AsyncIterable but expected sync object");
-	}
-
-	expect(runQuery).toHaveBeenCalledTimes(1);
-	const [, args] = runQuery.mock.calls[0]!;
-	expect(args).toEqual({
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
-		query: "value",
-		limit: 20,
-	});
-
-	expect(result.output).toContain("/docs/code-guide.md (lines 41-43, chars 900-925, chunk #2)");
-	expect(result.output).toContain("... more code block content above");
-	expect(result.output).toContain("... more code block content below");
-	expect(result.output).toContain("/docs/table-guide.md (lines 10-12, chars 120-151, chunk #1)");
-	expect(result.output).toContain("... more table content below");
 });
 
 test("read_file tool forwards pendingUpdateId and returns it in metadata", async () => {

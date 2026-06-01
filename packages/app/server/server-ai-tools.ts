@@ -8,7 +8,6 @@ import type { Id } from "../convex/_generated/dataModel";
 import { internal } from "../convex/_generated/api.js";
 import { path_name_of, server_path_normalize, server_path_parent_of } from "./server-utils.ts";
 import { minimatch } from "minimatch";
-import { files_chunk_has_bitmask_flag, files_chunk_BITMASK_FLAGS } from "./files-markdown-chunking-mastra.ts";
 import { files_get_normalized_node_path_segments } from "./files.ts";
 
 /**
@@ -943,114 +942,67 @@ export type ai_chat_tool_create_grep_files_ToolInput = InferToolInput<ai_chat_to
 export type ai_chat_tool_create_grep_files_ToolOutput = InferToolOutput<ai_chat_tool_create_grep_files_Tool>;
 // #endregion grep files
 
-// #region text search files
-export function ai_chat_tool_create_text_search_files(
+// #region bash
+export function ai_chat_tool_create_bash(
 	ctx: ActionCtx,
 	ctxData: {
 		workspaceId: string;
 		projectId: string;
+		workspaceName: string;
+		projectName: string;
 		userId: Id<"users">;
 	},
+	options: {
+		getThreadId: () => Id<"ai_chat_threads"> | null;
+		allowAppFileTreeMkdir: boolean;
+	},
 ) {
+	const appFilesMountPath = `/home/cloud-usr/w/${ctxData.workspaceName}/${ctxData.projectName}`;
 	return tool({
 		description: dedent`\
-			Ultra-fast text search over file content using a plain-text chunk index.\
-			Search happens on markdown-derived plain text, while results return markdown fragments with line ranges.\
-			This makes search resilient to markdown syntax and still gives exact markdown context.
-
-			Notes:\
-			- Searches chunk plain text only (not raw markdown syntax).\
-			- Results are relevance-ranked by Convex and limited to the specified limit.\
-			- Result snippets include chunk line ranges and explicit fragment markers above/below.\
-			- Generated Markdown outputs from uploads are ordinary visible files, so read the exact result path returned here.\
-			- Prefer this over grep for general keyword search; use grep for precise regex line matches.`,
-
+			Run a non-interactive Just Bash command in the user's cloud file environment. This is the app's normal file shell for listing, scanning, searching, reading, and inspecting app files.
+			Bash starts in ~ (/home/cloud-usr). App files are mounted at ~/w/${ctxData.workspaceName}/${ctxData.projectName} (${appFilesMountPath}). /tmp is in-memory scratch and resets between bash calls.
+			The app file tree ${appFilesMountPath} is the default target for inspection commands that do not name a path.
+			Use this tool directly for file inspection commands such as pwd, find, ls, cat, stat, wc, sed, awk, and search [--limit N] <query...> for indexed content search.
+			grep is kept as a compatibility hint only; it prints guidance to use search so app file content search goes through the Convex text index.
+			App file tree mkdir is available only when this tool is configured for Agent mode; scratch space is ephemeral and does not create durable folders.
+			File writes and redirects under ${appFilesMountPath} return read-only errors. Persistent Markdown edits belong in write_file or edit_file with app paths such as /docs/readme.md.
+			Convert bash paths under ${appFilesMountPath} to app paths for write_file/edit_file by removing that mount prefix.
+			Directory listing and glob expansion are aggressively capped; narrow the path for listing and use search when content-search completeness matters.`,
 		inputSchema: z.object({
-			query: z.string().describe("Search terms (e.g. 'hello hi'). Prefix matching applies to the last term."),
-			limit: z.number().int().gte(1).lte(100).default(20),
+			command: z
+				.string()
+				.min(1)
+				.max(20_000)
+				.describe(`Shell command to run. Use ${appFilesMountPath} as the default target for file inspection.`),
 		}),
-
 		execute: async (args) => {
-			const res = await ctx.runQuery(internal.files_nodes.text_search_files, {
-				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
-				query: args.query,
-				limit: args.limit ?? 20,
-			});
-
-			if (!res.items.length) {
-				return {
-					title: args.query,
-					metadata: { matches: 0 },
-					output: "No files found",
-				};
+			const threadId = options.getThreadId();
+			if (!threadId) {
+				throw new Error("Cannot run bash before the chat thread has been created.");
 			}
 
-			const outputBlocks = res.items.map((item) => {
-				const isCodeChunk = files_chunk_has_bitmask_flag(item.chunkFlags, files_chunk_BITMASK_FLAGS.isCode);
-				const isTableChunk = files_chunk_has_bitmask_flag(item.chunkFlags, files_chunk_BITMASK_FLAGS.isTable);
-				const hasSpecificAbove = files_chunk_has_bitmask_flag(
-					item.chunkFlags,
-					files_chunk_BITMASK_FLAGS.hasMoreFragmentContentAbove,
-				);
-				const hasSpecificBelow = files_chunk_has_bitmask_flag(
-					item.chunkFlags,
-					files_chunk_BITMASK_FLAGS.hasMoreFragmentContentBelow,
-				);
-
-				const blockLines = [
-					`${item.path} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})`,
-				];
-
-				if (item.hasChunkAbove) {
-					if (hasSpecificAbove && isCodeChunk) {
-						blockLines.push("... more code block content above");
-					} else if (hasSpecificAbove && isTableChunk) {
-						blockLines.push("... more table content above");
-					} else {
-						blockLines.push("... more content above");
-					}
-				}
-
-				blockLines.push(item.markdownChunk);
-
-				if (item.hasChunkBelow) {
-					if (hasSpecificBelow && isCodeChunk) {
-						blockLines.push("... more code block content below");
-					} else if (hasSpecificBelow && isTableChunk) {
-						blockLines.push("... more table content below");
-					} else {
-						blockLines.push("... more content below");
-					}
-				}
-
-				return blockLines.join("\n");
+			return await ctx.runAction(internal.bash.run, {
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
+				threadId,
+				userId: ctxData.userId,
+				command: args.command,
+				workspaceName: ctxData.workspaceName,
+				projectName: ctxData.projectName,
+				allowAppFileTreeMkdir: options.allowAppFileTreeMkdir,
 			});
-
-			const lines: string[] = [
-				`Found ${res.items.length} results (relevance-ranked plain-text chunks)`,
-				"",
-				...outputBlocks,
-			];
-
-			return {
-				title: args.query,
-				metadata: { matches: res.items.length },
-				output: lines.join("\n"),
-			};
 		},
 	});
 }
 
-type ai_chat_tool_create_text_search_files_Tool = ReturnType<typeof ai_chat_tool_create_text_search_files>;
-export type ai_chat_tool_create_text_search_files_ToolInput =
-	InferToolInput<ai_chat_tool_create_text_search_files_Tool>;
-export type ai_chat_tool_create_text_search_files_ToolOutput =
-	InferToolOutput<ai_chat_tool_create_text_search_files_Tool>;
-// #endregion text search files
+type ai_chat_tool_create_bash_Tool = ReturnType<typeof ai_chat_tool_create_bash>;
+export type ai_chat_tool_create_bash_ToolInput = InferToolInput<ai_chat_tool_create_bash_Tool>;
+export type ai_chat_tool_create_bash_ToolOutput = InferToolOutput<ai_chat_tool_create_bash_Tool>;
+// #endregion bash
 
-// Tools that mutate files. Ask mode must not expose these. Keep in sync when
-// adding a new mutating file tool.
+// Tools that mutate file content. Ask mode also disables bash app-file-tree mkdir through
+// the bash tool options because folder creation is intentionally a shell workflow.
 export const ai_chat_WRITE_TOOL_NAMES = ["write_file", "edit_file"] as const;
 export type ai_chat_WriteToolName = (typeof ai_chat_WRITE_TOOL_NAMES)[number];
 
@@ -1079,6 +1031,7 @@ export function ai_chat_tool_create_write_file(
 			- NEVER proactively create documentation files unless explicitly requested by the user.
 			- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.
 			- Paths are real Markdown file paths and must end in .md, for example /readme.md or /docs/setup.md.
+			- If you copied a path from bash, remove the /home/cloud-usr/w/<workspace>/<project> mount prefix before passing it here.
 			- The content must be valid GitHub Flavored Markdown.`,
 
 		inputSchema: z.object({
@@ -1203,6 +1156,7 @@ export function ai_chat_tool_create_edit_file(
 			- By default, replaces a single unique occurrence of oldString; fails if not found or ambiguous.
 			- Set replaceAll=true to replace every occurrence.
 			- If copying from read_file output, do NOT include the line-number prefix (e.g., "00001| ").
+			- If copying a path from bash, remove the /home/cloud-usr/w/<workspace>/<project> mount prefix before passing it here.
 			- The text must be valid GitHub Flavored Markdown; ensure replacements preserve valid Markdown structure (headings, code fences, lists).
 			- This tool does not apply changes directly; it saves a pending update for human review.`,
 

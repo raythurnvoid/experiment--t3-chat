@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import { internalQuery, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -453,6 +453,34 @@ export const get_membership_for_scope = query({
 			.first();
 
 		return membership;
+	},
+});
+
+export const get_tenant = internalQuery({
+	args: {
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
+	},
+	returns: v.object({
+		workspace: doc(app_convex_schema, "workspaces"),
+		project: doc(app_convex_schema, "workspaces_projects"),
+	}),
+	handler: async (ctx, args) => {
+		const [workspace, project] = await Promise.all([
+			ctx.db.get("workspaces", args.workspaceId),
+			ctx.db.get("workspaces_projects", args.projectId),
+		]);
+		if (!workspace || !project || project.workspaceId !== workspace._id) {
+			const errorMessage = "Workspace/project scope points to missing or mismatched docs";
+			const errorData = { workspaceId: args.workspaceId, projectId: args.projectId };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+
+		return {
+			workspace,
+			project,
+		};
 	},
 });
 

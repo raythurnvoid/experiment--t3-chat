@@ -35,7 +35,6 @@ vi.mock("@/hooks/ai-chat-hooks.tsx", () => ({
 	useAiChatMessageIsRunning: (_threadId: string | null, messageId: string) => hookMocks.runningMessageId === messageId,
 	useAiChatMessageSendErrorText: (_threadId: string | null, messageId: string) =>
 		hookMocks.sendErrorMessageId === messageId ? "Message failed to send." : undefined,
-	useAiChatRuntimeActions: () => hookMocks.actions,
 }));
 
 vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
@@ -114,11 +113,14 @@ function renderMessage(args: {
 			selectedThreadId="thread_1"
 			selectedModelId="gpt-5.4-nano"
 			selectedModeId="ask"
+			actions={hookMocks.actions}
 		/>,
 	);
 }
 
 describe("AiChatMessage", () => {
+	const bashProjectMount = "/home/cloud-usr/w/personal/home";
+
 	afterEach(() => {
 		cleanup();
 		vi.clearAllMocks();
@@ -203,4 +205,54 @@ describe("AiChatMessage", () => {
 
 		expect(screen.getByRole<HTMLButtonElement>("button", { name: "Copy message" }).disabled).toBe(true);
 	});
+
+	test("renders bash tool output as a terminal block", () => {
+		renderMessage({
+			message: {
+				id: "msg_assistant_bash",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-bash",
+						toolCallId: "call_bash",
+						state: "output-available",
+						input: { command: "pwd" },
+						output: {
+							title: `exit 0 · ${bashProjectMount}`,
+							output: `$ pwd\ncwd: ${bashProjectMount}\nnext cwd: ${bashProjectMount}\nexit: 0\n\n<stdout>\n${bashProjectMount}\n</stdout>`,
+							stdout: `${bashProjectMount}\n`,
+							stderr: "",
+							metadata: {
+								command: "pwd",
+								cwd: bashProjectMount,
+								nextCwd: bashProjectMount,
+								exitCode: 0,
+								stdoutTruncated: false,
+								stderrTruncated: false,
+								stdoutLength: bashProjectMount.length + 1,
+								stderrLength: 0,
+								pathIndexTruncated: false,
+							},
+						},
+					},
+				],
+				metadata: {
+					convexParentId: "msg_user_failed",
+					parentClientGeneratedId: null,
+				},
+			} satisfies ai_chat_AiSdk5UiMessage,
+		});
+
+		expect(screen.getByText("Bash:")).not.toBeNull();
+		expect(screen.getByText("pwd")).not.toBeNull();
+		expect(screen.getByRole("button", { name: "Bash: pwd" })).not.toBeNull();
+		fireEvent.click(screen.getByText("Bash:"));
+		const terminal = screen.getByRole("textbox", { name: "Bash terminal output" });
+		expect(terminal.textContent).toContain(`${bashProjectMount}$ pwd`);
+		expect(terminal.textContent).toContain(bashProjectMount);
+		expect(terminal.textContent).toContain(`exit 0 · cwd ${bashProjectMount}`);
+		expect(screen.queryByRole("region", { name: "Metadata" })).toBeNull();
+		expect(screen.queryByRole("region", { name: "Stdout" })).toBeNull();
+	});
+
 });

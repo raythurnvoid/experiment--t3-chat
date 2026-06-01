@@ -18,7 +18,13 @@ import {
 	internalMutation,
 } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { paginationOptsValidator, type RegisteredMutation, type RegisteredQuery, type RouteSpec } from "convex/server";
+import {
+	paginationOptsValidator,
+	type RegisteredAction,
+	type RegisteredMutation,
+	type RegisteredQuery,
+	type RouteSpec,
+} from "convex/server";
 import { Workpool } from "@convex-dev/workpool";
 import { generateText, streamText, smoothStream } from "ai";
 import { openai } from "@ai-sdk/openai";
@@ -409,6 +415,11 @@ export const get_by_path = internalQuery({
 			.first();
 	},
 });
+
+export type files_nodes_get_by_path_Result =
+	typeof get_by_path extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 async function db_resolve_tree_node_id_from_path(
 	ctx: QueryCtx,
@@ -846,6 +857,60 @@ export const create_folder_node = mutation({
 		return Result({ _yay: { nodeId: node._yay } });
 	},
 });
+
+/**
+ * Create a folder at a trusted absolute path for server-side agent tools.
+ *
+ * Trust callers to validate and normalize `path` before calling this mutation.
+ */
+export const create_folder_node_by_path = internalMutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		path: v.string(),
+	},
+	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes"), exists: v.boolean() }) }),
+	handler: async (ctx, args) => {
+		const activeNode = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("path", args.path)
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+		if (activeNode?.kind === "folder") {
+			return Result({ _yay: { nodeId: activeNode._id, exists: true } });
+		}
+		if (activeNode?.kind === "file") {
+			return Result({ _nay: { message: "A file already exists at this path." } });
+		}
+
+		const nodeId = await files_nodes_db_create_node_recursively_at_path(ctx, {
+			userId: args.userId,
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			parentId: files_ROOT_ID,
+			path: args.path,
+			kind: "folder",
+			now: Date.now(),
+		});
+
+		if (nodeId._nay) {
+			return nodeId;
+		}
+
+		return Result({ _yay: { nodeId: nodeId._yay, exists: false } });
+	},
+});
+
+export type files_nodes_create_folder_node_by_path_Result =
+	typeof create_folder_node_by_path extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export const create_markdown_file_node = internalMutation({
 	args: {
@@ -2223,7 +2288,7 @@ export const list_files = internalQuery({
 		// Normalize base path to an absolute path string (leading slash, no trailing slash except root)
 		const basePath = args.path;
 		const maxDepth = Math.max(0, Math.min(10, args.maxDepth));
-		const limit = Math.max(1, Math.min(100, args.limit));
+		const limit = Math.max(1, Math.min(20, args.limit));
 		const include = args.include;
 
 		const matchesInclude = (absPath: string) => matches_path(absPath, include);
@@ -2326,6 +2391,11 @@ export const list_files = internalQuery({
 		return { items: results, truncated };
 	},
 });
+
+export type files_nodes_list_files_Result =
+	typeof list_files extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export const file_content_materialization_state_validator = v.object({
 	fileNode: doc(app_convex_schema, "files_nodes"),
@@ -2693,6 +2763,15 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 	},
 });
 
+export type files_nodes_get_file_last_available_markdown_content_by_path_Result =
+	typeof get_file_last_available_markdown_content_by_path extends RegisteredAction<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
 export const get_plain_text = query({
 	args: { membershipId: v.id("workspaces_projects_users"), nodeId: v.id("files_nodes") },
 	returns: v.union(v.string(), v.null()),
@@ -2951,6 +3030,11 @@ export const text_search_files = internalQuery({
 		return { items };
 	},
 });
+
+export type files_nodes_text_search_files_Result =
+	typeof text_search_files extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 /**
  * Create a Markdown file at a trusted path.

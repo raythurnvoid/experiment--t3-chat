@@ -18,7 +18,7 @@ Primary:
 
 # Architecture Overview
 
-The current agent is a Convex-backed AI chat runtime that streams AI SDK 5 UI messages, persists threads/messages in Convex, and exposes a small server-side toolbelt focused on Markdown files in the project files.
+The current agent is a Convex-backed AI chat runtime that streams AI SDK 5 UI messages, persists threads/messages in Convex, and exposes a small server-side toolbelt focused on Markdown files in the app file tree.
 
 - Main request path: `POST /api/chat`
 - Secondary title path: `POST /api/v1/runs/stream` for `assistant_id = "system/thread_title"`
@@ -55,27 +55,36 @@ Non-obvious runtime details:
 - Thread/file access is scoped by a `membershipId` row that determines the effective workspace/project scope.
 - Auth falls back to an anonymous user identity when a signed-in identity is unavailable.
 - The chat HTTP action resolves the current app `users` row once and passes `user._id` into AI file tools; file-tool internals should use that id instead of re-reading auth from Convex context.
+- `bash` is presented as the normal shell interface for the app file tree mounted at `/home/cloud-usr/w/{workspaceName}/{projectName}`.
 
 # Current Toolbelt
 
 The main tool object currently contains:
 
+- `bash`
 - `read_file`
 - `list_files`
 - `glob_files`
 - `grep_files`
-- `text_search_files`
 - `write_file`
 - `edit_file`
 - `web_search`
 
 Important limitation:
 
-- These tools operate on DB-backed project files, not repo files on disk.
-- The agent does not currently have a general shell/filesystem tool in this chat runtime.
+- These tools operate on DB-backed app files, not repo files on disk.
+- `bash` is a Just Bash runtime over the DB-backed app file tree, not the host shell.
+- `bash` mounts app files at `/home/cloud-usr/w/{workspaceName}/{projectName}`, blocks file writes there, allows Agent-mode folder creation through `mkdir`, and provides per-invocation scratch space at `/tmp`.
+- The bash internal action and Just Bash filesystem implementation live in the Node-runtime `bash.run` module because Just Bash bundles Node built-ins. Keep thread-state queries/mutations in default-runtime `ai_chat.ts`.
+- `bash` persists the current working directory through the general `ai_chat.get_thread_state` / `ai_chat.set_thread_state` internal functions. The state row is stored in `ai_chat_threads_state`, linked from `ai_chat_threads.stateId` and back to `ai_chat_threads_state.threadId`. Thread creation inserts the state row with `~` (`/home/cloud-usr`) and stores home-relative values such as `~/w/personal/home/docs` after `cd`; cwd does not live directly on `ai_chat_threads`.
+- The prompt and tool description should describe `bash` as the ordinary file shell instead of maintaining a synonym table for user wording. File listing, scanning, searching, reading, and path lookup requests should run through `bash` directly without asking the user to confirm routine inspection.
+- For file inspection commands without a specific path, the app file tree `/home/cloud-usr/w/{workspaceName}/{projectName}` is the default target.
+- `/home/cloud-usr` is the bash home directory, and the app file tree is mounted at `/home/cloud-usr/w/{workspaceName}/{projectName}`.
+- Use the custom `search --limit N <query>` command inside `bash` for indexed plain-text content search.
+- `grep` exists inside `bash` only as a compatibility hint and tells the model to use `search`; it does not scan app files itself.
+- When using the agent itself to create large QA corpora, keep prompts to small batches and verify actual file nodes after each batch. Assistant summary text can say a batch succeeded even when the model stopped before issuing every requested `write_file` call.
 - The agent does not currently read raw R2 binaries through this toolbelt.
 - `read_file` and `grep_files` read Markdown-backed content through Convex actions that overlay pending edits and fetch committed Markdown from R2 when needed. Uploaded source paths do not alias to generated Markdown outputs.
-- `text_search_files` reports the actual Markdown content path that matched; generated output files appear by their ordinary visible paths.
 - Uploaded source file nodes are discoverable through path listing; their raw R2 binaries are not directly read by this toolbelt.
 - `web_search` uses the server-side Exa integration and should be used for current public facts, docs, release notes, news, and information outside the workspace. Keep workspace file tools first when the answer should come from the user's files.
 
@@ -89,12 +98,30 @@ Important limitation:
 - The generated Markdown stores converted Markdown only; source/conversion metadata stays in DB/R2 metadata, not visible frontmatter.
 - Editing generated Markdown does not mutate the original R2 object.
 - Agents should read generated outputs through their exact visible paths. For example, `/a.pdf.md` is the generated Markdown output for the uploaded source file `/a.pdf`.
-- `list_files`, `glob_files`, `grep_files`, and `text_search_files` expose generated outputs as ordinary files.
+- `list_files`, `glob_files`, and `grep_files` expose generated outputs as ordinary files.
 - `read_file("/report.pdf")` does not read generated Markdown; `read_file("/report.pdf.md")` reads the generated output once finalized.
 - Native source-file reading is planned for provider-supported files, especially PDFs. The agent should decide when Markdown search/results are enough and when to read the original source file with provider-native capabilities.
 - Original binary download is planned for users but is not implemented today.
 
 # Tool Semantics
+
+## `bash`
+
+- Runs Just Bash commands against the app file tree mounted at `/home/cloud-usr/w/{workspaceName}/{projectName}`.
+- Never exposes or runs against the host filesystem.
+- Starts in `~` (`/home/cloud-usr`) for new chat threads.
+- Presents `/home/cloud-usr/w/{workspaceName}/{projectName}` as the shell path for app files.
+- Does not alias `/` to app files; `/` only exposes normal mount-point directories such as `/home` and `/tmp`.
+- Loads Markdown file content through `get_file_last_available_markdown_content_by_path`, preserving the current user's pending-update overlay.
+- Lists app file paths through `files_nodes.list_files`.
+- Treats file writes under the app file tree as read-only; persistent content changes must use `write_file` or `edit_file`.
+- Convert bash paths to app paths before calling `write_file` or `edit_file` by removing the `/home/cloud-usr/w/{workspaceName}/{projectName}` prefix.
+- Creates persistent folders only through `mkdir` under the app file tree in Agent-mode `bash`; Ask-mode `bash` rejects durable folder creation.
+- Provides `/tmp` as writable scratch space for one tool invocation only. `/tmp` is reset on the next `bash` call.
+- Persists `cd` only when the final cwd is `~` or a directory below `/home/cloud-usr`. It does not persist `/tmp` or other paths outside the cloud user home.
+- Includes a custom `search [--limit N] <query...>` command backed by the `files_nodes.text_search_files` plain-text index query.
+- Keeps `grep` as a lightweight compatibility command that prints guidance to use `search` so app file content search goes through the Convex text index.
+- Uses an aggressively bounded synchronous path cache and capped directory reads for Just Bash traversal. Wide `ls`, `find`, `tree`, and glob expansion may miss paths past the cap; narrow the path for listing and use `search` when content-search completeness matters.
 
 ## `read_file`
 
@@ -128,14 +155,6 @@ Important limitation:
 - Searches only file nodes; folder nodes are traversed for discovery but not read.
 - Uploaded source paths are not Markdown-readable unless the source itself has editable Markdown state.
 - Produces grouped line-oriented output similar to ripgrep.
-
-## `text_search_files`
-
-- Fast search over file content using Convex's plain-text chunk index.
-- Search happens on markdown-derived plain text chunks, not raw markdown syntax.
-- Returned snippets are markdown chunks with line ranges and source character ranges.
-- Current behavior exact-filters candidate chunks with `plainTextChunk.includes(query)` and dedupes by markdown chunk id.
-- Uploaded-file generated output search comes from ordinary Markdown chunks and reports the generated output path.
 
 ## `write_file`
 
@@ -174,30 +193,34 @@ Writes:
 
 # Current Invariants
 
-1. The agent operates on DB-backed project files, not repo files.
-2. Folder nodes are not readable/writable by AI file tools.
+1. The agent operates on DB-backed app files, not repo files.
+2. Folder nodes are not content-readable or content-writable by AI file tools.
 3. File reads are user-scoped because pending overlays are user-scoped.
-4. `write_file` and `edit_file` create pending review state, not direct committed writes.
-5. `write_file` passes the already-resolved `userId` into `create_file_by_path`; pending-update rows store the same id.
-6. `text_search_files` is chunk-based and exact-filters candidate chunks by `includes(query)`.
-7. `grep_files` is the precise regex tool; `glob_files` is the path-discovery tool.
-8. `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
-9. Request messages are persisted before generation; assistant responses are persisted after streaming finishes.
-10. Current tools do not read raw uploaded R2 binaries; generated Markdown outputs from uploads are ordinary Markdown files whose committed Markdown is also stored in R2.
-11. Source-path reads must preserve the product distinction between the original R2 object and generated editable Markdown outputs.
-12. Generated upload outputs are regular visible files; tools should not apply hidden-file or path-alias behavior.
-13. Client-side failed-send feedback is not persisted; retry keeps the existing failed user message as the final chat message and resubmits it in place.
+4. `bash` can read, list, navigate, search app files, and create folders in Agent mode, but file writes under the app file tree fail by design.
+5. `bash` `mkdir` under `/home/cloud-usr/w/{workspaceName}/{projectName}` is the only AI path that creates persistent folder nodes.
+6. `write_file` and `edit_file` create pending review state, not direct committed writes.
+7. `write_file` passes the already-resolved `userId` into `create_file_by_path`; pending-update rows store the same id.
+8. `grep_files` is the precise regex tool; `glob_files` is the path-discovery tool.
+9. `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
+10. Request messages are persisted before generation; assistant responses are persisted after streaming finishes.
+11. Current tools do not read raw uploaded R2 binaries; generated Markdown outputs from uploads are ordinary Markdown files whose committed Markdown is also stored in R2.
+12. Source-path reads must preserve the product distinction between the original R2 object and generated editable Markdown outputs.
+13. Generated upload outputs are regular visible files; tools should not apply hidden-file or path-alias behavior.
+14. Client-side failed-send feedback is not persisted; retry keeps the existing failed user message as the final chat message and resubmits it in place.
 
 # Verification Checklist
 
 - New threads still dedupe optimistic entries correctly.
 - User messages persist even if generation is aborted mid-stream.
 - Assistant responses persist under the correct parent message.
+- `bash` can run `pwd`, `ls /home/cloud-usr/w/{workspaceName}/{projectName}`, `cat /home/cloud-usr/w/{workspaceName}/{projectName}/<path>`, `search --limit N <query>`, and preserves cwd across turns.
+- `/tmp` works inside one `bash` call and resets before the next one.
+- `bash` file writes under the app file tree fail with a read-only filesystem error.
+- Agent mode can create folders with `bash` `mkdir /home/cloud-usr/w/{workspaceName}/{projectName}/<folder>` and can call `write_file` and `edit_file`; Ask mode can call `bash` for reads/searches but cannot create folders or call write tools.
 - `read_file` sees the current user's pending unstaged branch when one exists.
 - `write_file` and `edit_file` create pending review state instead of silently saving live content.
 - `edit_file` fails on missing/ambiguous single-match replacements.
 - `grep_files` behaves like regex/line search.
-- `text_search_files` behaves like chunk search and returns markdown fragment context.
 - Uploaded source files are not described as raw-binary-readable until a native source-file tool exists.
 - Generated upload outputs are read, searched, edited, and listed by their actual visible paths.
 - Tool descriptions stay aligned with actual behavior.

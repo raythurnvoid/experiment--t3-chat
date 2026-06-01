@@ -15,16 +15,12 @@ import { dom_find_first_element_overflowing_element, dom_TypedAttributeAccessor 
 import { cn } from "@/lib/utils.ts";
 import { useUiStickToBottom } from "@/lib/ui.tsx";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import {
-	AiChatRuntimeActionsContext,
 	useAiChatThreadRuntime,
 	useAiChatThreadListController,
-	useAiChatThreadActiveMessageIds,
-	useAiChatThreadAnchorId,
 	useAiChatThreadEditingMessageId,
-	useAiChatThreadIsRunning,
-	useAiChatThreadStatus,
-	useAiChatThreadStreamErrorText,
 	type AiChatThreadRuntime,
 	type AiChatRuntimeActions,
 } from "@/hooks/ai-chat-hooks.tsx";
@@ -213,6 +209,12 @@ type AiChatMessagesList_Props = ComponentPropsWithRef<"div"> & {
 	selectedThreadId: string | null;
 	selectedModelId: AiChatThreadRuntime["selectedModelId"];
 	selectedModeId: AiChatThreadRuntime["selectedModeId"];
+	messages: AiChatThreadRuntime["activeBranchMessages"]["list"];
+	status: AiChatThreadRuntime["status"];
+	isRunning: AiChatThreadRuntime["isRunning"];
+	streamErrorText: string | null;
+	activeBranchAnchorId: string | null | undefined;
+	actions: AiChatRuntimeActions;
 	onClickSuggestion: (action: string) => void;
 };
 
@@ -224,19 +226,20 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 		selectedThreadId,
 		selectedModelId,
 		selectedModeId,
+		messages,
+		status,
+		isRunning,
+		streamErrorText,
+		activeBranchAnchorId,
+		actions,
 		onClickSuggestion,
 		...rest
 	} = props;
 
-	const activeMessageIds = useAiChatThreadActiveMessageIds(selectedThreadId);
-	const deferredActiveMessageIds = useDeferredValue(activeMessageIds);
-	const throttledMessageIds = useThrottle(deferredActiveMessageIds, 100);
-	const status = useAiChatThreadStatus(selectedThreadId);
-	const isRunning = useAiChatThreadIsRunning(selectedThreadId);
-	const streamErrorText = useAiChatThreadStreamErrorText(selectedThreadId);
-	const activeBranchAnchorId = useAiChatThreadAnchorId(selectedThreadId);
+	const deferredMessages = useDeferredValue(messages);
+	const throttledMessages = useThrottle(deferredMessages, 100);
 
-	const messageCount = activeMessageIds.length;
+	const messageCount = messages.length;
 
 	// Make sure to always show the skeleton when switching between threads,
 	// we cannot rely on `messageCount === 0` because we might have optimistic message,
@@ -262,17 +265,19 @@ const AiChatMessagesList = memo(function AiChatMessagesList(props: AiChatMessage
 			) : messageCount === 0 ? (
 				<AiChatWelcome onClickSuggestion={handleSuggestionClick} />
 			) : (
-				throttledMessageIds.map((messageId, index) => {
+				throttledMessages.map((message, index) => {
 					return (
 						<AiChatMessage
 							// index is better in this case because the messages follow a static order
 							// and this will prevent them from being unmounted when the message is
 							// persisted after stream
 							key={index}
-							messageId={messageId}
+							messageId={message.id}
+							message={message}
 							selectedThreadId={selectedThreadId}
 							selectedModelId={selectedModelId}
 							selectedModeId={selectedModeId}
+							actions={actions}
 						/>
 					);
 				})
@@ -744,48 +749,53 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 				: {}) satisfies Partial<AiChatThread_CustomAttributes>)}
 			onKeyDown={handleKeyDown}
 		>
-			<AiChatRuntimeActionsContext.Provider value={runtimeActions}>
-				<CatchBoundary
-					getResetKey={getCatchBoundaryResetKey}
-					errorComponent={AiChatThreadError}
-					onCatch={handleCatchBoundaryError}
-				>
-					<div className={"AiChatThread-content" satisfies AiChatThread_ClassNames}>
-						<AiChatMessagesList
-							ref={setMessagesListEl}
-							selectedThreadId={selectedThreadId}
-							selectedModelId={selectedModelId}
-							selectedModeId={selectedModeId}
-							onClickSuggestion={handleClickSuggestion}
-						/>
-					</div>
-					<div className={"AiChatThread-scroll-to-bottom" satisfies AiChatThread_ClassNames}>
-						<MyFloatingSurface
-							className={"AiChatThread-scroll-to-bottom-card" satisfies AiChatThread_ClassNames}
-							hidden={isAtBottom}
-						>
-							<MyIconButton variant="floating" tooltip="Scroll to bottom" onClick={handleScrollToBottom}>
-								<ArrowDown className={"AiChatThread-scroll-to-bottom-icon" satisfies AiChatThread_ClassNames} />
-							</MyIconButton>
-						</MyFloatingSurface>
-					</div>
-					<div className={"AiChatThread-composer" satisfies AiChatThread_ClassNames}>
-						<AiChatComposer
-							key={selectedThreadId ?? "new"}
-							canCancel={controller.isRunning}
-							isRunning={controller.isRunning}
-							initialValue={initialComposerValue}
-							selectedModelId={selectedModelId}
-							selectedModeId={selectedModeId}
-							onValueChange={handleComposerValueChange}
-							onSelectedModelIdChange={handleSelectedModelIdChange}
-							onSelectedModeIdChange={handleSelectedModeIdChange}
-							onSubmit={handleComposerSubmit}
-							onCancel={handleComposerCancel}
-						/>
-					</div>
-				</CatchBoundary>
-			</AiChatRuntimeActionsContext.Provider>
+			<CatchBoundary
+				getResetKey={getCatchBoundaryResetKey}
+				errorComponent={AiChatThreadError}
+				onCatch={handleCatchBoundaryError}
+			>
+				<div className={"AiChatThread-content" satisfies AiChatThread_ClassNames}>
+					<AiChatMessagesList
+						ref={setMessagesListEl}
+						selectedThreadId={selectedThreadId}
+						selectedModelId={selectedModelId}
+						selectedModeId={selectedModeId}
+						messages={controller.activeBranchMessages.list}
+						status={controller.status}
+						isRunning={controller.isRunning}
+						streamErrorText={controller.error ? "An error occurred during the generation" : null}
+						activeBranchAnchorId={controller.activeBranchMessages.anchorId}
+						actions={runtimeActions}
+						onClickSuggestion={handleClickSuggestion}
+					/>
+				</div>
+				<div className={"AiChatThread-scroll-to-bottom" satisfies AiChatThread_ClassNames}>
+					<MyFloatingSurface
+						className={"AiChatThread-scroll-to-bottom-card" satisfies AiChatThread_ClassNames}
+						hidden={isAtBottom}
+					>
+						<MyIconButton variant="floating" tooltip="Scroll to bottom" onClick={handleScrollToBottom}>
+							<ArrowDown className={"AiChatThread-scroll-to-bottom-icon" satisfies AiChatThread_ClassNames} />
+						</MyIconButton>
+					</MyFloatingSurface>
+				</div>
+				<div className={"AiChatThread-composer" satisfies AiChatThread_ClassNames}>
+					<AiChatComposer
+						key={selectedThreadId ?? "new"}
+						canCancel={controller.isRunning}
+						canSend={!selectedThreadId || controller.canSendUserText}
+						isRunning={controller.isRunning}
+						initialValue={initialComposerValue}
+						selectedModelId={selectedModelId}
+						selectedModeId={selectedModeId}
+						onValueChange={handleComposerValueChange}
+						onSelectedModelIdChange={handleSelectedModelIdChange}
+						onSelectedModeIdChange={handleSelectedModeIdChange}
+						onSubmit={handleComposerSubmit}
+						onCancel={handleComposerCancel}
+					/>
+				</div>
+			</CatchBoundary>
 		</div>
 	);
 });
@@ -819,7 +829,12 @@ type AiChat_Props = ComponentPropsWithRef<"div"> & {
 export const AiChat = memo(function AiChat(props: AiChat_Props) {
 	const { ref, id, className, ...rest } = props;
 
+	const { membershipId } = AppTenantProvider.useContext();
 	const controller = useAiChatThreadListController();
+	const controllerRef = useLiveRef(controller);
+	const [lastOpenThreadId] = useAppLocalStorageStateValue(
+		`app_state::ai_chat_last_open::scope::${membershipId}`,
+	);
 	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(true);
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
 
@@ -830,6 +845,30 @@ export const AiChat = memo(function AiChat(props: AiChat_Props) {
 	const handleOpenSidebar = useFn(() => {
 		setAiChatSidebarOpen(true);
 	});
+
+	useEffect(() => {
+		const controller = controllerRef.current;
+
+		// Keep route-level restoration here. The file editor sidebar has its own
+		// open-tab storage, so the shared list controller should not decide which
+		// chat surface wins on mount.
+		if (controller.session?.optimisticThread) {
+			return;
+		}
+
+		if (!lastOpenThreadId) {
+			if (controller.selectedThreadId) {
+				controller.clearSelectedThread();
+			}
+			return;
+		}
+
+		if (controller.selectedThreadId === lastOpenThreadId) {
+			return;
+		}
+
+		controller.selectThread(lastOpenThreadId);
+	}, [controller.selectedThreadId, controller.session?.optimisticThread, controllerRef, lastOpenThreadId]);
 
 	return (
 		<div ref={ref} id={id} className={cn("AiChat" satisfies AiChat_ClassNames, className)} {...rest}>

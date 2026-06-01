@@ -290,6 +290,47 @@ test("list_files_new", async () => {
 });
 
 describe("list_files", () => {
+	test("clamps high requested limits to the aggressive internal cap", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const membership = await test_mocks_fill_db_with.membership(ctx);
+			for (let index = 0; index < 25; index++) {
+				const name = `file-${String(index).padStart(2, "0")}.md`;
+				await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					createdBy: membership.userId,
+					updatedBy: membership.userId,
+					parentId: files_ROOT_ID,
+					name,
+					kind: "file",
+					path: `/${name}`,
+					updatedAt: index,
+				});
+			}
+			return membership;
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const result = await asUser.query(internal.files_nodes.list_files, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/",
+			maxDepth: 10,
+			limit: 100,
+		});
+
+		expect(result.items).toHaveLength(20);
+		expect(result.items[0]?.path).toBe("/file-00.md");
+		expect(result.items.at(-1)?.path).toBe("/file-19.md");
+		expect(result.truncated).toBe(true);
+	});
+
 	test("continues sibling traversal after a file child", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_file_first_list_fixture(ctx));

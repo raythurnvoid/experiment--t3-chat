@@ -422,6 +422,18 @@
 	}
 	/* #endregion tool textarea section */
 
+	/* #region tool bash */
+	.AiChatMessagePartToolBash-terminal {
+		margin: 8px 0 16px 16px;
+
+		border-color: var(--color-base-alt-1-06);
+		background: var(--color-base-alt-1-02);
+		color: var(--color-fg-11);
+
+		white-space: pre;
+	}
+	/* #endregion tool bash */
+
 	/* #region tool write_file */
 	.AiChatMessagePartToolWritePage {
 		display: flex;

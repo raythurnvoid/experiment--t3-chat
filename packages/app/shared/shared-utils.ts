@@ -27,35 +27,6 @@ export const is_browser = ((/* iife */) => {
 	};
 })();
 
-export const get_id_generator = ((/* iife */) => {
-	function value(snakeCasePrefix: string) {
-		return createIdGenerator({
-			prefix: snakeCasePrefix,
-			separator: "-",
-			size: 32,
-		});
-	}
-
-	const cache = new Map<string, ReturnType<typeof value>>();
-
-	return function get_id_generator(snakeCasePrefix: string) {
-		const cacheKey = snakeCasePrefix;
-		const cachedValue = cache.get(cacheKey);
-		if (cachedValue) {
-			return cachedValue;
-		}
-
-		const result = value(snakeCasePrefix);
-		cache.set(cacheKey, result);
-		return result;
-	};
-})();
-
-export function generate_id<T extends "file" | "ai_thread" | "ai_message">(snakeCasePrefix: T) {
-	const idGenerator = get_id_generator(snakeCasePrefix);
-	return idGenerator();
-}
-
 /**
  * Clamp a value between a minimum and maximum.
  *
@@ -178,6 +149,39 @@ export function omit_properties<O extends object, P extends KeysOfUnion<O>>(
 }
 
 export function assume_type<T>(v: any): asserts v is T {}
+
+// #region generated id
+export const get_id_generator = ((/* iife */) => {
+	function value(snakeCasePrefix: string) {
+		return createIdGenerator({
+			prefix: snakeCasePrefix,
+			separator: "-",
+			size: 32,
+		});
+	}
+
+	const cache = new Map<string, ReturnType<typeof value>>();
+
+	return function get_id_generator(snakeCasePrefix: string) {
+		const cacheKey = snakeCasePrefix;
+		const cachedValue = cache.get(cacheKey);
+		if (cachedValue) {
+			return cachedValue;
+		}
+
+		const result = value(snakeCasePrefix);
+		cache.set(cacheKey, result);
+		return result;
+	};
+})();
+
+export type GeneratedIdPrefix = "file" | "ai_thread" | "ai_message";
+
+export function generate_id<T extends GeneratedIdPrefix>(snakeCasePrefix: T): `${T}-${string}` {
+	const idGenerator = get_id_generator(snakeCasePrefix);
+	return idGenerator() as `${T}-${string}`;
+}
+// #endregion generated id
 
 // #region path
 export function path_extract_segments_from(path: string): string[] {

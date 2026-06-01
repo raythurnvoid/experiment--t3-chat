@@ -85,6 +85,7 @@ export type AiChatComposer_Props = Omit<
 
 	autoFocus?: boolean;
 	canCancel: boolean;
+	canSend: boolean;
 	isRunning: boolean;
 	initialValue: string;
 	selectedModelId: ai_chat_ModelId;
@@ -106,6 +107,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		className,
 		autoFocus,
 		canCancel,
+		canSend: canSendProp,
 		isRunning,
 		initialValue,
 		selectedModelId,
@@ -142,7 +144,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			})
 		: ai_chat_MODEL_IDS;
 
-	const canSend = !isRunning && !isEmpty;
+	const canSend = canSendProp && !isRunning && !isEmpty;
 
 	const syncComposerText = (value: string) => {
 		composerTextRef.current = value;
@@ -404,7 +406,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 						onSelectedModeIdChange(value as ai_chat_ModeId);
 					}}
 				>
-					<MySelectTrigger>
+					<MySelectTrigger aria-label={`Chat mode: ${ai_chat_MODE_METADATA[selectedModeId].label}`}>
 						<MyButton type="button" variant="outline">
 							Mode: {ai_chat_MODE_METADATA[selectedModeId].label}
 							<MySelectOpenIndicator />
@@ -437,7 +439,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 						}
 					}}
 				>
-					<MySearchSelectTrigger>
+					<MySearchSelectTrigger aria-label={`Chat model: ${selectedModelLabel}`}>
 						<MyButton type="button" variant="outline">
 							{selectedModelLabel}
 							<MySelectOpenIndicator />

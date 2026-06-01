@@ -4,4 +4,70 @@
 		color: var(--color-fg-11);
 	}
 	/* #endregion root */
+
+	/* #region code */
+	.AiChatMarkdown-inline-code {
+		border-radius: 4px;
+		background: var(--color-base-1-04);
+		padding: 0.125em 0.35em;
+		color: var(--color-fg-10);
+		font-family: monospace;
+		font-size: 0.92em;
+	}
+	/* #endregion code */
+
+	/* #region pre */
+	.AiChatMarkdown-code-block {
+		overflow: hidden;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 6px;
+		background: var(--color-base-1-03);
+		color: var(--color-fg-10);
+	}
+
+	.AiChatMarkdown-code-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		min-height: 32px;
+		padding: 4px 6px 4px 10px;
+		background: transparent;
+		color: var(--color-fg-06);
+	}
+
+	.AiChatMarkdown-code-header-language {
+		overflow: hidden;
+		font-family: monospace;
+		font-size: 12px;
+		line-height: 1;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.AiChatMarkdown-code-copy-button.MyIconButton {
+		width: 28px;
+		height: 28px;
+		padding: 6px;
+		color: var(--color-fg-08);
+	}
+
+	.AiChatMarkdown-pre {
+		overflow: auto;
+		margin: 0;
+		border-top: 1px solid var(--color-base-1-06);
+		background: var(--color-base-1-02);
+		padding: 12px 14px;
+		color: var(--color-fg-10);
+		font-family: monospace;
+		font-size: 13px;
+		line-height: 1.5;
+	}
+
+	.AiChatMarkdown-code {
+		background: transparent;
+		color: inherit;
+		font: inherit;
+	}
+	/* #endregion pre */
 }

@@ -1,92 +1,91 @@
 import "./ai-chat-markdown.css";
 
-// import type { ComponentPropsWithoutRef, ReactNode } from "react";
-// import { cloneElement, isValidElement } from "react";
-// import { CheckIcon, CopyIcon } from "lucide-react";
-// import { defaultRemarkPlugins, Streamdown, type Components, type StreamdownProps } from "streamdown";
-
-// import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button.tsx";
-// import { useAutoRevertingState } from "@/hooks/utils-hooks.ts";
-// import { cn, copy_to_clipboard } from "@/lib/utils.ts";
-
-import { memo } from "react";
-import { defaultRemarkPlugins, Streamdown } from "streamdown";
+import { isValidElement, memo, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { defaultRemarkPlugins, Streamdown, type Components } from "streamdown";
+import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { cn } from "@/lib/utils.ts";
 import type { AppClassName } from "../../lib/dom-utils.ts";
 
-// #region code header
-// function CodeHeader(props: { language: string; code: string }) {
-// 	const { language, code } = props;
-// 	const [isCopied, setIsCopied] = useAutoRevertingState(false, 3000);
+// #region code
+type AiChatMarkdownCode_ClassNames = "AiChatMarkdown-inline-code";
 
-// 	const onCopy = () => {
-// 		if (!code || isCopied) return;
+function AiChatMarkdownCode(props: ComponentPropsWithoutRef<"code"> & { node?: unknown }) {
+	const { className, children, node: _node, ...rest } = props;
 
-// 		copy_to_clipboard({ text: code })
-// 			.then((result) => {
-// 				if (result._nay) {
-// 					console.error("[AiChatMarkdown.CodeHeader] Error copying to clipboard", { result });
-// 					return;
-// 				}
+	return (
+		<code className={cn("AiChatMarkdown-inline-code" satisfies AiChatMarkdownCode_ClassNames, className)} {...rest}>
+			{children}
+		</code>
+	);
+}
+// #endregion code
 
-// 				setIsCopied(true);
-// 			})
-// 			.catch((error) => {
-// 				console.error("[AiChatMarkdown.CodeHeader] Error copying to clipboard", { error });
-// 			});
-// 	};
+// #region pre
+type AiChatMarkdownPre_ClassNames =
+	| "AiChatMarkdown-code-block"
+	| "AiChatMarkdown-code-header"
+	| "AiChatMarkdown-code-header-language"
+	| "AiChatMarkdown-code-copy-button"
+	| "AiChatMarkdown-pre"
+	| "AiChatMarkdown-code";
 
-// 	return (
-// 		<div className={"AiChatMarkdown-code-header" satisfies AiChatMarkdown_ClassNames}>
-// 			<span className={"AiChatMarkdown-code-header-language" satisfies AiChatMarkdown_ClassNames}>{language}</span>
-// 			<TooltipIconButton tooltip="Copy" onClick={onCopy}>
-// 				{!isCopied && <CopyIcon />}
-// 				{isCopied && <CheckIcon />}
-// 			</TooltipIconButton>
-// 		</div>
-// 	);
-// }
-// #endregion code header
+function get_code_text(children: ReactNode): string {
+	if (typeof children === "string" || typeof children === "number") {
+		return String(children);
+	}
 
-// #region markdown elements
+	if (Array.isArray(children)) {
+		return children.map(get_code_text).join("");
+	}
 
-// function PreComponent(props: ComponentPropsWithoutRef<"pre">) {
-// 	const { className, children, ...rest } = props;
-// 	let language = "text";
-// 	let code = "";
-// 	const firstChild = Array.isArray(children) ? children[0] : children;
-// 	if (isValidElement(firstChild)) {
-// 		const childProps = firstChild.props as { className?: string; children?: ReactNode };
-// 		const classNameValue = childProps.className ?? "";
-// 		const match = classNameValue.match(/language-(\S+)/);
-// 		language = match ? match[1] : "text";
-// 		const codeValue = Array.isArray(childProps.children)
-// 			? childProps.children.join("")
-// 			: String(childProps.children ?? "");
-// 		code = codeValue.endsWith("\n") ? codeValue.slice(0, -1) : codeValue;
-// 	}
+	return "";
+}
 
-// 	const renderedChildren = Array.isArray(children)
-// 		? children.map((child, index) =>
-// 				index === 0 && isValidElement(child)
-// 					? cloneElement(child, { "data-block": "true" } as { "data-block": string })
-// 					: child,
-// 			)
-// 		: isValidElement(children)
-// 			? cloneElement(children, { "data-block": "true" } as { "data-block": string })
-// 			: children;
+function get_code_language(className: string | undefined) {
+	const match = className?.match(/(?:^|\s)language-(\S+)/);
+	return match?.[1] ?? "text";
+}
 
-// 	return (
-// 		<div className={"AiChatMarkdown-code-block" satisfies AiChatMarkdown_ClassNames}>
-// 			<CodeHeader language={language} code={code} />
-// 			<pre className={cn("AiChatMarkdown-pre" satisfies AiChatMarkdown_ClassNames, className)} {...rest}>
-// 				{renderedChildren}
-// 			</pre>
-// 		</div>
-// 	);
-// }
+function get_first_child(children: ReactNode) {
+	return Array.isArray(children) ? children[0] : children;
+}
 
-// #endregion markdown elements
+function AiChatMarkdownPre(props: ComponentPropsWithoutRef<"pre"> & { node?: unknown }) {
+	const { className, children, node: _node, ...rest } = props;
+	const firstChild = get_first_child(children);
+	let codeClassName: string | undefined;
+	let code = get_code_text(children);
+
+	if (isValidElement(firstChild)) {
+		const childProps = firstChild.props as { className?: string; children?: ReactNode };
+		codeClassName = childProps.className;
+		code = get_code_text(childProps.children);
+	}
+
+	const displayCode = code.endsWith("\n") ? code.slice(0, -1) : code;
+
+	return (
+		<div className={"AiChatMarkdown-code-block" satisfies AiChatMarkdownPre_ClassNames}>
+			<div className={"AiChatMarkdown-code-header" satisfies AiChatMarkdownPre_ClassNames}>
+				<span className={"AiChatMarkdown-code-header-language" satisfies AiChatMarkdownPre_ClassNames}>
+					{get_code_language(codeClassName)}
+				</span>
+				<CopyIconButton
+					variant="ghost-highlightable"
+					className={"AiChatMarkdown-code-copy-button" satisfies AiChatMarkdownPre_ClassNames}
+					text={displayCode}
+					tooltipCopy="Copy code"
+				/>
+			</div>
+			<pre className={cn("AiChatMarkdown-pre" satisfies AiChatMarkdownPre_ClassNames, className)} {...rest}>
+				<code className={cn("AiChatMarkdown-code" satisfies AiChatMarkdownPre_ClassNames, codeClassName)}>
+					{displayCode}
+				</code>
+			</pre>
+		</div>
+	);
+}
+// #endregion pre
 
 // #region root
 type markdown_MdastNode = {
@@ -183,8 +182,6 @@ const remark_plugin_replace_break_with_newline = ((/* iife */) => {
 
 export type AiChatMarkdown_ClassNames =
 	| "AiChatMarkdown"
-	| "AiChatMarkdown-code-header"
-	| "AiChatMarkdown-code-header-language"
 	| "AiChatMarkdown-h1"
 	| "AiChatMarkdown-h2"
 	| "AiChatMarkdown-h3"
@@ -201,10 +198,12 @@ export type AiChatMarkdown_ClassNames =
 	| "AiChatMarkdown-th"
 	| "AiChatMarkdown-td"
 	| "AiChatMarkdown-tr"
-	| "AiChatMarkdown-sup"
-	| "AiChatMarkdown-code-block"
-	| "AiChatMarkdown-pre"
-	| "AiChatMarkdown-inline-code";
+	| "AiChatMarkdown-sup";
+
+const ai_chat_markdown_components = {
+	code: AiChatMarkdownCode,
+	pre: AiChatMarkdownPre,
+} satisfies Components;
 
 export type AiChatMarkdown_Props = {
 	className?: string;
@@ -234,7 +233,7 @@ export const AiChatMarkdown = memo(function AiChatMarkdown(props: AiChatMarkdown
 		<div
 			className={cn("AiChatMarkdown" satisfies AiChatMarkdown_ClassNames, "app-doc" satisfies AppClassName, className)}
 		>
-			<Streamdown mode="static" remarkPlugins={remarkPlugins}>
+			<Streamdown mode="static" remarkPlugins={remarkPlugins} components={ai_chat_markdown_components}>
 				{markdownToParse}
 			</Streamdown>
 		</div>

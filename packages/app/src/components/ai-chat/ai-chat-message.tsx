@@ -4,6 +4,7 @@ import {
 	memo,
 	useDeferredValue,
 	useEffect,
+	useId,
 	useRef,
 	useState,
 	type ComponentPropsWithRef,
@@ -48,7 +49,6 @@ import {
 	useAiChatMessageIsEditing,
 	useAiChatMessageIsRunning,
 	useAiChatMessageSendErrorText,
-	useAiChatRuntimeActions,
 	type AiChatRuntimeActions,
 } from "@/hooks/ai-chat-hooks.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
@@ -193,6 +193,8 @@ const AiChatMessagePartDisclosureButton = memo(function AiChatMessagePartDisclos
 				"AiChatMessagePartDisclosureButton" satisfies AiChatMessagePartDisclosureButton_ClassNames,
 				className,
 			)}
+			role="button"
+			aria-label={text ? `${title}: ${text}` : title}
 			aria-busy={isLoading}
 			aria-disabled={isLoading}
 			onClick={handleClick}
@@ -263,9 +265,11 @@ const AiChatMessagePartToolTextAreaSection = memo(function AiChatMessagePartTool
 	props: AiChatMessagePartToolTextAreaSection_Props,
 ) {
 	const { className, label, code, maxHeight, state } = props;
+	const headingId = useId();
 
 	return (
 		<section
+			aria-labelledby={headingId}
 			className={cn(
 				"AiChatMessagePartToolTextAreaSection" satisfies AiChatMessagePartToolTextAreaSection_ClassNames,
 				"app-font-monospace" satisfies AppClassName,
@@ -281,6 +285,7 @@ const AiChatMessagePartToolTextAreaSection = memo(function AiChatMessagePartTool
 			} satisfies AiChatMessagePartToolTextAreaSection_CssVars)}
 		>
 			<h6
+				id={headingId}
 				className={
 					"AiChatMessagePartToolTextAreaSection-heading" satisfies AiChatMessagePartToolTextAreaSection_ClassNames
 				}
@@ -481,49 +486,80 @@ const AiChatMessagePartToolGrepPages = memo(function AiChatMessagePartToolGrepPa
 });
 // #endregion tool grep_files
 
-// #region tool text_search_files
-type AiChatMessagePartToolTextSearchFiles_ClassNames = "AiChatMessagePartToolTextSearchFiles";
+// #region tool bash
+type AiChatMessagePartToolBash_ClassNames = "AiChatMessagePartToolBash" | "AiChatMessagePartToolBash-terminal";
 
-type AiChatMessagePartToolTextSearchFiles_Props = {
-	className?: string | undefined;
-	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-text_search_files" }>["input"];
-	result: ai_chat_AiSdk5UiTools["text_search_files"]["output"] | undefined;
+type AiChatMessagePartToolBash_Props = {
+	className?: string;
+	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-bash" }>["input"];
+	result: ai_chat_AiSdk5UiTools["bash"]["output"] | undefined;
 	toolState: ToolUIPart["state"];
 	isChatRunning: boolean;
-	errorText?: string | undefined;
+	errorText?: string;
 };
 
-const AiChatMessagePartToolTextSearchFiles = memo(function AiChatMessagePartToolTextSearchFiles(
-	props: AiChatMessagePartToolTextSearchFiles_Props,
+function ai_chat_message_part_tool_bash_terminal_text(
+	args: AiChatMessagePartToolBash_Props["args"],
+	result: AiChatMessagePartToolBash_Props["result"],
+	errorText?: string,
 ) {
-	const { className, args, result, toolState, isChatRunning, errorText } = props;
+	const metadata = result?.metadata;
+	const command = metadata?.command ?? args?.command ?? "";
+	const cwd = metadata?.cwd ?? metadata?.nextCwd;
+	const prompt = cwd ? `${cwd}$` : "$";
+	const terminalParts = [`${prompt} ${command}`];
+	const normalizedStdout = result?.stdout?.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+	const normalizedStderr = result?.stderr?.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+	const normalizedError = errorText?.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
 
-	const text = result?.metadata?.matches ? `${result.metadata.matches} results` : args?.query ? args.query : undefined;
+	if (normalizedStdout) {
+		terminalParts.push(normalizedStdout);
+	}
+	if (normalizedStderr) {
+		terminalParts.push(normalizedStderr);
+	}
+	if (normalizedError) {
+		terminalParts.push(normalizedError);
+	}
+	if (metadata) {
+		const statusParts = [`exit ${metadata.exitCode}`];
+		if (metadata.nextCwd) {
+			statusParts.push(`cwd ${metadata.nextCwd}`);
+		}
+		terminalParts.push(statusParts.join(" · "));
+	}
+
+	return terminalParts.join("\n\n");
+}
+
+const AiChatMessagePartToolBash = memo(function AiChatMessagePartToolBash(props: AiChatMessagePartToolBash_Props) {
+	const { className, args, result, toolState, isChatRunning, errorText } = props;
+	const metadata = result?.metadata;
+	const command = metadata?.command ?? args?.command;
+	const terminalText = ai_chat_message_part_tool_bash_terminal_text(args, result, errorText);
 
 	return (
 		<AiChatMessagePartDisclosure
-			className={cn(
-				"AiChatMessagePartToolTextSearchFiles" satisfies AiChatMessagePartToolTextSearchFiles_ClassNames,
-				className,
-			)}
+			className={cn("AiChatMessagePartToolBash" satisfies AiChatMessagePartToolBash_ClassNames, className)}
 		>
 			<AiChatMessagePartDisclosureButton
-				title={"Search files"}
-				text={text}
+				title="Bash"
+				text={command}
 				state={toolState}
 				isChatRunning={isChatRunning}
 			/>
 			<AiChatMessagePartToolBody>
-				<AiChatMessagePartToolTextAreaSection label="Parameters" code={JSON.stringify(args ?? {}, null, "\t")} />
-				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
-				{result?.output && (
-					<AiChatMessagePartToolTextAreaSection label="Result" code={result.output} maxHeight="16lh" />
-				)}
+				<TextMonospaceBlock
+					aria-label="Bash terminal output"
+					className={"AiChatMessagePartToolBash-terminal" satisfies AiChatMessagePartToolBash_ClassNames}
+					maxHeight="24lh"
+					text={terminalText}
+				/>
 			</AiChatMessagePartToolBody>
 		</AiChatMessagePartDisclosure>
 	);
 });
-// #endregion tool text_search_files
+// #endregion tool bash
 
 // #region tool write_file
 type AiChatMessagePartToolWritePage_ClassNames =
@@ -1044,6 +1080,17 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 		}
 
 		switch (part.type) {
+			case "tool-bash": {
+				return (
+					<AiChatMessagePartToolBash
+						args={part.input}
+						result={part.output}
+						toolState={part.state}
+						isChatRunning={isChatRunning}
+						errorText={part.errorText}
+					/>
+				);
+			}
 			case "tool-read_file": {
 				return (
 					<AiChatMessagePartToolReadPage
@@ -1080,17 +1127,6 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 			case "tool-grep_files": {
 				return (
 					<AiChatMessagePartToolGrepPages
-						args={part.input}
-						result={part.output}
-						toolState={part.state}
-						isChatRunning={isChatRunning}
-						errorText={part.errorText}
-					/>
-				);
-			}
-			case "tool-text_search_files": {
-				return (
-					<AiChatMessagePartToolTextSearchFiles
 						args={part.input}
 						result={part.output}
 						toolState={part.state}
@@ -1545,6 +1581,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 								className={"AiChatMessageUser-content-composer" satisfies AiChatMessageUser_ClassNames}
 								autoFocus
 								canCancel={false}
+								canSend={true}
 								isRunning={false}
 								initialValue={text ?? ""}
 								selectedModelId={selectedModelId}
@@ -1837,9 +1874,11 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 	className?: string;
 
 	messageId: string;
+	message?: ai_chat_AiSdk5UiMessage | undefined;
 	selectedThreadId: string | null;
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
+	actions: AiChatRuntimeActions;
 };
 
 export type AiChatMessage_CustomAttributes = {
@@ -1853,19 +1892,20 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		id,
 		className,
 		messageId,
+		message: providedMessage,
 		selectedThreadId,
 		selectedModelId,
 		selectedModeId,
+		actions,
 		...rest
 	} = props;
 
-	const message = useAiChatMessage(messageId);
+	const storedMessage = useAiChatMessage(messageId);
+	const message = providedMessage ?? storedMessage;
 	const isRunning = useAiChatMessageIsRunning(selectedThreadId, messageId);
 	const isEditing = useAiChatMessageIsEditing(selectedThreadId, messageId);
 	const branchAnchorIds = useAiChatMessageBranchSiblingIds(messageId);
 	const sendErrorText = useAiChatMessageSendErrorText(selectedThreadId, messageId);
-	// Keep command handlers in stable context so stream chunks update row state without changing every row prop.
-	const actions = useAiChatRuntimeActions();
 
 	const handleSelectedModelIdChange = useFn<AiChatComposer_Props["onSelectedModelIdChange"]>((value) => {
 		actions.setSelectedModelId(value);

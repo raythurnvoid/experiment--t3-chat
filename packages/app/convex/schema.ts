@@ -18,6 +18,7 @@ const app_convex_schema = defineSchema({
 		starred: v.optional(v.boolean()),
 
 		runtime: v.literal("aisdk_5"),
+		stateId: v.union(v.id("ai_chat_threads_state"), v.null()),
 
 		createdBy: v.id("users"),
 		updatedBy: v.id("users"),
@@ -30,6 +31,17 @@ const app_convex_schema = defineSchema({
 		 **/
 		lastMessageAt: v.optional(v.number()),
 	}).index("by_workspace_project_archived_lastMessageAt", ["workspaceId", "projectId", "archived", "lastMessageAt"]),
+
+	ai_chat_threads_state: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		threadId: v.id("ai_chat_threads"),
+		bashCwd: v.string(),
+		updatedBy: v.id("users"),
+		updatedAt: v.number(),
+	})
+		.index("by_thread", ["threadId"])
+		.index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"]),
 
 	/**
 	 * Each doc should be compatible with {@link ai_chat_AiSdk5UiMessage}.

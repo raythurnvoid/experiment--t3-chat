@@ -127,6 +127,14 @@ async function db_purge_workspace_project_content(
 		aiChatThreadsIds.push(doc._id);
 	}
 
+	// ai_chat_threads_state
+	const aiChatThreadStateIds: Array<Id<"ai_chat_threads_state">> = [];
+	for await (const doc of ctx.db
+		.query("ai_chat_threads_state")
+		.withIndex("by_workspace_project_thread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
+		aiChatThreadStateIds.push(doc._id);
+	}
+
 	// chat_messages
 	const chatMessagesIds: Array<Id<"chat_messages">> = [];
 	for await (const doc of ctx.db
@@ -216,6 +224,8 @@ async function db_purge_workspace_project_content(
 	await Promise.all(filesUploadConversionJobs.map((jobId) => files_upload_conversion_workpool.cancel(ctx, jobId)));
 	// ai_chat_threads_messages_aisdk_5
 	await Promise.all(aiChatThreadsMessagesAisdk5Ids.map((id) => ctx.db.delete("ai_chat_threads_messages_aisdk_5", id)));
+	// ai_chat_threads_state
+	await Promise.all(aiChatThreadStateIds.map((id) => ctx.db.delete("ai_chat_threads_state", id)));
 	// ai_chat_threads
 	await Promise.all(aiChatThreadsIds.map((id) => ctx.db.delete("ai_chat_threads", id)));
 	// chat_messages

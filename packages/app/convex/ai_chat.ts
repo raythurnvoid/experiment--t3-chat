@@ -1,9 +1,9 @@
 import { composite_id, omit_properties, should_never_happen } from "../shared/shared-utils.ts";
 import { ai_chat_MODEL_IDS, ai_chat_MODE_IDS, type ai_chat_AiSdk5UiMessage } from "../shared/ai-chat.ts";
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
-import { query, mutation, httpAction, type ActionCtx } from "./_generated/server.js";
+import { query, mutation, httpAction, internalMutation, internalQuery, type ActionCtx } from "./_generated/server.js";
 import { api, internal } from "./_generated/api.js";
-import { paginationOptsValidator, paginationResultValidator, type RouteSpec } from "convex/server";
+import { paginationOptsValidator, paginationResultValidator, type RegisteredQuery, type RouteSpec } from "convex/server";
 import { doc } from "convex-helpers/validators";
 import { v } from "convex/values";
 import { openai } from "@ai-sdk/openai";
@@ -27,11 +27,11 @@ import {
 import { workspaces_db_get_membership } from "./workspaces.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
+	ai_chat_tool_create_bash,
 	ai_chat_tool_create_list_files,
 	ai_chat_tool_create_read_file,
 	ai_chat_tool_create_glob_files,
 	ai_chat_tool_create_grep_files,
-	ai_chat_tool_create_text_search_files,
 	ai_chat_tool_create_write_file,
 	ai_chat_tool_create_edit_file,
 	ai_chat_tool_create_web_search,
@@ -55,28 +55,96 @@ export {
 	save_file_pending_update,
 } from "./files_pending_updates.ts";
 
-const ai_chat_TITLE_MODEL_ID = "gpt-4.1-nano" as const;
+const TITLE_MODEL_ID = "gpt-4.1-nano" as const;
 
-const ai_chat_TITLE_SYSTEM_PROMPT = [
+const TITLE_SYSTEM_PROMPT = [
 	"Generate a concise, descriptive title (max 6 words) for this conversation.",
 	"The title should capture the main topic or purpose.",
 	"Respond with ONLY the title, no quotes or extra text.",
 ].join("\n");
 
-const ai_chat_SYSTEM_PROMPT = [
-	"You are the app chat agent for the user's workspace.",
-	"Respond directly when you can answer confidently without tools.",
-	"When the request depends on existing file content or paths, read or search before you write or edit.",
-	"`write_file` and `edit_file` create pending review changes for the user; they do not silently publish live content.",
-	"If a read, search, or path lookup is uncertain, say so and use the tools to clarify instead of inventing content or paths.",
-	"Use `web_search` for current public facts, official documentation, release notes, news, and other information outside this workspace when file tools are not enough.",
-	"Summarize `web_search` highlight snippets in your own words; do not paste large raw tool outputs.",
-	"If `web_search` fails, say you could not retrieve current web results and continue from workspace context only; do not ask the user to configure keys or environment variables.",
-	"After tool results, give the user a concise direct answer and only continue using tools when it materially helps.",
-].join("\n");
+function ai_chat_system_prompt(args: { workspaceName: string; projectName: string }) {
+	const appFilesMountPath = `/home/cloud-usr/w/${args.workspaceName}/${args.projectName}`;
+	return [
+		"You are the app chat agent for the user's workspace.",
+		"Use the available tools as the working interface for the workspace.",
+		`Bash starts in \`~\` (\`/home/cloud-usr\`); app files are mounted at \`~/w/${args.workspaceName}/${args.projectName}\` (\`${appFilesMountPath}\`). \`/tmp\` is in-memory scratch and resets between bash calls.`,
+		"Bash is the normal file shell for the app. File listing, scanning, searching, reading, and path lookup are ordinary bash work: run the command and answer from the result.",
+		`The app file tree \`${appFilesMountPath}\` is the default target for inspection commands that do not name a path.`,
+		"Use ordinary commands such as `pwd`, `find`, `ls`, `cat`, `stat`, `wc`, and `search --limit N <query>`.",
+		"In Agent mode, `mkdir` under the app file tree creates durable folders.",
+		"File content changes use `write_file` or `edit_file` so the user can review them.",
+		`Convert shell paths under \`${appFilesMountPath}\` to app paths before calling \`write_file\` or \`edit_file\`; for example \`${appFilesMountPath}/docs/readme.md\` becomes \`/docs/readme.md\`.`,
+		"`write_file` and `edit_file` create pending review changes for the user to apply.",
+		"Use tools to clarify uncertain reads, searches, and path lookups instead of inventing content or paths.",
+		"Use `web_search` for current public facts, official documentation, release notes, news, and other information outside this workspace when file tools are not enough.",
+		"Summarize `web_search` highlight snippets in your own words.",
+		"On failed web search, continue from workspace context and state that current web results were unavailable.",
+		"After tool results, give the user a concise direct answer and only continue using tools when it materially helps.",
+	].join("\n");
+}
 
-const ai_chat_ASK_MODE_SYSTEM_PROMPT_SUFFIX =
-	"You are in Ask mode: do not call `write_file` or `edit_file`. Answer from reads and searches only.";
+const ASK_MODE_SYSTEM_PROMPT_SUFFIX =
+	"Ask mode is for reading, searching, and answering. Durable folder and file changes are handled in Agent mode; scratch space is ephemeral.";
+
+const BASH_REPLACED_TOOL_NAMES = ["read_file", "list_files", "glob_files", "grep_files"] as const;
+
+/**
+ * Resolve the persisted context for a client-provided parent message id.
+ *
+ * The client can send either a Convex message `_id` or an optimistic
+ * `clientGeneratedMessageId`, depending on whether the live query has caught up.
+ * Return a bad result when the parent id cannot be resolved so callers cannot
+ * accidentally use a partial parent chain and create a new root branch.
+ */
+function resolve_parent_message_context(input: {
+	messages: Doc<"ai_chat_threads_messages_aisdk_5">[];
+	parentId: string | null | undefined;
+}) {
+	// Index both persisted and optimistic ids so parent resolution works before
+	// the client has received the server-created message ids.
+	const messagesMap = new Map<string, Doc<"ai_chat_threads_messages_aisdk_5">>();
+	for (const msg of input.messages) {
+		messagesMap.set(msg._id, msg);
+		if (msg.clientGeneratedMessageId) {
+			messagesMap.set(msg.clientGeneratedMessageId, msg);
+		}
+	}
+
+	// Walk from the requested parent id back to the root.
+	const reconstructedMessages: Doc<"ai_chat_threads_messages_aisdk_5">[] = [];
+	let nextParentId = input.parentId;
+	while (nextParentId) {
+		const message = messagesMap.get(nextParentId);
+		if (!message) {
+			return Result({
+				_nay: {
+					message: "Message not found.",
+					data: {
+						unresolvedParentId: nextParentId,
+					},
+				},
+			});
+		}
+
+		reconstructedMessages.push(message);
+		nextParentId = message.parentId as string | null;
+	}
+
+	// Resolve the immediate parent separately; this is the id persisted on newly
+	// submitted messages and the optimistic id echoed back to the client.
+	const parentMessage = input.parentId ? (messagesMap.get(input.parentId) ?? null) : null;
+
+	// Keep all parent-resolution outputs together so the stream and persistence
+	// code cannot accidentally derive them from different lookup paths.
+	return Result({
+		_yay: {
+			reconstructedMessages,
+			resolvedParentId: parentMessage?._id ?? null,
+			resolvedParentClientGeneratedId: parentMessage?.clientGeneratedMessageId ?? null,
+		},
+	});
+}
 
 function compute_token_usage_cost_cents(args: { modelId: string; inputTokens: number; outputTokens: number }) {
 	switch (args.modelId) {
@@ -89,49 +157,158 @@ function compute_token_usage_cost_cents(args: { modelId: string; inputTokens: nu
 	}
 }
 
-function ai_chat_get_agent_configuration(input: {
+function build_agent_configuration(input: {
 	ctx: ActionCtx;
 	ctxData: {
 		workspaceId: string;
 		projectId: string;
+		workspaceName: string;
+		projectName: string;
 		userId: Id<"users">;
 	};
 	args: {
 		modeId: (typeof ai_chat_MODE_IDS)[number];
 	};
+	getThreadId: () => Id<"ai_chat_threads"> | null;
 }) {
 	const {
 		ctx,
 		ctxData,
 		args: { modeId },
+		getThreadId,
 	} = input;
 
 	const tools = {
+		bash: ai_chat_tool_create_bash(ctx, ctxData, {
+			getThreadId,
+			allowAppFileTreeMkdir: modeId === "agent",
+		}),
 		read_file: ai_chat_tool_create_read_file(ctx, ctxData),
 		list_files: ai_chat_tool_create_list_files(ctx, ctxData),
 		glob_files: ai_chat_tool_create_glob_files(ctx, ctxData),
 		grep_files: ai_chat_tool_create_grep_files(ctx, ctxData),
-		text_search_files: ai_chat_tool_create_text_search_files(ctx, ctxData),
 		write_file: ai_chat_tool_create_write_file(ctx, ctxData),
 		edit_file: ai_chat_tool_create_edit_file(ctx, ctxData),
 		web_search: ai_chat_tool_create_web_search(),
 	};
 
 	const writeToolNames = new Set<string>(ai_chat_WRITE_TOOL_NAMES);
+	const bashReplacedToolNames = new Set<string>(BASH_REPLACED_TOOL_NAMES);
 
-	// Keep the full tool registry for validation. Ask mode only narrows the tool
-	// names exposed to generation so historical write-tool messages still validate.
+	// Keep the full tool registry for validation. Generation uses bash for
+	// read/search parity while historical legacy-tool messages still validate.
 	const activeTools = (Object.keys(tools) as Array<keyof typeof tools>).filter((name) => {
+		if (bashReplacedToolNames.has(name)) {
+			return false;
+		}
 		return modeId === "ask" ? !writeToolNames.has(name) : true;
 	});
 
 	return {
 		systemPrompt:
-			modeId === "ask" ? `${ai_chat_SYSTEM_PROMPT}\n${ai_chat_ASK_MODE_SYSTEM_PROMPT_SUFFIX}` : ai_chat_SYSTEM_PROMPT,
+			modeId === "ask"
+				? `${ai_chat_system_prompt(ctxData)}\n${ASK_MODE_SYSTEM_PROMPT_SUFFIX}`
+				: ai_chat_system_prompt(ctxData),
 		tools,
 		activeTools,
 	};
 }
+
+export const get_thread_state = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		threadId: v.id("ai_chat_threads"),
+	},
+	returns: doc(app_convex_schema, "ai_chat_threads_state"),
+	handler: async (ctx, args) => {
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (!thread) {
+			throw convex_error({ message: "Not found" });
+		}
+		if (thread.workspaceId !== args.workspaceId || thread.projectId !== args.projectId) {
+			throw convex_error({ message: "Unauthorized" });
+		}
+		if (!thread.stateId) {
+			throw should_never_happen("AI chat thread state pointer missing", {
+				threadId: args.threadId,
+			});
+		}
+
+		const state = await ctx.db.get("ai_chat_threads_state", thread.stateId);
+		if (
+			!state ||
+			state.workspaceId !== args.workspaceId ||
+			state.projectId !== args.projectId ||
+			state.threadId !== args.threadId
+		) {
+			throw should_never_happen("AI chat thread state missing or mismatched", {
+				threadId: args.threadId,
+				stateId: thread.stateId,
+			});
+		}
+
+		return state;
+	},
+});
+
+export type ai_chat_get_thread_state_Result =
+	typeof get_thread_state extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const set_thread_state = internalMutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		threadId: v.id("ai_chat_threads"),
+		userId: v.id("users"),
+		patch: v.object({
+			bashCwd: v.optional(v.string()),
+		}),
+	},
+	returns: doc(app_convex_schema, "ai_chat_threads_state"),
+	handler: async (ctx, args) => {
+		const thread = await ctx.db.get("ai_chat_threads", args.threadId);
+		if (!thread) {
+			throw convex_error({ message: "Not found" });
+		}
+		if (thread.workspaceId !== args.workspaceId || thread.projectId !== args.projectId) {
+			throw convex_error({ message: "Unauthorized" });
+		}
+		if (!thread.stateId) {
+			throw should_never_happen("AI chat thread state pointer missing", {
+				threadId: args.threadId,
+			});
+		}
+
+		// Keep this table for low-churn per-thread agent state, not user-authored chat content.
+		const state = await ctx.db.get("ai_chat_threads_state", thread.stateId);
+		if (
+			!state ||
+			state.workspaceId !== args.workspaceId ||
+			state.projectId !== args.projectId ||
+			state.threadId !== args.threadId
+		) {
+			throw should_never_happen("AI chat thread state missing or mismatched", {
+				threadId: args.threadId,
+				stateId: thread.stateId,
+			});
+		}
+
+		const patch = {
+			...(args.patch.bashCwd !== undefined ? { bashCwd: args.patch.bashCwd } : {}),
+			updatedBy: args.userId,
+			updatedAt: Date.now(),
+		};
+		await ctx.db.patch("ai_chat_threads_state", state._id, patch);
+
+		return {
+			...state,
+			...patch,
+		};
+	},
+});
 
 export const threads_list = query({
 	args: {
@@ -261,11 +438,21 @@ export const thread_create = mutation({
 			lastMessageAt: args.lastMessageAt,
 			archived: false,
 			runtime: "aisdk_5",
+			stateId: null,
 			createdBy: userAuth.id,
 			updatedBy: userAuth.id,
 			updatedAt: now,
 			starred: false,
 		});
+		const stateId = await ctx.db.insert("ai_chat_threads_state", {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			threadId,
+			bashCwd: "~",
+			updatedBy: userAuth.id,
+			updatedAt: now,
+		});
+		await ctx.db.patch("ai_chat_threads", threadId, { stateId });
 
 		return Result({ _yay: { threadId } });
 	},
@@ -395,6 +582,14 @@ export const thread_branch = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
+		const sourceState = thread.stateId ? await ctx.db.get("ai_chat_threads_state", thread.stateId) : null;
+		if (!sourceState) {
+			throw should_never_happen("AI chat thread state missing", {
+				threadId,
+				stateId: thread.stateId,
+			});
+		}
+
 		const newThreadId = await ctx.db.insert("ai_chat_threads", {
 			workspaceId,
 			projectId,
@@ -403,11 +598,21 @@ export const thread_branch = mutation({
 			lastMessageAt: now,
 			archived: false,
 			runtime: "aisdk_5",
+			stateId: null,
 			createdBy: userAuth.id,
 			updatedBy: userAuth.id,
 			updatedAt: now,
 			starred: false,
 		});
+		const stateId = await ctx.db.insert("ai_chat_threads_state", {
+			workspaceId,
+			projectId,
+			threadId: newThreadId,
+			bashCwd: sourceState.bashCwd,
+			updatedBy: userAuth.id,
+			updatedAt: now,
+		});
+		await ctx.db.patch("ai_chat_threads", newThreadId, { stateId });
 
 		if (!newestMessage) {
 			return Result({ _yay: { threadId: newThreadId } });
@@ -834,6 +1039,10 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										},
 									} as const;
 								}
+								const tenant = await ctx.runQuery(internal.workspaces.get_tenant, {
+									workspaceId: membership.workspaceId,
+									projectId: membership.projectId,
+								});
 
 								if (body.threadId == null && body.clientGeneratedThreadId == null) {
 									return {
@@ -843,12 +1052,16 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										},
 									} as const;
 								}
+								let threadId: Id<"ai_chat_threads"> | null = null;
+								let createdThreadId = null;
 
-								const { systemPrompt, tools, activeTools } = ai_chat_get_agent_configuration({
+								const { systemPrompt, tools, activeTools } = build_agent_configuration({
 									ctx,
 									ctxData: {
 										workspaceId: membership.workspaceId,
 										projectId: membership.projectId,
+										workspaceName: tenant.workspace.name,
+										projectName: tenant.project.name,
 										// Pass the same user id into file tools so pending overlays and file-create audit fields
 										// use the identity already accepted by this chat action.
 										userId: user._id,
@@ -856,6 +1069,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									args: {
 										modeId: body.mode,
 									},
+									getThreadId: () => threadId,
 								});
 
 								// Validate the messages if they are present
@@ -899,9 +1113,6 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									}
 								}
 
-								let threadId = null;
-								let createdThreadId = null;
-
 								const requestMessages = body.messages as ai_chat_AiSdk5UiMessage[];
 								const uiMessages: ai_chat_AiSdk5UiMessage[] = [];
 
@@ -929,6 +1140,18 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 												clientGeneratedThreadId: body.clientGeneratedThreadId,
 											},
 										);
+									}
+
+									if (body.parentId) {
+										// A parent id only makes sense after the optimistic thread has been persisted
+										// and selected from the live query. Reject instead of resolving optimistic
+										// thread ids server-side, which would hide a client sync bug.
+										return {
+											status: 409,
+											body: {
+												message: "Message not found.",
+											},
+										} as const;
 									}
 								}
 
@@ -1007,55 +1230,31 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											break;
 										}
 
-										// FIX(parentId-race-condition): Index by both Convex doc `_id` and `clientGeneratedMessageId`
-										// so lookups work regardless of which ID format the client sends.
-										// The client may send a client-generated ID as `body.parentId` when the Convex
-										// real-time subscription hasn't delivered the persisted messages yet.
-										//
-										// BEFORE:
-										// const messagesMap = new Map<string, Doc<"ai_chat_threads_messages_aisdk_5">>(
-										// 	threadMessagesResult.messages.map((msg) => [msg._id, msg]),
-										// );
-										const messagesMap = new Map<string, Doc<"ai_chat_threads_messages_aisdk_5">>();
-										for (const msg of threadMessagesResult.messages) {
-											messagesMap.set(msg._id, msg);
-											if (msg.clientGeneratedMessageId) {
-												messagesMap.set(msg.clientGeneratedMessageId, msg);
-											}
+										// Resolve both Convex ids and client-generated ids. Reject unresolved parents
+										// so the UI can wait for sync instead of creating an accidental root branch.
+										const parentContext = resolve_parent_message_context({
+											messages: threadMessagesResult.messages,
+											parentId: body.parentId,
+										});
+										if (parentContext._nay) {
+											console.warn("AI chat parent message id unresolved; rejecting request", {
+												threadId,
+												parentId: body.parentId,
+												unresolvedParentId: parentContext._nay.data.unresolvedParentId,
+											});
+											return {
+												status: 409,
+												body: {
+													message: parentContext._nay.message,
+												},
+											} as const;
 										}
 
-										const reconstructedMessages: Doc<"ai_chat_threads_messages_aisdk_5">[] = [];
+										resolvedParentId = parentContext._yay.resolvedParentId;
+										resolvedParentClientGeneratedId = parentContext._yay.resolvedParentClientGeneratedId;
 
-										let nextMessageId = body.parentId;
-										while (nextMessageId) {
-											const message = messagesMap.get(nextMessageId);
-											if (!message) {
-												throw should_never_happen("Failed to reconstruct messages", {
-													threadId,
-													messageId: nextMessageId,
-												});
-											}
-
-											reconstructedMessages.push(message);
-											nextMessageId = message.parentId as string;
-										}
-
-										// FIX(parentId-race-condition): Resolve `body.parentId` to the Convex doc `_id` so that
-										// `onFinish` can persist the parent chain with real doc IDs.
-										// Without this, `normalizeId()` in `thread_messages_add` silently returns `null`
-										// for client-generated IDs, breaking the parent chain.
-										if (body.parentId) {
-											const parentMsg = messagesMap.get(body.parentId);
-											if (parentMsg) {
-												resolvedParentId = parentMsg._id;
-												if (parentMsg.clientGeneratedMessageId) {
-													resolvedParentClientGeneratedId = parentMsg.clientGeneratedMessageId;
-												}
-											}
-										}
-
-										for (let i = reconstructedMessages.length - 1; i >= 0; i--) {
-											const msg = reconstructedMessages[i];
+										for (let i = parentContext._yay.reconstructedMessages.length - 1; i >= 0; i--) {
+											const msg = parentContext._yay.reconstructedMessages[i];
 											uiMessages.push({
 												...(msg.content as any),
 												id: msg._id,
@@ -1220,8 +1419,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											let titleInputTokens = 0;
 											let titleOutputTokens = 0;
 											const titleResult = streamText({
-												model: openai(ai_chat_TITLE_MODEL_ID),
-												system: ai_chat_TITLE_SYSTEM_PROMPT,
+												model: openai(TITLE_MODEL_ID),
+												system: TITLE_SYSTEM_PROMPT,
 												messages: titleMessages,
 												stopWhen: stepCountIs(1),
 												temperature: 0.3,
@@ -1290,7 +1489,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 																),
 																metadata: {
 																	amount: compute_token_usage_cost_cents({
-																		modelId: ai_chat_TITLE_MODEL_ID,
+																		modelId: TITLE_MODEL_ID,
 																		inputTokens: titleInputTokens,
 																		outputTokens: titleOutputTokens,
 																	}),
@@ -1298,7 +1497,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 																	billedUserId: billedUser._id,
 																	workspaceId: membership.workspaceId,
 																	projectId: membership.projectId,
-																	modelId: ai_chat_TITLE_MODEL_ID,
+																	modelId: TITLE_MODEL_ID,
 																	inputTokens: titleInputTokens,
 																	outputTokens: titleOutputTokens,
 																	threadId: String(threadId ?? ""),
@@ -1591,8 +1790,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 
 								// Generate title using AI with streaming
 								const result = streamText({
-									model: openai(ai_chat_TITLE_MODEL_ID),
-									system: ai_chat_TITLE_SYSTEM_PROMPT,
+									model: openai(TITLE_MODEL_ID),
+									system: TITLE_SYSTEM_PROMPT,
 									messages: [
 										{
 											role: "user",
@@ -1624,7 +1823,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										const capturedTotalTokens = titleInputTokens + titleOutputTokens;
 										if (capturedTotalTokens > 0) {
 											const titleCostCents = compute_token_usage_cost_cents({
-												modelId: ai_chat_TITLE_MODEL_ID,
+												modelId: TITLE_MODEL_ID,
 												inputTokens: titleInputTokens,
 												outputTokens: titleOutputTokens,
 											});
@@ -1653,7 +1852,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 																billedUserId: billedUser._id,
 																workspaceId: membership.workspaceId,
 																projectId: membership.projectId,
-																modelId: ai_chat_TITLE_MODEL_ID,
+																modelId: TITLE_MODEL_ID,
 																inputTokens: titleInputTokens,
 																outputTokens: titleOutputTokens,
 																threadId: thread_id,
@@ -1744,29 +1943,31 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, test, expect, vi } = import.meta.vitest;
 
-	type ai_chat_get_agent_configuration_test_user_identity = NonNullable<
+	type build_agent_configuration_test_user_identity = NonNullable<
 		Awaited<ReturnType<ActionCtx["auth"]["getUserIdentity"]>>
 	>;
 
-	const ai_chat_get_agent_configuration_test_ctx_data = {
+	const build_agent_configuration_test_ctx_data = {
 		workspaceId: "app_workspace_test_1",
 		projectId: "app_project_test_1",
+		workspaceName: "personal",
+		projectName: "home",
 		userId: "user_1" as Id<"users">,
 	} as const;
 
-	const ai_chat_get_agent_configuration_test_user_identity_default = {
+	const build_agent_configuration_test_user_identity_default = {
 		issuer: "https://clerk.test",
 		subject: "subject-user-1",
 		external_id: "user_1",
 		name: "Test User",
-	} as unknown as ai_chat_get_agent_configuration_test_user_identity;
+	} as unknown as build_agent_configuration_test_user_identity;
 
-	const ai_chat_get_agent_configuration_expected_tool_keys = [
+	const build_agent_configuration_expected_tool_keys = [
+		"bash",
 		"read_file",
 		"list_files",
 		"glob_files",
 		"grep_files",
-		"text_search_files",
 		"write_file",
 		"edit_file",
 		"web_search",
@@ -1775,12 +1976,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const makeCtx = (args?: {
 		runQueryImpl?: (...fnArgs: unknown[]) => Promise<unknown>;
 		runMutationImpl?: (...fnArgs: unknown[]) => Promise<unknown>;
-		userIdentity?: ai_chat_get_agent_configuration_test_user_identity;
+		userIdentity?: build_agent_configuration_test_user_identity;
 	}) => {
 		const runQuery = vi.fn(args?.runQueryImpl ?? (async () => null));
 		const runMutation = vi.fn(args?.runMutationImpl ?? (async () => null));
 		const getUserIdentity = vi.fn(
-			async () => args?.userIdentity ?? ai_chat_get_agent_configuration_test_user_identity_default,
+			async () => args?.userIdentity ?? build_agent_configuration_test_user_identity_default,
 		);
 		const ctx = {
 			runQuery,
@@ -1798,68 +1999,147 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		};
 	};
 
-	describe("ai_chat_get_agent_configuration", () => {
+	const makeUserMessage = () =>
+		({
+			id: "message_1",
+			role: "user",
+			parts: [{ type: "text", text: "stored message" }],
+		}) as ai_chat_AiSdk5UiMessage;
+
+	const makeDbMessage = (args: { id: string; parentId?: string | null; clientGeneratedMessageId?: string }) =>
+		({
+			_id: args.id,
+			parentId: args.parentId ?? null,
+			clientGeneratedMessageId: args.clientGeneratedMessageId,
+			content: makeUserMessage(),
+		}) as unknown as Doc<"ai_chat_threads_messages_aisdk_5">;
+
+	describe("resolve_parent_message_context", () => {
+		test("resolves client-generated parent ids and reconstructs the parent chain", () => {
+			const root = makeDbMessage({ id: "msg_root", clientGeneratedMessageId: "client_root" });
+			const child = makeDbMessage({
+				id: "msg_child",
+				parentId: "msg_root",
+				clientGeneratedMessageId: "client_child",
+			});
+
+			const result = resolve_parent_message_context({
+				messages: [root, child],
+				parentId: "client_child",
+			});
+
+			expect(result._nay).toBeUndefined();
+			const resolved = result._yay;
+			expect(resolved).toBeDefined();
+			expect(resolved!.reconstructedMessages.map((message) => message._id)).toEqual(["msg_child", "msg_root"]);
+			expect(resolved!.resolvedParentId).toBe("msg_child");
+			expect(resolved!.resolvedParentClientGeneratedId).toBe("client_child");
+		});
+
+		test("returns a bad result for a missing parent id", () => {
+			const result = resolve_parent_message_context({
+				messages: [makeDbMessage({ id: "msg_root" })],
+				parentId: "stale_parent",
+			});
+
+			expect(result._yay).toBeUndefined();
+			const error = result._nay;
+			expect(error).toBeDefined();
+			expect(error!.message).toBe("Message not found.");
+			expect(error!.data.unresolvedParentId).toBe("stale_parent");
+		});
+	});
+
+	describe("build_agent_configuration", () => {
 		test("returns the full tool registry and keeps write tools active in Agent mode", () => {
 			const { ctx } = makeCtx();
-			const configuration = ai_chat_get_agent_configuration({
+			const configuration = build_agent_configuration({
 				ctx,
-				ctxData: ai_chat_get_agent_configuration_test_ctx_data,
+				ctxData: build_agent_configuration_test_ctx_data,
 				args: {
 					modeId: "agent",
 				},
+				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
 			});
 
-			expect(Object.keys(configuration.tools)).toEqual(ai_chat_get_agent_configuration_expected_tool_keys);
-			expect(configuration.activeTools).toEqual(ai_chat_get_agent_configuration_expected_tool_keys);
+			expect(Object.keys(configuration.tools)).toEqual(build_agent_configuration_expected_tool_keys);
+			expect(configuration.activeTools).toEqual(["bash", "write_file", "edit_file", "web_search"]);
 		});
 
 		test("keeps the full tool registry but excludes write tools from activeTools in Ask mode", () => {
 			const { ctx } = makeCtx();
-			const configuration = ai_chat_get_agent_configuration({
+			const configuration = build_agent_configuration({
 				ctx,
-				ctxData: ai_chat_get_agent_configuration_test_ctx_data,
+				ctxData: build_agent_configuration_test_ctx_data,
 				args: {
 					modeId: "ask",
 				},
+				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
 			});
 
-			expect(Object.keys(configuration.tools)).toEqual(ai_chat_get_agent_configuration_expected_tool_keys);
-			expect(configuration.activeTools).toEqual([
-				"read_file",
-				"list_files",
-				"glob_files",
-				"grep_files",
-				"text_search_files",
-				"web_search",
-			]);
+			expect(Object.keys(configuration.tools)).toEqual(build_agent_configuration_expected_tool_keys);
+			expect(configuration.activeTools).toEqual(["bash", "web_search"]);
 		});
 
 		test("appends the Ask mode instruction to the system prompt", () => {
 			const { ctx } = makeCtx();
-			const configuration = ai_chat_get_agent_configuration({
+			const configuration = build_agent_configuration({
 				ctx,
-				ctxData: ai_chat_get_agent_configuration_test_ctx_data,
+				ctxData: build_agent_configuration_test_ctx_data,
 				args: {
 					modeId: "ask",
 				},
+				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
 			});
 
 			expect(configuration.systemPrompt).toContain(
-				"You are in Ask mode: do not call `write_file` or `edit_file`. Answer from reads and searches only.",
+				"Ask mode is for reading, searching, and answering. Durable folder and file changes are handled in Agent mode; scratch space is ephemeral.",
 			);
+		});
+
+		test("describes bash as the app file shell without synonym rules", () => {
+			const { ctx } = makeCtx();
+			const configuration = build_agent_configuration({
+				ctx,
+				ctxData: build_agent_configuration_test_ctx_data,
+				args: {
+					modeId: "agent",
+				},
+				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+			});
+
+			expect(configuration.systemPrompt).toContain(
+				"Bash starts in `~` (`/home/cloud-usr`); app files are mounted at `~/w/personal/home` (`/home/cloud-usr/w/personal/home`). `/tmp` is in-memory scratch and resets between bash calls.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Bash is the normal file shell for the app. File listing, scanning, searching, reading, and path lookup are ordinary bash work: run the command and answer from the result.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"The app file tree `/home/cloud-usr/w/personal/home` is the default target for inspection commands that do not name a path.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Use ordinary commands such as `pwd`, `find`, `ls`, `cat`, `stat`, `wc`, and `search --limit N <query>`.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Convert shell paths under `/home/cloud-usr/w/personal/home` to app paths before calling `write_file` or `edit_file`",
+			);
+			expect(configuration.systemPrompt).not.toContain("convenience mount root");
+			expect(configuration.systemPrompt).not.toContain('words like "files"');
+			expect(configuration.systemPrompt).not.toContain("Do not answer file-listing");
 		});
 
 		test("keeps the returned tool keys aligned with the current runtime registry", () => {
 			const { ctx } = makeCtx();
-			const configuration = ai_chat_get_agent_configuration({
+			const configuration = build_agent_configuration({
 				ctx,
-				ctxData: ai_chat_get_agent_configuration_test_ctx_data,
+				ctxData: build_agent_configuration_test_ctx_data,
 				args: {
 					modeId: "agent",
 				},
+				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
 			});
 
-			expect(Object.keys(configuration.tools)).toEqual(ai_chat_get_agent_configuration_expected_tool_keys);
+			expect(Object.keys(configuration.tools)).toEqual(build_agent_configuration_expected_tool_keys);
 		});
 	});
 }

@@ -6,6 +6,8 @@ Use this file for reusable problems that affect app browser QA.
 
 - The global `playwriter` command may not exist on this machine. Use `pnpx playwriter`.
 - Create sessions from the repo root so the scoped Playwriter filesystem can read and append skill files.
+- In this repo, run Playwriter through Vite Plus, for example `& "$env:USERPROFILE\.vite-plus\bin\vp.exe" exec -- pnpx playwriter session new`.
+- Do not use `vp exec -F t3-chat-clone-app -- pnpx playwriter session new` when the flow needs `.agents/skills/**`; the package-filtered session cwd becomes `packages/app` and cannot read repo-root harness files.
 - Use extension mode by default. Do not use direct CDP unless the user explicitly asks for it.
 - This repo forbids Bun and `bunx`; translate any Playwriter docs that mention `npx`/`bunx` to `pnpx playwriter`.
 - In PowerShell, prefer `pnpx playwriter -s $session --% -e "..."` for Playwriter execute calls. Put `--%` after `-s $session` so PowerShell expands the session id but keeps JavaScript quotes intact.
@@ -14,7 +16,9 @@ Use this file for reusable problems that affect app browser QA.
 - `pnpx playwriter session new` can print status text plus the session id. Parse the `Session <id> created` line instead of using the whole trimmed output as the id.
 - If multiple Edge profiles are reported, choose the explicit `--browser profile:<key>` value. Do not use the auto-selected profile when Playwriter says multiple browsers were detected.
 - For long or assertion-heavy Playwriter flows, write the JavaScript to a temporary file and run `pnpx playwriter -s $session -f $scriptPath --timeout <ms>`; this avoids PowerShell quote corruption and makes reruns safer.
+- Playwriter execute snippets do not automatically provide Playwright Test's `expect`. Use manual polling or import only the small assertion utility you need.
 - If the user says the extension is active but `pnpx playwriter browser list` reports `No browsers detected`, restart the relay with `pnpx playwriter serve --host localhost --replace`, then check again. If the relay still sees no extension, start a managed Edge profile with Playwriter's bundled extension: `pnpx playwriter browser start "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --user-data-dir $env:TEMP\playwriter-t3-chat-profile --headed`. Then run `pnpx playwriter browser list`, create a session with the reported `install:Edge:<id>` key, and navigate the target URL from that session.
+- A React render loop can overwhelm the Playwriter relay and make the tab appear frozen. Check `getLatestLogs({ search: /Maximum update depth|too much recursion|render/i })` and the relay/CDP logs before retrying. After fixing the app loop, close or kill only the stuck localhost renderer tab, restart the relay with `pnpx playwriter serve --host localhost --replace`, recreate/bind a session, and reload the `/files` route.
 
 ## Interaction Discipline
 
@@ -28,6 +32,11 @@ Use this file for reusable problems that affect app browser QA.
 
 - Viewport and sidebar state may persist between sessions through browser storage.
 - Main sidebar open/collapsed state is persisted in localStorage keys documented in `app-map.md`.
+- Agent `New chat` creates a client-only `ai_thread-*` tab before Convex persists the real thread. If cleanup removes that optimistic tab too early, sends land in an older chat or the tab appears to vanish. Verify the selected `.AiChatThread[data-thread-id]` still starts with `ai_thread-` before sending the first message in a new chat.
+- Multi-file agent setup prompts can overstate success. For corpus generation or bulk QA data, keep batches small and verify persisted file nodes through the app Convex client after each batch.
+- Rapid AI chat sends can hit the `/api/chat` rate limiter and produce a recoverable `429` response with `retryAfterMs`. Wait for that window and click the visible `Retry` button for the same draft instead of sending a duplicate prompt.
+- The chat stop control is labelled `Stop generating`. Playwriter waits that look for `Stop generation` will miss the running state and can send the next prompt too early, producing avoidable `429` failures or branched transcript confusion.
+- Keep AI chat Playwriter scripts short when exercising multiple LLM turns. Long monolithic execute calls can lose the Playwriter relay connection with `fetch failed`; prefer one prompt per execute or a small batch with clear idle waits.
 - Rapid files-tree create/move/archive sequences can hit the `files_tree_write` rate limiter. If a create dialog stays open with `Rate limit exceeded`, wait for the retry window, keep the dialog open, and submit the same draft again instead of restarting the flow.
 - If using a temporary localhost tab, save `app::auth::anonymous_token` and `app::auth::anonymous_token_user_id` before clearing them to mint a fresh anonymous QA session. Restore both keys before closing the QA tab.
 - Close only the localhost tabs created for QA. Leave unrelated user tabs open.
