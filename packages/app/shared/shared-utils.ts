@@ -175,9 +175,10 @@ export const get_id_generator = ((/* iife */) => {
 	};
 })();
 
-export type GeneratedIdPrefix = "file" | "ai_thread" | "ai_message";
+export type GeneratedIdPrefixKey = "file" | "ai_thread" | "ai_message";
+export type GeneratedIdPrefix = `${GeneratedIdPrefixKey}-`;
 
-export function generate_id<T extends GeneratedIdPrefix>(snakeCasePrefix: T): `${T}-${string}` {
+export function generate_id<T extends GeneratedIdPrefixKey>(snakeCasePrefix: T): `${T}-${string}` {
 	const idGenerator = get_id_generator(snakeCasePrefix);
 	return idGenerator() as `${T}-${string}`;
 }

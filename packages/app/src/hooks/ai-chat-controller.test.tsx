@@ -1,8 +1,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { ai_chat_Thread } from "@/lib/ai-chat.ts";
+
+type MockChatInstance = {
+	id: string;
+	messages: unknown[];
+	error: Error | undefined;
+	sendMessage: ReturnType<typeof vi.fn>;
+};
 
 const hookMocks = vi.hoisted(() => {
 	return {
@@ -14,17 +21,25 @@ const hookMocks = vi.hoisted(() => {
 		threads: [] as Array<{ archived: boolean; [key: string]: unknown }>,
 		mutation: vi.fn(() => Promise.resolve({ _yay: { threadId: "thread_branch" } })),
 		renderSelectedThreadId: vi.fn(),
+		chatInstances: [] as MockChatInstance[],
 	};
 });
 
 vi.mock("@ai-sdk/react", () => {
-	class MockChat {
+	class MockChat implements MockChatInstance {
 		id: string;
 		messages: unknown[];
 		status = "ready";
 		error: Error | undefined;
+		nextMessageIndex = 0;
 		sendMessage = vi.fn((message: unknown) => {
-			this.messages.push(message);
+			const nextMessage =
+				typeof message === "object" && message !== null && !("id" in message)
+					? { id: `ai_message_mock_${this.nextMessageIndex}`, ...message }
+					: message;
+
+			this.nextMessageIndex += 1;
+			this.messages.push(nextMessage);
 			return Promise.resolve();
 		});
 		regenerate = vi.fn(() => Promise.resolve());
@@ -38,6 +53,7 @@ vi.mock("@ai-sdk/react", () => {
 		constructor(args: { id?: string | null; messages?: unknown[] }) {
 			this.id = args.id ?? "mock_chat";
 			this.messages = args.messages ?? [];
+			hookMocks.chatInstances.push(this);
 		}
 	}
 
@@ -154,6 +170,67 @@ function ControllerProbe(props: {
 	);
 }
 
+function RuntimeSendProbe() {
+	const [, forceRender] = useState(0);
+	const controller = AiChatController.useThreadRuntime();
+	const selectedThreadId = controller.selectedThreadId;
+	const selectedChat = controller.session?.chat as MockChatInstance | null | undefined;
+	const latestMessage = controller.activeBranchMessages.list.at(-1);
+	const failedSendUserMessageId = AiChatController.useStore((state) =>
+		selectedThreadId ? (state.failedSendUserMessageIdByThreadId.get(selectedThreadId) ?? null) : null,
+	);
+
+	return (
+		<div>
+			<div data-testid="runtime-selected">{selectedThreadId ?? "null"}</div>
+			<div data-testid="runtime-latest-message">{latestMessage?.id ?? "null"}</div>
+			<div data-testid="runtime-failed-message">{failedSendUserMessageId ?? "null"}</div>
+			<button type="button" onClick={() => controller.startNewChat()}>
+				new runtime
+			</button>
+			<button
+				type="button"
+				onClick={() => {
+					if (!selectedThreadId) {
+						return;
+					}
+
+					controller.sendUserText(selectedThreadId, "Retry me");
+					forceRender((value) => value + 1);
+				}}
+			>
+				send first
+			</button>
+			<button
+				type="button"
+				onClick={() => {
+					if (!selectedChat) {
+						return;
+					}
+
+					selectedChat.error = new Error("send failed");
+					forceRender((value) => value + 1);
+				}}
+			>
+				mark failed
+			</button>
+			<button
+				type="button"
+				onClick={() => {
+					if (!selectedThreadId || !latestMessage) {
+						return;
+					}
+
+					controller.sendUserText(selectedThreadId, "Retry me", { messageId: latestMessage.id });
+					forceRender((value) => value + 1);
+				}}
+			>
+				retry latest
+			</button>
+		</div>
+	);
+}
+
 function ControllerSurface(props: { storageKey: AiChatControllerStorageKey; children: ReactNode }) {
 	return (
 		<AiChatController key={props.storageKey} storageKey={props.storageKey}>
@@ -188,6 +265,7 @@ describe("AiChatController", () => {
 		hookMocks.tenant.workspaceId = "workspace_test";
 		hookMocks.tenant.projectId = "project_test";
 		hookMocks.threads = [];
+		hookMocks.chatInstances = [];
 		hookMocks.mutation.mockClear();
 		hookMocks.renderSelectedThreadId.mockClear();
 	});
@@ -255,6 +333,26 @@ describe("AiChatController", () => {
 		expect(hookMocks.renderSelectedThreadId).toHaveBeenNthCalledWith(1, "thread_sidebar_last");
 	});
 
+	test("ignores stale optimistic sidebar tabs when restoring the selected thread", () => {
+		const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` = `app_state::file_editor_sidebar_open_tabs::scope::${hookMocks.tenant.membershipId}`;
+		const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` = `app_state::file_editor_sidebar_agent_selected_tab::scope::${hookMocks.tenant.membershipId}`;
+
+		app_local_storage_set_value(openTabsStorageKey, [
+			{ id: "thread_sidebar_last", title: "Sidebar last" },
+			{ id: "ai_thread-stale_unsent", title: "New chat" },
+		]);
+		app_local_storage_set_value(selectedTabStorageKey, "ai_thread-stale_unsent");
+
+		render(
+			<SidebarSurface>
+				<ControllerProbe label="sidebar" />
+			</SidebarSurface>,
+		);
+
+		expect(screen.getByTestId("sidebar-selected").textContent).toBe("thread_sidebar_last");
+		expect(hookMocks.renderSelectedThreadId).toHaveBeenNthCalledWith(1, "thread_sidebar_last");
+	});
+
 	test("selectThread hydrates a session and updates only the current surface selection", () => {
 		const surfaceAStorageKey: AiChatControllerStorageKey = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}_a`;
 		const surfaceBStorageKey: AiChatControllerStorageKey = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}_b`;
@@ -296,6 +394,45 @@ describe("AiChatController", () => {
 		expect(selectedThreadId).not.toBe("null");
 		expect(selectedThreadId).not.toBe("thread_existing_last");
 		expect(app_local_storage_get_value(storageKey)).toBe("thread_existing_last");
+	});
+
+	test("retries a failed optimistic user message by replacing it from its original parent", async () => {
+		const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
+
+		render(
+			<ControllerSurface storageKey={storageKey}>
+				<RuntimeSendProbe />
+			</ControllerSurface>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "new runtime" }));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("runtime-selected").textContent).toMatch(/^ai_thread-/);
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "send first" }));
+
+		const chat = hookMocks.chatInstances.find((chat) => chat.sendMessage.mock.calls.length === 1);
+		expect(chat).toBeDefined();
+		if (!chat) {
+			throw new Error("Expected selected chat to send first message");
+		}
+
+		await waitFor(() => {
+			expect(screen.getByTestId("runtime-latest-message").textContent).toBe("ai_message_mock_0");
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "mark failed" }));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("runtime-failed-message").textContent).toBe("ai_message_mock_0");
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "retry latest" }));
+
+		expect(chat.sendMessage).toHaveBeenCalledTimes(2);
+		expect(chat.messages).toHaveLength(1);
 	});
 
 	test("optimistic-id upgrade replaces selected optimistic id and persists only the persisted id", async () => {

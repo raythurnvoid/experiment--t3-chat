@@ -54,12 +54,13 @@ Non-obvious runtime details:
 
 - Ask mode keeps the full tool registry for UI-message validation, but removes `write_file` and `edit_file` from `activeTools`.
 - User messages are persisted before generation so they survive aborts/stopped generations.
-- Pre-stream send failures, such as rate-limit or credit-gate HTTP failures, remain transient client state in AI SDK `chat.error`; the UI shows inline feedback on the failed user message and retries by resubmitting that same user message without appending a duplicate.
+- Pre-stream send failures, such as rate-limit or credit-gate HTTP failures, remain transient client state in AI SDK `chat.error`; the UI shows inline feedback on the failed user message and retries by replacing that same client-only message from its original parent without appending a duplicate.
 - Thread/file access is scoped by a `membershipId` row that determines the effective workspace/project scope.
 - Auth falls back to an anonymous user identity when a signed-in identity is unavailable.
 - The chat HTTP action resolves the current app `users` row once and passes `user._id` into AI file tools; file-tool internals should use that id instead of re-reading auth from Convex context.
 - `bash` is presented as the normal shell interface for the app file tree mounted at `/home/cloud-usr/w/{workspaceName}/{projectName}`.
-- Client-side thread selection is surface-owned through `AiChatController` in `../../../packages/app/src/hooks/ai-chat-controller.tsx`. Surfaces pass only their typed storage key: full-page chat uses `app_state::ai_chat_last_open::scope::<membershipId>`, while the file sidebar agent uses `app_state::file_editor_sidebar_agent_selected_tab::scope::<membershipId>` and the controller derives the matching open-tabs key internally. `AiChatController` is also the hook namespace for `useThreadList`, `useThreadRuntime`, and direct shared render-state selectors through `useStore`. Use `ai_chat_is_optimistic_thread` from `../../../packages/app/src/lib/ai-chat.ts` for optimistic-thread checks. The shared Zustand store keeps sessions, draft model/mode, message caches, running/error maps, and editing state, but does not own `selectedThreadId`.
+- Client-side thread selection is surface-owned through `AiChatController` in `../../../packages/app/src/hooks/ai-chat-controller.tsx`. Surfaces pass only their typed storage key: full-page chat uses `app_state::ai_chat_last_open::scope::<membershipId>`, while the file sidebar agent uses `app_state::file_editor_sidebar_agent_selected_tab::scope::<membershipId>` and the controller derives the matching open-tabs key internally. `AiChatController` is also the hook namespace for `useThreadList`, `useThreadRuntime`, and direct shared render-state selectors through `useStore`. Use `ai_chat_is_optimistic_thread` for thread objects. For stored ids, use a local `ai_thread-` prefix check whose dashed prefix satisfies `GeneratedIdPrefix`; `GeneratedIdPrefixKey` is the non-dashed key accepted by `generate_id`. The shared Zustand store keeps sessions, draft model/mode, message caches, running/error maps, and editing state, but does not own `selectedThreadId`.
+- `ai_thread-*` ids are client-only optimistic thread ids. They are resumable only while their in-memory `ThreadSession.optimisticThread` exists; local-storage restore paths must ignore/drop stale `ai_thread-*` ids or upgrade them to the persisted Convex thread id before a send. A stale optimistic id sent as `threadId` causes `/api/chat` request validation failure; fresh optimistic sends must use `clientGeneratedThreadId`.
 
 # Current Toolbelt
 
@@ -210,7 +211,8 @@ Writes:
 11. Current tools do not read raw uploaded R2 binaries; generated Markdown outputs from uploads are ordinary Markdown files whose committed Markdown is also stored in R2.
 12. Source-path reads must preserve the product distinction between the original R2 object and generated editable Markdown outputs.
 13. Generated upload outputs are regular visible files; tools should not apply hidden-file or path-alias behavior.
-14. Client-side failed-send feedback is not persisted; retry keeps the existing failed user message as the final chat message and resubmits it in place.
+14. Client-side failed-send feedback is not persisted; retry keeps the existing failed user message as the final chat message and resubmits it in place from that message's original persisted parent.
+15. Persisted chat-selection storage must not restore stale `ai_thread-*` ids as real thread ids. Either drop the unsent optimistic tab or replace it with the persisted Convex thread id matched by `clientGeneratedId`.
 
 # Verification Checklist
 

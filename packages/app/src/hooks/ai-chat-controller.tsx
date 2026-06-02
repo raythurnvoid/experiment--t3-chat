@@ -19,7 +19,7 @@ import { app_fetch_main_api_url } from "@/lib/fetch.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_local_storage_get_value, app_local_storage_set_value, type storage_local_Key } from "@/lib/storage.ts";
-import { generate_id, get_id_generator, should_never_happen } from "@/lib/utils.ts";
+import { generate_id, get_id_generator, should_never_happen, type GeneratedIdPrefix } from "@/lib/utils.ts";
 import { useFn, useLiveRef } from "./utils-hooks.ts";
 import {
 	type ai_chat_AiSdk5UiMessage,
@@ -162,10 +162,12 @@ function get_sidebar_open_tabs_storage_key(storageKey: SidebarSelectedTabStorage
 function get_initial_selected_thread_id(storageKey: AiChatControllerStorageKey) {
 	const selectedThreadId = app_local_storage_get_value(storageKey);
 	if (!is_sidebar_selected_tab_storage_key(storageKey)) {
-		return selectedThreadId;
+		return selectedThreadId?.startsWith("ai_thread-" satisfies GeneratedIdPrefix) ? null : selectedThreadId;
 	}
 
-	const openTabs = app_local_storage_get_value(get_sidebar_open_tabs_storage_key(storageKey));
+	const openTabs = app_local_storage_get_value(get_sidebar_open_tabs_storage_key(storageKey)).filter(
+		(tab) => !tab.id.startsWith("ai_thread-" satisfies GeneratedIdPrefix),
+	);
 	const selectedOpenTab = openTabs.find((tab) => tab.id === selectedThreadId);
 	return selectedOpenTab?.id ?? openTabs.at(-1)?.id ?? null;
 }
@@ -571,9 +573,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	const draftSelectedModelId = useStore((state) => state.draftSelectedModelId);
 	const draftSelectedModeId = useStore((state) => state.draftSelectedModeId);
 	const threadById = useStore((state) => state.threadById);
-	const session = useStore((state) =>
-		selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null,
-	);
+	const session = useStore((state) => (selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null));
 
 	const threads = usePaginatedQuery(
 		app_convex_api.ai_chat.threads_list,
@@ -1052,9 +1052,7 @@ const useThreadRuntimeController = () => {
 	const draftSelectedModelId = useStore((state) => state.draftSelectedModelId);
 	const draftSelectedModeId = useStore((state) => state.draftSelectedModeId);
 
-	const session = useStore((state) =>
-		selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null,
-	);
+	const session = useStore((state) => (selectedThreadId ? (state.threadById.get(selectedThreadId) ?? null) : null));
 	const selectedThreadFailedSendUserMessageId = useStore((state) =>
 		selectedThreadId ? (state.failedSendUserMessageIdByThreadId.get(selectedThreadId) ?? null) : null,
 	);
@@ -1768,8 +1766,25 @@ const useThreadRuntimeController = () => {
 			(persistedMessagesLookup?.mapById.has(message.id) ? message.id : undefined) ??
 			persistedMessagesLookup?.mapByClientGeneratedId.get(message.id)?.id;
 		const messageHasPersistedId = (message: ai_chat_AiSdk5UiMessage) => Boolean(getPersistedMessageId(message));
+		const failedSendUserMessageId = useStore.getState().failedSendUserMessageIdByThreadId.get(threadId) ?? null;
+		const targetMessageIsFailedOptimisticUserMessage = Boolean(
+			targetMessage?.role === "user" &&
+				!messageHasPersistedId(targetMessage) &&
+				failedSendUserMessageId === targetMessage.id,
+		);
+		const latestMessageIsFailedOptimisticUserMessage = Boolean(
+			!targetMessage &&
+				latestMessage?.role === "user" &&
+				!messageHasPersistedId(latestMessage) &&
+				failedSendUserMessageId === latestMessage.id,
+		);
 
-		if (session.optimisticThread && latestMessage) {
+		if (
+			session.optimisticThread &&
+			latestMessage &&
+			!targetMessageIsFailedOptimisticUserMessage &&
+			!latestMessageIsFailedOptimisticUserMessage
+		) {
 			// Keep follow-up sends blocked until the live query has replaced the
 			// optimistic thread with the persisted Convex thread id.
 			console.warn(
@@ -1783,13 +1798,6 @@ const useThreadRuntimeController = () => {
 			return;
 		}
 
-		const latestMessageIsFailedOptimisticUser = Boolean(
-			!targetMessage &&
-				latestMessage?.role === "user" &&
-				!latestMessage.metadata?.convexId &&
-				useStore.getState().failedSendUserMessageIdByThreadId.get(threadId) === latestMessage.id,
-		);
-
 		// Prevent the UI from breaking by hiding unnecessary optimistic messages
 		// that can be created as the user stop and adds a new message to the chat
 		// 1 or more times
@@ -1799,7 +1807,7 @@ const useThreadRuntimeController = () => {
 		let nextChatMessages = activeBranchMessages.list;
 		if (targetMessageIndex !== undefined && targetMessageIndex >= 0) {
 			nextChatMessages = activeBranchMessages.list.slice(0, targetMessageIndex);
-		} else if (shouldDropOptimisticAssistant || latestMessageIsFailedOptimisticUser) {
+		} else if (shouldDropOptimisticAssistant || latestMessageIsFailedOptimisticUserMessage) {
 			nextChatMessages = activeBranchMessages.list.slice(0, -1);
 		}
 
@@ -1817,6 +1825,15 @@ const useThreadRuntimeController = () => {
 				return null;
 			};
 
+			// Retry passes the failed message id; replace that client-only message
+			// from its original parent instead of treating it as the persisted target.
+			if (targetMessageIsFailedOptimisticUserMessage) {
+				return {
+					convexParentId: targetMessage?.metadata?.convexParentId ?? null,
+					parentClientGeneratedId: targetMessage?.metadata?.parentClientGeneratedId ?? null,
+				};
+			}
+
 			if (targetMessage) {
 				if (!messageHasPersistedId(targetMessage)) {
 					return blockUntilParentPersists(targetMessage, "target-message-not-persisted");
@@ -1831,7 +1848,7 @@ const useThreadRuntimeController = () => {
 			// Failed sends are client-only; anchor the replacement/new message to
 			// the parent that produced the failed request instead of an id the
 			// backend has never seen.
-			if (latestMessageIsFailedOptimisticUser) {
+			if (latestMessageIsFailedOptimisticUserMessage) {
 				return {
 					convexParentId: latestMessage?.metadata?.convexParentId ?? null,
 					parentClientGeneratedId: latestMessage?.metadata?.parentClientGeneratedId ?? null,
@@ -1979,10 +1996,6 @@ const useThreadRuntimeController = () => {
 			return true;
 		}
 
-		if (session?.optimisticThread) {
-			return false;
-		}
-
 		const getPersistedMessageId = (message: ai_chat_AiSdk5UiMessage) =>
 			message.metadata?.convexId ??
 			(persistedMessagesLookup?.mapById.has(message.id) ? message.id : undefined) ??
@@ -1990,6 +2003,16 @@ const useThreadRuntimeController = () => {
 		const latestMessageHasPersistedId = Boolean(getPersistedMessageId(latestMessage));
 		if (latestMessageHasPersistedId) {
 			return true;
+		}
+
+		// Allow retrying a client-only failed user message because its replacement
+		// is anchored to the last persisted parent, not to the failed optimistic id.
+		if (latestMessage.role === "user" && selectedThreadFailedSendUserMessageId === latestMessage.id) {
+			return true;
+		}
+
+		if (session?.optimisticThread) {
+			return false;
 		}
 
 		if (latestMessage.role === "assistant") {
@@ -2000,9 +2023,7 @@ const useThreadRuntimeController = () => {
 			return Boolean(parentMessage && getPersistedMessageId(parentMessage));
 		}
 
-		// Allow retrying a client-only failed user message because its replacement
-		// is anchored to the last persisted parent, not to the failed optimistic id.
-		return latestMessage.role === "user" && selectedThreadFailedSendUserMessageId === latestMessage.id;
+		return false;
 	})();
 
 	const status = ((/* iife */) => {

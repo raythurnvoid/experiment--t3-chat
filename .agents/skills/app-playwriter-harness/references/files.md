@@ -168,6 +168,8 @@ Use this when creating many QA files through the app agent.
 Use this after changing chat send, stop, branch, pending-message, or parent-id logic.
 
 - Bind one `/files` tab, open `#app_file_editor_sidebar_tabs_agent`, and capture `/api/chat` requests with `page.route("**/api/chat", ...)`.
+- If a New chat tab id starts with `ai_thread-*` after reload/HMR, first verify it still has an in-memory optimistic session. A stale stored optimistic tab must be dropped or upgraded before sending; `/api/chat` should receive `clientGeneratedThreadId` for a fresh optimistic chat, never `threadId: "ai_thread-..."`.
+- When a visible user bubble shows `Message failed to send.`, clicking `Retry` should create a new `/api/chat` request for the same text. If no request is captured and the console logs `target-message-not-persisted`, the retry path is treating the failed client-only user message as a persisted branch target instead of replacing it from its original parent.
 - Start a fresh chat with `getByRole("button", { name: "New chat", exact: true })`; the open chat drag handle can otherwise match the same text.
 - Send a prompt that starts with a unique marker and produces a long visible answer, for example `Start with <marker>, then write 80 numbered lines. Do not use tools.`
 - Wait until the marker appears, click `Stop generating`, immediately type a follow-up, and inspect `getByRole("button", { name: "Send message" })`.
