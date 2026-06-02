@@ -47,7 +47,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - User-created Markdown files and the auto-created home `README.md` are seeded by the Convex create action with `files_INITIAL_CONTENT`; the rich-text editor must not bootstrap initial Yjs content on the client.
 - Uploaded non-Markdown source file nodes create an upload asset immediately, store the source `contentType` on the node, and get `r2Key` on the asset after the R2 object-create event confirms the source object exists.
 - Uploaded Markdown files still upload directly to R2 through the signed PUT path. The R2 event finalizer then promotes the uploaded object into the ordinary editable Markdown shape by creating the Markdown asset, Yjs snapshot, chunks, and version snapshot.
-- Generated Markdown outputs are normal visible file nodes created as siblings of the uploaded source during R2 event processing. PDF uploads currently create `<source-name>.md`.
+- Generated Markdown outputs are normal visible file nodes created as siblings of the uploaded source during R2 event processing. PDF uploads create `<source-name>.md`; image uploads create `<source-name>.description.md`; video uploads create `<source-name>.summary.md` and `<source-name>.transcript.md`.
 - Assets are the single R2 object metadata record for source binaries, live Markdown, compacted Yjs snapshots, and version snapshot Markdown. Owners point to assets; assets do not own relationships between source files and generated outputs.
 - Source/conversion metadata stays in DB/R2 metadata, not visible generated Markdown.
 - Upload status is derived in the UI from the selected node and its asset: missing `r2Key` is waiting for upload, `conversionWorkId` means processing, and `null` means terminal.
@@ -58,11 +58,12 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 
 - Upload creates a visible source file node immediately.
 - While upload/conversion is pending, opening the source shows stored-file status such as waiting or processing.
-- R2 event processing for PDF uploads creates visible generated Markdown sibling placeholders before queueing conversion.
+- R2 event processing for PDF, image, and video uploads creates visible generated Markdown sibling placeholders before queueing conversion or AI media processing.
 - Opening a generated placeholder before finalization shows stored-file/status metadata. After finalization, opening it renders the normal Markdown editor.
 - Replacing an uploaded source archives only the conflicting source path. Generated output conflicts are handled when the R2 event creates planned output names.
 - Rename, move, archive, and unarchive treat generated outputs as ordinary independent files. Moving a pending generated output after enqueue does not break finalization because the conversion job targets output node ids.
 - Archiving a source upload should keep the original R2 object; permanent tenant purge deletes R2 objects for every `files_r2_assets` row before deleting the rows.
+- Browser-side source uploads try to compress static JPEG/PNG/WebP images before `files_nodes.create_upload_node`; keep the original file when compression fails or is not smaller. Animated GIFs must keep the original blob so animation is not destroyed, but still use the image-description generation path.
 - Rich-text image uploads should create visible upload nodes next to the document where the image was inserted and use the same R2 source/generated-output conversion model.
 - If conversion fails, keep the source and generated output placeholders visible in their last durable asset state. Cleanup/recovery for abandoned or failed reservations is intentionally still a TODO.
 - Conversion rerun is not a normal product flow; if a forced rerun is added later, it may overwrite generated outputs by node id.
@@ -169,7 +170,7 @@ Tree-item components:
 ## Upload Lifecycle
 
 1. User uploads one file through the menu or drops one external file onto an accepted target.
-2. Frontend detects Markdown uploads by Markdown media type or `.md` name for upload normalization; backend conversion behavior is based on stored `contentType`, not filename.
+2. Frontend detects Markdown uploads by Markdown media type or `.md` name for upload normalization; backend conversion behavior is based on stored `contentType`, not filename. Static image uploads are prepared with browser `createImageBitmap` + canvas compression before the upload node is created, and the smaller compressed `File` is used only when it is smaller than the original.
 3. Missing extension for non-Markdown uploads or any upload path conflict opens the upload draft modal.
 4. `files_nodes.create_upload_node` validates membership, rate limit, parent folder/root, size, and conflicts.
 5. Backend creates an upload `files_r2_assets` row without `r2Key` and creates the visible source file node with `assetId` and `contentType`.
@@ -179,9 +180,12 @@ Tree-item components:
 9. Convex parses the deterministic asset key from the R2 event, ignores non-upload asset kinds, patches `r2Key`/`etag`/`size` for upload assets, queues upload processing, and stores `conversionWorkId` on the asset.
 10. For Markdown uploads, Convex reads the uploaded Markdown from R2, creates the normal Markdown asset, Yjs snapshot, chunks, and version snapshot, then patches the visible node into the same shape as an app-created Markdown file.
 11. For PDF MIME uploads, Convex creates a generated sibling placeholder for `<source filename>.md`, archiving active name conflicts for that planned output name.
-12. Modal converts the R2 source object to Markdown.
-13. Convex writes generated Markdown, compacted Yjs objects, and version snapshots to R2.
-14. Convex patches the exact generated output node ids into editable Markdown files, clears conversion work, and writes chunks/snapshot rows.
+12. For image MIME uploads, Convex credit-gates media work, creates `<source filename>.description.md`, then an R2 Workpool action sends a short-lived signed R2 URL to OpenAI vision and writes the generated description as editable Markdown.
+13. For video MIME uploads, Convex credit-gates media work, creates `<source filename>.summary.md` and `<source filename>.transcript.md`, then asks the Cloudflare Media Transformer Worker to extract sampled frames and bounded M4A audio segments from private R2. Convex transcribes sampled audio with OpenAI, summarizes transcript plus frame samples, and writes both outputs as editable Markdown.
+14. If every Cloudflare audio sample fails and the original uploaded video is still within the OpenAI transcription byte cap, Convex downloads the original R2 object through a signed URL and transcribes that MP4 directly. This covers long compressed videos that exceed Cloudflare Media Transformations' source-duration limit while keeping larger uploads terminal instead of proxying unbounded bytes through Convex.
+15. Modal converts only PDF R2 source objects to Markdown. Do not use Modal for image/video extraction.
+16. Convex writes generated Markdown, compacted Yjs objects, and version snapshots to R2.
+17. Convex patches the exact generated output node ids into editable Markdown files, clears conversion work, and writes chunks/snapshot rows.
 
 # Headless-Tree Configuration Highlights
 
@@ -222,6 +226,8 @@ Tree-item components:
 - Archive/unarchive and archived filter/toggle behavior is correct.
 - DnD allows legal moves, blocks drops onto files, and root-zone feedback works.
 - PDF external file drops onto root/folders create normal uploaded source file nodes and visible generated Markdown sibling files through the R2 conversion flow.
+- Static image uploads are compressed in the browser when smaller, remain visible as source files, and create readable `<source>.description.md` siblings.
+- Video uploads remain visible as source files and create readable `<source>.summary.md` and `<source>.transcript.md` siblings.
 - Markdown external file drops onto root/folders use the same signed R2 upload path, then finalize into ordinary Markdown file nodes.
 - External file drops onto file rows do not upload to the file's parent.
 - Multi-file and directory external drops are rejected without creating nodes.

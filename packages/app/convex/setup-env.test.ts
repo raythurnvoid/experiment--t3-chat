@@ -51,6 +51,18 @@ if (!process.env.MODAL_TOKEN) {
 	process.env.MODAL_TOKEN = "MODAL_TOKEN_TEST";
 }
 
+if (!process.env.CLOUDFLARE_MEDIA_TRANSFORMER_URL) {
+	process.env.CLOUDFLARE_MEDIA_TRANSFORMER_URL = "https://media-transformer.test";
+}
+
+if (!process.env.CLOUDFLARE_MEDIA_TRANSFORMER_SECRET) {
+	process.env.CLOUDFLARE_MEDIA_TRANSFORMER_SECRET = "CLOUDFLARE_MEDIA_TRANSFORMER_SECRET_TEST";
+}
+
+if (!process.env.OPENAI_API_KEY) {
+	process.env.OPENAI_API_KEY = "OPENAI_API_KEY_TEST";
+}
+
 if (!process.env.CLOUDFLARE_EVENTS_SECRET) {
 	process.env.CLOUDFLARE_EVENTS_SECRET = "CLOUDFLARE_EVENTS_SECRET_TEST";
 }

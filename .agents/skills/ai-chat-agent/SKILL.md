@@ -98,11 +98,15 @@ Important limitation:
 - Uploaded source files are visible `files_nodes` rows with an `assetId` pointing to the uploaded source R2 asset.
 - The original uploaded binary is preserved in R2.
 - Successful PDF source-to-Markdown conversion creates a generated Markdown sibling file node such as `<source-name>.md`.
+- Successful image upload processing creates a generated Markdown sibling file node such as `<source-name>.description.md`.
+- Successful video upload processing creates two generated Markdown sibling file nodes: `<source-name>.summary.md` and `<source-name>.transcript.md`.
+- Image/video generation is orchestrated by Convex. Video frame/audio extraction uses the Cloudflare Media Transformer Worker against private R2; when Cloudflare cannot extract audio and the uploaded MP4 is still within the OpenAI transcription byte cap, Convex falls back to transcribing the original R2 upload directly. Generated transcript/summary/description Markdown is finalized into the same Yjs/chunk/snapshot shape as other editable Markdown files.
 - Upload processing is tracked by `files_r2_assets.conversionWorkId`: `undefined` means the upload/output is not accepted into processing yet, a Workpool id means processing is accepted/in flight/retrying, and `null` means terminal. Deterministic converter non-success, such as Modal `413` or `422`, is terminal and leaves generated output placeholders as stored-file/status rows rather than editable Markdown.
 - Generated output files are regular visible file nodes. They can be opened, moved, archived, renamed, searched, and edited independently from the uploaded source file.
 - The generated Markdown stores converted Markdown only; source/conversion metadata stays in DB/R2 metadata, not visible frontmatter.
 - Editing generated Markdown does not mutate the original R2 object.
 - Agents should read generated outputs through their exact visible paths. For example, `/a.pdf.md` is the generated Markdown output for the uploaded source file `/a.pdf`.
+- For images and videos, read `/a.png.description.md`, `/clip.mp4.summary.md`, or `/clip.mp4.transcript.md`; do not treat `/a.png` or `/clip.mp4` as aliases for the generated files.
 - `list_files`, `glob_files`, and `grep_files` expose generated outputs as ordinary files.
 - `read_file("/report.pdf")` does not read generated Markdown; `read_file("/report.pdf.md")` reads the generated output once finalized.
 - Native source-file reading is planned for provider-supported files, especially PDFs. The agent should decide when Markdown search/results are enough and when to read the original source file with provider-native capabilities.

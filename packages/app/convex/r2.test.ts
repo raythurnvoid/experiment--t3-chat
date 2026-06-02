@@ -16,6 +16,23 @@ import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 
+vi.mock("ai", () => ({
+	generateText: vi.fn(async (args: { messages?: unknown }) => {
+		const prompt = JSON.stringify(args.messages);
+		return {
+			text: prompt.includes("Summarize the uploaded video") ? "Video summary body" : "Image description body",
+			totalUsage: {
+				inputTokens: 100,
+				outputTokens: 20,
+			},
+		};
+	}),
+	smoothStream: vi.fn(() => undefined),
+	streamText: vi.fn(() => ({
+		toUIMessageStreamResponse: vi.fn(() => new Response(null, { status: 200 })),
+	})),
+}));
+
 const r2Objects = new Map<string, Uint8Array>();
 let enqueueActionSpy: MockInstance;
 
@@ -68,8 +85,15 @@ function bytes_to_response_body(bytes: Uint8Array) {
 	return copy.buffer;
 }
 
-function stub_r2_and_modal_fetch(args: { markdown?: string; modalStatus?: number } = {}) {
-	const { markdown = "# Converted\n\nPDF body", modalStatus = 200 } = args;
+function stub_r2_and_modal_fetch(
+	args: { markdown?: string; modalStatus?: number; mediaTransformerAlwaysFails?: boolean; transcriptionText?: string } = {},
+) {
+	const {
+		markdown = "# Converted\n\nPDF body",
+		modalStatus = 200,
+		mediaTransformerAlwaysFails = false,
+		transcriptionText = "Transcript segment body",
+	} = args;
 
 	vi.stubGlobal(
 		"fetch",
@@ -96,6 +120,54 @@ function stub_r2_and_modal_fetch(args: { markdown?: string; modalStatus?: number
 					JSON.stringify({
 						markdown,
 						converter: "markitdown",
+					}),
+					{
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			}
+
+			if (url === `${process.env.CLOUDFLARE_MEDIA_TRANSFORMER_URL}/api/media/frame`) {
+				if (mediaTransformerAlwaysFails) {
+					return new Response(null, { status: 422 });
+				}
+
+				const body = JSON.parse(String(init?.body ?? "{}")) as { timeSeconds?: number };
+				if ((body.timeSeconds ?? 0) > 5) {
+					return new Response(null, { status: 422 });
+				}
+
+				return new Response(new Uint8Array([255, 216, 255]), {
+					status: 200,
+					headers: { "Content-Type": "image/jpeg" },
+				});
+			}
+
+			if (url === `${process.env.CLOUDFLARE_MEDIA_TRANSFORMER_URL}/api/media/audio-segment`) {
+				if (mediaTransformerAlwaysFails) {
+					return new Response(null, { status: 422 });
+				}
+
+				const body = JSON.parse(String(init?.body ?? "{}")) as { startSeconds?: number };
+				if ((body.startSeconds ?? 0) > 0) {
+					return new Response(null, { status: 422 });
+				}
+
+				return new Response(new Uint8Array([1, 2, 3]), {
+					status: 200,
+					headers: { "Content-Type": "audio/mp4" },
+				});
+			}
+
+			if (url === "https://api.openai.com/v1/audio/transcriptions") {
+				return new Response(
+					JSON.stringify({
+						text: transcriptionText,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 5,
+						},
 					}),
 					{
 						status: 200,
@@ -655,6 +727,318 @@ describe("r2 asset content", () => {
 		const duplicateAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		expect(duplicateAsset?.etag).toBe("etag_2");
 		expect(duplicateAsset?.conversionWorkId).toBeNull();
+	});
+
+	test("R2 events create and finalize an image description Markdown sibling", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const db = await test_mocks_fill_db_with.membership(ctx);
+			await seed_billing_snapshot_for_user(ctx, db.userId);
+			return db;
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "photo.png",
+			contentType: "image/png",
+			size: 4096,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const sourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!sourceAsset) {
+			throw new Error("Expected upload asset");
+		}
+		const sourceAssetR2Key = expected_asset_key({
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			assetId: sourceAsset._id,
+		});
+
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_image",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: sourceAsset.r2Bucket,
+					object: {
+						key: sourceAssetR2Key,
+						size: 4096,
+						eTag: "etag_image",
+					},
+					eventTime: "2026-05-11T00:00:00.000Z",
+				},
+			}),
+		});
+		expect(response.status).toBe(204);
+
+		const pendingOutput = await t.run(async (ctx) => {
+			const output = await get_active_file_node_by_path(ctx, {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				path: "/photo.png.description.md",
+			});
+			if (!output?.assetId) {
+				throw new Error("Expected generated image description node");
+			}
+
+			return {
+				output: { ...output, assetId: output.assetId },
+				asset: await ctx.db.get("files_r2_assets", output.assetId),
+			};
+		});
+		expect(pendingOutput.output.yjsSnapshotId).toBeUndefined();
+		expect(pendingOutput.asset?.conversionWorkId).toBe("work_asset_refactor");
+
+		await asUser.action(internal.r2.describe_image_upload_to_markdown, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			sourceAssetId: upload._yay.assetId,
+			outputAssetId: pendingOutput.output.assetId,
+		});
+
+		const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			path: "/photo.png.description.md",
+		});
+		expect(readResult?.content).toContain("Image description body");
+		const processedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		expect(processedAsset?.conversionWorkId).toBeNull();
+	});
+
+	test("R2 events create and finalize video summary and transcript Markdown siblings", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const db = await test_mocks_fill_db_with.membership(ctx);
+			await seed_billing_snapshot_for_user(ctx, db.userId);
+			return db;
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "clip.mp4",
+			contentType: "video/mp4",
+			size: 4096,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const sourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!sourceAsset) {
+			throw new Error("Expected upload asset");
+		}
+		const sourceAssetR2Key = expected_asset_key({
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			assetId: sourceAsset._id,
+		});
+
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_video",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: sourceAsset.r2Bucket,
+					object: {
+						key: sourceAssetR2Key,
+						size: 4096,
+						eTag: "etag_video",
+					},
+					eventTime: "2026-05-11T00:00:00.000Z",
+				},
+			}),
+		});
+		expect(response.status).toBe(204);
+
+		const pendingOutputs = await t.run(async (ctx) => {
+			const [summary, transcript] = await Promise.all([
+				get_active_file_node_by_path(ctx, {
+					workspaceId: db.workspaceId,
+					projectId: db.projectId,
+					path: "/clip.mp4.summary.md",
+				}),
+				get_active_file_node_by_path(ctx, {
+					workspaceId: db.workspaceId,
+					projectId: db.projectId,
+					path: "/clip.mp4.transcript.md",
+				}),
+			]);
+			if (!summary?.assetId || !transcript?.assetId) {
+				throw new Error("Expected generated video output nodes");
+			}
+
+			return {
+				summary: { ...summary, assetId: summary.assetId },
+				transcript: { ...transcript, assetId: transcript.assetId },
+			};
+		});
+
+		await asUser.action(internal.r2.summarize_video_upload_to_markdown, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			sourceAssetId: upload._yay.assetId,
+			summaryOutputAssetId: pendingOutputs.summary.assetId,
+			transcriptOutputAssetId: pendingOutputs.transcript.assetId,
+		});
+
+		const [summaryReadResult, transcriptReadResult] = await Promise.all([
+			asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				userId: db.userId,
+				path: "/clip.mp4.summary.md",
+			}),
+			asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				userId: db.userId,
+				path: "/clip.mp4.transcript.md",
+			}),
+		]);
+		expect(summaryReadResult?.content).toContain("Video summary body");
+		expect(transcriptReadResult?.content).toContain("Transcript segment body");
+		const processedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		expect(processedAsset?.conversionWorkId).toBeNull();
+	});
+
+	test("falls back to original video transcription when media transformation rejects the upload", async () => {
+		stub_r2_and_modal_fetch({
+			mediaTransformerAlwaysFails: true,
+			transcriptionText: "Direct video transcript body",
+		});
+
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const db = await test_mocks_fill_db_with.membership(ctx);
+			await seed_billing_snapshot_for_user(ctx, db.userId);
+			return db;
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "long-clip.mp4",
+			contentType: "video/mp4",
+			size: 4096,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const sourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!sourceAsset) {
+			throw new Error("Expected upload asset");
+		}
+		const sourceAssetR2Key = expected_asset_key({
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			assetId: sourceAsset._id,
+		});
+		r2Objects.set(sourceAssetR2Key, new Uint8Array([1, 2, 3, 4]));
+
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_long_video",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: sourceAsset.r2Bucket,
+					object: {
+						key: sourceAssetR2Key,
+						size: 4096,
+						eTag: "etag_long_video",
+					},
+					eventTime: "2026-05-11T00:00:00.000Z",
+				},
+			}),
+		});
+		expect(response.status).toBe(204);
+
+		const pendingOutputs = await t.run(async (ctx) => {
+			const [summary, transcript] = await Promise.all([
+				get_active_file_node_by_path(ctx, {
+					workspaceId: db.workspaceId,
+					projectId: db.projectId,
+					path: "/long-clip.mp4.summary.md",
+				}),
+				get_active_file_node_by_path(ctx, {
+					workspaceId: db.workspaceId,
+					projectId: db.projectId,
+					path: "/long-clip.mp4.transcript.md",
+				}),
+			]);
+			if (!summary?.assetId || !transcript?.assetId) {
+				throw new Error("Expected generated video output nodes");
+			}
+
+			return {
+				summary: { ...summary, assetId: summary.assetId },
+				transcript: { ...transcript, assetId: transcript.assetId },
+			};
+		});
+
+		await asUser.action(internal.r2.summarize_video_upload_to_markdown, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			sourceAssetId: upload._yay.assetId,
+			summaryOutputAssetId: pendingOutputs.summary.assetId,
+			transcriptOutputAssetId: pendingOutputs.transcript.assetId,
+		});
+
+		const [summaryReadResult, transcriptReadResult] = await Promise.all([
+			asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				userId: db.userId,
+				path: "/long-clip.mp4.summary.md",
+			}),
+			asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				userId: db.userId,
+				path: "/long-clip.mp4.transcript.md",
+			}),
+		]);
+		expect(summaryReadResult?.content).toContain("Video summary body");
+		expect(transcriptReadResult?.content).toContain("Direct video transcript body");
+		const processedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		expect(processedAsset?.conversionWorkId).toBeNull();
 	});
 
 	test("finalizes uploaded Markdown into editable content and marks the upload terminal", async () => {

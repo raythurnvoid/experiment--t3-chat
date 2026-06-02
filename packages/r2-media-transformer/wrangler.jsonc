@@ -1,0 +1,25 @@
+{
+	"$schema": "https://unpkg.com/wrangler/config-schema.json",
+	"name": "bonobo-senate-r2-media-transformer",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-05-11",
+	"workers_dev": true,
+	"vars": {
+		"R2_UPLOAD_PREFIX": "workspaces/"
+	},
+	"secrets": {
+		"required": ["MEDIA_TRANSFORMER_SECRET"]
+	},
+	"r2_buckets": [
+		{
+			"binding": "FILES_BUCKET",
+			"bucket_name": "bonobo-senate-press-files"
+		}
+	],
+	"media": {
+		"binding": "MEDIA"
+	},
+	"observability": {
+		"enabled": true
+	}
+}

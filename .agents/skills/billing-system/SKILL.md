@@ -177,6 +177,15 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 - On successful finish/completion, it emits one `billing_event("ai_usage")` when AI SDK reports non-zero token usage. The deterministic external id is `composite_id("billing", "ai_usage", billedUserId, actorUserId, workspaceId, projectId, "inline_ai", requestId)`, with metadata `threadId: "inline_ai"` and `messageId: requestId`.
 - Keep the current inline-AI pricing helper local to `files_nodes.ts` while pricing remains hardcoded.
 
+### Media upload AI check and usage event
+
+Image/video upload processing in [r2.ts](../../../packages/app/convex/r2.ts) uses the existing `ai_usage` event family.
+
+- The R2 upload-event mutation gates image/video media work before enqueueing the Workpool action. It resolves the workspace payer with the same `billing_pick_billed_user_id` rule used by file saves, then calls `billing_db_check_credits(ctx, { minimumRequiredCents: 1 })`.
+- The media Workpool actions check credits again through `internal.billing.check_credits` before calling OpenAI. If the payer no longer has credits, they clear `conversionWorkId` on the source/output assets and do not generate Markdown.
+- Image descriptions, video transcripts, and video summaries emit `billing_event("ai_usage")` through `billing_ingest_events` when token usage is non-zero. Deterministic ids use `threadId: "media:<sourceFileNodeId>"` and operation ids such as `"image_description"`, `"video_transcript"`, and `"video_summary"` as the `messageId`/last composite id part.
+- Keep media pricing local to `r2.ts` while pricing remains hardcoded. Do not introduce a shared pricing catalog unless the product rule changes across multiple call sites.
+
 ### File-save check and usage event
 
 File saves ([yjs_push_update](../../../packages/app/convex/files_nodes.ts), [save_file_pending_update](../../../packages/app/convex/files_pending_updates.ts), and snapshot restore through [restore_snapshot_r2](../../../packages/app/convex/files_nodes.ts) / [restore_snapshot](../../../packages/app/convex/files_nodes.ts)) fail fast before the yjs push or restore write:
