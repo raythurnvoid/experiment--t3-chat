@@ -43,14 +43,7 @@ import {
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
-import {
-	useAiChatMessage,
-	useAiChatMessageBranchSiblingIds,
-	useAiChatMessageIsEditing,
-	useAiChatMessageIsRunning,
-	useAiChatMessageSendErrorText,
-	type AiChatRuntimeActions,
-} from "@/hooks/ai-chat-hooks.tsx";
+import { AiChatController, type AiChatRuntimeActions } from "@/hooks/ai-chat-controller.tsx";
 import { AiChatComposer, type AiChatComposer_Props } from "@/components/ai-chat/ai-chat-composer.tsx";
 import { AiChatMarkdown, type AiChatMarkdown_Props } from "@/components/ai-chat/ai-chat-markdown.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
@@ -60,6 +53,9 @@ import { cn, json_strigify_ensured, path_name_of, sx } from "@/lib/utils.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { MyButton, MyButtonIcon, type MyButton_ClassNames } from "../my-button.tsx";
+
+// Reuse one stable empty array so the store selector does not trigger avoidable re-renders.
+const EMPTY_BRANCH_SIBLING_IDS: readonly string[] = [];
 
 // #region tool chip
 type AiChatMessagePartToolChip_ClassNames = "AiChatMessagePartToolChip";
@@ -1900,12 +1896,32 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		...rest
 	} = props;
 
-	const storedMessage = useAiChatMessage(messageId);
+	const storedMessage = AiChatController.useStore((state) => state.messageById.get(messageId) ?? null);
 	const message = providedMessage ?? storedMessage;
-	const isRunning = useAiChatMessageIsRunning(selectedThreadId, messageId);
-	const isEditing = useAiChatMessageIsEditing(selectedThreadId, messageId);
-	const branchAnchorIds = useAiChatMessageBranchSiblingIds(messageId);
-	const sendErrorText = useAiChatMessageSendErrorText(selectedThreadId, messageId);
+	const isRunning = AiChatController.useStore((state) => {
+		if (!selectedThreadId) {
+			return false;
+		}
+
+		return state.runningMessageIdByThreadId.get(selectedThreadId) === messageId;
+	});
+	const isEditing = AiChatController.useStore((state) => {
+		if (!selectedThreadId) {
+			return false;
+		}
+
+		return state.editingMessageIdByThreadId.get(selectedThreadId) === messageId;
+	});
+	const branchAnchorIds = AiChatController.useStore(
+		(state) => state.branchSiblingIdsByMessageId.get(messageId) ?? EMPTY_BRANCH_SIBLING_IDS,
+	);
+	const sendErrorText = AiChatController.useStore((state) => {
+		if (!selectedThreadId || state.failedSendUserMessageIdByThreadId.get(selectedThreadId) !== messageId) {
+			return undefined;
+		}
+
+		return "Message failed to send.";
+	});
 
 	const handleSelectedModelIdChange = useFn<AiChatComposer_Props["onSelectedModelIdChange"]>((value) => {
 		actions.setSelectedModelId(value);

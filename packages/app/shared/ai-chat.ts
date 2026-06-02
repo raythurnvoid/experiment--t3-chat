@@ -138,6 +138,14 @@ export function ai_chat_is_mode_id(value: string): value is ai_chat_ModeId {
 	return ai_chat_MODE_IDS.includes(value as ai_chat_ModeId);
 }
 
+export function ai_chat_is_optimistic_thread(thread?: ai_chat_Thread | null) {
+	const clientGeneratedId = thread?.clientGeneratedId;
+	if (!clientGeneratedId) {
+		return false;
+	}
+	return thread._id === clientGeneratedId;
+}
+
 export function ai_chat_get_message_text(message: UIMessage) {
 	const parts = message.parts ?? [];
 

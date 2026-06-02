@@ -14,6 +14,9 @@ Primary:
 - `../../../packages/app/convex/files_pending_updates.ts`
 - `../../../packages/app/server/files.ts`
 - `../../../packages/app/server/files-markdown-chunking-mastra.ts`
+- `../../../packages/app/src/hooks/ai-chat-controller.tsx`
+- `../../../packages/app/src/components/ai-chat/ai-chat.tsx`
+- `../../../packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx`
 - `../files-agent-pending-updates/SKILL.md`
 
 # Architecture Overview
@@ -56,6 +59,7 @@ Non-obvious runtime details:
 - Auth falls back to an anonymous user identity when a signed-in identity is unavailable.
 - The chat HTTP action resolves the current app `users` row once and passes `user._id` into AI file tools; file-tool internals should use that id instead of re-reading auth from Convex context.
 - `bash` is presented as the normal shell interface for the app file tree mounted at `/home/cloud-usr/w/{workspaceName}/{projectName}`.
+- Client-side thread selection is surface-owned through `AiChatController` in `../../../packages/app/src/hooks/ai-chat-controller.tsx`. Surfaces pass only their typed storage key: full-page chat uses `app_state::ai_chat_last_open::scope::<membershipId>`, while the file sidebar agent uses `app_state::file_editor_sidebar_agent_selected_tab::scope::<membershipId>` and the controller derives the matching open-tabs key internally. `AiChatController` is also the hook namespace for `useThreadList`, `useThreadRuntime`, and direct shared render-state selectors through `useStore`. Use `ai_chat_is_optimistic_thread` from `../../../packages/app/src/lib/ai-chat.ts` for optimistic-thread checks. The shared Zustand store keeps sessions, draft model/mode, message caches, running/error maps, and editing state, but does not own `selectedThreadId`.
 
 # Current Toolbelt
 

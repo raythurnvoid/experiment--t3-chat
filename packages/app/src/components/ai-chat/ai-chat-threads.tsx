@@ -21,7 +21,14 @@ import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
-import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputControl, MyInputIcon } from "@/components/my-input.tsx";
+import {
+	MyInput,
+	MyInputArea,
+	MyInputBackground,
+	MyInputBox,
+	MyInputControl,
+	MyInputIcon,
+} from "@/components/my-input.tsx";
 import { MyLabel } from "@/components/my-label.tsx";
 import {
 	MyMenu,
@@ -48,7 +55,8 @@ import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
 import { useUiId } from "@/lib/ui.tsx";
 import { cn, ui_create_auto_complete_off_value } from "@/lib/utils.ts";
 import { type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { ai_chat_is_optimistic_thread, type AiChatThreadListController } from "@/hooks/ai-chat-hooks.tsx";
+import { ai_chat_is_optimistic_thread } from "@/lib/ai-chat.ts";
+import type { AiChatThreadListController } from "@/hooks/ai-chat-controller.tsx";
 
 const ai_chat_threads_RESULTS_LIST_ID = "ai_chat_threads_results_list";
 
@@ -138,10 +146,7 @@ const AiChatThreadsSearch = memo(function AiChatThreadsSearch(props: AiChatThrea
 	const { searchQuery, onSearchChange } = props;
 
 	return (
-		<MyInput
-			className={cn("AiChatThreadsSearch" satisfies AiChatThreadsSearch_ClassNames)}
-			role="search"
-		>
+		<MyInput className={cn("AiChatThreadsSearch" satisfies AiChatThreadsSearch_ClassNames)} role="search">
 			<MyInputBackground />
 			<MyInputArea>
 				<MyInputIcon>

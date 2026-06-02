@@ -27,14 +27,40 @@ const hookMocks = vi.hoisted(() => {
 	};
 });
 
-vi.mock("@/hooks/ai-chat-hooks.tsx", () => ({
-	useAiChatMessage: (messageId: string) => hookMocks.messageById.get(messageId) ?? null,
-	useAiChatMessageBranchSiblingIds: (messageId: string) =>
-		hookMocks.branchSiblingIdsByMessageId.get(messageId) ?? [messageId],
-	useAiChatMessageIsEditing: (_threadId: string | null, messageId: string) => hookMocks.editingMessageId === messageId,
-	useAiChatMessageIsRunning: (_threadId: string | null, messageId: string) => hookMocks.runningMessageId === messageId,
-	useAiChatMessageSendErrorText: (_threadId: string | null, messageId: string) =>
-		hookMocks.sendErrorMessageId === messageId ? "Message failed to send." : undefined,
+type AiChatControllerStoreMockState = {
+	messageById: Map<string, ai_chat_AiSdk5UiMessage>;
+	branchSiblingIdsByMessageId: Map<string, readonly string[]>;
+	runningMessageIdByThreadId: Map<string, string | null>;
+	failedSendUserMessageIdByThreadId: Map<string, string | null>;
+	editingMessageIdByThreadId: Map<string, string | null>;
+};
+
+vi.mock("@/hooks/ai-chat-controller.tsx", () => ({
+	AiChatController: {
+		useStore: <Result,>(selector: (state: AiChatControllerStoreMockState) => Result) => {
+			const runningMessageIdByThreadId = new Map<string, string | null>();
+			const failedSendUserMessageIdByThreadId = new Map<string, string | null>();
+			const editingMessageIdByThreadId = new Map<string, string | null>();
+
+			if (hookMocks.runningMessageId) {
+				runningMessageIdByThreadId.set("thread_1", hookMocks.runningMessageId);
+			}
+			if (hookMocks.sendErrorMessageId) {
+				failedSendUserMessageIdByThreadId.set("thread_1", hookMocks.sendErrorMessageId);
+			}
+			if (hookMocks.editingMessageId) {
+				editingMessageIdByThreadId.set("thread_1", hookMocks.editingMessageId);
+			}
+
+			return selector({
+				messageById: hookMocks.messageById,
+				branchSiblingIdsByMessageId: hookMocks.branchSiblingIdsByMessageId,
+				runningMessageIdByThreadId,
+				failedSendUserMessageIdByThreadId,
+				editingMessageIdByThreadId,
+			});
+		},
+	},
 }));
 
 vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
@@ -254,5 +280,4 @@ describe("AiChatMessage", () => {
 		expect(screen.queryByRole("region", { name: "Metadata" })).toBeNull();
 		expect(screen.queryByRole("region", { name: "Stdout" })).toBeNull();
 	});
-
 });

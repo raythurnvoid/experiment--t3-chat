@@ -16,14 +16,12 @@ import { cn } from "@/lib/utils.ts";
 import { useUiStickToBottom } from "@/lib/ui.tsx";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import {
-	useAiChatThreadRuntime,
-	useAiChatThreadListController,
-	useAiChatThreadEditingMessageId,
+	AiChatController,
+	type AiChatControllerStorageKey,
 	type AiChatThreadRuntime,
 	type AiChatRuntimeActions,
-} from "@/hooks/ai-chat-hooks.tsx";
+} from "@/hooks/ai-chat-controller.tsx";
 import {
 	AiChatComposer,
 	type AiChatComposer_ClassNames,
@@ -395,7 +393,9 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 	const selectedThreadId = controller.selectedThreadId;
 	const selectedModelId = controller.selectedModelId;
 	const selectedModeId = controller.selectedModeId;
-	const editingMessageId = useAiChatThreadEditingMessageId(selectedThreadId);
+	const editingMessageId = AiChatController.useStore((state) =>
+		selectedThreadId ? (state.editingMessageIdByThreadId.get(selectedThreadId) ?? null) : null,
+	);
 	const initialComposerValue = controller.session?.draftComposerText ?? "";
 	const controllerRef = useLiveRef(controller);
 
@@ -806,7 +806,7 @@ const AiChatThreadRuntimePanel = memo(function AiChatThreadRuntimePanel(props: {
 	scrollableContainer: HTMLElement | null;
 }) {
 	const { scrollableContainer } = props;
-	const controller = useAiChatThreadRuntime();
+	const controller = AiChatController.useThreadRuntime();
 
 	return <AiChatThread controller={controller} scrollableContainer={scrollableContainer} />;
 });
@@ -827,14 +827,20 @@ type AiChat_Props = ComponentPropsWithRef<"div"> & {
 };
 
 export const AiChat = memo(function AiChat(props: AiChat_Props) {
+	const { membershipId } = AppTenantProvider.useContext();
+	const storageKey: AiChatControllerStorageKey = `app_state::ai_chat_last_open::scope::${membershipId}`;
+
+	return (
+		<AiChatController key={storageKey} storageKey={storageKey}>
+			<AiChatContent {...props} />
+		</AiChatController>
+	);
+});
+
+const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 	const { ref, id, className, ...rest } = props;
 
-	const { membershipId } = AppTenantProvider.useContext();
-	const controller = useAiChatThreadListController();
-	const controllerRef = useLiveRef(controller);
-	const [lastOpenThreadId] = useAppLocalStorageStateValue(
-		`app_state::ai_chat_last_open::scope::${membershipId}`,
-	);
+	const controller = AiChatController.useThreadList();
 	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(true);
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
 
@@ -845,30 +851,6 @@ export const AiChat = memo(function AiChat(props: AiChat_Props) {
 	const handleOpenSidebar = useFn(() => {
 		setAiChatSidebarOpen(true);
 	});
-
-	useEffect(() => {
-		const controller = controllerRef.current;
-
-		// Keep route-level restoration here. The file editor sidebar has its own
-		// open-tab storage, so the shared list controller should not decide which
-		// chat surface wins on mount.
-		if (controller.session?.optimisticThread) {
-			return;
-		}
-
-		if (!lastOpenThreadId) {
-			if (controller.selectedThreadId) {
-				controller.clearSelectedThread();
-			}
-			return;
-		}
-
-		if (controller.selectedThreadId === lastOpenThreadId) {
-			return;
-		}
-
-		controller.selectThread(lastOpenThreadId);
-	}, [controller.selectedThreadId, controller.session?.optimisticThread, controllerRef, lastOpenThreadId]);
 
 	return (
 		<div ref={ref} id={id} className={cn("AiChat" satisfies AiChat_ClassNames, className)} {...rest}>

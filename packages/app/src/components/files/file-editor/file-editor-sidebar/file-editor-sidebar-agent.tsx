@@ -31,16 +31,20 @@ import {
 	MyTabsTabSurface,
 } from "@/components/my-tabs.tsx";
 import {
-	ai_chat_is_optimistic_thread,
+	AiChatController,
+	type AiChatControllerStorageKey,
 	type AiChatOptimisticThreadId,
 	type AiChatThreadListController,
-	useAiChatThreadListController,
-	useAiChatThreadRuntime,
-} from "@/hooks/ai-chat-hooks.tsx";
+} from "@/hooks/ai-chat-controller.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { ai_chat_is_optimistic_thread } from "@/lib/ai-chat.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { app_local_storage_set_value, type storage_local_ValueByKey, useAppLocalStorageValue } from "@/lib/storage.ts";
+import {
+	app_local_storage_set_value,
+	type storage_local_ValueByKey,
+	useAppLocalStorageValue,
+} from "@/lib/storage.ts";
 import { cn } from "@/lib/utils.ts";
 
 const DROPPABLE_ID = "file_editor_sidebar_agent_tabs";
@@ -630,7 +634,7 @@ const FileEditorSidebarAgentChatThread = memo(function FileEditorSidebarAgentCha
 	scrollableContainer: HTMLElement | null;
 }) {
 	const { scrollableContainer } = props;
-	const controller = useAiChatThreadRuntime();
+	const controller = AiChatController.useThreadRuntime();
 
 	return <AiChatThread variant="sidebar" controller={controller} scrollableContainer={scrollableContainer} />;
 });
@@ -641,9 +645,20 @@ export type FileEditorSidebarAgent_Props = {
 };
 
 export const FileEditorSidebarAgent = memo(function FileEditorSidebarAgent(props: FileEditorSidebarAgent_Props) {
+	const { membershipId } = AppTenantProvider.useContext();
+	const selectedTabStorageKey: AiChatControllerStorageKey = `app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
+
+	return (
+		<AiChatController key={selectedTabStorageKey} storageKey={selectedTabStorageKey}>
+			<FileEditorSidebarAgentContent {...props} />
+		</AiChatController>
+	);
+});
+
+const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentContent(props: FileEditorSidebarAgent_Props) {
 	const { rootTabId } = props;
 	const { membershipId } = AppTenantProvider.useContext();
-	const controller = useAiChatThreadListController({ includeArchived: false });
+	const controller = AiChatController.useThreadList({ includeArchived: false });
 	const hasAutoStartedRef = useRef(false);
 	const mountedOptimisticThreadIdsRef = useRef(new Set<string>());
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
