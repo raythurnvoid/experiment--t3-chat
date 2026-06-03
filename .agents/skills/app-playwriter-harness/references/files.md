@@ -175,6 +175,7 @@ Use this after changing chat send, stop, branch, pending-message, or parent-id l
 - Wait until the marker appears, click `Stop generating`, immediately type a follow-up, and inspect `getByRole("button", { name: "Send message" })`.
 - Expected immediate state: Send is disabled and no second `/api/chat` request is created while the parent is still unsafe.
 - Expected recovery state: a restored blank optimistic tab can send its first message with `clientGeneratedThreadId`; follow-up sends after a message exists remain blocked until the live query swaps the UI to the persisted Convex thread and parent message.
+- For parent recovery checks, inspect the captured `/api/chat` body: once the live query catches up, the follow-up request should use the persisted `parentId` produced from normalized `metadata.convexId`, not a client-only message id.
 - The UI must not create a follow-up request before that recovery state. After recovery, the follow-up request should use a persisted parent id and must not return `409` with `Parent message is not available yet`.
 - A `429` is the chat rate limiter, not this race. Wait for the retry window and rerun or retry the same message; do not count it as a parent-id failure.
 

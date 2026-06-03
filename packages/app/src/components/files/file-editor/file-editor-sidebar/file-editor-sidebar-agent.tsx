@@ -668,6 +668,7 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 	const openTabs = useAppLocalStorageValue(openTabsStorageKey);
 	const selectedAgentTab = useAppLocalStorageValue(selectedTabStorageKey);
 	const currentThreads = controller.currentThreadsWithOptimistic.unarchived.results;
+	const persistedThreadIdByClientGeneratedId = controller.persistedThreadIdByClientGeneratedId;
 	const appHoistingContainer = document.getElementById("app_hoisting_container" satisfies AppElementId);
 
 	const selectedStoredOpenTab = openTabs.find((tab) => tab.id === selectedAgentTab);
@@ -702,17 +703,15 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 		const seenIds = new Set<string>();
 
 		for (const openTab of openTabs) {
-			const persistedThread = currentThreads.find((thread) => {
-				return !ai_chat_is_optimistic_thread(thread) && thread.clientGeneratedId === openTab.id;
-			});
+			const persistedThreadId = persistedThreadIdByClientGeneratedId.get(openTab.id);
 
 			const nextOpenTab =
-				persistedThread == null
+				persistedThreadId == null
 					? openTab
 					: {
-							id: persistedThread._id,
+							id: persistedThreadId,
 							title: get_tab_title({
-								threadId: persistedThread._id,
+								threadId: persistedThreadId,
 								currentThreads,
 								streamingTitleByThreadId: controller.streamingTitleByThreadId,
 								fallbackTitle: openTab.title,
@@ -740,17 +739,16 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 			return;
 		}
 
-		const persistedSelectedThread = currentThreads.find((thread) => {
-			return !ai_chat_is_optimistic_thread(thread) && thread.clientGeneratedId === selectedAgentTab;
-		});
+		const persistedSelectedThreadId = persistedThreadIdByClientGeneratedId.get(selectedAgentTab);
 
-		if (persistedSelectedThread && persistedSelectedThread._id !== selectedAgentTab) {
-			app_local_storage_set_value(selectedTabStorageKey, persistedSelectedThread._id);
+		if (persistedSelectedThreadId && persistedSelectedThreadId !== selectedAgentTab) {
+			app_local_storage_set_value(selectedTabStorageKey, persistedSelectedThreadId);
 		}
 	}, [
 		openTabs,
 		selectedAgentTab,
 		currentThreads,
+		persistedThreadIdByClientGeneratedId,
 		controller.streamingTitleByThreadId,
 		openTabsStorageKey,
 		selectedTabStorageKey,
@@ -786,20 +784,18 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 			return;
 		}
 
-		const persistedSelectedThread = currentThreads.find((thread) => {
-			return !ai_chat_is_optimistic_thread(thread) && thread.clientGeneratedId === threadId && thread._id !== threadId;
-		});
-		if (persistedSelectedThread) {
-			app_local_storage_set_value(selectedTabStorageKey, persistedSelectedThread._id);
-			controller.selectThread(persistedSelectedThread._id);
+		const persistedSelectedThreadId = persistedThreadIdByClientGeneratedId.get(threadId);
+		if (persistedSelectedThreadId && persistedSelectedThreadId !== threadId) {
+			app_local_storage_set_value(selectedTabStorageKey, persistedSelectedThreadId);
+			controller.selectThread(persistedSelectedThreadId);
 			return;
 		}
 
 		const inOpenTabs = openTabs.some((t) => t.id === threadId);
 		if (!inOpenTabs) {
-			const upgradedOptimisticOpenTab = currentThreads.find((thread) => {
-				return !ai_chat_is_optimistic_thread(thread) && thread._id === threadId;
-			})?.clientGeneratedId;
+			const upgradedOptimisticOpenTab = openTabs.find((tab) => {
+				return persistedThreadIdByClientGeneratedId.get(tab.id) === threadId;
+			})?.id;
 
 			if (upgradedOptimisticOpenTab) {
 				const upgradedOpenTabIndex = openTabs.findIndex((tab) => tab.id === upgradedOptimisticOpenTab);
@@ -837,6 +833,7 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 		selectedAgentTab,
 		selectedChatTabId,
 		currentThreads,
+		persistedThreadIdByClientGeneratedId,
 		openTabsStorageKey,
 		selectedTabStorageKey,
 	]);

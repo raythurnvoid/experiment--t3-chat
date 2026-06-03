@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import type { ai_chat_Thread } from "@/lib/ai-chat.ts";
+import type { ai_chat_AiSdk5UiMessage, ai_chat_Thread } from "@/lib/ai-chat.ts";
 
 type MockChatInstance = {
 	id: string;
@@ -39,6 +39,12 @@ const hookMocks = vi.hoisted(() => {
 			projectId: "project_test",
 		},
 		threads: [] as Array<{ archived: boolean; [key: string]: unknown }>,
+		threadMessages: [] as Array<{
+			_id: string;
+			parentId: string | null;
+			clientGeneratedMessageId?: string | null;
+			content: ai_chat_AiSdk5UiMessage;
+		}>,
 		mutation: vi.fn(() => Promise.resolve({ _yay: { threadId: "thread_branch" } })),
 		renderSelectedThreadId: vi.fn(),
 		chatInstances: [] as MockChatInstance[],
@@ -122,7 +128,7 @@ vi.mock("convex/react", async (importOriginal) => {
 			};
 		},
 		useMutation: () => hookMocks.mutation,
-		useQuery: () => ({ messages: [] }),
+		useQuery: () => ({ messages: hookMocks.threadMessages }),
 	};
 });
 
@@ -160,6 +166,20 @@ function createThread(args: { id: string; title?: string | null; clientGenerated
 	} as ai_chat_Thread;
 }
 
+function createPersistedMessage(args: {
+	id: string;
+	clientGeneratedMessageId?: string | null;
+	parentId?: string | null;
+	content: ai_chat_AiSdk5UiMessage;
+}) {
+	return {
+		_id: args.id,
+		parentId: args.parentId ?? null,
+		clientGeneratedMessageId: args.clientGeneratedMessageId ?? null,
+		content: args.content,
+	};
+}
+
 function ControllerProbe(props: {
 	label: string;
 	selectThreadId?: string;
@@ -187,6 +207,77 @@ function ControllerProbe(props: {
 				}}
 			>
 				new {label}
+			</button>
+		</div>
+	);
+}
+
+function ThreadUpgradeMapProbe(props: { clientGeneratedId: string }) {
+	const controller = AiChatController.useThreadList({ includeArchived: false });
+
+	return (
+		<div data-testid="thread-upgrade-map">
+			{controller.persistedThreadIdByClientGeneratedId.get(props.clientGeneratedId) ?? "null"}
+		</div>
+	);
+}
+
+function RuntimeIdentityProbe() {
+	const [, forceRender] = useState(0);
+	const controller = AiChatController.useThreadRuntime();
+	const selectedThreadId = controller.selectedThreadId;
+	const selectedChat = controller.session?.chat as MockChatInstance | null | undefined;
+	const latestMessage = controller.activeBranchMessages.list.at(-1);
+	const liveMessage = selectedChat?.messages.at(0) as ai_chat_AiSdk5UiMessage | undefined;
+
+	return (
+		<div>
+			<div data-testid="identity-session">{selectedChat ? "session" : "no-session"}</div>
+			<div data-testid="identity-can-send">{controller.canSendUserText ? "yes" : "no"}</div>
+			<div data-testid="identity-latest-convex-id">{latestMessage?.metadata?.convexId ?? "null"}</div>
+			<div data-testid="identity-live-convex-id">{liveMessage?.metadata?.convexId ?? "null"}</div>
+			<button
+				type="button"
+				onClick={() => {
+					if (!selectedThreadId) {
+						return;
+					}
+
+					const chat = hookMocks.chatInstances.find((chat) => chat.id === selectedThreadId);
+					if (!chat) {
+						return;
+					}
+
+					chat.messages = [
+						{
+							id: "client_user_1",
+							role: "user",
+							parts: [{ type: "text", text: "Persist me" }],
+							metadata: {
+								convexParentId: null,
+								parentClientGeneratedId: null,
+								selectedModelId: "gpt-5.4-nano",
+								selectedModeId: "ask",
+							},
+						} satisfies ai_chat_AiSdk5UiMessage,
+					];
+					forceRender((value) => value + 1);
+				}}
+			>
+				inject matched live message
+			</button>
+			<button
+				type="button"
+				onClick={() => {
+					if (!selectedThreadId) {
+						return;
+					}
+
+					controller.sendUserText(selectedThreadId, "Follow up");
+					forceRender((value) => value + 1);
+				}}
+			>
+				send follow up
 			</button>
 		</div>
 	);
@@ -293,6 +384,7 @@ describe("AiChatController", () => {
 		hookMocks.tenant.workspaceId = "workspace_test";
 		hookMocks.tenant.projectId = "project_test";
 		hookMocks.threads = [];
+		hookMocks.threadMessages = [];
 		hookMocks.chatInstances = [];
 		hookMocks.mutation.mockClear();
 		hookMocks.renderSelectedThreadId.mockClear();
@@ -359,6 +451,31 @@ describe("AiChatController", () => {
 
 		expect(screen.getByTestId("sidebar-selected").textContent).toBe("thread_sidebar_last");
 		expect(hookMocks.renderSelectedThreadId).toHaveBeenNthCalledWith(1, "thread_sidebar_last");
+	});
+
+	test("exposes persisted thread ids by restored optimistic client-generated id", () => {
+		const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` = `app_state::file_editor_sidebar_open_tabs::scope::${hookMocks.tenant.membershipId}`;
+		const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` = `app_state::file_editor_sidebar_agent_selected_tab::scope::${hookMocks.tenant.membershipId}`;
+		const optimisticThreadId = "ai_thread-restored_upgrade";
+		const persistedThreadId = "thread_persisted_upgrade";
+
+		hookMocks.threads = [
+			createThread({
+				id: persistedThreadId,
+				clientGeneratedId: optimisticThreadId,
+				title: "Upgraded thread",
+			}),
+		];
+		app_local_storage_set_value(openTabsStorageKey, [{ id: optimisticThreadId, title: "New chat" }]);
+		app_local_storage_set_value(selectedTabStorageKey, optimisticThreadId);
+
+		render(
+			<SidebarSurface>
+				<ThreadUpgradeMapProbe clientGeneratedId={optimisticThreadId} />
+			</SidebarSurface>,
+		);
+
+		expect(screen.getByTestId("thread-upgrade-map").textContent).toBe(persistedThreadId);
 	});
 
 	test("rehydrates stored optimistic sidebar tabs as selected optimistic sessions", async () => {
@@ -443,6 +560,57 @@ describe("AiChatController", () => {
 			clientGeneratedThreadId: optimisticThreadId,
 		});
 		expect(body.threadId).toBeUndefined();
+	});
+
+	test("stamps matched live messages with persisted identity before follow-up sends", async () => {
+		const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
+		app_local_storage_set_value(storageKey, "thread_persisted_identity");
+		hookMocks.threadMessages = [
+			createPersistedMessage({
+				id: "msg_persisted_user_1",
+				clientGeneratedMessageId: "client_user_1",
+				content: {
+					id: "client_user_1",
+					role: "user",
+					parts: [{ type: "text", text: "Persist me" }],
+					metadata: {
+						convexParentId: null,
+						parentClientGeneratedId: null,
+						selectedModelId: "gpt-5.4-nano",
+						selectedModeId: "ask",
+					},
+				},
+			}),
+		];
+
+		render(
+			<FullPageSurface>
+				<RuntimeIdentityProbe />
+			</FullPageSurface>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("identity-session").textContent).toBe("session");
+		});
+		expect(screen.getByTestId("identity-latest-convex-id").textContent).toBe("msg_persisted_user_1");
+		expect(screen.getByTestId("identity-can-send").textContent).toBe("yes");
+
+		fireEvent.click(screen.getByRole("button", { name: "inject matched live message" }));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("identity-live-convex-id").textContent).toBe("msg_persisted_user_1");
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "send follow up" }));
+
+		const chat = hookMocks.chatInstances.find((chat) => chat.id === "thread_persisted_identity");
+		expect(chat).toBeDefined();
+		if (!chat) {
+			throw new Error("Expected persisted identity chat instance");
+		}
+		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+		const sentMessage = chat.sendMessage.mock.calls.at(-1)?.[0] as ai_chat_AiSdk5UiMessage | undefined;
+		expect(sentMessage?.metadata?.convexParentId).toBe("msg_persisted_user_1");
 	});
 
 	test("selectThread hydrates a session and updates only the current surface selection", () => {

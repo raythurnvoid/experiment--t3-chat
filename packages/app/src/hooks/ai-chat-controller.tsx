@@ -59,8 +59,6 @@ type ThreadChatOnFinish = Parameters<ChatOnFinishCallback<ai_chat_AiSdk5UiMessag
 	chatId: string;
 };
 
-type ThreadRenderStatus = "idle" | "loading" | "loaded";
-
 type UseChatResult = ReturnType<typeof useChat<ai_chat_AiSdk5UiMessage>>;
 
 export type AiChatOptimisticThreadId = ReturnType<typeof generate_id<"ai_thread">>;
@@ -74,8 +72,6 @@ type StoreState = {
 	branchSiblingIdsByMessageId: Map<string, readonly string[]>;
 	runningMessageIdByThreadId: Map<string, string | null>;
 	failedSendUserMessageIdByThreadId: Map<string, string | null>;
-	streamErrorTextByThreadId: Map<string, string | null>;
-	threadStatusByThreadId: Map<string, ThreadRenderStatus>;
 	editingMessageIdByThreadId: Map<string, string | null>;
 };
 
@@ -92,6 +88,26 @@ const persistedUiMessageById = new Map<string, ai_chat_AiSdk5UiMessage>();
  */
 let cacheClearIntervalId: ReturnType<typeof setInterval> | undefined;
 let cacheClearIntervalConsumerCount = 0;
+
+/**
+ * Normalize identity once so send/retry logic can trust `metadata.convexId`
+ * instead of re-resolving client-generated ids at every call site.
+ */
+function mutate_message_metadata(
+	mut_message: ai_chat_AiSdk5UiMessage,
+	args: {
+		convexId: string;
+		convexParentId: string | null;
+		parentClientGeneratedId: string | null;
+	},
+) {
+	mut_message.metadata ??= {
+		parentClientGeneratedId: args.parentClientGeneratedId,
+	} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>;
+	mut_message.metadata.convexId = args.convexId;
+	mut_message.metadata.convexParentId = args.convexParentId;
+	mut_message.metadata.parentClientGeneratedId = args.parentClientGeneratedId;
+}
 
 export type AiChatRuntimeActions = {
 	addToolOutput: UseChatResult["addToolOutput"];
@@ -398,8 +414,6 @@ const useStore = ((/* iife */) => {
 		branchSiblingIdsByMessageId: new Map(),
 		runningMessageIdByThreadId: new Map(),
 		failedSendUserMessageIdByThreadId: new Map(),
-		streamErrorTextByThreadId: new Map(),
-		threadStatusByThreadId: new Map(),
 		editingMessageIdByThreadId: new Map(),
 	}));
 
@@ -451,14 +465,11 @@ const useStore = ((/* iife */) => {
 					branchSiblingIdsByMessageId: new Map(),
 					runningMessageIdByThreadId: new Map(),
 					failedSendUserMessageIdByThreadId: new Map(),
-					streamErrorTextByThreadId: new Map(),
-					threadStatusByThreadId: new Map(),
 					editingMessageIdByThreadId: new Map(),
 				});
 			},
 			syncThreadRenderState(args: {
 				threadId: string | null;
-				status: ThreadRenderStatus;
 				messages: readonly ai_chat_AiSdk5UiMessage[];
 				branchSiblingIdsByParentId: Map<string | null, readonly string[]>;
 				isRunning: boolean;
@@ -534,22 +545,6 @@ const useStore = ((/* iife */) => {
 						changed = true;
 					}
 
-					const streamErrorText =
-						args.hasError && !failedSendUserMessageId ? "An error occurred during the generation" : null;
-					let streamErrorTextByThreadId = state.streamErrorTextByThreadId;
-					if ((streamErrorTextByThreadId.get(threadId) ?? null) !== streamErrorText) {
-						streamErrorTextByThreadId = new Map(streamErrorTextByThreadId);
-						streamErrorTextByThreadId.set(threadId, streamErrorText);
-						changed = true;
-					}
-
-					let threadStatusByThreadId = state.threadStatusByThreadId;
-					if ((threadStatusByThreadId.get(threadId) ?? "idle") !== args.status) {
-						threadStatusByThreadId = new Map(threadStatusByThreadId);
-						threadStatusByThreadId.set(threadId, args.status);
-						changed = true;
-					}
-
 					if (!changed) {
 						return state;
 					}
@@ -560,8 +555,6 @@ const useStore = ((/* iife */) => {
 						branchSiblingIdsByMessageId,
 						runningMessageIdByThreadId,
 						failedSendUserMessageIdByThreadId,
-						streamErrorTextByThreadId,
-						threadStatusByThreadId,
 					};
 				});
 			},
@@ -604,7 +597,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	const selectedModeId = selectedThreadId ? (session?.selectedModeId ?? draftSelectedModeId) : draftSelectedModeId;
 
 	/** Necessary to manage optimistic threads and their switch to persisted threads. */
-	const threadIdByClientGeneratedId = useMemo(() => {
+	const persistedThreadIdByClientGeneratedId = useMemo<ReadonlyMap<string, string>>(() => {
 		const result = new Map<string, string>();
 		for (const thread of threads.results) {
 			if (thread.clientGeneratedId && thread.clientGeneratedId !== thread._id) {
@@ -618,7 +611,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 		const result: Array<ai_chat_Thread> = [];
 
 		for (const threadId of threadById.keys()) {
-			if (!is_ai_chat_optimistic_thread_id(threadId) || threadIdByClientGeneratedId.has(threadId)) {
+			if (!is_ai_chat_optimistic_thread_id(threadId) || persistedThreadIdByClientGeneratedId.has(threadId)) {
 				continue;
 			}
 
@@ -626,9 +619,11 @@ const useThreadList = (props?: useThreadList_Props) => {
 		}
 
 		return result;
-	}, [projectId, threadById, threadIdByClientGeneratedId, workspaceId]);
+	}, [projectId, threadById, persistedThreadIdByClientGeneratedId, workspaceId]);
 
-	const persistedSelectedThreadId = selectedThreadId ? threadIdByClientGeneratedId.get(selectedThreadId) : undefined;
+	const persistedSelectedThreadId = selectedThreadId
+		? persistedThreadIdByClientGeneratedId.get(selectedThreadId)
+		: undefined;
 
 	const currentThreadsWithOptimistic = ((/* iife */) => {
 		const unarchived = {
@@ -808,25 +803,6 @@ const useThreadList = (props?: useThreadList_Props) => {
 		return threadId;
 	});
 
-	const branchChat = useFn((threadId: string, messageId?: string) => {
-		branchThread({ membershipId, threadId, ...(messageId ? { messageId } : {}) })
-			.then((result) => {
-				if (result._nay) {
-					console.error("[AiChatController.useThreadList.branchChat] Branch failed", { result, threadId, messageId });
-					return;
-				}
-
-				selectThread(result._yay.threadId);
-			})
-			.catch((error) => {
-				console.error("[AiChatController.useThreadList.branchChat] Error branching chat", {
-					error,
-					threadId,
-					messageId,
-				});
-			});
-	});
-
 	const selectThread = useFn((threadId: string) => {
 		let session = useStore.actions.getSession(threadId);
 		if (!session) {
@@ -844,6 +820,25 @@ const useThreadList = (props?: useThreadList_Props) => {
 		}
 
 		setSelectedThreadId(threadId, { persist: !is_ai_chat_optimistic_thread_id(threadId) });
+	});
+
+	const branchChat = useFn((threadId: string, messageId?: string) => {
+		branchThread({ membershipId, threadId, ...(messageId ? { messageId } : {}) })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[AiChatController.useThreadList.branchChat] Branch failed", { result, threadId, messageId });
+					return;
+				}
+
+				selectThread(result._yay.threadId);
+			})
+			.catch((error) => {
+				console.error("[AiChatController.useThreadList.branchChat] Error branching chat", {
+					error,
+					threadId,
+					messageId,
+				});
+			});
 	});
 
 	const clearSelectedThread = useFn(() => {
@@ -975,7 +970,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 		for (const [optimisticThreadId, session] of threadById.entries()) {
 			if (!is_ai_chat_optimistic_thread_id(optimisticThreadId)) continue;
 
-			const threadId = threadIdByClientGeneratedId.get(optimisticThreadId);
+			const threadId = persistedThreadIdByClientGeneratedId.get(optimisticThreadId);
 			if (threadId) {
 				const persistedSession = useStore.actions.getSession(threadId);
 				if (!persistedSession) {
@@ -1030,7 +1025,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 				);
 			}
 		}
-	}, [setSelectedThreadId, threadById, threadIdByClientGeneratedId]);
+	}, [setSelectedThreadId, threadById, persistedThreadIdByClientGeneratedId]);
 
 	return {
 		selectedThreadId,
@@ -1038,6 +1033,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 		selectedModeId,
 		session,
 		currentThreadsWithOptimistic,
+		persistedThreadIdByClientGeneratedId,
 		streamingTitleByThreadId,
 		startNewChat,
 		branchChat,
@@ -1086,13 +1082,17 @@ const useThreadRuntimeController = () => {
 			mapById: new Map<string, ai_chat_AiSdk5UiMessage>(),
 			mapByClientGeneratedId: new Map<string, ai_chat_AiSdk5UiMessage>(),
 			childrenByParentId: new Map<string | null, ai_chat_AiSdk5UiMessage[]>(),
-			clientGeneratedIds: new Set<string>(),
 			list: [] as ai_chat_AiSdk5UiMessage[],
 		};
 
 		for (const message of persistedThreadMessages.messages) {
 			// Convert DB message to AI SDK UI message
 			const dbMessageContent = message.content as ai_chat_AiSdk5UiMessage;
+			const metadata = {
+				convexId: message._id,
+				convexParentId: message.parentId ?? null,
+				parentClientGeneratedId: dbMessageContent.metadata?.parentClientGeneratedId ?? null,
+			};
 			const cachedUiMessage = persistedUiMessageById.get(message._id);
 			const uiMessage =
 				cachedUiMessage ??
@@ -1102,11 +1102,10 @@ const useThreadRuntimeController = () => {
 					parts: dbMessageContent.parts,
 					metadata: {
 						...(dbMessageContent.metadata ?? {}),
-						convexId: message._id,
-						convexParentId: message.parentId,
-						parentClientGeneratedId: dbMessageContent.metadata?.parentClientGeneratedId ?? null,
+						...metadata,
 					} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
 				} satisfies ai_chat_AiSdk5UiMessage);
+			mutate_message_metadata(uiMessage, metadata);
 
 			// Persisted AI messages are append-only today; editing creates a new branch message.
 			// If persisted rows become stream-updated later, replace this id-only cache with a versioned key.
@@ -1124,7 +1123,6 @@ const useThreadRuntimeController = () => {
 			}
 
 			if (message.clientGeneratedMessageId) {
-				result.clientGeneratedIds.add(message.clientGeneratedMessageId);
 				result.mapByClientGeneratedId.set(message.clientGeneratedMessageId, uiMessage);
 			}
 
@@ -1332,17 +1330,20 @@ const useThreadRuntimeController = () => {
 
 		// Read messages from the newest to the oldest.
 		for (const message of chat.messages.toReversed()) {
-			// Skip alredy persisted messages
-			if (
-				persistedMessagesLookup?.clientGeneratedIds.has(message.id) ||
-				persistedMessagesLookup?.mapById.has(message.id)
-			) {
+			const persistedMessage =
+				persistedMessagesLookup?.mapById.get(message.id) ??
+				persistedMessagesLookup?.mapByClientGeneratedId.get(message.id);
+
+			if (persistedMessage?.metadata?.convexId) {
+				mutate_message_metadata(message, {
+					convexId: persistedMessage.metadata.convexId,
+					convexParentId: persistedMessage.metadata.convexParentId ?? null,
+					parentClientGeneratedId: persistedMessage.metadata.parentClientGeneratedId ?? null,
+				});
 				continue;
 			}
 
-			if (!persistedMessagesLookup?.mapById.has(message.id)) {
-				result.list.push(message);
-			}
+			result.list.push(message);
 
 			result.mapById.set(message.id, message);
 
@@ -1500,29 +1501,6 @@ const useThreadRuntimeController = () => {
 		return threadId;
 	});
 
-	const branchChat = useFn((threadId: string, messageId?: string) => {
-		branchThread({ membershipId, threadId, ...(messageId ? { messageId } : {}) })
-			.then((result) => {
-				if (result._nay) {
-					console.error("[AiChatController.useThreadRuntime.branchChat] Branch failed", {
-						result,
-						threadId,
-						messageId,
-					});
-					return;
-				}
-
-				selectThread(result._yay.threadId);
-			})
-			.catch((error) => {
-				console.error("[AiChatController.useThreadRuntime.branchChat] Error branching chat", {
-					error,
-					threadId,
-					messageId,
-				});
-			});
-	});
-
 	const selectThread = useFn((threadId: string) => {
 		let session = useStore.actions.getSession(threadId);
 		if (!session) {
@@ -1544,6 +1522,29 @@ const useThreadRuntimeController = () => {
 		}
 
 		setSelectedThreadId(threadId, { persist: !is_ai_chat_optimistic_thread_id(threadId) });
+	});
+
+	const branchChat = useFn((threadId: string, messageId?: string) => {
+		branchThread({ membershipId, threadId, ...(messageId ? { messageId } : {}) })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[AiChatController.useThreadRuntime.branchChat] Branch failed", {
+						result,
+						threadId,
+						messageId,
+					});
+					return;
+				}
+
+				selectThread(result._yay.threadId);
+			})
+			.catch((error) => {
+				console.error("[AiChatController.useThreadRuntime.branchChat] Error branching chat", {
+					error,
+					threadId,
+					messageId,
+				});
+			});
 	});
 
 	const selectBranchAnchor = useFn((threadId: string, anchorId: string | null) => {
@@ -1681,6 +1682,16 @@ const useThreadRuntimeController = () => {
 		});
 	});
 
+	const setComposerValue = useFn((threadId: string, message: string) => {
+		useStore.actions.setSession(threadId, (prev) => {
+			const base = prev ?? thread_session_create();
+			if (base.draftComposerText === message) {
+				return base;
+			}
+			return { ...base, draftComposerText: message };
+		});
+	});
+
 	const sendUserText = useFn((threadId: string, value: string, options?: { messageId?: string }) => {
 		if (!value.trim()) {
 			return;
@@ -1704,21 +1715,16 @@ const useThreadRuntimeController = () => {
 		const targetMessageIndex = targetMessage ? activeBranchMessages.list.indexOf(targetMessage) : undefined;
 		const latestMessage = activeBranchMessages.list.at(-1);
 
-		const getPersistedMessageId = (message: ai_chat_AiSdk5UiMessage) =>
-			message.metadata?.convexId ??
-			(persistedMessagesLookup?.mapById.has(message.id) ? message.id : undefined) ??
-			persistedMessagesLookup?.mapByClientGeneratedId.get(message.id)?.id;
-		const messageHasPersistedId = (message: ai_chat_AiSdk5UiMessage) => Boolean(getPersistedMessageId(message));
 		const failedSendUserMessageId = useStore.getState().failedSendUserMessageIdByThreadId.get(threadId) ?? null;
 		const targetMessageIsFailedOptimisticUserMessage = Boolean(
 			targetMessage?.role === "user" &&
-				!messageHasPersistedId(targetMessage) &&
+				!targetMessage.metadata?.convexId &&
 				failedSendUserMessageId === targetMessage.id,
 		);
 		const latestMessageIsFailedOptimisticUserMessage = Boolean(
 			!targetMessage &&
 				latestMessage?.role === "user" &&
-				!messageHasPersistedId(latestMessage) &&
+				!latestMessage.metadata?.convexId &&
 				failedSendUserMessageId === latestMessage.id,
 		);
 
@@ -1745,7 +1751,7 @@ const useThreadRuntimeController = () => {
 		// that can be created as the user stop and adds a new message to the chat
 		// 1 or more times
 		const shouldDropOptimisticAssistant = Boolean(
-			!targetMessage && latestMessage?.role === "assistant" && !messageHasPersistedId(latestMessage),
+			!targetMessage && latestMessage?.role === "assistant" && !latestMessage.metadata?.convexId,
 		);
 		let nextChatMessages = activeBranchMessages.list;
 		if (targetMessageIndex !== undefined && targetMessageIndex >= 0) {
@@ -1778,7 +1784,7 @@ const useThreadRuntimeController = () => {
 			}
 
 			if (targetMessage) {
-				if (!messageHasPersistedId(targetMessage)) {
+				if (!targetMessage.metadata?.convexId) {
 					return blockUntilParentPersists(targetMessage, "target-message-not-persisted");
 				}
 
@@ -1807,11 +1813,7 @@ const useThreadRuntimeController = () => {
 				};
 			}
 
-			if (!messageHasPersistedId(parentMessage)) {
-				return blockUntilParentPersists(parentMessage, "latest-message-not-persisted");
-			}
-
-			const parentId = getPersistedMessageId(parentMessage);
+			const parentId = parentMessage.metadata?.convexId ?? null;
 			if (!parentId) {
 				return blockUntilParentPersists(parentMessage, "latest-message-not-persisted");
 			}
@@ -1857,16 +1859,6 @@ const useThreadRuntimeController = () => {
 		});
 
 		setComposerValue(threadId, "");
-	});
-
-	const setComposerValue = useFn((threadId: string, message: string) => {
-		useStore.actions.setSession(threadId, (prev) => {
-			const base = prev ?? thread_session_create();
-			if (base.draftComposerText === message) {
-				return base;
-			}
-			return { ...base, draftComposerText: message };
-		});
 	});
 
 	const setSelectedModelId = useFn((modelId: ai_chat_ModelId) => {
@@ -1932,11 +1924,7 @@ const useThreadRuntimeController = () => {
 			return true;
 		}
 
-		const getPersistedMessageId = (message: ai_chat_AiSdk5UiMessage) =>
-			message.metadata?.convexId ??
-			(persistedMessagesLookup?.mapById.has(message.id) ? message.id : undefined) ??
-			persistedMessagesLookup?.mapByClientGeneratedId.get(message.id)?.id;
-		const latestMessageHasPersistedId = Boolean(getPersistedMessageId(latestMessage));
+		const latestMessageHasPersistedId = Boolean(latestMessage.metadata?.convexId);
 		if (latestMessageHasPersistedId) {
 			return true;
 		}
@@ -1956,7 +1944,7 @@ const useThreadRuntimeController = () => {
 			// A stopped assistant can remain client-only when the stream is aborted before
 			// persistence finishes. Let the next send drop it only after the previous
 			// parent has refreshed from Convex with a persisted id.
-			return Boolean(parentMessage && getPersistedMessageId(parentMessage));
+			return Boolean(parentMessage?.metadata?.convexId);
 		}
 
 		return false;
@@ -1982,7 +1970,6 @@ const useThreadRuntimeController = () => {
 	const syncRenderState = useFn(() => {
 		useStore.actions.syncThreadRenderState({
 			threadId: selectedThreadId,
-			status,
 			messages: activeBranchMessages.list,
 			branchSiblingIdsByParentId: messageChildIdsByParentId,
 			isRunning,
@@ -2047,7 +2034,6 @@ const useThreadRuntimeController = () => {
 		// so dependency identity is not a reliable signal for every message/topology change.
 		useStore.actions.syncThreadRenderState({
 			threadId: selectedThreadId,
-			status,
 			messages: activeBranchMessages.list,
 			branchSiblingIdsByParentId: messageChildIdsByParentId,
 			isRunning,
