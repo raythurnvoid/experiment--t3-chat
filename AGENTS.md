@@ -1117,6 +1117,21 @@ Only add `useMemo` / `useCallback` when there is a concrete semantic requirement
 
 This guidance applies to hook-level memoization (`useMemo` / `useCallback`). Component declarations are still required to use `memo(...)` (see Component declaration style below).
 
+### Render-time caches without refs
+
+React Compiler lint rejects reading or mutating `ref.current` during render. When render logic needs to reuse stable objects keyed by semantic input, do not use `useRef(new Map(...))` and read it in render.
+
+Prefer module-level keyed storage when all of these are true:
+
+- The cached value is derived from stable semantic inputs and does not itself drive React updates.
+- The value exists to preserve object identity or avoid non-deterministic rebuilds such as `Date.now()`.
+- The key includes every scope needed to prevent cross-tenant/cross-project collisions.
+- There is a clear cleanup point if the cache can grow across user/session/tenant changes.
+
+Keep the lookup policy local to the actual use case. A cache may create on miss, return `undefined`, prepopulate from an effect, or delete entries explicitly; do not make AGENTS guidance imply one policy is required.
+
+Use React state when cache changes should cause a rerender. Use `useMemo` only when the cache is local to the current render computation and a concrete semantic requirement justifies it.
+
 ### Component declaration style (mandatory)
 
 All React components must be exported with `memo` using a named function expression.

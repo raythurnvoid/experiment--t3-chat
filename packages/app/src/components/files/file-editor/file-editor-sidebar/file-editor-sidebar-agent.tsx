@@ -45,7 +45,7 @@ import {
 	type storage_local_ValueByKey,
 	useAppLocalStorageValue,
 } from "@/lib/storage.ts";
-import { cn, type GeneratedIdPrefix } from "@/lib/utils.ts";
+import { cn } from "@/lib/utils.ts";
 
 const DROPPABLE_ID = "file_editor_sidebar_agent_tabs";
 const NEW_CHAT_TAB_ID = "__file_editor_sidebar_agent_new_chat__";
@@ -752,58 +752,6 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 		selectedAgentTab,
 		currentThreads,
 		controller.streamingTitleByThreadId,
-		openTabsStorageKey,
-		selectedTabStorageKey,
-	]);
-
-	// Drop unsent optimistic tabs after reload; their in-memory Chat session is gone and cannot be resumed.
-	useEffect(() => {
-		const currentThreadIds = new Set<string>(currentThreads.map((thread) => thread._id));
-		const currentOptimisticThreadIds = new Set(
-			currentThreads.filter((thread) => ai_chat_is_optimistic_thread(thread)).map((thread) => thread._id),
-		);
-		const persistedClientGeneratedThreadIds = new Set(
-			currentThreads.map((thread) => (ai_chat_is_optimistic_thread(thread) ? undefined : thread.clientGeneratedId)),
-		);
-		const nextOpenTabs = openTabs.filter((tab) => {
-			if (!tab.id.startsWith("ai_thread-" satisfies GeneratedIdPrefix)) {
-				return true;
-			}
-
-			if (mountedOptimisticThreadIdsRef.current.has(tab.id) || currentOptimisticThreadIds.has(tab.id)) {
-				return true;
-			}
-
-			return currentThreadIds.has(tab.id) || persistedClientGeneratedThreadIds.has(tab.id);
-		});
-		if (nextOpenTabs.length === openTabs.length) {
-			return;
-		}
-
-		app_local_storage_set_value(openTabsStorageKey, nextOpenTabs);
-
-		if (selectedAgentTab && !nextOpenTabs.some((tab) => tab.id === selectedAgentTab)) {
-			const fallbackSelectedTab =
-				(controller.selectedThreadId && nextOpenTabs.find((tab) => tab.id === controller.selectedThreadId)?.id) ??
-				nextOpenTabs.at(-1)?.id ??
-				NEW_CHAT_TAB_ID;
-
-			app_local_storage_set_value(selectedTabStorageKey, fallbackSelectedTab);
-
-			if (controller.selectedThreadId === selectedAgentTab) {
-				if (fallbackSelectedTab === NEW_CHAT_TAB_ID) {
-					controller.clearSelectedThread();
-				} else {
-					controller.selectThread(fallbackSelectedTab);
-				}
-			}
-		}
-	}, [
-		openTabs,
-		selectedAgentTab,
-		currentThreads,
-		controller,
-		controller.selectedThreadId,
 		openTabsStorageKey,
 		selectedTabStorageKey,
 	]);

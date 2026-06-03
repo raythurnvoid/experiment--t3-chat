@@ -8,7 +8,27 @@ type MockChatInstance = {
 	id: string;
 	messages: unknown[];
 	error: Error | undefined;
+	transport: MockTransport | undefined;
 	sendMessage: ReturnType<typeof vi.fn>;
+};
+
+type MockPrepareSendMessagesRequestOptions = {
+	api: string;
+	body: Record<string, unknown>;
+	headers: Headers;
+	id: string;
+	messages: Array<{
+		metadata?: {
+			convexParentId?: string | null;
+		};
+	}>;
+	trigger: "submit-message" | "regenerate-message";
+};
+
+type MockTransport = {
+	options: {
+		prepareSendMessagesRequest?: (options: MockPrepareSendMessagesRequestOptions) => unknown;
+	};
 };
 
 const hookMocks = vi.hoisted(() => {
@@ -31,8 +51,9 @@ vi.mock("@ai-sdk/react", () => {
 		messages: unknown[];
 		status = "ready";
 		error: Error | undefined;
+		transport: MockTransport | undefined;
 		nextMessageIndex = 0;
-		sendMessage = vi.fn((message: unknown) => {
+		sendMessage = vi.fn((message: unknown, _options?: unknown) => {
 			const nextMessage =
 				typeof message === "object" && message !== null && !("id" in message)
 					? { id: `ai_message_mock_${this.nextMessageIndex}`, ...message }
@@ -50,9 +71,10 @@ vi.mock("@ai-sdk/react", () => {
 			this.messages = messages;
 		});
 
-		constructor(args: { id?: string | null; messages?: unknown[] }) {
+		constructor(args: { id?: string | null; messages?: unknown[]; transport?: MockTransport }) {
 			this.id = args.id ?? "mock_chat";
 			this.messages = args.messages ?? [];
+			this.transport = args.transport;
 			hookMocks.chatInstances.push(this);
 		}
 	}
@@ -183,6 +205,7 @@ function RuntimeSendProbe() {
 	return (
 		<div>
 			<div data-testid="runtime-selected">{selectedThreadId ?? "null"}</div>
+			<div data-testid="runtime-session">{selectedChat ? "session" : "no-session"}</div>
 			<div data-testid="runtime-latest-message">{latestMessage?.id ?? "null"}</div>
 			<div data-testid="runtime-failed-message">{failedSendUserMessageId ?? "null"}</div>
 			<button type="button" onClick={() => controller.startNewChat()}>
@@ -204,11 +227,16 @@ function RuntimeSendProbe() {
 			<button
 				type="button"
 				onClick={() => {
-					if (!selectedChat) {
+					if (!selectedThreadId) {
 						return;
 					}
 
-					selectedChat.error = new Error("send failed");
+					const chat = hookMocks.chatInstances.find((chat) => chat.id === selectedThreadId);
+					if (!chat) {
+						return;
+					}
+
+					chat.error = new Error("send failed");
 					forceRender((value) => value + 1);
 				}}
 			>
@@ -333,15 +361,16 @@ describe("AiChatController", () => {
 		expect(hookMocks.renderSelectedThreadId).toHaveBeenNthCalledWith(1, "thread_sidebar_last");
 	});
 
-	test("ignores stale optimistic sidebar tabs when restoring the selected thread", () => {
+	test("rehydrates stored optimistic sidebar tabs as selected optimistic sessions", async () => {
 		const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` = `app_state::file_editor_sidebar_open_tabs::scope::${hookMocks.tenant.membershipId}`;
 		const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` = `app_state::file_editor_sidebar_agent_selected_tab::scope::${hookMocks.tenant.membershipId}`;
+		const optimisticThreadId = "ai_thread-restored_unsent";
 
 		app_local_storage_set_value(openTabsStorageKey, [
 			{ id: "thread_sidebar_last", title: "Sidebar last" },
-			{ id: "ai_thread-stale_unsent", title: "New chat" },
+			{ id: optimisticThreadId, title: "New chat" },
 		]);
-		app_local_storage_set_value(selectedTabStorageKey, "ai_thread-stale_unsent");
+		app_local_storage_set_value(selectedTabStorageKey, optimisticThreadId);
 
 		render(
 			<SidebarSurface>
@@ -349,8 +378,71 @@ describe("AiChatController", () => {
 			</SidebarSurface>,
 		);
 
-		expect(screen.getByTestId("sidebar-selected").textContent).toBe("thread_sidebar_last");
-		expect(hookMocks.renderSelectedThreadId).toHaveBeenNthCalledWith(1, "thread_sidebar_last");
+		expect(screen.getByTestId("sidebar-selected").textContent).toBe(optimisticThreadId);
+		await waitFor(() => {
+			expect(screen.getByTestId("sidebar-session").textContent).toBe("session");
+		});
+		expect(hookMocks.chatInstances.some((chat) => chat.id === optimisticThreadId)).toBe(true);
+	});
+
+	test("sends from a restored optimistic sidebar tab with client-generated thread id", async () => {
+		const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` = `app_state::file_editor_sidebar_open_tabs::scope::${hookMocks.tenant.membershipId}`;
+		const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` = `app_state::file_editor_sidebar_agent_selected_tab::scope::${hookMocks.tenant.membershipId}`;
+		const optimisticThreadId = "ai_thread-restored_send";
+
+		app_local_storage_set_value(openTabsStorageKey, [{ id: optimisticThreadId, title: "New chat" }]);
+		app_local_storage_set_value(selectedTabStorageKey, optimisticThreadId);
+
+		render(
+			<SidebarSurface>
+				<RuntimeSendProbe />
+			</SidebarSurface>,
+		);
+
+		expect(screen.getByTestId("runtime-selected").textContent).toBe(optimisticThreadId);
+		await waitFor(() => {
+			expect(screen.getByTestId("runtime-session").textContent).toBe("session");
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "send first" }));
+
+		const chat = hookMocks.chatInstances.find((chat) => chat.id === optimisticThreadId);
+		expect(chat).toBeDefined();
+		if (!chat) {
+			throw new Error("Expected restored optimistic chat instance");
+		}
+		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+		expect(chat.sendMessage.mock.calls[0]?.[1]).toBeUndefined();
+
+		const prepareSendMessagesRequest = chat.transport?.options.prepareSendMessagesRequest;
+		expect(prepareSendMessagesRequest).toBeTypeOf("function");
+		if (!prepareSendMessagesRequest) {
+			throw new Error("Expected restored optimistic chat transport");
+		}
+
+		const preparedRequest = await prepareSendMessagesRequest({
+			api: "/api/chat",
+			body: {},
+			headers: new Headers(),
+			id: optimisticThreadId,
+			messages: [
+				{
+					metadata: {
+						convexParentId: null,
+					},
+				},
+			],
+			trigger: "submit-message",
+		});
+
+		if (typeof preparedRequest !== "object" || preparedRequest === null || !("body" in preparedRequest)) {
+			throw new Error("Expected prepared request body");
+		}
+		const body = (preparedRequest as { body: Record<string, unknown> }).body;
+		expect(body).toMatchObject({
+			clientGeneratedThreadId: optimisticThreadId,
+		});
+		expect(body.threadId).toBeUndefined();
 	});
 
 	test("selectThread hydrates a session and updates only the current surface selection", () => {

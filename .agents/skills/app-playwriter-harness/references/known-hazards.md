@@ -32,7 +32,7 @@ Use this file for reusable problems that affect app browser QA.
 
 - Viewport and sidebar state may persist between sessions through browser storage.
 - Main sidebar open/collapsed state is persisted in localStorage keys documented in `app-map.md`.
-- Agent `New chat` creates a client-only `ai_thread-*` tab before Convex persists the real thread. If cleanup removes that optimistic tab too early, sends land in an older chat or the tab appears to vanish. Verify the selected `.AiChatThread[data-thread-id]` still starts with `ai_thread-` before sending the first message in a new chat.
+- Agent `New chat` creates a client-only `ai_thread-*` tab before Convex persists the real thread. If cleanup removes that optimistic tab too early, sends land in an older chat or the tab appears to vanish. If reload restores it, verify the tab still has an optimistic session and the first `/api/chat` request uses `clientGeneratedThreadId`.
 - Multi-file agent setup prompts can overstate success. For corpus generation or bulk QA data, keep batches small and verify persisted file nodes through the app Convex client after each batch.
 - Rapid AI chat sends can hit the `/api/chat` rate limiter and produce a recoverable `429` response with `retryAfterMs`. Wait for that window and click the visible `Retry` button for the same draft instead of sending a duplicate prompt.
 - The chat stop control is labelled `Stop generating`. Playwriter waits that look for `Stop generation` will miss the running state and can send the next prompt too early, producing avoidable `429` failures or branched transcript confusion.

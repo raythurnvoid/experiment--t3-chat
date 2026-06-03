@@ -53,11 +53,6 @@ type ThreadSession = {
 	 */
 	anchorId: string | null | undefined;
 	streamingTitle?: string;
-	optimisticThread?: ai_chat_Thread;
-};
-
-type ChatRequestMetadata = {
-	isOptimistic: boolean;
 };
 
 type ThreadChatOnFinish = Parameters<ChatOnFinishCallback<ai_chat_AiSdk5UiMessage>>[0] & {
@@ -146,6 +141,10 @@ export type AiChatController_Props = {
 const SIDEBAR_SELECTED_TAB_STORAGE_KEY_PREFIX = "app_state::file_editor_sidebar_agent_selected_tab::scope::";
 const SIDEBAR_OPEN_TABS_STORAGE_KEY_PREFIX = "app_state::file_editor_sidebar_open_tabs::scope::";
 
+function is_ai_chat_optimistic_thread_id(threadId?: string | null): threadId is AiChatOptimisticThreadId {
+	return Boolean(threadId?.startsWith("ai_thread-" satisfies GeneratedIdPrefix));
+}
+
 function is_sidebar_selected_tab_storage_key(
 	storageKey: AiChatControllerStorageKey,
 ): storageKey is SidebarSelectedTabStorageKey {
@@ -162,12 +161,10 @@ function get_sidebar_open_tabs_storage_key(storageKey: SidebarSelectedTabStorage
 function get_initial_selected_thread_id(storageKey: AiChatControllerStorageKey) {
 	const selectedThreadId = app_local_storage_get_value(storageKey);
 	if (!is_sidebar_selected_tab_storage_key(storageKey)) {
-		return selectedThreadId?.startsWith("ai_thread-" satisfies GeneratedIdPrefix) ? null : selectedThreadId;
+		return selectedThreadId;
 	}
 
-	const openTabs = app_local_storage_get_value(get_sidebar_open_tabs_storage_key(storageKey)).filter(
-		(tab) => !tab.id.startsWith("ai_thread-" satisfies GeneratedIdPrefix),
-	);
+	const openTabs = app_local_storage_get_value(get_sidebar_open_tabs_storage_key(storageKey));
 	const selectedOpenTab = openTabs.find((tab) => tab.id === selectedThreadId);
 	return selectedOpenTab?.id ?? openTabs.at(-1)?.id ?? null;
 }
@@ -193,12 +190,10 @@ function ControllerProvider(props: AiChatController_Props) {
 		setSelectedThreadIdState(nextThreadId);
 	});
 
-	const value = useMemo(() => {
-		return {
-			selectedThreadId,
-			setSelectedThreadId,
-		} satisfies SelectionContextValue;
-	}, [selectedThreadId, setSelectedThreadId]);
+	const value = {
+		selectedThreadId,
+		setSelectedThreadId,
+	} satisfies SelectionContextValue;
 
 	return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;
 }
@@ -250,6 +245,22 @@ function create_optimistic_thread(tenant: {
 	};
 }
 
+const optimisticThreadListItemByKey = new Map<string, ai_chat_Thread>();
+function get_optimistic_thread_list_item(tenant: {
+	workspaceId: string;
+	projectId: string;
+	threadId: AiChatOptimisticThreadId;
+}) {
+	const key = `${tenant.workspaceId}:${tenant.projectId}:${tenant.threadId}`;
+	let optimisticThread = optimisticThreadListItemByKey.get(key);
+	if (!optimisticThread) {
+		// Build fake list items once per client id so restored blank tabs do not flicker on every render.
+		optimisticThread = create_optimistic_thread(tenant);
+		optimisticThreadListItemByKey.set(key, optimisticThread);
+	}
+	return optimisticThread;
+}
+
 function strip_provider_metadata_from_message_parts(message: ai_chat_AiSdk5UiMessage) {
 	return {
 		...message,
@@ -298,7 +309,6 @@ function get_message_selected_mode_id(message?: ai_chat_AiSdk5UiMessage | null) 
 }
 
 const thread_session_create = (args?: {
-	optimisticThread?: ai_chat_Thread;
 	chat?: Chat<ai_chat_AiSdk5UiMessage> | null;
 	chatArgs?: ThreadChatArgs | undefined;
 	selectedModelId?: ai_chat_ModelId;
@@ -311,7 +321,6 @@ const thread_session_create = (args?: {
 		selectedModeId: args?.selectedModeId,
 		anchorId: undefined,
 		streamingTitle: undefined,
-		optimisticThread: args?.optimisticThread,
 	} satisfies ThreadSession;
 };
 
@@ -607,13 +616,17 @@ const useThreadList = (props?: useThreadList_Props) => {
 
 	const optimisticThreads = useMemo(() => {
 		const result: Array<ai_chat_Thread> = [];
-		for (const session of threadById.values()) {
-			if (session.optimisticThread && !threadIdByClientGeneratedId.has(session.optimisticThread._id)) {
-				result.push(session.optimisticThread);
+
+		for (const threadId of threadById.keys()) {
+			if (!is_ai_chat_optimistic_thread_id(threadId) || threadIdByClientGeneratedId.has(threadId)) {
+				continue;
 			}
+
+			result.push(get_optimistic_thread_list_item({ workspaceId, projectId, threadId }));
 		}
+
 		return result;
-	}, [threadById, threadIdByClientGeneratedId]);
+	}, [projectId, threadById, threadIdByClientGeneratedId, workspaceId]);
 
 	const persistedSelectedThreadId = selectedThreadId ? threadIdByClientGeneratedId.get(selectedThreadId) : undefined;
 
@@ -658,7 +671,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 				options.trigger === "regenerate-message"
 					? options.messages.at(-1)?.id
 					: (messagesToAppend.at(-1)?.metadata?.convexParentId ?? null);
-			const metadata = options.requestMetadata as ChatRequestMetadata;
+			const isOptimisticThread = is_ai_chat_optimistic_thread_id(options.id);
 			const storeState = useStore.getState();
 			const requestSession = storeState.threadById.get(options.id);
 			const requestSelectedModelId = requestSession?.selectedModelId;
@@ -676,8 +689,8 @@ const useThreadList = (props?: useThreadList_Props) => {
 				...options.body,
 				model: modelForRequest,
 				mode: modeForRequest,
-				threadId: metadata.isOptimistic ? undefined : options.id,
-				clientGeneratedThreadId: metadata.isOptimistic ? options.id : undefined,
+				threadId: isOptimisticThread ? undefined : options.id,
+				clientGeneratedThreadId: isOptimisticThread ? options.id : undefined,
 				messages: messagesToAppend,
 				trigger: options.trigger,
 				parentId,
@@ -713,11 +726,9 @@ const useThreadList = (props?: useThreadList_Props) => {
 			return;
 		}
 
-		const session = useStore.actions.getSession(options.chatId);
-		const threadId =
-			session?.optimisticThread && options.chatId === session.optimisticThread._id
-				? null
-				: (options.chatId as app_convex_Id<"ai_chat_threads">);
+		const threadId = is_ai_chat_optimistic_thread_id(options.chatId)
+			? null
+			: (options.chatId as app_convex_Id<"ai_chat_threads">);
 
 		if (!threadId) {
 			return;
@@ -763,15 +774,13 @@ const useThreadList = (props?: useThreadList_Props) => {
 		});
 	};
 
-	const startNewChat = (message?: string) => {
+	const startNewChat = useFn((message?: string) => {
 		const nextSelectedModelId = selectedModelId;
 		const nextSelectedModeId = selectedModeId;
 		const threadId = generate_id("ai_thread");
-		const optimisticThread = create_optimistic_thread({ workspaceId, projectId, threadId });
 		const optimisticChat = createThreadChat(threadId);
 		useStore.actions.setSession(threadId, () => {
 			return thread_session_create({
-				optimisticThread: optimisticThread,
 				chat: optimisticChat,
 				selectedModelId: nextSelectedModelId,
 				selectedModeId: nextSelectedModeId,
@@ -784,29 +793,22 @@ const useThreadList = (props?: useThreadList_Props) => {
 		setSelectedThreadId(threadId, { persist: false });
 
 		if (message?.trim()) {
-			optimisticChat.sendMessage(
-				{
-					role: "user",
-					parts: [{ type: "text", text: message }],
-					metadata: {
-						convexParentId: null,
-						parentClientGeneratedId: null,
-						selectedModelId: nextSelectedModelId,
-						selectedModeId: nextSelectedModeId,
-					} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
-				},
-				{
-					metadata: {
-						isOptimistic: true,
-					} satisfies ChatRequestMetadata,
-				},
-			);
+			optimisticChat.sendMessage({
+				role: "user",
+				parts: [{ type: "text", text: message }],
+				metadata: {
+					convexParentId: null,
+					parentClientGeneratedId: null,
+					selectedModelId: nextSelectedModelId,
+					selectedModeId: nextSelectedModeId,
+				} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
+			});
 		}
 
 		return threadId;
-	};
+	});
 
-	const branchChat = (threadId: string, messageId?: string) => {
+	const branchChat = useFn((threadId: string, messageId?: string) => {
 		branchThread({ membershipId, threadId, ...(messageId ? { messageId } : {}) })
 			.then((result) => {
 				if (result._nay) {
@@ -823,9 +825,9 @@ const useThreadList = (props?: useThreadList_Props) => {
 					messageId,
 				});
 			});
-	};
+	});
 
-	const selectThread = (threadId: string) => {
+	const selectThread = useFn((threadId: string) => {
 		let session = useStore.actions.getSession(threadId);
 		if (!session) {
 			session = useStore.actions.setSession(threadId, () => {
@@ -841,14 +843,14 @@ const useThreadList = (props?: useThreadList_Props) => {
 			});
 		}
 
-		setSelectedThreadId(threadId, { persist: !session?.optimisticThread });
-	};
+		setSelectedThreadId(threadId, { persist: !is_ai_chat_optimistic_thread_id(threadId) });
+	});
 
-	const clearSelectedThread = () => {
+	const clearSelectedThread = useFn(() => {
 		setSelectedThreadId(null, { persist: false });
-	};
+	});
 
-	const setThreadStarred = (threadId: string, starred: boolean) => {
+	const setThreadStarred = useFn((threadId: string, starred: boolean) => {
 		void updateThread({ threadId, membershipId, starred })
 			.then((result) => {
 				if (result._nay) {
@@ -866,12 +868,10 @@ const useThreadList = (props?: useThreadList_Props) => {
 					starred,
 				});
 			});
-	};
+	});
 
-	const archiveThread = (threadId: string, isArchived: boolean) => {
-		const session = useStore.actions.getSession(threadId);
-
-		if (session?.optimisticThread) {
+	const archiveThread = useFn((threadId: string, isArchived: boolean) => {
+		if (is_ai_chat_optimistic_thread_id(threadId)) {
 			if (!isArchived) {
 				return;
 			}
@@ -906,18 +906,25 @@ const useThreadList = (props?: useThreadList_Props) => {
 					isArchived,
 				});
 			});
-	};
+	});
 
-	const removeOptimisticThread = (threadId: string) => {
-		const session = useStore.actions.getSession(threadId);
-		if (!session?.optimisticThread) {
+	const removeOptimisticThread = useFn((threadId: string) => {
+		if (!is_ai_chat_optimistic_thread_id(threadId)) {
 			return;
 		}
 		setSelectedThreadId((currentThreadId) => (currentThreadId === threadId ? null : currentThreadId), {
 			persist: false,
 		});
 		useStore.actions.deleteSession(threadId);
-	};
+	});
+
+	useEffect(() => {
+		if (!is_ai_chat_optimistic_thread_id(selectedThreadId)) {
+			return;
+		}
+
+		selectThread(selectedThreadId);
+	}, [selectThread, selectedThreadId]);
 
 	// Upgrade stale optimistic selections so tab synchronization does not
 	// re-add a client-generated id after the real thread has appeared.
@@ -943,6 +950,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 	useEffect(() => {
 		useStore.setState({ threadById: new Map() });
 		persistedUiMessageById.clear();
+		optimisticThreadListItemByKey.clear();
 	}, [membershipId]);
 
 	useEffect(() => {
@@ -964,10 +972,8 @@ const useThreadList = (props?: useThreadList_Props) => {
 	}, []);
 
 	useEffect(() => {
-		for (const session of threadById.values()) {
-			if (!session.optimisticThread) continue;
-
-			const optimisticThreadId = session.optimisticThread._id;
+		for (const [optimisticThreadId, session] of threadById.entries()) {
+			if (!is_ai_chat_optimistic_thread_id(optimisticThreadId)) continue;
 
 			const threadId = threadIdByClientGeneratedId.get(optimisticThreadId);
 			if (threadId) {
@@ -980,7 +986,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 
 						// @ts-expect-error: Overwrite the readonly chat id to the persisted thread id.
 						session.chat.id = threadId;
-						return { ...session, optimisticThread: undefined };
+						return { ...session };
 					});
 				} else {
 					if (session.selectedModelId !== undefined && persistedSession.selectedModelId === undefined) {
@@ -1046,8 +1052,9 @@ const useThreadList = (props?: useThreadList_Props) => {
 export type AiChatThreadListController = ReturnType<typeof useThreadList>;
 
 const useThreadRuntimeController = () => {
-	const { membershipId, workspaceId, projectId } = AppTenantProvider.useContext();
+	const { membershipId } = AppTenantProvider.useContext();
 	const { selectedThreadId, setSelectedThreadId } = useControllerSelection();
+	const selectedThreadIsOptimistic = is_ai_chat_optimistic_thread_id(selectedThreadId);
 
 	const draftSelectedModelId = useStore((state) => state.draftSelectedModelId);
 	const draftSelectedModeId = useStore((state) => state.draftSelectedModeId);
@@ -1063,7 +1070,7 @@ const useThreadRuntimeController = () => {
 
 	const persistedThreadMessages = useQuery(
 		app_convex_api.ai_chat.thread_messages_list,
-		selectedThreadId && !session?.optimisticThread
+		selectedThreadId && !selectedThreadIsOptimistic
 			? {
 					membershipId,
 					threadId: selectedThreadId,
@@ -1173,40 +1180,6 @@ const useThreadRuntimeController = () => {
 		? (session?.selectedModeId ?? persistedSelectedModeId ?? ai_chat_DEFAULT_MODE_ID)
 		: draftSelectedModeId;
 
-	useEffect(() => {
-		if (!selectedThreadId || !session || session.selectedModelId !== undefined) {
-			return;
-		}
-
-		useStore.actions.setSession(selectedThreadId, (prev) => {
-			if (!prev || prev.selectedModelId !== undefined) {
-				return;
-			}
-
-			return {
-				...prev,
-				selectedModelId: persistedSelectedModelId ?? ai_chat_DEFAULT_MODEL_ID,
-			};
-		});
-	}, [persistedSelectedModelId, selectedThreadId, session]);
-
-	useEffect(() => {
-		if (!selectedThreadId || !session || session.selectedModeId !== undefined) {
-			return;
-		}
-
-		useStore.actions.setSession(selectedThreadId, (prev) => {
-			if (!prev || prev.selectedModeId !== undefined) {
-				return;
-			}
-
-			return {
-				...prev,
-				selectedModeId: persistedSelectedModeId ?? ai_chat_DEFAULT_MODE_ID,
-			};
-		});
-	}, [persistedSelectedModeId, selectedThreadId, session]);
-
 	const prepareSendMessagesRequest = useLiveRef<
 		NonNullable<DefaultChatTransport<ai_chat_AiSdk5UiMessage>["prepareSendMessagesRequest"]>
 	>(async (options) => {
@@ -1232,7 +1205,7 @@ const useThreadRuntimeController = () => {
 					? options.messages.at(-1)?.id
 					: (messagesToAppend.at(-1)?.metadata?.convexParentId ?? null);
 
-			const metadata = options.requestMetadata as ChatRequestMetadata;
+			const isOptimisticThread = is_ai_chat_optimistic_thread_id(options.id);
 
 			const modelForRequest = ai_chat_is_model_id(selectedModelId) ? selectedModelId : ai_chat_DEFAULT_MODEL_ID;
 
@@ -1242,8 +1215,8 @@ const useThreadRuntimeController = () => {
 				...options.body,
 				model: modelForRequest,
 				mode: modeForRequest,
-				threadId: metadata.isOptimistic ? undefined : options.id,
-				clientGeneratedThreadId: metadata.isOptimistic ? options.id : undefined,
+				threadId: isOptimisticThread ? undefined : options.id,
+				clientGeneratedThreadId: isOptimisticThread ? options.id : undefined,
 
 				messages: messagesToAppend,
 				trigger: options.trigger,
@@ -1280,11 +1253,9 @@ const useThreadRuntimeController = () => {
 			return;
 		}
 
-		const session = useStore.actions.getSession(options.chatId);
-		const threadId =
-			session?.optimisticThread && options.chatId === session.optimisticThread._id
-				? null
-				: (options.chatId as app_convex_Id<"ai_chat_threads">);
+		const threadId = is_ai_chat_optimistic_thread_id(options.chatId)
+			? null
+			: (options.chatId as app_convex_Id<"ai_chat_threads">);
 
 		if (!threadId) {
 			return;
@@ -1348,21 +1319,6 @@ const useThreadRuntimeController = () => {
 	const chat = useChat<ai_chat_AiSdk5UiMessage>({ chat: activeChatInstance });
 	const chatRef = useLiveRef(chat);
 	const activeChatInstanceIdRef = useLiveRef(activeChatInstance.id);
-
-	useEffect(() => {
-		if (!selectedThreadId || !selectedChatInstance) {
-			return;
-		}
-
-		useStore.actions.setSession(selectedThreadId, (prev) => {
-			const base = prev ?? thread_session_create();
-			if (base.chat) {
-				return base;
-			}
-
-			return { ...base, chat: selectedChatInstance };
-		});
-	}, [selectedChatInstance, selectedThreadId]);
 
 	const pendingMessagesLookup = ((/* iife */) => {
 		const result = {
@@ -1506,11 +1462,10 @@ const useThreadRuntimeController = () => {
 		return result;
 	})();
 
-	const startNewChat = (message?: string) => {
+	const startNewChat = useFn((message?: string) => {
 		const nextSelectedModelId = selectedModelId;
 		const nextSelectedModeId = selectedModeId;
 		const threadId = generate_id("ai_thread");
-		const optimisticThread = create_optimistic_thread({ workspaceId, projectId, threadId });
 		const optimisticChat = create_chat_instance({
 			chatId: threadId,
 			prepareSendMessagesRequest: (options) => prepareSendMessagesRequest.current(options),
@@ -1518,7 +1473,6 @@ const useThreadRuntimeController = () => {
 		});
 		useStore.actions.setSession(threadId, () => {
 			return thread_session_create({
-				optimisticThread: optimisticThread,
 				chat: optimisticChat,
 				selectedModelId: nextSelectedModelId,
 				selectedModeId: nextSelectedModeId,
@@ -1531,29 +1485,22 @@ const useThreadRuntimeController = () => {
 		setSelectedThreadId(threadId, { persist: false });
 
 		if (message?.trim()) {
-			optimisticChat.sendMessage(
-				{
-					role: "user",
-					parts: [{ type: "text", text: message }],
-					metadata: {
-						convexParentId: null,
-						parentClientGeneratedId: null,
-						selectedModelId: nextSelectedModelId,
-						selectedModeId: nextSelectedModeId,
-					} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
-				},
-				{
-					metadata: {
-						isOptimistic: true,
-					} satisfies ChatRequestMetadata,
-				},
-			);
+			optimisticChat.sendMessage({
+				role: "user",
+				parts: [{ type: "text", text: message }],
+				metadata: {
+					convexParentId: null,
+					parentClientGeneratedId: null,
+					selectedModelId: nextSelectedModelId,
+					selectedModeId: nextSelectedModeId,
+				} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
+			});
 		}
 
 		return threadId;
-	};
+	});
 
-	const branchChat = (threadId: string, messageId?: string) => {
+	const branchChat = useFn((threadId: string, messageId?: string) => {
 		branchThread({ membershipId, threadId, ...(messageId ? { messageId } : {}) })
 			.then((result) => {
 				if (result._nay) {
@@ -1574,9 +1521,9 @@ const useThreadRuntimeController = () => {
 					messageId,
 				});
 			});
-	};
+	});
 
-	const selectThread = (threadId: string) => {
+	const selectThread = useFn((threadId: string) => {
 		let session = useStore.actions.getSession(threadId);
 		if (!session) {
 			session = useStore.actions.setSession(threadId, () => {
@@ -1596,10 +1543,10 @@ const useThreadRuntimeController = () => {
 			});
 		}
 
-		setSelectedThreadId(threadId, { persist: !session?.optimisticThread });
-	};
+		setSelectedThreadId(threadId, { persist: !is_ai_chat_optimistic_thread_id(threadId) });
+	});
 
-	const selectBranchAnchor = (threadId: string, anchorId: string | null) => {
+	const selectBranchAnchor = useFn((threadId: string, anchorId: string | null) => {
 		useStore.actions.setSession(threadId, (prev) => {
 			if (!prev) {
 				should_never_happen("[AiChatController.useThreadRuntime.selectBranchAnchor] Missing session", {
@@ -1611,9 +1558,9 @@ const useThreadRuntimeController = () => {
 
 			return { ...prev, anchorId };
 		});
-	};
+	});
 
-	const setThreadStarred = (threadId: string, starred: boolean) => {
+	const setThreadStarred = useFn((threadId: string, starred: boolean) => {
 		void updateThread({ threadId, membershipId, starred })
 			.then((result) => {
 				if (result._nay) {
@@ -1631,13 +1578,11 @@ const useThreadRuntimeController = () => {
 					starred,
 				});
 			});
-	};
+	});
 
-	const archiveThread = (threadId: string, isArchived: boolean) => {
-		const session = useStore.actions.getSession(threadId);
-
+	const archiveThread = useFn((threadId: string, isArchived: boolean) => {
 		// Optimistic threads exist only on the client; "archiving" them just removes the optimistic session.
-		if (session?.optimisticThread) {
+		if (is_ai_chat_optimistic_thread_id(threadId)) {
 			if (!isArchived) {
 				return;
 			}
@@ -1672,20 +1617,19 @@ const useThreadRuntimeController = () => {
 					isArchived,
 				});
 			});
-	};
+	});
 
-	const removeOptimisticThread = (threadId: string) => {
-		const session = useStore.actions.getSession(threadId);
-		if (!session?.optimisticThread) {
+	const removeOptimisticThread = useFn((threadId: string) => {
+		if (!is_ai_chat_optimistic_thread_id(threadId)) {
 			return;
 		}
 		setSelectedThreadId((currentThreadId) => (currentThreadId === threadId ? null : currentThreadId), {
 			persist: false,
 		});
 		useStore.actions.deleteSession(threadId);
-	};
+	});
 
-	const regenerate = (threadId: string, messageId: string) => {
+	const regenerate = useFn((threadId: string, messageId: string) => {
 		const session = useStore.getState().threadById.get(threadId);
 		const chat = session?.chat;
 
@@ -1713,7 +1657,6 @@ const useThreadRuntimeController = () => {
 		chat
 			.regenerate({
 				messageId,
-				metadata: { isOptimistic: session.optimisticThread ? true : false } satisfies ChatRequestMetadata,
 			})
 			.catch((error: unknown) => {
 				console.error("[AiChatController.useThreadRuntime.regenerate] Error regenerating message", {
@@ -1736,9 +1679,9 @@ const useThreadRuntimeController = () => {
 				anchorId: null,
 			};
 		});
-	};
+	});
 
-	const sendUserText = (threadId: string, value: string, options?: { messageId?: string }) => {
+	const sendUserText = useFn((threadId: string, value: string, options?: { messageId?: string }) => {
 		if (!value.trim()) {
 			return;
 		}
@@ -1780,7 +1723,7 @@ const useThreadRuntimeController = () => {
 		);
 
 		if (
-			session.optimisticThread &&
+			is_ai_chat_optimistic_thread_id(threadId) &&
 			latestMessage &&
 			!targetMessageIsFailedOptimisticUserMessage &&
 			!latestMessageIsFailedOptimisticUserMessage
@@ -1888,23 +1831,16 @@ const useThreadRuntimeController = () => {
 
 		chat.messages = nextChatMessages;
 
-		chat.sendMessage(
-			{
-				role: "user",
-				parts: [{ type: "text", text: value }],
-				metadata: {
-					convexParentId: parentMessageIds.convexParentId,
-					parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
-					selectedModelId: threadSelectedModelId,
-					selectedModeId: threadSelectedModeId,
-				} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
-			},
-			{
-				metadata: {
-					isOptimistic: session.optimisticThread ? true : false,
-				} satisfies ChatRequestMetadata,
-			},
-		);
+		chat.sendMessage({
+			role: "user",
+			parts: [{ type: "text", text: value }],
+			metadata: {
+				convexParentId: parentMessageIds.convexParentId,
+				parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
+				selectedModelId: threadSelectedModelId,
+				selectedModeId: threadSelectedModeId,
+			} satisfies NonNullable<ai_chat_AiSdk5UiMessage["metadata"]>,
+		});
 
 		useStore.actions.setSession(threadId, (prev) => {
 			if (!prev) {
@@ -1921,9 +1857,9 @@ const useThreadRuntimeController = () => {
 		});
 
 		setComposerValue(threadId, "");
-	};
+	});
 
-	const setComposerValue = (threadId: string, message: string) => {
+	const setComposerValue = useFn((threadId: string, message: string) => {
 		useStore.actions.setSession(threadId, (prev) => {
 			const base = prev ?? thread_session_create();
 			if (base.draftComposerText === message) {
@@ -1931,9 +1867,9 @@ const useThreadRuntimeController = () => {
 			}
 			return { ...base, draftComposerText: message };
 		});
-	};
+	});
 
-	const setSelectedModelId = (modelId: ai_chat_ModelId) => {
+	const setSelectedModelId = useFn((modelId: ai_chat_ModelId) => {
 		if (!selectedThreadId) {
 			useStore.setState(() => ({ draftSelectedModelId: modelId }));
 			return;
@@ -1952,9 +1888,9 @@ const useThreadRuntimeController = () => {
 				selectedModelId: modelId,
 			};
 		});
-	};
+	});
 
-	const setSelectedModeId = (mode: ai_chat_ModeId) => {
+	const setSelectedModeId = useFn((mode: ai_chat_ModeId) => {
 		if (!selectedThreadId) {
 			useStore.setState(() => ({ draftSelectedModeId: mode }));
 			return;
@@ -1973,7 +1909,7 @@ const useThreadRuntimeController = () => {
 				selectedModeId: mode,
 			};
 		});
-	};
+	});
 
 	const stop = useFn(() => {
 		chatRef.current.stop().catch((error) => {
@@ -2011,7 +1947,7 @@ const useThreadRuntimeController = () => {
 			return true;
 		}
 
-		if (session?.optimisticThread) {
+		if (selectedThreadIsOptimistic) {
 			return false;
 		}
 
@@ -2030,7 +1966,7 @@ const useThreadRuntimeController = () => {
 		if (!selectedThreadId) {
 			return "idle" as const;
 		}
-		if (session?.optimisticThread) {
+		if (selectedThreadIsOptimistic) {
 			return "loaded" as const;
 		}
 		if (persistedThreadMessages === undefined) {
@@ -2038,6 +1974,73 @@ const useThreadRuntimeController = () => {
 		}
 		return "loaded" as const;
 	})();
+
+	const setEditingMessageId = useFn((threadId: string, messageId: string | null) => {
+		useStore.actions.setEditingMessageId(threadId, messageId);
+	});
+
+	const syncRenderState = useFn(() => {
+		useStore.actions.syncThreadRenderState({
+			threadId: selectedThreadId,
+			status,
+			messages: activeBranchMessages.list,
+			branchSiblingIdsByParentId: messageChildIdsByParentId,
+			isRunning,
+			hasError: Boolean(chat.error),
+		});
+	});
+
+	useEffect(() => {
+		if (!selectedThreadId || !session || session.selectedModelId !== undefined) {
+			return;
+		}
+
+		useStore.actions.setSession(selectedThreadId, (prev) => {
+			if (!prev || prev.selectedModelId !== undefined) {
+				return;
+			}
+
+			return {
+				...prev,
+				selectedModelId: persistedSelectedModelId ?? ai_chat_DEFAULT_MODEL_ID,
+			};
+		});
+	}, [persistedSelectedModelId, selectedThreadId, session]);
+
+	useEffect(() => {
+		if (!selectedThreadId || !session || session.selectedModeId !== undefined) {
+			return;
+		}
+
+		useStore.actions.setSession(selectedThreadId, (prev) => {
+			if (!prev || prev.selectedModeId !== undefined) {
+				return;
+			}
+
+			return {
+				...prev,
+				selectedModeId: persistedSelectedModeId ?? ai_chat_DEFAULT_MODE_ID,
+			};
+		});
+	}, [persistedSelectedModeId, selectedThreadId, session]);
+
+	// Attach the render-created Chat instance to the selected session once React has produced it.
+	// Restored `ai_thread-*` tabs use the same session shape as persisted tabs; the id prefix
+	// controls request routing later.
+	useEffect(() => {
+		if (!selectedThreadId || !selectedChatInstance) {
+			return;
+		}
+
+		useStore.actions.setSession(selectedThreadId, (prev) => {
+			const base = prev ?? thread_session_create();
+			if (base.chat) {
+				return base;
+			}
+
+			return { ...base, chat: selectedChatInstance };
+		});
+	}, [selectedChatInstance, selectedThreadId]);
 
 	useLayoutEffect(() => {
 		// Sync after every committed runtime render: AI SDK chat state can update through mutable Chat internals,
@@ -2094,25 +2097,14 @@ const useThreadRuntimeController = () => {
 		setComposerValue,
 		setSelectedModelId,
 		setSelectedModeId,
-		setEditingMessageId: (threadId: string, messageId: string | null) => {
-			useStore.actions.setEditingMessageId(threadId, messageId);
-		},
+		setEditingMessageId,
 		sendUserText,
 		regenerate,
 		stop,
 		resumeStream: chat.resumeStream,
 		addToolOutput: chat.addToolOutput,
 		setMessages: chat.setMessages,
-		syncRenderState: () => {
-			useStore.actions.syncThreadRenderState({
-				threadId: selectedThreadId,
-				status,
-				messages: activeBranchMessages.list,
-				branchSiblingIdsByParentId: messageChildIdsByParentId,
-				isRunning,
-				hasError: Boolean(chat.error),
-			});
-		},
+		syncRenderState,
 	};
 };
 

@@ -168,13 +168,13 @@ Use this when creating many QA files through the app agent.
 Use this after changing chat send, stop, branch, pending-message, or parent-id logic.
 
 - Bind one `/files` tab, open `#app_file_editor_sidebar_tabs_agent`, and capture `/api/chat` requests with `page.route("**/api/chat", ...)`.
-- If a New chat tab id starts with `ai_thread-*` after reload/HMR, first verify it still has an in-memory optimistic session. A stale stored optimistic tab must be dropped or upgraded before sending; `/api/chat` should receive `clientGeneratedThreadId` for a fresh optimistic chat, never `threadId: "ai_thread-..."`.
+- If a New chat tab id starts with `ai_thread-*` after reload/HMR, first verify it still has an optimistic session. A stored optimistic tab must be rehydrated, dropped, or upgraded before sending; `/api/chat` should receive `clientGeneratedThreadId` for an optimistic chat, never `threadId: "ai_thread-..."`.
 - When a visible user bubble shows `Message failed to send.`, clicking `Retry` should create a new `/api/chat` request for the same text. If no request is captured and the console logs `target-message-not-persisted`, the retry path is treating the failed client-only user message as a persisted branch target instead of replacing it from its original parent.
 - Start a fresh chat with `getByRole("button", { name: "New chat", exact: true })`; the open chat drag handle can otherwise match the same text.
 - Send a prompt that starts with a unique marker and produces a long visible answer, for example `Start with <marker>, then write 80 numbered lines. Do not use tools.`
 - Wait until the marker appears, click `Stop generating`, immediately type a follow-up, and inspect `getByRole("button", { name: "Send message" })`.
 - Expected immediate state: Send is disabled and no second `/api/chat` request is created while the parent is still unsafe.
-- Expected recovery state: Send remains disabled while the selected thread is still the optimistic `ai_thread-*` id, then becomes enabled after the live query swaps the UI to the persisted Convex thread and parent message.
+- Expected recovery state: a restored blank optimistic tab can send its first message with `clientGeneratedThreadId`; follow-up sends after a message exists remain blocked until the live query swaps the UI to the persisted Convex thread and parent message.
 - The UI must not create a follow-up request before that recovery state. After recovery, the follow-up request should use a persisted parent id and must not return `409` with `Parent message is not available yet`.
 - A `429` is the chat rate limiter, not this race. Wait for the retry window and rerun or retry the same message; do not count it as a parent-id failure.
 
