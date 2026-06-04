@@ -127,11 +127,12 @@ Use this when changing tree focus, context menus, selection, or route sync.
 - After conversion, folder explorer should show visible regular siblings in order: `<name>.pdf`, `<name>.pdf.md`.
 - Opening `<name>.pdf.md` should mount the normal rich editor with converted content.
 
-### File Agent Search Read Edit
+### File Agent Bash Search Read Edit
 
 - Put or find a unique token in the selected Markdown file.
 - Open `Agent` and ask it to search for the token, read the file, and make a small edit.
-- Verify `Search files`, `Read file`, and `Edit file` tool disclosures appear.
+- Verify a `Bash` disclosure appears for search/read steps, using commands such as `search --limit N <token>` and `cat /home/cloud-usr/w/personal/home/<known-md-path>`.
+- Verify the edit step uses `Edit file` or `Write file`, not a Bash redirect under `/home/cloud-usr/w/personal/home`.
 - Review/apply via `[data-testid="review-changes-button"]`.
 
 ### File Agent Just Bash
@@ -142,8 +143,10 @@ Use this after changing the AI bash tool, tool rendering, or agent file-access c
 - Open `#app_file_editor_sidebar_tabs_agent`.
 - Start a new chat from the sidebar chat controls.
 - Pace sequential sends and handle `429` responses by waiting for `retryAfterMs` and using the visible `Retry` button.
-- Send a broad file-listing prompt such as `List all files in the system using bash`; verify the assistant uses a Bash disclosure and lists the mounted app file tree without explaining host-machine access limits.
-- Send prompts that force separate bash tool calls for `pwd`, `ls /home/cloud-usr/w/personal/home`, `cat /home/cloud-usr/w/personal/home/<known-md-path>`, `search --limit 5 <known-token>`, and `grep -Rn <known-token> /home/cloud-usr/w/personal/home`.
+- Send a broad file-listing prompt such as `List all files in the system using bash`; verify the assistant uses a Bash disclosure and lists the mounted app file tree through `ls --limit N` or `find <path> --limit N`.
+- Send prompts that force separate bash tool calls for `pwd`, `ls --limit 5 /home/cloud-usr/w/personal/home`, `find /home/cloud-usr/w/personal/home --limit 5`, `cat /home/cloud-usr/w/personal/home/<known-md-path>`, `search --limit 5 <known-token>`, and `grep -Rn <known-token> /home/cloud-usr/w/personal/home`.
+- Ask for files by extension and verify the assistant uses `find -name '*.md' --limit N` or `find -iname '*.MD' --limit N`, not shell glob operands such as `ls *.md`.
+- Ask for files by path prefix and verify the assistant uses `find --prefix <prefix> --limit N`.
 - For search regressions, use a token known to appear in several Markdown files and verify the result includes every expected path up to the requested limit, not just the top indexed search hit.
 - Send `cd /home/cloud-usr/w/personal/home/<known-folder>` and then a second prompt asking for `pwd`; verify the second bash result uses the persisted cwd.
 - In Agent mode, ask it to create a timestamped folder with `mkdir /home/cloud-usr/w/personal/home/playwriter-ai-chat-qa-<timestamp>`; verify the new turn shows a Bash disclosure and does not show a `create_folder` tool.

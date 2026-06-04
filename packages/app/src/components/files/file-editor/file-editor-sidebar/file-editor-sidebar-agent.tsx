@@ -40,11 +40,7 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { ai_chat_is_optimistic_thread } from "@/lib/ai-chat.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import {
-	app_local_storage_set_value,
-	type storage_local_ValueByKey,
-	useAppLocalStorageValue,
-} from "@/lib/storage.ts";
+import { app_local_storage_set_value, type storage_local_ValueByKey, useAppLocalStorageValue } from "@/lib/storage.ts";
 import { cn } from "@/lib/utils.ts";
 
 const DROPPABLE_ID = "file_editor_sidebar_agent_tabs";

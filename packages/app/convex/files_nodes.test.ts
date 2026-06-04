@@ -161,6 +161,109 @@ async function seed_file_first_list_fixture(ctx: MutationCtx) {
 	return membership;
 }
 
+async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
+	const membership = await test_mocks_fill_db_with.membership(ctx);
+	const docsFolderId = await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		workspaceId: membership.workspaceId,
+		projectId: membership.projectId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: files_ROOT_ID,
+		name: "docs",
+		kind: "folder",
+		path: "/docs",
+		updatedAt: 1,
+	});
+	await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		workspaceId: membership.workspaceId,
+		projectId: membership.projectId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: docsFolderId,
+		name: "a.md",
+		kind: "file",
+		path: "/docs/a.md",
+		updatedAt: 2,
+	});
+	await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		workspaceId: membership.workspaceId,
+		projectId: membership.projectId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: docsFolderId,
+		name: "b.md",
+		kind: "file",
+		path: "/docs/b.md",
+		updatedAt: 3,
+	});
+	const nestedFolderId = await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		workspaceId: membership.workspaceId,
+		projectId: membership.projectId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: docsFolderId,
+		name: "nested",
+		kind: "folder",
+		path: "/docs/nested",
+		updatedAt: 4,
+	});
+	await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		workspaceId: membership.workspaceId,
+		projectId: membership.projectId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: nestedFolderId,
+		name: "c.md",
+		kind: "file",
+		path: "/docs/nested/c.md",
+		updatedAt: 5,
+	});
+	await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		workspaceId: membership.workspaceId,
+		projectId: membership.projectId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: docsFolderId,
+		name: "z-archived.md",
+		kind: "file",
+		path: "/docs/z-archived.md",
+		archiveOperationId: "archive-operation-test",
+		updatedAt: 6,
+	});
+	const siblingPrefixFolderId = await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		workspaceId: membership.workspaceId,
+		projectId: membership.projectId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: files_ROOT_ID,
+		name: "docs-archive",
+		kind: "folder",
+		path: "/docs-archive",
+		updatedAt: 7,
+	});
+	await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		workspaceId: membership.workspaceId,
+		projectId: membership.projectId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: siblingPrefixFolderId,
+		name: "outside.md",
+		kind: "file",
+		path: "/docs-archive/outside.md",
+		updatedAt: 8,
+	});
+
+	return membership;
+}
+
 test("list_files", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -385,6 +488,128 @@ describe("list_files", () => {
 			],
 			truncated: false,
 		});
+	});
+});
+
+describe("paginated bash listing queries", () => {
+	test("paginates direct children without descendants or archived nodes", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const firstPage = await asUser.query(internal.files_nodes.list_dir_children_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs",
+			numItems: 2,
+			cursor: null,
+		});
+		const secondPage = await asUser.query(internal.files_nodes.list_dir_children_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs",
+			numItems: 2,
+			cursor: firstPage.continueCursor,
+		});
+
+		expect(firstPage.isDone).toBe(false);
+		expect(firstPage.items.map((item) => item.name)).toEqual(["a.md", "b.md"]);
+		expect(secondPage.items.map((item) => item.name)).toEqual(["nested"]);
+		expect(secondPage.isDone).toBe(true);
+		expect([...firstPage.items, ...secondPage.items].map((item) => item.path)).not.toContain("/docs/nested/c.md");
+		expect([...firstPage.items, ...secondPage.items].map((item) => item.path)).not.toContain("/docs/z-archived.md");
+	});
+
+	test("paginates recursive descendants by path prefix without sibling-prefix leakage", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const firstPage = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs",
+			numItems: 2,
+			cursor: null,
+		});
+		const secondPage = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs",
+			numItems: 10,
+			cursor: firstPage.continueCursor,
+		});
+		const paths = [...firstPage.items, ...secondPage.items].map((item) => item.path);
+
+		expect(firstPage.isDone).toBe(false);
+		expect(new Set(paths).size).toBe(paths.length);
+		expect(paths).toEqual(expect.arrayContaining(["/docs/a.md", "/docs/b.md", "/docs/nested", "/docs/nested/c.md"]));
+		expect(paths).not.toContain("/docs/z-archived.md");
+		expect(paths).not.toContain("/docs-archive");
+		expect(paths).not.toContain("/docs-archive/outside.md");
+	});
+
+	test("paginates raw path prefixes with intentional sibling-prefix matches", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const result = await asUser.query(internal.files_nodes.list_path_prefix_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			pathPrefix: "/docs",
+			numItems: 20,
+			cursor: null,
+		});
+		const paths = result.items.map((item) => item.path);
+
+		expect(result.isDone).toBe(true);
+		expect(paths).toEqual(
+			expect.arrayContaining(["/docs", "/docs/a.md", "/docs/nested/c.md", "/docs-archive", "/docs-archive/outside.md"]),
+		);
+		expect(paths).not.toContain("/docs/z-archived.md");
+	});
+
+	test("returns a file start path exactly once for subtree pagination", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const firstPage = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs/a.md",
+			numItems: 1,
+			cursor: null,
+		});
+		const secondPage = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs/a.md",
+			numItems: 1,
+			cursor: firstPage.continueCursor,
+		});
+
+		expect(firstPage.items.map((item) => item.path)).toEqual(["/docs/a.md"]);
+		expect(firstPage.isDone).toBe(true);
+		expect(secondPage.items).toEqual([]);
+		expect(secondPage.isDone).toBe(true);
 	});
 });
 

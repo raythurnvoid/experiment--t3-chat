@@ -482,7 +482,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 						<Square className={"AiChatComposer-cancel-icon" satisfies AiChatComposer_ClassNames} />
 					</MyIconButton>
 				) : (
-					<MyIconButton type="button" variant="default" tooltip="Send message" onClick={handleSend} disabled={!canSend}>
+					<MyIconButton type="button" variant="default" tooltip="Send message" data-testid="ai-chat-send-button" onClick={handleSend} disabled={!canSend}>
 						<ArrowUp className={"AiChatComposer-send-icon" satisfies AiChatComposer_ClassNames} />
 					</MyIconButton>
 				)}

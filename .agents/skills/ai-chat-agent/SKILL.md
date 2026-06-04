@@ -80,15 +80,28 @@ The main tool object currently contains:
 Important limitation:
 
 - These tools operate on DB-backed app files, not repo files on disk.
-- `bash` is a Just Bash runtime over the DB-backed app file tree, not the host shell.
+- `bash` is the active Convex-native app-file shell over the DB-backed app file tree, not the host shell.
 - `bash` mounts app files at `/home/cloud-usr/w/{workspaceName}/{projectName}`, blocks file writes there, allows Agent-mode folder creation through `mkdir`, and provides per-invocation scratch space at `/tmp`.
 - The bash internal action and Just Bash filesystem implementation live in the Node-runtime `bash.run` module because Just Bash bundles Node built-ins. Keep thread-state queries/mutations in default-runtime `ai_chat.ts`.
 - `bash` persists the current working directory through the general `ai_chat.get_thread_state` / `ai_chat.set_thread_state` internal functions. The state row is stored in `ai_chat_threads_state`, linked from `ai_chat_threads.stateId` and back to `ai_chat_threads_state.threadId`. Thread creation inserts the state row with `~` (`/home/cloud-usr`) and stores home-relative values such as `~/w/personal/home/docs` after `cd`; cwd does not live directly on `ai_chat_threads`.
-- The prompt and tool description should describe `bash` as the ordinary file shell instead of maintaining a synonym table for user wording. File listing, scanning, searching, reading, and path lookup requests should run through `bash` directly without asking the user to confirm routine inspection.
+- The prompt and tool description should describe `bash` as the normal app-file shell, while explicitly warning that app files are Convex-backed and do not have full POSIX/GNU filesystem semantics.
 - For file inspection commands without a specific path, the app file tree `/home/cloud-usr/w/{workspaceName}/{projectName}` is the default target.
 - `/home/cloud-usr` is the bash home directory, and the app file tree is mounted at `/home/cloud-usr/w/{workspaceName}/{projectName}`.
-- Use the custom `search --limit N <query>` command inside `bash` for indexed plain-text content search.
-- `grep` exists inside `bash` only as a compatibility hint and tells the model to use `search`; it does not scan app files itself.
+- `ls --limit` and `find --limit` are app-file pagination commands. From `~`, omit the path or use `/home/cloud-usr/w/{workspaceName}/{projectName}` instead of `.`.
+- Use `ls --limit N [--cursor CURSOR] <dir>` for direct children. When asked to continue a listing, run the printed `Next page:` command as the next Bash call; do not just report that it exists, and do not invent `--next-page`.
+- `No matches in this page; more pages exist.` means the result is partial; continue the printed cursor command before concluding there are no matches.
+- Use `find <path> --limit N [--cursor CURSOR]` for subtree discovery.
+- Use `find --prefix <prefix> --limit N [--cursor CURSOR]` only when raw startsWith path semantics are intended; unlike subtree mode, prefix mode may match sibling prefixes such as `/docs-archive`.
+- Use `find --extension EXT`, `find -name PATTERN`, or `find -iname PATTERN` for extension/name predicates. Shell pathname expansion is disabled; app-file glob operands such as `*.md`, `src/**/*.ts`, `foo?.txt`, and `[abc].md` are unsupported.
+- Use the custom `search --limit N <query>` command inside `bash` for indexed plain-text content search. `search` takes query terms only; do not pass app paths to it, and do not use it as a pipeline filter.
+- `grep` exists inside `bash` only as a compatibility hint and tells the model to use `search`; it does not scan app files itself. For app-file content search, call `search` directly instead of `grep -R` over app paths.
+- `tree` exists as app-file guidance only; use `find <path> --limit N [-maxdepth N]` instead of expecting a rendered app tree.
+- `cat`, `head`, `tail`, `wc`, and `stat` read exact app paths only. `cat` may show an advisory for uploaded/unreadable source files; generic readers fail instead of treating that advisory as file content.
+- `sort`, `uniq`, `cut`, `sed`, and `awk` are stream or `/tmp` processors for app work. Use `cat exact-app-file | sort` or similar pipelines; do not pass app files as direct operands.
+- Keep Bash commands simple: avoid strict-mode boilerplate such as `set -euo pipefail`, comments inside command strings, and process substitution.
+- Only summarize actual Bash stdout/stderr. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.
+- App content writes, edits, moves, and deletes are not shell operations. Use `write_file` / `edit_file` for durable content changes; Bash rejects direct app writes except Agent-mode folder creation through `mkdir`. Do not work around app read-only write, move, or delete requests by copying app files to `/tmp` unless the user asked for a scratch copy.
+- Legacy `read_file`, `list_files`, `glob_files`, and `grep_files` tool definitions may remain in the runtime registry for historical message validation, but new generation should prefer `bash` plus `write_file` / `edit_file`.
 - When using the agent itself to create large QA corpora, keep prompts to small batches and verify actual file nodes after each batch. Assistant summary text can say a batch succeeded even when the model stopped before issuing every requested `write_file` call.
 - The agent does not currently read raw R2 binaries through this toolbelt.
 - `read_file` and `grep_files` read Markdown-backed content through Convex actions that overlay pending edits and fetch committed Markdown from R2 when needed. Uploaded source paths do not alias to generated Markdown outputs.
@@ -109,8 +122,8 @@ Important limitation:
 - Editing generated Markdown does not mutate the original R2 object.
 - Agents should read generated outputs through their exact visible paths. For example, `/a.pdf.md` is the generated Markdown output for the uploaded source file `/a.pdf`.
 - For images and videos, read `/a.png.description.md`, `/clip.mp4.summary.md`, or `/clip.mp4.transcript.md`; do not treat `/a.png` or `/clip.mp4` as aliases for the generated files.
-- `list_files`, `glob_files`, and `grep_files` expose generated outputs as ordinary files.
-- `read_file("/report.pdf")` does not read generated Markdown; `read_file("/report.pdf.md")` reads the generated output once finalized.
+- Bash discovery commands expose generated outputs as ordinary files. Use exact Bash reads such as `cat /home/cloud-usr/w/{workspaceName}/{projectName}/report.pdf.md` once generated output is finalized.
+- Legacy `read_file("/report.pdf")` does not read generated Markdown; `read_file("/report.pdf.md")` reads the generated output once finalized if a historical validation path still invokes that tool.
 - Native source-file reading is planned for provider-supported files, especially PDFs. The agent should decide when Markdown search/results are enough and when to read the original source file with provider-native capabilities.
 - Original binary download is planned for users but is not implemented today.
 
@@ -118,13 +131,13 @@ Important limitation:
 
 ## `bash`
 
-- Runs Just Bash commands against the app file tree mounted at `/home/cloud-usr/w/{workspaceName}/{projectName}`.
+- Runs a curated Just Bash command surface against the app file tree mounted at `/home/cloud-usr/w/{workspaceName}/{projectName}`.
 - Never exposes or runs against the host filesystem.
 - Starts in `~` (`/home/cloud-usr`) for new chat threads.
 - Presents `/home/cloud-usr/w/{workspaceName}/{projectName}` as the shell path for app files.
 - Does not alias `/` to app files; `/` only exposes normal mount-point directories such as `/home` and `/tmp`.
 - Loads Markdown file content through `get_file_last_available_markdown_content_by_path`, preserving the current user's pending-update overlay.
-- Lists app file paths through `files_nodes.list_files`.
+- Lists direct app children through `files_nodes.list_dir_children_paginated`, app subtrees through `files_nodes.list_subtree_paginated`, and raw startsWith prefixes through `files_nodes.list_path_prefix_paginated`.
 - Treats file writes under the app file tree as read-only; persistent content changes must use `write_file` or `edit_file`.
 - Convert bash paths to app paths before calling `write_file` or `edit_file` by removing the `/home/cloud-usr/w/{workspaceName}/{projectName}` prefix.
 - Creates persistent folders only through `mkdir` under the app file tree in Agent-mode `bash`; Ask-mode `bash` rejects durable folder creation.
@@ -132,9 +145,13 @@ Important limitation:
 - Persists `cd` only when the final cwd is `~` or a directory below `/home/cloud-usr`. It does not persist `/tmp` or other paths outside the cloud user home.
 - Includes a custom `search [--limit N] <query...>` command backed by the `files_nodes.text_search_files` plain-text index query.
 - Keeps `grep` as a lightweight compatibility command that prints guidance to use `search` so app file content search goes through the Convex text index.
-- Uses an aggressively bounded synchronous path cache and capped directory reads for Just Bash traversal. Wide `ls`, `find`, `tree`, and glob expansion may miss paths past the cap; narrow the path for listing and use `search` when content-search completeness matters.
+- Includes native `ls --limit N [--cursor CURSOR] <path>` and `find <path> [-maxdepth N] [-type f|d] [-name PATTERN|-iname PATTERN] [--extension EXT] --limit N [--cursor CURSOR]` for bounded continuation through large file trees. Cursors are opaque Convex pagination cursors and continuation commands are printed in stdout.
+- Runs commands under `set -f` so shell pathname expansion is disabled. App-file glob operands are rejected; use `find -name PATTERN`, `find -iname PATTERN`, or `find --prefix PREFIX`.
+- Blocks app directory enumeration through the generic Just Bash filesystem APIs. Use native `ls` / `find`; do not rely on Just Bash `readdir`, `getAllPaths`, glob expansion, or `tree` for app files.
 
-## `read_file`
+## Legacy `read_file`
+
+Legacy file tools stay documented because old assistant messages may need validation/rendering and tests still cover them. Do not prefer them for new agent generation; use Bash exact reads and discovery instead.
 
 - Reads one Markdown file by absolute path and returns numbered lines.
 - Path must be absolute and resolve to a file node.
@@ -144,7 +161,7 @@ Important limitation:
 - That action overlays the passed `userId` user's pending `unstaged` branch if a pending update exists.
 - Missing files may return sibling suggestions from the parent directory.
 
-## `list_files`
+## Legacy `list_files`
 
 - Lists descendant folders and files under an absolute root path.
 - Uses `internal.files_nodes.list_files`.
@@ -152,14 +169,14 @@ Important limitation:
 - Folder items are marked with a trailing `/` in tool output.
 - Generated upload outputs are normal visible files and appear in list results by their actual paths.
 
-## `glob_files`
+## Legacy `glob_files`
 
 - Finds file/folder paths by glob pattern.
 - Uses `list_files` under the hood with include filtering.
 - Returns paths sorted by newest `updatedAt` first.
 - Follows `list_files`, so generated upload outputs appear by their actual paths.
 
-## `grep_files`
+## Legacy `grep_files`
 
 - Regex search over file names plus committed/pending Markdown content. Committed content is fetched from R2 through the same read action used by `read_file`.
 - Uses JavaScript `RegExp`.
@@ -211,8 +228,8 @@ Writes:
 5. `bash` `mkdir` under `/home/cloud-usr/w/{workspaceName}/{projectName}` is the only AI path that creates persistent folder nodes.
 6. `write_file` and `edit_file` create pending review state, not direct committed writes.
 7. `write_file` passes the already-resolved `userId` into `create_file_by_path`; pending-update rows store the same id.
-8. `grep_files` is the precise regex tool; `glob_files` is the path-discovery tool.
-9. `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
+8. New generation uses Bash `search` for indexed content search and Bash `find` for path discovery; legacy `grep_files` / `glob_files` are validation-only surfaces.
+9. Legacy `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
 10. Request messages are persisted before generation; assistant responses are persisted after streaming finishes.
 11. Current tools do not read raw uploaded R2 binaries; generated Markdown outputs from uploads are ordinary Markdown files whose committed Markdown is also stored in R2.
 12. Source-path reads must preserve the product distinction between the original R2 object and generated editable Markdown outputs.
@@ -229,10 +246,10 @@ Writes:
 - `/tmp` works inside one `bash` call and resets before the next one.
 - `bash` file writes under the app file tree fail with a read-only filesystem error.
 - Agent mode can create folders with `bash` `mkdir /home/cloud-usr/w/{workspaceName}/{projectName}/<folder>` and can call `write_file` and `edit_file`; Ask mode can call `bash` for reads/searches but cannot create folders or call write tools.
-- `read_file` sees the current user's pending unstaged branch when one exists.
+- Bash exact reads and legacy `read_file` see the current user's pending unstaged branch when one exists.
 - `write_file` and `edit_file` create pending review state instead of silently saving live content.
 - `edit_file` fails on missing/ambiguous single-match replacements.
-- `grep_files` behaves like regex/line search.
+- Legacy `grep_files` behaves like regex/line search when validating old tool calls.
 - Uploaded source files are not described as raw-binary-readable until a native source-file tool exists.
-- Generated upload outputs are read, searched, edited, and listed by their actual visible paths.
+- Generated upload outputs are read, searched, edited, and listed by their actual visible paths, preferably through Bash plus `write_file` / `edit_file`.
 - Tool descriptions stay aligned with actual behavior.

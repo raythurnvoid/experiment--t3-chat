@@ -960,15 +960,22 @@ export function ai_chat_tool_create_bash(
 	const appFilesMountPath = `/home/cloud-usr/w/${ctxData.workspaceName}/${ctxData.projectName}`;
 	return tool({
 		description: dedent`\
-			Run a non-interactive Just Bash command in the user's cloud file environment. This is the app's normal file shell for listing, scanning, searching, reading, and inspecting app files.
+			Run a non-interactive Convex-native app-file shell command in the user's cloud file environment. Familiar Bash command names are available, but app files are DB-backed and do not have full POSIX/GNU filesystem semantics.
 			Bash starts in ~ (/home/cloud-usr). App files are mounted at ~/w/${ctxData.workspaceName}/${ctxData.projectName} (${appFilesMountPath}). /tmp is in-memory scratch and resets between bash calls.
 			The app file tree ${appFilesMountPath} is the default target for inspection commands that do not name a path.
-			Use this tool directly for file inspection commands such as pwd, find, ls, cat, stat, wc, sed, awk, and search [--limit N] <query...> for indexed content search.
-			grep is kept as a compatibility hint only; it prints guidance to use search so app file content search goes through the Convex text index.
+			Supported app-file inspection commands include pwd, cd, ls, find, search, cat, head, tail, wc, stat, grep guidance, and tree guidance.
+			Shell pathname expansion is disabled and app-file glob operands such as *.md, src/**/*.ts, foo?.txt, and [abc].md are unsupported.
+			ls --limit and find --limit are app-file pagination commands. Always use absolute app paths (${appFilesMountPath}/... or a sub-path); do not use relative paths like . or relative sub-paths without the full prefix from ~.
+			Use ls --limit N [--cursor CURSOR] <dir> for direct children. When asked to continue a listing, run the printed Next page command as the next Bash call; do not just report that it exists, and do not invent --next-page.
+			No matches in this page; more pages exist. means the result is partial; continue the printed cursor command before concluding there are no matches.
+			Use find <path> --limit N [--cursor CURSOR] for subtree pages, find --prefix <prefix> --limit N [--cursor CURSOR] for raw startsWith path discovery, and find --extension EXT or find -name PATTERN for extension/name discovery. GNU find extensions such as -printf, -mtime, -newer, -exec, and -ok are not supported; omit them.
+			Use search --limit N <query...> for indexed content search only. search takes query terms ONLY — no file paths, no directory scoping, and it always covers the entire workspace. Do not pass paths to search as positional operands, and do not use search as a pipeline filter.
+			Use exact app paths with cat/head/tail/wc/stat. Pipelines with sed/awk/sort/uniq/cut work on cat output. Do NOT use | grep or | head as pipeline filters on app-file content — they do not scan app files through a pipe; use search for content filtering and head/tail with a direct path operand instead.
+			For app-file content search, call search directly instead of grep -R over app paths. grep is a compatibility hint only. tree is guidance only; use find for app paths.
+			Keep commands simple: avoid strict-mode boilerplate, comments in command strings, and process substitution. Only summarize actual Bash stdout/stderr; if stdout is empty or a command failed, say that instead of inferring likely filesystem contents. Do not work around app read-only write, move, or delete requests by copying app files to /tmp unless the user asked for a scratch copy.
 			App file tree mkdir is available only when this tool is configured for Agent mode; scratch space is ephemeral and does not create durable folders.
-			File writes and redirects under ${appFilesMountPath} return read-only errors. Persistent Markdown edits belong in write_file or edit_file with app paths such as /docs/readme.md.
-			Convert bash paths under ${appFilesMountPath} to app paths for write_file/edit_file by removing that mount prefix.
-			Directory listing and glob expansion are aggressively capped; narrow the path for listing and use search when content-search completeness matters.`,
+			File writes, redirects, moves, and deletes under ${appFilesMountPath} are not supported shell operations. rm, mv, cp, and ln are not available for app files. Persistent Markdown edits belong in write_file or edit_file with app paths such as /docs/readme.md. If a user asks to delete or move a file, explain that these are not available as shell operations.
+			Convert bash paths under ${appFilesMountPath} to app paths for write_file/edit_file by removing that mount prefix.`,
 		inputSchema: z.object({
 			command: z
 				.string()

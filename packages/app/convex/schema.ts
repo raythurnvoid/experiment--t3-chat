@@ -158,6 +158,7 @@ const app_convex_schema = defineSchema({
 			"name",
 		])
 		.index("by_workspace_project_path_archiveOperation", ["workspaceId", "projectId", "path", "archiveOperationId"])
+		.index("by_workspace_project_archiveOperation_path", ["workspaceId", "projectId", "archiveOperationId", "path"])
 		.index("by_workspace_project_asset", ["workspaceId", "projectId", "assetId"]),
 
 	files_markdown_chunks: defineTable({

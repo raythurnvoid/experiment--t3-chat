@@ -69,9 +69,18 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 		"You are the app chat agent for the user's workspace.",
 		"Use the available tools as the working interface for the workspace.",
 		`Bash starts in \`~\` (\`/home/cloud-usr\`); app files are mounted at \`~/w/${args.workspaceName}/${args.projectName}\` (\`${appFilesMountPath}\`). \`/tmp\` is in-memory scratch and resets between bash calls.`,
-		"Bash is the normal file shell for the app. File listing, scanning, searching, reading, and path lookup are ordinary bash work: run the command and answer from the result.",
+		"Bash is the normal file shell for the app, but app files are Convex-backed, not a POSIX filesystem. Use the supported command subset instead of assuming GNU compatibility.",
 		`The app file tree \`${appFilesMountPath}\` is the default target for inspection commands that do not name a path.`,
-		"Use ordinary commands such as `pwd`, `find`, `ls`, `cat`, `stat`, `wc`, and `search --limit N <query>`.",
+		"Shell pathname expansion is disabled and app-file glob operands are unsupported. Do not run app-file commands such as `ls *.md` or `cat src/**/*.ts`.",
+		"`ls --limit` and `find --limit` are app-file pagination commands. From `~`, omit the path or use the mounted app path instead of `.`.",
+		"Use `ls --limit N [--cursor CURSOR] <dir>` for direct children. When asked to continue a listing, run the printed `Next page:` command as the next Bash call; do not just report that it exists, and do not invent `--next-page`.",
+		"`No matches in this page; more pages exist.` means the result is partial; continue the printed cursor command before concluding there are no matches.",
+		"Use `find <path> --limit N` for subtree pages, `find --prefix <prefix> --limit N` for raw startsWith path discovery, and `find --extension EXT` or `find -name PATTERN` for extension/name discovery.",
+		"`search --limit N <query>` is indexed content search only. Do not pass paths to `search`, and do not use `search` as a pipeline filter.",
+		"Use exact app paths with `cat`, `head`, `tail`, `wc`, and `stat`; for content search, call `search` directly instead of `grep -R` over app paths, and use `find` instead of `tree` for app paths.",
+		"Keep Bash commands simple: avoid strict-mode boilerplate, comments in command strings, and process substitution.",
+		"Only summarize actual Bash stdout/stderr. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
+		"Do not work around app read-only write, move, or delete requests by copying app files to `/tmp`; report the Bash error unless the user asked for a scratch copy.",
 		"In Agent mode, `mkdir` under the app file tree creates durable folders.",
 		"File content changes use `write_file` or `edit_file` so the user can review them.",
 		`Convert shell paths under \`${appFilesMountPath}\` to app paths before calling \`write_file\` or \`edit_file\`; for example \`${appFilesMountPath}/docs/readme.md\` becomes \`/docs/readme.md\`.`,
@@ -2112,14 +2121,36 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"Bash starts in `~` (`/home/cloud-usr`); app files are mounted at `~/w/personal/home` (`/home/cloud-usr/w/personal/home`). `/tmp` is in-memory scratch and resets between bash calls.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"Bash is the normal file shell for the app. File listing, scanning, searching, reading, and path lookup are ordinary bash work: run the command and answer from the result.",
+				"Bash is the normal file shell for the app, but app files are Convex-backed, not a POSIX filesystem.",
 			);
 			expect(configuration.systemPrompt).toContain(
 				"The app file tree `/home/cloud-usr/w/personal/home` is the default target for inspection commands that do not name a path.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"Use ordinary commands such as `pwd`, `find`, `ls`, `cat`, `stat`, `wc`, and `search --limit N <query>`.",
+				"Shell pathname expansion is disabled and app-file glob operands are unsupported.",
 			);
+			expect(configuration.systemPrompt).toContain(
+				"`ls --limit` and `find --limit` are app-file pagination commands. From `~`, omit the path or use the mounted app path instead of `.`.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Use `ls --limit N [--cursor CURSOR] <dir>` for direct children. When asked to continue a listing, run the printed `Next page:` command as the next Bash call;",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"`No matches in this page; more pages exist.` means the result is partial; continue the printed cursor command before concluding there are no matches.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Use `find <path> --limit N` for subtree pages, `find --prefix <prefix> --limit N` for raw startsWith path discovery, and `find --extension EXT` or `find -name PATTERN` for extension/name discovery.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"`search --limit N <query>` is indexed content search only. Do not pass paths to `search`, and do not use `search` as a pipeline filter.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Use exact app paths with `cat`, `head`, `tail`, `wc`, and `stat`",
+			);
+			expect(configuration.systemPrompt).toContain("call `search` directly instead of `grep -R` over app paths");
+			expect(configuration.systemPrompt).toContain("avoid strict-mode boilerplate");
+			expect(configuration.systemPrompt).toContain("Only summarize actual Bash stdout/stderr");
+			expect(configuration.systemPrompt).toContain("Do not work around app read-only write, move, or delete requests");
 			expect(configuration.systemPrompt).toContain(
 				"Convert shell paths under `/home/cloud-usr/w/personal/home` to app paths before calling `write_file` or `edit_file`",
 			);

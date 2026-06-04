@@ -2233,6 +2233,346 @@ export const get_file_info_for_list_dir_pagination = internalQuery({
 	},
 });
 
+const files_nodes_bash_listing_page_limit_MAX = 200;
+
+function files_nodes_clamp_bash_listing_page_limit(limit: number) {
+	const finiteLimit = Number.isFinite(limit) ? Math.trunc(limit) : files_nodes_bash_listing_page_limit_MAX;
+	return Math.max(1, Math.min(files_nodes_bash_listing_page_limit_MAX, finiteLimit));
+}
+
+export const get_bash_path_entry = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		path: v.string(),
+	},
+	returns: v.union(
+		v.object({
+			path: v.literal("/"),
+			name: v.literal(""),
+			kind: v.literal("folder"),
+			updatedAt: v.number(),
+			contentType: v.optional(v.string()),
+		}),
+		v.object({
+			path: v.string(),
+			name: v.string(),
+			kind: v.union(v.literal("folder"), v.literal("file")),
+			updatedAt: v.number(),
+			contentType: v.optional(v.string()),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		if (args.path === "/") {
+			return {
+				path: "/" as const,
+				name: "" as const,
+				kind: "folder" as const,
+				updatedAt: 0,
+			};
+		}
+
+		const node = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("path", args.path)
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+
+		if (!node) {
+			return null;
+		}
+
+		return {
+			path: node.path,
+			name: node.name,
+			kind: node.kind,
+			updatedAt: node.updatedAt,
+			contentType: node.contentType,
+		};
+	},
+});
+
+export type files_nodes_get_bash_path_entry_Result =
+	typeof get_bash_path_entry extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const list_dir_children_paginated = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		path: v.string(),
+		numItems: v.number(),
+		cursor: paginationOptsValidator.fields.cursor,
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				name: v.string(),
+				kind: v.union(v.literal("folder"), v.literal("file")),
+				path: v.string(),
+				updatedAt: v.number(),
+			}),
+		),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const parentId = await db_resolve_tree_node_id_from_path(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			path: args.path,
+		});
+		if (!parentId) {
+			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+		}
+
+		if (parentId !== files_ROOT_ID) {
+			const parent = await ctx.db.get("files_nodes", parentId);
+			if (!parent || parent.workspaceId !== args.workspaceId || parent.projectId !== args.projectId || parent.kind !== "folder") {
+				return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+			}
+		}
+
+		const result = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_parent_archiveOperation_name", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("parentId", parentId)
+					.eq("archiveOperationId", undefined),
+			)
+			.paginate({
+				cursor: args.cursor,
+				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+			});
+
+		return {
+			items: result.page.map((file) => ({
+				name: file.name,
+				kind: file.kind,
+				path: file.path,
+				updatedAt: file.updatedAt,
+			})),
+			continueCursor: result.continueCursor,
+			isDone: result.isDone,
+		};
+	},
+});
+
+export type files_nodes_list_dir_children_paginated_Result =
+	typeof list_dir_children_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const list_subtree_paginated = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		path: v.string(),
+		numItems: v.number(),
+		cursor: paginationOptsValidator.fields.cursor,
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				path: v.string(),
+				kind: v.union(v.literal("folder"), v.literal("file")),
+				updatedAt: v.number(),
+			}),
+		),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const startNodeId = await db_resolve_tree_node_id_from_path(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			path: args.path,
+		});
+		if (!startNodeId) {
+			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+		}
+
+		if (startNodeId !== files_ROOT_ID) {
+			const startNode = await ctx.db.get("files_nodes", startNodeId);
+			if (!startNode || startNode.workspaceId !== args.workspaceId || startNode.projectId !== args.projectId) {
+				return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+			}
+			if (startNode.kind !== "folder") {
+				return args.cursor == null
+					? {
+							items: [{ path: startNode.path, kind: startNode.kind, updatedAt: startNode.updatedAt }],
+							continueCursor: "",
+							isDone: true,
+						}
+					: { items: [], continueCursor: args.cursor, isDone: true };
+			}
+		}
+
+		const normalizedPath = args.path === "/" ? "/" : args.path.replace(/\/+$/u, "");
+		const lowerBound = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
+		const upperBound = `${lowerBound}\uffff`;
+		const result = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_archiveOperation_path", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("archiveOperationId", undefined)
+					.gte("path", lowerBound)
+					.lt("path", upperBound),
+			)
+			.paginate({
+				cursor: args.cursor,
+				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+			});
+
+		return {
+			items: result.page.map((file) => ({
+				path: file.path,
+				kind: file.kind,
+				updatedAt: file.updatedAt,
+			})),
+			continueCursor: result.continueCursor,
+			isDone: result.isDone,
+		};
+	},
+});
+
+export type files_nodes_list_subtree_paginated_Result =
+	typeof list_subtree_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const list_path_prefix_paginated = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pathPrefix: v.string(),
+		numItems: v.number(),
+		cursor: paginationOptsValidator.fields.cursor,
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				path: v.string(),
+				kind: v.union(v.literal("folder"), v.literal("file")),
+				updatedAt: v.number(),
+			}),
+		),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const lowerBound = args.pathPrefix;
+		const upperBound = `${lowerBound}\uffff`;
+		const result = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_archiveOperation_path", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("archiveOperationId", undefined)
+					.gte("path", lowerBound)
+					.lt("path", upperBound),
+			)
+			.paginate({
+				cursor: args.cursor,
+				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+			});
+
+		return {
+			items: result.page.map((file) => ({
+				path: file.path,
+				kind: file.kind,
+				updatedAt: file.updatedAt,
+			})),
+			continueCursor: result.continueCursor,
+			isDone: result.isDone,
+		};
+	},
+});
+
+export type files_nodes_list_path_prefix_paginated_Result =
+	typeof list_path_prefix_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const get_bash_stat_entry = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		path: v.string(),
+	},
+	returns: v.union(
+		v.object({
+			path: v.literal("/"),
+			name: v.literal(""),
+			kind: v.literal("folder"),
+			updatedAt: v.number(),
+			contentType: v.optional(v.string()),
+			size: v.optional(v.number()),
+		}),
+		v.object({
+			path: v.string(),
+			name: v.string(),
+			kind: v.union(v.literal("folder"), v.literal("file")),
+			updatedAt: v.number(),
+			contentType: v.optional(v.string()),
+			size: v.optional(v.number()),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		if (args.path === "/") {
+			return {
+				path: "/" as const,
+				name: "" as const,
+				kind: "folder" as const,
+				updatedAt: 0,
+			};
+		}
+
+		const node = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("path", args.path)
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+
+		if (!node) {
+			return null;
+		}
+
+		const asset = node.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		return {
+			path: node.path,
+			name: node.name,
+			kind: node.kind,
+			updatedAt: node.updatedAt,
+			contentType: node.contentType,
+			size: asset?.workspaceId === args.workspaceId && asset.projectId === args.projectId ? asset.size : undefined,
+		};
+	},
+});
+
+export type files_nodes_get_bash_stat_entry_Result =
+	typeof get_bash_stat_entry extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 function matches_path(absPath: string, include: string | undefined) {
 	return include ? minimatch(absPath, include) : true;
 }
