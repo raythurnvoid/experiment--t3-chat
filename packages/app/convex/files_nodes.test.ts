@@ -186,6 +186,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		kind: "file",
 		path: "/docs/a.md",
 		updatedAt: 2,
+		contentType: "text/markdown;charset=utf-8",
 	});
 	await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
@@ -261,7 +262,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		updatedAt: 8,
 	});
 
-	return membership;
+	return { ...membership, docsFolderId };
 }
 
 test("list_files", async () => {
@@ -524,6 +525,44 @@ describe("paginated bash listing queries", () => {
 		expect([...firstPage.items, ...secondPage.items].map((item) => item.path)).not.toContain("/docs/z-archived.md");
 	});
 
+	test("paginates direct children by parent id in ascending and descending name order with metadata", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const ascending = await asUser.query(internal.files_nodes.list_dir_children_by_parent_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			parentId: db.docsFolderId,
+			numItems: 10,
+			cursor: null,
+			order: "asc",
+		});
+		const descending = await asUser.query(internal.files_nodes.list_dir_children_by_parent_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			parentId: db.docsFolderId,
+			numItems: 10,
+			cursor: null,
+			order: "desc",
+		});
+
+		expect(ascending.items.map((item) => item.name)).toEqual(["a.md", "b.md", "nested"]);
+		expect(descending.items.map((item) => item.name)).toEqual(["nested", "b.md", "a.md"]);
+		expect(ascending.items[0]).toMatchObject({
+			name: "a.md",
+			path: "/docs/a.md",
+			kind: "file",
+			updatedAt: 2,
+			updatedBy: db.userId,
+			contentType: "text/markdown;charset=utf-8",
+		});
+	});
+
 	test("paginates recursive descendants by path prefix without sibling-prefix leakage", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
@@ -555,6 +594,43 @@ describe("paginated bash listing queries", () => {
 		expect(paths).not.toContain("/docs/z-archived.md");
 		expect(paths).not.toContain("/docs-archive");
 		expect(paths).not.toContain("/docs-archive/outside.md");
+	});
+
+	test("paginates recursive descendants in ascending and descending path order with metadata", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const ascending = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs",
+			numItems: 10,
+			cursor: null,
+			order: "asc",
+		});
+		const descending = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs",
+			numItems: 10,
+			cursor: null,
+			order: "desc",
+		});
+
+		expect(ascending.items.map((item) => item.path)).toEqual(["/docs/a.md", "/docs/b.md", "/docs/nested", "/docs/nested/c.md"]);
+		expect(descending.items.map((item) => item.path)).toEqual(["/docs/nested/c.md", "/docs/nested", "/docs/b.md", "/docs/a.md"]);
+		expect(ascending.items[0]).toMatchObject({
+			path: "/docs/a.md",
+			kind: "file",
+			updatedAt: 2,
+			updatedBy: db.userId,
+			contentType: "text/markdown;charset=utf-8",
+		});
 	});
 
 	test("paginates raw path prefixes with intentional sibling-prefix matches", async () => {

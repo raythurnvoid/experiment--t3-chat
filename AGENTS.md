@@ -330,6 +330,22 @@ Research Process
 
 Quality Standard: Understanding should be deep enough to explain concepts confidently and implement solutions without guessing. If uncertain, keep researching until clear.
 
+## Task Start Documentation And Quality Check
+
+At the start of every implementation, review, or investigation task, decide whether the task should also update durable project knowledge or verification surfaces. This is a required evaluation step, not a requirement to add churn to every diff.
+
+Consider whether the work needs:
+
+- Skill or README updates: update relevant `.agents/skills/**/SKILL.md`, skill references, `packages/**/README.md`, or playbooks when behavior, architecture, commands, workflows, integration details, or agent-facing guidance changes.
+- New skills: create a focused skill when a new or newly important app area has repeatable workflows, business rules, tooling, or gotchas that future agents should load on demand. Prefer updating an existing skill when it already owns the domain.
+- Tests: add or update the smallest focused unit test for changed business logic, serialization, validation, permissions, data transforms, or regression-prone edge cases when there is a natural public entrypoint. Use integration or browser coverage when the behavior only exists across modules or UI flows.
+- Playwriter harness/docs: improve `.agents/skills/app-playwriter-harness/` helpers only for broadly reusable browser QA primitives; otherwise add reusable route recipes to `packages/app/playwriter-playbooks/` or harness references when a repeated browser workflow, selector, or known hazard is discovered.
+- Accessibility: for UI work, check keyboard access, focus order and management, semantic controls, accessible names and descriptions, form labels and errors, contrast, zoom/responsive fit, target size, and reduced-motion expectations. Fix obvious regressions in the same pass.
+- Observability and operations: update runbooks, log or metric expectations, environment variable docs, migration notes, or rollback guidance when deployment, background jobs, external services, or data repair workflows change.
+- Security and privacy: document or test auth, authorization, secret handling, tenant isolation, user data exposure, and webhook or external-boundary behavior when those surfaces are touched.
+
+Before finishing, include in the final response what docs, tests, Playwriter/browser checks, and accessibility/security considerations were updated or intentionally left unchanged.
+
 ## System Spec Skills
 
 Treat the core business-logic skill files under `.agents/skills/` as maintained system-spec documents for the product behavior they describe.
@@ -338,10 +354,11 @@ Current spec-style skills include:
 
 - `.agents/skills/auth-system/SKILL.md`
 - `.agents/skills/billing-system/SKILL.md`
+- `.agents/skills/access-control/SKILL.md`
 - `.agents/skills/workspaces-tenancy/SKILL.md`
 - `.agents/skills/quotas/SKILL.md`
 - `.agents/skills/ai-chat-agent/SKILL.md`
-- `.agents/skills/pages-agent-pending-edits/SKILL.md`
+- `.agents/skills/files-agent-pending-updates/SKILL.md`
 
 When product requirements or business logic change, update the relevant spec skills in the same pass as the implementation so those files stay accurate.
 

@@ -84,11 +84,14 @@ Important limitation:
 - `bash` mounts app files at `/home/cloud-usr/w/{workspaceName}/{projectName}`, blocks file writes there, allows Agent-mode folder creation through `mkdir`, and provides per-invocation scratch space at `/tmp`.
 - The bash internal action and Just Bash filesystem implementation live in the Node-runtime `bash.run` module because Just Bash bundles Node built-ins. Keep thread-state queries/mutations in default-runtime `ai_chat.ts`.
 - `bash` persists the current working directory through the general `ai_chat.get_thread_state` / `ai_chat.set_thread_state` internal functions. The state row is stored in `ai_chat_threads_state`, linked from `ai_chat_threads.stateId` and back to `ai_chat_threads_state.threadId`. Thread creation inserts the state row with `~` (`/home/cloud-usr`) and stores home-relative values such as `~/w/personal/home/docs` after `cd`; cwd does not live directly on `ai_chat_threads`.
+- The prompt and tool description should tell the model that cwd persists across tool calls in the same chat and that it should use bare or relative commands instead of repeating `cd` when the previous Bash output already shows the desired cwd.
 - The prompt and tool description should describe `bash` as the normal app-file shell, while explicitly warning that app files are Convex-backed and do not have full POSIX/GNU filesystem semantics.
-- For file inspection commands without a specific path, the app file tree `/home/cloud-usr/w/{workspaceName}/{projectName}` is the default target.
+- For file inspection commands without a specific path, the current app directory is the default target when cwd is inside `/home/cloud-usr/w/{workspaceName}/{projectName}`; otherwise the app file tree root is the default target.
 - `/home/cloud-usr` is the bash home directory, and the app file tree is mounted at `/home/cloud-usr/w/{workspaceName}/{projectName}`.
-- `ls --limit` and `find --limit` are app-file pagination commands. From `~`, omit the path or use `/home/cloud-usr/w/{workspaceName}/{projectName}` instead of `.`.
-- Use `ls --limit N [--cursor CURSOR] <dir>` for direct children. When asked to continue a listing, run the printed `Next page:` command as the next Bash call; do not just report that it exists, and do not invent `--next-page`.
+- `ls --limit` and `find --limit` are app-file pagination commands. Relative paths resolve against the current working directory. From `~`, omit the path or use `/home/cloud-usr/w/{workspaceName}/{projectName}` instead of `.`.
+- When listing the current directory, the prompt and tool description should prefer `ls --limit N` over `ls --limit N <current-cwd>` and should not tell the model to restate cwd as a path argument for certainty.
+- Use `ls [-1aApFdlrR] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current app directory, or the app root when cwd is outside the app tree. `--cursor` continues one listing target only. When asked to continue a listing, run the printed `Next page:` command as the next Bash call; do not just report that it exists, and do not invent `--next-page`.
+- `ls -R` lists a paginated subtree as full app shell paths; `ls -d` lists the target entry itself and wins over `-R`; `ls -l` uses app metadata, not POSIX permissions, owners, groups, inodes, blocks, symlinks, or real sizes. Unsupported sort/filter flags still fail.
 - `No matches in this page; more pages exist.` means the result is partial; continue the printed cursor command before concluding there are no matches.
 - Use `find <path> --limit N [--cursor CURSOR]` for subtree discovery.
 - Use `find --prefix <prefix> --limit N [--cursor CURSOR]` only when raw startsWith path semantics are intended; unlike subtree mode, prefix mode may match sibling prefixes such as `/docs-archive`.
@@ -145,7 +148,7 @@ Important limitation:
 - Persists `cd` only when the final cwd is `~` or a directory below `/home/cloud-usr`. It does not persist `/tmp` or other paths outside the cloud user home.
 - Includes a custom `search [--limit N] <query...>` command backed by the `files_nodes.text_search_files` plain-text index query.
 - Keeps `grep` as a lightweight compatibility command that prints guidance to use `search` so app file content search goes through the Convex text index.
-- Includes native `ls --limit N [--cursor CURSOR] <path>` and `find <path> [-maxdepth N] [-type f|d] [-name PATTERN|-iname PATTERN] [--extension EXT] --limit N [--cursor CURSOR]` for bounded continuation through large file trees. Cursors are opaque Convex pagination cursors and continuation commands are printed in stdout.
+- Includes native `ls [-1aApFdlrR] [--limit N] [--cursor CURSOR] [PATH ...]` and `find <path> [-maxdepth N] [-type f|d] [-name PATTERN|-iname PATTERN] [--extension EXT] --limit N [--cursor CURSOR]` for bounded continuation through large file trees. Cursors are opaque Convex pagination cursors and continuation commands are printed in stdout.
 - Runs commands under `set -f` so shell pathname expansion is disabled. App-file glob operands are rejected; use `find -name PATTERN`, `find -iname PATTERN`, or `find --prefix PREFIX`.
 - Blocks app directory enumeration through the generic Just Bash filesystem APIs. Use native `ls` / `find`; do not rely on Just Bash `readdir`, `getAllPaths`, glob expansion, or `tree` for app files.
 

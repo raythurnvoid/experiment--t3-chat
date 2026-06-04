@@ -28,7 +28,7 @@ import type {
 	files_nodes_get_bash_stat_entry_Result,
 	files_nodes_get_by_path_Result,
 	files_nodes_get_file_last_available_markdown_content_by_path_Result,
-	files_nodes_list_dir_children_paginated_Result,
+	files_nodes_list_dir_children_by_parent_paginated_Result,
 	files_nodes_list_path_prefix_paginated_Result,
 	files_nodes_list_subtree_paginated_Result,
 	files_nodes_text_search_files_Result,
@@ -39,6 +39,7 @@ const HOME = "/home/cloud-usr";
 const MOUNT_ROOT = `${HOME}/w`;
 const TMP_MOUNT = "/tmp";
 const DEFAULT_CWD = "~";
+const FILES_ROOT_ID = "root";
 const OUTPUT_LIMIT = 30_000;
 const TERMINAL_LINE_ENDING_REGEX = /\r\n?/g;
 const TERMINAL_TRAILING_NEWLINE_REGEX = /\n+$/;
@@ -88,9 +89,11 @@ const ALLOWED_COMMANDS = [
  * folders created while caching descendants.
  */
 type JustBashFileNodeCacheEntry = {
+	nodeId?: Id<"files_nodes">;
 	path: Doc<"files_nodes">["path"];
 	kind: Doc<"files_nodes">["kind"];
 	updatedAt: Doc<"files_nodes">["updatedAt"];
+	updatedBy?: Id<"users">;
 	contentType?: Doc<"files_nodes">["contentType"];
 };
 
@@ -469,6 +472,10 @@ function search_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxD
 
 const LISTING_DEFAULT_LIMIT = 100;
 const LISTING_MAX_LIMIT = 200;
+const LS_PATH_OPERAND_MAX = 20;
+// Content readers (cat/head/tail/wc) fetch full file content from Convex per app-file
+// operand, so bound how many a single command can pull. stat reuses this for metadata fan-out.
+const READER_FILE_OPERAND_MAX = 10;
 const APP_COMMAND_NAMES = new Set<string>([...ALLOWED_COMMANDS, "search"]);
 
 async function delegate_builtin_command(command: CommandName, args: string[], ctx: CommandContext, options?: { cwd?: string }) {
@@ -519,16 +526,40 @@ async function get_bash_path_entry(
 	})) as files_nodes_get_bash_path_entry_Result;
 }
 
+function ls_read_value(args: string[], index: number, option: string) {
+	const value = args[index + 1];
+	if (value == null) {
+		return { error: `ls: ${option} requires a value` };
+	}
+	return { value, nextIndex: index + 1 };
+}
+
 function parse_ls_args(args: string[]) {
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
 	const paths: string[] = [];
 	let unsupportedOption: string | null = null;
+	let recursive = false;
+	let directory = false;
+	let reverse = false;
+	let long = false;
+	let optionsEnded = false;
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index]!;
+		if (optionsEnded) {
+			paths.push(arg);
+			continue;
+		}
+		if (arg === "--") {
+			optionsEnded = true;
+			continue;
+		}
 		if (arg === "--limit") {
-			limitValue = args[++index];
+			const value = ls_read_value(args, index, "--limit");
+			if (value.error != null) return value;
+			limitValue = value.value;
+			index = value.nextIndex;
 			continue;
 		}
 		if (arg.startsWith("--limit=")) {
@@ -536,15 +567,90 @@ function parse_ls_args(args: string[]) {
 			continue;
 		}
 		if (arg === "--cursor") {
-			cursor = args[++index] ?? null;
+			const value = ls_read_value(args, index, "--cursor");
+			if (value.error != null) return value;
+			cursor = value.value;
+			index = value.nextIndex;
 			continue;
 		}
 		if (arg.startsWith("--cursor=")) {
 			cursor = arg.slice("--cursor=".length);
 			continue;
 		}
-		if (arg.startsWith("-")) {
+		if (arg === "--recursive") {
+			recursive = true;
+			continue;
+		}
+		if (arg === "--directory") {
+			directory = true;
+			continue;
+		}
+		if (arg === "--reverse") {
+			reverse = true;
+			continue;
+		}
+		if (arg === "--classify") {
+			continue;
+		}
+		if (arg === "--indicator-style") {
+			const value = ls_read_value(args, index, "--indicator-style");
+			if (value.error != null) return value;
+			if (value.value !== "slash") {
+				unsupportedOption ??= `--indicator-style=${value.value}`;
+			}
+			index = value.nextIndex;
+			continue;
+		}
+		if (arg.startsWith("--indicator-style=")) {
+			const value = arg.slice("--indicator-style=".length);
+			if (value !== "slash") {
+				unsupportedOption ??= arg;
+			}
+			continue;
+		}
+		if (arg === "--sort") {
+			const value = ls_read_value(args, index, "--sort");
+			if (value.error != null) return value;
+			if (value.value !== "name") {
+				unsupportedOption ??= `--sort=${value.value}`;
+			}
+			index = value.nextIndex;
+			continue;
+		}
+		if (arg.startsWith("--sort=")) {
+			const value = arg.slice("--sort=".length);
+			if (value !== "name") {
+				unsupportedOption ??= arg;
+			}
+			continue;
+		}
+		if (arg.startsWith("--")) {
 			unsupportedOption ??= arg;
+			continue;
+		}
+		if (arg.startsWith("-") && arg !== "-") {
+			for (const flag of arg.slice(1)) {
+				if (flag === "1" || flag === "a" || flag === "A" || flag === "p" || flag === "F") {
+					continue;
+				}
+				if (flag === "d") {
+					directory = true;
+					continue;
+				}
+				if (flag === "r") {
+					reverse = true;
+					continue;
+				}
+				if (flag === "R") {
+					recursive = true;
+					continue;
+				}
+				if (flag === "l") {
+					long = true;
+					continue;
+				}
+				unsupportedOption ??= `-${flag}`;
+			}
 			continue;
 		}
 		paths.push(arg);
@@ -554,36 +660,125 @@ function parse_ls_args(args: string[]) {
 	if (limit.error != null) {
 		return limit;
 	}
-	if (paths.length > 1) {
-		return { error: "ls: app file listings support one path at a time" } as const;
+	if (paths.length > LS_PATH_OPERAND_MAX) {
+		return { error: `ls: app file listings support at most ${LS_PATH_OPERAND_MAX} path operands` } as const;
 	}
 
 	if (cursor != null && cursor.trim() === "") {
 		cursor = null;
 	}
+	if (cursor != null && paths.length > 1) {
+		return { error: "ls: --cursor can only continue one listing target" } as const;
+	}
 
 	return {
-		path: paths[0],
+		paths,
 		limit: limit.limit,
 		cursor,
 		hasAppListingOption: limitValue != null || cursor != null,
 		unsupportedOption,
+		recursive,
+		directory,
+		reverse,
+		long,
 	} as const;
 }
 
-function ls_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], appFilesMountPath: string) {
+function format_ls_item(args: {
+	kind: "folder" | "file";
+	updatedAt: number;
+	updatedBy?: string;
+	contentType?: string;
+	display: string;
+	long: boolean;
+}) {
+	const display = args.kind === "folder" && !args.display.endsWith("/") ? `${args.display}/` : args.display;
+	if (!args.long) {
+		return display;
+	}
+	const fields = [args.kind, new Date(args.updatedAt).toISOString(), `updatedBy=${args.updatedBy ?? "-"}`];
+	if (args.contentType != null) {
+		fields.push(`contentType=${args.contentType}`);
+	}
+	fields.push(display);
+	return fields.join("\t");
+}
+
+function build_ls_continuation(args: {
+	parsed: ReturnType<typeof parse_ls_args> & { error?: never };
+	targetShellPath: string;
+	cursor: string;
+}) {
+	const continuationParts = ["Next page:", "ls"];
+	if (args.parsed.long) {
+		continuationParts.push("-l");
+	}
+	if (args.parsed.reverse) {
+		continuationParts.push("-r");
+	}
+	if (args.parsed.recursive && !args.parsed.directory) {
+		continuationParts.push("-R");
+	}
+	continuationParts.push("--limit", String(args.parsed.limit), "--cursor", shell_arg_quote(args.cursor), shell_arg_quote(args.targetShellPath));
+	return continuationParts.join(" ");
+}
+
+async function get_ls_path_entry(args: {
+	ctx: ActionCtx;
+	ctxData: WorkspaceFsOptions["ctxData"];
+	workspaceFs: WorkspaceFs;
+	appPath: string;
+	needsFullMetadata: boolean;
+}) {
+	if (!args.needsFullMetadata) {
+		const cached = await args.workspaceFs.getEntry(args.appPath);
+		if (!cached) {
+			return null;
+		}
+		if (args.appPath === "/" || cached.nodeId != null) {
+			return {
+				nodeId: args.appPath === "/" ? FILES_ROOT_ID : cached.nodeId,
+				path: cached.path,
+				name: cached.path.split("/").filter(Boolean).at(-1) ?? "",
+				kind: cached.kind,
+				updatedAt: cached.updatedAt,
+				updatedBy: cached.updatedBy,
+				contentType: cached.contentType,
+			};
+		}
+	}
+
+	const entry = await get_bash_path_entry(args.ctx, args.ctxData, args.appPath);
+	if (entry && entry.nodeId !== FILES_ROOT_ID) {
+		args.workspaceFs.rememberEntry({
+			nodeId: entry.nodeId,
+			path: entry.path,
+			kind: entry.kind,
+			updatedAt: entry.updatedAt,
+			updatedBy: entry.updatedBy,
+			contentType: entry.contentType,
+		});
+	}
+	return entry;
+}
+
+function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, appFilesMountPath: string) {
 	return defineCommand("ls", async (args, commandCtx) => {
 		const parsed = parse_ls_args(args);
 		if ("error" in parsed) {
-			return command_usage_error(`${parsed.error}\nUsage: ls [--limit N] [--cursor CURSOR] [PATH]\n`);
+			return command_usage_error(`${parsed.error}\nUsage: ls [-1aApFdlrR] [--limit N] [--cursor CURSOR] [PATH ...]\n`);
 		}
 
-		const targetShellPath = resolve_path(
-			commandCtx.cwd,
-			parsed.path ?? default_app_target_shell_path(commandCtx.cwd, appFilesMountPath),
-		);
-		const appPath = shell_path_to_app_path(appFilesMountPath, targetShellPath);
-		if (appPath == null) {
+		const targetInputs = parsed.paths.length > 0 ? parsed.paths : [undefined];
+		const targets = targetInputs.map((path) => {
+			const targetShellPath = resolve_path(commandCtx.cwd, path ?? default_app_target_shell_path(commandCtx.cwd, appFilesMountPath));
+			return {
+				inputPath: path,
+				targetShellPath,
+				appPath: shell_path_to_app_path(appFilesMountPath, targetShellPath),
+			};
+		});
+		if (targets.every((target) => target.appPath == null)) {
 			if (parsed.hasAppListingOption) {
 				return command_usage_error(
 					"ls: --limit and --cursor are only available for app file paths\n" +
@@ -592,71 +787,136 @@ function ls_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"
 			}
 			return await delegate_builtin_command("ls", args, commandCtx);
 		}
+		if (targets.some((target) => target.appPath == null)) {
+			return command_usage_error("ls: cannot mix app file paths with non-app paths in one listing\n");
+		}
 
 		if (parsed.unsupportedOption != null) {
 			if (parsed.unsupportedOption === "--next-page") {
 				return command_usage_error(
 					"ls: --next-page is not supported for app files\n" +
 						"Copy the exact `Next page: ls --limit N --cursor ... <path>` command from the previous ls output.\n" +
-						"Usage: ls [--limit N] [--cursor CURSOR] [PATH]\n",
+						"Usage: ls [-1aApFdlrR] [--limit N] [--cursor CURSOR] [PATH ...]\n",
 				);
 			}
 			const opt = parsed.unsupportedOption;
-			const hint =
-				opt === "-R" || opt === "--recursive"
-					? "For recursive listing use: find <path> --limit N [-maxdepth N]"
-					: opt === "-l" || opt === "-la" || opt === "-al" || opt === "-a"
-						? "App ls does not support long/hidden format flags; use: ls [--limit N] [PATH]"
-						: "App ls only supports --limit and --cursor";
+			const hint = "App ls supports name order only; use find/search for pattern and content discovery.";
 			return command_usage_error(
-				`ls: unsupported option ${opt} for app files\n${hint}\nUsage: ls [--limit N] [--cursor CURSOR] [PATH]\n`,
+				`ls: unsupported option ${opt} for app files\n${hint}\nUsage: ls [-1aApFdlrR] [--limit N] [--cursor CURSOR] [PATH ...]\n`,
 			);
 		}
-		if (parsed.path != null && has_glob_metacharacters(parsed.path)) {
-			return command_usage_error(app_glob_syntax_error("ls", parsed.path));
-		}
-
-		const entry = await get_bash_path_entry(ctx, ctxData, appPath);
-		if (!entry) {
-			return command_failure(`ls: cannot access '${targetShellPath}': No such file or directory\n`);
-		}
-		if (entry.kind === "file") {
-			if (parsed.cursor != null) {
-				return command_usage_error(`ls: --cursor can only continue a directory listing\n`);
+		for (const target of targets) {
+			if (target.inputPath != null && has_glob_metacharacters(target.inputPath)) {
+				return command_usage_error(app_glob_syntax_error("ls", target.inputPath));
 			}
-			return {
-				stdout: `${targetShellPath}\n`,
-				stderr: "",
-				exitCode: 0,
-			};
 		}
 
-		const result = (await ctx.runQuery(internal.files_nodes.list_dir_children_paginated, {
-			workspaceId: ctxData.workspaceId,
-			projectId: ctxData.projectId,
-			path: appPath,
-			numItems: parsed.limit,
-			cursor: parsed.cursor,
-		})) as files_nodes_list_dir_children_paginated_Result;
+		const sections: string[] = [];
+		for (const target of targets) {
+			const appPath = target.appPath;
+			if (appPath == null) {
+				continue;
+			}
 
-		const lines = result.items.map((item) => (item.kind === "folder" ? `${item.name}/` : item.name));
-		if (!result.isDone) {
+			const entry = await get_ls_path_entry({
+				ctx,
+				ctxData: workspaceFs.ctxData,
+				workspaceFs,
+				appPath,
+				needsFullMetadata: parsed.long && (parsed.directory || (await workspaceFs.getEntry(appPath))?.kind === "file"),
+			});
+			if (!entry) {
+				return command_failure(`ls: cannot access '${target.targetShellPath}': No such file or directory\n`);
+			}
+
+			const lines: string[] = [];
+			if (parsed.directory || entry.kind === "file") {
+				if (parsed.cursor != null) {
+					return command_usage_error(`ls: --cursor can only continue a directory or recursive listing\n`);
+				}
+				lines.push(
+					format_ls_item({
+						kind: entry.kind,
+						updatedAt: entry.updatedAt,
+						updatedBy: "updatedBy" in entry ? entry.updatedBy : undefined,
+						contentType: entry.contentType,
+						display: target.targetShellPath,
+						long: parsed.long,
+					}),
+				);
+			} else if (parsed.recursive) {
+				const result = (await ctx.runQuery(internal.files_nodes.list_subtree_paginated, {
+					workspaceId: workspaceFs.ctxData.workspaceId,
+					projectId: workspaceFs.ctxData.projectId,
+					path: appPath,
+					numItems: parsed.limit,
+					cursor: parsed.cursor,
+					order: parsed.reverse ? "desc" : "asc",
+				})) as files_nodes_list_subtree_paginated_Result;
+
+				lines.push(
+					...result.items.map((item) =>
+						format_ls_item({
+							kind: item.kind,
+							updatedAt: item.updatedAt,
+							updatedBy: item.updatedBy,
+							contentType: item.contentType,
+							display: app_path_to_shell_path(appFilesMountPath, item.path),
+							long: parsed.long,
+						}),
+					),
+				);
+				if (!result.isDone) {
+					if (lines.length === 0) {
+						lines.push("No items in this page; more pages exist.");
+					}
+					lines.push("", build_ls_continuation({ parsed, targetShellPath: target.targetShellPath, cursor: result.continueCursor }));
+				}
+			} else {
+				const parentId = entry.nodeId;
+				if (parentId == null) {
+					return command_failure(`ls: cannot resolve '${target.targetShellPath}': No such file or directory\n`);
+				}
+				const result = (await ctx.runQuery(internal.files_nodes.list_dir_children_by_parent_paginated, {
+					workspaceId: workspaceFs.ctxData.workspaceId,
+					projectId: workspaceFs.ctxData.projectId,
+					parentId,
+					numItems: parsed.limit,
+					cursor: parsed.cursor,
+					order: parsed.reverse ? "desc" : "asc",
+				})) as files_nodes_list_dir_children_by_parent_paginated_Result;
+
+				lines.push(
+					...result.items.map((item) =>
+						format_ls_item({
+							kind: item.kind,
+							updatedAt: item.updatedAt,
+							updatedBy: item.updatedBy,
+							contentType: item.contentType,
+							display: item.name,
+							long: parsed.long,
+						}),
+					),
+				);
+				if (!result.isDone) {
+					if (lines.length === 0) {
+						lines.push("No items in this page; more pages exist.");
+					}
+					lines.push("", build_ls_continuation({ parsed, targetShellPath: target.targetShellPath, cursor: result.continueCursor }));
+				}
+			}
+
 			if (lines.length === 0) {
-				lines.push("No items in this page; more pages exist.");
+				lines.push("(empty directory)");
 			}
-			lines.push("", `Next page: ls --limit ${parsed.limit} --cursor ${shell_arg_quote(result.continueCursor)} ${shell_arg_quote(targetShellPath)}`);
-		}
-
-		if (lines.length === 0) {
-			return {
-				stdout: "(empty directory)\n",
-				stderr: "",
-				exitCode: 0,
-			};
+			if (targets.length > 1 && entry.kind === "folder" && !parsed.directory) {
+				lines.unshift(`${target.targetShellPath}:`);
+			}
+			sections.push(lines.join("\n"));
 		}
 
 		return {
-			stdout: `${lines.join("\n")}\n`,
+			stdout: `${sections.join("\n\n")}\n`,
 			stderr: "",
 			exitCode: 0,
 		};
@@ -677,6 +937,7 @@ function parse_find_args(args: string[]) {
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
 	let maxDepthValue: string | undefined;
+	let minDepthValue: string | undefined;
 	let type: string | undefined;
 	let name: string | undefined;
 	let iname: string | undefined;
@@ -725,6 +986,17 @@ function parse_find_args(args: string[]) {
 			index = value.nextIndex;
 			continue;
 		}
+		if (arg === "-mindepth" || arg === "--mindepth") {
+			const value = find_read_value(args, index, arg);
+			if (value.error != null) return value;
+			minDepthValue = value.value;
+			index = value.nextIndex;
+			continue;
+		}
+		if (arg === "-print") {
+			// Printing is already the default action; accept it as a no-op for compatibility.
+			continue;
+		}
 		if (arg === "-type" || arg === "--type") {
 			const value = find_read_value(args, index, arg);
 			if (value.error != null) return value;
@@ -758,7 +1030,7 @@ function parse_find_args(args: string[]) {
 			continue;
 		}
 		if (arg.startsWith("-") || arg === "!" || arg === "(" || arg === ")") {
-			return { error: `find: unsupported predicate ${arg} (GNU find extensions like -printf, -mtime, -newer, -exec, -ok are not available for app files; omit them and use -name PATTERN, -type f|d, -maxdepth N, or --extension EXT instead)` } as const;
+			return { error: `find: unsupported predicate ${arg} (GNU find extensions like -printf, -mtime, -newer, -exec, -ok are not available for app files; omit them and use -name PATTERN, -type f|d, -maxdepth N, -mindepth N, or --extension EXT instead)` } as const;
 		}
 		if (path != null) {
 			return { error: "find: app file find supports one path only" } as const;
@@ -783,6 +1055,14 @@ function parse_find_args(args: string[]) {
 		maxDepth = Number(maxDepthValue);
 	}
 
+	let minDepth: number | null = null;
+	if (minDepthValue != null) {
+		if (!/^\d+$/u.test(minDepthValue.trim())) {
+			return { error: "find: -mindepth must be a non-negative integer" } as const;
+		}
+		minDepth = Number(minDepthValue);
+	}
+
 	if (type != null && type !== "f" && type !== "d") {
 		return { error: "find: -type supports only f or d for app files" } as const;
 	}
@@ -803,6 +1083,7 @@ function parse_find_args(args: string[]) {
 		cursor,
 		hasAppListingOption: limitValue != null || cursor != null,
 		maxDepth,
+		minDepth,
 		type,
 		name,
 		iname,
@@ -846,6 +1127,7 @@ function find_item_matches(
 	item: { path: string; kind: "folder" | "file" },
 	parsed: {
 		maxDepth: number | null;
+		minDepth: number | null;
 		type: string | undefined;
 		name: string | undefined;
 		iname: string | undefined;
@@ -854,6 +1136,9 @@ function find_item_matches(
 	basePath: string,
 ) {
 	if (parsed.maxDepth != null && path_depth_from_base(basePath, item.path) > parsed.maxDepth) {
+		return false;
+	}
+	if (parsed.minDepth != null && path_depth_from_base(basePath, item.path) < parsed.minDepth) {
 		return false;
 	}
 	if (parsed.type != null && (parsed.type === "f" ? item.kind !== "file" : item.kind !== "folder")) {
@@ -879,7 +1164,7 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				stdout: "",
 				stderr:
 					`${parsed.error}\n` +
-					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-type f|d] [-name PATTERN|-iname PATTERN] [--extension EXT] [--limit N] [--cursor CURSOR]\n",
+					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name PATTERN|-iname PATTERN] [--extension EXT] [--limit N] [--cursor CURSOR]\n",
 				exitCode: 2,
 			};
 		}
@@ -987,6 +1272,9 @@ function build_find_continuation(args: {
 	if (args.parsed.maxDepth != null) {
 		continuationParts.push("-maxdepth", String(args.parsed.maxDepth));
 	}
+	if (args.parsed.minDepth != null) {
+		continuationParts.push("-mindepth", String(args.parsed.minDepth));
+	}
 	if (args.parsed.type != null) {
 		continuationParts.push("-type", args.parsed.type);
 	}
@@ -1075,6 +1363,27 @@ function create_grep_command() {
 	});
 }
 
+function enforce_reader_operand_cap(
+	command: string,
+	commandCtx: CommandContext,
+	appFilesMountPath: string,
+	files: string[],
+) {
+	let appFileCount = 0;
+	for (const file of files) {
+		if (file === "-") continue;
+		if (is_under_app_mount(appFilesMountPath, resolve_command_path(commandCtx, file))) {
+			appFileCount++;
+		}
+	}
+	if (appFileCount > READER_FILE_OPERAND_MAX) {
+		return command_usage_error(
+			`${command}: app file reads are limited to ${READER_FILE_OPERAND_MAX} files per command (you requested ${appFileCount}). Split into separate commands, or use search for content discovery.\n`,
+		);
+	}
+	return null;
+}
+
 function create_cat_command(appFilesMountPath: string) {
 	return defineCommand("cat", async (args, commandCtx) => {
 		let showLineNumbers = false;
@@ -1094,6 +1403,8 @@ function create_cat_command(appFilesMountPath: string) {
 		}
 
 		const targets = files.length ? files : ["-"];
+		const capError = enforce_reader_operand_cap("cat", commandCtx, appFilesMountPath, targets);
+		if (capError != null) return capError;
 		let stdout = "";
 		let stderr = "";
 		let exitCode = 0;
@@ -1267,6 +1578,9 @@ function create_stat_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 		if ("error" in parsed) {
 			return command_usage_error(`${parsed.error}\n`);
 		}
+
+		const capError = enforce_reader_operand_cap("stat", commandCtx, appFilesMountPath, parsed.files);
+		if (capError != null) return capError;
 
 		let stdout = "";
 		let stderr = "";
@@ -1486,6 +1800,8 @@ function create_reader_guard_command(command: "head" | "tail" | "wc", appFilesMo
 				return command_usage_error(app_glob_syntax_error(command, file));
 			}
 		}
+		const capError = enforce_reader_operand_cap(command, commandCtx, appFilesMountPath, files);
+		if (capError != null) return capError;
 		return await delegate_builtin_command(command, args, commandCtx);
 	});
 }
@@ -1949,9 +2265,11 @@ class WorkspaceFs implements IFileSystem {
 					if (node?.kind === "file") {
 						contentType = node.contentType;
 						this.rememberEntry({
+							nodeId: node._id,
 							path: node.path,
 							kind: node.kind,
 							updatedAt: node.updatedAt,
+							updatedBy: node.updatedBy,
 							contentType: node.contentType,
 						});
 					}
@@ -1973,6 +2291,7 @@ class WorkspaceFs implements IFileSystem {
 
 		this.contentCache.set(normalizedPath, fileContent.content);
 		this.rememberEntry({
+			nodeId: fileContent.nodeId,
 			path: normalizedPath,
 			kind: "file",
 			updatedAt: Date.now(),
@@ -2058,6 +2377,7 @@ class WorkspaceFs implements IFileSystem {
 			throw new Error(created._nay.message);
 		}
 		this.rememberEntry({
+			nodeId: created._yay.nodeId,
 			path: normalizedPath,
 			kind: "folder",
 			updatedAt: Date.now(),
@@ -2131,7 +2451,7 @@ class WorkspaceFs implements IFileSystem {
 		throw readonly_error(app_path_to_shell_path(this.appFilesMountPath, path));
 	}
 
-	private rememberEntry(entry: JustBashFileNodeCacheEntry) {
+	rememberEntry(entry: JustBashFileNodeCacheEntry) {
 		const normalizedPath = normalize_path(entry.path);
 		const segments = normalizedPath.split("/").filter(Boolean);
 		let currentPath = "";
@@ -2151,10 +2471,10 @@ class WorkspaceFs implements IFileSystem {
 		});
 	}
 
-	private async getEntry(path: string) {
+	async getEntry(path: string) {
 		const normalizedPath = normalize_path(path);
 		const cached = this.entryCache.get(normalizedPath);
-		if (cached) {
+		if (cached && (normalizedPath === "/" || cached.nodeId != null)) {
 			return cached;
 		}
 
@@ -2169,9 +2489,11 @@ class WorkspaceFs implements IFileSystem {
 		}
 
 		const entry = {
+			nodeId: node._id,
 			path: node.path,
 			kind: node.kind,
 			updatedAt: node.updatedAt,
+			updatedBy: node.updatedBy,
 			contentType: node.contentType,
 		} satisfies JustBashFileNodeCacheEntry;
 		this.rememberEntry(entry);
@@ -2412,7 +2734,7 @@ async function action_run(
 		commands: [...ALLOWED_COMMANDS],
 		customCommands: [
 			search_command_create(ctx, workspaceFs.ctxData, appFilesMountPath),
-			ls_command_create(ctx, workspaceFs.ctxData, appFilesMountPath),
+			ls_command_create(ctx, workspaceFs, appFilesMountPath),
 			find_command_create(ctx, workspaceFs.ctxData, appFilesMountPath),
 			create_tree_command(appFilesMountPath),
 			create_grep_command(),
@@ -2719,21 +3041,27 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			allowAppFileTreeMkdir?: boolean;
 		}) {
 			let cwd = args?.initialCwd ?? "~";
-			let currentCommand = "";
-			let paginatedPathQueryCount = 0;
 			const workspaceItems: Array<{
 				path: string;
 				kind: "folder" | "file";
 				updatedAt: number;
+				updatedBy?: string;
 				depthTruncated: boolean;
 				contentType?: string;
 			}> = [...workspaceItemsInitial];
 			const runQueryImpl = async (_ref: unknown, queryArgs: Record<string, unknown>) => {
 				const itemName = (path: string) => path.split("/").filter(Boolean).at(-1) ?? "";
+				const nodeIdForPath = (path: string) => (path === "/" ? "root" : `node:${path}`);
+				const pathFromNodeId = (nodeId: unknown) => {
+					if (nodeId === "root") return "/";
+					return typeof nodeId === "string" && nodeId.startsWith("node:") ? nodeId.slice("node:".length) : null;
+				};
 				const parentPath = (path: string) => {
 					const segments = path.split("/").filter(Boolean);
 					return segments.length <= 1 ? "/" : `/${segments.slice(0, -1).join("/")}`;
 				};
+				const sortBy = <T,>(items: T[], order: unknown, compare: (a: T, b: T) => number) =>
+					[...items].sort((a, b) => (order === "desc" ? -1 : 1) * compare(a, b));
 				const pageItems = <T,>(items: T[], limitValue: unknown, cursorValue: unknown) => {
 					const limit = typeof limitValue === "number" && Number.isFinite(limitValue) ? Math.max(1, Math.trunc(limitValue)) : 100;
 					const cursor = typeof cursorValue === "string" && cursorValue.startsWith("cursor-") ? Number(cursorValue.slice(7)) : 0;
@@ -2746,6 +3074,31 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						isDone: nextStart >= items.length,
 					};
 				};
+
+				if ("numItems" in queryArgs && "parentId" in queryArgs) {
+					const path = pathFromNodeId(queryArgs.parentId);
+					const paged = pageItems(
+						sortBy(
+							workspaceItems.filter((item) => parentPath(item.path) === path),
+							queryArgs.order,
+							(a, b) => itemName(a.path).localeCompare(itemName(b.path)),
+						),
+						queryArgs.numItems,
+						queryArgs.cursor,
+					);
+					return {
+						items: paged.page.map((item) => ({
+							name: itemName(item.path),
+							path: item.path,
+							kind: item.kind,
+							updatedAt: item.updatedAt,
+							updatedBy: item.updatedBy ?? test_user_id,
+							contentType: item.contentType,
+						})),
+						continueCursor: paged.continueCursor,
+						isDone: paged.isDone,
+					};
+				}
 
 				if ("query" in queryArgs) {
 					return {
@@ -2771,47 +3124,26 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 				if ("numItems" in queryArgs && "path" in queryArgs) {
 					const path = typeof queryArgs.path === "string" ? queryArgs.path : "/";
-					const commandBeforeCursor = currentCommand.split("--cursor")[0] ?? currentCommand;
-					const lsOccurrences = commandBeforeCursor.match(/\bls\s/gu)?.length ?? 0;
-					const isDirectChildrenQuery = paginatedPathQueryCount < lsOccurrences;
-					paginatedPathQueryCount++;
-					if (!isDirectChildrenQuery) {
-						const target = workspaceItems.find((item) => item.path === path);
-						const items =
-							target?.kind === "file"
-								? [target]
-								: workspaceItems.filter((item) => {
-										if (path === "/") return true;
-										return item.path.startsWith(`${path}/`);
-									});
-						const paged = pageItems(
-							items.sort((a, b) => a.path.localeCompare(b.path)),
-							queryArgs.numItems,
-							queryArgs.cursor,
-						);
-						return {
-							items: paged.page.map((item) => ({
-								path: item.path,
-								kind: item.kind,
-								updatedAt: item.updatedAt,
-							})),
-							continueCursor: paged.continueCursor,
-							isDone: paged.isDone,
-						};
-					}
+					const target = workspaceItems.find((item) => item.path === path);
+					const items =
+						target?.kind === "file"
+							? [target]
+							: workspaceItems.filter((item) => {
+									if (path === "/") return true;
+									return item.path.startsWith(`${path}/`);
+								});
 					const paged = pageItems(
-						workspaceItems
-							.filter((item) => parentPath(item.path) === path)
-							.sort((a, b) => itemName(a.path).localeCompare(itemName(b.path))),
+						sortBy(items, queryArgs.order, (a, b) => a.path.localeCompare(b.path)),
 						queryArgs.numItems,
 						queryArgs.cursor,
 					);
 					return {
 						items: paged.page.map((item) => ({
-							name: itemName(item.path),
 							path: item.path,
 							kind: item.kind,
 							updatedAt: item.updatedAt,
+							updatedBy: item.updatedBy ?? test_user_id,
+							contentType: item.contentType,
 						})),
 						continueCursor: paged.continueCursor,
 						isDone: paged.isDone,
@@ -2858,13 +3190,28 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				const path = queryArgs.path;
 				if (path === "/") {
 					return {
+						nodeId: "root",
 						path: "/",
 						name: "",
 						kind: "folder",
 						updatedAt: 0,
 					};
 				}
-				return typeof path === "string" ? (workspaceItems.find((item) => item.path === path) ?? null) : null;
+				if (typeof path !== "string") {
+					return null;
+				}
+				const item = workspaceItems.find((entry) => entry.path === path);
+				return item
+					? {
+							nodeId: nodeIdForPath(item.path),
+							name: itemName(item.path),
+							path: item.path,
+							kind: item.kind,
+							updatedAt: item.updatedAt,
+							updatedBy: item.updatedBy ?? test_user_id,
+							contentType: item.contentType,
+						}
+					: null;
 			};
 
 			const { ctx, runQuery, runMutation, runAction } = makeCtx(runQueryImpl, {
@@ -2881,6 +3228,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 							path: mutationArgs.path,
 							kind: "folder",
 							updatedAt: Date.now(),
+							updatedBy: test_user_id,
 							depthTruncated: false,
 						});
 						return { _yay: { nodeId: "folder_created", exists: false } };
@@ -2926,20 +3274,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			return {
 				run: async (command: string) => {
-					currentCommand = command;
-					paginatedPathQueryCount = 0;
-					try {
-						const result = await action_run(ctx, {
-							...test_ctx_data,
-							command,
-							allowAppFileTreeMkdir: args?.allowAppFileTreeMkdir ?? true,
-							persistedCwd: cwd,
-						});
-						cwd = result.nextPersistedCwd;
-						return result;
-					} finally {
-						currentCommand = "";
-					}
+					const result = await action_run(ctx, {
+						...test_ctx_data,
+						command,
+						allowAppFileTreeMkdir: args?.allowAppFileTreeMkdir ?? true,
+						persistedCwd: cwd,
+					});
+					cwd = result.nextPersistedCwd;
+					return result;
 				},
 				runQuery,
 				runMutation,
@@ -3029,8 +3371,39 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(paginatedCalls).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
-						path: "/docs",
+						parentId: "node:/docs",
 						numItems: 1,
+						cursor: null,
+					}),
+				]),
+			);
+		});
+
+		test("resolves paginated ls path arguments from the current working directory", async () => {
+			const { run, runQuery } = createBashRunner();
+
+			await run(`cd ${test_app_files_mount}/docs`);
+			const bareResult = await run("ls --limit 10");
+			const dotResult = await run("ls --limit 10 .");
+			const relativeResult = await run("ls --limit 10 nested");
+
+			expect(bareResult.metadata.exitCode).toBe(0);
+			expect(bareResult.stdout).toContain("readme.md");
+			expect(dotResult.metadata.exitCode).toBe(0);
+			expect(dotResult.stdout).toContain("tutorial.md");
+			expect(relativeResult.metadata.exitCode).toBe(0);
+			expect(relativeResult.stdout).toContain("deep.md");
+			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
+			expect(paginatedCalls).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						parentId: "node:/docs",
+						numItems: 10,
+						cursor: null,
+					}),
+					expect.objectContaining({
+						parentId: "node:/docs/nested",
+						numItems: 10,
 						cursor: null,
 					}),
 				]),
@@ -3046,6 +3419,102 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stdout).toContain("readme.md");
 			expect(result.stdout).not.toContain("nested/");
 			expect(result.stdout).toContain(`ls --limit 1 --cursor cursor-2 ${test_app_files_mount}/docs`);
+		});
+
+		test("supports multiple ls path operands with per-directory continuation commands", async () => {
+			const { run } = createBashRunner();
+
+			const result = await run(`ls --limit 1 ${test_app_files_mount}/docs ${test_app_files_mount} ${test_app_files_mount}/docs/readme.md`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toContain(`${test_app_files_mount}/docs:\nnested/`);
+			expect(result.stdout).toContain(`${test_app_files_mount}:\ndocs/`);
+			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(result.stdout.match(/Next page:/gu)).toHaveLength(2);
+			expect(result.stdout).toContain(`Next page: ls --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs`);
+			expect(result.stdout).toContain(`Next page: ls --limit 1 --cursor cursor-1 ${test_app_files_mount}`);
+		});
+
+		test("rejects ls cursor continuation with multiple operands", async () => {
+			const { run, runQuery } = createBashRunner();
+
+			const result = await run(`ls --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs ${test_app_files_mount}/reports`);
+
+			expect(result.metadata.exitCode).toBe(2);
+			expect(result.stderr).toContain("--cursor can only continue one listing target");
+			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
+			expect(paginatedCalls).toHaveLength(0);
+		});
+
+		test("supports ls -d and lets directory mode win over recursive mode", async () => {
+			const { run } = createBashRunner();
+
+			const result = await run(`ls -dR ${test_app_files_mount}/docs`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout.trim()).toBe(`${test_app_files_mount}/docs/`);
+			expect(result.stdout).not.toContain("readme.md");
+		});
+
+		test("supports recursive ls with full app shell paths", async () => {
+			const { run } = createBashRunner();
+
+			const result = await run(`ls -R --limit 10 ${test_app_files_mount}/docs`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toContain(`${test_app_files_mount}/docs/nested/`);
+			expect(result.stdout).toContain(`${test_app_files_mount}/docs/nested/deep.md`);
+			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+		});
+
+		test("supports reverse ls order through the paginated query", async () => {
+			const { run, runQuery } = createBashRunner();
+
+			const result = await run(`ls -r --limit 10 ${test_app_files_mount}/docs`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout.trim().split("\n")).toEqual(["tutorial.md", "readme.md", "nested/"]);
+			expect(runQuery).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({
+					parentId: "node:/docs",
+					order: "desc",
+				}),
+			);
+		});
+
+		test("supports app-specific long ls output", async () => {
+			const { run } = createBashRunner();
+
+			const result = await run(`ls -la --limit 10 ${test_app_files_mount}/docs`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toContain(`folder\t${new Date(now).toISOString()}\tupdatedBy=${test_user_id}\tnested/`);
+			expect(result.stdout).toContain(
+				`file\t${new Date(now).toISOString()}\tupdatedBy=${test_user_id}\tcontentType=text/markdown;charset=utf-8\treadme.md`,
+			);
+		});
+
+		test("accepts ls no-op presentation flags and name sort alias", async () => {
+			const { run } = createBashRunner();
+
+			const result = await run(`ls -1apF --sort=name --indicator-style=slash --limit 10 ${test_app_files_mount}/docs`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout.trim().split("\n")).toEqual(["nested/", "readme.md", "tutorial.md"]);
+		});
+
+		test("rejects unsupported ls sorting and size flags for app paths", async () => {
+			const { run } = createBashRunner();
+
+			const sortResult = await run(`ls --sort=time ${test_app_files_mount}/docs`);
+			const sizeResult = await run(`ls -S ${test_app_files_mount}/docs`);
+
+			expect(sortResult.metadata.exitCode).toBe(2);
+			expect(sortResult.stderr).toContain("unsupported option --sort=time");
+			expect(sortResult.stderr).toContain("supports name order only");
+			expect(sizeResult.metadata.exitCode).toBe(2);
+			expect(sizeResult.stderr).toContain("unsupported option -S");
 		});
 
 		test("guides invented ls pagination flags back to the printed cursor command", async () => {
@@ -3092,6 +3561,37 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stdout).not.toContain(`${test_app_files_mount}/docs/nested/deep.md`);
 			expect(dottedResult.metadata.exitCode).toBe(0);
 			expect(dottedResult.stdout).toBe(result.stdout);
+		});
+
+		test("supports find -mindepth and accepts -print as a no-op", async () => {
+			const { run } = createBashRunner();
+
+			const deepOnly = await run(`find ${test_app_files_mount}/docs -mindepth 2 --limit 50`);
+			const directOnly = await run(`find ${test_app_files_mount}/docs -mindepth 1 -maxdepth 1 --limit 50`);
+			const printed = await run(`find ${test_app_files_mount}/docs -maxdepth 1 -print --limit 50`);
+
+			expect(deepOnly.metadata.exitCode).toBe(0);
+			expect(deepOnly.stdout).toContain(`${test_app_files_mount}/docs/nested/deep.md`);
+			expect(deepOnly.stdout).not.toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(directOnly.metadata.exitCode).toBe(0);
+			expect(directOnly.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(directOnly.stdout).toContain(`${test_app_files_mount}/docs/nested/`);
+			expect(directOnly.stdout).not.toContain(`${test_app_files_mount}/docs/nested/deep.md`);
+			expect(printed.metadata.exitCode).toBe(0);
+			expect(printed.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+		});
+
+		test("rejects a non-integer find -mindepth and round-trips it in the continuation", async () => {
+			const { run } = createBashRunner();
+
+			const invalid = await run(`find ${test_app_files_mount}/docs -mindepth x --limit 10`);
+			const paged = await run(`find ${test_app_files_mount}/docs -mindepth 1 --limit 1`);
+
+			expect(invalid.metadata.exitCode).toBe(2);
+			expect(invalid.stderr).toContain("-mindepth must be a non-negative integer");
+			expect(paged.metadata.exitCode).toBe(0);
+			expect(paged.stdout).toContain("Next page: find");
+			expect(paged.stdout).toContain("-mindepth 1");
 		});
 
 		test("marks empty filtered find pages as partial when more pages exist", async () => {
@@ -3364,6 +3864,55 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stdout).toContain("regular file");
 			expect(unreadable.metadata.exitCode).not.toBe(0);
 			expect(unreadable.stdout).not.toContain("Markdown and plain text files only");
+		});
+
+		test("caps the number of app files a single reader command fetches", async () => {
+			const { run, runAction } = createBashRunner();
+
+			const overCapFiles = Array.from(
+				{ length: READER_FILE_OPERAND_MAX + 1 },
+				(_, index) => `${test_app_files_mount}/doc-${index}.md`,
+			).join(" ");
+			const atCapFiles = Array.from(
+				{ length: READER_FILE_OPERAND_MAX },
+				(_, index) => `${test_app_files_mount}/doc-${index}.md`,
+			).join(" ");
+
+			// The over-cap reads must short-circuit before any content fetch, so assert no
+			// runAction before any later run (the at-cap cat below legitimately fetches content).
+			const overCap = await run(`cat ${overCapFiles}`);
+			expect(overCap.metadata.exitCode).toBe(2);
+			expect(overCap.stderr).toContain(`cat: app file reads are limited to ${READER_FILE_OPERAND_MAX} files per command`);
+			expect(overCap.stderr).toContain(`you requested ${READER_FILE_OPERAND_MAX + 1}`);
+			expect(runAction).not.toHaveBeenCalled();
+
+			const headOverCap = await run(`head ${overCapFiles}`);
+			const wcOverCap = await run(`wc -l ${overCapFiles}`);
+			const statOverCap = await run(`stat ${overCapFiles}`);
+			const atCap = await run(`cat ${atCapFiles}`);
+
+			expect(headOverCap.metadata.exitCode).toBe(2);
+			expect(headOverCap.stderr).toContain(`head: app file reads are limited to ${READER_FILE_OPERAND_MAX}`);
+			expect(wcOverCap.metadata.exitCode).toBe(2);
+			expect(wcOverCap.stderr).toContain(`wc: app file reads are limited to ${READER_FILE_OPERAND_MAX}`);
+			expect(statOverCap.metadata.exitCode).toBe(2);
+			expect(statOverCap.stderr).toContain(`stat: app file reads are limited to ${READER_FILE_OPERAND_MAX}`);
+			expect(atCap.stderr).not.toContain("app file reads are limited");
+		});
+
+		test("counts only app-file operands toward the reader cap, not /tmp scratch", async () => {
+			const { run } = createBashRunner();
+
+			const tmpFiles = Array.from({ length: 20 }, (_, index) => `/tmp/scratch-${index}.txt`).join(" ");
+			const appFiles = Array.from(
+				{ length: READER_FILE_OPERAND_MAX + 1 },
+				(_, index) => `${test_app_files_mount}/doc-${index}.md`,
+			).join(" ");
+
+			const result = await run(`cat ${tmpFiles} ${appFiles}`);
+
+			expect(result.metadata.exitCode).toBe(2);
+			expect(result.stderr).toContain(`you requested ${READER_FILE_OPERAND_MAX + 1}`);
 		});
 
 		test("allows app exact reads through stream utilities but rejects direct app operands", async () => {

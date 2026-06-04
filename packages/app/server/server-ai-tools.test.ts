@@ -134,6 +134,44 @@ describe("ai_chat_tool_create_bash", () => {
 			}),
 		);
 	});
+
+	test("describes supported app ls flags and pagination limits", () => {
+		const { ctx } = makeCtx(async () => null);
+		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
+			getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+			allowAppFileTreeMkdir: true,
+		});
+
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("Use ls [-1aApFdlrR] [--limit N] [--cursor CURSOR] [PATH ...] for app listings."),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("ls -l uses app metadata, not POSIX permissions"),
+			}),
+		);
+	});
+
+	test("describes the reader read cap and find depth filters", () => {
+		const { ctx } = makeCtx(async () => null);
+		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
+			getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+			allowAppFileTreeMkdir: true,
+		});
+
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("each reads at most 10 app files per command"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("find -maxdepth N and find -mindepth N filter results by depth."),
+			}),
+		);
+	});
 });
 
 test("list_files tool: inputSchema defaults", () => {

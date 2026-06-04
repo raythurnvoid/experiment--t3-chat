@@ -69,15 +69,18 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 		"You are the app chat agent for the user's workspace.",
 		"Use the available tools as the working interface for the workspace.",
 		`Bash starts in \`~\` (\`/home/cloud-usr\`); app files are mounted at \`~/w/${args.workspaceName}/${args.projectName}\` (\`${appFilesMountPath}\`). \`/tmp\` is in-memory scratch and resets between bash calls.`,
+		"Bash cwd persists across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating `cd`.",
 		"Bash is the normal file shell for the app, but app files are Convex-backed, not a POSIX filesystem. Use the supported command subset instead of assuming GNU compatibility.",
-		`The app file tree \`${appFilesMountPath}\` is the default target for inspection commands that do not name a path.`,
+		`The app file tree \`${appFilesMountPath}\` is the default target for inspection commands that do not name a path unless the current working directory is already inside the app file tree.`,
 		"Shell pathname expansion is disabled and app-file glob operands are unsupported. Do not run app-file commands such as `ls *.md` or `cat src/**/*.ts`.",
-		"`ls --limit` and `find --limit` are app-file pagination commands. From `~`, omit the path or use the mounted app path instead of `.`.",
-		"Use `ls --limit N [--cursor CURSOR] <dir>` for direct children. When asked to continue a listing, run the printed `Next page:` command as the next Bash call; do not just report that it exists, and do not invent `--next-page`.",
+		"`ls --limit` and `find --limit` are app-file pagination commands. Relative paths resolve against the current working directory; from `~`, omit the path or use the mounted app path instead of `.`.",
+		"When listing the current directory, prefer `ls --limit N` over `ls --limit N <current-cwd>`. Do not restate the current cwd as a path argument just for certainty.",
+		"Use `ls [-1aApFdlrR] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current app directory, or the app root when cwd is outside the app tree. `--cursor` continues one listing target only; when asked to continue, run the printed `Next page:` command as the next Bash call and do not invent `--next-page`.",
+		"`ls -R` lists a paginated subtree as full app shell paths; `ls -d` lists the target entry itself and wins over `-R`; `ls -l` uses app metadata, not POSIX permissions, owners, groups, inodes, blocks, symlinks, or real sizes. Unsupported sort/filter flags still fail.",
 		"`No matches in this page; more pages exist.` means the result is partial; continue the printed cursor command before concluding there are no matches.",
-		"Use `find <path> --limit N` for subtree pages, `find --prefix <prefix> --limit N` for raw startsWith path discovery, and `find --extension EXT` or `find -name PATTERN` for extension/name discovery.",
+		"Use `find <path> --limit N` for subtree pages, `find --prefix <prefix> --limit N` for raw startsWith path discovery, and `find --extension EXT` or `find -name PATTERN` for extension/name discovery. `find -maxdepth N` and `find -mindepth N` filter results by depth.",
 		"`search --limit N <query>` is indexed content search only. Do not pass paths to `search`, and do not use `search` as a pipeline filter.",
-		"Use exact app paths with `cat`, `head`, `tail`, `wc`, and `stat`; for content search, call `search` directly instead of `grep -R` over app paths, and use `find` instead of `tree` for app paths.",
+		"Use exact app paths with `cat`, `head`, `tail`, `wc`, and `stat`; each fetches at most 10 app files per command, so use `search` to scan many files instead of batching reads. For content search, call `search` directly instead of `grep -R` over app paths, and use `find` instead of `tree` for app paths.",
 		"Keep Bash commands simple: avoid strict-mode boilerplate, comments in command strings, and process substitution.",
 		"Only summarize actual Bash stdout/stderr. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
 		"Do not work around app read-only write, move, or delete requests by copying app files to `/tmp`; report the Bash error unless the user asked for a scratch copy.",
@@ -2121,19 +2124,28 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"Bash starts in `~` (`/home/cloud-usr`); app files are mounted at `~/w/personal/home` (`/home/cloud-usr/w/personal/home`). `/tmp` is in-memory scratch and resets between bash calls.",
 			);
 			expect(configuration.systemPrompt).toContain(
+				"Bash cwd persists across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating `cd`.",
+			);
+			expect(configuration.systemPrompt).toContain(
 				"Bash is the normal file shell for the app, but app files are Convex-backed, not a POSIX filesystem.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"The app file tree `/home/cloud-usr/w/personal/home` is the default target for inspection commands that do not name a path.",
+				"The app file tree `/home/cloud-usr/w/personal/home` is the default target for inspection commands that do not name a path unless the current working directory is already inside the app file tree.",
 			);
 			expect(configuration.systemPrompt).toContain(
 				"Shell pathname expansion is disabled and app-file glob operands are unsupported.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"`ls --limit` and `find --limit` are app-file pagination commands. From `~`, omit the path or use the mounted app path instead of `.`.",
+				"`ls --limit` and `find --limit` are app-file pagination commands. Relative paths resolve against the current working directory; from `~`, omit the path or use the mounted app path instead of `.`.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"Use `ls --limit N [--cursor CURSOR] <dir>` for direct children. When asked to continue a listing, run the printed `Next page:` command as the next Bash call;",
+				"When listing the current directory, prefer `ls --limit N` over `ls --limit N <current-cwd>`.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Use `ls [-1aApFdlrR] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current app directory, or the app root when cwd is outside the app tree.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"`ls -R` lists a paginated subtree as full app shell paths; `ls -d` lists the target entry itself and wins over `-R`; `ls -l` uses app metadata",
 			);
 			expect(configuration.systemPrompt).toContain(
 				"`No matches in this page; more pages exist.` means the result is partial; continue the printed cursor command before concluding there are no matches.",
@@ -2142,11 +2154,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"Use `find <path> --limit N` for subtree pages, `find --prefix <prefix> --limit N` for raw startsWith path discovery, and `find --extension EXT` or `find -name PATTERN` for extension/name discovery.",
 			);
 			expect(configuration.systemPrompt).toContain(
+				"`find -maxdepth N` and `find -mindepth N` filter results by depth.",
+			);
+			expect(configuration.systemPrompt).toContain(
 				"`search --limit N <query>` is indexed content search only. Do not pass paths to `search`, and do not use `search` as a pipeline filter.",
 			);
 			expect(configuration.systemPrompt).toContain(
 				"Use exact app paths with `cat`, `head`, `tail`, `wc`, and `stat`",
 			);
+			expect(configuration.systemPrompt).toContain("each fetches at most 10 app files per command");
 			expect(configuration.systemPrompt).toContain("call `search` directly instead of `grep -R` over app paths");
 			expect(configuration.systemPrompt).toContain("avoid strict-mode boilerplate");
 			expect(configuration.systemPrompt).toContain("Only summarize actual Bash stdout/stderr");

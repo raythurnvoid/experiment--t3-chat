@@ -2248,6 +2248,7 @@ export const get_bash_path_entry = internalQuery({
 	},
 	returns: v.union(
 		v.object({
+			nodeId: v.literal(files_ROOT_ID),
 			path: v.literal("/"),
 			name: v.literal(""),
 			kind: v.literal("folder"),
@@ -2255,10 +2256,12 @@ export const get_bash_path_entry = internalQuery({
 			contentType: v.optional(v.string()),
 		}),
 		v.object({
+			nodeId: v.id("files_nodes"),
 			path: v.string(),
 			name: v.string(),
 			kind: v.union(v.literal("folder"), v.literal("file")),
 			updatedAt: v.number(),
+			updatedBy: v.id("users"),
 			contentType: v.optional(v.string()),
 		}),
 		v.null(),
@@ -2266,6 +2269,7 @@ export const get_bash_path_entry = internalQuery({
 	handler: async (ctx, args) => {
 		if (args.path === "/") {
 			return {
+				nodeId: files_ROOT_ID,
 				path: "/" as const,
 				name: "" as const,
 				kind: "folder" as const,
@@ -2289,10 +2293,12 @@ export const get_bash_path_entry = internalQuery({
 		}
 
 		return {
+			nodeId: node._id,
 			path: node.path,
 			name: node.name,
 			kind: node.kind,
 			updatedAt: node.updatedAt,
+			updatedBy: node.updatedBy,
 			contentType: node.contentType,
 		};
 	},
@@ -2303,13 +2309,61 @@ export type files_nodes_get_bash_path_entry_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-export const list_dir_children_paginated = internalQuery({
+async function db_list_dir_children_paginated(
+	ctx: QueryCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+		numItems: number;
+		cursor: string | null;
+		order?: "asc" | "desc";
+	},
+) {
+	if (args.parentId !== files_ROOT_ID) {
+		const parent = await ctx.db.get("files_nodes", args.parentId);
+		if (!parent || parent.workspaceId !== args.workspaceId || parent.projectId !== args.projectId || parent.kind !== "folder") {
+			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+		}
+	}
+
+	const result = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_workspace_project_parent_archiveOperation_name", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("parentId", args.parentId)
+				.eq("archiveOperationId", undefined),
+		)
+		.order(args.order ?? "asc")
+		.paginate({
+			cursor: args.cursor,
+			numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+		});
+
+	return {
+		items: result.page.map((file) => ({
+			name: file.name,
+			kind: file.kind,
+			path: file.path,
+			updatedAt: file.updatedAt,
+			updatedBy: file.updatedBy,
+			contentType: file.contentType,
+		})),
+		continueCursor: result.continueCursor,
+		isDone: result.isDone,
+	};
+}
+
+export const list_dir_children_by_parent_paginated = internalQuery({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		path: v.string(),
+		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
+		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
 	},
 	returns: v.object({
 		items: v.array(
@@ -2318,6 +2372,41 @@ export const list_dir_children_paginated = internalQuery({
 				kind: v.union(v.literal("folder"), v.literal("file")),
 				path: v.string(),
 				updatedAt: v.number(),
+				updatedBy: v.id("users"),
+				contentType: v.optional(v.string()),
+			}),
+		),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		return await db_list_dir_children_paginated(ctx, args);
+	},
+});
+
+export type files_nodes_list_dir_children_by_parent_paginated_Result =
+	typeof list_dir_children_by_parent_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const list_dir_children_paginated = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		path: v.string(),
+		numItems: v.number(),
+		cursor: paginationOptsValidator.fields.cursor,
+		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				name: v.string(),
+				kind: v.union(v.literal("folder"), v.literal("file")),
+				path: v.string(),
+				updatedAt: v.number(),
+				updatedBy: v.id("users"),
+				contentType: v.optional(v.string()),
 			}),
 		),
 		continueCursor: v.string(),
@@ -2333,37 +2422,14 @@ export const list_dir_children_paginated = internalQuery({
 			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
 		}
 
-		if (parentId !== files_ROOT_ID) {
-			const parent = await ctx.db.get("files_nodes", parentId);
-			if (!parent || parent.workspaceId !== args.workspaceId || parent.projectId !== args.projectId || parent.kind !== "folder") {
-				return { items: [], continueCursor: args.cursor ?? "", isDone: true };
-			}
-		}
-
-		const result = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_workspace_project_parent_archiveOperation_name", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("parentId", parentId)
-					.eq("archiveOperationId", undefined),
-			)
-			.paginate({
-				cursor: args.cursor,
-				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
-			});
-
-		return {
-			items: result.page.map((file) => ({
-				name: file.name,
-				kind: file.kind,
-				path: file.path,
-				updatedAt: file.updatedAt,
-			})),
-			continueCursor: result.continueCursor,
-			isDone: result.isDone,
-		};
+		return await db_list_dir_children_paginated(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			parentId,
+			numItems: args.numItems,
+			cursor: args.cursor,
+			order: args.order,
+		});
 	},
 });
 
@@ -2379,6 +2445,7 @@ export const list_subtree_paginated = internalQuery({
 		path: v.string(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
+		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
 	},
 	returns: v.object({
 		items: v.array(
@@ -2386,6 +2453,8 @@ export const list_subtree_paginated = internalQuery({
 				path: v.string(),
 				kind: v.union(v.literal("folder"), v.literal("file")),
 				updatedAt: v.number(),
+				updatedBy: v.id("users"),
+				contentType: v.optional(v.string()),
 			}),
 		),
 		continueCursor: v.string(),
@@ -2409,7 +2478,15 @@ export const list_subtree_paginated = internalQuery({
 			if (startNode.kind !== "folder") {
 				return args.cursor == null
 					? {
-							items: [{ path: startNode.path, kind: startNode.kind, updatedAt: startNode.updatedAt }],
+							items: [
+								{
+									path: startNode.path,
+									kind: startNode.kind,
+									updatedAt: startNode.updatedAt,
+									updatedBy: startNode.updatedBy,
+									contentType: startNode.contentType,
+								},
+							],
 							continueCursor: "",
 							isDone: true,
 						}
@@ -2430,6 +2507,7 @@ export const list_subtree_paginated = internalQuery({
 					.gte("path", lowerBound)
 					.lt("path", upperBound),
 			)
+			.order(args.order ?? "asc")
 			.paginate({
 				cursor: args.cursor,
 				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
@@ -2440,6 +2518,8 @@ export const list_subtree_paginated = internalQuery({
 				path: file.path,
 				kind: file.kind,
 				updatedAt: file.updatedAt,
+				updatedBy: file.updatedBy,
+				contentType: file.contentType,
 			})),
 			continueCursor: result.continueCursor,
 			isDone: result.isDone,
