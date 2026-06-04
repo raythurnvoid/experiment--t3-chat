@@ -257,6 +257,34 @@ async function seed_signed_in_user_id(t: ReturnType<typeof test_convex>) {
 	});
 }
 
+async function seed_signed_in_user_with_anagraphic(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		displayName: string;
+		email: string;
+		deletedAt?: number;
+	},
+) {
+	const clerkUserId = `clerk_test_${seed_signed_in_user_id_counter++}`;
+	return await t.run(async (ctx) => {
+		const userId = await ctx.db.insert("users", {
+			clerkUserId,
+			...(args.deletedAt ? { deletedAt: args.deletedAt } : {}),
+		});
+		const anagraphicId = await ctx.db.insert("users_anagraphics", {
+			userId,
+			displayName: args.displayName,
+			email: args.email,
+			updatedAt: Date.now(),
+		});
+		await ctx.db.patch("users", userId, {
+			anagraphic: anagraphicId,
+		});
+
+		return userId;
+	});
+}
+
 async function seed_billing_usage_snapshot(
 	t: ReturnType<typeof test_convex>,
 	args: {
@@ -2053,6 +2081,66 @@ describe("billing bootstrap_free_subscription", () => {
 		expect(subscription?.id).toBe("sub_bootstrap_restore_missing_subscription");
 	});
 
+	test("repairs a stranded usage snapshot after creating a missing Free subscription", async () => {
+		const t = test_convex();
+		const userId = await seed_signed_in_user_id(t);
+		const { polarProductId } = await seed_free_product(t, {
+			polarProductId: "billing_bootstrap_stranded_snapshot_free_product",
+		});
+
+		await t.mutation(components.polar.lib.insertCustomer, {
+			id: "cust_bootstrap_stranded_snapshot",
+			userId,
+		});
+		await t.run(async (ctx) => {
+			await ctx.db.insert("billing_usage_snapshots", {
+				userId,
+				polarCustomerId: "cust_bootstrap_stranded_snapshot",
+				subscription: null,
+				meter: null,
+				lastSyncedAt: Date.parse("2026-04-01T00:00:00.000Z"),
+			});
+		});
+		subscriptionsCreateMock.mockResolvedValue({
+			ok: true,
+			value: create_updated_polar_subscription({
+				subscriptionId: "sub_bootstrap_stranded_snapshot",
+				customerId: "cust_bootstrap_stranded_snapshot",
+				productId: polarProductId,
+			}),
+		} as never);
+		const getCustomerStateSpy = vi.spyOn(billing_polar, "getCustomerState").mockResolvedValue(
+			create_polar_customer_state({
+				customerId: "cust_bootstrap_stranded_snapshot",
+				userId,
+				productId: polarProductId,
+				subscriptionId: "sub_bootstrap_stranded_snapshot",
+				currentPeriodStart: "2026-04-13T03:20:38.364Z",
+				currentPeriodEnd: "2026-05-13T03:20:38.364Z",
+			}),
+		);
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_bootstrap_stranded_snapshot" as never);
+		vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-04-13T03:20:41.064Z"));
+
+		const result = await t.action(internal.billing.bootstrap_free_subscription, {
+			userId,
+			email: "bootstrap-stranded@test.local",
+			name: "Bootstrap Stranded Snapshot User",
+		});
+
+		const usageSnapshot = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", userId))
+				.unique(),
+		);
+
+		expect(result).toBeNull();
+		expect(getCustomerStateSpy).toHaveBeenCalledWith(expect.anything(), { userId });
+		expect(usageSnapshot?.subscription?.id).toBe("sub_bootstrap_stranded_snapshot");
+		expect(usageSnapshot?.subscription?.productId).toBe(polarProductId);
+	});
+
 	test("throws when bootstrap fails so the workpool can retry it", async () => {
 		const t = test_convex();
 		const userId = await seed_user_id(t);
@@ -2231,6 +2319,152 @@ describe("handle_polar_customer_state_update", () => {
 		expect(customer).toBeNull();
 		expect(usageSnapshot).toBeNull();
 		expect(subscriptions).toEqual([]);
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+	});
+
+	test("enqueues Free bootstrap when a signed-in customer has no active subscriptions", async () => {
+		const t = test_convex();
+		const userId = await seed_signed_in_user_with_anagraphic(t, {
+			displayName: "Zero Active Billing",
+			email: "zero-active-billing@test.local",
+		});
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_zero_active_subscription" as never);
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-04-19T20:49:20.577120Z",
+				data: {
+					id: "cust_zero_active_subscription",
+					external_id: userId,
+					active_subscriptions: [],
+					active_meters: [],
+				},
+			},
+		});
+
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.bootstrap_free_subscription, {
+			userId,
+			email: "zero-active-billing@test.local",
+			name: "Zero Active Billing",
+		});
+	});
+
+	test("logs and skips Free bootstrap when a zero-active customer external id is invalid", async () => {
+		const t = test_convex();
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_zero_active_invalid_user" as never);
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-04-19T20:49:20.577120Z",
+				data: {
+					id: "cust_zero_active_invalid_user",
+					external_id: "not_a_user_id",
+					active_subscriptions: [],
+					active_meters: [],
+				},
+			},
+		});
+
+		expect(consoleErrorSpy).toHaveBeenCalledWith(
+			"Cannot enqueue Free subscription bootstrap after cancellation: invalid user id",
+			{
+				externalId: "not_a_user_id",
+				polarCustomerId: "cust_zero_active_invalid_user",
+				reason: "customer.state_changed:zero_active_subscriptions",
+			},
+		);
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+	});
+
+	test("logs and skips Free bootstrap when a zero-active customer user row is missing", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		await t.run(async (ctx) => {
+			await ctx.db.delete("users", userId);
+		});
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_zero_active_missing_user" as never);
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-04-19T20:49:20.577120Z",
+				data: {
+					id: "cust_zero_active_missing_user",
+					external_id: userId,
+					active_subscriptions: [],
+					active_meters: [],
+				},
+			},
+		});
+
+		expect(consoleErrorSpy).toHaveBeenCalledWith(
+			"Cannot enqueue Free subscription bootstrap after cancellation: missing user",
+			{
+				polarCustomerId: "cust_zero_active_missing_user",
+				reason: "customer.state_changed:zero_active_subscriptions",
+				userId,
+			},
+		);
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+	});
+
+	test("does not enqueue Free bootstrap for anonymous zero-active customer state", async () => {
+		const t = test_convex();
+		const userId = await seed_user_id(t);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_zero_active_anonymous" as never);
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-04-19T20:49:20.577120Z",
+				data: {
+					id: "cust_zero_active_anonymous",
+					external_id: userId,
+					active_subscriptions: [],
+					active_meters: [],
+				},
+			},
+		});
+
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+	});
+
+	test("does not enqueue Free bootstrap for deleted signed-in zero-active customer state", async () => {
+		const t = test_convex();
+		const userId = await seed_signed_in_user_with_anagraphic(t, {
+			displayName: "Deleted Billing",
+			email: "deleted-billing@test.local",
+			deletedAt: Date.parse("2026-04-19T20:49:20.577Z"),
+		});
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_zero_active_deleted" as never);
+
+		await t.mutation(internal.billing.handle_polar_customer_state_update, {
+			payload: {
+				type: "customer.state_changed",
+				timestamp: "2026-04-19T20:49:20.577120Z",
+				data: {
+					id: "cust_zero_active_deleted",
+					external_id: userId,
+					active_subscriptions: [],
+					active_meters: [],
+				},
+			},
+		});
+
 		expect(enqueueActionSpy).not.toHaveBeenCalled();
 	});
 
@@ -3243,6 +3477,164 @@ describe("billing change_current_subscription", () => {
 		});
 
 		expect(result._nay?.message).toBe("Failed to change the subscription");
+	});
+});
+
+describe("billing cancel_current_subscription", () => {
+	beforeEach(() => {
+		subscriptionsUpdateMock.mockReset();
+	});
+
+	afterEach(() => {
+		subscriptionsUpdateMock.mockReset();
+	});
+
+	test("schedules paid subscriptions to Free for the next period", async () => {
+		const t = test_convex();
+		const { polarProductId: polarFreeProductId } = await seed_free_product(t, {
+			polarProductId: "billing_cancel_to_free_product",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_cancel_to_free_pro_product",
+		});
+
+		await seed_subscription(t, {
+			userId: "user_cancel_to_free",
+			customerId: "cust_cancel_to_free",
+			subscriptionId: "sub_cancel_to_free",
+			polarProductId: polarProProductId,
+		});
+		subscriptionsUpdateMock.mockResolvedValue({
+			ok: true,
+			value: create_updated_polar_subscription({
+				subscriptionId: "sub_cancel_to_free",
+				customerId: "cust_cancel_to_free",
+				productId: polarProProductId,
+				pendingUpdate: {
+					id: "pending_cancel_to_free",
+					appliesAt: "2026-02-01T00:00:00.000Z",
+					productId: polarFreeProductId,
+					seats: null,
+				},
+			}) as never,
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_cancel_to_free" as Id<"users">,
+			name: "Cancel To Free",
+			email: "cancel-to-free@test.local",
+		});
+
+		const result = await asUser.action(api.billing.cancel_current_subscription, {});
+
+		expect(result).toEqual({ _yay: null });
+		expect(subscriptionsUpdateMock).toHaveBeenCalledWith(expect.anything(), {
+			id: "sub_cancel_to_free",
+			subscriptionUpdate: {
+				productId: polarFreeProductId,
+				prorationBehavior: "next_period",
+			},
+		});
+	});
+
+	test("uncancels pending-cancel subscriptions before scheduling Free", async () => {
+		const t = test_convex();
+		const { polarProductId: polarFreeProductId } = await seed_free_product(t, {
+			polarProductId: "billing_cancel_pending_to_free_product",
+		});
+		const { polarProductId: polarProProductId } = await seed_pro_product(t, {
+			polarProductId: "billing_cancel_pending_to_free_pro_product",
+		});
+
+		await seed_subscription(t, {
+			userId: "user_cancel_pending_to_free",
+			customerId: "cust_cancel_pending_to_free",
+			subscriptionId: "sub_cancel_pending_to_free",
+			polarProductId: polarProProductId,
+			cancelAtPeriodEnd: true,
+			canceledAt: "2026-01-15T00:00:00.000Z",
+			endsAt: "2026-02-01T00:00:00.000Z",
+		});
+		subscriptionsUpdateMock
+			.mockResolvedValueOnce({
+				ok: true,
+				value: create_updated_polar_subscription({
+					subscriptionId: "sub_cancel_pending_to_free",
+					customerId: "cust_cancel_pending_to_free",
+					productId: polarProProductId,
+				}) as never,
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				value: create_updated_polar_subscription({
+					subscriptionId: "sub_cancel_pending_to_free",
+					customerId: "cust_cancel_pending_to_free",
+					productId: polarProProductId,
+					pendingUpdate: {
+						id: "pending_cancel_pending_to_free",
+						appliesAt: "2026-02-01T00:00:00.000Z",
+						productId: polarFreeProductId,
+						seats: null,
+					},
+				}) as never,
+			});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_cancel_pending_to_free" as Id<"users">,
+			name: "Cancel Pending To Free",
+			email: "cancel-pending-to-free@test.local",
+		});
+
+		const result = await asUser.action(api.billing.cancel_current_subscription, {});
+		const storedSubscription = await t.query(components.polar.lib.getSubscription, {
+			id: "sub_cancel_pending_to_free",
+		});
+
+		expect(result).toEqual({ _yay: null });
+		expect(subscriptionsUpdateMock).toHaveBeenNthCalledWith(1, expect.anything(), {
+			id: "sub_cancel_pending_to_free",
+			subscriptionUpdate: {
+				cancelAtPeriodEnd: false,
+			},
+		});
+		expect(subscriptionsUpdateMock).toHaveBeenNthCalledWith(2, expect.anything(), {
+			id: "sub_cancel_pending_to_free",
+			subscriptionUpdate: {
+				productId: polarFreeProductId,
+				prorationBehavior: "next_period",
+			},
+		});
+		expect(storedSubscription?.cancelAtPeriodEnd).toBe(false);
+		expect(storedSubscription?.canceledAt).toBeNull();
+		expect(storedSubscription?.endsAt).toBeNull();
+	});
+
+	test("does not cancel subscriptions already on Free", async () => {
+		const t = test_convex();
+		const { polarProductId: polarFreeProductId } = await seed_free_product(t, {
+			polarProductId: "billing_cancel_current_free_product",
+		});
+
+		await seed_subscription(t, {
+			userId: "user_cancel_current_free",
+			customerId: "cust_cancel_current_free",
+			subscriptionId: "sub_cancel_current_free",
+			polarProductId: polarFreeProductId,
+		});
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: "user_cancel_current_free" as Id<"users">,
+			name: "Cancel Current Free",
+			email: "cancel-current-free@test.local",
+		});
+
+		const result = await asUser.action(api.billing.cancel_current_subscription, {});
+
+		expect(result._nay?.message).toBe("You're already on this plan");
+		expect(subscriptionsUpdateMock).not.toHaveBeenCalled();
 	});
 });
 

@@ -49,6 +49,8 @@ The `customer.state_changed` webhook is the canonical refresh path for local usa
 - Apply upgrades immediately.
 - Apply downgrades at the end of the current billing cycle because the app does not refund.
 - Keep the current plan's credits and billing behavior active until the downgrade effective date.
+- Treat app-owned "cancel subscription" as a paid-plan downgrade to `Free` at the end of the current billing cycle, not as a transition to no plan.
+- Treat true cancellation/revocation as cleanup behavior for account deletion, hard deletion, and external Polar portal cancellations the app cannot prevent. When `customer.state_changed` reports that an external true cancellation left a regular signed-in, non-deleted user with no active subscription, bootstrap that user back to `Free`. Anonymous and deleted users are excluded from this repair.
 
 # Current architecture and code map
 
@@ -80,12 +82,13 @@ The backend billing module lives in [billing.ts](../../../packages/app/convex/bi
 - `billing_polar` wraps the vendored Polar component and currently allows only signed-in users through `getUserInfo`, returning the Convex user id, email, and app display name for Polar customer creation.
 - `list_products`, `get_current_user_subscription`, and `get_usage_snapshot` provide the billing panel data.
 - `generate_checkout_link` creates Polar checkout sessions and sends the current display name when the vendored Polar helper needs to create a missing customer.
-- `change_current_subscription` handles paid-plan changes, calls Polar with the correct immediate-upgrade or next-period-downgrade behavior, then waits for the subscription webhook to update the local subscription row. `Free -> paid` is intentionally not handled there and goes through checkout instead.
+- `change_current_subscription` handles paid-plan changes, calls Polar with the correct immediate-upgrade or next-period-downgrade behavior, then waits for the subscription webhook to update the local subscription row. If the current subscription is already pending period-end cancellation, it first uncancels the subscription because Polar rejects product updates while cancellation is pending. `Free -> paid` is intentionally not handled there and goes through checkout instead.
+- `cancel_current_subscription` is the app-owned paid-cancellation flow. It schedules a next-period product change to the active `Free` product and shares the same plan-change validation/error handling as `change_current_subscription`; it does not call Polar subscription cancellation. Cleanup flows keep using the dedicated cancellation/revoke helpers.
 - `generate_customer_portal_url` opens the Polar customer portal.
 - Public billing actions (`generate_checkout_link`, `generate_customer_portal_url`, `change_current_subscription`, and `cancel_current_subscription`) are rate-limited after signed-in auth and before Polar session/update calls. Throttled Result callers receive `_nay.message === "Rate limit exceeded"`.
-- `bootstrap_free_subscription` creates the local Polar customer with email and display name, then creates the `Free` subscription when missing. When auth marks the user as a restored deleted account, it first uncancels an active/trialing subscription that is still pending period-end cancellation. When bootstrap finds or creates a current subscription but the app-owned usage snapshot is missing, it replays `refresh_from_polar_customer_state` so a retained/restored account repairs the snapshot from Polar state.
+- `bootstrap_free_subscription` creates the local Polar customer with email and display name, then creates the `Free` subscription when missing. When auth marks the user as a restored deleted account, it first uncancels an active/trialing subscription that is still pending period-end cancellation. When bootstrap finds or creates a current subscription but the app-owned usage snapshot is missing or still has `subscription: null`, it replays `refresh_from_polar_customer_state` so retained/restored/externally-canceled accounts repair the snapshot from Polar state.
 - `billing_enqueue_free_subscription_bootstrap` enqueues that bootstrap work through `billing_workpool_bootstrap`, carrying the resolved display name from auth resolution and the optional restored-account billing flag.
-- `handle_polar_customer_state_update` is a thin adapter that parses the raw `customer.state_changed` webhook payload, converts it through `billing_polar_webhook_to_customer_state`, and calls `db_apply_polar_customer_state_refresh`. The helper owns the full reconcile flow: snapshot upsert from the canonical `BillingCustomerState`, period-gated monthly credit grant (optimistic meter + `monthly_credit` ingest), and customer deletion when the payload carries `deleted_at` (removes the local customer mapping, local subscription rows, and usage snapshot instead of recreating a blank snapshot). The same helper is replayed on demand by the admin `refresh_from_polar_customer_state` action.
+- `handle_polar_customer_state_update` is a thin adapter that parses the raw `customer.state_changed` webhook payload, converts it through `billing_polar_webhook_to_customer_state`, and calls `db_apply_polar_customer_state_refresh`. The helper owns the full reconcile flow: snapshot upsert from the canonical `BillingCustomerState`, period-gated monthly credit grant (optimistic meter + `monthly_credit` ingest), and customer deletion when the payload carries `deleted_at` (removes the local customer mapping, local subscription rows, and usage snapshot instead of recreating a blank snapshot). When the non-deleted customer state has zero active subscriptions, the webhook enqueues `Free` bootstrap for regular signed-in users only. The same helper is replayed on demand by the admin `refresh_from_polar_customer_state` action.
 
 See [Glossary — convex/billing.ts](#glossary--convexbillingts).
 
@@ -107,10 +110,10 @@ Workspace-scoped paid operations resolve the billed user before paid work starts
 
 Polar webhooks are split by data ownership:
 
-- `subscription.created`, `subscription.updated`, `subscription.active`, `subscription.canceled`, `subscription.uncanceled`, `subscription.revoked`, and `subscription.past_due` update the vendored component's local subscription mirror through the subscription upsert path. This is where subscription fields such as `pendingUpdate` are persisted and cleared.
+- `subscription.created`, `subscription.updated`, `subscription.active`, `subscription.canceled`, `subscription.uncanceled`, `subscription.revoked`, and `subscription.past_due` update the vendored component's local subscription mirror through the subscription upsert path. This is where subscription fields such as `pendingUpdate` are persisted and cleared. Do not attach app-owned Free-repair behavior to subscription lifecycle events; trust `customer.state_changed` as the customer-state repair signal.
 - `customer.created` is not handled by app-owned webhook code. Local customer rows are created by the supported app flows (`generate_checkout_link` / `bootstrap_free_subscription`) and should not be manually inserted from customer lifecycle webhooks.
 - `customer.updated` with `deletedAt`/`deleted_at` and `customer.deleted` remove the local customer mapping and that customer's local subscription rows by Polar customer id.
-- `customer.state_changed` updates usage snapshots and enqueues monthly credits from active subscription period data. If its raw payload has `deleted_at`, treat it as an anonymized customer deletion: remove the local customer mapping, that customer's local subscription rows, and that user's usage snapshot instead of deriving a new snapshot or enqueuing credits. Do not use this event to derive scheduled plan changes because its `CustomerState` payload does not include subscription `pendingUpdate`.
+- `customer.state_changed` updates usage snapshots and enqueues monthly credits from active subscription period data. If its raw payload has `deleted_at`, treat it as an anonymized customer deletion: remove the local customer mapping, that customer's local subscription rows, and that user's usage snapshot instead of deriving a new snapshot or enqueuing credits. If a non-deleted payload has zero active subscriptions, enqueue `Free` bootstrap only for regular signed-in, non-deleted users; anonymous and deleted users are excluded. Do not use this event to derive scheduled plan changes because its `CustomerState` payload does not include subscription `pendingUpdate`.
 - `customer.state_changed` is the sole trigger for enqueueing monthly recurring credits and the canonical refresh path for the local usage snapshot.
 - Do not app-rate-limit Polar webhook routes. Signature verification and Polar's delivery semantics are the gate; throttling webhooks can leave local billing state stale.
 - `subscription.active` is intentionally not handled by app-owned webhook code. Polar fires it before its customer-meter ledger is populated, so `customersGetState` from that hook would return `activeMeters: []`. Credits become visible immediately because `db_apply_polar_customer_state_refresh` writes an optimistic local meter through `db_apply_optimistic_credit_to_snapshot` in the same mutation that upserts the snapshot, before enqueueing the Polar event; the later `customer.state_changed` reconciles that meter with Polar's authoritative value once Polar's aggregation catches up (~20s).
@@ -340,7 +343,12 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 #### `change_current_subscription`
 
 - **Kind:** public `action`
-- **Role:** Changes subscription between paid plans (upgrade immediate, downgrade end-of-cycle per Polar / app rules). Does not replace checkout for `Free -> paid`. On success it returns `_yay: null`; the local subscription mirror is updated later by the subscription webhook.
+- **Role:** Changes subscription between paid plans (upgrade immediate, downgrade end-of-cycle per Polar / app rules). If the current subscription is pending period-end cancellation, it uncancels first and updates the local mirror from Polar's response before changing products. Does not replace checkout for `Free -> paid`. On success it returns `_yay: null`; the local subscription mirror is updated later by the subscription webhook.
+
+#### `cancel_current_subscription`
+
+- **Kind:** public `action`
+- **Role:** App-owned paid-plan cancellation. Finds the active synced `Free` product and schedules a next-period product change to `Free` through the shared subscription-change logic. Does not call Polar subscription cancellation or revoke APIs; those remain reserved for deletion/cleanup flows and external portal fallback repair.
 
 #### `generate_customer_portal_url`
 
@@ -351,19 +359,19 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 
 - **Kind:** `internalAction`
 - **Args:** `{ userId, email, name, restoreCanceledSubscription? }`
-- **Role:** Ensures Polar customer exists with the user's email and display name, inserts local customer row, creates `Free` subscription in Polar and local mirror when the user has no current subscription. If `restoreCanceledSubscription` is true and the current Polar subscription mirror is active/trialing with `cancelAtPeriodEnd: true`, it cancels any retry row, calls Polar with `cancelAtPeriodEnd: false`, and updates the local mirror from Polar's response. When a current subscription exists or has just been created but `billing_usage_snapshots` is missing, it replays the Polar customer-state refresh path before returning so the app-owned usage snapshot is repaired. Invoked via workpool.
+- **Role:** Ensures Polar customer exists with the user's email and display name, inserts local customer row, creates `Free` subscription in Polar and local mirror when the user has no current subscription. If `restoreCanceledSubscription` is true and the current Polar subscription mirror is active/trialing with `cancelAtPeriodEnd: true`, it cancels any retry row, calls Polar with `cancelAtPeriodEnd: false`, and updates the local mirror from Polar's response. When a current subscription exists or has just been created but `billing_usage_snapshots` is missing or stranded with `subscription: null`, it replays the Polar customer-state refresh path before returning so the app-owned usage snapshot is repaired. Invoked via workpool.
 
 #### `billing_enqueue_free_subscription_bootstrap`
 
 - **Kind:** async helper (`export async function`)
-- **Args:** `(ctx: ActionCtx, { userId, email, name, restoreCanceledSubscription? })`
+- **Args:** `(ctx: ActionCtx | MutationCtx, { userId, email, name, restoreCanceledSubscription? })`
 - **Role:** Enqueues `internal.billing.bootstrap_free_subscription` on `billing_workpool_bootstrap` (single-flight style, retries on failure) with the display name resolved during auth and the optional account-recovery billing restore flag.
 
 #### `handle_polar_customer_state_update`
 
 - **Kind:** `internalMutation`
 - **Args:** `{ payload }` (raw Polar `customer.state_changed` webhook payload, intentionally `v.any()` so strict local validators do not reject future Polar payload changes; read the raw snake_case fields Polar sends rather than SDK camelCase fields)
-- **Role:** Thin webhook adapter: converts the snake_case payload through `billing_polar_webhook_to_customer_state` and calls `db_apply_polar_customer_state_refresh`. All snapshot and credit logic lives in the helper. Does not persist subscription mirror fields such as `pendingUpdate`.
+- **Role:** Thin webhook adapter: converts the snake_case payload through `billing_polar_webhook_to_customer_state` and calls `db_apply_polar_customer_state_refresh`. All snapshot and credit logic lives in the helper. Does not persist subscription mirror fields such as `pendingUpdate`. When a non-deleted state has zero active subscriptions, enqueues `Free` bootstrap for regular signed-in, non-deleted users only.
 
 #### `db_apply_polar_customer_state_refresh`
 
@@ -446,6 +454,7 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 - Signed-in users see the active plan, other plans, and a `Manage subscription` entrypoint.
 - `Free -> paid` uses checkout through [billing-checkout-button.tsx](../../../packages/app/src/components/billing/billing-checkout-button.tsx), passing the current `Free` subscription id.
 - `paid -> Free` and `paid -> paid` use [billing-change-plan-button.tsx](../../../packages/app/src/components/billing/billing-change-plan-button.tsx), which calls `change_current_subscription`.
+- If the app exposes an explicit "cancel subscription" control outside the Polar portal, it should use `cancel_current_subscription`, which schedules the next-period `Free` downgrade. Do not wire product UI cancellation to true Polar cancellation/revoke APIs.
 
 ## Product and usage presentation
 
@@ -455,7 +464,7 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 
 ## Account deletion billing behavior
 
-- Normal user-facing account deletion schedules retryable work that cancels the current paid subscription at the close of the current billing period instead of revoking it immediately.
+- Normal user-facing account deletion schedules retryable cleanup work that truly cancels the current paid subscription at the close of the current billing period instead of revoking it immediately. Keep this separate from normal billing-panel cancellation, which is a paid-plan downgrade to `Free`.
 - Billing owns `billing_cancel_polar_subscription_jobs` as the scheduler row for that work. Keep one row per user, replace the stored `jobId` when you reschedule, and clear the row only when the matching work finishes successfully or an explicit cancel removes it.
 - Subscription mirror rows remain Polar-owned during normal account deletion and scheduled cancellation. Clear them only when Polar reports customer deletion through customer deletion webhooks or a `customer.state_changed` payload with `deleted_at`.
 - `billing_usage_snapshots` are mirrored local billing state, not billing authority. Preserve them whenever the Convex `users` row is retained, including retained tombstones after normal account deletion, retention finalization, `"data"` resets, and `"data_and_auth"` auth purges. Delete them only when the user record is purged, or when Polar customer deletion is part of that full purge.

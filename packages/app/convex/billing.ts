@@ -885,7 +885,54 @@ export const handle_polar_customer_state_update = internalMutation({
 			})),
 		});
 
-		await db_apply_polar_customer_state_refresh(ctx, { state, syncedAt });
+		if (!state.deletedAt && state.activeSubscriptions.length === 0) {
+			// Customer-state cancellation can arrive from the Polar portal, bypassing
+			// the app's normal Free downgrade action. Keep regular users subscribed.
+			const userId = state.externalId ? ctx.db.normalizeId("users", state.externalId) : null;
+			const reason = "customer.state_changed:zero_active_subscriptions";
+			if (!userId) {
+				console.error("Cannot enqueue Free subscription bootstrap after cancellation: invalid user id", {
+					externalId: state.externalId,
+					polarCustomerId: state.id,
+					reason,
+				});
+				return null;
+			}
+
+			const user = await ctx.db.get("users", userId);
+			if (!user) {
+				console.error("Cannot enqueue Free subscription bootstrap after cancellation: missing user", {
+					polarCustomerId: state.id,
+					reason,
+					userId,
+				});
+				return null;
+			}
+			await db_apply_polar_customer_state_refresh(ctx, { state, syncedAt });
+			if (!user.deletedAt && user.clerkUserId != null) {
+				const anagraphic = user.anagraphic ? await ctx.db.get("users_anagraphics", user.anagraphic) : null;
+				if (!anagraphic || !anagraphic.email) {
+					throw should_never_happen("Missing signed-in user profile while bootstrapping Free after cancellation", {
+						polarCustomerId: state.id,
+						reason,
+						userId,
+					});
+				}
+
+				console.info("enqueue Free subscription bootstrap after cancellation", {
+					polarCustomerId: state.id,
+					reason,
+					userId,
+				});
+				await billing_action_enqueue_free_subscription_bootstrap(ctx, {
+					userId,
+					email: anagraphic.email,
+					name: anagraphic.displayName,
+				});
+			}
+		} else {
+			await db_apply_polar_customer_state_refresh(ctx, { state, syncedAt });
+		}
 
 		return null;
 	},
@@ -1235,7 +1282,7 @@ const billing_workpool_bootstrap = new Workpool(components.billing_workpool_boot
 });
 
 export async function billing_action_enqueue_free_subscription_bootstrap(
-	ctx: ActionCtx,
+	ctx: ActionCtx | MutationCtx,
 	args: {
 		userId: Id<"users">;
 		email: string;
@@ -1257,7 +1304,7 @@ export const has_usage_snapshot = internalQuery({
 			.withIndex("by_user", (q) => q.eq("userId", args.userId))
 			.first();
 
-		return usageSnapshot != null;
+		return usageSnapshot?.subscription != null;
 	},
 });
 
@@ -1342,8 +1389,8 @@ export const bootstrap_free_subscription = internalAction({
 					userId: args.userId,
 				});
 				if (!hasUsageSnapshot) {
-					// Bootstrap only replays Polar state as a targeted repair when
-					// the local usage snapshot is missing while a subscription mirror exists.
+					// Bootstrap replays Polar state as a targeted repair when the
+					// local usage snapshot is missing or stranded without a subscription.
 					await action_refresh_from_polar_customer_state(ctx, { userId: args.userId });
 				}
 				return;
@@ -1397,8 +1444,8 @@ export const bootstrap_free_subscription = internalAction({
 				userId: args.userId,
 			});
 			if (!hasUsageSnapshot) {
-				// Bootstrap only replays Polar state as a targeted repair when
-				// the local usage snapshot is missing after creating the local mirror.
+				// Bootstrap replays Polar state as a targeted repair when the
+				// local usage snapshot is missing or stranded without a subscription.
 				await action_refresh_from_polar_customer_state(ctx, { userId: args.userId });
 			}
 		});
@@ -1422,6 +1469,99 @@ export const bootstrap_free_subscription = internalAction({
 });
 // #endregion bootstrap
 
+async function action_change_current_subscription_product(
+	ctx: ActionCtx,
+	args: {
+		userId: Id<"users">;
+		targetProduct: Awaited<ReturnType<typeof billing_polar.listProducts>>[number] | null;
+		invalidTargetMessage: string;
+		freeSourceMessage: string;
+	},
+) {
+	const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: args.userId });
+	if (
+		!currentSubscription ||
+		(currentSubscription.status !== "active" && currentSubscription.status !== "trialing")
+	) {
+		return Result({ _nay: { message: "No active subscription found" } });
+	}
+
+	if (!args.targetProduct) {
+		return Result({ _nay: { message: args.invalidTargetMessage } });
+	}
+
+	if (currentSubscription.productId === args.targetProduct.id) {
+		return Result({ _nay: { message: "You're already on this plan" } });
+	}
+
+	const currentBillingProduct = billing_PRODUCTS[currentSubscription.product.name as keyof typeof billing_PRODUCTS] ?? null;
+	const targetBillingProduct = billing_PRODUCTS[args.targetProduct.name as keyof typeof billing_PRODUCTS] ?? null;
+	if (!currentBillingProduct || !targetBillingProduct) {
+		return Result({ _nay: { message: "Unsupported plan change" } });
+	}
+	if (currentBillingProduct.name === billing_PRODUCTS.Free.name) {
+		return Result({ _nay: { message: args.freeSourceMessage } });
+	}
+
+	const changeKind = billing_get_plan_change_kind(currentBillingProduct.name, targetBillingProduct.name);
+	if (!changeKind) {
+		return Result({ _nay: { message: "Plan changes between equivalent tiers are not supported" } });
+	}
+
+	if (currentSubscription.cancelAtPeriodEnd) {
+		// Polar rejects product updates on pending-cancel subscriptions; turn the
+		// cancellation back into a normal subscription before scheduling Free.
+		const uncancelSubscriptionResult = await action_uncancel_polar_subscription({
+			subscriptionId: currentSubscription.id,
+		});
+		if (uncancelSubscriptionResult._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to restore canceled subscription before changing plan",
+					cause: uncancelSubscriptionResult._nay,
+				},
+			});
+		}
+
+		await ctx.runMutation(components.polar.lib.updateSubscription, {
+			subscription: convertToDatabaseSubscription(uncancelSubscriptionResult._yay),
+		});
+	}
+
+	const prorationBehavior = changeKind === "upgrade" ? "invoice" : "next_period";
+	const updateResult = await subscriptionsUpdate(billing_polar.polar, {
+		id: currentSubscription.id,
+		subscriptionUpdate: {
+			productId: args.targetProduct.id,
+			prorationBehavior,
+		},
+	});
+	if (!updateResult.ok) {
+		if (updateResult.error instanceof PaymentFailed) {
+			return Result({ _nay: { message: "Payment failed while updating the subscription" } });
+		}
+		if (updateResult.error instanceof SubscriptionLocked) {
+			return Result({ _nay: { message: "Subscription is locked and cannot be changed right now" } });
+		}
+		if (updateResult.error instanceof ResourceNotFound) {
+			return Result({ _nay: { message: "Subscription not found" } });
+		}
+
+		console.error("Failed to change the subscription", {
+			error: updateResult.error,
+			subscriptionId: currentSubscription.id,
+			targetProductId: args.targetProduct.id,
+		});
+		return Result({
+			_nay: {
+				message: "Failed to change the subscription",
+			},
+		});
+	}
+
+	return Result({ _yay: null });
+}
+
 export const change_current_subscription = action({
 	args: {
 		productId: v.string(),
@@ -1435,77 +1575,22 @@ export const change_current_subscription = action({
 			return Result({ _nay: { message: "A signed-in account is required for billing" } });
 		}
 
-		const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: userAuth.id });
-		if (
-			!currentSubscription ||
-			(currentSubscription.status !== "active" && currentSubscription.status !== "trialing")
-		) {
-			return Result({ _nay: { message: "No active subscription found" } });
-		}
-
 		const targetProduct =
 			(await billing_polar.listProducts(ctx)).find((product) => {
 				return product.id === args.productId && !product.isArchived;
 			}) ?? null;
-		if (!targetProduct) {
-			return Result({ _nay: { message: "Invalid target plan" } });
-		}
-		if (currentSubscription.productId === targetProduct.id) {
-			return Result({ _nay: { message: "You're already on this plan" } });
-		}
-
-		const currentBillingProduct =
-			billing_PRODUCTS[currentSubscription.product.name as keyof typeof billing_PRODUCTS] ?? null;
-		const targetBillingProduct = billing_PRODUCTS[targetProduct.name as keyof typeof billing_PRODUCTS] ?? null;
-		if (!currentBillingProduct || !targetBillingProduct) {
-			return Result({ _nay: { message: "Unsupported plan change" } });
-		}
-		if (currentBillingProduct.name === billing_PRODUCTS.Free.name) {
-			return Result({ _nay: { message: "Use checkout to upgrade from Free" } });
-		}
-
-		const changeKind = billing_get_plan_change_kind(currentBillingProduct.name, targetBillingProduct.name);
-		if (!changeKind) {
-			return Result({ _nay: { message: "Plan changes between equivalent tiers are not supported" } });
-		}
 
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "billing_action", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const prorationBehavior = changeKind === "upgrade" ? "invoice" : "next_period";
-		const updateResult = await subscriptionsUpdate(billing_polar.polar, {
-			id: currentSubscription.id,
-			subscriptionUpdate: {
-				productId: targetProduct.id,
-				prorationBehavior,
-			},
+		return await action_change_current_subscription_product(ctx, {
+			userId: userAuth.id,
+			targetProduct,
+			invalidTargetMessage: "Invalid target plan",
+			freeSourceMessage: "Use checkout to upgrade from Free",
 		});
-		if (!updateResult.ok) {
-			if (updateResult.error instanceof PaymentFailed) {
-				return Result({ _nay: { message: "Payment failed while updating the subscription" } });
-			}
-			if (updateResult.error instanceof SubscriptionLocked) {
-				return Result({ _nay: { message: "Subscription is locked and cannot be changed right now" } });
-			}
-			if (updateResult.error instanceof ResourceNotFound) {
-				return Result({ _nay: { message: "Subscription not found" } });
-			}
-
-			console.error("Failed to change the subscription", {
-				error: updateResult.error,
-				subscriptionId: currentSubscription.id,
-				targetProductId: targetProduct.id,
-			});
-			return Result({
-				_nay: {
-					message: "Failed to change the subscription",
-				},
-			});
-		}
-
-		return Result({ _yay: null });
 	},
 });
 
@@ -1516,7 +1601,7 @@ export const cancel_current_subscription = action({
 	returns: v_result({
 		_yay: v.null(),
 	}),
-	handler: async (ctx, args) => {
+	handler: async (ctx, _args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth || userAuth.kind !== "signed_in") {
 			return Result({ _nay: { message: "A signed-in account is required for billing" } });
@@ -1527,27 +1612,25 @@ export const cancel_current_subscription = action({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const cancelResult = await Result_try_async(() =>
-			billing_polar.cancelSubscription(ctx, { revokeImmediately: args.revokeImmediately }),
-		);
-		if (cancelResult._nay) {
-			const message = cancelResult._nay.message;
-			if (message === "Subscription not found") {
-				return Result({ _nay: { message: "Subscription not found" } });
-			}
-			if (message === "Subscription is not active") {
-				return Result({ _nay: { message: "Subscription is not active" } });
-			}
-
-			return Result({
-				_nay: {
-					message: "Failed to cancel current subscription",
-					cause: cancelResult._nay,
-				},
+		const freeProduct =
+			(await billing_polar.listProducts(ctx)).find((product) => {
+				return product.name === billing_PRODUCTS.Free.name && !product.isArchived;
+			}) ?? null;
+		if (!freeProduct) {
+			throw should_never_happen("Free product not found among synced Polar products", {
+				productName: billing_PRODUCTS.Free.name,
+				userId: userAuth.id,
 			});
 		}
 
-		return Result({ _yay: null });
+		// Public cancellation means "stop paid renewal"; true cancellation/revoke
+		// remains reserved for account deletion and Polar portal fallback repair.
+		return await action_change_current_subscription_product(ctx, {
+			userId: userAuth.id,
+			targetProduct: freeProduct,
+			invalidTargetMessage: "Invalid target plan",
+			freeSourceMessage: "You're already on the Free plan",
+		});
 	},
 });
 

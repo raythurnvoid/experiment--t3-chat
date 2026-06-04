@@ -77,8 +77,8 @@ Arguments:
 `purgeUserMod` behavior:
 
 - `"data"`: hard-delete/reset app data while keeping the account live; preserve the `users` row, Clerk and anonymous auth state, profile, billing/customer state, and a usable default tenant.
-- `"data_and_auth"`: delete tenant/user data and auth state, attempt Clerk deletion, remove anonymous auth tokens, keep the final tombstoned `users` row, and schedule period-end subscription cancellation when applicable.
-- `"data_auth_and_user_record"`: delete tenant/user data and auth state, revoke/delete billing state immediately, and purge the final local `users` row.
+- `"data_and_auth"`: delete tenant/user data and auth state, attempt Clerk deletion, remove anonymous auth tokens, keep the final tombstoned `users` row, and schedule period-end subscription cancellation when applicable. This is true cleanup cancellation, not the normal billing-panel cancellation flow that downgrades a live user to `Free`.
+- `"data_auth_and_user_record"`: delete tenant/user data and auth state, revoke/delete billing state immediately, and purge the final local `users` row. This is the only routine admin path that should immediately revoke/delete billing instead of preserving or downgrading the account.
 
 Use `"data"` when the user wants to wipe app data while keeping the account usable. Use `"data_and_auth"` for account deletion that keeps the final tombstone. Use `"data_auth_and_user_record"` only when the user explicitly wants the final user record purged too.
 
