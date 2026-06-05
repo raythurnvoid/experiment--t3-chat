@@ -3,6 +3,7 @@ import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { encodeStateAsUpdate } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
+import { files_line_range_from_text, files_tail_lines_from_text } from "./files_nodes.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
 import { minimatch } from "minimatch";
@@ -44,6 +45,40 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+});
+
+describe("bounded read line helpers", () => {
+	test("files_line_range_from_text slices a 1-based line range", () => {
+		const content = "a\nb\nc\nd\ne\n";
+		expect(files_line_range_from_text(content, 1, 2)).toMatchObject({ content: "a\nb\n", linesReturned: 2, moreLines: true });
+		expect(files_line_range_from_text(content, 3, 2)).toMatchObject({ content: "c\nd\n", linesReturned: 2, moreLines: true });
+		expect(files_line_range_from_text(content, 5, 2)).toMatchObject({ content: "e\n", linesReturned: 1, moreLines: false });
+		// Range entirely past the end → empty, no more lines.
+		expect(files_line_range_from_text(content, 10, 2)).toMatchObject({ content: "", linesReturned: 0, moreLines: false });
+		// No trailing newline: the final unterminated line still counts.
+		expect(files_line_range_from_text("x\ny", 1, 5)).toMatchObject({ content: "x\ny\n", linesReturned: 2, moreLines: false });
+	});
+
+	test("files_line_range_from_text truncates a pathologically long line with a marker", () => {
+		const longLine = "Z".repeat(50000);
+		const content = `short\n${longLine}\nafter\n`;
+
+		const result = files_line_range_from_text(content, 2, 1);
+		expect(result.linesReturned).toBe(1);
+		// Truncated to the display cap (8000), not the full 50000 chars.
+		expect(result.content.length).toBeLessThan(50000);
+		expect(result.content.startsWith("Z".repeat(8000))).toBe(true);
+		expect(result.content).toContain("[line truncated to 8000 chars");
+		// A normal-length line is returned untouched.
+		expect(files_line_range_from_text(content, 1, 1).content).toBe("short\n");
+	});
+
+	test("files_tail_lines_from_text returns the last lines and truncates long ones", () => {
+		expect(files_tail_lines_from_text("a\nb\nc\nd\n", 2)).toMatchObject({ content: "c\nd\n" });
+		const out = files_tail_lines_from_text(`p\n${"Q".repeat(20000)}\n`, 1);
+		expect(out.content).toContain("[line truncated to 8000 chars");
+		expect(out.content.length).toBeLessThan(20000);
+	});
 });
 
 async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
@@ -686,6 +721,113 @@ describe("paginated bash listing queries", () => {
 		expect(firstPage.isDone).toBe(true);
 		expect(secondPage.items).toEqual([]);
 		expect(secondPage.isDone).toBe(true);
+	});
+
+	test("list_recent_paginated returns active files newest-first and paginates without gaps", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const desc = await asUser.query(internal.files_nodes.list_recent_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			numItems: 50,
+			cursor: null,
+		});
+		const asc = await asUser.query(internal.files_nodes.list_recent_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			numItems: 50,
+			cursor: null,
+			order: "asc",
+		});
+
+		// Newest-first, archived node (updatedAt 6) excluded.
+		expect(desc.items[0]?.path).toBe("/docs-archive/outside.md");
+		expect(desc.items.map((item) => item.updatedAt)).toEqual([8, 7, 5, 4, 3, 2, 1]);
+		expect(desc.items.map((item) => item.path)).not.toContain("/docs/z-archived.md");
+		expect(asc.items[0]?.path).toBe("/docs");
+		expect(asc.items.map((item) => item.updatedAt)).toEqual([1, 2, 3, 4, 5, 7, 8]);
+
+		// Full multi-page cursor walk: no gaps, no dupes, terminal isDone.
+		const seen: string[] = [];
+		let cursor: string | null = null;
+		let done = false;
+		for (let page = 0; page < 20 && !done; page++) {
+			// Explicit type: `cursor` is both an input and derived from the output, which
+			// otherwise trips TS circular inference on the query result.
+			const result: { items: Array<{ path: string }>; continueCursor: string; isDone: boolean } =
+				await asUser.query(internal.files_nodes.list_recent_paginated, {
+					workspaceId: db.workspaceId,
+					projectId: db.projectId,
+					numItems: 3,
+					cursor,
+				});
+			seen.push(...result.items.map((item) => item.path));
+			cursor = result.continueCursor;
+			done = result.isDone;
+		}
+		expect(done).toBe(true);
+		expect(new Set(seen).size).toBe(seen.length);
+		expect([...seen].sort()).toEqual(desc.items.map((item) => item.path).sort());
+	});
+
+	test("get_bash_path_entry resolves active paths, excludes archived, and returns the root sentinel", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const file = await asUser.query(internal.files_nodes.get_bash_path_entry, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs/a.md",
+		});
+		const archived = await asUser.query(internal.files_nodes.get_bash_path_entry, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs/z-archived.md",
+		});
+		const root = await asUser.query(internal.files_nodes.get_bash_path_entry, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/",
+		});
+
+		expect(file).toMatchObject({ path: "/docs/a.md", kind: "file" });
+		expect(archived).toBeNull();
+		expect(root).toMatchObject({ path: "/", kind: "folder" });
+	});
+
+	test("get_bash_stat_entry returns app metadata for a file", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const stat = await asUser.query(internal.files_nodes.get_bash_stat_entry, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs/a.md",
+		});
+		const missing = await asUser.query(internal.files_nodes.get_bash_stat_entry, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs/does-not-exist.md",
+		});
+
+		expect(stat).toMatchObject({ path: "/docs/a.md", kind: "file", contentType: "text/markdown;charset=utf-8" });
+		expect(missing).toBeNull();
 	});
 });
 

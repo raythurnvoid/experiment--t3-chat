@@ -256,3 +256,33 @@ Writes:
 - Uploaded source files are not described as raw-binary-readable until a native source-file tool exists.
 - Generated upload outputs are read, searched, edited, and listed by their actual visible paths, preferably through Bash plus `write_file` / `edit_file`.
 - Tool descriptions stay aligned with actual behavior.
+
+# TODO / Hardening Backlog
+
+Defensive limits against pathologically large / long-line content. These are NOT about the
+agent read path — that is already bounded (`bash` reads use a 64 KB scan window, a 30 KB
+stdout cap, and per-line display truncation at `files_READ_MAX_LINE_CHARS = 8000` in
+`convex/files_nodes.ts`). The gap below is about **storage and materialization cost** of
+content written/typed into the workspace.
+
+- [ ] **Cap total written-document size (the real gap).** Uploads are size-capped via
+  `files_MAX_UPLOADS_BYTES` (`convex/files_nodes.ts:1236`), but typed/written Markdown has no
+  size limit. Add a content-agnostic per-document byte cap at the write choke points
+  — `write_file`/`edit_file` (`server/server-ai-tools.ts` → `create_file_by_path` /
+  `action_create_markdown_node` / the edit pending-update path in `convex/files_nodes.ts`)
+  and ideally the editor save/materialization — rejecting oversized content with a clear
+  error (mirror the upload "File too large" path). This bounds a 10 MB single line and 10 MB
+  across many lines equally, covers all write paths at one layer, and corrupts nothing.
+- [ ] **(Optional) Cap chunk count at materialization** so a borderline-large doc degrades
+  gracefully: index the first N chunks of `files_markdown_chunks` / `files_plain_text_chunks`
+  and mark "content too large to fully index" instead of doing unbounded chunking work in
+  `finalize_file_content_materialization` / `db_replace_file_chunks`.
+- [ ] **(Optional, belt-and-suspenders) Editor-side soft guard:** warn on a "document too
+  large" threshold in the rich editor. Note this only covers the editor path (the agent/API
+  write paths bypass it), so it is a UX nicety, not the security boundary.
+
+Rejected approach (do not implement): forcing a newline / hard-wrapping long lines during
+Markdown conversion or materialization. It mutates user content (breaks code fences, long
+URLs, base64, tables), diverges the editor's Yjs source of truth from the derived Markdown
+that `bash`/`search` see, and does not reduce total stored size. Prefer a total-size cap over
+any line-length enforcement at the storage layer.

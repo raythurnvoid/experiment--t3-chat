@@ -144,7 +144,7 @@ describe("ai_chat_tool_create_bash", () => {
 
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("Use ls [-1aApFdlrR] [--limit N] [--cursor CURSOR] [PATH ...] for app listings."),
+				description: expect.stringContaining("Use ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...] for app listings."),
 			}),
 		);
 		expect(tool).toEqual(
@@ -163,12 +163,27 @@ describe("ai_chat_tool_create_bash", () => {
 
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("each reads at most 10 app files per command"),
+				description: expect.stringContaining("these readers fetch at most 10 app files per command"),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining("find -maxdepth N and find -mindepth N filter results by depth."),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("matches your whole query as one CONTIGUOUS, case-insensitive substring"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("ls -t (newest first) and ls -rt (oldest first) list the whole project ordered by update time"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("Large files are not read inline"),
 			}),
 		);
 	});

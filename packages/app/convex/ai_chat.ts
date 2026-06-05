@@ -75,12 +75,12 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 		"Shell pathname expansion is disabled and app-file glob operands are unsupported. Do not run app-file commands such as `ls *.md` or `cat src/**/*.ts`.",
 		"`ls --limit` and `find --limit` are app-file pagination commands. Relative paths resolve against the current working directory; from `~`, omit the path or use the mounted app path instead of `.`.",
 		"When listing the current directory, prefer `ls --limit N` over `ls --limit N <current-cwd>`. Do not restate the current cwd as a path argument just for certainty.",
-		"Use `ls [-1aApFdlrR] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current app directory, or the app root when cwd is outside the app tree. `--cursor` continues one listing target only; when asked to continue, run the printed `Next page:` command as the next Bash call and do not invent `--next-page`.",
+		"Use `ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current app directory, or the app root when cwd is outside the app tree. `--cursor` continues one listing target only; when asked to continue, run the printed `Next page:` command as the next Bash call and do not invent `--next-page`. `ls -t` (newest first) and `ls -rt` (oldest first) list the whole project ordered by update time, paginated; they are project-wide and take no PATH operand.",
 		"`ls -R` lists a paginated subtree as full app shell paths; `ls -d` lists the target entry itself and wins over `-R`; `ls -l` uses app metadata, not POSIX permissions, owners, groups, inodes, blocks, symlinks, or real sizes. Unsupported sort/filter flags still fail.",
 		"`No matches in this page; more pages exist.` means the result is partial; continue the printed cursor command before concluding there are no matches.",
-		"Use `find <path> --limit N` for subtree pages, `find --prefix <prefix> --limit N` for raw startsWith path discovery, and `find --extension EXT` or `find -name PATTERN` for extension/name discovery. `find -maxdepth N` and `find -mindepth N` filter results by depth.",
-		"`search --limit N <query>` is indexed content search only. Do not pass paths to `search`, and do not use `search` as a pipeline filter.",
-		"Use exact app paths with `cat`, `head`, `tail`, `wc`, and `stat`; each fetches at most 10 app files per command, so use `search` to scan many files instead of batching reads. For content search, call `search` directly instead of `grep -R` over app paths, and use `find` instead of `tree` for app paths.",
+		"Use `find <path> --limit N` for subtree pages, `find --prefix <prefix> --limit N` for raw startsWith path discovery, and `find --extension EXT` or `find -name PATTERN` for extension/name discovery. `find -maxdepth N` and `find -mindepth N` filter results by depth. `-name`/`-iname` patterns accept glob wildcards (quote them, e.g. `-name '*.md'`); with filters `--limit` bounds entries scanned per page, so follow the printed `Next page:` command even on an empty page, and raising `--limit` past its cap returns no more rows.",
+		"`search --limit N <query>` matches your whole query as one CONTIGUOUS, case-insensitive substring of content (not separate keywords) across the entire workspace; on an empty result retry with one short distinctive token. Do not pass paths to `search`, and do not use `search` as a pipeline filter.",
+		"Use exact app paths with `cat`, `head`, `tail`, `wc`, and `stat`; these readers fetch at most 10 app files per command: to READ specific known files, `cat` them in batches of 10 or fewer across commands; to FIND which files mention something, use `search` (it returns snippets, not whole files). Large files are not read inline: `cat` refuses a full dump past a size limit. Read a large file in bounded pages — `head -n N` (first lines; it prints the next `sed -n` page command), `sed -n 'A,Bp'` (any line range), `tail -n N` (last lines), up to 200 lines per read; run `wc` first to learn its size (line/word counts are lower bounds for very large files). Use `search` to find content. For content search, call `search` directly instead of `grep -R` over app paths, and use `find` instead of `tree` for app paths.",
 		"Keep Bash commands simple: avoid strict-mode boilerplate, comments in command strings, and process substitution.",
 		"Only summarize actual Bash stdout/stderr. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
 		"Do not work around app read-only write, move, or delete requests by copying app files to `/tmp`; report the Bash error unless the user asked for a scratch copy.",
@@ -2142,7 +2142,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"When listing the current directory, prefer `ls --limit N` over `ls --limit N <current-cwd>`.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"Use `ls [-1aApFdlrR] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current app directory, or the app root when cwd is outside the app tree.",
+				"Use `ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current app directory, or the app root when cwd is outside the app tree.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"`ls -t` (newest first) and `ls -rt` (oldest first) list the whole project ordered by update time",
 			);
 			expect(configuration.systemPrompt).toContain(
 				"`ls -R` lists a paginated subtree as full app shell paths; `ls -d` lists the target entry itself and wins over `-R`; `ls -l` uses app metadata",
@@ -2157,12 +2160,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"`find -maxdepth N` and `find -mindepth N` filter results by depth.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"`search --limit N <query>` is indexed content search only. Do not pass paths to `search`, and do not use `search` as a pipeline filter.",
+				"matches your whole query as one CONTIGUOUS, case-insensitive substring of content",
 			);
 			expect(configuration.systemPrompt).toContain(
 				"Use exact app paths with `cat`, `head`, `tail`, `wc`, and `stat`",
 			);
-			expect(configuration.systemPrompt).toContain("each fetches at most 10 app files per command");
+			expect(configuration.systemPrompt).toContain("these readers fetch at most 10 app files per command");
+			expect(configuration.systemPrompt).toContain("Large files are not read inline");
 			expect(configuration.systemPrompt).toContain("call `search` directly instead of `grep -R` over app paths");
 			expect(configuration.systemPrompt).toContain("avoid strict-mode boilerplate");
 			expect(configuration.systemPrompt).toContain("Only summarize actual Bash stdout/stderr");

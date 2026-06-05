@@ -344,6 +344,37 @@ export async function r2_fetch_object_from_bucket(args: { key: string }) {
 	return response;
 }
 
+/**
+ * Fetch a bounded byte range of an R2 object via an HTTP Range request (R2 honors it and
+ * returns 206 Partial Content). Lets callers read a window of a large object instead of the
+ * whole thing. `start`/`endInclusive` are 0-based byte offsets; the response may be shorter
+ * than requested at end-of-object.
+ */
+export async function r2_fetch_object_range_from_bucket(args: { key: string; start: number; endInclusive: number }) {
+	const url = await r2_get_download_url({
+		key: args.key,
+		options: {
+			expiresIn: 60,
+		},
+	});
+	const response = await fetch(url, {
+		headers: { Range: `bytes=${args.start}-${args.endInclusive}` },
+	});
+	// 206 = partial content (range honored); 200 = full object (range ignored by store) — both usable.
+	if (!response.ok && response.status !== 206) {
+		throw convex_error({
+			message: "Failed to read R2 object range",
+			cause: {
+				status: response.status,
+				key: args.key,
+				range: `bytes=${args.start}-${args.endInclusive}`,
+			},
+		});
+	}
+
+	return response;
+}
+
 function normalize_external_base_url(value: string) {
 	return value.replace(/\/+$/, "");
 }

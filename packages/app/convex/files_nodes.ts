@@ -84,6 +84,7 @@ import {
 	r2_get_download_url,
 	r2_generate_upload_url,
 	r2_fetch_object_from_bucket,
+	r2_fetch_object_range_from_bucket,
 	r2_put_object,
 	r2_get_bucket,
 	r2_create_asset_key,
@@ -2532,6 +2533,63 @@ export type files_nodes_list_subtree_paginated_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+/**
+ * Workspace+project-wide recency listing ordered by `updatedAt`, paginated.
+ * Backs `ls -t` / `ls -rt`. Project-wide only — the updatedAt index has no `path`
+ * column, so it cannot be scoped to a sub-directory without a misleading page-local sort.
+ */
+export const list_recent_paginated = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		numItems: v.number(),
+		cursor: paginationOptsValidator.fields.cursor,
+		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				path: v.string(),
+				kind: v.union(v.literal("folder"), v.literal("file")),
+				updatedAt: v.number(),
+				updatedBy: v.id("users"),
+				contentType: v.optional(v.string()),
+			}),
+		),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const result = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_archiveOperation_updatedAt", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("archiveOperationId", undefined),
+			)
+			.order(args.order === "asc" ? "asc" : "desc")
+			.paginate({
+				cursor: args.cursor,
+				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+			});
+
+		return {
+			items: result.page.map((file) => ({
+				path: file.path,
+				kind: file.kind,
+				updatedAt: file.updatedAt,
+				updatedBy: file.updatedBy,
+				contentType: file.contentType,
+			})),
+			continueCursor: result.continueCursor,
+			isDone: result.isDone,
+		};
+	},
+});
+
+export type files_nodes_list_recent_paginated_Result =
+	typeof list_recent_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const list_path_prefix_paginated = internalQuery({
 	args: {
 		workspaceId: v.string(),
@@ -3192,6 +3250,287 @@ export type files_nodes_get_file_last_available_markdown_content_by_path_Result 
 		? Awaited<ReturnValue>
 		: never;
 
+// Bounded reads: never scan more than this many bytes of a committed file when reading a
+// line range, so a multi-MB file is not pulled in full. Tunable.
+const files_READ_RANGE_MAX_LINES = 200;
+const files_READ_RANGE_SCAN_MAX_BYTES = 64 * 1024;
+// A single very long line (legitimately minified content, or a deliberate attempt to bypass
+// line-based limits) is truncated for display at this many characters, with a marker, so one
+// line cannot dominate the bounded output. Generous enough not to clip normal prose lines.
+const files_READ_MAX_LINE_CHARS = 8000;
+
+/**
+ * Truncate one display line that is pathologically long, appending a clear marker so the
+ * agent understands the line continues (rather than being silently cut). Returns the line
+ * unchanged when it is within the cap.
+ */
+function files_truncate_long_display_line(line: string) {
+	if (line.length <= files_READ_MAX_LINE_CHARS) {
+		return line;
+	}
+	return `${line.slice(0, files_READ_MAX_LINE_CHARS)} …[line truncated to ${files_READ_MAX_LINE_CHARS} chars — the full line is ${line.length}+ chars]`;
+}
+
+/**
+ * Returns lines [`startLine`, `startLine`+`maxLines`) of `content` (1-based, each line with
+ * its trailing newline), plus how many lines were returned and whether more lines follow
+ * within `content`. `content` may be a leading window of a larger file. Over-long lines are
+ * truncated for display (with a marker) so a single huge line cannot flood the output.
+ */
+export function files_line_range_from_text(content: string, startLine: number, maxLines: number) {
+	if (maxLines <= 0 || content.length === 0) {
+		return { content: "", linesReturned: 0, moreLines: false };
+	}
+	const hasTrailingNewline = content.endsWith("\n");
+	const split = content.split("\n");
+	// A trailing newline yields an empty final element that is not a real line; drop it.
+	const lines = hasTrailingNewline ? split.slice(0, -1) : split;
+	const start = Math.max(0, startLine - 1);
+	const slice = lines.slice(start, start + maxLines).map(files_truncate_long_display_line);
+	const moreLines = start + maxLines < lines.length;
+	const out = slice.length > 0 ? `${slice.join("\n")}\n` : "";
+	return { content: out, linesReturned: slice.length, moreLines };
+}
+
+/** Returns the last `maxLines` lines of `content` (over-long lines truncated for display). */
+export function files_tail_lines_from_text(content: string, maxLines: number) {
+	if (maxLines <= 0 || content.length === 0) {
+		return { content: "" };
+	}
+	const hasTrailingNewline = content.endsWith("\n");
+	const split = content.split("\n");
+	const lines = hasTrailingNewline ? split.slice(0, -1) : split;
+	const slice = lines.slice(Math.max(0, lines.length - maxLines)).map(files_truncate_long_display_line);
+	return { content: slice.length > 0 ? `${slice.join("\n")}\n` : "" };
+}
+
+async function files_resolve_readable_content_or_window(
+	ctx: ActionCtx,
+	args: { workspaceId: string; projectId: string; userId: Id<"users">; path: string; pendingUpdateId?: Id<"files_pending_updates"> },
+): Promise<{ nodeId: Id<"files_nodes">; text: string; fetchedAllBytes: boolean; totalBytes: number } | null> {
+	const state = (await ctx.runQuery(internal.files_nodes.get_file_markdown_content_db_state_by_path, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		userId: args.userId,
+		path: args.path,
+		pendingUpdateId: args.pendingUpdateId,
+	})) as get_file_markdown_content_db_state_by_path_Result;
+	if (!state) {
+		return null;
+	}
+	const materializationState = state.materializationState;
+	// Pending user edit, or stale snapshot: full content is (or must be) in memory.
+	if (state.content !== undefined) {
+		return { nodeId: state.nodeId, text: state.content, fetchedAllBytes: true, totalBytes: files_get_utf8_byte_size(state.content) };
+	}
+	if (
+		materializationState &&
+		materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
+	) {
+		const reconstructed = await reconstruct_latest_file_content_from_materialization_state({ state: materializationState });
+		if (reconstructed._nay) {
+			throw convex_error({ message: "Failed to reconstruct latest file content", cause: reconstructed._nay });
+		}
+		return {
+			nodeId: state.nodeId,
+			text: reconstructed._yay.markdown,
+			fetchedAllBytes: true,
+			totalBytes: files_get_utf8_byte_size(reconstructed._yay.markdown),
+		};
+	}
+	// Committed and up to date: bounded byte-range read of the content object (leading window).
+	const r2Key = state.asset?.r2Key;
+	if (!r2Key) {
+		return { nodeId: state.nodeId, text: "", fetchedAllBytes: true, totalBytes: 0 };
+	}
+	const totalBytes = state.asset?.size ?? files_READ_RANGE_SCAN_MAX_BYTES;
+	const endInclusive = Math.max(0, Math.min(files_READ_RANGE_SCAN_MAX_BYTES, totalBytes) - 1);
+	const response = await r2_fetch_object_range_from_bucket({ key: r2Key, start: 0, endInclusive });
+	const bytes = new Uint8Array(await response.arrayBuffer());
+	const text = new TextDecoder("utf-8").decode(bytes);
+	return { nodeId: state.nodeId, text, fetchedAllBytes: bytes.byteLength >= totalBytes, totalBytes };
+}
+
+/**
+ * Read a line range of a file without pulling the whole thing: for committed, up-to-date
+ * content this issues a single bounded R2 byte-range read (a leading window capped at
+ * `files_READ_RANGE_SCAN_MAX_BYTES`); for pending/unmaterialized content it slices the
+ * in-memory reconstruction. Backs `head -n N` (startLine 1) and `sed -n 'A,Bp'` (startLine A).
+ * Deep ranges of a genuinely huge committed file may fall outside the leading window
+ * (scanTruncated); the aggressive-cap testing case keeps whole files within the window.
+ */
+export const read_file_line_range = internalAction({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		path: v.string(),
+		startLine: v.number(),
+		maxLines: v.number(),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+	},
+	returns: v.union(
+		v.object({
+			nodeId: v.id("files_nodes"),
+			content: v.string(),
+			moreLines: v.boolean(),
+			scanTruncated: v.boolean(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const resolved = await files_resolve_readable_content_or_window(ctx, args);
+		if (!resolved) {
+			return null;
+		}
+		const startLine = Math.max(1, Math.trunc(args.startLine));
+		const maxLines = Math.max(1, Math.min(files_READ_RANGE_MAX_LINES, Math.trunc(args.maxLines)));
+		const range = files_line_range_from_text(resolved.text, startLine, maxLines);
+		// Stopped on the byte window (not line count / EOF): output may be partial.
+		const scanTruncated = !resolved.fetchedAllBytes && range.linesReturned < maxLines;
+		return {
+			nodeId: resolved.nodeId,
+			content: range.content,
+			moreLines: range.moreLines || !resolved.fetchedAllBytes,
+			scanTruncated,
+		};
+	},
+});
+
+export type files_nodes_read_file_line_range_Result =
+	typeof read_file_line_range extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Read the last `maxLines` lines of a file. For committed content this reads a bounded
+ * trailing byte window via an R2 range request (so the file is not pulled in full); for
+ * pending/unmaterialized content it slices the in-memory reconstruction. Backs `tail -n N`.
+ */
+export const read_file_tail_lines = internalAction({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		path: v.string(),
+		maxLines: v.number(),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+	},
+	returns: v.union(
+		v.object({
+			nodeId: v.id("files_nodes"),
+			content: v.string(),
+			scanTruncated: v.boolean(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const state = (await ctx.runQuery(internal.files_nodes.get_file_markdown_content_db_state_by_path, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			userId: args.userId,
+			path: args.path,
+			pendingUpdateId: args.pendingUpdateId,
+		})) as get_file_markdown_content_db_state_by_path_Result;
+		if (!state) {
+			return null;
+		}
+		const maxLines = Math.max(1, Math.min(files_READ_RANGE_MAX_LINES, Math.trunc(args.maxLines)));
+		const materializationState = state.materializationState;
+
+		// Pending/stale: full content in memory.
+		if (state.content !== undefined) {
+			const tail = files_tail_lines_from_text(state.content, maxLines);
+			return { nodeId: state.nodeId, content: tail.content, scanTruncated: false };
+		}
+		if (
+			materializationState &&
+			materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
+		) {
+			const reconstructed = await reconstruct_latest_file_content_from_materialization_state({ state: materializationState });
+			if (reconstructed._nay) {
+				throw convex_error({ message: "Failed to reconstruct latest file content", cause: reconstructed._nay });
+			}
+			const tail = files_tail_lines_from_text(reconstructed._yay.markdown, maxLines);
+			return { nodeId: state.nodeId, content: tail.content, scanTruncated: false };
+		}
+
+		// Committed: read a bounded trailing window from the end of the R2 object.
+		const r2Key = state.asset?.r2Key;
+		const totalBytes = state.asset?.size;
+		if (!r2Key || totalBytes == null) {
+			return { nodeId: state.nodeId, content: "", scanTruncated: false };
+		}
+		const start = Math.max(0, totalBytes - files_READ_RANGE_SCAN_MAX_BYTES);
+		const response = await r2_fetch_object_range_from_bucket({ key: r2Key, start, endInclusive: totalBytes - 1 });
+		const bytes = new Uint8Array(await response.arrayBuffer());
+		const text = new TextDecoder("utf-8").decode(bytes);
+		const tail = files_tail_lines_from_text(text, maxLines);
+		// If the trailing window didn't reach the start of the file, the earliest returned line
+		// could be partial — only relevant for files larger than the scan window.
+		const scanTruncated = start > 0;
+		return { nodeId: state.nodeId, content: tail.content, scanTruncated };
+	},
+});
+
+export type files_nodes_read_file_tail_lines_Result =
+	typeof read_file_tail_lines extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Line/word/char/byte counts for a file without a guaranteed full read. `byteCount` is the
+ * true size; line/word/char counts come from a bounded leading window, so `exact` is false
+ * when the file is larger than the scan window (counts are then lower bounds). Backs `wc` on
+ * large files so the agent learns a file's size (e.g. line count) instead of over-paging.
+ */
+export const read_file_content_stats = internalAction({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		path: v.string(),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+	},
+	returns: v.union(
+		v.object({
+			nodeId: v.id("files_nodes"),
+			lineCount: v.number(),
+			wordCount: v.number(),
+			charCount: v.number(),
+			byteCount: v.number(),
+			exact: v.boolean(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const resolved = await files_resolve_readable_content_or_window(ctx, args);
+		if (!resolved) {
+			return null;
+		}
+		const text = resolved.text;
+		// wc -l counts newline characters (not "lines"), so an unterminated final line is not counted.
+		let lineCount = 0;
+		for (let index = 0; index < text.length; index++) {
+			if (text[index] === "\n") lineCount++;
+		}
+		const wordCount = text.trim().length === 0 ? 0 : text.trim().split(/\s+/u).length;
+		return {
+			nodeId: resolved.nodeId,
+			lineCount,
+			wordCount,
+			charCount: text.length,
+			byteCount: resolved.totalBytes,
+			exact: resolved.fetchedAllBytes,
+		};
+	},
+});
+
+export type files_nodes_read_file_content_stats_Result =
+	typeof read_file_content_stats extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const get_plain_text = query({
 	args: { membershipId: v.id("workspaces_projects_users"), nodeId: v.id("files_nodes") },
 	returns: v.union(v.string(), v.null()),
@@ -3330,6 +3669,7 @@ export const text_search_files = internalQuery({
 				hasChunkBelow: v.boolean(),
 			}),
 		),
+		truncated: v.boolean(),
 	}),
 	handler: async (
 		ctx,
@@ -3347,17 +3687,24 @@ export const text_search_files = internalQuery({
 			hasChunkAbove: boolean;
 			hasChunkBelow: boolean;
 		}>;
+		truncated: boolean;
 	}> => {
+		// Over-fetch a bounded candidate window BEFORE dedup/exact-filter so the survivor
+		// count isn't silently far below `limit` (relevance-ranked candidates dropped
+		// post-take). Bounded so per-search read cost stays capped.
+		const candidateLimit = Math.min(300, Math.max(args.limit * 5, 50));
 		const matches = await ctx.db
 			.query("files_plain_text_chunks")
 			.withSearchIndex("search_by_plainTextChunk", (q) =>
 				q.search("plainTextChunk", args.query).eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
 			)
-			.take(Math.max(1, Math.min(100, args.limit)));
+			.take(candidateLimit);
 
 		// Convex text search returns word by word search results ordered by relevance,
 		// we want to return only 1 result per chunk and only the exact match of the
-		// query in input.
+		// query in input. `truncated` signals the agent that more matches may exist:
+		// either the relevance window filled, or exact matches exceeded the limit.
+		let truncated = matches.length >= candidateLimit;
 		const exactMatches: typeof matches = [];
 		const seenMarkdownChunkIds = new Set<(typeof matches)[number]["markdownChunkId"]>();
 		for (const match of matches) {
@@ -3366,15 +3713,18 @@ export const text_search_files = internalQuery({
 			}
 			seenMarkdownChunkIds.add(match.markdownChunkId);
 
-			if (!match.plainTextChunk.includes(args.query)) {
+			// The Convex search index is case-insensitive and word-tokenized, so re-match
+			// case-insensitively here too — otherwise `search readme` against `# Readme`
+			// gets index hits that are all dropped, returning a false "No files found".
+			if (!match.plainTextChunk.toLowerCase().includes(args.query.toLowerCase())) {
 				continue;
 			}
 
-			exactMatches.push(match);
-
 			if (exactMatches.length >= args.limit) {
+				truncated = true;
 				break;
 			}
+			exactMatches.push(match);
 		}
 
 		const items = (
@@ -3447,7 +3797,7 @@ export const text_search_files = internalQuery({
 			)
 		).filter((item): item is NonNullable<typeof item> => item !== null);
 
-		return { items };
+		return { items, truncated };
 	},
 });
 
