@@ -72,6 +72,38 @@ describe("files_chunk_markdown", () => {
 		).toBe(true);
 	});
 
+	test("chunks reconstruct the source exactly and tile it contiguously", async () => {
+		// The chunk-backed reader (convex/files_nodes.ts read_committed_file_chunks_line_range) relies
+		// on chunks being verbatim source substrings that tile the document with no gaps, so merging
+		// the chunks overlapping a line range reproduces that portion exactly. Guard that invariant.
+		const sections = Array.from(
+			{ length: 12 },
+			(_, i) =>
+				`## Section ${i + 1}\n\nParagraph ${i + 1} with searchable words alpha-${i} beta gamma delta epsilon zeta.\n\n` +
+				"```ts\n" +
+				`const value${i} = "x".repeat(${i});\n` +
+				"```",
+		);
+		const markdownContent = `# Title\n\n${sections.join("\n\n")}\n\n| a | b |\n| - | - |\n| 1 | 2 |\n`;
+
+		const chunks = await files_chunk_markdown(markdownContent, { maxChunkSize: 120 });
+		if (chunks._nay) {
+			throw new Error("Expected markdown chunking to succeed", { cause: chunks._nay });
+		}
+
+		expect(chunks._yay.length).toBeGreaterThan(3);
+		// Verbatim: every chunk is the exact source slice at its recorded offsets.
+		for (const chunk of chunks._yay) {
+			expect(markdownContent.slice(chunk.startIndex, chunk.endIndex)).toBe(chunk.markdownChunk);
+		}
+		// Contiguous: each chunk starts exactly where the previous ended (no dropped bytes).
+		for (let i = 1; i < chunks._yay.length; i++) {
+			expect(chunks._yay[i]!.startIndex).toBe(chunks._yay[i - 1]!.endIndex);
+		}
+		// Concatenating all chunk text reproduces the whole document.
+		expect(chunks._yay.map((chunk) => chunk.markdownChunk).join("")).toBe(markdownContent);
+	});
+
 	test("returns empty chunks for empty markdown", async () => {
 		const chunks = await files_chunk_markdown("");
 		if (chunks._nay) {

@@ -1649,7 +1649,8 @@ describe("r2 asset content", () => {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			query: "PDF body",
-			limit: 10,
+			numItems: 10,
+			cursor: null,
 		});
 		expect(searchResult.items.map((item) => item.path)).toContain("/readable.pdf.md");
 		expect(searchResult.items.map((item) => item.path)).not.toContain("/readable.pdf");

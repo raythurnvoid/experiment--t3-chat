@@ -39,6 +39,44 @@ const migrations_test_schema = defineSchema({
 		.index("by_user_read", ["userId", "read"])
 		.index("by_workspace_user_read", ["workspaceId", "userId", "read"])
 		.index("by_workspace_project_user", ["workspaceId", "projectId", "userId"]),
+	files_nodes: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		path: v.string(),
+		pathDepth: v.optional(v.number()),
+		lowercaseExtension: v.optional(v.union(v.string(), v.null())),
+		name: v.string(),
+		kind: v.union(v.literal("folder"), v.literal("file")),
+		archiveOperationId: v.optional(v.string()),
+		parentId: v.union(v.id("files_nodes"), v.literal("root")),
+		createdBy: v.id("users"),
+		updatedBy: v.id("users"),
+		updatedAt: v.number(),
+	}),
+	files_markdown_chunks: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		nodeId: v.id("files_nodes"),
+		yjsSequence: v.number(),
+		chunkIndex: v.number(),
+		markdownChunk: v.string(),
+		startIndex: v.number(),
+		endIndex: v.number(),
+		lineStart: v.number(),
+		lineEnd: v.number(),
+		chunkFlags: v.number(),
+	}),
+	files_plain_text_chunks: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		nodeId: v.id("files_nodes"),
+		yjsSequence: v.number(),
+		chunkIndex: v.number(),
+		path: v.optional(v.string()),
+		archiveOperationId: v.optional(v.string()),
+		plainTextChunk: v.string(),
+		markdownChunkId: v.id("files_markdown_chunks"),
+	}),
 });
 
 describe("remove_notifications_created_at", () => {
@@ -93,5 +131,126 @@ describe("remove_notifications_created_at", () => {
 			updatedAt: 100,
 		});
 		expect(notification).not.toHaveProperty("createdAt");
+	});
+});
+
+describe("files chunk search backfills", () => {
+	test("backfills node path depth and plain text chunk scope fields", async () => {
+		const t = convexTest(migrations_test_schema, migrations_test_modules);
+		component.register(t);
+		const legacy = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-user-files-backfill" });
+			const fileId = await ctx.db.insert("files_nodes", {
+				workspaceId: "workspace-files-backfill",
+				projectId: "project-files-backfill",
+				path: "/docs/readme.md",
+				name: "readme.md",
+				kind: "file",
+				archiveOperationId: "archive-files-backfill",
+				parentId: "root",
+				createdBy: userId,
+				updatedBy: userId,
+				updatedAt: 100,
+			});
+			const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
+				workspaceId: "workspace-files-backfill",
+				projectId: "project-files-backfill",
+				nodeId: fileId,
+				yjsSequence: 0,
+				chunkIndex: 0,
+				markdownChunk: "hello",
+				startIndex: 0,
+				endIndex: 5,
+				lineStart: 1,
+				lineEnd: 1,
+				chunkFlags: 0,
+			});
+			const plainTextChunkId = await ctx.db.insert("files_plain_text_chunks", {
+				workspaceId: "workspace-files-backfill",
+				projectId: "project-files-backfill",
+				nodeId: fileId,
+				yjsSequence: 0,
+				chunkIndex: 0,
+				plainTextChunk: "hello",
+				markdownChunkId,
+			});
+
+			return { fileId, plainTextChunkId };
+		});
+
+		const result = await t.run(async (ctx) => {
+			await runToCompletion(ctx, components.migrations, internal.migrations.backfill_files_nodes_path_depth);
+			await runToCompletion(ctx, components.migrations, internal.migrations.backfill_files_plain_text_chunk_scope);
+
+			const fileNode = await ctx.db.get("files_nodes", legacy.fileId);
+			const plainTextChunk = await ctx.db.get("files_plain_text_chunks", legacy.plainTextChunkId);
+			return { fileNode, plainTextChunk };
+		});
+
+		expect(result.fileNode).toMatchObject({ pathDepth: 2 });
+		expect(result.plainTextChunk).toMatchObject({
+			path: "/docs/readme.md",
+			archiveOperationId: "archive-files-backfill",
+		});
+	});
+
+	test("backfills lowercase extension for file nodes", async () => {
+		const t = convexTest(migrations_test_schema, migrations_test_modules);
+		component.register(t);
+		const legacy = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-user-files-extension-backfill" });
+			const [markdownFileId, folderId, extensionlessFileId] = await Promise.all([
+				ctx.db.insert("files_nodes", {
+					workspaceId: "workspace-files-extension-backfill",
+					projectId: "project-files-extension-backfill",
+					path: "/docs/README.MD",
+					name: "README.MD",
+					kind: "file",
+					parentId: "root",
+					createdBy: userId,
+					updatedBy: userId,
+					updatedAt: 100,
+				}),
+				ctx.db.insert("files_nodes", {
+					workspaceId: "workspace-files-extension-backfill",
+					projectId: "project-files-extension-backfill",
+					path: "/docs",
+					name: "docs",
+					kind: "folder",
+					parentId: "root",
+					createdBy: userId,
+					updatedBy: userId,
+					updatedAt: 100,
+				}),
+				ctx.db.insert("files_nodes", {
+					workspaceId: "workspace-files-extension-backfill",
+					projectId: "project-files-extension-backfill",
+					path: "/LICENSE",
+					name: "LICENSE",
+					kind: "file",
+					parentId: "root",
+					createdBy: userId,
+					updatedBy: userId,
+					updatedAt: 100,
+				}),
+			]);
+
+			return { markdownFileId, folderId, extensionlessFileId };
+		});
+
+		const result = await t.run(async (ctx) => {
+			await runToCompletion(ctx, components.migrations, internal.migrations.backfill_files_nodes_lowercase_extension);
+
+			const [markdownFile, folder, extensionlessFile] = await Promise.all([
+				ctx.db.get("files_nodes", legacy.markdownFileId),
+				ctx.db.get("files_nodes", legacy.folderId),
+				ctx.db.get("files_nodes", legacy.extensionlessFileId),
+			]);
+			return { markdownFile, folder, extensionlessFile };
+		});
+
+		expect(result.markdownFile).toMatchObject({ lowercaseExtension: "md" });
+		expect(result.folder).toMatchObject({ lowercaseExtension: null });
+		expect(result.extensionlessFile).toMatchObject({ lowercaseExtension: null });
 	});
 });

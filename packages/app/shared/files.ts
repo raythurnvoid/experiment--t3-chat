@@ -62,6 +62,8 @@ export function files_create_tree_root() {
 		parentId: "",
 		name: "",
 		path: "/",
+		pathDepth: 0,
+		lowercaseExtension: null,
 		contentType: undefined,
 		assetId: undefined,
 		archiveOperationId: undefined,

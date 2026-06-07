@@ -29,15 +29,20 @@ const createTreeItem = (args: {
 	archiveOperationId?: string;
 }) => {
 	const id = args.id as Id<"files_nodes">;
+	const path = args.path ?? `/${args.name}`;
+	const lowercaseExtension =
+		args.kind === "file" && args.name.includes(".") ? args.name.slice(args.name.lastIndexOf(".") + 1).toLowerCase() : null;
 	return {
 		_id: id,
 		_creationTime: 0,
 		workspaceId: "workspace",
 		projectId: "project",
 		parentId: args.parentId === files_ROOT_ID ? files_ROOT_ID : (args.parentId as Id<"files_nodes">),
-		path: args.path ?? `/${args.name}`,
+		path,
+		pathDepth: path === "/" ? 0 : path.split("/").filter(Boolean).length,
 		name: args.name,
 		kind: args.kind,
+		lowercaseExtension,
 		archiveOperationId: args.archiveOperationId,
 		createdBy: "test-user" as Id<"users">,
 		updatedAt: 0,

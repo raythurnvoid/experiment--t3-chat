@@ -1,9 +1,9 @@
 import { Workpool } from "@convex-dev/workpool";
 import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
-import { encodeStateAsUpdate } from "yjs";
+import { encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
-import { files_line_range_from_text, files_tail_lines_from_text } from "./files_nodes.ts";
+import { files_line_range_from_text, files_tail_lines_from_text, files_grep_lines } from "./files_nodes.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
 import { minimatch } from "minimatch";
@@ -15,6 +15,7 @@ import {
 	files_get_utf8_byte_size,
 	files_u8_to_array_buffer,
 	files_yjs_doc_create_from_markdown,
+	files_yjs_doc_update_from_markdown,
 } from "../server/files.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
@@ -78,6 +79,31 @@ describe("bounded read line helpers", () => {
 		const out = files_tail_lines_from_text(`p\n${"Q".repeat(20000)}\n`, 1);
 		expect(out.content).toContain("[line truncated to 8000 chars");
 		expect(out.content.length).toBeLessThan(20000);
+	});
+
+	test("files_grep_lines matches substrings with 1-based line numbers", () => {
+		const content = "alpha beta\nGamma\ndelta alpha\n\nzeta\n";
+		// Case-sensitive substring; line numbers are 1-based; blank/non-matching lines excluded.
+		expect(files_grep_lines(content, "alpha", false, 100).matches).toEqual([
+			{ lineNumber: 1, line: "alpha beta" },
+			{ lineNumber: 3, line: "delta alpha" },
+		]);
+		// Case-insensitive.
+		expect(files_grep_lines(content, "gamma", true, 100).matches).toEqual([{ lineNumber: 2, line: "Gamma" }]);
+		// Case-sensitive miss.
+		expect(files_grep_lines(content, "gamma", false, 100).matches).toEqual([]);
+		// Empty pattern matches nothing (avoids "match everything").
+		expect(files_grep_lines(content, "", false, 100).matches).toEqual([]);
+		// maxMatches cap sets truncated.
+		const many = "x\n".repeat(10) + "\n";
+		const capped = files_grep_lines(many, "x", false, 3);
+		expect(capped.matches).toHaveLength(3);
+		expect(capped.truncated).toBe(true);
+		// Over-long matching line is display-truncated.
+		const long = files_grep_lines(`pre\n${"Z".repeat(20000)}match\n`, "match", false, 100);
+		expect(long.matches).toHaveLength(1);
+		expect(long.matches[0]!.lineNumber).toBe(2);
+		expect(long.matches[0]!.line).toContain("[line truncated to 8000 chars");
 	});
 });
 
@@ -208,6 +234,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "docs",
 		kind: "folder",
 		path: "/docs",
+		pathDepth: 1,
 		updatedAt: 1,
 	});
 	await ctx.db.insert("files_nodes", {
@@ -220,6 +247,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "a.md",
 		kind: "file",
 		path: "/docs/a.md",
+		pathDepth: 2,
+		lowercaseExtension: "md",
 		updatedAt: 2,
 		contentType: "text/markdown;charset=utf-8",
 	});
@@ -233,6 +262,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "b.md",
 		kind: "file",
 		path: "/docs/b.md",
+		pathDepth: 2,
+		lowercaseExtension: "md",
 		updatedAt: 3,
 	});
 	const nestedFolderId = await ctx.db.insert("files_nodes", {
@@ -245,6 +276,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "nested",
 		kind: "folder",
 		path: "/docs/nested",
+		pathDepth: 2,
 		updatedAt: 4,
 	});
 	await ctx.db.insert("files_nodes", {
@@ -257,6 +289,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "c.md",
 		kind: "file",
 		path: "/docs/nested/c.md",
+		pathDepth: 3,
+		lowercaseExtension: "md",
 		updatedAt: 5,
 	});
 	await ctx.db.insert("files_nodes", {
@@ -269,6 +303,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "z-archived.md",
 		kind: "file",
 		path: "/docs/z-archived.md",
+		pathDepth: 2,
+		lowercaseExtension: "md",
 		archiveOperationId: "archive-operation-test",
 		updatedAt: 6,
 	});
@@ -282,6 +318,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "docs-archive",
 		kind: "folder",
 		path: "/docs-archive",
+		pathDepth: 1,
 		updatedAt: 7,
 	});
 	await ctx.db.insert("files_nodes", {
@@ -294,11 +331,266 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "outside.md",
 		kind: "file",
 		path: "/docs-archive/outside.md",
+		pathDepth: 2,
+		lowercaseExtension: "md",
 		updatedAt: 8,
 	});
 
 	return { ...membership, docsFolderId };
 }
+
+describe("check_bash_file_search_readiness", () => {
+	test("reports sampled stale depth, stats, and chunk scope fields", async () => {
+		const t = test_convex();
+		const membership = await t.run(async (ctx) => {
+			const membership = await test_mocks_fill_db_with.membership(ctx);
+			const folderId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				createdBy: membership.userId,
+				updatedBy: membership.userId,
+				parentId: files_ROOT_ID,
+				name: "docs",
+				kind: "folder",
+				path: "/docs",
+				pathDepth: 0,
+				updatedAt: 1,
+			});
+			const fileId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				createdBy: membership.userId,
+				updatedBy: membership.userId,
+				parentId: folderId,
+				name: "readme.md",
+				kind: "file",
+				path: "/docs/readme.md",
+				pathDepth: 2,
+				lowercaseExtension: "md",
+				contentType: "text/markdown;charset=utf-8",
+				updatedAt: 2,
+			});
+			const [assetId, yjsSnapshotAssetId] = await Promise.all([
+				ctx.db.insert("files_r2_assets", {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					kind: "content",
+					r2Bucket: "test",
+					size: 9,
+					createdBy: membership.userId,
+					updatedAt: 2,
+				}),
+				ctx.db.insert("files_r2_assets", {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					kind: "yjs_snapshot",
+					r2Bucket: "test",
+					size: 9,
+					createdBy: membership.userId,
+					updatedAt: 2,
+				}),
+			]);
+			const [yjsSnapshotId, yjsLastSequenceId] = await Promise.all([
+				ctx.db.insert("files_yjs_snapshots", {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					nodeId: fileId,
+					sequence: 1,
+					assetId: yjsSnapshotAssetId,
+					createdBy: membership.userId,
+					updatedBy: membership.userId,
+					updatedAt: 2,
+				}),
+				ctx.db.insert("files_yjs_docs_last_sequences", {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					nodeId: fileId,
+					lastSequence: 1,
+				}),
+			]);
+			await ctx.db.patch("files_nodes", fileId, {
+				assetId,
+				yjsSnapshotId,
+				yjsLastSequenceId,
+			});
+			const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				nodeId: fileId,
+				yjsSequence: 1,
+				chunkIndex: 0,
+				markdownChunk: "# Readme\n",
+				startIndex: 0,
+				endIndex: 9,
+				lineStart: 1,
+				lineEnd: 1,
+				chunkFlags: 0,
+			});
+			await ctx.db.insert("files_plain_text_chunks", {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				nodeId: fileId,
+				yjsSequence: 1,
+				chunkIndex: 0,
+				path: "/stale/readme.md",
+				archiveOperationId: "stale-archive",
+				plainTextChunk: "Readme",
+				markdownChunkId,
+			});
+			return membership;
+		});
+
+		const result = await t.query(internal.files_nodes.check_bash_file_search_readiness, {
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
+			sampleLimit: 20,
+		});
+
+		expect(result.activeNodesWithMissingOrStalePathDepth).toContainEqual({
+			path: "/docs",
+			expectedPathDepth: 1,
+			actualPathDepth: 0,
+		});
+		expect(result.activeFilesWithMissingOrStaleStats).toContainEqual({
+			path: "/docs/readme.md",
+			reason: "missing_statsId",
+		});
+		expect(result.activeFilesWithChunkScopeIssues).toContainEqual(
+			expect.objectContaining({
+				path: "/docs/readme.md",
+				reason: "missing_or_stale_chunk_path",
+				yjsSequence: 1,
+				chunkIndex: 0,
+				chunkPath: "/stale/readme.md",
+				chunkArchiveOperationId: "stale-archive",
+			}),
+		);
+		expect(result.activeFilesWithStaleChunkScopeFields).toContainEqual(
+			expect.objectContaining({
+				path: "/docs/readme.md",
+				reason: "missing_or_stale_chunk_path",
+			}),
+		);
+		expect(result.activeFilesMissingPlainTextChunks).toEqual([]);
+	});
+});
+
+describe("enqueue_missing_plain_text_chunk_materializations", () => {
+	test("enqueues current editable files without plain text chunks and skips repeats", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const membership = await test_mocks_fill_db_with.membership(ctx);
+			const editableFileId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				createdBy: membership.userId,
+				updatedBy: membership.userId,
+				parentId: files_ROOT_ID,
+				name: "needs-index.md",
+				kind: "file",
+				path: "/needs-index.md",
+				pathDepth: 1,
+				lowercaseExtension: "md",
+				contentType: "text/markdown;charset=utf-8",
+				updatedAt: 1,
+			});
+			const rawFileId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				createdBy: membership.userId,
+				updatedBy: membership.userId,
+				parentId: files_ROOT_ID,
+				name: "source.pdf",
+				kind: "file",
+				path: "/source.pdf",
+				pathDepth: 1,
+				lowercaseExtension: "pdf",
+				contentType: "application/pdf",
+				updatedAt: 2,
+			});
+			const [assetId, yjsSnapshotAssetId] = await Promise.all([
+				ctx.db.insert("files_r2_assets", {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					kind: "content",
+					r2Bucket: "test",
+					size: 10,
+					createdBy: membership.userId,
+					updatedAt: 1,
+				}),
+				ctx.db.insert("files_r2_assets", {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					kind: "yjs_snapshot",
+					r2Bucket: "test",
+					size: 10,
+					createdBy: membership.userId,
+					updatedAt: 1,
+				}),
+			]);
+			const [yjsSnapshotId, yjsLastSequenceId] = await Promise.all([
+				ctx.db.insert("files_yjs_snapshots", {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					nodeId: editableFileId,
+					sequence: 0,
+					assetId: yjsSnapshotAssetId,
+					createdBy: membership.userId,
+					updatedBy: membership.userId,
+					updatedAt: 1,
+				}),
+				ctx.db.insert("files_yjs_docs_last_sequences", {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					nodeId: editableFileId,
+					lastSequence: 0,
+				}),
+			]);
+			await ctx.db.patch("files_nodes", editableFileId, {
+				assetId,
+				yjsSnapshotId,
+				yjsLastSequenceId,
+			});
+			return { ...membership, editableFileId, rawFileId };
+		});
+
+		const first = await t.mutation(internal.files_nodes.enqueue_missing_plain_text_chunk_materializations, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			numItems: 10,
+			cursor: null,
+		});
+		const second = await t.mutation(internal.files_nodes.enqueue_missing_plain_text_chunk_materializations, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			numItems: 10,
+			cursor: null,
+		});
+		const jobs = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_content_materialization_jobs")
+				.withIndex("by_file", (q) => q.eq("nodeId", db.editableFileId))
+				.collect(),
+		);
+
+		expect(first.enqueued).toBe(1);
+		expect(first.skippedNonEditable).toBeGreaterThanOrEqual(1);
+		expect(second.enqueued).toBe(0);
+		expect(second.skippedExistingJob).toBe(1);
+		expect(jobs).toHaveLength(1);
+		expect(jobs[0]).toMatchObject({
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			nodeId: db.editableFileId,
+			targetSequence: 0,
+		});
+		expect(db.rawFileId).toBeDefined();
+	});
+});
 
 test("list_files", async () => {
 	const t = test_convex();
@@ -668,6 +960,76 @@ describe("paginated bash listing queries", () => {
 		});
 	});
 
+	test("filters recursive descendants by kind and depth before pagination", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const filesAtDepthOne = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs",
+			numItems: 10,
+			cursor: null,
+			kind: "file",
+			maxDepth: 1,
+		});
+		const foldersAtDepthOne = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs",
+			numItems: 10,
+			cursor: null,
+			kind: "folder",
+			minDepth: 1,
+			maxDepth: 1,
+		});
+
+		expect(filesAtDepthOne.items.map((item) => item.path)).toEqual(["/docs/a.md", "/docs/b.md"]);
+		expect(foldersAtDepthOne.items.map((item) => item.path)).toEqual(["/docs/nested"]);
+		expect(filesAtDepthOne.items.map((item) => item.path)).not.toContain("/docs/nested/c.md");
+	});
+
+	test("paginates extension-filtered recursive descendants through the extension index", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const firstPage = await asUser.query(internal.files_nodes.list_subtree_by_extension_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs",
+			lowercaseExtension: "md",
+			numItems: 1,
+			cursor: null,
+			maxDepth: 1,
+		});
+		const secondPage = await asUser.query(internal.files_nodes.list_subtree_by_extension_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			path: "/docs",
+			lowercaseExtension: "md",
+			numItems: 10,
+			cursor: firstPage.continueCursor,
+			maxDepth: 1,
+		});
+		const paths = [...firstPage.items, ...secondPage.items].map((item) => item.path);
+
+		expect(firstPage.isDone).toBe(false);
+		expect(paths).toEqual(["/docs/a.md", "/docs/b.md"]);
+		expect(paths).not.toContain("/docs/nested/c.md");
+		expect(paths).not.toContain("/docs/z-archived.md");
+		expect(paths).not.toContain("/docs-archive/outside.md");
+	});
+
 	test("paginates raw path prefixes with intentional sibling-prefix matches", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
@@ -691,6 +1053,30 @@ describe("paginated bash listing queries", () => {
 			expect.arrayContaining(["/docs", "/docs/a.md", "/docs/nested/c.md", "/docs-archive", "/docs-archive/outside.md"]),
 		);
 		expect(paths).not.toContain("/docs/z-archived.md");
+	});
+
+	test("filters raw path prefixes by kind before pagination", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const result = await asUser.query(internal.files_nodes.list_path_prefix_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			pathPrefix: "/docs",
+			numItems: 20,
+			cursor: null,
+			kind: "file",
+		});
+		const paths = result.items.map((item) => item.path);
+
+		expect(paths).toEqual(expect.arrayContaining(["/docs/a.md", "/docs/b.md", "/docs/nested/c.md"]));
+		expect(paths).not.toContain("/docs");
+		expect(paths).not.toContain("/docs/nested");
 	});
 
 	test("returns a file start path exactly once for subtree pagination", async () => {
@@ -1124,6 +1510,8 @@ test("home file path stays immutable on rename and move", async () => {
 			name: "README.md",
 			kind: "file",
 			path: "/README.md",
+			pathDepth: 1,
+			lowercaseExtension: "md",
 			archiveOperationId: undefined,
 		}),
 	);
@@ -2090,6 +2478,8 @@ test("rename_node preserves caller-provided nested file names", async () => {
 			name: "yo.md",
 			kind: "file",
 			path: `/${db.files.file_root_1.name}/yo.md`,
+			pathDepth: 2,
+			lowercaseExtension: "md",
 			archiveOperationId: undefined,
 		}),
 	);
@@ -3177,6 +3567,503 @@ test("materialize_file_content writes nonempty Markdown and Yjs snapshots to R2"
 	expect(r2Writes.get(saved.asset!.r2Key!)).toBe(markdown);
 	expect(r2Writes.get(versionSnapshotAsset!.r2Key!)).toBe(markdown);
 	expect(r2Writes.has(saved.yjsSnapshotAsset!.r2Key!)).toBe(true);
+});
+
+// Wire R2 so materialization round-trips through an in-memory bucket keyed by the per-file upload key:
+// generateUploadUrl/getURL/fetch all read and write the returned `r2Writes` map. Returned so a test
+// can recover the exact committed markdown a file's content asset points at (the chunk-read oracle).
+function test_setup_r2_capture() {
+	const r2Writes = new Map<string, BodyInit>();
+	generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
+		const key = customKey ?? "test-upload-key";
+		return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
+	});
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+		async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+	);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlString.startsWith("https://r2.test/upload") && init?.method === "PUT") {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
+				r2Writes.set(key, init.body ?? "");
+				return new Response(null, { status: 200 });
+			}
+			if (urlString.startsWith("https://r2.test/object?key=")) {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
+				const body = r2Writes.get(key);
+				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+			}
+			return new Response(null, { status: 404 });
+		}),
+	);
+	return r2Writes;
+}
+
+// Create a file at `path`, push its markdown as the first Yjs update, and materialize it (sequence 1)
+// so its content lands in R2 + the markdown/plain-text chunk tables. Returns the node id.
+async function test_materialize_markdown_file(
+	t: ReturnType<typeof test_convex>,
+	asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
+	path: string,
+	markdown: string,
+) {
+	const created = await asUser.action(internal.files_nodes.create_file_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path,
+	});
+	if (created._nay) throw new Error(created._nay.message);
+	const nodeId = created._yay.nodeId;
+	const yjsDoc = files_yjs_doc_create_from_markdown({ markdown });
+	if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
+	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		membershipId: db.membershipId,
+		nodeId,
+		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
+		sessionId: `mat-${path}`,
+	});
+	yjsDoc.destroy();
+	if (pushResult._nay) throw new Error(pushResult._nay.message);
+	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		nodeId,
+		userId: db.userId,
+		targetSequence: 1,
+	});
+	if (materialized._nay) throw new Error(materialized._nay.message);
+	return nodeId;
+}
+
+// Recover the exact committed markdown a file's content asset points at (the chunk-read oracle).
+async function test_read_committed_markdown(
+	t: ReturnType<typeof test_convex>,
+	nodeId: Id<"files_nodes">,
+	r2Writes: Map<string, BodyInit>,
+) {
+	return t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", nodeId);
+		const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		return asset?.r2Key ? (r2Writes.get(asset.r2Key) as string | undefined) : undefined;
+	});
+}
+
+test("read_committed_file_chunks_line_range/stats match full-text slicing across chunks", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Chunk Read User",
+		email: "chunk-read-user@example.com",
+	});
+	const r2Writes = test_setup_r2_capture();
+
+	// Long enough to materialize into several chunks (default maxChunkSize 1200), so reads exercise
+	// the cross-chunk seek + merge, not a single chunk.
+	const paragraphs = Array.from(
+		{ length: 40 },
+		(_, i) =>
+			`Paragraph ${i + 1} carries searchable words alpha-${i} beta gamma delta epsilon zeta eta theta${i === 0 ? " 🙂" : ""}.`,
+	);
+	const markdown = `# Chunked Document\n\n${paragraphs.join("\n\n")}`;
+
+	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path: "/chunked.md",
+	});
+	if (createdFile._nay) {
+		throw new Error(createdFile._nay.message);
+	}
+	const nodeId = createdFile._yay.nodeId;
+
+	const yjsDoc = files_yjs_doc_create_from_markdown({ markdown });
+	if ("_nay" in yjsDoc) {
+		throw new Error(yjsDoc._nay.message);
+	}
+	const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		membershipId: db.membershipId,
+		nodeId,
+		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
+		sessionId: "chunk-read-session",
+	});
+	yjsDoc.destroy();
+	if (pushResult._nay) {
+		throw new Error(pushResult._nay.message);
+	}
+
+	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		nodeId,
+		userId: db.userId,
+		targetSequence: 1,
+	});
+	if (materialized._nay) {
+		throw new Error(materialized._nay.message);
+	}
+
+	// The exact committed markdown the chunker saw is the oracle: the chunk reader must reproduce
+	// the same line ranges as slicing this text directly.
+	const { committed, chunkCount } = await t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", nodeId);
+		const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		const chunks = await ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", nodeId),
+			)
+			.collect();
+		return { committed: asset?.r2Key ? (r2Writes.get(asset.r2Key) as string | undefined) : undefined, chunkCount: chunks.length };
+	});
+	if (committed === undefined) {
+		throw new Error("Expected committed markdown to be stored in R2");
+	}
+	// Guard the test is meaningful: the document really spans multiple chunks.
+	expect(chunkCount).toBeGreaterThan(1);
+
+	const totalLines = committed.split("\n").length;
+	const readRange = (startLine: number, maxLines: number, fromEnd = false) =>
+		asUser.query(internal.files_nodes.read_committed_file_chunks_line_range, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			path: "/chunked.md",
+			startLine,
+			maxLines,
+			fromEnd,
+		});
+
+	// Head, a deep mid-document range (the case the leading byte window could not reach), and the
+	// final lines — each must equal slicing the full committed text.
+	for (const [startLine, maxLines] of [
+		[1, 5],
+		[41, 6],
+		[Math.max(1, totalLines - 3), 10],
+	] as const) {
+		const result = await readRange(startLine, maxLines);
+		expect(result.usable).toBe(true);
+		if (!result.usable) throw new Error("expected usable");
+		expect(result.content).toBe(files_line_range_from_text(committed, startLine, maxLines).content);
+	}
+
+	// moreLines after the bounded-streaming refactor: a shallow read reports content follows; a range
+	// entirely past EOF does not (and is a valid empty page, not a fallback).
+	const shallow = await readRange(1, 5);
+	expect(shallow.usable && shallow.moreLines).toBe(true);
+	const pastEof = await readRange(totalLines + 50, 5);
+	expect(pastEof.usable).toBe(true);
+	if (!pastEof.usable) throw new Error("expected usable");
+	expect(pastEof.content).toBe("");
+	expect(pastEof.moreLines).toBe(false);
+
+	// tail.
+	const tail = await readRange(1, 5, true);
+	expect(tail.usable).toBe(true);
+	if (!tail.usable) throw new Error("expected usable");
+	expect(tail.content).toBe(files_tail_lines_from_text(committed, 5).content);
+
+	// Exact counts from chunks match counting the full committed text.
+	const stats = await asUser.query(internal.files_nodes.read_committed_file_chunk_stats, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path: "/chunked.md",
+	});
+	expect(stats.usable).toBe(true);
+	if (!stats.usable) throw new Error("expected usable");
+	expect(stats.lineCount).toBe((committed.match(/\n/gu) ?? []).length);
+	// charCount is Unicode code points (wc -m), not UTF-16 units: the 🙂 makes these differ.
+	expect(Array.from(committed).length).toBeLessThan(committed.length);
+	expect(stats.charCount).toBe(Array.from(committed).length);
+	expect(stats.byteCount).toBe(files_get_utf8_byte_size(committed));
+	expect(stats.wordCount).toBe(committed.trim().length === 0 ? 0 : committed.trim().split(/\s+/u).length);
+
+	// Currency gate: a stale snapshot (latest sequence ahead of the materialized snapshot) must not
+	// use chunks — the action falls back so output can never disagree with `cat`.
+	await t.run(async (ctx) => {
+		const node = await ctx.db.get("files_nodes", nodeId);
+		const snapshot = node?.yjsSnapshotId ? await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId) : null;
+		if (!node?.yjsLastSequenceId || !snapshot) {
+			throw new Error("Expected materialized yjs docs");
+		}
+		await ctx.db.patch("files_yjs_docs_last_sequences", node.yjsLastSequenceId, {
+			lastSequence: snapshot.sequence + 1,
+		});
+	});
+	const staleResult = await readRange(1, 5);
+	expect(staleResult.usable).toBe(false);
+});
+
+test("grep_committed_file_chunks streams every chunk: equals the full-text oracle, caps matches, spans chunk boundaries", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Grep User",
+		email: "grep-user@example.com",
+	});
+	const r2Writes = test_setup_r2_capture();
+
+	// 150 matching paragraphs (> the 100-match cap) plus one paragraph that is a single line long
+	// enough to be force-split across chunks — a match inside it only resolves if the streaming scan
+	// reassembles the line across the boundary via `carry`.
+	const manyLines = Array.from({ length: 150 }, (_, i) => `alpha needletoken row ${i + 1} beta`);
+	const boundaryLine = `${"x".repeat(1500)} BOUNDARYNEEDLE ${"y".repeat(700)}`;
+	const markdown = `# Grep Doc\n\n${manyLines.join("\n\n")}\n\n${boundaryLine}`;
+
+	const nodeId = await test_materialize_markdown_file(t, asUser, db, "/grep.md", markdown);
+	const committed = await test_read_committed_markdown(t, nodeId, r2Writes);
+	if (committed === undefined) throw new Error("Expected committed markdown in R2");
+
+	const chunkCount = await t.run(
+		async (ctx) =>
+			(
+				await ctx.db
+					.query("files_markdown_chunks")
+					.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", nodeId),
+					)
+					.collect()
+			).length,
+	);
+	expect(chunkCount).toBeGreaterThan(1);
+
+	const grep = (pattern: string, ignoreCase: boolean) =>
+		asUser.query(internal.files_nodes.grep_committed_file_chunks, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			path: "/grep.md",
+			pattern,
+			ignoreCase,
+		});
+
+	// > 100 matches: capped at the match cap and flagged truncated, identical to the full-text oracle.
+	const manyOracle = files_grep_lines(committed, "needletoken", false, 100);
+	expect(manyOracle.truncated).toBe(true); // guard: the doc really has more than 100 matches
+	const many = await grep("needletoken", false);
+	expect(many.usable).toBe(true);
+	if (!many.usable) throw new Error("expected usable");
+	expect(many.matches).toEqual(manyOracle.matches);
+	expect(many.matches.length).toBe(100);
+	expect(many.scanTruncated).toBe(manyOracle.truncated);
+
+	// A match inside the boundary-spanning long line is found (carry reassembles it across chunks).
+	const boundaryOracle = files_grep_lines(committed, "BOUNDARYNEEDLE", false, 100);
+	expect(boundaryOracle.matches.length).toBe(1); // guard
+	const boundary = await grep("BOUNDARYNEEDLE", false);
+	expect(boundary.usable).toBe(true);
+	if (!boundary.usable) throw new Error("expected usable");
+	expect(boundary.matches).toEqual(boundaryOracle.matches);
+	expect(boundary.scanTruncated).toBe(false);
+
+	// Case-insensitive matches the oracle.
+	const ciOracle = files_grep_lines(committed, "NEEDLETOKEN", true, 100);
+	const ci = await grep("NEEDLETOKEN", true);
+	expect(ci.usable).toBe(true);
+	if (!ci.usable) throw new Error("expected usable");
+	expect(ci.matches).toEqual(ciOracle.matches);
+
+	// No match: empty, not truncated.
+	const miss = await grep("zzz-absent-token-zzz", false);
+	expect(miss.usable).toBe(true);
+	if (!miss.usable) throw new Error("expected usable");
+	expect(miss.matches).toEqual([]);
+	expect(miss.scanTruncated).toBe(false);
+});
+
+test("file_stats stay fresh after an edit: re-materialization patches the same row in place", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Stats Edit User",
+		email: "stats-edit-user@example.com",
+	});
+	const r2Writes = test_setup_r2_capture();
+
+	const markdownA = "# Stats Doc\n\nFirst paragraph alpha.\n\nSecond paragraph beta.";
+	const markdownB = `${markdownA}\n\nThird paragraph gamma delta epsilon.\n\nFourth paragraph zeta eta theta iota.`;
+
+	const created = await asUser.action(internal.files_nodes.create_file_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path: "/stats-edit.md",
+	});
+	if (created._nay) throw new Error(created._nay.message);
+	const nodeId = created._yay.nodeId;
+
+	const yjsDoc = files_yjs_doc_create_from_markdown({ markdown: markdownA });
+	if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
+	const pushA = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		membershipId: db.membershipId,
+		nodeId,
+		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
+		sessionId: "stats-edit-A",
+	});
+	if (pushA._nay) throw new Error(pushA._nay.message);
+	const matA = await t.action(internal.files_nodes.materialize_file_content, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		nodeId,
+		userId: db.userId,
+		targetSequence: 1,
+	});
+	if (matA._nay) throw new Error(matA._nay.message);
+
+	const wc = (text: string) => ({
+		lineCount: (text.match(/\n/gu) ?? []).length,
+		wordCount: text.trim().length === 0 ? 0 : text.trim().split(/\s+/u).length,
+		charCount: Array.from(text).length,
+		byteCount: files_get_utf8_byte_size(text),
+	});
+	const statsArgs = {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path: "/stats-edit.md",
+	};
+
+	const committedA = await test_read_committed_markdown(t, nodeId, r2Writes);
+	if (committedA === undefined) throw new Error("Expected committed A");
+	const statsA = await asUser.query(internal.files_nodes.read_committed_file_chunk_stats, statsArgs);
+	expect(statsA.usable).toBe(true);
+	if (!statsA.usable) throw new Error("expected usable A");
+	expect({
+		lineCount: statsA.lineCount,
+		wordCount: statsA.wordCount,
+		charCount: statsA.charCount,
+		byteCount: statsA.byteCount,
+	}).toEqual(wc(committedA));
+	const statsRowIdA = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.statsId ?? null);
+	expect(statsRowIdA).not.toBeNull();
+
+	// Edit: transform the live Yjs doc to B and push only the incremental diff, then re-materialize.
+	const svA = encodeStateVector(yjsDoc);
+	const updated = files_yjs_doc_update_from_markdown({ markdown: markdownB, mut_yjsDoc: yjsDoc });
+	if (updated._nay) throw new Error(updated._nay.message);
+	const pushB = await asUser.mutation(api.files_nodes.yjs_push_update, {
+		membershipId: db.membershipId,
+		nodeId,
+		update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc, svA)),
+		sessionId: "stats-edit-B",
+	});
+	yjsDoc.destroy();
+	if (pushB._nay) throw new Error(pushB._nay.message);
+	const matB = await t.action(internal.files_nodes.materialize_file_content, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		nodeId,
+		userId: db.userId,
+		targetSequence: 2,
+	});
+	if (matB._nay) throw new Error(matB._nay.message);
+
+	const committedB = await test_read_committed_markdown(t, nodeId, r2Writes);
+	if (committedB === undefined) throw new Error("Expected committed B");
+	// The edit really changed the content — otherwise the freshness guarantee is not exercised.
+	expect(committedB.length).toBeGreaterThan(committedA.length);
+	const statsB = await asUser.query(internal.files_nodes.read_committed_file_chunk_stats, statsArgs);
+	expect(statsB.usable).toBe(true);
+	if (!statsB.usable) throw new Error("expected usable B");
+	expect({
+		lineCount: statsB.lineCount,
+		wordCount: statsB.wordCount,
+		charCount: statsB.charCount,
+		byteCount: statsB.byteCount,
+	}).toEqual(wc(committedB));
+	expect(statsB.lineCount).toBeGreaterThan(statsA.lineCount);
+
+	// The same stats row was patched in place (back-ref unchanged) — no duplicate row was inserted.
+	const statsRowIdB = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.statsId ?? null);
+	expect(statsRowIdB).toBe(statsRowIdA);
+	const rowCount = await t.run(
+		async (ctx) =>
+			(
+				await ctx.db
+					.query("file_stats")
+					.withIndex("by_workspace_project_node", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", nodeId),
+					)
+					.collect()
+			).length,
+	);
+	expect(rowCount).toBe(1);
+});
+
+test("text_search_files scopes to a path prefix without sibling-prefix leakage and limits after filtering", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Search User",
+		email: "search-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const body = (label: string) => `# ${label}\n\nThis document mentions scopeneedle exactly once for ${label}.`;
+	// One file under /scope and one under the sibling-prefix folder /scope-other (string-prefix
+	// collision). Two files is the per-user push-rate-limit ceiling; the richer multi-candidate
+	// limit-after-filter case is covered by the bash search mock test.
+	await test_materialize_markdown_file(t, asUser, db, "/scope/inside.md", body("inside"));
+	await test_materialize_markdown_file(t, asUser, db, "/scope-other/collide.md", body("collide"));
+
+	const search = (pathPrefix: string | undefined, numItems: number, cursor: string | null = null) =>
+		asUser.query(internal.files_nodes.text_search_files, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			query: "scopeneedle",
+			numItems,
+			cursor,
+			pathPrefix,
+		});
+	const pageHasItems = (pathPrefix: string | undefined, cursor: string) =>
+		asUser.query(internal.files_nodes.text_search_files_page_has_items, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			query: "scopeneedle",
+			cursor,
+			pathPrefix,
+		});
+
+	// Unscoped: both files match.
+	const all = await search(undefined, 50);
+	expect(new Set(all.items.map((i) => i.path))).toEqual(new Set(["/scope/inside.md", "/scope-other/collide.md"]));
+
+	const firstUnscopedPage = await search(undefined, 1);
+	expect(firstUnscopedPage.items).toHaveLength(1);
+	expect(firstUnscopedPage.isDone).toBe(false);
+	expect(firstUnscopedPage.continueCursor).not.toBe("");
+	expect(await pageHasItems(undefined, firstUnscopedPage.continueCursor)).toBe(true);
+
+	// Scoped to /scope: only the file under /scope, NOT the sibling-prefix /scope-other file.
+	const scoped = await search("/scope", 50);
+	expect(scoped.items.map((i) => i.path)).toEqual(["/scope/inside.md"]);
+
+	// Scoped to the sibling prefix: only its file (the collision is rejected in both directions).
+	const scopedOther = await search("/scope-other", 50);
+	expect(scopedOther.items.map((i) => i.path)).toEqual(["/scope-other/collide.md"]);
+
+	// Limit applied AFTER the path filter: with limit 1 and an out-of-scope match also present, the
+	// single in-scope match is still returned (an out-of-scope match must not consume the limit).
+	const scopedTinyLimit = await search("/scope", 1);
+	expect(scopedTinyLimit.items.map((i) => i.path)).toEqual(["/scope/inside.md"]);
+	expect(await pageHasItems("/scope", scopedTinyLimit.continueCursor)).toBe(false);
 });
 
 test("create_file_snapshot_content_url returns a signed R2 URL without fetching snapshot Markdown", async () => {

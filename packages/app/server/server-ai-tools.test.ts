@@ -2,6 +2,7 @@ import { test_mocks_hardcoded } from "../convex/setup.test.ts";
 import { describe, test, expect, vi } from "vitest";
 import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
+import { files_READ_RANGE_MAX_LINES } from "../convex/files_nodes.ts";
 
 const exa_test = vi.hoisted(() => ({
 	searchMock: vi.fn(),
@@ -149,6 +150,27 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
+				description: expect.stringContaining(
+					"When reporting Bash results, treat app-only flags such as --limit, --cursor, --path-query, and --extension as supported app Bash syntax",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"When a user names an app-root path like /docs, run it as /home/cloud-usr/w/personal/home/docs",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"If a failed Bash command prints a Try: command that directly matches the user's request",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
 				description: expect.stringContaining("ls -l uses app metadata, not POSIX permissions"),
 			}),
 		);
@@ -168,22 +190,157 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("find -maxdepth N and find -mindepth N filter results by depth."),
+				description: expect.stringContaining("wc accepts multiple files (per-file counts plus a total)"),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("matches your whole query as one CONTIGUOUS, case-insensitive substring"),
+				description: expect.stringContaining("find -maxdepth N and find -mindepth N filter non-search subtree results by depth."),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("ls -t (newest first) and ls -rt (oldest first) list the whole project ordered by update time"),
+				description: expect.stringContaining(
+					'Content-vs-path rule: use search for text inside files, and use find only for path/name discovery.',
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining('Plain requests like "search for X with limit N" mean content search'),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					'If the user says "search for the X file", "find the X file", "file named X", or "path/name contains X", use find.',
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"run search --path <folder> X or search X; do not substitute find --path-query.",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("Use find -name QUERY or find --path-query QUERY only for DB-backed path/name word search"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("find -name is case-insensitive like -iname"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("Use find <path> --extension md -type f for exact indexed extension search"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					'Prefer --path-query QUERY for natural "path/name contains QUERY" requests',
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("For regex path requests, say regex is unsupported"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"find --prefix <prefix> --limit N [--cursor CURSOR] only for raw startsWith path discovery",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("prefix mode may match sibling prefixes such as /docs-archive"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("indexed Convex text search across Markdown/text content"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("For recursive grep or grep -R wording over a folder"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("with PATH they list that directory's immediate children by update time"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("bare ls -t is still project-wide"),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining("Large files are not read inline"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("find -type f and find -type d restrict results to files or folders."),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("find searches paths/names only, not file content."),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("When asked for files under a folder, include -type f"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining('For requests like "where does X appear" or "which files mention X", run search first'),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("do not substitute find, which only searches paths/names"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("when the user asks for tree-shaped output, use tree, not ls -R"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("It is not regex, glob, or exact grep"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("broad folder scopes with common terms can be heavier"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("bare search scopes to that cwd"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(`up to ${files_READ_RANGE_MAX_LINES} lines per read`),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context"),
 			}),
 		);
 	});

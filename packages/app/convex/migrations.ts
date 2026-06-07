@@ -8,6 +8,7 @@ import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_ensure_role_permission_grant,
 } from "./access_control.ts";
+import { path_extract_segments_from } from "../shared/shared-utils.ts";
 
 const app_migrations = new Migrations<DataModel>(components.migrations, {
 	internalMutation,
@@ -31,6 +32,22 @@ type LegacyWorkspaceWithOwner = Omit<Doc<"workspaces">, "_id" | "_creationTime" 
 	owner?: Id<"users">;
 	ownerUserId?: Id<"users">;
 };
+
+function files_migrations_path_depth(path: string) {
+	return path === "/" ? 0 : path_extract_segments_from(path).length;
+}
+
+function files_migrations_lowercase_extension(path: string, kind: Doc<"files_nodes">["kind"]) {
+	if (kind !== "file") {
+		return null;
+	}
+	const name = path_extract_segments_from(path).at(-1) ?? "";
+	const dotIndex = name.lastIndexOf(".");
+	if (dotIndex <= 0 || dotIndex === name.length - 1) {
+		return null;
+	}
+	return name.slice(dotIndex + 1).toLowerCase();
+}
 
 const access_control_workspace_role_permission_grants = [
 	{ role: "admin", permission: "workspace.update" },
@@ -302,6 +319,53 @@ export const remove_notifications_created_at = app_migrations.define({
 	},
 });
 
+export const backfill_files_nodes_path_depth = app_migrations.define({
+	table: "files_nodes",
+	migrateOne: async (ctx, fileNode) => {
+		const pathDepth = files_migrations_path_depth(fileNode.path);
+		if (fileNode.pathDepth === pathDepth) {
+			return;
+		}
+
+		await ctx.db.patch("files_nodes", fileNode._id, { pathDepth });
+	},
+});
+
+export const backfill_files_nodes_lowercase_extension = app_migrations.define({
+	table: "files_nodes",
+	migrateOne: async (ctx, fileNode) => {
+		const lowercaseExtension = files_migrations_lowercase_extension(fileNode.path, fileNode.kind);
+		if (fileNode.lowercaseExtension === lowercaseExtension) {
+			return;
+		}
+
+		await ctx.db.patch("files_nodes", fileNode._id, { lowercaseExtension });
+	},
+});
+
+export const backfill_files_plain_text_chunk_scope = app_migrations.define({
+	table: "files_plain_text_chunks",
+	migrateOne: async (ctx, plainTextChunk) => {
+		const fileNode = await ctx.db.get("files_nodes", plainTextChunk.nodeId);
+		if (
+			!fileNode ||
+			fileNode.workspaceId !== plainTextChunk.workspaceId ||
+			fileNode.projectId !== plainTextChunk.projectId ||
+			fileNode.kind !== "file"
+		) {
+			return;
+		}
+		if (plainTextChunk.path === fileNode.path && plainTextChunk.archiveOperationId === fileNode.archiveOperationId) {
+			return;
+		}
+
+		await ctx.db.patch("files_plain_text_chunks", plainTextChunk._id, {
+			path: fileNode.path,
+			archiveOperationId: fileNode.archiveOperationId,
+		});
+	},
+});
+
 /** Run migrations from the CLI: `pnpx convex run migrations:run_<migration_name>` (cwd: packages/app). */
 export const run = app_migrations.runner();
 export const run_remove_billing_usage_snapshots_last_granted_period_start = app_migrations.runner(
@@ -339,4 +403,13 @@ export const run_cleanup_duplicate_access_control_owner_assignments = app_migrat
 );
 export const run_update_extra_workspaces_quota_max_count_to_2 = app_migrations.runner(
 	internal.migrations.update_extra_workspaces_quota_max_count_to_2,
+);
+export const run_backfill_files_nodes_path_depth = app_migrations.runner(
+	internal.migrations.backfill_files_nodes_path_depth,
+);
+export const run_backfill_files_nodes_lowercase_extension = app_migrations.runner(
+	internal.migrations.backfill_files_nodes_lowercase_extension,
+);
+export const run_backfill_files_plain_text_chunk_scope = app_migrations.runner(
+	internal.migrations.backfill_files_plain_text_chunk_scope,
 );

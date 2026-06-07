@@ -42,6 +42,7 @@ import type { RouterForConvexModules } from "./http.ts";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import {
 	db_insert_file_chunks,
+	db_patch_plain_text_chunks_scope,
 	db_get_file_content_materialization_db_state,
 	files_nodes_create_yjs_snapshot_update_from_markdown,
 	files_nodes_db_create_node_recursively_at_path,
@@ -1683,20 +1684,39 @@ async function archive_active_node_and_descendants(
 		.collect();
 
 	await Promise.all([
-		ctx.db.patch("files_nodes", args.node._id, {
-			archiveOperationId,
-			updatedBy: args.updatedBy,
-			updatedAt: args.now,
-		}),
+		(async () => {
+			const node = await ctx.db.get("files_nodes", args.node._id);
+			await ctx.db.patch("files_nodes", args.node._id, {
+				archiveOperationId,
+				updatedBy: args.updatedBy,
+				updatedAt: args.now,
+			});
+			if (node?.kind === "file") {
+				await db_patch_plain_text_chunks_scope(ctx, {
+					workspaceId: args.node.workspaceId,
+					projectId: args.node.projectId,
+					nodeId: args.node._id,
+					archiveOperationId,
+				});
+			}
+		})(),
 		...descendants
 			.filter((descendant) => descendant.archiveOperationId === undefined)
-			.map((descendant) =>
-				ctx.db.patch("files_nodes", descendant._id, {
+			.map(async (descendant) => {
+				await ctx.db.patch("files_nodes", descendant._id, {
 					archiveOperationId,
 					updatedBy: args.updatedBy,
 					updatedAt: args.now,
-				}),
-			),
+				});
+				if (descendant.kind === "file") {
+					await db_patch_plain_text_chunks_scope(ctx, {
+						workspaceId: descendant.workspaceId,
+						projectId: descendant.projectId,
+						nodeId: descendant._id,
+						archiveOperationId,
+					});
+				}
+			}),
 	]);
 }
 

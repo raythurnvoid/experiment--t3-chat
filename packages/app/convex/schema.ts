@@ -118,6 +118,10 @@ const app_convex_schema = defineSchema({
 		projectId: v.string(),
 		/** Materialized absolute path used for path resolution */
 		path: v.string(),
+		/** Absolute path segment count; root is 0. */
+		pathDepth: v.number(),
+		/** Lowercase file extension without the dot; folders and extensionless files use null. */
+		lowercaseExtension: v.union(v.string(), v.null()),
 		/** Display name used in path resolution */
 		name: v.string(),
 		kind: v.union(v.literal("folder"), v.literal("file")),
@@ -127,6 +131,12 @@ const app_convex_schema = defineSchema({
 		 * Store lowercase media types with optional semicolon parameters, e.g. `text/markdown;charset=utf-8`.
 		 */
 		contentType: v.optional(v.string()),
+		/**
+		 * Back-reference to this file's `file_stats` row (wc counts), so callers holding the node can
+		 * read stats by id without an index lookup. Optional because a node is created first and the
+		 * stats row is linked back afterwards; folders never have one (files only).
+		 */
+		statsId: v.optional(v.id("file_stats")),
 		/** ID of the last YJS sequence for the file */
 		yjsLastSequenceId: v.optional(v.id("files_yjs_docs_last_sequences")),
 		/** ID of the last YJS sequence for the file */
@@ -157,15 +167,59 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 			"name",
 		])
+		.index("by_workspace_project_parent_archiveOperation_updatedAt", [
+			"workspaceId",
+			"projectId",
+			"parentId",
+			"archiveOperationId",
+			"updatedAt",
+		])
 		.index("by_workspace_project_path_archiveOperation", ["workspaceId", "projectId", "path", "archiveOperationId"])
 		.index("by_workspace_project_archiveOperation_path", ["workspaceId", "projectId", "archiveOperationId", "path"])
+		.index("by_workspace_project_archiveOperation_kind_path", [
+			"workspaceId",
+			"projectId",
+			"archiveOperationId",
+			"kind",
+			"path",
+		])
+		.index("by_workspace_project_archiveOperation_kind_ext_path", [
+			"workspaceId",
+			"projectId",
+			"archiveOperationId",
+			"kind",
+			"lowercaseExtension",
+			"path",
+		])
 		.index("by_workspace_project_archiveOperation_updatedAt", [
 			"workspaceId",
 			"projectId",
 			"archiveOperationId",
 			"updatedAt",
 		])
-		.index("by_workspace_project_asset", ["workspaceId", "projectId", "assetId"]),
+		.index("by_workspace_project_asset", ["workspaceId", "projectId", "assetId"])
+		.searchIndex("search_path", {
+			searchField: "path",
+			filterFields: ["workspaceId", "projectId", "archiveOperationId", "kind", "parentId"],
+		}),
+
+	/**
+	 * Per-FILE content stats (`wc`), kept off the file node so updating them does not invalidate the
+	 * file-tree / path-resolution queries that read the node. One row per file node; computed at
+	 * materialization from the full markdown (exact). Byte size is NOT duplicated here — it lives on
+	 * the content asset (`files_r2_assets.size`, per-version). Folders have no row.
+	 */
+	file_stats: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		nodeId: v.id("files_nodes"),
+		/** Newline count (`wc -l`). -1 means the content cannot be processed (non-markdown/binary). */
+		lineCount: v.number(),
+		/** Whitespace-delimited word count (`wc -w`). -1 means cannot be processed. */
+		wordCount: v.number(),
+		/** Unicode code-point count (`wc -m`, not UTF-16 units). -1 means cannot be processed. */
+		charCount: v.number(),
+	}).index("by_workspace_project_node", ["workspaceId", "projectId", "nodeId"]),
 
 	files_markdown_chunks: defineTable({
 		workspaceId: v.string(),
@@ -179,13 +233,26 @@ const app_convex_schema = defineSchema({
 		lineStart: v.number(),
 		lineEnd: v.number(),
 		chunkFlags: v.number(),
-	}).index("by_workspace_project_file_yjsSequence_chunkIndex", [
-		"workspaceId",
-		"projectId",
-		"nodeId",
-		"yjsSequence",
-		"chunkIndex",
-	]),
+	})
+		.index("by_workspace_project_file_yjsSequence_chunkIndex", [
+			"workspaceId",
+			"projectId",
+			"nodeId",
+			"yjsSequence",
+			"chunkIndex",
+		])
+		// Seek directly to the chunks overlapping a requested line range (without scanning every
+		// preceding chunk) so committed-file line reads work at any depth. lineEnd is non-decreasing
+		// in chunkIndex; the trailing chunkIndex column breaks same-lineEnd ties (one line split across
+		// chunks) so the range scan returns chunks in chunkIndex order with no JS re-sort.
+		.index("by_workspace_project_file_yjsSequence_lineEnd_chunkIndex", [
+			"workspaceId",
+			"projectId",
+			"nodeId",
+			"yjsSequence",
+			"lineEnd",
+			"chunkIndex",
+		]),
 
 	files_plain_text_chunks: defineTable({
 		workspaceId: v.string(),
@@ -193,12 +260,16 @@ const app_convex_schema = defineSchema({
 		nodeId: v.id("files_nodes"),
 		yjsSequence: v.number(),
 		chunkIndex: v.number(),
+		/** Denormalized from files_nodes.path so scoped search can filter before pagination. */
+		path: v.string(),
+		/** Denormalized from files_nodes.archiveOperationId so archived chunks stay out of search pages. */
+		archiveOperationId: v.optional(v.string()),
 		plainTextChunk: v.string(),
 		markdownChunkId: v.id("files_markdown_chunks"),
 	})
 		.searchIndex("search_by_plainTextChunk", {
 			searchField: "plainTextChunk",
-			filterFields: ["workspaceId", "projectId"],
+			filterFields: ["workspaceId", "projectId", "archiveOperationId"],
 		})
 		.index("by_workspace_project_file_yjsSequence_chunkIndex", [
 			"workspaceId",

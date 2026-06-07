@@ -25,6 +25,7 @@ import {
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
 import { workspaces_db_get_membership } from "./workspaces.ts";
+import { files_READ_RANGE_MAX_LINES } from "./files_nodes.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
 	ai_chat_tool_create_bash,
@@ -71,16 +72,21 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 		`Bash starts in \`~\` (\`/home/cloud-usr\`); app files are mounted at \`~/w/${args.workspaceName}/${args.projectName}\` (\`${appFilesMountPath}\`). \`/tmp\` is in-memory scratch and resets between bash calls.`,
 		"Bash cwd persists across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating `cd`.",
 		"Bash is the normal file shell for the app, but app files are Convex-backed, not a POSIX filesystem. Use the supported command subset instead of assuming GNU compatibility.",
+		"When reporting Bash results, treat app-only flags such as `--limit`, `--cursor`, `--path-query`, and `--extension` as supported app Bash syntax; do not warn that a successful app command is non-standard.",
 		`The app file tree \`${appFilesMountPath}\` is the default target for inspection commands that do not name a path unless the current working directory is already inside the app file tree.`,
-		"Shell pathname expansion is disabled and app-file glob operands are unsupported. Do not run app-file commands such as `ls *.md` or `cat src/**/*.ts`.",
+		`When a user names an app-root path like \`/docs\`, run it as \`${appFilesMountPath}/docs\` or \`cd ${appFilesMountPath}\` and use \`docs\`; do not treat \`/docs\` as a host-root path.`,
+		"If a failed Bash command prints a `Try:` command that directly matches the user's request, run that `Try:` command next instead of only reporting the failure.",
+		"Shell pathname expansion is disabled. General app-file glob operands are unsupported. Prefer `find <folder> --extension md -type f`; simple find patterns like `*.md` are accepted only as extension-search recovery.",
 		"`ls --limit` and `find --limit` are app-file pagination commands. Relative paths resolve against the current working directory; from `~`, omit the path or use the mounted app path instead of `.`.",
+		"Content-vs-path rule: use `search` for text inside files, and use `find` only for path/name discovery. Plain requests like `search for X with limit N` mean content search, so run `search --limit N X`. If the user says `search for the X file`, `find the X file`, `file named X`, or `path/name contains X`, use `find`. If the user says `search inside <folder> for X`, `where does X appear`, or `files mention X`, run `search --path <folder> X` or `search X`; do not substitute `find --path-query`.",
 		"When listing the current directory, prefer `ls --limit N` over `ls --limit N <current-cwd>`. Do not restate the current cwd as a path argument just for certainty.",
-		"Use `ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current app directory, or the app root when cwd is outside the app tree. `--cursor` continues one listing target only; when asked to continue, run the printed `Next page:` command as the next Bash call and do not invent `--next-page`. `ls -t` (newest first) and `ls -rt` (oldest first) list the whole project ordered by update time, paginated; they are project-wide and take no PATH operand.",
-		"`ls -R` lists a paginated subtree as full app shell paths; `ls -d` lists the target entry itself and wins over `-R`; `ls -l` uses app metadata, not POSIX permissions, owners, groups, inodes, blocks, symlinks, or real sizes. Unsupported sort/filter flags still fail.",
-		"`No matches in this page; more pages exist.` means the result is partial; continue the printed cursor command before concluding there are no matches.",
-		"Use `find <path> --limit N` for subtree pages, `find --prefix <prefix> --limit N` for raw startsWith path discovery, and `find --extension EXT` or `find -name PATTERN` for extension/name discovery. `find -maxdepth N` and `find -mindepth N` filter results by depth. `-name`/`-iname` patterns accept glob wildcards (quote them, e.g. `-name '*.md'`); with filters `--limit` bounds entries scanned per page, so follow the printed `Next page:` command even on an empty page, and raising `--limit` past its cap returns no more rows.",
-		"`search --limit N <query>` matches your whole query as one CONTIGUOUS, case-insensitive substring of content (not separate keywords) across the entire workspace; on an empty result retry with one short distinctive token. Do not pass paths to `search`, and do not use `search` as a pipeline filter.",
-		"Use exact app paths with `cat`, `head`, `tail`, `wc`, and `stat`; these readers fetch at most 10 app files per command: to READ specific known files, `cat` them in batches of 10 or fewer across commands; to FIND which files mention something, use `search` (it returns snippets, not whole files). Large files are not read inline: `cat` refuses a full dump past a size limit. Read a large file in bounded pages — `head -n N` (first lines; it prints the next `sed -n` page command), `sed -n 'A,Bp'` (any line range), `tail -n N` (last lines), up to 200 lines per read; run `wc` first to learn its size (line/word counts are lower bounds for very large files). Use `search` to find content. For content search, call `search` directly instead of `grep -R` over app paths, and use `find` instead of `tree` for app paths.",
+		"Use `ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current app directory, or the app root when cwd is outside the app tree. `--cursor` continues one listing target only; when asked to continue, run the printed `Next page:` command as the next Bash call and do not invent `--next-page`. `ls -t` (newest first) and `ls -rt` (oldest first) without PATH list the whole project ordered by update time; with PATH they list that directory's immediate children by update time. For recent immediate children after `cd` into a folder, use `ls -t --limit N .`; bare `ls -t` is still project-wide. `ls -Rt PATH` is unsupported.",
+		"`ls -R` lists a paginated subtree as full app shell paths; when the user asks for tree-shaped output, use `tree`, not `ls -R`. `ls -d` lists the target entry itself and wins over `-R`; `ls -l` uses app metadata, not POSIX permissions, owners, groups, inodes, blocks, symlinks, or real sizes; `stat` reports the same app metadata, so its Access/owner/group fields are placeholders, not real POSIX values. Unsupported sort/filter flags still fail.",
+		"Use `find -name QUERY` or `find --path-query QUERY` only for DB-backed path/name word search. Prefer `--path-query QUERY` for natural “path/name contains QUERY” requests; pass a plain token such as `readme`, not `*readme*`. For regex path requests, say regex is unsupported and use token search when a plain token is obvious; do not summarize successful `--path-query` output as native glob/regex syntax. Use `find <dir> -maxdepth 1 -name QUERY` for DB-backed immediate-child path search under one directory. Use `find <path> --extension md -type f` for exact indexed extension search; simple `find -name '*.md'` and `find <dir>/*.md` are accepted as extension-search recovery, not general glob support. Use `find <path> --limit N` for subtree pages, and `find --prefix <prefix> --limit N` only for raw startsWith path discovery; unlike subtree mode, prefix mode may match sibling prefixes such as `/docs-archive`. `find` searches paths/names only, not file content. When asked for files under a folder, include `-type f`; when asked for folders, include `-type d`. `find -maxdepth N` and `find -mindepth N` filter non-search subtree results by depth. `find -type f` and `find -type d` restrict results to files or folders. General glob/regex patterns and GNU find extensions are not supported.",
+		"`search [--limit N] [--cursor CURSOR] <query>` uses indexed Convex text search across Markdown/text content. For requests like “where does X appear” or “which files mention X”, run `search` first; do not substitute `find`, which only searches paths/names. For recursive grep or `grep -R` wording over a folder, use `search --path <folder> QUERY` directly. It is not regex, glob, or exact grep. Scope to one folder with `search --path <folder> <query>` when useful, but broad folder scopes with common terms can be heavier. If cwd is inside the app tree, bare `search` scopes to that cwd; pass `--path` to choose another folder, follow printed `Next page:` commands, and do not use `search` as a pipeline filter. To search a SINGLE file's content use `grep [-i] PATTERN <file>` (substring match, prints `lineNumber:line`; also `-c`/`-l`/`-v` and `-A`/`-B`/`-C N` context).",
+		"Use exact app paths with `cat`, `head`, `tail`, `wc`, and `stat`; these readers fetch at most 10 app files per command: to READ specific known files, `cat` them in batches of 10 or fewer across commands; to FIND which files mention something, use `search` (it returns snippets, not whole files). Large files are not read inline: a single `cat` shows a bounded first page (it prints how to page on), and a multi-file `cat` refuses when any file is too large to inline. Read a large file in bounded pages — `head -n N` (first lines; it prints the next `sed -n` page command), `sed -n 'A,Bp'` (any line range), `tail -n N` (last lines), up to " +
+			files_READ_RANGE_MAX_LINES +
+			" lines per read; run `wc` first to learn its size (line/word counts are lower bounds for very large files); `wc` accepts multiple files (per-file line plus a `total`) and does not refuse a large member. Use `search` to find content across files (or `search --path <folder>` for one folder), and `grep [-i] PATTERN <file>` to find lines in ONE file; `grep -R`/multi-file grep is not supported. Use `tree [PATH] --limit N` only for paginated app tree shape.",
 		"Keep Bash commands simple: avoid strict-mode boilerplate, comments in command strings, and process substitution.",
 		"Only summarize actual Bash stdout/stderr. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
 		"Do not work around app read-only write, move, or delete requests by copying app files to `/tmp`; report the Bash error unless the user asked for a scratch copy.",
@@ -2130,11 +2136,21 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"Bash is the normal file shell for the app, but app files are Convex-backed, not a POSIX filesystem.",
 			);
 			expect(configuration.systemPrompt).toContain(
+				"When reporting Bash results, treat app-only flags such as `--limit`, `--cursor`, `--path-query`, and `--extension` as supported app Bash syntax",
+			);
+			expect(configuration.systemPrompt).toContain(
 				"The app file tree `/home/cloud-usr/w/personal/home` is the default target for inspection commands that do not name a path unless the current working directory is already inside the app file tree.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"Shell pathname expansion is disabled and app-file glob operands are unsupported.",
+				"When a user names an app-root path like `/docs`, run it as `/home/cloud-usr/w/personal/home/docs`",
 			);
+			expect(configuration.systemPrompt).toContain(
+				"If a failed Bash command prints a `Try:` command that directly matches the user's request",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Shell pathname expansion is disabled. General app-file glob operands are unsupported.",
+			);
+			expect(configuration.systemPrompt).toContain("Prefer `find <folder> --extension md -type f`");
 			expect(configuration.systemPrompt).toContain(
 				"`ls --limit` and `find --limit` are app-file pagination commands. Relative paths resolve against the current working directory; from `~`, omit the path or use the mounted app path instead of `.`.",
 			);
@@ -2142,32 +2158,71 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"When listing the current directory, prefer `ls --limit N` over `ls --limit N <current-cwd>`.",
 			);
 			expect(configuration.systemPrompt).toContain(
+				"Content-vs-path rule: use `search` for text inside files, and use `find` only for path/name discovery.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Plain requests like `search for X with limit N` mean content search",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"If the user says `search for the X file`, `find the X file`, `file named X`, or `path/name contains X`, use `find`.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"run `search --path <folder> X` or `search X`; do not substitute `find --path-query`.",
+			);
+			expect(configuration.systemPrompt).toContain(
 				"Use `ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current app directory, or the app root when cwd is outside the app tree.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"`ls -t` (newest first) and `ls -rt` (oldest first) list the whole project ordered by update time",
+				"`ls -t` (newest first) and `ls -rt` (oldest first) without PATH list the whole project ordered by update time",
+			);
+			expect(configuration.systemPrompt).toContain("bare `ls -t` is still project-wide");
+			expect(configuration.systemPrompt).toContain(
+				"`ls -R` lists a paginated subtree as full app shell paths",
+			);
+			expect(configuration.systemPrompt).toContain("when the user asks for tree-shaped output, use `tree`, not `ls -R`");
+			expect(configuration.systemPrompt).toContain(
+				"Use `find -name QUERY` or `find --path-query QUERY` only for DB-backed path/name word search.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"`ls -R` lists a paginated subtree as full app shell paths; `ls -d` lists the target entry itself and wins over `-R`; `ls -l` uses app metadata",
+				"Prefer `--path-query QUERY` for natural “path/name contains QUERY” requests",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"`No matches in this page; more pages exist.` means the result is partial; continue the printed cursor command before concluding there are no matches.",
+				"For regex path requests, say regex is unsupported and use token search when a plain token is obvious",
+			);
+			expect(configuration.systemPrompt).toContain("Use `find <path> --extension md -type f`");
+			expect(configuration.systemPrompt).toContain(
+				"`find --prefix <prefix> --limit N` only for raw startsWith path discovery",
+			);
+			expect(configuration.systemPrompt).toContain("prefix mode may match sibling prefixes such as `/docs-archive`");
+			expect(configuration.systemPrompt).toContain("`find` searches paths/names only, not file content.");
+			expect(configuration.systemPrompt).toContain(
+				"`find -maxdepth N` and `find -mindepth N` filter non-search subtree results by depth.",
+			);
+			expect(configuration.systemPrompt).toContain("When asked for files under a folder, include `-type f`");
+			expect(configuration.systemPrompt).toContain(
+				"`find -type f` and `find -type d` restrict results to files or folders.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"Use `find <path> --limit N` for subtree pages, `find --prefix <prefix> --limit N` for raw startsWith path discovery, and `find --extension EXT` or `find -name PATTERN` for extension/name discovery.",
+				"`search [--limit N] [--cursor CURSOR] <query>` uses indexed Convex text search",
 			);
+			expect(configuration.systemPrompt).toContain("For requests like “where does X appear” or “which files mention X”, run `search` first");
 			expect(configuration.systemPrompt).toContain(
-				"`find -maxdepth N` and `find -mindepth N` filter results by depth.",
+				"For recursive grep or `grep -R` wording over a folder, use `search --path <folder> QUERY` directly.",
 			);
-			expect(configuration.systemPrompt).toContain(
-				"matches your whole query as one CONTIGUOUS, case-insensitive substring of content",
-			);
+			expect(configuration.systemPrompt).toContain("do not substitute `find`, which only searches paths/names");
+			expect(configuration.systemPrompt).toContain("It is not regex, glob, or exact grep");
+			expect(configuration.systemPrompt).toContain("broad folder scopes with common terms can be heavier");
+			expect(configuration.systemPrompt).toContain("bare `search` scopes to that cwd");
 			expect(configuration.systemPrompt).toContain(
 				"Use exact app paths with `cat`, `head`, `tail`, `wc`, and `stat`",
 			);
 			expect(configuration.systemPrompt).toContain("these readers fetch at most 10 app files per command");
+			expect(configuration.systemPrompt).toContain("accepts multiple files (per-file line plus a `total`)");
 			expect(configuration.systemPrompt).toContain("Large files are not read inline");
-			expect(configuration.systemPrompt).toContain("call `search` directly instead of `grep -R` over app paths");
+			expect(configuration.systemPrompt).toContain(`up to ${files_READ_RANGE_MAX_LINES} lines per read`);
+			expect(configuration.systemPrompt).toContain("`grep -R`/multi-file grep is not supported");
+			expect(configuration.systemPrompt).toContain("Use `tree [PATH] --limit N` only for paginated app tree shape.");
+			expect(configuration.systemPrompt).toContain("also `-c`/`-l`/`-v` and `-A`/`-B`/`-C N` context");
 			expect(configuration.systemPrompt).toContain("avoid strict-mode boilerplate");
 			expect(configuration.systemPrompt).toContain("Only summarize actual Bash stdout/stderr");
 			expect(configuration.systemPrompt).toContain("Do not work around app read-only write, move, or delete requests");

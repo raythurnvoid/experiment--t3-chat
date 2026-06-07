@@ -64,7 +64,9 @@ import {
 	type files_SpecialFileName,
 	type files_InlineAiModelId,
 } from "../server/files.ts";
-import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
+import {
+	files_chunk_markdown,
+} from "../server/files-markdown-chunking-mastra.ts";
 import { minimatch } from "minimatch";
 import { Result, Result_all } from "../shared/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
@@ -213,6 +215,22 @@ function path_rebase(args: { fromBasePath: string; toBasePath: string; path: str
 	return `${args.toBasePath}${args.toBasePath === "/" ? "" : "/"}${suffix}`;
 }
 
+function files_path_depth(path: string) {
+	return path === "/" ? 0 : path_extract_segments_from(path).length;
+}
+
+function files_lowercase_extension(path: string, kind: Doc<"files_nodes">["kind"]) {
+	if (kind !== "file") {
+		return null;
+	}
+	const name = path_extract_segments_from(path).at(-1) ?? "";
+	const dotIndex = name.lastIndexOf(".");
+	if (dotIndex <= 0 || dotIndex === name.length - 1) {
+		return null;
+	}
+	return name.slice(dotIndex + 1).toLowerCase();
+}
+
 function is_home_file(node: Pick<Doc<"files_nodes">, "path" | "kind">): boolean;
 function is_home_file(node: Pick<Doc<"files_nodes">, "parentId" | "name" | "kind">): boolean;
 function is_home_file(node: Partial<Pick<Doc<"files_nodes">, "path" | "parentId" | "name" | "kind">>) {
@@ -239,6 +257,78 @@ async function db_get_home_file(ctx: QueryCtx | MutationCtx, args: { workspaceId
 	return homeFile?.kind === "file" ? homeFile : null;
 }
 
+/** -1 in any file_stats count means the content cannot be processed (non-markdown / binary). */
+const files_STATS_UNPROCESSABLE = -1;
+
+/**
+ * Create or update the `file_stats` row for a file node and, on first creation, link it back via
+ * `files_nodes.statsId`. Subsequent updates patch only the stats row — NOT the node — so
+ * re-materializing content does not invalidate the file-tree / path-resolution queries that read
+ * the node. Returns the stats row id.
+ */
+async function db_upsert_file_stats(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		nodeId: Id<"files_nodes">;
+		lineCount: number;
+		wordCount: number;
+		charCount: number;
+	},
+) {
+	const existing = await ctx.db
+		.query("file_stats")
+		.withIndex("by_workspace_project_node", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+		)
+		.first();
+	if (existing) {
+		await ctx.db.patch("file_stats", existing._id, {
+			lineCount: args.lineCount,
+			wordCount: args.wordCount,
+			charCount: args.charCount,
+		});
+		return existing._id;
+	}
+	const statsId = await ctx.db.insert("file_stats", {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		nodeId: args.nodeId,
+		lineCount: args.lineCount,
+		wordCount: args.wordCount,
+		charCount: args.charCount,
+	});
+	await ctx.db.patch("files_nodes", args.nodeId, { statsId });
+	return statsId;
+}
+
+export async function db_patch_plain_text_chunks_scope(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		nodeId: Id<"files_nodes">;
+		path?: string;
+		archiveOperationId?: string;
+	},
+) {
+	const patch: Partial<Pick<Doc<"files_plain_text_chunks">, "path" | "archiveOperationId">> = {};
+	if ("path" in args) {
+		patch.path = args.path;
+	}
+	if ("archiveOperationId" in args) {
+		patch.archiveOperationId = args.archiveOperationId;
+	}
+	const chunks = await ctx.db
+		.query("files_plain_text_chunks")
+		.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+		)
+		.collect();
+	await Promise.all(chunks.map((chunk) => ctx.db.patch("files_plain_text_chunks", chunk._id, patch)));
+}
+
 export async function db_insert_file_chunks(
 	ctx: MutationCtx,
 	args: {
@@ -249,6 +339,23 @@ export async function db_insert_file_chunks(
 		markdownContent: string;
 	},
 ) {
+	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	if (
+		!fileNode ||
+		fileNode.workspaceId !== args.workspaceId ||
+		fileNode.projectId !== args.projectId ||
+		fileNode.kind !== "file"
+	) {
+		const errorMessage = "db_insert_file_chunks expected a file node in the same workspace/project";
+		console.error(errorMessage, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId: args.nodeId,
+			fileNode,
+		});
+		throw should_never_happen(errorMessage);
+	}
+
 	// Create new chunks from markdown.
 	const chunks = await files_chunk_markdown(args.markdownContent);
 	if (chunks._nay) {
@@ -282,11 +389,26 @@ export async function db_insert_file_chunks(
 				nodeId: args.nodeId,
 				yjsSequence: args.yjsSequence,
 				chunkIndex: chunk.chunkIndex,
+				path: fileNode.path,
+				archiveOperationId: fileNode.archiveOperationId,
 				plainTextChunk: chunk.plainTextChunk,
 				markdownChunkId: markdownChunkIds[index],
 			}),
 		),
 	);
+
+	// Persist exact wc counts now, while the full markdown is in hand, so `wc` never re-reads the
+	// file (it reads the file_stats row). Computed on the whole document → exact, no chunk-boundary
+	// word-splitting error. Updates only the stats row on re-materialization (node untouched).
+	const counts = files_compute_wc_counts(args.markdownContent);
+	await db_upsert_file_stats(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		nodeId: args.nodeId,
+		lineCount: counts.lineCount,
+		wordCount: counts.wordCount,
+		charCount: counts.charCount,
+	});
 
 	return Result({ _yay: null });
 }
@@ -324,6 +446,96 @@ export async function db_replace_file_chunks(
 
 	return db_insert_file_chunks(ctx, args);
 }
+
+/**
+ * One-shot backfill: ensure every FILE node has a `file_stats` row (and a linked `statsId`).
+ * Markdown files get exact counts derived from their materialized chunks; non-markdown files get
+ * the -1 unprocessable sentinel. Idempotent (db_upsert_file_stats patches existing rows), so it is
+ * safe to re-run. DEV-SCALE: processes up to `limit` file nodes in one transaction; for a large
+ * production dataset this should be paginated/scheduled instead.
+ */
+const files_STATS_MIGRATION_MAX_CHUNKS = 4096;
+
+export const migrate_backfill_file_stats = internalMutation({
+	args: { cursor: v.optional(v.union(v.string(), v.null())), batchSize: v.optional(v.number()) },
+	returns: v.object({
+		processed: v.number(),
+		markdown: v.number(),
+		unprocessable: v.number(),
+		anomalies: v.number(),
+		isDone: v.boolean(),
+		continueCursor: v.union(v.string(), v.null()),
+	}),
+	handler: async (ctx, args) => {
+		// Paginated so a large workspace does not exceed mutation read/time limits in one call — run
+		// in a loop, passing back continueCursor, until isDone. Idempotent (db_upsert patches).
+		const numItems = Math.max(1, Math.min(1000, args.batchSize ?? 500));
+		const page = await ctx.db.query("files_nodes").paginate({ numItems, cursor: args.cursor ?? null });
+		let processed = 0;
+		let markdown = 0;
+		let unprocessable = 0;
+		let anomalies = 0;
+		for (const node of page.page) {
+			if (node.kind !== "file") continue;
+			processed++;
+			let lineCount = files_STATS_UNPROCESSABLE;
+			let wordCount = files_STATS_UNPROCESSABLE;
+			let charCount = files_STATS_UNPROCESSABLE;
+			const snapshot =
+				files_node_has_editable_yjs_state(node) && node.yjsSnapshotId
+					? await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId)
+					: null;
+			if (snapshot) {
+				// Read ONLY the current snapshot sequence's chunks (matches the read path), bounded. A
+				// merge anomaly or an over-cap file stays -1 — never a silently-wrong 0 count.
+				const chunks = await ctx.db
+					.query("files_markdown_chunks")
+					.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+						q
+							.eq("workspaceId", node.workspaceId)
+							.eq("projectId", node.projectId)
+							.eq("nodeId", node._id)
+							.eq("yjsSequence", snapshot.sequence),
+					)
+					.order("asc")
+					.take(files_STATS_MIGRATION_MAX_CHUNKS + 1);
+				if (chunks.length > files_STATS_MIGRATION_MAX_CHUNKS) {
+					anomalies++; // too large to count exactly here → leave -1 (wc falls back to window)
+				} else {
+					// Already in chunkIndex order (queried via the chunkIndex index, ordered asc).
+					const merged = files_merge_contiguous_chunks(chunks);
+					if (merged === null) {
+						anomalies++; // non-contiguous chunks → leave -1, never a wrong 0
+					} else {
+						const counts = files_compute_wc_counts(merged);
+						lineCount = counts.lineCount;
+						wordCount = counts.wordCount;
+						charCount = counts.charCount;
+						markdown++;
+					}
+				}
+			} else {
+				unprocessable++;
+			}
+			await db_upsert_file_stats(ctx, {
+				workspaceId: node.workspaceId,
+				projectId: node.projectId,
+				nodeId: node._id,
+				lineCount,
+				wordCount,
+				charCount,
+			});
+		}
+		return {
+			processed,
+			markdown,
+			unprocessable,
+			anomalies,
+			isDone: page.isDone,
+			continueCursor: page.isDone ? null : page.continueCursor,
+		};
+	},
+});
 
 export function files_nodes_create_yjs_snapshot_update_from_markdown(markdownContent: string) {
 	if (!markdownContent) {
@@ -513,7 +725,17 @@ async function cascade_file_descendants_path(
 				const childPath = path_join(frame.parentPath, child.name);
 				await ctx.db.patch("files_nodes", child._id, {
 					path: childPath,
+					pathDepth: files_path_depth(childPath),
+					lowercaseExtension: files_lowercase_extension(childPath, child.kind),
 				});
+				if (child.kind === "file") {
+					await db_patch_plain_text_chunks_scope(ctx, {
+						workspaceId: args.workspaceId,
+						projectId: args.projectId,
+						nodeId: child._id,
+						path: childPath,
+					});
+				}
 				stack.push({
 					parentId: child._id,
 					parentPath: childPath,
@@ -575,6 +797,8 @@ async function db_insert_node(
 		projectId: args.projectId,
 		parentId: args.parentId,
 		path: args.path,
+		pathDepth: files_path_depth(args.path),
+		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
 		name: args.name,
 		kind: args.kind,
 		contentType: args.contentType,
@@ -590,6 +814,17 @@ async function db_insert_node(
 	}
 
 	if (args.markdownContent === undefined) {
+		// A file with no processable markdown content (e.g. a raw upload) still gets a stats row,
+		// flagged unprocessable with -1; db_insert_file_chunks overwrites it with real counts if/when
+		// markdown content is materialized.
+		await db_upsert_file_stats(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId,
+			lineCount: files_STATS_UNPROCESSABLE,
+			wordCount: files_STATS_UNPROCESSABLE,
+			charCount: files_STATS_UNPROCESSABLE,
+		});
 		return Result({ _yay: nodeId });
 	}
 
@@ -1504,9 +1739,19 @@ export const rename_node = mutation({
 			parentId: targetParentId,
 			name: leafName,
 			path: renamedPath,
+			pathDepth: files_path_depth(renamedPath),
+			lowercaseExtension: files_lowercase_extension(renamedPath, file.kind),
 			updatedBy: userAuth.id,
 			updatedAt: now,
 		});
+		if (file.kind === "file") {
+			await db_patch_plain_text_chunks_scope(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				nodeId: args.nodeId,
+				path: renamedPath,
+			});
+		}
 		await cascade_file_descendants_path(ctx, {
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
@@ -1614,8 +1859,18 @@ export const move_nodes = mutation({
 				projectId: membership.projectId,
 				parentId: args.targetParentId,
 				path: fileToMove.movedPath,
+				pathDepth: files_path_depth(fileToMove.movedPath),
+				lowercaseExtension: files_lowercase_extension(fileToMove.movedPath, fileToMove.file.kind),
 				updatedAt: now,
 			});
+			if (fileToMove.file.kind === "file") {
+				await db_patch_plain_text_chunks_scope(ctx, {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					nodeId: fileToMove.itemId,
+					path: fileToMove.movedPath,
+				});
+			}
 			await cascade_file_descendants_path(ctx, {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
@@ -1639,13 +1894,25 @@ async function db_archive_nodes(
 	const archiveOperationId = crypto.randomUUID();
 
 	await Promise.all(
-		args.nodeIds.map((nodeId) =>
-			ctx.db.patch("files_nodes", nodeId, {
+		args.nodeIds.map(async (nodeId) => {
+			const file = await ctx.db.get("files_nodes", nodeId);
+			if (!file) {
+				return;
+			}
+			await ctx.db.patch("files_nodes", nodeId, {
 				archiveOperationId,
 				updatedBy: args.updatedBy,
 				updatedAt: args.now,
-			}),
-		),
+			});
+			if (file.kind === "file") {
+				await db_patch_plain_text_chunks_scope(ctx, {
+					workspaceId: file.workspaceId,
+					projectId: file.projectId,
+					nodeId,
+					archiveOperationId,
+				});
+			}
+		}),
 	);
 }
 
@@ -2047,15 +2314,26 @@ export const unarchive_nodes = mutation({
 		const now = Date.now();
 
 		await Promise.all(
-			plans.map(async (plan) =>
-				ctx.db.patch("files_nodes", plan.file._id, {
+			plans.map(async (plan) => {
+				await ctx.db.patch("files_nodes", plan.file._id, {
 					archiveOperationId: undefined,
 					updatedBy: userAuth.id,
 					updatedAt: now,
+					pathDepth: files_path_depth(plan.targetPath),
+					lowercaseExtension: files_lowercase_extension(plan.targetPath, plan.file.kind),
 					...(plan.targetPath !== plan.file.path ? { path: plan.targetPath } : {}),
 					...(plan.targetParentId !== plan.file.parentId ? { parentId: plan.targetParentId } : {}),
-				}),
-			),
+				});
+				if (plan.file.kind === "file") {
+					await db_patch_plain_text_chunks_scope(ctx, {
+						workspaceId: membership.workspaceId,
+						projectId: membership.projectId,
+						nodeId: plan.file._id,
+						path: plan.targetPath,
+						archiveOperationId: undefined,
+					});
+				}
+			}),
 		);
 
 		return Result({ _yay: null });
@@ -2235,6 +2513,7 @@ export const get_file_info_for_list_dir_pagination = internalQuery({
 });
 
 const files_nodes_bash_listing_page_limit_MAX = 200;
+const files_nodes_bash_filtered_listing_max_ROWS_READ = 1000;
 
 function files_nodes_clamp_bash_listing_page_limit(limit: number) {
 	const finiteLimit = Number.isFinite(limit) ? Math.trunc(limit) : files_nodes_bash_listing_page_limit_MAX;
@@ -2270,7 +2549,7 @@ export const get_bash_path_entry = internalQuery({
 	handler: async (ctx, args) => {
 		if (args.path === "/") {
 			return {
-				nodeId: files_ROOT_ID,
+				nodeId: files_ROOT_ID as typeof files_ROOT_ID,
 				path: "/" as const,
 				name: "" as const,
 				kind: "folder" as const,
@@ -2323,7 +2602,12 @@ async function db_list_dir_children_paginated(
 ) {
 	if (args.parentId !== files_ROOT_ID) {
 		const parent = await ctx.db.get("files_nodes", args.parentId);
-		if (!parent || parent.workspaceId !== args.workspaceId || parent.projectId !== args.projectId || parent.kind !== "folder") {
+		if (
+			!parent ||
+			parent.workspaceId !== args.workspaceId ||
+			parent.projectId !== args.projectId ||
+			parent.kind !== "folder"
+		) {
 			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
 		}
 	}
@@ -2386,7 +2670,86 @@ export const list_dir_children_by_parent_paginated = internalQuery({
 });
 
 export type files_nodes_list_dir_children_by_parent_paginated_Result =
-	typeof list_dir_children_by_parent_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+	typeof list_dir_children_by_parent_paginated extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
+export const list_dir_children_by_parent_recency_paginated = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
+		numItems: v.number(),
+		cursor: paginationOptsValidator.fields.cursor,
+		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				name: v.string(),
+				kind: v.union(v.literal("folder"), v.literal("file")),
+				path: v.string(),
+				updatedAt: v.number(),
+				updatedBy: v.id("users"),
+				contentType: v.optional(v.string()),
+			}),
+		),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		if (args.parentId !== files_ROOT_ID) {
+			const parent = await ctx.db.get("files_nodes", args.parentId);
+			if (
+				!parent ||
+				parent.workspaceId !== args.workspaceId ||
+				parent.projectId !== args.projectId ||
+				parent.kind !== "folder"
+			) {
+				return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+			}
+		}
+
+		const result = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_parent_archiveOperation_updatedAt", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("parentId", args.parentId)
+					.eq("archiveOperationId", undefined),
+			)
+			.order(args.order === "asc" ? "asc" : "desc")
+			.paginate({
+				cursor: args.cursor,
+				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+			});
+
+		return {
+			items: result.page.map((file) => ({
+				name: file.name,
+				kind: file.kind,
+				path: file.path,
+				updatedAt: file.updatedAt,
+				updatedBy: file.updatedBy,
+				contentType: file.contentType,
+			})),
+			continueCursor: result.continueCursor,
+			isDone: result.isDone,
+		};
+	},
+});
+
+export type files_nodes_list_dir_children_by_parent_recency_paginated_Result =
+	typeof list_dir_children_by_parent_recency_paginated extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -2447,6 +2810,9 @@ export const list_subtree_paginated = internalQuery({
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
 		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
+		kind: v.optional(v.union(v.literal("folder"), v.literal("file"))),
+		minDepth: v.optional(v.number()),
+		maxDepth: v.optional(v.number()),
 	},
 	returns: v.object({
 		items: v.array(
@@ -2477,20 +2843,25 @@ export const list_subtree_paginated = internalQuery({
 				return { items: [], continueCursor: args.cursor ?? "", isDone: true };
 			}
 			if (startNode.kind !== "folder") {
+				const matchesKind = args.kind == null || args.kind === "file";
+				const matchesMinDepth = args.minDepth == null || args.minDepth <= 0;
+				const matchesMaxDepth = args.maxDepth == null || args.maxDepth >= 0;
 				return args.cursor == null
-					? {
-							items: [
-								{
-									path: startNode.path,
-									kind: startNode.kind,
-									updatedAt: startNode.updatedAt,
-									updatedBy: startNode.updatedBy,
-									contentType: startNode.contentType,
-								},
-							],
-							continueCursor: "",
-							isDone: true,
-						}
+					? matchesKind && matchesMinDepth && matchesMaxDepth
+						? {
+								items: [
+									{
+										path: startNode.path,
+										kind: startNode.kind,
+										updatedAt: startNode.updatedAt,
+										updatedBy: startNode.updatedBy,
+										contentType: startNode.contentType,
+									},
+								],
+								continueCursor: "",
+								isDone: true,
+							}
+						: { items: [], continueCursor: "", isDone: true }
 					: { items: [], continueCursor: args.cursor, isDone: true };
 			}
 		}
@@ -2498,21 +2869,51 @@ export const list_subtree_paginated = internalQuery({
 		const normalizedPath = args.path === "/" ? "/" : args.path.replace(/\/+$/u, "");
 		const lowerBound = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
 		const upperBound = `${lowerBound}\uffff`;
-		const result = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_workspace_project_archiveOperation_path", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("archiveOperationId", undefined)
-					.gte("path", lowerBound)
-					.lt("path", upperBound),
-			)
-			.order(args.order ?? "asc")
-			.paginate({
-				cursor: args.cursor,
-				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
-			});
+		const baseDepth = files_path_depth(normalizedPath);
+		const minAbsoluteDepth = args.minDepth == null ? null : baseDepth + args.minDepth;
+		const maxAbsoluteDepth = args.maxDepth == null ? null : baseDepth + args.maxDepth;
+		const query =
+			args.kind == null
+				? ctx.db
+						.query("files_nodes")
+						.withIndex("by_workspace_project_archiveOperation_path", (q) =>
+							q
+								.eq("workspaceId", args.workspaceId)
+								.eq("projectId", args.projectId)
+								.eq("archiveOperationId", undefined)
+								.gte("path", lowerBound)
+								.lt("path", upperBound),
+						)
+						.order(args.order ?? "asc")
+				: ctx.db
+						.query("files_nodes")
+						.withIndex("by_workspace_project_archiveOperation_kind_path", (q) =>
+							q
+								.eq("workspaceId", args.workspaceId)
+								.eq("projectId", args.projectId)
+								.eq("archiveOperationId", undefined)
+								.eq("kind", args.kind!)
+								.gte("path", lowerBound)
+								.lt("path", upperBound),
+						)
+						.order(args.order ?? "asc");
+		const filteredQuery =
+			minAbsoluteDepth == null && maxAbsoluteDepth == null
+				? query
+				: minAbsoluteDepth != null && maxAbsoluteDepth != null
+					? query.filter((q) =>
+							q.and(q.gte(q.field("pathDepth"), minAbsoluteDepth), q.lte(q.field("pathDepth"), maxAbsoluteDepth)),
+						)
+					: minAbsoluteDepth != null
+						? query.filter((q) => q.gte(q.field("pathDepth"), minAbsoluteDepth))
+						: query.filter((q) => q.lte(q.field("pathDepth"), maxAbsoluteDepth!));
+		const result = await filteredQuery.paginate({
+			cursor: args.cursor,
+			numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+			...(minAbsoluteDepth == null && maxAbsoluteDepth == null
+				? {}
+				: { maximumRowsRead: files_nodes_bash_filtered_listing_max_ROWS_READ }),
+		});
 
 		return {
 			items: result.page.map((file) => ({
@@ -2533,10 +2934,125 @@ export type files_nodes_list_subtree_paginated_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+export const list_subtree_by_extension_paginated = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		path: v.string(),
+		lowercaseExtension: v.string(),
+		numItems: v.number(),
+		cursor: paginationOptsValidator.fields.cursor,
+		minDepth: v.optional(v.number()),
+		maxDepth: v.optional(v.number()),
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				path: v.string(),
+				kind: v.literal("file"),
+				updatedAt: v.number(),
+			}),
+		),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const startNodeId = await db_resolve_tree_node_id_from_path(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			path: args.path,
+		});
+		if (!startNodeId) {
+			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+		}
+
+		if (startNodeId !== files_ROOT_ID) {
+			const startNode = await ctx.db.get("files_nodes", startNodeId);
+			if (!startNode || startNode.workspaceId !== args.workspaceId || startNode.projectId !== args.projectId) {
+				return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+			}
+			if (startNode.kind !== "folder") {
+				const matchesExtension = startNode.lowercaseExtension === args.lowercaseExtension;
+				const matchesMinDepth = args.minDepth == null || args.minDepth <= 0;
+				const matchesMaxDepth = args.maxDepth == null || args.maxDepth >= 0;
+				return args.cursor == null
+					? matchesExtension && matchesMinDepth && matchesMaxDepth
+						? {
+								items: [
+									{
+										path: startNode.path,
+										kind: "file" as const,
+										updatedAt: startNode.updatedAt,
+									},
+								],
+								continueCursor: "",
+								isDone: true,
+							}
+						: { items: [], continueCursor: "", isDone: true }
+					: { items: [], continueCursor: args.cursor, isDone: true };
+			}
+		}
+
+		const normalizedPath = args.path === "/" ? "/" : args.path.replace(/\/+$/u, "");
+		const lowerBound = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
+		const upperBound = `${lowerBound}\uffff`;
+		const baseDepth = files_path_depth(normalizedPath);
+		const minAbsoluteDepth = args.minDepth == null ? null : baseDepth + args.minDepth;
+		const maxAbsoluteDepth = args.maxDepth == null ? null : baseDepth + args.maxDepth;
+		const query = ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_archiveOperation_kind_ext_path", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("archiveOperationId", undefined)
+					.eq("kind", "file")
+					.eq("lowercaseExtension", args.lowercaseExtension)
+					.gte("path", lowerBound)
+					.lt("path", upperBound),
+			);
+		const filteredQuery =
+			minAbsoluteDepth == null && maxAbsoluteDepth == null
+				? query
+				: minAbsoluteDepth != null && maxAbsoluteDepth != null
+					? query.filter((q) =>
+							q.and(q.gte(q.field("pathDepth"), minAbsoluteDepth), q.lte(q.field("pathDepth"), maxAbsoluteDepth)),
+						)
+					: minAbsoluteDepth != null
+						? query.filter((q) => q.gte(q.field("pathDepth"), minAbsoluteDepth))
+						: query.filter((q) => q.lte(q.field("pathDepth"), maxAbsoluteDepth!));
+		const result = await filteredQuery.paginate({
+			cursor: args.cursor,
+			numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+			...(minAbsoluteDepth == null && maxAbsoluteDepth == null
+				? {}
+				: { maximumRowsRead: files_nodes_bash_filtered_listing_max_ROWS_READ }),
+		});
+
+		return {
+			items: result.page.map((file) => ({
+				path: file.path,
+				kind: "file" as const,
+				updatedAt: file.updatedAt,
+			})),
+			continueCursor: result.continueCursor,
+			isDone: result.isDone,
+		};
+	},
+});
+
+export type files_nodes_list_subtree_by_extension_paginated_Result =
+	typeof list_subtree_by_extension_paginated extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
 /**
  * Workspace+project-wide recency listing ordered by `updatedAt`, paginated.
- * Backs `ls -t` / `ls -rt`. Project-wide only — the updatedAt index has no `path`
- * column, so it cannot be scoped to a sub-directory without a misleading page-local sort.
+ * Backs pathless `ls -t` / `ls -rt`; scoped directory recency uses the parent+updatedAt index.
  */
 export const list_recent_paginated = internalQuery({
 	args: {
@@ -2597,6 +3113,7 @@ export const list_path_prefix_paginated = internalQuery({
 		pathPrefix: v.string(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
+		kind: v.optional(v.union(v.literal("folder"), v.literal("file"))),
 	},
 	returns: v.object({
 		items: v.array(
@@ -2612,17 +3129,26 @@ export const list_path_prefix_paginated = internalQuery({
 	handler: async (ctx, args) => {
 		const lowerBound = args.pathPrefix;
 		const upperBound = `${lowerBound}\uffff`;
-		const result = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_workspace_project_archiveOperation_path", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("archiveOperationId", undefined)
-					.gte("path", lowerBound)
-					.lt("path", upperBound),
-			)
-			.paginate({
+		const query =
+			args.kind == null
+				? ctx.db.query("files_nodes").withIndex("by_workspace_project_archiveOperation_path", (q) =>
+						q
+							.eq("workspaceId", args.workspaceId)
+							.eq("projectId", args.projectId)
+							.eq("archiveOperationId", undefined)
+							.gte("path", lowerBound)
+							.lt("path", upperBound),
+					)
+				: ctx.db.query("files_nodes").withIndex("by_workspace_project_archiveOperation_kind_path", (q) =>
+						q
+							.eq("workspaceId", args.workspaceId)
+							.eq("projectId", args.projectId)
+							.eq("archiveOperationId", undefined)
+							.eq("kind", args.kind!)
+							.gte("path", lowerBound)
+							.lt("path", upperBound),
+					);
+		const result = await query.paginate({
 				cursor: args.cursor,
 				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
 			});
@@ -2641,6 +3167,82 @@ export const list_path_prefix_paginated = internalQuery({
 
 export type files_nodes_list_path_prefix_paginated_Result =
 	typeof list_path_prefix_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const search_paths_paginated = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		pathQuery: v.string(),
+		numItems: v.number(),
+		cursor: paginationOptsValidator.fields.cursor,
+		kind: v.optional(v.union(v.literal("folder"), v.literal("file"))),
+		parentId: v.optional(v.union(v.id("files_nodes"), v.literal(files_ROOT_ID))),
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				path: v.string(),
+				kind: v.union(v.literal("folder"), v.literal("file")),
+				updatedAt: v.number(),
+			}),
+		),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		if (args.parentId != null && args.parentId !== files_ROOT_ID) {
+			const parent = await ctx.db.get("files_nodes", args.parentId);
+			if (
+				!parent ||
+				parent.workspaceId !== args.workspaceId ||
+				parent.projectId !== args.projectId ||
+				parent.kind !== "folder"
+			) {
+				return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+			}
+		}
+
+		const result = await ctx.db
+			.query("files_nodes")
+			.withSearchIndex("search_path", (q) => {
+				const base = q
+					.search("path", args.pathQuery)
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("archiveOperationId", undefined);
+
+				if (args.kind != null && args.parentId != null) {
+					return base.eq("kind", args.kind).eq("parentId", args.parentId);
+				}
+				if (args.kind != null) {
+					return base.eq("kind", args.kind);
+				}
+				if (args.parentId != null) {
+					return base.eq("parentId", args.parentId);
+				}
+				return base;
+			})
+			.paginate({
+				cursor: args.cursor,
+				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+			});
+
+		return {
+			items: result.page.map((file) => ({
+				path: file.path,
+				kind: file.kind,
+				updatedAt: file.updatedAt,
+			})),
+			continueCursor: result.continueCursor,
+			isDone: result.isDone,
+		};
+	},
+});
+
+export type files_nodes_search_paths_paginated_Result =
+	typeof search_paths_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -2708,6 +3310,405 @@ export const get_bash_stat_entry = internalQuery({
 
 export type files_nodes_get_bash_stat_entry_Result =
 	typeof get_bash_stat_entry extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const check_bash_file_search_readiness = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		sampleLimit: v.optional(v.number()),
+	},
+	returns: v.object({
+		sampleLimit: v.number(),
+		activeNodesChecked: v.number(),
+		activeFilesChecked: v.number(),
+		plainTextChunksChecked: v.number(),
+		activeNodesWithMissingOrStalePathDepth: v.array(
+			v.object({
+				path: v.string(),
+				expectedPathDepth: v.number(),
+				actualPathDepth: v.optional(v.number()),
+			}),
+		),
+		activeNodesWithMissingOrStaleLowercaseExtension: v.array(
+			v.object({
+				path: v.string(),
+				expectedLowercaseExtension: v.union(v.string(), v.null()),
+				actualLowercaseExtension: v.optional(v.union(v.string(), v.null())),
+			}),
+		),
+		activeFilesWithMissingOrStaleStats: v.array(
+			v.object({
+				path: v.string(),
+				reason: v.string(),
+			}),
+		),
+		activeFilesMissingPlainTextChunks: v.array(
+			v.object({
+				path: v.string(),
+				reason: v.string(),
+			}),
+		),
+		activeFilesWithStaleChunkScopeFields: v.array(
+			v.object({
+				path: v.string(),
+				reason: v.string(),
+				yjsSequence: v.number(),
+				chunkIndex: v.number(),
+				chunkPath: v.optional(v.string()),
+				chunkArchiveOperationId: v.optional(v.string()),
+			}),
+		),
+		activeFilesWithChunkScopeIssues: v.array(
+			v.object({
+				path: v.string(),
+				reason: v.string(),
+				yjsSequence: v.optional(v.number()),
+				chunkIndex: v.optional(v.number()),
+				chunkPath: v.optional(v.string()),
+				chunkArchiveOperationId: v.optional(v.string()),
+			}),
+		),
+	}),
+	handler: async (ctx, args) => {
+		const rawSampleLimit = args.sampleLimit ?? 50;
+		const sampleLimit = Number.isFinite(rawSampleLimit) ? Math.min(100, Math.max(1, Math.trunc(rawSampleLimit))) : 50;
+
+		// Bounded eval/release diagnostic. It intentionally samples indexed active nodes instead of
+		// scanning every chunk row: this check is for rollout readiness, not a runtime repair path.
+		const [activeNodes, activeFiles] = await Promise.all([
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_archiveOperation_path", (q) =>
+					q
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId)
+						.eq("archiveOperationId", undefined),
+				)
+				.take(sampleLimit),
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_archiveOperation_kind_path", (q) =>
+					q
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId)
+						.eq("archiveOperationId", undefined)
+						.eq("kind", "file"),
+				)
+				.take(sampleLimit),
+		]);
+
+		const activeNodesWithMissingOrStalePathDepth = activeNodes.flatMap((node) => {
+			const expectedPathDepth = files_path_depth(node.path);
+			if (node.pathDepth === expectedPathDepth) {
+				return [];
+			}
+			return [
+				{
+					path: node.path,
+					expectedPathDepth,
+					...(node.pathDepth != null ? { actualPathDepth: node.pathDepth } : {}),
+				},
+			];
+		});
+		const activeNodesWithMissingOrStaleLowercaseExtension = activeNodes.flatMap((node) => {
+			const expectedLowercaseExtension = files_lowercase_extension(node.path, node.kind);
+			if (node.lowercaseExtension === expectedLowercaseExtension) {
+				return [];
+			}
+			return [
+				{
+					path: node.path,
+					expectedLowercaseExtension,
+					...(node.lowercaseExtension !== undefined ? { actualLowercaseExtension: node.lowercaseExtension } : {}),
+				},
+			];
+		});
+
+		const activeFilesWithMissingOrStaleStats = (
+			await Promise.all(
+				activeFiles.map(async (file) => {
+					if (!file.statsId) {
+						return { path: file.path, reason: "missing_statsId" };
+					}
+					const stats = await ctx.db.get("file_stats", file.statsId);
+					if (
+						!stats ||
+						stats.workspaceId !== file.workspaceId ||
+						stats.projectId !== file.projectId ||
+						stats.nodeId !== file._id
+					) {
+						return { path: file.path, reason: "missing_or_mismatched_file_stats" };
+					}
+					return null;
+				}),
+			)
+		).filter((issue): issue is { path: string; reason: string } => issue !== null);
+
+		type ChunkScopeIssue = {
+			path: string;
+			reason: string;
+			yjsSequence?: number;
+			chunkIndex?: number;
+			chunkPath?: string;
+			chunkArchiveOperationId?: string;
+		};
+		const chunkScopeResults = await Promise.all(
+			activeFiles.map(async (file) => {
+				if (!files_node_has_editable_yjs_state(file)) {
+					return {
+						checkedChunkRows: 0,
+						missingChunks: [],
+						staleScopeFields: [],
+					};
+				}
+				const latestPlainTextChunk = await ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+						q
+							.eq("workspaceId", file.workspaceId)
+							.eq("projectId", file.projectId)
+							.eq("nodeId", file._id),
+					)
+					.order("desc")
+					.first();
+				if (!latestPlainTextChunk) {
+					return {
+						checkedChunkRows: 0,
+						missingChunks: [{ path: file.path, reason: "missing_plain_text_chunks" }],
+						staleScopeFields: [],
+					};
+				}
+
+				const plainTextChunks = await ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+						q
+							.eq("workspaceId", file.workspaceId)
+							.eq("projectId", file.projectId)
+							.eq("nodeId", file._id)
+							.eq("yjsSequence", latestPlainTextChunk.yjsSequence),
+					)
+					.take(5);
+				const staleChunk = plainTextChunks.find(
+					(chunk) => chunk.path !== file.path || chunk.archiveOperationId !== file.archiveOperationId,
+				);
+				if (!staleChunk) {
+					return { checkedChunkRows: plainTextChunks.length, missingChunks: [], staleScopeFields: [] };
+				}
+
+				return {
+					checkedChunkRows: plainTextChunks.length,
+					missingChunks: [],
+					staleScopeFields: [
+						{
+							path: file.path,
+							reason: staleChunk.path !== file.path ? "missing_or_stale_chunk_path" : "stale_chunk_archiveOperationId",
+							yjsSequence: staleChunk.yjsSequence,
+							chunkIndex: staleChunk.chunkIndex,
+							...(staleChunk.path != null ? { chunkPath: staleChunk.path } : {}),
+							...(staleChunk.archiveOperationId != null
+								? { chunkArchiveOperationId: staleChunk.archiveOperationId }
+								: {}),
+						},
+					],
+				};
+			}),
+		);
+		const activeFilesMissingPlainTextChunks = chunkScopeResults.flatMap((result) => result.missingChunks);
+		const activeFilesWithStaleChunkScopeFields = chunkScopeResults.flatMap((result) => result.staleScopeFields);
+
+		return {
+			sampleLimit,
+			activeNodesChecked: activeNodes.length,
+			activeFilesChecked: activeFiles.length,
+			plainTextChunksChecked: chunkScopeResults.reduce((count, result) => count + result.checkedChunkRows, 0),
+			activeNodesWithMissingOrStalePathDepth,
+			activeNodesWithMissingOrStaleLowercaseExtension,
+			activeFilesWithMissingOrStaleStats,
+			activeFilesMissingPlainTextChunks,
+			activeFilesWithStaleChunkScopeFields,
+			activeFilesWithChunkScopeIssues: [
+				...activeFilesMissingPlainTextChunks,
+				...activeFilesWithStaleChunkScopeFields,
+			] satisfies ChunkScopeIssue[],
+		};
+	},
+});
+
+export const enqueue_missing_plain_text_chunk_materializations = internalMutation({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		numItems: v.optional(v.number()),
+		cursor: paginationOptsValidator.fields.cursor,
+	},
+	returns: v.object({
+		processed: v.number(),
+		editable: v.number(),
+		enqueued: v.number(),
+		skippedNonEditable: v.number(),
+		skippedExistingChunks: v.number(),
+		skippedExistingJob: v.number(),
+		skippedMissingState: v.number(),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const result = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_archiveOperation_kind_path", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("archiveOperationId", undefined)
+					.eq("kind", "file"),
+			)
+			.paginate({
+				cursor: args.cursor,
+				numItems: Math.max(1, Math.min(50, Math.trunc(args.numItems ?? 25))),
+			});
+
+		let editable = 0;
+		let enqueued = 0;
+		let skippedNonEditable = 0;
+		let skippedExistingChunks = 0;
+		let skippedExistingJob = 0;
+		let skippedMissingState = 0;
+
+		for (const file of result.page) {
+			if (!files_node_has_editable_yjs_state(file)) {
+				skippedNonEditable++;
+				continue;
+			}
+			editable++;
+			if (!file.yjsLastSequenceId) {
+				skippedMissingState++;
+				continue;
+			}
+			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", file.yjsLastSequenceId);
+			if (
+				!lastSequenceDoc ||
+				lastSequenceDoc.workspaceId !== args.workspaceId ||
+				lastSequenceDoc.projectId !== args.projectId ||
+				lastSequenceDoc.nodeId !== file._id
+			) {
+				skippedMissingState++;
+				continue;
+			}
+
+			const latestPlainTextChunk = await ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", file._id),
+				)
+				.order("desc")
+				.first();
+			if (latestPlainTextChunk && latestPlainTextChunk.yjsSequence >= lastSequenceDoc.lastSequence) {
+				skippedExistingChunks++;
+				continue;
+			}
+
+			const existingJobs = await ctx.db
+				.query("files_content_materialization_jobs")
+				.withIndex("by_file", (q) => q.eq("nodeId", file._id))
+				.collect();
+			if (existingJobs.some((job) => job.targetSequence >= lastSequenceDoc.lastSequence)) {
+				skippedExistingJob++;
+				continue;
+			}
+
+			await enqueue_file_content_materialization(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: file._id,
+				userId: file.updatedBy,
+				targetSequence: lastSequenceDoc.lastSequence,
+				delayMs: 0,
+			});
+			enqueued++;
+		}
+
+		return {
+			processed: result.page.length,
+			editable,
+			enqueued,
+			skippedNonEditable,
+			skippedExistingChunks,
+			skippedExistingJob,
+			skippedMissingState,
+			continueCursor: result.continueCursor,
+			isDone: result.isDone,
+		};
+	},
+});
+
+/**
+ * Byte size of the content a reader would actually serve the acting user — pending-aware. The
+ * agent's own write_file/edit_file edits live in files_pending_updates until saved, so the
+ * committed asset size (what `stat` reports) can disagree with what `cat`/`head`/`wc`/`tail`
+ * return. The reader oversize gate sizes on THIS so its decision and footer match the served
+ * content. `pending` is true when an unsaved overlay is what gets served. Non-pending committed
+ * content uses the asset size (a stale, not-yet-rematerialized snapshot is a brief post-save
+ * window where this is approximate — the readers still serve correct content). `null` when the
+ * path is not a readable editable file.
+ */
+export const get_bash_served_byte_size = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		path: v.string(),
+	},
+	returns: v.union(v.object({ servedBytes: v.number(), pending: v.boolean() }), v.null()),
+	handler: async (ctx, args) => {
+		if (args.path === "/") return null;
+		const file = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("path", args.path)
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+		if (!file || file.kind !== "file" || !files_node_has_editable_yjs_state(file)) return null;
+
+		const pendingUpdate = await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_workspace_project_user_file", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("userId", args.userId)
+					.eq("nodeId", file._id),
+			)
+			.first();
+		if (pendingUpdate) {
+			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.baseYjsUpdate, {
+				additionalIncrementalArrayBufferUpdates: [pendingUpdate.unstagedBranchYjsUpdate],
+			});
+			const markdown = files_yjs_doc_get_markdown({ yjsDoc });
+			if (markdown._yay !== undefined) {
+				return { servedBytes: files_get_utf8_byte_size(markdown._yay), pending: true };
+			}
+		}
+
+		const asset = file.assetId
+			? await ctx.db
+					.get("files_r2_assets", file.assetId)
+					.then((asset) =>
+						asset && asset.workspaceId === args.workspaceId && asset.projectId === args.projectId ? asset : null,
+					)
+			: null;
+		return { servedBytes: asset?.size ?? 0, pending: false };
+	},
+});
+
+export type files_nodes_get_bash_served_byte_size_Result =
+	typeof get_bash_served_byte_size extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -3250,10 +4251,15 @@ export type files_nodes_get_file_last_available_markdown_content_by_path_Result 
 		? Awaited<ReturnValue>
 		: never;
 
-// Bounded reads: never scan more than this many bytes of a committed file when reading a
-// line range, so a multi-MB file is not pulled in full. Tunable.
-const files_READ_RANGE_MAX_LINES = 200;
-const files_READ_RANGE_SCAN_MAX_BYTES = 64 * 1024;
+// Bounded reads. DEV-PHASE AGGRESSIVE CAPS: deliberately small so our tiny test files exercise the
+// same paging / truncation / fallback paths a huge file would in production. Raise these before
+// production. `MAX_LINES` is the per-page line cap for head/sed/tail; `SCAN_MAX_BYTES` is the
+// leading-window size for the in-memory/windowed FALLBACK path (committed reads use chunks and are
+// depth-unbounded, so this only bounds pending/stale reads).
+// Exported so the agent-facing bash tool description / system prompt can interpolate the true
+// per-read line cap instead of hardcoding a number that silently drifts when this value changes.
+export const files_READ_RANGE_MAX_LINES = 40;
+const files_READ_RANGE_SCAN_MAX_BYTES = 8 * 1024;
 // A single very long line (legitimately minified content, or a deliberate attempt to bypass
 // line-based limits) is truncated for display at this many characters, with a marker, so one
 // line cannot dominate the bounded output. Generous enough not to clip normal prose lines.
@@ -3269,6 +4275,105 @@ function files_truncate_long_display_line(line: string) {
 		return line;
 	}
 	return `${line.slice(0, files_READ_MAX_LINE_CHARS)} …[line truncated to ${files_READ_MAX_LINE_CHARS} chars — the full line is ${line.length}+ chars]`;
+}
+
+/**
+ * Compute `wc` counts for a full text in one pass: lineCount = newline count (`wc -l`), wordCount =
+ * whitespace-delimited words (`wc -w`), charCount = Unicode code points (`wc -m`, not UTF-16 units,
+ * so emoji/astral chars count as one). Used both at materialization (to store exact counts on the
+ * node) and on the windowed fallback (lower-bound counts for unmaterialized content), so the two
+ * paths share identical semantics. Allocation-free except the word split.
+ */
+function files_compute_wc_counts(text: string) {
+	let lineCount = 0;
+	let charCount = 0;
+	for (let index = 0; index < text.length; index++) {
+		const code = text.charCodeAt(index);
+		if (code === 10) lineCount++; // "\n"
+		// Skip the trailing half of a surrogate pair so the pair counts as one code point.
+		if (code < 0xdc00 || code > 0xdfff) charCount++;
+	}
+	const trimmed = text.trim();
+	const wordCount = trimmed.length === 0 ? 0 : trimmed.split(/\s+/u).length;
+	return { lineCount, wordCount, charCount };
+}
+
+/**
+ * Find lines of `content` containing `pattern` as a literal substring (case-insensitive when
+ * `ignoreCase`). Returns up to `maxMatches` { lineNumber (1-based), line } with over-long lines
+ * display-truncated, and `truncated` when the match cap is hit. This is substring matching, NOT
+ * full regex — single-file `grep` backed by a bounded chunk scan, not a global index.
+ */
+export function files_grep_lines(content: string, pattern: string, ignoreCase: boolean, maxMatches: number) {
+	const matches: Array<{ lineNumber: number; line: string }> = [];
+	if (pattern.length === 0) return { matches, truncated: false };
+	const hasTrailingNewline = content.endsWith("\n");
+	const split = content.split("\n");
+	const lines = hasTrailingNewline ? split.slice(0, -1) : split;
+	const needle = ignoreCase ? pattern.toLowerCase() : pattern;
+	let truncated = false;
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index]!;
+		const haystack = ignoreCase ? line.toLowerCase() : line;
+		if (haystack.includes(needle)) {
+			if (matches.length >= maxMatches) {
+				truncated = true;
+				break;
+			}
+			matches.push({ lineNumber: index + 1, line: files_truncate_long_display_line(line) });
+		}
+	}
+	return { matches, truncated };
+}
+
+/**
+ * Like `files_grep_lines` but supports context lines (`grep -A/-B/-C`) and inverted selection
+ * (`grep -v`). A "selected" line is a matching line, or — when `invert` — a non-matching line.
+ * Returns the selected lines plus up to `before`/`after` context lines around each, merged and
+ * de-duplicated into one ascending list with each entry flagged `matched` (a selected line) vs a
+ * context line. `selectedCount` is the total number of selected lines in `content` (counted in
+ * full, even past the output cap, so `grep -c` reports the real count for the scanned window);
+ * `truncated` is set when more than `maxSelected` selected lines exist (output stops at the first
+ * `maxSelected`). Substring match, not regex — same semantics as `files_grep_lines`.
+ */
+export function files_grep_lines_extended(
+	content: string,
+	pattern: string,
+	options: { ignoreCase: boolean; invert: boolean; before: number; after: number; maxSelected: number },
+) {
+	const out: Array<{ lineNumber: number; line: string; matched: boolean }> = [];
+	if (pattern.length === 0) return { lines: out, selectedCount: 0, truncated: false };
+	const hasTrailingNewline = content.endsWith("\n");
+	const split = content.split("\n");
+	const lines = hasTrailingNewline ? split.slice(0, -1) : split;
+	const needle = options.ignoreCase ? pattern.toLowerCase() : pattern;
+	const before = Math.max(0, options.before);
+	const after = Math.max(0, options.after);
+	const selected: number[] = [];
+	let selectedCount = 0;
+	let truncated = false;
+	for (let index = 0; index < lines.length; index++) {
+		const haystack = options.ignoreCase ? lines[index]!.toLowerCase() : lines[index]!;
+		const isMatch = haystack.includes(needle);
+		if (options.invert ? !isMatch : isMatch) {
+			selectedCount++;
+			if (selected.length < options.maxSelected) selected.push(index);
+			else truncated = true;
+		}
+	}
+	// Expand the context window around each selected line and merge into one ascending, de-duped set
+	// (overlapping windows collapse, exactly like real grep before it inserts "--" group separators).
+	const matched = new Set(selected);
+	const include = new Set<number>();
+	for (const index of selected) {
+		const lo = Math.max(0, index - before);
+		const hi = Math.min(lines.length - 1, index + after);
+		for (let i = lo; i <= hi; i++) include.add(i);
+	}
+	for (const index of [...include].sort((a, b) => a - b)) {
+		out.push({ lineNumber: index + 1, line: files_truncate_long_display_line(lines[index]!), matched: matched.has(index) });
+	}
+	return { lines: out, selectedCount, truncated };
 }
 
 /**
@@ -3295,18 +4400,26 @@ export function files_line_range_from_text(content: string, startLine: number, m
 /** Returns the last `maxLines` lines of `content` (over-long lines truncated for display). */
 export function files_tail_lines_from_text(content: string, maxLines: number) {
 	if (maxLines <= 0 || content.length === 0) {
-		return { content: "" };
+		return { content: "", moreAbove: false };
 	}
 	const hasTrailingNewline = content.endsWith("\n");
 	const split = content.split("\n");
 	const lines = hasTrailingNewline ? split.slice(0, -1) : split;
 	const slice = lines.slice(Math.max(0, lines.length - maxLines)).map(files_truncate_long_display_line);
-	return { content: slice.length > 0 ? `${slice.join("\n")}\n` : "" };
+	// `moreAbove` is true when the file (or this window) holds lines before the returned tail, so a
+	// `tail` view can honestly signal it is partial rather than implying it shows the whole file.
+	return { content: slice.length > 0 ? `${slice.join("\n")}\n` : "", moreAbove: lines.length > maxLines };
 }
 
 async function files_resolve_readable_content_or_window(
 	ctx: ActionCtx,
-	args: { workspaceId: string; projectId: string; userId: Id<"users">; path: string; pendingUpdateId?: Id<"files_pending_updates"> },
+	args: {
+		workspaceId: string;
+		projectId: string;
+		userId: Id<"users">;
+		path: string;
+		pendingUpdateId?: Id<"files_pending_updates">;
+	},
 ): Promise<{ nodeId: Id<"files_nodes">; text: string; fetchedAllBytes: boolean; totalBytes: number } | null> {
 	const state = (await ctx.runQuery(internal.files_nodes.get_file_markdown_content_db_state_by_path, {
 		workspaceId: args.workspaceId,
@@ -3321,13 +4434,20 @@ async function files_resolve_readable_content_or_window(
 	const materializationState = state.materializationState;
 	// Pending user edit, or stale snapshot: full content is (or must be) in memory.
 	if (state.content !== undefined) {
-		return { nodeId: state.nodeId, text: state.content, fetchedAllBytes: true, totalBytes: files_get_utf8_byte_size(state.content) };
+		return {
+			nodeId: state.nodeId,
+			text: state.content,
+			fetchedAllBytes: true,
+			totalBytes: files_get_utf8_byte_size(state.content),
+		};
 	}
 	if (
 		materializationState &&
 		materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
 	) {
-		const reconstructed = await reconstruct_latest_file_content_from_materialization_state({ state: materializationState });
+		const reconstructed = await reconstruct_latest_file_content_from_materialization_state({
+			state: materializationState,
+		});
 		if (reconstructed._nay) {
 			throw convex_error({ message: "Failed to reconstruct latest file content", cause: reconstructed._nay });
 		}
@@ -3351,13 +4471,535 @@ async function files_resolve_readable_content_or_window(
 	return { nodeId: state.nodeId, text, fetchedAllBytes: bytes.byteLength >= totalBytes, totalBytes };
 }
 
+// ---------------------------------------------------------------------------------------------
+// Chunk-backed reads. Committed, up-to-date content is materialized into files_markdown_chunks:
+// each markdownChunk is a VERBATIM source substring (source.slice(startIndex, endIndex) === chunk,
+// asserted in files-markdown-chunking-mastra.test.ts) and chunks tile the document contiguously
+// with 1-based lineStart/lineEnd metadata. Reading only the chunks that overlap a requested line
+// range therefore reconstructs that portion EXACTLY at any depth — a pure DB read, no byte window.
+// The chunk path is used only when content is committed and current (no pending user overlay,
+// snapshot caught up); otherwise callers fall back to the in-memory / windowed path so chunk
+// output can never disagree with `cat`.
+// ---------------------------------------------------------------------------------------------
+
+// Per-file `grep` scans a file's chunks streaming-style and stops at this many matches (the only cap
+// — chunk reads are not bounded by a fixed ceiling; they stream off the index until the cap or EOF).
+const files_GREP_MAX_MATCHES = 100;
+
 /**
- * Read a line range of a file without pulling the whole thing: for committed, up-to-date
- * content this issues a single bounded R2 byte-range read (a leading window capped at
- * `files_READ_RANGE_SCAN_MAX_BYTES`); for pending/unmaterialized content it slices the
- * in-memory reconstruction. Backs `head -n N` (startLine 1) and `sed -n 'A,Bp'` (startLine A).
- * Deep ranges of a genuinely huge committed file may fall outside the leading window
- * (scanTruncated); the aggressive-cap testing case keeps whole files within the window.
+ * Resolve the materialized-chunk read target for a path, or null when the chunk fast path must NOT
+ * be used: a pending user overlay (not yet materialized), a stale snapshot (latest edits not yet
+ * materialized — chunks would disagree with `cat`), an explicit pendingUpdateId (caller wants a
+ * pending view), or a non-file / non-editable node. `byteSize` is the committed content byte size.
+ */
+async function db_resolve_committed_chunk_source(
+	ctx: QueryCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		userId: Id<"users">;
+		path: string;
+		pendingUpdateId?: Id<"files_pending_updates">;
+	},
+): Promise<{
+	nodeId: Id<"files_nodes">;
+	yjsSequence: number;
+	byteSize: number;
+	counts: { lineCount: number; wordCount: number; charCount: number } | null;
+} | null> {
+	// An explicit pending view is requested → committed chunks are not what the caller wants.
+	if (args.pendingUpdateId || args.path === "/") return null;
+
+	const file = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("path", args.path)
+				.eq("archiveOperationId", undefined),
+		)
+		.first();
+	if (!file || file.kind !== "file" || !files_node_has_editable_yjs_state(file)) return null;
+
+	// The user's unstaged branch is not materialized into chunks; read it via the in-memory path.
+	const pendingUpdate = await ctx.db
+		.query("files_pending_updates")
+		.withIndex("by_workspace_project_user_file", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("userId", args.userId)
+				.eq("nodeId", file._id),
+		)
+		.first();
+	if (pendingUpdate) return null;
+
+	const mat = await db_get_file_content_materialization_db_state(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		nodeId: file._id,
+	});
+	if (!mat) return null;
+	// Stale: edits exist beyond the materialized snapshot, so chunks are behind the committed view.
+	if (mat.yjsLastSequenceDoc.lastSequence > mat.yjsSnapshotDoc.sequence) return null;
+
+	// Exact wc counts from the linked file_stats row (read O(1) by id — the back-ref the node holds).
+	// null when unlinked (old file not yet migrated) or flagged unprocessable (-1), so the stats
+	// query falls back to the windowed estimate.
+	const stats = file.statsId ? await ctx.db.get("file_stats", file.statsId) : null;
+	const counts =
+		stats && stats.lineCount >= 0 && stats.wordCount >= 0 && stats.charCount >= 0
+			? { lineCount: stats.lineCount, wordCount: stats.wordCount, charCount: stats.charCount }
+			: null;
+	return { nodeId: file._id, yjsSequence: mat.yjsSnapshotDoc.sequence, byteSize: mat.asset.size ?? 0, counts };
+}
+
+/**
+ * Concatenate chunks (given in ascending chunkIndex order) into the exact source substring they
+ * span. Returns null if the chunks are not contiguous (each startIndex must equal the previous
+ * endIndex) — a safety check so a materialization anomaly falls back rather than returning text
+ * with a hidden gap.
+ */
+function files_merge_contiguous_chunks(
+	chunks: Array<{ startIndex: number; endIndex: number; markdownChunk: string }>,
+): string | null {
+	let out = "";
+	let prevEnd: number | null = null;
+	for (const chunk of chunks) {
+		if (prevEnd !== null && chunk.startIndex !== prevEnd) return null;
+		out += chunk.markdownChunk;
+		prevEnd = chunk.endIndex;
+	}
+	return out;
+}
+
+/**
+ * Read a line range (or the trailing lines) of committed, up-to-date content directly from
+ * materialized chunks. Returns { usable: false } when the content is not committed-current (the
+ * action then falls back to the in-memory / windowed path). For a forward range it seeks the
+ * chunks overlapping [startLine, startLine+maxLines) via the lineEnd index; for `fromEnd` it walks
+ * chunks from the end until it has enough trailing lines. Works at any depth — no byte window.
+ */
+export const read_committed_file_chunks_line_range = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		path: v.string(),
+		startLine: v.number(),
+		maxLines: v.number(),
+		fromEnd: v.boolean(),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+	},
+	returns: v.union(
+		v.object({ usable: v.literal(false) }),
+		v.object({
+			usable: v.literal(true),
+			nodeId: v.id("files_nodes"),
+			content: v.string(),
+			moreLines: v.boolean(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const source = await db_resolve_committed_chunk_source(ctx, args);
+		if (!source) return { usable: false as const };
+		const maxLines = Math.max(1, Math.min(files_READ_RANGE_MAX_LINES, Math.trunc(args.maxLines)));
+
+		if (args.fromEnd) {
+			// tail: stream chunks from the end (descending) only until they cover maxLines distinct
+			// lines, then reorder ascending and slice the last maxLines. The trailing chunks are
+			// consecutive (so contiguous), and reading just enough of them avoids pulling the whole file.
+			const tailChunks: Array<Doc<"files_markdown_chunks">> = [];
+			let lastLineEnd: number | null = null;
+			for await (const chunk of ctx.db
+				.query("files_markdown_chunks")
+				.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+					q
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId)
+						.eq("nodeId", source.nodeId)
+						.eq("yjsSequence", source.yjsSequence),
+				)
+				.order("desc")) {
+				if (lastLineEnd === null) lastLineEnd = chunk.lineEnd; // file's last line (first iterated, desc)
+				tailChunks.push(chunk);
+				// Distinct lines covered so far = lastLine - earliestStart + 1 (contiguous chunks share at
+				// most a boundary line, so this counts distinct lines exactly, not a summed over-count).
+				if (lastLineEnd - chunk.lineStart + 1 >= maxLines) break;
+			}
+			if (tailChunks.length === 0) {
+				// A non-empty committed file must have chunks; if absent it is not yet materialized.
+				if (source.byteSize > 0) return { usable: false as const };
+				return { usable: true as const, nodeId: source.nodeId, content: "", moreLines: false };
+			}
+			tailChunks.reverse(); // desc → asc (document order)
+			const merged = files_merge_contiguous_chunks(tailChunks);
+			if (merged == null) return { usable: false as const };
+			const tail = files_tail_lines_from_text(merged, maxLines);
+			// For `fromEnd`, `moreLines` means "lines precede this tail". `lineEnd` is 0-based, so the
+			// file has `lastLineEnd + 1` lines; the tail is partial iff that total exceeds maxLines, i.e.
+			// `lastLineEnd >= maxLines`. (Using the file's true last line, not the merged-suffix length,
+			// which can equal maxLines on a chunk boundary while earlier lines still exist.)
+			const moreLines = (lastLineEnd ?? 0) >= maxLines;
+			return { usable: true as const, nodeId: source.nodeId, content: tail.content, moreLines };
+		}
+
+		const startLine = Math.max(1, Math.trunc(args.startLine));
+		const endLine = startLine + maxLines - 1;
+		// Seek to the first chunk whose lineEnd >= startLine (which contains the start of line
+		// `startLine`), then stream forward in chunkIndex order (the index's trailing chunkIndex column
+		// orders same-lineEnd ties), stopping at the first chunk that starts past endLine. lineStart is
+		// non-decreasing in chunkIndex, so that first beyond-chunk means every later chunk is beyond too
+		// — we read only the chunks overlapping the range, never the whole file, regardless of depth.
+		const overlapping: Array<Doc<"files_markdown_chunks">> = [];
+		let sawBeyond = false;
+		let anyCandidate = false;
+		for await (const chunk of ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_workspace_project_file_yjsSequence_lineEnd_chunkIndex", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("nodeId", source.nodeId)
+					.eq("yjsSequence", source.yjsSequence)
+					.gte("lineEnd", startLine),
+			)
+			.order("asc")) {
+			anyCandidate = true;
+			if (chunk.lineStart > endLine) {
+				sawBeyond = true; // content follows the requested range
+				break;
+			}
+			overlapping.push(chunk);
+		}
+		if (!anyCandidate) {
+			// No chunk ends at/after startLine: either startLine is past EOF (a valid empty page on a
+			// materialized file) or the file is not materialized (fall back).
+			const anyChunk = await ctx.db
+				.query("files_markdown_chunks")
+				.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+					q
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId)
+						.eq("nodeId", source.nodeId)
+						.eq("yjsSequence", source.yjsSequence),
+				)
+				.first();
+			if (anyChunk) return { usable: true as const, nodeId: source.nodeId, content: "", moreLines: false };
+			return source.byteSize > 0
+				? { usable: false as const }
+				: { usable: true as const, nodeId: source.nodeId, content: "", moreLines: false };
+		}
+		if (overlapping.length === 0) {
+			// Candidates exist but all start after endLine: the requested range is empty, content follows.
+			return { usable: true as const, nodeId: source.nodeId, content: "", moreLines: true };
+		}
+		const merged = files_merge_contiguous_chunks(overlapping);
+		if (merged == null) return { usable: false as const };
+		// merged begins at document line `baseLine`; translate the document range into merged-local
+		// line numbers. The requested lines always fall on full (non-partial) merged lines because
+		// the first overlapping chunk contains the start of line `startLine` (baseLine <= startLine).
+		const baseLine = overlapping[0]!.lineStart;
+		const range = files_line_range_from_text(merged, startLine - baseLine + 1, maxLines);
+		// More content follows iff a chunk starting past endLine was seen (sawBeyond) or the merged
+		// window itself held lines beyond the requested range (range.moreLines — e.g. the last chunk
+		// straddled endLine at EOF).
+		const moreLines = range.moreLines || sawBeyond;
+		return { usable: true as const, nodeId: source.nodeId, content: range.content, moreLines };
+	},
+});
+
+export type files_nodes_read_committed_file_chunks_line_range_Result =
+	typeof read_committed_file_chunks_line_range extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Exact line/word/char/byte counts for committed, up-to-date content — read O(1) from the counts
+ * stored on the file node at materialization (NO file/chunk content is read). Returns
+ * { usable: false } when not committed-current, or for a file materialized before counts were
+ * stored (the action then falls back to the windowed estimate). byteCount is the content byte size.
+ */
+export const read_committed_file_chunk_stats = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		path: v.string(),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+	},
+	returns: v.union(
+		v.object({ usable: v.literal(false) }),
+		v.object({
+			usable: v.literal(true),
+			nodeId: v.id("files_nodes"),
+			lineCount: v.number(),
+			wordCount: v.number(),
+			charCount: v.number(),
+			byteCount: v.number(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const source = await db_resolve_committed_chunk_source(ctx, args);
+		// Counts are persisted on the node at materialization; if absent (older file), fall back.
+		if (!source || !source.counts) return { usable: false as const };
+		return {
+			usable: true as const,
+			nodeId: source.nodeId,
+			lineCount: source.counts.lineCount,
+			wordCount: source.counts.wordCount,
+			charCount: source.counts.charCount,
+			byteCount: source.byteSize,
+		};
+	},
+});
+
+export type files_nodes_read_committed_file_chunk_stats_Result =
+	typeof read_committed_file_chunk_stats extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+const files_grep_match_validator = v.object({ lineNumber: v.number(), line: v.string() });
+
+/**
+ * `grep` a single committed, up-to-date file by scanning ONLY its materialized chunks (bounded) —
+ * no whole-file fetch beyond the chunk read, no global index. Returns { usable: false } for
+ * non-committed-current content so the action falls back to the windowed scan. Substring match.
+ */
+export const grep_committed_file_chunks = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		path: v.string(),
+		pattern: v.string(),
+		ignoreCase: v.boolean(),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+	},
+	returns: v.union(
+		v.object({ usable: v.literal(false) }),
+		v.object({
+			usable: v.literal(true),
+			nodeId: v.id("files_nodes"),
+			matches: v.array(files_grep_match_validator),
+			scanTruncated: v.boolean(),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const source = await db_resolve_committed_chunk_source(ctx, args);
+		if (!source) return { usable: false as const };
+
+		const matches: Array<{ lineNumber: number; line: string }> = [];
+		if (args.pattern.length === 0) {
+			return { usable: true as const, nodeId: source.nodeId, matches, scanTruncated: false };
+		}
+		const needle = args.ignoreCase ? args.pattern.toLowerCase() : args.pattern;
+
+		// Stream the file's chunks straight off the chunkIndex index, in order, reading only until the
+		// match cap is hit — no fixed chunk ceiling and no JS sort (the index already yields chunkIndex
+		// order). A line split across a chunk boundary is reassembled via `carry`, so matches and line
+		// numbers are identical to scanning the whole file in one piece. Mirrors files_grep_lines:
+		// lines are delimited by "\n", a trailing newline does not produce an extra empty line.
+		let carry = ""; // bytes accumulated since the last newline (an in-progress line)
+		let lineNumber = 0; // last completed line number (1-based)
+		let prevEnd: number | null = null; // contiguity guard: each chunk.startIndex must equal prev endIndex
+		let scanTruncated = false;
+		let contiguous = true;
+		for await (const chunk of ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("nodeId", source.nodeId)
+					.eq("yjsSequence", source.yjsSequence),
+			)
+			.order("asc")) {
+			if (prevEnd !== null && chunk.startIndex !== prevEnd) {
+				// Materialization anomaly (gap): bail so the caller falls back rather than greps text
+				// with a hidden hole.
+				contiguous = false;
+				break;
+			}
+			prevEnd = chunk.endIndex;
+			carry += chunk.markdownChunk;
+			let nl = carry.indexOf("\n");
+			while (nl !== -1) {
+				const line = carry.slice(0, nl);
+				carry = carry.slice(nl + 1);
+				lineNumber++;
+				const haystack = args.ignoreCase ? line.toLowerCase() : line;
+				if (haystack.includes(needle)) {
+					// Cap check before push (matches files_grep_lines): truncated only when a match
+					// BEYOND the cap exists, so an exact-cap file is not falsely flagged partial.
+					if (matches.length >= files_GREP_MAX_MATCHES) {
+						scanTruncated = true;
+						break;
+					}
+					matches.push({ lineNumber, line: files_truncate_long_display_line(line) });
+				}
+				nl = carry.indexOf("\n");
+			}
+			if (scanTruncated) break;
+		}
+		if (!contiguous) return { usable: false as const };
+		// The final line of a file with no trailing newline is left in `carry`.
+		if (!scanTruncated && carry.length > 0) {
+			lineNumber++;
+			const haystack = args.ignoreCase ? carry.toLowerCase() : carry;
+			if (haystack.includes(needle)) {
+				if (matches.length >= files_GREP_MAX_MATCHES) scanTruncated = true;
+				else matches.push({ lineNumber, line: files_truncate_long_display_line(carry) });
+			}
+		}
+		return { usable: true as const, nodeId: source.nodeId, matches, scanTruncated };
+	},
+});
+
+/**
+ * `grep PATTERN <file>` for one app file: committed-current content is scanned from its chunks;
+ * pending/stale content falls back to the bounded leading window. Substring match (case-insensitive
+ * with `ignoreCase`). Returns null when the file does not exist.
+ */
+export const grep_app_file = internalAction({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		path: v.string(),
+		pattern: v.string(),
+		ignoreCase: v.boolean(),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+	},
+	returns: v.union(
+		v.object({
+			nodeId: v.id("files_nodes"),
+			matches: v.array(files_grep_match_validator),
+			scanTruncated: v.boolean(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		// The chunk scan reads the whole file's chunks (until the match cap). A file large enough to
+		// exceed the per-query read limit throws; treat that like non-committed content and degrade to
+		// the bounded windowed scan below (which flags the result partial) rather than failing grep.
+		let chunked:
+			| { usable: false }
+			| {
+					usable: true;
+					nodeId: Id<"files_nodes">;
+					matches: Array<{ lineNumber: number; line: string }>;
+					scanTruncated: boolean;
+			  };
+		try {
+			chunked = (await ctx.runQuery(internal.files_nodes.grep_committed_file_chunks, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				userId: args.userId,
+				path: args.path,
+				pattern: args.pattern,
+				ignoreCase: args.ignoreCase,
+				pendingUpdateId: args.pendingUpdateId,
+			})) as typeof chunked;
+		} catch {
+			chunked = { usable: false };
+		}
+		if (chunked.usable) {
+			return { nodeId: chunked.nodeId, matches: chunked.matches, scanTruncated: chunked.scanTruncated };
+		}
+		// Fallback: pending/stale content via the in-memory reconstruction or a bounded leading window.
+		const resolved = await files_resolve_readable_content_or_window(ctx, args);
+		if (!resolved) {
+			return null;
+		}
+		const grepped = files_grep_lines(resolved.text, args.pattern, args.ignoreCase, files_GREP_MAX_MATCHES);
+		return {
+			nodeId: resolved.nodeId,
+			matches: grepped.matches,
+			scanTruncated: !resolved.fetchedAllBytes || grepped.truncated,
+		};
+	},
+});
+
+export type files_nodes_grep_app_file_Result =
+	typeof grep_app_file extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+const files_grep_scan_line_validator = v.object({
+	lineNumber: v.number(),
+	line: v.string(),
+	matched: v.boolean(),
+});
+
+/**
+ * `grep` one app file with context (`-A/-B/-C`) and/or inverted selection (`-v`) — modes that need
+ * lines OTHER than the matches, so this reads the file's (pending-aware) content or a bounded leading
+ * window rather than the match-only chunk scan used by `grep_app_file`. Returns the selected lines
+ * plus context, `selectedCount` (for `-c`/`-l`), and `scanTruncated` when only a leading window was
+ * read or the selected-line cap was hit. Returns null when the file does not exist. Substring match.
+ */
+export const grep_app_file_scan = internalAction({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		path: v.string(),
+		pattern: v.string(),
+		ignoreCase: v.boolean(),
+		invert: v.boolean(),
+		before: v.number(),
+		after: v.number(),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+	},
+	returns: v.union(
+		v.object({
+			nodeId: v.id("files_nodes"),
+			lines: v.array(files_grep_scan_line_validator),
+			selectedCount: v.number(),
+			scanTruncated: v.boolean(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const resolved = await files_resolve_readable_content_or_window(ctx, args);
+		if (!resolved) {
+			return null;
+		}
+		const scanned = files_grep_lines_extended(resolved.text, args.pattern, {
+			ignoreCase: args.ignoreCase,
+			invert: args.invert,
+			before: args.before,
+			after: args.after,
+			maxSelected: files_GREP_MAX_MATCHES,
+		});
+		return {
+			nodeId: resolved.nodeId,
+			lines: scanned.lines,
+			selectedCount: scanned.selectedCount,
+			scanTruncated: !resolved.fetchedAllBytes || scanned.truncated,
+		};
+	},
+});
+
+export type files_nodes_grep_app_file_scan_Result =
+	typeof grep_app_file_scan extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Read a line range of a file without pulling the whole thing. Committed, up-to-date content is
+ * read from the materialized chunks overlapping the range (`read_committed_file_chunks_line_range`),
+ * which works at ANY depth — no byte window. Pending/unmaterialized/stale content falls back to a
+ * slice of the in-memory reconstruction, or a single bounded R2 byte-range read (a leading window
+ * capped at `files_READ_RANGE_SCAN_MAX_BYTES`) for committed-but-window-only fallbacks. Backs
+ * `head -n N` (startLine 1) and `sed -n 'A,Bp'` (startLine A). `scanTruncated` is only ever true on
+ * the windowed fallback path.
  */
 export const read_file_line_range = internalAction({
 	args: {
@@ -3379,12 +5021,28 @@ export const read_file_line_range = internalAction({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
+		const startLine = Math.max(1, Math.trunc(args.startLine));
+		const maxLines = Math.max(1, Math.min(files_READ_RANGE_MAX_LINES, Math.trunc(args.maxLines)));
+		// Committed-current content: read from the overlapping materialized chunks (any depth, no
+		// byte window). Returns not-usable for pending/stale/unmaterialized content.
+		const chunked = (await ctx.runQuery(internal.files_nodes.read_committed_file_chunks_line_range, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			userId: args.userId,
+			path: args.path,
+			startLine,
+			maxLines,
+			fromEnd: false,
+			pendingUpdateId: args.pendingUpdateId,
+		})) as files_nodes_read_committed_file_chunks_line_range_Result;
+		if (chunked.usable) {
+			return { nodeId: chunked.nodeId, content: chunked.content, moreLines: chunked.moreLines, scanTruncated: false };
+		}
+		// Fallback: in-memory reconstruction (pending/stale) or a bounded leading R2 window.
 		const resolved = await files_resolve_readable_content_or_window(ctx, args);
 		if (!resolved) {
 			return null;
 		}
-		const startLine = Math.max(1, Math.trunc(args.startLine));
-		const maxLines = Math.max(1, Math.min(files_READ_RANGE_MAX_LINES, Math.trunc(args.maxLines)));
 		const range = files_line_range_from_text(resolved.text, startLine, maxLines);
 		// Stopped on the byte window (not line count / EOF): output may be partial.
 		const scanTruncated = !resolved.fetchedAllBytes && range.linesReturned < maxLines;
@@ -3420,11 +5078,29 @@ export const read_file_tail_lines = internalAction({
 		v.object({
 			nodeId: v.id("files_nodes"),
 			content: v.string(),
+			// True when lines precede the returned tail (the view is a partial end-of-file window).
+			moreLines: v.boolean(),
 			scanTruncated: v.boolean(),
 		}),
 		v.null(),
 	),
 	handler: async (ctx, args) => {
+		const maxLines = Math.max(1, Math.min(files_READ_RANGE_MAX_LINES, Math.trunc(args.maxLines)));
+		// Committed-current content: read the trailing lines from the last materialized chunks.
+		const chunked = (await ctx.runQuery(internal.files_nodes.read_committed_file_chunks_line_range, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			userId: args.userId,
+			path: args.path,
+			startLine: 1,
+			maxLines,
+			fromEnd: true,
+			pendingUpdateId: args.pendingUpdateId,
+		})) as files_nodes_read_committed_file_chunks_line_range_Result;
+		if (chunked.usable) {
+			return { nodeId: chunked.nodeId, content: chunked.content, moreLines: chunked.moreLines, scanTruncated: false };
+		}
+		// Fallback: in-memory reconstruction (pending/stale) or a bounded trailing R2 window.
 		const state = (await ctx.runQuery(internal.files_nodes.get_file_markdown_content_db_state_by_path, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
@@ -3435,31 +5111,32 @@ export const read_file_tail_lines = internalAction({
 		if (!state) {
 			return null;
 		}
-		const maxLines = Math.max(1, Math.min(files_READ_RANGE_MAX_LINES, Math.trunc(args.maxLines)));
 		const materializationState = state.materializationState;
 
 		// Pending/stale: full content in memory.
 		if (state.content !== undefined) {
 			const tail = files_tail_lines_from_text(state.content, maxLines);
-			return { nodeId: state.nodeId, content: tail.content, scanTruncated: false };
+			return { nodeId: state.nodeId, content: tail.content, moreLines: tail.moreAbove, scanTruncated: false };
 		}
 		if (
 			materializationState &&
 			materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
 		) {
-			const reconstructed = await reconstruct_latest_file_content_from_materialization_state({ state: materializationState });
+			const reconstructed = await reconstruct_latest_file_content_from_materialization_state({
+				state: materializationState,
+			});
 			if (reconstructed._nay) {
 				throw convex_error({ message: "Failed to reconstruct latest file content", cause: reconstructed._nay });
 			}
 			const tail = files_tail_lines_from_text(reconstructed._yay.markdown, maxLines);
-			return { nodeId: state.nodeId, content: tail.content, scanTruncated: false };
+			return { nodeId: state.nodeId, content: tail.content, moreLines: tail.moreAbove, scanTruncated: false };
 		}
 
 		// Committed: read a bounded trailing window from the end of the R2 object.
 		const r2Key = state.asset?.r2Key;
 		const totalBytes = state.asset?.size;
 		if (!r2Key || totalBytes == null) {
-			return { nodeId: state.nodeId, content: "", scanTruncated: false };
+			return { nodeId: state.nodeId, content: "", moreLines: false, scanTruncated: false };
 		}
 		const start = Math.max(0, totalBytes - files_READ_RANGE_SCAN_MAX_BYTES);
 		const response = await r2_fetch_object_range_from_bucket({ key: r2Key, start, endInclusive: totalBytes - 1 });
@@ -3469,7 +5146,7 @@ export const read_file_tail_lines = internalAction({
 		// If the trailing window didn't reach the start of the file, the earliest returned line
 		// could be partial — only relevant for files larger than the scan window.
 		const scanTruncated = start > 0;
-		return { nodeId: state.nodeId, content: tail.content, scanTruncated };
+		return { nodeId: state.nodeId, content: tail.content, moreLines: tail.moreAbove || start > 0, scanTruncated };
 	},
 });
 
@@ -3504,22 +5181,37 @@ export const read_file_content_stats = internalAction({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
+		// Committed-current content: count exactly from the materialized chunks (the verbatim document).
+		const chunked = (await ctx.runQuery(internal.files_nodes.read_committed_file_chunk_stats, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			userId: args.userId,
+			path: args.path,
+			pendingUpdateId: args.pendingUpdateId,
+		})) as files_nodes_read_committed_file_chunk_stats_Result;
+		if (chunked.usable) {
+			return {
+				nodeId: chunked.nodeId,
+				lineCount: chunked.lineCount,
+				wordCount: chunked.wordCount,
+				charCount: chunked.charCount,
+				byteCount: chunked.byteCount,
+				exact: true,
+			};
+		}
+		// Fallback: in-memory reconstruction (pending/stale) or a bounded leading R2 window (counts
+		// are then lower bounds, flagged via `exact: false`).
 		const resolved = await files_resolve_readable_content_or_window(ctx, args);
 		if (!resolved) {
 			return null;
 		}
-		const text = resolved.text;
-		// wc -l counts newline characters (not "lines"), so an unterminated final line is not counted.
-		let lineCount = 0;
-		for (let index = 0; index < text.length; index++) {
-			if (text[index] === "\n") lineCount++;
-		}
-		const wordCount = text.trim().length === 0 ? 0 : text.trim().split(/\s+/u).length;
+		// Same wc semantics as the materialized path, but on a possibly-partial window (lower bounds).
+		const counts = files_compute_wc_counts(resolved.text);
 		return {
 			nodeId: resolved.nodeId,
-			lineCount,
-			wordCount,
-			charCount: text.length,
+			lineCount: counts.lineCount,
+			wordCount: counts.wordCount,
+			charCount: counts.charCount,
 			byteCount: resolved.totalBytes,
 			exact: resolved.fetchedAllBytes,
 		};
@@ -3647,12 +5339,69 @@ export const get_file_last_yjs_sequence = query({
 	},
 });
 
+function files_nodes_text_search_filtered_query(
+	ctx: QueryCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		query: string;
+		pathPrefix?: string;
+	},
+) {
+	const rawPrefix = args.pathPrefix?.trim();
+	const scopePrefix = rawPrefix && rawPrefix !== "/" ? `/${rawPrefix.replace(/^\/+|\/+$/gu, "")}` : null;
+	const scopedLowerBound = scopePrefix === null ? "/" : `${scopePrefix}/`;
+	const scopedUpperBound = `${scopedLowerBound}\uffff`;
+
+	const searchQuery = ctx.db
+		.query("files_plain_text_chunks")
+		.withSearchIndex("search_by_plainTextChunk", (q) =>
+			q
+				.search("plainTextChunk", args.query)
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("archiveOperationId", undefined),
+		);
+	// Convex applies this filter before page contents are returned, so continuation cursors are
+	// over real in-scope matches instead of "page first, filter later" windows that can produce
+	// false-empty current pages. The tradeoff is that `.filter` scans search hits after
+	// `withSearchIndex`; broad folder scopes or common terms can be heavier. Do not rely on
+	// `maximumRowsRead` here: Convex currently does not enforce it for search queries.
+	return scopePrefix === null
+		? searchQuery
+		: searchQuery.filter((q) =>
+				q.and(q.gte(q.field("path"), scopedLowerBound), q.lt(q.field("path"), scopedUpperBound)),
+			);
+}
+
+const files_nodes_text_search_args = {
+	workspaceId: v.string(),
+	projectId: v.string(),
+	query: v.string(),
+	/** Optional subtree scope: keep only matches whose file path is under this folder prefix. */
+	pathPrefix: v.optional(v.string()),
+};
+
+export const text_search_files_page_has_items = internalQuery({
+	args: {
+		...files_nodes_text_search_args,
+		cursor: v.string(),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const result = await files_nodes_text_search_filtered_query(ctx, args).paginate({
+			cursor: args.cursor,
+			numItems: 1,
+		});
+		return result.page.length > 0;
+	},
+});
+
 export const text_search_files = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		query: v.string(),
-		limit: v.number(),
+		...files_nodes_text_search_args,
+		numItems: v.number(),
+		cursor: paginationOptsValidator.fields.cursor,
 	},
 	returns: v.object({
 		items: v.array(
@@ -3669,7 +5418,8 @@ export const text_search_files = internalQuery({
 				hasChunkBelow: v.boolean(),
 			}),
 		),
-		truncated: v.boolean(),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
 	}),
 	handler: async (
 		ctx,
@@ -3687,117 +5437,79 @@ export const text_search_files = internalQuery({
 			hasChunkAbove: boolean;
 			hasChunkBelow: boolean;
 		}>;
-		truncated: boolean;
+		continueCursor: string;
+		isDone: boolean;
 	}> => {
-		// Over-fetch a bounded candidate window BEFORE dedup/exact-filter so the survivor
-		// count isn't silently far below `limit` (relevance-ranked candidates dropped
-		// post-take). Bounded so per-search read cost stays capped.
-		const candidateLimit = Math.min(300, Math.max(args.limit * 5, 50));
-		const matches = await ctx.db
-			.query("files_plain_text_chunks")
-			.withSearchIndex("search_by_plainTextChunk", (q) =>
-				q.search("plainTextChunk", args.query).eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
-			)
-			.take(candidateLimit);
+		const pageLimit = files_nodes_clamp_bash_listing_page_limit(args.numItems);
+		const result = await files_nodes_text_search_filtered_query(ctx, args).paginate({
+			cursor: args.cursor,
+			numItems: pageLimit,
+		});
+		const isDone = result.isDone;
 
-		// Convex text search returns word by word search results ordered by relevance,
-		// we want to return only 1 result per chunk and only the exact match of the
-		// query in input. `truncated` signals the agent that more matches may exist:
-		// either the relevance window filled, or exact matches exceeded the limit.
-		let truncated = matches.length >= candidateLimit;
-		const exactMatches: typeof matches = [];
-		const seenMarkdownChunkIds = new Set<(typeof matches)[number]["markdownChunkId"]>();
-		for (const match of matches) {
-			if (seenMarkdownChunkIds.has(match.markdownChunkId)) {
-				continue;
-			}
-			seenMarkdownChunkIds.add(match.markdownChunkId);
+		const items = await Promise.all(
+			result.page.map(async (plainTextChunk) => {
+				const markdownChunkDoc = await ctx.db.get("files_markdown_chunks", plainTextChunk.markdownChunkId);
+				if (
+					!markdownChunkDoc ||
+					markdownChunkDoc.workspaceId !== args.workspaceId ||
+					markdownChunkDoc.projectId !== args.projectId ||
+					markdownChunkDoc.nodeId !== plainTextChunk.nodeId ||
+					markdownChunkDoc.yjsSequence !== plainTextChunk.yjsSequence ||
+					markdownChunkDoc.chunkIndex !== plainTextChunk.chunkIndex
+				) {
+					const errorMessage = "files_plain_text_chunks row points to an invalid files_markdown_chunks row";
+					console.error(errorMessage, {
+						plainTextChunkId: plainTextChunk._id,
+						markdownChunkId: plainTextChunk.markdownChunkId,
+					});
+					throw should_never_happen(errorMessage);
+				}
+				if (plainTextChunk.path == null) {
+					const errorMessage = "files_plain_text_chunks.path missing after DB search filter";
+					console.error(errorMessage, { plainTextChunkId: plainTextChunk._id });
+					throw should_never_happen(errorMessage);
+				}
+			const [chunkAbove, chunkBelow] = await Promise.all([
+				ctx.db
+					.query("files_markdown_chunks")
+					.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+						q
+							.eq("workspaceId", args.workspaceId)
+							.eq("projectId", args.projectId)
+							.eq("nodeId", plainTextChunk.nodeId)
+							.eq("yjsSequence", plainTextChunk.yjsSequence)
+							.eq("chunkIndex", plainTextChunk.chunkIndex - 1),
+					)
+					.first(),
+				ctx.db
+					.query("files_markdown_chunks")
+					.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+						q
+							.eq("workspaceId", args.workspaceId)
+							.eq("projectId", args.projectId)
+							.eq("nodeId", plainTextChunk.nodeId)
+							.eq("yjsSequence", plainTextChunk.yjsSequence)
+						.eq("chunkIndex", plainTextChunk.chunkIndex + 1),
+					)
+					.first(),
+			]);
+			return {
+				path: plainTextChunk.path,
+				markdownChunk: markdownChunkDoc.markdownChunk,
+				chunkIndex: markdownChunkDoc.chunkIndex,
+				startIndex: markdownChunkDoc.startIndex,
+				endIndex: markdownChunkDoc.endIndex,
+				lineStart: markdownChunkDoc.lineStart,
+				lineEnd: markdownChunkDoc.lineEnd,
+				chunkFlags: markdownChunkDoc.chunkFlags,
+				hasChunkAbove: !!chunkAbove,
+				hasChunkBelow: !!chunkBelow,
+			};
+			}),
+		);
 
-			// The Convex search index is case-insensitive and word-tokenized, so re-match
-			// case-insensitively here too — otherwise `search readme` against `# Readme`
-			// gets index hits that are all dropped, returning a false "No files found".
-			if (!match.plainTextChunk.toLowerCase().includes(args.query.toLowerCase())) {
-				continue;
-			}
-
-			if (exactMatches.length >= args.limit) {
-				truncated = true;
-				break;
-			}
-			exactMatches.push(match);
-		}
-
-		const items = (
-			await Promise.all(
-				exactMatches.map(async (plainTextChunk) => {
-					const [fileDoc, markdownChunkDoc] = await Promise.all([
-						ctx.db.get("files_nodes", plainTextChunk.nodeId),
-						ctx.db.get("files_markdown_chunks", plainTextChunk.markdownChunkId),
-					]);
-
-					if (
-						!fileDoc ||
-						fileDoc.workspaceId !== args.workspaceId ||
-						fileDoc.projectId !== args.projectId ||
-						fileDoc.kind !== "file" ||
-						fileDoc.archiveOperationId !== undefined
-					) {
-						return null;
-					}
-
-					if (
-						!markdownChunkDoc ||
-						markdownChunkDoc.workspaceId !== args.workspaceId ||
-						markdownChunkDoc.projectId !== args.projectId ||
-						markdownChunkDoc.nodeId !== plainTextChunk.nodeId ||
-						markdownChunkDoc.yjsSequence !== plainTextChunk.yjsSequence ||
-						markdownChunkDoc.chunkIndex !== plainTextChunk.chunkIndex
-					) {
-						return null;
-					}
-
-					const [chunkAbove, chunkBelow] = await Promise.all([
-						ctx.db
-							.query("files_markdown_chunks")
-							.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
-								q
-									.eq("workspaceId", args.workspaceId)
-									.eq("projectId", args.projectId)
-									.eq("nodeId", plainTextChunk.nodeId)
-									.eq("yjsSequence", plainTextChunk.yjsSequence)
-									.eq("chunkIndex", plainTextChunk.chunkIndex - 1),
-							)
-							.first(),
-						ctx.db
-							.query("files_markdown_chunks")
-							.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
-								q
-									.eq("workspaceId", args.workspaceId)
-									.eq("projectId", args.projectId)
-									.eq("nodeId", plainTextChunk.nodeId)
-									.eq("yjsSequence", plainTextChunk.yjsSequence)
-									.eq("chunkIndex", plainTextChunk.chunkIndex + 1),
-							)
-							.first(),
-					]);
-
-					return {
-						path: fileDoc.path,
-						markdownChunk: markdownChunkDoc.markdownChunk,
-						chunkIndex: markdownChunkDoc.chunkIndex,
-						startIndex: markdownChunkDoc.startIndex,
-						endIndex: markdownChunkDoc.endIndex,
-						lineStart: markdownChunkDoc.lineStart,
-						lineEnd: markdownChunkDoc.lineEnd,
-						chunkFlags: markdownChunkDoc.chunkFlags,
-						hasChunkAbove: !!chunkAbove,
-						hasChunkBelow: !!chunkBelow,
-					};
-				}),
-			)
-		).filter((item): item is NonNullable<typeof item> => item !== null);
-
-		return { items, truncated };
+		return { items, continueCursor: result.continueCursor, isDone };
 	},
 });
 
