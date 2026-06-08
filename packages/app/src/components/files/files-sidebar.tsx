@@ -103,10 +103,10 @@ import { useGlobalEventList } from "@/lib/global-event.tsx";
 import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
 import {
 	files_ROOT_ID,
+	files_SYNTHETIC_ROOT_FOLDER,
 	files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
 	files_clear_node_path_cached_validation_messages,
 	files_create_tree_items_list_from_nodes,
-	files_create_tree_root,
 	files_find_file_stem_end_index,
 	files_get_default_node_name,
 	files_get_node_path_validation,
@@ -3753,7 +3753,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const dataLoader = {
 		getItem: (itemId: string) =>
-			treeItems?.itemById.get(itemId) ?? treeItems?.itemById.get(files_ROOT_ID) ?? files_create_tree_root(),
+			treeItems?.itemById.get(itemId) ?? treeItems?.itemById.get(files_ROOT_ID) ?? files_SYNTHETIC_ROOT_FOLDER,
 		getChildren: (itemId: string) => {
 			const children = treeItems?.sortedItemsIdsByParentId.get(itemId) ?? [];
 			if (!isSearchActive) {
@@ -4510,7 +4510,7 @@ if (import.meta.vitest) {
 			expect(
 				can_receive_file_drop({
 					dataTransfer,
-					target: test_drag_target(files_create_tree_root()),
+					target: test_drag_target(files_SYNTHETIC_ROOT_FOLDER),
 					isBusy: false,
 					isUploadingFile: false,
 				}),
@@ -4559,7 +4559,7 @@ if (import.meta.vitest) {
 			expect(
 				can_receive_file_node_drop({
 					dataTransfer,
-					target: test_drag_target(files_create_tree_root()),
+					target: test_drag_target(files_SYNTHETIC_ROOT_FOLDER),
 					isBusy: false,
 					isUploadingFile: false,
 				}),
@@ -4871,7 +4871,7 @@ if (import.meta.vitest) {
 
 	describe("get_default_node_name", () => {
 		test("ignores archived siblings when picking the next default name", () => {
-			const root = files_create_tree_root();
+			const root = files_SYNTHETIC_ROOT_FOLDER;
 			const activeFolder = test_node({
 				id: "active_folder",
 				parentId: files_ROOT_ID,
@@ -5009,7 +5009,7 @@ if (import.meta.vitest) {
 		});
 
 		test("detects nested upload conflicts through existing folders", () => {
-			const root = files_create_tree_root();
+			const root = files_SYNTHETIC_ROOT_FOLDER;
 			const folder = test_node({
 				id: "folder_docs",
 				parentId: files_ROOT_ID,
@@ -5037,7 +5037,7 @@ if (import.meta.vitest) {
 		});
 
 		test("ignores the file currently being renamed", () => {
-			const root = files_create_tree_root();
+			const root = files_SYNTHETIC_ROOT_FOLDER;
 			const folder = test_node({
 				id: "folder_docs",
 				parentId: files_ROOT_ID,
@@ -5109,7 +5109,7 @@ if (import.meta.vitest) {
 
 	describe("get_tree_items_list_after_optimistic_rename", () => {
 		test("updates only the DB doc fields for simple renames", () => {
-			const root = files_create_tree_root();
+			const root = files_SYNTHETIC_ROOT_FOLDER;
 			const file = test_node({
 				id: "file_1",
 				parentId: files_ROOT_ID,
@@ -5127,7 +5127,7 @@ if (import.meta.vitest) {
 		});
 
 		test("returns the original list when the node is missing", () => {
-			const root = files_create_tree_root();
+			const root = files_SYNTHETIC_ROOT_FOLDER;
 			const file = test_node({
 				id: "file_1",
 				parentId: files_ROOT_ID,

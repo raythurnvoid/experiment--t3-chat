@@ -79,8 +79,17 @@
 		background: transparent;
 		box-shadow: none;
 
+		& .AiChatMessageUser-content-container,
+		& .AiChatMessageContent {
+			height: 100%;
+			min-height: 0;
+		}
+
 		& .AiChatComposer {
 			width: 100%;
+			height: 100%;
+			min-height: 0;
+			max-height: 100%;
 		}
 	}
 
@@ -145,6 +154,32 @@
 	.AiChatMessageUser-content-composer .MyInputBackground,
 	.AiChatMessageUser-content-composer .MyInputBox {
 		border-radius: 16px;
+	}
+
+	.AiChatMessageUser-content-composer {
+		--AiChatComposer-editor-area-padding: 10px 0px 48px 0px;
+		--AiChatComposer-configurations-padding: 0px 0px 10px 0px;
+
+		min-width: 100%;
+		max-width: 100%;
+		grid-template-columns: minmax(0, 1fr) auto;
+
+		& .AiChatComposer-editor-content-container {
+			min-height: 0;
+		}
+
+		& .AiChatComposer-configurations {
+			min-width: 0;
+			width: auto;
+			overflow: hidden;
+		}
+
+		& .AiChatComposer-configurations .MyButton {
+			min-width: 0;
+			flex-shrink: 1;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
 	}
 
 	.AiChatMessageUser-actions {
@@ -329,6 +364,13 @@
 		}
 	}
 
+	.AiChatMessagePartDisclosureButton-content {
+		display: inline-flex;
+		min-width: 0;
+		width: calc(100% - 1.25em);
+		vertical-align: top;
+	}
+
 	.AiChatMessagePartDisclosureButton-label,
 	.AiChatMessagePartThinking-text-only-content > b {
 		position: relative;
@@ -337,9 +379,21 @@
 		align-items: center;
 	}
 
+	.AiChatMessagePartDisclosureButton-label {
+		flex: none;
+	}
+
 	.AiChatMessagePartDisclosureButton-label-text {
 		grid-column: 1;
 		grid-row: 1;
+	}
+
+	.AiChatMessagePartDisclosureButton-text {
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	/* #endregion part disclosure button */
 

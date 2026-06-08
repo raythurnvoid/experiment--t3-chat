@@ -5,6 +5,7 @@ import {
 	useDeferredValue,
 	useEffect,
 	useId,
+	useLayoutEffect,
 	useRef,
 	useState,
 	type ComponentPropsWithRef,
@@ -56,6 +57,7 @@ import { MyButton, MyButtonIcon, type MyButton_ClassNames } from "../my-button.t
 
 // Reuse one stable empty array so the store selector does not trigger avoidable re-renders.
 const EMPTY_BRANCH_SIBLING_IDS: readonly string[] = [];
+const ai_chat_message_user_edit_layout_by_message_id = new Map<string, { width: number; height: number; top: number }>();
 
 // #region tool chip
 type AiChatMessagePartToolChip_ClassNames = "AiChatMessagePartToolChip";
@@ -159,7 +161,8 @@ type AiChatMessagePartDisclosureButton_ClassNames =
 	| "AiChatMessagePartDisclosureButton"
 	| "AiChatMessagePartDisclosureButton-content"
 	| "AiChatMessagePartDisclosureButton-label"
-	| "AiChatMessagePartDisclosureButton-label-text";
+	| "AiChatMessagePartDisclosureButton-label-text"
+	| "AiChatMessagePartDisclosureButton-text";
 
 type AiChatMessagePartDisclosureButton_Props = {
 	className?: string | undefined;
@@ -207,7 +210,9 @@ const AiChatMessagePartDisclosureButton = memo(function AiChatMessagePartDisclos
 						{labelText}
 					</span>
 				</b>
-				<span> {text}</span>
+				<span className={"AiChatMessagePartDisclosureButton-text" satisfies AiChatMessagePartDisclosureButton_ClassNames}>
+					{text}
+				</span>
 				<AiChatMessagePartToolStatus state={state} isChatRunning={isChatRunning} />
 			</div>
 		</summary>
@@ -1491,15 +1496,86 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 
 	const branchIndex = branchAnchorIds.indexOf(message.id);
 	const showEditButton = !isEditing && Boolean(selectedThreadId) && canEdit;
+	const bubbleRef = useRef<HTMLDivElement>(null);
+	const editBubbleLayoutCapturedOnPointerDownRef = useRef(false);
+	const [editBubbleLayout, setEditBubbleLayout] = useState(
+		() => ai_chat_message_user_edit_layout_by_message_id.get(message.id) ?? null,
+	);
+
+	const captureEditBubbleLayout = useFn((isPointerDown = false) => {
+		const bubbleRect = bubbleRef.current?.getBoundingClientRect();
+		const layout = bubbleRect ? { width: bubbleRect.width, height: bubbleRect.height, top: bubbleRect.top } : null;
+		editBubbleLayoutCapturedOnPointerDownRef.current = isPointerDown;
+		if (layout) {
+			ai_chat_message_user_edit_layout_by_message_id.set(message.id, layout);
+		} else {
+			ai_chat_message_user_edit_layout_by_message_id.delete(message.id);
+		}
+		setEditBubbleLayout(layout);
+	});
+
+	useLayoutEffect(() => {
+		if (!isEditing || !editBubbleLayout) {
+			return;
+		}
+
+		const bubble = bubbleRef.current;
+		if (!bubble) {
+			return;
+		}
+
+		const preserveScrollPosition = () => {
+			const topDelta = bubble.getBoundingClientRect().top - editBubbleLayout.top;
+			if (topDelta === 0) {
+				return;
+			}
+
+			const scrollContainer = bubble.closest(".AiChat-thread-content");
+			if (scrollContainer instanceof HTMLElement) {
+				scrollContainer.scrollTop += topDelta;
+			} else {
+				window.scrollBy(0, topDelta);
+			}
+		};
+
+		preserveScrollPosition();
+
+		let secondFrameId: number | undefined;
+		const firstFrameId = requestAnimationFrame(() => {
+			preserveScrollPosition();
+			secondFrameId = requestAnimationFrame(preserveScrollPosition);
+		});
+
+		return () => {
+			cancelAnimationFrame(firstFrameId);
+			if (secondFrameId !== undefined) {
+				cancelAnimationFrame(secondFrameId);
+			}
+		};
+	}, [isEditing, editBubbleLayout]);
 
 	const handleStartEdit = useFn(() => {
 		if (!selectedThreadId || !canEdit) {
 			return;
 		}
 
+		if (!editBubbleLayoutCapturedOnPointerDownRef.current) {
+			captureEditBubbleLayout();
+		}
+		editBubbleLayoutCapturedOnPointerDownRef.current = false;
+
 		const parentId = message.metadata?.convexParentId ?? null;
 
 		onEditStart({ messageId: message.id, parentId });
+	});
+	const handleEditMouseDown = useFn<ComponentPropsWithRef<"button">["onMouseDown"]>((event) => {
+		if (event.button !== 0) {
+			return;
+		}
+
+		event.preventDefault();
+		captureEditBubbleLayout(true);
+		handleStartEdit();
 	});
 
 	const handleEditCancel = useFn(() => {
@@ -1557,10 +1633,19 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 			{...rest}
 		>
 			<AiChatMessageBubble
+				ref={bubbleRef}
 				className={cn(
 					"AiChatMessageUser-bubble" satisfies AiChatMessageUser_ClassNames,
 					isEditing && ("AiChatMessageUser-bubble-state-editing" satisfies AiChatMessageUser_ClassNames),
 				)}
+				style={
+					isEditing && editBubbleLayout
+						? sx({
+								width: `${editBubbleLayout.width}px`,
+								height: `${editBubbleLayout.height}px`,
+							})
+						: undefined
+				}
 			>
 				<div className={"AiChatMessageUser-content-container" satisfies AiChatMessageUser_ClassNames}>
 					<AiChatMessageContent
@@ -1598,6 +1683,7 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 						type="button"
 						{...({ "data-ai-chat-message-id": message.id } satisfies Partial<AiChatMessage_CustomAttributes>)}
 						aria-label="Edit message"
+						onMouseDown={handleEditMouseDown}
 						onClick={handleStartEdit}
 					>
 						<div className={"AiChatMessageUser-edit-button-box" satisfies AiChatMessageUser_ClassNames}></div>

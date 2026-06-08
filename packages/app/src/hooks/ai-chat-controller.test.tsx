@@ -283,6 +283,30 @@ function RuntimeIdentityProbe() {
 	);
 }
 
+function RuntimeBranchAnchorProbe() {
+	const controller = AiChatController.useThreadRuntime();
+	const selectedThreadId = controller.selectedThreadId;
+	const anchorId = controller.activeBranchMessages.anchorId;
+
+	return (
+		<div>
+			<div data-testid="branch-anchor">{anchorId === undefined ? "undefined" : (anchorId ?? "null")}</div>
+			<div data-testid="branch-session">{controller.session ? "session" : "no-session"}</div>
+			<button
+				type="button"
+				onClick={() => {
+					AiChatController.useStore.setState({ threadById: new Map() });
+					if (selectedThreadId) {
+						controller.selectBranchAnchor(selectedThreadId, null);
+					}
+				}}
+			>
+				clear and select root branch
+			</button>
+		</div>
+	);
+}
+
 function RuntimeSendProbe() {
 	const [, forceRender] = useState(0);
 	const controller = AiChatController.useThreadRuntime();
@@ -611,6 +635,45 @@ describe("AiChatController", () => {
 		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
 		const sentMessage = chat.sendMessage.mock.calls.at(-1)?.[0] as ai_chat_AiSdk5UiMessage | undefined;
 		expect(sentMessage?.metadata?.convexParentId).toBe("msg_persisted_user_1");
+	});
+
+	test("selectBranchAnchor hydrates a missing restored persisted thread session", async () => {
+		const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
+		app_local_storage_set_value(storageKey, "thread_restored_branch");
+		hookMocks.threadMessages = [
+			createPersistedMessage({
+				id: "msg_branch_user_1",
+				content: {
+					id: "client_branch_user_1",
+					role: "user",
+					parts: [{ type: "text", text: "Edit this restored message" }],
+					metadata: {
+						convexParentId: null,
+						parentClientGeneratedId: null,
+						selectedModelId: "gpt-5.4-nano",
+						selectedModeId: "ask",
+					},
+				},
+			}),
+		];
+
+		render(
+			<FullPageSurface>
+				<RuntimeBranchAnchorProbe />
+			</FullPageSurface>,
+		);
+
+		await waitFor(() => {
+			expect(screen.getByTestId("branch-session").textContent).toBe("session");
+		});
+		expect(screen.getByTestId("branch-anchor").textContent).toBe("undefined");
+
+		fireEvent.click(screen.getByRole("button", { name: "clear and select root branch" }));
+
+		await waitFor(() => {
+			expect(screen.getByTestId("branch-session").textContent).toBe("session");
+			expect(screen.getByTestId("branch-anchor").textContent).toBe("null");
+		});
 	});
 
 	test("selectThread hydrates a session and updates only the current surface selection", () => {

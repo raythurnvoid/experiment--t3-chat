@@ -1549,15 +1549,9 @@ const useThreadRuntimeController = () => {
 
 	const selectBranchAnchor = useFn((threadId: string, anchorId: string | null) => {
 		useStore.actions.setSession(threadId, (prev) => {
-			if (!prev) {
-				should_never_happen("[AiChatController.useThreadRuntime.selectBranchAnchor] Missing session", {
-					threadId,
-					anchorId,
-				});
-				return;
-			}
+			const base = prev ?? thread_session_create();
 
-			return { ...prev, anchorId };
+			return { ...base, anchorId };
 		});
 	});
 

@@ -133,6 +133,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	const isEmpty = composerText.trim().length === 0;
 
 	const [modelFilter, setModelFilter] = useState("");
+	const [enableInteractedOutside, setEnableInteractedOutside] = useState(false);
 	const modelFilterValue = modelFilter.trim().toLowerCase();
 	const selectedModelLabel = ai_chat_MODELS[selectedModelId].label;
 	const filteredModels = modelFilterValue
@@ -170,7 +171,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		return {
 			extensions,
 			editorProps: {
-				autofocus: autoFocus ? "end" : false,
+				autofocus: false,
 				injectCSS: false,
 				extensions,
 				content: ((/* iife */) => {
@@ -346,9 +347,24 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		editor.commands.focus();
 	};
 
+	useEffect(() => {
+		setEnableInteractedOutside(false);
+		if (!onInteractedOutside) {
+			return;
+		}
+
+		const frameId = requestAnimationFrame(() => {
+			setEnableInteractedOutside(true);
+		});
+
+		return () => {
+			cancelAnimationFrame(frameId);
+		};
+	}, [onInteractedOutside]);
+
 	useUiInteractedOutside(rootRef, onInteractedOutside, {
 		allowedAreas: [editor?.view.dom],
-		enable: Boolean(onInteractedOutside),
+		enable: Boolean(onInteractedOutside) && enableInteractedOutside,
 	});
 
 	useEffect(() => {
@@ -356,8 +372,15 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 			return;
 		}
 
+		const focusEditor = () => {
+			if (autoFocus) {
+				editor.commands.focus("end", { scrollIntoView: false });
+			}
+		};
+
 		const editorMarkdown = editor.getMarkdown();
 		if (editorMarkdown === initialValue) {
+			focusEditor();
 			return;
 		}
 
@@ -372,6 +395,8 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		} else {
 			editor.commands.setContent(json._yay, { emitUpdate: false });
 		}
+
+		focusEditor();
 	}, [editor]);
 
 	return (

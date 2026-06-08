@@ -1,5 +1,12 @@
 @layer components {
 	.AiChatComposer {
+		--AiChatComposer-editor-area-align-items: start;
+		--AiChatComposer-editor-area-padding: 10px 0px 56px 0px;
+		--AiChatComposer-editor-content-container-padding: 0px 10px;
+		--AiChatComposer-editor-content-padding: 0px;
+		--AiChatComposer-configurations-padding: 0px 0px 10px 10px;
+		--AiChatComposer-actions-padding: 0px 10px 10px 0px;
+
 		contain: content;
 
 		display: grid;
@@ -25,8 +32,9 @@
 		grid-template-rows: auto;
 		grid-area: inherit;
 		gap: 0px;
+		align-items: var(--AiChatComposer-editor-area-align-items);
 
-		padding: 10px 0px 56px 0px;
+		padding: var(--AiChatComposer-editor-area-padding);
 
 		contain: content;
 	}
@@ -35,7 +43,7 @@
 		display: flex;
 		grid-area: 1 / 1 / 2 / -1;
 
-		padding: 0px 10px;
+		padding: var(--AiChatComposer-editor-content-container-padding);
 
 		min-height: 36px;
 
@@ -63,6 +71,10 @@
 		}
 	}
 
+	.AiChatComposer-editor-content.MyInputControl {
+		padding: var(--AiChatComposer-editor-content-padding);
+	}
+
 	.AiChatComposer-configurations {
 		grid-area: 2 / 1;
 		width: max-content;
@@ -73,7 +85,7 @@
 		align-items: center;
 		gap: 2px;
 
-		padding: 0px 0px 10px 10px;
+		padding: var(--AiChatComposer-configurations-padding);
 	}
 
 	.AiChatComposer-actions {
@@ -86,6 +98,6 @@
 		align-items: center;
 		gap: 8px;
 
-		padding: 0px 10px 10px 0px;
+		padding: var(--AiChatComposer-actions-padding);
 	}
 }

@@ -42,6 +42,9 @@
 
 		font-size: 0.9375rem;
 		line-height: 1.25;
+		/* Stay element-agnostic so items can render as a real link (<a>) without picking up global anchor styles. */
+		font-weight: inherit;
+		text-decoration: none;
 
 		cursor: pointer;
 		outline: none;
