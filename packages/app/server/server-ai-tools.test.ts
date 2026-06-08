@@ -158,6 +158,13 @@ describe("ai_chat_tool_create_bash", () => {
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
+					"Printed Next page commands may use short --cursor @... aliases; run the exact printed command to continue.",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
 					"When a user names an app-root path like /docs, run it as /home/cloud-usr/w/personal/home/docs",
 				),
 			}),
@@ -265,7 +272,12 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("indexed Convex text search across Markdown/text content"),
+				description: expect.stringContaining("full-text content search across Markdown/text content"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("one distinctive word or a few plain terms"),
 			}),
 		);
 		expect(tool).toEqual(
@@ -320,7 +332,7 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("It is not regex, glob, or exact grep"),
+				description: expect.stringContaining("not regex, glob, path/name search, or exact grep"),
 			}),
 		);
 		expect(tool).toEqual(

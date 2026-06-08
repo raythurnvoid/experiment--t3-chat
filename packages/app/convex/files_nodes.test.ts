@@ -1162,7 +1162,7 @@ describe("paginated bash listing queries", () => {
 		expect([...seen].sort()).toEqual(desc.items.map((item) => item.path).sort());
 	});
 
-	test("get_bash_path_entry resolves active paths, excludes archived, and returns the root sentinel", async () => {
+	test("get_by_path resolves active paths and excludes archived or root paths", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -1171,17 +1171,17 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const file = await asUser.query(internal.files_nodes.get_bash_path_entry, {
+		const file = await asUser.query(internal.files_nodes.get_by_path, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			path: "/docs/a.md",
 		});
-		const archived = await asUser.query(internal.files_nodes.get_bash_path_entry, {
+		const archived = await asUser.query(internal.files_nodes.get_by_path, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			path: "/docs/z-archived.md",
 		});
-		const root = await asUser.query(internal.files_nodes.get_bash_path_entry, {
+		const root = await asUser.query(internal.files_nodes.get_by_path, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			path: "/",
@@ -1189,7 +1189,7 @@ describe("paginated bash listing queries", () => {
 
 		expect(file).toMatchObject({ path: "/docs/a.md", kind: "file" });
 		expect(archived).toBeNull();
-		expect(root).toMatchObject({ path: "/", kind: "folder" });
+		expect(root).toBeNull();
 	});
 
 	test("get_bash_stat_entry returns app metadata for a file", async () => {
@@ -4032,14 +4032,6 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 			cursor,
 			pathPrefix,
 		});
-	const pageHasItems = (pathPrefix: string | undefined, cursor: string) =>
-		asUser.query(internal.files_nodes.text_search_files_page_has_items, {
-			workspaceId: db.workspaceId,
-			projectId: db.projectId,
-			query: "scopeneedle",
-			cursor,
-			pathPrefix,
-		});
 
 	// Unscoped: both files match.
 	const all = await search(undefined, 50);
@@ -4049,7 +4041,11 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 	expect(firstUnscopedPage.items).toHaveLength(1);
 	expect(firstUnscopedPage.isDone).toBe(false);
 	expect(firstUnscopedPage.continueCursor).not.toBe("");
-	expect(await pageHasItems(undefined, firstUnscopedPage.continueCursor)).toBe(true);
+	const secondUnscopedPage = await search(undefined, 50, firstUnscopedPage.continueCursor);
+	expect(secondUnscopedPage.isDone).toBe(true);
+	expect(new Set([...firstUnscopedPage.items, ...secondUnscopedPage.items].map((i) => i.path))).toEqual(
+		new Set(["/scope/inside.md", "/scope-other/collide.md"]),
+	);
 
 	// Scoped to /scope: only the file under /scope, NOT the sibling-prefix /scope-other file.
 	const scoped = await search("/scope", 50);
@@ -4063,7 +4059,6 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 	// single in-scope match is still returned (an out-of-scope match must not consume the limit).
 	const scopedTinyLimit = await search("/scope", 1);
 	expect(scopedTinyLimit.items.map((i) => i.path)).toEqual(["/scope/inside.md"]);
-	expect(await pageHasItems("/scope", scopedTinyLimit.continueCursor)).toBe(false);
 });
 
 test("create_file_snapshot_content_url returns a signed R2 URL without fetching snapshot Markdown", async () => {

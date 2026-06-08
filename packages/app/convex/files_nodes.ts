@@ -2520,75 +2520,6 @@ function files_nodes_clamp_bash_listing_page_limit(limit: number) {
 	return Math.max(1, Math.min(files_nodes_bash_listing_page_limit_MAX, finiteLimit));
 }
 
-export const get_bash_path_entry = internalQuery({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		path: v.string(),
-	},
-	returns: v.union(
-		v.object({
-			nodeId: v.literal(files_ROOT_ID),
-			path: v.literal("/"),
-			name: v.literal(""),
-			kind: v.literal("folder"),
-			updatedAt: v.number(),
-			contentType: v.optional(v.string()),
-		}),
-		v.object({
-			nodeId: v.id("files_nodes"),
-			path: v.string(),
-			name: v.string(),
-			kind: v.union(v.literal("folder"), v.literal("file")),
-			updatedAt: v.number(),
-			updatedBy: v.id("users"),
-			contentType: v.optional(v.string()),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		if (args.path === "/") {
-			return {
-				nodeId: files_ROOT_ID as typeof files_ROOT_ID,
-				path: "/" as const,
-				name: "" as const,
-				kind: "folder" as const,
-				updatedAt: 0,
-			};
-		}
-
-		const node = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("path", args.path)
-					.eq("archiveOperationId", undefined),
-			)
-			.first();
-
-		if (!node) {
-			return null;
-		}
-
-		return {
-			nodeId: node._id,
-			path: node.path,
-			name: node.name,
-			kind: node.kind,
-			updatedAt: node.updatedAt,
-			updatedBy: node.updatedBy,
-			contentType: node.contentType,
-		};
-	},
-});
-
-export type files_nodes_get_bash_path_entry_Result =
-	typeof get_bash_path_entry extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
 async function db_list_dir_children_paginated(
 	ctx: QueryCtx,
 	args: {
@@ -5362,11 +5293,11 @@ function files_nodes_text_search_filtered_query(
 				.eq("projectId", args.projectId)
 				.eq("archiveOperationId", undefined),
 		);
-	// Convex applies this filter before page contents are returned, so continuation cursors are
-	// over real in-scope matches instead of "page first, filter later" windows that can produce
-	// false-empty current pages. The tradeoff is that `.filter` scans search hits after
-	// `withSearchIndex`; broad folder scopes or common terms can be heavier. Do not rely on
-	// `maximumRowsRead` here: Convex currently does not enforce it for search queries.
+	// Convex applies `.filter` before returned page contents, so each rendered page is already
+	// scoped and does not need a JavaScript re-filter or separate page probe. The tradeoff is that
+	// `.filter` scans search hits after `withSearchIndex`; equality filters in the search index are
+	// still more efficient where available. Do not rely on `maximumRowsRead` here: Convex currently
+	// does not enforce it for search queries.
 	return scopePrefix === null
 		? searchQuery
 		: searchQuery.filter((q) =>
@@ -5381,21 +5312,6 @@ const files_nodes_text_search_args = {
 	/** Optional subtree scope: keep only matches whose file path is under this folder prefix. */
 	pathPrefix: v.optional(v.string()),
 };
-
-export const text_search_files_page_has_items = internalQuery({
-	args: {
-		...files_nodes_text_search_args,
-		cursor: v.string(),
-	},
-	returns: v.boolean(),
-	handler: async (ctx, args) => {
-		const result = await files_nodes_text_search_filtered_query(ctx, args).paginate({
-			cursor: args.cursor,
-			numItems: 1,
-		});
-		return result.page.length > 0;
-	},
-});
 
 export const text_search_files = internalQuery({
 	args: {

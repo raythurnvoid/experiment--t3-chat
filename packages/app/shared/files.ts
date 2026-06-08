@@ -23,7 +23,44 @@ import { Result } from "./errors-as-values-utils.ts";
 import type { app_convex_Doc } from "./app-convex.ts";
 import type { Merge } from "type-fest";
 
-export const files_ROOT_ID = "root";
+export const files_ROOT_ID = "root" as const;
+
+export const files_SYNTHETIC_ROOT_FOLDER = {
+	_id: files_ROOT_ID,
+	_creationTime: 0,
+	workspaceId: "",
+	projectId: "",
+	path: "/",
+	pathDepth: 0,
+	lowercaseExtension: null,
+	name: "",
+	kind: "folder",
+	contentType: undefined,
+	statsId: undefined,
+	assetId: undefined,
+	archiveOperationId: undefined,
+	yjsLastSequenceId: undefined,
+	yjsSnapshotId: undefined,
+	parentId: "",
+	updatedBy: "",
+	createdBy: "",
+	updatedAt: 0,
+} as const satisfies Merge<
+	app_convex_Doc<"files_nodes">,
+	{
+		_id: typeof files_ROOT_ID;
+		workspaceId: "";
+		projectId: "";
+		parentId: "";
+		name: "";
+		path: "/";
+		updatedBy: "";
+		updatedAt: 0;
+		createdBy: "";
+		_creationTime: 0;
+	}
+>;
+
 export const files_YJS_DOC_KEYS = {
 	richText: "default",
 	plainText: "markdown",
@@ -53,45 +90,8 @@ export function files_get_utf8_byte_size(content: string) {
  **/
 export const files_MAX_UPLOADS_BYTES = 50 * 1024 * 1024;
 
-export function files_create_tree_root() {
-	return {
-		_id: files_ROOT_ID,
-		workspaceId: "",
-		projectId: "",
-		kind: "folder",
-		parentId: "",
-		name: "",
-		path: "/",
-		pathDepth: 0,
-		lowercaseExtension: null,
-		contentType: undefined,
-		assetId: undefined,
-		archiveOperationId: undefined,
-		yjsLastSequenceId: undefined,
-		yjsSnapshotId: undefined,
-		updatedBy: "",
-		updatedAt: 0,
-		createdBy: "",
-		_creationTime: 0,
-	} as const satisfies Merge<
-		app_convex_Doc<"files_nodes">,
-		{
-			_id: typeof files_ROOT_ID;
-			workspaceId: "";
-			projectId: "";
-			parentId: "";
-			name: "";
-			path: "/";
-			updatedBy: "";
-			updatedAt: 0;
-			createdBy: "";
-			_creationTime: 0;
-		}
-	>;
-}
-
 export function files_create_tree_items_list_from_nodes(nodes: app_convex_Doc<"files_nodes">[]) {
-	return [files_create_tree_root(), ...nodes];
+	return [files_SYNTHETIC_ROOT_FOLDER, ...nodes];
 }
 
 export type files_TreeItem = ReturnType<typeof files_create_tree_items_list_from_nodes>[number];

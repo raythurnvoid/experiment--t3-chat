@@ -10,6 +10,8 @@ The Bash tool is a database-backed virtual filesystem. Exact POSIX compatibility
 - Keep the same visible model, mode, fixture folder, and prompts for baseline and post-change runs.
 - Start each scored scenario in a fresh chat unless the scenario is explicitly testing cwd persistence or cursor continuation.
 - Ask the agent to use Bash so the chosen command is visible.
+- Bash may print short cursor ids without an `@` prefix in `Next page:` commands; score continuation as correct only when the agent runs the exact printed command.
+- If a prompt asks for exactly one continuation, score as incorrect when the agent runs a second continuation from the second page.
 - Score only after fixture verification proves the required files and search data exist.
 - Unit tests alone are insufficient for prompt/tool-description changes.
 - Playwriter is a light evidence collector, not the evaluator. Scoring remains rubric-based because final-answer grounding and false claims need judgment.
@@ -385,7 +387,7 @@ Every evaluation pass should report:
 
 ## Durable Notes
 
-- `search` is indexed Convex text search, not regex/glob/exact grep.
+- `search` is full-text content search: pass one distinctive word or a few plain terms from the document body. The text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. It is implemented with Convex full-text search, but it is not regex/glob/exact grep or path/name search.
 - `find --extension md -type f` is exact indexed extension search.
 - Simple `find -name '*.md'` and `find <dir>/*.md` are recovery syntax for extension search only, not general glob support.
 - General glob and regex behavior should stay unsupported unless they map to a DB-backed query.

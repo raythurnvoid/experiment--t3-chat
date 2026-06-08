@@ -73,6 +73,12 @@ const app_convex_schema = defineSchema({
 
 	// #endregion ai
 
+	// #region value store
+	value_store: defineTable({
+		value: v.string(),
+	}),
+	// #endregion value store
+
 	// #region files
 	files_pending_updates: defineTable({
 		workspaceId: v.string(),

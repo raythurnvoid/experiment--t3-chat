@@ -136,7 +136,6 @@
 		"minimatch": "^10.0.3",
 		"monaco-editor": "0.54.0",
 		"motion": "^12.23.24",
-		"mri": "^1.2.0",
 		"novel": "workspace:*",
 		"p-queue": "^8.1.1",
 		"react": "^19.2.4",

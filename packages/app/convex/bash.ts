@@ -3,14 +3,34 @@
 // This module is not a full POSIX shell.
 // It gives the AI a bash-shaped interface over Convex-backed app files.
 // Convex file discovery has to stay index-friendly, so native glob expansion,
-// recursive grep, and arbitrary regex scans are not the default app-file path.
+// recursive grep, and arbitrary regex scans are not the default way to query app file node paths.
 // Prefer custom app-aware commands and flags that map directly to indexed queries,
 // such as `find --extension`, `find --path-query`, `search --path`, and exact file reads.
 // When the model still writes common glob or regex-shaped commands, recover only the
 // simple cases that can be translated safely into the same indexed operations.
 // Do not add broad JavaScript filtering after pagination to imitate native shell behavior.
+//
+// Path vocabulary:
+// - Bash path: an absolute path in the Just Bash filesystem. It may point at
+//   app files, `/tmp`, or synthetic base directories.
+// - `HOME`: the bash home/user path, `/home/cloud-usr`.
+// - `appMountPath`: the parent mount path for app workspaces,
+//   `/home/cloud-usr/w`.
+// - `currentProjectPath`: the mounted project file tree path,
+//   `/home/cloud-usr/w/<workspaceName>/<projectName>`.
+// - App file node path: the Convex `files_nodes.path` inside the current
+//   project tree. It is project-relative, but still starts with `/`; examples
+//   are `/docs/readme.md` and `/` for the project root.
+// - Persisted cwd path: the thread-state representation, saved as `~` or
+//   `~/...`, then expanded to a Bash path before command execution.
+//
+// Command operands start raw. Command handlers resolve them against `cwd` into a
+// normalized Bash path, then strip the current project path before querying
+// Convex. `WorkspaceFs` receives already-stripped app file paths from
+// `MountableFs`.
 
 import { v } from "convex/values";
+import { getFunctionName } from "convex/server";
 import {
 	Bash,
 	defineCommand,
@@ -25,15 +45,12 @@ import {
 	type MkdirOptions,
 	type RmOptions,
 } from "just-bash/browser";
-import mri from "mri";
-import { z } from "zod";
 import { internal } from "./_generated/api.js";
 import { internalAction, type ActionCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { ai_chat_get_thread_state_Result } from "./ai_chat.ts";
 import type {
 	files_nodes_create_folder_node_by_path_Result,
-	files_nodes_get_bash_path_entry_Result,
 	files_nodes_get_bash_served_byte_size_Result,
 	files_nodes_get_bash_stat_entry_Result,
 	files_nodes_get_by_path_Result,
@@ -53,13 +70,14 @@ import type {
 	files_nodes_text_search_files_Result,
 } from "./files_nodes.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
+import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER } from "../shared/files.ts";
+import { path_name_of } from "../shared/shared-utils.ts";
 import { files_chunk_BITMASK_FLAGS, files_chunk_has_bitmask_flag } from "../server/files-markdown-chunking-mastra.ts";
 
 const HOME = "/home/cloud-usr";
-const MOUNT_ROOT = `${HOME}/w`;
+const appMountPath = `${HOME}/w`;
 const TMP_MOUNT = "/tmp";
 const DEFAULT_CWD = "~";
-const FILES_ROOT_ID = "root";
 const OUTPUT_LIMIT = 30_000;
 const COMMAND_EXIT_FAILURE = 1;
 const COMMAND_EXIT_USAGE = 2;
@@ -69,7 +87,17 @@ const TERMINAL_LINE_ENDING_REGEX = /\r\n?/g;
 const TERMINAL_TRAILING_NEWLINE_REGEX = /\n+$/;
 const SIMPLE_EXTENSION_GLOB_REGEX = /^\*\.([a-z0-9][a-z0-9_-]*)$/iu;
 const GLOB_METACHARACTER_REGEX = /[*?[\]]/u;
-const SHELL_ARG_SAFE_UNQUOTED_REGEX = /^[A-Za-z0-9_/:.,=+-]+$/;
+const SHELL_ARG_SAFE_UNQUOTED_REGEX = /^[A-Za-z0-9_/:.,=+@-]+$/;
+const PAGINATION_CURSORS_CACHE_MAX_ENTRIES = 500;
+/**
+ * In-memory LRU cache for stored pagination cursors.
+ *
+ * Map insertion order tracks recency: writes and cache hits delete then set an
+ * id to move it to the newest slot. When over capacity, the first map key is
+ * the least recently used cursor and is evicted. `value_store` remains the
+ * durable fallback when this per-runtime cache is empty.
+ */
+const pagination_cursors_cache = new Map<string, string>();
 
 const ALLOWED_COMMANDS = [
 	"echo",
@@ -115,11 +143,12 @@ const ALLOWED_COMMANDS = [
  * folders created while caching descendants.
  */
 type JustBashFileNodeCacheEntry = {
-	nodeId?: Id<"files_nodes">;
+	_id?: Id<"files_nodes"> | typeof files_ROOT_ID;
 	path: Doc<"files_nodes">["path"];
+	name: Doc<"files_nodes">["name"];
 	kind: Doc<"files_nodes">["kind"];
 	updatedAt: Doc<"files_nodes">["updatedAt"];
-	updatedBy?: Id<"users">;
+	updatedBy?: Doc<"files_nodes">["updatedBy"] | "";
 	contentType?: Doc<"files_nodes">["contentType"];
 };
 
@@ -132,9 +161,10 @@ type WorkspaceFsOptions = {
 		projectName: string;
 		userId: Id<"users">;
 	};
-	appFilesMountPath: string;
+	currentProjectPath: string;
 	allowAppFileTreeMkdir: boolean;
 };
+
 /**
  * Means the app file exists, but bash cannot read its body as text.
  *
@@ -178,7 +208,7 @@ class ReadOnlyFileSystemError extends Error {
 }
 
 /**
- * Return one clean absolute path for bash, Convex queries, and cache keys.
+ * Return one clean absolute path for bash, app files, and cache keys.
  */
 function normalize_path(path: string) {
 	const parts: string[] = [];
@@ -205,25 +235,24 @@ function resolve_path(base: string, path: string) {
 }
 
 /**
- * Convert an app file path to its mounted bash path.
+ * Convert a Convex app file node path to its Bash path inside currentProjectPath.
  */
-function app_path_to_shell_path(appFilesMountPath: string, path: string) {
+function app_file_node_path_to_current_project_path(currentProjectPath: string, path: string) {
 	const normalizedPath = normalize_path(path);
-	return normalizedPath === "/" ? appFilesMountPath : `${appFilesMountPath}${normalizedPath}`;
+	return normalizedPath === "/" ? currentProjectPath : `${currentProjectPath}${normalizedPath}`;
 }
 
 /**
- * Convert a mounted shell path back to a real app file path.
+ * Convert a normalized Bash path under currentProjectPath back to a Convex app file node path.
  *
- * The path must already be normalized by the command boundary before calling
- * this helper.
+ * Returns `null` for Bash paths outside currentProjectPath, like `/tmp/foo`.
  */
-function shell_path_to_app_path(appFilesMountPath: string, path: string) {
-	if (path === appFilesMountPath) {
+function current_project_path_to_app_file_node_path(currentProjectPath: string, path: string) {
+	if (path === currentProjectPath) {
 		return "/";
 	}
-	if (path.startsWith(`${appFilesMountPath}/`)) {
-		return path.slice(appFilesMountPath.length);
+	if (path.startsWith(`${currentProjectPath}/`)) {
+		return path.slice(currentProjectPath.length);
 	}
 	return null;
 }
@@ -238,17 +267,83 @@ function shell_arg_quote(arg: string) {
 	return SHELL_ARG_SAFE_UNQUOTED_REGEX.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
+function pagination_cursors_cache_set(id: string, value: string) {
+	if (pagination_cursors_cache.has(id)) {
+		pagination_cursors_cache.delete(id);
+	}
+	pagination_cursors_cache.set(id, value);
+
+	while (pagination_cursors_cache.size > PAGINATION_CURSORS_CACHE_MAX_ENTRIES) {
+		const oldest = pagination_cursors_cache.keys().next().value!;
+		pagination_cursors_cache.delete(oldest);
+	}
+}
+
+/**
+ * Persist a raw pagination cursor and return the short stored cursor id printed
+ * in command output.
+ *
+ * Raw Convex cursors are extremely long and hard for the AI to copy back into
+ * shell commands reliably, so bash output exposes only this value_store id.
+ */
+async function cursor_id_create(ctx: ActionCtx, cursor: string) {
+	// Persist first so the cursor id survives runtime cache eviction or restart.
+	const id = (await ctx.runMutation(internal.value_store.put, {
+		value: cursor,
+	})) as Id<"value_store">;
+	// Warm the local LRU for the common case where the next command lands here.
+	pagination_cursors_cache_set(id, cursor);
+	return id;
+}
+
+/**
+ * Resolve a command cursor id back to the raw Convex pagination cursor that
+ * list queries expect.
+ */
+async function cursor_id_resolve(ctx: ActionCtx, cursor: string) {
+	const id = cursor.trim();
+	if (!id) {
+		return Result({
+			_nay: {
+				message: "bash: cursor is invalid; rerun the original command to get a fresh Next page cursor.",
+			},
+		});
+	}
+
+	const cached = pagination_cursors_cache.get(id);
+	if (cached != null) {
+		// Cache hits refresh recency because Map insertion order powers the LRU.
+		pagination_cursors_cache.delete(id);
+		pagination_cursors_cache.set(id, cached);
+		return Result({ _yay: cached });
+	}
+
+	// Fall back to durable storage because Convex action runtimes may not share memory.
+	const stored = (await ctx.runQuery(internal.value_store.get, { id })) as { value: string; createdAt: number } | null;
+	if (!stored) {
+		return Result({
+			_nay: {
+				message: `bash: cursor ${cursor} expired or is unavailable; rerun the original command to get a fresh Next page cursor.`,
+			},
+		});
+	}
+
+	// Refill the local LRU after durable lookup for subsequent page requests.
+	pagination_cursors_cache_set(id, stored.value);
+	return Result({ _yay: stored.value });
+}
+
 /**
  * Expand the cwd saved in thread state into the absolute path Bash runs with.
  *
  * We save cwd as `~` or `~/...` so it stays tied to the bash home.
  * Examples:
- * - `undefined` or `~` -> `/home/cloud-usr`
+ * - `~` -> `/home/cloud-usr`
  * - `~/w/personal/home` -> `/home/cloud-usr/w/personal/home`
  * - `/home/cloud-usr/w/personal/home` -> `/home/cloud-usr/w/personal/home`
  */
-function expand_persisted_bash_cwd(path: string | undefined) {
-	const cwd = path?.trim() || DEFAULT_CWD;
+function expand_bash_path(path: string) {
+	const cwd = path.trim();
 	if (cwd === "~") {
 		return HOME;
 	}
@@ -264,19 +359,20 @@ function expand_persisted_bash_cwd(path: string | undefined) {
 /**
  * Collapse a bash cwd into the thread-state format.
  *
- * Only paths under `/home/cloud-usr` persist between bash calls.
+ * Only paths under HOME persist between bash calls. Keep HOME absolute so the
+ * legacy `~` default can mean "start in currentProjectPath".
  * Examples:
- * - `/home/cloud-usr` -> `~`
+ * - `/home/cloud-usr` -> `/home/cloud-usr`
  * - `/home/cloud-usr/w/personal/home` -> `~/w/personal/home`
  * - `/tmp` -> `null`
  */
-function collapse_bash_cwd_for_persistence(shellCwd: string | undefined) {
-	const normalizedCwd = normalize_path(shellCwd || HOME);
-	if (normalizedCwd === HOME) {
-		return DEFAULT_CWD;
+function collapse_bash_path(path: string) {
+	const normalizedPath = normalize_path(path);
+	if (normalizedPath === HOME) {
+		return HOME;
 	}
-	if (normalizedCwd.startsWith(`${HOME}/`)) {
-		return `~/${normalizedCwd.slice(HOME.length + 1)}`;
+	if (normalizedPath.startsWith(`${HOME}/`)) {
+		return `~/${normalizedPath.slice(HOME.length + 1)}`;
 	}
 	return null;
 }
@@ -288,7 +384,7 @@ function collapse_bash_cwd_for_persistence(shellCwd: string | undefined) {
  *
  * Returns `null` for anything more complex.
  */
-function parse_simple_find_command_extension_glob(pattern: string) {
+function parse_simple_extension_glob(pattern: string) {
 	const trimmed = pattern.trim();
 
 	// Split an optional folder path from the file name part.
@@ -318,14 +414,14 @@ function parse_simple_find_command_extension_glob(pattern: string) {
  * Build the error text for commands that operate on Convex-backed app files
  * when a path operand contains shell glob metacharacters.
  *
- * These commands read, list, or inspect the virtual app file tree mounted under
- * `~/w/...`; they do not expand globs over that tree. For the common discovery
+ * These commands read, list, or inspect the current project tree under
+ * `~/w/<workspace>/<project>`; they do not expand globs over that tree. For the common discovery
  * mistake `*.ext`, point the model at `find --extension`, which uses the indexed
  * file path query. `find` itself handles simple extension globs separately and
  * can run that indexed search directly.
  */
-function app_glob_syntax_unsupported_message(command: string, path: string) {
-	const simpleExtensionGlob = parse_simple_find_command_extension_glob(path);
+function create_glob_syntax_unsupported_message(command: string, path: string) {
+	const simpleExtensionGlob = parse_simple_extension_glob(path);
 	if (simpleExtensionGlob) {
 		const target = simpleExtensionGlob.path ?? ".";
 		return (
@@ -342,12 +438,11 @@ function app_glob_syntax_unsupported_message(command: string, path: string) {
 }
 
 /**
- * Check whether a normalized path is inside the mounted app file tree.
+ * Check whether a normalized path is inside currentProjectPath.
  */
-function is_path_under_app_mount(appFilesMountPath: string, path: string) {
-	return path === appFilesMountPath || path.startsWith(`${appFilesMountPath}/`);
+function is_path_under_current_project_path(currentProjectPath: string, path: string) {
+	return path === currentProjectPath || path.startsWith(`${currentProjectPath}/`);
 }
-
 
 /**
  * Cap bash stdout/stderr before storing it in the chat message.
@@ -401,153 +496,308 @@ function format_tool_output(args: {
 	return lines.join("\n");
 }
 
+/**
+ * Read the argv value that follows an option like `--limit 10`.
+ *
+ * Callers own incrementing their loop index after a successful read.
+ */
+function command_read_option_value(command: string, args: string[], index: number, option: string) {
+	const value = args[index + 1];
+	if (value == null) {
+		return Result({ _nay: { message: `${command}: ${option} requires a value` } });
+	}
+	return Result({ _yay: { value } });
+}
+
+/**
+ * Parse a positive pagination limit, applying the command default and max clamp.
+ */
+function command_parse_limit(command: string, value: string | undefined, defaultLimit: number, maxLimit: number) {
+	const rawValue = value ?? String(defaultLimit);
+	if (!/^-?\d+$/u.test(rawValue.trim())) {
+		return Result({ _nay: { message: `${command}: --limit must be an integer` } });
+	}
+	return Result({ _yay: Math.max(1, Math.min(maxLimit, Number(rawValue))) });
+}
+
+/**
+ * Builds argv for delegating part of an app-aware command to native Just Bash.
+ *
+ * App-file pagination options and original operands are removed. The caller
+ * passes only the native operands that should remain, usually the original
+ * operand text so native output keeps normal shell path formatting.
+ */
+function command_build_native_delegation_args(
+	args: string[],
+	nativeOperands: string[],
+	options: {
+		optionsWithValues: ReadonlySet<string>;
+		pathsPosition: "beforeOptions" | "afterOptions";
+	},
+) {
+	const nativeArgs: string[] = [];
+	const shortOptionsWithValues = [...options.optionsWithValues].filter(
+		(option) => option.startsWith("-") && !option.startsWith("--"),
+	);
+	let optionsEnded = false;
+
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index]!;
+		if (optionsEnded) {
+			continue;
+		}
+		if (arg === "--") {
+			optionsEnded = true;
+			nativeArgs.push(arg);
+			continue;
+		}
+		if (arg === "--limit" || arg === "--cursor") {
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--limit=") || arg.startsWith("--cursor=")) {
+			continue;
+		}
+
+		const equalsIndex = arg.indexOf("=");
+		const optionName = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
+		if (options.optionsWithValues.has(optionName)) {
+			nativeArgs.push(arg);
+			if (equalsIndex === -1 && index + 1 < args.length) {
+				nativeArgs.push(args[index + 1]!);
+				index++;
+			}
+			continue;
+		}
+
+		if (
+			arg.startsWith("-") &&
+			!arg.startsWith("--") &&
+			shortOptionsWithValues.some((option) => arg.startsWith(option) && arg.length > option.length)
+		) {
+			nativeArgs.push(arg);
+			continue;
+		}
+
+		if (arg.startsWith("-") && arg !== "-") {
+			nativeArgs.push(arg);
+		}
+	}
+
+	if (options.pathsPosition === "beforeOptions") {
+		return [...nativeOperands, ...nativeArgs];
+	}
+	return [...nativeArgs, ...nativeOperands];
+}
+
 // #region search command
 
-const search_command_args_schema = z.object({
-	_: z.array(z.string()),
-	limit: z
-		.string()
-		.trim()
-		.regex(/^-?\d+$/)
-		.transform((value) => Number(value)),
-	cursor: z.string().trim().optional(),
-	path: z.string().trim().optional(),
-});
+function search_command_parse_args(args: string[], currentProjectPath: string) {
+	let limitValue: string | undefined;
+	let cursor: string | null = null;
+	let pathValue: string | undefined;
+	const queryParts: string[] = [];
+	let optionsEnded = false;
 
-function search_command_parse_args(args: string[], appFilesMountPath: string) {
-	const unsupportedChunkFilter = args.find((arg) => arg === "--code" || arg === "--table" || arg === "--no-code");
-	if (unsupportedChunkFilter != null) {
-		return Result({
-			_nay: {
-				message:
-					`search: ${unsupportedChunkFilter} is not supported for app indexed search.\n` +
-					"Use a distinctive text token, or inspect a specific file with grep.",
-			},
-		});
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index]!;
+		if (optionsEnded) {
+			queryParts.push(arg);
+			continue;
+		}
+		if (arg === "--") {
+			optionsEnded = true;
+			continue;
+		}
+		if (arg === "--code" || arg === "--table" || arg === "--no-code") {
+			return Result({
+				_nay: {
+					message:
+						`search: ${arg} is not supported for full-text content search.\n` +
+						"Use plain content words or inspect a specific file with grep.",
+				},
+			});
+		}
+		if (arg === "--limit") {
+			const value = command_read_option_value("search", args, index, "--limit");
+			if (value._nay) return value;
+			limitValue = value._yay.value;
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--limit=")) {
+			limitValue = arg.slice("--limit=".length);
+			continue;
+		}
+		if (arg === "--cursor") {
+			const value = command_read_option_value("search", args, index, "--cursor");
+			if (value._nay) return value;
+			cursor = value._yay.value.trim();
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--cursor=")) {
+			cursor = arg.slice("--cursor=".length).trim();
+			continue;
+		}
+		if (arg === "--path") {
+			const value = command_read_option_value("search", args, index, "--path");
+			if (value._nay) return value;
+			pathValue = value._yay.value.trim();
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--path=")) {
+			pathValue = arg.slice("--path=".length).trim();
+			continue;
+		}
+		if (arg.startsWith("--") || (arg.startsWith("-") && arg !== "-")) {
+			return Result({ _nay: { message: `search: unsupported option ${arg}` } });
+		}
+		queryParts.push(arg);
 	}
 
-	const unsupportedOptions: string[] = [];
-	const parsedArgs = mri<{ limit?: string; path?: string; cursor?: string }>(args, {
-		string: ["limit", "path", "cursor"],
-		alias: {
-			limit: [],
-			path: [],
-			cursor: [],
-		},
-		default: {
-			limit: "20",
-		},
-		unknown: (option) => {
-			unsupportedOptions.push(option);
-		},
-	});
-
-	const unsupportedOption = unsupportedOptions[0];
-	if (unsupportedOption != null) {
-		return Result({ _nay: { message: `search: unsupported option ${unsupportedOption}` } });
+	const limit = command_parse_limit("search", limitValue, 20, 100);
+	if (limit._nay) {
+		return limit;
 	}
 
-	const result = search_command_args_schema.safeParse(parsedArgs);
-	if (!result.success) {
-		const hasLimitError = result.error.issues.some((issue) => issue.path[0] === "limit");
+	const query = queryParts.join(" ").trim();
+	if (!query) {
 		return Result({
-			_nay: { message: hasLimitError ? "search: --limit must be an integer" : "search: missing query" },
+			_nay: { message: "search: missing query" },
 		});
 	}
 
 	// A positional path is almost always a mistaken scope filter; point to --path instead of
 	// silently folding it into the text query.
-	const pathOperand = result.data._.find(
+	const pathOperand = queryParts.find(
 		(arg) =>
 			arg.includes("/") ||
 			arg.startsWith("~") ||
 			arg === "." ||
 			arg === ".." ||
-			is_path_under_app_mount(appFilesMountPath, normalize_path(arg)),
+			is_path_under_current_project_path(currentProjectPath, normalize_path(arg)),
 	);
 	if (pathOperand != null) {
 		return Result({
 			_nay: {
 				message:
 					`search: path operands are not supported: ${pathOperand}\n` +
-					"Pass query terms only. To restrict to one folder, use: search --path <folder> <query terms>",
+					"Pass content words only. To restrict to one folder, use: search --path <folder> <content terms>",
 			},
 		});
 	}
 
-	// Optional subtree scope. Resolve the shell folder path to an app path; reject paths outside the
-	// app file tree.
-	let pathPrefix: string | undefined;
-	if (result.data.path != null && result.data.path !== "") {
-		const appPath = shell_path_to_app_path(appFilesMountPath, normalize_path(result.data.path));
-		if (appPath == null) {
+	// Optional subtree scope. Resolve the shell folder path to an app file node path.
+	let path: string | undefined;
+	if (pathValue != null && pathValue !== "") {
+		const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, normalize_path(pathValue));
+		if (appFileNodePath == null) {
 			return Result({
 				_nay: {
 					message:
-						`search: --path must be a folder under the app file tree: ${result.data.path}\n` +
-						`Use an absolute path under ${appFilesMountPath}.`,
+						`search: --path must be a folder under the app file tree: ${pathValue}\n` +
+						`Use an absolute path under ${currentProjectPath}.`,
 				},
 			});
 		}
-		pathPrefix = appPath;
+		path = appFileNodePath;
 	}
 
-	const query = result.data._.join(" ").trim();
-	return query
-		? Result({
-				_yay: {
-					query,
-					limit: Math.max(1, Math.min(100, result.data.limit)),
-					cursor: result.data.cursor ?? null,
-					pathPrefix,
-				},
-			})
-		: Result({ _nay: { message: "search: missing query" } });
+	return Result({
+		_yay: {
+			query,
+			limit: limit._yay,
+			cursor,
+			path,
+		},
+	});
 }
 
-function search_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], appFilesMountPath: string) {
+function search_command_build_continuation(args: {
+	currentProjectPath: string;
+	path: string | undefined;
+	limit: number;
+	cursor: string;
+	query: string;
+}) {
+	const continuationParts = ["Next page:", "search"];
+	if (args.path != null) {
+		continuationParts.push(
+			"--path",
+			shell_arg_quote(app_file_node_path_to_current_project_path(args.currentProjectPath, args.path)),
+		);
+	}
+	continuationParts.push(
+		"--limit",
+		String(args.limit),
+		"--cursor",
+		shell_arg_quote(args.cursor),
+		shell_arg_quote(args.query),
+	);
+	return continuationParts.join(" ");
+}
+
+function search_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], currentProjectPath: string) {
 	return defineCommand("search", async (args, commandCtx) => {
-		const parsedResult = search_command_parse_args(args, appFilesMountPath);
-		if (parsedResult._nay) {
+		const parsed = search_command_parse_args(args, currentProjectPath);
+		if (parsed._nay) {
 			return {
 				stdout: "",
-				stderr: `${parsedResult._nay.message}\nUsage: search [--limit N] [--cursor CURSOR] [--path <folder>] <query...>\n`,
+				stderr: `${parsed._nay.message}\nUsage: search [--limit N] [--cursor CURSOR] [--path <folder>] <content terms...>\n`,
 				exitCode: 2,
 			};
 		}
-		const parsed = parsedResult._yay;
 
-		const cwdAppPath = shell_path_to_app_path(
-			appFilesMountPath,
-			default_app_target_shell_path(commandCtx.cwd, appFilesMountPath),
-		);
-		const pathPrefix = parsed.pathPrefix ?? (cwdAppPath != null && cwdAppPath !== "/" ? cwdAppPath : undefined);
+		let cursor: string | null = null;
+		if (parsed._yay.cursor != null) {
+			const resolvedCursor = await cursor_id_resolve(ctx, parsed._yay.cursor);
+			if (resolvedCursor._nay) {
+				return {
+					stdout: "",
+					stderr: `${resolvedCursor._nay.message}\n`,
+					exitCode: COMMAND_EXIT_FAILURE,
+				};
+			}
+			cursor = resolvedCursor._yay;
+		}
+
+		const cwdAppFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, commandCtx.cwd);
+
+		// Without --path, search follows cwd when it is inside currentProjectPath.
+		const path =
+			parsed._yay.path ?? (cwdAppFileNodePath != null && cwdAppFileNodePath !== "/" ? cwdAppFileNodePath : undefined);
+
 		const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
 			workspaceId: ctxData.workspaceId,
 			projectId: ctxData.projectId,
-			query: parsed.query,
-			numItems: parsed.limit,
-			cursor: parsed.cursor,
-			pathPrefix,
+			query: parsed._yay.query,
+			numItems: parsed._yay.limit,
+			cursor,
+			pathPrefix: path,
 		})) as files_nodes_text_search_files_Result;
+
 		const searchResult = {
 			items: res.items.map((item) => ({
 				...item,
-				path: app_path_to_shell_path(appFilesMountPath, item.path),
+				path: app_file_node_path_to_current_project_path(currentProjectPath, item.path),
 			})),
 		};
-		const hasNextPage =
-			!res.isDone &&
-			(pathPrefix == null ||
-				(await ctx.runQuery(internal.files_nodes.text_search_files_page_has_items, {
-					workspaceId: ctxData.workspaceId,
-					projectId: ctxData.projectId,
-					query: parsed.query,
-					cursor: res.continueCursor,
-					pathPrefix,
-				})));
-		const scopeNote = pathPrefix != null ? ` under ${app_path_to_shell_path(appFilesMountPath, pathPrefix)}` : "";
-		let output = `No content matches found${scopeNote}. search uses indexed Convex text search, not path/name search; use find -name QUERY or find --path-query QUERY for path/name discovery. Retry content search with a shorter distinctive token if needed.`;
+
+		const scopeNote =
+			path != null ? ` under ${app_file_node_path_to_current_project_path(currentProjectPath, path)}` : "";
+
+		// The miss text is actionable because full-text search accepts plain
+		// content terms, not path/name/glob syntax.
+		let output =
+			`No content matches found${scopeNote}. ` +
+			`search expects words from the file content, not a shell pattern: ` +
+			`pass one distinctive word or a few plain terms that should appear in the document body. ` +
+			`The text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. ` +
+			`It is implemented with Convex full-text search, but it is not path/name/glob/regex search; ` +
+			`use find -name QUERY or find --path-query QUERY for path/name discovery. ` +
+			`Retry with shorter distinctive content terms if needed.`;
 
 		if (searchResult.items.length) {
 			const outputBlocks = searchResult.items.map((item) => {
@@ -562,6 +812,8 @@ function search_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxD
 					files_chunk_BITMASK_FLAGS.hasMoreFragmentContentBelow,
 				);
 
+				// Each hit is one block: stable location metadata, optional context hints,
+				// then the matched Markdown chunk exactly as it was indexed.
 				const blockLines = [
 					`${item.path} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})`,
 				];
@@ -591,35 +843,23 @@ function search_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxD
 				return blockLines.join("\n");
 			});
 
+			// Blank lines separate the summary, result blocks, and continuation command in the transcript.
 			const blocks = [`Found ${searchResult.items.length} results${scopeNote}`, "", ...outputBlocks];
-			if (hasNextPage) {
-				const continuationParts = ["Next page:", "search"];
-				if (pathPrefix != null) {
-					continuationParts.push("--path", shell_arg_quote(app_path_to_shell_path(appFilesMountPath, pathPrefix)));
-				}
-				continuationParts.push(
-					"--limit",
-					String(parsed.limit),
-					"--cursor",
-					shell_arg_quote(res.continueCursor),
-					shell_arg_quote(parsed.query),
+			if (!res.isDone) {
+				// Print a complete command so the next request can copy the cursor without editing.
+				const cursorId = await cursor_id_create(ctx, res.continueCursor);
+				blocks.push(
+					"",
+					search_command_build_continuation({
+						currentProjectPath,
+						path,
+						limit: parsed._yay.limit,
+						cursor: cursorId,
+						query: parsed._yay.query,
+					}),
 				);
-				blocks.push("", continuationParts.join(" "));
 			}
 			output = blocks.join("\n");
-		} else if (hasNextPage) {
-			const continuationParts = ["Next page:", "search"];
-			if (pathPrefix != null) {
-				continuationParts.push("--path", shell_arg_quote(app_path_to_shell_path(appFilesMountPath, pathPrefix)));
-			}
-			continuationParts.push(
-				"--limit",
-				String(parsed.limit),
-				"--cursor",
-				shell_arg_quote(res.continueCursor),
-				shell_arg_quote(parsed.query),
-			);
-			output = `${output}\n\n${continuationParts.join(" ")}`;
 		}
 
 		return {
@@ -638,11 +878,6 @@ function search_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxD
 // Tunable — raise for production.
 const LISTING_DEFAULT_LIMIT = 10;
 const LISTING_MAX_LIMIT = 20;
-// Shared partial-page sentinel emitted by ls and find when a page yields no rows but the
-// cursor is not done. The agent-facing docs/system prompt document this exact phrase, so all
-// listing surfaces must emit it verbatim (an ls page that said "No items..." would not be
-// recognized as the documented "continue paging" signal).
-const PARTIAL_PAGE_NOTICE = "No matches in this page; more pages exist.";
 // Content readers (cat/head/tail/wc) fetch full file content from Convex per app-file
 // operand, so bound how many a single command can pull. stat reuses this for metadata fan-out.
 const READER_FILE_OPERAND_MAX = 10;
@@ -655,6 +890,8 @@ const READ_INLINE_MAX_BYTES = 2 * 1024;
 // Per-page line cap for head/sed/tail against a large file (must match the backend
 // files_READ_RANGE_MAX_LINES). DEV-PHASE AGGRESSIVE so pagination kicks in on small files.
 const READ_HEAD_LARGE_FILE_MAX_LINES = 40;
+
+const COMMAND_NO_NATIVE_OPTIONS_WITH_VALUES = new Set<string>();
 
 async function delegate_builtin_command(
 	command: CommandName,
@@ -684,48 +921,31 @@ async function delegate_builtin_command(
 	});
 }
 
-function parse_listing_limit(command: string, value: string | undefined) {
-	const rawValue = value ?? String(LISTING_DEFAULT_LIMIT);
-	if (!/^-?\d+$/u.test(rawValue.trim())) {
-		return Result({ _nay: { message: `${command}: --limit must be an integer` } });
-	}
-	return Result({ _yay: { limit: Math.max(1, Math.min(LISTING_MAX_LIMIT, Number(rawValue))) } });
-}
-
-function default_app_target_shell_path(cwd: string, appFilesMountPath: string) {
-	const normalizedCwd = normalize_path(cwd);
-	return is_path_under_app_mount(appFilesMountPath, normalizedCwd) ? normalizedCwd : appFilesMountPath;
-}
-
-async function get_bash_path_entry(
+async function get_file_node_from_path(
 	ctx: ActionCtx,
 	ctxData: WorkspaceFsOptions["ctxData"],
-	appPath: string,
-): Promise<files_nodes_get_bash_path_entry_Result> {
-	return (await ctx.runQuery(internal.files_nodes.get_bash_path_entry, {
+	appFileNodePath: string,
+): Promise<files_nodes_get_by_path_Result> {
+	if (appFileNodePath === "/") {
+		return null;
+	}
+
+	return (await ctx.runQuery(internal.files_nodes.get_by_path, {
 		workspaceId: ctxData.workspaceId,
 		projectId: ctxData.projectId,
-		path: appPath,
-	})) as files_nodes_get_bash_path_entry_Result;
+		path: appFileNodePath,
+	})) as files_nodes_get_by_path_Result;
 }
 
 // #region ls command
 
 const LS_PATH_OPERAND_MAX = 20;
 
-function ls_command_read_value(args: string[], index: number, option: string) {
-	const value = args[index + 1];
-	if (value == null) {
-		return Result({ _nay: { message: `ls: ${option} requires a value` } });
-	}
-	return Result({ _yay: { value, nextIndex: index + 1 } });
-}
-
-function parse_ls_command_args(args: string[]) {
+function ls_command_parse_args(args: string[]) {
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
 	const paths: string[] = [];
-	let unsupportedOption: string | null = null;
+	let unsupportedAppFileOption: string | null = null;
 	let recursive = false;
 	let directory = false;
 	let reverse = false;
@@ -744,10 +964,10 @@ function parse_ls_command_args(args: string[]) {
 			continue;
 		}
 		if (arg === "--limit") {
-			const value = ls_command_read_value(args, index, "--limit");
+			const value = command_read_option_value("ls", args, index, "--limit");
 			if (value._nay) return value;
 			limitValue = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg.startsWith("--limit=")) {
@@ -755,10 +975,10 @@ function parse_ls_command_args(args: string[]) {
 			continue;
 		}
 		if (arg === "--cursor") {
-			const value = ls_command_read_value(args, index, "--cursor");
+			const value = command_read_option_value("ls", args, index, "--cursor");
 			if (value._nay) return value;
 			cursor = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg.startsWith("--cursor=")) {
@@ -781,30 +1001,30 @@ function parse_ls_command_args(args: string[]) {
 			continue;
 		}
 		if (arg === "--indicator-style") {
-			const value = ls_command_read_value(args, index, "--indicator-style");
+			const value = command_read_option_value("ls", args, index, "--indicator-style");
 			if (value._nay) return value;
 			if (value._yay.value !== "slash") {
-				unsupportedOption ??= `--indicator-style=${value._yay.value}`;
+				unsupportedAppFileOption ??= `--indicator-style=${value._yay.value}`;
 			}
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg.startsWith("--indicator-style=")) {
 			const value = arg.slice("--indicator-style=".length);
 			if (value !== "slash") {
-				unsupportedOption ??= arg;
+				unsupportedAppFileOption ??= arg;
 			}
 			continue;
 		}
 		if (arg === "--sort") {
-			const value = ls_command_read_value(args, index, "--sort");
+			const value = command_read_option_value("ls", args, index, "--sort");
 			if (value._nay) return value;
 			if (value._yay.value === "time" || value._yay.value === "mtime") {
 				time = true;
 			} else if (value._yay.value !== "name") {
-				unsupportedOption ??= `--sort=${value._yay.value}`;
+				unsupportedAppFileOption ??= `--sort=${value._yay.value}`;
 			}
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg.startsWith("--sort=")) {
@@ -812,12 +1032,12 @@ function parse_ls_command_args(args: string[]) {
 			if (value === "time" || value === "mtime") {
 				time = true;
 			} else if (value !== "name") {
-				unsupportedOption ??= arg;
+				unsupportedAppFileOption ??= arg;
 			}
 			continue;
 		}
 		if (arg.startsWith("--")) {
-			unsupportedOption ??= arg;
+			unsupportedAppFileOption ??= arg;
 			continue;
 		}
 		if (arg.startsWith("-") && arg !== "-") {
@@ -845,14 +1065,14 @@ function parse_ls_command_args(args: string[]) {
 					time = true;
 					continue;
 				}
-				unsupportedOption ??= `-${flag}`;
+				unsupportedAppFileOption ??= `-${flag}`;
 			}
 			continue;
 		}
 		paths.push(arg);
 	}
 
-	const limit = parse_listing_limit("ls", limitValue);
+	const limit = command_parse_limit("ls", limitValue, LISTING_DEFAULT_LIMIT, LISTING_MAX_LIMIT);
 	if (limit._nay) {
 		return limit;
 	}
@@ -870,10 +1090,9 @@ function parse_ls_command_args(args: string[]) {
 	return Result({
 		_yay: {
 			paths,
-			limit: limit._yay.limit,
+			limit: limit._yay,
 			cursor,
-			hasAppListingOption: limitValue != null || cursor != null,
-			unsupportedOption,
+			unsupportedAppFileOption,
 			recursive,
 			directory,
 			reverse,
@@ -883,7 +1102,7 @@ function parse_ls_command_args(args: string[]) {
 	});
 }
 
-function format_ls_command_item(args: {
+function ls_command_format_item(args: {
 	kind: "folder" | "file";
 	updatedAt: number;
 	updatedBy?: string;
@@ -903,9 +1122,9 @@ function format_ls_command_item(args: {
 	return fields.join("\t");
 }
 
-function build_ls_command_continuation(args: {
-	parsed: NonNullable<ReturnType<typeof parse_ls_command_args>["_yay"]>;
-	targetShellPath: string;
+function ls_command_build_continuation(args: {
+	parsed: NonNullable<ReturnType<typeof ls_command_parse_args>["_yay"]>;
+	absoluteShellPath?: string;
 	cursor: string;
 }) {
 	const continuationParts = ["Next page:", "ls"];
@@ -921,49 +1140,33 @@ function build_ls_command_continuation(args: {
 	if (args.parsed.recursive && !args.parsed.directory) {
 		continuationParts.push("-R");
 	}
-	continuationParts.push(
-		"--limit",
-		String(args.parsed.limit),
-		"--cursor",
-		shell_arg_quote(args.cursor),
-		shell_arg_quote(args.targetShellPath),
-	);
+	continuationParts.push("--limit", String(args.parsed.limit), "--cursor", shell_arg_quote(args.cursor));
+	if (args.absoluteShellPath != null) {
+		continuationParts.push(shell_arg_quote(args.absoluteShellPath));
+	}
 	return continuationParts.join(" ");
 }
 
-function build_ls_command_recent_continuation(args: {
-	parsed: NonNullable<ReturnType<typeof parse_ls_command_args>["_yay"]>;
-	cursor: string;
-}) {
-	// Recency listing is project-wide, so the continuation carries no path operand.
-	return [
-		"Next page:",
-		"ls",
-		args.parsed.reverse ? "-rt" : "-t",
-		"--limit",
-		String(args.parsed.limit),
-		"--cursor",
-		shell_arg_quote(args.cursor),
-	].join(" ");
-}
-
-async function get_ls_command_path_entry(args: {
+async function ls_command_get_path_entry(args: {
 	ctx: ActionCtx;
 	ctxData: WorkspaceFsOptions["ctxData"];
 	workspaceFs: WorkspaceFs;
-	appPath: string;
+	appFileNodePath: string;
 	needsFullMetadata: boolean;
 }) {
 	if (!args.needsFullMetadata) {
-		const cached = await args.workspaceFs.getEntry(args.appPath);
+		const cached = await args.workspaceFs.getEntry(args.appFileNodePath);
 		if (!cached) {
 			return null;
 		}
-		if (args.appPath === "/" || cached.nodeId != null) {
+		if (args.appFileNodePath === "/") {
+			return files_SYNTHETIC_ROOT_FOLDER;
+		}
+		if (cached._id != null) {
 			return {
-				nodeId: args.appPath === "/" ? (FILES_ROOT_ID as typeof FILES_ROOT_ID) : cached.nodeId,
+				_id: cached._id,
 				path: cached.path,
-				name: cached.path.split("/").filter(Boolean).at(-1) ?? "",
+				name: cached.name,
 				kind: cached.kind,
 				updatedAt: cached.updatedAt,
 				updatedBy: cached.updatedBy,
@@ -972,11 +1175,16 @@ async function get_ls_command_path_entry(args: {
 		}
 	}
 
-	const entry = await get_bash_path_entry(args.ctx, args.ctxData, args.appPath);
-	if (entry && entry.nodeId !== FILES_ROOT_ID) {
+	if (args.appFileNodePath === "/") {
+		return files_SYNTHETIC_ROOT_FOLDER;
+	}
+
+	const entry = await get_file_node_from_path(args.ctx, args.ctxData, args.appFileNodePath);
+	if (entry) {
 		args.workspaceFs.rememberEntry({
-			nodeId: entry.nodeId,
+			_id: entry._id,
 			path: entry.path,
+			name: entry.name,
 			kind: entry.kind,
 			updatedAt: entry.updatedAt,
 			updatedBy: entry.updatedBy,
@@ -986,111 +1194,120 @@ async function get_ls_command_path_entry(args: {
 	return entry;
 }
 
-function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, appFilesMountPath: string) {
+function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProjectPath: string) {
 	return defineCommand("ls", async (args, commandCtx) => {
-		const parsedResult = parse_ls_command_args(args);
-		if (parsedResult._nay) {
+		const parsed = ls_command_parse_args(args);
+		if (parsed._nay) {
 			return {
 				stdout: "",
-				stderr: `${parsedResult._nay.message}\nUsage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n`,
+				stderr: `${parsed._nay.message}\nUsage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n`,
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
-		const parsed = parsedResult._yay;
 
-		const targetInputs = parsed.paths.length > 0 ? parsed.paths : [undefined];
+		// AI agents commonly hallucinate `--next-page`; reject it after parse
+		// validation so malformed real options still report their normal errors.
+		if (args.includes("--next-page")) {
+			return {
+				stdout: "",
+				stderr:
+					"ls: --next-page is not supported\n" +
+					"Copy the exact `Next page: ls --limit N --cursor ... <path>` command from the previous ls output.\n" +
+					"Usage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n",
+				exitCode: COMMAND_EXIT_USAGE,
+			};
+		}
+
+		const targetInputs = parsed._yay.paths.length > 0 ? parsed._yay.paths : [undefined];
+
+		// Turn each ls target into a shell path and, when possible, an app file node path.
 		const targets = targetInputs.map((path) => {
-			const targetShellPath = resolve_path(
-				commandCtx.cwd,
-				path ?? default_app_target_shell_path(commandCtx.cwd, appFilesMountPath),
-			);
+			const absoluteShellPath = resolve_path(commandCtx.cwd, path ?? commandCtx.cwd);
 			return {
 				inputPath: path,
-				targetShellPath,
-				appPath: shell_path_to_app_path(appFilesMountPath, targetShellPath),
+				absoluteShellPath,
+				appFileNodePath: current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
+				nativeOperand: path ?? ".",
 			};
 		});
-		if (targets.every((target) => target.appPath == null)) {
-			if (parsed.hasAppListingOption) {
-				return {
-					stdout: "",
-					stderr: (
-						"ls: --limit and --cursor are only available for app file paths\n" +
-						`Omit PATH to list the app root, or use ${appFilesMountPath} explicitly. Use plain ls for /tmp.\n`
-					),
-					exitCode: COMMAND_EXIT_USAGE,
-				};
-			}
-			return await delegate_builtin_command("ls", args, commandCtx);
-		}
-		if (targets.some((target) => target.appPath == null)) {
+
+		const hasAppFileNodeTarget = targets.some((target) => target.appFileNodePath != null);
+
+		if (hasAppFileNodeTarget && parsed._yay.unsupportedAppFileOption != null) {
+			const opt = parsed._yay.unsupportedAppFileOption;
+			const hint = `ls under ${appMountPath} supports name order only; use find/search for pattern and content discovery.`;
 			return {
 				stdout: "",
-				stderr: "ls: cannot mix app file paths with non-app paths in one listing\n",
+				stderr: `ls: unsupported option ${opt} for paths under ${appMountPath}\n${hint}\nUsage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n`,
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
 
-		if (parsed.unsupportedOption != null) {
-			if (parsed.unsupportedOption === "--next-page") {
+		let cursor: string | null = null;
+		if (hasAppFileNodeTarget && parsed._yay.cursor != null) {
+			const resolvedCursor = await cursor_id_resolve(ctx, parsed._yay.cursor);
+			if (resolvedCursor._nay) {
 				return {
 					stdout: "",
-					stderr: (
-						"ls: --next-page is not supported for app files\n" +
-						"Copy the exact `Next page: ls --limit N --cursor ... <path>` command from the previous ls output.\n" +
-						"Usage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n"
-					),
-					exitCode: COMMAND_EXIT_USAGE,
+					stderr: `${resolvedCursor._nay.message}\n`,
+					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
-			const opt = parsed.unsupportedOption;
-			const hint = "App ls supports name order only; use find/search for pattern and content discovery.";
-			return {
-				stdout: "",
-				stderr: `ls: unsupported option ${opt} for app files\n${hint}\nUsage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n`,
-				exitCode: COMMAND_EXIT_USAGE,
-			};
+			cursor = resolvedCursor._yay;
 		}
 
-		if (parsed.time && parsed.paths.length === 0) {
+		// Pathless `ls -t` is the project-wide recency view, so the agent can ask
+		// "what changed recently?" without first discovering every folder.
+		if (hasAppFileNodeTarget && parsed._yay.time && parsed._yay.paths.length === 0) {
 			const result = (await ctx.runQuery(internal.files_nodes.list_recent_paginated, {
 				workspaceId: workspaceFs.ctxData.workspaceId,
 				projectId: workspaceFs.ctxData.projectId,
-				numItems: parsed.limit,
-				cursor: parsed.cursor,
-				order: parsed.reverse ? "asc" : "desc",
+				numItems: parsed._yay.limit,
+				cursor,
+				order: parsed._yay.reverse ? "asc" : "desc",
 			})) as files_nodes_list_recent_paginated_Result;
 
 			const lines = result.items.map(
 				(item) =>
-					`${new Date(item.updatedAt).toISOString()}\t${app_path_to_shell_path(appFilesMountPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
+					`${new Date(item.updatedAt).toISOString()}\t${app_file_node_path_to_current_project_path(currentProjectPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
 			if (!result.isDone) {
-				if (lines.length === 0) {
-					lines.push(PARTIAL_PAGE_NOTICE);
-				}
-				lines.push("", build_ls_command_recent_continuation({ parsed, cursor: result.continueCursor }));
+				lines.push(
+					"",
+					ls_command_build_continuation({
+						parsed: parsed._yay,
+						cursor: await cursor_id_create(ctx, result.continueCursor),
+					}),
+				);
 			} else if (lines.length === 0) {
 				lines.push("(no files)");
 			}
 			return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
 		}
-		if (parsed.time && parsed.recursive && !parsed.directory) {
+
+		// There is no single indexed query for recursive subtree results ordered by
+		// updatedAt, so reject instead of loading and sorting a whole tree in memory.
+		if (hasAppFileNodeTarget && parsed._yay.time && parsed._yay.recursive && !parsed._yay.directory) {
 			return {
 				stdout: "",
-				stderr: (
+				stderr:
 					"ls -t -R is not supported for app file paths.\n" +
-					"Use `ls -t` for project-wide recency, `ls -t <dir>` for immediate children, or `find <dir>` for recursive path discovery.\n"
-				),
+					"Use `ls -t` for project-wide recency, `ls -t <dir>` for immediate children, or `find <dir>` for recursive path discovery.\n",
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
 
 		for (const target of targets) {
-			if (target.inputPath != null && GLOB_METACHARACTER_REGEX.test(target.inputPath)) {
+			// App file node paths are DB-backed. Native glob expansion would require
+			// unbounded client-side filtering, so guide callers to indexed commands.
+			if (
+				target.appFileNodePath != null &&
+				target.inputPath != null &&
+				GLOB_METACHARACTER_REGEX.test(target.inputPath)
+			) {
 				return {
 					stdout: "",
-					stderr: app_glob_syntax_unsupported_message("ls", target.inputPath),
+					stderr: create_glob_syntax_unsupported_message("ls", target.inputPath),
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
@@ -1098,29 +1315,81 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, appFilesMou
 
 		const sections: string[] = [];
 		let stderr = "";
-		let hasFailure = false;
-		for (const target of targets) {
-			const appPath = target.appPath;
-			if (appPath == null) {
+		let exitCode = 0;
+		for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
+			const target = targets[targetIndex]!;
+			const appFileNodePath = target.appFileNodePath;
+			if (appFileNodePath == null) {
+				const nativeTargets = [target];
+				while (targetIndex + 1 < targets.length && targets[targetIndex + 1]!.appFileNodePath == null) {
+					targetIndex++;
+					nativeTargets.push(targets[targetIndex]!);
+				}
+
+				// Adjacent native targets can run as one Just Bash ls call. Stop the
+				// batch before an app target so output order stays the same as input order.
+				const result = await delegate_builtin_command(
+					"ls",
+					command_build_native_delegation_args(
+						args,
+						nativeTargets.map((nativeTarget) => nativeTarget.nativeOperand),
+						{
+							optionsWithValues: COMMAND_NO_NATIVE_OPTIONS_WITH_VALUES,
+							pathsPosition: "afterOptions",
+						},
+					),
+					commandCtx,
+				);
+				let stdout = result.stdout.endsWith("\n") ? result.stdout.slice(0, -1) : result.stdout;
+				try {
+					const stat = await commandCtx.fs.stat(target.absoluteShellPath);
+					// A single native directory in a mixed ls still needs the heading
+					// that native multi-target ls would have printed.
+					if (
+						nativeTargets.length === 1 &&
+						targets.length > 1 &&
+						stat.isDirectory &&
+						!parsed._yay.directory &&
+						!parsed._yay.recursive
+					) {
+						stdout = stdout.length > 0 ? `${target.nativeOperand}:\n${stdout}` : `${target.nativeOperand}:`;
+					}
+				} catch {
+					// Missing native targets already report through the delegated ls stderr.
+				}
+				if (stdout.length > 0) {
+					sections.push(stdout);
+				}
+				stderr += result.stderr;
+				if (result.exitCode !== 0) {
+					exitCode = result.exitCode;
+				}
 				continue;
 			}
 
-			const entry = await get_ls_command_path_entry({
+			// Plain output only needs basic entry data. Long output asks for the
+			// full file-node row when it needs updatedBy/contentType fields.
+			const entry = await ls_command_get_path_entry({
 				ctx,
 				ctxData: workspaceFs.ctxData,
 				workspaceFs,
-				appPath,
-				needsFullMetadata: parsed.long && (parsed.directory || (await workspaceFs.getEntry(appPath))?.kind === "file"),
+				appFileNodePath,
+				needsFullMetadata:
+					parsed._yay.long && (parsed._yay.directory || (await workspaceFs.getEntry(appFileNodePath))?.kind === "file"),
 			});
 			if (!entry) {
-				stderr += `ls: cannot access '${target.targetShellPath}': No such file or directory\n`;
-				hasFailure = true;
+				stderr += `ls: cannot access '${target.absoluteShellPath}': No such file or directory\n`;
+				if (exitCode === 0) {
+					exitCode = COMMAND_EXIT_FAILURE;
+				}
 				continue;
 			}
 
 			const lines: string[] = [];
-			if (parsed.directory || entry.kind === "file") {
-				if (parsed.cursor != null) {
+			if (parsed._yay.directory || entry.kind === "file") {
+				// `-d` means "print the target itself"; files are also printed as a
+				// single target instead of being treated as directories.
+				if (parsed._yay.cursor != null) {
 					return {
 						stdout: "",
 						stderr: `ls: --cursor can only continue a directory or recursive listing\n`,
@@ -1128,99 +1397,95 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, appFilesMou
 					};
 				}
 				lines.push(
-					format_ls_command_item({
+					ls_command_format_item({
 						kind: entry.kind,
 						updatedAt: entry.updatedAt,
-						updatedBy: "updatedBy" in entry ? entry.updatedBy : undefined,
+						updatedBy: entry.updatedBy,
 						contentType: entry.contentType,
-						display: target.targetShellPath,
-						long: parsed.long,
+						display: target.absoluteShellPath,
+						long: parsed._yay.long,
 					}),
 				);
-			} else if (parsed.recursive) {
+			} else if (parsed._yay.recursive) {
+				// Recursive listings use the subtree index and print absolute shell
+				// paths, since children can be nested at different depths.
 				const result = (await ctx.runQuery(internal.files_nodes.list_subtree_paginated, {
 					workspaceId: workspaceFs.ctxData.workspaceId,
 					projectId: workspaceFs.ctxData.projectId,
-					path: appPath,
-					numItems: parsed.limit,
-					cursor: parsed.cursor,
-					order: parsed.reverse ? "desc" : "asc",
+					path: appFileNodePath,
+					numItems: parsed._yay.limit,
+					cursor,
+					order: parsed._yay.reverse ? "desc" : "asc",
 				})) as files_nodes_list_subtree_paginated_Result;
 
 				lines.push(
 					...result.items.map((item) =>
-						format_ls_command_item({
+						ls_command_format_item({
 							kind: item.kind,
 							updatedAt: item.updatedAt,
 							updatedBy: item.updatedBy,
 							contentType: item.contentType,
-							display: app_path_to_shell_path(appFilesMountPath, item.path),
-							long: parsed.long,
+							display: app_file_node_path_to_current_project_path(currentProjectPath, item.path),
+							long: parsed._yay.long,
 						}),
 					),
 				);
 				if (!result.isDone) {
-					if (lines.length === 0) {
-						lines.push(PARTIAL_PAGE_NOTICE);
-					}
 					lines.push(
 						"",
-						build_ls_command_continuation({
-							parsed,
-							targetShellPath: target.targetShellPath,
-							cursor: result.continueCursor,
+						ls_command_build_continuation({
+							parsed: parsed._yay,
+							absoluteShellPath: target.absoluteShellPath,
+							cursor: await cursor_id_create(ctx, result.continueCursor),
 						}),
 					);
 				}
 			} else {
-				const parentId = entry.nodeId;
-				if (parentId == null) {
-					return {
-						stdout: "",
-						stderr: `ls: cannot resolve '${target.targetShellPath}': No such file or directory\n`,
-						exitCode: COMMAND_EXIT_FAILURE,
-					};
+				// Plain directory listings are a parentId query. The project root is
+				// synthetic, so its parent id is the stable root sentinel.
+				let parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+				if (entry.path === "/") {
+					parentId = files_ROOT_ID;
+				} else {
+					parentId = entry._id as Id<"files_nodes">;
 				}
-				const result = parsed.time
+				const result = parsed._yay.time
 					? ((await ctx.runQuery(internal.files_nodes.list_dir_children_by_parent_recency_paginated, {
 							workspaceId: workspaceFs.ctxData.workspaceId,
 							projectId: workspaceFs.ctxData.projectId,
 							parentId,
-							numItems: parsed.limit,
-							cursor: parsed.cursor,
-							order: parsed.reverse ? "asc" : "desc",
+							numItems: parsed._yay.limit,
+							cursor,
+							order: parsed._yay.reverse ? "asc" : "desc",
 						})) as files_nodes_list_dir_children_by_parent_recency_paginated_Result)
 					: ((await ctx.runQuery(internal.files_nodes.list_dir_children_by_parent_paginated, {
 							workspaceId: workspaceFs.ctxData.workspaceId,
 							projectId: workspaceFs.ctxData.projectId,
 							parentId,
-							numItems: parsed.limit,
-							cursor: parsed.cursor,
-							order: parsed.reverse ? "desc" : "asc",
+							numItems: parsed._yay.limit,
+							cursor,
+							order: parsed._yay.reverse ? "desc" : "asc",
 						})) as files_nodes_list_dir_children_by_parent_paginated_Result);
 
 				lines.push(
 					...result.items.map((item) =>
-						format_ls_command_item({
+						ls_command_format_item({
 							kind: item.kind,
 							updatedAt: item.updatedAt,
 							updatedBy: item.updatedBy,
 							contentType: item.contentType,
 							display: item.name,
-							long: parsed.long,
+							long: parsed._yay.long,
 						}),
 					),
 				);
 				if (!result.isDone) {
-					if (lines.length === 0) {
-						lines.push(PARTIAL_PAGE_NOTICE);
-					}
 					lines.push(
 						"",
-						build_ls_command_continuation({
-							parsed,
-							targetShellPath: target.targetShellPath,
-							cursor: result.continueCursor,
+						ls_command_build_continuation({
+							parsed: parsed._yay,
+							absoluteShellPath: target.absoluteShellPath,
+							cursor: await cursor_id_create(ctx, result.continueCursor),
 						}),
 					);
 				}
@@ -1229,8 +1494,8 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, appFilesMou
 			if (lines.length === 0) {
 				lines.push("(empty directory)");
 			}
-			if (targets.length > 1 && entry.kind === "folder" && !parsed.directory) {
-				lines.unshift(`${target.targetShellPath}:`);
+			if (targets.length > 1 && entry.kind === "folder" && !parsed._yay.directory) {
+				lines.unshift(`${target.absoluteShellPath}:`);
 			}
 			sections.push(lines.join("\n"));
 		}
@@ -1238,7 +1503,7 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, appFilesMou
 		return {
 			stdout: sections.length > 0 ? `${sections.join("\n\n")}\n` : "",
 			stderr,
-			exitCode: hasFailure ? 1 : 0,
+			exitCode,
 		};
 	});
 }
@@ -1250,6 +1515,22 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, appFilesMou
 const FIND_COMMAND_EXTENSION_TOKEN_REGEX = /^[a-z0-9][a-z0-9_-]*$/iu;
 const SIMPLE_PATH_WORD_GLOB_REGEX = /^\*+([a-z0-9][a-z0-9_-]*)\*+$/iu;
 const SIMPLE_PATH_WORD_REGEX_GLOB_REGEX = /^\.\*([a-z0-9][a-z0-9_-]*)\.\*$/iu;
+const FIND_COMMAND_NATIVE_OPTIONS_WITH_VALUES = new Set([
+	"-iname",
+	"-ipath",
+	"-iregex",
+	"-maxdepth",
+	"-mindepth",
+	"-mtime",
+	"-name",
+	"-newer",
+	"-path",
+	"-perm",
+	"-printf",
+	"-regex",
+	"-size",
+	"-type",
+]);
 
 /**
  * Clean the extension value used by `find --extension`.
@@ -1258,7 +1539,7 @@ const SIMPLE_PATH_WORD_REGEX_GLOB_REGEX = /^\.\*([a-z0-9][a-z0-9_-]*)\.\*$/iu;
  *
  * Bad input returns a `_nay` with the text to print.
  */
-function normalize_find_command_extension_value(extension: string) {
+function find_command_normalize_extension_value(extension: string) {
 	const trimmed = extension.trim();
 
 	// Let callers pass `md` or `.md`.
@@ -1283,7 +1564,7 @@ function normalize_find_command_extension_value(extension: string) {
  *
  * Returns `null` for real globs or regexes.
  */
-function parse_simple_find_command_path_word_glob(pattern: string) {
+function find_command_parse_simple_path_word_glob(pattern: string) {
 	const trimmed = pattern.trim();
 
 	// Treat `*readme*` as the plain path word `readme`.
@@ -1303,11 +1584,11 @@ function parse_simple_find_command_path_word_glob(pattern: string) {
  * This points the model at the indexed `find --path-query` form when it used a
  * glob or regex-shaped path query that the app shell cannot run directly.
  */
-function build_find_command_path_query_retry_hint(
-	targetShellPath: string,
+function find_command_build_path_query_retry_hint(
+	absoluteShellPath: string,
 	args: { query: string; type?: string; maxDepth?: number; limit: number },
 ) {
-	const parts = ["Try:", "find", shell_arg_quote(targetShellPath)];
+	const parts = ["Try:", "find", shell_arg_quote(absoluteShellPath)];
 	if (args.maxDepth != null) {
 		parts.push("-maxdepth", String(args.maxDepth));
 	}
@@ -1318,19 +1599,12 @@ function build_find_command_path_query_retry_hint(
 	return parts.join(" ");
 }
 
-function find_command_read_value(args: string[], index: number, option: string) {
-	const value = args[index + 1];
-	if (value == null) {
-		return Result({ _nay: { message: `find: ${option} requires a value` } });
-	}
-	return Result({ _yay: { value, nextIndex: index + 1 } });
-}
-
-function parse_find_command_args(args: string[]) {
+function find_command_parse_args(args: string[]) {
 	let path: string | undefined;
-	let pathPrefix: string | undefined;
+	let prefix: string | undefined;
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
+	let unsupportedAppFilePredicate: string | null = null;
 	let maxDepthValue: string | undefined;
 	let minDepthValue: string | undefined;
 	let type: string | undefined;
@@ -1343,10 +1617,10 @@ function parse_find_command_args(args: string[]) {
 		const arg = args[index]!;
 
 		if (arg === "--limit") {
-			const value = find_command_read_value(args, index, "--limit");
+			const value = command_read_option_value("find", args, index, "--limit");
 			if (value._nay) return value;
 			limitValue = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg.startsWith("--limit=")) {
@@ -1354,10 +1628,10 @@ function parse_find_command_args(args: string[]) {
 			continue;
 		}
 		if (arg === "--cursor") {
-			const value = find_command_read_value(args, index, "--cursor");
+			const value = command_read_option_value("find", args, index, "--cursor");
 			if (value._nay) return value;
 			cursor = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg.startsWith("--cursor=")) {
@@ -1365,28 +1639,28 @@ function parse_find_command_args(args: string[]) {
 			continue;
 		}
 		if (arg === "--prefix") {
-			const value = find_command_read_value(args, index, "--prefix");
+			const value = command_read_option_value("find", args, index, "--prefix");
 			if (value._nay) return value;
-			pathPrefix = value._yay.value;
-			index = value._yay.nextIndex;
+			prefix = value._yay.value;
+			index++;
 			continue;
 		}
 		if (arg.startsWith("--prefix=")) {
-			pathPrefix = arg.slice("--prefix=".length);
+			prefix = arg.slice("--prefix=".length);
 			continue;
 		}
 		if (arg === "-maxdepth" || arg === "--maxdepth") {
-			const value = find_command_read_value(args, index, arg);
+			const value = command_read_option_value("find", args, index, arg);
 			if (value._nay) return value;
 			maxDepthValue = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg === "-mindepth" || arg === "--mindepth") {
-			const value = find_command_read_value(args, index, arg);
+			const value = command_read_option_value("find", args, index, arg);
 			if (value._nay) return value;
 			minDepthValue = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg === "-print") {
@@ -1394,31 +1668,31 @@ function parse_find_command_args(args: string[]) {
 			continue;
 		}
 		if (arg === "-type" || arg === "--type") {
-			const value = find_command_read_value(args, index, arg);
+			const value = command_read_option_value("find", args, index, arg);
 			if (value._nay) return value;
 			type = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg === "-name" || arg === "--name") {
-			const value = find_command_read_value(args, index, arg);
+			const value = command_read_option_value("find", args, index, arg);
 			if (value._nay) return value;
 			name = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg === "-iname" || arg === "--iname") {
-			const value = find_command_read_value(args, index, arg);
+			const value = command_read_option_value("find", args, index, arg);
 			if (value._nay) return value;
 			iname = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg === "--path-query") {
-			const value = find_command_read_value(args, index, arg);
+			const value = command_read_option_value("find", args, index, arg);
 			if (value._nay) return value;
 			pathQuery = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg.startsWith("--path-query=")) {
@@ -1426,10 +1700,10 @@ function parse_find_command_args(args: string[]) {
 			continue;
 		}
 		if (arg === "--extension") {
-			const value = find_command_read_value(args, index, arg);
+			const value = command_read_option_value("find", args, index, arg);
 			if (value._nay) return value;
 			extension = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg.startsWith("--extension=")) {
@@ -1437,19 +1711,26 @@ function parse_find_command_args(args: string[]) {
 			continue;
 		}
 		if (arg.startsWith("-") || arg === "!" || arg === "(" || arg === ")") {
-			return Result({
-				_nay: {
-					message: `find: unsupported predicate ${arg} (GNU find extensions like -printf, -mtime, -newer, -exec, -ok are not available for app files; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead)`,
-				},
-			});
+			unsupportedAppFilePredicate ??= arg;
+			if (FIND_COMMAND_NATIVE_OPTIONS_WITH_VALUES.has(arg)) {
+				index++;
+			} else if (arg === "-exec" || arg === "-ok") {
+				while (index + 1 < args.length && args[index + 1] !== ";" && args[index + 1] !== "+") {
+					index++;
+				}
+				if (index + 1 < args.length) {
+					index++;
+				}
+			}
+			continue;
 		}
-		const simpleExtensionGlob = parse_simple_find_command_extension_glob(arg);
+		const simpleExtensionGlob = parse_simple_extension_glob(arg);
 		if (simpleExtensionGlob) {
 			if (path != null) {
 				return Result({ _nay: { message: "find: app file find supports one path only" } });
 			}
 			if (extension != null) {
-				const normalizedExtension = normalize_find_command_extension_value(extension);
+				const normalizedExtension = find_command_normalize_extension_value(extension);
 				if (normalizedExtension._nay) return normalizedExtension;
 				if (normalizedExtension._yay.extension !== simpleExtensionGlob.extension) {
 					return Result({ _nay: { message: "find: simple extension glob conflicts with --extension" } });
@@ -1465,11 +1746,11 @@ function parse_find_command_args(args: string[]) {
 		path = arg;
 	}
 
-	if (pathPrefix != null && path != null) {
+	if (prefix != null && path != null) {
 		return Result({ _nay: { message: "find: --prefix cannot be combined with PATH" } });
 	}
 
-	const limit = parse_listing_limit("find", limitValue);
+	const limit = command_parse_limit("find", limitValue, LISTING_DEFAULT_LIMIT, LISTING_MAX_LIMIT);
 	if (limit._nay) {
 		return limit;
 	}
@@ -1490,7 +1771,7 @@ function parse_find_command_args(args: string[]) {
 		minDepth = Number(minDepthValue);
 	}
 
-	if (pathPrefix != null && (maxDepth != null || minDepth != null)) {
+	if (prefix != null && (maxDepth != null || minDepth != null)) {
 		// --prefix is a raw startsWith token, not an ancestor folder, so depth measured
 		// from the prefix string is meaningless. Reject rather than silently mis-filter.
 		return Result({
@@ -1507,13 +1788,13 @@ function parse_find_command_args(args: string[]) {
 
 	let normalizedExtension: string | undefined;
 	if (extension != null) {
-		const normalized = normalize_find_command_extension_value(extension);
+		const normalized = find_command_normalize_extension_value(extension);
 		if (normalized._nay) return normalized;
 		normalizedExtension = normalized._yay.extension;
 	}
 
 	const simpleNameExtension =
-		name != null || iname != null ? parse_simple_find_command_extension_glob((name ?? iname)!.trim()) : null;
+		name != null || iname != null ? parse_simple_extension_glob((name ?? iname)!.trim()) : null;
 	if (simpleNameExtension) {
 		if (simpleNameExtension.path != null) {
 			return Result({ _nay: { message: "find: -name/-iname simple extension globs must not include a path" } });
@@ -1539,7 +1820,7 @@ function parse_find_command_args(args: string[]) {
 		normalizedPathQuery != null &&
 		GLOB_METACHARACTER_REGEX.test(normalizedPathQuery)
 	) {
-		const simplePathWordGlob = parse_simple_find_command_path_word_glob(normalizedPathQuery);
+		const simplePathWordGlob = find_command_parse_simple_path_word_glob(normalizedPathQuery);
 		return Result({
 			_nay: {
 				message:
@@ -1551,7 +1832,7 @@ function parse_find_command_args(args: string[]) {
 								tryPathQuery: {
 									query: simplePathWordGlob,
 									...(type == null ? {} : { type }),
-									limit: limit._yay.limit,
+									limit: limit._yay,
 								},
 							},
 						}),
@@ -1559,7 +1840,7 @@ function parse_find_command_args(args: string[]) {
 		});
 	}
 	if (pathQuery != null && normalizedPathQuery != null && GLOB_METACHARACTER_REGEX.test(normalizedPathQuery)) {
-		const simplePathWordGlob = parse_simple_find_command_path_word_glob(normalizedPathQuery);
+		const simplePathWordGlob = find_command_parse_simple_path_word_glob(normalizedPathQuery);
 		return Result({
 			_nay: {
 				message:
@@ -1571,7 +1852,7 @@ function parse_find_command_args(args: string[]) {
 								tryPathQuery: {
 									query: simplePathWordGlob,
 									...(type == null ? {} : { type }),
-									limit: limit._yay.limit,
+									limit: limit._yay,
 								},
 							},
 						}),
@@ -1582,96 +1863,148 @@ function parse_find_command_args(args: string[]) {
 	return Result({
 		_yay: {
 			path,
-			pathPrefix,
-			limit: limit._yay.limit,
+			prefix,
+			limit: limit._yay,
 			cursor,
-			hasAppListingOption: limitValue != null || cursor != null,
+			unsupportedAppFilePredicate,
 			maxDepth,
 			minDepth,
 			type,
-			name,
-			iname,
+			name: name == null ? undefined : normalizedPathQuery,
+			iname: iname == null ? undefined : normalizedPathQuery,
 			pathQuery: pathQuery == null ? undefined : normalizedPathQuery,
-			pathSearchQuery: normalizedPathQuery,
 			extension: normalizedExtension,
 		} as const,
 	});
 }
 
-function command_path_to_app_path(commandCtx: CommandContext, appFilesMountPath: string, path: string) {
-	return shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, path));
+function find_command_path_to_app_file_node_path(commandCtx: CommandContext, currentProjectPath: string, path: string) {
+	return current_project_path_to_app_file_node_path(currentProjectPath, resolve_path(commandCtx.cwd, path));
 }
 
-function find_command_prefix_to_app_path(commandCtx: CommandContext, appFilesMountPath: string, pathPrefix: string) {
-	if (GLOB_METACHARACTER_REGEX.test(pathPrefix)) {
-		return Result({ _nay: { message: app_glob_syntax_unsupported_message("find", pathPrefix) } });
+function find_command_prefix_to_app_file_node_path(
+	commandCtx: CommandContext,
+	currentProjectPath: string,
+	prefix: string,
+) {
+	if (GLOB_METACHARACTER_REGEX.test(prefix)) {
+		return Result({ _nay: { message: create_glob_syntax_unsupported_message("find", prefix) } });
 	}
-	if (pathPrefix === "/" || pathPrefix.startsWith("/") || pathPrefix.startsWith("~/")) {
-		const shellPath = pathPrefix.startsWith("~/")
-			? normalize_path(`${HOME}/${pathPrefix.slice(2)}`)
-			: normalize_path(pathPrefix);
-		const mountedAppPath = shell_path_to_app_path(appFilesMountPath, shellPath);
-		return Result({ _yay: { appPath: mountedAppPath ?? normalize_path(pathPrefix) } });
+	if (prefix === "/" || prefix.startsWith("/") || prefix.startsWith("~/")) {
+		const shellPath = prefix.startsWith("~/") ? normalize_path(`${HOME}/${prefix.slice(2)}`) : normalize_path(prefix);
+		const currentProjectAppFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, shellPath);
+		return Result({ _yay: { appFileNodePath: currentProjectAppFileNodePath ?? normalize_path(prefix) } });
 	}
 
 	const cwd = normalize_path(commandCtx.cwd);
-	if (is_path_under_app_mount(appFilesMountPath, cwd)) {
+	if (is_path_under_current_project_path(currentProjectPath, cwd)) {
 		return Result({
 			_yay: {
-				appPath: command_path_to_app_path(commandCtx, appFilesMountPath, pathPrefix) ?? normalize_path(pathPrefix),
+				appFileNodePath:
+					find_command_path_to_app_file_node_path(commandCtx, currentProjectPath, prefix) ?? normalize_path(prefix),
 			},
 		});
 	}
-	return Result({ _yay: { appPath: normalize_path(pathPrefix) } });
+	return Result({ _yay: { appFileNodePath: normalize_path(prefix) } });
 }
 
-function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], appFilesMountPath: string) {
+function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], currentProjectPath: string) {
 	return defineCommand("find", async (args, commandCtx) => {
-		const parsedResult = parse_find_command_args(args);
-		if (parsedResult._nay) {
-			const errorData = parsedResult._nay.data as
+		const parsed = find_command_parse_args(args);
+		if (parsed._nay) {
+			const errorData = parsed._nay.data as
 				| { tryPathQuery?: { query: string; type?: string; limit: number } }
 				| undefined;
 			const tryPathQuery = errorData?.tryPathQuery ?? null;
 			const tryLine =
-				tryPathQuery == null ? "" : `${build_find_command_path_query_retry_hint(appFilesMountPath, tryPathQuery)}\n`;
+				tryPathQuery == null ? "" : `${find_command_build_path_query_retry_hint(currentProjectPath, tryPathQuery)}\n`;
 			return {
 				stdout: "",
 				stderr:
-					`${parsedResult._nay.message}\n` +
+					`${parsed._nay.message}\n` +
 					tryLine +
 					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
 				exitCode: 2,
 			};
 		}
-		const parsed = parsedResult._yay;
+		// AI agents commonly hallucinate `--next-page`; reject it after parse
+		// validation so malformed real options still report their normal errors.
+		if (args.includes("--next-page")) {
+			return {
+				stdout: "",
+				stderr:
+					"find: --next-page is not supported\n" +
+					"Copy the exact `Next page: find ... --limit N --cursor ...` command from the previous find output.\n" +
+					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
+				exitCode: COMMAND_EXIT_USAGE,
+			};
+		}
+		const pathQuery = parsed._yay.name ?? parsed._yay.iname ?? parsed._yay.pathQuery;
 
-		if (parsed.pathPrefix != null) {
-			if (parsed.extension != null) {
+		let cursor: string | null = null;
+		const absoluteShellPath = resolve_path(commandCtx.cwd, parsed._yay.path ?? commandCtx.cwd);
+		const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath);
+		const nativeOperand = parsed._yay.path ?? ".";
+		if (parsed._yay.prefix == null && appFileNodePath == null) {
+			return await delegate_builtin_command(
+				"find",
+				command_build_native_delegation_args(args, [nativeOperand], {
+					optionsWithValues: FIND_COMMAND_NATIVE_OPTIONS_WITH_VALUES,
+					pathsPosition: "beforeOptions",
+				}),
+				commandCtx,
+			);
+		}
+		if (parsed._yay.unsupportedAppFilePredicate != null) {
+			return {
+				stdout: "",
+				stderr:
+					`find: unsupported predicate ${parsed._yay.unsupportedAppFilePredicate} for paths under ${appMountPath}\n` +
+					"GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
+					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
+				exitCode: COMMAND_EXIT_USAGE,
+			};
+		}
+		if (parsed._yay.cursor != null) {
+			const resolvedCursor = await cursor_id_resolve(ctx, parsed._yay.cursor);
+			if (resolvedCursor._nay) {
 				return {
 					stdout: "",
-					stderr: (
+					stderr: `${resolvedCursor._nay.message}\n`,
+					exitCode: COMMAND_EXIT_FAILURE,
+				};
+			}
+			cursor = resolvedCursor._yay;
+		}
+
+		if (parsed._yay.prefix != null) {
+			if (parsed._yay.extension != null) {
+				return {
+					stdout: "",
+					stderr:
 						"find: --prefix cannot be combined with --extension for app files.\n" +
 						"Try: find <folder> -type f --extension " +
-						shell_arg_quote(parsed.extension) +
+						shell_arg_quote(parsed._yay.extension) +
 						" --limit " +
-						String(parsed.limit) +
-						"\n"
-					),
+						String(parsed._yay.limit) +
+						"\n",
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
-			if (parsed.pathSearchQuery != null) {
+			if (pathQuery != null) {
 				return {
 					stdout: "",
-					stderr: (
+					stderr:
 						"find: --prefix cannot be combined with path word search for app files.\n" +
-						"Use `find --prefix PREFIX` for exact starts-with path discovery, or `find -name QUERY` for DB-backed path word search.\n"
-					),
+						"Use `find --prefix PREFIX` for exact starts-with path discovery, or `find -name QUERY` for DB-backed path word search.\n",
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
-			const prefixResult = find_command_prefix_to_app_path(commandCtx, appFilesMountPath, parsed.pathPrefix);
+			const prefixResult = find_command_prefix_to_app_file_node_path(
+				commandCtx,
+				currentProjectPath,
+				parsed._yay.prefix,
+			);
 			if (prefixResult._nay) {
 				return {
 					stdout: "",
@@ -1683,26 +2016,28 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			const result = (await ctx.runQuery(internal.files_nodes.list_path_prefix_paginated, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
-				pathPrefix: prefix.appPath,
-				numItems: parsed.limit,
-				cursor: parsed.cursor,
-				...(parsed.type === "f" ? { kind: "file" as const } : parsed.type === "d" ? { kind: "folder" as const } : {}),
+				pathPrefix: prefix.appFileNodePath,
+				numItems: parsed._yay.limit,
+				cursor,
+				...(parsed._yay.type === "f"
+					? { kind: "file" as const }
+					: parsed._yay.type === "d"
+						? { kind: "folder" as const }
+						: {}),
 			})) as files_nodes_list_path_prefix_paginated_Result;
 
 			const lines = result.items.map(
-				(item) => `${app_path_to_shell_path(appFilesMountPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
+				(item) =>
+					`${app_file_node_path_to_current_project_path(currentProjectPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
 			if (!result.isDone) {
-				if (lines.length === 0) {
-					lines.push(PARTIAL_PAGE_NOTICE);
-				}
 				lines.push(
 					"",
-					build_find_command_continuation({
-						parsed,
+					find_command_build_continuation({
+						parsed: parsed._yay,
 						target: null,
-						prefix: app_path_to_shell_path(appFilesMountPath, prefix.appPath),
-						cursor: result.continueCursor,
+						prefix: app_file_node_path_to_current_project_path(currentProjectPath, prefix.appFileNodePath),
+						cursor: await cursor_id_create(ctx, result.continueCursor),
 					}),
 				);
 			} else if (lines.length === 0) {
@@ -1716,149 +2051,135 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			};
 		}
 
-		const targetShellPath = resolve_path(
-			commandCtx.cwd,
-			parsed.path ?? default_app_target_shell_path(commandCtx.cwd, appFilesMountPath),
-		);
-		const appPath = shell_path_to_app_path(appFilesMountPath, targetShellPath);
-		if (appPath == null) {
-			if (parsed.hasAppListingOption) {
-				return {
-					stdout: "",
-					stderr: (
-						"find: --limit and --cursor are only available for app file paths\n" +
-						`Omit PATH to search the app root, or use ${appFilesMountPath} explicitly. Use plain find for /tmp.\n`
-					),
-					exitCode: COMMAND_EXIT_USAGE,
-				};
-			}
-			return await delegate_builtin_command("find", args, commandCtx);
+		if (appFileNodePath == null) {
+			return await delegate_builtin_command(
+				"find",
+				command_build_native_delegation_args(args, [nativeOperand], {
+					optionsWithValues: FIND_COMMAND_NATIVE_OPTIONS_WITH_VALUES,
+					pathsPosition: "beforeOptions",
+				}),
+				commandCtx,
+			);
 		}
-		if (parsed.path != null && GLOB_METACHARACTER_REGEX.test(parsed.path)) {
+		if (parsed._yay.path != null && GLOB_METACHARACTER_REGEX.test(parsed._yay.path)) {
 			return {
 				stdout: "",
-				stderr: app_glob_syntax_unsupported_message("find", parsed.path),
+				stderr: create_glob_syntax_unsupported_message("find", parsed._yay.path),
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
 
-		const entry = await get_bash_path_entry(ctx, ctxData, appPath);
-		if (!entry) {
+		const entry = await get_file_node_from_path(ctx, ctxData, appFileNodePath);
+		if (appFileNodePath !== "/" && !entry) {
 			return {
 				stdout: "",
-				stderr: (
-					`find: ${targetShellPath}: No such file or directory\n` +
+				stderr:
+					`find: ${absoluteShellPath}: No such file or directory\n` +
 					`If you intended a path prefix search (paths whose names START WITH this string), run:\n` +
-					`  find --prefix ${shell_arg_quote(targetShellPath)} --limit ${parsed.limit}\n`
-				),
+					`  find --prefix ${shell_arg_quote(absoluteShellPath)} --limit ${parsed._yay.limit}\n`,
 				exitCode: COMMAND_EXIT_FAILURE,
 			};
 		}
 
-		if (parsed.pathSearchQuery != null) {
-			if (parsed.extension != null) {
+		if (pathQuery != null) {
+			if (parsed._yay.extension != null) {
 				return {
 					stdout: "",
-					stderr: (
+					stderr:
 						"find: path word search cannot be combined with --extension for app files.\n" +
 						"Try either `find -name readme --limit " +
-						String(parsed.limit) +
+						String(parsed._yay.limit) +
 						"` or `find <folder> -type f --extension " +
-						shell_arg_quote(parsed.extension) +
+						shell_arg_quote(parsed._yay.extension) +
 						" --limit " +
-						String(parsed.limit) +
-						"`.\n"
-					),
+						String(parsed._yay.limit) +
+						"`.\n",
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
-			let parentId: Id<"files_nodes"> | typeof FILES_ROOT_ID | undefined;
-			if (appPath === "/") {
-				if (parsed.maxDepth != null && parsed.maxDepth !== 1) {
+			let parentId = undefined;
+			if (appFileNodePath === "/") {
+				if (parsed._yay.maxDepth != null && parsed._yay.maxDepth !== 1) {
 					return {
 						stdout: "",
-						stderr: (
+						stderr:
 							"find: path word search supports project-wide results or immediate children with -maxdepth 1.\n" +
-							`${build_find_command_path_query_retry_hint(targetShellPath, {
-							query: parsed.pathSearchQuery,
-							...(parsed.type == null ? {} : { type: parsed.type }),
-							limit: parsed.limit,
-							})}\n`
-						),
+							`${find_command_build_path_query_retry_hint(absoluteShellPath, {
+								query: pathQuery,
+								...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
+								limit: parsed._yay.limit,
+							})}\n`,
 						exitCode: COMMAND_EXIT_USAGE,
 					};
 				}
-				if (parsed.minDepth != null && parsed.minDepth !== 1) {
+				if (parsed._yay.minDepth != null && parsed._yay.minDepth !== 1) {
 					return {
 						stdout: "",
 						stderr: "find: path word search with -mindepth supports only -mindepth 1.\n",
 						exitCode: COMMAND_EXIT_USAGE,
 					};
 				}
-				if (parsed.maxDepth === 1) {
-					parentId = FILES_ROOT_ID;
+				if (parsed._yay.maxDepth === 1) {
+					parentId = files_ROOT_ID;
 				}
 			} else {
-				if (entry.kind !== "folder") {
+				if (!entry || entry.kind !== "folder") {
 					return {
 						stdout: "",
 						stderr: "find: path word search can target the project root or an immediate folder.\n",
 						exitCode: COMMAND_EXIT_USAGE,
 					};
 				}
-				if (parsed.maxDepth !== 1) {
+				if (parsed._yay.maxDepth !== 1) {
 					return {
 						stdout: "",
-						stderr: (
+						stderr:
 							"find: scoped path word search supports immediate children only. Add -maxdepth 1, or omit PATH for project-wide search.\n" +
-							`${build_find_command_path_query_retry_hint(targetShellPath, {
-							query: parsed.pathSearchQuery,
-							...(parsed.type == null ? {} : { type: parsed.type }),
-							maxDepth: 1,
-							limit: parsed.limit,
-							})}\n`
-						),
+							`${find_command_build_path_query_retry_hint(absoluteShellPath, {
+								query: pathQuery,
+								...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
+								maxDepth: 1,
+								limit: parsed._yay.limit,
+							})}\n`,
 						exitCode: COMMAND_EXIT_USAGE,
 					};
 				}
-				if (parsed.minDepth != null && parsed.minDepth !== 1) {
+				if (parsed._yay.minDepth != null && parsed._yay.minDepth !== 1) {
 					return {
 						stdout: "",
 						stderr: "find: scoped path word search with -mindepth supports only -mindepth 1.\n",
 						exitCode: COMMAND_EXIT_USAGE,
 					};
 				}
-				if (entry.nodeId == null) {
-					return {
-						stdout: "",
-						stderr: `find: cannot resolve '${targetShellPath}': No such file or directory\n`,
-						exitCode: COMMAND_EXIT_FAILURE,
-					};
-				}
-				parentId = entry.nodeId;
+				parentId = entry._id;
 			}
 
 			const result = (await ctx.runQuery(internal.files_nodes.search_paths_paginated, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
-				pathQuery: parsed.pathSearchQuery,
-				numItems: parsed.limit,
-				cursor: parsed.cursor,
-				...(parsed.type === "f" ? { kind: "file" as const } : parsed.type === "d" ? { kind: "folder" as const } : {}),
+				pathQuery,
+				numItems: parsed._yay.limit,
+				cursor,
+				...(parsed._yay.type === "f"
+					? { kind: "file" as const }
+					: parsed._yay.type === "d"
+						? { kind: "folder" as const }
+						: {}),
 				...(parentId == null ? {} : { parentId }),
 			})) as files_nodes_search_paths_paginated_Result;
 
 			const lines = result.items.map(
-				(item) => `${app_path_to_shell_path(appFilesMountPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
+				(item) =>
+					`${app_file_node_path_to_current_project_path(currentProjectPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
 			if (!result.isDone) {
 				lines.push(
 					"",
-					build_find_command_continuation({
-						parsed,
-						target: targetShellPath,
+					find_command_build_continuation({
+						parsed: parsed._yay,
+						target: absoluteShellPath,
 						prefix: null,
-						cursor: result.continueCursor,
+						cursor: await cursor_id_create(ctx, result.continueCursor),
 					}),
 				);
 			} else if (lines.length === 0) {
@@ -1872,8 +2193,8 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			};
 		}
 
-		if (parsed.extension != null) {
-			if (parsed.type === "d") {
+		if (parsed._yay.extension != null) {
+			if (parsed._yay.type === "d") {
 				return {
 					stdout: "0 matches.\n",
 					stderr: "",
@@ -1884,26 +2205,25 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			const result = (await ctx.runQuery(internal.files_nodes.list_subtree_by_extension_paginated, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
-				path: appPath,
-				lowercaseExtension: parsed.extension,
-				numItems: parsed.limit,
-				cursor: parsed.cursor,
-				...(parsed.minDepth == null ? {} : { minDepth: parsed.minDepth }),
-				...(parsed.maxDepth == null ? {} : { maxDepth: parsed.maxDepth }),
+				path: appFileNodePath,
+				lowercaseExtension: parsed._yay.extension,
+				numItems: parsed._yay.limit,
+				cursor,
+				...(parsed._yay.minDepth == null ? {} : { minDepth: parsed._yay.minDepth }),
+				...(parsed._yay.maxDepth == null ? {} : { maxDepth: parsed._yay.maxDepth }),
 			})) as files_nodes_list_subtree_by_extension_paginated_Result;
 
-			const lines = result.items.map((item) => app_path_to_shell_path(appFilesMountPath, item.path));
+			const lines = result.items.map((item) =>
+				app_file_node_path_to_current_project_path(currentProjectPath, item.path),
+			);
 			if (!result.isDone) {
-				if (lines.length === 0) {
-					lines.push(PARTIAL_PAGE_NOTICE);
-				}
 				lines.push(
 					"",
-					build_find_command_continuation({
-						parsed,
-						target: targetShellPath,
+					find_command_build_continuation({
+						parsed: parsed._yay,
+						target: absoluteShellPath,
 						prefix: null,
-						cursor: result.continueCursor,
+						cursor: await cursor_id_create(ctx, result.continueCursor),
 					}),
 				);
 			} else if (lines.length === 0) {
@@ -1920,29 +2240,31 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 		const result = (await ctx.runQuery(internal.files_nodes.list_subtree_paginated, {
 			workspaceId: ctxData.workspaceId,
 			projectId: ctxData.projectId,
-			path: appPath,
-			numItems: parsed.limit,
-			cursor: parsed.cursor,
-			...(parsed.type === "f" ? { kind: "file" as const } : parsed.type === "d" ? { kind: "folder" as const } : {}),
-			...(parsed.minDepth == null ? {} : { minDepth: parsed.minDepth }),
-			...(parsed.maxDepth == null ? {} : { maxDepth: parsed.maxDepth }),
+			path: appFileNodePath,
+			numItems: parsed._yay.limit,
+			cursor,
+			...(parsed._yay.type === "f"
+				? { kind: "file" as const }
+				: parsed._yay.type === "d"
+					? { kind: "folder" as const }
+					: {}),
+			...(parsed._yay.minDepth == null ? {} : { minDepth: parsed._yay.minDepth }),
+			...(parsed._yay.maxDepth == null ? {} : { maxDepth: parsed._yay.maxDepth }),
 		})) as files_nodes_list_subtree_paginated_Result;
 
 		const lines = result.items.map(
-			(item) => `${app_path_to_shell_path(appFilesMountPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
+			(item) =>
+				`${app_file_node_path_to_current_project_path(currentProjectPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
 		);
 
 		if (!result.isDone) {
-			if (lines.length === 0) {
-				lines.push(PARTIAL_PAGE_NOTICE);
-			}
 			lines.push(
 				"",
-				build_find_command_continuation({
-					parsed,
-					target: targetShellPath,
+				find_command_build_continuation({
+					parsed: parsed._yay,
+					target: absoluteShellPath,
 					prefix: null,
-					cursor: result.continueCursor,
+					cursor: await cursor_id_create(ctx, result.continueCursor),
 				}),
 			);
 		} else if (lines.length === 0) {
@@ -1957,8 +2279,8 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 	});
 }
 
-function build_find_command_continuation(args: {
-	parsed: NonNullable<ReturnType<typeof parse_find_command_args>["_yay"]>;
+function find_command_build_continuation(args: {
+	parsed: NonNullable<ReturnType<typeof find_command_parse_args>["_yay"]>;
 	target: string | null;
 	prefix: string | null;
 	cursor: string;
@@ -1999,28 +2321,21 @@ function build_find_command_continuation(args: {
 
 // #region tree command
 
-function tree_command_read_value(args: string[], index: number, option: string) {
-	const value = args[index + 1];
-	if (value == null) {
-		return Result({ _nay: { message: `tree: ${option} requires a value` } });
-	}
-	return Result({ _yay: { value, nextIndex: index + 1 } });
-}
+const TREE_COMMAND_NATIVE_OPTIONS_WITH_VALUES = new Set(["-L", "-P", "-I", "--filelimit", "-o"]);
 
-function parse_tree_command_args(args: string[]) {
+function tree_command_parse_args(args: string[]) {
 	let path: string | undefined;
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
-	let unsupportedOption: string | null = null;
-	const valueFlags = new Set(["-L", "-P", "-I", "--filelimit", "-o"]);
+	let unsupportedAppFileOption: string | null = null;
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index]!;
 		if (arg === "--limit") {
-			const value = tree_command_read_value(args, index, "--limit");
+			const value = command_read_option_value("tree", args, index, "--limit");
 			if (value._nay) return value;
 			limitValue = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg.startsWith("--limit=")) {
@@ -2028,23 +2343,23 @@ function parse_tree_command_args(args: string[]) {
 			continue;
 		}
 		if (arg === "--cursor") {
-			const value = tree_command_read_value(args, index, "--cursor");
+			const value = command_read_option_value("tree", args, index, "--cursor");
 			if (value._nay) return value;
 			cursor = value._yay.value;
-			index = value._yay.nextIndex;
+			index++;
 			continue;
 		}
 		if (arg.startsWith("--cursor=")) {
 			cursor = arg.slice("--cursor=".length);
 			continue;
 		}
-		if (valueFlags.has(arg)) {
-			unsupportedOption ??= arg;
+		if (TREE_COMMAND_NATIVE_OPTIONS_WITH_VALUES.has(arg)) {
+			unsupportedAppFileOption ??= arg;
 			index++;
 			continue;
 		}
 		if (arg.startsWith("-")) {
-			unsupportedOption ??= arg;
+			unsupportedAppFileOption ??= arg;
 			continue;
 		}
 		if (path != null) {
@@ -2053,7 +2368,7 @@ function parse_tree_command_args(args: string[]) {
 		path = arg;
 	}
 
-	const limit = parse_listing_limit("tree", limitValue);
+	const limit = command_parse_limit("tree", limitValue, LISTING_DEFAULT_LIMIT, LISTING_MAX_LIMIT);
 	if (limit._nay) {
 		return limit;
 	}
@@ -2061,10 +2376,9 @@ function parse_tree_command_args(args: string[]) {
 	return Result({
 		_yay: {
 			path,
-			limit: limit._yay.limit,
+			limit: limit._yay,
 			cursor,
-			unsupportedOption,
-			hasAppListingOption: limitValue != null || cursor != null,
+			unsupportedAppFileOption,
 		} as const,
 	});
 }
@@ -2082,7 +2396,7 @@ function tree_command_relative_segments(basePath: string, itemPath: string) {
 	return suffix.split("/").filter(Boolean);
 }
 
-function build_tree_command_continuation(args: { target: string; limit: number; cursor: string }) {
+function tree_command_build_continuation(args: { target: string; limit: number; cursor: string }) {
 	return [
 		"Next page:",
 		"tree",
@@ -2094,69 +2408,82 @@ function build_tree_command_continuation(args: { target: string; limit: number; 
 	].join(" ");
 }
 
-function create_tree_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], appFilesMountPath: string) {
+function tree_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], currentProjectPath: string) {
 	return defineCommand("tree", async (args, commandCtx) => {
-		const parsedResult = parse_tree_command_args(args);
-		if (parsedResult._nay) {
+		const parsed = tree_command_parse_args(args);
+		if (parsed._nay) {
 			return {
 				stdout: "",
-				stderr: `${parsedResult._nay.message}\nUsage: tree [PATH] [--limit N] [--cursor CURSOR]\n`,
+				stderr: `${parsed._nay.message}\nUsage: tree [PATH] [--limit N] [--cursor CURSOR]\n`,
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
-		const parsed = parsedResult._yay;
-		const targetShellPath = resolve_path(
-			commandCtx.cwd,
-			parsed.path ?? default_app_target_shell_path(commandCtx.cwd, appFilesMountPath),
-		);
-		if (!is_path_under_app_mount(appFilesMountPath, targetShellPath)) {
-			if (parsed.hasAppListingOption) {
-				const suggestedTarget =
-					parsed.path != null && parsed.path.startsWith("/")
-						? `${appFilesMountPath}${normalize_path(parsed.path) === "/" ? "" : normalize_path(parsed.path)}`
-						: `${appFilesMountPath}/${parsed.path ?? ""}`.replace(/\/+$/u, "");
+		// AI agents commonly hallucinate `--next-page`; reject it after parse
+		// validation so malformed real options still report their normal errors.
+		if (args.includes("--next-page")) {
+			return {
+				stdout: "",
+				stderr:
+					"tree: --next-page is not supported\n" +
+					"Copy the exact `Next page: tree <path> --limit N --cursor ...` command from the previous tree output.\n" +
+					"Usage: tree [PATH] [--limit N] [--cursor CURSOR]\n",
+				exitCode: COMMAND_EXIT_USAGE,
+			};
+		}
+		const absoluteShellPath = resolve_path(commandCtx.cwd, parsed._yay.path ?? commandCtx.cwd);
+		if (!is_path_under_current_project_path(currentProjectPath, absoluteShellPath)) {
+			const nativeOperand = parsed._yay.path ?? ".";
+			return await delegate_builtin_command(
+				"tree",
+				command_build_native_delegation_args(args, [nativeOperand], {
+					optionsWithValues: TREE_COMMAND_NATIVE_OPTIONS_WITH_VALUES,
+					pathsPosition: "afterOptions",
+				}),
+				commandCtx,
+			);
+		}
+		if (parsed._yay.unsupportedAppFileOption != null) {
+			return {
+				stdout: "",
+				stderr:
+					`tree: unsupported option ${parsed._yay.unsupportedAppFileOption} for paths under ${appMountPath}\n` +
+					"Usage: tree [PATH] [--limit N] [--cursor CURSOR]\n",
+				exitCode: COMMAND_EXIT_USAGE,
+			};
+		}
+		if (parsed._yay.path != null && GLOB_METACHARACTER_REGEX.test(parsed._yay.path)) {
+			return {
+				stdout: "",
+				stderr: create_glob_syntax_unsupported_message("tree", parsed._yay.path),
+				exitCode: COMMAND_EXIT_USAGE,
+			};
+		}
+		let cursor: string | null = null;
+		if (parsed._yay.cursor != null) {
+			const resolvedCursor = await cursor_id_resolve(ctx, parsed._yay.cursor);
+			if (resolvedCursor._nay) {
 				return {
 					stdout: "",
-					stderr: (
-						`tree: --limit and --cursor are app-file pagination flags, but ${targetShellPath} is outside the app mount ${appFilesMountPath}\n` +
-						`Try: tree ${shell_arg_quote(suggestedTarget)} --limit ${parsed.limit}\n`
-					),
-					exitCode: COMMAND_EXIT_USAGE,
+					stderr: `${resolvedCursor._nay.message}\n`,
+					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
-			return await delegate_builtin_command("tree", args, commandCtx);
-		}
-		if (parsed.unsupportedOption != null) {
-			return {
-				stdout: "",
-				stderr: (
-					`tree: unsupported option ${parsed.unsupportedOption} for app files\n` +
-					"Usage: tree [PATH] [--limit N] [--cursor CURSOR]\n"
-				),
-				exitCode: COMMAND_EXIT_USAGE,
-			};
-		}
-		if (parsed.path != null && GLOB_METACHARACTER_REGEX.test(parsed.path)) {
-			return {
-				stdout: "",
-				stderr: app_glob_syntax_unsupported_message("tree", parsed.path),
-				exitCode: COMMAND_EXIT_USAGE,
-			};
+			cursor = resolvedCursor._yay;
 		}
 
-		const appPath = shell_path_to_app_path(appFilesMountPath, targetShellPath);
-		if (appPath == null) {
+		const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath);
+		if (appFileNodePath == null) {
 			return {
 				stdout: "",
-				stderr: `tree: app path expected under ${appFilesMountPath}\n`,
+				stderr: `tree: app file path expected under ${currentProjectPath}\n`,
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
-		const entry = await get_bash_path_entry(ctx, ctxData, appPath);
-		if (!entry) {
+		const entry = await get_file_node_from_path(ctx, ctxData, appFileNodePath);
+		if (appFileNodePath !== "/" && !entry) {
 			return {
 				stdout: "",
-				stderr: `tree: ${targetShellPath}: No such file or directory\n`,
+				stderr: `tree: ${absoluteShellPath}: No such file or directory\n`,
 				exitCode: COMMAND_EXIT_FAILURE,
 			};
 		}
@@ -2164,14 +2491,14 @@ function create_tree_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 		const result = (await ctx.runQuery(internal.files_nodes.list_subtree_paginated, {
 			workspaceId: ctxData.workspaceId,
 			projectId: ctxData.projectId,
-			path: appPath,
-			numItems: parsed.limit,
-			cursor: parsed.cursor,
+			path: appFileNodePath,
+			numItems: parsed._yay.limit,
+			cursor,
 		})) as files_nodes_list_subtree_paginated_Result;
 
-		const lines = [targetShellPath];
+		const lines = [absoluteShellPath];
 		for (const item of result.items) {
-			const segments = tree_command_relative_segments(appPath, item.path);
+			const segments = tree_command_relative_segments(appFileNodePath, item.path);
 			if (segments.length === 0) {
 				continue;
 			}
@@ -2181,10 +2508,10 @@ function create_tree_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 		if (!result.isDone) {
 			lines.push(
 				"",
-				build_tree_command_continuation({
-					target: targetShellPath,
-					limit: parsed.limit,
-					cursor: result.continueCursor,
+				tree_command_build_continuation({
+					target: absoluteShellPath,
+					limit: parsed._yay.limit,
+					cursor: await cursor_id_create(ctx, result.continueCursor),
 				}),
 			);
 		}
@@ -2202,9 +2529,9 @@ function create_tree_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 // #region grep command
 
 const GREP_SUBSTRING_ONLY_WARNING =
-	"grep: app-file grep is substring-only; regex metacharacters are matched literally. Use search for indexed content search.\n";
+	"grep: app-file grep is substring-only; regex metacharacters are matched literally. Use search with plain content words for cross-file discovery.\n";
 
-function has_unescaped_grep_command_regex_metacharacter(pattern: string) {
+function grep_command_has_unescaped_regex_metacharacter(pattern: string) {
 	let escaped = false;
 	for (const char of pattern) {
 		if (escaped) {
@@ -2222,7 +2549,7 @@ function has_unescaped_grep_command_regex_metacharacter(pattern: string) {
 	return false;
 }
 
-function create_grep_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], appFilesMountPath: string) {
+function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], currentProjectPath: string) {
 	return defineCommand("grep", async (args, commandCtx) => {
 		// Single APP-file grep is supported via a bounded chunk scan (substring, -i), with -c/-l/-v and
 		// -A/-B/-C context handled too. Everything else — workspace-wide, recursive, multiple files,
@@ -2366,18 +2693,22 @@ function create_grep_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 		const isSingleAppFile =
 			operands.length === 1 &&
 			operands[0] !== "-" &&
-			shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, operands[0]!)) != null;
+			current_project_path_to_app_file_node_path(currentProjectPath, resolve_path(commandCtx.cwd, operands[0]!)) !=
+				null;
 		if (pattern != null && pattern.length > 0 && !recursive && !complexFlag && isSingleAppFile) {
 			const fileArg = operands[0]!;
 			if (GLOB_METACHARACTER_REGEX.test(fileArg)) {
 				return {
 					stdout: "",
-					stderr: app_glob_syntax_unsupported_message("grep", fileArg),
+					stderr: create_glob_syntax_unsupported_message("grep", fileArg),
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
-			const appPath = shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, fileArg))!;
-			const regexWarning = has_unescaped_grep_command_regex_metacharacter(pattern) ? GREP_SUBSTRING_ONLY_WARNING : "";
+			const appFileNodePath = current_project_path_to_app_file_node_path(
+				currentProjectPath,
+				resolve_path(commandCtx.cwd, fileArg),
+			)!;
+			const regexWarning = grep_command_has_unescaped_regex_metacharacter(pattern) ? GREP_SUBSTRING_ONLY_WARNING : "";
 
 			// Context (-A/-B/-C) and inverted selection (-v) need lines OTHER than the matches → the
 			// windowed scan path. Plain matching, and -c/-l without -v, only need the match set → the
@@ -2389,7 +2720,7 @@ function create_grep_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
 					userId: ctxData.userId,
-					path: appPath,
+					path: appFileNodePath,
 					pattern,
 					ignoreCase,
 					invert,
@@ -2447,7 +2778,7 @@ function create_grep_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				userId: ctxData.userId,
-				path: appPath,
+				path: appFileNodePath,
 				pattern,
 				ignoreCase,
 			})) as files_nodes_grep_app_file_Result;
@@ -2551,27 +2882,30 @@ function create_grep_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 		if (pattern != null && pattern.length > 0 && isSingleAppFile && unsupportedFlag != null) {
 			return {
 				stdout: "",
-				stderr: (
+				stderr:
 					`grep: unsupported option ${unsupportedFlag} for app-file grep. ` +
 					"Supported: grep [-i] PATTERN <file> with -c, -l, -v, and -A/-B/-C N. " +
-					"Drop the flag, or use search for cross-file discovery.\n"
-				),
+					"Drop the flag, or use search for cross-file discovery.\n",
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
 
-		let suggestedCommand = pattern ? `search --limit 20 ${shell_arg_quote(pattern)}` : "search --limit 20 <query>";
+		let suggestedCommand = pattern
+			? `search --limit 20 ${shell_arg_quote(pattern)}`
+			: "search --limit 20 <content-terms>";
 		if (pattern) {
 			const firstAppOperand = operands.find((operand) => {
 				if (operand === "-" || GLOB_METACHARACTER_REGEX.test(operand)) return false;
-				return shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, operand)) != null;
+				return (
+					current_project_path_to_app_file_node_path(currentProjectPath, resolve_path(commandCtx.cwd, operand)) != null
+				);
 			});
 			if (firstAppOperand != null) {
-				const targetShellPath = resolve_path(commandCtx.cwd, firstAppOperand);
-				const appPath = shell_path_to_app_path(appFilesMountPath, targetShellPath);
-				const entry = appPath ? await get_bash_path_entry(ctx, ctxData, appPath) : null;
-				if (entry?.kind === "folder") {
-					suggestedCommand = `search --path ${shell_arg_quote(targetShellPath)} --limit 20 ${shell_arg_quote(pattern)}`;
+				const absoluteShellPath = resolve_path(commandCtx.cwd, firstAppOperand);
+				const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath);
+				const entry = appFileNodePath ? await get_file_node_from_path(ctx, ctxData, appFileNodePath) : null;
+				if (appFileNodePath === "/" || entry?.kind === "folder") {
+					suggestedCommand = `search --path ${shell_arg_quote(absoluteShellPath)} --limit 20 ${shell_arg_quote(pattern)}`;
 				}
 			}
 		}
@@ -2579,12 +2913,13 @@ function create_grep_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			stdout:
 				[
 					"grep over multiple/app-wide files is not supported; use search, or grep a single file.",
-					"To search ALL files for content, use the indexed search command:",
+					"To search ALL files for content, use search with words that should appear in the document body:",
 					`Try: ${suggestedCommand}`,
-					"IMPORTANT: search uses indexed Convex text search, not regex/glob/exact grep; use short distinctive tokens.",
+					"IMPORTANT: search is full-text, not grep. Pass one distinctive word or a few plain terms; the text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term.",
+					"It is implemented with Convex full-text search, but it is not regex/glob/exact substring matching.",
 					"To grep ONE file, pass exactly one app file path: grep [-i] PATTERN <file> (substring match, prints line numbers).",
-					"To restrict search to a folder, cd there or use search --path <folder> <query>; broad scopes with common terms can be heavier.",
-					"The search command uses the Convex text index and returns matching file paths with snippets.",
+					"To restrict search to a folder, cd there or use search --path <folder> <content terms>; broad scopes with common terms can be heavier.",
+					"The search command returns matching file paths with snippets.",
 				].join("\n") + "\n",
 			stderr: "",
 			exitCode: 2,
@@ -2597,24 +2932,23 @@ function create_grep_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 function enforce_reader_operand_cap(
 	command: string,
 	commandCtx: CommandContext,
-	appFilesMountPath: string,
+	currentProjectPath: string,
 	files: string[],
 ) {
 	let appFileCount = 0;
 	for (const file of files) {
 		if (file === "-") continue;
-		if (is_path_under_app_mount(appFilesMountPath, resolve_path(commandCtx.cwd, file))) {
+		if (is_path_under_current_project_path(currentProjectPath, resolve_path(commandCtx.cwd, file))) {
 			appFileCount++;
 		}
 	}
 	if (appFileCount > READER_FILE_OPERAND_MAX) {
 		return {
 			stdout: "",
-			stderr: (
+			stderr:
 				`${command}: app file reads are limited to ${READER_FILE_OPERAND_MAX} files per command (you requested ${appFileCount}). ` +
 				`This is a per-command batch limit, not a total ceiling: to READ these files, ${command} them in batches of ${READER_FILE_OPERAND_MAX} or fewer across multiple commands. ` +
-				`To FIND which files mention something, use search (it returns matching snippets, not whole files).\n`
-			),
+				`To FIND which files mention something, use search (it returns matching snippets, not whole files).\n`,
 			exitCode: COMMAND_EXIT_USAGE,
 		};
 	}
@@ -2622,7 +2956,7 @@ function enforce_reader_operand_cap(
 }
 
 /** Byte size of an app file via stat metadata, or null when unknown (e.g. unmaterialized). */
-async function get_app_file_byte_size(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], appPath: string) {
+async function get_app_file_byte_size(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], appFileNodePath: string) {
 	// Pending-aware: the agent's own unsaved write_file/edit_file content lives in
 	// files_pending_updates, so the reader gate must size on what's actually served, not the
 	// committed asset (which `stat` reports). Otherwise the gate decision and the byte count in
@@ -2631,26 +2965,26 @@ async function get_app_file_byte_size(ctx: ActionCtx, ctxData: WorkspaceFsOption
 		workspaceId: ctxData.workspaceId,
 		projectId: ctxData.projectId,
 		userId: ctxData.userId,
-		path: appPath,
+		path: appFileNodePath,
 	})) as files_nodes_get_bash_served_byte_size_Result;
 	return served ? served.servedBytes : null;
 }
 
 function build_unreadable_file_advisory(
-	appFilesMountPath: string,
+	currentProjectPath: string,
 	normalizedPath: string,
 	contentType: string | undefined,
 ) {
-	const shellPath = app_path_to_shell_path(appFilesMountPath, normalizedPath);
+	const shellPath = app_file_node_path_to_current_project_path(currentProjectPath, normalizedPath);
 	const lastSlashIndex = normalizedPath.lastIndexOf("/");
 	const lastDotIndex = normalizedPath.lastIndexOf(".");
-	const appPathWithoutExtension =
+	const appFileNodePathWithoutExtension =
 		lastDotIndex > lastSlashIndex ? normalizedPath.slice(0, lastDotIndex) : normalizedPath;
 	const relatedReadablePaths = Array.from(
 		new Set([
-			app_path_to_shell_path(appFilesMountPath, `${normalizedPath}.md`),
-			app_path_to_shell_path(appFilesMountPath, `${appPathWithoutExtension}.md`),
-			app_path_to_shell_path(appFilesMountPath, `${appPathWithoutExtension}.txt`),
+			app_file_node_path_to_current_project_path(currentProjectPath, `${normalizedPath}.md`),
+			app_file_node_path_to_current_project_path(currentProjectPath, `${appFileNodePathWithoutExtension}.md`),
+			app_file_node_path_to_current_project_path(currentProjectPath, `${appFileNodePathWithoutExtension}.txt`),
 		]),
 	).filter((path) => path !== shellPath);
 	return [
@@ -2664,7 +2998,7 @@ function build_unreadable_file_advisory(
 
 // #region cat command
 
-function create_cat_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], appFilesMountPath: string) {
+function cat_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], currentProjectPath: string) {
 	return defineCommand("cat", async (args, commandCtx) => {
 		let showLineNumbers = false;
 		const files: string[] = [];
@@ -2687,7 +3021,7 @@ function create_cat_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData
 		}
 
 		const targets = files.length ? files : ["-"];
-		const capError = enforce_reader_operand_cap("cat", commandCtx, appFilesMountPath, targets);
+		const capError = enforce_reader_operand_cap("cat", commandCtx, currentProjectPath, targets);
 		if (capError != null) return capError;
 
 		// Multi-file cat can't safely page a large member: a bounded preview spliced into the
@@ -2696,9 +3030,12 @@ function create_cat_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData
 		if (targets.length > 1) {
 			for (const file of targets) {
 				if (file === "-" || GLOB_METACHARACTER_REGEX.test(file)) continue;
-				const appPath = shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, file));
-				if (appPath == null) continue;
-				const size = await get_app_file_byte_size(ctx, ctxData, appPath);
+				const appFileNodePath = current_project_path_to_app_file_node_path(
+					currentProjectPath,
+					resolve_path(commandCtx.cwd, file),
+				);
+				if (appFileNodePath == null) continue;
+				const size = await get_app_file_byte_size(ctx, ctxData, appFileNodePath);
 				if (size != null && size > READ_INLINE_MAX_BYTES) {
 					return {
 						stdout: "",
@@ -2715,7 +3052,7 @@ function create_cat_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData
 
 		const appendContent = (content: string) => {
 			if (showLineNumbers) {
-				const numbered = add_cat_command_line_numbers(content, lineNumber);
+				const numbered = cat_command_add_line_numbers(content, lineNumber);
 				stdout += numbered.content;
 				lineNumber = numbered.nextLineNumber;
 			} else {
@@ -2731,23 +3068,23 @@ function create_cat_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData
 			if (GLOB_METACHARACTER_REGEX.test(file)) {
 				return {
 					stdout: "",
-					stderr: app_glob_syntax_unsupported_message("cat", file),
+					stderr: create_glob_syntax_unsupported_message("cat", file),
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
 			const resolvedPath = resolve_path(commandCtx.cwd, file);
-			const appPath = shell_path_to_app_path(appFilesMountPath, resolvedPath);
+			const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath);
 			// Large app file: don't dump it whole (and don't refuse) — show a bounded first page
 			// plus a footer telling the agent how to read the rest.
-			if (appPath != null) {
-				const size = await get_app_file_byte_size(ctx, ctxData, appPath);
+			if (appFileNodePath != null) {
+				const size = await get_app_file_byte_size(ctx, ctxData, appFileNodePath);
 				if (size != null && size > READ_INLINE_MAX_BYTES) {
-					const resolvedAppShellPath = app_path_to_shell_path(appFilesMountPath, appPath);
+					const resolvedAppShellPath = app_file_node_path_to_current_project_path(currentProjectPath, appFileNodePath);
 					const page = (await ctx.runAction(internal.files_nodes.read_file_line_range, {
 						workspaceId: ctxData.workspaceId,
 						projectId: ctxData.projectId,
 						userId: ctxData.userId,
-						path: appPath,
+						path: appFileNodePath,
 						startLine: 1,
 						maxLines: READ_HEAD_LARGE_FILE_MAX_LINES,
 					})) as files_nodes_read_file_line_range_Result;
@@ -2772,8 +3109,8 @@ function create_cat_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData
 				if (error instanceof AppFileContentUnavailableError) {
 					appendContent(
 						build_unreadable_file_advisory(
-							appFilesMountPath,
-							shell_path_to_app_path(appFilesMountPath, error.shellPath) ?? file,
+							currentProjectPath,
+							current_project_path_to_app_file_node_path(currentProjectPath, error.shellPath) ?? file,
 							error.contentType,
 						),
 					);
@@ -2791,7 +3128,7 @@ function create_cat_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData
 	});
 }
 
-function add_cat_command_line_numbers(content: string, startLine: number) {
+function cat_command_add_line_numbers(content: string, startLine: number) {
 	const lines = content.split("\n");
 	const hasTrailingNewline = content.endsWith("\n");
 	const linesToNumber = hasTrailingNewline ? lines.slice(0, -1) : lines;
@@ -2806,7 +3143,7 @@ function add_cat_command_line_numbers(content: string, startLine: number) {
 
 // #region stat command
 
-function parse_stat_command_args(args: string[]) {
+function stat_command_parse_args(args: string[]) {
 	let format: string | null = null;
 	const files: string[] = [];
 	for (let index = 0; index < args.length; index++) {
@@ -2833,7 +3170,7 @@ function parse_stat_command_args(args: string[]) {
 	return Result({ _yay: { format, files } as const });
 }
 
-function format_stat_command_mode(mode: number, isDirectory: boolean) {
+function stat_command_format_mode(mode: number, isDirectory: boolean) {
 	const prefix = isDirectory ? "d" : "-";
 	const bits = [
 		[0o400, "r"],
@@ -2849,13 +3186,13 @@ function format_stat_command_mode(mode: number, isDirectory: boolean) {
 	return `${prefix}${bits.map(([bit, char]) => ((mode & bit) === bit ? char : "-")).join("")}`;
 }
 
-function render_stat_command_output(
+function stat_command_render_output(
 	format: string | null,
 	file: string,
 	stat: { isDirectory: boolean; mode: number; size: number | undefined; mtime: Date },
 ) {
 	const modeOctal = stat.mode.toString(8);
-	const modeStr = format_stat_command_mode(stat.mode, stat.isDirectory);
+	const modeStr = stat_command_format_mode(stat.mode, stat.isDirectory);
 	// When size is undefined the committed snapshot size is unknown/not tracked;
 	// render "?" rather than "0" so a %s format does not mislead the agent into
 	// thinking the file is empty.
@@ -2899,9 +3236,9 @@ function render_stat_command_output(
 	].join("\n");
 }
 
-function create_stat_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], appFilesMountPath: string) {
+function stat_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], currentProjectPath: string) {
 	return defineCommand("stat", async (args, commandCtx) => {
-		const parsedResult = parse_stat_command_args(args);
+		const parsedResult = stat_command_parse_args(args);
 		if (parsedResult._nay) {
 			return {
 				stdout: "",
@@ -2909,40 +3246,39 @@ function create_stat_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
-		const parsed = parsedResult._yay;
-		if ("delegate" in parsed) {
+		if ("delegate" in parsedResult._yay) {
 			return await delegate_builtin_command("stat", args, commandCtx);
 		}
 
-		const capError = enforce_reader_operand_cap("stat", commandCtx, appFilesMountPath, parsed.files);
+		const capError = enforce_reader_operand_cap("stat", commandCtx, currentProjectPath, parsedResult._yay.files);
 		if (capError != null) return capError;
 
 		let stdout = "";
 		let stderr = "";
 		let hasError = false;
-		for (const file of parsed.files) {
+		for (const file of parsedResult._yay.files) {
 			if (GLOB_METACHARACTER_REGEX.test(file)) {
-				stderr += app_glob_syntax_unsupported_message("stat", file);
+				stderr += create_glob_syntax_unsupported_message("stat", file);
 				hasError = true;
 				continue;
 			}
 			const resolvedPath = resolve_path(commandCtx.cwd, file);
-			const appPath = shell_path_to_app_path(appFilesMountPath, resolvedPath);
+			const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath);
 			try {
-				if (appPath == null) {
+				if (appFileNodePath == null) {
 					const stat = await commandCtx.fs.stat(resolvedPath);
-					stdout += render_stat_command_output(parsed.format, file, stat);
+					stdout += stat_command_render_output(parsedResult._yay.format, file, stat);
 					continue;
 				}
 				const entry = (await ctx.runQuery(internal.files_nodes.get_bash_stat_entry, {
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
-					path: appPath,
+					path: appFileNodePath,
 				})) as files_nodes_get_bash_stat_entry_Result;
 				if (!entry) {
 					throw new Error("missing");
 				}
-				stdout += render_stat_command_output(parsed.format, file, {
+				stdout += stat_command_render_output(parsedResult._yay.format, file, {
 					isDirectory: entry.kind === "folder",
 					mode: entry.kind === "folder" ? 0o755 : 0o644,
 					// size: 0 means the committed R2 snapshot is empty (initial blank doc);
@@ -2965,9 +3301,9 @@ function create_stat_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 
 // #region stream utility commands
 
-function create_file_operand_guard_command(
+function stream_utility_command_create_file_operand_guard(
 	command: CommandName,
-	appFilesMountPath: string,
+	currentProjectPath: string,
 	argsToFiles: (args: string[]) => { files: string[]; outputFiles?: string[]; delegateCwd?: string },
 ) {
 	return defineCommand(command, async (args, commandCtx) => {
@@ -2976,18 +3312,17 @@ function create_file_operand_guard_command(
 			if (GLOB_METACHARACTER_REGEX.test(file)) {
 				return {
 					stdout: "",
-					stderr: app_glob_syntax_unsupported_message(command, file),
+					stderr: create_glob_syntax_unsupported_message(command, file),
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
 			const resolvedPath = resolve_path(commandCtx.cwd, file);
-			if (is_path_under_app_mount(appFilesMountPath, resolvedPath)) {
+			if (is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
 				return {
 					stdout: "",
-					stderr: (
+					stderr:
 						`${command}: direct app file operands are not supported for '${file}'\n` +
-						`Pipe the file through cat instead: cat '${file}' | ${command}\n`
-					),
+						`Pipe the file through cat instead: cat '${file}' | ${command}\n`,
 					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
@@ -2996,9 +3331,9 @@ function create_file_operand_guard_command(
 	});
 }
 
-function create_stream_utility_commands(appFilesMountPath: string) {
+function stream_utility_command_create_all(currentProjectPath: string) {
 	return [
-		create_file_operand_guard_command("sort", appFilesMountPath, (args) => {
+		stream_utility_command_create_file_operand_guard("sort", currentProjectPath, (args) => {
 			const files: string[] = [];
 			const outputFiles: string[] = [];
 			for (let index = 0; index < args.length; index++) {
@@ -3024,10 +3359,10 @@ function create_stream_utility_commands(appFilesMountPath: string) {
 			}
 			return { files, outputFiles };
 		}),
-		create_file_operand_guard_command("uniq", appFilesMountPath, (args) => ({
+		stream_utility_command_create_file_operand_guard("uniq", currentProjectPath, (args) => ({
 			files: args.filter((arg) => !arg.startsWith("-")),
 		})),
-		create_file_operand_guard_command("cut", appFilesMountPath, (args) => {
+		stream_utility_command_create_file_operand_guard("cut", currentProjectPath, (args) => {
 			const files: string[] = [];
 			for (let index = 0; index < args.length; index++) {
 				const arg = args[index]!;
@@ -3041,7 +3376,7 @@ function create_stream_utility_commands(appFilesMountPath: string) {
 			}
 			return { files };
 		}),
-		create_file_operand_guard_command("awk", appFilesMountPath, (args) => {
+		stream_utility_command_create_file_operand_guard("awk", currentProjectPath, (args) => {
 			const files: string[] = [];
 			let hasProgram = false;
 			for (let index = 0; index < args.length; index++) {
@@ -3078,15 +3413,18 @@ function create_stream_utility_commands(appFilesMountPath: string) {
  * continuation hints point to). Any other sed usage falls back to the standard guard:
  * app-file operands must be piped through cat; non-app operands delegate to the builtin.
  */
-function create_sed_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], appFilesMountPath: string) {
+function sed_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], currentProjectPath: string) {
 	return defineCommand("sed", async (args, commandCtx) => {
 		if (args.includes("-n")) {
 			const nonFlags = args.filter((arg) => !arg.startsWith("-"));
 			const rangeMatch = nonFlags.length === 2 ? /^(\d+)(?:,(\d+))?p$/u.exec(nonFlags[0]!) : null;
 			if (rangeMatch) {
 				const fileArg = nonFlags[1]!;
-				const appPath = shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, fileArg));
-				if (appPath != null) {
+				const appFileNodePath = current_project_path_to_app_file_node_path(
+					currentProjectPath,
+					resolve_path(commandCtx.cwd, fileArg),
+				);
+				if (appFileNodePath != null) {
 					const startLine = Number(rangeMatch[1]);
 					const endLine = rangeMatch[2] != null ? Number(rangeMatch[2]) : startLine;
 					if (endLine < startLine) {
@@ -3108,7 +3446,7 @@ function create_sed_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData
 						workspaceId: ctxData.workspaceId,
 						projectId: ctxData.projectId,
 						userId: ctxData.userId,
-						path: appPath,
+						path: appFileNodePath,
 						startLine,
 						maxLines,
 					})) as files_nodes_read_file_line_range_Result;
@@ -3123,7 +3461,7 @@ function create_sed_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData
 					const notes: string[] = [];
 					if (result.moreLines && !result.scanTruncated) {
 						notes.push(
-							`More lines below. Next page: sed -n '${endLine + 1},${endLine + maxLines}p' ${shell_arg_quote(app_path_to_shell_path(appFilesMountPath, appPath))}`,
+							`More lines below. Next page: sed -n '${endLine + 1},${endLine + maxLines}p' ${shell_arg_quote(app_file_node_path_to_current_project_path(currentProjectPath, appFileNodePath))}`,
 						);
 					}
 					if (result.scanTruncated) {
@@ -3168,18 +3506,17 @@ function create_sed_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData
 			if (GLOB_METACHARACTER_REGEX.test(file)) {
 				return {
 					stdout: "",
-					stderr: app_glob_syntax_unsupported_message("sed", file),
+					stderr: create_glob_syntax_unsupported_message("sed", file),
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
-			if (is_path_under_app_mount(appFilesMountPath, resolve_path(commandCtx.cwd, file))) {
+			if (is_path_under_current_project_path(currentProjectPath, resolve_path(commandCtx.cwd, file))) {
 				return {
 					stdout: "",
-					stderr: (
+					stderr:
 						`sed: direct app file operands are not supported for '${file}'\n` +
 						`Pipe the file through cat instead: cat '${file}' | sed '<script>'\n` +
-						`To read a line range of a large app file, use: sed -n 'A,Bp' '${file}'\n`
-					),
+						`To read a line range of a large app file, use: sed -n 'A,Bp' '${file}'\n`,
 					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
@@ -3192,7 +3529,7 @@ function create_sed_command(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData
 
 // #region head tail wc commands
 
-function parse_head_command_line_count(value: string | undefined) {
+function reader_command_parse_line_count(value: string | undefined) {
 	if (value == null) return null;
 	// A leading `+` (e.g. `tail -n +K`) means "start at line K" (forward), not "last K lines".
 	const match = /^(\+?)(\d+)$/u.exec(value.trim());
@@ -3204,30 +3541,33 @@ function parse_head_command_line_count(value: string | undefined) {
  * can refuse to pull a multi-MB file in one shot. Unknown sizes (unmaterialized) are allowed
  * through to the normal path.
  */
-async function find_oversized_app_operand(
+async function reader_command_find_oversized_app_operand(
 	ctx: ActionCtx,
 	ctxData: WorkspaceFsOptions["ctxData"],
 	commandCtx: CommandContext,
-	appFilesMountPath: string,
+	currentProjectPath: string,
 	files: string[],
 ) {
 	for (const file of files) {
 		if (file === "-") continue;
-		const appPath = shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, file));
-		if (appPath == null) continue;
-		const size = await get_app_file_byte_size(ctx, ctxData, appPath);
+		const appFileNodePath = current_project_path_to_app_file_node_path(
+			currentProjectPath,
+			resolve_path(commandCtx.cwd, file),
+		);
+		if (appFileNodePath == null) continue;
+		const size = await get_app_file_byte_size(ctx, ctxData, appFileNodePath);
 		if (size != null && size > READ_INLINE_MAX_BYTES) {
-			return { file, appPath, size } as const;
+			return { file, appFileNodePath, size } as const;
 		}
 	}
 	return null;
 }
 
-function create_reader_guard_command(
+function reader_command_create(
 	ctx: ActionCtx,
 	ctxData: WorkspaceFsOptions["ctxData"],
 	command: "head" | "tail" | "wc",
-	appFilesMountPath: string,
+	currentProjectPath: string,
 ) {
 	return defineCommand(command, async (args, commandCtx) => {
 		const files: string[] = [];
@@ -3265,7 +3605,7 @@ function create_reader_guard_command(
 				}
 			} else {
 				if (arg === "-n" || arg === "--lines") {
-					const parsed = parse_head_command_line_count(args[++index]);
+					const parsed = reader_command_parse_line_count(args[++index]);
 					headLineCount = parsed?.count ?? null;
 					headFromStart = parsed?.fromStart ?? false;
 					continue;
@@ -3276,7 +3616,7 @@ function create_reader_guard_command(
 					continue;
 				}
 				if (arg.startsWith("--lines=")) {
-					const parsed = parse_head_command_line_count(arg.slice("--lines=".length));
+					const parsed = reader_command_parse_line_count(arg.slice("--lines=".length));
 					headLineCount = parsed?.count ?? null;
 					headFromStart = parsed?.fromStart ?? false;
 					continue;
@@ -3292,7 +3632,7 @@ function create_reader_guard_command(
 					continue;
 				}
 				if (arg.startsWith("-n")) {
-					const parsed = parse_head_command_line_count(arg.slice(2));
+					const parsed = reader_command_parse_line_count(arg.slice(2));
 					headLineCount = parsed?.count ?? null;
 					headFromStart = parsed?.fromStart ?? false;
 					continue;
@@ -3313,16 +3653,16 @@ function create_reader_guard_command(
 			if (
 				file !== "-" &&
 				GLOB_METACHARACTER_REGEX.test(file) &&
-				is_path_under_app_mount(appFilesMountPath, resolve_path(commandCtx.cwd, file))
+				is_path_under_current_project_path(currentProjectPath, resolve_path(commandCtx.cwd, file))
 			) {
 				return {
 					stdout: "",
-					stderr: app_glob_syntax_unsupported_message(command, file),
+					stderr: create_glob_syntax_unsupported_message(command, file),
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
 		}
-		const capError = enforce_reader_operand_cap(command, commandCtx, appFilesMountPath, files);
+		const capError = enforce_reader_operand_cap(command, commandCtx, currentProjectPath, files);
 		if (capError != null) return capError;
 
 		// Multi-file wc across app files: serve per-file + total counts from the bounded stats
@@ -3333,7 +3673,8 @@ function create_reader_guard_command(
 			files.length >= 2 &&
 			files.every(
 				(file) =>
-					file !== "-" && shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, file)) != null,
+					file !== "-" &&
+					current_project_path_to_app_file_node_path(currentProjectPath, resolve_path(commandCtx.cwd, file)) != null,
 			)
 		) {
 			const wantDefault = !wcFlags.lines && !wcFlags.words && !wcFlags.chars && !wcFlags.bytes;
@@ -3351,17 +3692,20 @@ function create_reader_guard_command(
 			let exitCode = 0;
 			let anyWindowed = false;
 			for (const file of files) {
-				const appPath = shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, file))!;
+				const appFileNodePath = current_project_path_to_app_file_node_path(
+					currentProjectPath,
+					resolve_path(commandCtx.cwd, file),
+				)!;
 				const stats = (await ctx.runAction(internal.files_nodes.read_file_content_stats, {
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
 					userId: ctxData.userId,
-					path: appPath,
+					path: appFileNodePath,
 				})) as files_nodes_read_file_content_stats_Result;
 				if (!stats) {
-					const entry = await get_bash_path_entry(ctx, ctxData, appPath);
+					const entry = await get_file_node_from_path(ctx, ctxData, appFileNodePath);
 					if (entry?.kind === "file") {
-						stderr += build_unreadable_file_advisory(appFilesMountPath, appPath, entry.contentType);
+						stderr += build_unreadable_file_advisory(currentProjectPath, appFileNodePath, entry.contentType);
 					} else {
 						stderr += `wc: ${file}: No such file or directory\n`;
 					}
@@ -3388,11 +3732,18 @@ function create_reader_guard_command(
 		// Large files would pull megabytes through a full read; gate them. head/tail/wc map to
 		// bounded line reads served from materialized chunks (any depth); byte-mode (head -c) and
 		// multi-file batches still refuse with guidance below.
-		const oversized = await find_oversized_app_operand(ctx, ctxData, commandCtx, appFilesMountPath, files);
+		const oversized = await reader_command_find_oversized_app_operand(
+			ctx,
+			ctxData,
+			commandCtx,
+			currentProjectPath,
+			files,
+		);
 		if (oversized != null) {
 			const appOperandCount = files.filter(
 				(file) =>
-					file !== "-" && shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, file)) != null,
+					file !== "-" &&
+					current_project_path_to_app_file_node_path(currentProjectPath, resolve_path(commandCtx.cwd, file)) != null,
 			).length;
 
 			// Large files are read in bounded pages. head/tail map to bounded line reads; a
@@ -3400,12 +3751,15 @@ function create_reader_guard_command(
 			if ((command === "head" || command === "tail") && byteMode && appOperandCount === 1) {
 				return {
 					stdout: "",
-					stderr: `${command}: byte-range reads (-c) are not supported for large app files; use ${command} -n N (lines) or wc -c ${shell_arg_quote(app_path_to_shell_path(appFilesMountPath, oversized.appPath))} for the byte count.\n`,
+					stderr: `${command}: byte-range reads (-c) are not supported for large app files; use ${command} -n N (lines) or wc -c ${shell_arg_quote(app_file_node_path_to_current_project_path(currentProjectPath, oversized.appFileNodePath))} for the byte count.\n`,
 					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
 			if ((command === "head" || command === "tail") && !byteMode && appOperandCount === 1) {
-				const oversizedAppShellPath = app_path_to_shell_path(appFilesMountPath, oversized.appPath);
+				const oversizedAppShellPath = app_file_node_path_to_current_project_path(
+					currentProjectPath,
+					oversized.appFileNodePath,
+				);
 				// `tail -n +K`: output from line K onward — a forward read at an offset, not a trailing
 				// window. Serve it from the same bounded forward reader head uses (paged via sed).
 				if (command === "tail" && headFromStart && headLineCount != null) {
@@ -3415,7 +3769,7 @@ function create_reader_guard_command(
 						workspaceId: ctxData.workspaceId,
 						projectId: ctxData.projectId,
 						userId: ctxData.userId,
-						path: oversized.appPath,
+						path: oversized.appFileNodePath,
 						startLine,
 						maxLines,
 					})) as files_nodes_read_file_line_range_Result;
@@ -3453,7 +3807,7 @@ function create_reader_guard_command(
 						workspaceId: ctxData.workspaceId,
 						projectId: ctxData.projectId,
 						userId: ctxData.userId,
-						path: oversized.appPath,
+						path: oversized.appFileNodePath,
 						startLine: 1,
 						maxLines,
 					})) as files_nodes_read_file_line_range_Result;
@@ -3485,7 +3839,7 @@ function create_reader_guard_command(
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
 					userId: ctxData.userId,
-					path: oversized.appPath,
+					path: oversized.appFileNodePath,
 					maxLines,
 				})) as files_nodes_read_file_tail_lines_Result;
 				if (!result) {
@@ -3520,7 +3874,7 @@ function create_reader_guard_command(
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
 					userId: ctxData.userId,
-					path: oversized.appPath,
+					path: oversized.appFileNodePath,
 				})) as files_nodes_read_file_content_stats_Result;
 				if (!stats) {
 					return {
@@ -3559,14 +3913,14 @@ function create_reader_guard_command(
 		for (const file of files) {
 			if (file === "-") continue;
 			const resolvedPath = resolve_path(commandCtx.cwd, file);
-			const appPath = shell_path_to_app_path(appFilesMountPath, resolvedPath);
-			if (appPath == null) continue;
+			const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath);
+			if (appFileNodePath == null) continue;
 			try {
 				await commandCtx.fs.readFile(resolvedPath);
 			} catch (error) {
 				if (error instanceof AppFileContentUnavailableError) {
 					return {
-						stdout: build_unreadable_file_advisory(appFilesMountPath, appPath, error.contentType),
+						stdout: build_unreadable_file_advisory(currentProjectPath, appFileNodePath, error.contentType),
 						stderr: "",
 						exitCode: 0,
 					};
@@ -3579,8 +3933,8 @@ function create_reader_guard_command(
 			if (error instanceof AppFileContentUnavailableError) {
 				return {
 					stdout: build_unreadable_file_advisory(
-						appFilesMountPath,
-						shell_path_to_app_path(appFilesMountPath, error.shellPath) ?? error.shellPath,
+						currentProjectPath,
+						current_project_path_to_app_file_node_path(currentProjectPath, error.shellPath) ?? error.shellPath,
 						error.contentType,
 					),
 					stderr: "",
@@ -3596,7 +3950,7 @@ function create_reader_guard_command(
 
 // #region touch command
 
-function create_touch_command(appFilesMountPath: string) {
+function touch_command_create(currentProjectPath: string) {
 	return defineCommand("touch", async (args, commandCtx) => {
 		const files: string[] = [];
 		for (let index = 0; index < args.length; index++) {
@@ -3611,15 +3965,14 @@ function create_touch_command(appFilesMountPath: string) {
 		}
 		for (const file of files) {
 			const resolvedPath = resolve_path(commandCtx.cwd, file);
-			if (is_path_under_app_mount(appFilesMountPath, resolvedPath)) {
-				const appPath = shell_path_to_app_path(appFilesMountPath, resolvedPath) ?? file;
+			if (is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
+				const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath) ?? file;
 				return {
 					stdout: "",
-					stderr: (
+					stderr:
 						`touch: cannot create or update app file '${file}' through bash.\n` +
-						`Use write_file with path '${appPath}' to create a new file (strip the '${appFilesMountPath}' mount prefix from the bash path).\n` +
-						`Use edit_file with path '${appPath}' to update an existing file.\n`
-					),
+						`Use write_file with path '${appFileNodePath}' to create a new file (strip the current project path prefix '${currentProjectPath}' from the bash path).\n` +
+						`Use edit_file with path '${appFileNodePath}' to update an existing file.\n`,
 					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
@@ -3632,18 +3985,17 @@ function create_touch_command(appFilesMountPath: string) {
 
 // #region rm command
 
-function create_rm_command(appFilesMountPath: string) {
+function rm_command_create(currentProjectPath: string) {
 	return defineCommand("rm", async (args, commandCtx) => {
 		for (const arg of args) {
 			if (arg.startsWith("-")) continue;
 			const resolvedPath = resolve_path(commandCtx.cwd, arg);
-			if (is_path_under_app_mount(appFilesMountPath, resolvedPath)) {
+			if (is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
 				return {
 					stdout: "",
-					stderr: (
+					stderr:
 						`rm: cannot delete app file '${arg}' through bash.\n` +
-						`App files cannot be deleted via shell commands. Use the Files sidebar Archive action for '${arg}', or use write_file/edit_file for content changes.\n`
-					),
+						`App files cannot be deleted via shell commands. Use the Files sidebar Archive action for '${arg}', or use write_file/edit_file for content changes.\n`,
 					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
@@ -3654,7 +4006,7 @@ function create_rm_command(appFilesMountPath: string) {
 
 // #endregion rm command
 
-function parse_cp_mv_command_operands(args: string[]) {
+function cp_mv_command_parse_operands(args: string[]) {
 	const operands: string[] = [];
 	let recursive = false;
 	for (const arg of args) {
@@ -3675,15 +4027,15 @@ function parse_cp_mv_command_operands(args: string[]) {
 /**
  * Check whether a normalized path is inside the per-command scratch mount.
  */
-function is_under_tmp_mount(path: string) {
+function cp_command_is_under_tmp_mount(path: string) {
 	return path === TMP_MOUNT || path.startsWith(`${TMP_MOUNT}/`);
 }
 
-function create_cp_command(appFilesMountPath: string) {
+function cp_command_create(currentProjectPath: string) {
 	return defineCommand("cp", async (args, commandCtx) => {
-		const { operands, recursive } = parse_cp_mv_command_operands(args);
+		const { operands, recursive } = cp_mv_command_parse_operands(args);
 		const appOperands = operands.filter((operand) =>
-			is_path_under_app_mount(appFilesMountPath, resolve_path(commandCtx.cwd, operand)),
+			is_path_under_current_project_path(currentProjectPath, resolve_path(commandCtx.cwd, operand)),
 		);
 		if (appOperands.length === 0) {
 			return await delegate_builtin_command("cp", args, commandCtx);
@@ -3692,7 +4044,7 @@ function create_cp_command(appFilesMountPath: string) {
 			if (GLOB_METACHARACTER_REGEX.test(operand)) {
 				return {
 					stdout: "",
-					stderr: app_glob_syntax_unsupported_message("cp", operand),
+					stderr: create_glob_syntax_unsupported_message("cp", operand),
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
@@ -3701,47 +4053,45 @@ function create_cp_command(appFilesMountPath: string) {
 		// straight to write_file so the model does not retry cp.
 		if (
 			operands.length === 2 &&
-			is_path_under_app_mount(appFilesMountPath, resolve_path(commandCtx.cwd, operands[1]!))
+			is_path_under_current_project_path(currentProjectPath, resolve_path(commandCtx.cwd, operands[1]!))
 		) {
-			const destAppPath =
-				shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, operands[1]!)) ?? operands[1]!;
+			const destAppFileNodePath =
+				current_project_path_to_app_file_node_path(currentProjectPath, resolve_path(commandCtx.cwd, operands[1]!)) ??
+				operands[1]!;
 			return {
 				stdout: "",
-				stderr: (
+				stderr:
 					`cp: cannot write to app file '${operands[1]}': the app file tree is read-only for cp.\n` +
-					`To create a durable copy at '${destAppPath}', use write_file with path '${destAppPath}' and the content read from the source.\n` +
-					`cp into the app tree is never supported; only cp <app-file> /tmp/<name> (scratch copy) is allowed.\n`
-				),
+					`To create a durable copy at '${destAppFileNodePath}', use write_file with path '${destAppFileNodePath}' and the content read from the source.\n` +
+					`cp into the app tree is never supported; only cp <app-file> /tmp/<name> (scratch copy) is allowed.\n`,
 				exitCode: COMMAND_EXIT_FAILURE,
 			};
 		}
 		if (recursive || operands.length !== 2 || appOperands.length !== 1 || appOperands[0] !== operands[0]) {
 			return {
 				stdout: "",
-				stderr: (
+				stderr:
 					"cp: app files can only be copied as one exact readable file to a /tmp destination.\n" +
 					"Usage: cp <app-file> /tmp/<name>  — copies the file content to /tmp scratch space (one invocation only).\n" +
-					"To duplicate an app file as a new durable file, use write_file with the new app path (strip the mount prefix).\n"
-				),
+					"To duplicate an app file as a new durable file, use write_file with the new app file path (strip the current project path prefix).\n",
 				exitCode: COMMAND_EXIT_FAILURE,
 			};
 		}
 
 		const sourceShellPath = resolve_path(commandCtx.cwd, operands[0]!);
 		const destShellPath = resolve_path(commandCtx.cwd, operands[1]!);
-		if (!is_under_tmp_mount(destShellPath)) {
-			const destAppPath = shell_path_to_app_path(appFilesMountPath, destShellPath);
+		if (!cp_command_is_under_tmp_mount(destShellPath)) {
+			const destAppFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, destShellPath);
 			const destHint =
-				destAppPath != null
-					? `To create a durable copy at '${destAppPath}', use write_file with path '${destAppPath}' and the content read from the source.`
+				destAppFileNodePath != null
+					? `To create a durable copy at '${destAppFileNodePath}', use write_file with path '${destAppFileNodePath}' and the content read from the source.`
 					: "Durable app file writes require write_file, not cp.";
 			return {
 				stdout: "",
-				stderr: (
+				stderr:
 					`cp: cannot write to '${operands[1]}': app file tree is read-only for cp.\n` +
 					`Only /tmp destinations are supported: cp ${shell_arg_quote(operands[0]!)} /tmp/<name>\n` +
-					`${destHint}\n`
-				),
+					`${destHint}\n`,
 				exitCode: COMMAND_EXIT_FAILURE,
 			};
 		}
@@ -3778,26 +4128,32 @@ function create_cp_command(appFilesMountPath: string) {
 
 // #region mv command
 
-function create_mv_command(appFilesMountPath: string) {
+function mv_command_create(currentProjectPath: string) {
 	return defineCommand("mv", async (args, commandCtx) => {
-		const { operands } = parse_cp_mv_command_operands(args);
+		const { operands } = cp_mv_command_parse_operands(args);
 		// Identify source and destination for better guidance
 		const srcOperand = operands[0];
 		const destOperand = operands[1];
 		for (const operand of operands) {
 			const resolvedPath = resolve_path(commandCtx.cwd, operand);
-			if (is_path_under_app_mount(appFilesMountPath, resolvedPath)) {
-				const srcAppPath =
+			if (is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
+				const srcAppFileNodePath =
 					srcOperand != null
-						? (shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, srcOperand)) ?? srcOperand)
+						? (current_project_path_to_app_file_node_path(
+								currentProjectPath,
+								resolve_path(commandCtx.cwd, srcOperand),
+							) ?? srcOperand)
 						: null;
-				const destAppPath =
+				const destAppFileNodePath =
 					destOperand != null
-						? (shell_path_to_app_path(appFilesMountPath, resolve_path(commandCtx.cwd, destOperand)) ?? destOperand)
+						? (current_project_path_to_app_file_node_path(
+								currentProjectPath,
+								resolve_path(commandCtx.cwd, destOperand),
+							) ?? destOperand)
 						: null;
 				const renameHint =
-					srcAppPath != null && destAppPath != null
-						? `To rename/move an app file, use the Files sidebar rename/move UI. For content changes, use write_file with path '${destAppPath}' or edit_file on '${srcAppPath}'.`
+					srcAppFileNodePath != null && destAppFileNodePath != null
+						? `To rename/move an app file, use the Files sidebar rename/move UI. For content changes, use write_file with path '${destAppFileNodePath}' or edit_file on '${srcAppFileNodePath}'.`
 						: "To rename/move an app file, use the Files sidebar rename/move UI. For content changes, use write_file or edit_file.";
 				return {
 					stdout: "",
@@ -3814,19 +4170,19 @@ function create_mv_command(appFilesMountPath: string) {
 
 // #region tee command
 
-function create_tee_command(appFilesMountPath: string) {
+function tee_command_create(currentProjectPath: string) {
 	return defineCommand("tee", async (args, commandCtx) => {
 		const files = args.filter((arg) => !arg.startsWith("-"));
 		for (const file of files) {
 			const resolvedPath = resolve_path(commandCtx.cwd, file);
-			if (is_path_under_app_mount(appFilesMountPath, resolvedPath)) {
-				const appPath = shell_path_to_app_path(appFilesMountPath, resolvedPath) ?? file;
+			if (is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
+				const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath) ?? file;
 				return {
 					stdout: commandCtx.stdin as unknown as string,
 					stderr:
 						`tee: cannot write to app file '${file}' through bash.\n` +
-						`Use write_file with path '${appPath}' to write new content (strip the '${appFilesMountPath}' mount prefix).\n` +
-						`Use edit_file with path '${appPath}' to apply targeted edits to an existing file.\n`,
+						`Use write_file with path '${appFileNodePath}' to write new content (strip the current project path prefix '${currentProjectPath}').\n` +
+						`Use edit_file with path '${appFileNodePath}' to apply targeted edits to an existing file.\n`,
 					exitCode: 1,
 				};
 			}
@@ -3839,7 +4195,7 @@ function create_tee_command(appFilesMountPath: string) {
 
 // #region nested shell commands
 
-function create_nested_shell_command(name: "bash" | "sh", appFilesMountPath: string) {
+function nested_shell_command_create(name: "bash" | "sh", currentProjectPath: string) {
 	return defineCommand(name, async (args, commandCtx) => {
 		if (args.length === 0) {
 			return { stdout: "", stderr: "", exitCode: 0 };
@@ -3875,7 +4231,7 @@ function create_nested_shell_command(name: "bash" | "sh", appFilesMountPath: str
 			};
 		}
 		const scriptPath = resolve_path(commandCtx.cwd, args[0]!);
-		if (is_path_under_app_mount(appFilesMountPath, scriptPath)) {
+		if (is_path_under_current_project_path(currentProjectPath, scriptPath)) {
 			return {
 				stdout: "",
 				stderr: `${name}: app-mounted script files are not executable through bash\n`,
@@ -3902,7 +4258,7 @@ function create_nested_shell_command(name: "bash" | "sh", appFilesMountPath: str
 
 // #region xargs command
 
-function create_xargs_command() {
+function xargs_command_create() {
 	return defineCommand("xargs", async (args, commandCtx) => {
 		let replaceString: string | null = null;
 		let delimiter: string | null = null;
@@ -4083,7 +4439,7 @@ function create_xargs_command() {
 
 const APP_COMMAND_NAMES = new Set<string>([...ALLOWED_COMMANDS, "search"]);
 
-function create_which_command() {
+function which_command_create() {
 	return defineCommand("which", async (args) => {
 		let silent = false;
 		let showAll = false;
@@ -4134,13 +4490,15 @@ function create_which_command() {
 
 // #endregion which command
 
+// #region action
+
 /**
  * Mount the app file tree into Just Bash as a mostly read-only filesystem.
  */
 class WorkspaceFs implements IFileSystem {
 	readonly ctx: ActionCtx;
 	readonly ctxData: WorkspaceFsOptions["ctxData"];
-	readonly appFilesMountPath: string;
+	readonly currentProjectPath: string;
 	readonly allowAppFileTreeMkdir: boolean;
 	pathIndexTruncated = false;
 	private entryCache = new Map<string, JustBashFileNodeCacheEntry>();
@@ -4149,20 +4507,16 @@ class WorkspaceFs implements IFileSystem {
 	constructor(options: WorkspaceFsOptions) {
 		this.ctx = options.ctx;
 		this.ctxData = options.ctxData;
-		this.appFilesMountPath = options.appFilesMountPath;
+		this.currentProjectPath = options.currentProjectPath;
 		this.allowAppFileTreeMkdir = options.allowAppFileTreeMkdir;
-		this.rememberEntry({
-			path: "/",
-			kind: "folder",
-			updatedAt: 0,
-		});
+		this.rememberEntry(files_SYNTHETIC_ROOT_FOLDER);
 	}
 
 	async readFile(path: string, _options?: Parameters<IFileSystem["readFile"]>[1]) {
 		const normalizedPath = normalize_path(path);
 		if (GLOB_METACHARACTER_REGEX.test(normalizedPath)) {
 			throw new Error(
-				`app file glob patterns are not supported: '${app_path_to_shell_path(this.appFilesMountPath, normalizedPath)}'`,
+				`app file glob patterns are not supported: '${app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
 		const cached = this.contentCache.get(normalizedPath);
@@ -4170,7 +4524,7 @@ class WorkspaceFs implements IFileSystem {
 			return cached;
 		}
 
-		const fileContent = (await this.ctx.runAction(
+		const fileContentPromise = this.ctx.runAction(
 			internal.files_nodes.get_file_last_available_markdown_content_by_path,
 			{
 				workspaceId: this.ctxData.workspaceId,
@@ -4178,52 +4532,42 @@ class WorkspaceFs implements IFileSystem {
 				userId: this.ctxData.userId,
 				path: normalizedPath,
 			},
-		)) as files_nodes_get_file_last_available_markdown_content_by_path_Result;
+		) as Promise<files_nodes_get_file_last_available_markdown_content_by_path_Result>;
+		const nodePromise = get_file_node_from_path(this.ctx, this.ctxData, normalizedPath);
+		const [fileContent, node] = await Promise.all([fileContentPromise, nodePromise]);
 
 		if (!fileContent) {
-			const entry = await this.getEntry(normalizedPath);
+			const entry = normalizedPath === "/" ? files_SYNTHETIC_ROOT_FOLDER : node;
 			if (entry?.kind === "file") {
-				let contentType = entry.contentType;
-				if (contentType == null) {
-					const node = (await this.ctx.runQuery(internal.files_nodes.get_by_path, {
-						workspaceId: this.ctxData.workspaceId,
-						projectId: this.ctxData.projectId,
-						path: normalizedPath,
-					})) as files_nodes_get_by_path_Result;
-					if (node?.kind === "file") {
-						contentType = node.contentType;
-						this.rememberEntry({
-							nodeId: node._id,
-							path: node.path,
-							kind: node.kind,
-							updatedAt: node.updatedAt,
-							updatedBy: node.updatedBy,
-							contentType: node.contentType,
-						});
-					}
-				}
+				this.rememberEntry(entry);
 				throw new AppFileContentUnavailableError({
-					shellPath: app_path_to_shell_path(this.appFilesMountPath, normalizedPath),
-					contentType,
+					shellPath: app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath),
+					contentType: entry.contentType,
 				});
 			}
 			if (entry?.kind === "folder") {
+				this.rememberEntry(entry);
 				throw new Error(
-					`EISDIR: illegal operation on a directory, read '${app_path_to_shell_path(this.appFilesMountPath, normalizedPath)}'`,
+					`EISDIR: illegal operation on a directory, read '${app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 				);
 			}
 			throw new Error(
-				`ENOENT: no such file or directory, open '${app_path_to_shell_path(this.appFilesMountPath, normalizedPath)}'`,
+				`ENOENT: no such file or directory, open '${app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
 
 		this.contentCache.set(normalizedPath, fileContent.content);
-		this.rememberEntry({
-			nodeId: fileContent.nodeId,
-			path: normalizedPath,
-			kind: "file",
-			updatedAt: Date.now(),
-		});
+		if (node?.kind === "file") {
+			this.rememberEntry(node);
+		} else {
+			this.rememberEntry({
+				_id: fileContent.nodeId,
+				path: normalizedPath,
+				name: path_name_of(normalizedPath),
+				kind: "file",
+				updatedAt: Date.now(),
+			});
+		}
 		return fileContent.content;
 	}
 
@@ -4232,11 +4576,11 @@ class WorkspaceFs implements IFileSystem {
 	}
 
 	async writeFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["writeFile"]>[2]) {
-		throw new ReadOnlyFileSystemError(app_path_to_shell_path(this.appFilesMountPath, path));
+		throw new ReadOnlyFileSystemError(app_file_node_path_to_current_project_path(this.currentProjectPath, path));
 	}
 
 	async appendFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["appendFile"]>[2]) {
-		throw new ReadOnlyFileSystemError(app_path_to_shell_path(this.appFilesMountPath, path));
+		throw new ReadOnlyFileSystemError(app_file_node_path_to_current_project_path(this.currentProjectPath, path));
 	}
 
 	async exists(path: string) {
@@ -4247,13 +4591,13 @@ class WorkspaceFs implements IFileSystem {
 		const normalizedPath = normalize_path(path);
 		if (GLOB_METACHARACTER_REGEX.test(normalizedPath)) {
 			throw new Error(
-				`app file glob patterns are not supported: '${app_path_to_shell_path(this.appFilesMountPath, normalizedPath)}'`,
+				`app file glob patterns are not supported: '${app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
 		const entry = await this.getEntry(normalizedPath);
 		if (!entry) {
 			throw new Error(
-				`ENOENT: no such file or directory, stat '${app_path_to_shell_path(this.appFilesMountPath, normalizedPath)}'`,
+				`ENOENT: no such file or directory, stat '${app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
 
@@ -4272,7 +4616,7 @@ class WorkspaceFs implements IFileSystem {
 		const normalizedPath = normalize_path(path);
 		if (GLOB_METACHARACTER_REGEX.test(normalizedPath)) {
 			throw new Error(
-				`app file glob patterns are not supported: '${app_path_to_shell_path(this.appFilesMountPath, normalizedPath)}'`,
+				`app file glob patterns are not supported: '${app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
 		const existing = await this.getEntry(normalizedPath);
@@ -4281,7 +4625,7 @@ class WorkspaceFs implements IFileSystem {
 				return;
 			}
 			throw new Error(
-				`EEXIST: file already exists, mkdir '${app_path_to_shell_path(this.appFilesMountPath, normalizedPath)}'`,
+				`EEXIST: file already exists, mkdir '${app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
 		if (!this.allowAppFileTreeMkdir) {
@@ -4294,7 +4638,7 @@ class WorkspaceFs implements IFileSystem {
 			const parent = await this.getEntry(parentPath);
 			if (!parent || parent.kind !== "folder") {
 				throw new Error(
-					`ENOENT: no such file or directory, mkdir '${app_path_to_shell_path(this.appFilesMountPath, normalizedPath)}'`,
+					`ENOENT: no such file or directory, mkdir '${app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 				);
 			}
 		}
@@ -4309,10 +4653,13 @@ class WorkspaceFs implements IFileSystem {
 			throw new Error(created._nay.message);
 		}
 		this.rememberEntry({
-			nodeId: created._yay.nodeId,
+			_id: created._yay.nodeId,
 			path: normalizedPath,
+			name: path_name_of(normalizedPath),
 			kind: "folder",
 			updatedAt: Date.now(),
+			contentType: undefined,
+			updatedBy: this.ctxData.userId,
 		});
 	}
 
@@ -4321,7 +4668,7 @@ class WorkspaceFs implements IFileSystem {
 		const stat = await this.stat(normalizedPath);
 		if (!stat.isDirectory) {
 			throw new Error(
-				`ENOTDIR: not a directory, scandir '${app_path_to_shell_path(this.appFilesMountPath, normalizedPath)}'`,
+				`ENOTDIR: not a directory, scandir '${app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
 		throw new Error("app file directory enumeration is not supported; use ls --limit N or find --limit N");
@@ -4331,15 +4678,15 @@ class WorkspaceFs implements IFileSystem {
 		if (options?.force && !(await this.exists(path))) {
 			return;
 		}
-		throw new ReadOnlyFileSystemError(app_path_to_shell_path(this.appFilesMountPath, path));
+		throw new ReadOnlyFileSystemError(app_file_node_path_to_current_project_path(this.currentProjectPath, path));
 	}
 
 	async cp(_src: string, dest: string, _options?: CpOptions) {
-		throw new ReadOnlyFileSystemError(app_path_to_shell_path(this.appFilesMountPath, dest));
+		throw new ReadOnlyFileSystemError(app_file_node_path_to_current_project_path(this.currentProjectPath, dest));
 	}
 
 	async mv(_src: string, dest: string) {
-		throw new ReadOnlyFileSystemError(app_path_to_shell_path(this.appFilesMountPath, dest));
+		throw new ReadOnlyFileSystemError(app_file_node_path_to_current_project_path(this.currentProjectPath, dest));
 	}
 
 	resolvePath(base: string, path: string) {
@@ -4354,19 +4701,21 @@ class WorkspaceFs implements IFileSystem {
 	}
 
 	async chmod(path: string, _mode: number) {
-		throw new ReadOnlyFileSystemError(app_path_to_shell_path(this.appFilesMountPath, path));
+		throw new ReadOnlyFileSystemError(app_file_node_path_to_current_project_path(this.currentProjectPath, path));
 	}
 
 	async symlink(_target: string, linkPath: string) {
-		throw new ReadOnlyFileSystemError(app_path_to_shell_path(this.appFilesMountPath, linkPath));
+		throw new ReadOnlyFileSystemError(app_file_node_path_to_current_project_path(this.currentProjectPath, linkPath));
 	}
 
 	async link(_existingPath: string, newPath: string) {
-		throw new ReadOnlyFileSystemError(app_path_to_shell_path(this.appFilesMountPath, newPath));
+		throw new ReadOnlyFileSystemError(app_file_node_path_to_current_project_path(this.currentProjectPath, newPath));
 	}
 
 	async readlink(path: string): Promise<string> {
-		throw new Error(`EINVAL: invalid argument, readlink '${app_path_to_shell_path(this.appFilesMountPath, path)}'`);
+		throw new Error(
+			`EINVAL: invalid argument, readlink '${app_file_node_path_to_current_project_path(this.currentProjectPath, path)}'`,
+		);
 	}
 
 	async lstat(path: string) {
@@ -4380,7 +4729,7 @@ class WorkspaceFs implements IFileSystem {
 	}
 
 	async utimes(path: string, _atime: Date, _mtime: Date) {
-		throw new ReadOnlyFileSystemError(app_path_to_shell_path(this.appFilesMountPath, path));
+		throw new ReadOnlyFileSystemError(app_file_node_path_to_current_project_path(this.currentProjectPath, path));
 	}
 
 	rememberEntry(entry: JustBashFileNodeCacheEntry) {
@@ -4392,6 +4741,7 @@ class WorkspaceFs implements IFileSystem {
 			if (!this.entryCache.has(currentPath)) {
 				this.entryCache.set(currentPath, {
 					path: currentPath,
+					name: segments[index],
 					kind: "folder",
 					updatedAt: entry.updatedAt,
 				});
@@ -4406,7 +4756,7 @@ class WorkspaceFs implements IFileSystem {
 	async getEntry(path: string) {
 		const normalizedPath = normalize_path(path);
 		const cached = this.entryCache.get(normalizedPath);
-		if (cached && (normalizedPath === "/" || cached.nodeId != null)) {
+		if (cached && (normalizedPath === "/" || cached._id != null)) {
 			return cached;
 		}
 
@@ -4421,8 +4771,9 @@ class WorkspaceFs implements IFileSystem {
 		}
 
 		const entry = {
-			nodeId: node._id,
+			_id: node._id,
 			path: node.path,
+			name: node.name,
 			kind: node.kind,
 			updatedAt: node.updatedAt,
 			updatedBy: node.updatedBy,
@@ -4542,6 +4893,168 @@ class ReadOnlyBaseFs implements IFileSystem {
 	}
 }
 
+async function action_run(
+	ctx: ActionCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		workspaceName: string;
+		projectName: string;
+		userId: Id<"users">;
+		command: string;
+		allowAppFileTreeMkdir: boolean;
+		persistedCwd: string;
+	},
+) {
+	// Workspace and project names are validated slugs, so they are stable shell
+	// path segments and do not need path-segment encoding here.
+	const currentProjectPath = normalize_path(`${appMountPath}/${args.workspaceName}/${args.projectName}`);
+	const defaultPersistedCwd = collapse_bash_path(currentProjectPath) ?? DEFAULT_CWD;
+	const persistedCwd = args.persistedCwd.trim();
+	let cwd = persistedCwd === "" || persistedCwd === DEFAULT_CWD ? currentProjectPath : expand_bash_path(persistedCwd);
+
+	const workspaceFs = new WorkspaceFs({
+		ctx,
+		ctxData: {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			workspaceName: args.workspaceName,
+			projectName: args.projectName,
+			userId: args.userId,
+		},
+		currentProjectPath,
+		allowAppFileTreeMkdir: args.allowAppFileTreeMkdir,
+	});
+
+	const fs = new MountableFs({
+		base: new ReadOnlyBaseFs(),
+		mounts: [
+			{ mountPoint: currentProjectPath, filesystem: workspaceFs },
+			{ mountPoint: TMP_MOUNT, filesystem: new InMemoryFs() },
+		],
+	});
+
+	try {
+		const cwdStat = await fs.stat(cwd);
+		if (!cwdStat.isDirectory) {
+			cwd = currentProjectPath;
+		}
+	} catch {
+		cwd = currentProjectPath;
+	}
+
+	const bash = new Bash({
+		fs,
+		cwd,
+		env: {
+			PWD: cwd,
+			HOME: HOME,
+		},
+		commands: [...ALLOWED_COMMANDS],
+		customCommands: [
+			search_command_create(ctx, workspaceFs.ctxData, currentProjectPath),
+			ls_command_create(ctx, workspaceFs, currentProjectPath),
+			find_command_create(ctx, workspaceFs.ctxData, currentProjectPath),
+			tree_command_create(ctx, workspaceFs.ctxData, currentProjectPath),
+			grep_command_create(ctx, workspaceFs.ctxData, currentProjectPath),
+			cat_command_create(ctx, workspaceFs.ctxData, currentProjectPath),
+			reader_command_create(ctx, workspaceFs.ctxData, "head", currentProjectPath),
+			reader_command_create(ctx, workspaceFs.ctxData, "tail", currentProjectPath),
+			reader_command_create(ctx, workspaceFs.ctxData, "wc", currentProjectPath),
+			stat_command_create(ctx, workspaceFs.ctxData, currentProjectPath),
+			...stream_utility_command_create_all(currentProjectPath),
+			sed_command_create(ctx, workspaceFs.ctxData, currentProjectPath),
+			touch_command_create(currentProjectPath),
+			rm_command_create(currentProjectPath),
+			cp_command_create(currentProjectPath),
+			mv_command_create(currentProjectPath),
+			tee_command_create(currentProjectPath),
+			nested_shell_command_create("bash", currentProjectPath),
+			nested_shell_command_create("sh", currentProjectPath),
+			xargs_command_create(),
+			which_command_create(),
+		],
+		executionLimits: {
+			maxCommandCount: 200,
+			maxLoopIterations: 10_000,
+			maxCallDepth: 50,
+			maxOutputSize: 250_000,
+			maxHeredocSize: 250_000,
+		},
+	});
+
+	const result = await bash
+		.exec(`set -f\n${args.command}`, {
+			cwd,
+			env: {
+				PWD: cwd,
+				HOME: HOME,
+			},
+		})
+		.catch((error: unknown) => ({
+			stdout: "",
+			stderr: `${error instanceof Error ? error.message : String(error)}\n`,
+			exitCode: 1,
+			env: {
+				PWD: cwd,
+			},
+		}));
+
+	const rawNextCwd = result.env.PWD || HOME;
+	let nextPersistedCwd = collapse_bash_path(rawNextCwd);
+	let nextCwd = nextPersistedCwd == null ? HOME : expand_bash_path(nextPersistedCwd);
+	let stderr = result.stderr;
+	const commandNotFoundPattern = /: command not found$/m;
+	const redirectsStderrToStdout = /(^|[\s;&|])2\s*>\s*&\s*1(?=$|[\s;&|])/.test(args.command);
+	if (commandNotFoundPattern.test(stderr) || (redirectsStderrToStdout && commandNotFoundPattern.test(result.stdout))) {
+		stderr +=
+			"bash: run 'help' to list available commands; app files are DB-backed — use search/grep for content and find/ls for paths.\n";
+	}
+	try {
+		const nextCwdStat = await fs.stat(nextCwd);
+		if (!nextCwdStat.isDirectory || nextPersistedCwd == null) {
+			nextPersistedCwd = defaultPersistedCwd;
+			nextCwd = currentProjectPath;
+			stderr += `bash: cwd '${rawNextCwd}' is not persisted; resetting to ${currentProjectPath}\n`;
+		}
+	} catch {
+		nextPersistedCwd = defaultPersistedCwd;
+		nextCwd = currentProjectPath;
+		stderr += `bash: cwd '${rawNextCwd}' is invalid; resetting to ${currentProjectPath}\n`;
+	}
+
+	const stdoutLength = result.stdout.length;
+	const stderrLength = stderr.length;
+	const stdout = truncate_output(result.stdout);
+	const truncatedStderr = truncate_output(stderr);
+
+	return {
+		nextPersistedCwd,
+		title: `exit ${result.exitCode} · ${nextCwd}`,
+		output: format_tool_output({
+			command: args.command,
+			cwd,
+			nextCwd,
+			exitCode: result.exitCode,
+			stdout: stdout.value,
+			stderr: truncatedStderr.value,
+		}),
+		stdout: stdout.value,
+		stderr: truncatedStderr.value,
+		metadata: {
+			command: args.command,
+			cwd,
+			nextCwd,
+			exitCode: result.exitCode,
+			stdoutTruncated: stdout.truncated,
+			stderrTruncated: truncatedStderr.truncated,
+			stdoutLength,
+			stderrLength,
+			pathIndexTruncated: workspaceFs.pathIndexTruncated,
+		},
+	};
+}
+
 export const run = internalAction({
 	args: {
 		workspaceId: v.string(),
@@ -4608,165 +5121,7 @@ export const run = internalAction({
 	},
 });
 
-async function action_run(
-	ctx: ActionCtx,
-	args: {
-		workspaceId: string;
-		projectId: string;
-		workspaceName: string;
-		projectName: string;
-		userId: Id<"users">;
-		command: string;
-		allowAppFileTreeMkdir: boolean;
-		persistedCwd: string;
-	},
-) {
-	// Workspace and project names are validated slugs, so they are stable shell
-	// path segments and do not need path-segment encoding here.
-	const appFilesMountPath = normalize_path(`${MOUNT_ROOT}/${args.workspaceName}/${args.projectName}`);
-	let cwd = expand_persisted_bash_cwd(args.persistedCwd);
-
-	const workspaceFs = new WorkspaceFs({
-		ctx,
-		ctxData: {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			workspaceName: args.workspaceName,
-			projectName: args.projectName,
-			userId: args.userId,
-		},
-		appFilesMountPath,
-		allowAppFileTreeMkdir: args.allowAppFileTreeMkdir,
-	});
-
-	const fs = new MountableFs({
-		base: new ReadOnlyBaseFs(),
-		mounts: [
-			{ mountPoint: appFilesMountPath, filesystem: workspaceFs },
-			{ mountPoint: TMP_MOUNT, filesystem: new InMemoryFs() },
-		],
-	});
-
-	try {
-		const cwdStat = await fs.stat(cwd);
-		if (!cwdStat.isDirectory) {
-			cwd = HOME;
-		}
-	} catch {
-		cwd = HOME;
-	}
-
-	const bash = new Bash({
-		fs,
-		cwd,
-		env: {
-			PWD: cwd,
-			HOME: HOME,
-		},
-		commands: [...ALLOWED_COMMANDS],
-		customCommands: [
-			search_command_create(ctx, workspaceFs.ctxData, appFilesMountPath),
-			ls_command_create(ctx, workspaceFs, appFilesMountPath),
-			find_command_create(ctx, workspaceFs.ctxData, appFilesMountPath),
-			create_tree_command(ctx, workspaceFs.ctxData, appFilesMountPath),
-			create_grep_command(ctx, workspaceFs.ctxData, appFilesMountPath),
-			create_cat_command(ctx, workspaceFs.ctxData, appFilesMountPath),
-			create_reader_guard_command(ctx, workspaceFs.ctxData, "head", appFilesMountPath),
-			create_reader_guard_command(ctx, workspaceFs.ctxData, "tail", appFilesMountPath),
-			create_reader_guard_command(ctx, workspaceFs.ctxData, "wc", appFilesMountPath),
-			create_stat_command(ctx, workspaceFs.ctxData, appFilesMountPath),
-			...create_stream_utility_commands(appFilesMountPath),
-			create_sed_command(ctx, workspaceFs.ctxData, appFilesMountPath),
-			create_touch_command(appFilesMountPath),
-			create_rm_command(appFilesMountPath),
-			create_cp_command(appFilesMountPath),
-			create_mv_command(appFilesMountPath),
-			create_tee_command(appFilesMountPath),
-			create_nested_shell_command("bash", appFilesMountPath),
-			create_nested_shell_command("sh", appFilesMountPath),
-			create_xargs_command(),
-			create_which_command(),
-		],
-		executionLimits: {
-			maxCommandCount: 200,
-			maxLoopIterations: 10_000,
-			maxCallDepth: 50,
-			maxOutputSize: 250_000,
-			maxHeredocSize: 250_000,
-		},
-	});
-
-	const result = await bash
-		.exec(`set -f\n${args.command}`, {
-			cwd,
-			env: {
-				PWD: cwd,
-				HOME: HOME,
-			},
-		})
-		.catch((error: unknown) => ({
-			stdout: "",
-			stderr: `${error instanceof Error ? error.message : String(error)}\n`,
-			exitCode: 1,
-			env: {
-				PWD: cwd,
-			},
-		}));
-
-	const rawNextCwd = result.env.PWD;
-	let nextPersistedCwd = collapse_bash_cwd_for_persistence(rawNextCwd);
-	let nextCwd = nextPersistedCwd == null ? HOME : expand_persisted_bash_cwd(nextPersistedCwd);
-	let stderr = result.stderr;
-	const commandNotFoundPattern = /: command not found$/m;
-	const redirectsStderrToStdout = /(^|[\s;&|])2\s*>\s*&\s*1(?=$|[\s;&|])/.test(args.command);
-	if (commandNotFoundPattern.test(stderr) || (redirectsStderrToStdout && commandNotFoundPattern.test(result.stdout))) {
-		stderr +=
-			"bash: run 'help' to list available commands; app files are DB-backed — use search/grep for content and find/ls for paths.\n";
-	}
-	try {
-		const nextCwdStat = await fs.stat(nextCwd);
-		if (!nextCwdStat.isDirectory || nextPersistedCwd == null) {
-			nextPersistedCwd = DEFAULT_CWD;
-			nextCwd = HOME;
-			stderr += `bash: cwd '${rawNextCwd}' is not persisted; resetting to ${HOME}\n`;
-		}
-	} catch {
-		nextPersistedCwd = DEFAULT_CWD;
-		nextCwd = HOME;
-		stderr += `bash: cwd '${rawNextCwd}' is invalid; resetting to ${HOME}\n`;
-	}
-
-	const stdoutLength = result.stdout.length;
-	const stderrLength = stderr.length;
-	const stdout = truncate_output(result.stdout);
-	const truncatedStderr = truncate_output(stderr);
-
-	return {
-		nextPersistedCwd,
-		title: `exit ${result.exitCode} · ${nextCwd}`,
-		output: format_tool_output({
-			command: args.command,
-			cwd,
-			nextCwd,
-			exitCode: result.exitCode,
-			stdout: stdout.value,
-			stderr: truncatedStderr.value,
-		}),
-		stdout: stdout.value,
-		stderr: truncatedStderr.value,
-		metadata: {
-			command: args.command,
-			cwd,
-			nextCwd,
-			exitCode: result.exitCode,
-			stdoutTruncated: stdout.truncated,
-			stderrTruncated: truncatedStderr.truncated,
-			stdoutLength,
-			stderrLength,
-			pathIndexTruncated: workspaceFs.pathIndexTruncated,
-		},
-	};
-}
+// #endregion action
 
 // Vitest sets NODE_ENV to "test"; Convex's bundler defines it as "production",
 // so keep that check first to let esbuild erase `import.meta.vitest` before analysis.
@@ -4783,6 +5138,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		userId: test_user_id,
 	} as const;
 	const test_app_files_mount = "/home/cloud-usr/w/personal/home";
+	const function_name_of = (ref: unknown) => {
+		try {
+			return getFunctionName(ref as Parameters<typeof getFunctionName>[0]);
+		} catch {
+			return null;
+		}
+	};
 
 	const makeCtx = (
 		runQueryImpl: (ref: unknown, args: Record<string, unknown>) => Promise<unknown>,
@@ -5003,8 +5365,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			extraFileContents?: Record<string, string>;
 			scanTruncatedPaths?: string[];
 		}) {
+			pagination_cursors_cache.clear();
 			let cwd = args?.initialCwd ?? "~";
 			const scanTruncatedPaths = new Set(args?.scanTruncatedPaths ?? []);
+			let valueStoreCounter = 0;
+			const valueStore = new Map<string, string>();
 			const workspaceItems: Array<{
 				path: string;
 				kind: "folder" | "file";
@@ -5016,6 +5381,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				servedSize?: number;
 			}> = [...workspaceItemsInitial, ...(args?.extraItems ?? [])];
 			const runQueryImpl = async (_ref: unknown, queryArgs: Record<string, unknown>) => {
+				if (function_name_of(_ref) === "value_store:get") {
+					const id = typeof queryArgs.id === "string" ? queryArgs.id : "";
+					const value = valueStore.get(id);
+					return value == null ? null : { value, createdAt: Date.now() };
+				}
+
 				const itemName = (path: string) => path.split("/").filter(Boolean).at(-1) ?? "";
 				const itemExtension = (path: string) => {
 					const name = itemName(path);
@@ -5170,10 +5541,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						continueCursor: paged.continueCursor,
 						isDone: paged.isDone,
 					};
-				}
-
-				if (_ref === internal.files_nodes.text_search_files_page_has_items) {
-					return true;
 				}
 
 				if ("query" in queryArgs) {
@@ -5346,15 +5713,33 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					return { servedBytes: typeof target.size === "number" ? target.size : 0, pending: false };
 				}
 
+				if (function_name_of(_ref) === "files_nodes:get_by_path") {
+					const path = queryArgs.path;
+					if (path === "/" || typeof path !== "string") {
+						return null;
+					}
+					const item = workspaceItems.find((entry) => entry.path === path);
+					return item
+						? {
+								_id: nodeIdForPath(item.path),
+								_creationTime: item.updatedAt,
+								workspaceId: queryArgs.workspaceId,
+								projectId: queryArgs.projectId,
+								parentId: nodeIdForPath(parentPath(item.path)),
+								name: itemName(item.path),
+								path: item.path,
+								kind: item.kind,
+								updatedAt: item.updatedAt,
+								updatedBy: item.updatedBy ?? test_user_id,
+								contentType: item.contentType,
+								size: item.size,
+							}
+						: null;
+				}
+
 				const path = queryArgs.path;
 				if (path === "/") {
-					return {
-						nodeId: "root",
-						path: "/",
-						name: "",
-						kind: "folder",
-						updatedAt: 0,
-					};
+					return files_SYNTHETIC_ROOT_FOLDER;
 				}
 				if (typeof path !== "string") {
 					return null;
@@ -5376,6 +5761,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const { ctx, runQuery, runMutation, runAction } = makeCtx(runQueryImpl, {
 				runMutationImpl: async (_ref, mutationArgs) => {
+					if (function_name_of(_ref) === "value_store:put") {
+						const id = `value_store_${++valueStoreCounter}`;
+						valueStore.set(id, String(mutationArgs.value ?? ""));
+						return id;
+					}
+
 					if (typeof mutationArgs.path === "string") {
 						const existing = workspaceItems.find((item) => item.path === mutationArgs.path);
 						if (existing?.kind === "folder") {
@@ -5577,8 +5968,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run, getCwd } = createBashRunner();
 
 			const pwdResult = await run("pwd");
-			expect(pwdResult.stdout.trim()).toBe("/home/cloud-usr");
-			expect(pwdResult.metadata.cwd).toBe("/home/cloud-usr");
+			expect(pwdResult.stdout.trim()).toBe(test_app_files_mount);
+			expect(pwdResult.metadata.cwd).toBe(test_app_files_mount);
+			expect(getCwd()).toBe("~/w/personal/home");
 
 			const cdResult = await run(`cd ${test_app_files_mount}/docs`);
 			expect(cdResult.metadata.nextCwd).toBe(`${test_app_files_mount}/docs`);
@@ -5730,7 +6122,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("nested/");
 			expect(result.stdout).toContain("Next page:");
-			expect(result.stdout).toContain(`ls --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs`);
+			expect(result.stdout).toContain(`ls --limit 1 --cursor value_store_1 ${test_app_files_mount}/docs`);
 			expect(result.stderr).not.toContain("directory listing truncated");
 			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
 			expect(paginatedCalls).toEqual(
@@ -5775,15 +6167,95 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 		});
 
-		test("continues paginated ls from the opaque cursor", async () => {
+		test("delegates bare ls to the current scratch directory outside the current project path", async () => {
+			const { run, runQuery } = createBashRunner();
+
+			const result = await run("cd /tmp && printf hi > scratch.txt && ls");
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toContain("scratch.txt");
+			expect(result.stdout).not.toContain("readme.md");
+			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
+			expect(paginatedCalls).toHaveLength(0);
+		});
+
+		test("keeps native relative ls output outside the current project path", async () => {
+			const { run, runQuery } = createBashRunner();
+
+			const result = await run("cd /tmp && printf hi > relative-native.txt && ls relative-native.txt");
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout.trim()).toBe("relative-native.txt");
+			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
+			expect(paginatedCalls).toHaveLength(0);
+		});
+
+		test("reports unknown ls cursor ids with recovery guidance", async () => {
 			const { run } = createBashRunner();
 
 			const result = await run(`ls --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs`);
 
-			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toContain("readme.md");
-			expect(result.stdout).not.toContain("nested/");
-			expect(result.stdout).toContain(`ls --limit 1 --cursor cursor-2 ${test_app_files_mount}/docs`);
+			expect(result.metadata.exitCode).toBe(1);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toContain("cursor cursor-1 expired or is unavailable");
+			expect(result.stderr).toContain("rerun the original command");
+		});
+
+		test("resolves stored cursor ids from memory before querying value_store", async () => {
+			const { run, runQuery } = createBashRunner();
+
+			const firstPage = await run(`ls --limit 1 ${test_app_files_mount}/docs`);
+			const cursorId = firstPage.stdout.match(/--cursor (\S+)/u)?.[1];
+			expect(cursorId).toBe("value_store_1");
+
+			runQuery.mockClear();
+			const secondPage = await run(`ls --limit 1 --cursor ${cursorId} ${test_app_files_mount}/docs`);
+
+			expect(secondPage.metadata.exitCode).toBe(0);
+			expect(secondPage.stdout).toContain("readme.md");
+			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "value_store:get")).toBe(false);
+			expect(runQuery).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({
+					cursor: "cursor-1",
+				}),
+			);
+		});
+
+		test("falls back to value_store when a cursor id is not in memory", async () => {
+			const { run, runQuery } = createBashRunner();
+
+			const firstPage = await run(`ls --limit 1 ${test_app_files_mount}/docs`);
+			const cursorId = firstPage.stdout.match(/--cursor (\S+)/u)?.[1];
+			expect(cursorId).toBe("value_store_1");
+
+			pagination_cursors_cache.clear();
+			runQuery.mockClear();
+			const secondPage = await run(`ls --limit 1 --cursor ${cursorId} ${test_app_files_mount}/docs`);
+
+			expect(secondPage.metadata.exitCode).toBe(0);
+			expect(secondPage.stdout).toContain("readme.md");
+			expect(
+				runQuery.mock.calls.some(
+					([ref, queryArgs]) => function_name_of(ref) === "value_store:get" && queryArgs.id === "value_store_1",
+				),
+			).toBe(true);
+			expect(runQuery).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({
+					cursor: "cursor-1",
+				}),
+			);
+		});
+
+		test("reports missing cursor ids with recovery guidance", async () => {
+			const { run } = createBashRunner();
+
+			const result = await run(`ls --limit 1 --cursor missing ${test_app_files_mount}/docs`);
+
+			expect(result.metadata.exitCode).toBe(1);
+			expect(result.stderr).toContain("cursor missing expired or is unavailable");
+			expect(result.stderr).toContain("rerun the original command");
 		});
 
 		test("supports multiple ls path operands with per-directory continuation commands", async () => {
@@ -5798,8 +6270,82 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stdout).toContain(`${test_app_files_mount}:\ndocs/`);
 			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
 			expect(result.stdout.match(/Next page:/gu)).toHaveLength(2);
-			expect(result.stdout).toContain(`Next page: ls --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs`);
-			expect(result.stdout).toContain(`Next page: ls --limit 1 --cursor cursor-1 ${test_app_files_mount}`);
+			expect(result.stdout).toContain(`Next page: ls --limit 1 --cursor value_store_1 ${test_app_files_mount}/docs`);
+			expect(result.stdout).toContain(`Next page: ls --limit 1 --cursor value_store_2 ${test_app_files_mount}`);
+		});
+
+		test("supports mixed native and app ls operands without a cursor", async () => {
+			const { run } = createBashRunner();
+
+			const nativeFirst = await run(
+				`printf hi > /tmp/mixed-native-a.txt && printf hi > /tmp/mixed-native-b.txt && ls /tmp/mixed-native-a.txt /tmp/mixed-native-b.txt ${test_app_files_mount}/docs`,
+			);
+			const nativeAppNative = await run(
+				`printf hi > /tmp/mixed-native-a.txt && printf hi > /tmp/mixed-native-b.txt && ls /tmp/mixed-native-a.txt ${test_app_files_mount}/docs /tmp/mixed-native-b.txt`,
+			);
+
+			expect(nativeFirst.metadata.exitCode).toBe(0);
+			expect(nativeFirst.stdout).toContain("/tmp/mixed-native-a.txt");
+			expect(nativeFirst.stdout).toContain("/tmp/mixed-native-b.txt");
+			expect(nativeFirst.stdout).toContain(`${test_app_files_mount}/docs:\nnested/`);
+			expect(nativeFirst.stdout.indexOf("/tmp/mixed-native-a.txt")).toBeLessThan(
+				nativeFirst.stdout.indexOf("/tmp/mixed-native-b.txt"),
+			);
+			expect(nativeFirst.stdout.indexOf("/tmp/mixed-native-b.txt")).toBeLessThan(
+				nativeFirst.stdout.indexOf(`${test_app_files_mount}/docs:`),
+			);
+			expect(nativeFirst.stderr).not.toContain("cannot mix app file paths");
+
+			expect(nativeAppNative.metadata.exitCode).toBe(0);
+			expect(nativeAppNative.stdout).toContain("/tmp/mixed-native-a.txt");
+			expect(nativeAppNative.stdout).toContain(`${test_app_files_mount}/docs:\nnested/`);
+			expect(nativeAppNative.stdout).toContain("/tmp/mixed-native-b.txt");
+			expect(nativeAppNative.stdout.indexOf("/tmp/mixed-native-a.txt")).toBeLessThan(
+				nativeAppNative.stdout.indexOf(`${test_app_files_mount}/docs:`),
+			);
+			expect(nativeAppNative.stdout.indexOf(`${test_app_files_mount}/docs:`)).toBeLessThan(
+				nativeAppNative.stdout.indexOf("/tmp/mixed-native-b.txt"),
+			);
+			expect(nativeAppNative.stderr).not.toContain("cannot mix app file paths");
+		});
+
+		test("formats mixed native and app ls directory sections consistently", async () => {
+			const { run } = createBashRunner();
+
+			const result = await run(
+				`mkdir -p /tmp/mixed-ls-dir && printf hi > /tmp/mixed-ls-dir/native.txt && ls ${test_app_files_mount}/docs /tmp/mixed-ls-dir`,
+			);
+			const relativeResult = await run(
+				`cd /tmp && mkdir -p mixed-ls-relative-dir && printf hi > mixed-ls-relative-dir/native.txt && ls mixed-ls-relative-dir ${test_app_files_mount}/docs`,
+			);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toContain(`${test_app_files_mount}/docs:\nnested/`);
+			expect(result.stdout).toContain("/tmp/mixed-ls-dir:\nnative.txt");
+			expect(result.stdout.trim().split("\n\n")).toEqual([
+				`${test_app_files_mount}/docs:\nnested/\nreadme.md\ntutorial.md`,
+				"/tmp/mixed-ls-dir:\nnative.txt",
+			]);
+			expect(relativeResult.metadata.exitCode).toBe(0);
+			expect(relativeResult.stdout.trim().split("\n\n")).toEqual([
+				"mixed-ls-relative-dir:\nnative.txt",
+				`${test_app_files_mount}/docs:\nnested/\nreadme.md\ntutorial.md`,
+			]);
+		});
+
+		test("keeps native ls flags when batching adjacent native operands", async () => {
+			const { run } = createBashRunner();
+
+			const result = await run(
+				`mkdir -p /tmp/mixed-ls-a /tmp/mixed-ls-b && ls -d /tmp/mixed-ls-a /tmp/mixed-ls-b ${test_app_files_mount}/docs`,
+			);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout.trim().split("\n\n")).toEqual([
+				"/tmp/mixed-ls-a",
+				"/tmp/mixed-ls-b",
+				`${test_app_files_mount}/docs/`,
+			]);
 		});
 
 		test("rejects ls cursor continuation with multiple operands", async () => {
@@ -5808,9 +6354,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const result = await run(
 				`ls --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs ${test_app_files_mount}/reports`,
 			);
+			const mixedResult = await run(`ls --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs /tmp`);
 
 			expect(result.metadata.exitCode).toBe(2);
 			expect(result.stderr).toContain("--cursor can only continue one listing target");
+			expect(mixedResult.metadata.exitCode).toBe(2);
+			expect(mixedResult.stderr).toContain("--cursor can only continue one listing target");
 			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
 			expect(paginatedCalls).toHaveLength(0);
 		});
@@ -5895,7 +6444,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(scopedNewest.stdout.trim().split("\n").at(0)).toBe("zzz-new.md");
 			expect(scopedOldest.metadata.exitCode).toBe(0);
 			expect(scopedOldest.stdout.trim().split("\n").at(0)).toBe("aaa-old.md");
-			expect(scopedPaged.stdout).toContain(`Next page: ls -t --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs`);
+			expect(scopedPaged.stdout).toContain(
+				`Next page: ls -t --limit 1 --cursor value_store_1 ${test_app_files_mount}/docs`,
+			);
 			expect(recursiveScoped.metadata.exitCode).toBe(2);
 			expect(recursiveScoped.stderr).toContain("ls -t -R is not supported");
 			expect(projectPaged.stdout).toContain("Next page: ls -t --limit 1 --cursor");
@@ -5929,28 +6480,43 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stdout.trim().split("\n")).toEqual(["nested/", "readme.md", "tutorial.md"]);
 		});
 
-		test("rejects unsupported ls sorting and size flags for app paths", async () => {
-			const { run } = createBashRunner();
+		test("rejects unsupported ls sorting and size flags only when app file node paths are involved", async () => {
+			const { run, runQuery } = createBashRunner();
 
 			const sortResult = await run(`ls --sort=size ${test_app_files_mount}/docs`);
 			const sizeResult = await run(`ls -S ${test_app_files_mount}/docs`);
+			const nativeResult = await run("ls --sort=size /tmp");
+			const mixedResult = await run(
+				`printf hi > /tmp/unsupported-ls-native.txt && ls --sort=size /tmp/unsupported-ls-native.txt ${test_app_files_mount}/docs`,
+			);
 
 			expect(sortResult.metadata.exitCode).toBe(2);
 			expect(sortResult.stderr).toContain("unsupported option --sort=size");
+			expect(sortResult.stderr).toContain("/home/cloud-usr/w");
 			expect(sortResult.stderr).toContain("supports name order only");
 			expect(sizeResult.metadata.exitCode).toBe(2);
 			expect(sizeResult.stderr).toContain("unsupported option -S");
+			expect(nativeResult.stderr).not.toContain("/home/cloud-usr/w");
+			expect(mixedResult.metadata.exitCode).toBe(2);
+			expect(mixedResult.stderr).toContain("unsupported option --sort=size");
+			expect(mixedResult.stderr).toContain("/home/cloud-usr/w");
+			expect(mixedResult.stdout).not.toContain("unsupported-ls-native.txt");
+			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
+			expect(paginatedCalls).toHaveLength(0);
 		});
 
 		test("guides invented ls pagination flags back to the printed cursor command", async () => {
 			const { run } = createBashRunner();
 
-			const result = await run(`ls --limit 1 --next-page ${test_app_files_mount}/docs`);
+			const appResult = await run(`ls --limit 1 --next-page ${test_app_files_mount}/docs`);
+			const nativeResult = await run("ls --next-page /tmp");
 
-			expect(result.metadata.exitCode).toBe(2);
-			expect(result.stderr).toContain("--next-page is not supported");
-			expect(result.stderr).toContain("Copy the exact");
-			expect(result.stderr).toContain("Next page: ls --limit N --cursor");
+			for (const result of [appResult, nativeResult]) {
+				expect(result.metadata.exitCode).toBe(2);
+				expect(result.stderr).toContain("--next-page is not supported");
+				expect(result.stderr).toContain("Copy the exact");
+				expect(result.stderr).toContain("Next page: ls --limit N --cursor");
+			}
 		});
 
 		test("supports paginated find with maxdepth and type filters", async () => {
@@ -6063,7 +6629,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(pathGlob.metadata.exitCode).toBe(0);
 			expect(pathGlob.stdout).toContain(`${test_app_files_mount}/docs/nested/deep.md`);
 			expect(pathGlob.stdout).toContain(
-				`Next page: find ${test_app_files_mount}/docs --extension md --limit 1 --cursor`,
+				`Next page: find ${test_app_files_mount}/docs --extension md --limit 1 --cursor value_store_1`,
 			);
 			expect(runQuery).toHaveBeenCalledWith(
 				internal.files_nodes.list_subtree_by_extension_paginated,
@@ -6121,27 +6687,42 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run, runQuery } = createBashRunner();
 
 			const result = await run(`find ${test_app_files_mount}/docs -delete --limit 10`);
+			const nativeResult = await run("find /tmp -mtime 1 --limit 1");
 
 			expect(result.metadata.exitCode).toBe(2);
 			expect(result.stderr).toContain("unsupported predicate -delete");
+			expect(result.stderr).toContain("/home/cloud-usr/w");
 			expect(result.stderr).toContain("use -name QUERY");
 			expect(result.stderr).toContain("Usage: find");
+			expect(nativeResult.stderr).not.toContain("/home/cloud-usr/w");
 			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
 			expect(paginatedCalls).toHaveLength(0);
 		});
 
-		test("rejects app pagination options outside the app file mount without Convex queries", async () => {
+		test("ignores app pagination options outside the app file mount without Convex queries", async () => {
 			const { run, runQuery } = createBashRunner();
 
 			const lsResult = await run("ls --limit 1 /tmp");
+			const lsCursorResult = await run("ls /tmp --cursor missing");
 			const findResult = await run("find /tmp --limit 1");
+			const findCursorResult = await run("find /tmp --cursor missing");
+			const plainTreeResult = await run("tree /tmp");
+			const treeResult = await run("tree /tmp --limit 1");
+			const treeCursorResult = await run("tree /tmp --cursor missing");
+			const malformedLimitResult = await run("ls --limit nope /tmp");
 
-			expect(lsResult.metadata.exitCode).toBe(2);
-			expect(lsResult.stderr).toContain("--limit and --cursor are only available for app file paths");
-			expect(lsResult.stderr).toContain(test_app_files_mount);
-			expect(findResult.metadata.exitCode).toBe(2);
-			expect(findResult.stderr).toContain("--limit and --cursor are only available for app file paths");
-			expect(findResult.stderr).toContain(test_app_files_mount);
+			expect(lsResult.metadata.exitCode).toBe(0);
+			expect(lsCursorResult.metadata.exitCode).toBe(0);
+			expect(findResult.metadata.exitCode).toBe(0);
+			expect(findCursorResult.metadata.exitCode).toBe(0);
+			expect(treeResult.metadata.exitCode).toBe(plainTreeResult.metadata.exitCode);
+			expect(treeResult.stdout).toBe(plainTreeResult.stdout);
+			expect(treeResult.stderr).toBe(plainTreeResult.stderr);
+			expect(treeCursorResult.metadata.exitCode).toBe(plainTreeResult.metadata.exitCode);
+			expect(treeCursorResult.stdout).toBe(plainTreeResult.stdout);
+			expect(treeCursorResult.stderr).toBe(plainTreeResult.stderr);
+			expect(malformedLimitResult.metadata.exitCode).toBe(2);
+			expect(malformedLimitResult.stderr).toContain("ls: --limit must be an integer");
 			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
 			expect(paginatedCalls).toHaveLength(0);
 		});
@@ -6157,7 +6738,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(listCalls).toHaveLength(0);
 		});
 
-		test("resolves exact parent folders through app path lookups", async () => {
+		test("resolves exact parent folders through app file node path lookups", async () => {
 			const { run, runQuery } = createBashRunner();
 
 			const result = await run(`cd ${test_app_files_mount}/reports && pwd`);
@@ -6310,6 +6891,32 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 		});
 
+		test("runs indexed search with equals-form options", async () => {
+			const { run, runQuery } = createBashRunner();
+
+			const result = await run(`search --path=${test_app_files_mount}/docs --limit=5 unique-token`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(runQuery).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({
+					query: "unique-token",
+					numItems: 5,
+					pathPrefix: "/docs",
+				}),
+			);
+		});
+
+		test("rejects indexed search invalid limit values", async () => {
+			const { run, runQuery } = createBashRunner();
+
+			const result = await run("search --limit nope unique-token");
+
+			expect(result.metadata.exitCode).toBe(2);
+			expect(result.stderr).toContain("search: --limit must be an integer");
+			expect(runQuery).not.toHaveBeenCalled();
+		});
+
 		test("prints a search continuation when indexed search has another DB page", async () => {
 			const { run, runQuery } = createBashRunner();
 
@@ -6318,7 +6925,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(firstPage.metadata.exitCode).toBe(0);
 			expect(firstPage.stdout).toContain("Found 1 results");
-			expect(firstPage.stdout).toContain("Next page: search --limit 1 --cursor cursor-1 paged-token");
+			expect(firstPage.stdout).toContain("Next page: search --limit 1 --cursor value_store_1 paged-token");
 			expect(complete.stdout).not.toContain("Next page: search");
 			const pageProbeCalls = runQuery.mock.calls.filter(
 				([, args]) => "query" in args && "cursor" in args && !("numItems" in args),
@@ -6326,22 +6933,36 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(pageProbeCalls).toHaveLength(0);
 		});
 
-		test("probes scoped search continuations because DB-side filters can skip raw search hits", async () => {
+		test("reports unknown indexed search cursor ids", async () => {
+			const { run, runQuery } = createBashRunner();
+
+			const result = await run("search --limit 1 --cursor cursor-1 paged-token");
+
+			expect(result.metadata.exitCode).toBe(1);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toContain("cursor cursor-1 expired or is unavailable");
+			expect(runQuery).toHaveBeenCalledWith(internal.value_store.get, { id: "cursor-1" });
+		});
+
+		test("does not probe scoped search continuations because Convex filters paginate results", async () => {
 			const { run, runQuery } = createBashRunner();
 
 			const result = await run(`search --path ${test_app_files_mount}/docs --limit 1 paged-token`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("Next page: search --path");
+			expect(result.stdout).not.toContain("No matches in this page; more pages exist.");
+			expect(runQuery).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ query: "paged-token", pathPrefix: "/docs", numItems: 1 }),
+			);
 			const pageProbeCalls = runQuery.mock.calls.filter(
 				([, args]) => "query" in args && "cursor" in args && !("numItems" in args),
 			);
-			expect(pageProbeCalls.map(([, args]) => args)).toContainEqual(
-				expect.objectContaining({ query: "paged-token", pathPrefix: "/docs" }),
-			);
+			expect(pageProbeCalls).toHaveLength(0);
 		});
 
-		test("rejects app path operands in indexed search instead of folding them into the query", async () => {
+		test("rejects app file node path operands in indexed search instead of folding them into the query", async () => {
 			const { run, runQuery } = createBashRunner();
 
 			const result = await run(`search --limit 5 unique-token ${test_app_files_mount}`);
@@ -6355,7 +6976,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("scopes indexed search to a folder with --path", async () => {
 			const { run, runQuery } = createBashRunner();
 
-			// In-scope folder → hit, and the app path is passed through to the query.
+			// In-scope folder -> hit, and the app file node path is passed through to the query.
 			const inScope = await run(`search --path ${test_app_files_mount}/docs unique-token`);
 			expect(inScope.metadata.exitCode).toBe(0);
 			expect(inScope.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
@@ -6378,9 +6999,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(outScope.metadata.exitCode).toBe(0);
 			expect(outScope.stdout).toContain("No content matches found");
 			expect(outScope.stdout).toContain(`under ${test_app_files_mount}/other`);
-			expect(outScope.stdout).toContain("not path/name search");
+			expect(outScope.stdout).toContain("not path/name/glob/regex search");
 
-			// A --path outside the app mount is rejected.
+			// A --path outside currentProjectPath is rejected.
 			const bad = await run("search --path /etc unique-token");
 			expect(bad.metadata.exitCode).toBe(2);
 			expect(bad.stderr).toContain("must be a folder under the app file tree");
@@ -6422,7 +7043,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).toBe("");
 			expect(result.stdout).toContain("is not supported");
 			expect(result.stdout).toContain(`Try: search --path ${test_app_files_mount} --limit 20 unique-token`);
-			expect(result.stdout).toContain("Convex text index");
+			expect(result.stdout).toContain("one distinctive word or a few plain terms");
 			expect(result.stdout).toContain("cd there or use search --path");
 		});
 
@@ -6549,23 +7170,44 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const prefixResult = await run("find --prefix /docs --limit 20 -type f");
 			const relativePrefixResult = await scopedRunner.run("find --prefix nested --limit 1");
 			const treeResult = await run(`tree ${test_app_files_mount}/docs --limit 2`);
-			const wrongRootTree = await run("tree /docs --limit 2");
 
 			expect(prefixResult.metadata.exitCode).toBe(0);
 			expect(prefixResult.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
 			expect(prefixResult.stdout).toContain(`${test_app_files_mount}/docs/tutorial.md`);
 			expect(relativePrefixResult.metadata.exitCode).toBe(0);
 			expect(relativePrefixResult.stdout).toContain(
-				`Next page: find --prefix ${test_app_files_mount}/docs/nested --limit 1 --cursor`,
+				`Next page: find --prefix ${test_app_files_mount}/docs/nested --limit 1 --cursor value_store_1`,
 			);
 			expect(treeResult.metadata.exitCode).toBe(0);
 			expect(treeResult.stdout).toContain(test_app_files_mount + "/docs");
 			expect(treeResult.stdout).toContain("|-- nested/");
 			expect(treeResult.stdout).toContain("|   |-- deep.md");
-			expect(treeResult.stdout).toContain("Next page: tree");
-			expect(wrongRootTree.metadata.exitCode).toBe(2);
-			expect(wrongRootTree.stderr).toContain("tree: --limit and --cursor are app-file pagination flags");
-			expect(wrongRootTree.stderr).toContain(`Try: tree ${test_app_files_mount}/docs --limit 2`);
+			expect(treeResult.stdout).toContain(
+				`Next page: tree ${test_app_files_mount}/docs --limit 2 --cursor value_store_1`,
+			);
+		});
+
+		test("keeps tree app-only option guidance out of native paths", async () => {
+			const { run, runQuery } = createBashRunner();
+
+			const nativeResult = await run(
+				"mkdir -p /tmp/tree-native && printf hi > /tmp/tree-native/a.md && tree -P '*.md' /tmp/tree-native",
+			);
+			const appResult = await run(`tree -P '*.md' ${test_app_files_mount}/docs`);
+			const nativeNextPage = await run("tree --next-page /tmp");
+			const appNextPage = await run(`tree --next-page ${test_app_files_mount}/docs`);
+
+			expect(nativeResult.stderr).not.toContain("/home/cloud-usr/w");
+			expect(appResult.metadata.exitCode).toBe(2);
+			expect(appResult.stderr).toContain("unsupported option -P");
+			expect(appResult.stderr).toContain("/home/cloud-usr/w");
+			for (const result of [nativeNextPage, appNextPage]) {
+				expect(result.metadata.exitCode).toBe(2);
+				expect(result.stderr).toContain("--next-page is not supported");
+				expect(result.stderr).toContain("Copy the exact");
+			}
+			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
+			expect(paginatedCalls).toHaveLength(0);
 		});
 
 		test("supports exact reader commands while keeping unreadable app content out of generic readers", async () => {
@@ -6699,7 +7341,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(smallStillWorks.stdout).toContain("# Readme");
 		});
 
-		test("prints absolute app paths in large-file reader continuations", async () => {
+		test("prints absolute app file node paths in large-file reader continuations", async () => {
 			const bigFile = {
 				path: "/big.md",
 				kind: "file" as const,

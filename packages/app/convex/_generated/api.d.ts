@@ -25,6 +25,7 @@ import type * as quotas from "../quotas.js";
 import type * as r2 from "../r2.js";
 import type * as rate_limiter from "../rate_limiter.js";
 import type * as users from "../users.js";
+import type * as value_store from "../value_store.js";
 import type * as workspaces from "../workspaces.js";
 
 import type {
@@ -51,6 +52,7 @@ declare const fullApi: ApiFromModules<{
   r2: typeof r2;
   rate_limiter: typeof rate_limiter;
   users: typeof users;
+  value_store: typeof value_store;
   workspaces: typeof workspaces;
 }>;
 
