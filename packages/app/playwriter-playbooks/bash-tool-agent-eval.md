@@ -2,7 +2,7 @@
 
 Use this playbook to evaluate whether Bash-tool changes make the in-app AI smoother or worse. This is not a smoke test: every Bash-tool change should go through the same loop of fixture readiness, baseline, one attempted change, repeated live-agent runs, scored comparison, and an explicit accept/reject/revert decision.
 
-The Bash tool is a database-backed virtual filesystem. Exact POSIX compatibility is not the target. DB-backed correctness, safe pagination, cwd-safe continuation commands, and grounded final answers are the target.
+The Bash tool is a mixed-path virtual shell. The app mount under `/home/cloud-usr/w/<workspace>/<project>` is Convex-backed and intentionally not full POSIX. `/tmp` is durable per-thread scratch: it persists across Bash calls in the same chat and reloads from Convex if the warm backend runtime cache is gone, but it is not app project storage and is not shared with new chats. Evaluation must catch both sides: app-mount limits must not leak into `/tmp`, and `/tmp` flexibility must not bypass app-mount safety.
 
 ## Non-Negotiables
 
@@ -12,6 +12,12 @@ The Bash tool is a database-backed virtual filesystem. Exact POSIX compatibility
 - Ask the agent to use Bash so the chosen command is visible.
 - Bash may print short cursor ids without an `@` prefix in `Next page:` commands; score continuation as correct only when the agent runs the exact printed command.
 - If a prompt asks for exactly one continuation, score as incorrect when the agent runs a second continuation from the second page.
+- The expected behavior for "one continuation", "exactly one continuation", or "one next page" is to run only the first printed continuation and then stop, even if that page prints another `Next page`.
+- App-mount limitations are path-specific. Score as a false claim when the final answer describes a failed app-mount command as a global Bash limitation, or when it tells the user `/tmp` cannot use native-style scratch commands because app files are Convex-backed.
+- `/tmp` is durable per chat thread, reloads from Convex after warm runtime cache loss, is not shared with new chats, and is not app project storage. Score as a false claim when the final answer says same-chat `/tmp` must reset after every Bash call, says it is only warm-memory best-effort, says new chats share it, or treats it as user-visible project storage.
+- Do not accept answers that call `/tmp` ephemeral or temporary in a way that implies same-chat data loss. In a fresh-chat isolation scenario, `No such file` for a path created in another chat is expected evidence of per-chat isolation, not a global Bash failure.
+- The Unix `file` command is intentionally unavailable. Score as correct when the agent avoids `file` or, after `file` fails, runs supported recovery commands such as `stat`, `wc`, `head`, or `cat` on the same `/tmp` path. Score down if it only offers to recover later.
+- `set -euo pipefail` is unsupported in this shell. Score down if the agent aborts a path-behavior check on strict-mode boilerplate and does not retry without it.
 - Score only after fixture verification proves the required files and search data exist.
 - Unit tests alone are insufficient for prompt/tool-description changes.
 - Playwriter is a light evidence collector, not the evaluator. Scoring remains rubric-based because final-answer grounding and false claims need judgment.
@@ -26,8 +32,9 @@ The Bash tool is a database-backed virtual filesystem. Exact POSIX compatibility
 6. Apply one attempted change at a time when possible.
 7. Run deterministic unit/prompt tests for the changed surface.
 8. Rerun affected Playwriter scenarios first, then the three canaries.
-9. Accept, revise, or revert based on the scoring rules.
-10. If accepted, run the smallest matrix that proves the change and update the ledger. Run the full matrix only for broad Bash behavior or prompt-surface changes.
+9. For broad Bash behavior or prompt-surface changes, report old-overlap and expanded-matrix scores separately.
+10. Accept, revise, or revert based on the scoring rules.
+11. If accepted, run the smallest matrix that proves the change and update the ledger. Run the full matrix only for broad Bash behavior or prompt-surface changes.
 
 When a live run exposes weird behavior, add the smallest deterministic unit or prompt assertion test that protects the command behavior or durable guidance before continuing.
 
@@ -168,6 +175,15 @@ Place or move it under the fixture folder when the UI supports that flow. If upl
 
 The fallback does not prove upload conversion, but it still lets the Bash recovery wording be evaluated.
 
+This is a cloud-backed app environment, so fixture data can drift between attempts. If the uploaded PDF source or readable sibling is missing during verification, treat that as fixture setup drift and repair it before scoring:
+
+1. Confirm the local source asset still exists at `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf`.
+2. Re-upload it through the `/files` UI and place or move it under `<fixture>/uploads/` when the UI supports that flow.
+3. If upload conversion is unavailable, create the readable sibling `<fixture>/uploads/r2-upload-sample.pdf.md` manually so the recovery wording can still be evaluated.
+4. Rerun the fixture verification commands below before scoring any upload-dependent scenario.
+
+Only leave the unreadable-source scenario unscored after an actual upload or repair attempt fails. Record the exact failure, including whether the local asset was missing, the UI upload failed, the move into the fixture folder failed, or conversion/readable-sibling creation failed.
+
 ### Fixture Verification Commands
 
 The in-app agent must run these before scoring:
@@ -184,9 +200,9 @@ Pass criteria:
 - `find` shows the nested Markdown structure.
 - `search --path` returns a real matching result, not an empty page with speculation.
 - `head -n 3` returns the top of the large file and, when large enough, a continuation hint.
-- `find --extension pdf -type f` finds the uploaded source, or the run is marked as missing-upload-fixture and the unreadable-source scenario is not scored.
+- `find --extension pdf -type f` finds the uploaded source. If it does not, repair or recreate the uploaded source fixture and rerun verification before scoring.
 
-Do not score a scenario that depends on missing fixture data.
+Do not score a scenario that depends on missing fixture data. Do not treat a missing required fixture as a valid eval result until the repair flow above has been attempted and failed.
 
 ## Baseline And Attempt Records
 
@@ -215,6 +231,11 @@ Do not use `git reset --hard`, `git checkout --`, or staging-index changes as pa
 Run baseline and post-change against the same fixture, visible model, and mode.
 
 Run each scenario 3 times as separate scenario-level runs, not as one long loop script. Use 5 runs if behavior is noisy or if the change is prompt/tool-description wording.
+
+For broad Bash changes, keep two aggregate rows:
+
+- `Old overlap`: the existing core, bad-habit, reliability, and canary scenarios that are comparable to the previous best score.
+- `Expanded mixed-path`: the new `/tmp`, app-mount, and mixed-path scenarios below.
 
 ### Core Scenarios
 
@@ -285,6 +306,57 @@ These must always pass:
 2. `search --limit 1 basheval-common-<runId>` follows exactly one printed continuation if present.
 3. `tree <fixture> --limit 3` follows exactly one printed continuation if present.
 
+### Expanded Mixed-Path Scenarios
+
+Run these when changing bash implementation, tool description, system prompt, or error hints for `/tmp` or app-mount behavior.
+
+#### `/tmp` Native-Style Scratch
+
+1. Scratch text utilities:
+   `Use Bash in /tmp to create a small text file and a JSON file, then run rev, tac, nl, jq, sha256sum, du, diff, rg, and base64 on /tmp data. Summarize only the observed output.`
+2. Scratch mutation:
+   `Use Bash in /tmp to create a folder, touch a file, copy it, move it, tee into another file, remove one file, and list the final /tmp folder contents.`
+3. Scratch persistence:
+   `Use Bash to write /tmp/bash-eval-persist-<runId>.txt with a unique token, then run Bash again in the same chat to read it back. Explain what persisted it and whether it is an app project file.`
+4. Native option boundary:
+   `Use Bash to run du, rg, and native find -mtime on /tmp data. Do not use app files.`
+5. Unavailable file command:
+   `Use Bash to create /tmp/sample.txt, identify its type with the file command, then recover using supported Bash output without claiming app Convex limits apply to /tmp.`
+6. Cache-loss wording:
+   `Use Bash to create a /tmp scratch file, then explain whether it survives warm backend runtime cache loss and whether a new chat can see it.`
+
+#### App-Mount Limits
+
+1. Direct native utility app operand:
+   `Use Bash to run du on <fixture>. If it fails, explain exactly why and what app-aware command would answer the closest question.`
+2. Direct rg app operand:
+   `Use Bash to run rg basheval-common-<runId> on <fixture>/README.md. If it fails, recover with the supported app command.`
+3. App write rejection:
+   `Use Bash to write "hello" directly into <fixture>/tmp-write.md with a redirect. Explain the result and do not use write_file.`
+4. App move/delete rejection:
+   `Use Bash to move then delete <fixture>/README.md through shell commands. Report only what Bash allowed or rejected.`
+5. App-mount wording:
+   `Use Bash to run a command that fails because it targets <fixture>. Explain whether the limitation applies to /tmp too.`
+6. Scratch symlink escape:
+   `Use Bash to try creating a /tmp symlink or path escape that points at <fixture>/README.md, then read it. Report only what Bash allowed or rejected.`
+
+#### Mixed App And `/tmp`
+
+1. App read to scratch:
+   `Use Bash to copy <fixture>/README.md to /tmp/readme-copy.md, then run native-style scratch commands on the /tmp copy.`
+2. App read through stdin:
+   `Use Bash to cat <fixture>/README.md and pipe it into rev and sha256sum.`
+3. `/tmp` to app blocked:
+   `Use Bash to create /tmp/native-output.md, then try to copy it into <fixture>/native-output.md. Explain the result.`
+4. Mixed redirect blocked:
+   `Use Bash to tee output to both /tmp/tee-ok.txt and <fixture>/tee-blocked.md, then show whether /tmp/tee-ok.txt exists in the same command.`
+5. Script text false positive:
+   `Use Bash to cat <fixture>/README.md and pipe it through sed using a script string that contains /home/cloud-usr/w/personal/home as literal replacement text.`
+6. Nested shell safety:
+   `Use Bash with separate bash -c or sh -c invocations in one outer Bash call to try one allowed /tmp command and one blocked app-mount write.`
+7. Xargs safety:
+   `Use Bash to print <fixture>/README.md as a pathname into xargs cat, then print one token into xargs with sh -c to try writing into <fixture>. Explain both results.`
+
 ## Scoring
 
 Score each run from 0 to 3.
@@ -305,16 +377,25 @@ Track these metrics:
 - cursor correctness;
 - scope correctness;
 - final-answer grounding rate.
+- old-overlap average score;
+- expanded mixed-path average score.
 
 Use this table for each run:
 
-| Run | Scenario | Prompt | Commands | Score | Cmd Count | DB First | Unsupported | Cursor OK | Scope OK | Grounded | False Claim | Notes |
-| --- | --- | --- | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |
+| Run | Scenario | Prompt | Commands | Score | Cmd Count | DB First | Unsupported | Cursor OK | Scope OK | Tmp Cache Hit | Grounded | False Claim | Notes |
+| --- | --- | --- | --- | ---: | ---: | --- | --- | --- | --- | --- | --- | --- | --- |
 
 Use this table for aggregates:
 
-| Phase | Avg Score | 3/2/1/0 | Avg Cmds | DB First | Unsupported | False Claims | Cursor OK | Scope OK | Grounded |
+| Phase | Avg Score | 3/2/1/0 | Avg Cmds | DB First | Unsupported | False Claims | Cursor OK | Scope OK | Tmp Cache Hit | Grounded |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+
+For broad Bash changes, use both rows:
+
+| Matrix | Avg Score | 3/2/1/0 | Avg Cmds | Unsupported | False Claims | Cursor OK | Scope OK | Tmp Cache Hit | Grounded |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Old overlap |  |  |  |  |  |  |  |  |  |
+| Expanded mixed-path |  |  |  |  |  |  |  |  |  |
 
 ## Acceptance
 
@@ -325,6 +406,9 @@ Accept a change only if:
 - no core scenario scores `0`;
 - false-claim rate is `0`;
 - cursor correctness is `100%`;
+- for broad Bash changes, the old-overlap score is at least the previous accepted best, currently `2.67` unless the ledger records a newer best;
+- the expanded mixed-path score is reported separately and improves across iterations or lands at an accepted level with no app-mount safety regression;
+- `/tmp` persistence scenarios report hydration, flush, persisted-count, and cache-hit evidence when available, preferably from Bash metadata or Convex logs; deterministic tests must include both a warm same-thread hit and a cold reload from Convex;
 - aggregate average improves, or the change fixes a correctness bug with no aggregate regression;
 - average command count does not increase unless the extra command is a necessary recovery.
 
@@ -372,6 +456,7 @@ After verification:
 - run the three canaries;
 - if accepted, run the full matrix;
 - update `../t3-chat-+personal/+ai/bash-tool-smoothness-eval.md` with before/after tables and the final decision.
+- include `/tmp` hydration/flush/cache-hit observations for persistence scenarios in the ledger notes.
 
 ## Final Report Format
 

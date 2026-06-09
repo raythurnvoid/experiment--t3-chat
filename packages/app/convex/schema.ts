@@ -71,6 +71,47 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	}).index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"]),
 
+	ai_chat_files_state: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		threadId: v.id("ai_chat_threads"),
+		pathCount: v.number(),
+		totalBytes: v.number(),
+		updatedBy: v.id("users"),
+		updatedAt: v.number(),
+	})
+		.index("by_thread", ["threadId"])
+		.index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"]),
+
+	ai_chat_files: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		threadId: v.id("ai_chat_threads"),
+		path: v.string(),
+		kind: v.union(v.literal("file"), v.literal("directory"), v.literal("symlink")),
+		mode: v.number(),
+		size: v.number(),
+		mtime: v.number(),
+		target: v.optional(v.string()),
+		updatedBy: v.id("users"),
+		updatedAt: v.number(),
+	})
+		.index("by_thread_path", ["threadId", "path"])
+		.index("by_workspace_project_thread_path", ["workspaceId", "projectId", "threadId", "path"])
+		.index("by_thread", ["threadId"]),
+
+	ai_chat_files_content: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		threadId: v.id("ai_chat_threads"),
+		fileId: v.id("ai_chat_files"),
+		bytes: v.bytes(),
+		updatedAt: v.number(),
+	})
+		.index("by_file", ["fileId"])
+		.index("by_thread_file", ["threadId", "fileId"])
+		.index("by_thread", ["threadId"]),
+
 	// #endregion ai
 
 	// #region value store

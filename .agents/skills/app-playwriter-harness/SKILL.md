@@ -46,6 +46,7 @@ pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab
 - Use `state.appPlaywriterHarness.hitTest({ x, y })` only for layout or clickability bugs where a visible element may be covered.
 - For route-specific checks, read the relevant reference recipe and run it with generic helpers instead of adding a new helper function.
 - Keep each execute call focused on one observation or one action, then observe again.
+- Prefer small observe-act-observe scripts over bundled multi-step runners during interactive debugging and eval inspection. Batch only when the user explicitly asks for a runner or the flow is already stable and repeatable.
 
 ## Memories
 

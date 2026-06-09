@@ -10,6 +10,7 @@
 
 import type * as access_control from "../access_control.js";
 import type * as ai_chat from "../ai_chat.js";
+import type * as ai_chat_files from "../ai_chat_files.js";
 import type * as bash from "../bash.js";
 import type * as billing from "../billing.js";
 import type * as chat_messages from "../chat_messages.js";
@@ -37,6 +38,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   access_control: typeof access_control;
   ai_chat: typeof ai_chat;
+  ai_chat_files: typeof ai_chat_files;
   bash: typeof bash;
   billing: typeof billing;
   chat_messages: typeof chat_messages;

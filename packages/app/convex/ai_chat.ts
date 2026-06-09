@@ -71,25 +71,35 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 	return [
 		"You are the app chat agent for the user's workspace.",
 		"Use the available tools as the working interface for the workspace.",
-		`Bash starts in the current project path at \`~/w/${args.workspaceName}/${args.projectName}\` (\`${currentProjectPath}\`). \`~\` is \`${HOME}\`, the app mount is \`${appMountPath}\`, and \`/tmp\` is in-memory scratch that resets between bash calls.`,
+		`Bash starts in the current project path at \`~/w/${args.workspaceName}/${args.projectName}\` (\`${currentProjectPath}\`). \`~\` is \`${HOME}\`, the app mount is \`${appMountPath}\`, and \`/tmp\` is durable scratch scoped to this chat thread.`,
+		"`/tmp` persists across Bash calls in this chat and reloads from Convex if the warm backend runtime cache is gone. It is not shared with new chats and is not app project storage; use app file tools for durable user-visible files.",
+		"Do not call `/tmp` ephemeral or temporary in a way that implies same-chat data loss. If a fresh chat cannot read a `/tmp` path created in another chat, that is expected evidence of per-chat isolation, not a global Bash failure.",
 		"Bash cwd persists across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating `cd`.",
-		"Bash is the normal file shell for the app, but app files are Convex-backed, not a POSIX filesystem. Use the supported command subset instead of assuming GNU compatibility.",
+		"Bash is the normal shell for this cloud file environment. `/tmp` supports the safe Just Bash native-style scratch command surface; app files under the app mount are Convex-backed, not POSIX files.",
+		"Do not describe app-mount limitations as global Bash limitations. If a command touches only `/tmp` or stdin, use normal scratch commands; if it touches the app mount, use the app-aware command forms below.",
+		"Native-style `/tmp` commands use Just Bash's own argument parsing and include safe text/file utilities such as `du`, `diff`, `rg`, `jq`, `base64`, `sha256sum`, `nl`, `rev`, and `tac`; the Unix `file` command is intentionally unavailable.",
+		"If `file` fails or the user asks for it, do not stop after reporting that it is unavailable; run supported recovery commands such as `stat`, `wc`, `head`, or `cat` on the same `/tmp` path when that answers the request.",
+		"`/tmp` native commands are Just Bash browser commands, not host GNU coreutils. Prefer simple portable forms such as `du file`; if a `/tmp` option fails but the command is useful, retry once with simpler native syntax.",
+		"When retrying a `/tmp` command option, prefer doing related scratch work in one call when convenient, but previous `/tmp` files are available in later calls in the same chat.",
 		"When reporting Bash results, treat app-only flags such as `--limit`, `--cursor`, `--path-query`, and `--extension` as supported app Bash syntax; do not warn that a successful app command is non-standard.",
-		"Printed `Next page:` commands may use short `--cursor @...` aliases; run the exact printed command to continue.",
+		"Printed `Next page:` commands use short cursor ids without an `@` prefix; run the exact printed command to continue. If the user asks for exactly one continuation, one continuation, or one next page, run only the first printed continuation and then stop even if that page prints another `Next page:` command. If the user asked for continuations from multiple commands, continue each requested command before summarizing.",
 		`When a user names an app-root path like \`/docs\`, run it as \`${currentProjectPath}/docs\` or \`cd ${currentProjectPath}\` and use \`docs\`; do not treat \`/docs\` as a host-root path.`,
 		"If a failed Bash command prints a `Try:` command that directly matches the user's request, run that `Try:` command next instead of only reporting the failure.",
+		"When using `bash -c` or `sh -c` to compare `/tmp` and app-mount behavior, use separate nested invocations in one outer Bash call so a blocked app redirect cannot hide earlier `/tmp` stdout.",
+		"For `xargs` path checks, print pathnames into `xargs` such as `printf '%s\\n' <path> | xargs cat`; do not pipe file content to `xargs` when the input is meant to be a pathname.",
 		"Shell pathname expansion is disabled. General app-file glob operands are unsupported. Prefer `find <folder> --extension md -type f`; simple find patterns like `*.md` are accepted only as extension-search recovery.",
 		"`ls --limit` and `find --limit` are app-file pagination commands. Relative paths resolve against the current working directory.",
 		"Content-vs-path rule: use `search` for text inside files, and use `find` only for path/name discovery. Plain requests like `search for X with limit N` mean content search, so run `search --limit N X`. If the user says `search for the X file`, `find the X file`, `file named X`, or `path/name contains X`, use `find`. If the user says `search inside <folder> for X`, `where does X appear`, or `files mention X`, run `search --path <folder> X` or `search X`; do not substitute `find --path-query`.",
+		"For recursive grep requests over an app folder, the first Bash command should be `search --path <folder> <content terms>`; do not run `ls`, native `rg`, or multi-file `grep` first.",
 		"When listing the current directory, prefer `ls --limit N` over `ls --limit N <current-cwd>`. Do not restate the current cwd as a path argument just for certainty.",
 		"Use `ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current directory. `--cursor` continues one listing target only; when asked to continue, run the printed `Next page:` command as the next Bash call and do not invent `--next-page`. `ls -t` (newest first) and `ls -rt` (oldest first) without PATH list the whole project ordered by update time; with PATH they list that directory's immediate children by update time. For recent immediate children after `cd` into a folder, use `ls -t --limit N .`; bare `ls -t` is still project-wide. `ls -Rt PATH` is unsupported.",
 		"`ls -R` lists a paginated subtree as full app shell paths; when the user asks for tree-shaped output, use `tree`, not `ls -R`. `ls -d` lists the target entry itself and wins over `-R`; `ls -l` uses app metadata, not POSIX permissions, owners, groups, inodes, blocks, symlinks, or real sizes; `stat` reports the same app metadata, so its Access/owner/group fields are placeholders, not real POSIX values. Unsupported sort/filter flags still fail.",
-		"Use `find -name QUERY` or `find --path-query QUERY` only for DB-backed path/name word search. Prefer `--path-query QUERY` for natural “path/name contains QUERY” requests; pass a plain token such as `readme`, not `*readme*`. For regex path requests, say regex is unsupported and use token search when a plain token is obvious; do not summarize successful `--path-query` output as native glob/regex syntax. Use `find <dir> -maxdepth 1 -name QUERY` for DB-backed immediate-child path search under one directory. Use `find <path> --extension md -type f` for exact indexed extension search; simple `find -name '*.md'` and `find <dir>/*.md` are accepted as extension-search recovery, not general glob support. Use `find <path> --limit N` for subtree pages, and `find --prefix <prefix> --limit N` only for raw startsWith path discovery; unlike subtree mode, prefix mode may match sibling prefixes such as `/docs-archive`. `find` searches paths/names only, not file content. When asked for files under a folder, include `-type f`; when asked for folders, include `-type d`. `find -maxdepth N` and `find -mindepth N` filter non-search subtree results by depth. `find -type f` and `find -type d` restrict results to files or folders. General glob/regex patterns and GNU find extensions are not supported.",
-		"`search [--limit N] [--cursor CURSOR] <content terms...>` is full-text content search across Markdown/text content. Pass one distinctive word or a few plain terms that should appear in the document body; the text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. It is implemented with Convex full-text search, but it is not regex, glob, path/name search, or exact grep. For requests like “where does X appear” or “which files mention X”, run `search` first; do not substitute `find`, which only searches paths/names. For recursive grep or `grep -R` wording over a folder, use `search --path <folder> <content terms>` directly. Scope to one folder with `search --path <folder> <content terms>` when useful, but broad folder scopes with common terms can be heavier. If cwd is inside the app tree, bare `search` scopes to that cwd; pass `--path` to choose another folder, follow printed `Next page:` commands, and do not use `search` as a pipeline filter. To search a SINGLE file's content use `grep [-i] PATTERN <file>` (substring match, prints `lineNumber:line`; also `-c`/`-l`/`-v` and `-A`/`-B`/`-C N` context).",
+		"Use `find -name QUERY` or `find --path-query QUERY` only for DB-backed path/name word search. Prefer `--path-query QUERY` for natural “path/name contains QUERY” requests; pass a plain token such as `readme`, not `*readme*`. For regex path requests against app files, say regex is unsupported and use token search when a plain token is obvious; do not summarize successful `--path-query` output as native glob/regex syntax. Use `find <dir> -maxdepth 1 -name QUERY` for DB-backed immediate-child path search under one directory. Use `find <path> --extension md -type f` for exact indexed extension search; simple `find -name '*.md'` and `find <dir>/*.md` are accepted as extension-search recovery, not general glob support. Use `find <path> --limit N` for subtree pages, and `find --prefix <prefix> --limit N` only for raw startsWith path discovery; unlike subtree mode, prefix mode may match sibling prefixes such as `/docs-archive`. `find` searches app paths/names only, not file content. When asked for app files under a folder, include `-type f`; when asked for folders, include `-type d`. `find -maxdepth N` and `find -mindepth N` filter non-search app subtree results by depth. `find -type f` and `find -type d` restrict app results to files or folders. General glob/regex patterns and GNU find extensions are unsupported for app paths, but native `find` syntax can be used for `/tmp` paths.",
+		"`search [--limit N] [--cursor CURSOR] <content terms...>` is full-text content search across Markdown/text content. Pass one distinctive word or a few plain terms that should appear in the document body; the text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. It is implemented with Convex full-text search, but it is not regex, glob, path/name search, or exact grep. For requests like “where does X appear” or “which files mention X”, run `search` first; do not substitute `find`, which only searches paths/names. For recursive grep, `grep -R`, or `rg` wording over an app folder, do not try native `rg` or multi-file `grep` first; run `search --path <folder> <content terms>` directly. Scope to one folder with `search --path <folder> <content terms>` when useful, but broad folder scopes with common terms can be heavier. If cwd is inside the app tree, bare `search` scopes to that cwd; pass `--path` to choose another folder, follow printed `Next page:` commands, and do not use `search` as a pipeline filter. To search a SINGLE file's content use `grep [-i] PATTERN <file>` (substring match, prints `lineNumber:line`; also `-c`/`-l`/`-v` and `-A`/`-B`/`-C N` context).",
 		"Use exact app paths with `cat`, `head`, `tail`, `wc`, and `stat`; these readers fetch at most 10 app files per command: to READ specific known files, `cat` them in batches of 10 or fewer across commands; to FIND which files mention something, use `search` (it returns snippets, not whole files). Large files are not read inline: a single `cat` shows a bounded first page (it prints how to page on), and a multi-file `cat` refuses when any file is too large to inline. Read a large file in bounded pages — `head -n N` (first lines; it prints the next `sed -n` page command), `sed -n 'A,Bp'` (any line range), `tail -n N` (last lines), up to " +
 			files_READ_RANGE_MAX_LINES +
-			" lines per read; run `wc` first to learn its size (line/word counts are lower bounds for very large files); `wc` accepts multiple files (per-file line plus a `total`) and does not refuse a large member. Use `search` to find content across files (or `search --path <folder>` for one folder), and `grep [-i] PATTERN <file>` to find lines in ONE file; `grep -R`/multi-file grep is not supported. Use `tree [PATH] --limit N` only for paginated app tree shape.",
-		"Keep Bash commands simple: avoid strict-mode boilerplate, comments in command strings, and process substitution.",
+			" lines per read; run `wc` first to learn its size (line/word counts are lower bounds for very large files); `wc` accepts multiple files (per-file line plus a `total`) and does not refuse a large member. Use `search` to find content across files (or `search --path <folder>` for one folder), and `grep [-i] PATTERN <file>` to find lines in ONE file. Simple `grep -R PATTERN <app-folder>` is recovered through indexed full-text search, but complex or multi-file grep forms are not exact recursive grep; prefer `search --path`. Use `tree [PATH] --limit N` only for paginated app tree shape.",
+		"Keep Bash commands simple: avoid strict-mode boilerplate such as `set -euo pipefail` because `pipefail` is unsupported, comments in command strings, and process substitution. For multi-command inspection or eval checks, do not use `set -e` or hide stderr with `2>/dev/null`; later commands and visible stderr should still be observed.",
 		"Only summarize actual Bash stdout/stderr. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
 		"Do not work around app read-only write, move, or delete requests by copying app files to `/tmp`; report the Bash error unless the user asked for a scratch copy.",
 		"In Agent mode, `mkdir` under the app file tree creates durable folders.",
@@ -105,7 +115,7 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 }
 
 const ASK_MODE_SYSTEM_PROMPT_SUFFIX =
-	"Ask mode is for reading, searching, and answering. Durable folder and file changes are handled in Agent mode; scratch space is ephemeral.";
+	"Ask mode is for reading, searching, and answering. Durable folder and file changes are handled in Agent mode; /tmp scratch is durable per chat thread but is not app project storage.";
 
 const BASH_REPLACED_TOOL_NAMES = ["read_file", "list_files", "glob_files", "grep_files"] as const;
 
@@ -633,6 +643,20 @@ export const thread_branch = mutation({
 			updatedAt: now,
 		});
 		await ctx.db.patch("ai_chat_threads", newThreadId, { stateId });
+		const copiedTmpFiles = (await ctx.runMutation(internal.ai_chat_files.copy_thread_tmp_files, {
+			workspaceId,
+			projectId,
+			sourceThreadId: threadId,
+			targetThreadId: newThreadId,
+			userId: userAuth.id,
+		})) as { _yay: { pathCount: number; totalBytes: number } } | { _nay: { message: string } };
+		if ("_nay" in copiedTmpFiles) {
+			console.error("Failed to copy AI chat thread /tmp files during branch", {
+				sourceThreadId: threadId,
+				targetThreadId: newThreadId,
+				message: copiedTmpFiles._nay.message,
+			});
+		}
 
 		if (!newestMessage) {
 			return Result({ _yay: { threadId: newThreadId } });
@@ -2113,7 +2137,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			expect(configuration.systemPrompt).toContain(
-				"Ask mode is for reading, searching, and answering. Durable folder and file changes are handled in Agent mode; scratch space is ephemeral.",
+				"Ask mode is for reading, searching, and answering. Durable folder and file changes are handled in Agent mode; /tmp scratch is durable per chat thread but is not app project storage.",
 			);
 		});
 
@@ -2129,19 +2153,58 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			expect(configuration.systemPrompt).toContain(
-				"Bash starts in the current project path at `~/w/personal/home` (`/home/cloud-usr/w/personal/home`). `~` is `/home/cloud-usr`, the app mount is `/home/cloud-usr/w`, and `/tmp` is in-memory scratch that resets between bash calls.",
+				"Bash starts in the current project path at `~/w/personal/home` (`/home/cloud-usr/w/personal/home`). `~` is `/home/cloud-usr`, the app mount is `/home/cloud-usr/w`, and `/tmp` is durable scratch scoped to this chat thread.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"`/tmp` persists across Bash calls in this chat and reloads from Convex if the warm backend runtime cache is gone.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"It is not shared with new chats and is not app project storage; use app file tools for durable user-visible files.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Do not call `/tmp` ephemeral or temporary in a way that implies same-chat data loss.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"that is expected evidence of per-chat isolation, not a global Bash failure.",
 			);
 			expect(configuration.systemPrompt).toContain(
 				"Bash cwd persists across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating `cd`.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"Bash is the normal file shell for the app, but app files are Convex-backed, not a POSIX filesystem.",
+				"Bash is the normal shell for this cloud file environment. `/tmp` supports the safe Just Bash native-style scratch command surface; app files under the app mount are Convex-backed, not POSIX files.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Do not describe app-mount limitations as global Bash limitations.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"If a command touches only `/tmp` or stdin, use normal scratch commands; if it touches the app mount, use the app-aware command forms below.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Native-style `/tmp` commands use Just Bash's own argument parsing and include safe text/file utilities such as `du`, `diff`, `rg`, `jq`, `base64`, `sha256sum`, `nl`, `rev`, and `tac`; the Unix `file` command is intentionally unavailable.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"If `file` fails or the user asks for it, do not stop after reporting that it is unavailable",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"`/tmp` native commands are Just Bash browser commands, not host GNU coreutils.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"if a `/tmp` option fails but the command is useful, retry once with simpler native syntax.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"When retrying a `/tmp` command option, prefer doing related scratch work in one call when convenient",
 			);
 			expect(configuration.systemPrompt).toContain(
 				"When reporting Bash results, treat app-only flags such as `--limit`, `--cursor`, `--path-query`, and `--extension` as supported app Bash syntax",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"Printed `Next page:` commands may use short `--cursor @...` aliases; run the exact printed command to continue.",
+				"Printed `Next page:` commands use short cursor ids without an `@` prefix; run the exact printed command to continue.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"If the user asks for exactly one continuation, one continuation, or one next page, run only the first printed continuation",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"If the user asked for continuations from multiple commands, continue each requested command before summarizing.",
 			);
 			expect(configuration.systemPrompt).toContain(
 				"When a user names an app-root path like `/docs`, run it as `/home/cloud-usr/w/personal/home/docs`",
@@ -2161,6 +2224,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(configuration.systemPrompt).toContain(
 				"Content-vs-path rule: use `search` for text inside files, and use `find` only for path/name discovery.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"For recursive grep requests over an app folder, the first Bash command should be `search --path <folder> <content terms>`",
 			);
 			expect(configuration.systemPrompt).toContain(
 				"Plain requests like `search for X with limit N` mean content search",
@@ -2189,20 +2255,23 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"Prefer `--path-query QUERY` for natural “path/name contains QUERY” requests",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"For regex path requests, say regex is unsupported and use token search when a plain token is obvious",
+				"For regex path requests against app files, say regex is unsupported and use token search when a plain token is obvious",
 			);
 			expect(configuration.systemPrompt).toContain("Use `find <path> --extension md -type f`");
 			expect(configuration.systemPrompt).toContain(
 				"`find --prefix <prefix> --limit N` only for raw startsWith path discovery",
 			);
 			expect(configuration.systemPrompt).toContain("prefix mode may match sibling prefixes such as `/docs-archive`");
-			expect(configuration.systemPrompt).toContain("`find` searches paths/names only, not file content.");
+			expect(configuration.systemPrompt).toContain("`find` searches app paths/names only, not file content.");
 			expect(configuration.systemPrompt).toContain(
-				"`find -maxdepth N` and `find -mindepth N` filter non-search subtree results by depth.",
+				"`find -maxdepth N` and `find -mindepth N` filter non-search app subtree results by depth.",
 			);
-			expect(configuration.systemPrompt).toContain("When asked for files under a folder, include `-type f`");
+			expect(configuration.systemPrompt).toContain("When asked for app files under a folder, include `-type f`");
 			expect(configuration.systemPrompt).toContain(
-				"`find -type f` and `find -type d` restrict results to files or folders.",
+				"`find -type f` and `find -type d` restrict app results to files or folders.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"General glob/regex patterns and GNU find extensions are unsupported for app paths, but native `find` syntax can be used for `/tmp` paths.",
 			);
 			expect(configuration.systemPrompt).toContain(
 				"`search [--limit N] [--cursor CURSOR] <content terms...>` is full-text content search",
@@ -2210,7 +2279,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(configuration.systemPrompt).toContain("Pass one distinctive word or a few plain terms");
 			expect(configuration.systemPrompt).toContain("For requests like “where does X appear” or “which files mention X”, run `search` first");
 			expect(configuration.systemPrompt).toContain(
-				"For recursive grep or `grep -R` wording over a folder, use `search --path <folder> <content terms>` directly.",
+				"For recursive grep, `grep -R`, or `rg` wording over an app folder, do not try native `rg` or multi-file `grep` first",
 			);
 			expect(configuration.systemPrompt).toContain("do not substitute `find`, which only searches paths/names");
 			expect(configuration.systemPrompt).toContain("it is not regex, glob, path/name search, or exact grep");
@@ -2223,10 +2292,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(configuration.systemPrompt).toContain("accepts multiple files (per-file line plus a `total`)");
 			expect(configuration.systemPrompt).toContain("Large files are not read inline");
 			expect(configuration.systemPrompt).toContain(`up to ${files_READ_RANGE_MAX_LINES} lines per read`);
-			expect(configuration.systemPrompt).toContain("`grep -R`/multi-file grep is not supported");
+			expect(configuration.systemPrompt).toContain(
+				"Simple `grep -R PATTERN <app-folder>` is recovered through indexed full-text search",
+			);
 			expect(configuration.systemPrompt).toContain("Use `tree [PATH] --limit N` only for paginated app tree shape.");
 			expect(configuration.systemPrompt).toContain("also `-c`/`-l`/`-v` and `-A`/`-B`/`-C N` context");
-			expect(configuration.systemPrompt).toContain("avoid strict-mode boilerplate");
+			expect(configuration.systemPrompt).toContain(
+				"When using `bash -c` or `sh -c` to compare `/tmp` and app-mount behavior",
+			);
+			expect(configuration.systemPrompt).toContain("For `xargs` path checks, print pathnames into `xargs`");
+			expect(configuration.systemPrompt).toContain("avoid strict-mode boilerplate such as `set -euo pipefail`");
+			expect(configuration.systemPrompt).toContain("`pipefail` is unsupported");
+			expect(configuration.systemPrompt).toContain(
+				"For multi-command inspection or eval checks, do not use `set -e` or hide stderr with `2>/dev/null`",
+			);
 			expect(configuration.systemPrompt).toContain("Only summarize actual Bash stdout/stderr");
 			expect(configuration.systemPrompt).toContain("Do not work around app read-only write, move, or delete requests");
 			expect(configuration.systemPrompt).toContain(

@@ -105,6 +105,25 @@ describe("ai_chat_tool_create_bash", () => {
 					stdoutLength: server_ai_tools_test_app_files_mount.length + 1,
 					stderrLength: 0,
 					pathIndexTruncated: false,
+					tmpFsCacheHit: false,
+					tmpFsHydratedFromDb: false,
+					tmpFsFlushed: false,
+					tmpFsFlushMode: "none",
+					tmpFsDeltaUpsertedPathCount: 0,
+					tmpFsDeltaDeletedPathCount: 0,
+					tmpFsDirty: false,
+					tmpFsSessionCallCount: 1,
+					tmpFsSessionHitCount: 0,
+					tmpFsPathCount: 0,
+					tmpFsApproxBytes: 0,
+					tmpFsPersistedPathCount: 0,
+					tmpFsPersistedBytes: 0,
+					tmpFsCacheGets: 1,
+					tmpFsCacheHits: 0,
+					tmpFsCacheMisses: 1,
+					tmpFsCacheEvictions: 0,
+					tmpFsCacheExpiredEvictions: 0,
+					tmpFsCacheOversizeDiscards: 0,
 				},
 			}),
 		});
@@ -157,8 +176,103 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
+				description: expect.stringContaining("App-mount limitations apply only to paths under /home/cloud-usr/w/personal/home or /home/cloud-usr/w."),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("/tmp has the safe Just Bash native-style scratch command surface"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("If a command touches only /tmp or stdin, use normal scratch commands"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("/tmp is durable scratch scoped to this chat thread"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
 				description: expect.stringContaining(
-					"Printed Next page commands may use short --cursor @... aliases; run the exact printed command to continue.",
+					"/tmp persists across Bash calls in this chat and reloads from Convex if the warm backend runtime cache is gone.",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("It is not shared with new chats and is not app project storage; use app file tools for durable user-visible files."),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("Do not call /tmp ephemeral or temporary in a way that implies same-chat data loss."),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("that is expected evidence of per-chat isolation, not a global Bash failure."),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"Native-style /tmp commands use Just Bash's own argument parsing and include safe text/file utilities",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("jq, base64, sha256sum"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("/tmp native commands are Just Bash browser commands, not host GNU coreutils."),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("if a /tmp option fails but the command is useful, retry once with simpler native syntax."),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"When retrying a /tmp command option, prefer doing related scratch work in one call when convenient",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("the Unix file command is intentionally unavailable"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("If file fails or the user asks for it, do not stop after reporting that it is unavailable"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"Printed Next page commands use short cursor ids without an @ prefix; run the exact printed command to continue.",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"If the user asks for exactly one continuation, one continuation, or one next page, run only the first printed continuation",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"If the user asked for continuations from multiple commands, continue each requested command before summarizing.",
 				),
 			}),
 		);
@@ -173,6 +287,28 @@ describe("ai_chat_tool_create_bash", () => {
 			expect.objectContaining({
 				description: expect.stringContaining(
 					"If a failed Bash command prints a Try: command that directly matches the user's request",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("When using bash -c or sh -c to compare /tmp and app-mount behavior"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("For xargs path checks, print pathnames into xargs"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("avoid strict-mode boilerplate such as set -euo pipefail because pipefail is unsupported"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"For multi-command inspection or eval checks, do not use set -e or hide stderr with 2>/dev/null",
 				),
 			}),
 		);
@@ -202,13 +338,20 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("find -maxdepth N and find -mindepth N filter non-search subtree results by depth."),
+				description: expect.stringContaining("find -maxdepth N and find -mindepth N filter non-search app subtree results by depth."),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
 					'Content-vs-path rule: use search for text inside files, and use find only for path/name discovery.',
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"For recursive grep requests over an app folder, the first Bash command should be search --path <folder> <content terms>",
 				),
 			}),
 		);
@@ -255,7 +398,7 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("For regex path requests, say regex is unsupported"),
+				description: expect.stringContaining("For regex path requests against app files, say regex is unsupported"),
 			}),
 		);
 		expect(tool).toEqual(
@@ -282,7 +425,12 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("For recursive grep or grep -R wording over a folder"),
+				description: expect.stringContaining("For recursive grep, grep -R, or rg wording over an app folder"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search"),
 			}),
 		);
 		expect(tool).toEqual(
@@ -302,17 +450,22 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("find -type f and find -type d restrict results to files or folders."),
+				description: expect.stringContaining("find -type f and find -type d restrict app results to files or folders."),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("find searches paths/names only, not file content."),
+				description: expect.stringContaining("find searches app paths/names only, not file content."),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("When asked for files under a folder, include -type f"),
+				description: expect.stringContaining("When asked for app files under a folder, include -type f"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("Native find syntax can be used for /tmp paths."),
 			}),
 		);
 		expect(tool).toEqual(
