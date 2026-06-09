@@ -236,7 +236,7 @@
 	/* #endregion user message send error */
 
 	/* #region markdown user */
-	.AiChatMessagePartMarkdownUser {
+	.AiChatMessagePartMarkdownUser-content {
 		white-space: pre-wrap;
 	}
 	/* #endregion markdown user */
@@ -559,6 +559,10 @@
 	/* #region markdown agent */
 	.AiChatMessagePartMarkdownAgent {
 		padding: 0 24px;
+	}
+
+	.AiChatMessagePartMarkdownAgent-content {
+		white-space: pre-wrap;
 	}
 	/* #endregion markdown agent */
 

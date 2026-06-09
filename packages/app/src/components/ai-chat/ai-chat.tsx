@@ -1,9 +1,10 @@
 import "./ai-chat.css";
 
 import type { ComponentPropsWithRef, Ref } from "react";
-import { memo, useState, useEffect, useRef, useDeferredValue, useLayoutEffect } from "react";
+import { memo, useState, useEffect, useRef, useDeferredValue, useLayoutEffect, useMemo } from "react";
 import { useFn, useLiveRef, useThrottle } from "@/hooks/utils-hooks.ts";
 import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
+import { useQuery } from "convex/react";
 import { ArrowDown, PanelLeft } from "lucide-react";
 
 import { MyButton } from "@/components/my-button.tsx";
@@ -12,10 +13,11 @@ import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { MyIconButton } from "@/components/my-icon-button.tsx";
 import { AiChatThreads } from "@/components/ai-chat/ai-chat-threads.tsx";
 import { dom_find_first_element_overflowing_element, dom_TypedAttributeAccessor } from "@/lib/dom-utils.ts";
-import { cn } from "@/lib/utils.ts";
+import { cn, type GeneratedIdPrefix } from "@/lib/utils.ts";
 import { useUiStickToBottom } from "@/lib/ui.tsx";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { app_convex_api } from "@/lib/app-convex-client.ts";
 import {
 	AiChatController,
 	type AiChatControllerStorageKey,
@@ -33,6 +35,10 @@ import {
 	type AiChatMessage_CustomAttributes,
 	type AiChatMessageUser_ClassNames,
 } from "@/components/ai-chat/ai-chat-message.tsx";
+
+function ai_chat_is_optimistic_thread_id(threadId?: string | null) {
+	return Boolean(threadId?.startsWith("ai_thread-" satisfies GeneratedIdPrefix));
+}
 
 // #region welcome
 type AiChatWelcome_ClassNames =
@@ -824,25 +830,53 @@ type AiChat_Props = ComponentPropsWithRef<"div"> & {
 	ref?: Ref<HTMLDivElement>;
 	id?: string;
 	className?: string;
+	searchParams?: AiChat_SearchParams;
+	onNavigateSearch?: (search: AiChat_SearchParams) => void;
+};
+
+export type AiChat_SearchParams = {
+	threadId?: string;
 };
 
 export const AiChat = memo(function AiChat(props: AiChat_Props) {
+	const { searchParams } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const storageKey: AiChatControllerStorageKey = `app_state::ai_chat_last_open::scope::${membershipId}`;
 
 	return (
-		<AiChatController key={storageKey} storageKey={storageKey}>
+		<AiChatController key={storageKey} storageKey={storageKey} initialSelectedThreadId={searchParams?.threadId}>
 			<AiChatContent {...props} />
 		</AiChatController>
 	);
 });
 
 const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
-	const { ref, id, className, ...rest } = props;
+	const { ref, id, className, searchParams, onNavigateSearch, ...rest } = props;
 
+	const { membershipId } = AppTenantProvider.useContext();
 	const controller = AiChatController.useThreadList();
 	const [aiChatSidebarOpen, setAiChatSidebarOpen] = useState(true);
 	const [scrollableContainer, setScrollableContainer] = useState<HTMLElement | null>(null);
+	const fallbackSelectedThreadIdRef = useRef<string | null>(null);
+	const lastAppliedSearchThreadIdRef = useRef<string | null>(null);
+
+	const searchThreadId = searchParams?.threadId;
+	const searchThreadIsOptimistic = ai_chat_is_optimistic_thread_id(searchThreadId);
+	const searchThread = useQuery(
+		app_convex_api.ai_chat.thread_get,
+		searchThreadId && !searchThreadIsOptimistic ? { membershipId, threadId: searchThreadId } : "skip",
+	);
+	const firstThread = useMemo(() => {
+		return (
+			controller.currentThreadsWithOptimistic.unarchived.results
+				.toSorted((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0))
+				.at(0) ?? null
+		);
+	}, [controller.currentThreadsWithOptimistic.unarchived.results]);
+
+	const navigateSearch = useFn((threadId?: string) => {
+		onNavigateSearch?.({ threadId });
+	});
 
 	const handleCloseSidebar = useFn(() => {
 		setAiChatSidebarOpen(false);
@@ -852,6 +886,93 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 		setAiChatSidebarOpen(true);
 	});
 
+	const handleSelectThread = useFn((threadId: string) => {
+		controller.selectThread(threadId);
+		navigateSearch(threadId);
+	});
+
+	const handleNewChat = useFn(() => {
+		const threadId = controller.startNewChat();
+		navigateSearch(threadId);
+	});
+
+	useEffect(() => {
+		if (!searchThreadId) {
+			return;
+		}
+
+		if (searchThreadIsOptimistic) {
+			lastAppliedSearchThreadIdRef.current = searchThreadId;
+			if (searchThreadId !== controller.selectedThreadId) {
+				controller.selectThread(searchThreadId);
+			}
+			return;
+		}
+
+		if (searchThread === undefined) {
+			return;
+		}
+
+		if (searchThread) {
+			lastAppliedSearchThreadIdRef.current = searchThreadId;
+			if (searchThread._id !== controller.selectedThreadId) {
+				controller.selectThread(searchThread._id);
+			}
+			return;
+		}
+
+		if (controller.currentThreadsWithOptimistic.unarchived.status === "LoadingFirstPage") {
+			return;
+		}
+
+		lastAppliedSearchThreadIdRef.current = null;
+		if (firstThread) {
+			fallbackSelectedThreadIdRef.current = firstThread._id;
+			controller.selectThread(firstThread._id);
+		} else {
+			controller.clearSelectedThread();
+		}
+		navigateSearch(undefined);
+	}, [
+		controller.clearSelectedThread,
+		controller.currentThreadsWithOptimistic.unarchived.status,
+		controller.selectThread,
+		controller.selectedThreadId,
+		firstThread,
+		navigateSearch,
+		searchThread,
+		searchThreadId,
+		searchThreadIsOptimistic,
+	]);
+
+	useEffect(() => {
+		const selectedThreadId = controller.selectedThreadId;
+
+		if (searchThreadId === selectedThreadId) {
+			lastAppliedSearchThreadIdRef.current = searchThreadId ?? null;
+			return;
+		}
+
+		if (searchThreadId && lastAppliedSearchThreadIdRef.current !== searchThreadId) {
+			return;
+		}
+
+		if (!selectedThreadId) {
+			if (searchThreadId) {
+				lastAppliedSearchThreadIdRef.current = null;
+				navigateSearch(undefined);
+			}
+			return;
+		}
+
+		if (fallbackSelectedThreadIdRef.current === selectedThreadId) {
+			fallbackSelectedThreadIdRef.current = null;
+			return;
+		}
+
+		navigateSearch(selectedThreadId);
+	}, [controller.selectedThreadId, navigateSearch, searchThreadId]);
+
 	return (
 		<div ref={ref} id={id} className={cn("AiChat" satisfies AiChat_ClassNames, className)} {...rest}>
 			<AiChatThreads
@@ -860,12 +981,12 @@ const AiChatContent = memo(function AiChatContent(props: AiChat_Props) {
 				streamingTitleByThreadId={controller.streamingTitleByThreadId}
 				selectedThreadId={controller.selectedThreadId}
 				onClose={handleCloseSidebar}
-				onSelectThread={controller.selectThread}
+				onSelectThread={handleSelectThread}
 				onToggleFavouriteThread={controller.setThreadStarred}
 				onBranchThread={controller.branchChat}
 				onArchiveThread={controller.archiveThread}
 				onRemoveOptimisticThread={controller.removeOptimisticThread}
-				onNewChat={controller.startNewChat}
+				onNewChat={handleNewChat}
 			/>
 
 			{/* Main Content Area - takes remaining space */}

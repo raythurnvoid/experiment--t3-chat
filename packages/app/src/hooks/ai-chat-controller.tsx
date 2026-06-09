@@ -151,6 +151,7 @@ const SelectionContext = createContext<SelectionContextValue | null>(null);
 
 export type AiChatController_Props = {
 	storageKey: AiChatControllerStorageKey;
+	initialSelectedThreadId?: string | null;
 	children?: ReactNode;
 };
 
@@ -174,7 +175,11 @@ function get_sidebar_open_tabs_storage_key(storageKey: SidebarSelectedTabStorage
 	) as SidebarOpenTabsStorageKey;
 }
 
-function get_initial_selected_thread_id(storageKey: AiChatControllerStorageKey) {
+function get_initial_selected_thread_id(storageKey: AiChatControllerStorageKey, initialSelectedThreadId?: string | null) {
+	if (initialSelectedThreadId !== undefined) {
+		return initialSelectedThreadId;
+	}
+
 	const selectedThreadId = app_local_storage_get_value(storageKey);
 	if (!is_sidebar_selected_tab_storage_key(storageKey)) {
 		return selectedThreadId;
@@ -186,9 +191,11 @@ function get_initial_selected_thread_id(storageKey: AiChatControllerStorageKey) 
 }
 
 function ControllerProvider(props: AiChatController_Props) {
-	const { storageKey, children } = props;
+	const { storageKey, initialSelectedThreadId, children } = props;
 
-	const [selectedThreadId, setSelectedThreadIdState] = useState(() => get_initial_selected_thread_id(storageKey));
+	const [selectedThreadId, setSelectedThreadIdState] = useState(() =>
+		get_initial_selected_thread_id(storageKey, initialSelectedThreadId),
+	);
 	const selectedThreadIdRef = useRef(selectedThreadId);
 
 	const setSelectedThreadId = useFn<SelectionContextValue["setSelectedThreadId"]>((next, options) => {

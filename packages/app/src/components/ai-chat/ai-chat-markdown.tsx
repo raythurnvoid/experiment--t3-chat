@@ -182,6 +182,7 @@ const remark_plugin_replace_break_with_newline = ((/* iife */) => {
 
 export type AiChatMarkdown_ClassNames =
 	| "AiChatMarkdown"
+	| "AiChatMarkdown-content"
 	| "AiChatMarkdown-h1"
 	| "AiChatMarkdown-h2"
 	| "AiChatMarkdown-h3"
@@ -207,12 +208,13 @@ const ai_chat_markdown_components = {
 
 export type AiChatMarkdown_Props = {
 	className?: string;
+	contentClassName?: string;
 	markdown: string;
 	replaceNewLineToBr?: boolean;
 };
 
 export const AiChatMarkdown = memo(function AiChatMarkdown(props: AiChatMarkdown_Props) {
-	const { markdown, replaceNewLineToBr, className } = props;
+	const { markdown, replaceNewLineToBr, className, contentClassName } = props;
 
 	const remarkPlugins = [
 		...Object.values(defaultRemarkPlugins),
@@ -233,7 +235,12 @@ export const AiChatMarkdown = memo(function AiChatMarkdown(props: AiChatMarkdown
 		<div
 			className={cn("AiChatMarkdown" satisfies AiChatMarkdown_ClassNames, "app-doc" satisfies AppClassName, className)}
 		>
-			<Streamdown mode="static" remarkPlugins={remarkPlugins} components={ai_chat_markdown_components}>
+			<Streamdown
+				mode="static"
+				className={cn("AiChatMarkdown-content" satisfies AiChatMarkdown_ClassNames, contentClassName)}
+				remarkPlugins={remarkPlugins}
+				components={ai_chat_markdown_components}
+			>
 				{markdownToParse}
 			</Streamdown>
 		</div>

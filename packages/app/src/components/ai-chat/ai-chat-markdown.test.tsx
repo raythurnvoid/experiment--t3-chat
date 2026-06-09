@@ -31,4 +31,12 @@ describe("AiChatMarkdown", () => {
 		expect(inlineCode?.textContent).toBe("search");
 		expect(container.querySelector("[data-streamdown='inline-code']")).toBeNull();
 	});
+
+	test("passes content classes to the Streamdown wrapper", () => {
+		const { container } = render(<AiChatMarkdown markdown={"Line 1\nLine 2"} contentClassName="TestMarkdownContent" />);
+
+		const content = container.querySelector(".AiChatMarkdown-content.TestMarkdownContent");
+
+		expect(content?.textContent).toBe("Line 1\nLine 2");
+	});
 });

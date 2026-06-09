@@ -392,11 +392,11 @@ function SidebarSurface(props: { children: ReactNode }) {
 	);
 }
 
-function FullPageSurface(props: { children: ReactNode }) {
+function FullPageSurface(props: { children: ReactNode; initialSelectedThreadId?: string | null }) {
 	const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
 
 	return (
-		<AiChatController key={storageKey} storageKey={storageKey}>
+		<AiChatController key={storageKey} storageKey={storageKey} initialSelectedThreadId={props.initialSelectedThreadId}>
 			{props.children}
 		</AiChatController>
 	);
@@ -431,6 +431,37 @@ describe("AiChatController", () => {
 
 		expect(screen.getByTestId("full-selected").textContent).toBe("thread_full_last");
 		expect(hookMocks.renderSelectedThreadId).toHaveBeenNthCalledWith(1, "thread_full_last");
+	});
+
+	test("initializes full-page selection from URL thread before last-open storage", () => {
+		const storageKey: `app_state::ai_chat_last_open::scope::${string}` = `app_state::ai_chat_last_open::scope::${hookMocks.tenant.membershipId}`;
+		app_local_storage_set_value(storageKey, "thread_full_last");
+
+		render(
+			<FullPageSurface initialSelectedThreadId="thread_url_selected">
+				<ControllerProbe label="full" />
+			</FullPageSurface>,
+		);
+
+		expect(screen.getByTestId("full-selected").textContent).toBe("thread_url_selected");
+		expect(hookMocks.renderSelectedThreadId).toHaveBeenNthCalledWith(1, "thread_url_selected");
+		expect(app_local_storage_get_value(storageKey)).toBe("thread_full_last");
+	});
+
+	test("rehydrates URL optimistic full-page selection as an optimistic session", async () => {
+		const optimisticThreadId = "ai_thread-url_restored";
+
+		render(
+			<FullPageSurface initialSelectedThreadId={optimisticThreadId}>
+				<ControllerProbe label="full" />
+			</FullPageSurface>,
+		);
+
+		expect(screen.getByTestId("full-selected").textContent).toBe(optimisticThreadId);
+		await waitFor(() => {
+			expect(screen.getByTestId("full-session").textContent).toBe("session");
+		});
+		expect(hookMocks.chatInstances.some((chat) => chat.id === optimisticThreadId)).toBe(true);
 	});
 
 	test("initializes sidebar selection from selected/open tab storage and ignores full-page last-open storage", () => {

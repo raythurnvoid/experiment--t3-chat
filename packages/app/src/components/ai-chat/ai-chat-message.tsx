@@ -804,14 +804,16 @@ const AiChatMessagePartToolUnknown = memo(function AiChatMessagePartToolUnknown(
 // #endregion tool unknown
 
 // #region markdown assistant
-type AiChatMessagePartMarkdownAssistant_ClassNames = "AiChatMessagePartMarkdownAgent";
+type AiChatMessagePartMarkdownAssistant_ClassNames =
+	| "AiChatMessagePartMarkdownAgent"
+	| "AiChatMessagePartMarkdownAgent-content";
 
 type AiChatMessagePartMarkdownAssistant_Props = AiChatMarkdown_Props;
 
 const AiChatMessagePartMarkdownAgent = memo(function AiChatMessagePartMarkdownAgent(
 	props: AiChatMessagePartMarkdownAssistant_Props,
 ) {
-	const { className, markdown, ...rest } = props;
+	const { className, contentClassName, markdown, ...rest } = props;
 
 	const deferredMarkdown = useDeferredValue(markdown);
 
@@ -821,6 +823,10 @@ const AiChatMessagePartMarkdownAgent = memo(function AiChatMessagePartMarkdownAg
 				"AiChatMessagePartMarkdownAgent" satisfies AiChatMessagePartMarkdownAssistant_ClassNames,
 				className,
 			)}
+			contentClassName={cn(
+				"AiChatMessagePartMarkdownAgent-content" satisfies AiChatMessagePartMarkdownAssistant_ClassNames,
+				contentClassName,
+			)}
 			markdown={deferredMarkdown}
 			{...rest}
 		/>
@@ -829,7 +835,9 @@ const AiChatMessagePartMarkdownAgent = memo(function AiChatMessagePartMarkdownAg
 // #endregion markdown assistant
 
 // #region markdown user
-type AiChatMessagePartMarkdownUser_ClassNames = "AiChatMessagePartMarkdownUser";
+type AiChatMessagePartMarkdownUser_ClassNames =
+	| "AiChatMessagePartMarkdownUser"
+	| "AiChatMessagePartMarkdownUser-content";
 
 type AiChatMessagePartMarkdownUser_Props = {
 	markdown: string;
@@ -845,6 +853,7 @@ const AiChatMessagePartMarkdownUser = memo(function AiChatMessagePartMarkdownUse
 	return (
 		<AiChatMarkdown
 			className={"AiChatMessagePartMarkdownUser" satisfies AiChatMessagePartMarkdownUser_ClassNames}
+			contentClassName={"AiChatMessagePartMarkdownUser-content" satisfies AiChatMessagePartMarkdownUser_ClassNames}
 			markdown={deferredMarkdown}
 			replaceNewLineToBr={true}
 			{...rest}
