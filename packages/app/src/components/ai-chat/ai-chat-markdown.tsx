@@ -1,6 +1,7 @@
 import "./ai-chat-markdown.css";
 
 import { isValidElement, memo, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import remarkBreaks from "remark-breaks";
 import { defaultRemarkPlugins, Streamdown, type Components } from "streamdown";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { cn } from "@/lib/utils.ts";
@@ -86,6 +87,42 @@ function AiChatMarkdownPre(props: ComponentPropsWithoutRef<"pre"> & { node?: unk
 	);
 }
 // #endregion pre
+
+// #region ul
+/**
+ * Streamdown's default list components use `list-inside` (list-style-position: inside),
+ * which pushes the marker onto its own line when the li starts with a block element
+ * (loose list items render as `<li><p>…</p>…</li>`). Render plain ul/ol instead so the
+ * `.app-doc` list styles apply with default outside markers.
+ */
+function AiChatMarkdownUl(props: ComponentPropsWithoutRef<"ul"> & { node?: unknown }) {
+	const { className, children, node: _node, ...rest } = props;
+
+	return (
+		<ul className={cn("AiChatMarkdown-ul" satisfies AiChatMarkdown_ClassNames, className)} {...rest}>
+			{children}
+		</ul>
+	);
+}
+// #endregion ul
+
+// #region ol
+/**
+ * Streamdown's default list components use `list-inside` (list-style-position: inside),
+ * which pushes the marker onto its own line when the li starts with a block element
+ * (loose list items render as `<li><p>…</p>…</li>`). Render plain ul/ol instead so the
+ * `.app-doc` list styles apply with default outside markers.
+ */
+function AiChatMarkdownOl(props: ComponentPropsWithoutRef<"ol"> & { node?: unknown }) {
+	const { className, children, node: _node, ...rest } = props;
+
+	return (
+		<ol className={cn("AiChatMarkdown-ol" satisfies AiChatMarkdown_ClassNames, className)} {...rest}>
+			{children}
+		</ol>
+	);
+}
+// #endregion ol
 
 // #region root
 type markdown_MdastNode = {
@@ -204,6 +241,8 @@ export type AiChatMarkdown_ClassNames =
 const ai_chat_markdown_components = {
 	code: AiChatMarkdownCode,
 	pre: AiChatMarkdownPre,
+	ul: AiChatMarkdownUl,
+	ol: AiChatMarkdownOl,
 } satisfies Components;
 
 export type AiChatMarkdown_Props = {
@@ -216,8 +255,11 @@ export type AiChatMarkdown_Props = {
 export const AiChatMarkdown = memo(function AiChatMarkdown(props: AiChatMarkdown_Props) {
 	const { markdown, replaceNewLineToBr, className, contentClassName } = props;
 
+	// remark-breaks renders soft line breaks as <br> like chat UIs do, since
+	// model output relies on single newlines for line separation.
 	const remarkPlugins = [
 		...Object.values(defaultRemarkPlugins),
+		remarkBreaks,
 		...(replaceNewLineToBr ? [remark_plugin_replace_break_with_newline] : []),
 	];
 
@@ -395,5 +437,6 @@ if (import.meta.vitest) {
 			`);
 		});
 	});
+
 }
 // #endregion root

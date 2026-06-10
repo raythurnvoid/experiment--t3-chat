@@ -39,4 +39,20 @@ describe("AiChatMarkdown", () => {
 
 		expect(content?.textContent).toBe("Line 1\nLine 2");
 	});
+
+	test("renders soft line breaks in paragraphs as br elements", () => {
+		const { container } = render(<AiChatMarkdown markdown={"001 first\n002 second\n003 third"} />);
+
+		const paragraph = container.querySelector("p");
+
+		expect(paragraph?.querySelectorAll("br")).toHaveLength(2);
+	});
+
+	test("keeps literal newlines for user messages with replaceNewLineToBr", () => {
+		const { container } = render(<AiChatMarkdown markdown={"Line 1\nLine 2"} replaceNewLineToBr={true} />);
+
+		const content = container.querySelector(".AiChatMarkdown-content");
+
+		expect(content?.textContent).toBe("Line 1\nLine 2");
+	});
 });
