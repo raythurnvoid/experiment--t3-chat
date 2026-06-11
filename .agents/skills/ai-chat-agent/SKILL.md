@@ -101,7 +101,7 @@ Important limitation:
 - When a user names an app-root path like `/docs`, run it as `/home/cloud-usr/w/{workspaceName}/{projectName}/docs` or `cd /home/cloud-usr/w/{workspaceName}/{projectName}` and use `docs`. Do not treat `/docs` as a host-root path.
 - If a failed Bash command prints a `Try:` command that directly matches the user's request, run that `Try:` command next instead of only reporting the failure.
 - When using `bash -c` or `sh -c` to compare `/tmp` and app-mount behavior, use separate nested invocations in one outer Bash call so a blocked app redirect cannot hide earlier `/tmp` stdout.
-- For `xargs` path checks, print pathnames into `xargs`, such as `printf '%s\n' <path> | xargs cat`. Do not pipe file content to `xargs` when the input is meant to be a pathname.
+- For `xargs` path checks, print pathnames into `xargs`, such as `printf '%s\n' <path> | xargs cat`. Do not pipe file content to `xargs` when the input is meant to be a pathname. When feeding many pathnames such as `find ... | xargs cat`, add `xargs -n 10` so each reader invocation stays within the 10-file per-command cap.
 - `ls --limit` and `find --limit` are app-file pagination commands. Relative paths resolve against the current working directory.
 - When listing the current directory, the prompt and tool description should prefer `ls --limit N` over `ls --limit N <current-cwd>` and should not tell the model to restate cwd as a path argument for certainty.
 - Content-vs-path rule: use `search` for text inside files, and use `find` only for path/name discovery. Plain requests like "search for X with limit N" mean content search, so run `search --limit N X`. If the user says "search for the X file", "find the X file", "file named X", or "path/name contains X", use `find`. If the user says "search inside <folder> for X", "where does X appear", or "files mention X", run `search --path <folder> X` or `search X`; do not substitute `find --path-query`.
@@ -158,11 +158,11 @@ Important limitation:
 - Loads Markdown file content through `get_file_last_available_markdown_content_by_path`, preserving the current user's pending-update overlay.
 - Lists direct app children through `files_nodes.list_dir_children_by_parent_paginated` / `files_nodes.list_dir_children_by_parent_recency_paginated`, app subtrees through `files_nodes.list_subtree_paginated`, and raw startsWith prefixes through `files_nodes.list_path_prefix_paginated`.
 - Treats file writes under the app file tree as read-only; persistent content changes must use `write_file` or `edit_file`.
-- Convert bash paths to app paths before calling `write_file` or `edit_file` by removing the current project path prefix `/home/cloud-usr/w/{workspaceName}/{projectName}`.
+- Convert bash paths to app paths before calling `write_file` or `edit_file` by removing the current project path prefix `/home/cloud-usr/w/{workspaceName}/{projectName}` while preserving the full remaining suffix. For example, `/home/cloud-usr/w/personal/home/folder/README.md` becomes `/folder/README.md`, never `/README.md`.
 - Creates persistent folders only through `mkdir` under the app file tree in Agent-mode `bash`; Ask-mode `bash` rejects durable folder creation.
 - Provides `/tmp` as writable durable scratch space scoped to the chat thread. `/tmp` persists across later `bash` calls in the same chat and reloads from Convex if the warm backend runtime cache is gone, but a new chat has a separate scratch filesystem. App-mount guards should not prevent `/tmp`-only commands from using native-style scratch utilities.
 - Persists `cd` only when the final cwd is `~` or a directory below `/home/cloud-usr`. It does not persist `/tmp` or other paths outside the cloud user home.
-- Includes a custom `search [--limit N] [--cursor CURSOR] <content terms...>` command backed by the `files_nodes.text_search_files` plain-text index query. It expects one distinctive content word or a few plain terms from the document body, not paths, glob patterns, regexes, or exact grep syntax. Scoped `search --path` and app-cwd `search` use a DB-side filter before pagination. Avoid broad/common scoped searches when unscoped search or a more distinctive token is enough.
+- Includes a custom `search [--limit N] [--cursor CURSOR] <content terms...>` command backed by the `files_nodes.text_search_files` plain-text index query. It expects one distinctive content word or a few plain terms from the document body, not paths, glob patterns, regexes, or exact grep syntax. Scoped `search --path` and app-cwd `search` use a DB-side filter before pagination. The query searches the current user's materialized pending chunks (`files_pending_updates_chunks`, written in the same mutation as every pending row write) first, then committed chunks, and suppresses committed chunks for files with pending rows, so search results follow the same latest-version view as Bash exact readers. Avoid broad/common scoped searches when unscoped search or a more distinctive token is enough.
 - Supports `grep [-i] PATTERN <file>` for one exact app file through a bounded substring scan. Simple `grep -R PATTERN <app-folder>` is recovered through indexed full-text search. Complex or multi-file grep forms print guidance to use indexed `search`.
 - Includes native `ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]` and `find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] --limit N [--cursor CURSOR]` for bounded continuation through large file trees. Short cursor ids are app Bash syntax; continuation commands are printed in stdout.
 - Runs commands under `set -f` so shell pathname expansion is disabled. General app-file glob operands are rejected. Only common simple find extension mistakes such as `*.md` are auto-fixed into indexed `--extension md` search; do not add or assume general glob or regex evaluation.
@@ -211,6 +211,7 @@ Legacy file tools stay documented because old assistant messages may need valida
 - Creates the file path if it does not exist; intermediate path segments become folders.
 - Missing-file creation uses the internal server file path flow and starts from empty committed content; the proposed body lives in the pending update instead of inheriting the UI welcome document.
 - Paths must be real Markdown paths ending in `.md`, for example `/readme.md` or `/docs/setup.md`.
+- When converting a Bash path, preserve the full suffix after `/home/cloud-usr/w/{workspaceName}/{projectName}`; do not collapse nested files to their basename.
 - Stores the proposed result in `files_pending_updates` through `upsert_file_pending_update_internal_action`, which fetches the latest R2-backed base before the mutation writes.
 - `write_file` remains Markdown-path-oriented and is not the normal way to target converted uploaded sources such as PDFs.
 
@@ -222,6 +223,7 @@ Legacy file tools stay documented because old assistant messages may need valida
 - Default behavior replaces one unique occurrence and fails if the match is missing or ambiguous.
 - `replaceAll` is opt-in.
 - Stores modified Markdown in `files_pending_updates`, not live file content.
+- When converting a Bash path, preserve the full suffix after `/home/cloud-usr/w/{workspaceName}/{projectName}`; do not collapse nested files to their basename.
 - If the user copies text from `read_file`, they must not include line-number prefixes.
 - Generated upload outputs are editable Markdown files; pending updates belong to the generated output file node.
 
@@ -232,6 +234,8 @@ Reads:
 - `read_file` goes through `get_file_last_available_markdown_content_by_path`.
 - That action resolves the exact Markdown file path and checks `files_pending_updates` for `(workspaceId, projectId, userId, nodeId)`.
 - If a pending row exists, it reconstructs Markdown from the pending `unstaged` branch and returns that instead of committed Markdown.
+- Bash exact readers (`cat`, `head`, `tail`, `wc`, `grep`, and pipelines fed by `cat`) use the same pending-aware read path, with chunk/R2 fallbacks only when no pending row exists.
+- Bash `search` queries the current user's materialized pending chunk index (`files_pending_updates_chunks`, kept in sync by the pending row mutations) before committed chunks and hides stale committed chunk hits for files with pending rows.
 
 Writes:
 
@@ -266,7 +270,7 @@ Writes:
 - `/tmp` is durable per-thread scratch. It persists across later `bash` calls in the same chat, reloads from Convex after warm runtime cache loss, and is not app project storage.
 - `bash` file writes under the app file tree fail with a read-only filesystem error.
 - Agent mode can create folders with `bash` `mkdir /home/cloud-usr/w/{workspaceName}/{projectName}/<folder>` and can call `write_file` and `edit_file`; Ask mode can call `bash` for reads/searches but cannot create folders or call write tools.
-- Bash exact reads and legacy `read_file` see the current user's pending unstaged branch when one exists.
+- Bash exact reads, Bash `search`, and legacy `read_file` see the current user's pending unstaged branch when one exists.
 - `write_file` and `edit_file` create pending review state instead of silently saving live content.
 - `edit_file` fails on missing/ambiguous single-match replacements.
 - Legacy `grep_files` behaves like regex/line search when validating old tool calls.

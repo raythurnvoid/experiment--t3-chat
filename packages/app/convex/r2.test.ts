@@ -1648,6 +1648,7 @@ describe("r2 asset content", () => {
 		const searchResult = await asUser.query(internal.files_nodes.text_search_files, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
+			userId: db.userId,
 			query: "PDF body",
 			numItems: 10,
 			cursor: null,

@@ -73,6 +73,15 @@ async function db_purge_workspace_project_content(
 		}
 	}
 
+	const pendingUpdateChunkIds: Array<Id<"files_pending_updates_chunks">> = [];
+	for (const pendingUpdateId of pendingUpdateIds) {
+		const chunks = await ctx.db
+			.query("files_pending_updates_chunks")
+			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdateId))
+			.collect();
+		pendingUpdateChunkIds.push(...chunks.map((chunk) => chunk._id));
+	}
+
 	const nodeIds: Array<Id<"files_nodes">> = [];
 	for await (const page of ctx.db
 		.query("files_nodes")
@@ -234,6 +243,8 @@ async function db_purge_workspace_project_content(
 	await Promise.all(
 		filesPendingUpdatesLastSequenceSavedIds.map((id) => ctx.db.delete("files_pending_updates_last_sequence_saved", id)),
 	);
+	// files_pending_updates_chunks
+	await Promise.all(pendingUpdateChunkIds.map((id) => ctx.db.delete("files_pending_updates_chunks", id)));
 	// files_pending_updates
 	await Promise.all(pendingUpdateIds.map((id) => ctx.db.delete("files_pending_updates", id)));
 	// files_plain_text_chunks
@@ -534,6 +545,17 @@ async function db_finalize_deleted_user(
 		)
 	).flat();
 
+	const pendingUpdateChunks = (
+		await Promise.all(
+			pendingUpdates.map((doc) =>
+				ctx.db
+					.query("files_pending_updates_chunks")
+					.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", doc._id))
+					.collect(),
+			),
+		)
+	).flat();
+
 	// Keep the affected workspace ids before deleting memberships so you can
 	// later detect which workspaces became fully empty after the user is gone.
 	const affectedWorkspaceIds = new Set<Id<"workspaces">>();
@@ -550,6 +572,7 @@ async function db_finalize_deleted_user(
 	await Promise.all(
 		pendingUpdateCleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)),
 	);
+	await Promise.all(pendingUpdateChunks.map((doc) => ctx.db.delete("files_pending_updates_chunks", doc._id)));
 	await Promise.all(
 		lastSequenceSaved.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
 	);

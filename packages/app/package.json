@@ -145,6 +145,7 @@
 		"react-resizable-panels": "^2.1.9",
 		"react-syntax-highlighter": "^15.6.6",
 		"rehype-katex": "^7.0.1",
+		"remark-breaks": "^4.0.0",
 		"remark-gfm": "^4.0.1",
 		"remark-math": "^6.0.0",
 		"sonner": "^2.0.7",

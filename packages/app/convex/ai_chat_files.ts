@@ -1,6 +1,9 @@
 import { v } from "convex/values";
+import type { RegisteredMutation, RegisteredQuery } from "convex/server";
+import { doc } from "convex-helpers/validators";
 import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
+import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
 
@@ -15,7 +18,7 @@ type TmpEntryInput = {
 	mode: number;
 	size: number;
 	mtime: number;
-	target?: string;
+	symlinkTargetPath?: string;
 };
 
 type TmpContentInput = {
@@ -62,21 +65,6 @@ async function require_thread_scope(
 	return thread;
 }
 
-async function read_thread_entries(ctx: QueryCtx | MutationCtx, threadId: Id<"ai_chat_threads">) {
-	return await ctx.db
-		.query("ai_chat_files")
-		.withIndex("by_thread", (q) => q.eq("threadId", threadId))
-		.take(AI_CHAT_TMP_MAX_PATHS + 1);
-}
-
-async function delete_content_rows_for_file(ctx: MutationCtx, fileId: Id<"ai_chat_files">) {
-	const rows = await ctx.db
-		.query("ai_chat_files_content")
-		.withIndex("by_file", (q) => q.eq("fileId", fileId))
-		.collect();
-	await Promise.all(rows.map((row) => ctx.db.delete("ai_chat_files_content", row._id)));
-}
-
 function validate_tmp_entries_and_contents(args: { entries: TmpEntryInput[]; contents: TmpContentInput[] }) {
 	if (args.entries.length > AI_CHAT_TMP_MAX_PATHS) {
 		return Result({ _nay: { message: "/tmp path limit exceeded" } });
@@ -106,7 +94,7 @@ function validate_tmp_entries_and_contents(args: { entries: TmpEntryInput[]; con
 			}
 			totalBytes += bytes.byteLength;
 		} else if (entry.kind === "symlink") {
-			totalBytes += textEncoder.encode(entry.target ?? "").length;
+			totalBytes += textEncoder.encode(entry.symlinkTargetPath ?? "").length;
 		}
 	}
 
@@ -129,7 +117,6 @@ async function flush_thread_tmp_files_impl(
 		workspaceId: string;
 		projectId: string;
 		threadId: Id<"ai_chat_threads">;
-		userId: Id<"users">;
 		entries: TmpEntryInput[];
 		contents: TmpContentInput[];
 	},
@@ -143,13 +130,20 @@ async function flush_thread_tmp_files_impl(
 	const contentByPath = validated._yay.contentByPath;
 
 	const now = Date.now();
-	const existingEntries = await read_thread_entries(ctx, args.threadId);
-	const existingByPath = new Map(existingEntries.map((entry) => [entry.path, entry]));
-	const nextFileIdsByPath = new Map<string, Id<"ai_chat_files">>();
+	const existingAiChatFiles = await ctx.db
+		.query("ai_chat_files")
+		.withIndex("by_thread_path", (q) => q.eq("threadId", args.threadId))
+		.take(AI_CHAT_TMP_MAX_PATHS + 1);
+	const existingByPath = new Map(existingAiChatFiles.map((entry) => [entry.path, entry]));
+	const nextFileNodeIdByPath = new Map<string, Id<"ai_chat_files">>();
 
-	for (const existing of existingEntries) {
+	for (const existing of existingAiChatFiles) {
 		if (!validated._yay.entryPaths.has(existing.path)) {
-			await delete_content_rows_for_file(ctx, existing._id);
+			const aiChatFilesContent = await ctx.db
+				.query("ai_chat_files_content")
+				.withIndex("by_file", (q) => q.eq("fileNodeId", existing._id))
+				.collect();
+			await Promise.all(aiChatFilesContent.map((row) => ctx.db.delete("ai_chat_files_content", row._id)));
 			await ctx.db.delete("ai_chat_files", existing._id);
 		}
 	}
@@ -160,7 +154,7 @@ async function flush_thread_tmp_files_impl(
 			entry.kind === "file"
 				? (bytes?.byteLength ?? 0)
 				: entry.kind === "symlink"
-					? textEncoder.encode(entry.target ?? "").length
+					? textEncoder.encode(entry.symlinkTargetPath ?? "").length
 					: 0;
 		const doc = {
 			workspaceId: args.workspaceId,
@@ -171,42 +165,45 @@ async function flush_thread_tmp_files_impl(
 			mode: entry.mode,
 			size,
 			mtime: entry.mtime,
-			...(entry.kind === "symlink" && entry.target !== undefined ? { target: entry.target } : {}),
-			updatedBy: args.userId,
-			updatedAt: now,
+			...(entry.kind === "symlink" && entry.symlinkTargetPath !== undefined
+				? { symlinkTargetPath: entry.symlinkTargetPath }
+				: {}),
 		};
 		const existing = existingByPath.get(entry.path);
-		const fileId = existing?._id ?? (await ctx.db.insert("ai_chat_files", doc));
+		const fileNodeId = existing?._id ?? (await ctx.db.insert("ai_chat_files", doc));
 		if (existing) {
 			await ctx.db.replace("ai_chat_files", existing._id, doc);
 		}
 
 		if (entry.kind === "file") {
-			nextFileIdsByPath.set(entry.path, fileId);
+			nextFileNodeIdByPath.set(entry.path, fileNodeId);
 		} else if (existing) {
-			await delete_content_rows_for_file(ctx, existing._id);
+			const aiChatFilesContent = await ctx.db
+				.query("ai_chat_files_content")
+				.withIndex("by_file", (q) => q.eq("fileNodeId", existing._id))
+				.collect();
+			await Promise.all(aiChatFilesContent.map((row) => ctx.db.delete("ai_chat_files_content", row._id)));
 		}
 	}
 
 	for (const [path, bytes] of contentByPath) {
-		const fileId = nextFileIdsByPath.get(path);
-		if (!fileId) {
+		const fileNodeId = nextFileNodeIdByPath.get(path);
+		if (!fileNodeId) {
 			continue;
 		}
-		const existingContent = await ctx.db
+		const existingAiChatFilesContent = await ctx.db
 			.query("ai_chat_files_content")
-			.withIndex("by_file", (q) => q.eq("fileId", fileId))
+			.withIndex("by_file", (q) => q.eq("fileNodeId", fileNodeId))
 			.first();
 		const doc = {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			threadId: args.threadId,
-			fileId,
+			fileNodeId,
 			bytes,
-			updatedAt: now,
 		};
-		if (existingContent) {
-			await ctx.db.replace("ai_chat_files_content", existingContent._id, doc);
+		if (existingAiChatFilesContent) {
+			await ctx.db.replace("ai_chat_files_content", existingAiChatFilesContent._id, doc);
 		} else {
 			await ctx.db.insert("ai_chat_files_content", doc);
 		}
@@ -222,7 +219,6 @@ async function flush_thread_tmp_files_impl(
 		threadId: args.threadId,
 		pathCount: args.entries.length,
 		totalBytes: validated._yay.totalBytes,
-		updatedBy: args.userId,
 		updatedAt: now,
 	};
 	if (state) {
@@ -241,77 +237,52 @@ export const load_thread_tmp_files = internalQuery({
 		threadId: v.id("ai_chat_threads"),
 	},
 	returns: v.object({
-		entries: v.array(
-			v.object({
-				path: v.string(),
-				kind: v.union(v.literal("file"), v.literal("directory"), v.literal("symlink")),
-				mode: v.number(),
-				size: v.number(),
-				mtime: v.number(),
-				target: v.optional(v.string()),
-			}),
-		),
-		contents: v.array(
-			v.object({
-				path: v.string(),
-				bytes: v.bytes(),
-			}),
-		),
-		pathCount: v.number(),
-		totalBytes: v.number(),
+		aiChatFiles: v.array(doc(app_convex_schema, "ai_chat_files")),
+		aiChatFilesContentDict: v.record(v.id("ai_chat_files"), doc(app_convex_schema, "ai_chat_files_content")),
+		aiChatFilesState: v.union(doc(app_convex_schema, "ai_chat_files_state"), v.null()),
 	}),
 	handler: async (ctx, args) => {
 		await require_thread_scope(ctx, args);
 
-		const state = await ctx.db
+		const aiChatFilesState = await ctx.db
 			.query("ai_chat_files_state")
 			.withIndex("by_thread", (q) => q.eq("threadId", args.threadId))
 			.first();
-		if (!state) {
+		if (!aiChatFilesState) {
 			return {
-				entries: [],
-				contents: [],
-				pathCount: 0,
-				totalBytes: 0,
+				aiChatFiles: [],
+				aiChatFilesContentDict: {} as Record<Id<"ai_chat_files">, Doc<"ai_chat_files_content">>,
+				aiChatFilesState: null,
 			};
 		}
 
-		const entries = await read_thread_entries(ctx, args.threadId);
-		const fileIds = new Set(entries.filter((entry) => entry.kind === "file").map((entry) => entry._id));
-		const pathByFileId = new Map(entries.map((entry) => [entry._id, entry.path]));
-		const contentRows = await ctx.db
-			.query("ai_chat_files_content")
-			.withIndex("by_thread", (q) => q.eq("threadId", args.threadId))
+		const aiChatFiles = await ctx.db
+			.query("ai_chat_files")
+			.withIndex("by_thread_path", (q) => q.eq("threadId", args.threadId))
 			.take(AI_CHAT_TMP_MAX_PATHS + 1);
+		const aiChatFilesContent = await ctx.db
+			.query("ai_chat_files_content")
+			.withIndex("by_thread_file", (q) => q.eq("threadId", args.threadId))
+			.take(AI_CHAT_TMP_MAX_PATHS + 1);
+		const aiChatFilesContentDict: Record<Id<"ai_chat_files">, Doc<"ai_chat_files_content">> = {};
+		for (const content of aiChatFilesContent) {
+			aiChatFilesContentDict[content.fileNodeId] = content;
+		}
 
-		return {
-			entries: entries.map((entry) => ({
-				path: entry.path,
-				kind: entry.kind,
-				mode: entry.mode,
-				size: entry.size,
-				mtime: entry.mtime,
-				...(entry.target !== undefined ? { target: entry.target } : {}),
-			})),
-			contents: contentRows.flatMap((row) => {
-				if (!fileIds.has(row.fileId)) {
-					return [];
-				}
-				const path = pathByFileId.get(row.fileId);
-				return path ? [{ path, bytes: row.bytes }] : [];
-			}),
-			pathCount: state.pathCount,
-			totalBytes: state.totalBytes,
-		};
+		return { aiChatFiles, aiChatFilesContentDict, aiChatFilesState };
 	},
 });
+
+export type ai_chat_files_load_thread_tmp_files_Result =
+	typeof load_thread_tmp_files extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export const flush_thread_tmp_files = internalMutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
 		threadId: v.id("ai_chat_threads"),
-		userId: v.id("users"),
 		entries: v.array(
 			v.object({
 				path: v.string(),
@@ -319,7 +290,7 @@ export const flush_thread_tmp_files = internalMutation({
 				mode: v.number(),
 				size: v.number(),
 				mtime: v.number(),
-				target: v.optional(v.string()),
+				symlinkTargetPath: v.optional(v.string()),
 			}),
 		),
 		contents: v.array(
@@ -340,12 +311,21 @@ export const flush_thread_tmp_files = internalMutation({
 	},
 });
 
+export type ai_chat_files_flush_thread_tmp_files_Result =
+	typeof flush_thread_tmp_files extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export type ai_chat_files_flush_thread_tmp_files_Args =
+	typeof flush_thread_tmp_files extends RegisteredMutation<infer _Visibility, infer Args, infer _ReturnValue>
+		? Args
+		: never;
+
 export const patch_thread_tmp_files = internalMutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
 		threadId: v.id("ai_chat_threads"),
-		userId: v.id("users"),
 		upsertEntries: v.array(
 			v.object({
 				path: v.string(),
@@ -353,7 +333,7 @@ export const patch_thread_tmp_files = internalMutation({
 				mode: v.number(),
 				size: v.number(),
 				mtime: v.number(),
-				target: v.optional(v.string()),
+				symlinkTargetPath: v.optional(v.string()),
 			}),
 		),
 		upsertContents: v.array(
@@ -400,10 +380,13 @@ export const patch_thread_tmp_files = internalMutation({
 		}
 
 		const now = Date.now();
-		const existingEntries = await read_thread_entries(ctx, args.threadId);
-		const existingByPath = new Map(existingEntries.map((entry) => [entry.path, entry]));
+		const existingAiChatFiles = await ctx.db
+			.query("ai_chat_files")
+			.withIndex("by_thread_path", (q) => q.eq("threadId", args.threadId))
+			.take(AI_CHAT_TMP_MAX_PATHS + 1);
+		const existingByPath = new Map(existingAiChatFiles.map((entry) => [entry.path, entry]));
 		const nextEntries = new Map(
-			existingEntries.map((entry) => [
+			existingAiChatFiles.map((entry) => [
 				entry.path,
 				{
 					kind: entry.kind,
@@ -421,7 +404,7 @@ export const patch_thread_tmp_files = internalMutation({
 				entry.kind === "file"
 					? (bytes?.byteLength ?? 0)
 					: entry.kind === "symlink"
-						? textEncoder.encode(entry.target ?? "").length
+						? textEncoder.encode(entry.symlinkTargetPath ?? "").length
 						: 0;
 			nextEntries.set(entry.path, { kind: entry.kind, size });
 		}
@@ -445,18 +428,22 @@ export const patch_thread_tmp_files = internalMutation({
 			if (!existing) {
 				continue;
 			}
-			await delete_content_rows_for_file(ctx, existing._id);
+			const aiChatFilesContent = await ctx.db
+				.query("ai_chat_files_content")
+				.withIndex("by_file", (q) => q.eq("fileNodeId", existing._id))
+				.collect();
+			await Promise.all(aiChatFilesContent.map((row) => ctx.db.delete("ai_chat_files_content", row._id)));
 			await ctx.db.delete("ai_chat_files", existing._id);
 		}
 
-		const fileIdsByPath = new Map<string, Id<"ai_chat_files">>();
+		const fileNodeIdByPath = new Map<string, Id<"ai_chat_files">>();
 		for (const entry of args.upsertEntries) {
 			const bytes = validated._yay.contentByPath.get(entry.path);
 			const size =
 				entry.kind === "file"
 					? (bytes?.byteLength ?? 0)
 					: entry.kind === "symlink"
-						? textEncoder.encode(entry.target ?? "").length
+						? textEncoder.encode(entry.symlinkTargetPath ?? "").length
 						: 0;
 			const doc = {
 				workspaceId: args.workspaceId,
@@ -467,42 +454,45 @@ export const patch_thread_tmp_files = internalMutation({
 				mode: entry.mode,
 				size,
 				mtime: entry.mtime,
-				...(entry.kind === "symlink" && entry.target !== undefined ? { target: entry.target } : {}),
-				updatedBy: args.userId,
-				updatedAt: now,
+				...(entry.kind === "symlink" && entry.symlinkTargetPath !== undefined
+					? { symlinkTargetPath: entry.symlinkTargetPath }
+					: {}),
 			};
 			const existing = existingByPath.get(entry.path);
-			const fileId = existing?._id ?? (await ctx.db.insert("ai_chat_files", doc));
+			const fileNodeId = existing?._id ?? (await ctx.db.insert("ai_chat_files", doc));
 			if (existing) {
 				await ctx.db.replace("ai_chat_files", existing._id, doc);
 			}
 
 			if (entry.kind === "file") {
-				fileIdsByPath.set(entry.path, fileId);
+				fileNodeIdByPath.set(entry.path, fileNodeId);
 			} else if (existing) {
-				await delete_content_rows_for_file(ctx, existing._id);
+				const aiChatFilesContent = await ctx.db
+					.query("ai_chat_files_content")
+					.withIndex("by_file", (q) => q.eq("fileNodeId", existing._id))
+					.collect();
+				await Promise.all(aiChatFilesContent.map((row) => ctx.db.delete("ai_chat_files_content", row._id)));
 			}
 		}
 
 		for (const [path, bytes] of validated._yay.contentByPath) {
-			const fileId = fileIdsByPath.get(path);
-			if (!fileId) {
+			const fileNodeId = fileNodeIdByPath.get(path);
+			if (!fileNodeId) {
 				continue;
 			}
-			const existingContent = await ctx.db
+			const existingAiChatFilesContent = await ctx.db
 				.query("ai_chat_files_content")
-				.withIndex("by_file", (q) => q.eq("fileId", fileId))
+				.withIndex("by_file", (q) => q.eq("fileNodeId", fileNodeId))
 				.first();
 			const doc = {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				threadId: args.threadId,
-				fileId,
+				fileNodeId,
 				bytes,
-				updatedAt: now,
 			};
-			if (existingContent) {
-				await ctx.db.replace("ai_chat_files_content", existingContent._id, doc);
+			if (existingAiChatFilesContent) {
+				await ctx.db.replace("ai_chat_files_content", existingAiChatFilesContent._id, doc);
 			} else {
 				await ctx.db.insert("ai_chat_files_content", doc);
 			}
@@ -518,7 +508,6 @@ export const patch_thread_tmp_files = internalMutation({
 			threadId: args.threadId,
 			pathCount,
 			totalBytes,
-			updatedBy: args.userId,
 			updatedAt: now,
 		};
 		if (state) {
@@ -538,13 +527,17 @@ export const patch_thread_tmp_files = internalMutation({
 	},
 });
 
+export type ai_chat_files_patch_thread_tmp_files_Result =
+	typeof patch_thread_tmp_files extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const copy_thread_tmp_files = internalMutation({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
 		sourceThreadId: v.id("ai_chat_threads"),
 		targetThreadId: v.id("ai_chat_threads"),
-		userId: v.id("users"),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -564,28 +557,30 @@ export const copy_thread_tmp_files = internalMutation({
 			threadId: args.targetThreadId,
 		});
 
-		const sourceEntries = await read_thread_entries(ctx, args.sourceThreadId);
-		const pathByFileId = new Map(sourceEntries.map((entry) => [entry._id, entry.path]));
-		const sourceContents = await ctx.db
+		const sourceAiChatFiles = await ctx.db
+			.query("ai_chat_files")
+			.withIndex("by_thread_path", (q) => q.eq("threadId", args.sourceThreadId))
+			.take(AI_CHAT_TMP_MAX_PATHS + 1);
+		const pathByFileNodeId = new Map(sourceAiChatFiles.map((entry) => [entry._id, entry.path]));
+		const sourceAiChatFilesContent = await ctx.db
 			.query("ai_chat_files_content")
-			.withIndex("by_thread", (q) => q.eq("threadId", args.sourceThreadId))
+			.withIndex("by_thread_file", (q) => q.eq("threadId", args.sourceThreadId))
 			.take(AI_CHAT_TMP_MAX_PATHS + 1);
 
 		return await flush_thread_tmp_files_impl(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			threadId: args.targetThreadId,
-			userId: args.userId,
-			entries: sourceEntries.map((entry) => ({
+			entries: sourceAiChatFiles.map((entry) => ({
 				path: entry.path,
 				kind: entry.kind,
 				mode: entry.mode,
 				size: entry.size,
 				mtime: entry.mtime,
-				...(entry.target !== undefined ? { target: entry.target } : {}),
+				...(entry.symlinkTargetPath !== undefined ? { symlinkTargetPath: entry.symlinkTargetPath } : {}),
 			})),
-			contents: sourceContents.flatMap((content) => {
-				const path = pathByFileId.get(content.fileId);
+			contents: sourceAiChatFilesContent.flatMap((content) => {
+				const path = pathByFileNodeId.get(content.fileNodeId);
 				return path ? [{ path, bytes: content.bytes }] : [];
 			}),
 		});

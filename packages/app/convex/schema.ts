@@ -75,9 +75,13 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		threadId: v.id("ai_chat_threads"),
+		/**
+		 * Number of persisted
+		 * /tmp paths (files, directories, and symlinks)
+		 * in the thread's scratch
+		 **/
 		pathCount: v.number(),
 		totalBytes: v.number(),
-		updatedBy: v.id("users"),
 		updatedAt: v.number(),
 	})
 		.index("by_thread", ["threadId"])
@@ -89,28 +93,35 @@ const app_convex_schema = defineSchema({
 		threadId: v.id("ai_chat_threads"),
 		path: v.string(),
 		kind: v.union(v.literal("file"), v.literal("directory"), v.literal("symlink")),
+		/**
+		 * POSIX mode bits from the scratch
+		 * fs stat (e.g. 0o100644 file, 0o40755 directory),
+		 * reapplied on hydrate
+		 **/
 		mode: v.number(),
 		size: v.number(),
+		/**
+		 * Last-modified timestamp in milliseconds
+		 * from the scratch fs stat, reapplied on hydrate
+		 **/
 		mtime: v.number(),
-		target: v.optional(v.string()),
-		updatedBy: v.id("users"),
-		updatedAt: v.number(),
+		/** Symlink target path,
+		 * only present when kind is "symlink"
+		 **/
+		symlinkTargetPath: v.optional(v.string()),
 	})
 		.index("by_thread_path", ["threadId", "path"])
-		.index("by_workspace_project_thread_path", ["workspaceId", "projectId", "threadId", "path"])
-		.index("by_thread", ["threadId"]),
+		.index("by_workspace_project_thread_path", ["workspaceId", "projectId", "threadId", "path"]),
 
 	ai_chat_files_content: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		threadId: v.id("ai_chat_threads"),
-		fileId: v.id("ai_chat_files"),
+		fileNodeId: v.id("ai_chat_files"),
 		bytes: v.bytes(),
-		updatedAt: v.number(),
 	})
-		.index("by_file", ["fileId"])
-		.index("by_thread_file", ["threadId", "fileId"])
-		.index("by_thread", ["threadId"]),
+		.index("by_file", ["fileNodeId"])
+		.index("by_thread_file", ["threadId", "fileNodeId"]),
 
 	// #endregion ai
 
@@ -157,6 +168,34 @@ const app_convex_schema = defineSchema({
 		scheduledFunctionId: v.id("_scheduled_functions"),
 		expectedUpdatedAt: v.number(),
 	}).index("by_pendingUpdate", ["pendingUpdateId"]),
+
+	/**
+	 * Search-only materialization of each pending update's `unstaged` Markdown, chunked with the
+	 * same chunker as committed content. Rows are replaced in the same mutation as every pending
+	 * row write and deleted in the same mutation as every pending row delete, so no orphan chunks
+	 * exist. Unlike committed chunks there is no denormalized path/archive scope: search joins
+	 * `files_nodes` at read time because rename/move/archive flows never touch pending updates.
+	 */
+	files_pending_updates_chunks: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.string(),
+		nodeId: v.id("files_nodes"),
+		pendingUpdateId: v.id("files_pending_updates"),
+		chunkIndex: v.number(),
+		markdownChunk: v.string(),
+		plainTextChunk: v.string(),
+		startIndex: v.number(),
+		endIndex: v.number(),
+		lineStart: v.number(),
+		lineEnd: v.number(),
+		chunkFlags: v.number(),
+	})
+		.searchIndex("search_by_plainTextChunk", {
+			searchField: "plainTextChunk",
+			filterFields: ["workspaceId", "projectId", "userId"],
+		})
+		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"]),
 
 	files_nodes: defineTable({
 		/** Workspace ID extracted from roomId */

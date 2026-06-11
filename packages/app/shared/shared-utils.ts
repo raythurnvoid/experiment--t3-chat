@@ -257,3 +257,44 @@ export function composite_key(...parts: Array<string | number>) {
 	return parts.join("::");
 }
 // #endregion composite ids
+
+// #region lru cache
+/**
+ * Minimal in-memory LRU cache backed by Map insertion order.
+ *
+ * Map insertion order tracks recency: writes and cache hits delete then set a
+ * key to move it to the newest slot. When over capacity, the first map key is
+ * the least recently used entry and is evicted.
+ */
+export class LruCache<K, V> {
+	private map = new Map<K, V>();
+
+	constructor(private maxEntries: number) {}
+
+	get(key: K) {
+		const value = this.map.get(key);
+		if (value !== undefined) {
+			// Cache hits refresh recency because Map insertion order powers the LRU.
+			this.map.delete(key);
+			this.map.set(key, value);
+		}
+		return value;
+	}
+
+	set(key: K, value: V) {
+		if (this.map.has(key)) {
+			this.map.delete(key);
+		}
+		this.map.set(key, value);
+
+		while (this.map.size > this.maxEntries) {
+			const oldest = this.map.keys().next().value!;
+			this.map.delete(oldest);
+		}
+	}
+
+	clear() {
+		this.map.clear();
+	}
+}
+// #endregion lru cache

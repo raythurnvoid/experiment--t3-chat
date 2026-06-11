@@ -104,8 +104,9 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 		"Do not work around app read-only write, move, or delete requests by copying app files to `/tmp`; report the Bash error unless the user asked for a scratch copy.",
 		"In Agent mode, `mkdir` under the app file tree creates durable folders.",
 		"File content changes use `write_file` or `edit_file` so the user can review them.",
-		`Convert bash paths under \`${currentProjectPath}\` to app paths before calling \`write_file\` or \`edit_file\`; for example \`${currentProjectPath}/docs/readme.md\` becomes \`/docs/readme.md\`.`,
+		`Convert bash paths under \`${currentProjectPath}\` to app paths before calling \`write_file\` or \`edit_file\`; for example \`${currentProjectPath}/docs/readme.md\` becomes \`/docs/readme.md\`. Preserve the full remaining suffix: \`${currentProjectPath}/folder/README.md\` becomes \`/folder/README.md\`, never \`/README.md\`.`,
 		"`write_file` and `edit_file` create pending review changes for the user to apply.",
+		"After `write_file` or `edit_file`, Bash exact readers (`cat`, `head`, `tail`, `wc`, `grep`) and Bash `search` read the current user's pending unstaged version, so use them normally to verify follow-up edits before the user applies the changes.",
 		"Use tools to clarify uncertain reads, searches, and path lookups instead of inventing content or paths.",
 		"Use `web_search` for current public facts, official documentation, release notes, news, and other information outside this workspace when file tools are not enough.",
 		"Summarize `web_search` highlight snippets in your own words.",
@@ -648,7 +649,6 @@ export const thread_branch = mutation({
 			projectId,
 			sourceThreadId: threadId,
 			targetThreadId: newThreadId,
-			userId: userAuth.id,
 		})) as { _yay: { pathCount: number; totalBytes: number } } | { _nay: { message: string } };
 		if ("_nay" in copiedTmpFiles) {
 			console.error("Failed to copy AI chat thread /tmp files during branch", {
@@ -2311,6 +2311,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(configuration.systemPrompt).toContain(
 				"Convert bash paths under `/home/cloud-usr/w/personal/home` to app paths before calling `write_file` or `edit_file`",
 			);
+			expect(configuration.systemPrompt).toContain("never `/README.md`");
 			expect(configuration.systemPrompt).not.toContain("convenience mount root");
 			expect(configuration.systemPrompt).not.toContain('words like "files"');
 			expect(configuration.systemPrompt).not.toContain("Do not answer file-listing");

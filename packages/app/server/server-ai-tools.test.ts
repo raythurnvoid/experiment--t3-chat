@@ -105,25 +105,15 @@ describe("ai_chat_tool_create_bash", () => {
 					stdoutLength: server_ai_tools_test_app_files_mount.length + 1,
 					stderrLength: 0,
 					pathIndexTruncated: false,
-					tmpFsCacheHit: false,
-					tmpFsHydratedFromDb: false,
 					tmpFsFlushed: false,
 					tmpFsFlushMode: "none",
 					tmpFsDeltaUpsertedPathCount: 0,
 					tmpFsDeltaDeletedPathCount: 0,
 					tmpFsDirty: false,
-					tmpFsSessionCallCount: 1,
-					tmpFsSessionHitCount: 0,
 					tmpFsPathCount: 0,
 					tmpFsApproxBytes: 0,
 					tmpFsPersistedPathCount: 0,
 					tmpFsPersistedBytes: 0,
-					tmpFsCacheGets: 1,
-					tmpFsCacheHits: 0,
-					tmpFsCacheMisses: 1,
-					tmpFsCacheEvictions: 0,
-					tmpFsCacheExpiredEvictions: 0,
-					tmpFsCacheOversizeDiscards: 0,
 				},
 			}),
 		});
@@ -315,6 +305,13 @@ describe("ai_chat_tool_create_bash", () => {
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining("ls -l uses app metadata, not POSIX permissions"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"Preserve the full remaining suffix: /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.",
+				),
 			}),
 		);
 	});
@@ -509,6 +506,31 @@ describe("ai_chat_tool_create_bash", () => {
 			}),
 		);
 	});
+});
+
+test("write and edit tools describe preserving nested app path suffixes", () => {
+	const { ctx } = makeCtx(async () => null);
+	const writeTool = ai_chat_tool_create_write_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
+	);
+	const editTool = ai_chat_tool_create_edit_file(
+		ctx,
+		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
+	);
+	const expectedPathGuidance =
+		"Preserve the full remaining suffix after that prefix; /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.";
+
+	expect(writeTool).toEqual(
+		expect.objectContaining({
+			description: expect.stringContaining(expectedPathGuidance),
+		}),
+	);
+	expect(editTool).toEqual(
+		expect.objectContaining({
+			description: expect.stringContaining(expectedPathGuidance),
+		}),
+	);
 });
 
 test("list_files tool: inputSchema defaults", () => {

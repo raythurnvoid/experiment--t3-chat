@@ -36,6 +36,7 @@ import {
 	files_u8_to_array_buffer,
 	files_u8_equals,
 } from "../server/files.ts";
+import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { r2_fetch_object_from_bucket } from "./r2.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
@@ -139,6 +140,77 @@ async function files_pending_update_upsert_last_sequence_saved(
 		lastSequenceSaved: args.lastSequenceSaved,
 		updatedAt: args.updatedAt,
 	});
+}
+
+async function files_pending_update_db_delete_chunks(
+	ctx: MutationCtx,
+	args: { pendingUpdateId: Id<"files_pending_updates"> },
+) {
+	const chunks = await ctx.db
+		.query("files_pending_updates_chunks")
+		.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+		.collect();
+	await Promise.all(chunks.map((chunk) => ctx.db.delete("files_pending_updates_chunks", chunk._id)));
+}
+
+/**
+ * Replace the search-only chunk materialization of a pending update's `unstaged` Markdown.
+ * Run this in the same mutation as the pending row write so search never sees stale chunks.
+ */
+async function files_pending_update_db_replace_chunks(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: string;
+		projectId: string;
+		userId: string;
+		nodeId: Id<"files_nodes">;
+		pendingUpdateId: Id<"files_pending_updates">;
+		unstagedMarkdown: string;
+	},
+) {
+	await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: args.pendingUpdateId });
+
+	const chunks = await files_chunk_markdown(args.unstagedMarkdown);
+	if (chunks._nay) {
+		return chunks;
+	}
+
+	await Promise.all(
+		chunks._yay.map((chunk) =>
+			ctx.db.insert("files_pending_updates_chunks", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				userId: args.userId,
+				nodeId: args.nodeId,
+				pendingUpdateId: args.pendingUpdateId,
+				chunkIndex: chunk.chunkIndex,
+				markdownChunk: chunk.markdownChunk,
+				plainTextChunk: chunk.plainTextChunk,
+				startIndex: chunk.startIndex,
+				endIndex: chunk.endIndex,
+				lineStart: chunk.lineStart,
+				lineEnd: chunk.lineEnd,
+				chunkFlags: chunk.chunkFlags,
+			}),
+		),
+	);
+
+	return Result({ _yay: null });
+}
+
+/**
+ * Chunk maintenance must not fail the pending row write: the row is the source of truth and the
+ * chunks are search-only, so a chunking failure only degrades search (the file's committed chunks
+ * stay excluded, matching the old reconstruct-failure skip). The stale rows were already deleted,
+ * so search misses the file instead of seeing outdated chunks.
+ */
+function files_pending_update_log_replace_chunks_nay(
+	chunksReplaced: Awaited<ReturnType<typeof files_pending_update_db_replace_chunks>>,
+	context: { pendingUpdateId: Id<"files_pending_updates">; nodeId: Id<"files_nodes"> },
+) {
+	if (chunksReplaced._nay) {
+		console.error("Failed to replace pending update search chunks", { chunksReplaced, ...context });
+	}
 }
 
 function files_pending_update_project_markdown_to_branch(args: { mut_yjsDoc: YDoc; markdown: string }) {
@@ -298,6 +370,8 @@ async function files_pending_update_upsert_branch_docs(
 		baseYjsDoc: YDoc;
 		stagedBranchYjsDoc: YDoc;
 		unstagedBranchYjsDoc: YDoc;
+		unstagedMarkdown: string;
+		unstagedBranchChanged: boolean;
 	},
 ) {
 	const branchDocsHaveChanges = files_pending_update_branch_docs_have_changes({
@@ -318,6 +392,9 @@ async function files_pending_update_upsert_branch_docs(
 		if (args.existingPendingUpdate) {
 			await Promise.all([
 				files_db_cancel_pending_update_cleanup_tasks(ctx, {
+					pendingUpdateId: args.existingPendingUpdate._id,
+				}),
+				files_pending_update_db_delete_chunks(ctx, {
 					pendingUpdateId: args.existingPendingUpdate._id,
 				}),
 				ctx.db.delete("files_pending_updates", args.existingPendingUpdate._id),
@@ -367,6 +444,15 @@ async function files_pending_update_upsert_branch_docs(
 			pendingUpdateId,
 			expectedUpdatedAt: now,
 		});
+		const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			userId: args.userId,
+			nodeId: args.nodeId,
+			pendingUpdateId,
+			unstagedMarkdown: args.unstagedMarkdown,
+		});
+		files_pending_update_log_replace_chunks_nay(chunksReplaced, { pendingUpdateId, nodeId: args.nodeId });
 	} else {
 		await Promise.all([
 			ctx.db.patch("files_pending_updates", args.existingPendingUpdate._id, {
@@ -382,6 +468,22 @@ async function files_pending_update_upsert_branch_docs(
 				expectedUpdatedAt: now,
 			}),
 		]);
+		// Staged-only changes (e.g. Accept all) keep the unstaged content intact, so the existing
+		// chunk rows stay correct and re-chunking would be wasted writes.
+		if (args.unstagedBranchChanged) {
+			const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				userId: args.userId,
+				nodeId: args.nodeId,
+				pendingUpdateId: args.existingPendingUpdate._id,
+				unstagedMarkdown: args.unstagedMarkdown,
+			});
+			files_pending_update_log_replace_chunks_nay(chunksReplaced, {
+				pendingUpdateId: args.existingPendingUpdate._id,
+				nodeId: args.nodeId,
+			});
+		}
 	}
 
 	return Result({ _yay: null });
@@ -460,6 +562,9 @@ async function files_pending_update_upsert_updates(
 		baseYjsDoc,
 		stagedBranchYjsDoc,
 		unstagedBranchYjsDoc,
+		unstagedMarkdown: args.unstagedMarkdown,
+		// `false` means the projection found the branch already serialized to this markdown.
+		unstagedBranchChanged: unstagedBranchProjection._yay !== false,
 	});
 }
 
@@ -494,6 +599,9 @@ export const remove_file_pending_update_if_expired = internalMutation({
 
 		await Promise.all([
 			ctx.db.delete("files_pending_updates", pendingUpdate._id),
+			files_pending_update_db_delete_chunks(ctx, {
+				pendingUpdateId: pendingUpdate._id,
+			}),
 			...cleanupTasks
 				.filter((cleanupTask) => cleanupTask.expectedUpdatedAt !== args.expectedUpdatedAt)
 				.map((cleanupTask) => ctx.db.delete("files_pending_updates_cleanup_tasks", cleanupTask._id)),
@@ -718,6 +826,9 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 					files_db_cancel_pending_update_cleanup_tasks(ctx, {
 						pendingUpdateId: existingPendingUpdate._id,
 					}),
+					files_pending_update_db_delete_chunks(ctx, {
+						pendingUpdateId: existingPendingUpdate._id,
+					}),
 					ctx.db.delete("files_pending_updates", existingPendingUpdate._id),
 				]);
 			}
@@ -785,6 +896,28 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 						expectedUpdatedAt: now,
 					})
 				: null;
+
+		// Rebase rewrites the unstaged branch, so always refresh the search-only chunk rows.
+		if (pendingUpdateId) {
+			const unstagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: unstagedBranchYjsDoc });
+			if (unstagedMarkdown._nay) {
+				console.error("Failed to serialize rebased unstaged branch for pending search chunks", {
+					nay: unstagedMarkdown._nay,
+					pendingUpdateId,
+					nodeId: args.nodeId,
+				});
+			} else {
+				const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					userId: userAuth.id,
+					nodeId: args.nodeId,
+					pendingUpdateId,
+					unstagedMarkdown: unstagedMarkdown._yay,
+				});
+				files_pending_update_log_replace_chunks_nay(chunksReplaced, { pendingUpdateId, nodeId: args.nodeId });
+			}
+		}
 
 		const [, nextPendingUpdate] = await Promise.all([
 			schedulePendingUpdateCleanupPromise,
@@ -1189,6 +1322,9 @@ export const save_file_pending_update_in_db = internalMutation({
 				files_db_cancel_pending_update_cleanup_tasks(ctx, {
 					pendingUpdateId: pendingUpdate._id,
 				}),
+				files_pending_update_db_delete_chunks(ctx, {
+					pendingUpdateId: pendingUpdate._id,
+				}),
 				ctx.db.delete("files_pending_updates", pendingUpdate._id),
 			]);
 
@@ -1227,6 +1363,32 @@ export const save_file_pending_update_in_db = internalMutation({
 				updatedAt: now,
 			}),
 		]);
+
+		// Remote drift merged into the unstaged branch changes its content, so its search chunks
+		// must be rebuilt; without drift the unstaged content is unchanged by a partial save.
+		if (remoteUpdateFromBase) {
+			const unstagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: unstagedBranchYjsDoc });
+			if (unstagedMarkdown._nay) {
+				console.error("Failed to serialize unstaged branch after partial save for pending search chunks", {
+					nay: unstagedMarkdown._nay,
+					pendingUpdateId: pendingUpdate._id,
+					nodeId: args.nodeId,
+				});
+			} else {
+				const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
+					workspaceId: membership.workspaceId,
+					projectId: membership.projectId,
+					userId: user._id,
+					nodeId: args.nodeId,
+					pendingUpdateId: pendingUpdate._id,
+					unstagedMarkdown: unstagedMarkdown._yay,
+				});
+				files_pending_update_log_replace_chunks_nay(chunksReplaced, {
+					pendingUpdateId: pendingUpdate._id,
+					nodeId: args.nodeId,
+				});
+			}
+		}
 
 		return Result({
 			_yay: {

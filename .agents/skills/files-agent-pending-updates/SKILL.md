@@ -38,6 +38,21 @@ Main table in `packages/app/convex/schema.ts`:
   - `unstagedBranchYjsUpdate`
   - `updatedAt`
 
+Search chunk table (materialized from the `unstaged` branch Markdown, used only by full-text search):
+
+- `files_pending_updates_chunks`
+  - `workspaceId`
+  - `projectId`
+  - `userId`
+  - `nodeId`
+  - `pendingUpdateId`
+  - `chunkIndex`
+  - `markdownChunk`
+  - `plainTextChunk`
+  - `startIndex` / `endIndex` / `lineStart` / `lineEnd` / `chunkFlags`
+  - search index `search_by_plainTextChunk` (filter fields `workspaceId`, `projectId`, `userId`)
+  - index `by_pendingUpdate_chunkIndex` for replace/delete and neighbor lookups
+
 Saved-sequence marker table:
 
 - `files_pending_updates_last_sequence_saved`
@@ -114,6 +129,8 @@ Important behavior:
 - Save applies remote drift from base into both branches before saving, persists only the `staged` diff to the live file, writes the saved-sequence marker, enqueues R2 content materialization, and keeps the row alive on partial save.
 - Public actions/mutations are rate-limited after membership validation and before writes.
 - Saves that push a live Yjs diff must pass the billing credit gate and emit one `file_save` usage event. The billing event name is intentionally unchanged for now to avoid a separate billing taxonomy migration.
+- Every pending row lifecycle path maintains `files_pending_updates_chunks` in the same mutation: row insert chunks the `unstaged` Markdown with the shared `files_chunk_markdown` chunker, patches re-chunk only when the unstaged content actually changed (staged-only changes like `Accept all` skip re-chunking), and row deletion (collapse, full save, expiry, data deletion) deletes the chunks.
+- A chunking failure never fails the row write: the stale chunks are already deleted, the failure is logged, and search just misses that file until the next upsert (its committed chunks stay hidden).
 
 # Client Responsibilities
 
@@ -138,10 +155,9 @@ Important behavior:
 # Cleanup And Expiry Model
 
 - Every active pending row gets a cleanup task.
-- Normal expiry window is 4 hours.
-- On reconnect / new presence session, cleanup is rescheduled back to the long-lived TTL.
-- When the last presence session disconnects, cleanup is shortened to 30 seconds.
-- If another session is still online, disconnect does not shorten cleanup.
+- The expiry window is 4 hours from the last write, regardless of presence.
+- Every upsert and partial save refreshes the 4-hour window; reconnect / new presence session also refreshes it.
+- Presence disconnect never shortens cleanup, so unreviewed AI edits survive the user closing the app.
 - Every scheduled cleanup carries `expectedUpdatedAt`.
 - `remove_file_pending_update_if_expired` only deletes the row if the current row still has that exact `updatedAt`.
 
@@ -150,6 +166,8 @@ Important behavior:
 - Pending updates are per-user rows keyed by `(workspaceId, projectId, userId, nodeId)`.
 - A pending row exists only while either `staged` or `unstaged` differs from `base`.
 - AI reads must continue to see the current user's pending `unstaged` branch overlay.
+- Pending chunks are replaced in the same mutation as every pending row write/delete, so search can trust that no orphan or stale `files_pending_updates_chunks` rows exist.
+- Bash `search` (`text_search_files`) returns the acting user's pending chunk matches first, then committed matches, and hides committed chunks for files that user has pending edits on. Rename/move/archive flows never touch pending rows, so search validates the node (tenant, kind, archived, editable Yjs state, path scope) at read time.
 - `Review changes` must switch into diff mode.
 - `Accept all` does not save by itself.
 - `Discard all` does not call a special clear mutation.

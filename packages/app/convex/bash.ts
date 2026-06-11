@@ -51,6 +51,12 @@ import { internalAction, type ActionCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { ai_chat_get_thread_state_Result } from "./ai_chat.ts";
 import type {
+	ai_chat_files_flush_thread_tmp_files_Args,
+	ai_chat_files_flush_thread_tmp_files_Result,
+	ai_chat_files_load_thread_tmp_files_Result,
+	ai_chat_files_patch_thread_tmp_files_Result,
+} from "./ai_chat_files.ts";
+import type {
 	files_nodes_create_folder_node_by_path_Result,
 	files_nodes_get_bash_served_byte_size_Result,
 	files_nodes_get_bash_stat_entry_Result,
@@ -64,6 +70,7 @@ import type {
 	files_nodes_list_recent_paginated_Result,
 	files_nodes_list_subtree_by_extension_paginated_Result,
 	files_nodes_list_subtree_paginated_Result,
+	files_nodes_read_file_full_content_from_chunks_Result,
 	files_nodes_read_file_content_stats_Result,
 	files_nodes_read_file_line_range_Result,
 	files_nodes_read_file_tail_lines_Result,
@@ -72,7 +79,7 @@ import type {
 } from "./files_nodes.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER } from "../shared/files.ts";
-import { path_name_of } from "../shared/shared-utils.ts";
+import { LruCache, path_name_of } from "../shared/shared-utils.ts";
 import { files_chunk_BITMASK_FLAGS, files_chunk_has_bitmask_flag } from "../server/files-markdown-chunking-mastra.ts";
 
 const HOME = "/home/cloud-usr";
@@ -90,65 +97,30 @@ const SIMPLE_EXTENSION_GLOB_REGEX = /^\*\.([a-z0-9][a-z0-9_-]*)$/iu;
 const GLOB_METACHARACTER_REGEX = /[*?[\]]/u;
 const SHELL_ARG_SAFE_UNQUOTED_REGEX = /^[A-Za-z0-9_/:.,=+@-]+$/;
 const PAGINATION_CURSORS_CACHE_MAX_ENTRIES = 500;
-const BASH_TMP_SESSION_CACHE_MAX_ENTRIES = 200;
-const BASH_TMP_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 const BASH_TMP_SESSION_MAX_PATHS = 1000;
 const BASH_TMP_SESSION_MAX_BYTES = 5_000_000;
 const BASH_TMP_SESSION_MAX_FILE_BYTES = 512_000;
 /**
- * In-memory LRU cache for stored pagination cursors.
- *
- * Map insertion order tracks recency: writes and cache hits delete then set an
- * id to move it to the newest slot. When over capacity, the first map key is
- * the least recently used cursor and is evicted. `value_store` remains the
+ * In-memory LRU cache for stored pagination cursors. `value_store` remains the
  * durable fallback when this per-runtime cache is empty.
  */
-const pagination_cursors_cache = new Map<string, string>();
+const pagination_cursors_cache = new LruCache<string, string>(PAGINATION_CURSORS_CACHE_MAX_ENTRIES);
 
+/**
+ * Per-call /tmp scratch state. Hydrated from durable storage at the start of
+ * every bash call and flushed back at the end; nothing survives the call in
+ * memory, so any Convex action runtime sees the same durable state.
+ */
 type BashTmpSession = {
 	fs: InMemoryFs;
-	hydrated: boolean;
 	dirty: boolean;
-	baselinePaths: Set<string> | null;
+	baselinePaths: Set<string>;
 	dirtyRoots: Set<string>;
-	requiresFullFlush: boolean;
-	createdAt: number;
-	lastAccessedAt: number;
-	callCount: number;
-	hitCount: number;
-	pending: Promise<void>;
 };
 
-type BashTmpSessionAccess = {
-	key: string;
-	session: BashTmpSession;
-	cacheHit: boolean;
-	sessionHitCount: number;
-};
+type BashTmpFilesSnapshotEntry = ai_chat_files_flush_thread_tmp_files_Args["entries"][number];
 
-const bash_tmp_session_cache = new Map<string, BashTmpSession>();
-const bash_tmp_session_cache_metrics = {
-	gets: 0,
-	hits: 0,
-	misses: 0,
-	evictions: 0,
-	expiredEvictions: 0,
-	oversizeDiscards: 0,
-};
-
-type BashTmpFilesSnapshotEntry = {
-	path: string;
-	kind: "file" | "directory" | "symlink";
-	mode: number;
-	size: number;
-	mtime: number;
-	target?: string;
-};
-
-type BashTmpFilesSnapshotContent = {
-	path: string;
-	bytes: ArrayBuffer;
-};
+type BashTmpFilesSnapshotContent = ai_chat_files_flush_thread_tmp_files_Args["contents"][number];
 
 type BashTmpFilesSnapshot = {
 	entries: BashTmpFilesSnapshotEntry[];
@@ -165,36 +137,17 @@ type BashTmpFilesPatch = {
 	totalBytes: number;
 };
 
-type BashTmpFilesFlushResult =
-	| {
-			_yay: {
-				pathCount: number;
-				totalBytes: number;
-			};
-	  }
-	| {
-			_nay: {
-				message: string;
-			};
-	  };
+type BashTmpFlushMode = "none" | "delta" | "full_fallback";
 
-type BashTmpFilesPatchResult =
-	| {
-			_yay: {
-				pathCount: number;
-				totalBytes: number;
-				upsertedPathCount: number;
-				deletedPathCount: number;
-			};
-	  }
-	| {
-			_nay: {
-				message: string;
-			};
-	  };
-
-type BashTmpFlushMode = "none" | "delta" | "full_fallback" | "full";
-
+/**
+ * Whitelist of commands allowed to operate on paths under `appMountPath`, the
+ * app files mount folder.
+ *
+ * These commands have app-aware handlers backed by indexed Convex
+ * `files_nodes` queries. Every other allowed native command is wrapped as a
+ * scratch-only command (see `NATIVE_SCRATCH_COMMANDS`) that rejects app file
+ * paths with a hint instead of touching the mounted project tree.
+ */
 const APP_FILE_COMMANDS = [
 	"echo",
 	"cat",
@@ -371,18 +324,6 @@ function shell_arg_quote(arg: string) {
 	return SHELL_ARG_SAFE_UNQUOTED_REGEX.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
-function pagination_cursors_cache_set(id: string, value: string) {
-	if (pagination_cursors_cache.has(id)) {
-		pagination_cursors_cache.delete(id);
-	}
-	pagination_cursors_cache.set(id, value);
-
-	while (pagination_cursors_cache.size > PAGINATION_CURSORS_CACHE_MAX_ENTRIES) {
-		const oldest = pagination_cursors_cache.keys().next().value!;
-		pagination_cursors_cache.delete(oldest);
-	}
-}
-
 /**
  * Persist a raw pagination cursor and return the short stored cursor id printed
  * in command output.
@@ -396,7 +337,7 @@ async function cursor_id_create(ctx: ActionCtx, cursor: string) {
 		value: cursor,
 	})) as Id<"value_store">;
 	// Warm the local LRU for the common case where the next command lands here.
-	pagination_cursors_cache_set(id, cursor);
+	pagination_cursors_cache.set(id, cursor);
 	return id;
 }
 
@@ -416,9 +357,6 @@ async function cursor_id_resolve(ctx: ActionCtx, cursor: string) {
 
 	const cached = pagination_cursors_cache.get(id);
 	if (cached != null) {
-		// Cache hits refresh recency because Map insertion order powers the LRU.
-		pagination_cursors_cache.delete(id);
-		pagination_cursors_cache.set(id, cached);
 		return Result({ _yay: cached });
 	}
 
@@ -433,112 +371,8 @@ async function cursor_id_resolve(ctx: ActionCtx, cursor: string) {
 	}
 
 	// Refill the local LRU after durable lookup for subsequent page requests.
-	pagination_cursors_cache_set(id, stored.value);
+	pagination_cursors_cache.set(id, stored.value);
 	return Result({ _yay: stored.value });
-}
-
-function bash_tmp_session_cache_key(args: {
-	workspaceId: string;
-	projectId: string;
-	threadId: string;
-}) {
-	return JSON.stringify([args.workspaceId, args.projectId, args.threadId]);
-}
-
-function bash_tmp_session_metrics_snapshot() {
-	return { ...bash_tmp_session_cache_metrics };
-}
-
-function bash_tmp_session_cache_clear_for_tests() {
-	bash_tmp_session_cache.clear();
-	bash_tmp_session_cache_metrics.gets = 0;
-	bash_tmp_session_cache_metrics.hits = 0;
-	bash_tmp_session_cache_metrics.misses = 0;
-	bash_tmp_session_cache_metrics.evictions = 0;
-	bash_tmp_session_cache_metrics.expiredEvictions = 0;
-	bash_tmp_session_cache_metrics.oversizeDiscards = 0;
-}
-
-function bash_tmp_session_evict_expired(now: number) {
-	for (const [key, session] of bash_tmp_session_cache) {
-		if (now - session.lastAccessedAt > BASH_TMP_SESSION_TTL_MS) {
-			bash_tmp_session_cache.delete(key);
-			bash_tmp_session_cache_metrics.expiredEvictions += 1;
-		}
-	}
-}
-
-function bash_tmp_session_evict_oldest() {
-	while (bash_tmp_session_cache.size > BASH_TMP_SESSION_CACHE_MAX_ENTRIES) {
-		const oldest = bash_tmp_session_cache.keys().next().value!;
-		bash_tmp_session_cache.delete(oldest);
-		bash_tmp_session_cache_metrics.evictions += 1;
-	}
-}
-
-function bash_tmp_session_get_or_create(args: {
-	workspaceId: string;
-	projectId: string;
-	threadId: string;
-	now?: number;
-}): BashTmpSessionAccess {
-	const now = args.now ?? Date.now();
-	const key = bash_tmp_session_cache_key(args);
-	bash_tmp_session_cache_metrics.gets += 1;
-	bash_tmp_session_evict_expired(now);
-
-	const cached = bash_tmp_session_cache.get(key);
-	if (cached) {
-		cached.lastAccessedAt = now;
-		cached.hitCount += 1;
-		bash_tmp_session_cache.delete(key);
-		bash_tmp_session_cache.set(key, cached);
-		bash_tmp_session_cache_metrics.hits += 1;
-		return {
-			key,
-			session: cached,
-			cacheHit: true,
-			sessionHitCount: cached.hitCount,
-		};
-	}
-
-	const session: BashTmpSession = {
-		fs: new InMemoryFs(),
-		hydrated: false,
-		dirty: false,
-		baselinePaths: null,
-		dirtyRoots: new Set(),
-		requiresFullFlush: false,
-		createdAt: now,
-		lastAccessedAt: now,
-		callCount: 0,
-		hitCount: 0,
-		pending: Promise.resolve(),
-	};
-	bash_tmp_session_cache.set(key, session);
-	bash_tmp_session_cache_metrics.misses += 1;
-	bash_tmp_session_evict_oldest();
-	return {
-		key,
-		session,
-		cacheHit: false,
-		sessionHitCount: 0,
-	};
-}
-
-async function bash_tmp_session_run_serialized<T>(session: BashTmpSession, run: () => Promise<T>) {
-	const previous = session.pending;
-	let release = () => {};
-	session.pending = new Promise<void>((resolve) => {
-		release = resolve;
-	});
-
-	await previous.catch(() => {});
-	try {
-		return await run();
-	} finally {
-		release();
-	}
 }
 
 async function bash_tmp_session_estimate_usage(fs: InMemoryFs) {
@@ -561,12 +395,11 @@ async function bash_tmp_session_estimate_usage(fs: InMemoryFs) {
 	return { pathCount, approxBytes };
 }
 
-function bash_tmp_session_discard_if_current(key: string, session: BashTmpSession) {
-	if (bash_tmp_session_cache.get(key) === session) {
-		bash_tmp_session_cache.delete(key);
-	}
-}
-
+/**
+ * Build a fresh per-call /tmp session from durable storage. Called at the
+ * start of every bash call so the in-memory fs always reflects what other
+ * runtimes flushed; the returned baseline powers the end-of-call delta flush.
+ */
 async function bash_tmp_session_hydrate(
 	ctx: ActionCtx,
 	args: {
@@ -574,28 +407,15 @@ async function bash_tmp_session_hydrate(
 		projectId: string;
 		threadId: Id<"ai_chat_threads">;
 	},
-	session: BashTmpSession,
-) {
-	if (session.hydrated) {
-		return false;
-	}
-
+): Promise<BashTmpSession> {
 	const snapshot = (await ctx.runQuery(internal.ai_chat_files.load_thread_tmp_files, {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		threadId: args.threadId,
-	})) as BashTmpFilesSnapshot;
+	})) as ai_chat_files_load_thread_tmp_files_Result;
 
 	const fs = new InMemoryFs();
-	const contentByPath = new Map(snapshot.contents.map((content) => [content.path, content.bytes]));
-	const entries = [...snapshot.entries].sort((a, b) => {
-		if (a.kind === b.kind) {
-			return a.path.localeCompare(b.path);
-		}
-		return a.kind === "directory" ? -1 : b.kind === "directory" ? 1 : 0;
-	});
-
-	for (const entry of entries) {
+	for (const entry of snapshot.aiChatFiles) {
 		if (entry.kind === "directory") {
 			await fs.mkdir(entry.path, { recursive: true });
 			await fs.chmod(entry.path, entry.mode);
@@ -603,25 +423,24 @@ async function bash_tmp_session_hydrate(
 			continue;
 		}
 		if (entry.kind === "symlink") {
-			await fs.symlink(entry.target ?? "", entry.path);
+			await fs.symlink(entry.symlinkTargetPath ?? "", entry.path);
 			await fs.chmod(entry.path, entry.mode);
 			continue;
 		}
 
-		const bytes = contentByPath.get(entry.path) ?? new ArrayBuffer(0);
+		const bytes = snapshot.aiChatFilesContentDict[entry._id]?.bytes ?? new ArrayBuffer(0);
 		fs.writeFileSync(entry.path, new Uint8Array(bytes), undefined, {
 			mode: entry.mode,
 			mtime: new Date(entry.mtime),
 		});
 	}
 
-	session.fs = fs;
-	session.hydrated = true;
-	session.dirty = false;
-	session.baselinePaths = null;
-	session.dirtyRoots.clear();
-	session.requiresFullFlush = false;
-	return true;
+	return {
+		fs,
+		dirty: false,
+		baselinePaths: new Set(fs.getAllPaths().filter((path) => path !== "/")),
+		dirtyRoots: new Set(),
+	};
 }
 
 async function bash_tmp_file_snapshot_entry(fs: InMemoryFs, path: string) {
@@ -640,7 +459,7 @@ async function bash_tmp_file_snapshot_entry(fs: InMemoryFs, path: string) {
 		};
 	}
 	if (stat.isSymbolicLink) {
-		const target = await fs.readlink(path);
+		const symlinkTargetPath = await fs.readlink(path);
 		return {
 			entry: {
 				path,
@@ -648,7 +467,7 @@ async function bash_tmp_file_snapshot_entry(fs: InMemoryFs, path: string) {
 				mode: stat.mode,
 				size: stat.size,
 				mtime: stat.mtime.getTime(),
-				target,
+				symlinkTargetPath,
 			},
 			content: null,
 			bytes: stat.size,
@@ -677,7 +496,10 @@ async function bash_tmp_session_snapshot(fs: InMemoryFs): Promise<BashTmpFilesSn
 	const contents: BashTmpFilesSnapshotContent[] = [];
 	let totalBytes = 0;
 
-	for (const path of fs.getAllPaths().filter((path) => path !== "/").sort()) {
+	for (const path of fs
+		.getAllPaths()
+		.filter((path) => path !== "/")
+		.sort()) {
 		const item = await bash_tmp_file_snapshot_entry(fs, path);
 		entries.push(item.entry);
 		if (item.content) {
@@ -695,7 +517,7 @@ async function bash_tmp_session_snapshot(fs: InMemoryFs): Promise<BashTmpFilesSn
 }
 
 async function bash_tmp_session_delta(session: BashTmpSession, usage: { pathCount: number; approxBytes: number }) {
-	const baselinePaths = session.baselinePaths ?? new Set<string>();
+	const baselinePaths = session.baselinePaths;
 	const finalPaths = new Set(session.fs.getAllPaths().filter((path) => path !== "/"));
 	const upsertPaths = new Set<string>();
 	const deletePaths = [...baselinePaths].filter((path) => !finalPaths.has(path)).sort();
@@ -1291,6 +1113,7 @@ function search_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxD
 		const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
 			workspaceId: ctxData.workspaceId,
 			projectId: ctxData.projectId,
+			userId: ctxData.userId,
 			query: parsed._yay.query,
 			numItems: parsed._yay.limit,
 			cursor,
@@ -1488,7 +1311,7 @@ class NativeScratchAccessError extends Error {
 		const appFileNodePath =
 			current_project_path_to_app_file_node_path(currentProjectPath, normalizedPath) ?? normalizedPath;
 		super(
-				`native scratch commands cannot access app files directly: '${normalizedPath}'.\n` +
+			`native scratch commands cannot access app files directly: '${normalizedPath}'.\n` +
 				`The app file tree at '${currentProjectPath}' is Convex-backed, so native scratch commands can use /tmp paths or stdin but not direct app-file operands.\n` +
 				`For app path '${appFileNodePath}', use app-aware commands such as search, find, grep, cat, head, tail, wc, stat, or tree. To process one readable app file with native scratch tools, pipe it through cat or copy it first: cp ${shell_arg_quote(normalizedPath)} /tmp/<name>\n`,
 		);
@@ -1682,9 +1505,12 @@ async function delegate_native_scratch_command(
 ) {
 	const env = Object.fromEntries(ctx.env);
 	const cwd = is_native_scratch_path(ctx.cwd) ? ctx.cwd : TMP_MOUNT;
-	const directRgOperand = command === "rg" ? native_scratch_command_rg_app_operand(args, ctx, currentProjectPath) : null;
+	const directRgOperand =
+		command === "rg" ? native_scratch_command_rg_app_operand(args, ctx, currentProjectPath) : null;
 	const directPathOperand =
-		command === "du" || command === "diff" ? native_scratch_command_path_app_operand(args, ctx, currentProjectPath) : null;
+		command === "du" || command === "diff"
+			? native_scratch_command_path_app_operand(args, ctx, currentProjectPath)
+			: null;
 	const directAppOperand = directRgOperand?.path ?? directPathOperand;
 	if (directAppOperand != null) {
 		const appOperandError =
@@ -1737,7 +1563,13 @@ function native_scratch_command_path_app_operand(args: string[], ctx: CommandCon
 			continue;
 		}
 		const resolvedPath = resolve_path(ctx.cwd, arg);
-		const isPathLike = arg === "." || arg === ".." || arg.startsWith("/") || arg.startsWith("./") || arg.startsWith("../") || arg.includes("/");
+		const isPathLike =
+			arg === "." ||
+			arg === ".." ||
+			arg.startsWith("/") ||
+			arg.startsWith("./") ||
+			arg.startsWith("../") ||
+			arg.includes("/");
 		if (isPathLike && is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
 			return resolvedPath;
 		}
@@ -1756,7 +1588,13 @@ function native_scratch_command_rg_app_operand(args: string[], ctx: CommandConte
 			continue;
 		}
 		const resolvedPath = resolve_path(ctx.cwd, arg);
-		const isPathLike = arg === "." || arg === ".." || arg.startsWith("/") || arg.startsWith("./") || arg.startsWith("../") || arg.includes("/");
+		const isPathLike =
+			arg === "." ||
+			arg === ".." ||
+			arg.startsWith("/") ||
+			arg.startsWith("./") ||
+			arg.startsWith("../") ||
+			arg.includes("/");
 		if (isPathLike && is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
 			return { pattern, path: resolvedPath };
 		}
@@ -1780,7 +1618,13 @@ function native_scratch_command_app_hint_path(
 			hasExplicitScratchOperand = true;
 			continue;
 		}
-		const isPathLike = arg === "." || arg === ".." || arg.startsWith("/") || arg.startsWith("./") || arg.startsWith("../") || arg.includes("/");
+		const isPathLike =
+			arg === "." ||
+			arg === ".." ||
+			arg.startsWith("/") ||
+			arg.startsWith("./") ||
+			arg.startsWith("../") ||
+			arg.includes("/");
 		if (isPathLike && is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
 			return resolvedPath;
 		}
@@ -3785,6 +3629,7 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
+					userId: ctxData.userId,
 					query: pattern,
 					numItems: 20,
 					cursor: null,
@@ -5343,6 +5188,20 @@ class WorkspaceFs implements IFileSystem {
 			return cached;
 		}
 
+		const chunkRead = (await this.ctx.runQuery(internal.files_nodes.read_file_full_content_from_chunks, {
+			workspaceId: this.ctxData.workspaceId,
+			projectId: this.ctxData.projectId,
+			userId: this.ctxData.userId,
+			path: normalizedPath,
+			maxBytes: READ_INLINE_MAX_BYTES,
+		})) as files_nodes_read_file_full_content_from_chunks_Result;
+		if (chunkRead) {
+			this.contentCache.set(normalizedPath, chunkRead.content);
+			this.rememberEntry(chunkRead.fileNode);
+			return chunkRead.content;
+		}
+
+		// TODO: This can be optimized
 		const fileContentPromise = this.ctx.runAction(
 			internal.files_nodes.get_file_last_available_markdown_content_by_path,
 			{
@@ -5747,12 +5606,7 @@ async function action_run(
 		command: string;
 		allowAppFileTreeMkdir: boolean;
 		persistedCwd: string;
-		tmpFsCacheKey: string;
 		tmpFsSession: BashTmpSession;
-		tmpFsCacheHit: boolean;
-		tmpFsHydratedFromDb: boolean;
-		tmpFsSessionCallCount: number;
-		tmpFsSessionHitCount: number;
 	},
 ) {
 	// Workspace and project names are validated slugs, so they are stable shell
@@ -5862,8 +5716,7 @@ async function action_run(
 		const filePathMatch = /(?:^|[\s;&|])file\s+([^\s;&|]+)/u.exec(args.command);
 		if (filePathMatch?.[1] != null) {
 			const target = shell_arg_quote(filePathMatch[1]);
-			stderr +=
-				`bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
+			stderr += `bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
 		}
 	}
 	if (
@@ -5893,12 +5746,12 @@ async function action_run(
 	let tmpFsDeltaDeletedPathCount = 0;
 	let tmpFsPersistedPathCount = tmpFsUsage.pathCount;
 	let tmpFsPersistedBytes = tmpFsUsage.approxBytes;
-	const full_flush = async (mode: Exclude<BashTmpFlushMode, "none" | "delta">) => {
+	const full_flush = async () => {
 		const snapshot = await bash_tmp_session_snapshot(args.tmpFsSession.fs);
-		const oversizedFile = snapshot.contents.find((content) => content.bytes.byteLength > BASH_TMP_SESSION_MAX_FILE_BYTES);
+		const oversizedFile = snapshot.contents.find(
+			(content) => content.bytes.byteLength > BASH_TMP_SESSION_MAX_FILE_BYTES,
+		);
 		if (oversizedFile) {
-			bash_tmp_session_discard_if_current(args.tmpFsCacheKey, args.tmpFsSession);
-			bash_tmp_session_cache_metrics.oversizeDiscards += 1;
 			stderr += `/tmp file exceeded its durable file limit and scratch files from this call were discarded: ${oversizedFile.path}\n`;
 			return false;
 		}
@@ -5907,69 +5760,55 @@ async function action_run(
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			threadId: args.threadId,
-			userId: args.userId,
 			entries: snapshot.entries,
 			contents: snapshot.contents,
-		})) as BashTmpFilesFlushResult;
-		if ("_nay" in flushResult) {
+		})) as ai_chat_files_flush_thread_tmp_files_Result;
+		if (flushResult._nay) {
 			stderr += `/tmp scratch persistence failed: ${flushResult._nay.message}\n`;
-			args.tmpFsSession.requiresFullFlush = true;
 			return false;
 		}
 
 		args.tmpFsSession.dirty = false;
-		args.tmpFsSession.requiresFullFlush = false;
 		tmpFsFlushed = true;
-		tmpFsFlushMode = mode;
+		tmpFsFlushMode = "full_fallback";
 		tmpFsPersistedPathCount = flushResult._yay.pathCount;
 		tmpFsPersistedBytes = flushResult._yay.totalBytes;
 		return true;
 	};
 	if (tmpFsUsage.pathCount > BASH_TMP_SESSION_MAX_PATHS || tmpFsUsage.approxBytes > BASH_TMP_SESSION_MAX_BYTES) {
-		bash_tmp_session_discard_if_current(args.tmpFsCacheKey, args.tmpFsSession);
-		bash_tmp_session_cache_metrics.oversizeDiscards += 1;
 		stderr += "/tmp scratch exceeded its durable thread limit; scratch files from this call were discarded.\n";
 	} else if (args.tmpFsSession.dirty) {
-		if (args.tmpFsSession.requiresFullFlush) {
-			await full_flush("full");
+		const patch = await bash_tmp_session_delta(args.tmpFsSession, tmpFsUsage);
+		const oversizedFile = patch.contents.find(
+			(content) => content.bytes.byteLength > BASH_TMP_SESSION_MAX_FILE_BYTES,
+		);
+		if (oversizedFile) {
+			stderr += `/tmp file exceeded its durable file limit and scratch files from this call were discarded: ${oversizedFile.path}\n`;
 		} else {
-			const patch = await bash_tmp_session_delta(args.tmpFsSession, tmpFsUsage);
-			const oversizedFile = patch.contents.find((content) => content.bytes.byteLength > BASH_TMP_SESSION_MAX_FILE_BYTES);
-			if (oversizedFile) {
-				bash_tmp_session_discard_if_current(args.tmpFsCacheKey, args.tmpFsSession);
-				bash_tmp_session_cache_metrics.oversizeDiscards += 1;
-				stderr += `/tmp file exceeded its durable file limit and scratch files from this call were discarded: ${oversizedFile.path}\n`;
-			} else {
-				const patchResult = (await ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
-					threadId: args.threadId,
-					userId: args.userId,
-					upsertEntries: patch.entries,
-					upsertContents: patch.contents,
-					deletePaths: patch.deletePaths,
-				})) as BashTmpFilesPatchResult;
-				if ("_nay" in patchResult) {
-					const fallbackSucceeded = await full_flush("full_fallback");
-					if (!fallbackSucceeded) {
-						stderr += `/tmp scratch delta persistence failed: ${patchResult._nay.message}\n`;
-					}
-				} else {
-					args.tmpFsSession.dirty = false;
-					args.tmpFsSession.requiresFullFlush = false;
-					tmpFsFlushed = true;
-					tmpFsFlushMode = "delta";
-					tmpFsDeltaUpsertedPathCount = patchResult._yay.upsertedPathCount;
-					tmpFsDeltaDeletedPathCount = patchResult._yay.deletedPathCount;
-					tmpFsPersistedPathCount = patchResult._yay.pathCount;
-					tmpFsPersistedBytes = patchResult._yay.totalBytes;
+			const patchResult = (await ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				threadId: args.threadId,
+				upsertEntries: patch.entries,
+				upsertContents: patch.contents,
+				deletePaths: patch.deletePaths,
+			})) as ai_chat_files_patch_thread_tmp_files_Result;
+			if (patchResult._nay) {
+				const fallbackSucceeded = await full_flush();
+				if (!fallbackSucceeded) {
+					stderr += `/tmp scratch delta persistence failed: ${patchResult._nay.message}\n`;
 				}
+			} else {
+				args.tmpFsSession.dirty = false;
+				tmpFsFlushed = true;
+				tmpFsFlushMode = "delta";
+				tmpFsDeltaUpsertedPathCount = patchResult._yay.upsertedPathCount;
+				tmpFsDeltaDeletedPathCount = patchResult._yay.deletedPathCount;
+				tmpFsPersistedPathCount = patchResult._yay.pathCount;
+				tmpFsPersistedBytes = patchResult._yay.totalBytes;
 			}
 		}
 	}
-	args.tmpFsSession.baselinePaths = null;
-	args.tmpFsSession.dirtyRoots.clear();
-	const tmpFsCacheMetrics = bash_tmp_session_metrics_snapshot();
 
 	const stdoutLength = result.stdout.length;
 	const stderrLength = stderr.length;
@@ -5999,25 +5838,15 @@ async function action_run(
 			stdoutLength,
 			stderrLength,
 			pathIndexTruncated: workspaceFs.pathIndexTruncated,
-			tmpFsCacheHit: args.tmpFsCacheHit,
-			tmpFsHydratedFromDb: args.tmpFsHydratedFromDb,
 			tmpFsFlushed,
 			tmpFsFlushMode,
 			tmpFsDeltaUpsertedPathCount,
 			tmpFsDeltaDeletedPathCount,
 			tmpFsDirty: args.tmpFsSession.dirty,
-			tmpFsSessionCallCount: args.tmpFsSessionCallCount,
-			tmpFsSessionHitCount: args.tmpFsSessionHitCount,
 			tmpFsPathCount: tmpFsUsage.pathCount,
 			tmpFsApproxBytes: tmpFsUsage.approxBytes,
 			tmpFsPersistedPathCount,
 			tmpFsPersistedBytes,
-			tmpFsCacheGets: tmpFsCacheMetrics.gets,
-			tmpFsCacheHits: tmpFsCacheMetrics.hits,
-			tmpFsCacheMisses: tmpFsCacheMetrics.misses,
-			tmpFsCacheEvictions: tmpFsCacheMetrics.evictions,
-			tmpFsCacheExpiredEvictions: tmpFsCacheMetrics.expiredEvictions,
-			tmpFsCacheOversizeDiscards: tmpFsCacheMetrics.oversizeDiscards,
 		},
 	};
 }
@@ -6048,79 +5877,44 @@ export const run = internalAction({
 			stdoutLength: v.number(),
 			stderrLength: v.number(),
 			pathIndexTruncated: v.boolean(),
-			tmpFsCacheHit: v.boolean(),
-			tmpFsHydratedFromDb: v.boolean(),
 			tmpFsFlushed: v.boolean(),
-			tmpFsFlushMode: v.union(
-				v.literal("none"),
-				v.literal("delta"),
-				v.literal("full_fallback"),
-				v.literal("full"),
-			),
+			tmpFsFlushMode: v.union(v.literal("none"), v.literal("delta"), v.literal("full_fallback")),
 			tmpFsDeltaUpsertedPathCount: v.number(),
 			tmpFsDeltaDeletedPathCount: v.number(),
 			tmpFsDirty: v.boolean(),
-			tmpFsSessionCallCount: v.number(),
-			tmpFsSessionHitCount: v.number(),
 			tmpFsPathCount: v.number(),
 			tmpFsApproxBytes: v.number(),
 			tmpFsPersistedPathCount: v.number(),
 			tmpFsPersistedBytes: v.number(),
-			tmpFsCacheGets: v.number(),
-			tmpFsCacheHits: v.number(),
-			tmpFsCacheMisses: v.number(),
-			tmpFsCacheEvictions: v.number(),
-			tmpFsCacheExpiredEvictions: v.number(),
-			tmpFsCacheOversizeDiscards: v.number(),
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const tmpFsSession = bash_tmp_session_get_or_create({
+		const tmpFsSession = await bash_tmp_session_hydrate(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			threadId: args.threadId,
 		});
+		const threadState = (await ctx.runQuery(internal.ai_chat.get_thread_state, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			threadId: args.threadId,
+		})) as ai_chat_get_thread_state_Result;
 
-		return await bash_tmp_session_run_serialized(tmpFsSession.session, async () => {
-			tmpFsSession.session.callCount += 1;
-			const tmpFsSessionCallCount = tmpFsSession.session.callCount;
-			const tmpFsHydratedFromDb = await bash_tmp_session_hydrate(
-				ctx,
-				{
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
-					threadId: args.threadId,
-				},
-				tmpFsSession.session,
-			);
-			tmpFsSession.session.baselinePaths = new Set(
-				tmpFsSession.session.fs.getAllPaths().filter((path) => path !== "/"),
-			);
-			tmpFsSession.session.dirtyRoots.clear();
-			const threadState = (await ctx.runQuery(internal.ai_chat.get_thread_state, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				threadId: args.threadId,
-			})) as ai_chat_get_thread_state_Result;
+		const execution = await action_run(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			workspaceName: args.workspaceName,
+			projectName: args.projectName,
+			userId: args.userId,
+			threadId: args.threadId,
+			command: args.command,
+			allowAppFileTreeMkdir: args.allowAppFileTreeMkdir,
+			persistedCwd: threadState.bashCwd,
+			tmpFsSession,
+		});
 
-			const execution = await action_run(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				workspaceName: args.workspaceName,
-				projectName: args.projectName,
-				userId: args.userId,
-				threadId: args.threadId,
-				command: args.command,
-				allowAppFileTreeMkdir: args.allowAppFileTreeMkdir,
-				persistedCwd: threadState.bashCwd,
-				tmpFsCacheKey: tmpFsSession.key,
-				tmpFsSession: tmpFsSession.session,
-				tmpFsCacheHit: tmpFsSession.cacheHit,
-				tmpFsHydratedFromDb,
-				tmpFsSessionCallCount,
-				tmpFsSessionHitCount: tmpFsSession.sessionHitCount,
-			});
-
+		const threadStateUpdated = execution.nextPersistedCwd !== threadState.bashCwd;
+		if (threadStateUpdated) {
 			await ctx.runMutation(internal.ai_chat.set_thread_state, {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
@@ -6130,15 +5924,27 @@ export const run = internalAction({
 					bashCwd: execution.nextPersistedCwd,
 				},
 			});
+		}
 
-			return {
-				title: execution.title,
-				output: execution.output,
-				stdout: execution.stdout,
-				stderr: execution.stderr,
-				metadata: execution.metadata,
-			};
+		console.info("Bash command completed", {
+			threadId: args.threadId,
+			commandName: args.command.trim().split(/\s+/u, 1)[0] ?? "",
+			exitCode: execution.metadata.exitCode,
+			stdoutLength: execution.metadata.stdoutLength,
+			stderrLength: execution.metadata.stderrLength,
+			threadStateUpdated,
+			pathIndexTruncated: execution.metadata.pathIndexTruncated,
+			tmpFsFlushed: execution.metadata.tmpFsFlushed,
+			tmpFsFlushMode: execution.metadata.tmpFsFlushMode,
 		});
+
+		return {
+			title: execution.title,
+			output: execution.output,
+			stdout: execution.stdout,
+			stderr: execution.stderr,
+			metadata: execution.metadata,
+		};
 	},
 });
 
@@ -6395,13 +6201,48 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			};
 		}
 
+		function tmp_snapshot_to_load_result(
+			snapshot: BashTmpFilesSnapshot,
+			scope: { workspaceId: string; projectId: string; threadId: Id<"ai_chat_threads"> },
+		): ai_chat_files_load_thread_tmp_files_Result {
+			const now = Date.now();
+			const aiChatFilesContentDict: ai_chat_files_load_thread_tmp_files_Result["aiChatFilesContentDict"] = {};
+			for (const content of snapshot.contents) {
+				const fileNodeId = `ai_chat_file:${content.path}` as Id<"ai_chat_files">;
+				aiChatFilesContentDict[fileNodeId] = {
+					_id: `ai_chat_files_content:${content.path}` as Id<"ai_chat_files_content">,
+					_creationTime: now,
+					...scope,
+					fileNodeId,
+					bytes: content.bytes.slice(0),
+				};
+			}
+			return {
+				aiChatFiles: snapshot.entries.map((entry) => ({
+					_id: `ai_chat_file:${entry.path}` as Id<"ai_chat_files">,
+					_creationTime: now,
+					...scope,
+					...entry,
+				})),
+				aiChatFilesContentDict,
+				aiChatFilesState: {
+					_id: `ai_chat_files_state:${scope.threadId}` as Id<"ai_chat_files_state">,
+					_creationTime: now,
+					...scope,
+					pathCount: snapshot.pathCount,
+					totalBytes: snapshot.totalBytes,
+					updatedAt: now,
+				},
+			};
+		}
+
 		function createBashRunner(args?: {
 			initialCwd?: string;
 			threadId?: Id<"ai_chat_threads">;
 			workspaceId?: string;
 			projectId?: string;
 			userId?: Id<"users">;
-			preserveTmpSessionCache?: boolean;
+			preserveTmpFiles?: boolean;
 			listTruncated?: boolean;
 			allowAppFileTreeMkdir?: boolean;
 			extraItems?: Array<{
@@ -6419,8 +6260,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			failTmpPatchOnce?: boolean;
 		}) {
 			pagination_cursors_cache.clear();
-			if (!args?.preserveTmpSessionCache) {
-				bash_tmp_session_cache_clear_for_tests();
+			if (!args?.preserveTmpFiles) {
 				tmpSnapshots.clear();
 			}
 			const ctxData = {
@@ -6452,12 +6292,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					return value == null ? null : { value, createdAt: Date.now() };
 				}
 				if (function_name_of(_ref) === "ai_chat_files:load_thread_tmp_files") {
-					const key = tmp_snapshot_key({
+					const scope = {
 						workspaceId: String(queryArgs.workspaceId ?? ""),
 						projectId: String(queryArgs.projectId ?? ""),
 						threadId: queryArgs.threadId as Id<"ai_chat_threads">,
-					});
-					return tmp_snapshot_clone(tmpSnapshots.get(key) ?? tmp_snapshot_empty());
+					};
+					const key = tmp_snapshot_key(scope);
+					return tmp_snapshot_to_load_result(tmpSnapshots.get(key) ?? tmp_snapshot_empty(), scope);
 				}
 
 				const itemName = (path: string) => path.split("/").filter(Boolean).at(-1) ?? "";
@@ -6625,7 +6466,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						],
 						"exact-hyphen-token-2026": [
 							{ path: "/docs/readme.md", markdownChunk: "A chunk with exact-hyphen-token-2026 inside.", chunkFlags: 0 },
-							{ path: "/docs/guide.md", markdownChunk: "A broad tokenization hit for exact hyphen token only.", chunkFlags: 0 },
+							{
+								path: "/docs/guide.md",
+								markdownChunk: "A broad tokenization hit for exact hyphen token only.",
+								chunkFlags: 0,
+							},
 						],
 						"paged-token": [
 							{ path: "/docs/readme.md", markdownChunk: "First paged-token chunk.", chunkFlags: 0 },
@@ -6877,9 +6722,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						const upsertContents = Array.isArray(mutationArgs.upsertContents)
 							? (mutationArgs.upsertContents as BashTmpFilesSnapshotContent[])
 							: [];
-						const deletePaths = Array.isArray(mutationArgs.deletePaths)
-							? (mutationArgs.deletePaths as string[])
-							: [];
+						const deletePaths = Array.isArray(mutationArgs.deletePaths) ? (mutationArgs.deletePaths as string[]) : [];
 						const key = tmp_snapshot_key({
 							workspaceId: String(mutationArgs.workspaceId ?? ""),
 							projectId: String(mutationArgs.projectId ?? ""),
@@ -6913,7 +6756,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 								return sum + (contentsByPath.get(entry.path)?.byteLength ?? 0);
 							}
 							if (entry.kind === "symlink") {
-								return sum + textEncoder.encode(entry.target ?? "").length;
+								return sum + textEncoder.encode(entry.symlinkTargetPath ?? "").length;
 							}
 							return sum;
 						}, 0);
@@ -7115,39 +6958,18 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			return {
 				run: async (command: string) => {
-					const tmpFsSession = bash_tmp_session_get_or_create({
+					const tmpFsSession = await bash_tmp_session_hydrate(ctx, {
 						workspaceId: ctxData.workspaceId,
 						projectId: ctxData.projectId,
 						threadId,
 					});
-					const result = await bash_tmp_session_run_serialized(tmpFsSession.session, async () => {
-						tmpFsSession.session.callCount += 1;
-						const tmpFsHydratedFromDb = await bash_tmp_session_hydrate(
-							ctx,
-							{
-								workspaceId: ctxData.workspaceId,
-								projectId: ctxData.projectId,
-								threadId,
-							},
-							tmpFsSession.session,
-						);
-						tmpFsSession.session.baselinePaths = new Set(
-							tmpFsSession.session.fs.getAllPaths().filter((path) => path !== "/"),
-						);
-						tmpFsSession.session.dirtyRoots.clear();
-						return await action_run(ctx, {
-							...ctxData,
-							threadId,
-							command,
-							allowAppFileTreeMkdir: args?.allowAppFileTreeMkdir ?? true,
-							persistedCwd: cwd,
-							tmpFsCacheKey: tmpFsSession.key,
-							tmpFsSession: tmpFsSession.session,
-							tmpFsCacheHit: tmpFsSession.cacheHit,
-							tmpFsHydratedFromDb,
-							tmpFsSessionCallCount: tmpFsSession.session.callCount,
-							tmpFsSessionHitCount: tmpFsSession.sessionHitCount,
-						});
+					const result = await action_run(ctx, {
+						...ctxData,
+						threadId,
+						command,
+						allowAppFileTreeMkdir: args?.allowAppFileTreeMkdir ?? true,
+						persistedCwd: cwd,
+						tmpFsSession,
 					});
 					cwd = result.nextPersistedCwd;
 					return result;
@@ -7156,13 +6978,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				runMutation,
 				runAction,
 				getCwd: () => cwd,
-				getTmpSession: () =>
-					bash_tmp_session_get_or_create({
-						workspaceId: ctxData.workspaceId,
-						projectId: ctxData.projectId,
-						threadId,
-					}).session,
-				clearTmpSessionCache: () => bash_tmp_session_cache_clear_for_tests(),
 			};
 		}
 
@@ -8035,7 +7850,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(suggestionLine).toContain(`${test_app_files_mount}/uploaded.txt`);
 		});
 
-		test("rejects workspace writes and keeps warm same-thread /tmp scratch files", async () => {
+		test("rejects workspace writes and persists same-thread /tmp scratch files", async () => {
 			const { run } = createBashRunner();
 
 			const workspaceWrite = await run(`echo nope > ${test_app_files_mount}/docs/new.md`);
@@ -8044,8 +7859,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const tmpWrite = await run("printf hi > /tmp/a.txt");
 			expect(tmpWrite.metadata.exitCode).toBe(0);
-			expect(tmpWrite.metadata.tmpFsCacheHit).toBe(true);
-			expect(tmpWrite.metadata.tmpFsHydratedFromDb).toBe(false);
 			expect(tmpWrite.metadata.tmpFsFlushed).toBe(true);
 			expect(tmpWrite.metadata.tmpFsFlushMode).toBe("delta");
 			expect(tmpWrite.metadata.tmpFsDeltaUpsertedPathCount).toBeGreaterThanOrEqual(1);
@@ -8058,31 +7871,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const nextInvocation = await run("cat /tmp/a.txt");
 			expect(nextInvocation.metadata.exitCode).toBe(0);
 			expect(nextInvocation.stdout).toBe("hi");
-			expect(nextInvocation.metadata.tmpFsCacheHit).toBe(true);
 			expect(nextInvocation.metadata.tmpFsFlushMode).toBe("none");
 			expect(nextInvocation.metadata.tmpFsDeltaUpsertedPathCount).toBe(0);
 			expect(nextInvocation.metadata.tmpFsDeltaDeletedPathCount).toBe(0);
-			expect(nextInvocation.metadata.tmpFsSessionCallCount).toBeGreaterThanOrEqual(3);
-			expect(nextInvocation.metadata.tmpFsSessionHitCount).toBeGreaterThanOrEqual(2);
-			expect(nextInvocation.metadata.tmpFsCacheHits).toBeGreaterThanOrEqual(2);
-			expect(nextInvocation.metadata.tmpFsCacheMisses).toBe(1);
-		});
-
-		test("hydrates durable /tmp after hot cache loss", async () => {
-			const { run, clearTmpSessionCache } = createBashRunner();
-
-			const write = await run("printf durable > /tmp/persisted.txt");
-			expect(write.metadata.exitCode).toBe(0);
-			expect(write.metadata.tmpFsFlushed).toBe(true);
-			expect(write.metadata.tmpFsFlushMode).toBe("delta");
-
-			clearTmpSessionCache();
-			const read = await run("cat /tmp/persisted.txt");
-			expect(read.metadata.exitCode).toBe(0);
-			expect(read.stdout).toBe("durable");
-			expect(read.metadata.tmpFsCacheHit).toBe(false);
-			expect(read.metadata.tmpFsHydratedFromDb).toBe(true);
-			expect(read.metadata.tmpFsPersistedPathCount).toBeGreaterThanOrEqual(1);
 		});
 
 		test("flushes only changed /tmp paths as a delta", async () => {
@@ -8134,25 +7925,22 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("persists nested /tmp creates and recursive deletes through deltas", async () => {
-			const { run, clearTmpSessionCache } = createBashRunner();
+			const { run } = createBashRunner();
 
 			const create = await run("mkdir -p /tmp/a/b && printf nested > /tmp/a/b/c.txt");
 			expect(create.metadata.exitCode).toBe(0);
 			expect(create.metadata.tmpFsFlushMode).toBe("delta");
 			expect(create.metadata.tmpFsDeltaUpsertedPathCount).toBeGreaterThanOrEqual(3);
 
-			clearTmpSessionCache();
 			const hydratedRead = await run("cat /tmp/a/b/c.txt");
 			expect(hydratedRead.metadata.exitCode).toBe(0);
 			expect(hydratedRead.stdout).toBe("nested");
-			expect(hydratedRead.metadata.tmpFsHydratedFromDb).toBe(true);
 
 			const remove = await run("rm -r /tmp/a");
 			expect(remove.metadata.exitCode).toBe(0);
 			expect(remove.metadata.tmpFsFlushMode).toBe("delta");
 			expect(remove.metadata.tmpFsDeltaDeletedPathCount).toBeGreaterThanOrEqual(3);
 
-			clearTmpSessionCache();
 			const missing = await run("cat /tmp/a/b/c.txt");
 			expect(missing.metadata.exitCode).not.toBe(0);
 			expect(missing.stderr).toContain("No such file");
@@ -8174,7 +7962,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("falls back to full /tmp flush when delta patching fails", async () => {
-			const { run, clearTmpSessionCache } = createBashRunner({ failTmpPatchOnce: true });
+			const { run } = createBashRunner({ failTmpPatchOnce: true });
 
 			const result = await run("printf fallback > /tmp/fallback.txt");
 
@@ -8183,11 +7971,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.metadata.tmpFsFlushMode).toBe("full_fallback");
 			expect(result.metadata.tmpFsDirty).toBe(false);
 
-			clearTmpSessionCache();
 			const read = await run("cat /tmp/fallback.txt");
 			expect(read.metadata.exitCode).toBe(0);
 			expect(read.stdout).toBe("fallback");
-			expect(read.metadata.tmpFsHydratedFromDb).toBe(true);
 		});
 
 		test("scopes durable /tmp scratch files by thread and project", async () => {
@@ -8196,17 +7982,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const sameScope = createBashRunner({
 				threadId: "thread_a" as Id<"ai_chat_threads">,
-				preserveTmpSessionCache: true,
+				preserveTmpFiles: true,
 			});
 			const sameScopeRead = await sameScope.run("cat /tmp/scope.txt");
 			expect(sameScopeRead.metadata.exitCode).toBe(0);
 			expect(sameScopeRead.stdout).toBe("thread-a");
-			expect(sameScopeRead.metadata.tmpFsCacheHit).toBe(true);
-			expect(sameScopeRead.metadata.tmpFsHydratedFromDb).toBe(false);
 
 			const otherThread = createBashRunner({
 				threadId: "thread_b" as Id<"ai_chat_threads">,
-				preserveTmpSessionCache: true,
+				preserveTmpFiles: true,
 			});
 			const otherThreadRead = await otherThread.run("cat /tmp/scope.txt");
 			expect(otherThreadRead.metadata.exitCode).not.toBe(0);
@@ -8215,7 +7999,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const otherProject = createBashRunner({
 				threadId: "thread_a" as Id<"ai_chat_threads">,
 				projectId: "app_project_test_2",
-				preserveTmpSessionCache: true,
+				preserveTmpFiles: true,
 			});
 			const otherProjectRead = await otherProject.run("cat /tmp/scope.txt");
 			expect(otherProjectRead.metadata.exitCode).not.toBe(0);
@@ -8224,62 +8008,46 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const sameThreadOtherUser = createBashRunner({
 				threadId: "thread_a" as Id<"ai_chat_threads">,
 				userId: "user_2" as Id<"users">,
-				preserveTmpSessionCache: true,
+				preserveTmpFiles: true,
 			});
 			const sameThreadOtherUserRead = await sameThreadOtherUser.run("cat /tmp/scope.txt");
 			expect(sameThreadOtherUserRead.metadata.exitCode).toBe(0);
 			expect(sameThreadOtherUserRead.stdout).toBe("thread-a");
 		});
 
-		test("serializes same-thread /tmp access across overlapping bash calls", async () => {
+		test("merges parallel same-thread /tmp writes through deltas", async () => {
 			const { run } = createBashRunner();
 
-			const write = run("printf serialized > /tmp/serialized.txt");
-			const read = run("cat /tmp/serialized.txt");
-			const [writeResult, readResult] = await Promise.all([write, read]);
+			const [aResult, bResult] = await Promise.all([
+				run("printf a > /tmp/a.txt"),
+				run("printf b > /tmp/b.txt"),
+			]);
+			expect(aResult.metadata.exitCode).toBe(0);
+			expect(bResult.metadata.exitCode).toBe(0);
 
-			expect(writeResult.metadata.exitCode).toBe(0);
-			expect(readResult.metadata.exitCode).toBe(0);
-			expect(readResult.stdout).toBe("serialized");
-			expect(readResult.metadata.tmpFsCacheHit).toBe(true);
-			expect(readResult.metadata.tmpFsSessionCallCount).toBe(2);
+			const read = await run("cat /tmp/a.txt /tmp/b.txt");
+			expect(read.metadata.exitCode).toBe(0);
+			expect(read.stdout).toBe("ab");
 		});
 
-		test("bounds cached /tmp sessions by LRU entries and scratch size", async () => {
-			const first = createBashRunner({ threadId: "thread_0" as Id<"ai_chat_threads"> });
-			await first.run("printf first > /tmp/first.txt");
-			for (let index = 1; index <= BASH_TMP_SESSION_CACHE_MAX_ENTRIES; index += 1) {
-				const runner = createBashRunner({
-					threadId: `thread_${index}` as Id<"ai_chat_threads">,
-					preserveTmpSessionCache: true,
-				});
-				await runner.run(`printf ${index} > /tmp/value.txt`);
-			}
-
-			const firstAgain = createBashRunner({
-				threadId: "thread_0" as Id<"ai_chat_threads">,
-				preserveTmpSessionCache: true,
-			});
-			const firstRead = await firstAgain.run("cat /tmp/first.txt");
-			expect(firstRead.metadata.exitCode).toBe(0);
-			expect(firstRead.stdout).toBe("first");
-			expect(firstRead.metadata.tmpFsHydratedFromDb).toBe(true);
-			expect(firstRead.metadata.tmpFsCacheEvictions).toBeGreaterThan(0);
-
+		test("discards /tmp scratch that exceeds durable limits", async () => {
 			const oversized = createBashRunner();
-			const paths = Array.from({ length: BASH_TMP_SESSION_MAX_PATHS + 1 }, (_, index) => `/tmp/p-${index}.txt`).join(" ");
+			const paths = Array.from({ length: BASH_TMP_SESSION_MAX_PATHS + 1 }, (_, index) => `/tmp/p-${index}.txt`).join(
+				" ",
+			);
 			const oversizedResult = await oversized.run(`touch ${paths}`);
 			expect(oversizedResult.stderr).toContain("/tmp scratch exceeded its durable thread limit");
 			expect(oversizedResult.metadata.tmpFsPathCount).toBeGreaterThan(BASH_TMP_SESSION_MAX_PATHS);
-			expect(oversizedResult.metadata.tmpFsCacheOversizeDiscards).toBeGreaterThan(0);
+			expect(oversizedResult.metadata.tmpFsFlushed).toBe(false);
 
 			const oversizedBytes = createBashRunner();
-			await oversizedBytes.run("true");
-			await oversizedBytes.getTmpSession().fs.writeFile("/large.bin", new Uint8Array(BASH_TMP_SESSION_MAX_BYTES + 1));
-			const oversizedBytesResult = await oversizedBytes.run("true");
+			// The emulated seq caps at 100k iterations (~589KB), so concatenate copies to pass 5MB.
+			const oversizedBytesResult = await oversizedBytes.run(
+				"seq 1 100000 > /tmp/s.txt && cat /tmp/s.txt /tmp/s.txt /tmp/s.txt /tmp/s.txt /tmp/s.txt /tmp/s.txt /tmp/s.txt /tmp/s.txt /tmp/s.txt > /tmp/big.txt",
+			);
 			expect(oversizedBytesResult.stderr).toContain("/tmp scratch exceeded its durable thread limit");
 			expect(oversizedBytesResult.metadata.tmpFsApproxBytes).toBeGreaterThan(BASH_TMP_SESSION_MAX_BYTES);
-			expect(oversizedBytesResult.metadata.tmpFsCacheOversizeDiscards).toBeGreaterThan(0);
+			expect(oversizedBytesResult.metadata.tmpFsFlushed).toBe(false);
 		});
 
 		test("creates persistent app file tree folders through bash mkdir when allowed", async () => {
@@ -8328,6 +8096,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(runQuery).toHaveBeenCalledWith(
 				expect.anything(),
 				expect.objectContaining({
+					userId: test_user_id,
 					query: "unique-token",
 					numItems: 5,
 					cursor: null,
@@ -8487,7 +8256,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(code.stderr).toContain("--code is not supported");
 			expect(table.stderr).toContain("--table is not supported");
 			expect(noCode.stderr).toContain("--no-code is not supported");
-			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:text_search_files")).toBe(false);
+			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:text_search_files")).toBe(
+				false,
+			);
 		});
 
 		test("maps simple recursive app grep to indexed search", async () => {
@@ -9149,7 +8920,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					"tac data.txt",
 					"nl data.txt",
 					"printf alpha | base64",
-					"printf '{\"name\":\"alpha\"}\\n' > meta.json",
+					'printf \'{"name":"alpha"}\\n\' > meta.json',
 					"jq -r .name meta.json",
 					"sha256sum data.txt",
 					"du data.txt",

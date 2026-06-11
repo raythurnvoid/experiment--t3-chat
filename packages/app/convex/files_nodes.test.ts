@@ -17,6 +17,7 @@ import {
 	files_yjs_doc_create_from_markdown,
 	files_yjs_doc_update_from_markdown,
 } from "../server/files.ts";
+import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
@@ -4027,6 +4028,7 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 		asUser.query(internal.files_nodes.text_search_files, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
+			userId: db.userId,
 			query: "scopeneedle",
 			numItems,
 			cursor,
@@ -4059,6 +4061,279 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 	// single in-scope match is still returned (an out-of-scope match must not consume the limit).
 	const scopedTinyLimit = await search("/scope", 1);
 	expect(scopedTinyLimit.items.map((i) => i.path)).toEqual(["/scope/inside.md"]);
+});
+
+test("text_search_files searches pending unstaged content instead of stale committed chunks", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Pending Search User",
+		email: "pending-search-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const path = "/pending-search/plan.md";
+	const otherPath = "/pending-search/other.md";
+	const nodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		path,
+		"# Plan\n\ncommittedneedle appears only in the committed version.",
+	);
+	await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		otherPath,
+		"# Other\n\nsharedneedle lives in another committed file.",
+	);
+
+	const search = (query: string) =>
+		asUser.query(internal.files_nodes.text_search_files, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			query,
+			numItems: 10,
+			cursor: null,
+		});
+
+	const beforePending = await search("committedneedle");
+	expect(beforePending.items.map((item) => item.path)).toContain(path);
+
+	const unstagedMarkdown = "# Plan\n\npendingneedle and sharedneedle appear only in the pending version.";
+	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		nodeId,
+		unstagedMarkdown,
+	});
+	if (pending._nay) throw new Error(pending._nay.message);
+
+	// The pending item carries the real metadata produced by the shared markdown chunker.
+	const expectedChunks = await files_chunk_markdown(unstagedMarkdown);
+	if (expectedChunks._nay) throw new Error(expectedChunks._nay.message);
+	const expectedChunk = expectedChunks._yay.find((chunk) => chunk.markdownChunk.includes("pendingneedle"));
+	if (!expectedChunk) throw new Error("Expected a chunk containing pendingneedle");
+
+	const pendingSearch = await search("pendingneedle");
+	expect(pendingSearch.items).toEqual([
+		{
+			path,
+			markdownChunk: expectedChunk.markdownChunk,
+			chunkIndex: expectedChunk.chunkIndex,
+			startIndex: expectedChunk.startIndex,
+			endIndex: expectedChunk.endIndex,
+			lineStart: expectedChunk.lineStart,
+			lineEnd: expectedChunk.lineEnd,
+			chunkFlags: expectedChunk.chunkFlags,
+			hasChunkAbove: expectedChunk.chunkIndex > 0,
+			hasChunkBelow: expectedChunk.chunkIndex < expectedChunks._yay.length - 1,
+		},
+	]);
+	expect(pendingSearch.isDone).toBe(true);
+
+	// The stale committed chunks of the pending file are hidden.
+	const staleCommittedSearch = await search("committedneedle");
+	expect(staleCommittedSearch.items.map((item) => item.path)).not.toContain(path);
+	expect(staleCommittedSearch.isDone).toBe(true);
+
+	// Pending hits rank first and committed hits from other files fill the same page.
+	const mergedSearch = await search("sharedneedle");
+	expect(mergedSearch.items.map((item) => item.path)).toEqual([path, otherPath]);
+	expect(mergedSearch.isDone).toBe(true);
+});
+
+test("text_search_files scopes pending hits to a path prefix without sibling-prefix leakage", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Pending Scope User",
+		email: "pending-scope-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const insidePath = "/scope-pending/inside.md";
+	const collidePath = "/scope-pending-other/collide.md";
+	const insideNodeId = await test_materialize_markdown_file(t, asUser, db, insidePath, "# Inside\n\nbase content.");
+	const collideNodeId = await test_materialize_markdown_file(t, asUser, db, collidePath, "# Collide\n\nbase content.");
+
+	for (const [nodeId, label] of [
+		[insideNodeId, "Inside"],
+		[collideNodeId, "Collide"],
+	] as const) {
+		const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			nodeId,
+			unstagedMarkdown: `# ${label}\n\npendingscopeneedle for ${label}.`,
+		});
+		if (pending._nay) throw new Error(pending._nay.message);
+	}
+
+	const search = (pathPrefix: string | undefined) =>
+		asUser.query(internal.files_nodes.text_search_files, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			query: "pendingscopeneedle",
+			numItems: 10,
+			cursor: null,
+			pathPrefix,
+		});
+
+	const unscoped = await search(undefined);
+	expect(new Set(unscoped.items.map((item) => item.path))).toEqual(new Set([insidePath, collidePath]));
+
+	// Scoped to /scope-pending: the sibling-prefix folder must not leak in, and the out-of-scope
+	// pending hit must not consume the page.
+	const scoped = await search("/scope-pending");
+	expect(scoped.items.map((item) => item.path)).toEqual([insidePath]);
+	expect(scoped.isDone).toBe(true);
+
+	const scopedOther = await search("/scope-pending-other");
+	expect(scopedOther.items.map((item) => item.path)).toEqual([collidePath]);
+	expect(scopedOther.isDone).toBe(true);
+});
+
+test("text_search_files drops pending hits for archived files", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Pending Archive User",
+		email: "pending-archive-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const path = "/archive-pending/doc.md";
+	const nodeId = await test_materialize_markdown_file(t, asUser, db, path, "# Doc\n\nbase content.");
+
+	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		nodeId,
+		unstagedMarkdown: "# Doc\n\narchivedpendingneedle added before archiving.",
+	});
+	if (pending._nay) throw new Error(pending._nay.message);
+
+	const search = () =>
+		asUser.query(internal.files_nodes.text_search_files, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			query: "archivedpendingneedle",
+			numItems: 10,
+			cursor: null,
+		});
+
+	const beforeArchive = await search();
+	expect(beforeArchive.items.map((item) => item.path)).toEqual([path]);
+
+	// Archive flows never touch pending rows, so the node validation at read time must drop the hit.
+	const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+		membershipId: db.membershipId,
+		nodeIds: [nodeId],
+	});
+	if (archived._nay) throw new Error(archived._nay.message);
+
+	const afterArchive = await search();
+	expect(afterArchive.items).toEqual([]);
+	expect(afterArchive.isDone).toBe(true);
+});
+
+test("text_search_files paginates a multi-chunk pending file into committed results via the composite cursor", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Pending Paging User",
+		email: "pending-paging-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const pendingPath = "/paging/pending.md";
+	const committedPath = "/paging/committed.md";
+	const pendingNodeId = await test_materialize_markdown_file(t, asUser, db, pendingPath, "# Pending\n\nbase content.");
+	await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		committedPath,
+		"# Committed\n\npagingneedle stays in the committed index.",
+	);
+
+	// Two sections that together exceed the chunker max size, so the pending file materializes as
+	// two chunk rows that both match the query.
+	const section = (label: string) => `# ${label}\n\npagingneedle ${"lorem ipsum dolor sit amet ".repeat(30)}`;
+	const unstagedMarkdown = `${section("First")}\n\n${section("Second")}`;
+	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		nodeId: pendingNodeId,
+		unstagedMarkdown,
+	});
+	if (pending._nay) throw new Error(pending._nay.message);
+
+	const expectedChunks = await files_chunk_markdown(unstagedMarkdown);
+	if (expectedChunks._nay) throw new Error(expectedChunks._nay.message);
+	expect(expectedChunks._yay).toHaveLength(2);
+
+	const search = (cursor: string | null) =>
+		asUser.query(internal.files_nodes.text_search_files, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			query: "pagingneedle",
+			numItems: 2,
+			cursor,
+		});
+
+	// First page is exactly the two pending chunks; the committed hit is left for the next page.
+	const firstPage = await search(null);
+	expect(firstPage.items).toHaveLength(2);
+	expect(firstPage.items.map((item) => item.path)).toEqual([pendingPath, pendingPath]);
+	expect(firstPage.isDone).toBe(false);
+	const pendingByChunkIndex = [...firstPage.items].sort((left, right) => left.chunkIndex - right.chunkIndex);
+	expect(pendingByChunkIndex.map((item) => item.chunkIndex)).toEqual([0, 1]);
+	expect(pendingByChunkIndex[0]).toMatchObject({
+		markdownChunk: expectedChunks._yay[0]!.markdownChunk,
+		hasChunkAbove: false,
+		hasChunkBelow: true,
+	});
+	expect(pendingByChunkIndex[1]).toMatchObject({
+		markdownChunk: expectedChunks._yay[1]!.markdownChunk,
+		hasChunkAbove: true,
+		hasChunkBelow: false,
+	});
+
+	// Continue with the composite cursor until done: the only remaining match is the committed file.
+	const tailItems = [];
+	let cursor = firstPage.continueCursor;
+	let sawDone = false;
+	for (let pageGuard = 0; pageGuard < 5 && !sawDone; pageGuard++) {
+		const page = await search(cursor);
+		tailItems.push(...page.items);
+		cursor = page.continueCursor;
+		sawDone = page.isDone;
+	}
+	expect(sawDone).toBe(true);
+	expect(tailItems.map((item) => item.path)).toEqual([committedPath]);
 });
 
 test("create_file_snapshot_content_url returns a signed R2 URL without fetching snapshot Markdown", async () => {

@@ -60,8 +60,8 @@ export const heartbeat = mutation({
 						color: "#" + Math.floor(Math.random() * 16777215).toString(16),
 					},
 				}),
-				// Use reconnecting as a signal to restore any disconnect-driven short cleanup
-				// window back to the normal long-lived pending-edit TTL for the user's scopes.
+				// Use reconnecting as a signal to refresh the long-lived pending-edit TTL for
+				// the user's scopes, so an active user never loses pending edits to expiry.
 				...memberships.map((membership) =>
 					files_db_reschedule_pending_update_cleanup_for_user(ctx, {
 						workspaceId: membership.workspaceId,
@@ -260,36 +260,10 @@ export const disconnect = mutation({
 			throw presence_rate_limit_error(rateLimit);
 		}
 
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			await presence.disconnect(ctx, args.sessionToken);
-			return null;
-		}
+		// Pending-edit cleanup stays on the normal long-lived TTL regardless of presence:
+		// disconnecting must not shorten the window, or unreviewed AI edits would vanish
+		// shortly after the user closes the app.
 		await presence.disconnect(ctx, args.sessionToken);
-		const onlineRooms = await presence.listUser(ctx, userAuth.id, true, 1);
-
-		// Keep the long-lived fallback TTL in `ai_chat` because presence is optional, but
-		// only shorten cleanup when the user is now fully offline across presence sessions.
-		if (onlineRooms.length > 0) {
-			return null;
-		}
-
-		const memberships = await ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", userAuth.id))
-			.collect();
-
-		await Promise.all(
-			memberships.map(async (membership) => {
-				await files_db_reschedule_pending_update_cleanup_for_user(ctx, {
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					userId: userAuth.id,
-					delayMs: 10 * 60 * 1000, // 10 minutes
-				});
-			}),
-		);
-
 		return null;
 	},
 });

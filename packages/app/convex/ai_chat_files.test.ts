@@ -55,7 +55,6 @@ describe("ai_chat_files /tmp persistence", () => {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
-				userId: ctxData.userId,
 				entries: [
 					{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
 					{ path: "/b.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
@@ -73,7 +72,6 @@ describe("ai_chat_files /tmp persistence", () => {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
-				userId: ctxData.userId,
 				upsertEntries: [{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now + 1 }],
 				upsertContents: [{ path: "/a.txt", bytes: bytes("ONE") }],
 				deletePaths: ["/b.txt"],
@@ -94,8 +92,10 @@ describe("ai_chat_files /tmp persistence", () => {
 				threadId: ctxData.threadId,
 			}),
 		);
-		expect(snapshot.entries.map((entry) => entry.path)).toEqual(["/a.txt"]);
-		expect(snapshot.contents.map((content) => [content.path, text(content.bytes)])).toEqual([["/a.txt", "ONE"]]);
+		expect(snapshot.aiChatFiles.map((entry) => entry.path)).toEqual(["/a.txt"]);
+		expect(
+			snapshot.aiChatFiles.map((entry) => [entry.path, text(snapshot.aiChatFilesContentDict[entry._id]!.bytes)]),
+		).toEqual([["/a.txt", "ONE"]]);
 	});
 
 	test("patch_thread_tmp_files removes stale content when a file path becomes a directory", async () => {
@@ -107,7 +107,6 @@ describe("ai_chat_files /tmp persistence", () => {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
-				userId: ctxData.userId,
 				entries: [{ path: "/node", kind: "file", mode: 0o100644, size: 4, mtime: now }],
 				contents: [{ path: "/node", bytes: bytes("file") }],
 			}),
@@ -118,7 +117,6 @@ describe("ai_chat_files /tmp persistence", () => {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
-				userId: ctxData.userId,
 				upsertEntries: [{ path: "/node", kind: "directory", mode: 0o40755, size: 0, mtime: now + 1 }],
 				upsertContents: [],
 				deletePaths: [],
@@ -134,7 +132,7 @@ describe("ai_chat_files /tmp persistence", () => {
 				threadId: ctxData.threadId,
 			}),
 		);
-		expect(snapshot.entries).toMatchObject([{ path: "/node", kind: "directory", size: 0 }]);
-		expect(snapshot.contents).toEqual([]);
+		expect(snapshot.aiChatFiles).toMatchObject([{ path: "/node", kind: "directory", size: 0 }]);
+		expect(snapshot.aiChatFilesContentDict).toEqual({});
 	});
 });

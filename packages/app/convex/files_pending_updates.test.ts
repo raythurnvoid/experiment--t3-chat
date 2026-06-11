@@ -455,6 +455,13 @@ async function list_pending_update_cleanup_tasks(args: { ctx: MutationCtx; pendi
 		.collect();
 }
 
+async function list_pending_update_chunks(args: { ctx: MutationCtx; pendingUpdateId: Id<"files_pending_updates"> }) {
+	return await args.ctx.db
+		.query("files_pending_updates_chunks")
+		.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+		.collect();
+}
+
 async function read_pending_update_last_sequence_saved_doc(args: {
 	ctx: MutationCtx;
 	workspaceId: string;
@@ -1141,6 +1148,236 @@ describe("upsert_file_pending_update", () => {
 	});
 });
 
+describe("files_pending_updates_chunks lifecycle", () => {
+	const read_pending_row = async (args: {
+		t: ReturnType<typeof test_convex>;
+		workspaceId: string;
+		projectId: string;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+	}) =>
+		await args.t.run(async (ctx) =>
+			ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_workspace_project_user_file", (q) =>
+					q
+						.eq("workspaceId", args.workspaceId)
+						.eq("projectId", args.projectId)
+						.eq("userId", args.userId)
+						.eq("nodeId", args.nodeId),
+				)
+				.first(),
+		);
+
+	test("upsert creates chunks, re-chunks only on unstaged change, and collapse deletes them", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/pending-chunks-upsert",
+				name: "pending-chunks-upsert",
+				markdown: "# Base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+
+		const firstMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nChunk needle one`);
+		const firstUpsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: firstMarkdown,
+		});
+		if (firstUpsertResult._nay) {
+			throw new Error(firstUpsertResult._nay.message);
+		}
+
+		const pendingRow = await read_pending_row({ t, ...seeded });
+		if (!pendingRow) {
+			throw new Error("Missing pending doc while testing chunk creation");
+		}
+
+		const firstChunks = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
+		expect(firstChunks.length).toBeGreaterThan(0);
+		expect(firstChunks.map((chunk) => chunk.markdownChunk).join("\n")).toContain("Chunk needle one");
+		expect(firstChunks.map((chunk) => chunk.plainTextChunk).join("\n")).toContain("Chunk needle one");
+		expect(firstChunks[0]).toMatchObject({
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: String(seeded.userId),
+			nodeId: seeded.nodeId,
+			pendingUpdateId: pendingRow._id,
+			chunkIndex: 0,
+		});
+
+		// Unstaged content changed -> chunk rows are replaced.
+		const secondMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nChunk needle two`);
+		const secondUpsertResult = await upsert_file_pending_update_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: secondMarkdown,
+		});
+		if (secondUpsertResult._nay) {
+			throw new Error(secondUpsertResult._nay.message);
+		}
+
+		const secondChunks = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
+		expect(secondChunks.length).toBeGreaterThan(0);
+		expect(secondChunks.map((chunk) => chunk.markdownChunk).join("\n")).toContain("Chunk needle two");
+		expect(secondChunks.map((chunk) => chunk.markdownChunk).join("\n")).not.toContain("Chunk needle one");
+		const firstChunkIds = new Set(firstChunks.map((chunk) => chunk._id));
+		for (const chunk of secondChunks) {
+			expect(firstChunkIds.has(chunk._id)).toBe(false);
+		}
+
+		// Staged-only change (Accept all) keeps the unstaged content intact -> chunk row ids survive.
+		const stagedOnlyUpsertResult = await upsert_file_pending_update_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: secondMarkdown,
+			unstagedMarkdown: secondMarkdown,
+		});
+		if (stagedOnlyUpsertResult._nay) {
+			throw new Error(stagedOnlyUpsertResult._nay.message);
+		}
+
+		const stagedOnlyChunks = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
+		expect(new Set(stagedOnlyChunks.map((chunk) => chunk._id))).toEqual(new Set(secondChunks.map((chunk) => chunk._id)));
+
+		// Collapse back to base deletes the row and its chunks in the same mutation.
+		const collapseResult = await upsert_file_pending_update_internal_for_test({
+			t,
+			workspaceId: seeded.workspaceId,
+			projectId: seeded.projectId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: seeded.baseMarkdown,
+			unstagedMarkdown: seeded.baseMarkdown,
+		});
+		if (collapseResult._nay) {
+			throw new Error(collapseResult._nay.message);
+		}
+
+		expect(await read_pending_row({ t, ...seeded })).toBeNull();
+		const chunksAfterCollapse = await t.run((ctx) =>
+			list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		);
+		expect(chunksAfterCollapse).toHaveLength(0);
+	});
+
+	test("full save deletes the pending chunks with the row", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-chunks-full-save",
+				name: "pending-chunks-full-save",
+				markdown: "# Save base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+
+		const resolvedMarkdown = `${seeded.baseMarkdown}\n\nFully resolved chunk needle`;
+		const upsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: resolvedMarkdown,
+			unstagedMarkdown: resolvedMarkdown,
+		});
+		if (upsertResult._nay) {
+			throw new Error(upsertResult._nay.message);
+		}
+
+		const pendingRow = await read_pending_row({ t, ...seeded });
+		if (!pendingRow) {
+			throw new Error("Missing pending doc while testing full-save chunk cleanup");
+		}
+		const chunksBeforeSave = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
+		expect(chunksBeforeSave.length).toBeGreaterThan(0);
+
+		const saveResult = await asUser.action(api.ai_chat.save_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		if (saveResult._nay) {
+			throw new Error(saveResult._nay.message);
+		}
+
+		expect(await read_pending_row({ t, ...seeded })).toBeNull();
+		const chunksAfterSave = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
+		expect(chunksAfterSave).toHaveLength(0);
+	});
+
+	test("expiry cleanup deletes the pending chunks with the row", async () => {
+		const t = test_convex();
+
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/pending-chunks-expiry",
+				name: "pending-chunks-expiry",
+				markdown: "# Expiry base",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+
+		const upsertResult = await asUser.action(api.ai_chat.upsert_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nExpiry chunk needle`,
+		});
+		if (upsertResult._nay) {
+			throw new Error(upsertResult._nay.message);
+		}
+
+		const pendingRow = await read_pending_row({ t, ...seeded });
+		if (!pendingRow) {
+			throw new Error("Missing pending doc while testing expiry chunk cleanup");
+		}
+		const chunksBeforeExpiry = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
+		expect(chunksBeforeExpiry.length).toBeGreaterThan(0);
+
+		const cleanupTask = await t.run(async (ctx) => {
+			const cleanupTasks = await list_pending_update_cleanup_tasks({
+				ctx,
+				pendingUpdateId: pendingRow._id,
+			});
+			return cleanupTasks[0] ?? null;
+		});
+		if (!cleanupTask) {
+			throw new Error("Missing cleanup task while testing expiry chunk cleanup");
+		}
+
+		await t.mutation(internal.ai_chat.remove_file_pending_update_if_expired, {
+			pendingUpdateId: pendingRow._id,
+			expectedUpdatedAt: cleanupTask.expectedUpdatedAt,
+		});
+
+		expect(await read_pending_row({ t, ...seeded })).toBeNull();
+		const chunksAfterExpiry = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
+		expect(chunksAfterExpiry).toHaveLength(0);
+	});
+});
+
 describe("files_db_reschedule_pending_update_cleanup_for_user", () => {
 	test("files_db_reschedule_pending_update_cleanup_for_user refreshes existing cleanup tasks", async () => {
 		const t = test_convex();
@@ -1222,7 +1459,7 @@ describe("files_db_reschedule_pending_update_cleanup_for_user", () => {
 });
 
 describe("presence.disconnect", () => {
-	test("presence.disconnect shortens cleanup after the last session disconnects", async () => {
+	test("presence.disconnect keeps the long-lived cleanup after the last session disconnects", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -1266,6 +1503,16 @@ describe("presence.disconnect", () => {
 			throw new Error("Missing pending doc while testing last-session disconnect cleanup");
 		}
 
+		const roomId = `pending-edits-room-${seeded.nodeId}`;
+		const presenceHeartbeatResult = await asUser.mutation(api.presence.heartbeat, {
+			roomId,
+			userId: seeded.userId,
+			sessionId: "session-last",
+			interval: presenceHeartbeatIntervalMs,
+		});
+
+		// Capture after the heartbeat so any reconnect-driven refresh is already applied and
+		// the assertion isolates disconnect, which must leave the cleanup schedule untouched.
 		const firstCleanupTask = await t.run(async (ctx) => {
 			const cleanupTasks = await list_pending_update_cleanup_tasks({
 				ctx,
@@ -1276,14 +1523,6 @@ describe("presence.disconnect", () => {
 		if (!firstCleanupTask) {
 			throw new Error("Missing first cleanup task while testing last-session disconnect cleanup");
 		}
-
-		const roomId = `pending-edits-room-${seeded.nodeId}`;
-		const presenceHeartbeatResult = await asUser.mutation(api.presence.heartbeat, {
-			roomId,
-			userId: seeded.userId,
-			sessionId: "session-last",
-			interval: presenceHeartbeatIntervalMs,
-		});
 
 		await asUser.mutation(api.presence.disconnect, {
 			sessionToken: presenceHeartbeatResult.sessionToken,
@@ -1306,7 +1545,7 @@ describe("presence.disconnect", () => {
 		}
 
 		expect(secondCleanupTask.expectedUpdatedAt).toBe(firstCleanupTask.expectedUpdatedAt);
-		expect(secondCleanupTask.scheduledFunctionId).not.toBe(firstCleanupTask.scheduledFunctionId);
+		expect(secondCleanupTask.scheduledFunctionId).toBe(firstCleanupTask.scheduledFunctionId);
 	});
 
 	test("presence.disconnect keeps cleanup unchanged while another session stays online", async () => {

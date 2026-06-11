@@ -140,7 +140,7 @@ Use a stable `<runId>` such as `2026-06-06-a`. Keep the same fixture for baselin
 
 ### Markdown Fixture Prompt
 
-Fixture files used for scored `search` scenarios must be committed app content with materialized plain-text chunks. Unapplied `write_file` / `edit_file` pending updates are not enough: Bash exact reads may see pending content, but indexed `search` only proves committed searchable data after the changes are applied/materialized. Prefer a committed setup path such as `files_nodes:create_file_by_path` with `markdownContent`, or explicitly apply and verify pending writes before scoring.
+Fixture files used for committed-content `search` scenarios must be committed app content with materialized plain-text chunks. Bash `search` also overlays the current user's unapplied `write_file` / `edit_file` pending updates, so pending-edit scenarios should deliberately leave the proposal unapplied and then verify both Bash exact reads and `search` against the pending token.
 
 Use Agent mode and app file writes only when the run is evaluating pending-update behavior or when the writes will be applied before scoring. Replace `<runId>` with the actual value.
 
@@ -259,6 +259,8 @@ For broad Bash changes, keep two aggregate rows:
    `Use Bash to list the recent immediate children of <fixture>.`
 10. Recent immediate children through cwd:
    `Use Bash. Go into <fixture>, then list the recent immediate children of the current directory.`
+11. Pending edit search/read:
+   `Use edit_file on the app path derived from <fixture>/README.md by removing only the /home/cloud-usr/w/<workspace>/<project> prefix and preserving the full remaining suffix, never collapsing it to /README.md. Replace the exact line "Common token: basheval-common-<runId>." with "Common token: basheval-common-<runId>. pending-token-<runId>" without applying it. Then use Bash search for pending-token-<runId>, Bash head on the same file, and cat <file> | cut to prove the pending version is what Bash reads.`
 
 ### Bad-Habit Scenarios
 
@@ -394,8 +396,8 @@ For broad Bash changes, use both rows:
 
 | Matrix | Avg Score | 3/2/1/0 | Avg Cmds | Unsupported | False Claims | Cursor OK | Scope OK | Tmp Cache Hit | Grounded |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Old overlap |  |  |  |  |  |  |  |  |  |
-| Expanded mixed-path |  |  |  |  |  |  |  |  |  |
+| Old overlap |  |  |  |  |  |  |  |  |
+| Expanded mixed-path |  |  |  |  |  |  |  |  |
 
 ## Acceptance
 
