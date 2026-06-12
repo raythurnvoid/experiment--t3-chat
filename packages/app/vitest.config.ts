@@ -14,6 +14,7 @@ export default defineConfig({
 	test: {
 		exclude: [...configDefaults.exclude],
 		passWithNoTests: true,
+		silent: "passed-only",
 		testTimeout: 30_000,
 		hookTimeout: 30_000,
 		teardownTimeout: 30_000,

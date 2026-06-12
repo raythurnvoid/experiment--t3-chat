@@ -71,22 +71,6 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	}).index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"]),
 
-	ai_chat_files_state: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
-		threadId: v.id("ai_chat_threads"),
-		/**
-		 * Number of persisted
-		 * /tmp paths (files, directories, and symlinks)
-		 * in the thread's scratch
-		 **/
-		pathCount: v.number(),
-		totalBytes: v.number(),
-		updatedAt: v.number(),
-	})
-		.index("by_thread", ["threadId"])
-		.index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"]),
-
 	ai_chat_files: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),

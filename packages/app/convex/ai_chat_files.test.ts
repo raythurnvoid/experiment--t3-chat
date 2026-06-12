@@ -38,9 +38,11 @@ async function create_thread() {
 
 	return {
 		t,
+		asUser,
 		workspaceId: seeded.workspaceId,
 		projectId: seeded.projectId,
 		userId: seeded.userId,
+		membershipId: seeded.membershipId,
 		threadId: created._yay!.threadId as Id<"ai_chat_threads">,
 	};
 }
@@ -50,51 +52,45 @@ describe("ai_chat_files /tmp persistence", () => {
 		const ctxData = await create_thread();
 		const now = Date.now();
 
-		const initial = await ctxData.t.run((ctx) =>
-			ctx.runMutation(internal.ai_chat_files.flush_thread_tmp_files, {
-				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
-				threadId: ctxData.threadId,
-				entries: [
-					{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
-					{ path: "/b.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
-				],
-				contents: [
-					{ path: "/a.txt", bytes: bytes("one") },
-					{ path: "/b.txt", bytes: bytes("two") },
-				],
-			}),
-		);
-		expect(initial._yay).toMatchObject({ pathCount: 2, totalBytes: 6 });
-
-		const patched = await ctxData.t.run((ctx) =>
+		await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
-				upsertEntries: [{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now + 1 }],
-				upsertContents: [{ path: "/a.txt", bytes: bytes("ONE") }],
+				file_nodes: [
+					{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
+					{ path: "/b.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
+				],
+				file_nodes_content: [
+					{ path: "/a.txt", bytes: bytes("one") },
+					{ path: "/b.txt", bytes: bytes("two") },
+				],
+				deletePaths: [],
+			}),
+		);
+
+		await ctxData.t.run((ctx) =>
+			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
+				threadId: ctxData.threadId,
+				file_nodes: [{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now + 1 }],
+				file_nodes_content: [{ path: "/a.txt", bytes: bytes("ONE") }],
 				deletePaths: ["/b.txt"],
 			}),
 		);
 
-		expect(patched._yay).toMatchObject({
-			pathCount: 1,
-			totalBytes: 3,
-			upsertedPathCount: 1,
-			deletedPathCount: 1,
-		});
-
 		const snapshot = await ctxData.t.run((ctx) =>
 			ctx.runQuery(internal.ai_chat_files.load_thread_tmp_files, {
-				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
 			}),
 		);
-		expect(snapshot.aiChatFiles.map((entry) => entry.path)).toEqual(["/a.txt"]);
+		expect(snapshot.file_nodes.map((fileNode) => fileNode.path)).toEqual(["/a.txt"]);
 		expect(
-			snapshot.aiChatFiles.map((entry) => [entry.path, text(snapshot.aiChatFilesContentDict[entry._id]!.bytes)]),
+			snapshot.file_nodes.map((fileNode) => [
+				fileNode.path,
+				text(snapshot.file_nodes_content_dict[fileNode._id]!.bytes),
+			]),
 		).toEqual([["/a.txt", "ONE"]]);
 	});
 
@@ -103,36 +99,89 @@ describe("ai_chat_files /tmp persistence", () => {
 		const now = Date.now();
 
 		await ctxData.t.run((ctx) =>
-			ctx.runMutation(internal.ai_chat_files.flush_thread_tmp_files, {
-				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
-				threadId: ctxData.threadId,
-				entries: [{ path: "/node", kind: "file", mode: 0o100644, size: 4, mtime: now }],
-				contents: [{ path: "/node", bytes: bytes("file") }],
-			}),
-		);
-
-		const patched = await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
-				upsertEntries: [{ path: "/node", kind: "directory", mode: 0o40755, size: 0, mtime: now + 1 }],
-				upsertContents: [],
+				file_nodes: [{ path: "/node", kind: "file", mode: 0o100644, size: 4, mtime: now }],
+				file_nodes_content: [{ path: "/node", bytes: bytes("file") }],
 				deletePaths: [],
 			}),
 		);
 
-		expect(patched._yay).toMatchObject({ pathCount: 1, totalBytes: 0 });
-
-		const snapshot = await ctxData.t.run((ctx) =>
-			ctx.runQuery(internal.ai_chat_files.load_thread_tmp_files, {
+		await ctxData.t.run((ctx) =>
+			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
+				file_nodes: [{ path: "/node", kind: "directory", mode: 0o40755, size: 0, mtime: now + 1 }],
+				file_nodes_content: [],
+				deletePaths: [],
 			}),
 		);
-		expect(snapshot.aiChatFiles).toMatchObject([{ path: "/node", kind: "directory", size: 0 }]);
-		expect(snapshot.aiChatFilesContentDict).toEqual({});
+
+		const snapshot = await ctxData.t.run((ctx) =>
+			ctx.runQuery(internal.ai_chat_files.load_thread_tmp_files, {
+				threadId: ctxData.threadId,
+			}),
+		);
+		expect(snapshot.file_nodes).toMatchObject([{ path: "/node", kind: "directory", size: 0 }]);
+		expect(snapshot.file_nodes_content_dict).toEqual({});
+	});
+
+	test("copy_thread_tmp_files copies file nodes and content to the target thread", async () => {
+		const ctxData = await create_thread();
+		const now = Date.now();
+
+		const target = await ctxData.asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: ctxData.membershipId,
+			clientGeneratedId: "client_ai_chat_files_copy",
+			title: "AI chat files copy",
+			lastMessageAt: Date.now(),
+		});
+		expect(target._yay).toBeTruthy();
+		const targetThreadId = target._yay!.threadId as Id<"ai_chat_threads">;
+
+		await ctxData.t.run((ctx) =>
+			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
+				threadId: ctxData.threadId,
+				file_nodes: [
+					{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
+					{ path: "/dir", kind: "directory", mode: 0o40755, size: 0, mtime: now },
+					{ path: "/link", kind: "symlink", mode: 0o120777, size: 6, mtime: now, symlinkTargetPath: "/a.txt" },
+				],
+				file_nodes_content: [{ path: "/a.txt", bytes: bytes("one") }],
+				deletePaths: [],
+			}),
+		);
+
+		await ctxData.t.run((ctx) =>
+			ctx.runMutation(internal.ai_chat_files.copy_thread_tmp_files, {
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
+				sourceThreadId: ctxData.threadId,
+				targetThreadId,
+			}),
+		);
+
+		const snapshot = await ctxData.t.run((ctx) =>
+			ctx.runQuery(internal.ai_chat_files.load_thread_tmp_files, {
+				threadId: targetThreadId,
+			}),
+		);
+		expect(snapshot.file_nodes).toMatchObject([
+			{ path: "/a.txt", kind: "file", size: 3, mtime: now },
+			{ path: "/dir", kind: "directory", size: 0 },
+			{ path: "/link", kind: "symlink", size: 6, symlinkTargetPath: "/a.txt" },
+		]);
+		expect(
+			snapshot.file_nodes.flatMap((fileNode) =>
+				snapshot.file_nodes_content_dict[fileNode._id]
+					? [[fileNode.path, text(snapshot.file_nodes_content_dict[fileNode._id]!.bytes)]]
+					: [],
+			),
+		).toEqual([["/a.txt", "one"]]);
 	});
 });

@@ -14,22 +14,23 @@
 // - Bash path: an absolute path in the Just Bash filesystem. It may point at
 //   app files, `/tmp`, or synthetic base directories.
 // - `HOME`: the bash home/user path, `/home/cloud-usr`.
-// - `appMountPath`: the parent mount path for app workspaces,
+// - `APP_MOUNT_PATH`: the parent mount path for app workspaces,
 //   `/home/cloud-usr/w`.
 // - `currentProjectPath`: the mounted project file tree path,
 //   `/home/cloud-usr/w/<workspaceName>/<projectName>`.
 // - App file node path: the Convex `files_nodes.path` inside the current
 //   project tree. It is project-relative, but still starts with `/`; examples
 //   are `/docs/readme.md` and `/` for the project root.
-// - Persisted cwd path: the thread-state representation, saved as `~` or
-//   `~/...`, then expanded to a Bash path before command execution.
+// - Persisted cwd path: the thread-state representation. `~` (the creation
+//   default) means "start in currentProjectPath"; anything else is an absolute
+//   Bash path under `HOME` or `/tmp`.
 //
 // Command operands start raw. Command handlers resolve them against `cwd` into a
 // normalized Bash path, then strip the current project path before querying
 // Convex. `WorkspaceFs` receives already-stripped app file paths from
 // `MountableFs`.
 
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { getFunctionName } from "convex/server";
 import {
 	Bash,
@@ -47,14 +48,12 @@ import {
 	type RmOptions,
 } from "just-bash/browser";
 import { internal } from "./_generated/api.js";
-import { internalAction, type ActionCtx } from "./_generated/server.js";
+import { internalAction, type ActionCtx, type MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { ai_chat_get_thread_state_Result } from "./ai_chat.ts";
 import type {
-	ai_chat_files_flush_thread_tmp_files_Args,
-	ai_chat_files_flush_thread_tmp_files_Result,
 	ai_chat_files_load_thread_tmp_files_Result,
-	ai_chat_files_patch_thread_tmp_files_Result,
+	ai_chat_files_patch_thread_tmp_files_Args,
 } from "./ai_chat_files.ts";
 import type {
 	files_nodes_create_folder_node_by_path_Result,
@@ -83,7 +82,7 @@ import { LruCache, path_name_of } from "../shared/shared-utils.ts";
 import { files_chunk_BITMASK_FLAGS, files_chunk_has_bitmask_flag } from "../server/files-markdown-chunking-mastra.ts";
 
 const HOME = "/home/cloud-usr";
-const appMountPath = `${HOME}/w`;
+const APP_MOUNT_PATH = `${HOME}/w`;
 const TMP_MOUNT = "/tmp";
 const DEFAULT_CWD = "~";
 const OUTPUT_LIMIT = 30_000;
@@ -96,51 +95,26 @@ const TERMINAL_TRAILING_NEWLINE_REGEX = /\n+$/;
 const SIMPLE_EXTENSION_GLOB_REGEX = /^\*\.([a-z0-9][a-z0-9_-]*)$/iu;
 const GLOB_METACHARACTER_REGEX = /[*?[\]]/u;
 const SHELL_ARG_SAFE_UNQUOTED_REGEX = /^[A-Za-z0-9_/:.,=+@-]+$/;
+const COMMAND_NOT_FOUND_REGEX = /: command not found$/m;
+const REDIRECTS_STDERR_TO_STDOUT_REGEX = /(^|[\s;&|])2\s*>\s*&\s*1(?=$|[\s;&|])/;
+const SET_INVALID_OPTION_REGEX = /bash: set: -o: invalid option/m;
 const PAGINATION_CURSORS_CACHE_MAX_ENTRIES = 500;
-const BASH_TMP_SESSION_MAX_PATHS = 1000;
-const BASH_TMP_SESSION_MAX_BYTES = 5_000_000;
-const BASH_TMP_SESSION_MAX_FILE_BYTES = 512_000;
+// Deliberately tiny caps so /tmp eviction is exercised while testing the app.
+const BASH_TMP_SESSION_MAX_PATHS = 10;
+const BASH_TMP_SESSION_MAX_BYTES = 4_000;
+const BASH_TMP_SESSION_MAX_FILE_BYTES = 2_000;
 /**
  * In-memory LRU cache for stored pagination cursors. `value_store` remains the
  * durable fallback when this per-runtime cache is empty.
  */
 const pagination_cursors_cache = new LruCache<string, string>(PAGINATION_CURSORS_CACHE_MAX_ENTRIES);
 
-/**
- * Per-call /tmp scratch state. Hydrated from durable storage at the start of
- * every bash call and flushed back at the end; nothing survives the call in
- * memory, so any Convex action runtime sees the same durable state.
- */
-type BashTmpSession = {
-	fs: InMemoryFs;
-	dirty: boolean;
-	baselinePaths: Set<string>;
-	dirtyRoots: Set<string>;
-};
+type BashTmpFileNode = ai_chat_files_patch_thread_tmp_files_Args["file_nodes"][number];
 
-type BashTmpFilesSnapshotEntry = ai_chat_files_flush_thread_tmp_files_Args["entries"][number];
-
-type BashTmpFilesSnapshotContent = ai_chat_files_flush_thread_tmp_files_Args["contents"][number];
-
-type BashTmpFilesSnapshot = {
-	entries: BashTmpFilesSnapshotEntry[];
-	contents: BashTmpFilesSnapshotContent[];
-	pathCount: number;
-	totalBytes: number;
-};
-
-type BashTmpFilesPatch = {
-	entries: BashTmpFilesSnapshotEntry[];
-	contents: BashTmpFilesSnapshotContent[];
-	deletePaths: string[];
-	pathCount: number;
-	totalBytes: number;
-};
-
-type BashTmpFlushMode = "none" | "delta" | "full_fallback";
+type BashTmpFileNodeContent = ai_chat_files_patch_thread_tmp_files_Args["file_nodes_content"][number];
 
 /**
- * Whitelist of commands allowed to operate on paths under `appMountPath`, the
+ * Whitelist of commands allowed to operate on paths under `APP_MOUNT_PATH`, the
  * app files mount folder.
  *
  * These commands have app-aware handlers backed by indexed Convex
@@ -375,196 +349,67 @@ async function cursor_id_resolve(ctx: ActionCtx, cursor: string) {
 	return Result({ _yay: stored.value });
 }
 
-async function bash_tmp_session_estimate_usage(fs: InMemoryFs) {
-	let pathCount = 0;
-	let approxBytes = 0;
-	for (const path of fs.getAllPaths()) {
-		if (path === "/") {
-			continue;
-		}
-		pathCount += 1;
-		try {
-			const stat = await fs.lstat(path);
-			if (stat.isFile || stat.isSymbolicLink) {
-				approxBytes += stat.size;
-			}
-		} catch {
-			// Broken scratch symlinks still count as paths, but have no readable size.
-		}
-	}
-	return { pathCount, approxBytes };
-}
-
 /**
- * Build a fresh per-call /tmp session from durable storage. Called at the
- * start of every bash call so the in-memory fs always reflects what other
- * runtimes flushed; the returned baseline powers the end-of-call delta flush.
+ * Per-call /tmp scratch fs. Loaded from durable storage at the start of
+ * every bash call and flushed back at the end; nothing survives the call in
+ * memory, so any Convex action runtime sees the same durable state.
+ *
+ * Mutating operations mark the touched roots dirty so the end-of-call flush
+ * can persist a delta instead of the whole scratch.
  */
-async function bash_tmp_session_hydrate(
-	ctx: ActionCtx,
-	args: {
-		workspaceId: string;
-		projectId: string;
-		threadId: Id<"ai_chat_threads">;
-	},
-): Promise<BashTmpSession> {
-	const snapshot = (await ctx.runQuery(internal.ai_chat_files.load_thread_tmp_files, {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		threadId: args.threadId,
-	})) as ai_chat_files_load_thread_tmp_files_Result;
+class BashTmpFs implements IFileSystem {
+	readonly fs = new InMemoryFs();
+	/**
+	 * Paths that existed at create time;
+	 * the delta flush derives deletions from it.
+	 **/
+	readonly baselinePaths = new Set<string>();
+	/**
+	 * Roots of paths mutated.
+	 **/
+	readonly dirtyRoots = new Set<string>();
+	dirty = false;
 
-	const fs = new InMemoryFs();
-	for (const entry of snapshot.aiChatFiles) {
-		if (entry.kind === "directory") {
-			await fs.mkdir(entry.path, { recursive: true });
-			await fs.chmod(entry.path, entry.mode);
-			await fs.utimes(entry.path, new Date(entry.mtime), new Date(entry.mtime));
-			continue;
-		}
-		if (entry.kind === "symlink") {
-			await fs.symlink(entry.symlinkTargetPath ?? "", entry.path);
-			await fs.chmod(entry.path, entry.mode);
-			continue;
-		}
+	/**
+	 * Build a fresh per-call /tmp fs from durable storage. Called at the start
+	 * of every bash call so the in-memory fs always reflects what other
+	 * runtimes flushed; the collected baseline powers the end-of-call delta
+	 * flush.
+	 */
+	static async create(ctx: ActionCtx, threadId: Id<"ai_chat_threads">): Promise<BashTmpFs> {
+		const loaded = (await ctx.runQuery(internal.ai_chat_files.load_thread_tmp_files, {
+			threadId,
+		})) as ai_chat_files_load_thread_tmp_files_Result;
 
-		const bytes = snapshot.aiChatFilesContentDict[entry._id]?.bytes ?? new ArrayBuffer(0);
-		fs.writeFileSync(entry.path, new Uint8Array(bytes), undefined, {
-			mode: entry.mode,
-			mtime: new Date(entry.mtime),
-		});
-	}
-
-	return {
-		fs,
-		dirty: false,
-		baselinePaths: new Set(fs.getAllPaths().filter((path) => path !== "/")),
-		dirtyRoots: new Set(),
-	};
-}
-
-async function bash_tmp_file_snapshot_entry(fs: InMemoryFs, path: string) {
-	const stat = await fs.lstat(path);
-	if (stat.isDirectory) {
-		return {
-			entry: {
-				path,
-				kind: "directory" as const,
-				mode: stat.mode,
-				size: 0,
-				mtime: stat.mtime.getTime(),
-			},
-			content: null,
-			bytes: 0,
-		};
-	}
-	if (stat.isSymbolicLink) {
-		const symlinkTargetPath = await fs.readlink(path);
-		return {
-			entry: {
-				path,
-				kind: "symlink" as const,
-				mode: stat.mode,
-				size: stat.size,
-				mtime: stat.mtime.getTime(),
-				symlinkTargetPath,
-			},
-			content: null,
-			bytes: stat.size,
-		};
-	}
-
-	const bytes = await fs.readFileBuffer(path);
-	return {
-		entry: {
-			path,
-			kind: "file" as const,
-			mode: stat.mode,
-			size: bytes.byteLength,
-			mtime: stat.mtime.getTime(),
-		},
-		content: {
-			path,
-			bytes: new Uint8Array(bytes).buffer,
-		},
-		bytes: bytes.byteLength,
-	};
-}
-
-async function bash_tmp_session_snapshot(fs: InMemoryFs): Promise<BashTmpFilesSnapshot> {
-	const entries: BashTmpFilesSnapshotEntry[] = [];
-	const contents: BashTmpFilesSnapshotContent[] = [];
-	let totalBytes = 0;
-
-	for (const path of fs
-		.getAllPaths()
-		.filter((path) => path !== "/")
-		.sort()) {
-		const item = await bash_tmp_file_snapshot_entry(fs, path);
-		entries.push(item.entry);
-		if (item.content) {
-			contents.push(item.content);
-		}
-		totalBytes += item.bytes;
-	}
-
-	return {
-		entries,
-		contents,
-		pathCount: entries.length,
-		totalBytes,
-	};
-}
-
-async function bash_tmp_session_delta(session: BashTmpSession, usage: { pathCount: number; approxBytes: number }) {
-	const baselinePaths = session.baselinePaths;
-	const finalPaths = new Set(session.fs.getAllPaths().filter((path) => path !== "/"));
-	const upsertPaths = new Set<string>();
-	const deletePaths = [...baselinePaths].filter((path) => !finalPaths.has(path)).sort();
-
-	for (const path of finalPaths) {
-		if (!baselinePaths.has(path)) {
-			upsertPaths.add(path);
-		}
-	}
-	for (const root of session.dirtyRoots) {
-		for (const path of finalPaths) {
-			if (path === root || path.startsWith(`${root}/`)) {
-				upsertPaths.add(path);
+		const tmpFs = new BashTmpFs();
+		for (const fileNode of loaded.file_nodes) {
+			if (fileNode.kind === "directory") {
+				await tmpFs.fs.mkdir(fileNode.path, { recursive: true });
+				await tmpFs.fs.chmod(fileNode.path, fileNode.mode);
+				await tmpFs.fs.utimes(fileNode.path, new Date(fileNode.mtime), new Date(fileNode.mtime));
+			} else if (fileNode.kind === "symlink") {
+				await tmpFs.fs.symlink(fileNode.symlinkTargetPath ?? "", fileNode.path);
+				await tmpFs.fs.chmod(fileNode.path, fileNode.mode);
+			} else {
+				const bytes = loaded.file_nodes_content_dict[fileNode._id]?.bytes ?? new ArrayBuffer(0);
+				tmpFs.fs.writeFileSync(fileNode.path, new Uint8Array(bytes), undefined, {
+					mode: fileNode.mode,
+					mtime: new Date(fileNode.mtime),
+				});
 			}
+			tmpFs.baselinePaths.add(fileNode.path);
 		}
+		return tmpFs;
 	}
 
-	const entries: BashTmpFilesSnapshotEntry[] = [];
-	const contents: BashTmpFilesSnapshotContent[] = [];
-	for (const path of [...upsertPaths].sort()) {
-		const item = await bash_tmp_file_snapshot_entry(session.fs, path);
-		entries.push(item.entry);
-		if (item.content) {
-			contents.push(item.content);
-		}
+	private markDirty(path: string) {
+		this.dirty = true;
+		this.dirtyRoots.add(normalize_path(path));
 	}
 
-	return {
-		entries,
-		contents,
-		deletePaths,
-		pathCount: usage.pathCount,
-		totalBytes: usage.approxBytes,
-	} satisfies BashTmpFilesPatch;
-}
-
-class DirtyTrackingFs implements IFileSystem {
-	constructor(private readonly session: BashTmpSession) {}
-
-	private mark_dirty(path: string) {
-		this.session.dirty = true;
-		this.session.dirtyRoots.add(normalize_path(path));
-	}
-
-	private async final_dest_root(src: string, dest: string) {
+	private async finalDestRoot(src: string, dest: string) {
 		try {
-			const destStat = await this.session.fs.stat(dest);
+			const destStat = await this.fs.stat(dest);
 			if (destStat.isDirectory) {
 				const basename = src.split("/").filter(Boolean).at(-1) ?? "";
 				return normalize_path(dest === "/" ? `/${basename}` : `${dest}/${basename}`);
@@ -576,141 +421,195 @@ class DirtyTrackingFs implements IFileSystem {
 	}
 
 	async readFile(path: string, options?: Parameters<IFileSystem["readFile"]>[1]) {
-		return await this.session.fs.readFile(path, options);
+		return await this.fs.readFile(path, options);
 	}
 
 	async readFileBuffer(path: string) {
-		return await this.session.fs.readFileBuffer(path);
+		return await this.fs.readFileBuffer(path);
 	}
 
 	async writeFile(path: string, content: FileContent, options?: Parameters<IFileSystem["writeFile"]>[2]) {
-		await this.session.fs.writeFile(path, content, options);
-		this.mark_dirty(path);
+		await this.fs.writeFile(path, content, options);
+		this.markDirty(path);
 	}
 
 	async appendFile(path: string, content: FileContent, options?: Parameters<IFileSystem["appendFile"]>[2]) {
-		await this.session.fs.appendFile(path, content, options);
-		this.mark_dirty(path);
+		await this.fs.appendFile(path, content, options);
+		this.markDirty(path);
 	}
 
 	async exists(path: string) {
-		return await this.session.fs.exists(path);
+		return await this.fs.exists(path);
 	}
 
 	async stat(path: string) {
-		return await this.session.fs.stat(path);
+		return await this.fs.stat(path);
 	}
 
 	async mkdir(path: string, options?: MkdirOptions) {
-		await this.session.fs.mkdir(path, options);
-		this.mark_dirty(path);
+		await this.fs.mkdir(path, options);
+		this.markDirty(path);
 	}
 
 	async readdir(path: string) {
-		return await this.session.fs.readdir(path);
+		return await this.fs.readdir(path);
 	}
 
 	async rm(path: string, options?: RmOptions) {
-		await this.session.fs.rm(path, options);
-		this.mark_dirty(path);
+		await this.fs.rm(path, options);
+		this.markDirty(path);
 	}
 
 	async cp(src: string, dest: string, options?: CpOptions) {
-		const finalDest = await this.final_dest_root(src, dest);
-		await this.session.fs.cp(src, dest, options);
-		this.mark_dirty(finalDest);
+		const finalDest = await this.finalDestRoot(src, dest);
+		await this.fs.cp(src, dest, options);
+		this.markDirty(finalDest);
 	}
 
 	async mv(src: string, dest: string) {
-		const finalDest = await this.final_dest_root(src, dest);
-		await this.session.fs.mv(src, dest);
-		this.mark_dirty(src);
-		this.mark_dirty(finalDest);
+		const finalDest = await this.finalDestRoot(src, dest);
+		await this.fs.mv(src, dest);
+		this.markDirty(src);
+		this.markDirty(finalDest);
 	}
 
 	resolvePath(base: string, path: string) {
-		return this.session.fs.resolvePath(base, path);
+		return this.fs.resolvePath(base, path);
 	}
 
 	getAllPaths() {
-		return this.session.fs.getAllPaths();
+		return this.fs.getAllPaths();
 	}
 
 	async chmod(path: string, mode: number) {
-		await this.session.fs.chmod(path, mode);
-		this.mark_dirty(path);
+		await this.fs.chmod(path, mode);
+		this.markDirty(path);
 	}
 
 	async symlink(target: string, linkPath: string) {
-		await this.session.fs.symlink(target, linkPath);
-		this.mark_dirty(linkPath);
+		await this.fs.symlink(target, linkPath);
+		this.markDirty(linkPath);
 	}
 
 	async link(existingPath: string, newPath: string) {
-		await this.session.fs.link(existingPath, newPath);
-		this.mark_dirty(newPath);
+		await this.fs.link(existingPath, newPath);
+		this.markDirty(newPath);
 	}
 
 	async readlink(path: string) {
-		return await this.session.fs.readlink(path);
+		return await this.fs.readlink(path);
 	}
 
 	async lstat(path: string) {
-		return await this.session.fs.lstat(path);
+		return await this.fs.lstat(path);
 	}
 
 	async realpath(path: string) {
-		return await this.session.fs.realpath(path);
+		return await this.fs.realpath(path);
 	}
 
 	async utimes(path: string, atime: Date, mtime: Date) {
-		await this.session.fs.utimes(path, atime, mtime);
-		this.mark_dirty(path);
+		await this.fs.utimes(path, atime, mtime);
+		this.markDirty(path);
 	}
 }
 
 /**
- * Expand the cwd saved in thread state into the absolute path Bash runs with.
- *
- * We save cwd as `~` or `~/...` so it stays tied to the bash home.
- * Examples:
- * - `~` -> `/home/cloud-usr`
- * - `~/w/personal/home` -> `/home/cloud-usr/w/personal/home`
- * - `/home/cloud-usr/w/personal/home` -> `/home/cloud-usr/w/personal/home`
- */
-function expand_bash_path(path: string) {
-	const cwd = path.trim();
-	if (cwd === "~") {
-		return HOME;
+ * Read one scratch path into its durable file node (+ content for files).
+ **/
+async function tmp_fs_read_file_node(fs: InMemoryFs, path: string) {
+	const stat = await fs.lstat(path);
+	const mtime = stat.mtime.getTime();
+	if (stat.isDirectory) {
+		return {
+			fileNode: {
+				path,
+				kind: "directory" as const,
+				mode: stat.mode,
+				size: 0,
+				mtime,
+			},
+			content: null,
+		};
 	}
-	if (cwd.startsWith("~/")) {
-		return normalize_path(`${HOME}/${cwd.slice(2)}`);
+	if (stat.isSymbolicLink) {
+		const symlinkTargetPath = await fs.readlink(path);
+		return {
+			fileNode: {
+				path,
+				kind: "symlink" as const,
+				mode: stat.mode,
+				size: stat.size,
+				mtime,
+				symlinkTargetPath,
+			},
+			content: null,
+		};
 	}
-	if (cwd === HOME || cwd.startsWith(`${HOME}/`)) {
-		return normalize_path(cwd);
-	}
-	return normalize_path(cwd);
+
+	const bytes = await fs.readFileBuffer(path);
+	return {
+		fileNode: {
+			path,
+			kind: "file" as const,
+			mode: stat.mode,
+			size: bytes.byteLength,
+			mtime,
+		},
+		content: {
+			path,
+			bytes: new Uint8Array(bytes).buffer,
+		},
+	};
 }
 
 /**
- * Collapse a bash cwd into the thread-state format.
- *
- * Only paths under HOME persist between bash calls. Keep HOME absolute so the
- * legacy `~` default can mean "start in currentProjectPath".
- * Examples:
- * - `/home/cloud-usr` -> `/home/cloud-usr`
- * - `/home/cloud-usr/w/personal/home` -> `~/w/personal/home`
- * - `/tmp` -> `null`
- */
-function collapse_bash_path(path: string) {
-	const normalizedPath = normalize_path(path);
-	if (normalizedPath === HOME) {
-		return HOME;
+ * Changed and deleted paths since the baseline, for `patch_thread_tmp_files`.
+ **/
+async function tmp_fs_delta_payload(tmpFs: BashTmpFs) {
+	const finalPaths = new Set(tmpFs.fs.getAllPaths().filter((path) => path !== "/"));
+	const upsertPaths = new Set<string>();
+	const deletePaths = [...tmpFs.baselinePaths].filter((path) => !finalPaths.has(path)).sort();
+
+	for (const path of finalPaths) {
+		if (!tmpFs.baselinePaths.has(path)) {
+			upsertPaths.add(path);
+		}
 	}
-	if (normalizedPath.startsWith(`${HOME}/`)) {
-		return `~/${normalizedPath.slice(HOME.length + 1)}`;
+	for (const root of tmpFs.dirtyRoots) {
+		for (const path of finalPaths) {
+			if (path === root || path.startsWith(`${root}/`)) {
+				upsertPaths.add(path);
+			}
+		}
 	}
-	return null;
+
+	const items = await Promise.all([...upsertPaths].sort().map((path) => tmp_fs_read_file_node(tmpFs.fs, path)));
+	return {
+		file_nodes: items.map((item) => item.fileNode),
+		file_nodes_content: items.flatMap((item) => (item.content ? [item.content] : [])),
+		deletePaths,
+	};
+}
+
+/**
+ * Climb from `path` to the nearest existing directory, or `null` when even `/` is gone.
+ **/
+async function nearest_existing_dir(fs: MountableFs, path: string) {
+	let candidate = normalize_path(path);
+	while (true) {
+		try {
+			if ((await fs.stat(candidate)).isDirectory) {
+				return candidate;
+			}
+		} catch {
+			// fall through to the parent
+		}
+		if (candidate === "/") {
+			return null;
+		}
+		candidate = normalize_path(`${candidate}/..`);
+	}
 }
 
 /**
@@ -1963,10 +1862,10 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 
 		if (hasAppFileNodeTarget && parsed._yay.unsupportedAppFileOption != null) {
 			const opt = parsed._yay.unsupportedAppFileOption;
-			const hint = `ls under ${appMountPath} supports name order only; use find/search for pattern and content discovery.`;
+			const hint = `ls under ${APP_MOUNT_PATH} supports name order only; use find/search for pattern and content discovery.`;
 			return {
 				stdout: "",
-				stderr: `ls: unsupported option ${opt} for paths under ${appMountPath}\n${hint}\nUsage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n`,
+				stderr: `ls: unsupported option ${opt} for paths under ${APP_MOUNT_PATH}\n${hint}\nUsage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n`,
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
@@ -2687,7 +2586,7 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			return {
 				stdout: "",
 				stderr:
-					`find: unsupported predicate ${parsed._yay.unsupportedAppFilePredicate} for paths under ${appMountPath}\n` +
+					`find: unsupported predicate ${parsed._yay.unsupportedAppFilePredicate} for paths under ${APP_MOUNT_PATH}\n` +
 					"GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
 					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
 				exitCode: COMMAND_EXIT_USAGE,
@@ -3174,7 +3073,7 @@ function tree_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			return {
 				stdout: "",
 				stderr:
-					`tree: unsupported option ${parsed._yay.unsupportedAppFileOption} for paths under ${appMountPath}\n` +
+					`tree: unsupported option ${parsed._yay.unsupportedAppFileOption} for paths under ${APP_MOUNT_PATH}\n` +
 					"Usage: tree [PATH] [--limit N] [--cursor CURSOR]\n",
 				exitCode: COMMAND_EXIT_USAGE,
 			};
@@ -5594,27 +5493,29 @@ class ReadOnlyBaseFs implements IFileSystem {
 	}
 }
 
-async function action_run(
-	ctx: ActionCtx,
-	args: {
-		workspaceId: string;
-		projectId: string;
-		workspaceName: string;
-		projectName: string;
-		userId: Id<"users">;
-		threadId: Id<"ai_chat_threads">;
-		command: string;
-		allowAppFileTreeMkdir: boolean;
-		persistedCwd: string;
-		tmpFsSession: BashTmpSession;
-	},
-) {
+const action_run_args_validator = v.object({
+	workspaceId: v.string(),
+	projectId: v.string(),
+	workspaceName: v.string(),
+	projectName: v.string(),
+	userId: v.id("users"),
+	threadId: v.id("ai_chat_threads"),
+	command: v.string(),
+	allowAppFileTreeMkdir: v.boolean(),
+});
+
+async function action_run(ctx: ActionCtx, args: Infer<typeof action_run_args_validator>) {
+	const threadState = (await ctx.runQuery(internal.ai_chat.get_thread_state, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		threadId: args.threadId,
+	})) as ai_chat_get_thread_state_Result;
+
 	// Workspace and project names are validated slugs, so they are stable shell
 	// path segments and do not need path-segment encoding here.
-	const currentProjectPath = normalize_path(`${appMountPath}/${args.workspaceName}/${args.projectName}`);
-	const defaultPersistedCwd = collapse_bash_path(currentProjectPath) ?? DEFAULT_CWD;
-	const persistedCwd = args.persistedCwd.trim();
-	let cwd = persistedCwd === "" || persistedCwd === DEFAULT_CWD ? currentProjectPath : expand_bash_path(persistedCwd);
+	const currentProjectPath = `${APP_MOUNT_PATH}/${args.workspaceName}/${args.projectName}`;
+
+	const tmpFs = await BashTmpFs.create(ctx, args.threadId);
 
 	const workspaceFs = new WorkspaceFs({
 		ctx,
@@ -5633,27 +5534,22 @@ async function action_run(
 		base: new ReadOnlyBaseFs(),
 		mounts: [
 			{ mountPoint: currentProjectPath, filesystem: workspaceFs },
-			{ mountPoint: TMP_MOUNT, filesystem: new DirtyTrackingFs(args.tmpFsSession) },
+			{ mountPoint: TMP_MOUNT, filesystem: tmpFs },
 		],
 	});
 
-	try {
-		const cwdStat = await fs.stat(cwd);
-		if (!cwdStat.isDirectory) {
-			cwd = currentProjectPath;
-		}
-	} catch {
-		cwd = currentProjectPath;
-	}
+	// The persisted cwd can vanish between runs (deleted folder, pruned /tmp).
+	const cwd =
+		(await nearest_existing_dir(fs, threadState.bashCwd === DEFAULT_CWD ? currentProjectPath : threadState.bashCwd)) ??
+		currentProjectPath;
 
 	const bash = new Bash({
 		fs,
 		cwd,
 		env: {
-			PWD: cwd,
-			HOME: HOME,
+			HOME,
 		},
-		commands: [...ALLOWED_COMMANDS],
+		commands: ALLOWED_COMMANDS,
 		customCommands: [
 			search_command_create(ctx, workspaceFs.ctxData, currentProjectPath),
 			ls_command_create(ctx, workspaceFs, currentProjectPath),
@@ -5687,136 +5583,186 @@ async function action_run(
 		},
 	});
 
-	const result = await bash
-		.exec(`set -f\n${args.command}`, {
-			cwd,
-			env: {
-				PWD: cwd,
-				HOME: HOME,
-			},
-		})
-		.catch((error: unknown) => ({
-			stdout: "",
-			stderr: `${error instanceof Error ? error.message : String(error)}\n`,
-			exitCode: 1,
-			env: {
-				PWD: cwd,
-			},
-		}));
+	const result = await bash.exec(`set -f\n${args.command}`).catch((error: unknown) => ({
+		stdout: "",
+		stderr: `${error instanceof Error ? error.message : String(error)}\n`,
+		exitCode: 1,
+		env: {
+			PWD: cwd,
+		},
+	}));
 
-	const rawNextCwd = result.env.PWD || HOME;
-	let nextPersistedCwd = collapse_bash_path(rawNextCwd);
-	let nextCwd = nextPersistedCwd == null ? HOME : expand_bash_path(nextPersistedCwd);
-	let stderr = result.stderr;
-	const commandNotFoundPattern = /: command not found$/m;
-	const redirectsStderrToStdout = /(^|[\s;&|])2\s*>\s*&\s*1(?=$|[\s;&|])/.test(args.command);
-	if (commandNotFoundPattern.test(stderr) || (redirectsStderrToStdout && commandNotFoundPattern.test(result.stdout))) {
-		stderr +=
+	// PWD is an ordinary shell variable; a command can unset or empty it, in
+	// which case we assume the shell did not move.
+	const rawNextCwd = result.env.PWD || cwd;
+	// A command can delete its own cwd; climb to the nearest surviving directory.
+	let nextCwd = (await nearest_existing_dir(fs, rawNextCwd)) ?? currentProjectPath;
+	const redirectsStderrToStdout = REDIRECTS_STDERR_TO_STDOUT_REGEX.test(args.command);
+
+	if (
+		COMMAND_NOT_FOUND_REGEX.test(result.stderr) ||
+		(redirectsStderrToStdout && COMMAND_NOT_FOUND_REGEX.test(result.stdout))
+	) {
+		result.stderr +=
 			"bash: run 'help' to list available commands; app files are DB-backed — use search/grep for content and find/ls for paths.\n";
 		const filePathMatch = /(?:^|[\s;&|])file\s+([^\s;&|]+)/u.exec(args.command);
 		if (filePathMatch?.[1] != null) {
 			const target = shell_arg_quote(filePathMatch[1]);
-			stderr += `bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
+			result.stderr += `bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
 		}
 	}
+
 	if (
 		args.command.includes("pipefail") &&
-		(/bash: set: -o: invalid option/m.test(stderr) ||
-			(redirectsStderrToStdout && /bash: set: -o: invalid option/m.test(result.stdout)))
+		(SET_INVALID_OPTION_REGEX.test(result.stderr) ||
+			(redirectsStderrToStdout && SET_INVALID_OPTION_REGEX.test(result.stdout)))
 	) {
-		stderr += "bash: `set -euo pipefail` is unsupported; retry without strict-mode boilerplate.\n";
-	}
-	try {
-		const nextCwdStat = await fs.stat(nextCwd);
-		if (!nextCwdStat.isDirectory || nextPersistedCwd == null) {
-			nextPersistedCwd = defaultPersistedCwd;
-			nextCwd = currentProjectPath;
-			stderr += `bash: cwd '${rawNextCwd}' is not persisted; resetting to ${currentProjectPath}\n`;
-		}
-	} catch {
-		nextPersistedCwd = defaultPersistedCwd;
-		nextCwd = currentProjectPath;
-		stderr += `bash: cwd '${rawNextCwd}' is invalid; resetting to ${currentProjectPath}\n`;
+		result.stderr += "bash: `set -euo pipefail` is unsupported; retry without strict-mode boilerplate.\n";
 	}
 
-	const tmpFsUsage = await bash_tmp_session_estimate_usage(args.tmpFsSession.fs);
-	let tmpFsFlushed = false;
-	let tmpFsFlushMode: BashTmpFlushMode = "none";
-	let tmpFsDeltaUpsertedPathCount = 0;
-	let tmpFsDeltaDeletedPathCount = 0;
-	let tmpFsPersistedPathCount = tmpFsUsage.pathCount;
-	let tmpFsPersistedBytes = tmpFsUsage.approxBytes;
-	const full_flush = async () => {
-		const snapshot = await bash_tmp_session_snapshot(args.tmpFsSession.fs);
-		const oversizedFile = snapshot.contents.find(
-			(content) => content.bytes.byteLength > BASH_TMP_SESSION_MAX_FILE_BYTES,
-		);
-		if (oversizedFile) {
-			stderr += `/tmp file exceeded its durable file limit and scratch files from this call were discarded: ${oversizedFile.path}\n`;
-			return false;
-		}
-
-		const flushResult = (await ctx.runMutation(internal.ai_chat_files.flush_thread_tmp_files, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
+	// Only paths under HOME and `/tmp` survive between runs (`/tmp` is restored
+	// from the DB; everything else is synthetic mount scaffolding).
+	if (
+		nextCwd !== HOME &&
+		!nextCwd.startsWith(`${HOME}/`) &&
+		nextCwd !== TMP_MOUNT &&
+		!nextCwd.startsWith(`${TMP_MOUNT}/`)
+	) {
+		console.warn("Bash cwd is not persistable, resetting to the project root", {
 			threadId: args.threadId,
-			entries: snapshot.entries,
-			contents: snapshot.contents,
-		})) as ai_chat_files_flush_thread_tmp_files_Result;
-		if (flushResult._nay) {
-			stderr += `/tmp scratch persistence failed: ${flushResult._nay.message}\n`;
-			return false;
-		}
+			cwd: rawNextCwd,
+		});
+		nextCwd = currentProjectPath;
+	}
 
-		args.tmpFsSession.dirty = false;
-		tmpFsFlushed = true;
-		tmpFsFlushMode = "full_fallback";
-		tmpFsPersistedPathCount = flushResult._yay.pathCount;
-		tmpFsPersistedBytes = flushResult._yay.totalBytes;
-		return true;
+	// `/tmp` persists to the DB, so bound its durable footprint before flushing:
+	// discard files over the per-file cap, then evict the oldest leaves (files,
+	// symlinks, and empty directories, by mtime then path) until both thread
+	// caps are satisfied — this call's writes have fresh mtimes and survive.
+	// Deletions go through `tmpFs.rm` so they mark the fs dirty and reach the DB.
+	const live = new Map<string, { isDirectory: boolean; size: number; mtime: number; childCount: number }>();
+	for (const path of tmpFs.fs.getAllPaths()) {
+		if (path === "/") {
+			continue;
+		}
+		const stat = await tmpFs.fs.lstat(path).catch(() => null);
+		live.set(path, {
+			isDirectory: stat?.isDirectory ?? false,
+			// Broken scratch symlinks still count as paths, but have no readable size.
+			size: stat && (stat.isFile || stat.isSymbolicLink) ? stat.size : 0,
+			mtime: stat?.mtime.getTime() ?? 0,
+			childCount: 0,
+		});
+	}
+	let totalBytes = 0;
+	for (const [path, entry] of live) {
+		totalBytes += entry.size;
+		const parent = live.get(path.slice(0, path.lastIndexOf("/")));
+		if (parent) {
+			parent.childCount += 1;
+		}
+	}
+
+	const evict = async (path: string) => {
+		totalBytes -= live.get(path)!.size;
+		live.delete(path);
+		const parent = live.get(path.slice(0, path.lastIndexOf("/")));
+		if (parent) {
+			parent.childCount -= 1;
+		}
+		await tmpFs.rm(path, { recursive: true });
 	};
-	if (tmpFsUsage.pathCount > BASH_TMP_SESSION_MAX_PATHS || tmpFsUsage.approxBytes > BASH_TMP_SESSION_MAX_BYTES) {
-		stderr += "/tmp scratch exceeded its durable thread limit; scratch files from this call were discarded.\n";
-	} else if (args.tmpFsSession.dirty) {
-		const patch = await bash_tmp_session_delta(args.tmpFsSession, tmpFsUsage);
-		const oversizedFile = patch.contents.find(
-			(content) => content.bytes.byteLength > BASH_TMP_SESSION_MAX_FILE_BYTES,
-		);
-		if (oversizedFile) {
-			stderr += `/tmp file exceeded its durable file limit and scratch files from this call were discarded: ${oversizedFile.path}\n`;
-		} else {
-			const patchResult = (await ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+
+	const oversizedPaths = [...live.entries()]
+		.filter(([, entry]) => !entry.isDirectory && entry.size > BASH_TMP_SESSION_MAX_FILE_BYTES)
+		.map(([path]) => path);
+	for (const path of oversizedPaths) {
+		await evict(path);
+	}
+
+	const evictedPaths: string[] = [];
+	while (live.size > BASH_TMP_SESSION_MAX_PATHS || totalBytes > BASH_TMP_SESSION_MAX_BYTES) {
+		let oldest: { path: string; mtime: number } | null = null;
+		for (const [path, entry] of live) {
+			if (entry.isDirectory && entry.childCount > 0) {
+				continue;
+			}
+			if (oldest === null || entry.mtime < oldest.mtime || (entry.mtime === oldest.mtime && path < oldest.path)) {
+				oldest = { path, mtime: entry.mtime };
+			}
+		}
+		if (oldest === null) {
+			break;
+		}
+		evictedPaths.push(oldest.path);
+		await evict(oldest.path);
+	}
+
+	// Eviction paths are internal to the /tmp mount; prefix them for display.
+	const list_tmp_paths = (paths: string[]) =>
+		paths
+			.slice(0, 20)
+			.map((path) => `${TMP_MOUNT}${path}`)
+			.join(", ") + (paths.length > 20 ? ` (and ${paths.length - 20} more)` : "");
+
+	if (oversizedPaths.length > 0) {
+		result.stderr += `/tmp scratch files larger than ${BASH_TMP_SESSION_MAX_FILE_BYTES} bytes are not persisted between calls; discarded ${oversizedPaths.length} oversized file(s): ${list_tmp_paths(oversizedPaths)}\n`;
+	}
+	if (evictedPaths.length > 0) {
+		result.stderr += `/tmp scratch is limited to ${BASH_TMP_SESSION_MAX_PATHS} paths and ${BASH_TMP_SESSION_MAX_BYTES} total bytes between calls; evicted the ${evictedPaths.length} oldest path(s) to fit: ${list_tmp_paths(evictedPaths)}\n`;
+	}
+
+	const pendingMutations: Promise<unknown>[] = [];
+
+	if (tmpFs.dirty) {
+		const patch = await tmp_fs_delta_payload(tmpFs);
+		pendingMutations.push(
+			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				threadId: args.threadId,
-				upsertEntries: patch.entries,
-				upsertContents: patch.contents,
+				file_nodes: patch.file_nodes,
+				file_nodes_content: patch.file_nodes_content,
 				deletePaths: patch.deletePaths,
-			})) as ai_chat_files_patch_thread_tmp_files_Result;
-			if (patchResult._nay) {
-				const fallbackSucceeded = await full_flush();
-				if (!fallbackSucceeded) {
-					stderr += `/tmp scratch delta persistence failed: ${patchResult._nay.message}\n`;
-				}
-			} else {
-				args.tmpFsSession.dirty = false;
-				tmpFsFlushed = true;
-				tmpFsFlushMode = "delta";
-				tmpFsDeltaUpsertedPathCount = patchResult._yay.upsertedPathCount;
-				tmpFsDeltaDeletedPathCount = patchResult._yay.deletedPathCount;
-				tmpFsPersistedPathCount = patchResult._yay.pathCount;
-				tmpFsPersistedBytes = patchResult._yay.totalBytes;
-			}
-		}
+			}),
+		);
+		tmpFs.dirty = false;
 	}
 
 	const stdoutLength = result.stdout.length;
-	const stderrLength = stderr.length;
+	const stderrLength = result.stderr.length;
 	const stdout = truncate_output(result.stdout);
-	const truncatedStderr = truncate_output(stderr);
+	const truncatedStderr = truncate_output(result.stderr);
+
+	const threadStateUpdated = nextCwd !== threadState.bashCwd;
+	if (threadStateUpdated) {
+		pendingMutations.push(
+			ctx.runMutation(internal.ai_chat.set_thread_state, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				threadId: args.threadId,
+				userId: args.userId,
+				patch: {
+					bashCwd: nextCwd,
+				},
+			}),
+		);
+	}
+
+	await Promise.all(pendingMutations);
+
+	console.debug("Bash command completed", {
+		threadId: args.threadId,
+		commandName: args.command.trim().split(/\s+/u, 1)[0] ?? "",
+		exitCode: result.exitCode,
+		stdoutLength,
+		stderrLength,
+		threadStateUpdated,
+		pathIndexTruncated: workspaceFs.pathIndexTruncated,
+		tmpFsEvictedPathCount: oversizedPaths.length + evictedPaths.length,
+	});
 
 	return {
-		nextPersistedCwd,
 		title: `exit ${result.exitCode} · ${nextCwd}`,
 		output: format_tool_output({
 			command: args.command,
@@ -5838,30 +5784,12 @@ async function action_run(
 			stdoutLength,
 			stderrLength,
 			pathIndexTruncated: workspaceFs.pathIndexTruncated,
-			tmpFsFlushed,
-			tmpFsFlushMode,
-			tmpFsDeltaUpsertedPathCount,
-			tmpFsDeltaDeletedPathCount,
-			tmpFsDirty: args.tmpFsSession.dirty,
-			tmpFsPathCount: tmpFsUsage.pathCount,
-			tmpFsApproxBytes: tmpFsUsage.approxBytes,
-			tmpFsPersistedPathCount,
-			tmpFsPersistedBytes,
 		},
 	};
 }
 
 export const run = internalAction({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		workspaceName: v.string(),
-		projectName: v.string(),
-		userId: v.id("users"),
-		threadId: v.id("ai_chat_threads"),
-		command: v.string(),
-		allowAppFileTreeMkdir: v.boolean(),
-	},
+	args: action_run_args_validator,
 	returns: v.object({
 		title: v.string(),
 		output: v.string(),
@@ -5877,75 +5805,9 @@ export const run = internalAction({
 			stdoutLength: v.number(),
 			stderrLength: v.number(),
 			pathIndexTruncated: v.boolean(),
-			tmpFsFlushed: v.boolean(),
-			tmpFsFlushMode: v.union(v.literal("none"), v.literal("delta"), v.literal("full_fallback")),
-			tmpFsDeltaUpsertedPathCount: v.number(),
-			tmpFsDeltaDeletedPathCount: v.number(),
-			tmpFsDirty: v.boolean(),
-			tmpFsPathCount: v.number(),
-			tmpFsApproxBytes: v.number(),
-			tmpFsPersistedPathCount: v.number(),
-			tmpFsPersistedBytes: v.number(),
 		}),
 	}),
-	handler: async (ctx, args) => {
-		const tmpFsSession = await bash_tmp_session_hydrate(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			threadId: args.threadId,
-		});
-		const threadState = (await ctx.runQuery(internal.ai_chat.get_thread_state, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			threadId: args.threadId,
-		})) as ai_chat_get_thread_state_Result;
-
-		const execution = await action_run(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			workspaceName: args.workspaceName,
-			projectName: args.projectName,
-			userId: args.userId,
-			threadId: args.threadId,
-			command: args.command,
-			allowAppFileTreeMkdir: args.allowAppFileTreeMkdir,
-			persistedCwd: threadState.bashCwd,
-			tmpFsSession,
-		});
-
-		const threadStateUpdated = execution.nextPersistedCwd !== threadState.bashCwd;
-		if (threadStateUpdated) {
-			await ctx.runMutation(internal.ai_chat.set_thread_state, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				threadId: args.threadId,
-				userId: args.userId,
-				patch: {
-					bashCwd: execution.nextPersistedCwd,
-				},
-			});
-		}
-
-		console.info("Bash command completed", {
-			threadId: args.threadId,
-			commandName: args.command.trim().split(/\s+/u, 1)[0] ?? "",
-			exitCode: execution.metadata.exitCode,
-			stdoutLength: execution.metadata.stdoutLength,
-			stderrLength: execution.metadata.stderrLength,
-			threadStateUpdated,
-			pathIndexTruncated: execution.metadata.pathIndexTruncated,
-			tmpFsFlushed: execution.metadata.tmpFsFlushed,
-			tmpFsFlushMode: execution.metadata.tmpFsFlushMode,
-		});
-
-		return {
-			title: execution.title,
-			output: execution.output,
-			stdout: execution.stdout,
-			stderr: execution.stderr,
-			metadata: execution.metadata,
-		};
-	},
+	handler: action_run,
 });
 
 // #endregion action
@@ -5953,17 +5815,8 @@ export const run = internalAction({
 // Vitest sets NODE_ENV to "test"; Convex's bundler defines it as "production",
 // so keep that check first to let esbuild erase `import.meta.vitest` before analysis.
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
-	const { describe, test, expect, vi } = import.meta.vitest;
+	const { describe, test, expect, vi, beforeEach, afterEach } = import.meta.vitest;
 
-	const test_user_id = "user_1" as Id<"users">;
-
-	const test_ctx_data = {
-		workspaceId: "app_workspace_test_1",
-		projectId: "app_project_test_1",
-		workspaceName: "personal",
-		projectName: "home",
-		userId: test_user_id,
-	} as const;
 	const test_app_files_mount = "/home/cloud-usr/w/personal/home";
 	const function_name_of = (ref: unknown) => {
 		try {
@@ -5971,24 +5824,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		} catch {
 			return null;
 		}
-	};
-
-	const makeCtx = (
-		runQueryImpl: (ref: unknown, args: Record<string, unknown>) => Promise<unknown>,
-		args?: {
-			runMutationImpl?: (ref: unknown, args: Record<string, unknown>) => Promise<unknown>;
-			runActionImpl?: (ref: unknown, args: Record<string, unknown>) => Promise<unknown>;
-		},
-	) => {
-		const runQuery = vi.fn(runQueryImpl);
-		const runMutation = vi.fn(args?.runMutationImpl ?? (async () => null));
-		const runAction = vi.fn(args?.runActionImpl ?? runQueryImpl);
-		const ctx = {
-			runQuery,
-			runMutation,
-			runAction,
-		} as unknown as ActionCtx;
-		return { ctx, runQuery, runMutation, runAction };
 	};
 
 	describe("truncate_output", () => {
@@ -6116,889 +5951,427 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("action_run", () => {
-		const now = Date.now();
-		const workspaceItemsInitial = [
-			{ path: "/docs", kind: "folder", updatedAt: now, depthTruncated: false },
-			{
-				path: "/docs/readme.md",
-				kind: "file",
-				updatedAt: now,
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-			},
-			{
-				path: "/docs/tutorial.md",
-				kind: "file",
-				updatedAt: now,
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-			},
-			{
-				path: "/docs/nested",
-				kind: "folder",
-				updatedAt: now,
-				depthTruncated: false,
-			},
-			{
-				path: "/docs/nested/deep.md",
-				kind: "file",
-				updatedAt: now,
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-			},
-			{
-				path: "/source.pdf",
-				kind: "file",
-				updatedAt: now,
-				depthTruncated: false,
-				contentType: "application/pdf",
-			},
-			{
-				path: "/uploaded.md",
-				kind: "file",
-				updatedAt: now,
-				depthTruncated: false,
-				contentType: "application/octet-stream",
-			},
-			{
-				path: "/reports",
-				kind: "folder",
-				updatedAt: now,
-				depthTruncated: false,
-			},
-			{
-				path: "/reports/summary.md",
-				kind: "file",
-				updatedAt: now,
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-			},
-		] as const;
-		const tmpSnapshots = new Map<string, BashTmpFilesSnapshot>();
+		const test_workspace_name = "personal";
+		const test_project_name = "home";
 
-		function tmp_snapshot_key(args: { workspaceId: string; projectId: string; threadId: Id<"ai_chat_threads"> }) {
-			return JSON.stringify([args.workspaceId, args.projectId, args.threadId]);
-		}
+		// Full object bytes served by the stubbed global fetch, keyed by files_r2_assets.r2Key. The
+		// R2 client's getUrl is spied to embed the key in the URL so the bounded window readers
+		// exercise real HTTP Range parsing against this store.
+		const test_r2_objects = new Map<string, Uint8Array>();
+		let test_runner_counter = 0;
 
-		function tmp_snapshot_clone(snapshot: BashTmpFilesSnapshot): BashTmpFilesSnapshot {
-			return {
-				entries: snapshot.entries.map((entry) => ({ ...entry })),
-				contents: snapshot.contents.map((content) => ({
-					path: content.path,
-					bytes: content.bytes.slice(0),
-				})),
-				pathCount: snapshot.pathCount,
-				totalBytes: snapshot.totalBytes,
-			};
-		}
+		beforeEach(async () => {
+			const { Workpool } = await import("@convex-dev/workpool");
+			const { R2 } = await import("@convex-dev/r2");
+			test_r2_objects.clear();
+			// Billing enqueue and R2 metadata sync behavior are covered by their own suites; file
+			// content reads are served from test_r2_objects through the fetch stub below.
+			vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_bash_test_billing_event" as never);
+			vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined as never);
+			vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (customKey?: string) => ({
+				key: customKey ?? "bash-test-upload-key",
+				url: "https://r2.test/upload",
+			}));
+			vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+			vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+				async (key: string) => `https://r2.test/object/${encodeURIComponent(key)}`,
+			);
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+					const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+					const url = new URL(href);
+					if (url.origin !== "https://r2.test" || !url.pathname.startsWith("/object/")) {
+						return new Response(null, { status: 200 });
+					}
+					const key = decodeURIComponent(url.pathname.slice("/object/".length));
+					const bytes = test_r2_objects.get(key);
+					if (!bytes) {
+						return new Response(null, { status: 404 });
+					}
+					const range = new Headers(init?.headers).get("Range");
+					const rangeMatch = range == null ? null : /^bytes=(\d+)-(\d+)$/.exec(range);
+					if (rangeMatch) {
+						const start = Number(rangeMatch[1]);
+						const endInclusive = Math.min(Number(rangeMatch[2]), bytes.byteLength - 1);
+						return new Response(bytes.slice(start, endInclusive + 1), { status: 206 });
+					}
+					return new Response(bytes.slice(0), { status: 200 });
+				}),
+			);
+		});
 
-		function tmp_snapshot_empty(): BashTmpFilesSnapshot {
-			return {
-				entries: [],
-				contents: [],
-				pathCount: 0,
-				totalBytes: 0,
-			};
-		}
+		afterEach(() => {
+			vi.restoreAllMocks();
+			vi.unstubAllGlobals();
+		});
 
-		function tmp_snapshot_to_load_result(
-			snapshot: BashTmpFilesSnapshot,
-			scope: { workspaceId: string; projectId: string; threadId: Id<"ai_chat_threads"> },
-		): ai_chat_files_load_thread_tmp_files_Result {
-			const now = Date.now();
-			const aiChatFilesContentDict: ai_chat_files_load_thread_tmp_files_Result["aiChatFilesContentDict"] = {};
-			for (const content of snapshot.contents) {
-				const fileNodeId = `ai_chat_file:${content.path}` as Id<"ai_chat_files">;
-				aiChatFilesContentDict[fileNodeId] = {
-					_id: `ai_chat_files_content:${content.path}` as Id<"ai_chat_files_content">,
-					_creationTime: now,
-					...scope,
-					fileNodeId,
-					bytes: content.bytes.slice(0),
-				};
+		type BashSeedSpec = {
+			path: string;
+			kind?: "folder" | "file";
+			content?: string;
+			contentType?: string;
+			/** false skips chunk materialization: reads fall back to the bounded R2 window paths. */
+			materialized?: boolean;
+			/** Break chunk tiling contiguity (materialization anomaly) so chunk readers bail to the window fallback. */
+			brokenChunks?: boolean;
+			/** Upload-style node without editable yjs state (binary uploads, PDFs). */
+			withoutYjsState?: boolean;
+			/** Committed asset byte size override; defaults to the utf8 size of `content`. */
+			size?: number;
+			updatedAt?: number;
+		};
+
+		// Mirrors the old mock workspace tree; contents are canonical for every test that reads them.
+		const default_workspace_files: BashSeedSpec[] = [
+			{ path: "/docs", kind: "folder" },
+			{ path: "/docs/readme.md", content: "# Readme\nunique-token here\nmore unique-token below\n" },
+			{ path: "/docs/tutorial.md", content: "zeta\nalpha\nALPHA\n" },
+			{ path: "/docs/nested", kind: "folder" },
+			{ path: "/docs/nested/deep.md", content: "one:two\nthree:four\n" },
+			{ path: "/source.pdf", contentType: "application/pdf", withoutYjsState: true, size: 4096 },
+			{ path: "/uploaded.md", contentType: "application/octet-stream", withoutYjsState: true, size: 64 },
+			{ path: "/reports", kind: "folder" },
+			{ path: "/reports/summary.md", content: "summary\n" },
+		];
+
+		// ~8.9KB / 1000 lines — over READ_INLINE_MAX_BYTES, so readers take the bounded large-file pages.
+		const big_md_file: BashSeedSpec = {
+			path: "/big.md",
+			content: `${Array.from({ length: 1000 }, (_, index) => `line ${index + 1}`).join("\n")}\n`,
+		};
+
+		async function seed_workspace_folder(
+			ctx: MutationCtx,
+			scope: { workspaceId: string; projectId: string; userId: Id<"users"> },
+			path: string,
+			updatedAt: number,
+		) {
+			const { test_mocks } = await import("./setup.test.ts");
+			const segments = path.split("/").filter(Boolean);
+			let parentId: Id<"files_nodes"> | typeof files_ROOT_ID = files_ROOT_ID;
+			for (let depth = 1; depth <= segments.length; depth++) {
+				const ancestorPath = `/${segments.slice(0, depth).join("/")}`;
+				const existing = await ctx.db
+					.query("files_nodes")
+					.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+						q
+							.eq("workspaceId", scope.workspaceId)
+							.eq("projectId", scope.projectId)
+							.eq("path", ancestorPath)
+							.eq("archiveOperationId", undefined),
+					)
+					.first();
+				if (existing) {
+					parentId = existing._id;
+					continue;
+				}
+				parentId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					workspaceId: scope.workspaceId,
+					projectId: scope.projectId,
+					createdBy: scope.userId,
+					updatedBy: scope.userId,
+					parentId,
+					name: segments[depth - 1]!,
+					kind: "folder",
+					path: ancestorPath,
+					pathDepth: depth,
+					updatedAt,
+				});
 			}
-			return {
-				aiChatFiles: snapshot.entries.map((entry) => ({
-					_id: `ai_chat_file:${entry.path}` as Id<"ai_chat_files">,
-					_creationTime: now,
-					...scope,
-					...entry,
-				})),
-				aiChatFilesContentDict,
-				aiChatFilesState: {
-					_id: `ai_chat_files_state:${scope.threadId}` as Id<"ai_chat_files_state">,
-					_creationTime: now,
-					...scope,
-					pathCount: snapshot.pathCount,
-					totalBytes: snapshot.totalBytes,
-					updatedAt: now,
-				},
-			};
+			return parentId;
 		}
 
-		function createBashRunner(args?: {
-			initialCwd?: string;
-			threadId?: Id<"ai_chat_threads">;
-			workspaceId?: string;
-			projectId?: string;
-			userId?: Id<"users">;
-			preserveTmpFiles?: boolean;
-			listTruncated?: boolean;
-			allowAppFileTreeMkdir?: boolean;
-			extraItems?: Array<{
-				path: string;
-				kind: "folder" | "file";
-				updatedAt: number;
-				updatedBy?: string;
-				depthTruncated: boolean;
-				contentType?: string;
-				size?: number;
-				servedSize?: number;
-			}>;
-			extraFileContents?: Record<string, string>;
-			scanTruncatedPaths?: string[];
-			failTmpPatchOnce?: boolean;
-		}) {
-			pagination_cursors_cache.clear();
-			if (!args?.preserveTmpFiles) {
-				tmpSnapshots.clear();
+		async function seed_workspace_node(
+			ctx: MutationCtx,
+			scope: { workspaceId: string; projectId: string; userId: Id<"users"> },
+			spec: BashSeedSpec,
+			seedIndex: number,
+		) {
+			const { test_mocks } = await import("./setup.test.ts");
+			const { db_insert_file_chunks } = await import("./files_nodes.ts");
+			// Deterministic, distinct recency: later seeds are newer.
+			const updatedAt = spec.updatedAt ?? Date.now() - 1_000_000 + seedIndex * 1000;
+			const segments = spec.path.split("/").filter(Boolean);
+			if (spec.kind === "folder") {
+				await seed_workspace_folder(ctx, scope, spec.path, updatedAt);
+				return;
 			}
-			const ctxData = {
-				...test_ctx_data,
-				workspaceId: args?.workspaceId ?? test_ctx_data.workspaceId,
-				projectId: args?.projectId ?? test_ctx_data.projectId,
-				userId: args?.userId ?? test_ctx_data.userId,
-			};
-			const threadId = args?.threadId ?? ("thread_1" as Id<"ai_chat_threads">);
-			let cwd = args?.initialCwd ?? "~";
-			const scanTruncatedPaths = new Set(args?.scanTruncatedPaths ?? []);
-			let failTmpPatchOnce = args?.failTmpPatchOnce ?? false;
-			let valueStoreCounter = 0;
-			const valueStore = new Map<string, string>();
-			const workspaceItems: Array<{
-				path: string;
-				kind: "folder" | "file";
-				updatedAt: number;
-				updatedBy?: string;
-				depthTruncated: boolean;
-				contentType?: string;
-				size?: number;
-				servedSize?: number;
-			}> = [...workspaceItemsInitial, ...(args?.extraItems ?? [])];
-			const runQueryImpl = async (_ref: unknown, queryArgs: Record<string, unknown>) => {
-				if (function_name_of(_ref) === "value_store:get") {
-					const id = typeof queryArgs.id === "string" ? queryArgs.id : "";
-					const value = valueStore.get(id);
-					return value == null ? null : { value, createdAt: Date.now() };
-				}
-				if (function_name_of(_ref) === "ai_chat_files:load_thread_tmp_files") {
-					const scope = {
-						workspaceId: String(queryArgs.workspaceId ?? ""),
-						projectId: String(queryArgs.projectId ?? ""),
-						threadId: queryArgs.threadId as Id<"ai_chat_threads">,
-					};
-					const key = tmp_snapshot_key(scope);
-					return tmp_snapshot_to_load_result(tmpSnapshots.get(key) ?? tmp_snapshot_empty(), scope);
-				}
-
-				const itemName = (path: string) => path.split("/").filter(Boolean).at(-1) ?? "";
-				const itemExtension = (path: string) => {
-					const name = itemName(path);
-					const dotIndex = name.lastIndexOf(".");
-					return dotIndex <= 0 || dotIndex === name.length - 1 ? null : name.slice(dotIndex + 1).toLowerCase();
-				};
-				const nodeIdForPath = (path: string) => (path === "/" ? "root" : `node:${path}`);
-				const pathFromNodeId = (nodeId: unknown) => {
-					if (nodeId === "root") return "/";
-					return typeof nodeId === "string" && nodeId.startsWith("node:") ? nodeId.slice("node:".length) : null;
-				};
-				const parentPath = (path: string) => {
-					const segments = path.split("/").filter(Boolean);
-					return segments.length <= 1 ? "/" : `/${segments.slice(0, -1).join("/")}`;
-				};
-				const sortBy = <T>(items: T[], order: unknown, compare: (a: T, b: T) => number) =>
-					[...items].sort((a, b) => (order === "desc" ? -1 : 1) * compare(a, b));
-				const pageItems = <T>(items: T[], limitValue: unknown, cursorValue: unknown) => {
-					const limit =
-						typeof limitValue === "number" && Number.isFinite(limitValue) ? Math.max(1, Math.trunc(limitValue)) : 100;
-					const cursor =
-						typeof cursorValue === "string" && cursorValue.startsWith("cursor-") ? Number(cursorValue.slice(7)) : 0;
-					const start = Number.isFinite(cursor) ? cursor : 0;
-					const page = items.slice(start, start + limit);
-					const nextStart = start + limit;
-					return {
-						page,
-						continueCursor: nextStart < items.length ? `cursor-${nextStart}` : "",
-						isDone: nextStart >= items.length,
-					};
-				};
-
-				if (_ref === internal.files_nodes.search_paths_paginated) {
-					const pathQuery = String(queryArgs.pathQuery ?? "").toLowerCase();
-					const parentPathFilter = queryArgs.parentId == null ? null : pathFromNodeId(queryArgs.parentId);
-					const kindFilter = typeof queryArgs.kind === "string" ? queryArgs.kind : null;
-					const paged = pageItems(
-						workspaceItems.filter((item) => {
-							if (pathQuery !== "" && !item.path.toLowerCase().includes(pathQuery)) {
-								return false;
-							}
-							if (parentPathFilter != null && parentPath(item.path) !== parentPathFilter) {
-								return false;
-							}
-							if (kindFilter != null && item.kind !== kindFilter) {
-								return false;
-							}
-							return true;
-						}),
-						queryArgs.numItems,
-						queryArgs.cursor,
-					);
-					return {
-						items: paged.page.map((item) => ({
-							path: item.path,
-							kind: item.kind,
-							updatedAt: item.updatedAt,
-						})),
-						continueCursor: paged.continueCursor,
-						isDone: paged.isDone,
-					};
-				}
-
-				if ("lowercaseExtension" in queryArgs) {
-					const path = typeof queryArgs.path === "string" ? queryArgs.path : "/";
-					const extension = String(queryArgs.lowercaseExtension ?? "").toLowerCase();
-					const target = workspaceItems.find((item) => item.path === path);
-					const baseDepth = path === "/" ? 0 : path.split("/").filter(Boolean).length;
-					const itemRelativeDepth = (itemPath: string) => {
-						const itemDepth = itemPath === "/" ? 0 : itemPath.split("/").filter(Boolean).length;
-						return itemDepth - baseDepth;
-					};
-					const items =
-						target?.kind === "file"
-							? [target]
-							: workspaceItems.filter((item) => {
-									if (path === "/") return true;
-									return item.path.startsWith(`${path}/`);
-								});
-					const paged = pageItems(
-						items
-							.filter((item) => item.kind === "file" && itemExtension(item.path) === extension)
-							.filter((item) => {
-								if (typeof queryArgs.minDepth === "number" && itemRelativeDepth(item.path) < queryArgs.minDepth) {
-									return false;
-								}
-								if (typeof queryArgs.maxDepth === "number" && itemRelativeDepth(item.path) > queryArgs.maxDepth) {
-									return false;
-								}
-								return true;
-							})
-							.sort((a, b) => a.path.localeCompare(b.path)),
-						queryArgs.numItems,
-						queryArgs.cursor,
-					);
-					return {
-						items: paged.page.map((item) => ({
-							path: item.path,
-							kind: "file" as const,
-							updatedAt: item.updatedAt,
-						})),
-						continueCursor: paged.continueCursor,
-						isDone: paged.isDone,
-					};
-				}
-
-				if (_ref === internal.files_nodes.list_dir_children_by_parent_recency_paginated && "parentId" in queryArgs) {
-					const path = pathFromNodeId(queryArgs.parentId);
-					const paged = pageItems(
-						sortBy(
-							workspaceItems.filter((item) => parentPath(item.path) === path),
-							queryArgs.order,
-							(a, b) => a.updatedAt - b.updatedAt || itemName(a.path).localeCompare(itemName(b.path)),
-						),
-						queryArgs.numItems,
-						queryArgs.cursor,
-					);
-					return {
-						items: paged.page.map((item) => ({
-							name: itemName(item.path),
-							path: item.path,
-							kind: item.kind,
-							updatedAt: item.updatedAt,
-							updatedBy: item.updatedBy ?? test_user_id,
-							contentType: item.contentType,
-						})),
-						continueCursor: paged.continueCursor,
-						isDone: paged.isDone,
-					};
-				}
-
-				if ("numItems" in queryArgs && "parentId" in queryArgs) {
-					const path = pathFromNodeId(queryArgs.parentId);
-					const paged = pageItems(
-						sortBy(
-							workspaceItems.filter((item) => parentPath(item.path) === path),
-							queryArgs.order,
-							(a, b) => itemName(a.path).localeCompare(itemName(b.path)),
-						),
-						queryArgs.numItems,
-						queryArgs.cursor,
-					);
-					return {
-						items: paged.page.map((item) => ({
-							name: itemName(item.path),
-							path: item.path,
-							kind: item.kind,
-							updatedAt: item.updatedAt,
-							updatedBy: item.updatedBy ?? test_user_id,
-							contentType: item.contentType,
-						})),
-						continueCursor: paged.continueCursor,
-						isDone: paged.isDone,
-					};
-				}
-
-				if ("query" in queryArgs) {
-					const prefix = typeof queryArgs.pathPrefix === "string" ? queryArgs.pathPrefix : null;
-					const underScope = (path: string) => prefix === null || path === prefix || path.startsWith(`${prefix}/`);
-					const fixtures: Record<string, Array<{ path: string; markdownChunk: string; chunkFlags: number }>> = {
-						"unique-token": [
-							{ path: "/docs/readme.md", markdownChunk: "A chunk with unique-token inside.", chunkFlags: 0 },
-						],
-						"exact-hyphen-token-2026": [
-							{ path: "/docs/readme.md", markdownChunk: "A chunk with exact-hyphen-token-2026 inside.", chunkFlags: 0 },
-							{
-								path: "/docs/guide.md",
-								markdownChunk: "A broad tokenization hit for exact hyphen token only.",
-								chunkFlags: 0,
-							},
-						],
-						"paged-token": [
-							{ path: "/docs/readme.md", markdownChunk: "First paged-token chunk.", chunkFlags: 0 },
-							{ path: "/docs/tutorial.md", markdownChunk: "Second paged-token chunk.", chunkFlags: 0 },
-						],
-						"code-token": [
-							{
-								path: "/docs/readme.md",
-								markdownChunk: "const codeToken = 1;",
-								chunkFlags: files_chunk_BITMASK_FLAGS.isCode,
-							},
-						],
-						"table-token": [
-							{
-								path: "/docs/readme.md",
-								markdownChunk: "| table-token | x |",
-								chunkFlags: files_chunk_BITMASK_FLAGS.isTable,
-							},
-						],
-					};
-					const paged = pageItems(
-						(fixtures[String(queryArgs.query)] ?? []).filter((fixture) => underScope(fixture.path)),
-						queryArgs.numItems,
-						queryArgs.cursor,
-					);
-					return {
-						items: paged.page.map((fixture, index) => ({
-							path: fixture.path,
-							markdownChunk: fixture.markdownChunk,
-							chunkIndex: index,
-							startIndex: 0,
-							endIndex: fixture.markdownChunk.length,
-							lineStart: 1,
-							lineEnd: 1,
-							chunkFlags: fixture.chunkFlags,
-							hasChunkAbove: false,
-							hasChunkBelow: false,
-						})),
-						continueCursor: paged.continueCursor,
-						isDone: paged.isDone,
-					};
-				}
-
-				if ("numItems" in queryArgs && "path" in queryArgs) {
-					const path = typeof queryArgs.path === "string" ? queryArgs.path : "/";
-					const target = workspaceItems.find((item) => item.path === path);
-					const baseDepth = path === "/" ? 0 : path.split("/").filter(Boolean).length;
-					const itemRelativeDepth = (itemPath: string) => {
-						const itemDepth = itemPath === "/" ? 0 : itemPath.split("/").filter(Boolean).length;
-						return itemDepth - baseDepth;
-					};
-					const items =
-						target?.kind === "file"
-							? [target]
-							: workspaceItems.filter((item) => {
-									if (path === "/") return true;
-									return item.path.startsWith(`${path}/`);
-								});
-					const filteredItems = items.filter((item) => {
-						if (queryArgs.kind === "file" && item.kind !== "file") return false;
-						if (queryArgs.kind === "folder" && item.kind !== "folder") return false;
-						if (typeof queryArgs.minDepth === "number" && itemRelativeDepth(item.path) < queryArgs.minDepth)
-							return false;
-						if (typeof queryArgs.maxDepth === "number" && itemRelativeDepth(item.path) > queryArgs.maxDepth)
-							return false;
-						return true;
-					});
-					const paged = pageItems(
-						sortBy(filteredItems, queryArgs.order, (a, b) => a.path.localeCompare(b.path)),
-						queryArgs.numItems,
-						queryArgs.cursor,
-					);
-					return {
-						items: paged.page.map((item) => ({
-							path: item.path,
-							kind: item.kind,
-							updatedAt: item.updatedAt,
-							updatedBy: item.updatedBy ?? test_user_id,
-							contentType: item.contentType,
-						})),
-						continueCursor: paged.continueCursor,
-						isDone: paged.isDone,
-					};
-				}
-
-				if ("numItems" in queryArgs && "pathPrefix" in queryArgs) {
-					const pathPrefix = typeof queryArgs.pathPrefix === "string" ? queryArgs.pathPrefix : "/";
-					const paged = pageItems(
-						workspaceItems
-							.filter((item) => item.path.startsWith(pathPrefix))
-							.filter((item) => {
-								if (queryArgs.kind === "file" && item.kind !== "file") return false;
-								if (queryArgs.kind === "folder" && item.kind !== "folder") return false;
-								return true;
-							})
-							.sort((a, b) => a.path.localeCompare(b.path)),
-						queryArgs.numItems,
-						queryArgs.cursor,
-					);
-					return {
-						items: paged.page.map((item) => ({
-							path: item.path,
-							kind: item.kind,
-							updatedAt: item.updatedAt,
-						})),
-						continueCursor: paged.continueCursor,
-						isDone: paged.isDone,
-					};
-				}
-
-				if ("maxDepth" in queryArgs) {
-					return {
-						items: workspaceItems
-							.filter((item) => {
-								if (queryArgs.path === "/") return true;
-								return item.path.startsWith(`${queryArgs.path}/`);
-							})
-							.map((item) => ({
-								path: item.path,
-								kind: item.kind,
-								updatedAt: item.updatedAt,
-								depthTruncated: item.depthTruncated,
-							})),
-						truncated: args?.listTruncated ?? false,
-					};
-				}
-
-				// list_recent_paginated: project-wide, numItems but no parentId/path/pathPrefix.
-				if ("numItems" in queryArgs) {
-					const paged = pageItems(
-						sortBy(
-							workspaceItems,
-							queryArgs.order,
-							(a, b) => a.updatedAt - b.updatedAt || a.path.localeCompare(b.path),
-						),
-						queryArgs.numItems,
-						queryArgs.cursor,
-					);
-					return {
-						items: paged.page.map((item) => ({
-							path: item.path,
-							kind: item.kind,
-							updatedAt: item.updatedAt,
-							updatedBy: item.updatedBy ?? test_user_id,
-							contentType: item.contentType,
-						})),
-						continueCursor: paged.continueCursor,
-						isDone: paged.isDone,
-					};
-				}
-
-				// get_bash_served_byte_size: pending-aware reader oversize gate (the only query that
-				// takes userId + path). `servedSize` simulates an unsaved pending overlay diverging
-				// from the committed `size`; otherwise sizing falls back to committed `size`.
-				if ("userId" in queryArgs && "path" in queryArgs) {
-					const targetPath = typeof queryArgs.path === "string" ? queryArgs.path : "";
-					const target = workspaceItems.find((entry) => entry.path === targetPath);
-					if (!target || target.kind !== "file") return null;
-					if (typeof target.servedSize === "number") {
-						return { servedBytes: target.servedSize, pending: true };
-					}
-					return { servedBytes: typeof target.size === "number" ? target.size : 0, pending: false };
-				}
-
-				if (function_name_of(_ref) === "files_nodes:get_by_path") {
-					const path = queryArgs.path;
-					if (path === "/" || typeof path !== "string") {
-						return null;
-					}
-					const item = workspaceItems.find((entry) => entry.path === path);
-					return item
-						? {
-								_id: nodeIdForPath(item.path),
-								_creationTime: item.updatedAt,
-								workspaceId: queryArgs.workspaceId,
-								projectId: queryArgs.projectId,
-								parentId: nodeIdForPath(parentPath(item.path)),
-								name: itemName(item.path),
-								path: item.path,
-								kind: item.kind,
-								updatedAt: item.updatedAt,
-								updatedBy: item.updatedBy ?? test_user_id,
-								contentType: item.contentType,
-								size: item.size,
-							}
-						: null;
-				}
-
-				const path = queryArgs.path;
-				if (path === "/") {
-					return files_SYNTHETIC_ROOT_FOLDER;
-				}
-				if (typeof path !== "string") {
-					return null;
-				}
-				const item = workspaceItems.find((entry) => entry.path === path);
-				return item
-					? {
-							nodeId: nodeIdForPath(item.path),
-							name: itemName(item.path),
-							path: item.path,
-							kind: item.kind,
-							updatedAt: item.updatedAt,
-							updatedBy: item.updatedBy ?? test_user_id,
-							contentType: item.contentType,
-							size: item.size,
-						}
-					: null;
-			};
-
-			const { ctx, runQuery, runMutation, runAction } = makeCtx(runQueryImpl, {
-				runMutationImpl: async (_ref, mutationArgs) => {
-					if (function_name_of(_ref) === "value_store:put") {
-						const id = `value_store_${++valueStoreCounter}`;
-						valueStore.set(id, String(mutationArgs.value ?? ""));
-						return id;
-					}
-					if (function_name_of(_ref) === "ai_chat_files:flush_thread_tmp_files") {
-						const entries = Array.isArray(mutationArgs.entries)
-							? (mutationArgs.entries as BashTmpFilesSnapshotEntry[])
-							: [];
-						const contents = Array.isArray(mutationArgs.contents)
-							? (mutationArgs.contents as BashTmpFilesSnapshotContent[])
-							: [];
-						const totalBytes = contents.reduce((sum, content) => sum + content.bytes.byteLength, 0);
-						const snapshot = {
-							entries,
-							contents,
-							pathCount: entries.length,
-							totalBytes,
-						};
-						const key = tmp_snapshot_key({
-							workspaceId: String(mutationArgs.workspaceId ?? ""),
-							projectId: String(mutationArgs.projectId ?? ""),
-							threadId: mutationArgs.threadId as Id<"ai_chat_threads">,
-						});
-						tmpSnapshots.set(key, tmp_snapshot_clone(snapshot));
-						return { _yay: { pathCount: snapshot.pathCount, totalBytes: snapshot.totalBytes } };
-					}
-					if (function_name_of(_ref) === "ai_chat_files:patch_thread_tmp_files") {
-						if (failTmpPatchOnce) {
-							failTmpPatchOnce = false;
-							return { _nay: { message: "forced patch failure" } };
-						}
-
-						const upsertEntries = Array.isArray(mutationArgs.upsertEntries)
-							? (mutationArgs.upsertEntries as BashTmpFilesSnapshotEntry[])
-							: [];
-						const upsertContents = Array.isArray(mutationArgs.upsertContents)
-							? (mutationArgs.upsertContents as BashTmpFilesSnapshotContent[])
-							: [];
-						const deletePaths = Array.isArray(mutationArgs.deletePaths) ? (mutationArgs.deletePaths as string[]) : [];
-						const key = tmp_snapshot_key({
-							workspaceId: String(mutationArgs.workspaceId ?? ""),
-							projectId: String(mutationArgs.projectId ?? ""),
-							threadId: mutationArgs.threadId as Id<"ai_chat_threads">,
-						});
-						const snapshot = tmp_snapshot_clone(tmpSnapshots.get(key) ?? tmp_snapshot_empty());
-						const entriesByPath = new Map(snapshot.entries.map((entry) => [entry.path, entry]));
-						const contentsByPath = new Map(snapshot.contents.map((content) => [content.path, content.bytes]));
-
-						for (const path of deletePaths) {
-							entriesByPath.delete(path);
-							contentsByPath.delete(path);
-						}
-						for (const entry of upsertEntries) {
-							entriesByPath.set(entry.path, { ...entry });
-							if (entry.kind !== "file") {
-								contentsByPath.delete(entry.path);
-							}
-						}
-						for (const content of upsertContents) {
-							contentsByPath.set(content.path, content.bytes.slice(0));
-						}
-
-						const entries = [...entriesByPath.values()].sort((a, b) => a.path.localeCompare(b.path));
-						const filePaths = new Set(entries.filter((entry) => entry.kind === "file").map((entry) => entry.path));
-						const contents = [...contentsByPath]
-							.filter(([path]) => filePaths.has(path))
-							.map(([path, bytes]) => ({ path, bytes: bytes.slice(0) }));
-						const totalBytes = entries.reduce((sum, entry) => {
-							if (entry.kind === "file") {
-								return sum + (contentsByPath.get(entry.path)?.byteLength ?? 0);
-							}
-							if (entry.kind === "symlink") {
-								return sum + textEncoder.encode(entry.symlinkTargetPath ?? "").length;
-							}
-							return sum;
-						}, 0);
-						const nextSnapshot = {
-							entries,
-							contents,
-							pathCount: entries.length,
-							totalBytes,
-						};
-						tmpSnapshots.set(key, tmp_snapshot_clone(nextSnapshot));
-						return {
-							_yay: {
-								pathCount: nextSnapshot.pathCount,
-								totalBytes: nextSnapshot.totalBytes,
-								upsertedPathCount: upsertEntries.length,
-								deletedPathCount: deletePaths.length,
-							},
-						};
-					}
-
-					if (typeof mutationArgs.path === "string") {
-						const existing = workspaceItems.find((item) => item.path === mutationArgs.path);
-						if (existing?.kind === "folder") {
-							return { _yay: { nodeId: "folder_existing", exists: true } };
-						}
-						if (existing?.kind === "file") {
-							return { _nay: { message: "A file already exists at this path." } };
-						}
-						workspaceItems.push({
-							path: mutationArgs.path,
-							kind: "folder",
-							updatedAt: Date.now(),
-							updatedBy: test_user_id,
-							depthTruncated: false,
-						});
-						return { _yay: { nodeId: "folder_created", exists: false } };
-					}
-					return null;
-				},
-				runActionImpl: async (_ref, actionArgs) => {
-					const grepContents: Record<string, string> = {
-						"/docs/readme.md": "# Readme\nunique-token here\nmore unique-token below\n",
-						"/docs/tutorial.md": "zeta\nalpha\nALPHA\n",
-						...(args?.extraFileContents ?? {}),
-					};
-					// grep_app_file_scan: context (-A/-B/-C) and/or inverted (-v) scan of a simulated file.
-					if ("invert" in actionArgs) {
-						const path = typeof actionArgs.path === "string" ? actionArgs.path : "";
-						const text = grepContents[path];
-						if (text === undefined) return null;
-						const pattern = String(actionArgs.pattern);
-						const ignoreCase = actionArgs.ignoreCase === true;
-						const invert = actionArgs.invert === true;
-						const before = typeof actionArgs.before === "number" ? actionArgs.before : 0;
-						const after = typeof actionArgs.after === "number" ? actionArgs.after : 0;
-						const allLines = text.endsWith("\n") ? text.split("\n").slice(0, -1) : text.split("\n");
-						const needle = ignoreCase ? pattern.toLowerCase() : pattern;
-						const selected: number[] = [];
-						for (let i = 0; i < allLines.length; i++) {
-							const isMatch = (ignoreCase ? allLines[i]!.toLowerCase() : allLines[i]!).includes(needle);
-							if (invert ? !isMatch : isMatch) selected.push(i);
-						}
-						const matched = new Set(selected);
-						const include = new Set<number>();
-						for (const idx of selected) {
-							for (let i = Math.max(0, idx - before); i <= Math.min(allLines.length - 1, idx + after); i++)
-								include.add(i);
-						}
-						const lines = [...include]
-							.sort((a, b) => a - b)
-							.map((i) => ({ lineNumber: i + 1, line: allLines[i]!, matched: matched.has(i) }));
-						return {
-							nodeId: `node:${path}`,
-							lines,
-							selectedCount: selected.length,
-							scanTruncated: scanTruncatedPaths.has(path),
-						};
-					}
-					// grep_app_file: substring scan of a simulated file's content.
-					if ("pattern" in actionArgs) {
-						const path = typeof actionArgs.path === "string" ? actionArgs.path : "";
-						const text = grepContents[path];
-						if (text === undefined) return null;
-						const pattern = String(actionArgs.pattern);
-						const ignoreCase = actionArgs.ignoreCase === true;
-						const lines = text.endsWith("\n") ? text.split("\n").slice(0, -1) : text.split("\n");
-						const needle = ignoreCase ? pattern.toLowerCase() : pattern;
-						const matches = lines
-							.map((line, index) => ({ lineNumber: index + 1, line }))
-							.filter((m) => (ignoreCase ? m.line.toLowerCase() : m.line).includes(needle));
-						return { nodeId: `node:${path}`, matches, scanTruncated: scanTruncatedPaths.has(path) };
-					}
-					// read_file_head_lines: bounded leading-lines read for large files.
-					if ("maxLines" in actionArgs) {
-						// Simulate a 1000-line file ("line 1".."line 1000") for bounded-read paging tests.
-						const path = typeof actionArgs.path === "string" ? actionArgs.path : "";
-						const item = workspaceItems.find((entry) => entry.path === path);
-						if (!item || item.kind !== "file") {
-							return null;
-						}
-						const TOTAL = 1000;
-						const maxLines = typeof actionArgs.maxLines === "number" ? actionArgs.maxLines : 10;
-						if ("startLine" in actionArgs) {
-							// read_file_line_range
-							const startLine = typeof actionArgs.startLine === "number" ? actionArgs.startLine : 1;
-							const start = Math.max(1, startLine);
-							const end = Math.min(TOTAL, start + maxLines - 1);
-							const lines: string[] = [];
-							for (let line = start; line <= end; line++) lines.push(`line ${line}`);
-							return {
-								nodeId: "file_big",
-								content: lines.length ? `${lines.join("\n")}\n` : "",
-								moreLines: end < TOTAL,
-								scanTruncated: scanTruncatedPaths.has(path),
-							};
-						}
-						// read_file_tail_lines: last maxLines
-						const start = Math.max(1, TOTAL - maxLines + 1);
-						const lines: string[] = [];
-						for (let line = start; line <= TOTAL; line++) lines.push(`line ${line}`);
-						return {
-							nodeId: "file_big",
-							content: `${lines.join("\n")}\n`,
-							moreLines: TOTAL > maxLines,
-							scanTruncated: scanTruncatedPaths.has(path),
-						};
-					}
-					// read_file_content_stats fixtures for the multi-file wc batch (per-file + total via
-					// the bounded stats path). Keyed by path; only wc touches these paths.
-					const wcStatsFixtures: Record<
-						string,
-						{ lineCount: number; wordCount: number; charCount: number; byteCount: number; exact: boolean }
-					> = {
-						"/wc/a.md": { lineCount: 3, wordCount: 5, charCount: 20, byteCount: 20, exact: true },
-						"/wc/b.md": { lineCount: 2, wordCount: 4, charCount: 12, byteCount: 12, exact: true },
-						"/wc/windowed.md": { lineCount: 40, wordCount: 80, charCount: 8000, byteCount: 12000, exact: false },
-					};
-					const wcStats = typeof actionArgs.path === "string" ? wcStatsFixtures[actionArgs.path] : undefined;
-					if (wcStats) {
-						return { nodeId: `node:${actionArgs.path}`, ...wcStats };
-					}
-					// read_file_content_stats for an oversized file (no maxLines/startLine): the only
-					// no-content-read action hitting the simulated big file is the wc stats call.
-					if (actionArgs.path === "/big.md") {
-						const item = workspaceItems.find((entry) => entry.path === "/big.md");
-						const byteCount = typeof item?.size === "number" ? item.size : 9000;
-						return {
-							nodeId: "file_big",
-							lineCount: 1000,
-							wordCount: 2000,
-							charCount: byteCount,
-							byteCount,
-							exact: true,
-						};
-					}
-					if (actionArgs.path === "/docs/readme.md") {
-						return {
-							nodeId: "file_1",
-							displayNodeId: "file_1",
-							content: "# Readme\nunique-token\n",
-							pendingUpdateId: null,
-						};
-					}
-					if (actionArgs.path === "/docs/tutorial.md") {
-						return {
-							nodeId: "file_2",
-							displayNodeId: "file_2",
-							content: "zeta\nalpha\nalpha\n",
-							pendingUpdateId: null,
-						};
-					}
-					if (actionArgs.path === "/docs/nested/deep.md") {
-						return {
-							nodeId: "file_3",
-							displayNodeId: "file_3",
-							content: "one:two\nthree:four\n",
-							pendingUpdateId: null,
-						};
-					}
-					if (actionArgs.path === "/reports/summary.md") {
-						return {
-							nodeId: "file_4",
-							displayNodeId: "file_4",
-							content: "summary\n",
-							pendingUpdateId: null,
-						};
-					}
-					if (typeof actionArgs.path === "string" && args?.extraFileContents?.[actionArgs.path] != null) {
-						return {
-							nodeId: `node:${actionArgs.path}`,
-							displayNodeId: `node:${actionArgs.path}`,
-							content: args.extraFileContents[actionArgs.path],
-							pendingUpdateId: null,
-						};
-					}
-					return null;
-				},
+			const parentId =
+				segments.length > 1
+					? await seed_workspace_folder(ctx, scope, `/${segments.slice(0, -1).join("/")}`, updatedAt)
+					: files_ROOT_ID;
+			const name = segments.at(-1)!;
+			const dotIndex = name.lastIndexOf(".");
+			const content = spec.content ?? "";
+			const bytes = new TextEncoder().encode(content);
+			const fileId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				workspaceId: scope.workspaceId,
+				projectId: scope.projectId,
+				createdBy: scope.userId,
+				updatedBy: scope.userId,
+				parentId,
+				name,
+				kind: "file",
+				path: spec.path,
+				pathDepth: segments.length,
+				lowercaseExtension:
+					dotIndex <= 0 || dotIndex === name.length - 1 ? null : name.slice(dotIndex + 1).toLowerCase(),
+				contentType: spec.contentType ?? "text/markdown;charset=utf-8",
+				updatedAt,
 			});
+			const r2Key = `bash-test${spec.path}`;
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				workspaceId: scope.workspaceId,
+				projectId: scope.projectId,
+				kind: "content",
+				r2Bucket: "test",
+				r2Key,
+				size: spec.size ?? bytes.byteLength,
+				createdBy: scope.userId,
+				updatedAt,
+			});
+			test_r2_objects.set(r2Key, bytes);
+			if (spec.withoutYjsState) {
+				await ctx.db.patch("files_nodes", fileId, { assetId });
+				return;
+			}
+			const yjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
+				workspaceId: scope.workspaceId,
+				projectId: scope.projectId,
+				kind: "yjs_snapshot",
+				r2Bucket: "test",
+				size: 0,
+				createdBy: scope.userId,
+				updatedAt,
+			});
+			const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
+				workspaceId: scope.workspaceId,
+				projectId: scope.projectId,
+				nodeId: fileId,
+				sequence: 1,
+				assetId: yjsSnapshotAssetId,
+				createdBy: scope.userId,
+				updatedBy: scope.userId,
+				updatedAt,
+			});
+			const yjsLastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+				workspaceId: scope.workspaceId,
+				projectId: scope.projectId,
+				nodeId: fileId,
+				lastSequence: 1,
+			});
+			await ctx.db.patch("files_nodes", fileId, { assetId, yjsSnapshotId, yjsLastSequenceId });
+			if (spec.materialized === false) {
+				return;
+			}
+			const chunked = await db_insert_file_chunks(ctx, {
+				workspaceId: scope.workspaceId,
+				projectId: scope.projectId,
+				nodeId: fileId,
+				yjsSequence: 1,
+				markdownContent: content,
+			});
+			if (chunked._nay) {
+				throw new Error(`Seed chunking failed for ${spec.path}: ${chunked._nay.message}`);
+			}
+			if (spec.brokenChunks) {
+				// Materialization anomaly: break the verbatim chunk tiling so chunk-backed readers
+				// bail out (usable: false) and the bounded R2 window fallback runs instead.
+				const chunks = await ctx.db
+					.query("files_markdown_chunks")
+					.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+						q
+							.eq("workspaceId", scope.workspaceId)
+							.eq("projectId", scope.projectId)
+							.eq("nodeId", fileId)
+							.eq("yjsSequence", 1),
+					)
+					.collect();
+				const second = chunks[1];
+				if (second) {
+					await ctx.db.patch("files_markdown_chunks", second._id, { startIndex: second.startIndex + 1 });
+				} else {
+					const first = chunks[0];
+					await ctx.db.insert("files_markdown_chunks", {
+						workspaceId: scope.workspaceId,
+						projectId: scope.projectId,
+						nodeId: fileId,
+						yjsSequence: 1,
+						chunkIndex: (first?.chunkIndex ?? 0) + 1,
+						markdownChunk: "x",
+						startIndex: (first?.endIndex ?? 0) + 7,
+						endIndex: (first?.endIndex ?? 0) + 8,
+						lineStart: first?.lineEnd ?? 1,
+						lineEnd: first?.lineEnd ?? 1,
+						chunkFlags: 0,
+					});
+				}
+			}
+		}
 
-			return {
-				run: async (command: string) => {
-					const tmpFsSession = await bash_tmp_session_hydrate(ctx, {
-						workspaceId: ctxData.workspaceId,
-						projectId: ctxData.projectId,
-						threadId,
-					});
-					const result = await action_run(ctx, {
-						...ctxData,
-						threadId,
-						command,
-						allowAppFileTreeMkdir: args?.allowAppFileTreeMkdir ?? true,
-						persistedCwd: cwd,
-						tmpFsSession,
-					});
-					cwd = result.nextPersistedCwd;
-					return result;
-				},
-				runQuery,
-				runMutation,
-				runAction,
-				getCwd: () => cwd,
+		async function create_bash_runner(opts?: {
+			initialCwd?: string;
+			allowAppFileTreeMkdir?: boolean;
+			extraFiles?: BashSeedSpec[];
+			/** Reuse another runner's database (fresh thread, no default tree re-seed). */
+			shared?: {
+				t: unknown;
+				seeded: {
+					userId: Id<"users">;
+					workspaceId: string;
+					projectId: string;
+					membershipId: Id<"workspaces_projects_users">;
+				};
 			};
+			/** Acting user override for the action args (scoping tests). */
+			userId?: Id<"users">;
+			/** Attach to an existing thread instead of creating one (tmp-scope tests). */
+			threadId?: Id<"ai_chat_threads">;
+		}) {
+			const { test_convex, test_mocks_fill_db_with } = await import("./setup.test.ts");
+			const { api } = await import("./_generated/api.js");
+
+			pagination_cursors_cache.clear();
+			test_runner_counter += 1;
+			const runnerIndex = test_runner_counter;
+
+			const t = (opts?.shared?.t as ReturnType<typeof test_convex> | undefined) ?? test_convex();
+			const seeded =
+				opts?.shared?.seeded ??
+				(await t.run((ctx) =>
+					test_mocks_fill_db_with.membership(ctx, {
+						workspaceName: test_workspace_name,
+						projectName: test_project_name,
+					}),
+				));
+			const actingUserId = opts?.userId ?? seeded.userId;
+
+			const seedSpecs = [...(opts?.shared ? [] : default_workspace_files), ...(opts?.extraFiles ?? [])];
+			if (seedSpecs.length > 0) {
+				await t.run(async (ctx) => {
+					for (const [seedIndex, spec] of seedSpecs.entries()) {
+						await seed_workspace_node(
+							ctx,
+							{ workspaceId: seeded.workspaceId, projectId: seeded.projectId, userId: seeded.userId },
+							spec,
+							seedIndex,
+						);
+					}
+				});
+			}
+
+			let threadId = opts?.threadId;
+			if (!threadId) {
+				const asUser = t.withIdentity({
+					issuer: "https://clerk.test",
+					subject: `clerk-bash-runner-${runnerIndex}`,
+					external_id: seeded.userId,
+					email: `bash-runner-${runnerIndex}@test.local`,
+				});
+				const createdThread = await asUser.mutation(api.ai_chat.thread_create, {
+					membershipId: seeded.membershipId,
+					clientGeneratedId: `client_bash_thread_${runnerIndex}`,
+					title: "bash test thread",
+					lastMessageAt: Date.now(),
+				});
+				if (!createdThread._yay) {
+					throw new Error(`Failed to create bash test thread: ${createdThread._nay?.message}`);
+				}
+				threadId = createdThread._yay.threadId;
+			}
+
+			let cwd = "~";
+			if (opts?.initialCwd != null && opts.initialCwd !== "~") {
+				const state = await t.mutation(internal.ai_chat.set_thread_state, {
+					workspaceId: seeded.workspaceId,
+					projectId: seeded.projectId,
+					threadId,
+					userId: seeded.userId,
+					patch: { bashCwd: opts.initialCwd },
+				});
+				cwd = state.bashCwd ?? opts.initialCwd;
+			}
+
+			// Spy-delegate ctx: every downstream function runs for real against the in-memory DB
+			// while the spies keep call-shape assertions (toHaveBeenCalledWith) working.
+			const runQuery = vi.fn((ref: unknown, queryArgs: Record<string, unknown>) =>
+				t.query(ref as never, queryArgs as never),
+			);
+			const runMutation = vi.fn((ref: unknown, mutationArgs: Record<string, unknown>) =>
+				t.mutation(ref as never, mutationArgs as never),
+			);
+			const runAction = vi.fn((ref: unknown, actionArgs: Record<string, unknown>) =>
+				t.action(ref as never, actionArgs as never),
+			);
+			const ctx = { runQuery, runMutation, runAction } as unknown as ActionCtx;
+
+			const ctxData = {
+				workspaceId: seeded.workspaceId,
+				projectId: seeded.projectId,
+				workspaceName: test_workspace_name,
+				projectName: test_project_name,
+				userId: actingUserId,
+			};
+
+			const run = async (command: string) => {
+				const result = await action_run(ctx, {
+					...ctxData,
+					threadId,
+					command,
+					allowAppFileTreeMkdir: opts?.allowAppFileTreeMkdir ?? true,
+				});
+				const state = await t.query(internal.ai_chat.get_thread_state, {
+					workspaceId: seeded.workspaceId,
+					projectId: seeded.projectId,
+					threadId,
+				});
+				cwd = state.bashCwd ?? cwd;
+				return result;
+			};
+
+			return { run, runQuery, runMutation, runAction, getCwd: () => cwd, t, seeded, threadId, ctxData };
+		}
+
+		async function get_seeded_node_id(runner: Awaited<ReturnType<typeof create_bash_runner>>, path: string) {
+			const node = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+						q
+							.eq("workspaceId", runner.seeded.workspaceId)
+							.eq("projectId", runner.seeded.projectId)
+							.eq("path", path)
+							.eq("archiveOperationId", undefined),
+					)
+					.first(),
+			);
+			if (!node) {
+				throw new Error(`No seeded node at ${path}`);
+			}
+			return node._id;
 		}
 
 		test("runs pwd and persists cd across invocations", async () => {
-			const { run, getCwd } = createBashRunner();
+			const { run, getCwd } = await create_bash_runner();
 
 			const pwdResult = await run("pwd");
 			expect(pwdResult.stdout.trim()).toBe(test_app_files_mount);
 			expect(pwdResult.metadata.cwd).toBe(test_app_files_mount);
-			expect(getCwd()).toBe("~/w/personal/home");
+			expect(getCwd()).toBe(test_app_files_mount);
 
 			const cdResult = await run(`cd ${test_app_files_mount}/docs`);
 			expect(cdResult.metadata.nextCwd).toBe(`${test_app_files_mount}/docs`);
-			expect(getCwd()).toBe("~/w/personal/home/docs");
+			expect(getCwd()).toBe(`${test_app_files_mount}/docs`);
 
 			const nextPwdResult = await run("pwd");
 			expect(nextPwdResult.stdout.trim()).toBe(`${test_app_files_mount}/docs`);
 		});
 
 		test("sets HOME to the cloud user home", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run("printf $HOME");
 
@@ -7007,7 +6380,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("guides unknown commands toward supported bash commands", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run("notrealcmd");
 			const swallowed = await run("notrealcmd 2>&1 || true");
@@ -7026,7 +6399,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("guides unsupported strict-mode boilerplate", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run("set -euo pipefail\nprintf hi > /tmp/a.txt");
 
@@ -7038,19 +6411,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("does not treat file content as an unknown command", async () => {
 			const literalPath = "/docs/command-not-found.md";
-			const { run } = createBashRunner({
-				extraItems: [
-					{
-						path: literalPath,
-						kind: "file",
-						updatedAt: now,
-						depthTruncated: false,
-						contentType: "text/markdown;charset=utf-8",
-					},
-				],
-				extraFileContents: {
-					[literalPath]: "example: command not found\n",
-				},
+			const { run } = await create_bash_runner({
+				extraFiles: [{ path: literalPath, content: "example: command not found\n" }],
 			});
 
 			const catResult = await run(`cat ${test_app_files_mount}${literalPath}`);
@@ -7062,33 +6424,33 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(grepResult.stderr).not.toContain("run 'help' to list available commands");
 		});
 
-		test("reads markdown files through the pending-aware file content action", async () => {
-			const { run, runAction } = createBashRunner();
+		test("reads markdown files through the chunk-backed file content query", async () => {
+			const { run, runQuery, seeded } = await create_bash_runner();
 
 			const result = await run(`cat ${test_app_files_mount}/docs/readme.md`);
 
 			expect(result.stdout).toContain("# Readme");
-			expect(runAction).toHaveBeenCalledWith(
-				expect.anything(),
-				expect.objectContaining({
-					path: "/docs/readme.md",
-					userId: test_user_id,
-				}),
-			);
+			expect(
+				runQuery.mock.calls.some(
+					([ref, queryArgs]) =>
+						function_name_of(ref) === "files_nodes:read_file_full_content_from_chunks" &&
+						queryArgs?.path === "/docs/readme.md" &&
+						queryArgs?.userId === seeded.userId,
+				),
+			).toBe(true);
 		});
 
 		test("caches markdown file content within one bash invocation", async () => {
-			const { run, runAction } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run(
 				`cat ${test_app_files_mount}/docs/readme.md && cat ${test_app_files_mount}/docs/readme.md`,
 			);
-			const readCalls = runAction.mock.calls.filter((call) => {
-				const actionArgs = call[1];
-				return (
-					actionArgs && typeof actionArgs === "object" && "path" in actionArgs && actionArgs.path === "/docs/readme.md"
-				);
-			});
+			const readCalls = runQuery.mock.calls.filter(
+				([ref, queryArgs]) =>
+					function_name_of(ref) === "files_nodes:read_file_full_content_from_chunks" &&
+					queryArgs?.path === "/docs/readme.md",
+			);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout.split("# Readme").length - 1).toBe(2);
@@ -7098,19 +6460,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("pipes cat text output without corrupting Unicode", async () => {
 			const unicodePath = "/docs/unicode.md";
 			const content = "cafe\u0301 — snowman ☃\n";
-			const { run } = createBashRunner({
-				extraItems: [
-					{
-						path: unicodePath,
-						kind: "file",
-						updatedAt: now,
-						depthTruncated: false,
-						contentType: "text/markdown;charset=utf-8",
-					},
-				],
-				extraFileContents: {
-					[unicodePath]: content,
-				},
+			const { run } = await create_bash_runner({
+				extraFiles: [{ path: unicodePath, content }],
 			});
 
 			const result = await run(`cat ${test_app_files_mount}${unicodePath} | cat`);
@@ -7120,7 +6471,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("supports ls, find, and stat over file-node paths", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(
 				`ls ${test_app_files_mount}/docs && find ${test_app_files_mount}/docs -maxdepth 1 -type f && stat ${test_app_files_mount}/docs/readme.md`,
@@ -7132,7 +6483,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("keeps valid ls operands when another operand is missing", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(`ls ${test_app_files_mount}/docs ${test_app_files_mount}/missing`);
 
@@ -7143,20 +6494,22 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("supports paginated ls with a continuation command", async () => {
-			const { run, runQuery } = createBashRunner();
+			const runner = await create_bash_runner();
+			const { run, runQuery } = runner;
+			const docsId = await get_seeded_node_id(runner, "/docs");
 
 			const result = await run(`ls --limit 1 ${test_app_files_mount}/docs`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("nested/");
 			expect(result.stdout).toContain("Next page:");
-			expect(result.stdout).toContain(`ls --limit 1 --cursor value_store_1 ${test_app_files_mount}/docs`);
+			expect(result.stdout).toMatch(new RegExp(`ls --limit 1 --cursor \\S+ ${test_app_files_mount}/docs`, "u"));
 			expect(result.stderr).not.toContain("directory listing truncated");
 			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
 			expect(paginatedCalls).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
-						parentId: "node:/docs",
+						parentId: docsId,
 						numItems: 1,
 						cursor: null,
 					}),
@@ -7165,7 +6518,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("resolves paginated ls path arguments from the current working directory", async () => {
-			const { run, runQuery } = createBashRunner();
+			const runner = await create_bash_runner();
+			const { run, runQuery } = runner;
+			const docsId = await get_seeded_node_id(runner, "/docs");
+			const nestedId = await get_seeded_node_id(runner, "/docs/nested");
 
 			await run(`cd ${test_app_files_mount}/docs`);
 			const bareResult = await run("ls --limit 10");
@@ -7182,12 +6538,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(paginatedCalls).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
-						parentId: "node:/docs",
+						parentId: docsId,
 						numItems: 10,
 						cursor: null,
 					}),
 					expect.objectContaining({
-						parentId: "node:/docs/nested",
+						parentId: nestedId,
 						numItems: 10,
 						cursor: null,
 					}),
@@ -7196,7 +6552,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("delegates bare ls to the current scratch directory outside the current project path", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run("cd /tmp && printf hi > scratch.txt && ls");
 
@@ -7208,7 +6564,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("keeps native relative ls output outside the current project path", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run("cd /tmp && printf hi > relative-native.txt && ls relative-native.txt");
 
@@ -7219,7 +6575,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("reports unknown ls cursor ids with recovery guidance", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(`ls --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs`);
 
@@ -7230,14 +6586,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("resolves stored cursor ids from memory before querying value_store", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const firstPage = await run(`ls --limit 1 ${test_app_files_mount}/docs`);
-			const cursorId = firstPage.stdout.match(/--cursor (\S+)/u)?.[1];
-			expect(cursorId).toBe("value_store_1");
+			const cursorId = firstPage.stdout.match(/--cursor '?([^' ]+)'?/u)?.[1];
+			expect(cursorId).toBeTruthy();
+			const rawCursor = pagination_cursors_cache.get(cursorId!);
+			expect(rawCursor).toBeTruthy();
 
 			runQuery.mockClear();
-			const secondPage = await run(`ls --limit 1 --cursor ${cursorId} ${test_app_files_mount}/docs`);
+			const secondPage = await run(`ls --limit 1 --cursor '${cursorId}' ${test_app_files_mount}/docs`);
 
 			expect(secondPage.metadata.exitCode).toBe(0);
 			expect(secondPage.stdout).toContain("readme.md");
@@ -7245,39 +6603,41 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(runQuery).toHaveBeenCalledWith(
 				expect.anything(),
 				expect.objectContaining({
-					cursor: "cursor-1",
+					cursor: rawCursor,
 				}),
 			);
 		});
 
 		test("falls back to value_store when a cursor id is not in memory", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const firstPage = await run(`ls --limit 1 ${test_app_files_mount}/docs`);
-			const cursorId = firstPage.stdout.match(/--cursor (\S+)/u)?.[1];
-			expect(cursorId).toBe("value_store_1");
+			const cursorId = firstPage.stdout.match(/--cursor '?([^' ]+)'?/u)?.[1];
+			expect(cursorId).toBeTruthy();
+			const rawCursor = pagination_cursors_cache.get(cursorId!);
+			expect(rawCursor).toBeTruthy();
 
 			pagination_cursors_cache.clear();
 			runQuery.mockClear();
-			const secondPage = await run(`ls --limit 1 --cursor ${cursorId} ${test_app_files_mount}/docs`);
+			const secondPage = await run(`ls --limit 1 --cursor '${cursorId}' ${test_app_files_mount}/docs`);
 
 			expect(secondPage.metadata.exitCode).toBe(0);
 			expect(secondPage.stdout).toContain("readme.md");
 			expect(
 				runQuery.mock.calls.some(
-					([ref, queryArgs]) => function_name_of(ref) === "value_store:get" && queryArgs.id === "value_store_1",
+					([ref, queryArgs]) => function_name_of(ref) === "value_store:get" && queryArgs.id === cursorId,
 				),
 			).toBe(true);
 			expect(runQuery).toHaveBeenCalledWith(
 				expect.anything(),
 				expect.objectContaining({
-					cursor: "cursor-1",
+					cursor: rawCursor,
 				}),
 			);
 		});
 
 		test("reports missing cursor ids with recovery guidance", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(`ls --limit 1 --cursor missing ${test_app_files_mount}/docs`);
 
@@ -7287,7 +6647,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("supports multiple ls path operands with per-directory continuation commands", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(
 				`ls --limit 1 ${test_app_files_mount}/docs ${test_app_files_mount} ${test_app_files_mount}/docs/readme.md`,
@@ -7298,12 +6658,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stdout).toContain(`${test_app_files_mount}:\ndocs/`);
 			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
 			expect(result.stdout.match(/Next page:/gu)).toHaveLength(2);
-			expect(result.stdout).toContain(`Next page: ls --limit 1 --cursor value_store_1 ${test_app_files_mount}/docs`);
-			expect(result.stdout).toContain(`Next page: ls --limit 1 --cursor value_store_2 ${test_app_files_mount}`);
+			const continuations = [...result.stdout.matchAll(/Next page: ls --limit 1 --cursor (\S+) (\S+)/gu)];
+			expect(continuations.map((m) => m[2])).toEqual([`${test_app_files_mount}/docs`, test_app_files_mount]);
+			expect(continuations[0]![1]).not.toBe(continuations[1]![1]);
 		});
 
 		test("supports mixed native and app ls operands without a cursor", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const nativeFirst = await run(
 				`printf hi > /tmp/mixed-native-a.txt && printf hi > /tmp/mixed-native-b.txt && ls /tmp/mixed-native-a.txt /tmp/mixed-native-b.txt ${test_app_files_mount}/docs`,
@@ -7338,7 +6699,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("formats mixed native and app ls directory sections consistently", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(
 				`mkdir -p /tmp/mixed-ls-dir && printf hi > /tmp/mixed-ls-dir/native.txt && ls ${test_app_files_mount}/docs /tmp/mixed-ls-dir`,
@@ -7362,7 +6723,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("keeps native ls flags when batching adjacent native operands", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(
 				`mkdir -p /tmp/mixed-ls-a /tmp/mixed-ls-b && ls -d /tmp/mixed-ls-a /tmp/mixed-ls-b ${test_app_files_mount}/docs`,
@@ -7377,7 +6738,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects ls cursor continuation with multiple operands", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run(
 				`ls --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs ${test_app_files_mount}/reports`,
@@ -7393,7 +6754,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("supports ls -d and lets directory mode win over recursive mode", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(`ls -dR ${test_app_files_mount}/docs`);
 
@@ -7403,7 +6764,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("supports recursive ls with full app shell paths", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(`ls -R --limit 10 ${test_app_files_mount}/docs`);
 
@@ -7414,7 +6775,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("supports reverse ls order through the paginated query", async () => {
-			const { run, runQuery } = createBashRunner();
+			const runner = await create_bash_runner();
+			const { run, runQuery } = runner;
+			const docsId = await get_seeded_node_id(runner, "/docs");
 
 			const result = await run(`ls -r --limit 10 ${test_app_files_mount}/docs`);
 
@@ -7423,31 +6786,21 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(runQuery).toHaveBeenCalledWith(
 				expect.anything(),
 				expect.objectContaining({
-					parentId: "node:/docs",
+					parentId: docsId,
 					order: "desc",
 				}),
 			);
 		});
 
 		test("ls -t lists the project newest-first and supports scoped immediate-child recency", async () => {
-			const { run, runQuery } = createBashRunner({
-				extraItems: [
-					{
-						path: "/docs/aaa-old.md",
-						kind: "file",
-						updatedAt: now - 10_000,
-						depthTruncated: false,
-						contentType: "text/markdown;charset=utf-8",
-					},
-					{
-						path: "/docs/zzz-new.md",
-						kind: "file",
-						updatedAt: now + 10_000,
-						depthTruncated: false,
-						contentType: "text/markdown;charset=utf-8",
-					},
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/docs/aaa-old.md", content: "old\n", updatedAt: Date.now() - 2_000_000 },
+					{ path: "/docs/zzz-new.md", content: "new\n", updatedAt: Date.now() + 10_000 },
 				],
 			});
+			const { run, runQuery } = runner;
+			const docsId = await get_seeded_node_id(runner, "/docs");
 
 			const newest = await run("ls -t --limit 50");
 			const oldest = await run("ls -rt --limit 50");
@@ -7472,8 +6825,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(scopedNewest.stdout.trim().split("\n").at(0)).toBe("zzz-new.md");
 			expect(scopedOldest.metadata.exitCode).toBe(0);
 			expect(scopedOldest.stdout.trim().split("\n").at(0)).toBe("aaa-old.md");
-			expect(scopedPaged.stdout).toContain(
-				`Next page: ls -t --limit 1 --cursor value_store_1 ${test_app_files_mount}/docs`,
+			expect(scopedPaged.stdout).toMatch(
+				new RegExp(`Next page: ls -t --limit 1 --cursor \\S+ ${test_app_files_mount}/docs`, "u"),
 			);
 			expect(recursiveScoped.metadata.exitCode).toBe(2);
 			expect(recursiveScoped.stderr).toContain("ls -t -R is not supported");
@@ -7481,26 +6834,29 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(runQuery).toHaveBeenCalledWith(
 				internal.files_nodes.list_dir_children_by_parent_recency_paginated,
 				expect.objectContaining({
-					parentId: "node:/docs",
+					parentId: docsId,
 					order: "desc",
 				}),
 			);
 		});
 
 		test("supports app-specific long ls output", async () => {
-			const { run } = createBashRunner();
+			const { run, seeded } = await create_bash_runner();
 
 			const result = await run(`ls -la --limit 10 ${test_app_files_mount}/docs`);
 
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toContain(`folder\t${new Date(now).toISOString()}\tupdatedBy=${test_user_id}\tnested/`);
-			expect(result.stdout).toContain(
-				`file\t${new Date(now).toISOString()}\tupdatedBy=${test_user_id}\tcontentType=text/markdown;charset=utf-8\treadme.md`,
+			expect(result.stdout).toMatch(new RegExp(`folder\\t[^\\t]+Z\\tupdatedBy=${seeded.userId}\\tnested/`, "u"));
+			expect(result.stdout).toMatch(
+				new RegExp(
+					`file\\t[^\\t]+Z\\tupdatedBy=${seeded.userId}\\tcontentType=text/markdown;charset=utf-8\\treadme\\.md`,
+					"u",
+				),
 			);
 		});
 
 		test("accepts ls no-op presentation flags and name sort alias", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(`ls -1apF --sort=name --indicator-style=slash --limit 10 ${test_app_files_mount}/docs`);
 
@@ -7509,7 +6865,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects unsupported ls sorting and size flags only when app file node paths are involved", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const sortResult = await run(`ls --sort=size ${test_app_files_mount}/docs`);
 			const sizeResult = await run(`ls -S ${test_app_files_mount}/docs`);
@@ -7534,7 +6890,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("guides invented ls pagination flags back to the printed cursor command", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const appResult = await run(`ls --limit 1 --next-page ${test_app_files_mount}/docs`);
 			const nativeResult = await run("ls --next-page /tmp");
@@ -7548,7 +6904,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("supports paginated find with maxdepth and type filters", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run(`find ${test_app_files_mount}/docs -maxdepth 1 -type f --limit 10`);
 
@@ -7571,18 +6927,25 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("supports DB-backed find path word search", async () => {
-			const { run, runQuery } = createBashRunner();
+			// convex-test's search index splits document words on whitespace only, so the word
+			// query can only land on a path segment that follows a space in the file name.
+			const wordSearchPath = "/docs/word readme.md";
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: wordSearchPath, content: "word search fixture\n" }],
+			});
+			const { run, runQuery } = runner;
+			const docsId = await get_seeded_node_id(runner, "/docs");
 
 			const nameResult = await run("find -name readme --limit 10");
 			const explicitResult = await run("find --path-query readme --limit 10");
 			const scopedResult = await run(`find ${test_app_files_mount}/docs -maxdepth 1 -name readme -type f --limit 10`);
 
 			expect(nameResult.metadata.exitCode).toBe(0);
-			expect(nameResult.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(nameResult.stdout).toContain(`${test_app_files_mount}${wordSearchPath}`);
 			expect(explicitResult.metadata.exitCode).toBe(0);
-			expect(explicitResult.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(explicitResult.stdout).toContain(`${test_app_files_mount}${wordSearchPath}`);
 			expect(scopedResult.metadata.exitCode).toBe(0);
-			expect(scopedResult.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(scopedResult.stdout).toContain(`${test_app_files_mount}${wordSearchPath}`);
 			expect(runQuery).toHaveBeenCalledWith(
 				internal.files_nodes.search_paths_paginated,
 				expect.objectContaining({
@@ -7592,14 +6955,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(runQuery).toHaveBeenCalledWith(
 				internal.files_nodes.search_paths_paginated,
 				expect.objectContaining({
-					parentId: "node:/docs",
+					parentId: docsId,
 					kind: "file",
 				}),
 			);
 		});
 
 		test("supports find -mindepth and accepts -print as a no-op", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const deepOnly = await run(`find ${test_app_files_mount}/docs -mindepth 2 --limit 50`);
 			const directOnly = await run(`find ${test_app_files_mount}/docs -mindepth 1 -maxdepth 1 --limit 50`);
@@ -7617,7 +6980,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects a non-integer find -mindepth and round-trips it in the continuation", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const invalid = await run(`find ${test_app_files_mount}/docs -mindepth x --limit 10`);
 			const paged = await run(`find ${test_app_files_mount}/docs -mindepth 1 --limit 1`);
@@ -7630,7 +6993,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects find --prefix combined with depth flags (depth is undefined for a prefix)", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const maxResult = await run(`find --prefix ${test_app_files_mount}/docs -maxdepth 1 --limit 10`);
 			const minResult = await run(`find --prefix ${test_app_files_mount}/docs -mindepth 2 --limit 10`);
@@ -7644,7 +7007,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("supports DB-backed find extension search and simple extension glob recovery", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const globName = await run("find -name '*.md' --limit 10");
 			const extension = await run(`find ${test_app_files_mount}/docs --extension md --limit 10`);
@@ -7656,8 +7019,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(extension.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
 			expect(pathGlob.metadata.exitCode).toBe(0);
 			expect(pathGlob.stdout).toContain(`${test_app_files_mount}/docs/nested/deep.md`);
-			expect(pathGlob.stdout).toContain(
-				`Next page: find ${test_app_files_mount}/docs --extension md --limit 1 --cursor value_store_1`,
+			expect(pathGlob.stdout).toMatch(
+				new RegExp(`Next page: find ${test_app_files_mount}/docs --extension md --limit 1 --cursor \\S+`, "u"),
 			);
 			expect(runQuery).toHaveBeenCalledWith(
 				internal.files_nodes.list_subtree_by_extension_paginated,
@@ -7669,7 +7032,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects find combinations that still cannot stay DB-backed", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const scopedRecursive = await run(`find ${test_app_files_mount}/docs -name readme --limit 10`);
 			const tokenGlobName = await run("find -type f -name '*readme*' --limit 10");
@@ -7701,7 +7064,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("filters non-search find pages before pagination", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(`find ${test_app_files_mount}/docs -maxdepth 1 -type f --limit 1`);
 
@@ -7712,7 +7075,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects unsupported find predicates when pagination is requested", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run(`find ${test_app_files_mount}/docs -delete --limit 10`);
 			const nativeResult = await run("find /tmp -mtime 1 --limit 1");
@@ -7728,7 +7091,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("ignores app pagination options outside the app file mount without Convex queries", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const lsResult = await run("ls --limit 1 /tmp");
 			const lsCursorResult = await run("ls /tmp --cursor missing");
@@ -7756,7 +7119,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("does not use the legacy capped list_files query for native app ls", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			await run(`ls ${test_app_files_mount}/docs`);
 
@@ -7767,7 +7130,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("resolves exact parent folders through app file node path lookups", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run(`cd ${test_app_files_mount}/reports && pwd`);
 			const reportsLookupCalls = runQuery.mock.calls.filter((call) => {
@@ -7787,7 +7150,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects app glob patterns without falling back to capped enumeration", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(`ls ${test_app_files_mount}/docs/*.md`);
 
@@ -7798,7 +7161,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("does not alias root listing to app files", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run("ls /");
 
@@ -7810,7 +7173,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("does not expose the removed legacy mount", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 			const legacyMount = "/work" + "space";
 
 			const result = await run(`ls ${legacyMount}`);
@@ -7820,7 +7183,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("explains unreadable uploaded source files through bash cat", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(`cat ${test_app_files_mount}/source.pdf`);
 
@@ -7834,7 +7197,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("does not suggest rereading the same unreadable file path", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(`cat ${test_app_files_mount}/uploaded.md`);
 			const suggestionLine = result.stdout
@@ -7851,7 +7214,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects workspace writes and persists same-thread /tmp scratch files", async () => {
-			const { run } = createBashRunner();
+			const { run, runMutation } = await create_bash_runner();
 
 			const workspaceWrite = await run(`echo nope > ${test_app_files_mount}/docs/new.md`);
 			expect(workspaceWrite.metadata.exitCode).not.toBe(0);
@@ -7859,46 +7222,38 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const tmpWrite = await run("printf hi > /tmp/a.txt");
 			expect(tmpWrite.metadata.exitCode).toBe(0);
-			expect(tmpWrite.metadata.tmpFsFlushed).toBe(true);
-			expect(tmpWrite.metadata.tmpFsFlushMode).toBe("delta");
-			expect(tmpWrite.metadata.tmpFsDeltaUpsertedPathCount).toBeGreaterThanOrEqual(1);
-			expect(tmpWrite.metadata.tmpFsDeltaDeletedPathCount).toBe(0);
-			expect(tmpWrite.metadata.tmpFsPersistedPathCount).toBeGreaterThanOrEqual(1);
-			expect(tmpWrite.metadata.tmpFsPersistedBytes).toBeGreaterThanOrEqual(2);
-			expect(tmpWrite.metadata.tmpFsPathCount).toBeGreaterThanOrEqual(1);
-			expect(tmpWrite.metadata.tmpFsApproxBytes).toBeGreaterThanOrEqual(2);
 
 			const nextInvocation = await run("cat /tmp/a.txt");
 			expect(nextInvocation.metadata.exitCode).toBe(0);
 			expect(nextInvocation.stdout).toBe("hi");
-			expect(nextInvocation.metadata.tmpFsFlushMode).toBe("none");
-			expect(nextInvocation.metadata.tmpFsDeltaUpsertedPathCount).toBe(0);
-			expect(nextInvocation.metadata.tmpFsDeltaDeletedPathCount).toBe(0);
+
+			// Only the tmp write flushes; the failed workspace write and the read do not.
+			const patchCalls = runMutation.mock.calls.filter(
+				([ref]) => function_name_of(ref) === "ai_chat_files:patch_thread_tmp_files",
+			);
+			expect(patchCalls).toHaveLength(1);
 		});
 
 		test("flushes only changed /tmp paths as a delta", async () => {
-			const { run, runMutation } = createBashRunner();
+			const { run, runMutation } = await create_bash_runner();
 
 			await run("printf one > /tmp/a.txt && printf two > /tmp/b.txt");
 			const update = await run("printf ONE > /tmp/a.txt");
 
 			expect(update.metadata.exitCode).toBe(0);
-			expect(update.metadata.tmpFsFlushMode).toBe("delta");
-			expect(update.metadata.tmpFsDeltaUpsertedPathCount).toBe(1);
-			expect(update.metadata.tmpFsDeltaDeletedPathCount).toBe(0);
 
 			const patchCalls = runMutation.mock.calls.filter(
 				([ref]) => function_name_of(ref) === "ai_chat_files:patch_thread_tmp_files",
 			);
 			const lastPatchArgs = patchCalls.at(-1)?.[1] as
 				| {
-						upsertEntries: BashTmpFilesSnapshotEntry[];
-						upsertContents: BashTmpFilesSnapshotContent[];
+						file_nodes: BashTmpFileNode[];
+						file_nodes_content: BashTmpFileNodeContent[];
 						deletePaths: string[];
 				  }
 				| undefined;
-			expect(lastPatchArgs?.upsertEntries.map((entry) => entry.path)).toEqual(["/a.txt"]);
-			expect(lastPatchArgs?.upsertContents.map((content) => content.path)).toEqual(["/a.txt"]);
+			expect(lastPatchArgs?.file_nodes.map((fileNode) => fileNode.path)).toEqual(["/a.txt"]);
+			expect(lastPatchArgs?.file_nodes_content.map((content) => content.path)).toEqual(["/a.txt"]);
 			expect(lastPatchArgs?.deletePaths).toEqual([]);
 
 			const read = await run("cat /tmp/a.txt /tmp/b.txt");
@@ -7906,31 +7261,26 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("flushes /tmp removals as delete-only deltas", async () => {
-			const { run, runMutation } = createBashRunner();
+			const { run, runMutation } = await create_bash_runner();
 
 			await run("printf one > /tmp/a.txt && printf two > /tmp/b.txt");
 			const remove = await run("rm /tmp/a.txt");
 
 			expect(remove.metadata.exitCode).toBe(0);
-			expect(remove.metadata.tmpFsFlushMode).toBe("delta");
-			expect(remove.metadata.tmpFsDeltaUpsertedPathCount).toBe(0);
-			expect(remove.metadata.tmpFsDeltaDeletedPathCount).toBe(1);
 
 			const patchCalls = runMutation.mock.calls.filter(
 				([ref]) => function_name_of(ref) === "ai_chat_files:patch_thread_tmp_files",
 			);
-			const lastPatchArgs = patchCalls.at(-1)?.[1] as { upsertEntries: unknown[]; deletePaths: string[] } | undefined;
-			expect(lastPatchArgs?.upsertEntries).toEqual([]);
+			const lastPatchArgs = patchCalls.at(-1)?.[1] as { file_nodes: unknown[]; deletePaths: string[] } | undefined;
+			expect(lastPatchArgs?.file_nodes).toEqual([]);
 			expect(lastPatchArgs?.deletePaths).toEqual(["/a.txt"]);
 		});
 
 		test("persists nested /tmp creates and recursive deletes through deltas", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const create = await run("mkdir -p /tmp/a/b && printf nested > /tmp/a/b/c.txt");
 			expect(create.metadata.exitCode).toBe(0);
-			expect(create.metadata.tmpFsFlushMode).toBe("delta");
-			expect(create.metadata.tmpFsDeltaUpsertedPathCount).toBeGreaterThanOrEqual(3);
 
 			const hydratedRead = await run("cat /tmp/a/b/c.txt");
 			expect(hydratedRead.metadata.exitCode).toBe(0);
@@ -7938,8 +7288,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const remove = await run("rm -r /tmp/a");
 			expect(remove.metadata.exitCode).toBe(0);
-			expect(remove.metadata.tmpFsFlushMode).toBe("delta");
-			expect(remove.metadata.tmpFsDeltaDeletedPathCount).toBeGreaterThanOrEqual(3);
 
 			const missing = await run("cat /tmp/a/b/c.txt");
 			expect(missing.metadata.exitCode).not.toBe(0);
@@ -7947,68 +7295,38 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("persists /tmp copy and move changes through deltas", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			await run("mkdir -p /tmp/src && printf copied > /tmp/src/a.txt && printf moved > /tmp/to-move.txt");
 			const copyMove = await run("cp -r /tmp/src /tmp/copy && mv /tmp/to-move.txt /tmp/moved.txt");
 
 			expect(copyMove.metadata.exitCode).toBe(0);
-			expect(copyMove.metadata.tmpFsFlushMode).toBe("delta");
-			expect(copyMove.metadata.tmpFsDeltaUpsertedPathCount).toBeGreaterThanOrEqual(2);
-			expect(copyMove.metadata.tmpFsDeltaDeletedPathCount).toBeGreaterThanOrEqual(1);
 
 			const read = await run("cat /tmp/src/a.txt /tmp/copy/a.txt /tmp/moved.txt");
 			expect(read.stdout).toBe("copiedcopiedmoved");
 		});
 
-		test("falls back to full /tmp flush when delta patching fails", async () => {
-			const { run } = createBashRunner({ failTmpPatchOnce: true });
-
-			const result = await run("printf fallback > /tmp/fallback.txt");
-
-			expect(result.metadata.exitCode).toBe(0);
-			expect(result.metadata.tmpFsFlushed).toBe(true);
-			expect(result.metadata.tmpFsFlushMode).toBe("full_fallback");
-			expect(result.metadata.tmpFsDirty).toBe(false);
-
-			const read = await run("cat /tmp/fallback.txt");
-			expect(read.metadata.exitCode).toBe(0);
-			expect(read.stdout).toBe("fallback");
-		});
-
-		test("scopes durable /tmp scratch files by thread and project", async () => {
-			const writer = createBashRunner({ threadId: "thread_a" as Id<"ai_chat_threads"> });
+		test("scopes durable /tmp scratch files by thread", async () => {
+			const writer = await create_bash_runner();
 			await writer.run("printf thread-a > /tmp/scope.txt");
+			const shared = { t: writer.t, seeded: writer.seeded };
 
-			const sameScope = createBashRunner({
-				threadId: "thread_a" as Id<"ai_chat_threads">,
-				preserveTmpFiles: true,
-			});
+			const sameScope = await create_bash_runner({ shared, threadId: writer.threadId });
 			const sameScopeRead = await sameScope.run("cat /tmp/scope.txt");
 			expect(sameScopeRead.metadata.exitCode).toBe(0);
 			expect(sameScopeRead.stdout).toBe("thread-a");
 
-			const otherThread = createBashRunner({
-				threadId: "thread_b" as Id<"ai_chat_threads">,
-				preserveTmpFiles: true,
-			});
+			const otherThread = await create_bash_runner({ shared });
 			const otherThreadRead = await otherThread.run("cat /tmp/scope.txt");
 			expect(otherThreadRead.metadata.exitCode).not.toBe(0);
 			expect(otherThreadRead.stderr).toContain("No such file");
 
-			const otherProject = createBashRunner({
-				threadId: "thread_a" as Id<"ai_chat_threads">,
-				projectId: "app_project_test_2",
-				preserveTmpFiles: true,
-			});
-			const otherProjectRead = await otherProject.run("cat /tmp/scope.txt");
-			expect(otherProjectRead.metadata.exitCode).not.toBe(0);
-			expect(otherProjectRead.stderr).toContain("No such file");
-
-			const sameThreadOtherUser = createBashRunner({
-				threadId: "thread_a" as Id<"ai_chat_threads">,
-				userId: "user_2" as Id<"users">,
-				preserveTmpFiles: true,
+			const { test_mocks_fill_db_with } = await import("./setup.test.ts");
+			const otherUserSeeded = await writer.t.run((ctx) => test_mocks_fill_db_with.membership(ctx, {}));
+			const sameThreadOtherUser = await create_bash_runner({
+				shared,
+				threadId: writer.threadId,
+				userId: otherUserSeeded.userId,
 			});
 			const sameThreadOtherUserRead = await sameThreadOtherUser.run("cat /tmp/scope.txt");
 			expect(sameThreadOtherUserRead.metadata.exitCode).toBe(0);
@@ -8016,12 +7334,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("merges parallel same-thread /tmp writes through deltas", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
-			const [aResult, bResult] = await Promise.all([
-				run("printf a > /tmp/a.txt"),
-				run("printf b > /tmp/b.txt"),
-			]);
+			const [aResult, bResult] = await Promise.all([run("printf a > /tmp/a.txt"), run("printf b > /tmp/b.txt")]);
 			expect(aResult.metadata.exitCode).toBe(0);
 			expect(bResult.metadata.exitCode).toBe(0);
 
@@ -8030,28 +7345,51 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(read.stdout).toBe("ab");
 		});
 
-		test("discards /tmp scratch that exceeds durable limits", async () => {
-			const oversized = createBashRunner();
-			const paths = Array.from({ length: BASH_TMP_SESSION_MAX_PATHS + 1 }, (_, index) => `/tmp/p-${index}.txt`).join(
-				" ",
-			);
-			const oversizedResult = await oversized.run(`touch ${paths}`);
-			expect(oversizedResult.stderr).toContain("/tmp scratch exceeded its durable thread limit");
-			expect(oversizedResult.metadata.tmpFsPathCount).toBeGreaterThan(BASH_TMP_SESSION_MAX_PATHS);
-			expect(oversizedResult.metadata.tmpFsFlushed).toBe(false);
+		test("evicts the oldest /tmp scratch paths beyond the path cap", async () => {
+			const { run } = await create_bash_runner();
 
-			const oversizedBytes = createBashRunner();
-			// The emulated seq caps at 100k iterations (~589KB), so concatenate copies to pass 5MB.
-			const oversizedBytesResult = await oversizedBytes.run(
-				"seq 1 100000 > /tmp/s.txt && cat /tmp/s.txt /tmp/s.txt /tmp/s.txt /tmp/s.txt /tmp/s.txt /tmp/s.txt /tmp/s.txt /tmp/s.txt /tmp/s.txt > /tmp/big.txt",
-			);
-			expect(oversizedBytesResult.stderr).toContain("/tmp scratch exceeded its durable thread limit");
-			expect(oversizedBytesResult.metadata.tmpFsApproxBytes).toBeGreaterThan(BASH_TMP_SESSION_MAX_BYTES);
-			expect(oversizedBytesResult.metadata.tmpFsFlushed).toBe(false);
+			await run("printf old > /tmp/old.txt");
+			const paths = Array.from({ length: BASH_TMP_SESSION_MAX_PATHS }, (_, index) => `/tmp/p-${index}.txt`).join(" ");
+			const overflow = await run(`touch ${paths}`);
+			expect(overflow.metadata.exitCode).toBe(0);
+			expect(overflow.stderr).toContain("evicted the 1 oldest path(s) to fit: /tmp/old.txt");
+
+			const list = await run("ls /tmp");
+			expect(list.stdout).toContain("p-0.txt");
+			expect(list.stdout).not.toContain("old.txt");
+		});
+
+		test("evicts the oldest /tmp scratch files beyond the byte cap", async () => {
+			const { run } = await create_bash_runner();
+
+			// Each seq output is ~1.7KB: under the per-file cap, but three together pass the 4KB session cap.
+			const first = await run("seq 1 470 > /tmp/a.txt");
+			expect(first.stderr).toBe("");
+			const overflow = await run("seq 1 470 > /tmp/b.txt && seq 1 470 > /tmp/c.txt");
+			expect(overflow.metadata.exitCode).toBe(0);
+			expect(overflow.stderr).toContain("evicted the 1 oldest path(s) to fit: /tmp/a.txt");
+
+			const evictedRead = await run("cat /tmp/a.txt");
+			expect(evictedRead.metadata.exitCode).not.toBe(0);
+			const survivorsRead = await run("cat /tmp/b.txt /tmp/c.txt");
+			expect(survivorsRead.metadata.exitCode).toBe(0);
+		});
+
+		test("evicts only the offending /tmp file beyond the per-file cap", async () => {
+			const { run } = await create_bash_runner();
+
+			// seq 1 1000 is ~3.9KB, past the 2KB per-file cap.
+			const result = await run("seq 1 1000 > /tmp/big.txt && printf keep > /tmp/keep.txt");
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stderr).toContain("discarded 1 oversized file(s): /tmp/big.txt");
+
+			const read = await run("cat /tmp/keep.txt && cat /tmp/big.txt");
+			expect(read.stdout).toBe("keep");
+			expect(read.metadata.exitCode).not.toBe(0);
 		});
 
 		test("creates persistent app file tree folders through bash mkdir when allowed", async () => {
-			const { run, runMutation } = createBashRunner({ allowAppFileTreeMkdir: true });
+			const { run, runMutation, seeded } = await create_bash_runner({ allowAppFileTreeMkdir: true });
 
 			const result = await run(
 				`mkdir ${test_app_files_mount}/bash-created && stat ${test_app_files_mount}/bash-created && ls ${test_app_files_mount}`,
@@ -8064,13 +7402,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				expect.anything(),
 				expect.objectContaining({
 					path: "/bash-created",
-					userId: test_user_id,
+					userId: seeded.userId,
 				}),
 			);
 		});
 
 		test("blocks app file tree folder creation through bash mkdir when not allowed", async () => {
-			const { run, runMutation } = createBashRunner({ allowAppFileTreeMkdir: false });
+			const { run, runMutation } = await create_bash_runner({ allowAppFileTreeMkdir: false });
 
 			const result = await run(`mkdir ${test_app_files_mount}/ask-denied`);
 
@@ -8086,7 +7424,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("runs indexed search with options before the query", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery, seeded } = await create_bash_runner();
 
 			const result = await run("search --limit 5 unique-token");
 
@@ -8096,7 +7434,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(runQuery).toHaveBeenCalledWith(
 				expect.anything(),
 				expect.objectContaining({
-					userId: test_user_id,
+					userId: seeded.userId,
 					query: "unique-token",
 					numItems: 5,
 					cursor: null,
@@ -8105,7 +7443,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("runs indexed search with equals-form options", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run(`search --path=${test_app_files_mount}/docs --limit=5 unique-token`);
 
@@ -8121,19 +7459,26 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("filters broad full-text results for exact hyphenated token searches", async () => {
-			const { run } = createBashRunner();
+			// The broad fixture's intraword bold breaks the literal token in the markdown chunk while
+			// the plain-text search index still matches it, so only the exact-query filter drops it.
+			const { run } = await create_bash_runner({
+				extraFiles: [
+					{ path: "/search-fixtures/hyphen.md", content: "exact-hyphen-token-2026 inside\n" },
+					{ path: "/search-fixtures/broad.md", content: "broad mention exact-hyphen-to**ken-2026ish** here\n" },
+				],
+			});
 
 			const result = await run("search --limit 5 exact-hyphen-token-2026");
 
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(result.stdout).toContain(`${test_app_files_mount}/search-fixtures/hyphen.md`);
 			expect(result.stdout).toContain("exact-hyphen-token-2026 inside");
-			expect(result.stdout).not.toContain(`${test_app_files_mount}/docs/guide.md`);
+			expect(result.stdout).not.toContain(`${test_app_files_mount}/search-fixtures/broad.md`);
 			expect(result.stdout).toContain("Exact query filter: omitted 1 broad full-text result");
 		});
 
 		test("rejects indexed search invalid limit values", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run("search --limit nope unique-token");
 
@@ -8143,14 +7488,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("prints a search continuation when indexed search has another DB page", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner({
+				extraFiles: [
+					{ path: "/docs/paged-a.md", content: "paged-token alpha\n" },
+					{ path: "/docs/paged-b.md", content: "paged-token beta\n" },
+				],
+			});
 
 			const firstPage = await run("search --limit 1 paged-token");
 			const complete = await run("search --limit 5 unique-token");
 
 			expect(firstPage.metadata.exitCode).toBe(0);
 			expect(firstPage.stdout).toContain("Found 1 results");
-			expect(firstPage.stdout).toContain("Next page: search --limit 1 --cursor value_store_1 paged-token");
+			expect(firstPage.stdout).toMatch(/Next page: search --limit 1 --cursor \S+ paged-token/u);
 			expect(complete.stdout).not.toContain("Next page: search");
 			const pageProbeCalls = runQuery.mock.calls.filter(
 				([, args]) => "query" in args && "cursor" in args && !("numItems" in args),
@@ -8159,7 +7509,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("reports unknown indexed search cursor ids", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run("search --limit 1 --cursor cursor-1 paged-token");
 
@@ -8170,7 +7520,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("does not probe scoped search continuations because Convex filters paginate results", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner({
+				extraFiles: [
+					{ path: "/docs/paged-a.md", content: "paged-token alpha\n" },
+					{ path: "/docs/paged-b.md", content: "paged-token beta\n" },
+				],
+			});
 
 			const result = await run(`search --path ${test_app_files_mount}/docs --limit 1 paged-token`);
 
@@ -8188,7 +7543,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects app file node path operands in indexed search instead of folding them into the query", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run(`search --limit 5 unique-token ${test_app_files_mount}`);
 
@@ -8199,7 +7554,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("scopes indexed search to a folder with --path", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			// In-scope folder -> hit, and the app file node path is passed through to the query.
 			const inScope = await run(`search --path ${test_app_files_mount}/docs unique-token`);
@@ -8233,9 +7588,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("does not scan markdown files when indexed search misses", async () => {
-			const { run, runAction } = createBashRunner();
+			const { run, runAction } = await create_bash_runner();
 
-			const result = await run("search --limit 5 Readme");
+			const result = await run("search --limit 5 zzz-absent-token");
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("No content matches found");
@@ -8244,7 +7599,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects chunk-type filters for indexed search", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const code = await run("search --code code-token");
 			const table = await run("search --table table-token");
@@ -8262,7 +7617,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("maps simple recursive app grep to indexed search", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run(`grep -R unique-token ${test_app_files_mount}/docs`);
 
@@ -8278,7 +7633,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("greps a single app file (substring, line numbers, -i), guidance otherwise", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			// Single app file → matching lines with 1-based line numbers (grep -n style).
 			const hit = await run(`grep unique-token ${test_app_files_mount}/docs/readme.md`);
@@ -8286,7 +7641,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(hit.stdout).toBe("2:unique-token here\n3:more unique-token below\n");
 			const piped = await run(`cat ${test_app_files_mount}/docs/readme.md | head -n 20 | grep -n unique-token`);
 			expect(piped.metadata.exitCode).toBe(0);
-			expect(piped.stdout).toBe("2:unique-token\n");
+			expect(piped.stdout).toBe("2:unique-token here\n3:more unique-token below\n");
 
 			// Case-insensitive.
 			const ci = await run(`grep -i ALPHA ${test_app_files_mount}/docs/tutorial.md`);
@@ -8351,7 +7706,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("warns when single-file app grep patterns look like regex but still matches substrings only", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const anchored = await run(`grep '^# Readme' ${test_app_files_mount}/docs/readme.md`);
 			const escaped = await run(`grep '\\.' ${test_app_files_mount}/docs/readme.md`);
@@ -8365,20 +7720,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("keeps grep large-file scan advisories on stderr", async () => {
 			const path = "/docs/large-grep.md";
-			const { run } = createBashRunner({
-				extraItems: [
+			// Over the bounded scan window so the fallback reads only a leading slice; broken chunk
+			// tiling makes the chunk scan bail (usable: false) into that windowed fallback.
+			const { run } = await create_bash_runner({
+				extraFiles: [
 					{
 						path,
-						kind: "file",
-						updatedAt: now,
-						depthTruncated: false,
-						contentType: "text/markdown;charset=utf-8",
+						content: `match-token\n${"filler-line\n".repeat(800)}`,
+						brokenChunks: true,
 					},
 				],
-				extraFileContents: {
-					[path]: "match-token\n",
-				},
-				scanTruncatedPaths: [path],
 			});
 			const shellPath = `${test_app_files_mount}${path}`;
 
@@ -8394,8 +7745,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("uses native prefix find and renders app tree pages", async () => {
-			const { run } = createBashRunner();
-			const scopedRunner = createBashRunner({ initialCwd: `${test_app_files_mount}/docs` });
+			const { run } = await create_bash_runner();
+			const scopedRunner = await create_bash_runner({ initialCwd: `${test_app_files_mount}/docs` });
 
 			const prefixResult = await run("find --prefix /docs --limit 20 -type f");
 			const relativePrefixResult = await scopedRunner.run("find --prefix nested --limit 1");
@@ -8405,20 +7756,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(prefixResult.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
 			expect(prefixResult.stdout).toContain(`${test_app_files_mount}/docs/tutorial.md`);
 			expect(relativePrefixResult.metadata.exitCode).toBe(0);
-			expect(relativePrefixResult.stdout).toContain(
-				`Next page: find --prefix ${test_app_files_mount}/docs/nested --limit 1 --cursor value_store_1`,
+			expect(relativePrefixResult.stdout).toMatch(
+				new RegExp(`Next page: find --prefix ${test_app_files_mount}/docs/nested --limit 1 --cursor \\S+`, "u"),
 			);
 			expect(treeResult.metadata.exitCode).toBe(0);
 			expect(treeResult.stdout).toContain(test_app_files_mount + "/docs");
 			expect(treeResult.stdout).toContain("|-- nested/");
 			expect(treeResult.stdout).toContain("|   |-- deep.md");
-			expect(treeResult.stdout).toContain(
-				`Next page: tree ${test_app_files_mount}/docs --limit 2 --cursor value_store_1`,
+			expect(treeResult.stdout).toMatch(
+				new RegExp(`Next page: tree ${test_app_files_mount}/docs --limit 2 --cursor \\S+`, "u"),
 			);
 		});
 
 		test("keeps tree app-only option guidance out of native paths", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			const nativeResult = await run(
 				"mkdir -p /tmp/tree-native && printf hi > /tmp/tree-native/a.md && tree -P '*.md' /tmp/tree-native",
@@ -8441,7 +7792,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("supports exact reader commands while keeping unreadable app content out of generic readers", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(
 				[
@@ -8468,7 +7819,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("caps the number of app files a single reader command fetches", async () => {
-			const { run, runAction } = createBashRunner();
+			const { run, runAction } = await create_bash_runner();
 
 			const overCapFiles = Array.from(
 				{ length: READER_FILE_OPERAND_MAX + 1 },
@@ -8504,7 +7855,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("counts only app-file operands toward the reader cap, not /tmp scratch", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const tmpFiles = Array.from({ length: 20 }, (_, index) => `/tmp/scratch-${index}.txt`).join(" ");
 			const appFiles = Array.from(
@@ -8519,15 +7870,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("pages large files smoothly: cat/head/sed/tail return bounded pages with hints, wc reports counts", async () => {
-			const bigFile = {
-				path: "/big.md",
-				kind: "file" as const,
-				updatedAt: Date.now(),
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-				size: READ_INLINE_MAX_BYTES + 1,
-			};
-			const { run } = createBashRunner({ extraItems: [bigFile] });
+			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
 			const bigPath = `${test_app_files_mount}/big.md`;
 
 			const catResult = await run(`cat ${bigPath}`);
@@ -8572,15 +7915,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("prints absolute app file node paths in large-file reader continuations", async () => {
-			const bigFile = {
-				path: "/big.md",
-				kind: "file" as const,
-				updatedAt: Date.now(),
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-				size: READ_INLINE_MAX_BYTES + 1,
-			};
-			const { run } = createBashRunner({ initialCwd: test_app_files_mount, extraItems: [bigFile] });
+			const { run } = await create_bash_runner({ initialCwd: test_app_files_mount, extraFiles: [big_md_file] });
 			const bigPath = `${test_app_files_mount}/big.md`;
 
 			const catResult = await run("cat big.md");
@@ -8601,15 +7936,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("does not emit precise reader continuations when the bounded scan is truncated", async () => {
-			const bigFile = {
-				path: "/big.md",
-				kind: "file" as const,
-				updatedAt: Date.now(),
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-				size: READ_INLINE_MAX_BYTES + 1,
-			};
-			const { run } = createBashRunner({ extraItems: [bigFile], scanTruncatedPaths: ["/big.md"] });
+			// Unmaterialized (no chunks) so reads fall back to the bounded leading window, with lines
+			// so long the window holds fewer lines than each command requests → scanTruncated.
+			const { run } = await create_bash_runner({
+				extraFiles: [
+					{
+						path: "/big.md",
+						content: `${"A".repeat(4999)}\n${"B".repeat(4999)}\n${"C".repeat(2000)}`,
+						materialized: false,
+					},
+				],
+			});
 			const bigPath = `${test_app_files_mount}/big.md`;
 
 			const headResult = await run(`head -n 3 ${bigPath}`);
@@ -8624,15 +7961,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("supports obsolete head and tail line-count flags on large files", async () => {
-			const bigFile = {
-				path: "/big.md",
-				kind: "file" as const,
-				updatedAt: Date.now(),
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-				size: READ_INLINE_MAX_BYTES + 1,
-			};
-			const { run } = createBashRunner({ extraItems: [bigFile] });
+			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
 			const bigPath = `${test_app_files_mount}/big.md`;
 
 			const headResult = await run(`head -5 ${bigPath}`);
@@ -8647,15 +7976,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects byte-range reads for oversized app files with explicit guidance", async () => {
-			const bigFile = {
-				path: "/big.md",
-				kind: "file" as const,
-				updatedAt: Date.now(),
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-				size: READ_INLINE_MAX_BYTES + 1,
-			};
-			const { run } = createBashRunner({ extraItems: [bigFile] });
+			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
 			const bigPath = `${test_app_files_mount}/big.md`;
 
 			const headResult = await run(`head -c 100 ${bigPath}`);
@@ -8670,7 +7991,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("wc over multiple app files reports per-file counts plus a total via the bounded stats path", async () => {
-			const { run, runAction } = createBashRunner();
+			const { run, runAction } = await create_bash_runner({
+				extraFiles: [
+					{ path: "/wc/a.md", content: "on two\nthree\nfour x\n" },
+					{ path: "/wc/b.md", content: "abc cd\nef g\n" },
+				],
+			});
 
 			const result = await run(`wc ${test_app_files_mount}/wc/a.md ${test_app_files_mount}/wc/b.md`);
 
@@ -8712,7 +8038,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("multi-file wc flags windowed lower bounds and reports missing operands without aborting", async () => {
-			const { run } = createBashRunner();
+			// Unmaterialized 12000-byte file with exactly 40 newlines inside the 8192-byte scan
+			// window (40 × 204B lines, then one long unterminated line), so counts are lower bounds.
+			const { run } = await create_bash_runner({
+				extraFiles: [
+					{
+						path: "/wc/windowed.md",
+						content: `${`${"x".repeat(203)}\n`.repeat(40)}${"y".repeat(3840)}`,
+						materialized: false,
+					},
+				],
+			});
 
 			const result = await run(`wc -l ${test_app_files_mount}/wc/windowed.md ${test_app_files_mount}/wc/missing.md`);
 
@@ -8726,7 +8062,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("multi-file wc uses the readable-sibling advisory for unreadable app operands", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner({
+				extraFiles: [{ path: "/wc/a.md", content: "on two\nthree\nfour x\n" }],
+			});
 
 			const result = await run(`wc ${test_app_files_mount}/wc/a.md ${test_app_files_mount}/source.pdf`);
 
@@ -8738,15 +8076,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("tail -n +K reads forward from line K on a large file (not the trailing window)", async () => {
-			const bigFile = {
-				path: "/big.md",
-				kind: "file" as const,
-				updatedAt: Date.now(),
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-				size: READ_INLINE_MAX_BYTES + 1,
-			};
-			const { run } = createBashRunner({ extraItems: [bigFile] });
+			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
 			const bigPath = `${test_app_files_mount}/big.md`;
 
 			const result = await run(`tail -n +5 ${bigPath}`);
@@ -8762,15 +8092,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("cat refuses a multi-file concatenation when a member is too large to inline", async () => {
-			const bigFile = {
-				path: "/big.md",
-				kind: "file" as const,
-				updatedAt: Date.now(),
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-				size: READ_INLINE_MAX_BYTES + 1,
-			};
-			const { run } = createBashRunner({ extraItems: [bigFile] });
+			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
 			const bigPath = `${test_app_files_mount}/big.md`;
 			const smallPath = `${test_app_files_mount}/docs/readme.md`;
 
@@ -8783,15 +8105,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("piping a large cat keeps the advisory out of the pipe", async () => {
-			const bigFile = {
-				path: "/big.md",
-				kind: "file" as const,
-				updatedAt: Date.now(),
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-				size: READ_INLINE_MAX_BYTES + 1,
-			};
-			const { run } = createBashRunner({ extraItems: [bigFile] });
+			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
 			const bigPath = `${test_app_files_mount}/big.md`;
 
 			const result = await run(`cat ${bigPath} | cat`);
@@ -8805,33 +8119,54 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// Simulates the agent's own large write_file/edit_file edit living in files_pending_updates:
 			// the committed asset is tiny, but the served content is large. The gate must fire on the
 			// served size — otherwise a multi-MB unsaved file would be pulled inline unguarded.
-			const pendingBig = {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/draft.md", content: "tiny base\n" }],
+			});
+			const { files_yjs_doc_create_from_markdown, files_u8_to_array_buffer } = await import("../server/files.ts");
+			const { encodeStateAsUpdate } = await import("yjs");
+			const baseYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "tiny base" });
+			if ("_nay" in baseYjsDoc) {
+				throw new Error(baseYjsDoc._nay.message);
+			}
+			const upserted = await runner.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
+				workspaceId: runner.seeded.workspaceId,
+				projectId: runner.seeded.projectId,
+				userId: runner.seeded.userId,
+				nodeId: await get_seeded_node_id(runner, "/draft.md"),
+				baseYjsSequence: 1,
+				baseYjsUpdate: files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc)),
+				unstagedMarkdown: Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n\n"),
+			});
+			if (upserted._nay) {
+				throw new Error(upserted._nay.message);
+			}
+			const served = await runner.t.query(internal.files_nodes.get_bash_served_byte_size, {
+				workspaceId: runner.seeded.workspaceId,
+				projectId: runner.seeded.projectId,
+				userId: runner.seeded.userId,
 				path: "/draft.md",
-				kind: "file" as const,
-				updatedAt: Date.now(),
-				depthTruncated: false,
-				contentType: "text/markdown;charset=utf-8",
-				size: 12, // committed asset (what `stat` reports)
-				servedSize: READ_INLINE_MAX_BYTES + 1, // unsaved pending overlay (what `cat` serves)
-			};
-			const { run } = createBashRunner({ extraItems: [pendingBig] });
+			});
+			expect(served).toMatchObject({ pending: true });
+			expect(served!.servedBytes).toBeGreaterThan(READ_INLINE_MAX_BYTES);
 			const draftPath = `${test_app_files_mount}/draft.md`;
 
-			const result = await run(`cat ${draftPath}`);
+			const result = await runner.run(`cat ${draftPath}`);
 
 			// Gate fired on the served size: bounded page on stdout, advisory carrying the served
-			// byte count on stderr — even though the committed asset is only 12 bytes.
+			// byte count on stderr — even though the committed asset is only 10 bytes.
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toContain("line 1\nline 2");
-			expect(result.stderr).toContain(`is ${READ_INLINE_MAX_BYTES + 1} bytes`);
+			expect(result.stdout).toContain("line 1\n\nline 2");
+			expect(result.stderr).toContain(`is ${served!.servedBytes} bytes`);
 		});
 
 		test("allows app exact reads through stream utilities but rejects direct app operands", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner({
+				extraFiles: [{ path: "/docs/dupes.md", content: "alpha\nzeta\nalpha\n" }],
+			});
 
 			const pipeline = await run(
 				[
-					`cat ${test_app_files_mount}/docs/tutorial.md | sort | uniq -c`,
+					`cat ${test_app_files_mount}/docs/dupes.md | sort | uniq -c`,
 					`cat ${test_app_files_mount}/docs/nested/deep.md | cut -d ':' -f 2`,
 					`cat ${test_app_files_mount}/docs/readme.md | sed 's/Readme/Guide/'`,
 					`cat ${test_app_files_mount}/docs/readme.md | awk '{print $1}'`,
@@ -8858,7 +8193,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("does not falsely reject a sed script that merely contains the mount path text", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			// The mount path appears inside the sed SCRIPT, not as a file operand; piping via cat
 			// must run, not be rejected by an over-broad substring guard.
@@ -8871,7 +8206,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects app writes and prevents mixed /tmp partial side effects", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const touchResult = await run(`touch ${test_app_files_mount}/docs/readme.md`);
 			const rmResult = await run(`rm -f ${test_app_files_mount}/docs/readme.md`);
@@ -8898,7 +8233,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("copies one exact readable app file to scratch and rejects unreadable app copies", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const copied = await run(`cp ${test_app_files_mount}/docs/readme.md /tmp/readme.md && cat /tmp/readme.md`);
 			const unreadable = await run(`cp ${test_app_files_mount}/source.pdf /tmp/source.pdf`);
@@ -8910,7 +8245,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("supports the broader native scratch command surface in /tmp", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(
 				[
@@ -8941,7 +8276,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("treats /dev/null as a native null device outside the app mount", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(
 				"printf hi > /dev/null && printf 'alpha\\n' > /tmp/a.txt && tee /dev/null /tmp/b.txt < /tmp/a.txt >/dev/null && cat /tmp/b.txt",
@@ -8954,7 +8289,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("does not append app-mount guidance for /tmp native command failures", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run("printf alpha > /tmp/a.txt && rg missing /tmp/a.txt");
 
@@ -8964,7 +8299,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("keeps the Unix file command unavailable", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run("printf hi > /tmp/a.txt && file /tmp/a.txt");
 
@@ -8977,7 +8312,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("prevents scratch symlinks from escaping into the app mount", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(`ln -s ${test_app_files_mount}/docs/readme.md /tmp/readme-link && cat /tmp/readme-link`);
 
@@ -8988,7 +8323,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects expanded native scratch commands when direct app operands are involved", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const duResult = await run(`du ${test_app_files_mount}/docs`);
 			const rgResult = await run(`rg unique-token ${test_app_files_mount}/docs/readme.md`);
@@ -9017,7 +8352,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("allows app reads to stream into expanded native text utilities", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run(
 				[
@@ -9033,7 +8368,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("keeps nested shells, xargs, and which inside the curated command surface", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const nested = await run(`bash -c 'ls --limit 1 ${test_app_files_mount}/docs'`);
 			const nestedLoginForm = await run(`bash -lc 'ls --limit 1 ${test_app_files_mount}/docs'`);
@@ -9065,7 +8400,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects xargs -n with a non-positive or non-numeric value instead of silently batching all items", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const zero = await run("printf 'a\\nb\\nc\\n' | xargs -n 0 echo");
 			const nonNumeric = await run("printf 'a\\nb\\nc\\n' | xargs -n x echo");
@@ -9079,7 +8414,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("parses options after the search query", async () => {
-			const { run, runQuery } = createBashRunner();
+			const { run, runQuery } = await create_bash_runner();
 
 			await run("search unique-token --limit 5");
 
@@ -9093,7 +8428,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("reports stdout truncation without path-index truncation", async () => {
-			const { run } = createBashRunner();
+			const { run } = await create_bash_runner();
 
 			const result = await run("seq 1 40000");
 

@@ -644,19 +644,12 @@ export const thread_branch = mutation({
 			updatedAt: now,
 		});
 		await ctx.db.patch("ai_chat_threads", newThreadId, { stateId });
-		const copiedTmpFiles = (await ctx.runMutation(internal.ai_chat_files.copy_thread_tmp_files, {
+		await ctx.runMutation(internal.ai_chat_files.copy_thread_tmp_files, {
 			workspaceId,
 			projectId,
 			sourceThreadId: threadId,
 			targetThreadId: newThreadId,
-		})) as { _yay: { pathCount: number; totalBytes: number } } | { _nay: { message: string } };
-		if ("_nay" in copiedTmpFiles) {
-			console.error("Failed to copy AI chat thread /tmp files during branch", {
-				sourceThreadId: threadId,
-				targetThreadId: newThreadId,
-				message: copiedTmpFiles._nay.message,
-			});
-		}
+		});
 
 		if (!newestMessage) {
 			return Result({ _yay: { threadId: newThreadId } });
