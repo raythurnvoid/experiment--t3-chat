@@ -142,6 +142,7 @@ export const test_mocks = {
 				name: name,
 				kind: "folder",
 				path: `/${name}`,
+				treePath: `/${name}/`,
 				pathDepth: 1,
 				lowercaseExtension: null,
 				archiveOperationId: undefined,
@@ -265,6 +266,7 @@ export const test_mocks_fill_db_with = {
 				name: test_mocks_hardcoded.files.file_root_1.name,
 				parentId: test_mocks_hardcoded.files.file_root_1.parentId,
 				path: `/${test_mocks_hardcoded.files.file_root_1.name}`,
+				treePath: `/${test_mocks_hardcoded.files.file_root_1.name}/`,
 				pathDepth: 1,
 			}),
 		);
@@ -282,6 +284,7 @@ export const test_mocks_fill_db_with = {
 				name: test_mocks_hardcoded.files.file_root_1_child_1.name,
 				parentId: file_root_1._id,
 				path: `/${file_root_1.name}/${test_mocks_hardcoded.files.file_root_1_child_1.name}`,
+				treePath: `/${file_root_1.name}/${test_mocks_hardcoded.files.file_root_1_child_1.name}/`,
 				pathDepth: 2,
 			}),
 		);
@@ -299,6 +302,7 @@ export const test_mocks_fill_db_with = {
 				name: test_mocks_hardcoded.files.file_root_1_child_1_deep_1.name,
 				parentId: file_root_1_child_1._id,
 				path: `/${file_root_1.name}/${file_root_1_child_1.name}/${test_mocks_hardcoded.files.file_root_1_child_1_deep_1.name}`,
+				treePath: `/${file_root_1.name}/${file_root_1_child_1.name}/${test_mocks_hardcoded.files.file_root_1_child_1_deep_1.name}/`,
 				pathDepth: 3,
 			}),
 		);
@@ -316,6 +320,7 @@ export const test_mocks_fill_db_with = {
 				name: test_mocks_hardcoded.files.file_root_1_child_2.name,
 				parentId: file_root_1._id,
 				path: `/${file_root_1.name}/${test_mocks_hardcoded.files.file_root_1_child_2.name}`,
+				treePath: `/${file_root_1.name}/${test_mocks_hardcoded.files.file_root_1_child_2.name}/`,
 				pathDepth: 2,
 			}),
 		);
@@ -333,6 +338,7 @@ export const test_mocks_fill_db_with = {
 				name: test_mocks_hardcoded.files.file_root_2.name,
 				parentId: test_mocks_hardcoded.files.file_root_2.parentId,
 				path: `/${test_mocks_hardcoded.files.file_root_2.name}`,
+				treePath: `/${test_mocks_hardcoded.files.file_root_2.name}/`,
 				pathDepth: 1,
 			}),
 		);

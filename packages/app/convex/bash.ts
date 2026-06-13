@@ -2385,6 +2385,7 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 					path: appFileNodePath,
 					numItems: parsed._yay.limit,
 					cursor,
+					minDepth: 1,
 					order: parsed._yay.reverse ? "desc" : "asc",
 				})) as files_nodes_list_subtree_paginated_Result;
 
@@ -2742,12 +2743,12 @@ function find_command_parse_args(args: string[]) {
 	}
 
 	if (prefix != null && (maxDepth != null || minDepth != null)) {
-		// --prefix is a raw startsWith token, not an ancestor folder, so depth measured
-		// from the prefix string is meaningless. Reject rather than silently mis-filter.
+		// --prefix uses direct indexed path-boundary scans and does not compute a
+		// base node depth. Reject rather than silently mis-filter.
 		return Result({
 			_nay: {
 				message:
-					"find: --prefix cannot be combined with -maxdepth/-mindepth (depth is undefined for a prefix; drop the depth flags or use a folder PATH instead)",
+					"find: --prefix cannot be combined with -maxdepth/-mindepth (use a folder PATH when depth filtering is needed)",
 			},
 		});
 	}
@@ -2993,7 +2994,8 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			cursor = resolvedCursor._yay;
 		}
 
-		// Prefix searches are exact starts-with path scans; the prefix does not need to be an existing folder.
+		// Prefix searches use the same path-boundary subtree scan key as folder PATH searches.
+		// The prefix does not need to resolve to an existing folder first.
 		if (parsed._yay.prefix != null) {
 			if (parsed._yay.extension != null) {
 				return {
@@ -3013,7 +3015,7 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 					stdout: "",
 					stderr:
 						"find: --prefix cannot be combined with path word search for app files.\n" +
-						"Use `find --prefix PREFIX` for exact starts-with path discovery, or `find -name QUERY` for DB-backed path word search.\n",
+						"Use `find --prefix PREFIX` for indexed descendant path discovery, or `find -name QUERY` for DB-backed path word search.\n",
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
@@ -3093,7 +3095,7 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				stdout: "",
 				stderr:
 					`find: ${target.absoluteShellPath}: No such file or directory\n` +
-					`If you intended a path prefix search (paths whose names START WITH this string), run:\n` +
+					`If you intended a path-prefix subtree search, run:\n` +
 					`  find --prefix ${shell_arg_quote(target.absoluteShellPath)} --limit ${parsed._yay.limit}\n`,
 				exitCode: COMMAND_EXIT_FAILURE,
 			};
@@ -3485,6 +3487,7 @@ function tree_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			path: appFileNodePath,
 			numItems: parsed._yay.limit,
 			cursor,
+			minDepth: 1,
 		})) as files_nodes_list_subtree_paginated_Result;
 
 		const lines = [absoluteShellPath];
@@ -6469,6 +6472,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					name: segments[depth - 1],
 					kind: "folder",
 					path: ancestorPath,
+					treePath: `${ancestorPath}/`,
 					pathDepth: depth,
 					updatedAt,
 				});
@@ -6509,6 +6513,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				name,
 				kind: "file",
 				path: spec.path,
+				treePath: spec.path,
 				pathDepth: segments.length,
 				lowercaseExtension:
 					dotIndex <= 0 || dotIndex === name.length - 1 ? null : name.slice(dotIndex + 1).toLowerCase(),
@@ -7406,7 +7411,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(paged.stdout).toContain("-mindepth 1");
 		});
 
-		test("rejects find --prefix combined with depth flags (depth is undefined for a prefix)", async () => {
+		test("rejects find --prefix combined with depth flags", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
 			const maxResult = await run(`find --prefix ${test_app_files_mount}/docs -maxdepth 1 --limit 10`);

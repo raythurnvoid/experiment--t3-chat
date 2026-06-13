@@ -1301,6 +1301,7 @@ describe("r2 asset content", () => {
 				name: "collision.pdf.md",
 				kind: "file",
 				path: "/collision.pdf.md",
+				treePath: "/collision.pdf.md",
 			}),
 		);
 		const sourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
@@ -1514,6 +1515,7 @@ describe("r2 asset content", () => {
 				name: "processed",
 				kind: "folder",
 				path: "/processed",
+				treePath: "/processed/",
 			});
 			await ctx.db.patch("files_nodes", outputs.convertedMarkdown._id, {
 				parentId: folderId,

@@ -181,6 +181,7 @@ async function seed_file_first_list_fixture(ctx: MutationCtx) {
 		name: "fixture",
 		kind: "folder",
 		path: "/fixture",
+		treePath: "/fixture/",
 		updatedAt: 1,
 	});
 	await ctx.db.insert("files_nodes", {
@@ -193,6 +194,7 @@ async function seed_file_first_list_fixture(ctx: MutationCtx) {
 		name: "00-source.md",
 		kind: "file",
 		path: "/fixture/00-source.md",
+		treePath: "/fixture/00-source.md",
 		updatedAt: 2,
 	});
 	const nestedFolderId = await ctx.db.insert("files_nodes", {
@@ -205,6 +207,7 @@ async function seed_file_first_list_fixture(ctx: MutationCtx) {
 		name: "nested",
 		kind: "folder",
 		path: "/fixture/nested",
+		treePath: "/fixture/nested/",
 		updatedAt: 3,
 	});
 	await ctx.db.insert("files_nodes", {
@@ -217,6 +220,7 @@ async function seed_file_first_list_fixture(ctx: MutationCtx) {
 		name: "glob-target.md",
 		kind: "file",
 		path: "/fixture/nested/glob-target.md",
+		treePath: "/fixture/nested/glob-target.md",
 		updatedAt: 4,
 	});
 
@@ -235,6 +239,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "docs",
 		kind: "folder",
 		path: "/docs",
+		treePath: "/docs/",
 		pathDepth: 1,
 		updatedAt: 1,
 	});
@@ -248,6 +253,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "a.md",
 		kind: "file",
 		path: "/docs/a.md",
+		treePath: "/docs/a.md",
 		pathDepth: 2,
 		lowercaseExtension: "md",
 		updatedAt: 2,
@@ -263,6 +269,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "b.md",
 		kind: "file",
 		path: "/docs/b.md",
+		treePath: "/docs/b.md",
 		pathDepth: 2,
 		lowercaseExtension: "md",
 		updatedAt: 3,
@@ -277,6 +284,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "nested",
 		kind: "folder",
 		path: "/docs/nested",
+		treePath: "/docs/nested/",
 		pathDepth: 2,
 		updatedAt: 4,
 	});
@@ -290,6 +298,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "c.md",
 		kind: "file",
 		path: "/docs/nested/c.md",
+		treePath: "/docs/nested/c.md",
 		pathDepth: 3,
 		lowercaseExtension: "md",
 		updatedAt: 5,
@@ -304,6 +313,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "z-archived.md",
 		kind: "file",
 		path: "/docs/z-archived.md",
+		treePath: "/docs/z-archived.md",
 		pathDepth: 2,
 		lowercaseExtension: "md",
 		archiveOperationId: "archive-operation-test",
@@ -319,6 +329,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "docs-archive",
 		kind: "folder",
 		path: "/docs-archive",
+		treePath: "/docs-archive/",
 		pathDepth: 1,
 		updatedAt: 7,
 	});
@@ -332,6 +343,7 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 		name: "outside.md",
 		kind: "file",
 		path: "/docs-archive/outside.md",
+		treePath: "/docs-archive/outside.md",
 		pathDepth: 2,
 		lowercaseExtension: "md",
 		updatedAt: 8,
@@ -355,6 +367,7 @@ describe("check_bash_file_search_readiness", () => {
 				name: "docs",
 				kind: "folder",
 				path: "/docs",
+				treePath: "/docs/",
 				pathDepth: 0,
 				updatedAt: 1,
 			});
@@ -368,6 +381,7 @@ describe("check_bash_file_search_readiness", () => {
 				name: "readme.md",
 				kind: "file",
 				path: "/docs/readme.md",
+				treePath: "/docs/readme.md",
 				pathDepth: 2,
 				lowercaseExtension: "md",
 				contentType: "text/markdown;charset=utf-8",
@@ -493,6 +507,7 @@ describe("enqueue_missing_plain_text_chunk_materializations", () => {
 				name: "needs-index.md",
 				kind: "file",
 				path: "/needs-index.md",
+				treePath: "/needs-index.md",
 				pathDepth: 1,
 				lowercaseExtension: "md",
 				contentType: "text/markdown;charset=utf-8",
@@ -508,6 +523,7 @@ describe("enqueue_missing_plain_text_chunk_materializations", () => {
 				name: "source.pdf",
 				kind: "file",
 				path: "/source.pdf",
+				treePath: "/source.pdf",
 				pathDepth: 1,
 				lowercaseExtension: "pdf",
 				contentType: "application/pdf",
@@ -738,6 +754,7 @@ describe("list_files", () => {
 					name,
 					kind: "file",
 					path: `/${name}`,
+					treePath: `/${name}`,
 					updatedAt: index,
 				});
 			}
@@ -891,7 +908,7 @@ describe("paginated bash listing queries", () => {
 		});
 	});
 
-	test("paginates recursive descendants by path prefix without sibling-prefix leakage", async () => {
+	test("paginates a recursive subtree without sibling-prefix leakage", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -918,13 +935,13 @@ describe("paginated bash listing queries", () => {
 
 		expect(firstPage.isDone).toBe(false);
 		expect(new Set(paths).size).toBe(paths.length);
-		expect(paths).toEqual(expect.arrayContaining(["/docs/a.md", "/docs/b.md", "/docs/nested", "/docs/nested/c.md"]));
+		expect(paths).toEqual(expect.arrayContaining(["/docs", "/docs/a.md", "/docs/b.md", "/docs/nested", "/docs/nested/c.md"]));
 		expect(paths).not.toContain("/docs/z-archived.md");
 		expect(paths).not.toContain("/docs-archive");
 		expect(paths).not.toContain("/docs-archive/outside.md");
 	});
 
-	test("paginates recursive descendants in ascending and descending path order with metadata", async () => {
+	test("paginates recursive subtrees in ascending and descending path order with metadata", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -950,14 +967,25 @@ describe("paginated bash listing queries", () => {
 			order: "desc",
 		});
 
-		expect(ascending.items.map((item) => item.path)).toEqual(["/docs/a.md", "/docs/b.md", "/docs/nested", "/docs/nested/c.md"]);
-		expect(descending.items.map((item) => item.path)).toEqual(["/docs/nested/c.md", "/docs/nested", "/docs/b.md", "/docs/a.md"]);
+		expect(ascending.items.map((item) => item.path)).toEqual([
+			"/docs",
+			"/docs/a.md",
+			"/docs/b.md",
+			"/docs/nested",
+			"/docs/nested/c.md",
+		]);
+		expect(descending.items.map((item) => item.path)).toEqual([
+			"/docs/nested/c.md",
+			"/docs/nested",
+			"/docs/b.md",
+			"/docs/a.md",
+			"/docs",
+		]);
 		expect(ascending.items[0]).toMatchObject({
-			path: "/docs/a.md",
-			kind: "file",
-			updatedAt: 2,
+			path: "/docs",
+			kind: "folder",
+			updatedAt: 1,
 			updatedBy: db.userId,
-			contentType: "text/markdown;charset=utf-8",
 		});
 	});
 
@@ -1031,7 +1059,7 @@ describe("paginated bash listing queries", () => {
 		expect(paths).not.toContain("/docs-archive/outside.md");
 	});
 
-	test("paginates raw path prefixes with intentional sibling-prefix matches", async () => {
+	test("paginates path-prefix subtrees without sibling-prefix matches", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -1050,13 +1078,13 @@ describe("paginated bash listing queries", () => {
 		const paths = result.items.map((item) => item.path);
 
 		expect(result.isDone).toBe(true);
-		expect(paths).toEqual(
-			expect.arrayContaining(["/docs", "/docs/a.md", "/docs/nested/c.md", "/docs-archive", "/docs-archive/outside.md"]),
-		);
+		expect(paths).toEqual(expect.arrayContaining(["/docs", "/docs/a.md", "/docs/nested/c.md"]));
+		expect(paths).not.toContain("/docs-archive");
+		expect(paths).not.toContain("/docs-archive/outside.md");
 		expect(paths).not.toContain("/docs/z-archived.md");
 	});
 
-	test("filters raw path prefixes by kind before pagination", async () => {
+	test("filters path-prefix subtrees by kind before pagination", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -1241,11 +1269,13 @@ test("generated sibling file is visible in tree and list queries", async () => {
 			...sharedNode,
 			name: "report.pdf",
 			path: "/report.pdf",
+			treePath: "/report.pdf",
 		});
 		const markdownNodeId = await ctx.db.insert("files_nodes", {
 			...sharedNode,
 			name: "report.pdf.md",
 			path: "/report.pdf.md",
+			treePath: "/report.pdf.md",
 		});
 
 		return { sourceNodeId, markdownNodeId };
@@ -1356,6 +1386,7 @@ test("rename_node leaves generated siblings independent from the source", async 
 			name: "report.pdf",
 			kind: "file",
 			path: "/report.pdf",
+			treePath: "/report.pdf",
 		});
 		const generatedNodeId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
@@ -1367,6 +1398,7 @@ test("rename_node leaves generated siblings independent from the source", async 
 			name: "report.pdf.md",
 			kind: "file",
 			path: "/report.pdf.md",
+			treePath: "/report.pdf.md",
 		});
 
 		return { sourceNodeId, generatedNodeId };
@@ -1451,6 +1483,7 @@ test("move_nodes leaves generated siblings independent from the source", async (
 			name: "report.pdf",
 			kind: "file",
 			path: "/report.pdf",
+			treePath: "/report.pdf",
 		});
 		const generatedNodeId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
@@ -1462,6 +1495,7 @@ test("move_nodes leaves generated siblings independent from the source", async (
 			name: "report.pdf.md",
 			kind: "file",
 			path: "/report.pdf.md",
+			treePath: "/report.pdf.md",
 		});
 
 		return { sourceNodeId, generatedNodeId };
@@ -1511,6 +1545,7 @@ test("home file path stays immutable on rename and move", async () => {
 			name: "README.md",
 			kind: "file",
 			path: "/README.md",
+			treePath: "/README.md",
 			pathDepth: 1,
 			lowercaseExtension: "md",
 			archiveOperationId: undefined,
@@ -1579,6 +1614,7 @@ test("create_folder_node rejects active file at leaf path", async () => {
 			name: "notes",
 			kind: "file",
 			path: "/notes",
+			treePath: "/notes",
 		}),
 	);
 
@@ -1614,6 +1650,7 @@ test("create_folder_node rejects active file at intermediate path without creati
 			name: "notes",
 			kind: "file",
 			path: "/notes",
+			treePath: "/notes",
 		}),
 	);
 
@@ -2298,6 +2335,7 @@ describe("files_nodes.create_upload_node", () => {
 				name: "replace-me.pdf.md",
 				kind: "file",
 				path: "/replace-me.pdf.md",
+				treePath: "/replace-me.pdf.md",
 				contentType: "text/markdown;charset=utf-8",
 				assetId,
 			});
@@ -2479,6 +2517,7 @@ test("rename_node preserves caller-provided nested file names", async () => {
 			name: "yo.md",
 			kind: "file",
 			path: `/${db.files.file_root_1.name}/yo.md`,
+			treePath: `/${db.files.file_root_1.name}/yo.md`,
 			pathDepth: 2,
 			lowercaseExtension: "md",
 			archiveOperationId: undefined,
@@ -2677,11 +2716,13 @@ test("archive_nodes and unarchive_nodes leave root generated siblings independen
 			...sharedNode,
 			name: "report.pdf",
 			path: "/report.pdf",
+			treePath: "/report.pdf",
 		});
 		const generatedNodeId = await ctx.db.insert("files_nodes", {
 			...sharedNode,
 			name: "report.pdf.md",
 			path: "/report.pdf.md",
+			treePath: "/report.pdf.md",
 		});
 
 		return { sourceNodeId, generatedNodeId };
@@ -2733,6 +2774,7 @@ test("archive_nodes and unarchive_nodes include generated siblings as normal fol
 			name: "folder",
 			kind: "folder",
 			path: "/folder",
+			treePath: "/folder/",
 		});
 		const sharedNode = {
 			...test_mocks.files.base(),
@@ -2747,11 +2789,13 @@ test("archive_nodes and unarchive_nodes include generated siblings as normal fol
 			...sharedNode,
 			name: "report.pdf",
 			path: "/folder/report.pdf",
+			treePath: "/folder/report.pdf",
 		});
 		const generatedNodeId = await ctx.db.insert("files_nodes", {
 			...sharedNode,
 			name: "report.pdf.md",
 			path: "/folder/report.pdf.md",
+			treePath: "/folder/report.pdf.md",
 		});
 
 		return { folderId, sourceNodeId, generatedNodeId };
@@ -5031,6 +5075,7 @@ describe("files_nodes.cleanup_old_snapshots", () => {
 					name: "retention.md",
 					kind: "file",
 					path: "/retention.md",
+					treePath: "/retention.md",
 				}),
 			);
 			const insertSnapshot = async (label: string, timestamp: string) => {

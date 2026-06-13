@@ -231,6 +231,28 @@ function files_lowercase_extension(path: string, kind: Doc<"files_nodes">["kind"
 	return name.slice(dotIndex + 1).toLowerCase();
 }
 
+function derive_tree_path_for_file_node(path: string, kind: Doc<"files_nodes">["kind"]) {
+	return kind === "folder" && path !== "/" ? `${path}/` : path;
+}
+
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, expect, test } = import.meta.vitest;
+
+	describe("derive_tree_path_for_file_node", () => {
+		test("keeps file paths unchanged", () => {
+			expect(derive_tree_path_for_file_node("/docs/readme.md", "file")).toBe("/docs/readme.md");
+		});
+
+		test("adds a trailing slash for non-root folders", () => {
+			expect(derive_tree_path_for_file_node("/docs", "folder")).toBe("/docs/");
+		});
+
+		test("keeps root unchanged", () => {
+			expect(derive_tree_path_for_file_node("/", "folder")).toBe("/");
+		});
+	});
+}
+
 function is_home_file(node: Pick<Doc<"files_nodes">, "path" | "kind">): boolean;
 function is_home_file(node: Pick<Doc<"files_nodes">, "parentId" | "name" | "kind">): boolean;
 function is_home_file(node: Partial<Pick<Doc<"files_nodes">, "path" | "parentId" | "name" | "kind">>) {
@@ -725,6 +747,7 @@ async function cascade_file_descendants_path(
 				const childPath = path_join(frame.parentPath, child.name);
 				await ctx.db.patch("files_nodes", child._id, {
 					path: childPath,
+					treePath: derive_tree_path_for_file_node(childPath, child.kind),
 					pathDepth: files_path_depth(childPath),
 					lowercaseExtension: files_lowercase_extension(childPath, child.kind),
 				});
@@ -797,6 +820,7 @@ async function db_insert_node(
 		projectId: args.projectId,
 		parentId: args.parentId,
 		path: args.path,
+		treePath: derive_tree_path_for_file_node(args.path, args.kind),
 		pathDepth: files_path_depth(args.path),
 		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
 		name: args.name,
@@ -1739,6 +1763,7 @@ export const rename_node = mutation({
 			parentId: targetParentId,
 			name: leafName,
 			path: renamedPath,
+			treePath: derive_tree_path_for_file_node(renamedPath, file.kind),
 			pathDepth: files_path_depth(renamedPath),
 			lowercaseExtension: files_lowercase_extension(renamedPath, file.kind),
 			updatedBy: userAuth.id,
@@ -1859,6 +1884,7 @@ export const move_nodes = mutation({
 				projectId: membership.projectId,
 				parentId: args.targetParentId,
 				path: fileToMove.movedPath,
+				treePath: derive_tree_path_for_file_node(fileToMove.movedPath, fileToMove.file.kind),
 				pathDepth: files_path_depth(fileToMove.movedPath),
 				lowercaseExtension: files_lowercase_extension(fileToMove.movedPath, fileToMove.file.kind),
 				updatedAt: now,
@@ -2321,6 +2347,9 @@ export const unarchive_nodes = mutation({
 					updatedAt: now,
 					pathDepth: files_path_depth(plan.targetPath),
 					lowercaseExtension: files_lowercase_extension(plan.targetPath, plan.file.kind),
+					...(plan.targetPath !== plan.file.path
+						? { treePath: derive_tree_path_for_file_node(plan.targetPath, plan.file.kind) }
+						: {}),
 					...(plan.targetPath !== plan.file.path ? { path: plan.targetPath } : {}),
 					...(plan.targetParentId !== plan.file.parentId ? { parentId: plan.targetParentId } : {}),
 				});
@@ -2798,7 +2827,7 @@ export const list_subtree_paginated = internalQuery({
 		}
 
 		const normalizedPath = args.path === "/" ? "/" : args.path.replace(/\/+$/u, "");
-		const lowerBound = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
+		const lowerBound = derive_tree_path_for_file_node(normalizedPath, "folder");
 		const upperBound = `${lowerBound}\uffff`;
 		const baseDepth = files_path_depth(normalizedPath);
 		const minAbsoluteDepth = args.minDepth == null ? null : baseDepth + args.minDepth;
@@ -2807,25 +2836,25 @@ export const list_subtree_paginated = internalQuery({
 			args.kind == null
 				? ctx.db
 						.query("files_nodes")
-						.withIndex("by_workspace_project_archiveOperation_path", (q) =>
+						.withIndex("by_workspace_project_archiveOperation_treePath", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
 								.eq("archiveOperationId", undefined)
-								.gte("path", lowerBound)
-								.lt("path", upperBound),
+								.gte("treePath", lowerBound)
+								.lt("treePath", upperBound),
 						)
 						.order(args.order ?? "asc")
 				: ctx.db
 						.query("files_nodes")
-						.withIndex("by_workspace_project_archiveOperation_kind_path", (q) =>
+						.withIndex("by_workspace_project_archiveOperation_kind_treePath", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
 								.eq("archiveOperationId", undefined)
 								.eq("kind", args.kind!)
-								.gte("path", lowerBound)
-								.lt("path", upperBound),
+								.gte("treePath", lowerBound)
+								.lt("treePath", upperBound),
 						)
 						.order(args.order ?? "asc");
 		const filteredQuery =
@@ -2925,22 +2954,22 @@ export const list_subtree_by_extension_paginated = internalQuery({
 		}
 
 		const normalizedPath = args.path === "/" ? "/" : args.path.replace(/\/+$/u, "");
-		const lowerBound = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
+		const lowerBound = derive_tree_path_for_file_node(normalizedPath, "folder");
 		const upperBound = `${lowerBound}\uffff`;
 		const baseDepth = files_path_depth(normalizedPath);
 		const minAbsoluteDepth = args.minDepth == null ? null : baseDepth + args.minDepth;
 		const maxAbsoluteDepth = args.maxDepth == null ? null : baseDepth + args.maxDepth;
 		const query = ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_archiveOperation_kind_ext_path", (q) =>
+			.withIndex("by_workspace_project_archiveOperation_kind_ext_treePath", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
 					.eq("archiveOperationId", undefined)
 					.eq("kind", "file")
 					.eq("lowercaseExtension", args.lowercaseExtension)
-					.gte("path", lowerBound)
-					.lt("path", upperBound),
+					.gte("treePath", lowerBound)
+					.lt("treePath", upperBound),
 			);
 		const filteredQuery =
 			minAbsoluteDepth == null && maxAbsoluteDepth == null
@@ -3058,26 +3087,26 @@ export const list_path_prefix_paginated = internalQuery({
 		isDone: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
-		const lowerBound = args.pathPrefix;
+		const lowerBound = derive_tree_path_for_file_node(args.pathPrefix, "folder");
 		const upperBound = `${lowerBound}\uffff`;
 		const query =
 			args.kind == null
-				? ctx.db.query("files_nodes").withIndex("by_workspace_project_archiveOperation_path", (q) =>
+				? ctx.db.query("files_nodes").withIndex("by_workspace_project_archiveOperation_treePath", (q) =>
 						q
 							.eq("workspaceId", args.workspaceId)
 							.eq("projectId", args.projectId)
 							.eq("archiveOperationId", undefined)
-							.gte("path", lowerBound)
-							.lt("path", upperBound),
+							.gte("treePath", lowerBound)
+							.lt("treePath", upperBound),
 					)
-				: ctx.db.query("files_nodes").withIndex("by_workspace_project_archiveOperation_kind_path", (q) =>
+				: ctx.db.query("files_nodes").withIndex("by_workspace_project_archiveOperation_kind_treePath", (q) =>
 						q
 							.eq("workspaceId", args.workspaceId)
 							.eq("projectId", args.projectId)
 							.eq("archiveOperationId", undefined)
 							.eq("kind", args.kind!)
-							.gte("path", lowerBound)
-							.lt("path", upperBound),
+							.gte("treePath", lowerBound)
+							.lt("treePath", upperBound),
 					);
 		const result = await query.paginate({
 			cursor: args.cursor,
@@ -3136,7 +3165,8 @@ export const search_paths_paginated = internalQuery({
 			}
 		}
 
-		const pathPrefixFilter = args.pathPrefix == null || args.pathPrefix === "/" ? null : `${args.pathPrefix}/`;
+		const pathPrefixFilter =
+			args.pathPrefix == null || args.pathPrefix === "/" ? null : derive_tree_path_for_file_node(args.pathPrefix, "folder");
 
 		let searchQuery = ctx.db
 			.query("files_nodes")
@@ -3164,7 +3194,7 @@ export const search_paths_paginated = internalQuery({
 		// sibling-prefix folder like /foo-bar out of a /foo scope.
 		if (pathPrefixFilter != null) {
 			searchQuery = searchQuery.filter((q) =>
-				q.and(q.gte(q.field("path"), pathPrefixFilter), q.lt(q.field("path"), `${pathPrefixFilter}\uffff`)),
+				q.and(q.gte(q.field("treePath"), pathPrefixFilter), q.lt(q.field("treePath"), `${pathPrefixFilter}\uffff`)),
 			);
 		}
 
@@ -3275,6 +3305,13 @@ export const check_bash_file_search_readiness = internalQuery({
 				actualPathDepth: v.optional(v.number()),
 			}),
 		),
+		activeNodesWithMissingOrStaleTreePath: v.array(
+			v.object({
+				path: v.string(),
+				expectedTreePath: v.string(),
+				actualTreePath: v.string(),
+			}),
+		),
 		activeNodesWithMissingOrStaleLowercaseExtension: v.array(
 			v.object({
 				path: v.string(),
@@ -3324,7 +3361,7 @@ export const check_bash_file_search_readiness = internalQuery({
 		const [activeNodes, activeFiles] = await Promise.all([
 			ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_archiveOperation_path", (q) =>
+				.withIndex("by_workspace_project_archiveOperation_treePath", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
@@ -3333,7 +3370,7 @@ export const check_bash_file_search_readiness = internalQuery({
 				.take(sampleLimit),
 			ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_archiveOperation_kind_path", (q) =>
+				.withIndex("by_workspace_project_archiveOperation_kind_treePath", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
@@ -3353,6 +3390,19 @@ export const check_bash_file_search_readiness = internalQuery({
 					path: node.path,
 					expectedPathDepth,
 					...(node.pathDepth != null ? { actualPathDepth: node.pathDepth } : {}),
+				},
+			];
+		});
+		const activeNodesWithMissingOrStaleTreePath = activeNodes.flatMap((node) => {
+			const expectedTreePath = derive_tree_path_for_file_node(node.path, node.kind);
+			if (node.treePath === expectedTreePath) {
+				return [];
+			}
+			return [
+				{
+					path: node.path,
+					expectedTreePath,
+					actualTreePath: node.treePath,
 				},
 			];
 		});
@@ -3469,6 +3519,7 @@ export const check_bash_file_search_readiness = internalQuery({
 			activeFilesChecked: activeFiles.length,
 			plainTextChunksChecked: chunkScopeResults.reduce((count, result) => count + result.checkedChunkRows, 0),
 			activeNodesWithMissingOrStalePathDepth,
+			activeNodesWithMissingOrStaleTreePath,
 			activeNodesWithMissingOrStaleLowercaseExtension,
 			activeFilesWithMissingOrStaleStats,
 			activeFilesMissingPlainTextChunks,
@@ -3502,7 +3553,7 @@ export const enqueue_missing_plain_text_chunk_materializations = internalMutatio
 	handler: async (ctx, args) => {
 		const result = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_archiveOperation_kind_path", (q) =>
+			.withIndex("by_workspace_project_archiveOperation_kind_treePath", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)

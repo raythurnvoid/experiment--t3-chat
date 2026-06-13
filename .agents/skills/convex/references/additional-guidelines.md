@@ -463,20 +463,20 @@ Treat `.collect()` as a heavy read because it materializes the full result set i
 To fetch "all docs whose string field starts with `prefix`" without JS filtering, use a range on a regular index: lower bound the prefix, upper bound the prefix plus `"\uffff"` (the max BMP code point, so every extension of the prefix sorts below it):
 
 ```ts
-.withIndex("by_workspace_project_archiveOperation_path", (q) =>
-	q.eq("workspaceId", wid).eq("projectId", pid).eq("archiveOperationId", undefined)
-		.gte("path", prefix)
-		.lt("path", `${prefix}\uffff`),
+.withIndex("by_workspace_project_slug", (q) =>
+	q.eq("workspaceId", wid).eq("projectId", pid)
+		.gte("slug", prefix)
+		.lt("slug", `${prefix}\uffff`),
 )
 ```
 
-See `files_nodes.list_path_prefix_paginated` for a live example.
+Use this raw form for true string-prefix scans. For file-tree scans, use the materialized `files_nodes.treePath` key instead of raw `path`: files and root store their canonical path, and non-root folders store `path + "/"`. A range such as `treePath >= "/docs/" && treePath < "/docs/\uffff"` includes the `/docs` folder itself first, includes its descendants, and excludes sibling-prefix paths such as `/docs-archive`.
 
 This only works on regular indexes. Search indexes (`withSearchIndex`) accept exactly one `.search()` plus `.eq()` on `filterFields` — equality only, no `gte`/`lt` — so a prefix constraint on a full-text query cannot ride the search index. Express the same range as a post-index `.filter()` instead (see the next section for what `.filter()` does to pagination):
 
 ```ts
 .withSearchIndex("search_path", (q) => q.search("path", words).eq("workspaceId", wid))
-.filter((q) => q.and(q.gte(q.field("path"), prefix), q.lt(q.field("path"), `${prefix}\uffff`)))
+.filter((q) => q.and(q.gte(q.field("treePath"), treePathPrefix), q.lt(q.field("treePath"), `${treePathPrefix}\uffff`)))
 ```
 
 See `files_nodes.search_paths_paginated` for a live example.

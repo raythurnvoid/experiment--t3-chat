@@ -191,6 +191,7 @@ async function seed_file_with_markdown(args: {
 		workspaceId,
 		projectId,
 		path,
+		treePath: path,
 		pathDepth: path === "/" ? 0 : path.split("/").filter(Boolean).length,
 		name,
 		kind: "file",

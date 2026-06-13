@@ -56,11 +56,13 @@ async function db_purge_workspace_project_content(
 
 	// files_pending_updates (tenant docs + cleanup tasks + file ids used to locate file-scoped background jobs)
 	const pendingUpdateIds: Array<Id<"files_pending_updates">> = [];
-	for await (const doc of ctx.db.query("files_pending_updates")) {
-		if (doc.workspaceId === workspaceId && doc.projectId === projectId) {
+	for await (const doc of ctx.db
+		.query("files_pending_updates")
+		.withIndex("by_workspace_project_user_file", (q) =>
+			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		)) {
 			pendingUpdateIds.push(doc._id);
 		}
-	}
 
 	const pendingUpdateCleanupTaskIds: Array<Id<"files_pending_updates_cleanup_tasks">> = [];
 	for (const pendingUpdateId of pendingUpdateIds) {
@@ -152,13 +154,15 @@ async function db_purge_workspace_project_content(
 		chatMessagesIds.push(doc._id);
 	}
 
-	// files_pending_updates_last_sequence_saved (full table scan; filter in memory)
+	// files_pending_updates_last_sequence_saved
 	const filesPendingUpdatesLastSequenceSavedIds: Array<Id<"files_pending_updates_last_sequence_saved">> = [];
-	for await (const doc of ctx.db.query("files_pending_updates_last_sequence_saved")) {
-		if (doc.workspaceId === workspaceId && doc.projectId === projectId) {
+	for await (const doc of ctx.db
+		.query("files_pending_updates_last_sequence_saved")
+		.withIndex("by_workspace_project_file_user", (q) =>
+			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		)) {
 			filesPendingUpdatesLastSequenceSavedIds.push(doc._id);
 		}
-	}
 
 	// files_plain_text_chunks
 	const filesPlainTextChunksIds: Array<Id<"files_plain_text_chunks">> = [];

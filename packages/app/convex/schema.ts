@@ -188,6 +188,14 @@ const app_convex_schema = defineSchema({
 		projectId: v.string(),
 		/** Materialized absolute path used for path resolution */
 		path: v.string(),
+		/**
+		 * Materialized subtree scan key used only for ordered tree range queries.
+		 *
+		 * Files and root use their canonical `path`. Non-root folders use `path + "/"`, so a range like
+		 * `treePath >= "/docs/" && treePath < "/docs/\uffff"` returns `/docs` first
+		 * followed by descendants, while excluding sibling-prefix paths such as `/docs-archive`.
+		 */
+		treePath: v.string(),
 		/** Absolute path segment count; root is 0. */
 		pathDepth: v.number(),
 		/** Lowercase file extension without the dot; folders and extensionless files use null. */
@@ -245,21 +253,26 @@ const app_convex_schema = defineSchema({
 			"updatedAt",
 		])
 		.index("by_workspace_project_path_archiveOperation", ["workspaceId", "projectId", "path", "archiveOperationId"])
-		.index("by_workspace_project_archiveOperation_path", ["workspaceId", "projectId", "archiveOperationId", "path"])
-		.index("by_workspace_project_archiveOperation_kind_path", [
+		.index("by_workspace_project_archiveOperation_treePath", [
+			"workspaceId",
+			"projectId",
+			"archiveOperationId",
+			"treePath",
+		])
+		.index("by_workspace_project_archiveOperation_kind_treePath", [
 			"workspaceId",
 			"projectId",
 			"archiveOperationId",
 			"kind",
-			"path",
+			"treePath",
 		])
-		.index("by_workspace_project_archiveOperation_kind_ext_path", [
+		.index("by_workspace_project_archiveOperation_kind_ext_treePath", [
 			"workspaceId",
 			"projectId",
 			"archiveOperationId",
 			"kind",
 			"lowercaseExtension",
-			"path",
+			"treePath",
 		])
 		.index("by_workspace_project_archiveOperation_updatedAt", [
 			"workspaceId",

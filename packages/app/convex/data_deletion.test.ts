@@ -90,6 +90,7 @@ async function data_deletion_test_seed_page(
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		path: `/${args.tag}`,
+		treePath: `/${args.tag}`,
 		pathDepth: 1,
 		name: args.tag,
 		kind: "file",
