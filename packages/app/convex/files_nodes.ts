@@ -3110,6 +3110,7 @@ export const search_paths_paginated = internalQuery({
 		cursor: paginationOptsValidator.fields.cursor,
 		kind: v.optional(v.union(v.literal("folder"), v.literal("file"))),
 		parentId: v.optional(v.union(v.id("files_nodes"), v.literal(files_ROOT_ID))),
+		pathPrefix: v.optional(v.string()),
 	},
 	returns: v.object({
 		items: v.array(
@@ -3135,7 +3136,9 @@ export const search_paths_paginated = internalQuery({
 			}
 		}
 
-		const result = await ctx.db
+		const pathPrefixFilter = args.pathPrefix == null || args.pathPrefix === "/" ? null : `${args.pathPrefix}/`;
+
+		let searchQuery = ctx.db
 			.query("files_nodes")
 			.withSearchIndex("search_path", (q) => {
 				const base = q
@@ -3154,11 +3157,21 @@ export const search_paths_paginated = internalQuery({
 					return base.eq("parentId", args.parentId);
 				}
 				return base;
-			})
-			.paginate({
-				cursor: args.cursor,
-				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
 			});
+		// Subtree scope rides a post-index `.filter()` (search filterFields are equality-only, so a
+		// prefix range cannot ride the index): numItems counts rows that pass the filter, so pages
+		// fill with descendants instead of thinning, and the `\uffff` upper bound keeps a
+		// sibling-prefix folder like /foo-bar out of a /foo scope.
+		if (pathPrefixFilter != null) {
+			searchQuery = searchQuery.filter((q) =>
+				q.and(q.gte(q.field("path"), pathPrefixFilter), q.lt(q.field("path"), `${pathPrefixFilter}\uffff`)),
+			);
+		}
+
+		const result = await searchQuery.paginate({
+			cursor: args.cursor,
+			numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+		});
 
 		return {
 			items: result.page.map((file) => ({

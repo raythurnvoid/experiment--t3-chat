@@ -57,14 +57,14 @@ describe("ai_chat_files /tmp persistence", () => {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
-				file_nodes: [
+				fileNodes: [
 					{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
 					{ path: "/b.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
 				],
-				file_nodes_content: [
-					{ path: "/a.txt", bytes: bytes("one") },
-					{ path: "/b.txt", bytes: bytes("two") },
-				],
+				fileNodesContentDict: {
+					"/a.txt": bytes("one"),
+					"/b.txt": bytes("two"),
+				},
 				deletePaths: [],
 			}),
 		);
@@ -74,8 +74,8 @@ describe("ai_chat_files /tmp persistence", () => {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
-				file_nodes: [{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now + 1 }],
-				file_nodes_content: [{ path: "/a.txt", bytes: bytes("ONE") }],
+				fileNodes: [{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now + 1 }],
+				fileNodesContentDict: { "/a.txt": bytes("ONE") },
 				deletePaths: ["/b.txt"],
 			}),
 		);
@@ -103,8 +103,8 @@ describe("ai_chat_files /tmp persistence", () => {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
-				file_nodes: [{ path: "/node", kind: "file", mode: 0o100644, size: 4, mtime: now }],
-				file_nodes_content: [{ path: "/node", bytes: bytes("file") }],
+				fileNodes: [{ path: "/node", kind: "file", mode: 0o100644, size: 4, mtime: now }],
+				fileNodesContentDict: { "/node": bytes("file") },
 				deletePaths: [],
 			}),
 		);
@@ -114,8 +114,8 @@ describe("ai_chat_files /tmp persistence", () => {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
-				file_nodes: [{ path: "/node", kind: "directory", mode: 0o40755, size: 0, mtime: now + 1 }],
-				file_nodes_content: [],
+				fileNodes: [{ path: "/node", kind: "directory", mode: 0o40755, size: 0, mtime: now + 1 }],
+				fileNodesContentDict: {},
 				deletePaths: [],
 			}),
 		);
@@ -147,12 +147,12 @@ describe("ai_chat_files /tmp persistence", () => {
 				workspaceId: ctxData.workspaceId,
 				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
-				file_nodes: [
+				fileNodes: [
 					{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
 					{ path: "/dir", kind: "directory", mode: 0o40755, size: 0, mtime: now },
 					{ path: "/link", kind: "symlink", mode: 0o120777, size: 6, mtime: now, symlinkTargetPath: "/a.txt" },
 				],
-				file_nodes_content: [{ path: "/a.txt", bytes: bytes("one") }],
+				fileNodesContentDict: { "/a.txt": bytes("one") },
 				deletePaths: [],
 			}),
 		);

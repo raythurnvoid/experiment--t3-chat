@@ -496,6 +496,8 @@ Write a comment when the code:
 
 Skip comments that restate the code, narrate trivial flow, or document self-evident functions.
 
+Place comments for control-flow branches and loops immediately before the `if`, `else if`, `else`, `for`, or `while` block they explain, rather than as the first line inside the block, so the comment remains visible when the block is collapsed in the IDE.
+
 Preserve and update existing product-requirement comments when refactoring; a stale comment is worse than none.
 
 Use imperative second-person voice ("Keep...", "Use...", "Guard...") rather than descriptive narration ("Keeps...", "Uses...", "Guards..."). Skip this for doc-style prose where it would be unnatural.

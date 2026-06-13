@@ -55,6 +55,7 @@ Use `state.appPlaywriterHarness.appendMemory({ file, title, body })` only for re
 Allowed memory files:
 
 - `app-map.md`
+- `agent-panel.md`
 - `files.md`
 - `known-hazards.md`
 - `snippets.md`
@@ -64,6 +65,7 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 ## References
 
 - Read `references/app-map.md` for stable app routes, landmarks, and selectors.
+- Read `references/agent-panel.md` for AI chat / agent panel selectors, the ProseMirror composer recipe, doneness polling, and backgrounded-tab recovery (`scripts/agent-chat-helpers.js` installs `state.qa`).
 - Read `references/files.md` for `/files` route and file/sidebar basics.
 - Read `references/file-node-view.md` for selected-file editor surfaces, comments, diff, and right-sidebar workflows.
 - Read `references/known-hazards.md` before debugging browser interaction failures.

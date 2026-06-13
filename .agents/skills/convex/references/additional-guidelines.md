@@ -458,6 +458,42 @@ Treat `.collect()` as a heavy read because it materializes the full result set i
 - Avoid `unique()` on normal read paths because it throws when duplicate docs exist. Use it only when throwing on duplicates is the behavior you explicitly want.
 - Keep `collect` + JS filtering only for predicates Convex cannot express cleanly, especially missing optional-field logic.
 
+## Performance: prefix scans via index range (`\uffff` upper bound)
+
+To fetch "all docs whose string field starts with `prefix`" without JS filtering, use a range on a regular index: lower bound the prefix, upper bound the prefix plus `"\uffff"` (the max BMP code point, so every extension of the prefix sorts below it):
+
+```ts
+.withIndex("by_workspace_project_archiveOperation_path", (q) =>
+	q.eq("workspaceId", wid).eq("projectId", pid).eq("archiveOperationId", undefined)
+		.gte("path", prefix)
+		.lt("path", `${prefix}\uffff`),
+)
+```
+
+See `files_nodes.list_path_prefix_paginated` for a live example.
+
+This only works on regular indexes. Search indexes (`withSearchIndex`) accept exactly one `.search()` plus `.eq()` on `filterFields` — equality only, no `gte`/`lt` — so a prefix constraint on a full-text query cannot ride the search index. Express the same range as a post-index `.filter()` instead (see the next section for what `.filter()` does to pagination):
+
+```ts
+.withSearchIndex("search_path", (q) => q.search("path", words).eq("workspaceId", wid))
+.filter((q) => q.and(q.gte(q.field("path"), prefix), q.lt(q.field("path"), `${prefix}\uffff`)))
+```
+
+See `files_nodes.search_paths_paginated` for a live example.
+
+## Pagination: `.filter()` semantics, short pages, and empty pages
+
+`.filter()` is never index-backed: the query scans every row the index range yields and drops non-matches one by one, exactly like filtering in JS afterwards. What differs is the pagination accounting (verified live against a dev deployment):
+
+- **`.filter()` before `.paginate()`**: `numItems` counts rows that *pass* the filter. The scan continues past non-matching rows until the page fills, the range ends, or the scan budget runs out (`maximumRowsRead` / `maximumBytesRead` in `paginationOptsValidator`, with server-side defaults). Pages come back full — but at the budget a page can still be short or even empty with `isDone: false` and `pageStatus: "SplitRequired"`. A selective filter over a big table can scan up to the whole budget to fill one page.
+- **JS post-filter after `.paginate()`**: paginate reads exactly `numItems` rows, then survivors are dropped, so pages thin — possibly to zero — while `isDone` stays false. Per-call reads stay flat and bounded.
+
+Rules that follow:
+
+- **Never treat an empty page as "done".** Under either approach an empty page with `isDone: false` is normal; only `isDone` ends pagination. Always continue on `continueCursor`.
+- Both approaches scan the same rows overall — choose by who pays. Prefer `.filter()` when the consumer wants full pages (fewer round-trips); prefer the JS post-filter only when per-call read cost must stay flat.
+- Either way, `.filter()`/JS filtering is the fallback, not the default: express the predicate on an index (`withIndex` range, search-index `filterFields` equality) whenever the schema allows.
+
 ## Query cache and composition
 
 Convex query results are automatically cached by the client and kept consistent via subscriptions. In this codebase, treat query-cache reuse as a first-class design constraint when shaping public queries.

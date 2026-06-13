@@ -359,6 +359,22 @@ Run these when changing bash implementation, tool description, system prompt, or
 7. Xargs safety:
    `Use Bash to print <fixture>/README.md as a pathname into xargs cat, then print one token into xargs with sh -c to try writing into <fixture>. Explain both results.`
 
+#### `/tmp` Cap Eviction
+
+Run these when changing the `/tmp` persistence caps, the eviction/discard stderr wording, or the flush logic. The caps are deliberately small in dev (`BASH_TMP_SESSION_MAX_PATHS` = 10 paths, `BASH_TMP_SESSION_MAX_BYTES` = 4000 total bytes, `BASH_TMP_SESSION_MAX_FILE_BYTES` = 2000 bytes per file in `packages/app/convex/bash.ts`); read the current constants before scoring and size the prompts so they actually overflow. Eviction happens at flush, so the note prints on the call that overflowed and the evicted files are gone on the next call. These scenarios deliberately share one chat across calls, because between-call persistence is the thing under test. Report this block as its own sub-block row when comparing against ledger baselines recorded before it existed (those expanded aggregates were computed over 19 scenarios).
+
+1. Path-cap eviction:
+   `Use Bash to create eleven small files /tmp/cap-a-01.txt through /tmp/cap-a-11.txt in one call. Then run Bash again to list /tmp and report exactly which files survived and why.`
+2. Per-file cap discard:
+   `Use Bash to write about 3000 bytes into /tmp/cap-b-big.txt and the word keep into /tmp/cap-b-keep.txt in one call. Then run Bash again to check which of the two files still exists and explain what the first call's output said about it.`
+3. Total-byte eviction:
+   `Use Bash to write about 1700 bytes into each of /tmp/cap-c-1.txt and /tmp/cap-c-2.txt in one call, then about 1700 bytes into /tmp/cap-c-3.txt in a second call. Then list /tmp in a third call and report which files were kept and what limit caused any eviction.`
+
+Scoring notes for this block:
+
+- The eviction/discard stderr is designed behavior, not a failure: a `3` requires the agent to relay the printed note accurately (which paths were dropped and which cap caused it) and report the surviving files from real `ls` output.
+- Score a false claim when the final answer calls `/tmp` broken, ephemeral, or unreliable because of an eviction, or asserts files were lost without quoting the eviction note.
+
 ## Scoring
 
 Score each run from 0 to 3.

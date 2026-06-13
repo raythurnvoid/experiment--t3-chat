@@ -15,9 +15,12 @@ Use this file for reusable problems that affect app browser QA.
 - Avoid JavaScript template literals in PowerShell `-e` snippets. PowerShell treats backticks as escapes, so use string concatenation or put the script in a file/here-string before passing it to Playwriter.
 - `pnpx playwriter session new` can print status text plus the session id. Parse the `Session <id> created` line instead of using the whole trimmed output as the id.
 - If multiple Edge profiles are reported, choose the explicit `--browser profile:<key>` value. Do not use the auto-selected profile when Playwriter says multiple browsers were detected.
+- The t3-chat app tabs live in the personal Edge profile (`profile:909172d3ee56c25e`). With both profiles connected, the Playwriter MCP fails with "Multiple extensions connected" — use the raw CLI with the explicit profile key for every session.
 - For long or assertion-heavy Playwriter flows, write the JavaScript to a temporary file and run `pnpx playwriter -s $session -f $scriptPath --timeout <ms>`; this avoids PowerShell quote corruption and makes reruns safer.
 - Playwriter execute snippets do not automatically provide Playwright Test's `expect`. Use manual polling or import only the small assertion utility you need.
 - If the user says the extension is active but `pnpx playwriter browser list` reports `No browsers detected`, restart the relay with `pnpx playwriter serve --host localhost --replace`, then check again. If the relay still sees no extension, start a managed Edge profile with Playwriter's bundled extension: `pnpx playwriter browser start "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --user-data-dir $env:TEMP\playwriter-t3-chat-profile --headed`. Then run `pnpx playwriter browser list`, create a session with the reported `install:Edge:<id>` key, and navigate the target URL from that session.
+- Edge can relaunch itself after an OS/Edge upgrade (`--os-upgraded-session` on the main process), dropping the personal-profile window and the Playwriter extension (`not connected`, exit 9); active sessions die. Recovery: follow CLAUDE.md 10a and run `node C:\Users\rt0\.cursor\skills\edge-remote-debugging-mcp\scripts\start-edge-personal-browser.mjs` (safe — opens a window in the running instance, no kill), confirm `pnpx playwriter browser list` shows the personal profile key again, create a new session with `--browser profile:<key>`, then re-bind the app tab and re-install helpers.
+- Fresh Playwriter sessions start with an empty `state` (`{}`); executor scripts receive a bare global `context` (the Playwright BrowserContext), not `state.context`. Bind with `context.pages()` / `context.newPage()` and assign `state.page` yourself before relying on it.
 - A React render loop can overwhelm the Playwriter relay and make the tab appear frozen. Check `getLatestLogs({ search: /Maximum update depth|too much recursion|render/i })` and the relay/CDP logs before retrying. After fixing the app loop, close or kill only the stuck localhost renderer tab, restart the relay with `pnpx playwriter serve --host localhost --replace`, recreate/bind a session, and reload the `/files` route.
 
 ## Interaction Discipline
@@ -27,6 +30,13 @@ Use this file for reusable problems that affect app browser QA.
 - Do not use `{ force: true }`, `dispatchEvent`, or DOM `element.click()` to bypass blockers.
 - For clickability bugs, use `hitTest(...)` or `inspectElement(...)` to identify the topmost element instead of retrying alternate selectors.
 - If a visible button is blocked by a text-only tooltip portal, inspect `document.elementFromPoint(...)` at the button center. Tooltip content and its portal wrapper should have `pointer-events: none`; check `packages/app/src/components/my-tooltip.css` before working around it in Playwriter.
+
+## Backgrounded Tabs
+
+- On a backgrounded localhost tab, `snapshot()`, `screenshot()`, and `innerText` are unreliable. Read state via `evaluate()` with `textContent`, `getComputedStyle`, and `getBoundingClientRect`.
+- `locator.click()` on popover triggers can hang on a backgrounded tab. Prefer foregrounding the tab; if that is not possible, DOM `el.click()` is the documented exception to the no-`element.click()` rule (see `agent-panel.md`).
+- Convex deploy (`convex dev --once`) and Vite HMR can blank a backgrounded tab entirely (empty body, all selectors gone). Recover with the reload recipe in `agent-panel.md` before the next interaction.
+- Hidden hoisted modals keep `aria-busy="true"` while closed (0x0 rect). Busy/idle checks must count only visible `aria-busy` elements or they will report busy forever.
 
 ## App State
 

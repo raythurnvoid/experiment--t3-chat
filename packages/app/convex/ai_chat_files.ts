@@ -44,7 +44,7 @@ export const patch_thread_tmp_files = internalMutation({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		threadId: v.id("ai_chat_threads"),
-		file_nodes: v.array(
+		fileNodes: v.array(
 			v.object({
 				path: v.string(),
 				kind: v.union(v.literal("file"), v.literal("directory"), v.literal("symlink")),
@@ -54,18 +54,11 @@ export const patch_thread_tmp_files = internalMutation({
 				symlinkTargetPath: v.optional(v.string()),
 			}),
 		),
-		file_nodes_content: v.array(
-			v.object({
-				path: v.string(),
-				bytes: v.bytes(),
-			}),
-		),
+		fileNodesContentDict: v.record(v.string(), v.bytes()),
 		deletePaths: v.array(v.string()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const contentByPath = new Map(args.file_nodes_content.map((content) => [content.path, content.bytes]));
-
 		const existingAiChatFiles = await ctx.db
 			.query("ai_chat_files")
 			.withIndex("by_thread_path", (q) => q.eq("threadId", args.threadId))
@@ -90,7 +83,7 @@ export const patch_thread_tmp_files = internalMutation({
 		);
 
 		await Promise.all(
-			args.file_nodes.map(async (fileNode) => {
+			args.fileNodes.map(async (fileNode) => {
 				const doc = {
 					workspaceId: args.workspaceId,
 					projectId: args.projectId,
@@ -121,7 +114,7 @@ export const patch_thread_tmp_files = internalMutation({
 					return;
 				}
 
-				const bytes = contentByPath.get(fileNode.path);
+				const bytes = args.fileNodesContentDict[fileNode.path];
 				if (bytes === undefined) {
 					return;
 				}

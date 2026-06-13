@@ -3,7 +3,18 @@ import { memo, useEffect, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { DragDropContext, Draggable, Droppable, type DropResult } from "@hello-pangea/dnd";
 import { Link } from "@tanstack/react-router";
-import { ArchiveIcon, ArchiveRestoreIcon, ArrowUpRight, Clock, Copy, EllipsisVertical, GripVertical, Plus, Star, X } from "lucide-react";
+import {
+	ArchiveIcon,
+	ArchiveRestoreIcon,
+	ArrowUpRight,
+	Clock,
+	Copy,
+	EllipsisVertical,
+	GripVertical,
+	Plus,
+	Star,
+	X,
+} from "lucide-react";
 import { AiChatThread } from "@/components/ai-chat/ai-chat.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import type { MyButton_ClassNames } from "@/components/my-button.tsx";
@@ -868,7 +879,9 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 		if (!threadId) {
 			return;
 		}
-		if (threadId !== selectedChatTabId) {
+		// A selected thread without a tab (e.g. branching selects the new thread
+		// directly on the controller) skips this return so it gets a tab below.
+		if (threadId !== selectedChatTabId && openTabs.some((tab) => tab.id === threadId)) {
 			return;
 		}
 
