@@ -31,6 +31,7 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 	workspaceId: "",
 	projectId: "",
 	path: "/",
+	treePath: "/",
 	pathDepth: 0,
 	lowercaseExtension: null,
 	name: "",
@@ -54,6 +55,7 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 		parentId: "";
 		name: "";
 		path: "/";
+		treePath: "/";
 		updatedBy: "";
 		updatedAt: 0;
 		createdBy: "";

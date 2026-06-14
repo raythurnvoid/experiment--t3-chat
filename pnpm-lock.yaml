@@ -518,8 +518,8 @@ importers:
         specifier: 1.0.0
         version: 1.0.0
       convex-test:
-        specifier: ^0.0.41
-        version: 0.0.41(convex@1.31.7(@clerk/clerk-react@5.61.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4))
+        specifier: ^0.0.53
+        version: 0.0.53(convex@1.31.7(@clerk/clerk-react@5.61.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4))
       culori:
         specifier: ^4.0.2
         version: 4.0.2
@@ -11878,6 +11878,11 @@ packages:
 
   convex-test@0.0.48:
     resolution: {integrity: sha512-ewAkXwNJE0TpHAfHJt38NR6ZsArqdzd4HUy9BxegKENvupYwWCVJezFfkIJoYaZThqPABEfmiChvG8KCqCTm5w==}
+    peerDependencies:
+      convex: 1.31.7
+
+  convex-test@0.0.53:
+    resolution: {integrity: sha512-bouZQTnTvZi8IHljHL++yClj1vcV+/9ZxEcd8JZz7RDxOfPkRKrkMgkk/xlX4M1EAiwcEJPNiQE7VJFvDM3lCQ==}
     peerDependencies:
       convex: 1.31.7
 
@@ -33128,6 +33133,10 @@ snapshots:
       convex: 1.31.7(@clerk/clerk-react@5.61.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)
 
   convex-test@0.0.48(convex@1.31.7(@clerk/clerk-react@5.61.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)):
+    dependencies:
+      convex: 1.31.7(@clerk/clerk-react@5.61.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)
+
+  convex-test@0.0.53(convex@1.31.7(@clerk/clerk-react@5.61.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)):
     dependencies:
       convex: 1.31.7(@clerk/clerk-react@5.61.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)
 

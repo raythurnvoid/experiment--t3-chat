@@ -1245,6 +1245,8 @@ export const hard_delete_user_now = internalAction({
 		purgeUserMod: v.optional(
 			v.union(v.literal("data"), v.literal("data_and_auth"), v.literal("data_auth_and_user_record")),
 		),
+		_test_batchSize: v.optional(v.number()),
+		_test_disableReschedule: v.optional(v.boolean()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -1258,9 +1260,21 @@ export const hard_delete_user_now = internalAction({
 		const purgeUserMod = args.purgeUserMod ?? "data";
 		if (purgeUserMod === "data") {
 			// Treat data mode as a live account reset; keep it out of the account-deletion billing/auth cleanup below.
-			await ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
-				userId: user._id,
-			});
+			for (let step = 0; step < 25; step += 1) {
+				const result = await ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+					userId: user._id,
+					_test_batchSize: args._test_batchSize,
+				});
+				if (result.done) {
+					return null;
+				}
+			}
+			if (!args._test_disableReschedule) {
+				await ctx.scheduler.runAfter(0, internal.users.hard_delete_user_now, {
+					userId: user._id,
+					purgeUserMod: "data",
+				});
+			}
 			return null;
 		}
 
@@ -1328,6 +1342,22 @@ export const hard_delete_user_now = internalAction({
 			deleteUserAuth: purgeAuth,
 			deleteBillingState: purgeUserRecord,
 		});
+		let hasDeletionRequests = false;
+		for (let step = 0; step < 40; step += 1) {
+			await ctx.runAction(internal.data_deletion.run_process_deletion_requests_once, {
+				_test_batchSize: args._test_batchSize,
+				_test_disableReschedule: true,
+			});
+			hasDeletionRequests = await ctx.runQuery(internal.data_deletion.has_deletion_requests_for_user, {
+				userId: user._id,
+			});
+			if (!hasDeletionRequests) {
+				break;
+			}
+		}
+		if (hasDeletionRequests && !args._test_disableReschedule) {
+			await ctx.scheduler.runAfter(0, internal.data_deletion.enqueue_deletion_requests_processing, {});
+		}
 
 		if (purgeUserRecord) {
 			await ctx.runMutation(internal.users.purge_deleted_user_tombstone, {

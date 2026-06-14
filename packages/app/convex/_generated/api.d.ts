@@ -93,6 +93,7 @@ export declare const components: {
   billing_workpool_usage_event: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"billing_workpool_usage_event">;
   files_content_materialization_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"files_content_materialization_workpool">;
   files_upload_conversion_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"files_upload_conversion_workpool">;
+  data_deletion_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"data_deletion_workpool">;
   rate_limiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rate_limiter">;
   r2: import("@convex-dev/r2/_generated/component.js").ComponentApi<"r2">;
 };

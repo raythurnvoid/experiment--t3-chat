@@ -194,7 +194,7 @@ export const backfill_workspace_home_memberships = app_migrations.define({
 				q.eq("userId", membership.userId).eq("workspaceId", membership.workspaceId).eq("projectId", defaultProjectId),
 			)
 			.collect();
-		if (existingHomeMemberships.some((homeMembership) => homeMembership.active !== false)) {
+		if (existingHomeMemberships.some((homeMembership) => homeMembership.active === true)) {
 			return;
 		}
 

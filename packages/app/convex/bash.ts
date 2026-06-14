@@ -6782,15 +6782,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			// Spy-delegate ctx: every downstream function runs for real against the in-memory DB
 			// while the spies keep call-shape assertions (toHaveBeenCalledWith) working.
-			const runQuery = vi.fn((ref: unknown, queryArgs: Record<string, unknown>) =>
-				t.query(ref as never, queryArgs as never),
-			);
+			const testQuery = t.query as unknown as (ref: unknown, args: Record<string, unknown>) => Promise<unknown>;
+			const testMutation = t.mutation as unknown as (ref: unknown, args: Record<string, unknown>) => Promise<unknown>;
+			const testAction = t.action as unknown as (ref: unknown, args: Record<string, unknown>) => Promise<unknown>;
+			const runQuery = vi.fn((ref: unknown, queryArgs: Record<string, unknown>) => testQuery(ref, queryArgs));
 			const runMutation = vi.fn((ref: unknown, mutationArgs: Record<string, unknown>) =>
-				t.mutation(ref as never, mutationArgs as never),
+				testMutation(ref, mutationArgs),
 			);
-			const runAction = vi.fn((ref: unknown, actionArgs: Record<string, unknown>) =>
-				t.action(ref as never, actionArgs as never),
-			);
+			const runAction = vi.fn((ref: unknown, actionArgs: Record<string, unknown>) => testAction(ref, actionArgs));
 			const ctx = { runQuery, runMutation, runAction } as unknown as ActionCtx;
 
 			const ctxData = {

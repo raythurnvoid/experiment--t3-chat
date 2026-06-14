@@ -105,6 +105,7 @@ const app_convex_schema = defineSchema({
 		bytes: v.bytes(),
 	})
 		.index("by_fileNode", ["fileNodeId"])
+		.index("by_workspace_project_fileNode", ["workspaceId", "projectId", "fileNodeId"])
 		.index("by_thread_fileNode", ["threadId", "fileNodeId"]),
 
 	// #endregion ai
@@ -415,7 +416,9 @@ const app_convex_schema = defineSchema({
 		fileNodeId: v.id("files_nodes"),
 		jobId: vWorkId,
 		targetSequence: v.number(),
-	}).index("by_fileNode", ["fileNodeId"]),
+	})
+		.index("by_fileNode", ["fileNodeId"])
+		.index("by_workspace_project_fileNode", ["workspaceId", "projectId", "fileNodeId"]),
 
 	files_snapshots: defineTable({
 		workspaceId: v.string(),
@@ -487,7 +490,9 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.optional(v.id("workspaces")),
 		projectId: v.optional(v.id("workspaces_projects")),
 		scope: v.union(v.literal("project"), v.literal("workspace"), v.literal("user")),
+		eligibleAt: v.number(),
 	})
+		.index("by_scope_eligibleAt", ["scope", "eligibleAt"])
 		.index("by_workspace_project", ["workspaceId", "projectId"])
 		.index("by_user_scope", ["userId", "scope"])
 		.index("by_workspace_scope", ["workspaceId", "scope"])
@@ -607,9 +612,9 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.optional(v.number()),
 		/**
 		 * `false` during account-deletion retention so memberships stay recoverable but non-effective.
-		 * Omit or `true` for normal active membership. Backfilled to `true` via migration.
+		 * `true` for normal active membership.
 		 */
-		active: v.optional(v.boolean()),
+		active: v.boolean(),
 	})
 		.index("by_project_user_active", ["projectId", "userId", "active"])
 		.index("by_user_workspace_project_active", ["userId", "workspaceId", "projectId", "active"])

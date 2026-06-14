@@ -178,7 +178,7 @@
 		"@vitejs/plugin-react": "^5.1.4",
 		"@vitest/browser": "3.2.4",
 		"babel-plugin-react-compiler": "1.0.0",
-		"convex-test": "^0.0.41",
+		"convex-test": "^0.0.53",
 		"culori": "^4.0.2",
 		"globals": "^16.5.0",
 		"pixelmatch": "^7.1.0",

@@ -39,6 +39,7 @@ const createTreeItem = (args: {
 		projectId: "project",
 		parentId: args.parentId === files_ROOT_ID ? files_ROOT_ID : (args.parentId as Id<"files_nodes">),
 		path,
+		treePath: args.kind === "folder" && path !== "/" ? `${path}/` : path,
 		pathDepth: path === "/" ? 0 : path.split("/").filter(Boolean).length,
 		name: args.name,
 		kind: args.kind,

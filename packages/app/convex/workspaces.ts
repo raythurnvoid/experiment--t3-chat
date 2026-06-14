@@ -22,7 +22,7 @@ import {
 	access_control_db_has_permission,
 	access_control_workspace_role_permission_grants,
 } from "./access_control.ts";
-import { data_deletion_db_request } from "../server/data_deletion.ts";
+import { data_deletion_db_request } from "./data_deletion.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
 /**

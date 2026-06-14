@@ -16,6 +16,6 @@ crons.cron("cleanup expired value store entries", "30 4 * * *", internal.value_s
 crons.cron("cleanup old snapshots", "0 5 * * *", internal.files_nodes.cleanup_old_snapshots, {});
 
 // Once daily at 06:00 UTC — workspace/content purge plus eligible hard user-account deletes.
-crons.cron("unified delayed data deletion pipeline", "0 6 * * *", internal.data_deletion.process_deletion_requests, {});
+crons.cron("unified delayed data deletion pipeline", "0 6 * * *", internal.data_deletion.enqueue_deletion_requests_processing, {});
 
 export default crons;

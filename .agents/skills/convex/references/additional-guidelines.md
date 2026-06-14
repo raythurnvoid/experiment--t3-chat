@@ -2,6 +2,10 @@
 
 These extend the base Convex guidance in [../SKILL.md](../SKILL.md) with patterns that are specific to this repository. Read this file before writing or modifying Convex code under `packages/app/convex/**`.
 
+# Convex terminology in comments
+
+Use **doc/docs** when referring to entries in Convex tables in code comments, tests, and project guidance. Avoid **row/rows** unless quoting a Convex API field name, a database-neutral external source, or an existing identifier that must not be renamed.
+
 # HTTP routes typing pattern (this repo)
 
 This codebase defines HTTP routes using a “route builder” pattern that keeps runtime behavior and types in one place.
@@ -483,15 +487,15 @@ See `files_nodes.search_paths_paginated` for a live example.
 
 ## Pagination: `.filter()` semantics, short pages, and empty pages
 
-`.filter()` is never index-backed: the query scans every row the index range yields and drops non-matches one by one, exactly like filtering in JS afterwards. What differs is the pagination accounting (verified live against a dev deployment):
+`.filter()` is never index-backed: the query scans every doc the index range yields and drops non-matches one by one, exactly like filtering in JS afterwards. What differs is the pagination accounting (verified live against a dev deployment):
 
-- **`.filter()` before `.paginate()`**: `numItems` counts rows that *pass* the filter. The scan continues past non-matching rows until the page fills, the range ends, or the scan budget runs out (`maximumRowsRead` / `maximumBytesRead` in `paginationOptsValidator`, with server-side defaults). Pages come back full — but at the budget a page can still be short or even empty with `isDone: false` and `pageStatus: "SplitRequired"`. A selective filter over a big table can scan up to the whole budget to fill one page.
-- **JS post-filter after `.paginate()`**: paginate reads exactly `numItems` rows, then survivors are dropped, so pages thin — possibly to zero — while `isDone` stays false. Per-call reads stay flat and bounded.
+- **`.filter()` before `.paginate()`**: `numItems` counts docs that *pass* the filter. The scan continues past non-matching docs until the page fills, the range ends, or the scan budget runs out (`maximumRowsRead` / `maximumBytesRead` in `paginationOptsValidator`, with server-side defaults). Pages come back full — but at the budget a page can still be short or even empty with `isDone: false` and `pageStatus: "SplitRequired"`. A selective filter over a big table can scan up to the whole budget to fill one page.
+- **JS post-filter after `.paginate()`**: paginate reads exactly `numItems` docs, then survivors are dropped, so pages thin — possibly to zero — while `isDone` stays false. Per-call reads stay flat and limited.
 
 Rules that follow:
 
 - **Never treat an empty page as "done".** Under either approach an empty page with `isDone: false` is normal; only `isDone` ends pagination. Always continue on `continueCursor`.
-- Both approaches scan the same rows overall — choose by who pays. Prefer `.filter()` when the consumer wants full pages (fewer round-trips); prefer the JS post-filter only when per-call read cost must stay flat.
+- Both approaches scan the same docs overall — choose by who pays. Prefer `.filter()` when the consumer wants full pages (fewer round-trips); prefer the JS post-filter only when per-call read cost must stay flat.
 - Either way, `.filter()`/JS filtering is the fallback, not the default: express the predicate on an index (`withIndex` range, search-index `filterFields` equality) whenever the schema allows.
 
 ## Query cache and composition

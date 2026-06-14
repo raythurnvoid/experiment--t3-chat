@@ -1,11 +1,12 @@
 import { R2 } from "@convex-dev/r2";
+import { Workpool, type WorkId } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { presence } from "./presence.ts";
 import { test_convex } from "./setup.test.ts";
-import { data_deletion_db_request } from "../server/data_deletion.ts";
+import { data_deletion_db_request } from "./data_deletion.ts";
 
 const test = baseTest.sequential;
 import {
@@ -22,9 +23,11 @@ const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 beforeEach(() => {
 	vi.useFakeTimers();
+	vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	vi.clearAllTimers();
 	vi.useRealTimers();
 });
@@ -120,6 +123,449 @@ async function data_deletion_test_seed_page(
 	return {
 		nodeId,
 	} as const;
+}
+
+async function data_deletion_test_seed_project_content_bulk(
+	ctx: MutationCtx,
+	args: {
+		userId: Id<"users">;
+		workspaceId: string;
+		projectId: string;
+		count: number;
+		tag: string;
+	},
+) {
+	const r2Keys: string[] = [];
+	for (let i = 0; i < args.count; i += 1) {
+		const fileNodeId = await ctx.db.insert("files_nodes", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			path: `/${args.tag}-${i}.md`,
+			treePath: `/${args.tag}-${i}.md`,
+			pathDepth: 1,
+			name: `${args.tag}-${i}.md`,
+			kind: "file",
+			lowercaseExtension: "md",
+			parentId: "root",
+			createdBy: args.userId,
+			updatedBy: args.userId,
+			updatedAt: Date.now(),
+			contentType: "text/markdown;charset=utf-8",
+		});
+		const contentR2Key = `content/workspaces/${args.workspaceId}/projects/${args.projectId}/nodes/${args.tag}-${i}/markdown`;
+		const yjsR2Key = `content/workspaces/${args.workspaceId}/projects/${args.projectId}/nodes/${args.tag}-${i}/yjs`;
+		r2Keys.push(contentR2Key, yjsR2Key);
+		const [assetId, yjsAssetId] = await Promise.all([
+			ctx.db.insert("files_r2_assets", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				kind: "content",
+				r2Bucket: "test-bucket",
+				r2Key: contentR2Key,
+				size: 12,
+				createdBy: args.userId,
+				updatedAt: Date.now(),
+			}),
+			ctx.db.insert("files_r2_assets", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				kind: "yjs_snapshot",
+				r2Bucket: "test-bucket",
+				r2Key: yjsR2Key,
+				size: 12,
+				createdBy: args.userId,
+				updatedAt: Date.now(),
+			}),
+		]);
+		const [statsId, yjsSnapshotId, yjsLastSequenceId] = await Promise.all([
+			ctx.db.insert("file_stats", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				fileNodeId,
+				lineCount: 1,
+				wordCount: 2,
+				charCount: 12,
+			}),
+			ctx.db.insert("files_yjs_snapshots", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				fileNodeId,
+				sequence: 1,
+				assetId: yjsAssetId,
+				createdBy: args.userId,
+				updatedBy: String(args.userId),
+				updatedAt: Date.now(),
+			}),
+			ctx.db.insert("files_yjs_docs_last_sequences", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				fileNodeId,
+				lastSequence: 1,
+			}),
+		]);
+		await ctx.db.patch("files_nodes", fileNodeId, {
+			assetId,
+			statsId,
+			yjsSnapshotId,
+			yjsLastSequenceId,
+		});
+		const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			fileNodeId,
+			yjsSequence: 1,
+			chunkIndex: 0,
+			markdownChunk: `# ${args.tag} ${i}`,
+			startIndex: 0,
+			endIndex: 12,
+			lineStart: 1,
+			lineEnd: 1,
+			chunkFlags: 0,
+		});
+		await Promise.all([
+			ctx.db.insert("files_plain_text_chunks", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				fileNodeId,
+				yjsSequence: 1,
+				chunkIndex: 0,
+				path: `/${args.tag}-${i}.md`,
+				plainTextChunk: `${args.tag} ${i}`,
+				markdownChunkId,
+			}),
+			ctx.db.insert("files_yjs_updates", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				fileNodeId,
+				sequence: 1,
+				update: new ArrayBuffer(0),
+				origin: { type: "USER_EDIT", sessionId: `${args.tag}-${i}` },
+				createdBy: args.userId,
+				createdAt: Date.now(),
+			}),
+			ctx.db.insert("files_snapshots", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				fileNodeId,
+				assetId,
+				createdBy: args.userId,
+				archivedAt: -1,
+			}),
+		]);
+		if (i < 5) {
+			const pendingUpdateUpdatedAt = Date.now();
+			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				userId: String(args.userId),
+				fileNodeId,
+				baseYjsSequence: 0,
+				baseYjsUpdate: new ArrayBuffer(0),
+				stagedBranchYjsUpdate: new ArrayBuffer(0),
+				unstagedBranchYjsUpdate: new ArrayBuffer(0),
+				updatedAt: pendingUpdateUpdatedAt,
+			});
+			await ctx.db.insert("files_pending_updates_chunks", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				userId: String(args.userId),
+				fileNodeId,
+				pendingUpdateId,
+				chunkIndex: 0,
+				markdownChunk: `# pending ${i}`,
+				plainTextChunk: `pending ${i}`,
+				startIndex: 0,
+				endIndex: 10,
+				lineStart: 1,
+				lineEnd: 1,
+				chunkFlags: 0,
+			});
+			const scheduledFunctionId = await ctx.scheduler.runAfter(
+				4 * 60 * 60 * 1000,
+				internal.files_pending_updates.remove_file_pending_update_if_expired,
+				{
+					pendingUpdateId,
+					expectedUpdatedAt: pendingUpdateUpdatedAt,
+				},
+			);
+			await ctx.db.insert("files_pending_updates_cleanup_tasks", {
+				pendingUpdateId,
+				scheduledFunctionId,
+				expectedUpdatedAt: pendingUpdateUpdatedAt,
+			});
+		}
+		await ctx.db.insert("files_pending_updates_last_sequence_saved", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			userId: String(args.userId),
+			fileNodeId,
+			lastSequenceSaved: 1,
+			updatedAt: Date.now(),
+		});
+		const threadId = await ctx.db.insert("ai_chat_threads", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			clientGeneratedId: `${args.tag}-thread-${i}`,
+			title: `${args.tag} ${i}`,
+			archived: false,
+			runtime: "aisdk_5",
+			stateId: null,
+			createdBy: args.userId,
+			updatedBy: args.userId,
+			updatedAt: Date.now(),
+			lastMessageAt: Date.now(),
+		});
+		const [stateId, aiFileNodeId] = await Promise.all([
+			ctx.db.insert("ai_chat_threads_state", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				threadId,
+				bashCwd: "~",
+				updatedBy: args.userId,
+				updatedAt: Date.now(),
+			}),
+			ctx.db.insert("ai_chat_files", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				threadId,
+				path: `/${args.tag}-${i}.txt`,
+				kind: "file",
+				mode: 0o100644,
+				size: 4,
+				mtime: Date.now(),
+			}),
+		]);
+		await Promise.all([
+			ctx.db.patch("ai_chat_threads", threadId, { stateId }),
+			ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				parentId: null,
+				threadId,
+				clientGeneratedMessageId: `${args.tag}-message-${i}`,
+				content: {},
+				createdBy: args.userId,
+				updatedAt: Date.now(),
+			}),
+			ctx.db.insert("ai_chat_files_content", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				threadId,
+				fileNodeId: aiFileNodeId,
+				bytes: new ArrayBuffer(0),
+			}),
+			ctx.db.insert("chat_messages", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				threadId: null,
+				parentId: null,
+				isArchived: false,
+				createdBy: String(args.userId),
+				content: `${args.tag} ${i}`,
+			}),
+		]);
+	}
+
+	return { r2Keys };
+}
+
+async function data_deletion_test_count_project_content(ctx: MutationCtx, args: { workspaceId: string; projectId: string }) {
+	const [
+		files,
+		fileStats,
+		assets,
+		markdownChunks,
+		plainTextChunks,
+		yjsSnapshots,
+		yjsUpdates,
+		yjsLastSequences,
+		snapshots,
+		pendingUpdates,
+		pendingUpdateCleanupTasks,
+		pendingUpdateChunks,
+		lastSequenceSaved,
+		materializationJobs,
+		aiThreads,
+		aiStates,
+		aiMessages,
+		aiFiles,
+		aiFileContents,
+		chatMessages,
+	] = await Promise.all([
+		ctx.db.query("files_nodes").collect(),
+		ctx.db.query("file_stats").collect(),
+		ctx.db.query("files_r2_assets").collect(),
+		ctx.db.query("files_markdown_chunks").collect(),
+		ctx.db.query("files_plain_text_chunks").collect(),
+		ctx.db.query("files_yjs_snapshots").collect(),
+		ctx.db.query("files_yjs_updates").collect(),
+		ctx.db.query("files_yjs_docs_last_sequences").collect(),
+		ctx.db.query("files_snapshots").collect(),
+		ctx.db.query("files_pending_updates").collect(),
+		ctx.db.query("files_pending_updates_cleanup_tasks").collect(),
+		ctx.db.query("files_pending_updates_chunks").collect(),
+		ctx.db.query("files_pending_updates_last_sequence_saved").collect(),
+		ctx.db.query("files_content_materialization_jobs").collect(),
+		ctx.db.query("ai_chat_threads").collect(),
+		ctx.db.query("ai_chat_threads_state").collect(),
+		ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
+		ctx.db.query("ai_chat_files").collect(),
+		ctx.db.query("ai_chat_files_content").collect(),
+		ctx.db.query("chat_messages").collect(),
+	]);
+	const inProject = (row: { workspaceId: string; projectId: string }) =>
+		row.workspaceId === args.workspaceId && row.projectId === args.projectId;
+	const projectPendingUpdateIds = new Set(pendingUpdates.filter(inProject).map((doc) => doc._id));
+	return (
+		[
+			files,
+			fileStats,
+			assets,
+			markdownChunks,
+			plainTextChunks,
+			yjsSnapshots,
+			yjsUpdates,
+			yjsLastSequences,
+			snapshots,
+			pendingUpdates,
+			pendingUpdateChunks,
+			lastSequenceSaved,
+			materializationJobs,
+			aiThreads,
+			aiStates,
+			aiMessages,
+			aiFiles,
+			aiFileContents,
+			chatMessages,
+		].reduce((total, rows) => total + rows.filter(inProject).length, 0) +
+		pendingUpdateCleanupTasks.filter((doc) => projectPendingUpdateIds.has(doc.pendingUpdateId)).length
+	);
+}
+
+async function data_deletion_test_process_project_request_until_done(
+	t: ReturnType<typeof test_convex>,
+	args: { requestId: Id<"data_deletion_requests">; batchSize?: number },
+) {
+	for (let i = 0; i < 300; i += 1) {
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_project_deletion_request, {
+				requestId: args.requestId,
+				_test_batchSize: args.batchSize,
+			}),
+		);
+		if (result.done) {
+			return;
+		}
+	}
+
+	throw new Error("Project deletion request did not finish");
+}
+
+async function data_deletion_test_process_workspace_request_until_done(
+	t: ReturnType<typeof test_convex>,
+	args: { requestId: Id<"data_deletion_requests">; batchSize?: number },
+) {
+	for (let i = 0; i < 300; i += 1) {
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_workspace_deletion_request, {
+				requestId: args.requestId,
+				_test_batchSize: args.batchSize,
+			}),
+		);
+		if (result.done) {
+			return;
+		}
+	}
+
+	throw new Error("Workspace deletion request did not finish");
+}
+
+async function data_deletion_test_hard_delete_user_data_until_done(
+	t: ReturnType<typeof test_convex>,
+	args: { userId: Id<"users">; batchSize?: number },
+) {
+	for (let i = 0; i < 100; i += 1) {
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+				userId: args.userId,
+				_test_batchSize: args.batchSize,
+			}),
+		);
+		if (result.done) {
+			return;
+		}
+	}
+
+	throw new Error("User data hard delete did not finish");
+}
+
+async function data_deletion_test_run_worker_until_idle(
+	t: ReturnType<typeof test_convex>,
+	args?: { batchSize?: number; testNow?: number },
+) {
+	for (let i = 0; i < 40; i += 1) {
+		const eligibleRequestCount = await data_deletion_test_count_eligible_requests(t, args);
+		if (eligibleRequestCount === 0) {
+			return;
+		}
+
+		await t.action(internal.data_deletion.enqueue_deletion_requests_processing, {
+			_test_now: args?.testNow,
+			_test_batchSize: args?.batchSize,
+			_test_disableReschedule: true,
+		});
+		await data_deletion_test_finish_immediate_scheduled_functions(t);
+	}
+
+	throw new Error("Deletion worker did not finish eligible requests");
+}
+
+async function data_deletion_test_count_eligible_requests(
+	t: ReturnType<typeof test_convex>,
+	args?: { testNow?: number },
+) {
+	return await t.run(async (ctx) => {
+		const [userRequests, workspaceRequests, projectRequests] = await Promise.all([
+			ctx.runQuery(internal.data_deletion.list_deletion_request_ids_by_scope, {
+				scope: "user",
+				limit: 1_000,
+				_test_now: args?.testNow,
+			}),
+			ctx.runQuery(internal.data_deletion.list_deletion_request_ids_by_scope, {
+				scope: "workspace",
+				limit: 1_000,
+				_test_now: args?.testNow,
+			}),
+			ctx.runQuery(internal.data_deletion.list_deletion_request_ids_by_scope, {
+				scope: "project",
+				limit: 1_000,
+				_test_now: args?.testNow,
+			}),
+		]);
+
+		return userRequests.length + workspaceRequests.length + projectRequests.length;
+	});
+}
+
+async function data_deletion_test_finish_immediate_scheduled_functions(t: ReturnType<typeof test_convex>) {
+	for (let i = 0; i < 75; i += 1) {
+		vi.advanceTimersByTime(1000);
+		await t.finishInProgressScheduledFunctions();
+	}
+}
+
+async function data_deletion_test_hard_delete_user_now_data_until_idle(
+	t: ReturnType<typeof test_convex>,
+	args: { userId: Id<"users">; batchSize?: number },
+) {
+	for (let i = 0; i < 10; i += 1) {
+		await t.action(internal.users.hard_delete_user_now, {
+			userId: args.userId,
+			purgeUserMod: "data",
+			_test_batchSize: args.batchSize,
+			_test_disableReschedule: true,
+		});
+	}
 }
 
 describe("data_deletion_db_request", () => {
@@ -226,6 +672,117 @@ describe("data_deletion_db_request", () => {
 					row.projectId === extraProject._yay.projectId,
 			),
 		).toHaveLength(1);
+	});
+
+	test("keeps the earliest eligible time when requests are repeated", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-request-earliest",
+				displayName: "Request Earliest",
+			}),
+		);
+
+		const workspace = await t.run(async (ctx) =>
+			workspaces_db_create(ctx, {
+				userId: user.userId,
+				name: "earliest-space",
+				description: "",
+				now: Date.now(),
+				default: false,
+			}),
+		);
+		if (workspace._nay) {
+			throw new Error(workspace._nay.message);
+		}
+
+		const project = await t.run(async (ctx) =>
+			workspaces_db_create_project(ctx, {
+				userId: user.userId,
+				workspaceId: workspace._yay.workspaceId,
+				name: "earliest-project",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		if (project._nay) {
+			throw new Error(project._nay.message);
+		}
+
+		const requests = await t.run(async (ctx) => {
+			const userRequestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				scope: "user",
+				eligibleAt: 20_000,
+			});
+			await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				scope: "user",
+				eligibleAt: 10_000,
+			});
+			await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				scope: "user",
+				eligibleAt: 30_000,
+			});
+
+			const workspaceRequestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: workspace._yay.workspaceId,
+				scope: "workspace",
+				eligibleAt: 40_000,
+			});
+			await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: workspace._yay.workspaceId,
+				scope: "workspace",
+				eligibleAt: 25_000,
+			});
+			await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: workspace._yay.workspaceId,
+				scope: "workspace",
+				eligibleAt: 50_000,
+			});
+
+			const projectRequestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: workspace._yay.workspaceId,
+				projectId: project._yay.projectId,
+				scope: "project",
+				eligibleAt: 60_000,
+			});
+			await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: workspace._yay.workspaceId,
+				projectId: project._yay.projectId,
+				scope: "project",
+				eligibleAt: 35_000,
+			});
+			await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: workspace._yay.workspaceId,
+				projectId: project._yay.projectId,
+				scope: "project",
+				eligibleAt: 70_000,
+			});
+
+			const [userRequest, workspaceRequest, projectRequest] = await Promise.all([
+				ctx.db.get("data_deletion_requests", userRequestId),
+				ctx.db.get("data_deletion_requests", workspaceRequestId),
+				ctx.db.get("data_deletion_requests", projectRequestId),
+			]);
+
+			return {
+				userRequest,
+				workspaceRequest,
+				projectRequest,
+			};
+		});
+
+		expect(requests.userRequest?.eligibleAt).toBe(10_000);
+		expect(requests.workspaceRequest?.eligibleAt).toBe(25_000);
+		expect(requests.projectRequest?.eligibleAt).toBe(35_000);
 	});
 });
 
@@ -716,17 +1273,19 @@ describe("process_user_deletion_request", () => {
 			}),
 		);
 
-		const requestCreationTime = await t.run(async (ctx) => {
+		const requestEligibleAt = await t.run(async (ctx) => {
 			const request = await ctx.db.get("data_deletion_requests", requestId!);
-			return request!._creationTime;
+			return request!.eligibleAt;
 		});
+		const test_now = requestEligibleAt + 1;
 
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
 				requestId: requestId!,
-				_test_now: requestCreationTime + RETENTION_MS + 1,
+				_test_now: test_now,
 			}),
 		);
+		await data_deletion_test_run_worker_until_idle(t, { testNow: test_now });
 
 		const afterUserDeletion = await t.run(async (ctx) => {
 			const [
@@ -946,15 +1505,15 @@ describe("process_user_deletion_request", () => {
 				nowTs: 20_001,
 			}),
 		);
-		const requestCreationTime = await t.run(async (ctx) => {
+		const requestEligibleAt = await t.run(async (ctx) => {
 			const request = await ctx.db.get("data_deletion_requests", requestId!);
-			return request!._creationTime;
+			return request!.eligibleAt;
 		});
 
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
 				requestId: requestId!,
-				_test_now: requestCreationTime + RETENTION_MS + 1,
+				_test_now: requestEligibleAt + 1,
 			}),
 		);
 
@@ -995,7 +1554,310 @@ describe("process_user_deletion_request", () => {
 	});
 });
 
+describe("process_project_deletion_request", () => {
+	test("removes invalid project requests without a project id", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-project-invalid-request",
+				displayName: "Project Invalid Request",
+			}),
+		);
+
+		const requestId = await t.run((ctx) =>
+			ctx.db.insert("data_deletion_requests", {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				scope: "project",
+				eligibleAt: 0,
+			}),
+		);
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_project_deletion_request, {
+				requestId,
+			}),
+		);
+		const after = await t.run((ctx) => ctx.db.get("data_deletion_requests", requestId));
+
+		expect(result).toEqual({ done: true, deletedCount: 1 });
+		expect(after).toBeNull();
+	});
+
+	test("purges project content in retryable batches without touching sibling projects", async () => {
+		const t = test_convex();
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject");
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-project-batch",
+				displayName: "Project Batch",
+			}),
+		);
+
+		const { victimProjectId, controlProjectId, requestId, r2Keys } = await t.run(async (ctx) => {
+			const victimProject = await workspaces_db_create_project(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				name: "batch-victim",
+				description: "",
+				now: Date.now(),
+			});
+			if (victimProject._nay) {
+				throw new Error(victimProject._nay.message);
+			}
+			const controlProject = await workspaces_db_create_project(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				name: "batch-control",
+				description: "",
+				now: Date.now(),
+			});
+			if (controlProject._nay) {
+				throw new Error(controlProject._nay.message);
+			}
+
+			const seeded = await data_deletion_test_seed_project_content_bulk(ctx, {
+				userId: user.userId,
+				workspaceId: String(user.defaultWorkspaceId),
+				projectId: String(victimProject._yay.projectId),
+				count: 20,
+				tag: "project-batch-victim",
+			});
+			await data_deletion_test_seed_page(ctx, {
+				userId: user.userId,
+				workspaceId: String(user.defaultWorkspaceId),
+				projectId: String(controlProject._yay.projectId),
+				tag: "project-batch-control",
+			});
+
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				projectId: victimProject._yay.projectId,
+				scope: "project",
+			});
+			return {
+				victimProjectId: victimProject._yay.projectId,
+				controlProjectId: controlProject._yay.projectId,
+				requestId,
+				r2Keys: seeded.r2Keys,
+			};
+		});
+
+		const beforeCount = await t.run((ctx) =>
+			data_deletion_test_count_project_content(ctx, {
+				workspaceId: String(user.defaultWorkspaceId),
+				projectId: String(victimProjectId),
+			}),
+		);
+		const firstResult = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_project_deletion_request, {
+				requestId,
+				_test_batchSize: 5,
+			}),
+		);
+		const afterFirst = await t.run(async (ctx) => {
+			const [request, victimCount, controlCount] = await Promise.all([
+				ctx.db.get("data_deletion_requests", requestId),
+				data_deletion_test_count_project_content(ctx, {
+					workspaceId: String(user.defaultWorkspaceId),
+					projectId: String(victimProjectId),
+				}),
+				data_deletion_test_count_project_content(ctx, {
+					workspaceId: String(user.defaultWorkspaceId),
+					projectId: String(controlProjectId),
+				}),
+			]);
+
+			return { request, victimCount, controlCount };
+		});
+
+		expect(firstResult.done).toBe(false);
+		expect(afterFirst.request?._id).toBe(requestId);
+		expect(afterFirst.victimCount).toBeGreaterThan(0);
+		expect(afterFirst.victimCount).toBeLessThan(beforeCount);
+		expect(afterFirst.controlCount).toBeGreaterThan(0);
+
+		await data_deletion_test_process_project_request_until_done(t, {
+			requestId,
+			batchSize: 5,
+		});
+
+		const afterDone = await t.run(async (ctx) => {
+			const [request, victimCount, controlCount] = await Promise.all([
+				ctx.db.get("data_deletion_requests", requestId),
+				data_deletion_test_count_project_content(ctx, {
+					workspaceId: String(user.defaultWorkspaceId),
+					projectId: String(victimProjectId),
+				}),
+				data_deletion_test_count_project_content(ctx, {
+					workspaceId: String(user.defaultWorkspaceId),
+					projectId: String(controlProjectId),
+				}),
+			]);
+
+			return { request, victimCount, controlCount };
+		});
+
+		expect(afterDone.request).toBeNull();
+		expect(afterDone.victimCount).toBe(0);
+		expect(afterDone.controlCount).toBeGreaterThan(0);
+		for (const r2Key of r2Keys) {
+			expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), r2Key);
+		}
+	});
+
+	test("leaves R2 asset rows retryable when object deletion fails", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-project-r2-failure",
+				displayName: "Project R2 Failure",
+			}),
+		);
+
+		const { requestId, assetId } = await t.run(async (ctx) => {
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				workspaceId: String(user.defaultWorkspaceId),
+				projectId: String(user.defaultProjectId),
+				kind: "content",
+				r2Bucket: "test-bucket",
+				r2Key: "content/r2-failure",
+				createdBy: user.userId,
+				updatedAt: Date.now(),
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				projectId: user.defaultProjectId,
+				scope: "project",
+			});
+			return {
+				requestId,
+				assetId,
+			};
+		});
+
+		vi.spyOn(R2.prototype, "deleteObject").mockRejectedValue(new Error("R2 unavailable"));
+
+		await expect(
+			t.run((ctx) =>
+				ctx.runMutation(internal.data_deletion.process_project_deletion_request, {
+					requestId,
+					_test_batchSize: 5,
+				}),
+			),
+		).rejects.toThrow("R2 unavailable");
+
+		const after = await t.run(async (ctx) => {
+			const [request, asset] = await Promise.all([
+				ctx.db.get("data_deletion_requests", requestId),
+				ctx.db.get("files_r2_assets", assetId),
+			]);
+
+			return { request, asset };
+		});
+
+		expect(after.request?._id).toBe(requestId);
+		expect(after.asset?._id).toBe(assetId);
+	});
+
+	test("cancels materialization jobs before deleting their tracking docs", async () => {
+		const t = test_convex();
+		const cancelSpy = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined as never);
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-project-materialization-job",
+				displayName: "Project Materialization Job",
+			}),
+		);
+		const jobId = "work_project_materialization_delete" as WorkId;
+
+		const { requestId, jobDocId, fileNodeId } = await t.run(async (ctx) => {
+			const fileNodeId = await ctx.db.insert("files_nodes", {
+				workspaceId: String(user.defaultWorkspaceId),
+				projectId: String(user.defaultProjectId),
+				path: "/materialization-job.md",
+				treePath: "/materialization-job.md",
+				pathDepth: 1,
+				name: "materialization-job.md",
+				kind: "file",
+				lowercaseExtension: "md",
+				parentId: "root",
+				createdBy: user.userId,
+				updatedBy: user.userId,
+				updatedAt: Date.now(),
+			});
+			const jobDocId = await ctx.db.insert("files_content_materialization_jobs", {
+				workspaceId: String(user.defaultWorkspaceId),
+				projectId: String(user.defaultProjectId),
+				fileNodeId,
+				jobId,
+				targetSequence: 1,
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				projectId: user.defaultProjectId,
+				scope: "project",
+			});
+
+			return { requestId, jobDocId, fileNodeId };
+		});
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_project_deletion_request, {
+				requestId,
+				_test_batchSize: 5,
+			}),
+		);
+		const after = await t.run(async (ctx) => {
+			const [request, jobDoc, fileNode] = await Promise.all([
+				ctx.db.get("data_deletion_requests", requestId),
+				ctx.db.get("files_content_materialization_jobs", jobDocId),
+				ctx.db.get("files_nodes", fileNodeId),
+			]);
+
+			return { request, jobDoc, fileNode };
+		});
+
+		expect(result).toEqual({ done: false, deletedCount: 1 });
+		expect(cancelSpy).toHaveBeenCalledWith(expect.anything(), jobId);
+		expect(after.request?._id).toBe(requestId);
+		expect(after.jobDoc).toBeNull();
+		expect(after.fileNode?._id).toBe(fileNodeId);
+	});
+});
+
 describe("process_workspace_deletion_request", () => {
+	test("removes invalid workspace requests without a workspace id", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-workspace-invalid-request",
+				displayName: "Workspace Invalid Request",
+			}),
+		);
+
+		const requestId = await t.run((ctx) =>
+			ctx.db.insert("data_deletion_requests", {
+				userId: user.userId,
+				scope: "workspace",
+				eligibleAt: 0,
+			}),
+		);
+
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_workspace_deletion_request, {
+				requestId,
+			}),
+		);
+		const after = await t.run((ctx) => ctx.db.get("data_deletion_requests", requestId));
+
+		expect(result).toEqual({ done: true, deletedCount: 1 });
+		expect(after).toBeNull();
+	});
+
 	test("purges the whole workspace and clears matching queued project requests", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
@@ -1050,7 +1912,7 @@ describe("process_workspace_deletion_request", () => {
 			});
 		});
 
-		const { workspaceRequestId, projectRequestId, test_now } = await t.run(async (ctx) => {
+		const { workspaceRequestId, projectRequestId } = await t.run(async (ctx) => {
 			const projectRequestId = await data_deletion_db_request(ctx, {
 				userId: user.userId,
 				workspaceId: workspace.workspaceId,
@@ -1062,24 +1924,15 @@ describe("process_workspace_deletion_request", () => {
 				workspaceId: workspace.workspaceId,
 				scope: "workspace",
 			});
-			const workspaceRequest = await ctx.db.get("data_deletion_requests", workspaceRequestId);
-			if (!workspaceRequest) {
-				throw new Error("Expected queued workspace deletion request");
-			}
-
 			return {
 				workspaceRequestId,
 				projectRequestId,
-				test_now: workspaceRequest._creationTime + RETENTION_MS + 1,
 			};
 		});
 
-		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.process_workspace_deletion_request, {
-				requestId: workspaceRequestId,
-				_test_now: test_now,
-			}),
-		);
+		await data_deletion_test_process_workspace_request_until_done(t, {
+			requestId: workspaceRequestId,
+		});
 
 		const after = await t.run(async (ctx) => {
 			const [
@@ -1134,10 +1987,127 @@ describe("process_workspace_deletion_request", () => {
 		expect(after.fileAssets).toHaveLength(0);
 		expect(after.workspaceQuotaDocs).toHaveLength(0);
 	});
+
+	test("purges queued project content even when the project doc was already removed", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-workspace-missing-project",
+				displayName: "Workspace Missing Project",
+			}),
+		);
+
+		const { workspaceId, defaultProjectId, removedProjectId, workspaceRequestId, projectRequestId } = await t.run(
+			async (ctx) => {
+				const workspace = await workspaces_db_create(ctx, {
+					userId: user.userId,
+					name: "ws-missing-project",
+					description: "",
+					now: Date.now(),
+					default: false,
+				});
+				if (workspace._nay) {
+					throw new Error(workspace._nay.message);
+				}
+				const removedProject = await workspaces_db_create_project(ctx, {
+					userId: user.userId,
+					workspaceId: workspace._yay.workspaceId,
+					name: "removed-project",
+					description: "",
+					now: Date.now(),
+				});
+				if (removedProject._nay) {
+					throw new Error(removedProject._nay.message);
+				}
+
+				await Promise.all([
+					data_deletion_test_seed_project_content_bulk(ctx, {
+						userId: user.userId,
+						workspaceId: String(workspace._yay.workspaceId),
+						projectId: String(workspace._yay.defaultProjectId),
+						count: 8,
+						tag: "workspace-default-batch",
+					}),
+					data_deletion_test_seed_project_content_bulk(ctx, {
+						userId: user.userId,
+						workspaceId: String(workspace._yay.workspaceId),
+						projectId: String(removedProject._yay.projectId),
+						count: 20,
+						tag: "workspace-removed-batch",
+					}),
+				]);
+
+				const projectRequestId = await data_deletion_db_request(ctx, {
+					userId: user.userId,
+					workspaceId: workspace._yay.workspaceId,
+					projectId: removedProject._yay.projectId,
+					scope: "project",
+				});
+				await ctx.db.delete("workspaces_projects", removedProject._yay.projectId);
+				const workspaceRequestId = await data_deletion_db_request(ctx, {
+					userId: user.userId,
+					workspaceId: workspace._yay.workspaceId,
+					scope: "workspace",
+				});
+				return {
+					workspaceId: workspace._yay.workspaceId,
+					defaultProjectId: workspace._yay.defaultProjectId,
+					removedProjectId: removedProject._yay.projectId,
+					workspaceRequestId,
+					projectRequestId,
+				};
+			},
+		);
+
+		await data_deletion_test_process_workspace_request_until_done(t, {
+			requestId: workspaceRequestId,
+			batchSize: 5,
+		});
+
+		const after = await t.run(async (ctx) => {
+			const [workspace, defaultProject, workspaceRequest, projectRequest, defaultContent, removedContent, quotaDocs] =
+				await Promise.all([
+					ctx.db.get("workspaces", workspaceId),
+					ctx.db.get("workspaces_projects", defaultProjectId),
+					ctx.db.get("data_deletion_requests", workspaceRequestId),
+					ctx.db.get("data_deletion_requests", projectRequestId),
+					data_deletion_test_count_project_content(ctx, {
+						workspaceId: String(workspaceId),
+						projectId: String(defaultProjectId),
+					}),
+					data_deletion_test_count_project_content(ctx, {
+						workspaceId: String(workspaceId),
+						projectId: String(removedProjectId),
+					}),
+					ctx.db
+						.query("quotas")
+						.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", workspaceId))
+						.collect(),
+				]);
+
+			return {
+				workspace,
+				defaultProject,
+				workspaceRequest,
+				projectRequest,
+				defaultContent,
+				removedContent,
+				quotaDocs,
+			};
+		});
+
+		expect(after.workspace).toBeNull();
+		expect(after.defaultProject).toBeNull();
+		expect(after.workspaceRequest).toBeNull();
+		expect(after.projectRequest).toBeNull();
+		expect(after.defaultContent).toBe(0);
+		expect(after.removedContent).toBe(0);
+		expect(after.quotaDocs).toHaveLength(0);
+	});
 });
 
 describe("hard_delete_user_data", () => {
-	test("preserves the live default tenant while purging reset-owned content and disposable tenants", async () => {
+	test("preserves the usable default tenant while purging reset-owned content and disposable tenants", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -1227,11 +2197,9 @@ describe("hard_delete_user_data", () => {
 			};
 		});
 
-		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
-				userId: user.userId,
-			}),
-		);
+		await data_deletion_test_hard_delete_user_data_until_done(t, {
+			userId: user.userId,
+		});
 
 		const after = await t.run(async (ctx) => {
 			const [
@@ -1365,7 +2333,230 @@ describe("hard_delete_user_data", () => {
 		expect(after.unrelatedRequest?._id).toBe(seeded.unrelatedRequestId);
 	});
 
-	test("restores a previously auth-preserved tombstoned user to a fresh default tenant", async () => {
+	test("admin data reset batches content while preserving auth, profile, billing, and default workspace/project docs", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-action-batch",
+				displayName: "Reset Action Batch",
+				email: "reset-action-batch@test.local",
+			}),
+		);
+
+		const { extraProjectId, anonymousTokenId, billingSnapshotId } = await t.run(async (ctx) => {
+			const anonymousTokenId = await ctx.db.insert("users_anon_tokens", {
+				userId: user.userId,
+				token: "reset-action-token",
+				updatedAt: 88_001,
+			});
+			await ctx.db.patch("users", user.userId, {
+				anonymousAuthToken: anonymousTokenId,
+			});
+			const billingSnapshotId = await ctx.db.insert("billing_usage_snapshots", {
+				userId: user.userId,
+				polarCustomerId: "cust_reset_action_batch",
+				subscription: null,
+				meter: null,
+				lastSyncedAt: 88_002,
+			});
+			const extraProject = await workspaces_db_create_project(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				name: "reset-action-extra",
+				description: "",
+				now: Date.now(),
+			});
+			if (extraProject._nay) {
+				throw new Error(extraProject._nay.message);
+			}
+
+			await Promise.all([
+				data_deletion_test_seed_project_content_bulk(ctx, {
+					userId: user.userId,
+					workspaceId: String(user.defaultWorkspaceId),
+					projectId: String(user.defaultProjectId),
+					count: 20,
+					tag: "reset-action-default",
+				}),
+				data_deletion_test_seed_project_content_bulk(ctx, {
+					userId: user.userId,
+					workspaceId: String(user.defaultWorkspaceId),
+					projectId: String(extraProject._yay.projectId),
+					count: 20,
+					tag: "reset-action-extra",
+				}),
+			]);
+
+			return {
+				extraProjectId: extraProject._yay.projectId,
+				anonymousTokenId,
+				billingSnapshotId,
+			};
+		});
+
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
+		await data_deletion_test_hard_delete_user_now_data_until_idle(t, {
+			userId: user.userId,
+			batchSize: 5,
+		});
+
+		const after = await t.run(async (ctx) => {
+			const [
+				userDoc,
+				anagraphic,
+				anonymousToken,
+				billingSnapshot,
+				defaultWorkspace,
+				defaultProject,
+				extraProject,
+				defaultMembership,
+				ownerRole,
+				defaultContent,
+				extraContent,
+			] = await Promise.all([
+				ctx.db.get("users", user.userId),
+				ctx.db.get("users_anagraphics", user.anagraphicId),
+				ctx.db.get("users_anon_tokens", anonymousTokenId),
+				ctx.db.get("billing_usage_snapshots", billingSnapshotId),
+				ctx.db.get("workspaces", user.defaultWorkspaceId),
+				ctx.db.get("workspaces_projects", user.defaultProjectId),
+				ctx.db.get("workspaces_projects", extraProjectId),
+				ctx.db
+					.query("workspaces_projects_users")
+					.withIndex("by_active_user_workspace_project", (q) =>
+						q
+							.eq("active", true)
+							.eq("userId", user.userId)
+							.eq("workspaceId", user.defaultWorkspaceId)
+							.eq("projectId", user.defaultProjectId),
+					)
+					.first(),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_workspace_project_user_role", (q) =>
+						q
+							.eq("workspaceId", user.defaultWorkspaceId)
+							.eq("projectId", user.defaultProjectId)
+							.eq("userId", user.userId)
+							.eq("role", "owner"),
+					)
+					.first(),
+				data_deletion_test_count_project_content(ctx, {
+					workspaceId: String(user.defaultWorkspaceId),
+					projectId: String(user.defaultProjectId),
+				}),
+				data_deletion_test_count_project_content(ctx, {
+					workspaceId: String(user.defaultWorkspaceId),
+					projectId: String(extraProjectId),
+				}),
+			]);
+
+			return {
+				userDoc,
+				anagraphic,
+				anonymousToken,
+				billingSnapshot,
+				defaultWorkspace,
+				defaultProject,
+				extraProject,
+				defaultMembership,
+				ownerRole,
+				defaultContent,
+				extraContent,
+			};
+		});
+
+		expect(after.userDoc?.clerkUserId).toBe("clerk-user-reset-action-batch");
+		expect(after.userDoc?.anonymousAuthToken).toBe(anonymousTokenId);
+		expect(after.userDoc?.defaultWorkspaceId).toBe(user.defaultWorkspaceId);
+		expect(after.userDoc?.defaultProjectId).toBe(user.defaultProjectId);
+		expect(after.anagraphic?.displayName).toBe("Reset Action Batch");
+		expect(after.anonymousToken?.token).toBe("reset-action-token");
+		expect(after.billingSnapshot?.polarCustomerId).toBe("cust_reset_action_batch");
+		expect(after.defaultWorkspace?._id).toBe(user.defaultWorkspaceId);
+		expect(after.defaultProject?._id).toBe(user.defaultProjectId);
+		expect(after.defaultMembership?._id).toBeDefined();
+		expect(after.ownerRole?._id).toBeDefined();
+		expect(after.extraProject).toBeNull();
+		expect(after.defaultContent).toBe(0);
+		expect(after.extraContent).toBe(0);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	test("purges queued personal project content after the project doc was already deleted", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-deleted-project-request",
+				displayName: "Reset Deleted Project Request",
+			}),
+		);
+
+		const { removedProjectId, requestId } = await t.run(async (ctx) => {
+			const extraProject = await workspaces_db_create_project(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				name: "reset-del-proj",
+				description: "",
+				now: Date.now(),
+			});
+			if (extraProject._nay) {
+				throw new Error(extraProject._nay.message);
+			}
+
+			await data_deletion_test_seed_project_content_bulk(ctx, {
+				userId: user.userId,
+				workspaceId: String(user.defaultWorkspaceId),
+				projectId: String(extraProject._yay.projectId),
+				count: 3,
+				tag: "reset-deleted-project",
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				projectId: extraProject._yay.projectId,
+				scope: "project",
+			});
+
+			await ctx.db.delete("workspaces_projects", extraProject._yay.projectId);
+
+			return {
+				removedProjectId: extraProject._yay.projectId,
+				requestId,
+			};
+		});
+
+		await data_deletion_test_hard_delete_user_data_until_done(t, {
+			userId: user.userId,
+			batchSize: 5,
+		});
+
+		const after = await t.run(async (ctx) => {
+			const [request, contentCount, defaultWorkspace, defaultProject] = await Promise.all([
+				ctx.db.get("data_deletion_requests", requestId),
+				data_deletion_test_count_project_content(ctx, {
+					workspaceId: String(user.defaultWorkspaceId),
+					projectId: String(removedProjectId),
+				}),
+				ctx.db.get("workspaces", user.defaultWorkspaceId),
+				ctx.db.get("workspaces_projects", user.defaultProjectId),
+			]);
+
+			return {
+				request,
+				contentCount,
+				defaultWorkspace,
+				defaultProject,
+			};
+		});
+
+		expect(after.request).toBeNull();
+		expect(after.contentCount).toBe(0);
+		expect(after.defaultWorkspace?._id).toBe(user.defaultWorkspaceId);
+		expect(after.defaultProject?._id).toBe(user.defaultProjectId);
+	});
+
+	test("throws when resetting a tombstoned user without a default tenant", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -1373,17 +2564,6 @@ describe("hard_delete_user_data", () => {
 				displayName: "Reset Tombstone",
 			}),
 		);
-		const tokenId = await t.run(async (ctx) => {
-			const tokenId = await ctx.db.insert("users_anon_tokens", {
-				userId: user.userId,
-				token: "reset-tombstone-token",
-				updatedAt: 12_345,
-			});
-			await ctx.db.patch("users", user.userId, {
-				anonymousAuthToken: tokenId,
-			});
-			return tokenId;
-		});
 
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
@@ -1392,61 +2572,75 @@ describe("hard_delete_user_data", () => {
 			}),
 		);
 
-		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
-				userId: user.userId,
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			await expect(
+				t.run((ctx) =>
+					ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+						userId: user.userId,
+					}),
+				),
+			).rejects.toThrow("Default tenant is missing or inconsistent during data reset");
+			expect(consoleErrorSpy).toHaveBeenCalledWith(
+				"Default tenant is missing or inconsistent during data reset",
+				expect.objectContaining({
+					defaultWorkspaceId: undefined,
+					defaultProjectId: undefined,
+					membershipFound: false,
+					userId: user.userId,
+				}),
+			);
+		} finally {
+			consoleErrorSpy.mockRestore();
+		}
+	});
+
+	test("throws when the cached default project is not the workspace default project", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-reset-wrong-default-project",
+				displayName: "Reset Wrong Default Project",
 			}),
 		);
-
-		const after = await t.run(async (ctx) => {
-			const userDoc = await ctx.db.get("users", user.userId);
-			const [workspace, project, membership, userQuota, anonymousToken] =
-				userDoc?.defaultWorkspaceId && userDoc.defaultProjectId
-					? await Promise.all([
-							ctx.db.get("workspaces", userDoc.defaultWorkspaceId),
-							ctx.db.get("workspaces_projects", userDoc.defaultProjectId),
-							ctx.db
-								.query("workspaces_projects_users")
-								.withIndex("by_active_user_workspace_project", (q) =>
-									q
-										.eq("active", true)
-										.eq("userId", user.userId)
-										.eq("workspaceId", userDoc.defaultWorkspaceId!)
-										.eq("projectId", userDoc.defaultProjectId!),
-								)
-								.first(),
-							ctx.db
-								.query("quotas")
-								.withIndex("by_user_quotaName", (q) =>
-									q.eq("userId", user.userId).eq("quotaName", "extra_workspaces"),
-								)
-								.first(),
-							ctx.db.get("users_anon_tokens", tokenId),
-						])
-					: [null, null, null, null, null];
-
-			return {
-				userDoc,
-				workspace,
-				project,
-				membership,
-				userQuota,
-				anonymousToken,
-			};
+		const extraProject = await t.run(async (ctx) => {
+			const result = await workspaces_db_create_project(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				name: "wrong-default",
+				description: "",
+				now: Date.now(),
+			});
+			if (result._nay) {
+				throw new Error(result._nay.message);
+			}
+			await ctx.db.patch("users", user.userId, {
+				defaultProjectId: result._yay.projectId,
+			});
+			return result._yay;
 		});
 
-		expect(after.userDoc?.deletedAt).toBeUndefined();
-		expect(after.userDoc?.clerkUserId).toBe("clerk-user-reset-tombstone");
-		expect(after.userDoc?.anonymousAuthToken).toBe(tokenId);
-		expect(after.anonymousToken?.token).toBe("reset-tombstone-token");
-		expect(after.userDoc?.defaultWorkspaceId).toBeDefined();
-		expect(after.userDoc?.defaultWorkspaceId).not.toBe(user.defaultWorkspaceId);
-		expect(after.userDoc?.defaultProjectId).toBeDefined();
-		expect(after.userDoc?.defaultProjectId).not.toBe(user.defaultProjectId);
-		expect(after.workspace?.default).toBe(true);
-		expect(after.project?.default).toBe(true);
-		expect(after.membership?._id).toBeDefined();
-		expect(after.userQuota?.quotaName).toBe("extra_workspaces");
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			await expect(
+				t.run((ctx) =>
+					ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
+						userId: user.userId,
+					}),
+				),
+			).rejects.toThrow("Default tenant is missing or inconsistent during data reset");
+			expect(consoleErrorSpy).toHaveBeenCalledWith(
+				"Default tenant is missing or inconsistent during data reset",
+				expect.objectContaining({
+					defaultWorkspaceId: user.defaultWorkspaceId,
+					defaultProjectId: extraProject.projectId,
+					projectDefault: false,
+					workspaceDefaultProjectId: user.defaultProjectId,
+				}),
+			);
+		} finally {
+			consoleErrorSpy.mockRestore();
+		}
 	});
 
 	test("preserves shared workspaces and only deletes reset-user-only extra projects", async () => {
@@ -1536,11 +2730,9 @@ describe("hard_delete_user_data", () => {
 			};
 		});
 
-		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.hard_delete_user_data, {
-				userId: user.userId,
-			}),
-		);
+		await data_deletion_test_hard_delete_user_data_until_done(t, {
+			userId: user.userId,
+		});
 
 		const after = await t.run(async (ctx) => {
 			const [workspace, defaultProject, soloProject, sharedProject, sharedProjectFiles, projectQuota] = await Promise.all([
@@ -1683,6 +2875,7 @@ describe("finalize_user_deletion_data", () => {
 				userId: deletedUser.userId,
 			}),
 		);
+		await data_deletion_test_run_worker_until_idle(t);
 
 		const after = await t.run(async (ctx) => {
 			const [user, workspace, project, files, filesR2Assets, userRequest, workspaceRequest, projectRequest, unrelatedProjectRequest] =
@@ -1776,6 +2969,7 @@ describe("finalize_user_deletion_data", () => {
 				userId: deletedUser.userId,
 			}),
 		);
+		await data_deletion_test_run_worker_until_idle(t);
 
 		const after = await t.run(async (ctx) => {
 			const [user, request, workspace, project, files, snapshots] = await Promise.all([
@@ -1966,6 +3160,7 @@ describe("finalize_user_deletion_data", () => {
 				userId: deletedUser.userId,
 			}),
 		);
+		await data_deletion_test_run_worker_until_idle(t);
 
 		const after = await t.run(async (ctx) => {
 			const [user, requests, sharedWorkspaceDoc, sharedDefaultProject, sharedExtraProject, extraProjectPages] =
@@ -2003,26 +3198,26 @@ describe("finalize_user_deletion_data", () => {
 describe("list_deletion_request_ids_by_scope", () => {
 	test("returns at most limit eligible user-scoped ids across paginated global order", async () => {
 		const t = test_convex();
-		const maxCreationTime = await t.run(async (ctx) => {
+		const maxEligibleAt = await t.run(async (ctx) => {
 			for (let i = 0; i < 22; i++) {
 				const userId = await ctx.db.insert("users", { clerkUserId: `clerk-user-scope-list-${i}` });
 				await data_deletion_db_request(ctx, { userId, scope: "user" });
 			}
 			const rows = await ctx.db.query("data_deletion_requests").collect();
-			return Math.max(...rows.map((row) => row._creationTime));
+			return Math.max(...rows.map((row) => row.eligibleAt));
 		});
 		const listed = await t.run((ctx) =>
 			ctx.runQuery(internal.data_deletion.list_deletion_request_ids_by_scope, {
 				scope: "user",
 				limit: 20,
-				_test_now: maxCreationTime + RETENTION_MS + 1,
+				_test_now: maxEligibleAt + 1,
 			}),
 		);
 		expect(listed).toHaveLength(20);
 	});
 });
 
-describe("process_deletion_requests", () => {
+describe("enqueue_deletion_requests_processing", () => {
 	test("runs the pipeline on an eligible project deletion request", async () => {
 		const t = test_convex();
 		const { requestId, test_now } = await t.run(async (ctx) => {
@@ -2055,16 +3250,145 @@ describe("process_deletion_requests", () => {
 				workspaceId: workspace._yay.workspaceId,
 				projectId: extraProject._yay.projectId,
 				scope: "project",
+				eligibleAt: Date.now() + RETENTION_MS,
 			});
 			const row = await ctx.db.get("data_deletion_requests", rid!);
 			if (!row) {
 				throw new Error("Expected purge request");
 			}
-			return { requestId: rid, test_now: row._creationTime + RETENTION_MS + 1 };
+			return { requestId: rid, test_now: row.eligibleAt + 1 };
 		});
-		await t.action(internal.data_deletion.process_deletion_requests, { _test_now: test_now });
+		await t.action(internal.data_deletion.enqueue_deletion_requests_processing, { _test_now: test_now });
+		const queued = await t.run(async (ctx) => ctx.db.get("data_deletion_requests", requestId));
+		expect(queued).not.toBeNull();
+		await data_deletion_test_finish_immediate_scheduled_functions(t);
+		await data_deletion_test_run_worker_until_idle(t, { testNow: test_now });
 		const remaining = await t.run(async (ctx) => ctx.db.get("data_deletion_requests", requestId));
 		expect(remaining).toBeNull();
+	});
+
+	test("drains a multi-batch project fixture through the action worker", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-worker-batch-drain",
+				displayName: "Worker Batch Drain",
+			}),
+		);
+
+		const { requestId, test_now } = await t.run(async (ctx) => {
+			await data_deletion_test_seed_project_content_bulk(ctx, {
+				userId: user.userId,
+				workspaceId: String(user.defaultWorkspaceId),
+				projectId: String(user.defaultProjectId),
+				count: 20,
+				tag: "worker-batch-drain",
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				projectId: user.defaultProjectId,
+				scope: "project",
+			});
+			const request = await ctx.db.get("data_deletion_requests", requestId);
+			if (!request) {
+				throw new Error("Expected project deletion request");
+			}
+
+			return {
+				requestId,
+				test_now: request.eligibleAt + 1,
+			};
+		});
+
+		await data_deletion_test_run_worker_until_idle(t, {
+			testNow: test_now,
+			batchSize: 5,
+		});
+
+		const after = await t.run(async (ctx) => {
+			const [request, contentCount] = await Promise.all([
+				ctx.db.get("data_deletion_requests", requestId),
+				data_deletion_test_count_project_content(ctx, {
+					workspaceId: String(user.defaultWorkspaceId),
+					projectId: String(user.defaultProjectId),
+				}),
+			]);
+
+			return { request, contentCount };
+		});
+
+		expect(after.request).toBeNull();
+		expect(after.contentCount).toBe(0);
+	});
+
+	test("reschedules when a processor throws and leaves the request retryable", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-worker-r2-failure",
+				displayName: "Worker R2 Failure",
+			}),
+		);
+
+		const { requestId, assetId, test_now } = await t.run(async (ctx) => {
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				workspaceId: String(user.defaultWorkspaceId),
+				projectId: String(user.defaultProjectId),
+				kind: "content",
+				r2Bucket: "test-bucket",
+				r2Key: "content/worker-r2-failure",
+				createdBy: user.userId,
+				updatedAt: Date.now(),
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				workspaceId: user.defaultWorkspaceId,
+				projectId: user.defaultProjectId,
+				scope: "project",
+			});
+			const request = await ctx.db.get("data_deletion_requests", requestId);
+			if (!request) {
+				throw new Error("Expected project deletion request");
+			}
+
+			return {
+				requestId,
+				assetId,
+				test_now: request.eligibleAt + 1,
+			};
+		});
+
+		vi.spyOn(R2.prototype, "deleteObject").mockRejectedValueOnce(new Error("R2 unavailable"));
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const result = await t.action(internal.data_deletion.process_deletion_requests, {
+				_test_now: test_now,
+				_test_disableReschedule: true,
+				_test_batchSize: 5,
+			});
+			const after = await t.run(async (ctx) => {
+				const [request, asset] = await Promise.all([
+					ctx.db.get("data_deletion_requests", requestId),
+					ctx.db.get("files_r2_assets", assetId),
+				]);
+
+				return { request, asset };
+			});
+
+			expect(result.steps).toBe(1);
+			expect(result.shouldReschedule).toBe(true);
+			expect(after.request?._id).toBe(requestId);
+			expect(after.asset?._id).toBe(assetId);
+			expect(consoleErrorSpy).toHaveBeenCalledWith(
+				"Failed to process project deletion request",
+				expect.objectContaining({
+					requestId,
+				}),
+			);
+		} finally {
+			consoleErrorSpy.mockRestore();
+		}
 	});
 
 	test("directly consumes an already-queued project request during the user phase in the same run", async () => {
@@ -2109,11 +3433,12 @@ describe("process_deletion_requests", () => {
 			return {
 				userRequestId: rid!,
 				projectRequestId: queuedProjectRequestId,
-				test_now: Math.max(row._creationTime, queuedProjectRequest._creationTime) + RETENTION_MS + 1,
+				test_now: Math.max(row.eligibleAt, queuedProjectRequest.eligibleAt) + 1,
 			};
 		});
 
-		await t.action(internal.data_deletion.process_deletion_requests, { _test_now: test_now });
+		await t.action(internal.data_deletion.enqueue_deletion_requests_processing, { _test_now: test_now });
+		await data_deletion_test_run_worker_until_idle(t, { testNow: test_now });
 
 		const after = await t.run(async (ctx) => {
 			const [userRequest, projectRequest, requests, workspace, project, files] = await Promise.all([
@@ -2143,9 +3468,9 @@ describe("process_deletion_requests", () => {
 		expect(after.files).toHaveLength(0);
 	});
 
-	test("respects the per-scope quotas in one run", async () => {
+	test("respects the per-run mutation step budget", async () => {
 		const t = test_convex();
-		const maxCreationTime = await t.run(async (ctx) => {
+		const maxEligibleAt = await t.run(async (ctx) => {
 			const now = Date.now();
 
 			for (let i = 0; i < 25; i++) {
@@ -2156,6 +3481,7 @@ describe("process_deletion_requests", () => {
 				await ctx.db.insert("data_deletion_requests", {
 					userId,
 					scope: "user",
+					eligibleAt: now + RETENTION_MS,
 				});
 			}
 
@@ -2175,6 +3501,7 @@ describe("process_deletion_requests", () => {
 					userId,
 					workspaceId,
 					scope: "workspace",
+					eligibleAt: now + RETENTION_MS,
 				});
 			}
 
@@ -2202,22 +3529,70 @@ describe("process_deletion_requests", () => {
 					workspaceId,
 					projectId,
 					scope: "project",
+					eligibleAt: now + RETENTION_MS,
 				});
 			}
 
 			const rows = await ctx.db.query("data_deletion_requests").collect();
-			return Math.max(...rows.map((row) => row._creationTime));
+			return Math.max(...rows.map((row) => row.eligibleAt));
 		});
 
-		await t.action(internal.data_deletion.process_deletion_requests, {
-			_test_now: maxCreationTime + RETENTION_MS + 1,
+		await t.action(internal.data_deletion.enqueue_deletion_requests_processing, {
+			_test_now: maxEligibleAt + 1,
+			_test_disableReschedule: true,
 		});
+		await data_deletion_test_finish_immediate_scheduled_functions(t);
 
 		const remaining = await t.run(async (ctx) => ctx.db.query("data_deletion_requests").collect());
 
 		expect(remaining.filter((row) => row.scope === "user")).toHaveLength(5);
-		expect(remaining.filter((row) => row.scope === "workspace")).toHaveLength(5);
-		expect(remaining.filter((row) => row.scope === "project")).toHaveLength(5);
+		expect(remaining.filter((row) => row.scope === "workspace")).toHaveLength(50);
+		expect(remaining.filter((row) => row.scope === "project")).toHaveLength(205);
+	});
+
+	test("reschedules when project-only requests use the whole step budget", async () => {
+		const t = test_convex();
+		const eligibleAt = await t.run(async (ctx) => {
+			const now = Date.now();
+			for (let i = 0; i < 26; i += 1) {
+				const userId = await ctx.db.insert("users", {
+					clerkUserId: `clerk-user-project-only-budget-${i}`,
+				});
+				const workspaceId = await ctx.db.insert("workspaces", {
+					name: `project-only-budget-workspace-${i}`,
+					description: "",
+					default: false,
+					billingMode: "user",
+					ownerUserId: userId,
+					updatedAt: now,
+				});
+				const projectId = await ctx.db.insert("workspaces_projects", {
+					workspaceId,
+					name: `project-only-budget-project-${i}`,
+					description: "",
+					default: false,
+					updatedAt: now,
+				});
+				await ctx.db.insert("data_deletion_requests", {
+					userId,
+					workspaceId,
+					projectId,
+					scope: "project",
+					eligibleAt: now,
+				});
+			}
+			return now;
+		});
+
+		const result = await t.action(internal.data_deletion.process_deletion_requests, {
+			_test_now: eligibleAt,
+			_test_disableReschedule: true,
+		});
+		const remaining = await t.run(async (ctx) => ctx.db.query("data_deletion_requests").collect());
+
+		expect(result.steps).toBe(25);
+		expect(result.shouldReschedule).toBe(true);
+		expect(remaining.filter((row) => row.scope === "project")).toHaveLength(1);
 	});
 });
 
@@ -2403,14 +3778,14 @@ describe("resolve_user after tombstone", () => {
 				nowTs: 30_001,
 			}),
 		);
-		const requestCreationTime2 = await t.run(async (ctx) => {
+		const requestEligibleAt2 = await t.run(async (ctx) => {
 			const request = await ctx.db.get("data_deletion_requests", requestId!);
-			return request!._creationTime;
+			return request!.eligibleAt;
 		});
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
 				requestId: requestId!,
-				_test_now: requestCreationTime2 + RETENTION_MS + 1,
+				_test_now: requestEligibleAt2 + 1,
 			}),
 		);
 
@@ -2488,14 +3863,14 @@ describe("resolve_user after tombstone", () => {
 				nowTs: 30_001,
 			}),
 		);
-		const requestCreationTime = await t.run(async (ctx) => {
+		const requestEligibleAt = await t.run(async (ctx) => {
 			const request = await ctx.db.get("data_deletion_requests", requestId!);
-			return request!._creationTime;
+			return request!.eligibleAt;
 		});
 		await t.run((ctx) =>
 			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
 				requestId: requestId!,
-				_test_now: requestCreationTime + RETENTION_MS + 1,
+				_test_now: requestEligibleAt + 1,
 			}),
 		);
 

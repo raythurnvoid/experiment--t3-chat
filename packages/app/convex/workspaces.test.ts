@@ -31,6 +31,42 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
+async function workspaces_test_process_project_deletion_request_until_done(
+	t: ReturnType<typeof test_convex>,
+	args: { requestId: Id<"data_deletion_requests"> },
+) {
+	for (let i = 0; i < 100; i += 1) {
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_project_deletion_request, {
+				requestId: args.requestId,
+			}),
+		);
+		if (result.done) {
+			return;
+		}
+	}
+
+	throw new Error("Project deletion request did not finish");
+}
+
+async function workspaces_test_process_workspace_deletion_request_until_done(
+	t: ReturnType<typeof test_convex>,
+	args: { requestId: Id<"data_deletion_requests"> },
+) {
+	for (let i = 0; i < 200; i += 1) {
+		const result = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_workspace_deletion_request, {
+				requestId: args.requestId,
+			}),
+		);
+		if (result.done) {
+			return;
+		}
+	}
+
+	throw new Error("Workspace deletion request did not finish");
+}
+
 async function workspaces_test_seed_default_workspace(ctx: MutationCtx, args: { userId: Id<"users">; now?: number }) {
 	await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
 		userId: args.userId,
@@ -3181,12 +3217,9 @@ describe("delete_project", () => {
 		expect(after_delete.user?.defaultWorkspaceId).toBe(personalDefaultIds.workspaceId);
 		expect(after_delete.user?.defaultProjectId).toBe(personalDefaultIds.defaultProjectId);
 
-		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.process_project_deletion_request, {
-				requestId: after_delete.requests[0]!._id,
-				_test_now: after_delete.requests[0]!._creationTime + 7 * 24 * 60 * 60 * 1000 + 1,
-			}),
-		);
+		await workspaces_test_process_project_deletion_request_until_done(t, {
+			requestId: after_delete.requests[0]!._id,
+		});
 
 		const purgeRequestsAfter = await t.run(async (ctx) =>
 			(await ctx.db.query("data_deletion_requests").collect()).filter(
@@ -3411,13 +3444,9 @@ describe("delete_workspace", () => {
 		expect(after_delete.member?.defaultWorkspaceId).toBe(memberDefault._yay!.workspaceId);
 		expect(after_delete.member?.defaultProjectId).toBe(memberDefault._yay!.defaultProjectId);
 
-		const newestRequestCreationTime = Math.max(...after_delete.requests.map((row) => row._creationTime));
-		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.process_workspace_deletion_request, {
-				requestId: after_delete.requests[0]!._id,
-				_test_now: newestRequestCreationTime + 7 * 24 * 60 * 60 * 1000 + 1,
-			}),
-		);
+		await workspaces_test_process_workspace_deletion_request_until_done(t, {
+			requestId: after_delete.requests[0]!._id,
+		});
 
 		const purgeRequestsAfter = await t.run(async (ctx) =>
 			(await ctx.db.query("data_deletion_requests").collect()).filter(
@@ -3570,6 +3599,7 @@ describe("process_project_deletion_request", () => {
 				workspaceId: created._yay!.workspaceId,
 				projectId: victimProject._yay!.projectId,
 				scope: "project",
+				eligibleAt: Date.now() + RETENTION_MS,
 			});
 			const purgeRequest = await ctx.db.get("data_deletion_requests", purgeRequestId);
 			if (!purgeRequest) {
@@ -3579,12 +3609,9 @@ describe("process_project_deletion_request", () => {
 			return purgeRequest;
 		});
 
-		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.process_project_deletion_request, {
-				requestId: purgeRequest._id,
-				_test_now: purgeRequest._creationTime + RETENTION_MS + 1,
-			}),
-		);
+		await workspaces_test_process_project_deletion_request_until_done(t, {
+			requestId: purgeRequest._id,
+		});
 
 		const afterPurge = await t.run(async (ctx) => {
 			const [requests, files, assets, aiThreads, aiMessages, chatMessages] = await Promise.all([

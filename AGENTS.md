@@ -357,6 +357,7 @@ Current spec-style skills include:
 - `.agents/skills/access-control/SKILL.md`
 - `.agents/skills/workspaces-tenancy/SKILL.md`
 - `.agents/skills/quotas/SKILL.md`
+- `.agents/skills/data-deletion/SKILL.md`
 - `.agents/skills/ai-chat-agent/SKILL.md`
 - `.agents/skills/files-agent-pending-updates/SKILL.md`
 

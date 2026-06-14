@@ -42,12 +42,13 @@ export function test_convex() {
 		polar_test.schema as unknown as Parameters<typeof t.registerComponent>[1],
 		polar_test.modules as unknown as Parameters<typeof t.registerComponent>[2],
 	);
-	presence_test.register(t);
+	presence_test.register(t as unknown as Parameters<typeof presence_test.register>[0]);
 	workpool_test.register(t, "billing_workpool_bootstrap");
 	workpool_test.register(t, "billing_workpool_cancellation");
 	workpool_test.register(t, "billing_workpool_usage_event");
 	workpool_test.register(t, "files_content_materialization_workpool");
 	workpool_test.register(t, "files_upload_conversion_workpool");
+	workpool_test.register(t, "data_deletion_workpool");
 	rate_limiter_test.register(t, "rate_limiter");
 	r2_test.register(t as unknown as Parameters<typeof r2_test.register>[0]);
 	return t;
