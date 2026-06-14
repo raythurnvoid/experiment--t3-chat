@@ -317,7 +317,7 @@ async function db_ensure_default_workspace_and_project_for_user(
 }
 
 /**
- * Deletes one bounded batch of project-owned content docs.
+ * Deletes one limited set of project-owned content docs.
  *
  * Queue processors call this repeatedly. Each branch deletes one class of docs
  * and returns immediately so large projects stay within mutation limits.
@@ -420,8 +420,8 @@ async function db_purge_workspace_project_content_batch(
 		return { done: false, deletedCount: aiChatThreads.length };
 	}
 
-	// Legacy chat messages are still project-scoped content and are purged with
-	// the same bounded batch discipline.
+// Legacy chat messages are still project-scoped content and are purged with
+// the same per-call deletion limit.
 	const chatMessages = await ctx.db
 		.query("chat_messages")
 		.withIndex("by_workspace_project_thread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
@@ -1453,13 +1453,18 @@ type process_project_deletion_request_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+// #region admin hard deletion
+
 /**
- * Reset one user's data without deleting the account.
+ * Internal admin data-reset entrypoint.
  *
- * This is the admin data-only reset path. It keeps the `users` doc, auth ids,
- * profile, billing state, and default tenant: the `personal` workspace plus
- * the `home` project. Each call deletes only a limited number of docs, so
- * callers should invoke it again when it returns `done: false`.
+ * Used by `users.hard_delete_user_now` for `purgeUserMod: "data"`. It removes
+ * reset-owned data without deleting the account. It keeps the `users` doc, auth
+ * ids, profile, billing state, and default tenant: the `personal` workspace
+ * plus the `home` project.
+ *
+ * Each call deletes only a limited number of docs, so callers should invoke it
+ * again when it returns `done: false`.
  */
 export const hard_delete_user_data = internalMutation({
 	args: {
@@ -1940,6 +1945,14 @@ export const hard_delete_user_data = internalMutation({
 	},
 });
 
+/**
+ * Internal admin finalization entrypoint for auth-removing hard-delete modes.
+ *
+ * This runs the user tombstone and finalization immediately instead of waiting
+ * for the retained user-scope queue doc. It may preserve or remove auth and
+ * billing state depending on the caller's mode, then queues any newly empty
+ * workspaces for immediate phase-2 purge.
+ */
 export const finalize_user_deletion_data = internalMutation({
 	args: {
 		userId: v.id("users"),
@@ -1989,6 +2002,8 @@ export const finalize_user_deletion_data = internalMutation({
 		return null;
 	},
 });
+
+// #endregion admin hard deletion
 
 // #region data deletion orchestration
 
