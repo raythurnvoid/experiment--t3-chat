@@ -2525,141 +2525,29 @@ export const get_file_info_for_list_dir_pagination = internalQuery({
 
 const SUBTREE_FILTER_MAX_ROWS_READ = 1000;
 
-async function db_list_dir_children_paginated(
+async function db_list_children_paginated(
 	ctx: QueryCtx,
 	args: {
 		workspaceId: string;
 		projectId: string;
-		parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 		numItems: number;
 		cursor: string | null;
+		parentId?: Id<"files_nodes"> | typeof files_ROOT_ID;
+		orderBy: "name" | "updatedAt";
 		order?: "asc" | "desc";
 	},
 ) {
-	if (args.parentId !== files_ROOT_ID) {
-		const parent = await ctx.db.get("files_nodes", args.parentId);
-		if (
-			!parent ||
-			parent.workspaceId !== args.workspaceId ||
-			parent.projectId !== args.projectId ||
-			parent.kind !== "folder"
-		) {
+	if (args.parentId == null) {
+		if (args.orderBy === "name") {
 			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
-		}
-	}
-
-	const result = await ctx.db
-		.query("files_nodes")
-		.withIndex("by_workspace_project_parent_archiveOperation_name", (q) =>
-			q
-				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
-				.eq("parentId", args.parentId)
-				.eq("archiveOperationId", undefined),
-		)
-		.order(args.order ?? "asc")
-		.paginate({
-			cursor: args.cursor,
-			numItems: args.numItems,
-		});
-
-	return {
-		items: result.page.map((file) => ({
-			name: file.name,
-			kind: file.kind,
-			path: file.path,
-			updatedAt: file.updatedAt,
-			updatedBy: file.updatedBy,
-			contentType: file.contentType,
-		})),
-		continueCursor: result.continueCursor,
-		isDone: result.isDone,
-	};
-}
-
-export const list_dir_children_by_parent_paginated = internalQuery({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
-		numItems: v.number(),
-		cursor: paginationOptsValidator.fields.cursor,
-		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
-	},
-	returns: v.object({
-		items: v.array(
-			v.object({
-				name: v.string(),
-				kind: v.union(v.literal("folder"), v.literal("file")),
-				path: v.string(),
-				updatedAt: v.number(),
-				updatedBy: v.id("users"),
-				contentType: v.optional(v.string()),
-			}),
-		),
-		continueCursor: v.string(),
-		isDone: v.boolean(),
-	}),
-	handler: async (ctx, args) => {
-		return await db_list_dir_children_paginated(ctx, args);
-	},
-});
-
-export type files_nodes_list_dir_children_by_parent_paginated_Result =
-	typeof list_dir_children_by_parent_paginated extends RegisteredQuery<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
-		? Awaited<ReturnValue>
-		: never;
-
-export const list_dir_children_by_parent_recency_paginated = internalQuery({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
-		numItems: v.number(),
-		cursor: paginationOptsValidator.fields.cursor,
-		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
-	},
-	returns: v.object({
-		items: v.array(
-			v.object({
-				name: v.string(),
-				kind: v.union(v.literal("folder"), v.literal("file")),
-				path: v.string(),
-				updatedAt: v.number(),
-				updatedBy: v.id("users"),
-				contentType: v.optional(v.string()),
-			}),
-		),
-		continueCursor: v.string(),
-		isDone: v.boolean(),
-	}),
-	handler: async (ctx, args) => {
-		if (args.parentId !== files_ROOT_ID) {
-			const parent = await ctx.db.get("files_nodes", args.parentId);
-			if (
-				!parent ||
-				parent.workspaceId !== args.workspaceId ||
-				parent.projectId !== args.projectId ||
-				parent.kind !== "folder"
-			) {
-				return { items: [], continueCursor: args.cursor ?? "", isDone: true };
-			}
 		}
 
 		const result = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_parent_archiveOperation_updatedAt", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("parentId", args.parentId)
-					.eq("archiveOperationId", undefined),
+			.withIndex("by_workspace_project_archiveOperation_updatedAt", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("archiveOperationId", undefined),
 			)
-			.order(args.order === "asc" ? "asc" : "desc")
+			.order(args.order ?? "desc")
 			.paginate({
 				cursor: args.cursor,
 				numItems: args.numItems,
@@ -2677,15 +2565,97 @@ export const list_dir_children_by_parent_recency_paginated = internalQuery({
 			continueCursor: result.continueCursor,
 			isDone: result.isDone,
 		};
+	}
+
+	const parentId = args.parentId;
+	if (parentId !== files_ROOT_ID) {
+		const parent = await ctx.db.get("files_nodes", parentId);
+		if (
+			!parent ||
+			parent.workspaceId !== args.workspaceId ||
+			parent.projectId !== args.projectId ||
+			parent.kind !== "folder"
+		) {
+			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+		}
+	}
+
+	const result =
+		args.orderBy === "name"
+			? await ctx.db
+					.query("files_nodes")
+					.withIndex("by_workspace_project_parent_archiveOperation_name", (q) =>
+						q
+							.eq("workspaceId", args.workspaceId)
+							.eq("projectId", args.projectId)
+							.eq("parentId", parentId)
+							.eq("archiveOperationId", undefined),
+					)
+					.order(args.order ?? "asc")
+					.paginate({
+						cursor: args.cursor,
+						numItems: args.numItems,
+					})
+			: await ctx.db
+					.query("files_nodes")
+					.withIndex("by_workspace_project_parent_archiveOperation_updatedAt", (q) =>
+						q
+							.eq("workspaceId", args.workspaceId)
+							.eq("projectId", args.projectId)
+							.eq("parentId", parentId)
+							.eq("archiveOperationId", undefined),
+					)
+					.order(args.order ?? "desc")
+					.paginate({
+						cursor: args.cursor,
+						numItems: args.numItems,
+					});
+
+	return {
+		items: result.page.map((file) => ({
+			name: file.name,
+			kind: file.kind,
+			path: file.path,
+			updatedAt: file.updatedAt,
+			updatedBy: file.updatedBy,
+			contentType: file.contentType,
+		})),
+		continueCursor: result.continueCursor,
+		isDone: result.isDone,
+	};
+}
+
+export const list_children_paginated = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		numItems: v.number(),
+		cursor: paginationOptsValidator.fields.cursor,
+		parentId: v.optional(v.union(v.id("files_nodes"), v.literal(files_ROOT_ID))),
+		orderBy: v.union(v.literal("name"), v.literal("updatedAt")),
+		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
+	},
+	returns: v.object({
+		items: v.array(
+			v.object({
+				name: v.string(),
+				kind: v.union(v.literal("folder"), v.literal("file")),
+				path: v.string(),
+				updatedAt: v.number(),
+				updatedBy: v.id("users"),
+				contentType: v.optional(v.string()),
+			}),
+		),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		return await db_list_children_paginated(ctx, args);
 	},
 });
 
-export type files_nodes_list_dir_children_by_parent_recency_paginated_Result =
-	typeof list_dir_children_by_parent_recency_paginated extends RegisteredQuery<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
+export type files_nodes_list_children_paginated_Result =
+	typeof list_children_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -2778,62 +2748,6 @@ export const list_folder_subtree_paginated = internalQuery({
 
 export type files_nodes_list_folder_subtree_paginated_Result =
 	typeof list_folder_subtree_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-/**
- * Workspace+project-wide recency listing ordered by `updatedAt`, paginated.
- * Backs pathless `ls -t` / `ls -rt`; scoped directory recency uses the parent+updatedAt index.
- */
-export const list_recent_paginated = internalQuery({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		numItems: v.number(),
-		cursor: paginationOptsValidator.fields.cursor,
-		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
-	},
-	returns: v.object({
-		items: v.array(
-			v.object({
-				path: v.string(),
-				kind: v.union(v.literal("folder"), v.literal("file")),
-				updatedAt: v.number(),
-				updatedBy: v.id("users"),
-				contentType: v.optional(v.string()),
-			}),
-		),
-		continueCursor: v.string(),
-		isDone: v.boolean(),
-	}),
-	handler: async (ctx, args) => {
-		const result = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_workspace_project_archiveOperation_updatedAt", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("archiveOperationId", undefined),
-			)
-			.order(args.order === "asc" ? "asc" : "desc")
-			.paginate({
-				cursor: args.cursor,
-				numItems: args.numItems,
-			});
-
-		return {
-			items: result.page.map((file) => ({
-				path: file.path,
-				kind: file.kind,
-				updatedAt: file.updatedAt,
-				updatedBy: file.updatedBy,
-				contentType: file.contentType,
-			})),
-			continueCursor: result.continueCursor,
-			isDone: result.isDone,
-		};
-	},
-});
-
-export type files_nodes_list_recent_paginated_Result =
-	typeof list_recent_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 

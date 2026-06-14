@@ -63,10 +63,8 @@ import type {
 	files_nodes_get_file_last_available_markdown_content_by_path_Result,
 	files_nodes_grep_app_file_Result,
 	files_nodes_grep_app_file_scan_Result,
-	files_nodes_list_dir_children_by_parent_paginated_Result,
-	files_nodes_list_dir_children_by_parent_recency_paginated_Result,
+	files_nodes_list_children_paginated_Result,
 	files_nodes_list_folder_subtree_paginated_Result,
-	files_nodes_list_recent_paginated_Result,
 	files_nodes_read_file_full_content_from_chunks_Result,
 	files_nodes_read_file_content_stats_Result,
 	files_nodes_read_file_line_range_Result,
@@ -2236,13 +2234,14 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 		// Pathless `ls -t` is the project-wide recency view, so the agent can ask
 		// "what changed recently?" without first discovering every folder.
 		if (hasAppFileNodeTarget && parsed._yay.time && parsed._yay.paths.length === 0) {
-			const result = (await ctx.runQuery(internal.files_nodes.list_recent_paginated, {
+			const result = (await ctx.runQuery(internal.files_nodes.list_children_paginated, {
 				workspaceId: workspaceFs.ctxData.workspaceId,
 				projectId: workspaceFs.ctxData.projectId,
 				numItems: clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
+				orderBy: "updatedAt",
 				order: parsed._yay.reverse ? "asc" : "desc",
-			})) as files_nodes_list_recent_paginated_Result;
+			})) as files_nodes_list_children_paginated_Result;
 
 			const lines = result.items.map(
 				(item) =>
@@ -2427,23 +2426,15 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 				} else {
 					parentId = entry._id as Id<"files_nodes">;
 				}
-				const result = parsed._yay.time
-					? ((await ctx.runQuery(internal.files_nodes.list_dir_children_by_parent_recency_paginated, {
-							workspaceId: workspaceFs.ctxData.workspaceId,
-							projectId: workspaceFs.ctxData.projectId,
-							parentId,
-							numItems: clamp_listing_page_limit(parsed._yay.limit),
-							cursor,
-							order: parsed._yay.reverse ? "asc" : "desc",
-						})) as files_nodes_list_dir_children_by_parent_recency_paginated_Result)
-					: ((await ctx.runQuery(internal.files_nodes.list_dir_children_by_parent_paginated, {
-							workspaceId: workspaceFs.ctxData.workspaceId,
-							projectId: workspaceFs.ctxData.projectId,
-							parentId,
-							numItems: clamp_listing_page_limit(parsed._yay.limit),
-							cursor,
-							order: parsed._yay.reverse ? "desc" : "asc",
-						})) as files_nodes_list_dir_children_by_parent_paginated_Result);
+				const result = (await ctx.runQuery(internal.files_nodes.list_children_paginated, {
+					workspaceId: workspaceFs.ctxData.workspaceId,
+					projectId: workspaceFs.ctxData.projectId,
+					parentId,
+					numItems: clamp_listing_page_limit(parsed._yay.limit),
+					cursor,
+					orderBy: parsed._yay.time ? "updatedAt" : "name",
+					order: parsed._yay.time ? (parsed._yay.reverse ? "asc" : "desc") : parsed._yay.reverse ? "desc" : "asc",
+				})) as files_nodes_list_children_paginated_Result;
 
 				lines.push(
 					...result.items.map((item) =>
@@ -7320,9 +7311,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(recursiveScoped.stderr).toContain("ls -t -R is not supported");
 			expect(projectPaged.stdout).toContain("Next page: ls -t --limit 1 --cursor");
 			expect(runQuery).toHaveBeenCalledWith(
-				internal.files_nodes.list_dir_children_by_parent_recency_paginated,
+				internal.files_nodes.list_children_paginated,
 				expect.objectContaining({
 					parentId: docsId,
+					orderBy: "updatedAt",
 					order: "desc",
 				}),
 			);

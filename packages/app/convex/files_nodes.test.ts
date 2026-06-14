@@ -867,19 +867,21 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const firstPage = await asUser.query(internal.files_nodes.list_dir_children_by_parent_paginated, {
+		const firstPage = await asUser.query(internal.files_nodes.list_children_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			parentId: db.docsFolderId,
 			numItems: 2,
 			cursor: null,
+			orderBy: "name",
 		});
-		const secondPage = await asUser.query(internal.files_nodes.list_dir_children_by_parent_paginated, {
+		const secondPage = await asUser.query(internal.files_nodes.list_children_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			parentId: db.docsFolderId,
 			numItems: 2,
 			cursor: firstPage.continueCursor,
+			orderBy: "name",
 		});
 
 		expect(firstPage.isDone).toBe(false);
@@ -899,20 +901,22 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const ascending = await asUser.query(internal.files_nodes.list_dir_children_by_parent_paginated, {
+		const ascending = await asUser.query(internal.files_nodes.list_children_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
+			orderBy: "name",
 			order: "asc",
 		});
-		const descending = await asUser.query(internal.files_nodes.list_dir_children_by_parent_paginated, {
+		const descending = await asUser.query(internal.files_nodes.list_children_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
+			orderBy: "name",
 			order: "desc",
 		});
 
@@ -926,6 +930,40 @@ describe("paginated bash listing queries", () => {
 			updatedBy: db.userId,
 			contentType: "text/markdown;charset=utf-8",
 		});
+	});
+
+	test("paginates direct children by parent id in updatedAt order", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const descending = await asUser.query(internal.files_nodes.list_children_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			parentId: db.docsFolderId,
+			numItems: 10,
+			cursor: null,
+			orderBy: "updatedAt",
+		});
+		const ascending = await asUser.query(internal.files_nodes.list_children_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			parentId: db.docsFolderId,
+			numItems: 10,
+			cursor: null,
+			orderBy: "updatedAt",
+			order: "asc",
+		});
+
+		expect(descending.items.map((item) => item.path)).toEqual(["/docs/nested", "/docs/b.md", "/docs/a.md"]);
+		expect(descending.items.map((item) => item.updatedAt)).toEqual([4, 3, 2]);
+		expect(ascending.items.map((item) => item.path)).toEqual(["/docs/a.md", "/docs/b.md", "/docs/nested"]);
+		expect(descending.items.map((item) => item.path)).not.toContain("/docs/nested/c.md");
+		expect(descending.items.map((item) => item.path)).not.toContain("/docs/z-archived.md");
 	});
 
 	test("paginates a recursive subtree without sibling-prefix leakage", async () => {
@@ -1162,7 +1200,7 @@ describe("paginated bash listing queries", () => {
 		expect(secondPage.isDone).toBe(true);
 	});
 
-	test("list_recent_paginated returns active files newest-first and paginates without gaps", async () => {
+	test("list_children_paginated returns project recency newest-first and paginates without gaps", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -1171,17 +1209,19 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const desc = await asUser.query(internal.files_nodes.list_recent_paginated, {
+		const desc = await asUser.query(internal.files_nodes.list_children_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			numItems: 50,
 			cursor: null,
+			orderBy: "updatedAt",
 		});
-		const asc = await asUser.query(internal.files_nodes.list_recent_paginated, {
+		const asc = await asUser.query(internal.files_nodes.list_children_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			numItems: 50,
 			cursor: null,
+			orderBy: "updatedAt",
 			order: "asc",
 		});
 
@@ -1200,12 +1240,13 @@ describe("paginated bash listing queries", () => {
 			// Explicit type: `cursor` is both an input and derived from the output, which
 			// otherwise trips TS circular inference on the query result.
 			const result: { items: Array<{ path: string }>; continueCursor: string; isDone: boolean } = await asUser.query(
-				internal.files_nodes.list_recent_paginated,
+				internal.files_nodes.list_children_paginated,
 				{
 					workspaceId: db.workspaceId,
 					projectId: db.projectId,
 					numItems: 3,
 					cursor,
+					orderBy: "updatedAt",
 				},
 			);
 			seen.push(...result.items.map((item) => item.path));
@@ -1215,6 +1256,35 @@ describe("paginated bash listing queries", () => {
 		expect(done).toBe(true);
 		expect(new Set(seen).size).toBe(seen.length);
 		expect([...seen].sort()).toEqual(desc.items.map((item) => item.path).sort());
+	});
+
+	test("list_children_paginated returns empty done pages for unsupported or invalid scopes", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const projectNameOrder = await asUser.query(internal.files_nodes.list_children_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			numItems: 10,
+			cursor: null,
+			orderBy: "name",
+		});
+		const invalidParent = await asUser.query(internal.files_nodes.list_children_paginated, {
+			workspaceId: db.workspaceId,
+			projectId: "other-project",
+			parentId: db.docsFolderId,
+			numItems: 10,
+			cursor: null,
+			orderBy: "name",
+		});
+
+		expect(projectNameOrder).toEqual({ items: [], continueCursor: "", isDone: true });
+		expect(invalidParent).toEqual({ items: [], continueCursor: "", isDone: true });
 	});
 
 	test("get_by_path resolves active paths and excludes archived or root paths", async () => {
@@ -3016,9 +3086,6 @@ async function list_dir(args: {
 			parentId: frame.parentId,
 			cursor: frame.cursor,
 		});
-
-		// No more children at this cursor for this parent or file is empty
-		if (paginatedResult.isDone) continue;
 
 		const child = paginatedResult.files.at(0);
 		if (!child) continue; // just for type safety
