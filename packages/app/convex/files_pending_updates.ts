@@ -58,7 +58,7 @@ async function files_pending_update_action_get_latest_file_yjs_state(
 	args: {
 		workspaceId: string;
 		projectId: string;
-		nodeId: app_convex_Doc<"files_pending_updates">["nodeId"];
+		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 	},
 ) {
 	const state = (await ctx.runQuery(
@@ -108,19 +108,19 @@ async function files_pending_update_upsert_last_sequence_saved(
 		workspaceId: string;
 		projectId: string;
 		userId: string;
-		nodeId: app_convex_Doc<"files_pending_updates_last_sequence_saved">["nodeId"];
+		nodeId: app_convex_Doc<"files_pending_updates_last_sequence_saved">["fileNodeId"];
 		lastSequenceSaved: number;
 		updatedAt: number;
 	},
 ) {
 	const existingRow = await ctx.db
 		.query("files_pending_updates_last_sequence_saved")
-		.withIndex("by_workspace_project_user_file", (q) =>
+		.withIndex("by_workspace_project_user_fileNode", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
 				.eq("userId", args.userId)
-				.eq("nodeId", args.nodeId),
+				.eq("fileNodeId", args.nodeId),
 		)
 		.first();
 
@@ -129,7 +129,7 @@ async function files_pending_update_upsert_last_sequence_saved(
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			userId: args.userId,
-			nodeId: args.nodeId,
+			fileNodeId: args.nodeId,
 			lastSequenceSaved: args.lastSequenceSaved,
 			updatedAt: args.updatedAt,
 		});
@@ -181,7 +181,7 @@ async function files_pending_update_db_replace_chunks(
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				userId: args.userId,
-				nodeId: args.nodeId,
+				fileNodeId: args.nodeId,
 				pendingUpdateId: args.pendingUpdateId,
 				chunkIndex: chunk.chunkIndex,
 				markdownChunk: chunk.markdownChunk,
@@ -308,7 +308,7 @@ async function files_pending_update_resolve_branch_docs(
 		workspaceId: string;
 		projectId: string;
 		userId: string;
-		nodeId: app_convex_Doc<"files_pending_updates">["nodeId"];
+		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"];
 		baseYjsSequence?: number;
 		baseYjsUpdate?: ArrayBuffer;
@@ -364,7 +364,7 @@ async function files_pending_update_upsert_branch_docs(
 		workspaceId: string;
 		projectId: string;
 		userId: string;
-		nodeId: app_convex_Doc<"files_pending_updates">["nodeId"];
+		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		existingPendingUpdate: app_convex_Doc<"files_pending_updates"> | null;
 		baseYjsSequence: number;
 		baseYjsDoc: YDoc;
@@ -433,7 +433,7 @@ async function files_pending_update_upsert_branch_docs(
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			userId: args.userId,
-			nodeId: args.nodeId,
+			fileNodeId: args.nodeId,
 			baseYjsSequence: args.baseYjsSequence,
 			baseYjsUpdate,
 			stagedBranchYjsUpdate,
@@ -495,7 +495,7 @@ async function files_pending_update_upsert_updates(
 		workspaceId: string;
 		projectId: string;
 		userId: string;
-		nodeId: app_convex_Doc<"files_pending_updates">["nodeId"];
+		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"];
 		baseYjsSequence?: number;
 		baseYjsUpdate?: ArrayBuffer;
@@ -864,7 +864,7 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
 				userId: userAuth.id,
-				nodeId: args.nodeId,
+				fileNodeId: args.nodeId,
 				baseYjsSequence: args.baseYjsSequence,
 				baseYjsUpdate: args.baseYjsUpdate,
 				stagedBranchYjsUpdate: args.stagedBranchYjsUpdate,
@@ -952,7 +952,7 @@ async function action_persist_file_pending_update_rebased_state_in_db(
 	ctx: ActionCtx,
 	args: {
 		membershipId: app_convex_Doc<"workspaces_projects_users">["_id"];
-		nodeId: app_convex_Doc<"files_pending_updates">["nodeId"];
+		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"] | undefined;
 		baseYjsSequence: number;
 		baseYjsUpdate: ArrayBuffer;
@@ -1083,7 +1083,7 @@ export const list_files_pending_updates = query({
 
 		const filesPendingUpdates = await ctx.db
 			.query("files_pending_updates")
-			.withIndex("by_workspace_project_user_file", (q) =>
+			.withIndex("by_workspace_project_user_fileNode", (q) =>
 				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("userId", userAuth.id),
 			)
 			.order("asc")
@@ -1114,12 +1114,12 @@ export const get_file_pending_update_last_sequence_saved = query({
 
 		return await ctx.db
 			.query("files_pending_updates_last_sequence_saved")
-			.withIndex("by_workspace_project_user_file", (q) =>
+			.withIndex("by_workspace_project_user_fileNode", (q) =>
 				q
 					.eq("workspaceId", membership.workspaceId)
 					.eq("projectId", membership.projectId)
 					.eq("userId", userAuth.id)
-					.eq("nodeId", args.nodeId),
+					.eq("fileNodeId", args.nodeId),
 			)
 			.first();
 	},
@@ -1407,7 +1407,7 @@ async function action_save_file_pending_update_in_db(
 	ctx: ActionCtx,
 	args: {
 		membershipId: app_convex_Doc<"workspaces_projects_users">["_id"];
-		nodeId: app_convex_Doc<"files_pending_updates">["nodeId"];
+		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"] | undefined;
 		baseYjsSequence: number;
 		baseYjsUpdate: ArrayBuffer;

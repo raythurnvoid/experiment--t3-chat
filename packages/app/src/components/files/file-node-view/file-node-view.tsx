@@ -2097,7 +2097,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	// start below the route toolbar with the same top breathing room.
 	const topSafeArea = FILE_NODE_VIEW_TOP_SAFE_AREA;
 	const currentPendingUpdateIndex = activeEditorNodeId
-		? pendingUpdates.findIndex((pendingUpdate) => pendingUpdate.nodeId === activeEditorNodeId)
+		? pendingUpdates.findIndex((pendingUpdate) => pendingUpdate.fileNodeId === activeEditorNodeId)
 		: -1;
 	const currentPendingUpdate = pendingUpdates[currentPendingUpdateIndex];
 	const hasCurrentPendingUpdates = currentPendingUpdateIndex >= 0;
@@ -2126,7 +2126,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			}
 
 			handleNavigatePendingUpdates({
-				nodeId: pendingUpdates[0].nodeId,
+			nodeId: pendingUpdates[0].fileNodeId,
 				forceDiffEditor: true,
 			});
 			return;
@@ -2142,7 +2142,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		}
 
 		handleNavigatePendingUpdates({
-			nodeId: nextPendingUpdate.nodeId,
+			nodeId: nextPendingUpdate.fileNodeId,
 			forceDiffEditor: !hasCurrentPendingUpdates,
 		});
 	});

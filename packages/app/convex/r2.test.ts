@@ -337,14 +337,14 @@ describe("r2 asset content", () => {
 				ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId),
 				ctx.db
 					.query("files_yjs_updates")
-					.withIndex("by_workspace_project_file_sequence", (q) =>
-						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", node._id),
+					.withIndex("by_workspace_project_fileNode_sequence", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", node._id),
 					)
 					.collect(),
 				ctx.db
 					.query("files_snapshots")
-					.withIndex("by_workspace_project_file_archivedAt", (q) =>
-						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", node._id),
+					.withIndex("by_workspace_project_fileNode_archivedAt", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", node._id),
 					)
 					.collect(),
 			]);
@@ -500,12 +500,12 @@ describe("r2 asset content", () => {
 		const pendingUpdate = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_file", (q) =>
+				.withIndex("by_workspace_project_user_fileNode", (q) =>
 					q
 						.eq("workspaceId", db.workspaceId)
 						.eq("projectId", db.projectId)
 						.eq("userId", db.userId)
-						.eq("nodeId", created._yay.nodeId),
+						.eq("fileNodeId", created._yay.nodeId),
 				)
 				.unique(),
 		);

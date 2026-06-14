@@ -52,13 +52,33 @@ afterEach(() => {
 describe("bounded read line helpers", () => {
 	test("files_line_range_from_text slices a 1-based line range", () => {
 		const content = "a\nb\nc\nd\ne\n";
-		expect(files_line_range_from_text(content, 1, 2)).toMatchObject({ content: "a\nb\n", linesReturned: 2, moreLines: true });
-		expect(files_line_range_from_text(content, 3, 2)).toMatchObject({ content: "c\nd\n", linesReturned: 2, moreLines: true });
-		expect(files_line_range_from_text(content, 5, 2)).toMatchObject({ content: "e\n", linesReturned: 1, moreLines: false });
+		expect(files_line_range_from_text(content, 1, 2)).toMatchObject({
+			content: "a\nb\n",
+			linesReturned: 2,
+			moreLines: true,
+		});
+		expect(files_line_range_from_text(content, 3, 2)).toMatchObject({
+			content: "c\nd\n",
+			linesReturned: 2,
+			moreLines: true,
+		});
+		expect(files_line_range_from_text(content, 5, 2)).toMatchObject({
+			content: "e\n",
+			linesReturned: 1,
+			moreLines: false,
+		});
 		// Range entirely past the end → empty, no more lines.
-		expect(files_line_range_from_text(content, 10, 2)).toMatchObject({ content: "", linesReturned: 0, moreLines: false });
+		expect(files_line_range_from_text(content, 10, 2)).toMatchObject({
+			content: "",
+			linesReturned: 0,
+			moreLines: false,
+		});
 		// No trailing newline: the final unterminated line still counts.
-		expect(files_line_range_from_text("x\ny", 1, 5)).toMatchObject({ content: "x\ny\n", linesReturned: 2, moreLines: false });
+		expect(files_line_range_from_text("x\ny", 1, 5)).toMatchObject({
+			content: "x\ny\n",
+			linesReturned: 2,
+			moreLines: false,
+		});
 	});
 
 	test("files_line_range_from_text truncates a pathologically long line with a marker", () => {
@@ -411,7 +431,7 @@ describe("check_bash_file_search_readiness", () => {
 				ctx.db.insert("files_yjs_snapshots", {
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,
-					nodeId: fileId,
+					fileNodeId: fileId,
 					sequence: 1,
 					assetId: yjsSnapshotAssetId,
 					createdBy: membership.userId,
@@ -421,7 +441,7 @@ describe("check_bash_file_search_readiness", () => {
 				ctx.db.insert("files_yjs_docs_last_sequences", {
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,
-					nodeId: fileId,
+					fileNodeId: fileId,
 					lastSequence: 1,
 				}),
 			]);
@@ -433,7 +453,7 @@ describe("check_bash_file_search_readiness", () => {
 			const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
-				nodeId: fileId,
+				fileNodeId: fileId,
 				yjsSequence: 1,
 				chunkIndex: 0,
 				markdownChunk: "# Readme\n",
@@ -446,7 +466,7 @@ describe("check_bash_file_search_readiness", () => {
 			await ctx.db.insert("files_plain_text_chunks", {
 				workspaceId: membership.workspaceId,
 				projectId: membership.projectId,
-				nodeId: fileId,
+				fileNodeId: fileId,
 				yjsSequence: 1,
 				chunkIndex: 0,
 				path: "/stale/readme.md",
@@ -553,7 +573,7 @@ describe("enqueue_missing_plain_text_chunk_materializations", () => {
 				ctx.db.insert("files_yjs_snapshots", {
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,
-					nodeId: editableFileId,
+					fileNodeId: editableFileId,
 					sequence: 0,
 					assetId: yjsSnapshotAssetId,
 					createdBy: membership.userId,
@@ -563,7 +583,7 @@ describe("enqueue_missing_plain_text_chunk_materializations", () => {
 				ctx.db.insert("files_yjs_docs_last_sequences", {
 					workspaceId: membership.workspaceId,
 					projectId: membership.projectId,
-					nodeId: editableFileId,
+					fileNodeId: editableFileId,
 					lastSequence: 0,
 				}),
 			]);
@@ -590,7 +610,7 @@ describe("enqueue_missing_plain_text_chunk_materializations", () => {
 		const jobs = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_content_materialization_jobs")
-				.withIndex("by_file", (q) => q.eq("nodeId", db.editableFileId))
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", db.editableFileId))
 				.collect(),
 		);
 
@@ -602,7 +622,7 @@ describe("enqueue_missing_plain_text_chunk_materializations", () => {
 		expect(jobs[0]).toMatchObject({
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			nodeId: db.editableFileId,
+			fileNodeId: db.editableFileId,
 			targetSequence: 0,
 		});
 		expect(db.rawFileId).toBeDefined();
@@ -847,17 +867,17 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const firstPage = await asUser.query(internal.files_nodes.list_dir_children_paginated, {
+		const firstPage = await asUser.query(internal.files_nodes.list_dir_children_by_parent_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			path: "/docs",
+			parentId: db.docsFolderId,
 			numItems: 2,
 			cursor: null,
 		});
-		const secondPage = await asUser.query(internal.files_nodes.list_dir_children_paginated, {
+		const secondPage = await asUser.query(internal.files_nodes.list_dir_children_by_parent_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			path: "/docs",
+			parentId: db.docsFolderId,
 			numItems: 2,
 			cursor: firstPage.continueCursor,
 		});
@@ -917,25 +937,27 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const firstPage = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+		const firstPage = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			path: "/docs",
+			folderPath: "/docs",
 			numItems: 2,
 			cursor: null,
 		});
-		const secondPage = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+		const secondPage = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			path: "/docs",
+			folderPath: "/docs",
 			numItems: 10,
 			cursor: firstPage.continueCursor,
 		});
-		const paths = [...firstPage.items, ...secondPage.items].map((item) => item.path);
+		const paths = [...firstPage.page, ...secondPage.page].map((item) => item.path);
 
 		expect(firstPage.isDone).toBe(false);
 		expect(new Set(paths).size).toBe(paths.length);
-		expect(paths).toEqual(expect.arrayContaining(["/docs", "/docs/a.md", "/docs/b.md", "/docs/nested", "/docs/nested/c.md"]));
+		expect(paths).toEqual(
+			expect.arrayContaining(["/docs", "/docs/a.md", "/docs/b.md", "/docs/nested", "/docs/nested/c.md"]),
+		);
 		expect(paths).not.toContain("/docs/z-archived.md");
 		expect(paths).not.toContain("/docs-archive");
 		expect(paths).not.toContain("/docs-archive/outside.md");
@@ -950,38 +972,38 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const ascending = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+		const ascending = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			path: "/docs",
+			folderPath: "/docs",
 			numItems: 10,
 			cursor: null,
 			order: "asc",
 		});
-		const descending = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+		const descending = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			path: "/docs",
+			folderPath: "/docs",
 			numItems: 10,
 			cursor: null,
 			order: "desc",
 		});
 
-		expect(ascending.items.map((item) => item.path)).toEqual([
+		expect(ascending.page.map((item) => item.path)).toEqual([
 			"/docs",
 			"/docs/a.md",
 			"/docs/b.md",
 			"/docs/nested",
 			"/docs/nested/c.md",
 		]);
-		expect(descending.items.map((item) => item.path)).toEqual([
+		expect(descending.page.map((item) => item.path)).toEqual([
 			"/docs/nested/c.md",
 			"/docs/nested",
 			"/docs/b.md",
 			"/docs/a.md",
 			"/docs",
 		]);
-		expect(ascending.items[0]).toMatchObject({
+		expect(ascending.page[0]).toMatchObject({
 			path: "/docs",
 			kind: "folder",
 			updatedAt: 1,
@@ -998,19 +1020,19 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const filesAtDepthOne = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+		const filesAtDepthOne = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			path: "/docs",
+			folderPath: "/docs",
 			numItems: 10,
 			cursor: null,
 			kind: "file",
 			maxDepth: 1,
 		});
-		const foldersAtDepthOne = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+		const foldersAtDepthOne = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			path: "/docs",
+			folderPath: "/docs",
 			numItems: 10,
 			cursor: null,
 			kind: "folder",
@@ -1018,9 +1040,9 @@ describe("paginated bash listing queries", () => {
 			maxDepth: 1,
 		});
 
-		expect(filesAtDepthOne.items.map((item) => item.path)).toEqual(["/docs/a.md", "/docs/b.md"]);
-		expect(foldersAtDepthOne.items.map((item) => item.path)).toEqual(["/docs/nested"]);
-		expect(filesAtDepthOne.items.map((item) => item.path)).not.toContain("/docs/nested/c.md");
+		expect(filesAtDepthOne.page.map((item) => item.path)).toEqual(["/docs/a.md", "/docs/b.md"]);
+		expect(foldersAtDepthOne.page.map((item) => item.path)).toEqual(["/docs/nested"]);
+		expect(filesAtDepthOne.page.map((item) => item.path)).not.toContain("/docs/nested/c.md");
 	});
 
 	test("paginates extension-filtered recursive descendants through the extension index", async () => {
@@ -1032,25 +1054,27 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const firstPage = await asUser.query(internal.files_nodes.list_subtree_by_extension_paginated, {
+		const firstPage = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			path: "/docs",
+			folderPath: "/docs",
+			kind: "file",
 			lowercaseExtension: "md",
 			numItems: 1,
 			cursor: null,
 			maxDepth: 1,
 		});
-		const secondPage = await asUser.query(internal.files_nodes.list_subtree_by_extension_paginated, {
+		const secondPage = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			path: "/docs",
+			folderPath: "/docs",
+			kind: "file",
 			lowercaseExtension: "md",
 			numItems: 10,
 			cursor: firstPage.continueCursor,
 			maxDepth: 1,
 		});
-		const paths = [...firstPage.items, ...secondPage.items].map((item) => item.path);
+		const paths = [...firstPage.page, ...secondPage.page].map((item) => item.path);
 
 		expect(firstPage.isDone).toBe(false);
 		expect(paths).toEqual(["/docs/a.md", "/docs/b.md"]);
@@ -1059,7 +1083,7 @@ describe("paginated bash listing queries", () => {
 		expect(paths).not.toContain("/docs-archive/outside.md");
 	});
 
-	test("paginates path-prefix subtrees without sibling-prefix matches", async () => {
+	test("paginates folder subtrees without sibling-prefix matches", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -1068,14 +1092,14 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const result = await asUser.query(internal.files_nodes.list_path_prefix_paginated, {
+		const result = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			pathPrefix: "/docs",
+			folderPath: "/docs/",
 			numItems: 20,
 			cursor: null,
 		});
-		const paths = result.items.map((item) => item.path);
+		const paths = result.page.map((item) => item.path);
 
 		expect(result.isDone).toBe(true);
 		expect(paths).toEqual(expect.arrayContaining(["/docs", "/docs/a.md", "/docs/nested/c.md"]));
@@ -1084,7 +1108,7 @@ describe("paginated bash listing queries", () => {
 		expect(paths).not.toContain("/docs/z-archived.md");
 	});
 
-	test("filters path-prefix subtrees by kind before pagination", async () => {
+	test("filters folder subtrees by kind before pagination", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -1093,22 +1117,22 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const result = await asUser.query(internal.files_nodes.list_path_prefix_paginated, {
+		const result = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			pathPrefix: "/docs",
+			folderPath: "/docs",
 			numItems: 20,
 			cursor: null,
 			kind: "file",
 		});
-		const paths = result.items.map((item) => item.path);
+		const paths = result.page.map((item) => item.path);
 
 		expect(paths).toEqual(expect.arrayContaining(["/docs/a.md", "/docs/b.md", "/docs/nested/c.md"]));
 		expect(paths).not.toContain("/docs");
 		expect(paths).not.toContain("/docs/nested");
 	});
 
-	test("returns a file start path exactly once for subtree pagination", async () => {
+	test("returns no rows when a folder subtree scan receives a file path", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -1117,24 +1141,24 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const firstPage = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+		const firstPage = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			path: "/docs/a.md",
+			folderPath: "/docs/a.md",
 			numItems: 1,
 			cursor: null,
 		});
-		const secondPage = await asUser.query(internal.files_nodes.list_subtree_paginated, {
+		const secondPage = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			path: "/docs/a.md",
+			folderPath: "/docs/a.md",
 			numItems: 1,
 			cursor: firstPage.continueCursor,
 		});
 
-		expect(firstPage.items.map((item) => item.path)).toEqual(["/docs/a.md"]);
+		expect(firstPage.page).toEqual([]);
 		expect(firstPage.isDone).toBe(true);
-		expect(secondPage.items).toEqual([]);
+		expect(secondPage.page).toEqual([]);
 		expect(secondPage.isDone).toBe(true);
 	});
 
@@ -1175,13 +1199,15 @@ describe("paginated bash listing queries", () => {
 		for (let page = 0; page < 20 && !done; page++) {
 			// Explicit type: `cursor` is both an input and derived from the output, which
 			// otherwise trips TS circular inference on the query result.
-			const result: { items: Array<{ path: string }>; continueCursor: string; isDone: boolean } =
-				await asUser.query(internal.files_nodes.list_recent_paginated, {
+			const result: { items: Array<{ path: string }>; continueCursor: string; isDone: boolean } = await asUser.query(
+				internal.files_nodes.list_recent_paginated,
+				{
 					workspaceId: db.workspaceId,
 					projectId: db.projectId,
 					numItems: 3,
 					cursor,
-				});
+				},
+			);
 			seen.push(...result.items.map((item) => item.path));
 			cursor = result.continueCursor;
 			done = result.isDone;
@@ -1826,8 +1852,8 @@ test("create_markdown_node seeds initial Yjs content on the server", async () =>
 			ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId),
 			ctx.db
 				.query("files_yjs_updates")
-				.withIndex("by_workspace_project_file_sequence", (q) =>
-					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+				.withIndex("by_workspace_project_fileNode_sequence", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
 				)
 				.order("asc")
 				.collect(),
@@ -1909,17 +1935,17 @@ test("create_markdown_node writes server-seeded initial content to R2", async ()
 		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_file_sequence", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const versionSnapshot = await ctx.db
 			.query("files_snapshots")
-			.withIndex("by_workspace_project_file_archivedAt", (q) =>
+			.withIndex("by_workspace_project_fileNode_archivedAt", (q) =>
 				q
 					.eq("workspaceId", db.workspaceId)
 					.eq("projectId", db.projectId)
-					.eq("nodeId", createdFile._yay.nodeId)
+					.eq("fileNodeId", createdFile._yay.nodeId)
 					.eq("archivedAt", -1),
 			)
 			.first();
@@ -1946,7 +1972,7 @@ test("create_markdown_node writes server-seeded initial content to R2", async ()
 		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.yjsSnapshotAsset?._id}`,
 	});
 	expect(saved.yjsUpdates).toHaveLength(0);
-	expect(saved.versionSnapshot?.nodeId).toBe(createdFile._yay.nodeId);
+	expect(saved.versionSnapshot?.fileNodeId).toBe(createdFile._yay.nodeId);
 	expect(saved.versionSnapshotAsset).toMatchObject({
 		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.versionSnapshotAsset?._id}`,
 		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
@@ -3320,7 +3346,7 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 		const snapshotId = await ctx.db.insert("files_snapshots", {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			nodeId: db.files.file_root_1._id,
+			fileNodeId: db.files.file_root_1._id,
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
@@ -3429,17 +3455,17 @@ test("materialize_file_content writes empty Markdown and Yjs snapshots to R2", a
 		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_file_sequence", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const versionSnapshots = await ctx.db
 			.query("files_snapshots")
-			.withIndex("by_workspace_project_file_archivedAt", (q) =>
+			.withIndex("by_workspace_project_fileNode_archivedAt", (q) =>
 				q
 					.eq("workspaceId", db.workspaceId)
 					.eq("projectId", db.projectId)
-					.eq("nodeId", createdFile._yay.nodeId)
+					.eq("fileNodeId", createdFile._yay.nodeId)
 					.eq("archivedAt", -1),
 			)
 			.collect();
@@ -3564,17 +3590,17 @@ test("materialize_file_content writes nonempty Markdown and Yjs snapshots to R2"
 		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_file_sequence", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const versionSnapshots = await ctx.db
 			.query("files_snapshots")
-			.withIndex("by_workspace_project_file_archivedAt", (q) =>
+			.withIndex("by_workspace_project_fileNode_archivedAt", (q) =>
 				q
 					.eq("workspaceId", db.workspaceId)
 					.eq("projectId", db.projectId)
-					.eq("nodeId", createdFile._yay.nodeId)
+					.eq("fileNodeId", createdFile._yay.nodeId)
 					.eq("archivedAt", -1),
 			)
 			.collect();
@@ -3762,11 +3788,14 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 		const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
 		const chunks = await ctx.db
 			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", nodeId),
+			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", nodeId),
 			)
 			.collect();
-		return { committed: asset?.r2Key ? (r2Writes.get(asset.r2Key) as string | undefined) : undefined, chunkCount: chunks.length };
+		return {
+			committed: asset?.r2Key ? (r2Writes.get(asset.r2Key) as string | undefined) : undefined,
+			chunkCount: chunks.length,
+		};
 	});
 	if (committed === undefined) {
 		throw new Error("Expected committed markdown to be stored in R2");
@@ -3875,8 +3904,8 @@ test("grep_committed_file_chunks streams every chunk: equals the full-text oracl
 			(
 				await ctx.db
 					.query("files_markdown_chunks")
-					.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
-						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", nodeId),
+					.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", nodeId),
 					)
 					.collect()
 			).length,
@@ -4040,8 +4069,8 @@ test("file_stats stay fresh after an edit: re-materialization patches the same r
 			(
 				await ctx.db
 					.query("file_stats")
-					.withIndex("by_workspace_project_node", (q) =>
-						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", nodeId),
+					.withIndex("by_workspace_project_fileNode", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", nodeId),
 					)
 					.collect()
 			).length,
@@ -4417,7 +4446,7 @@ test("create_file_snapshot_content_url returns a signed R2 URL without fetching 
 		const snapshotId = await ctx.db.insert("files_snapshots", {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			nodeId,
+			fileNodeId: nodeId,
 			assetId,
 			createdBy: db.userId,
 			archivedAt: 0,
@@ -4480,7 +4509,7 @@ test("create_file_snapshot_content_url fails when a snapshot asset has no R2 key
 		const snapshotId = await ctx.db.insert("files_snapshots", {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			nodeId,
+			fileNodeId: nodeId,
 			assetId,
 			createdBy: db.userId,
 			archivedAt: 0,
@@ -4590,7 +4619,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 		const snapshotId = await ctx.db.insert("files_snapshots", {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			nodeId: createdFile._yay.nodeId,
+			fileNodeId: createdFile._yay.nodeId,
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
@@ -4696,14 +4725,14 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 	const stateAfterBlock = await t.run(async (ctx) => {
 		const updates = await ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_file_sequence", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const lastSequence = await ctx.db
 			.query("files_yjs_docs_last_sequences")
-			.withIndex("by_workspace_project_file", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+			.withIndex("by_workspace_project_fileNode", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.first();
 		return {
@@ -4832,7 +4861,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 		const snapshotId = await ctx.db.insert("files_snapshots", {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			nodeId: createdFile._yay.nodeId,
+			fileNodeId: createdFile._yay.nodeId,
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
@@ -4857,8 +4886,8 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 	const yjsUpdates = await t.run((ctx) =>
 		ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_file_sequence", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect(),
 	);
@@ -4981,7 +5010,7 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		const snapshotId = await ctx.db.insert("files_snapshots", {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
-			nodeId: createdFile._yay.nodeId,
+			fileNodeId: createdFile._yay.nodeId,
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
@@ -5024,8 +5053,8 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 			asset,
 			yjsUpdates: await ctx.db
 				.query("files_yjs_updates")
-				.withIndex("by_workspace_project_file_sequence", (q) =>
-					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", createdFile._yay.nodeId),
+				.withIndex("by_workspace_project_fileNode_sequence", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
 				)
 				.collect(),
 		};
@@ -5095,7 +5124,7 @@ describe("files_nodes.cleanup_old_snapshots", () => {
 					const snapshotId = await ctx.db.insert("files_snapshots", {
 						workspaceId: db.workspaceId,
 						projectId: db.projectId,
-						nodeId,
+						fileNodeId: nodeId,
 						assetId,
 						createdBy: db.userId,
 						archivedAt: -1,
@@ -5121,8 +5150,8 @@ describe("files_nodes.cleanup_old_snapshots", () => {
 					await Promise.all([
 						ctx.db
 							.query("files_snapshots")
-							.withIndex("by_workspace_project_file_archivedAt", (q) =>
-								q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("nodeId", nodeId),
+							.withIndex("by_workspace_project_fileNode_archivedAt", (q) =>
+								q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", nodeId),
 							)
 							.collect(),
 						ctx.db.get("files_r2_assets", outsideScanWindowKept.assetId),

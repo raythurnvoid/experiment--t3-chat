@@ -58,11 +58,11 @@ async function db_purge_workspace_project_content(
 	const pendingUpdateIds: Array<Id<"files_pending_updates">> = [];
 	for await (const doc of ctx.db
 		.query("files_pending_updates")
-		.withIndex("by_workspace_project_user_file", (q) =>
+		.withIndex("by_workspace_project_user_fileNode", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-			pendingUpdateIds.push(doc._id);
-		}
+		pendingUpdateIds.push(doc._id);
+	}
 
 	const pendingUpdateCleanupTaskIds: Array<Id<"files_pending_updates_cleanup_tasks">> = [];
 	for (const pendingUpdateId of pendingUpdateIds) {
@@ -115,7 +115,7 @@ async function db_purge_workspace_project_content(
 	for (const nodeId of nodeIds) {
 		const materializationJobs = await ctx.db
 			.query("files_content_materialization_jobs")
-			.withIndex("by_file", (q) => q.eq("nodeId", nodeId))
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
 			.collect();
 		filesContentMaterializationJobs.push(...materializationJobs.map((job) => ({ _id: job._id, jobId: job.jobId })));
 	}
@@ -158,17 +158,17 @@ async function db_purge_workspace_project_content(
 	const filesPendingUpdatesLastSequenceSavedIds: Array<Id<"files_pending_updates_last_sequence_saved">> = [];
 	for await (const doc of ctx.db
 		.query("files_pending_updates_last_sequence_saved")
-		.withIndex("by_workspace_project_file_user", (q) =>
+		.withIndex("by_workspace_project_fileNode_user", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
-			filesPendingUpdatesLastSequenceSavedIds.push(doc._id);
-		}
+		filesPendingUpdatesLastSequenceSavedIds.push(doc._id);
+	}
 
 	// files_plain_text_chunks
 	const filesPlainTextChunksIds: Array<Id<"files_plain_text_chunks">> = [];
 	for await (const doc of ctx.db
 		.query("files_plain_text_chunks")
-		.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+		.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		filesPlainTextChunksIds.push(doc._id);
@@ -178,7 +178,7 @@ async function db_purge_workspace_project_content(
 	const filesMarkdownChunksIds: Array<Id<"files_markdown_chunks">> = [];
 	for await (const doc of ctx.db
 		.query("files_markdown_chunks")
-		.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+		.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		filesMarkdownChunksIds.push(doc._id);
@@ -188,7 +188,7 @@ async function db_purge_workspace_project_content(
 	const filesYjsSnapshotsIds: Array<Id<"files_yjs_snapshots">> = [];
 	for await (const doc of ctx.db
 		.query("files_yjs_snapshots")
-		.withIndex("by_workspace_project_file_sequence", (q) =>
+		.withIndex("by_workspace_project_fileNode_sequence", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		filesYjsSnapshotsIds.push(doc._id);
@@ -198,7 +198,7 @@ async function db_purge_workspace_project_content(
 	const filesYjsUpdatesIds: Array<Id<"files_yjs_updates">> = [];
 	for await (const doc of ctx.db
 		.query("files_yjs_updates")
-		.withIndex("by_workspace_project_file_sequence", (q) =>
+		.withIndex("by_workspace_project_fileNode_sequence", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		filesYjsUpdatesIds.push(doc._id);
@@ -208,7 +208,7 @@ async function db_purge_workspace_project_content(
 	const filesYjsDocsLastSequencesIds: Array<Id<"files_yjs_docs_last_sequences">> = [];
 	for await (const doc of ctx.db
 		.query("files_yjs_docs_last_sequences")
-		.withIndex("by_workspace_project_file", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
+		.withIndex("by_workspace_project_fileNode", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
 		filesYjsDocsLastSequencesIds.push(doc._id);
 	}
 
@@ -216,7 +216,7 @@ async function db_purge_workspace_project_content(
 	const filesSnapshotsIds: Array<Id<"files_snapshots">> = [];
 	for await (const doc of ctx.db
 		.query("files_snapshots")
-		.withIndex("by_workspace_project_file_archivedAt", (q) =>
+		.withIndex("by_workspace_project_fileNode_archivedAt", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)) {
 		filesSnapshotsIds.push(doc._id);
@@ -524,11 +524,11 @@ async function db_finalize_deleted_user(
 			: Promise.resolve([] as Array<Doc<"users_anon_tokens">>),
 		ctx.db
 			.query("files_pending_updates")
-			.withIndex("by_user_page", (q) => q.eq("userId", userIdString))
+			.withIndex("by_user_fileNode", (q) => q.eq("userId", userIdString))
 			.collect(),
 		ctx.db
 			.query("files_pending_updates_last_sequence_saved")
-			.withIndex("by_user_page", (q) => q.eq("userId", userIdString))
+			.withIndex("by_user_fileNode", (q) => q.eq("userId", userIdString))
 			.collect(),
 		args.deleteBillingState
 			? ctx.db

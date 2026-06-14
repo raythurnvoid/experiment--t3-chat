@@ -104,8 +104,8 @@ const app_convex_schema = defineSchema({
 		fileNodeId: v.id("ai_chat_files"),
 		bytes: v.bytes(),
 	})
-		.index("by_file", ["fileNodeId"])
-		.index("by_thread_file", ["threadId", "fileNodeId"]),
+		.index("by_fileNode", ["fileNodeId"])
+		.index("by_thread_fileNode", ["threadId", "fileNodeId"]),
 
 	// #endregion ai
 
@@ -120,27 +120,27 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		userId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 		baseYjsSequence: v.number(),
 		baseYjsUpdate: v.bytes(),
 		stagedBranchYjsUpdate: v.bytes(),
 		unstagedBranchYjsUpdate: v.bytes(),
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_user_file", ["workspaceId", "projectId", "userId", "nodeId"])
-		.index("by_user_page", ["userId", "nodeId"]),
+		.index("by_workspace_project_user_fileNode", ["workspaceId", "projectId", "userId", "fileNodeId"])
+		.index("by_user_fileNode", ["userId", "fileNodeId"]),
 
 	files_pending_updates_last_sequence_saved: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		userId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 		lastSequenceSaved: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_user_file", ["workspaceId", "projectId", "userId", "nodeId"])
-		.index("by_workspace_project_file_user", ["workspaceId", "projectId", "nodeId", "userId"])
-		.index("by_user_page", ["userId", "nodeId"]),
+		.index("by_workspace_project_user_fileNode", ["workspaceId", "projectId", "userId", "fileNodeId"])
+		.index("by_workspace_project_fileNode_user", ["workspaceId", "projectId", "fileNodeId", "userId"])
+		.index("by_user_fileNode", ["userId", "fileNodeId"]),
 
 	/**
 	 * Tracks scheduled cleanup tasks for each pending update row.
@@ -164,7 +164,7 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		userId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 		pendingUpdateId: v.id("files_pending_updates"),
 		chunkIndex: v.number(),
 		markdownChunk: v.string(),
@@ -266,7 +266,7 @@ const app_convex_schema = defineSchema({
 			"kind",
 			"treePath",
 		])
-		.index("by_workspace_project_archiveOperation_kind_ext_treePath", [
+		.index("by_workspace_project_archive_kind_lowercaseExtension_tree", [
 			"workspaceId",
 			"projectId",
 			"archiveOperationId",
@@ -295,19 +295,19 @@ const app_convex_schema = defineSchema({
 	file_stats: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 		/** Newline count (`wc -l`). -1 means the content cannot be processed (non-markdown/binary). */
 		lineCount: v.number(),
 		/** Whitespace-delimited word count (`wc -w`). -1 means cannot be processed. */
 		wordCount: v.number(),
 		/** Unicode code-point count (`wc -m`, not UTF-16 units). -1 means cannot be processed. */
 		charCount: v.number(),
-	}).index("by_workspace_project_node", ["workspaceId", "projectId", "nodeId"]),
+	}).index("by_workspace_project_fileNode", ["workspaceId", "projectId", "fileNodeId"]),
 
 	files_markdown_chunks: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 		yjsSequence: v.number(),
 		chunkIndex: v.number(),
 		markdownChunk: v.string(),
@@ -317,10 +317,10 @@ const app_convex_schema = defineSchema({
 		lineEnd: v.number(),
 		chunkFlags: v.number(),
 	})
-		.index("by_workspace_project_file_yjsSequence_chunkIndex", [
+		.index("by_workspace_project_fileNode_yjsSequence_chunkIndex", [
 			"workspaceId",
 			"projectId",
-			"nodeId",
+			"fileNodeId",
 			"yjsSequence",
 			"chunkIndex",
 		])
@@ -328,10 +328,10 @@ const app_convex_schema = defineSchema({
 		// preceding chunk) so committed-file line reads work at any depth. lineEnd is non-decreasing
 		// in chunkIndex; the trailing chunkIndex column breaks same-lineEnd ties (one line split across
 		// chunks) so the range scan returns chunks in chunkIndex order with no JS re-sort.
-		.index("by_workspace_project_file_yjsSequence_lineEnd_chunkIndex", [
+		.index("by_workspace_project_fileNode_yjsSequence_lineEnd_chunkIndex", [
 			"workspaceId",
 			"projectId",
-			"nodeId",
+			"fileNodeId",
 			"yjsSequence",
 			"lineEnd",
 			"chunkIndex",
@@ -340,7 +340,7 @@ const app_convex_schema = defineSchema({
 	files_plain_text_chunks: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 		yjsSequence: v.number(),
 		chunkIndex: v.number(),
 		/** Denormalized from files_nodes.path so scoped search can filter before pagination. */
@@ -354,10 +354,10 @@ const app_convex_schema = defineSchema({
 			searchField: "plainTextChunk",
 			filterFields: ["workspaceId", "projectId", "archiveOperationId"],
 		})
-		.index("by_workspace_project_file_yjsSequence_chunkIndex", [
+		.index("by_workspace_project_fileNode_yjsSequence_chunkIndex", [
 			"workspaceId",
 			"projectId",
-			"nodeId",
+			"fileNodeId",
 			"yjsSequence",
 			"chunkIndex",
 		])
@@ -366,19 +366,19 @@ const app_convex_schema = defineSchema({
 	files_yjs_snapshots: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 		sequence: v.number(),
 		/** Current R2 asset for the compacted Yjs update. */
 		assetId: v.id("files_r2_assets"),
 		createdBy: v.id("users"),
 		updatedBy: v.string(),
 		updatedAt: v.number(),
-	}).index("by_workspace_project_file_sequence", ["workspaceId", "projectId", "nodeId", "sequence"]),
+	}).index("by_workspace_project_fileNode_sequence", ["workspaceId", "projectId", "fileNodeId", "sequence"]),
 
 	files_yjs_updates: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 		sequence: v.number(),
 		update: v.bytes(),
 		origin: v.union(
@@ -400,27 +400,27 @@ const app_convex_schema = defineSchema({
 		),
 		createdBy: v.id("users"),
 		createdAt: v.number(),
-	}).index("by_workspace_project_file_sequence", ["workspaceId", "projectId", "nodeId", "sequence"]),
+	}).index("by_workspace_project_fileNode_sequence", ["workspaceId", "projectId", "fileNodeId", "sequence"]),
 
 	files_yjs_docs_last_sequences: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 		lastSequence: v.number(),
-	}).index("by_workspace_project_file", ["workspaceId", "projectId", "nodeId"]),
+	}).index("by_workspace_project_fileNode", ["workspaceId", "projectId", "fileNodeId"]),
 
 	files_content_materialization_jobs: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 		jobId: vWorkId,
 		targetSequence: v.number(),
-	}).index("by_file", ["nodeId"]),
+	}).index("by_fileNode", ["fileNodeId"]),
 
 	files_snapshots: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 		assetId: v.id("files_r2_assets"),
 		createdBy: v.id("users"),
 		/**
@@ -428,7 +428,7 @@ const app_convex_schema = defineSchema({
 		 * unarchived, and > 0 for the archive timestamp in milliseconds.
 		 */
 		archivedAt: v.number(),
-	}).index("by_workspace_project_file_archivedAt", ["workspaceId", "projectId", "nodeId", "archivedAt"]),
+	}).index("by_workspace_project_fileNode_archivedAt", ["workspaceId", "projectId", "fileNodeId", "archivedAt"]),
 
 	files_r2_assets: defineTable({
 		workspaceId: v.string(),

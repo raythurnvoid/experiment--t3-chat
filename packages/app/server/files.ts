@@ -78,8 +78,8 @@ export async function files_db_get_yjs_content_and_sequence(
 		ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
 		ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_file_sequence", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
 			)
 			.order("asc")
 			.collect(),
@@ -150,16 +150,16 @@ export async function files_db_get_pending_update(
 		pendingUpdateById.workspaceId === args.workspaceId &&
 		pendingUpdateById.projectId === args.projectId &&
 		pendingUpdateById.userId === args.userId &&
-		pendingUpdateById.nodeId === args.nodeId
+		pendingUpdateById.fileNodeId === args.nodeId
 			? pendingUpdateById
 			: await ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_workspace_project_user_file", (q) =>
+					.withIndex("by_workspace_project_user_fileNode", (q) =>
 						q
 							.eq("workspaceId", args.workspaceId)
 							.eq("projectId", args.projectId)
 							.eq("userId", args.userId)
-							.eq("nodeId", args.nodeId),
+							.eq("fileNodeId", args.nodeId),
 					)
 					.first();
 
@@ -236,7 +236,7 @@ export async function files_db_reschedule_pending_update_cleanup_for_user(
 ) {
 	const pendingUpdates = await ctx.db
 		.query("files_pending_updates")
-		.withIndex("by_workspace_project_user_file", (q) =>
+		.withIndex("by_workspace_project_user_fileNode", (q) =>
 			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", args.userId),
 		)
 		.collect();

@@ -978,7 +978,7 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 		ctx.db.insert("files_yjs_snapshots", {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			nodeId: args.fileNodeId,
+			fileNodeId: args.fileNodeId,
 			sequence: 0,
 			assetId: args.yjsSnapshotAssetId,
 			createdBy: args.userId,
@@ -988,7 +988,7 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 		ctx.db.insert("files_yjs_docs_last_sequences", {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			nodeId: args.fileNodeId,
+			fileNodeId: args.fileNodeId,
 			lastSequence: 0,
 		}),
 		db_insert_file_chunks(ctx, {
@@ -1068,7 +1068,7 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 		ctx.db.insert("files_snapshots", {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			nodeId: args.fileNodeId,
+			fileNodeId: args.fileNodeId,
 			assetId: args.versionSnapshotAssetId,
 			createdBy: args.userId,
 			archivedAt: -1,

@@ -20,6 +20,7 @@ import {
 import type { Doc, Id } from "./_generated/dataModel";
 import {
 	paginationOptsValidator,
+	paginationResultValidator,
 	type RegisteredAction,
 	type RegisteredMutation,
 	type RegisteredQuery,
@@ -31,6 +32,7 @@ import { openai } from "@ai-sdk/openai";
 import type { Editor } from "@tiptap/core";
 import {
 	path_extract_segments_from,
+	server_path_normalize,
 	server_convex_get_user_fallback_to_anonymous,
 	path_join,
 	server_request_json_parse_and_validate,
@@ -64,9 +66,7 @@ import {
 	type files_SpecialFileName,
 	type files_InlineAiModelId,
 } from "../server/files.ts";
-import {
-	files_chunk_markdown,
-} from "../server/files-markdown-chunking-mastra.ts";
+import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { minimatch } from "minimatch";
 import { Result, Result_all } from "../shared/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
@@ -235,24 +235,6 @@ function derive_tree_path_for_file_node(path: string, kind: Doc<"files_nodes">["
 	return kind === "folder" && path !== "/" ? `${path}/` : path;
 }
 
-if (process.env.NODE_ENV === "test" && import.meta.vitest) {
-	const { describe, expect, test } = import.meta.vitest;
-
-	describe("derive_tree_path_for_file_node", () => {
-		test("keeps file paths unchanged", () => {
-			expect(derive_tree_path_for_file_node("/docs/readme.md", "file")).toBe("/docs/readme.md");
-		});
-
-		test("adds a trailing slash for non-root folders", () => {
-			expect(derive_tree_path_for_file_node("/docs", "folder")).toBe("/docs/");
-		});
-
-		test("keeps root unchanged", () => {
-			expect(derive_tree_path_for_file_node("/", "folder")).toBe("/");
-		});
-	});
-}
-
 function is_home_file(node: Pick<Doc<"files_nodes">, "path" | "kind">): boolean;
 function is_home_file(node: Pick<Doc<"files_nodes">, "parentId" | "name" | "kind">): boolean;
 function is_home_file(node: Partial<Pick<Doc<"files_nodes">, "path" | "parentId" | "name" | "kind">>) {
@@ -301,8 +283,8 @@ async function db_upsert_file_stats(
 ) {
 	const existing = await ctx.db
 		.query("file_stats")
-		.withIndex("by_workspace_project_node", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+		.withIndex("by_workspace_project_fileNode", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
 		)
 		.first();
 	if (existing) {
@@ -316,7 +298,7 @@ async function db_upsert_file_stats(
 	const statsId = await ctx.db.insert("file_stats", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
-		nodeId: args.nodeId,
+		fileNodeId: args.nodeId,
 		lineCount: args.lineCount,
 		wordCount: args.wordCount,
 		charCount: args.charCount,
@@ -344,8 +326,8 @@ export async function db_patch_plain_text_chunks_scope(
 	}
 	const chunks = await ctx.db
 		.query("files_plain_text_chunks")
-		.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+		.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
 		)
 		.collect();
 	await Promise.all(chunks.map((chunk) => ctx.db.patch("files_plain_text_chunks", chunk._id, patch)));
@@ -390,7 +372,7 @@ export async function db_insert_file_chunks(
 			ctx.db.insert("files_markdown_chunks", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
-				nodeId: args.nodeId,
+				fileNodeId: args.nodeId,
 				yjsSequence: args.yjsSequence,
 				chunkIndex: chunk.chunkIndex,
 				markdownChunk: chunk.markdownChunk,
@@ -408,7 +390,7 @@ export async function db_insert_file_chunks(
 			ctx.db.insert("files_plain_text_chunks", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
-				nodeId: args.nodeId,
+				fileNodeId: args.nodeId,
 				yjsSequence: args.yjsSequence,
 				chunkIndex: chunk.chunkIndex,
 				path: fileNode.path,
@@ -449,14 +431,14 @@ export async function db_replace_file_chunks(
 	await Promise.all([
 		ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
 			)
 			.collect(),
 		ctx.db
 			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
 			)
 			.collect(),
 	]).then(([plainTextChunkDocs, markdownChunkDocs]) =>
@@ -512,11 +494,11 @@ export const migrate_backfill_file_stats = internalMutation({
 				// merge anomaly or an over-cap file stays -1 — never a silently-wrong 0 count.
 				const chunks = await ctx.db
 					.query("files_markdown_chunks")
-					.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+					.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
 						q
 							.eq("workspaceId", node.workspaceId)
 							.eq("projectId", node.projectId)
-							.eq("nodeId", node._id)
+							.eq("fileNodeId", node._id)
 							.eq("yjsSequence", snapshot.sequence),
 					)
 					.order("asc")
@@ -599,7 +581,7 @@ async function enqueue_file_content_materialization(
 ) {
 	const existingJobs = await ctx.db
 		.query("files_content_materialization_jobs")
-		.withIndex("by_file", (q) => q.eq("nodeId", args.nodeId))
+		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
 		.collect();
 
 	const jobId = await files_content_materialization_workpool.enqueueAction(
@@ -621,7 +603,7 @@ async function enqueue_file_content_materialization(
 		ctx.db.insert("files_content_materialization_jobs", {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			nodeId: args.nodeId,
+			fileNodeId: args.nodeId,
 			jobId,
 			targetSequence: args.targetSequence,
 		}),
@@ -881,7 +863,7 @@ async function db_insert_node(
 		ctx.db.insert("files_yjs_snapshots", {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			nodeId: nodeId,
+			fileNodeId: nodeId,
 			sequence: 0,
 			assetId: args.yjsSnapshotAssetId,
 			createdBy: args.userId,
@@ -891,7 +873,7 @@ async function db_insert_node(
 		ctx.db.insert("files_yjs_docs_last_sequences", {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			nodeId: nodeId,
+			fileNodeId: nodeId,
 			lastSequence: initialYjsSequence,
 		}),
 		db_insert_file_chunks(ctx, {
@@ -1255,7 +1237,7 @@ export async function files_nodes_db_finalize_markdown_node_creation(
 		ctx.db.insert("files_snapshots", {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			nodeId: args.nodeId,
+			fileNodeId: args.nodeId,
 			assetId: args.versionSnapshotAssetId,
 			createdBy: args.userId,
 			archivedAt: -1,
@@ -2541,13 +2523,7 @@ export const get_file_info_for_list_dir_pagination = internalQuery({
 	},
 });
 
-const files_nodes_bash_listing_page_limit_MAX = 200;
-const files_nodes_bash_filtered_listing_max_ROWS_READ = 1000;
-
-function files_nodes_clamp_bash_listing_page_limit(limit: number) {
-	const finiteLimit = Number.isFinite(limit) ? Math.trunc(limit) : files_nodes_bash_listing_page_limit_MAX;
-	return Math.max(1, Math.min(files_nodes_bash_listing_page_limit_MAX, finiteLimit));
-}
+const SUBTREE_FILTER_MAX_ROWS_READ = 1000;
 
 async function db_list_dir_children_paginated(
 	ctx: QueryCtx,
@@ -2584,7 +2560,7 @@ async function db_list_dir_children_paginated(
 		.order(args.order ?? "asc")
 		.paginate({
 			cursor: args.cursor,
-			numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+			numItems: args.numItems,
 		});
 
 	return {
@@ -2686,7 +2662,7 @@ export const list_dir_children_by_parent_recency_paginated = internalQuery({
 			.order(args.order === "asc" ? "asc" : "desc")
 			.paginate({
 				cursor: args.cursor,
-				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+				numItems: args.numItems,
 			});
 
 		return {
@@ -2713,300 +2689,95 @@ export type files_nodes_list_dir_children_by_parent_recency_paginated_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-export const list_dir_children_paginated = internalQuery({
+export const list_folder_subtree_paginated = internalQuery({
 	args: {
 		workspaceId: v.string(),
 		projectId: v.string(),
-		path: v.string(),
+		folderPath: v.string(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
 		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
-	},
-	returns: v.object({
-		items: v.array(
-			v.object({
-				name: v.string(),
-				kind: v.union(v.literal("folder"), v.literal("file")),
-				path: v.string(),
-				updatedAt: v.number(),
-				updatedBy: v.id("users"),
-				contentType: v.optional(v.string()),
-			}),
-		),
-		continueCursor: v.string(),
-		isDone: v.boolean(),
-	}),
-	handler: async (ctx, args) => {
-		const parentId = await db_resolve_tree_node_id_from_path(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			path: args.path,
-		});
-		if (!parentId) {
-			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
-		}
-
-		return await db_list_dir_children_paginated(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			parentId,
-			numItems: args.numItems,
-			cursor: args.cursor,
-			order: args.order,
-		});
-	},
-});
-
-export type files_nodes_list_dir_children_paginated_Result =
-	typeof list_dir_children_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-export const list_subtree_paginated = internalQuery({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		path: v.string(),
-		numItems: v.number(),
-		cursor: paginationOptsValidator.fields.cursor,
-		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
-		kind: v.optional(v.union(v.literal("folder"), v.literal("file"))),
+		kind: v.optional(doc(app_convex_schema, "files_nodes").fields.kind),
+		lowercaseExtension: v.optional(v.string()),
 		minDepth: v.optional(v.number()),
 		maxDepth: v.optional(v.number()),
 	},
-	returns: v.object({
-		items: v.array(
-			v.object({
-				path: v.string(),
-				kind: v.union(v.literal("folder"), v.literal("file")),
-				updatedAt: v.number(),
-				updatedBy: v.id("users"),
-				contentType: v.optional(v.string()),
-			}),
-		),
-		continueCursor: v.string(),
-		isDone: v.boolean(),
-	}),
+	returns: paginationResultValidator(doc(app_convex_schema, "files_nodes")),
 	handler: async (ctx, args) => {
-		const startNodeId = await db_resolve_tree_node_id_from_path(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			path: args.path,
-		});
-		if (!startNodeId) {
-			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
+		const lowercaseExtension = args.lowercaseExtension;
+		const kind = args.kind;
+
+		if (lowercaseExtension != null && kind === "folder") {
+			return { page: [], continueCursor: args.cursor ?? "", isDone: true };
 		}
 
-		if (startNodeId !== files_ROOT_ID) {
-			const startNode = await ctx.db.get("files_nodes", startNodeId);
-			if (!startNode || startNode.workspaceId !== args.workspaceId || startNode.projectId !== args.projectId) {
-				return { items: [], continueCursor: args.cursor ?? "", isDone: true };
-			}
-			if (startNode.kind !== "folder") {
-				const matchesKind = args.kind == null || args.kind === "file";
-				const matchesMinDepth = args.minDepth == null || args.minDepth <= 0;
-				const matchesMaxDepth = args.maxDepth == null || args.maxDepth >= 0;
-				return args.cursor == null
-					? matchesKind && matchesMinDepth && matchesMaxDepth
-						? {
-								items: [
-									{
-										path: startNode.path,
-										kind: startNode.kind,
-										updatedAt: startNode.updatedAt,
-										updatedBy: startNode.updatedBy,
-										contentType: startNode.contentType,
-									},
-								],
-								continueCursor: "",
-								isDone: true,
-							}
-						: { items: [], continueCursor: "", isDone: true }
-					: { items: [], continueCursor: args.cursor, isDone: true };
-			}
-		}
-
-		const normalizedPath = args.path === "/" ? "/" : args.path.replace(/\/+$/u, "");
+		const normalizedPath = server_path_normalize(args.folderPath);
 		const lowerBound = derive_tree_path_for_file_node(normalizedPath, "folder");
 		const upperBound = `${lowerBound}\uffff`;
 		const baseDepth = files_path_depth(normalizedPath);
 		const minAbsoluteDepth = args.minDepth == null ? null : baseDepth + args.minDepth;
 		const maxAbsoluteDepth = args.maxDepth == null ? null : baseDepth + args.maxDepth;
 		const query =
-			args.kind == null
+			lowercaseExtension != null
 				? ctx.db
 						.query("files_nodes")
-						.withIndex("by_workspace_project_archiveOperation_treePath", (q) =>
+						.withIndex("by_workspace_project_archive_kind_lowercaseExtension_tree", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
 								.eq("archiveOperationId", undefined)
+								.eq("kind", "file")
+								.eq("lowercaseExtension", lowercaseExtension)
 								.gte("treePath", lowerBound)
 								.lt("treePath", upperBound),
 						)
 						.order(args.order ?? "asc")
-				: ctx.db
-						.query("files_nodes")
-						.withIndex("by_workspace_project_archiveOperation_kind_treePath", (q) =>
-							q
-								.eq("workspaceId", args.workspaceId)
-								.eq("projectId", args.projectId)
-								.eq("archiveOperationId", undefined)
-								.eq("kind", args.kind!)
-								.gte("treePath", lowerBound)
-								.lt("treePath", upperBound),
-						)
-						.order(args.order ?? "asc");
-		const filteredQuery =
-			minAbsoluteDepth == null && maxAbsoluteDepth == null
-				? query
-				: minAbsoluteDepth != null && maxAbsoluteDepth != null
-					? query.filter((q) =>
-							q.and(q.gte(q.field("pathDepth"), minAbsoluteDepth), q.lte(q.field("pathDepth"), maxAbsoluteDepth)),
-						)
-					: minAbsoluteDepth != null
-						? query.filter((q) => q.gte(q.field("pathDepth"), minAbsoluteDepth))
-						: query.filter((q) => q.lte(q.field("pathDepth"), maxAbsoluteDepth!));
-		const result = await filteredQuery.paginate({
-			cursor: args.cursor,
-			numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
-			...(minAbsoluteDepth == null && maxAbsoluteDepth == null
-				? {}
-				: { maximumRowsRead: files_nodes_bash_filtered_listing_max_ROWS_READ }),
-		});
-
-		return {
-			items: result.page.map((file) => ({
-				path: file.path,
-				kind: file.kind,
-				updatedAt: file.updatedAt,
-				updatedBy: file.updatedBy,
-				contentType: file.contentType,
-			})),
-			continueCursor: result.continueCursor,
-			isDone: result.isDone,
-		};
-	},
-});
-
-export type files_nodes_list_subtree_paginated_Result =
-	typeof list_subtree_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-export const list_subtree_by_extension_paginated = internalQuery({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		path: v.string(),
-		lowercaseExtension: v.string(),
-		numItems: v.number(),
-		cursor: paginationOptsValidator.fields.cursor,
-		minDepth: v.optional(v.number()),
-		maxDepth: v.optional(v.number()),
-	},
-	returns: v.object({
-		items: v.array(
-			v.object({
-				path: v.string(),
-				kind: v.literal("file"),
-				updatedAt: v.number(),
-			}),
-		),
-		continueCursor: v.string(),
-		isDone: v.boolean(),
-	}),
-	handler: async (ctx, args) => {
-		const startNodeId = await db_resolve_tree_node_id_from_path(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			path: args.path,
-		});
-		if (!startNodeId) {
-			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
-		}
-
-		if (startNodeId !== files_ROOT_ID) {
-			const startNode = await ctx.db.get("files_nodes", startNodeId);
-			if (!startNode || startNode.workspaceId !== args.workspaceId || startNode.projectId !== args.projectId) {
-				return { items: [], continueCursor: args.cursor ?? "", isDone: true };
-			}
-			if (startNode.kind !== "folder") {
-				const matchesExtension = startNode.lowercaseExtension === args.lowercaseExtension;
-				const matchesMinDepth = args.minDepth == null || args.minDepth <= 0;
-				const matchesMaxDepth = args.maxDepth == null || args.maxDepth >= 0;
-				return args.cursor == null
-					? matchesExtension && matchesMinDepth && matchesMaxDepth
-						? {
-								items: [
-									{
-										path: startNode.path,
-										kind: "file" as const,
-										updatedAt: startNode.updatedAt,
-									},
-								],
-								continueCursor: "",
-								isDone: true,
-							}
-						: { items: [], continueCursor: "", isDone: true }
-					: { items: [], continueCursor: args.cursor, isDone: true };
-			}
-		}
-
-		const normalizedPath = args.path === "/" ? "/" : args.path.replace(/\/+$/u, "");
-		const lowerBound = derive_tree_path_for_file_node(normalizedPath, "folder");
-		const upperBound = `${lowerBound}\uffff`;
-		const baseDepth = files_path_depth(normalizedPath);
-		const minAbsoluteDepth = args.minDepth == null ? null : baseDepth + args.minDepth;
-		const maxAbsoluteDepth = args.maxDepth == null ? null : baseDepth + args.maxDepth;
-		const query = ctx.db
-			.query("files_nodes")
-			.withIndex("by_workspace_project_archiveOperation_kind_ext_treePath", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("archiveOperationId", undefined)
-					.eq("kind", "file")
-					.eq("lowercaseExtension", args.lowercaseExtension)
-					.gte("treePath", lowerBound)
-					.lt("treePath", upperBound),
+				: kind == null
+					? ctx.db
+							.query("files_nodes")
+							.withIndex("by_workspace_project_archiveOperation_treePath", (q) =>
+								q
+									.eq("workspaceId", args.workspaceId)
+									.eq("projectId", args.projectId)
+									.eq("archiveOperationId", undefined)
+									.gte("treePath", lowerBound)
+									.lt("treePath", upperBound),
+							)
+							.order(args.order ?? "asc")
+					: ctx.db
+							.query("files_nodes")
+							.withIndex("by_workspace_project_archiveOperation_kind_treePath", (q) =>
+								q
+									.eq("workspaceId", args.workspaceId)
+									.eq("projectId", args.projectId)
+									.eq("archiveOperationId", undefined)
+									.eq("kind", kind)
+									.gte("treePath", lowerBound)
+									.lt("treePath", upperBound),
+							)
+							.order(args.order ?? "asc");
+		let filteredQuery = query;
+		if (minAbsoluteDepth != null && maxAbsoluteDepth != null) {
+			filteredQuery = query.filter((q) =>
+				q.and(q.gte(q.field("pathDepth"), minAbsoluteDepth), q.lte(q.field("pathDepth"), maxAbsoluteDepth)),
 			);
-		const filteredQuery =
-			minAbsoluteDepth == null && maxAbsoluteDepth == null
-				? query
-				: minAbsoluteDepth != null && maxAbsoluteDepth != null
-					? query.filter((q) =>
-							q.and(q.gte(q.field("pathDepth"), minAbsoluteDepth), q.lte(q.field("pathDepth"), maxAbsoluteDepth)),
-						)
-					: minAbsoluteDepth != null
-						? query.filter((q) => q.gte(q.field("pathDepth"), minAbsoluteDepth))
-						: query.filter((q) => q.lte(q.field("pathDepth"), maxAbsoluteDepth!));
-		const result = await filteredQuery.paginate({
+		} else if (minAbsoluteDepth != null) {
+			filteredQuery = query.filter((q) => q.gte(q.field("pathDepth"), minAbsoluteDepth));
+		} else if (maxAbsoluteDepth != null) {
+			filteredQuery = query.filter((q) => q.lte(q.field("pathDepth"), maxAbsoluteDepth));
+		}
+		return await filteredQuery.paginate({
 			cursor: args.cursor,
-			numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+			numItems: args.numItems,
 			...(minAbsoluteDepth == null && maxAbsoluteDepth == null
 				? {}
-				: { maximumRowsRead: files_nodes_bash_filtered_listing_max_ROWS_READ }),
+				: { maximumRowsRead: SUBTREE_FILTER_MAX_ROWS_READ }),
 		});
-
-		return {
-			items: result.page.map((file) => ({
-				path: file.path,
-				kind: "file" as const,
-				updatedAt: file.updatedAt,
-			})),
-			continueCursor: result.continueCursor,
-			isDone: result.isDone,
-		};
 	},
 });
 
-export type files_nodes_list_subtree_by_extension_paginated_Result =
-	typeof list_subtree_by_extension_paginated extends RegisteredQuery<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
+export type files_nodes_list_folder_subtree_paginated_Result =
+	typeof list_folder_subtree_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -3044,7 +2815,7 @@ export const list_recent_paginated = internalQuery({
 			.order(args.order === "asc" ? "asc" : "desc")
 			.paginate({
 				cursor: args.cursor,
-				numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+				numItems: args.numItems,
 			});
 
 		return {
@@ -3063,70 +2834,6 @@ export const list_recent_paginated = internalQuery({
 
 export type files_nodes_list_recent_paginated_Result =
 	typeof list_recent_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-export const list_path_prefix_paginated = internalQuery({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		pathPrefix: v.string(),
-		numItems: v.number(),
-		cursor: paginationOptsValidator.fields.cursor,
-		kind: v.optional(v.union(v.literal("folder"), v.literal("file"))),
-	},
-	returns: v.object({
-		items: v.array(
-			v.object({
-				path: v.string(),
-				kind: v.union(v.literal("folder"), v.literal("file")),
-				updatedAt: v.number(),
-			}),
-		),
-		continueCursor: v.string(),
-		isDone: v.boolean(),
-	}),
-	handler: async (ctx, args) => {
-		const lowerBound = derive_tree_path_for_file_node(args.pathPrefix, "folder");
-		const upperBound = `${lowerBound}\uffff`;
-		const query =
-			args.kind == null
-				? ctx.db.query("files_nodes").withIndex("by_workspace_project_archiveOperation_treePath", (q) =>
-						q
-							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
-							.eq("archiveOperationId", undefined)
-							.gte("treePath", lowerBound)
-							.lt("treePath", upperBound),
-					)
-				: ctx.db.query("files_nodes").withIndex("by_workspace_project_archiveOperation_kind_treePath", (q) =>
-						q
-							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
-							.eq("archiveOperationId", undefined)
-							.eq("kind", args.kind!)
-							.gte("treePath", lowerBound)
-							.lt("treePath", upperBound),
-					);
-		const result = await query.paginate({
-			cursor: args.cursor,
-			numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
-		});
-
-		return {
-			items: result.page.map((file) => ({
-				path: file.path,
-				kind: file.kind,
-				updatedAt: file.updatedAt,
-			})),
-			continueCursor: result.continueCursor,
-			isDone: result.isDone,
-		};
-	},
-});
-
-export type files_nodes_list_path_prefix_paginated_Result =
-	typeof list_path_prefix_paginated extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -3166,28 +2873,28 @@ export const search_paths_paginated = internalQuery({
 		}
 
 		const pathPrefixFilter =
-			args.pathPrefix == null || args.pathPrefix === "/" ? null : derive_tree_path_for_file_node(args.pathPrefix, "folder");
+			args.pathPrefix == null || args.pathPrefix === "/"
+				? null
+				: derive_tree_path_for_file_node(args.pathPrefix, "folder");
 
-		let searchQuery = ctx.db
-			.query("files_nodes")
-			.withSearchIndex("search_path", (q) => {
-				const base = q
-					.search("path", args.pathQuery)
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("archiveOperationId", undefined);
+		let searchQuery = ctx.db.query("files_nodes").withSearchIndex("search_path", (q) => {
+			const base = q
+				.search("path", args.pathQuery)
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("archiveOperationId", undefined);
 
-				if (args.kind != null && args.parentId != null) {
-					return base.eq("kind", args.kind).eq("parentId", args.parentId);
-				}
-				if (args.kind != null) {
-					return base.eq("kind", args.kind);
-				}
-				if (args.parentId != null) {
-					return base.eq("parentId", args.parentId);
-				}
-				return base;
-			});
+			if (args.kind != null && args.parentId != null) {
+				return base.eq("kind", args.kind).eq("parentId", args.parentId);
+			}
+			if (args.kind != null) {
+				return base.eq("kind", args.kind);
+			}
+			if (args.parentId != null) {
+				return base.eq("parentId", args.parentId);
+			}
+			return base;
+		});
 		// Subtree scope rides a post-index `.filter()` (search filterFields are equality-only, so a
 		// prefix range cannot ride the index): numItems counts rows that pass the filter, so pages
 		// fill with descendants instead of thinning, and the `\uffff` upper bound keeps a
@@ -3200,7 +2907,7 @@ export const search_paths_paginated = internalQuery({
 
 		const result = await searchQuery.paginate({
 			cursor: args.cursor,
-			numItems: files_nodes_clamp_bash_listing_page_limit(args.numItems),
+			numItems: args.numItems,
 		});
 
 		return {
@@ -3362,10 +3069,7 @@ export const check_bash_file_search_readiness = internalQuery({
 			ctx.db
 				.query("files_nodes")
 				.withIndex("by_workspace_project_archiveOperation_treePath", (q) =>
-					q
-						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
-						.eq("archiveOperationId", undefined),
+					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("archiveOperationId", undefined),
 				)
 				.take(sampleLimit),
 			ctx.db
@@ -3431,7 +3135,7 @@ export const check_bash_file_search_readiness = internalQuery({
 						!stats ||
 						stats.workspaceId !== file.workspaceId ||
 						stats.projectId !== file.projectId ||
-						stats.nodeId !== file._id
+						stats.fileNodeId !== file._id
 					) {
 						return { path: file.path, reason: "missing_or_mismatched_file_stats" };
 					}
@@ -3459,11 +3163,8 @@ export const check_bash_file_search_readiness = internalQuery({
 				}
 				const latestPlainTextChunk = await ctx.db
 					.query("files_plain_text_chunks")
-					.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
-						q
-							.eq("workspaceId", file.workspaceId)
-							.eq("projectId", file.projectId)
-							.eq("nodeId", file._id),
+					.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+						q.eq("workspaceId", file.workspaceId).eq("projectId", file.projectId).eq("fileNodeId", file._id),
 					)
 					.order("desc")
 					.first();
@@ -3477,11 +3178,11 @@ export const check_bash_file_search_readiness = internalQuery({
 
 				const plainTextChunks = await ctx.db
 					.query("files_plain_text_chunks")
-					.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+					.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
 						q
 							.eq("workspaceId", file.workspaceId)
 							.eq("projectId", file.projectId)
-							.eq("nodeId", file._id)
+							.eq("fileNodeId", file._id)
 							.eq("yjsSequence", latestPlainTextChunk.yjsSequence),
 					)
 					.take(5);
@@ -3587,7 +3288,7 @@ export const enqueue_missing_plain_text_chunk_materializations = internalMutatio
 				!lastSequenceDoc ||
 				lastSequenceDoc.workspaceId !== args.workspaceId ||
 				lastSequenceDoc.projectId !== args.projectId ||
-				lastSequenceDoc.nodeId !== file._id
+				lastSequenceDoc.fileNodeId !== file._id
 			) {
 				skippedMissingState++;
 				continue;
@@ -3595,8 +3296,8 @@ export const enqueue_missing_plain_text_chunk_materializations = internalMutatio
 
 			const latestPlainTextChunk = await ctx.db
 				.query("files_plain_text_chunks")
-				.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
-					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", file._id),
+				.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", file._id),
 				)
 				.order("desc")
 				.first();
@@ -3607,7 +3308,7 @@ export const enqueue_missing_plain_text_chunk_materializations = internalMutatio
 
 			const existingJobs = await ctx.db
 				.query("files_content_materialization_jobs")
-				.withIndex("by_file", (q) => q.eq("nodeId", file._id))
+				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", file._id))
 				.collect();
 			if (existingJobs.some((job) => job.targetSequence >= lastSequenceDoc.lastSequence)) {
 				skippedExistingJob++;
@@ -3673,12 +3374,12 @@ export const get_bash_served_byte_size = internalQuery({
 
 		const pendingUpdate = await ctx.db
 			.query("files_pending_updates")
-			.withIndex("by_workspace_project_user_file", (q) =>
+			.withIndex("by_workspace_project_user_fileNode", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
 					.eq("userId", args.userId)
-					.eq("nodeId", file._id),
+					.eq("fileNodeId", file._id),
 			)
 			.first();
 		if (pendingUpdate) {
@@ -3935,8 +3636,8 @@ export async function db_get_file_content_materialization_db_state(
 		ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
 		ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_file_sequence", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
+				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
 			)
 			.order("asc")
 			.collect(),
@@ -3964,7 +3665,7 @@ export async function db_get_file_content_materialization_db_state(
 		!yjsSnapshotDoc ||
 		yjsSnapshotDoc.workspaceId !== args.workspaceId ||
 		yjsSnapshotDoc.projectId !== args.projectId ||
-		yjsSnapshotDoc.nodeId !== args.nodeId
+		yjsSnapshotDoc.fileNodeId !== args.nodeId
 	) {
 		const errorMessage = "fileNode.yjsSnapshotId points to a missing or mismatched files_yjs_snapshots doc";
 		const errorData = {
@@ -3982,7 +3683,7 @@ export async function db_get_file_content_materialization_db_state(
 		!yjsLastSequenceDoc ||
 		yjsLastSequenceDoc.workspaceId !== args.workspaceId ||
 		yjsLastSequenceDoc.projectId !== args.projectId ||
-		yjsLastSequenceDoc.nodeId !== args.nodeId
+		yjsLastSequenceDoc.fileNodeId !== args.nodeId
 	) {
 		const errorMessage =
 			"fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
@@ -4094,16 +3795,16 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 			pendingUpdateById.workspaceId === args.workspaceId &&
 			pendingUpdateById.projectId === args.projectId &&
 			pendingUpdateById.userId === args.userId &&
-			pendingUpdateById.nodeId === file._id
+			pendingUpdateById.fileNodeId === file._id
 				? pendingUpdateById
 				: await ctx.db
 						.query("files_pending_updates")
-						.withIndex("by_workspace_project_user_file", (q) =>
+						.withIndex("by_workspace_project_user_fileNode", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
 								.eq("userId", args.userId)
-								.eq("nodeId", file._id),
+								.eq("fileNodeId", file._id),
 						)
 						.first();
 		if (pendingUpdate) {
@@ -4363,10 +4064,14 @@ export function files_grep_lines_extended(
 	for (const index of selected) {
 		const lo = Math.max(0, index - before);
 		const hi = Math.min(lines.length - 1, index + after);
-	for (let i = lo; i <= hi; i++) include.add(i);
+		for (let i = lo; i <= hi; i++) include.add(i);
 	}
 	for (const index of [...include].sort((a, b) => a - b)) {
-		out.push({ lineNumber: index + 1, line: files_truncate_long_display_line(lines[index]!), matched: matched.has(index) });
+		out.push({
+			lineNumber: index + 1,
+			line: files_truncate_long_display_line(lines[index]!),
+			matched: matched.has(index),
+		});
 	}
 	return { lines: out, selectedCount, truncated };
 }
@@ -4520,12 +4225,12 @@ async function db_resolve_committed_chunk_source(
 	// The user's unstaged branch is not materialized into chunks; read it via the in-memory path.
 	const pendingUpdate = await ctx.db
 		.query("files_pending_updates")
-		.withIndex("by_workspace_project_user_file", (q) =>
+		.withIndex("by_workspace_project_user_fileNode", (q) =>
 			q
 				.eq("workspaceId", args.workspaceId)
 				.eq("projectId", args.projectId)
 				.eq("userId", args.userId)
-				.eq("nodeId", fileNode._id),
+				.eq("fileNodeId", fileNode._id),
 		)
 		.first();
 	if (pendingUpdate) return null;
@@ -4614,11 +4319,11 @@ export const read_committed_file_chunks_line_range = internalQuery({
 			let lastLineEnd: number | null = null;
 			for await (const chunk of ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+				.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
-						.eq("nodeId", source.nodeId)
+						.eq("fileNodeId", source.nodeId)
 						.eq("yjsSequence", source.yjsSequence),
 				)
 				.order("desc")) {
@@ -4657,11 +4362,11 @@ export const read_committed_file_chunks_line_range = internalQuery({
 		let anyCandidate = false;
 		for await (const chunk of ctx.db
 			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_file_yjsSequence_lineEnd_chunkIndex", (q) =>
+			.withIndex("by_workspace_project_fileNode_yjsSequence_lineEnd_chunkIndex", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
-					.eq("nodeId", source.nodeId)
+					.eq("fileNodeId", source.nodeId)
 					.eq("yjsSequence", source.yjsSequence)
 					.gte("lineEnd", startLine),
 			)
@@ -4678,11 +4383,11 @@ export const read_committed_file_chunks_line_range = internalQuery({
 			// materialized file) or the file is not materialized (fall back).
 			const anyChunk = await ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+				.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
-						.eq("nodeId", source.nodeId)
+						.eq("fileNodeId", source.nodeId)
 						.eq("yjsSequence", source.yjsSequence),
 				)
 				.first();
@@ -4751,12 +4456,12 @@ export const read_file_full_content_from_chunks = internalQuery({
 
 		const pendingUpdate = await ctx.db
 			.query("files_pending_updates")
-			.withIndex("by_workspace_project_user_file", (q) =>
+			.withIndex("by_workspace_project_user_fileNode", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
 					.eq("userId", args.userId)
-					.eq("nodeId", fileNode._id),
+					.eq("fileNodeId", fileNode._id),
 			)
 			.first();
 		if (pendingUpdate) {
@@ -4789,11 +4494,11 @@ export const read_file_full_content_from_chunks = internalQuery({
 
 		const chunks = await ctx.db
 			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
-					.eq("nodeId", fileNode._id)
+					.eq("fileNodeId", fileNode._id)
 					.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence),
 			)
 			.order("asc")
@@ -4906,11 +4611,11 @@ export const grep_committed_file_chunks = internalQuery({
 		let contiguous = true;
 		for await (const chunk of ctx.db
 			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
-					.eq("nodeId", source.nodeId)
+					.eq("fileNodeId", source.nodeId)
 					.eq("yjsSequence", source.yjsSequence),
 			)
 			.order("asc")) {
@@ -5346,8 +5051,8 @@ export const get_plain_text = query({
 
 		const latestChunkByFile = await ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
-				q.eq("workspaceId", file.workspaceId).eq("projectId", file.projectId).eq("nodeId", args.nodeId),
+			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+				q.eq("workspaceId", file.workspaceId).eq("projectId", file.projectId).eq("fileNodeId", args.nodeId),
 			)
 			.order("desc")
 			.first();
@@ -5365,11 +5070,11 @@ export const get_plain_text = query({
 
 		const plainTextChunks = await ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
 				q
 					.eq("workspaceId", file.workspaceId)
 					.eq("projectId", file.projectId)
-					.eq("nodeId", args.nodeId)
+					.eq("fileNodeId", args.nodeId)
 					.eq("yjsSequence", latestChunkByFile.yjsSequence),
 			)
 			.order("asc")
@@ -5468,7 +5173,7 @@ function files_nodes_text_search_filtered_query(
 		);
 	}
 	for (const excludedNodeId of args.excludedNodeIds ?? []) {
-		searchQuery = searchQuery.filter((q) => q.neq(q.field("nodeId"), excludedNodeId));
+		searchQuery = searchQuery.filter((q) => q.neq(q.field("fileNodeId"), excludedNodeId));
 	}
 	return searchQuery;
 }
@@ -5543,7 +5248,7 @@ export const text_search_files = internalQuery({
 		continueCursor: string;
 		isDone: boolean;
 	}> => {
-		const pageLimit = files_nodes_clamp_bash_listing_page_limit(args.numItems);
+		const pageLimit = args.numItems;
 		const cursorParse =
 			args.cursor === null
 				? null
@@ -5565,12 +5270,12 @@ export const text_search_files = internalQuery({
 
 		const pendingUpdates = await ctx.db
 			.query("files_pending_updates")
-			.withIndex("by_workspace_project_user_file", (q) =>
+			.withIndex("by_workspace_project_user_fileNode", (q) =>
 				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", args.userId),
 			)
 			.order("asc")
 			.collect();
-		const pendingNodeIds = pendingUpdates.map((pendingUpdate) => pendingUpdate.nodeId);
+		const pendingNodeIds = pendingUpdates.map((pendingUpdate) => pendingUpdate.fileNodeId);
 
 		// Pending phase: the acting user's unsaved edits rank before committed content because they
 		// are the latest user-visible version of those files.
@@ -5609,10 +5314,10 @@ export const text_search_files = internalQuery({
 			for (const chunk of rawHits.slice(pendingSkip)) {
 				if (pendingItems.length >= pageLimit) break;
 				pendingSkip += 1;
-				let file = fileByNodeId.get(chunk.nodeId);
+				let file = fileByNodeId.get(chunk.fileNodeId);
 				if (file === undefined) {
-					file = await ctx.db.get("files_nodes", chunk.nodeId);
-					fileByNodeId.set(chunk.nodeId, file);
+					file = await ctx.db.get("files_nodes", chunk.fileNodeId);
+					fileByNodeId.set(chunk.fileNodeId, file);
 				}
 				if (
 					!file ||
@@ -5678,7 +5383,7 @@ export const text_search_files = internalQuery({
 					!markdownChunkDoc ||
 					markdownChunkDoc.workspaceId !== args.workspaceId ||
 					markdownChunkDoc.projectId !== args.projectId ||
-					markdownChunkDoc.nodeId !== plainTextChunk.nodeId ||
+					markdownChunkDoc.fileNodeId !== plainTextChunk.fileNodeId ||
 					markdownChunkDoc.yjsSequence !== plainTextChunk.yjsSequence ||
 					markdownChunkDoc.chunkIndex !== plainTextChunk.chunkIndex
 				) {
@@ -5697,22 +5402,22 @@ export const text_search_files = internalQuery({
 				const [chunkAbove, chunkBelow] = await Promise.all([
 					ctx.db
 						.query("files_markdown_chunks")
-						.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+						.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
-								.eq("nodeId", plainTextChunk.nodeId)
+								.eq("fileNodeId", plainTextChunk.fileNodeId)
 								.eq("yjsSequence", plainTextChunk.yjsSequence)
 								.eq("chunkIndex", plainTextChunk.chunkIndex - 1),
 						)
 						.first(),
 					ctx.db
 						.query("files_markdown_chunks")
-						.withIndex("by_workspace_project_file_yjsSequence_chunkIndex", (q) =>
+						.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
-								.eq("nodeId", plainTextChunk.nodeId)
+								.eq("fileNodeId", plainTextChunk.fileNodeId)
 								.eq("yjsSequence", plainTextChunk.yjsSequence)
 								.eq("chunkIndex", plainTextChunk.chunkIndex + 1),
 						)
@@ -5926,11 +5631,11 @@ export const get_file_snapshots_list = query({
 
 		const snapshots = await ctx.db
 			.query("files_snapshots")
-			.withIndex("by_workspace_project_file_archivedAt", (q) => {
+			.withIndex("by_workspace_project_fileNode_archivedAt", (q) => {
 				const qBase = q
 					.eq("workspaceId", membership.workspaceId)
 					.eq("projectId", membership.projectId)
-					.eq("nodeId", args.nodeId);
+					.eq("fileNodeId", args.nodeId);
 
 				const qFinal = args.showArchived ? qBase.gt("archivedAt", 0) : qBase.lte("archivedAt", 0);
 
@@ -5973,7 +5678,7 @@ export const get_file_snapshot = query({
 		if (
 			snapshot.workspaceId !== membership.workspaceId ||
 			snapshot.projectId !== membership.projectId ||
-			snapshot.nodeId !== args.nodeId
+			snapshot.fileNodeId !== args.nodeId
 		) {
 			return null;
 		}
@@ -5996,7 +5701,7 @@ async function db_get_file_snapshot_content(
 		!snapshot ||
 		snapshot.workspaceId !== args.workspaceId ||
 		snapshot.projectId !== args.projectId ||
-		snapshot.nodeId !== args.nodeId
+		snapshot.fileNodeId !== args.nodeId
 	) {
 		return null;
 	}
@@ -6282,8 +5987,8 @@ async function yjs_increment_or_create_last_sequence(
 ) {
 	let lastSequenceData = await ctx.db
 		.query("files_yjs_docs_last_sequences")
-		.withIndex("by_workspace_project_file", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("nodeId", args.nodeId),
+		.withIndex("by_workspace_project_fileNode", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
 		)
 		.order("desc")
 		.first();
@@ -6298,7 +6003,7 @@ async function yjs_increment_or_create_last_sequence(
 		const lastSequenceDataId = await ctx.db.insert("files_yjs_docs_last_sequences", {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			nodeId: args.nodeId,
+			fileNodeId: args.nodeId,
 			lastSequence: 0,
 		});
 		lastSequenceData = (await ctx.db.get("files_yjs_docs_last_sequences", lastSequenceDataId))!;
@@ -6329,7 +6034,7 @@ export async function files_db_yjs_push_update(
 	await ctx.db.insert("files_yjs_updates", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
-		nodeId: args.nodeId,
+		fileNodeId: args.nodeId,
 		sequence: newSequenceData.lastSequence,
 		update: args.update,
 		origin: {
@@ -6525,8 +6230,8 @@ export const yjs_get_incremental_updates = query({
 
 		const updates = await ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_file_sequence", (q) =>
-				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("nodeId", args.nodeId),
+			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
+				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("fileNodeId", args.nodeId),
 			)
 			.order("desc")
 			.collect();
@@ -6573,7 +6278,7 @@ async function db_insert_snapshot_restore_update(
 	await ctx.db.insert("files_yjs_updates", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
-		nodeId: args.nodeId,
+		fileNodeId: args.nodeId,
 		sequence: newSequenceData.lastSequence,
 		update: args.restoreUpdate,
 		origin: {
@@ -6600,7 +6305,7 @@ async function store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store
 	const snapshotId = await ctx.db.insert("files_snapshots", {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
-		nodeId: args.nodeId,
+		fileNodeId: args.nodeId,
 		assetId: args.assetId,
 		createdBy: args.createdBy,
 		archivedAt: -1,
@@ -6738,7 +6443,7 @@ export const finalize_file_content_materialization = internalMutation({
 				}),
 				ctx.db
 					.query("files_content_materialization_jobs")
-					.withIndex("by_file", (q) => q.eq("nodeId", args.nodeId))
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
 					.collect()
 					.then((jobs) =>
 						Promise.all(
@@ -7444,7 +7149,7 @@ export const cleanup_old_snapshots = internalMutation({
 
 				// If this is the first snapshot for this time slot, it means it's the latest
 				// therefore we keep it
-				const snapshotTimeSlotKey = `${snapshot.nodeId}::${bucketTimestamp}`;
+				const snapshotTimeSlotKey = `${snapshot.fileNodeId}::${bucketTimestamp}`;
 				if (!latestSnapshotNodeIdWithTimeSlot.has(snapshotTimeSlotKey)) {
 					latestSnapshotNodeIdWithTimeSlot.add(snapshotTimeSlotKey);
 					keepSnapshot = true;
@@ -7801,4 +7506,22 @@ export function files_http_routes(router: RouterForConvexModules) {
 			},
 		}))(),
 	};
+}
+
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, expect, test } = import.meta.vitest;
+
+	describe("derive_tree_path_for_file_node", () => {
+		test("keeps file paths unchanged", () => {
+			expect(derive_tree_path_for_file_node("/docs/readme.md", "file")).toBe("/docs/readme.md");
+		});
+
+		test("adds a trailing slash for non-root folders", () => {
+			expect(derive_tree_path_for_file_node("/docs", "folder")).toBe("/docs/");
+		});
+
+		test("keeps root unchanged", () => {
+			expect(derive_tree_path_for_file_node("/", "folder")).toBe("/");
+		});
+	});
 }

@@ -33,6 +33,39 @@ type LegacyWorkspaceWithOwner = Omit<Doc<"workspaces">, "_id" | "_creationTime" 
 	ownerUserId?: Id<"users">;
 };
 
+type FileNodeReferenceTable =
+	| "files_pending_updates"
+	| "files_pending_updates_last_sequence_saved"
+	| "files_pending_updates_chunks"
+	| "file_stats"
+	| "files_markdown_chunks"
+	| "files_plain_text_chunks"
+	| "files_yjs_snapshots"
+	| "files_yjs_updates"
+	| "files_yjs_docs_last_sequences"
+	| "files_content_materialization_jobs"
+	| "files_snapshots";
+
+type LegacyFileNodeReferenceDoc<TableName extends FileNodeReferenceTable> = Omit<
+	Doc<TableName>,
+	"fileNodeId"
+> & {
+	fileNodeId?: Id<"files_nodes">;
+	nodeId?: Id<"files_nodes">;
+};
+
+function rename_legacy_node_id_to_file_node_id<TableName extends FileNodeReferenceTable>(doc: Doc<TableName>) {
+	const legacyDoc = doc as LegacyFileNodeReferenceDoc<TableName>;
+	if (legacyDoc.nodeId === undefined) {
+		return;
+	}
+
+	return {
+		fileNodeId: legacyDoc.fileNodeId ?? legacyDoc.nodeId,
+		nodeId: undefined,
+	};
+}
+
 function files_migrations_path_depth(path: string) {
 	return path === "/" ? 0 : path_extract_segments_from(path).length;
 }
@@ -319,6 +352,61 @@ export const remove_notifications_created_at = app_migrations.define({
 	},
 });
 
+export const rename_pending_updates_file_node_id = app_migrations.define({
+	table: "files_pending_updates",
+	migrateOne: (_ctx, pendingUpdate) => rename_legacy_node_id_to_file_node_id(pendingUpdate),
+});
+
+export const rename_pending_update_sequences_file_node_id = app_migrations.define({
+	table: "files_pending_updates_last_sequence_saved",
+	migrateOne: (_ctx, lastSequenceSaved) => rename_legacy_node_id_to_file_node_id(lastSequenceSaved),
+});
+
+export const rename_pending_update_chunks_file_node_id = app_migrations.define({
+	table: "files_pending_updates_chunks",
+	migrateOne: (_ctx, chunk) => rename_legacy_node_id_to_file_node_id(chunk),
+});
+
+export const rename_file_stats_file_node_id = app_migrations.define({
+	table: "file_stats",
+	migrateOne: (_ctx, stats) => rename_legacy_node_id_to_file_node_id(stats),
+});
+
+export const rename_markdown_chunks_file_node_id = app_migrations.define({
+	table: "files_markdown_chunks",
+	migrateOne: (_ctx, chunk) => rename_legacy_node_id_to_file_node_id(chunk),
+});
+
+export const rename_plain_text_chunks_file_node_id = app_migrations.define({
+	table: "files_plain_text_chunks",
+	migrateOne: (_ctx, chunk) => rename_legacy_node_id_to_file_node_id(chunk),
+});
+
+export const rename_yjs_snapshots_file_node_id = app_migrations.define({
+	table: "files_yjs_snapshots",
+	migrateOne: (_ctx, snapshot) => rename_legacy_node_id_to_file_node_id(snapshot),
+});
+
+export const rename_yjs_updates_file_node_id = app_migrations.define({
+	table: "files_yjs_updates",
+	migrateOne: (_ctx, update) => rename_legacy_node_id_to_file_node_id(update),
+});
+
+export const rename_yjs_last_sequences_file_node_id = app_migrations.define({
+	table: "files_yjs_docs_last_sequences",
+	migrateOne: (_ctx, lastSequence) => rename_legacy_node_id_to_file_node_id(lastSequence),
+});
+
+export const rename_materialization_jobs_file_node_id = app_migrations.define({
+	table: "files_content_materialization_jobs",
+	migrateOne: (_ctx, job) => rename_legacy_node_id_to_file_node_id(job),
+});
+
+export const rename_file_snapshots_file_node_id = app_migrations.define({
+	table: "files_snapshots",
+	migrateOne: (_ctx, snapshot) => rename_legacy_node_id_to_file_node_id(snapshot),
+});
+
 export const backfill_files_nodes_path_depth = app_migrations.define({
 	table: "files_nodes",
 	migrateOne: async (ctx, fileNode) => {
@@ -346,7 +434,7 @@ export const backfill_files_nodes_lowercase_extension = app_migrations.define({
 export const backfill_files_plain_text_chunk_scope = app_migrations.define({
 	table: "files_plain_text_chunks",
 	migrateOne: async (ctx, plainTextChunk) => {
-		const fileNode = await ctx.db.get("files_nodes", plainTextChunk.nodeId);
+		const fileNode = await ctx.db.get("files_nodes", plainTextChunk.fileNodeId);
 		if (
 			!fileNode ||
 			fileNode.workspaceId !== plainTextChunk.workspaceId ||
@@ -403,6 +491,39 @@ export const run_cleanup_duplicate_access_control_owner_assignments = app_migrat
 );
 export const run_update_extra_workspaces_quota_max_count_to_2 = app_migrations.runner(
 	internal.migrations.update_extra_workspaces_quota_max_count_to_2,
+);
+export const run_rename_pending_updates_file_node_id = app_migrations.runner(
+	internal.migrations.rename_pending_updates_file_node_id,
+);
+export const run_rename_pending_update_sequences_file_node_id = app_migrations.runner(
+	internal.migrations.rename_pending_update_sequences_file_node_id,
+);
+export const run_rename_pending_update_chunks_file_node_id = app_migrations.runner(
+	internal.migrations.rename_pending_update_chunks_file_node_id,
+);
+export const run_rename_file_stats_file_node_id = app_migrations.runner(
+	internal.migrations.rename_file_stats_file_node_id,
+);
+export const run_rename_markdown_chunks_file_node_id = app_migrations.runner(
+	internal.migrations.rename_markdown_chunks_file_node_id,
+);
+export const run_rename_plain_text_chunks_file_node_id = app_migrations.runner(
+	internal.migrations.rename_plain_text_chunks_file_node_id,
+);
+export const run_rename_yjs_snapshots_file_node_id = app_migrations.runner(
+	internal.migrations.rename_yjs_snapshots_file_node_id,
+);
+export const run_rename_yjs_updates_file_node_id = app_migrations.runner(
+	internal.migrations.rename_yjs_updates_file_node_id,
+);
+export const run_rename_yjs_last_sequences_file_node_id = app_migrations.runner(
+	internal.migrations.rename_yjs_last_sequences_file_node_id,
+);
+export const run_rename_materialization_jobs_file_node_id = app_migrations.runner(
+	internal.migrations.rename_materialization_jobs_file_node_id,
+);
+export const run_rename_file_snapshots_file_node_id = app_migrations.runner(
+	internal.migrations.rename_file_snapshots_file_node_id,
 );
 export const run_backfill_files_nodes_path_depth = app_migrations.runner(
 	internal.migrations.backfill_files_nodes_path_depth,

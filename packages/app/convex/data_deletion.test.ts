@@ -648,7 +648,7 @@ describe("process_user_deletion_request", () => {
 				workspaceId: String(created._yay.workspaceId),
 				projectId: String(created._yay.defaultProjectId),
 				userId: String(deletedUser.userId),
-				nodeId: (
+				fileNodeId: (
 					await data_deletion_test_seed_page(ctx, {
 						userId: deletedUser.userId,
 						workspaceId: String(created._yay.workspaceId),
@@ -667,7 +667,7 @@ describe("process_user_deletion_request", () => {
 				workspaceId: String(created._yay.workspaceId),
 				projectId: String(created._yay.defaultProjectId),
 				userId: String(deletedUser.userId),
-				nodeId: await ctx.db
+				fileNodeId: await ctx.db
 					.query("files_nodes")
 					.collect()
 					.then((pages) => {
@@ -762,11 +762,11 @@ describe("process_user_deletion_request", () => {
 					.collect(),
 				ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_user_page", (q) => q.eq("userId", String(deletedUser.userId)))
+					.withIndex("by_user_fileNode", (q) => q.eq("userId", String(deletedUser.userId)))
 					.collect(),
 				ctx.db
 					.query("files_pending_updates_last_sequence_saved")
-					.withIndex("by_user_page", (q) => q.eq("userId", String(deletedUser.userId)))
+					.withIndex("by_user_fileNode", (q) => q.eq("userId", String(deletedUser.userId)))
 					.collect(),
 				ctx.db.query("files_pending_updates_cleanup_tasks").collect(),
 				ctx.db.query("data_deletion_requests").collect(),

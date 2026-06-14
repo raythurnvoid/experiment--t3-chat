@@ -56,7 +56,7 @@ const migrations_test_schema = defineSchema({
 	files_markdown_chunks: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.id("files_nodes"),
 		yjsSequence: v.number(),
 		chunkIndex: v.number(),
 		markdownChunk: v.string(),
@@ -69,7 +69,8 @@ const migrations_test_schema = defineSchema({
 	files_plain_text_chunks: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
-		nodeId: v.id("files_nodes"),
+		fileNodeId: v.optional(v.id("files_nodes")),
+		nodeId: v.optional(v.id("files_nodes")),
 		yjsSequence: v.number(),
 		chunkIndex: v.number(),
 		path: v.optional(v.string()),
@@ -77,6 +78,64 @@ const migrations_test_schema = defineSchema({
 		plainTextChunk: v.string(),
 		markdownChunkId: v.id("files_markdown_chunks"),
 	}),
+});
+
+describe("rename_plain_text_chunks_file_node_id", () => {
+	test("renames legacy nodeId to fileNodeId", async () => {
+		const t = convexTest(migrations_test_schema, migrations_test_modules);
+		component.register(t);
+		const legacy = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-user-files-node-id-rename" });
+			const fileId = await ctx.db.insert("files_nodes", {
+				workspaceId: "workspace-files-node-id-rename",
+				projectId: "project-files-node-id-rename",
+				path: "/docs/readme.md",
+				name: "readme.md",
+				kind: "file",
+				parentId: "root",
+				createdBy: userId,
+				updatedBy: userId,
+				updatedAt: 100,
+			});
+			const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
+				workspaceId: "workspace-files-node-id-rename",
+				projectId: "project-files-node-id-rename",
+				fileNodeId: fileId,
+				yjsSequence: 0,
+				chunkIndex: 0,
+				markdownChunk: "hello",
+				startIndex: 0,
+				endIndex: 5,
+				lineStart: 1,
+				lineEnd: 1,
+				chunkFlags: 0,
+			});
+			const plainTextChunkId = await ctx.db.insert("files_plain_text_chunks", {
+				workspaceId: "workspace-files-node-id-rename",
+				projectId: "project-files-node-id-rename",
+				nodeId: fileId,
+				yjsSequence: 0,
+				chunkIndex: 0,
+				plainTextChunk: "hello",
+				markdownChunkId,
+			});
+
+			return { fileId, plainTextChunkId };
+		});
+
+		const plainTextChunk = await t.run(async (ctx) => {
+			await runToCompletion(
+				ctx,
+				components.migrations,
+				internal.migrations.rename_plain_text_chunks_file_node_id,
+			);
+
+			return await ctx.db.get("files_plain_text_chunks", legacy.plainTextChunkId);
+		});
+
+		expect(plainTextChunk).toMatchObject({ fileNodeId: legacy.fileId });
+		expect(plainTextChunk).not.toHaveProperty("nodeId");
+	});
 });
 
 describe("remove_notifications_created_at", () => {
@@ -155,7 +214,7 @@ describe("files chunk search backfills", () => {
 			const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
 				workspaceId: "workspace-files-backfill",
 				projectId: "project-files-backfill",
-				nodeId: fileId,
+				fileNodeId: fileId,
 				yjsSequence: 0,
 				chunkIndex: 0,
 				markdownChunk: "hello",
@@ -168,7 +227,7 @@ describe("files chunk search backfills", () => {
 			const plainTextChunkId = await ctx.db.insert("files_plain_text_chunks", {
 				workspaceId: "workspace-files-backfill",
 				projectId: "project-files-backfill",
-				nodeId: fileId,
+				fileNodeId: fileId,
 				yjsSequence: 0,
 				chunkIndex: 0,
 				plainTextChunk: "hello",

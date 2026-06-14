@@ -112,7 +112,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			await expect(t.query(internal.value_store.get, { id })).resolves.toBeNull();
 
 			const expiredId = await t.mutation(internal.value_store.put, { value: "expired" });
-			const expiredCreatedAt = await t.run(async (ctx) => (await ctx.db.get("value_store", expiredId))!._creationTime);
+			const expiredCreatedAt = await t.run(async (ctx) => {
+				const doc = await ctx.db.get("value_store", expiredId);
+				if (!doc) {
+					throw new Error("expected value_store row");
+				}
+				return doc._creationTime;
+			});
 			await expect(
 				t.query(internal.value_store.get, {
 					id: expiredId,
@@ -127,7 +133,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const t = test_convex();
 
 			const freshId = await t.mutation(internal.value_store.put, { value: "fresh" });
-			const freshCreatedAt = await t.run(async (ctx) => (await ctx.db.get("value_store", freshId))!._creationTime);
+			const freshCreatedAt = await t.run(async (ctx) => {
+				const doc = await ctx.db.get("value_store", freshId);
+				if (!doc) {
+					throw new Error("expected value_store row");
+				}
+				return doc._creationTime;
+			});
 			const freshCleanup = await t.mutation(internal.value_store.cleanup_expired, {
 				_test_now: freshCreatedAt + VALUE_STORE_TTL_MS - 1,
 			});

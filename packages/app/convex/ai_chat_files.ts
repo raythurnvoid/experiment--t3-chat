@@ -20,7 +20,7 @@ export const load_thread_tmp_files = internalQuery({
 			.collect();
 		const fileNodesContent = await ctx.db
 			.query("ai_chat_files_content")
-			.withIndex("by_thread_file", (q) => q.eq("threadId", args.threadId))
+			.withIndex("by_thread_fileNode", (q) => q.eq("threadId", args.threadId))
 			.collect();
 		const fileNodesContentDict: Record<Id<"ai_chat_files">, Doc<"ai_chat_files_content">> = {};
 		for (const content of fileNodesContent) {
@@ -73,7 +73,7 @@ export const patch_thread_tmp_files = internalMutation({
 				}
 				const aiChatFilesContent = await ctx.db
 					.query("ai_chat_files_content")
-					.withIndex("by_file", (q) => q.eq("fileNodeId", existing._id))
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", existing._id))
 					.collect();
 				await Promise.all([
 					...aiChatFilesContent.map((row) => ctx.db.delete("ai_chat_files_content", row._id)),
@@ -107,7 +107,7 @@ export const patch_thread_tmp_files = internalMutation({
 					if (existing) {
 						const aiChatFilesContent = await ctx.db
 							.query("ai_chat_files_content")
-							.withIndex("by_file", (q) => q.eq("fileNodeId", existing._id))
+							.withIndex("by_fileNode", (q) => q.eq("fileNodeId", existing._id))
 							.collect();
 						await Promise.all(aiChatFilesContent.map((row) => ctx.db.delete("ai_chat_files_content", row._id)));
 					}
@@ -120,7 +120,7 @@ export const patch_thread_tmp_files = internalMutation({
 				}
 				const existingAiChatFilesContent = await ctx.db
 					.query("ai_chat_files_content")
-					.withIndex("by_file", (q) => q.eq("fileNodeId", fileNodeId))
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", fileNodeId))
 					.first();
 				const contentDoc = {
 					workspaceId: args.workspaceId,
@@ -161,7 +161,7 @@ export const copy_thread_tmp_files = internalMutation({
 			.collect();
 		const sourceAiChatFilesContent = await ctx.db
 			.query("ai_chat_files_content")
-			.withIndex("by_thread_file", (q) => q.eq("threadId", args.sourceThreadId))
+			.withIndex("by_thread_fileNode", (q) => q.eq("threadId", args.sourceThreadId))
 			.collect();
 		const contentByFileNodeId = new Map(sourceAiChatFilesContent.map((content) => [content.fileNodeId, content]));
 
