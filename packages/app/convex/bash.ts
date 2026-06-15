@@ -62,7 +62,6 @@ import type {
 	files_nodes_get_by_path_Result,
 	files_nodes_get_file_last_available_markdown_content_by_path_Result,
 	files_nodes_grep_app_file_Result,
-	files_nodes_grep_app_file_scan_Result,
 	files_nodes_list_children_paginated_Result,
 	files_nodes_list_folder_subtree_paginated_Result,
 	files_nodes_read_file_full_content_from_chunks_Result,
@@ -89,12 +88,15 @@ const textEncoder = new TextEncoder();
 
 const TERMINAL_LINE_ENDING_REGEX = /\r\n?/g;
 const TERMINAL_TRAILING_NEWLINE_REGEX = /\n+$/;
+const BACKSLASH_REGEX = /\\/g;
+const SINGLE_QUOTE_REGEX = /'/g;
+const SIGNED_INTEGER_REGEX = /^-?\d+$/u;
+const NON_NEGATIVE_INTEGER_REGEX = /^\d+$/u;
 const SIMPLE_EXTENSION_GLOB_REGEX = /^\*\.([a-z0-9][a-z0-9_-]*)$/iu;
 const GLOB_METACHARACTER_REGEX = /[*?[\]]/u;
 const SHELL_ARG_SAFE_UNQUOTED_REGEX = /^[A-Za-z0-9_/:.,=+@-]+$/;
-const COMMAND_NOT_FOUND_REGEX = /: command not found$/m;
-const REDIRECTS_STDERR_TO_STDOUT_REGEX = /(^|[\s;&|])2\s*>\s*&\s*1(?=$|[\s;&|])/;
-const SET_INVALID_OPTION_REGEX = /bash: set: -o: invalid option/m;
+const WHITESPACE_RUN_REGEX = /\s+/u;
+
 const PAGINATION_CURSORS_CACHE_MAX_ENTRIES = 500;
 // Deliberately tiny caps so /tmp eviction is exercised while testing the app.
 const BASH_TMP_SESSION_MAX_PATHS = 10;
@@ -203,7 +205,7 @@ function clamp_listing_page_limit(limit: number) {
  */
 function normalize_path(path: string) {
 	const parts: string[] = [];
-	const normalizedInput = path.replace(/\\/g, "/");
+	const normalizedInput = path.replace(BACKSLASH_REGEX, "/");
 	for (const rawPart of normalizedInput.split("/")) {
 		const part = rawPart.trim();
 		if (!part || part === ".") {
@@ -255,7 +257,7 @@ function current_project_path_to_app_file_node_path(currentProjectPath: string, 
  * embedded single quotes escaped using the normal shell `'\''` pattern.
  */
 function shell_arg_quote(arg: string) {
-	return SHELL_ARG_SAFE_UNQUOTED_REGEX.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
+	return SHELL_ARG_SAFE_UNQUOTED_REGEX.test(arg) ? arg : `'${arg.replace(SINGLE_QUOTE_REGEX, `'\\''`)}'`;
 }
 
 /**
@@ -704,7 +706,7 @@ function command_read_option_value(command: string, args: string[], index: numbe
  */
 function command_parse_limit(command: string, value: string | undefined, defaultLimit: number, maxLimit: number) {
 	const rawValue = value ?? String(defaultLimit);
-	if (!/^-?\d+$/u.test(rawValue.trim())) {
+	if (!SIGNED_INTEGER_REGEX.test(rawValue.trim())) {
 		return Result({ _nay: { message: `${command}: --limit must be an integer` } });
 	}
 	return Result({ _yay: Math.max(1, Math.min(maxLimit, Number(rawValue))) });
@@ -824,6 +826,9 @@ async function delegate_builtin_command(args: {
 // #endregion builtin command delegation
 
 // #region native just bash tmp command
+
+const COMMAND_LOOKUP_PATH_REGEX = /^\/(?:usr\/)?bin\/([^/]+)$/u;
+
 /**
  * Returns whether a path is in the direct-access surface for Native Just Bash
  * commands: `/`, `/dev`, `/dev/null`, `/tmp`, or a descendant of `/tmp`.
@@ -857,7 +862,7 @@ function is_native_just_bash_command_lookup_directory(path: string) {
  */
 function native_just_bash_command_lookup_name(path: string) {
 	const normalizedPath = normalize_path(path);
-	const match = /^\/(?:usr\/)?bin\/([^/]+)$/u.exec(normalizedPath);
+	const match = COMMAND_LOOKUP_PATH_REGEX.exec(normalizedPath);
 	if (!match) {
 		return null;
 	}
@@ -1552,6 +1557,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 
 // #region search command
 
+const SEARCH_EXACT_SINGLE_TOKEN_REGEX = /^\S+$/u;
+const SEARCH_EXACT_PUNCTUATION_TOKEN_REGEX = /[-_.:@]/u;
+
 function search_command_parse_args(args: string[], options: { currentProjectPath: string; cwd: string }) {
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
@@ -1649,9 +1657,13 @@ function search_command_parse_args(args: string[], options: { currentProjectPath
 		});
 	}
 
-	// Optional subtree scope. Resolve the shell folder path to an app file node path.
+	// Convert the user-facing folder scope to the app path used by the chunk index.
+	// The command handler verifies that this app path is an existing folder.
 	let path: string | undefined;
-	if (pathValue != null && pathValue !== "") {
+	if (pathValue != null) {
+		if (pathValue === "") {
+			return Result({ _nay: { message: "search: --path requires a non-empty folder path" } });
+		}
 		const appFileNodePath = current_project_path_to_app_file_node_path(
 			options.currentProjectPath,
 			resolve_path(options.cwd, pathValue),
@@ -1704,7 +1716,11 @@ function search_command_build_continuation(args: {
 
 function search_command_exact_query_filter(query: string) {
 	const trimmedQuery = query.trim();
-	return /^\S+$/u.test(trimmedQuery) && /[-_.:@]/u.test(trimmedQuery) ? trimmedQuery.toLowerCase() : null;
+	// Punctuation-heavy single tokens often get broadened by full-text search.
+	// Track the literal form so each hit can say whether the exact token is present.
+	return SEARCH_EXACT_SINGLE_TOKEN_REGEX.test(trimmedQuery) && SEARCH_EXACT_PUNCTUATION_TOKEN_REGEX.test(trimmedQuery)
+		? trimmedQuery.toLowerCase()
+		: null;
 }
 
 // Broad word-level hits stay in the page (suppressing them thins pagination); a per-hit
@@ -1755,6 +1771,30 @@ function search_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxD
 				};
 			}
 			cursor = resolvedCursor._yay;
+		}
+
+		// `search --path` is an exact folder scope, not a prefix scan.
+		if (parsed._yay.path != null && parsed._yay.path !== "/") {
+			const scopedFolder = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
+				path: parsed._yay.path,
+			})) as files_nodes_get_by_path_Result;
+			const scopedShellPath = app_file_node_path_to_current_project_path(currentProjectPath, parsed._yay.path);
+			if (!scopedFolder) {
+				return {
+					stdout: "",
+					stderr: `search: --path folder does not exist: ${scopedShellPath}\n`,
+					exitCode: COMMAND_EXIT_FAILURE,
+				};
+			}
+			if (scopedFolder.kind !== "folder") {
+				return {
+					stdout: "",
+					stderr: `search: --path must be a folder: ${scopedShellPath}\n`,
+					exitCode: COMMAND_EXIT_USAGE,
+				};
+			}
 		}
 
 		const cwdAppFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, commandCtx.cwd);
@@ -1895,22 +1935,6 @@ const READ_INLINE_MAX_BYTES = 2 * 1024;
 const READ_HEAD_LARGE_FILE_MAX_LINES = 40;
 
 const COMMAND_NO_BUILTIN_OPTIONS_WITH_VALUES = new Set<string>();
-
-async function get_file_node_from_path(
-	ctx: ActionCtx,
-	ctxData: WorkspaceFsOptions["ctxData"],
-	appFileNodePath: string,
-): Promise<files_nodes_get_by_path_Result> {
-	if (appFileNodePath === "/") {
-		return null;
-	}
-
-	return (await ctx.runQuery(internal.files_nodes.get_by_path, {
-		workspaceId: ctxData.workspaceId,
-		projectId: ctxData.projectId,
-		path: appFileNodePath,
-	})) as files_nodes_get_by_path_Result;
-}
 
 // #region ls command
 
@@ -2129,7 +2153,11 @@ async function ls_command_get_path_entry(args: {
 		return files_SYNTHETIC_ROOT_FOLDER;
 	}
 
-	const entry = await get_file_node_from_path(args.ctx, args.ctxData, args.appFileNodePath);
+	const entry = (await args.ctx.runQuery(internal.files_nodes.get_by_path, {
+		workspaceId: args.ctxData.workspaceId,
+		projectId: args.ctxData.projectId,
+		path: args.appFileNodePath,
+	})) as files_nodes_get_by_path_Result;
 	if (entry) {
 		args.workspaceFs.rememberEntry({
 			_id: entry._id,
@@ -2210,7 +2238,7 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 
 		if (hasAppFileNodeTarget && parsed._yay.unsupportedAppFileOption != null) {
 			const opt = parsed._yay.unsupportedAppFileOption;
-			const hint = `ls under ${APP_MOUNT_PATH} supports name order only; use find/search for pattern and content discovery.`;
+			const hint = `ls under ${APP_MOUNT_PATH} supports name and time order only; use find/search for pattern and content discovery.`;
 			return {
 				stdout: "",
 				stderr: `ls: unsupported option ${opt} for paths under ${APP_MOUNT_PATH}\n${hint}\nUsage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n`,
@@ -2726,7 +2754,7 @@ function find_command_parse_args(args: string[]) {
 
 	let maxDepth: number | null = null;
 	if (maxDepthValue != null) {
-		if (!/^\d+$/u.test(maxDepthValue.trim())) {
+		if (!NON_NEGATIVE_INTEGER_REGEX.test(maxDepthValue.trim())) {
 			return Result({ _nay: { message: "find: -maxdepth must be a non-negative integer" } });
 		}
 		maxDepth = Number(maxDepthValue);
@@ -2734,7 +2762,7 @@ function find_command_parse_args(args: string[]) {
 
 	let minDepth: number | null = null;
 	if (minDepthValue != null) {
-		if (!/^\d+$/u.test(minDepthValue.trim())) {
+		if (!NON_NEGATIVE_INTEGER_REGEX.test(minDepthValue.trim())) {
 			return Result({ _nay: { message: "find: -mindepth must be a non-negative integer" } });
 		}
 		minDepth = Number(minDepthValue);
@@ -2856,6 +2884,13 @@ function find_command_parse_args(args: string[]) {
 	});
 }
 
+/**
+ * Convert a shell prefix to the app path format used by `treePath`.
+ *
+ * Prefix scans do not require an existing file-node doc. They only need the normalized
+ * app path that `list_folder_subtree_paginated` can turn into a trailing-slash
+ * `treePath` prefix.
+ */
 function find_command_prefix_to_app_file_node_path(
 	commandCtx: CommandContext,
 	currentProjectPath: string,
@@ -2998,9 +3033,9 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			cursor = resolvedCursor._yay;
 		}
 
-		// Prefix search scans descendants and does not require the folder to exist.
+		// Prefix search scans treePath descendants and does not require an existing folder.
 		if (parsed._yay.prefix != null) {
-			// Extension filtering is supported only for exact PATH searches.
+			// Prefix mode is only for broad path-boundary scans.
 			if (parsed._yay.extension != null) {
 				return {
 					stdout: "",
@@ -3015,7 +3050,7 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				};
 			}
 
-			// Word search and prefix search are separate modes.
+			// Prefix scans and path word search use different query shapes.
 			if (pathQuery != null) {
 				return {
 					stdout: "",
@@ -3026,7 +3061,7 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				};
 			}
 
-			// Convert to the app path format used to build the trailing-slash treePath prefix.
+			// Convert to the app path format that matches folder treePath prefixes.
 			const prefixResult = find_command_prefix_to_app_file_node_path(
 				commandCtx,
 				currentProjectPath,
@@ -3095,7 +3130,14 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			});
 		}
 
-		const entry = await get_file_node_from_path(ctx, ctxData, target.appFileNodePath);
+		const entry: files_nodes_get_by_path_Result =
+			target.appFileNodePath === "/"
+				? null
+				: await ctx.runQuery(internal.files_nodes.get_by_path, {
+						workspaceId: ctxData.workspaceId,
+						projectId: ctxData.projectId,
+						path: target.appFileNodePath,
+					});
 		// Missing concrete app paths fail normally, with a hint for prefix-style discovery.
 		if (target.appFileNodePath !== "/" && !entry) {
 			return {
@@ -3127,11 +3169,12 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				};
 			}
 
-			// Supported depth options become parent or subtree filters.
-			let parentId = undefined;
-			let pathPrefix = undefined;
+			// Path word search can only express project-wide, direct-child, or subtree scopes.
+			let parentId: Id<"files_nodes"> | typeof files_ROOT_ID | undefined = undefined;
+			let pathPrefix: string | undefined = undefined;
+			let minPathDepth: number | undefined = undefined;
 			if (target.appFileNodePath === "/") {
-				// Root word search supports project-wide results and depth 1.
+				// At root, -maxdepth 1 is the direct children query.
 				if (parsed._yay.maxDepth != null && parsed._yay.maxDepth !== 1) {
 					return {
 						stdout: "",
@@ -3146,7 +3189,7 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 					};
 				}
 
-				// Root word search only supports -mindepth 1.
+				// Root has no file-node doc, so only the natural child floor is supported.
 				if (parsed._yay.minDepth != null && parsed._yay.minDepth !== 1) {
 					return {
 						stdout: "",
@@ -3162,12 +3205,11 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 					};
 				}
 
-				// Depth 1 means root children.
 				if (parsed._yay.maxDepth === 1) {
 					parentId = files_ROOT_ID;
 				}
 			} else {
-				// Scoped word search must start from a folder.
+				// A scoped path-word search starts from an exact folder.
 				if (!entry || entry.kind !== "folder") {
 					return {
 						stdout: "",
@@ -3176,7 +3218,7 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 					};
 				}
 
-				// Folder word search supports all descendants and depth 1.
+				// Non-root scoped search supports the full subtree or direct children.
 				if (parsed._yay.maxDepth != null && parsed._yay.maxDepth !== 1) {
 					return {
 						stdout: "",
@@ -3191,7 +3233,7 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 					};
 				}
 
-				// Scoped -mindepth only supports 1.
+				// The only supported mindepth filter excludes the starting folder itself.
 				if (parsed._yay.minDepth != null && parsed._yay.minDepth !== 1) {
 					return {
 						stdout: "",
@@ -3207,11 +3249,13 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 					};
 				}
 
-				// Depth 1 maps to parentId; full subtree maps to pathPrefix.
 				if (parsed._yay.maxDepth === 1) {
 					parentId = entry._id;
 				} else {
 					pathPrefix = target.appFileNodePath;
+					if (parsed._yay.minDepth === 1) {
+						minPathDepth = entry.pathDepth + 1;
+					}
 				}
 			}
 
@@ -3228,6 +3272,7 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 						: {}),
 				...(parentId == null ? {} : { parentId }),
 				...(pathPrefix == null ? {} : { pathPrefix }),
+				...(minPathDepth == null ? {} : { minPathDepth }),
 			})) as files_nodes_search_paths_paginated_Result;
 
 			const lines = result.items.map(
@@ -3273,7 +3318,7 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				const matchesDepth =
 					(parsed._yay.minDepth == null || parsed._yay.minDepth <= 0) &&
 					(parsed._yay.maxDepth == null || parsed._yay.maxDepth >= 0);
-				const lines =
+				const lines: string[] =
 					cursor == null && matchesDepth && entry.lowercaseExtension === parsed._yay.extension
 						? [app_file_node_path_to_current_project_path(currentProjectPath, entry.path)]
 						: ["0 matches."];
@@ -3326,7 +3371,7 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			const matchesDepth =
 				(parsed._yay.minDepth == null || parsed._yay.minDepth <= 0) &&
 				(parsed._yay.maxDepth == null || parsed._yay.maxDepth >= 0);
-			const lines =
+			const lines: string[] =
 				cursor == null && matchesKind && matchesDepth
 					? [app_file_node_path_to_current_project_path(currentProjectPath, entry.path)]
 					: ["0 matches."];
@@ -3386,6 +3431,19 @@ function find_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 
 const TREE_COMMAND_BUILTIN_OPTIONS_WITH_VALUES = new Set(["-L", "-P", "-I", "--filelimit", "-o"]);
 
+/**
+ * Return the path segments from a tree root to an item path.
+ *
+ * Both paths must already be normalized by the command boundary.
+ */
+function tree_command_relative_segments(basePath: string, itemPath: string) {
+	if (itemPath === basePath) {
+		return [];
+	}
+	const suffix = basePath === "/" ? itemPath.slice(1) : itemPath.slice(basePath.length + 1);
+	return suffix.split("/").filter(Boolean);
+}
+
 function tree_command_parse_args(args: string[]) {
 	let path: string | undefined;
 	let limitValue: string | undefined;
@@ -3394,6 +3452,7 @@ function tree_command_parse_args(args: string[]) {
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
+
 		if (arg === "--limit") {
 			const value = command_read_option_value("tree", args, index, "--limit");
 			if (value._nay) return value;
@@ -3405,6 +3464,7 @@ function tree_command_parse_args(args: string[]) {
 			limitValue = arg.slice("--limit=".length);
 			continue;
 		}
+
 		if (arg === "--cursor") {
 			const value = command_read_option_value("tree", args, index, "--cursor");
 			if (value._nay) return value;
@@ -3416,18 +3476,22 @@ function tree_command_parse_args(args: string[]) {
 			cursor = arg.slice("--cursor=".length);
 			continue;
 		}
+
 		if (TREE_COMMAND_BUILTIN_OPTIONS_WITH_VALUES.has(arg)) {
 			unsupportedAppFileOption ??= arg;
 			index++;
 			continue;
 		}
+
 		if (arg.startsWith("-")) {
 			unsupportedAppFileOption ??= arg;
 			continue;
 		}
+
 		if (path != null) {
 			return Result({ _nay: { message: "tree: app file tree supports one path only" } });
 		}
+
 		path = arg;
 	}
 
@@ -3444,19 +3508,6 @@ function tree_command_parse_args(args: string[]) {
 			unsupportedAppFileOption,
 		} as const,
 	});
-}
-
-/**
- * Return the path segments from a tree root to an item path.
- *
- * Both paths must already be normalized by the command boundary.
- */
-function tree_command_relative_segments(basePath: string, itemPath: string) {
-	if (itemPath === basePath) {
-		return [];
-	}
-	const suffix = basePath === "/" ? itemPath.slice(1) : itemPath.slice(basePath.length + 1);
-	return suffix.split("/").filter(Boolean);
 }
 
 function tree_command_build_continuation(args: { target: string; limit: number; cursor: string }) {
@@ -3481,6 +3532,7 @@ function tree_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
+
 		// AI agents commonly hallucinate `--next-page`; reject it after parse
 		// validation so malformed real options still report their normal errors.
 		if (args.includes("--next-page")) {
@@ -3493,18 +3545,31 @@ function tree_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
+
+		// Turn the tree target into a shell path and, when possible, an app file node path.
 		const absoluteShellPath = resolve_path(commandCtx.cwd, parsed._yay.path ?? commandCtx.cwd);
-		if (!is_path_under_current_project_path(currentProjectPath, absoluteShellPath)) {
-			const builtinOperand = parsed._yay.path ?? ".";
+		const target = {
+			inputPath: parsed._yay.path,
+			absoluteShellPath,
+			appFileNodePath: current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
+			builtinOperand: parsed._yay.path ?? ".",
+		};
+
+		// Non-app paths are normal Just Bash filesystem paths. Delegate them so native
+		// `tree` behavior is preserved outside the app file mount.
+		if (target.appFileNodePath == null) {
 			return await delegate_builtin_command({
 				command: "tree",
-				args: command_build_builtin_delegation_args(args, [builtinOperand], {
+				args: command_build_builtin_delegation_args(args, [target.builtinOperand], {
 					optionsWithValues: TREE_COMMAND_BUILTIN_OPTIONS_WITH_VALUES,
 					pathsPosition: "afterOptions",
 				}),
 				commandCtx,
 			});
 		}
+
+		// Option parsing happens before target routing. Once the target is an app-file
+		// path, reject options that only the built-in `tree` implementation can handle.
 		if (parsed._yay.unsupportedAppFileOption != null) {
 			return {
 				stdout: "",
@@ -3514,13 +3579,19 @@ function tree_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
-		if (parsed._yay.path != null && GLOB_METACHARACTER_REGEX.test(parsed._yay.path)) {
+
+		// App files are DB-backed docs, so shell globs cannot be expanded without an
+		// unbounded scan. Point callers to indexed discovery commands instead.
+		if (target.inputPath != null && GLOB_METACHARACTER_REGEX.test(target.inputPath)) {
 			return {
 				stdout: "",
-				stderr: create_glob_syntax_unsupported_message("tree", parsed._yay.path),
+				stderr: create_glob_syntax_unsupported_message("tree", target.inputPath),
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
+
+		// Cursor ids are opaque handles stored outside command output. Resolve the
+		// public id before sending the real Convex cursor to the paginated query.
 		let cursor: string | null = null;
 		if (parsed._yay.cursor != null) {
 			const resolvedCursor = await cursor_id_resolve(ctx, parsed._yay.cursor);
@@ -3534,54 +3605,65 @@ function tree_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			cursor = resolvedCursor._yay;
 		}
 
-		const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath);
-		if (appFileNodePath == null) {
+		// The project root is synthetic and has no files_nodes doc. Every non-root
+		// app target must resolve to a real file-node doc before tree can print it.
+		const entry =
+			target.appFileNodePath === "/"
+				? null
+				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+						workspaceId: ctxData.workspaceId,
+						projectId: ctxData.projectId,
+						path: target.appFileNodePath,
+					})) as files_nodes_get_by_path_Result);
+
+		// Missing concrete app paths fail like normal tree paths.
+		if (target.appFileNodePath !== "/" && !entry) {
 			return {
 				stdout: "",
-				stderr: `tree: app file path expected under ${currentProjectPath}\n`,
-				exitCode: COMMAND_EXIT_USAGE,
-			};
-		}
-		const entry = await get_file_node_from_path(ctx, ctxData, appFileNodePath);
-		if (appFileNodePath !== "/" && !entry) {
-			return {
-				stdout: "",
-				stderr: `tree: ${absoluteShellPath}: No such file or directory\n`,
+				stderr: `tree: ${target.absoluteShellPath}: No such file or directory\n`,
 				exitCode: COMMAND_EXIT_FAILURE,
 			};
 		}
 
+		// A file target is already a complete tree of one item.
 		if (entry?.kind === "file") {
 			return {
-				stdout: `${absoluteShellPath}\n`,
+				stdout: `${target.absoluteShellPath}\n`,
 				stderr: "",
 				exitCode: 0,
 			};
 		}
 
+		// Folder targets use the subtree index. minDepth excludes the folder itself
+		// because the first output line already prints the requested root path.
 		const result = (await ctx.runQuery(internal.files_nodes.list_folder_subtree_paginated, {
 			workspaceId: ctxData.workspaceId,
 			projectId: ctxData.projectId,
-			folderPath: appFileNodePath,
+			folderPath: target.appFileNodePath,
 			numItems: clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
 			minDepth: 1,
 		})) as files_nodes_list_folder_subtree_paginated_Result;
 
-		const lines = [absoluteShellPath];
+		// Render each returned descendant as a simple tree branch relative to the
+		// requested root, preserving folder slashes for easy visual scanning.
+		const lines = [target.absoluteShellPath];
 		for (const item of result.page) {
-			const segments = tree_command_relative_segments(appFileNodePath, item.path);
+			const segments = tree_command_relative_segments(target.appFileNodePath, item.path);
 			if (segments.length === 0) {
 				continue;
 			}
 			const prefix = segments.length === 1 ? "|-- " : `${"|   ".repeat(segments.length - 1)}|-- `;
 			lines.push(`${prefix}${segments.at(-1)}${item.kind === "folder" ? "/" : ""}`);
 		}
+
+		// Emit a complete continuation command so the next page can be copied without
+		// reconstructing the path, limit, or cursor by hand.
 		if (!result.isDone) {
 			lines.push(
 				"",
 				tree_command_build_continuation({
-					target: absoluteShellPath,
+					target: target.absoluteShellPath,
 					limit: parsed._yay.limit,
 					cursor: await cursor_id_create(ctx, result.continueCursor),
 				}),
@@ -3600,6 +3682,9 @@ function tree_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 
 // #region grep command
 
+const GREP_ATTACHED_CONTEXT_REGEX = /^-([ABC])(\d+)$/u;
+const GREP_LONG_CONTEXT_REGEX = /^--(after-context|before-context|context)=(\d+)$/u;
+const GREP_COMBINED_SHORT_FLAGS_REGEX = /^-[a-zA-Z]{2,}$/u;
 const GREP_SUBSTRING_ONLY_WARNING =
 	"grep: app-file grep is substring-only; regex metacharacters are matched literally. Use search with plain content words for cross-file discovery.\n";
 
@@ -3652,13 +3737,10 @@ function grep_command_substring_only_retry_literal(pattern: string) {
 
 function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], currentProjectPath: string) {
 	return defineCommand("grep", async (args, commandCtx) => {
-		// Single APP-file grep is supported via a bounded chunk scan (substring, -i), with -c/-l/-v and
-		// -A/-B/-C context handled too. Everything else — workspace-wide, recursive, multiple files,
-		// /tmp, regex/-e OR-sets, -m, or unknown flags — keeps the indexed-search guidance.
-		const valueOptions = new Set(["-e", "--regexp", "-m", "--max-count", "-f", "--file"]);
+		// Parse only the bounded grep subset that maps cleanly to app-file queries.
+		// Unsupported flags stay recorded so later branches can return focused guidance.
+		const valueOptions = new Set(["-m", "--max-count", "-f", "--file"]);
 		const noopFlags = new Set([
-			"-n",
-			"--line-number",
 			"-H",
 			"--with-filename",
 			"-h",
@@ -3678,6 +3760,7 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 		let invert = false;
 		let countOnly = false;
 		let listOnly = false;
+		let showLineNumbers = false;
 		let before = 0;
 		let after = 0;
 		let complexFlag = false;
@@ -3693,18 +3776,30 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			const arg = args[index];
 			if (arg === "-e" || arg === "--regexp") {
 				const value = args[++index];
-				// A second pattern (multiple -e) is real-grep OR-semantics we don't reproduce → fall back.
-				if (pattern !== undefined) complexFlag = true;
-				else if (value != null) pattern = value;
+				// A second pattern (multiple -e) is real-grep OR semantics we don't reproduce.
+				if (pattern !== undefined || value == null) {
+					complexFlag = true;
+					unsupportedFlag ??= arg;
+				} else {
+					pattern = value;
+				}
 				continue;
 			}
 			if (arg.startsWith("--regexp=")) {
-				if (pattern !== undefined) complexFlag = true;
-				else pattern = arg.slice("--regexp=".length);
+				if (pattern !== undefined) {
+					complexFlag = true;
+					unsupportedFlag ??= "--regexp";
+				} else {
+					pattern = arg.slice("--regexp=".length);
+				}
 				continue;
 			}
 			if (arg === "-i" || arg === "--ignore-case") {
 				ignoreCase = true;
+				continue;
+			}
+			if (arg === "-n" || arg === "--line-number") {
+				showLineNumbers = true;
 				continue;
 			}
 			if (arg === "-r" || arg === "-R" || arg === "--recursive") {
@@ -3742,7 +3837,7 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				else before = after = value;
 				continue;
 			}
-			const attachedContext = /^-([ABC])(\d+)$/u.exec(arg);
+			const attachedContext = GREP_ATTACHED_CONTEXT_REGEX.exec(arg);
 			if (attachedContext) {
 				const value = Number(attachedContext[2]);
 				if (attachedContext[1] === "A") after = value;
@@ -3750,7 +3845,7 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				else before = after = value;
 				continue;
 			}
-			const longContext = /^--(after-context|before-context|context)=(\d+)$/u.exec(arg);
+			const longContext = GREP_LONG_CONTEXT_REGEX.exec(arg);
 			if (longContext) {
 				const value = Number(longContext[2]);
 				if (longContext[1] === "after-context") after = value;
@@ -3760,14 +3855,15 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			}
 			// Combined short flags like -in (= -i -n) or -ivc. Split and apply each; only boolean
 			// i/v/c/l/n/H/h/s/I (and r/R) are safe — any value/unknown char falls back to guidance.
-			if (/^-[a-zA-Z]{2,}$/u.test(arg)) {
+			if (GREP_COMBINED_SHORT_FLAGS_REGEX.test(arg)) {
 				for (const ch of arg.slice(1)) {
 					if (ch === "i") ignoreCase = true;
 					else if (ch === "r" || ch === "R") recursive = true;
 					else if (ch === "v") invert = true;
 					else if (ch === "c") countOnly = true;
 					else if (ch === "l") listOnly = true;
-					else if (ch === "n" || ch === "H" || ch === "h" || ch === "s" || ch === "I") {
+					else if (ch === "n") showLineNumbers = true;
+					else if (ch === "H" || ch === "h" || ch === "s" || ch === "I") {
 						// display/no-op flag
 					} else {
 						complexFlag = true;
@@ -3779,6 +3875,7 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			if (valueOptions.has(arg)) {
 				index++; // consume the value
 				complexFlag = true; // output/semantics we don't reproduce on the fast path
+				unsupportedFlag ??= arg;
 				continue;
 			}
 			if (noopFlags.has(arg)) continue;
@@ -3791,53 +3888,73 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			else operands.push(arg);
 		}
 
-		// Resolved once: this both gates the single-app-file fast path and feeds the queries below.
-		const singleAppFileNodePath =
-			operands.length === 1 && operands[0] !== "-"
-				? current_project_path_to_app_file_node_path(currentProjectPath, resolve_path(commandCtx.cwd, operands[0]))
-				: null;
-		if (pattern != null && pattern.length > 0 && !recursive && !complexFlag && singleAppFileNodePath != null) {
-			const fileArg = operands[0];
-			if (GLOB_METACHARACTER_REGEX.test(fileArg)) {
-				return {
-					stdout: "",
-					stderr: create_glob_syntax_unsupported_message("grep", fileArg),
-					exitCode: COMMAND_EXIT_USAGE,
-				};
-			}
-			const retryLiteral = grep_command_has_unescaped_regex_metacharacter(pattern)
-				? grep_command_substring_only_retry_literal(pattern)
-				: null;
-			const regexWarning = grep_command_has_unescaped_regex_metacharacter(pattern)
-				? `${GREP_SUBSTRING_ONLY_WARNING}${retryLiteral == null ? "" : `Try: grep ${shell_arg_quote(retryLiteral)} ${shell_arg_quote(fileArg)}\n`}`
-				: "";
+		// A single app-file target can use chunk-backed queries instead of the search fallback.
+		if (
+			pattern != null &&
+			pattern.length > 0 &&
+			!recursive &&
+			!complexFlag &&
+			operands.length === 1 &&
+			operands[0] !== "-"
+		) {
+			const inputPath = operands[0];
+			const absoluteShellPath = resolve_path(commandCtx.cwd, inputPath);
+			const target = {
+				inputPath,
+				absoluteShellPath,
+				appFileNodePath: current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
+			};
+			if (target.appFileNodePath != null) {
+				if (GLOB_METACHARACTER_REGEX.test(target.inputPath)) {
+					return {
+						stdout: "",
+						stderr: create_glob_syntax_unsupported_message("grep", target.inputPath),
+						exitCode: COMMAND_EXIT_USAGE,
+					};
+				}
 
-			// Context (-A/-B/-C) and inverted selection (-v) need lines OTHER than the matches → the
-			// windowed scan path. Plain matching, and -c/-l without -v, only need the match set → the
-			// cheaper match-only chunk scan. (-c/-l override context output, so context alone there
-			// still takes the match path.)
-			const needsScan = invert || (!countOnly && !listOnly && (before > 0 || after > 0));
-			if (needsScan) {
-				const result = (await ctx.runAction(internal.files_nodes.grep_app_file_scan, {
+				const entry =
+					target.appFileNodePath === "/"
+						? null
+						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+								workspaceId: ctxData.workspaceId,
+								projectId: ctxData.projectId,
+								path: target.appFileNodePath,
+							})) as files_nodes_get_by_path_Result);
+				if (!entry || entry.kind !== "file") {
+					return {
+						stdout: "",
+						stderr: `grep: ${target.inputPath}: No such file or directory\n`,
+						exitCode: COMMAND_EXIT_FAILURE,
+					};
+				}
+
+				// App-file grep is substring-only. Regex-looking patterns get a warning
+				// and a literal retry when one can be derived safely.
+				const hasRegexMetacharacter = grep_command_has_unescaped_regex_metacharacter(pattern);
+				const retryLiteral = hasRegexMetacharacter ? grep_command_substring_only_retry_literal(pattern) : null;
+				const regexWarning = hasRegexMetacharacter
+					? `${GREP_SUBSTRING_ONLY_WARNING}${retryLiteral == null ? "" : `Try: grep ${shell_arg_quote(retryLiteral)} ${shell_arg_quote(target.inputPath)}\n`}`
+					: "";
+
+				const result = (await ctx.runQuery(internal.files_nodes.grep_app_file, {
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
 					userId: ctxData.userId,
-					path: singleAppFileNodePath,
+					fileNodeId: entry._id,
 					pattern,
 					ignoreCase,
 					invert,
 					before,
 					after,
-				})) as files_nodes_grep_app_file_scan_Result;
+				})) as files_nodes_grep_app_file_Result;
 				if (!result) {
-					return {
-						stdout: "",
-						stderr: `grep: ${fileArg}: No such file or directory\n`,
-						exitCode: COMMAND_EXIT_FAILURE,
-					};
+					return { stdout: "", stderr: regexWarning, exitCode: 1 };
 				}
 				if (listOnly) {
-					if (result.selectedCount > 0) return { stdout: `${fileArg}\n`, stderr: regexWarning, exitCode: 0 };
+					if (result.selectedCount > 0) {
+						return { stdout: `${target.inputPath}\n`, stderr: regexWarning, exitCode: 0 };
+					}
 					const stderr = result.scanTruncated
 						? "[grep: scanned only a bounded portion of a large file; matches may exist beyond it]\n"
 						: "";
@@ -3854,19 +3971,26 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 					};
 				}
 				if (result.lines.length === 0) {
+					// Real grep: exit 1 means "no matches".
 					const note = result.scanTruncated
 						? "[grep: scanned only a bounded portion of a large file; matches may exist beyond it]\n"
 						: "";
 					return { stdout: "", stderr: `${regexWarning}${note}`, exitCode: 1 };
 				}
-				// Render matched lines with a ":" separator and context lines with "-" (real grep -n
-				// style), inserting "--" between non-contiguous groups.
+				// Context and inverted output keep the grouped scan formatting already used by app grep.
+				// Plain grep output stays raw unless -n asks for line numbers.
+				const separatesGroups = invert || before > 0 || after > 0;
 				const pieces: string[] = [];
 				let prevLineNumber: number | null = null;
-				for (const entry of result.lines) {
-					if (prevLineNumber !== null && entry.lineNumber > prevLineNumber + 1) pieces.push("--");
-					pieces.push(`${entry.lineNumber}${entry.matched ? ":" : "-"}${entry.line}`);
-					prevLineNumber = entry.lineNumber;
+				for (const lineEntry of result.lines) {
+					if (separatesGroups && prevLineNumber !== null && lineEntry.lineNumber > prevLineNumber + 1) {
+						pieces.push("--");
+					}
+					const lineNumberSeparator = separatesGroups && !lineEntry.matched ? "-" : ":";
+					pieces.push(
+						showLineNumbers ? `${lineEntry.lineNumber}${lineNumberSeparator}${lineEntry.line}` : lineEntry.line,
+					);
+					prevLineNumber = lineEntry.lineNumber;
 				}
 				const stdout = `${pieces.join("\n")}\n`;
 				let stderr = regexWarning;
@@ -3875,60 +3999,15 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				}
 				return { stdout, stderr, exitCode: 0 };
 			}
-
-			const result = (await ctx.runAction(internal.files_nodes.grep_app_file, {
-				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
-				userId: ctxData.userId,
-				path: singleAppFileNodePath,
-				pattern,
-				ignoreCase,
-			})) as files_nodes_grep_app_file_Result;
-			if (!result) {
-				return {
-					stdout: "",
-					stderr: `grep: ${fileArg}: No such file or directory\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
-				};
-			}
-			if (listOnly) {
-				if (result.matches.length > 0) return { stdout: `${fileArg}\n`, stderr: regexWarning, exitCode: 0 };
-				const stderr = result.scanTruncated
-					? "[grep: scanned only a bounded portion of a large file; matches may exist beyond it]\n"
-					: "";
-				return { stdout: "", stderr: `${regexWarning}${stderr}`, exitCode: 1 };
-			}
-			if (countOnly) {
-				// matches is capped at the per-file match cap, so scanTruncated means the count is a
-				// lower bound (more matching lines exist past the cap or the scanned window).
-				const stderr = result.scanTruncated ? "[grep: stopped at the match cap; count is a lower bound]\n" : "";
-				return {
-					stdout: `${result.matches.length}\n`,
-					stderr: `${regexWarning}${stderr}`,
-					exitCode: result.matches.length > 0 ? 0 : 1,
-				};
-			}
-			if (result.matches.length === 0) {
-				// Real grep: exit 1 means "no matches".
-				const note = result.scanTruncated
-					? "[grep: scanned only a bounded portion of a large file; matches may exist beyond it]\n"
-					: "";
-				return { stdout: "", stderr: `${regexWarning}${note}`, exitCode: 1 };
-			}
-			const stdout = `${result.matches.map((match) => `${match.lineNumber}:${match.line}`).join("\n")}\n`;
-			let stderr = regexWarning;
-			if (result.scanTruncated) {
-				stderr += `[grep: stopped at the match/scan cap (showing first ${result.matches.length}); more may exist]\n`;
-			}
-			return { stdout, stderr, exitCode: 0 };
 		}
 
+		// Stdin grep is in-memory text and supports the same bounded flag subset.
 		const readsStdin =
 			operands.length === 0 ? commandCtx.stdin !== undefined : operands.length === 1 && operands[0] === "-";
 		if (pattern != null && pattern.length > 0 && !recursive && !complexFlag && readsStdin) {
 			const text = String(commandCtx.stdin ?? "");
 			const normalizedNeedle = ignoreCase ? pattern.toLowerCase() : pattern;
-			const lines = text.replace(/\r\n/gu, "\n").replace(/\r/gu, "\n").split("\n");
+			const lines = text.replace(TERMINAL_LINE_ENDING_REGEX, "\n").split("\n");
 			if (text.endsWith("\n")) {
 				lines.pop();
 			}
@@ -3971,7 +4050,7 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 				if (previousIndex !== null && index > previousIndex + 1) {
 					outputLines.push("--");
 				}
-				outputLines.push(`${index + 1}${selected.has(index) ? ":" : "-"}${lines[index]}`);
+				outputLines.push(showLineNumbers ? `${index + 1}${selected.has(index) ? ":" : "-"}${lines[index]}` : lines[index]);
 				previousIndex = index;
 			}
 			return {
@@ -3981,6 +4060,8 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			};
 		}
 
+		// Recursive app-folder grep is a discovery shortcut over indexed full-text search.
+		// It is intentionally not exact recursive regex grep.
 		if (
 			pattern != null &&
 			pattern.length > 0 &&
@@ -3995,11 +4076,22 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			operands[0] !== "-" &&
 			!GLOB_METACHARACTER_REGEX.test(operands[0])
 		) {
-			const folderArg = operands[0];
-			const absoluteShellPath = resolve_path(commandCtx.cwd, folderArg);
-			const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath);
-			const entry = appFileNodePath ? await get_file_node_from_path(ctx, ctxData, appFileNodePath) : null;
-			if (appFileNodePath != null && (appFileNodePath === "/" || entry?.kind === "folder")) {
+			const inputPath = operands[0];
+			const absoluteShellPath = resolve_path(commandCtx.cwd, inputPath);
+			const target = {
+				inputPath,
+				absoluteShellPath,
+				appFileNodePath: current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
+			};
+			const entry =
+				target.appFileNodePath == null || target.appFileNodePath === "/"
+					? null
+					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+							workspaceId: ctxData.workspaceId,
+							projectId: ctxData.projectId,
+							path: target.appFileNodePath,
+						})) as files_nodes_get_by_path_Result);
+			if (target.appFileNodePath != null && (target.appFileNodePath === "/" || entry?.kind === "folder")) {
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
 					workspaceId: ctxData.workspaceId,
 					projectId: ctxData.projectId,
@@ -4007,9 +4099,9 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 					query: pattern,
 					numItems: 20,
 					cursor: null,
-					pathPrefix: appFileNodePath,
+					pathPrefix: target.appFileNodePath,
 				})) as files_nodes_text_search_files_Result;
-				const scopePath = app_file_node_path_to_current_project_path(currentProjectPath, appFileNodePath);
+				const scopePath = app_file_node_path_to_current_project_path(currentProjectPath, target.appFileNodePath);
 				// Same exact-query annotation as search: hyphenated single-token patterns get a
 				// per-hit note saying whether the literal pattern appears in the shown chunk.
 				const exactQueryFilter = search_command_exact_query_filter(pattern);
@@ -4039,7 +4131,7 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 						"",
 						search_command_build_continuation({
 							currentProjectPath,
-							path: appFileNodePath,
+							path: target.appFileNodePath,
 							limit: 20,
 							cursor: cursorId,
 							query: pattern,
@@ -4054,17 +4146,34 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			}
 		}
 
-		if (pattern != null && pattern.length > 0 && singleAppFileNodePath != null && unsupportedFlag != null) {
-			return {
-				stdout: "",
-				stderr:
-					`grep: unsupported option ${unsupportedFlag} for app-file grep. ` +
-					"Supported: grep [-i] PATTERN <file> with -c, -l, -v, and -A/-B/-C N. " +
-					"Drop the flag, or use search for cross-file discovery.\n",
-				exitCode: COMMAND_EXIT_USAGE,
+		// Unsupported app-file flags get a grep-specific error instead of the broad search fallback.
+		if (
+			pattern != null &&
+			pattern.length > 0 &&
+			unsupportedFlag != null &&
+			operands.length === 1 &&
+			operands[0] !== "-"
+		) {
+			const inputPath = operands[0];
+			const absoluteShellPath = resolve_path(commandCtx.cwd, inputPath);
+			const target = {
+				inputPath,
+				absoluteShellPath,
+				appFileNodePath: current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
 			};
+			if (target.appFileNodePath != null) {
+				return {
+					stdout: "",
+					stderr:
+						`grep: unsupported option ${unsupportedFlag} for app-file grep. ` +
+						"Supported: grep [-n] [-i] PATTERN <file> with -c, -l, -v, and -A/-B/-C N. " +
+						"Drop the flag, or use search for cross-file discovery.\n",
+					exitCode: COMMAND_EXIT_USAGE,
+				};
+			}
 		}
 
+		// Everything outside the supported fast paths returns a concrete search retry.
 		let suggestedCommand = pattern
 			? `search --limit 20 ${shell_arg_quote(pattern)}`
 			: "search --limit 20 <content-terms>";
@@ -4077,10 +4186,21 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 			});
 			if (firstAppOperand != null) {
 				const absoluteShellPath = resolve_path(commandCtx.cwd, firstAppOperand);
-				const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath);
-				const entry = appFileNodePath ? await get_file_node_from_path(ctx, ctxData, appFileNodePath) : null;
-				if (appFileNodePath === "/" || entry?.kind === "folder") {
-					suggestedCommand = `search --path ${shell_arg_quote(absoluteShellPath)} --limit 20 ${shell_arg_quote(pattern)}`;
+				const target = {
+					inputPath: firstAppOperand,
+					absoluteShellPath,
+					appFileNodePath: current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
+				};
+				const entry =
+					target.appFileNodePath == null || target.appFileNodePath === "/"
+						? null
+						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+								workspaceId: ctxData.workspaceId,
+								projectId: ctxData.projectId,
+								path: target.appFileNodePath,
+							})) as files_nodes_get_by_path_Result);
+				if (target.appFileNodePath === "/" || entry?.kind === "folder") {
+					suggestedCommand = `search --path ${shell_arg_quote(target.absoluteShellPath)} --limit 20 ${shell_arg_quote(pattern)}`;
 				}
 			}
 		}
@@ -4093,7 +4213,7 @@ function grep_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxDat
 					"If the Try command matches the user's request, run it next before answering.",
 					"IMPORTANT: search is full-text, not grep. Pass one distinctive word or a few plain terms; the text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term.",
 					"It is implemented with Convex full-text search, but it is not regex/glob/exact substring matching.",
-					"To grep ONE file, pass exactly one app file path: grep [-i] PATTERN <file> (substring match, prints line numbers).",
+					"To grep ONE file, pass exactly one app file path: grep [-n] [-i] PATTERN <file> (substring match; -n prints line numbers).",
 					"To restrict search to a folder, cd there or use search --path <folder> <content terms>; broad scopes with common terms can be heavier.",
 					"The search command returns matching file paths with snippets.",
 				].join("\n") + "\n",
@@ -4319,6 +4439,23 @@ function cat_command_add_line_numbers(content: string, startLine: number) {
 
 // #region stat command
 
+const STAT_FORMAT_FILE_NAME_REGEX = /%n/g;
+const STAT_FORMAT_QUOTED_FILE_NAME_REGEX = /%N/g;
+const STAT_FORMAT_SIZE_REGEX = /%s/g;
+const STAT_FORMAT_FILE_TYPE_REGEX = /%F/g;
+const STAT_FORMAT_MODE_OCTAL_REGEX = /%a/g;
+const STAT_FORMAT_MODE_STRING_REGEX = /%A/g;
+const STAT_FORMAT_USER_ID_REGEX = /%u/g;
+const STAT_FORMAT_USER_NAME_REGEX = /%U/g;
+const STAT_FORMAT_GROUP_ID_REGEX = /%g/g;
+const STAT_FORMAT_GROUP_NAME_REGEX = /%G/g;
+const STAT_FORMAT_MTIME_HUMAN_REGEX = /%y/g;
+const STAT_FORMAT_MTIME_SECONDS_REGEX = /%Y/g;
+const STAT_FORMAT_ATIME_HUMAN_REGEX = /%x/g;
+const STAT_FORMAT_ATIME_SECONDS_REGEX = /%X/g;
+const STAT_FORMAT_CTIME_HUMAN_REGEX = /%z/g;
+const STAT_FORMAT_CTIME_SECONDS_REGEX = /%Z/g;
+
 function stat_command_parse_args(args: string[]) {
 	let format: string | null = null;
 	const files: string[] = [];
@@ -4377,22 +4514,22 @@ function stat_command_render_output(
 	const mtimeHuman = mtimeIso.replace("T", " ").replace("Z", " +0000");
 	if (format != null) {
 		let output = format;
-		output = output.replace(/%n/g, file);
-		output = output.replace(/%N/g, `'${file}'`);
-		output = output.replace(/%s/g, sizeStr);
-		output = output.replace(/%F/g, stat.isDirectory ? "directory" : "regular file");
-		output = output.replace(/%a/g, modeOctal);
-		output = output.replace(/%A/g, modeStr);
-		output = output.replace(/%u/g, "1000");
-		output = output.replace(/%U/g, "user");
-		output = output.replace(/%g/g, "1000");
-		output = output.replace(/%G/g, "group");
-		output = output.replace(/%y/g, mtimeHuman);
-		output = output.replace(/%Y/g, String(Math.floor(stat.mtime.getTime() / 1000)));
-		output = output.replace(/%x/g, mtimeHuman);
-		output = output.replace(/%X/g, String(Math.floor(stat.mtime.getTime() / 1000)));
-		output = output.replace(/%z/g, mtimeHuman);
-		output = output.replace(/%Z/g, String(Math.floor(stat.mtime.getTime() / 1000)));
+		output = output.replace(STAT_FORMAT_FILE_NAME_REGEX, file);
+		output = output.replace(STAT_FORMAT_QUOTED_FILE_NAME_REGEX, `'${file}'`);
+		output = output.replace(STAT_FORMAT_SIZE_REGEX, sizeStr);
+		output = output.replace(STAT_FORMAT_FILE_TYPE_REGEX, stat.isDirectory ? "directory" : "regular file");
+		output = output.replace(STAT_FORMAT_MODE_OCTAL_REGEX, modeOctal);
+		output = output.replace(STAT_FORMAT_MODE_STRING_REGEX, modeStr);
+		output = output.replace(STAT_FORMAT_USER_ID_REGEX, "1000");
+		output = output.replace(STAT_FORMAT_USER_NAME_REGEX, "user");
+		output = output.replace(STAT_FORMAT_GROUP_ID_REGEX, "1000");
+		output = output.replace(STAT_FORMAT_GROUP_NAME_REGEX, "group");
+		output = output.replace(STAT_FORMAT_MTIME_HUMAN_REGEX, mtimeHuman);
+		output = output.replace(STAT_FORMAT_MTIME_SECONDS_REGEX, String(Math.floor(stat.mtime.getTime() / 1000)));
+		output = output.replace(STAT_FORMAT_ATIME_HUMAN_REGEX, mtimeHuman);
+		output = output.replace(STAT_FORMAT_ATIME_SECONDS_REGEX, String(Math.floor(stat.mtime.getTime() / 1000)));
+		output = output.replace(STAT_FORMAT_CTIME_HUMAN_REGEX, mtimeHuman);
+		output = output.replace(STAT_FORMAT_CTIME_SECONDS_REGEX, String(Math.floor(stat.mtime.getTime() / 1000)));
 		return `${output}\n`;
 	}
 	const sizeDisplay =
@@ -4490,6 +4627,8 @@ function stream_utility_command_create_all(currentProjectPath: string) {
 
 // #region sed command
 
+const SED_PRINT_RANGE_REGEX = /^(\d+)(?:,(\d+))?p$/u;
+
 /**
  * `sed` with a special fast path for bounded line-range reads of an app file:
  * `sed -n 'A,Bp' <file>` (or `sed -n 'Ap' <file>`) reads exactly that line range via a
@@ -4501,7 +4640,7 @@ function sed_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData
 	return defineCommand("sed", async (args, commandCtx) => {
 		if (args.includes("-n")) {
 			const nonFlags = args.filter((arg) => !arg.startsWith("-"));
-			const rangeMatch = nonFlags.length === 2 ? /^(\d+)(?:,(\d+))?p$/u.exec(nonFlags[0]) : null;
+			const rangeMatch = nonFlags.length === 2 ? SED_PRINT_RANGE_REGEX.exec(nonFlags[0]) : null;
 			if (rangeMatch) {
 				const fileArg = nonFlags[1];
 				const appFileNodePath = current_project_path_to_app_file_node_path(
@@ -4567,10 +4706,14 @@ function sed_command_create(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData
 
 // #region head tail wc commands
 
+const READER_LINE_COUNT_REGEX = /^(\+?)(\d+)$/u;
+const WC_COMBINED_FLAGS_REGEX = /^-[lwmc]{2,}$/u;
+const OBSOLETE_LINE_COUNT_FLAG_REGEX = /^-(\d+)$/u;
+
 function reader_command_parse_line_count(value: string | undefined) {
 	if (value == null) return null;
 	// A leading `+` (e.g. `tail -n +K`) means "start at line K" (forward), not "last K lines".
-	const match = /^(\+?)(\d+)$/u.exec(value.trim());
+	const match = READER_LINE_COUNT_REGEX.exec(value.trim());
 	return match ? { count: Number(match[2]), fromStart: match[1] === "+" } : null;
 }
 
@@ -4632,7 +4775,7 @@ function reader_command_create(
 					wcFlags.chars = true;
 					continue;
 				}
-				if (/^-[lwmc]{2,}$/u.test(arg)) {
+				if (WC_COMBINED_FLAGS_REGEX.test(arg)) {
 					for (const ch of arg.slice(1)) {
 						if (ch === "l") wcFlags.lines = true;
 						else if (ch === "w") wcFlags.words = true;
@@ -4663,7 +4806,7 @@ function reader_command_create(
 					byteMode = true;
 					continue;
 				}
-				const obsoleteLineCount = /^-(\d+)$/u.exec(arg);
+				const obsoleteLineCount = OBSOLETE_LINE_COUNT_FLAG_REGEX.exec(arg);
 				if (obsoleteLineCount) {
 					headLineCount = Number(obsoleteLineCount[1]);
 					headFromStart = false;
@@ -4745,7 +4888,14 @@ function reader_command_create(
 					path: appFileNodePath,
 				})) as files_nodes_read_file_content_stats_Result;
 				if (!stats) {
-					const entry = await get_file_node_from_path(ctx, ctxData, appFileNodePath);
+					const entry =
+						appFileNodePath === "/"
+							? null
+							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+									workspaceId: ctxData.workspaceId,
+									projectId: ctxData.projectId,
+									path: appFileNodePath,
+								})) as files_nodes_get_by_path_Result);
 					if (entry?.kind === "file") {
 						stderr += build_unreadable_file_advisory(currentProjectPath, appFileNodePath, entry.contentType);
 					} else {
@@ -5300,6 +5450,12 @@ function nested_shell_command_create(name: "bash" | "sh", currentProjectPath: st
 
 // #region xargs command
 
+const XARGS_DELIMITER_NEWLINE_ESCAPE_REGEX = /\\n/gu;
+const XARGS_DELIMITER_TAB_ESCAPE_REGEX = /\\t/gu;
+const XARGS_DELIMITER_NUL_ESCAPE_REGEX = /\\0/gu;
+const XARGS_ATTACHED_MAX_ARGS_REGEX = /^-n\d+$/u;
+const SINGLE_TRAILING_NEWLINE_REGEX = /\n$/u;
+
 function xargs_command_create() {
 	return defineCommand("xargs", async (args, commandCtx) => {
 		let replaceString: string | null = null;
@@ -5323,18 +5479,25 @@ function xargs_command_create() {
 				continue;
 			}
 			if (arg === "-d") {
-				delimiter = (args[++index] ?? "").replace(/\\n/gu, "\n").replace(/\\t/gu, "\t").replace(/\\0/gu, "\0");
+				delimiter = (args[++index] ?? "")
+					.replace(XARGS_DELIMITER_NEWLINE_ESCAPE_REGEX, "\n")
+					.replace(XARGS_DELIMITER_TAB_ESCAPE_REGEX, "\t")
+					.replace(XARGS_DELIMITER_NUL_ESCAPE_REGEX, "\0");
 				commandStart = index + 1;
 				continue;
 			}
 			if (arg.startsWith("-d") && arg.length > 2) {
-				delimiter = arg.slice(2).replace(/\\n/gu, "\n").replace(/\\t/gu, "\t").replace(/\\0/gu, "\0");
+				delimiter = arg
+					.slice(2)
+					.replace(XARGS_DELIMITER_NEWLINE_ESCAPE_REGEX, "\n")
+					.replace(XARGS_DELIMITER_TAB_ESCAPE_REGEX, "\t")
+					.replace(XARGS_DELIMITER_NUL_ESCAPE_REGEX, "\0");
 				commandStart = index + 1;
 				continue;
 			}
 			if (arg === "-n") {
 				const rawMaxArgs = args[++index];
-				if (rawMaxArgs == null || !/^\d+$/u.test(rawMaxArgs) || Number(rawMaxArgs) < 1) {
+				if (rawMaxArgs == null || !NON_NEGATIVE_INTEGER_REGEX.test(rawMaxArgs) || Number(rawMaxArgs) < 1) {
 					return {
 						stdout: "",
 						stderr: "xargs: -n requires a positive integer\n",
@@ -5345,7 +5508,7 @@ function xargs_command_create() {
 				commandStart = index + 1;
 				continue;
 			}
-			if (arg.startsWith("-n") && arg.length > 2 && /^-n\d+$/u.test(arg)) {
+			if (arg.startsWith("-n") && arg.length > 2 && XARGS_ATTACHED_MAX_ARGS_REGEX.test(arg)) {
 				const inlineMaxArgs = Number(arg.slice(2));
 				if (inlineMaxArgs < 1) {
 					return {
@@ -5418,9 +5581,9 @@ function xargs_command_create() {
 		const items = nullSeparated
 			? stdinText.split("\0").filter(Boolean)
 			: delimiter != null
-				? stdinText.replace(/\n$/u, "").split(delimiter).filter(Boolean)
+				? stdinText.replace(SINGLE_TRAILING_NEWLINE_REGEX, "").split(delimiter).filter(Boolean)
 				: stdinText
-						.split(/\s+/u)
+						.split(WHITESPACE_RUN_REGEX)
 						.map((item) => item.trim())
 						.filter(Boolean);
 		if (items.length === 0) {
@@ -5534,6 +5697,11 @@ function which_command_create() {
 
 // #region action
 
+const COMMAND_NOT_FOUND_REGEX = /: command not found$/m;
+const REDIRECTS_STDERR_TO_STDOUT_REGEX = /(^|[\s;&|])2\s*>\s*&\s*1(?=$|[\s;&|])/;
+const SET_INVALID_OPTION_REGEX = /bash: set: -o: invalid option/m;
+const FILE_COMMAND_OPERAND_REGEX = /(?:^|[\s;&|])file\s+([^\s;&|]+)/u;
+
 /**
  * Mount the app file tree into Just Bash as a mostly read-only filesystem.
  */
@@ -5589,7 +5757,14 @@ class WorkspaceFs implements IFileSystem {
 				path: normalizedPath,
 			},
 		) as Promise<files_nodes_get_file_last_available_markdown_content_by_path_Result>;
-		const nodePromise = get_file_node_from_path(this.ctx, this.ctxData, normalizedPath);
+		const nodePromise: Promise<files_nodes_get_by_path_Result> =
+			normalizedPath === "/"
+				? Promise.resolve(null)
+				: (this.ctx.runQuery(internal.files_nodes.get_by_path, {
+						workspaceId: this.ctxData.workspaceId,
+						projectId: this.ctxData.projectId,
+						path: normalizedPath,
+					}) as Promise<files_nodes_get_by_path_Result>);
 		const [fileContent, node] = await Promise.all([fileContentPromise, nodePromise]);
 
 		if (!fileContent) {
@@ -6062,7 +6237,7 @@ async function action_run(ctx: ActionCtx, args: Infer<typeof action_run_args_val
 		},
 	});
 
-	const result = await bash.exec(`set -f\n${args.command}`).catch((error: unknown) => ({
+	const result = await bash.exec(`set -f\n${args.command}`).catch((error) => ({
 		stdout: "",
 		stderr: `${error instanceof Error ? error.message : String(error)}\n`,
 		exitCode: 1,
@@ -6084,7 +6259,7 @@ async function action_run(ctx: ActionCtx, args: Infer<typeof action_run_args_val
 	) {
 		result.stderr +=
 			"bash: run 'help' to list available commands; app files are DB-backed — use search/grep for content and find/ls for paths.\n";
-		const filePathMatch = /(?:^|[\s;&|])file\s+([^\s;&|]+)/u.exec(args.command);
+		const filePathMatch = FILE_COMMAND_OPERAND_REGEX.exec(args.command);
 		if (filePathMatch?.[1] != null) {
 			const target = shell_arg_quote(filePathMatch[1]);
 			result.stderr += `bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
@@ -6162,7 +6337,7 @@ async function action_run(ctx: ActionCtx, args: Infer<typeof action_run_args_val
 
 	console.debug("Bash command completed", {
 		threadId: args.threadId,
-		commandName: args.command.trim().split(/\s+/u, 1)[0] ?? "",
+		commandName: args.command.trim().split(WHITESPACE_RUN_REGEX, 1)[0] ?? "",
 		exitCode: result.exitCode,
 		stdoutLength,
 		stderrLength,
@@ -6739,8 +6914,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				});
 			}
 
-			let threadId = opts?.threadId;
-			if (!threadId) {
+			let threadId: Id<"ai_chat_threads">;
+			if (opts?.threadId != null) {
+				threadId = opts.threadId;
+			} else {
 				const asUser = t.withIdentity({
 					issuer: "https://clerk.test",
 					subject: `clerk-bash-runner-${runnerIndex}`,
@@ -7357,7 +7534,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(sortResult.metadata.exitCode).toBe(2);
 			expect(sortResult.stderr).toContain("unsupported option --sort=size");
 			expect(sortResult.stderr).toContain("/home/cloud-usr/w");
-			expect(sortResult.stderr).toContain("supports name order only");
+			expect(sortResult.stderr).toContain("supports name and time order only");
 			expect(sizeResult.metadata.exitCode).toBe(2);
 			expect(sizeResult.stderr).toContain("unsupported option -S");
 			expect(nativeJustBashResult.stderr).not.toContain("/home/cloud-usr/w");
@@ -7434,6 +7611,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				extraFiles: [
 					{ path: wordSearchPath, content: "word search fixture\n" },
 					{ path: outsideWordSearchPath, content: "outside word search fixture\n" },
+					{ path: "/docs/scope word/child.md", content: "child under scope word\n" },
 				],
 			});
 			const { run, runQuery } = runner;
@@ -7443,6 +7621,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const explicitResult = await run("find --path-query readme --limit 10");
 			const scopedResult = await run(`find ${test_app_files_mount}/docs -maxdepth 1 -name readme -type f --limit 10`);
 			const subtreeResult = await run(`find ${test_app_files_mount}/docs -name readme --limit 10`);
+			const scopedSelfResult = await run(`find '${test_app_files_mount}/docs/scope word' --path-query word --limit 10`);
+			const scopedMindepthResult = await run(
+				`find '${test_app_files_mount}/docs/scope word' -mindepth 1 --path-query word --limit 10`,
+			);
 
 			expect(nameResult.metadata.exitCode).toBe(0);
 			expect(nameResult.stdout).toContain(`${test_app_files_mount}${wordSearchPath}`);
@@ -7455,6 +7637,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(subtreeResult.metadata.exitCode).toBe(0);
 			expect(subtreeResult.stdout).toContain(`${test_app_files_mount}${wordSearchPath}`);
 			expect(subtreeResult.stdout).not.toContain(`${test_app_files_mount}${outsideWordSearchPath}`);
+			expect(scopedSelfResult.metadata.exitCode).toBe(0);
+			expect(scopedSelfResult.stdout.trim().split("\n")).toContain(`${test_app_files_mount}/docs/scope word/`);
+			expect(scopedMindepthResult.metadata.exitCode).toBe(0);
+			expect(scopedMindepthResult.stdout.trim().split("\n")).not.toContain(`${test_app_files_mount}/docs/scope word/`);
+			expect(scopedMindepthResult.stdout.trim().split("\n")).toContain(
+				`${test_app_files_mount}/docs/scope word/child.md`,
+			);
 			expect(runQuery).toHaveBeenCalledWith(
 				internal.files_nodes.search_paths_paginated,
 				expect.objectContaining({
@@ -8173,12 +8362,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const relCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "query" in args);
 			expect(relCalls.at(-1)).toEqual(expect.objectContaining({ query: "unique-token", pathPrefix: "/docs" }));
 
-			// Out-of-scope folder → no match (the only hit lives under /docs).
-			const outScope = await run(`search --path ${test_app_files_mount}/other unique-token`);
-			expect(outScope.metadata.exitCode).toBe(0);
-			expect(outScope.stdout).toContain("No content matches found");
-			expect(outScope.stdout).toContain(`under ${test_app_files_mount}/other`);
-			expect(outScope.stdout).toContain("not path/name/glob/regex search");
+			// Explicit --path scopes must be real app folders.
+			const missingScope = await run(`search --path ${test_app_files_mount}/other unique-token`);
+			expect(missingScope.metadata.exitCode).toBe(1);
+			expect(missingScope.stderr).toContain("--path folder does not exist");
+
+			const fileScope = await run(`search --path ${test_app_files_mount}/docs/readme.md unique-token`);
+			expect(fileScope.metadata.exitCode).toBe(2);
+			expect(fileScope.stderr).toContain("--path must be a folder");
 
 			// A --path outside currentProjectPath is rejected.
 			const bad = await run("search --path /etc unique-token");
@@ -8271,13 +8462,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 		});
 
-		test("greps a single app file (substring, line numbers, -i), guidance otherwise", async () => {
+		test("greps a single app file (substring, optional line numbers, -i), guidance otherwise", async () => {
 			const { run } = await create_bash_runner();
 
-			// Single app file → matching lines with 1-based line numbers (grep -n style).
+			// Single app file prints raw matching lines by default, like native grep.
 			const hit = await run(`grep unique-token ${test_app_files_mount}/docs/readme.md`);
 			expect(hit.metadata.exitCode).toBe(0);
-			expect(hit.stdout).toBe("2:unique-token here\n3:more unique-token below\n");
+			expect(hit.stdout).toBe("unique-token here\nmore unique-token below\n");
+
+			// -n switches to 1-based line numbers.
+			const numberedHit = await run(`grep -n unique-token ${test_app_files_mount}/docs/readme.md`);
+			expect(numberedHit.metadata.exitCode).toBe(0);
+			expect(numberedHit.stdout).toBe("2:unique-token here\n3:more unique-token below\n");
+
 			const piped = await run(`cat ${test_app_files_mount}/docs/readme.md | head -n 20 | grep -n unique-token`);
 			expect(piped.metadata.exitCode).toBe(0);
 			expect(piped.stdout).toBe("2:unique-token here\n3:more unique-token below\n");
@@ -8285,7 +8482,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// Case-insensitive.
 			const ci = await run(`grep -i ALPHA ${test_app_files_mount}/docs/tutorial.md`);
 			expect(ci.metadata.exitCode).toBe(0);
-			expect(ci.stdout).toBe("2:alpha\n3:ALPHA\n");
+			expect(ci.stdout).toBe("alpha\nALPHA\n");
 
 			// No match → exit 1, no output (real grep semantics).
 			const none = await run(`grep zzz-nope ${test_app_files_mount}/docs/readme.md`);
@@ -8302,7 +8499,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const unsupportedSingleFileFlag = await run(`grep -o token ${test_app_files_mount}/docs/readme.md`);
 			expect(unsupportedSingleFileFlag.metadata.exitCode).toBe(2);
 			expect(unsupportedSingleFileFlag.stderr).toContain("unsupported option -o");
-			expect(unsupportedSingleFileFlag.stderr).toContain("Supported: grep [-i] PATTERN <file>");
+			expect(unsupportedSingleFileFlag.stderr).toContain("Supported: grep [-n] [-i] PATTERN <file>");
 
 			// -c counts matching lines ("token" is on lines 2 and 3).
 			const counted = await run(`grep -c token ${test_app_files_mount}/docs/readme.md`);
@@ -8322,7 +8519,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// -iv (= -i -v) inverts: only line 1 lacks "token" (case-insensitively).
 			const combinedV = await run(`grep -iv token ${test_app_files_mount}/docs/readme.md`);
 			expect(combinedV.metadata.exitCode).toBe(0);
-			expect(combinedV.stdout).toBe("1:# Readme\n");
+			expect(combinedV.stdout).toBe("# Readme\n");
 
 			// -l prints the file path when it has a match, and exits 1 (no output) when it does not.
 			const listed = await run(`grep -l unique-token ${test_app_files_mount}/docs/readme.md`);
@@ -8332,16 +8529,21 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(listedNone.metadata.exitCode).toBe(1);
 			expect(listedNone.stdout).toBe("");
 
-			// -B N adds leading context: a context line uses "-", a matching line uses ":".
+			// -B N adds leading context. Without -n, both matching and context lines are raw text.
 			const before = await run(`grep -B 1 ALPHA ${test_app_files_mount}/docs/tutorial.md`);
 			expect(before.metadata.exitCode).toBe(0);
-			expect(before.stdout).toBe("2-alpha\n3:ALPHA\n");
+			expect(before.stdout).toBe("alpha\nALPHA\n");
+
+			// With -n, context lines use "-" and selected lines use ":".
+			const beforeNumbered = await run(`grep -n -B 1 ALPHA ${test_app_files_mount}/docs/tutorial.md`);
+			expect(beforeNumbered.metadata.exitCode).toBe(0);
+			expect(beforeNumbered.stdout).toBe("2-alpha\n3:ALPHA\n");
 
 			// -v over non-contiguous selected lines inserts a "--" group separator (lines 1 and 3 lack
 			// the case-sensitive "alpha"; line 2 is "alpha").
 			const invertGap = await run(`grep -v alpha ${test_app_files_mount}/docs/tutorial.md`);
 			expect(invertGap.metadata.exitCode).toBe(0);
-			expect(invertGap.stdout).toBe("1:zeta\n--\n3:ALPHA\n");
+			expect(invertGap.stdout).toBe("zeta\n--\nALPHA\n");
 		});
 
 		test("warns when single-file app grep patterns look like regex but still matches substrings only", async () => {
@@ -8360,10 +8562,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(wildcard.stderr).toContain(`Try: grep unique ${test_app_files_mount}/docs/readme.md`);
 		});
 
-		test("keeps grep large-file scan advisories on stderr", async () => {
+		test("treats chunk-unavailable app grep as no match", async () => {
 			const path = "/docs/large-grep.md";
-			// Over the bounded scan window so the fallback reads only a leading slice; broken chunk
-			// tiling makes the chunk scan bail (usable: false) into that windowed fallback.
 			const { run } = await create_bash_runner({
 				extraFiles: [
 					{
@@ -8378,12 +8578,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const match = await run(`grep match-token ${shellPath}`);
 			const noMatch = await run(`grep missing-token ${shellPath}`);
 
-			expect(match.metadata.exitCode).toBe(0);
-			expect(match.stdout).toBe("1:match-token\n");
-			expect(match.stderr).toContain("more may exist");
-			expect(noMatch.metadata.exitCode).toBe(1);
+			for (const result of [match, noMatch]) {
+				expect(result.metadata.exitCode).toBe(1);
+				expect(result.stdout).toBe("");
+				expect(result.stderr).toBe("");
+			}
 			expect(noMatch.stdout).toBe("");
-			expect(noMatch.stderr).toContain("matches may exist beyond it");
 		});
 
 		test("uses prefix find and renders app tree pages", async () => {

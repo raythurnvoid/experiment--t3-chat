@@ -381,6 +381,44 @@ Client side:
 
 # Query and document patterns
 
+## TypeScript circular inference around generated function refs
+
+When a Convex module reports TS7023/TS7024/TS7022 after adding or changing `ctx.runQuery`,
+`ctx.runMutation`, command factories, action builders, or other callback-heavy code, fix the
+smallest local inference knot first.
+
+Use this order:
+
+1. Read the first errors in the owning module. Treat later implicit-`any` errors in tests,
+   components, or downstream callers as cascade noise until the first module-level errors are gone.
+2. Keep existing Convex call style: call direct generated refs such as `internal.files_nodes.get_by_path`.
+   Do not add new `FunctionReference` aliases, grouped ref objects, or module-specific ref exports unless
+   the surrounding code already uses that pattern.
+3. If TypeScript names a local value in TS7022, annotate that value directly. Prefer existing result
+   types for shared query results and simple concrete types for local collections. A local annotation is
+   enough; do not also cast the awaited expression unless the value is inline or otherwise has no local
+   annotation to carry the type:
+
+```ts
+const entry: files_nodes_get_by_path_Result =
+	appFileNodePath === "/"
+		? null
+		: await ctx.runQuery(internal.files_nodes.get_by_path, {
+				workspaceId,
+				projectId,
+				path: appFileNodePath,
+			});
+
+const lines: string[] = condition ? [path] : ["0 matches."];
+```
+
+4. Re-run the focused lint/type check after grounding those locals. Many TS7023/TS7024 errors on the
+   enclosing function disappear once the shared query result, ternary array, accumulator, or promise
+   result that TypeScript named is explicitly grounded.
+5. Use a broader function return annotation only after local annotations fail, and explain why the
+   boundary is needed. Prefer local annotations over annotating command factory returns or callback
+   parameters.
+
 ## Prefer `doc(app_convex_schema, "...")` for DB document shapes
 
 When a Convex function returns documents fetched from `ctx.db` (or objects that embed full documents), **avoid re-defining the whole schema with `v.object({...})`**.
@@ -489,7 +527,7 @@ See `files_nodes.search_paths_paginated` for a live example.
 
 `.filter()` is never index-backed: the query scans every doc the index range yields and drops non-matches one by one, exactly like filtering in JS afterwards. What differs is the pagination accounting (verified live against a dev deployment):
 
-- **`.filter()` before `.paginate()`**: `numItems` counts docs that *pass* the filter. The scan continues past non-matching docs until the page fills, the range ends, or the scan budget runs out (`maximumRowsRead` / `maximumBytesRead` in `paginationOptsValidator`, with server-side defaults). Pages come back full — but at the budget a page can still be short or even empty with `isDone: false` and `pageStatus: "SplitRequired"`. A selective filter over a big table can scan up to the whole budget to fill one page.
+- **`.filter()` before `.paginate()`**: `numItems` counts docs that _pass_ the filter. The scan continues past non-matching docs until the page fills, the range ends, or the scan budget runs out (`maximumRowsRead` / `maximumBytesRead` in `paginationOptsValidator`, with server-side defaults). Pages come back full — but at the budget a page can still be short or even empty with `isDone: false` and `pageStatus: "SplitRequired"`. A selective filter over a big table can scan up to the whole budget to fill one page.
 - **JS post-filter after `.paginate()`**: paginate reads exactly `numItems` docs, then survivors are dropped, so pages thin — possibly to zero — while `isDone` stays false. Per-call reads stay flat and limited.
 
 Rules that follow:

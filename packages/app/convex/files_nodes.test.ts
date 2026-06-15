@@ -3,7 +3,12 @@ import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
-import { files_line_range_from_text, files_tail_lines_from_text, files_grep_lines } from "./files_nodes.ts";
+import {
+	files_line_range_from_text,
+	files_tail_lines_from_text,
+	files_grep_lines,
+	files_grep_lines_extended,
+} from "./files_nodes.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import { math_clamp } from "../shared/shared-utils.ts";
 import { minimatch } from "minimatch";
@@ -3943,84 +3948,177 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	expect(staleResult.usable).toBe(false);
 });
 
-test("grep_committed_file_chunks streams every chunk: equals the full-text oracle, caps matches, spans chunk boundaries", async () => {
+test("grep_app_file queries committed and pending chunks and returns null for unreadable chunk gaps", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
 		external_id: db.userId,
-		name: "Grep User",
-		email: "grep-user@example.com",
+		name: "Query Grep User",
+		email: "query-grep-user@example.com",
 	});
 	const r2Writes = test_setup_r2_capture();
 
-	// 150 matching paragraphs (> the 100-match cap) plus one paragraph that is a single line long
-	// enough to be force-split across chunks — a match inside it only resolves if the streaming scan
-	// reassembles the line across the boundary via `carry`.
-	const manyLines = Array.from({ length: 150 }, (_, i) => `alpha needletoken row ${i + 1} beta`);
-	const boundaryLine = `${"x".repeat(1500)} BOUNDARYNEEDLE ${"y".repeat(700)}`;
-	const markdown = `# Grep Doc\n\n${manyLines.join("\n\n")}\n\n${boundaryLine}`;
-
-	const nodeId = await test_materialize_markdown_file(t, asUser, db, "/grep.md", markdown);
+	const path = "/grep-query.md";
+	const committedMarkdown = "intro context\ncommittedneedle one\nmiddle\ncommittedneedle two\n";
+	const nodeId = await test_materialize_markdown_file(t, asUser, db, path, committedMarkdown);
 	const committed = await test_read_committed_markdown(t, nodeId, r2Writes);
-	if (committed === undefined) throw new Error("Expected committed markdown in R2");
+	if (committed === undefined) throw new Error("Expected committed markdown");
 
-	const chunkCount = await t.run(
-		async (ctx) =>
-			(
-				await ctx.db
-					.query("files_markdown_chunks")
-					.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
-						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", nodeId),
-					)
-					.collect()
-			).length,
+	const grepArgs = {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		fileNodeId: nodeId,
+	};
+
+	const committedGrep = await asUser.query(internal.files_nodes.grep_app_file, {
+		...grepArgs,
+		pattern: "committedneedle",
+		ignoreCase: false,
+		invert: false,
+		before: 0,
+		after: 0,
+	});
+	expect(committedGrep).not.toBeNull();
+	if (!committedGrep) throw new Error("expected committed grep");
+	expect(committedGrep.lines.map(({ lineNumber, line }) => ({ lineNumber, line }))).toEqual(
+		files_grep_lines(committed, "committedneedle", false, 100).matches,
 	);
-	expect(chunkCount).toBeGreaterThan(1);
+	expect(committedGrep.scanTruncated).toBe(false);
 
-	const grep = (pattern: string, ignoreCase: boolean) =>
-		asUser.query(internal.files_nodes.grep_committed_file_chunks, {
-			workspaceId: db.workspaceId,
-			projectId: db.projectId,
-			userId: db.userId,
-			path: "/grep.md",
-			pattern,
-			ignoreCase,
-		});
+	const committedScan = await asUser.query(internal.files_nodes.grep_app_file, {
+		...grepArgs,
+		pattern: "committedneedle",
+		ignoreCase: false,
+		invert: false,
+		before: 1,
+		after: 1,
+	});
+	const committedScanOracle = files_grep_lines_extended(committed, "committedneedle", {
+		ignoreCase: false,
+		invert: false,
+		before: 1,
+		after: 1,
+		maxSelected: 100,
+	});
+	expect(committedScan).not.toBeNull();
+	if (!committedScan) throw new Error("expected committed grep scan");
+	expect(committedScan.lines).toEqual(committedScanOracle.lines);
+	expect(committedScan.selectedCount).toBe(committedScanOracle.selectedCount);
+	expect(committedScan.scanTruncated).toBe(false);
 
-	// > 100 matches: capped at the match cap and flagged truncated, identical to the full-text oracle.
-	const manyOracle = files_grep_lines(committed, "needletoken", false, 100);
-	expect(manyOracle.truncated).toBe(true); // guard: the doc really has more than 100 matches
-	const many = await grep("needletoken", false);
-	expect(many.usable).toBe(true);
-	if (!many.usable) throw new Error("expected usable");
-	expect(many.matches).toEqual(manyOracle.matches);
-	expect(many.matches.length).toBe(100);
-	expect(many.scanTruncated).toBe(manyOracle.truncated);
+	const cappedOutputMarkdown = Array.from({ length: 12 }, (_, groupIndex) =>
+		[
+			...Array.from({ length: 25 }, (_, lineIndex) => `group-${groupIndex + 1}-before-${lineIndex + 1}`),
+			`outputneedle-${String(groupIndex + 1).padStart(2, "0")}`,
+			...Array.from({ length: 25 }, (_, lineIndex) => `group-${groupIndex + 1}-after-${lineIndex + 1}`),
+		].join("\n"),
+	).join("\n");
+	const cappedOutputNodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		"/grep-capped-output.md",
+		cappedOutputMarkdown,
+	);
+	const cappedContextScan = await asUser.query(internal.files_nodes.grep_app_file, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		fileNodeId: cappedOutputNodeId,
+		pattern: "outputneedle-01",
+		ignoreCase: false,
+		invert: false,
+		before: 100,
+		after: 100,
+	});
+	expect(cappedContextScan).not.toBeNull();
+	if (!cappedContextScan) throw new Error("expected capped context scan");
+	expect(cappedContextScan.lines.map((line) => line.lineNumber)).toEqual(
+		Array.from({ length: 41 }, (_, index) => index + 6),
+	);
+	expect(cappedContextScan.scanTruncated).toBe(true);
 
-	// A match inside the boundary-spanning long line is found (carry reassembles it across chunks).
-	const boundaryOracle = files_grep_lines(committed, "BOUNDARYNEEDLE", false, 100);
-	expect(boundaryOracle.matches.length).toBe(1); // guard
-	const boundary = await grep("BOUNDARYNEEDLE", false);
-	expect(boundary.usable).toBe(true);
-	if (!boundary.usable) throw new Error("expected usable");
-	expect(boundary.matches).toEqual(boundaryOracle.matches);
-	expect(boundary.scanTruncated).toBe(false);
+	const cappedOutputScan = await asUser.query(internal.files_nodes.grep_app_file, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		fileNodeId: cappedOutputNodeId,
+		pattern: "outputneedle",
+		ignoreCase: false,
+		invert: false,
+		before: 20,
+		after: 20,
+	});
+	expect(cappedOutputScan).not.toBeNull();
+	if (!cappedOutputScan) throw new Error("expected capped output scan");
+	expect(cappedOutputScan.lines.length).toBe(200);
+	expect(cappedOutputScan.scanTruncated).toBe(true);
 
-	// Case-insensitive matches the oracle.
-	const ciOracle = files_grep_lines(committed, "NEEDLETOKEN", true, 100);
-	const ci = await grep("NEEDLETOKEN", true);
-	expect(ci.usable).toBe(true);
-	if (!ci.usable) throw new Error("expected usable");
-	expect(ci.matches).toEqual(ciOracle.matches);
+	const pendingMarkdown = "pending context\npendingneedle only in the pending version\n";
+	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		nodeId,
+		unstagedMarkdown: pendingMarkdown,
+	});
+	if (pending._nay) throw new Error(pending._nay.message);
 
-	// No match: empty, not truncated.
-	const miss = await grep("zzz-absent-token-zzz", false);
-	expect(miss.usable).toBe(true);
-	if (!miss.usable) throw new Error("expected usable");
-	expect(miss.matches).toEqual([]);
-	expect(miss.scanTruncated).toBe(false);
+	const pendingGrep = await asUser.query(internal.files_nodes.grep_app_file, {
+		...grepArgs,
+		pattern: "pendingneedle",
+		ignoreCase: false,
+		invert: false,
+		before: 0,
+		after: 0,
+	});
+	expect(pendingGrep).not.toBeNull();
+	if (!pendingGrep) throw new Error("expected pending grep");
+	expect(pendingGrep.lines.map(({ lineNumber, line }) => ({ lineNumber, line }))).toEqual(
+		files_grep_lines(pendingMarkdown, "pendingneedle", false, 100).matches,
+	);
+
+	const staleCommittedGrep = await asUser.query(internal.files_nodes.grep_app_file, {
+		...grepArgs,
+		pattern: "committedneedle",
+		ignoreCase: false,
+		invert: false,
+		before: 0,
+		after: 0,
+	});
+	expect(staleCommittedGrep).not.toBeNull();
+	if (!staleCommittedGrep) throw new Error("expected pending grep view");
+	expect(staleCommittedGrep.lines).toEqual([]);
+
+	await t.run(async (ctx) => {
+		const chunks = await ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", cappedOutputNodeId),
+			)
+			.collect();
+		const secondChunk = chunks[1];
+		if (!secondChunk) {
+			throw new Error("Expected more than one chunk");
+		}
+		await ctx.db.patch("files_markdown_chunks", secondChunk._id, { startIndex: secondChunk.startIndex + 1 });
+	});
+
+	const brokenGrep = await asUser.query(internal.files_nodes.grep_app_file, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		fileNodeId: cappedOutputNodeId,
+		pattern: "outputneedle",
+		ignoreCase: false,
+		invert: false,
+		before: 0,
+		after: 0,
+	});
+	expect(brokenGrep).toBeNull();
 });
 
 test("file_stats stay fresh after an edit: re-materialization patches the same row in place", async () => {
