@@ -491,6 +491,7 @@ Every evaluation pass should report:
 ## Durable Notes
 
 - `search` is full-text content search: pass one distinctive word or a few plain terms from the document body. The text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. It is implemented with Convex full-text search, but it is not regex/glob/exact grep or path/name search.
+- `grep` is Markdown/file-representation substring search. For explicit regex over rendered plain-text chunks, use `textgrep [-i] PATTERN <file>` for one app file or `textgrep --path <folder> PATTERN` for a bounded folder/project scan.
 - `find --extension md -type f` is exact indexed extension search.
 - Simple `find -name '*.md'` and `find <dir>/*.md` are recovery syntax for extension search only, not general glob support.
 - General glob and regex behavior should stay unsupported unless they map to a DB-backed query.

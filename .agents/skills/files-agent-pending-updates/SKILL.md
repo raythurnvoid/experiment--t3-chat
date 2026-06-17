@@ -36,6 +36,7 @@ Main table in `packages/app/convex/schema.ts`:
   - `baseYjsUpdate`
   - `stagedBranchYjsUpdate`
   - `unstagedBranchYjsUpdate`
+  - `size` (UTF-8 byte size of the current `unstaged` Markdown)
   - `updatedAt`
 
 Search chunk table (materialized from the `unstaged` branch Markdown, used only by full-text search):
@@ -130,6 +131,7 @@ Important behavior:
 - Public actions/mutations are rate-limited after membership validation and before writes.
 - Saves that push a live Yjs diff must pass the billing credit gate and emit one `file_save` usage event. The billing event name is intentionally unchanged for now to avoid a separate billing taxonomy migration.
 - Every pending row lifecycle path maintains `files_pending_updates_chunks` in the same mutation: row insert chunks the `unstaged` Markdown with the shared `files_chunk_markdown` chunker, patches re-chunk only when the unstaged content actually changed (staged-only changes like `Accept all` skip re-chunking), and row deletion (collapse, full save, expiry, data deletion) deletes the chunks.
+- Pending row writes also store `size` from the same current `unstaged` Markdown whenever the unstaged branch is created or replaced. Staged-only changes preserve the existing size.
 - A chunking failure never fails the row write: the stale chunks are already deleted, the failure is logged, and search just misses that file until the next upsert (its committed chunks stay hidden).
 
 # Client Responsibilities

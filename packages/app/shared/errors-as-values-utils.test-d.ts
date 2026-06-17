@@ -1,5 +1,5 @@
 import { expectTypeOf, test } from "vitest";
-import { AbortReason, Result, Result_all } from "./errors-as-values-utils.ts";
+import { AbortReason, Result, Result_all, Result_try_async } from "./errors-as-values-utils.ts";
 
 // TypeScript native type utils tests
 test("Be able to extract _nay from Result", () => {
@@ -87,4 +87,15 @@ test("Result_all infers tuple _yay for mixed values", () => {
 	expectTypeOf(yjsLastSequenceId).toEqualTypeOf<"yjs_last_sequence_id">();
 	expectTypeOf(contentAssetId).toEqualTypeOf<"content_asset_id">();
 	expectTypeOf(upsertChunksYay).toEqualTypeOf<null>();
+});
+
+test("Result_try_async narrows to _yay after checking _nay", async () => {
+	const checkoutSessionResult = await Result_try_async(async () => ({ url: "https://example.com/checkout" }));
+
+	if (checkoutSessionResult._nay) {
+		return;
+	}
+
+	expectTypeOf(checkoutSessionResult._yay).toEqualTypeOf<{ url: string }>();
+	expectTypeOf(checkoutSessionResult._yay.url).toBeString();
 });

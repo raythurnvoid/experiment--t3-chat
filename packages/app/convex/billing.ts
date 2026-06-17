@@ -1016,12 +1016,8 @@ export const generate_checkout_link = action({
 		if (checkoutSessionResult._nay) {
 			return Result({ _nay: { message: "Failed to create a checkout link", cause: checkoutSessionResult._nay } });
 		}
-		if (!checkoutSessionResult._yay) {
-			return Result({ _nay: { message: "Failed to create a checkout link" } });
-		}
-		const checkoutSession = checkoutSessionResult._yay;
 
-		let url = checkoutSession.url;
+		let url = checkoutSessionResult._yay.url;
 		if (args.locale) {
 			const localeUrl = new URL(url);
 			localeUrl.searchParams.set("locale", args.locale);
@@ -1479,10 +1475,7 @@ async function action_change_current_subscription_product(
 	},
 ) {
 	const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: args.userId });
-	if (
-		!currentSubscription ||
-		(currentSubscription.status !== "active" && currentSubscription.status !== "trialing")
-	) {
+	if (!currentSubscription || (currentSubscription.status !== "active" && currentSubscription.status !== "trialing")) {
 		return Result({ _nay: { message: "No active subscription found" } });
 	}
 
@@ -1494,7 +1487,8 @@ async function action_change_current_subscription_product(
 		return Result({ _nay: { message: "You're already on this plan" } });
 	}
 
-	const currentBillingProduct = billing_PRODUCTS[currentSubscription.product.name as keyof typeof billing_PRODUCTS] ?? null;
+	const currentBillingProduct =
+		billing_PRODUCTS[currentSubscription.product.name as keyof typeof billing_PRODUCTS] ?? null;
 	const targetBillingProduct = billing_PRODUCTS[args.targetProduct.name as keyof typeof billing_PRODUCTS] ?? null;
 	if (!currentBillingProduct || !targetBillingProduct) {
 		return Result({ _nay: { message: "Unsupported plan change" } });

@@ -9,7 +9,7 @@ import { internal } from "../convex/_generated/api.js";
 import { files_READ_RANGE_MAX_LINES } from "../convex/files_nodes.ts";
 import { path_name_of, server_path_normalize, server_path_parent_of } from "./server-utils.ts";
 import { minimatch } from "minimatch";
-import { files_get_normalized_node_path_segments } from "./files.ts";
+import { files_ROOT_ID, files_get_normalized_node_path_segments } from "./files.ts";
 
 /**
  * Advanced replace utility mirroring OpenCode's edit replacer pipeline.
@@ -576,25 +576,45 @@ export function ai_chat_tool_create_read_file(
 				// Try to get suggestions for similar paths
 				const parentPath = server_path_parent_of(normalizedPath);
 				if (parentPath) {
-					const siblingPaths = await ctx.runQuery(internal.files_nodes.read_dir, {
-						workspaceId: ctxData.workspaceId,
-						projectId: ctxData.projectId,
-						path: parentPath,
-					});
+					const parentNode =
+						parentPath === "/"
+							? null
+							: await ctx.runQuery(internal.files_nodes.get_by_path, {
+									workspaceId: ctxData.workspaceId,
+									projectId: ctxData.projectId,
+									path: parentPath,
+								});
+					const parentId = parentPath === "/" ? files_ROOT_ID : parentNode?.kind === "folder" ? parentNode._id : null;
 
 					const fileName = path_name_of(normalizedPath);
-					const suggestions = siblingPaths
-						.filter(
-							(name) =>
-								name.trim() !== "" &&
-								(name.toLowerCase().includes(fileName.toLowerCase()) ||
-									fileName.toLowerCase().includes(name.toLowerCase())),
-						)
-						.map((name) => {
-							const trimmedName = name.trim();
-							return parentPath === "/" ? `/${trimmedName}` : `${parentPath}/${trimmedName}`;
-						})
-						.slice(0, 3);
+					const suggestions: string[] = [];
+					if (parentId) {
+						const siblings = await ctx.runQuery(internal.files_nodes.list_children, {
+							workspaceId: ctxData.workspaceId,
+							projectId: ctxData.projectId,
+							parentId,
+							orderBy: "name",
+							order: "asc",
+							cursor: null,
+							numItems: 200,
+						});
+
+						suggestions.push(
+							...siblings.items
+								.map((item) => item.name)
+								.filter(
+									(name) =>
+										name.trim() !== "" &&
+										(name.toLowerCase().includes(fileName.toLowerCase()) ||
+											fileName.toLowerCase().includes(name.toLowerCase())),
+								)
+								.map((name) => {
+									const trimmedName = name.trim();
+									return parentPath === "/" ? `/${trimmedName}` : `${parentPath}/${trimmedName}`;
+								})
+								.slice(0, 3),
+						);
+					}
 
 					if (suggestions.length > 0) {
 						return {
@@ -983,15 +1003,17 @@ export function ai_chat_tool_create_bash(
 			Shell pathname expansion is disabled. General app-file glob operands such as src/**/*.ts, foo?.txt, and [abc].md are unsupported; simple find patterns like *.md are converted to indexed extension search.
 			ls --limit and find --limit are app-file pagination commands. Relative paths resolve against the current working directory.
 			Content-vs-path rule: use search for text inside files, and use find only for path/name discovery. Plain requests like "search for X with limit N" mean content search, so run search --limit N X. If the user says "search for the X file", "find the X file", "file named X", or "path/name contains X", use find. If the user says "search inside <folder> for X", "where does X appear", or "files mention X", run search --path <folder> X or search X; do not substitute find --path-query.
+			For search --path, the same app-root path rule applies: pass ${currentProjectPath}/folder or relative folder, never raw /folder.
+			When a content-search request already names a folder, do not run ls first to verify that folder; run search --path <folder> <content terms> directly and let search report missing or invalid scopes.
 			For recursive grep requests over an app folder, the first Bash command should be search --path <folder> <content terms>; do not run ls, native rg, or multi-file grep first.
 			When listing the current directory, prefer ls --limit N over ls --limit N <current-cwd>. Do not restate the current cwd as a path argument just for certainty.
 			Use ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...] for app listings. Bare ls --limit N lists the current directory. --cursor continues one listing target only; when asked to continue, run the printed Next page command as the next Bash call and do not invent --next-page. Listings are paginated in small pages; raising --limit past its cap (20 for ls/find) returns no more rows — page through with the printed Next page command instead. ls -t (newest first) and ls -rt (oldest first) without PATH list the whole project ordered by update time; with PATH they list that directory's immediate children by update time. For recent immediate children after cd into a folder, use ls -t --limit N .; bare ls -t is still project-wide. ls -Rt PATH is unsupported.
 			ls -R lists a paginated subtree as full app shell paths; when the user asks for tree-shaped output, use tree, not ls -R. ls -d lists the target entry itself and wins over -R; ls -l uses app metadata, not POSIX permissions, owners, groups, inodes, blocks, symlinks, or real sizes; stat reports the same app metadata, so its Access/owner/group fields are placeholders, not real POSIX values. ls -l and stat sizes are committed asset sizes; readers such as cat/head/tail/wc serve the current user's pending write_file/edit_file content, so byte counts can differ from stat while edits are pending. Unsupported sort/filter flags still fail.
 			Use find -name QUERY or find --path-query QUERY only for DB-backed path/name word search; find -name is case-insensitive like -iname. Prefer --path-query QUERY for natural "path/name contains QUERY" requests; pass a plain token such as readme, not *readme*. For regex path requests against app files, say regex is unsupported and use token search when a plain token is obvious; do not summarize successful --path-query output as native glob/regex syntax. Use find <dir> -maxdepth 1 -name QUERY for DB-backed immediate-child path search under one directory. Use find <path> --extension md -type f for exact indexed extension search; simple find -name '*.md' and find <dir>/*.md are accepted as extension-search recovery, not general glob support. Use find <path> --limit N [--cursor CURSOR] for subtree pages, and find --prefix <prefix> --limit N [--cursor CURSOR] only for raw startsWith path discovery; unlike subtree mode, prefix mode may match sibling prefixes such as /docs-archive. find searches app paths/names only, not file content. When asked for app files under a folder, include -type f; when asked for folders, include -type d. find -maxdepth N and find -mindepth N filter non-search app subtree results by depth. find -type f and find -type d restrict app results to files or folders. General glob/regex patterns and GNU find extensions such as -printf, -mtime, -newer, -exec, and -ok are not supported for app paths; omit them there. Native find syntax can be used for /tmp paths.
 			Use search [--limit N] [--cursor CURSOR] <content terms...> for full-text content search across Markdown/text content. Pass one distinctive word or a few plain terms that should appear in the document body; the text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. It overlays the current user's pending write_file/edit_file unstaged changes before returning results. It is implemented with Convex full-text search, but it is not regex, glob, path/name search, or exact grep. For requests like "where does X appear" or "which files mention X", run search first; do not substitute find, which only searches paths/names. For recursive grep, grep -R, or rg wording over an app folder, do not try native rg or multi-file grep first; run search --path <folder> <content terms> directly. Scope to one folder with search --path <folder> <content terms...> when useful, but broad folder scopes with common terms can be heavier. Raising --limit past 100 has no effect; page with the printed Next page command. If cwd is inside the app tree, bare search scopes to that cwd; pass a folder via --path, not as a positional operand, and do not use search as a pipeline filter.
-			Use exact app paths with cat/head/tail/wc/stat; these readers fetch at most 10 app files per command — to READ specific known files, cat them in batches of 10 or fewer across multiple commands; to FIND which files mention something, use search (it returns matching snippets, not whole files). The 10-file cap is a per-command batch limit, not a total ceiling. Large files are not read inline: a single cat shows a bounded first page (with a footer telling you how to page on), and a multi-file cat refuses when any file is too large to inline. Read a large file in bounded pages with head -n N (first lines; prints the next sed -n page command to continue), sed -n 'A,Bp' (any line range), or tail -n N (last lines) — up to ${files_READ_RANGE_MAX_LINES} lines per read; wc reports line/word/byte/character counts (use wc -m for characters) so you know its size first (line/word/character counts are lower bounds for files beyond the scan window); wc accepts multiple files (per-file counts plus a total) and does not refuse a large member. Use search to find content across files. Pipelines with sed/awk/sort/uniq/cut work on cat output. Do NOT use | grep or | head as pipeline filters on app-file content — they do not scan app files through a pipe; use search for content filtering and head/tail with a direct path operand instead.
-			To search content across files use search (or search --path <folder> for one folder); to find lines in a SINGLE file use grep [-i] PATTERN <file> (substring match, prints lineNumber:line; also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context). Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search, but complex or multi-file grep forms are not exact recursive grep; prefer search --path. Use tree [PATH] [--limit N] [--cursor CURSOR] for paginated app tree shape; unsupported native tree flags fail for app paths.
-			Keep commands simple: avoid strict-mode boilerplate such as set -euo pipefail because pipefail is unsupported, comments in command strings, and process substitution. For multi-command inspection or eval checks, do not use set -e or hide stderr with 2>/dev/null; later commands and visible stderr should still be observed. Only summarize actual Bash stdout/stderr; if stdout is empty or a command failed, say that instead of inferring likely filesystem contents. Do not work around app read-only write, move, or delete requests by copying app files to /tmp unless the user asked for a scratch copy.
+			Use exact app paths with cat [-n] [--] [FILE...], head, tail, wc, and stat; these readers fetch at most 10 app files per command — to READ specific known files, cat them in batches of 10 or fewer across multiple commands; to FIND which files mention something, use search (it returns matching snippets, not whole files). The 10-file cap is a per-command batch limit, not a total ceiling. cat unreadable-file advisories are stderr, not file content, so do not parse them as content. Large files are not read inline: a single cat shows a bounded first page (with a footer telling you how to page on), and a multi-file cat refuses when any file is too large to inline. Read a large file in bounded pages with head -n N (first lines; prints the next sed -n page command to continue), sed -n 'A,Bp' (any line range), or tail -n N (last lines) — up to ${files_READ_RANGE_MAX_LINES} lines per read; wc reports line/word/byte/character counts (use wc -m for characters) so you know its size first (line/word/character counts are lower bounds for files beyond the scan window); wc accepts multiple files (per-file counts plus a total) and does not refuse a large member. Use search to find content across files. Pipelines with sed/awk/sort/uniq/cut/grep/head process already emitted text, but direct app-aware grep/head path operands are preferred for app files.
+			To search content across files use search (or search --path <folder> for one folder); to find lines in a SINGLE file use grep [-n] [-i] PATTERN <file> (substring match; -n prints lineNumber:line, and without -n it prints raw matching lines; also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context). For explicit regex over rendered plain-text chunks, use textgrep [-i] PATTERN <file> for one app file or textgrep --path <folder> PATTERN for a bounded folder/project scan. textgrep is regex-only, plain-text-only, and app-file-only; grep remains Markdown/file-representation substring search. Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search, but complex or multi-file grep forms are not exact recursive grep; prefer search --path. Use tree [PATH] [--limit N] [--cursor CURSOR] for paginated app tree shape; unsupported native tree flags fail for app paths.
+			Keep commands simple: avoid strict-mode boilerplate such as set -euo pipefail because pipefail is unsupported, comments in command strings, and process substitution. For multi-command inspection or eval checks, do not use set -e or hide stderr with 2>/dev/null; later commands and visible stderr should still be observed. Only summarize actual Bash stdout/stderr; the blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents. Do not work around app read-only write, move, or delete requests by copying app files to /tmp unless the user asked for a scratch copy.
 			App file tree mkdir is available only when this tool is configured for Agent mode; /tmp scratch does not create app project folders.
 			File writes, redirects, moves, and deletes under ${currentProjectPath} are not supported shell operations. rm, mv, and ln are not available for app files, and cp cannot write into the app tree; cp <app-file> /tmp/<name> is allowed as a durable per-thread scratch copy. Persistent Markdown edits belong in write_file or edit_file with app paths such as /docs/readme.md. If a user asks to delete or move a file, explain that these are not available as shell operations.
 			Convert bash paths under ${currentProjectPath} to app paths for write_file/edit_file by removing the current project path prefix. Preserve the full remaining suffix: ${currentProjectPath}/folder/README.md becomes /folder/README.md, never /README.md.`,

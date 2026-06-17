@@ -263,6 +263,7 @@ async function data_deletion_test_seed_project_content_bulk(
 				baseYjsUpdate: new ArrayBuffer(0),
 				stagedBranchYjsUpdate: new ArrayBuffer(0),
 				unstagedBranchYjsUpdate: new ArrayBuffer(0),
+				size: files_get_utf8_byte_size(`# pending ${i}`),
 				updatedAt: pendingUpdateUpdatedAt,
 			});
 			await ctx.db.insert("files_pending_updates_chunks", {
@@ -1217,6 +1218,7 @@ describe("process_user_deletion_request", () => {
 				baseYjsUpdate: new ArrayBuffer(0),
 				stagedBranchYjsUpdate: new ArrayBuffer(0),
 				unstagedBranchYjsUpdate: new ArrayBuffer(0),
+				size: 0,
 				updatedAt: Date.now(),
 			});
 

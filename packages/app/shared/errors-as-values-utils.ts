@@ -95,23 +95,15 @@ export class AbortReason extends Error {
  * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
  * For asynchronous functions, use `Result.tryAsync` instead.
  */
-export function Result_try<T>(fn: () => T): Result<
-	| { _yay: T }
-	| { _nay: null }
-	| {
-			_nay: {
-				name?: Result_nay_name;
-				message?: string;
-				cause?: unknown;
-				data?: unknown;
-				stack?: string;
-			};
-	  }
-> {
+export function Result_try<T>(fn: () => T) {
 	try {
 		return Result({ _yay: fn() });
-	} catch (error: any) {
-		return Result({ _nay: "_nay" in error ? error._nay : Result_nay_from(error) });
+	} catch (error: unknown) {
+		const nay =
+			error && typeof error === "object" && "_nay" in error
+				? (error as { _nay: ReturnType<typeof Result_nay_from> })._nay
+				: Result_nay_from(error);
+		return Result({ _nay: nay ?? { message: "unknown" } });
 	}
 }
 
@@ -119,27 +111,17 @@ export function Result_try<T>(fn: () => T): Result<
  * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
  * For synchronous functions, use `Result.try` instead.
  */
-export function Result_try_async<T>(fn: () => Promise<T>): Promise<
-	Result<
-		| { _yay: T }
-		| { _nay: null }
-		| {
-				_nay: {
-					name?: Result_nay_name;
-					message?: string;
-					cause?: unknown;
-					data?: unknown;
-					stack?: string;
-				};
-		  }
-	>
-> {
+export function Result_try_async<T>(fn: () => Promise<T>) {
 	return fn()
 		.then((value) => {
 			return Result({ _yay: value });
 		})
 		.catch((error) => {
-			return Result({ _nay: "_nay" in error ? error._nay : Result_nay_from(error) });
+			const nay =
+				error && typeof error === "object" && "_nay" in error
+					? (error as { _nay: ReturnType<typeof Result_nay_from> })._nay
+					: Result_nay_from(error);
+			return Result({ _nay: nay ?? { message: "unknown" } });
 		});
 }
 
@@ -147,27 +129,17 @@ export function Result_try_async<T>(fn: () => Promise<T>): Promise<
  * This function assumes that only `Error`s and `BadResult`s are thrown. This may not always be the case.
  * For cases where you have a function that returns a promise, use `Result.tryAsync` instead.
  */
-export function Result_try_promise<T>(promise: Promise<T>): Promise<
-	Result<
-		| { _yay: T }
-		| { _nay: null }
-		| {
-				_nay: {
-					name?: Result_nay_name;
-					message?: string;
-					cause?: unknown;
-					data?: unknown;
-					stack?: string;
-				};
-		  }
-	>
-> {
+export function Result_try_promise<T>(promise: Promise<T>) {
 	return promise
 		.then((value) => {
 			return Result({ _yay: value });
 		})
 		.catch((error) => {
-			return Result({ _nay: "_nay" in error ? error._nay : Result_nay_from(error) });
+			const nay =
+				error && typeof error === "object" && "_nay" in error
+					? (error as { _nay: ReturnType<typeof Result_nay_from> })._nay
+					: Result_nay_from(error);
+			return Result({ _nay: nay ?? { message: "unknown" } });
 		});
 }
 

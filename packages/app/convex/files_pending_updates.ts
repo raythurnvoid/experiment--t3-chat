@@ -8,7 +8,7 @@ import {
 	type MutationCtx,
 } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel.js";
-import type { RegisteredMutation } from "convex/server";
+import type { RegisteredMutation, RegisteredQuery } from "convex/server";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import type { app_convex_Doc } from "../src/lib/app-convex-client.ts";
@@ -37,6 +37,7 @@ import {
 	files_u8_equals,
 } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
+import { files_get_utf8_byte_size } from "../shared/files.ts";
 import { r2_fetch_object_from_bucket } from "./r2.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
@@ -141,6 +142,33 @@ async function files_pending_update_upsert_last_sequence_saved(
 		updatedAt: args.updatedAt,
 	});
 }
+
+export const get_by_file_node = internalQuery({
+	args: {
+		workspaceId: v.string(),
+		projectId: v.string(),
+		userId: v.id("users"),
+		fileNodeId: v.id("files_nodes"),
+	},
+	returns: v.union(doc(app_convex_schema, "files_pending_updates"), v.null()),
+	handler: async (ctx, args) => {
+		return await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_workspace_project_user_fileNode", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("userId", args.userId)
+					.eq("fileNodeId", args.fileNodeId),
+			)
+			.first();
+	},
+});
+
+export type files_pending_updates_get_by_file_node_Result =
+	typeof get_by_file_node extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 async function files_pending_update_db_delete_chunks(
 	ctx: MutationCtx,
@@ -427,6 +455,7 @@ async function files_pending_update_upsert_branch_docs(
 	}
 
 	const now = Date.now();
+	const unstagedSize = files_get_utf8_byte_size(args.unstagedMarkdown);
 
 	if (!args.existingPendingUpdate) {
 		const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
@@ -438,6 +467,7 @@ async function files_pending_update_upsert_branch_docs(
 			baseYjsUpdate,
 			stagedBranchYjsUpdate,
 			unstagedBranchYjsUpdate,
+			size: unstagedSize,
 			updatedAt: now,
 		});
 		await files_db_schedule_pending_update_cleanup(ctx, {
@@ -460,6 +490,7 @@ async function files_pending_update_upsert_branch_docs(
 				baseYjsUpdate,
 				stagedBranchYjsUpdate,
 				unstagedBranchYjsUpdate,
+				...(args.unstagedBranchChanged ? { size: unstagedSize } : {}),
 				updatedAt: now,
 			}),
 			// Reset the pending update expiry so active pending work stays preserved.
@@ -856,6 +887,15 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 			});
 		}
 
+		const unstagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: unstagedBranchYjsDoc });
+		if (unstagedMarkdown._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to serialize rebased unstaged branch for pending update",
+					cause: unstagedMarkdown._nay,
+				},
+			});
+		}
 		const now = Date.now();
 		let pendingUpdateId = existingPendingUpdate?._id ?? null;
 
@@ -869,6 +909,7 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 				baseYjsUpdate: args.baseYjsUpdate,
 				stagedBranchYjsUpdate: args.stagedBranchYjsUpdate,
 				unstagedBranchYjsUpdate: args.unstagedBranchYjsUpdate,
+				size: files_get_utf8_byte_size(unstagedMarkdown._yay),
 				updatedAt: now,
 			});
 		} else {
@@ -878,6 +919,7 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 					baseYjsUpdate: args.baseYjsUpdate,
 					stagedBranchYjsUpdate: args.stagedBranchYjsUpdate,
 					unstagedBranchYjsUpdate: args.unstagedBranchYjsUpdate,
+					size: files_get_utf8_byte_size(unstagedMarkdown._yay),
 					updatedAt: now,
 				}),
 				// Refresh the expiry window from this latest doc version because rebasing
@@ -899,24 +941,15 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 
 		// Rebase rewrites the unstaged branch, so always refresh the search-only chunk rows.
 		if (pendingUpdateId) {
-			const unstagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: unstagedBranchYjsDoc });
-			if (unstagedMarkdown._nay) {
-				console.error("Failed to serialize rebased unstaged branch for pending search chunks", {
-					nay: unstagedMarkdown._nay,
-					pendingUpdateId,
-					nodeId: args.nodeId,
-				});
-			} else {
-				const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					userId: userAuth.id,
-					nodeId: args.nodeId,
-					pendingUpdateId,
-					unstagedMarkdown: unstagedMarkdown._yay,
-				});
-				files_pending_update_log_replace_chunks_nay(chunksReplaced, { pendingUpdateId, nodeId: args.nodeId });
-			}
+			const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				userId: userAuth.id,
+				nodeId: args.nodeId,
+				pendingUpdateId,
+				unstagedMarkdown: unstagedMarkdown._yay,
+			});
+			files_pending_update_log_replace_chunks_nay(chunksReplaced, { pendingUpdateId, nodeId: args.nodeId });
 		}
 
 		const [, nextPendingUpdate] = await Promise.all([
@@ -1338,6 +1371,17 @@ export const save_file_pending_update_in_db = internalMutation({
 		const nextBaseYjsUpdate = files_pending_update_encode_yjs_state_update({
 			yjsDoc: liveFileYjsDocAfterSave,
 		});
+		const unstagedMarkdownAfterRemoteDrift = remoteUpdateFromBase
+			? files_yjs_doc_get_markdown({ yjsDoc: unstagedBranchYjsDoc })
+			: null;
+		if (unstagedMarkdownAfterRemoteDrift?._nay) {
+			return Result({
+				_nay: {
+					message: "Failed to serialize unstaged branch after partial save",
+					cause: unstagedMarkdownAfterRemoteDrift._nay,
+				},
+			});
+		}
 
 		await Promise.all([
 			ctx.db.patch("files_pending_updates", pendingUpdate._id, {
@@ -1347,6 +1391,9 @@ export const save_file_pending_update_in_db = internalMutation({
 				unstagedBranchYjsUpdate: files_pending_update_encode_yjs_state_update({
 					yjsDoc: unstagedBranchYjsDoc,
 				}),
+				...(unstagedMarkdownAfterRemoteDrift
+					? { size: files_get_utf8_byte_size(unstagedMarkdownAfterRemoteDrift._yay) }
+					: {}),
 				updatedAt: now,
 			}),
 			// Partial saves must keep the pending update alive. Reset the expire of the pending update doc.
@@ -1366,28 +1413,20 @@ export const save_file_pending_update_in_db = internalMutation({
 
 		// Remote drift merged into the unstaged branch changes its content, so its search chunks
 		// must be rebuilt; without drift the unstaged content is unchanged by a partial save.
-		if (remoteUpdateFromBase) {
-			const unstagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: unstagedBranchYjsDoc });
-			if (unstagedMarkdown._nay) {
-				console.error("Failed to serialize unstaged branch after partial save for pending search chunks", {
-					nay: unstagedMarkdown._nay,
-					pendingUpdateId: pendingUpdate._id,
-					nodeId: args.nodeId,
-				});
-			} else {
-				const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					userId: user._id,
-					nodeId: args.nodeId,
-					pendingUpdateId: pendingUpdate._id,
-					unstagedMarkdown: unstagedMarkdown._yay,
-				});
-				files_pending_update_log_replace_chunks_nay(chunksReplaced, {
-					pendingUpdateId: pendingUpdate._id,
-					nodeId: args.nodeId,
-				});
-			}
+		if (unstagedMarkdownAfterRemoteDrift) {
+			const unstagedMarkdown = unstagedMarkdownAfterRemoteDrift;
+			const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				userId: user._id,
+				nodeId: args.nodeId,
+				pendingUpdateId: pendingUpdate._id,
+				unstagedMarkdown: unstagedMarkdown._yay,
+			});
+			files_pending_update_log_replace_chunks_nay(chunksReplaced, {
+				pendingUpdateId: pendingUpdate._id,
+				nodeId: args.nodeId,
+			});
 		}
 
 		return Result({

@@ -3,16 +3,8 @@ import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
-import {
-	files_line_range_from_text,
-	files_tail_lines_from_text,
-	files_grep_lines,
-	files_grep_lines_extended,
-} from "./files_nodes.ts";
+import { files_line_range_from_text, files_tail_lines_from_text } from "./files_nodes.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
-import { math_clamp } from "../shared/shared-utils.ts";
-import { minimatch } from "minimatch";
-import { server_path_normalize } from "../server/server-utils.ts";
 import {
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
@@ -107,30 +99,6 @@ describe("bounded read line helpers", () => {
 		expect(out.content.length).toBeLessThan(20000);
 	});
 
-	test("files_grep_lines matches substrings with 1-based line numbers", () => {
-		const content = "alpha beta\nGamma\ndelta alpha\n\nzeta\n";
-		// Case-sensitive substring; line numbers are 1-based; blank/non-matching lines excluded.
-		expect(files_grep_lines(content, "alpha", false, 100).matches).toEqual([
-			{ lineNumber: 1, line: "alpha beta" },
-			{ lineNumber: 3, line: "delta alpha" },
-		]);
-		// Case-insensitive.
-		expect(files_grep_lines(content, "gamma", true, 100).matches).toEqual([{ lineNumber: 2, line: "Gamma" }]);
-		// Case-sensitive miss.
-		expect(files_grep_lines(content, "gamma", false, 100).matches).toEqual([]);
-		// Empty pattern matches nothing (avoids "match everything").
-		expect(files_grep_lines(content, "", false, 100).matches).toEqual([]);
-		// maxMatches cap sets truncated.
-		const many = "x\n".repeat(10) + "\n";
-		const capped = files_grep_lines(many, "x", false, 3);
-		expect(capped.matches).toHaveLength(3);
-		expect(capped.truncated).toBe(true);
-		// Over-long matching line is display-truncated.
-		const long = files_grep_lines(`pre\n${"Z".repeat(20000)}match\n`, "match", false, 100);
-		expect(long.matches).toHaveLength(1);
-		expect(long.matches[0]!.lineNumber).toBe(2);
-		expect(long.matches[0]!.line).toContain("[line truncated to 8000 chars");
-	});
 });
 
 async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"users">) {
@@ -377,146 +345,6 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	return { ...membership, docsFolderId };
 }
 
-describe("check_bash_file_search_readiness", () => {
-	test("reports sampled stale depth, stats, and chunk scope fields", async () => {
-		const t = test_convex();
-		const membership = await t.run(async (ctx) => {
-			const membership = await test_mocks_fill_db_with.membership(ctx);
-			const folderId = await ctx.db.insert("files_nodes", {
-				...test_mocks.files.base(),
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				createdBy: membership.userId,
-				updatedBy: membership.userId,
-				parentId: files_ROOT_ID,
-				name: "docs",
-				kind: "folder",
-				path: "/docs",
-				treePath: "/docs/",
-				pathDepth: 0,
-				updatedAt: 1,
-			});
-			const fileId = await ctx.db.insert("files_nodes", {
-				...test_mocks.files.base(),
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				createdBy: membership.userId,
-				updatedBy: membership.userId,
-				parentId: folderId,
-				name: "readme.md",
-				kind: "file",
-				path: "/docs/readme.md",
-				treePath: "/docs/readme.md",
-				pathDepth: 2,
-				lowercaseExtension: "md",
-				contentType: "text/markdown;charset=utf-8",
-				updatedAt: 2,
-			});
-			const [assetId, yjsSnapshotAssetId] = await Promise.all([
-				ctx.db.insert("files_r2_assets", {
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					kind: "content",
-					r2Bucket: "test",
-					size: 9,
-					createdBy: membership.userId,
-					updatedAt: 2,
-				}),
-				ctx.db.insert("files_r2_assets", {
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					kind: "yjs_snapshot",
-					r2Bucket: "test",
-					size: 9,
-					createdBy: membership.userId,
-					updatedAt: 2,
-				}),
-			]);
-			const [yjsSnapshotId, yjsLastSequenceId] = await Promise.all([
-				ctx.db.insert("files_yjs_snapshots", {
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					fileNodeId: fileId,
-					sequence: 1,
-					assetId: yjsSnapshotAssetId,
-					createdBy: membership.userId,
-					updatedBy: membership.userId,
-					updatedAt: 2,
-				}),
-				ctx.db.insert("files_yjs_docs_last_sequences", {
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					fileNodeId: fileId,
-					lastSequence: 1,
-				}),
-			]);
-			await ctx.db.patch("files_nodes", fileId, {
-				assetId,
-				yjsSnapshotId,
-				yjsLastSequenceId,
-			});
-			const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				fileNodeId: fileId,
-				yjsSequence: 1,
-				chunkIndex: 0,
-				markdownChunk: "# Readme\n",
-				startIndex: 0,
-				endIndex: 9,
-				lineStart: 1,
-				lineEnd: 1,
-				chunkFlags: 0,
-			});
-			await ctx.db.insert("files_plain_text_chunks", {
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				fileNodeId: fileId,
-				yjsSequence: 1,
-				chunkIndex: 0,
-				path: "/stale/readme.md",
-				archiveOperationId: "stale-archive",
-				plainTextChunk: "Readme",
-				markdownChunkId,
-			});
-			return membership;
-		});
-
-		const result = await t.query(internal.files_nodes.check_bash_file_search_readiness, {
-			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
-			sampleLimit: 20,
-		});
-
-		expect(result.activeNodesWithMissingOrStalePathDepth).toContainEqual({
-			path: "/docs",
-			expectedPathDepth: 1,
-			actualPathDepth: 0,
-		});
-		expect(result.activeFilesWithMissingOrStaleStats).toContainEqual({
-			path: "/docs/readme.md",
-			reason: "missing_statsId",
-		});
-		expect(result.activeFilesWithChunkScopeIssues).toContainEqual(
-			expect.objectContaining({
-				path: "/docs/readme.md",
-				reason: "missing_or_stale_chunk_path",
-				yjsSequence: 1,
-				chunkIndex: 0,
-				chunkPath: "/stale/readme.md",
-				chunkArchiveOperationId: "stale-archive",
-			}),
-		);
-		expect(result.activeFilesWithStaleChunkScopeFields).toContainEqual(
-			expect.objectContaining({
-				path: "/docs/readme.md",
-				reason: "missing_or_stale_chunk_path",
-			}),
-		);
-		expect(result.activeFilesMissingPlainTextChunks).toEqual([]);
-	});
-});
-
 describe("enqueue_missing_plain_text_chunk_materializations", () => {
 	test("enqueues current editable files without plain text chunks and skips repeats", async () => {
 		const t = test_convex();
@@ -631,57 +459,6 @@ describe("enqueue_missing_plain_text_chunk_materializations", () => {
 			targetSequence: 0,
 		});
 		expect(db.rawFileId).toBeDefined();
-	});
-});
-
-test("list_files", async () => {
-	const t = test_convex();
-	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
-	const asUser = t.withIdentity({
-		issuer: "https://clerk.test",
-		external_id: db.userId,
-		name: "Test User",
-	});
-
-	const result_list_root = await list_dir({
-		runQuery: asUser.query,
-		workspaceId: db.workspaceId,
-		projectId: db.projectId,
-		path: "/",
-	});
-
-	expect(result_list_root.items).toHaveLength(Object.keys(db.files).length);
-
-	expect(result_list_root.items[0]).toStrictEqual({
-		path: `/${db.files.file_root_1.name}`,
-		updatedAt: db.files.file_root_1.updatedAt,
-	});
-
-	// The list must be depth-first
-	expect(result_list_root.items[1]).toStrictEqual({
-		path: `/${db.files.file_root_1.name}/${db.files.file_root_1_child_1.name}`,
-		updatedAt: db.files.file_root_1_child_1.updatedAt,
-	});
-	expect(result_list_root.items[2]).toStrictEqual({
-		path: `/${db.files.file_root_1.name}/${db.files.file_root_1_child_1.name}/${db.files.file_root_1_child_1_deep_1.name}`,
-		updatedAt: db.files.file_root_1_child_1_deep_1.updatedAt,
-	});
-
-	const result_list_file_root_1 = await list_dir({
-		runQuery: asUser.query,
-		workspaceId: db.workspaceId,
-		projectId: db.projectId,
-		path: `/${db.files.file_root_1.name}`,
-	});
-
-	expect(result_list_file_root_1.items).toHaveLength(
-		[db.files.file_root_1_child_1, db.files.file_root_1_child_1_deep_1, db.files.file_root_1_child_2].length,
-	);
-
-	// The list must be depth-first
-	expect(result_list_file_root_1.items[0]).toStrictEqual({
-		path: `/${db.files.file_root_1.name}/${db.files.file_root_1_child_1.name}`,
-		updatedAt: db.files.file_root_1_child_1.updatedAt,
 	});
 });
 
@@ -872,7 +649,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const firstPage = await asUser.query(internal.files_nodes.list_children_paginated, {
+		const firstPage = await asUser.query(internal.files_nodes.list_children, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			parentId: db.docsFolderId,
@@ -880,7 +657,7 @@ describe("paginated bash listing queries", () => {
 			cursor: null,
 			orderBy: "name",
 		});
-		const secondPage = await asUser.query(internal.files_nodes.list_children_paginated, {
+		const secondPage = await asUser.query(internal.files_nodes.list_children, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			parentId: db.docsFolderId,
@@ -906,7 +683,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const ascending = await asUser.query(internal.files_nodes.list_children_paginated, {
+		const ascending = await asUser.query(internal.files_nodes.list_children, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			parentId: db.docsFolderId,
@@ -915,7 +692,7 @@ describe("paginated bash listing queries", () => {
 			orderBy: "name",
 			order: "asc",
 		});
-		const descending = await asUser.query(internal.files_nodes.list_children_paginated, {
+		const descending = await asUser.query(internal.files_nodes.list_children, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			parentId: db.docsFolderId,
@@ -946,7 +723,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const descending = await asUser.query(internal.files_nodes.list_children_paginated, {
+		const descending = await asUser.query(internal.files_nodes.list_children, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			parentId: db.docsFolderId,
@@ -954,7 +731,7 @@ describe("paginated bash listing queries", () => {
 			cursor: null,
 			orderBy: "updatedAt",
 		});
-		const ascending = await asUser.query(internal.files_nodes.list_children_paginated, {
+		const ascending = await asUser.query(internal.files_nodes.list_children, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			parentId: db.docsFolderId,
@@ -980,14 +757,14 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const firstPage = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
+		const firstPage = await asUser.query(internal.files_nodes.list_folder_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
 			numItems: 2,
 			cursor: null,
 		});
-		const secondPage = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
+		const secondPage = await asUser.query(internal.files_nodes.list_folder_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -1015,7 +792,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const ascending = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
+		const ascending = await asUser.query(internal.files_nodes.list_folder_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -1023,7 +800,7 @@ describe("paginated bash listing queries", () => {
 			cursor: null,
 			order: "asc",
 		});
-		const descending = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
+		const descending = await asUser.query(internal.files_nodes.list_folder_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -1063,7 +840,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const filesAtDepthOne = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
+		const filesAtDepthOne = await asUser.query(internal.files_nodes.list_folder_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -1072,7 +849,7 @@ describe("paginated bash listing queries", () => {
 			kind: "file",
 			maxDepth: 1,
 		});
-		const foldersAtDepthOne = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
+		const foldersAtDepthOne = await asUser.query(internal.files_nodes.list_folder_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -1097,7 +874,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const firstPage = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
+		const firstPage = await asUser.query(internal.files_nodes.list_folder_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -1107,7 +884,7 @@ describe("paginated bash listing queries", () => {
 			cursor: null,
 			maxDepth: 1,
 		});
-		const secondPage = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
+		const secondPage = await asUser.query(internal.files_nodes.list_folder_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -1135,7 +912,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const result = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
+		const result = await asUser.query(internal.files_nodes.list_folder_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs/",
@@ -1160,7 +937,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const result = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
+		const result = await asUser.query(internal.files_nodes.list_folder_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -1184,14 +961,14 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const firstPage = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
+		const firstPage = await asUser.query(internal.files_nodes.list_folder_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs/a.md",
 			numItems: 1,
 			cursor: null,
 		});
-		const secondPage = await asUser.query(internal.files_nodes.list_folder_subtree_paginated, {
+		const secondPage = await asUser.query(internal.files_nodes.list_folder_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs/a.md",
@@ -1205,7 +982,7 @@ describe("paginated bash listing queries", () => {
 		expect(secondPage.isDone).toBe(true);
 	});
 
-	test("list_children_paginated returns project recency newest-first and paginates without gaps", async () => {
+	test("list_children returns project recency newest-first and paginates without gaps", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -1214,14 +991,14 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const desc = await asUser.query(internal.files_nodes.list_children_paginated, {
+		const desc = await asUser.query(internal.files_nodes.list_children, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			numItems: 50,
 			cursor: null,
 			orderBy: "updatedAt",
 		});
-		const asc = await asUser.query(internal.files_nodes.list_children_paginated, {
+		const asc = await asUser.query(internal.files_nodes.list_children, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			numItems: 50,
@@ -1245,7 +1022,7 @@ describe("paginated bash listing queries", () => {
 			// Explicit type: `cursor` is both an input and derived from the output, which
 			// otherwise trips TS circular inference on the query result.
 			const result: { items: Array<{ path: string }>; continueCursor: string; isDone: boolean } = await asUser.query(
-				internal.files_nodes.list_children_paginated,
+				internal.files_nodes.list_children,
 				{
 					workspaceId: db.workspaceId,
 					projectId: db.projectId,
@@ -1263,7 +1040,7 @@ describe("paginated bash listing queries", () => {
 		expect([...seen].sort()).toEqual(desc.items.map((item) => item.path).sort());
 	});
 
-	test("list_children_paginated returns empty done pages for unsupported or invalid scopes", async () => {
+	test("list_children returns empty done pages for unsupported or invalid scopes", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -1272,14 +1049,14 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const projectNameOrder = await asUser.query(internal.files_nodes.list_children_paginated, {
+		const projectNameOrder = await asUser.query(internal.files_nodes.list_children, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			numItems: 10,
 			cursor: null,
 			orderBy: "name",
 		});
-		const invalidParent = await asUser.query(internal.files_nodes.list_children_paginated, {
+		const invalidParent = await asUser.query(internal.files_nodes.list_children, {
 			workspaceId: db.workspaceId,
 			projectId: "other-project",
 			parentId: db.docsFolderId,
@@ -3051,91 +2828,6 @@ test("create_file_by_path creates active ancestors instead of reusing archived n
 	});
 });
 
-async function list_dir(args: {
-	runQuery: (ref: any, args: any) => Promise<any>;
-	workspaceId: string;
-	projectId: string;
-	path: string;
-	maxDepth?: number;
-	limit?: number;
-	include?: string;
-}): Promise<{ items: Array<{ path: string; updatedAt: number }>; metadata: { count: number; truncated: boolean } }> {
-	// Resolve the starting node id for the provided path
-	const startNodeId = await args.runQuery(internal.files_nodes.resolve_tree_node_id_from_path, {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
-		path: args.path,
-	});
-	if (!startNodeId) return { items: [], metadata: { count: 0, truncated: false } };
-
-	// Normalize base path to an absolute path string (leading slash, no trailing slash except root)
-	const basePath = server_path_normalize(args.path);
-
-	const maxDepth = args.maxDepth ? math_clamp(args.maxDepth, 0, 10) : 5;
-	const limit = args.limit ? math_clamp(args.limit, 1, 100) : 100;
-
-	const resultPaths: Array<{ path: string; updatedAt: number }> = [];
-	let truncated = false;
-
-	// Depth-first traversal using an explicit stack. Each frame carries a pagination cursor
-	// so we fetch one child at a time for the current parent, then dive deeper first.
-	const stack = [{ parentId: startNodeId, absPath: basePath, cursor: null as string | null, depth: 0 }];
-
-	while (stack.length > 0) {
-		const frame = stack.pop();
-		if (!frame) continue;
-
-		const paginatedResult = await args.runQuery(internal.files_nodes.get_file_info_for_list_dir_pagination, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			parentId: frame.parentId,
-			cursor: frame.cursor,
-		});
-
-		const child = paginatedResult.files.at(0);
-		if (!child) continue; // just for type safety
-
-		const childPath = frame.absPath === "/" ? `/${child.name}` : `${frame.absPath}/${child.name}`;
-
-		// If include pattern is provided, only add items that match the glob
-		const matchesInclude = args.include ? minimatch(childPath, args.include) : true;
-		if (matchesInclude) {
-			resultPaths.push({ path: childPath, updatedAt: child.updatedAt });
-
-			// Respect limit if provided (only counts included items)
-			if (resultPaths.length >= limit) {
-				truncated = true;
-				break;
-			}
-		}
-
-		// First, if there are more siblings for the current parent, push the parent back with updated cursor
-		// so we'll process siblings after we finish the deep dive into this child.
-		if (!paginatedResult.isDone) {
-			stack.push({
-				parentId: frame.parentId,
-				absPath: frame.absPath,
-				cursor: paginatedResult.continueCursor,
-				depth: frame.depth,
-			});
-		}
-
-		// Then, push the child to dive deeper first (pre-order/JSON.stringify-like walk)
-		const nextDepth = frame.depth + 1;
-		if (nextDepth < maxDepth) {
-			stack.push({ parentId: child.nodeId, absPath: childPath, cursor: null, depth: nextDepth });
-		}
-	}
-
-	return {
-		items: resultPaths,
-		metadata: {
-			count: resultPaths.length,
-			truncated,
-		},
-	};
-}
-
 test("N07 rename_node idempotency: same name no-op", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -3948,7 +3640,7 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	expect(staleResult.usable).toBe(false);
 });
 
-test("grep_app_file queries committed and pending chunks and returns null for unreadable chunk gaps", async () => {
+test("match_markdown_file_lines and match_plain_text_file_lines query committed and pending chunks", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -3961,7 +3653,7 @@ test("grep_app_file queries committed and pending chunks and returns null for un
 	const r2Writes = test_setup_r2_capture();
 
 	const path = "/grep-query.md";
-	const committedMarkdown = "intro context\ncommittedneedle one\nmiddle\ncommittedneedle two\n";
+	const committedMarkdown = "intro context\n**critical** alert\ncommittedneedle one\nmiddle\ncommittedneedle two\n";
 	const nodeId = await test_materialize_markdown_file(t, asUser, db, path, committedMarkdown);
 	const committed = await test_read_committed_markdown(t, nodeId, r2Writes);
 	if (committed === undefined) throw new Error("Expected committed markdown");
@@ -3973,49 +3665,95 @@ test("grep_app_file queries committed and pending chunks and returns null for un
 		fileNodeId: nodeId,
 	};
 
-	const committedGrep = await asUser.query(internal.files_nodes.grep_app_file, {
+	const committedGrep = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
 		...grepArgs,
 		pattern: "committedneedle",
 		ignoreCase: false,
+		fixedStrings: true,
 		invert: false,
 		before: 0,
 		after: 0,
 	});
 	expect(committedGrep).not.toBeNull();
 	if (!committedGrep) throw new Error("expected committed grep");
-	expect(committedGrep.lines.map(({ lineNumber, line }) => ({ lineNumber, line }))).toEqual(
-		files_grep_lines(committed, "committedneedle", false, 100).matches,
-	);
+	expect(committedGrep.lines.map(({ lineNumber, line }) => ({ lineNumber, line }))).toEqual([
+		{ lineNumber: 3, line: "committedneedle one" },
+		{ lineNumber: 5, line: "committedneedle two" },
+	]);
 	expect(committedGrep.scanTruncated).toBe(false);
 
-	const committedScan = await asUser.query(internal.files_nodes.grep_app_file, {
+	const committedRegexGrep = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
+		...grepArgs,
+		pattern: String.raw`committedneedle\s+(one|two)`,
+		ignoreCase: false,
+		fixedStrings: false,
+		invert: false,
+		before: 0,
+		after: 0,
+	});
+	expect(committedRegexGrep).not.toBeNull();
+	if (!committedRegexGrep) throw new Error("expected committed regex grep");
+	expect(committedRegexGrep.lines.map(({ lineNumber, line }) => ({ lineNumber, line }))).toEqual([
+		{ lineNumber: 3, line: "committedneedle one" },
+		{ lineNumber: 5, line: "committedneedle two" },
+	]);
+	expect(committedRegexGrep.scanTruncated).toBe(false);
+
+	const committedPlainRegex = await asUser.query(internal.files_nodes.match_plain_text_file_lines, {
+		...grepArgs,
+		pattern: String.raw`critical\s+alert`,
+		ignoreCase: false,
+	});
+	expect(committedPlainRegex).not.toBeNull();
+	if (!committedPlainRegex) throw new Error("expected committed plain-text regex grep");
+	expect(committedPlainRegex.lines).toEqual([{ lineNumber: 2, line: "critical alert", matched: true }]);
+	expect(committedPlainRegex.scanTruncated).toBe(false);
+
+	const committedScan = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
 		...grepArgs,
 		pattern: "committedneedle",
 		ignoreCase: false,
+		fixedStrings: true,
 		invert: false,
 		before: 1,
 		after: 1,
-	});
-	const committedScanOracle = files_grep_lines_extended(committed, "committedneedle", {
-		ignoreCase: false,
-		invert: false,
-		before: 1,
-		after: 1,
-		maxSelected: 100,
 	});
 	expect(committedScan).not.toBeNull();
 	if (!committedScan) throw new Error("expected committed grep scan");
-	expect(committedScan.lines).toEqual(committedScanOracle.lines);
-	expect(committedScan.selectedCount).toBe(committedScanOracle.selectedCount);
+	expect(committedScan.lines).toEqual([
+		{ lineNumber: 2, line: "**critical** alert", matched: false },
+		{ lineNumber: 3, line: "committedneedle one", matched: true },
+		{ lineNumber: 4, line: "middle", matched: false },
+		{ lineNumber: 5, line: "committedneedle two", matched: true },
+		{ lineNumber: 6, line: "", matched: false },
+	]);
+	expect(committedScan.selectedCount).toBe(2);
 	expect(committedScan.scanTruncated).toBe(false);
 
-	const cappedOutputMarkdown = Array.from({ length: 12 }, (_, groupIndex) =>
-		[
-			...Array.from({ length: 25 }, (_, lineIndex) => `group-${groupIndex + 1}-before-${lineIndex + 1}`),
-			`outputneedle-${String(groupIndex + 1).padStart(2, "0")}`,
-			...Array.from({ length: 25 }, (_, lineIndex) => `group-${groupIndex + 1}-after-${lineIndex + 1}`),
-		].join("\n"),
-	).join("\n");
+	const committedWindow = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
+		...grepArgs,
+		pattern: "committedneedle",
+		ignoreCase: false,
+		fixedStrings: true,
+		invert: false,
+		before: 0,
+		after: 0,
+		window: { kind: "lines", startLine: 5, maxLines: 2 },
+	});
+	expect(committedWindow).not.toBeNull();
+	if (!committedWindow) throw new Error("expected committed window grep");
+	expect(committedWindow.lines).toEqual([{ lineNumber: 5, line: "committedneedle two", matched: true }]);
+	expect(committedWindow.scanTruncated).toBe(false);
+
+	const cappedOutputMarkdown = [
+		"outputneedle-primer",
+		...Array.from({ length: 24 }, (_, lineIndex) => `group-1-before-${lineIndex + 1}`),
+		"outputneedle-01",
+		...Array.from({ length: 25 }, (_, lineIndex) => `group-1-after-${lineIndex + 1}`),
+		...Array.from({ length: 154 }, (_, index) =>
+			index % 2 === 0 ? `outputneedle-dense-${index + 1}` : `dense-filler-${index + 1}`,
+		),
+	].join("\n");
 	const cappedOutputNodeId = await test_materialize_markdown_file(
 		t,
 		asUser,
@@ -4023,13 +3761,14 @@ test("grep_app_file queries committed and pending chunks and returns null for un
 		"/grep-capped-output.md",
 		cappedOutputMarkdown,
 	);
-	const cappedContextScan = await asUser.query(internal.files_nodes.grep_app_file, {
+	const cappedContextScan = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
 		userId: db.userId,
 		fileNodeId: cappedOutputNodeId,
 		pattern: "outputneedle-01",
 		ignoreCase: false,
+		fixedStrings: true,
 		invert: false,
 		before: 100,
 		after: 100,
@@ -4041,13 +3780,14 @@ test("grep_app_file queries committed and pending chunks and returns null for un
 	);
 	expect(cappedContextScan.scanTruncated).toBe(true);
 
-	const cappedOutputScan = await asUser.query(internal.files_nodes.grep_app_file, {
+	const cappedOutputScan = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
 		userId: db.userId,
 		fileNodeId: cappedOutputNodeId,
 		pattern: "outputneedle",
 		ignoreCase: false,
+		fixedStrings: true,
 		invert: false,
 		before: 20,
 		after: 20,
@@ -4057,7 +3797,7 @@ test("grep_app_file queries committed and pending chunks and returns null for un
 	expect(cappedOutputScan.lines.length).toBe(200);
 	expect(cappedOutputScan.scanTruncated).toBe(true);
 
-	const pendingMarkdown = "pending context\npendingneedle only in the pending version\n";
+	const pendingMarkdown = "pending context\n**pending** alert\npendingneedle only in the pending version\n";
 	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
@@ -4067,24 +3807,52 @@ test("grep_app_file queries committed and pending chunks and returns null for un
 	});
 	if (pending._nay) throw new Error(pending._nay.message);
 
-	const pendingGrep = await asUser.query(internal.files_nodes.grep_app_file, {
+	const pendingGrep = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
 		...grepArgs,
 		pattern: "pendingneedle",
 		ignoreCase: false,
+		fixedStrings: true,
 		invert: false,
 		before: 0,
 		after: 0,
 	});
 	expect(pendingGrep).not.toBeNull();
 	if (!pendingGrep) throw new Error("expected pending grep");
-	expect(pendingGrep.lines.map(({ lineNumber, line }) => ({ lineNumber, line }))).toEqual(
-		files_grep_lines(pendingMarkdown, "pendingneedle", false, 100).matches,
-	);
+	expect(pendingGrep.lines.map(({ lineNumber, line }) => ({ lineNumber, line }))).toEqual([
+		{ lineNumber: 3, line: "pendingneedle only in the pending version" },
+	]);
 
-	const staleCommittedGrep = await asUser.query(internal.files_nodes.grep_app_file, {
+	const pendingWindow = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
+		...grepArgs,
+		pattern: "pendingneedle",
+		ignoreCase: false,
+		fixedStrings: true,
+		invert: false,
+		before: 0,
+		after: 0,
+		window: { kind: "lines", startLine: 3, maxLines: 2 },
+	});
+	expect(pendingWindow).not.toBeNull();
+	if (!pendingWindow) throw new Error("expected pending window grep");
+	expect(pendingWindow.lines).toEqual([
+		{ lineNumber: 3, line: "pendingneedle only in the pending version", matched: true },
+	]);
+	expect(pendingWindow.scanTruncated).toBe(false);
+
+	const pendingPlainRegex = await asUser.query(internal.files_nodes.match_plain_text_file_lines, {
+		...grepArgs,
+		pattern: String.raw`pending\s+alert`,
+		ignoreCase: false,
+	});
+	expect(pendingPlainRegex).not.toBeNull();
+	if (!pendingPlainRegex) throw new Error("expected pending plain-text regex grep");
+	expect(pendingPlainRegex.lines).toEqual([{ lineNumber: 2, line: "pending alert", matched: true }]);
+
+	const staleCommittedGrep = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
 		...grepArgs,
 		pattern: "committedneedle",
 		ignoreCase: false,
+		fixedStrings: true,
 		invert: false,
 		before: 0,
 		after: 0,
@@ -4107,18 +3875,128 @@ test("grep_app_file queries committed and pending chunks and returns null for un
 		await ctx.db.patch("files_markdown_chunks", secondChunk._id, { startIndex: secondChunk.startIndex + 1 });
 	});
 
-	const brokenGrep = await asUser.query(internal.files_nodes.grep_app_file, {
+	const brokenGrep = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
 		userId: db.userId,
 		fileNodeId: cappedOutputNodeId,
 		pattern: "outputneedle",
 		ignoreCase: false,
+		fixedStrings: true,
 		invert: false,
 		before: 0,
 		after: 0,
 	});
 	expect(brokenGrep).toBeNull();
+});
+
+test("regex_search_plain_text_files scans committed and pending plain-text chunks", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Regex Search User",
+		email: "regex-search-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const committedNodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		"/regex-search/committed.md",
+		"# Committed\n\n**critical** alert\n",
+	);
+	const otherNodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		"/regex-search/other.md",
+		"# Other\n\nno matching text\n",
+	);
+
+	const committed = await asUser.query(internal.files_nodes.regex_search_plain_text_files, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		query: String.raw`critical\s+alert`,
+		ignoreCase: false,
+		pathPrefix: "/regex-search",
+		numItems: 10,
+		cursor: null,
+	});
+	expect(committed.items).toEqual([
+		{
+			path: "/regex-search/committed.md",
+			lineNumber: 3,
+			line: "critical alert",
+			chunkIndex: 0,
+		},
+	]);
+	expect(committed.isDone).toBe(true);
+
+	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		nodeId: committedNodeId,
+		unstagedMarkdown: "# Pending\n\n**pending** alert\n",
+	});
+	if (pending._nay) throw new Error(pending._nay.message);
+
+	const pendingResult = await asUser.query(internal.files_nodes.regex_search_plain_text_files, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		query: String.raw`pending\s+alert`,
+		ignoreCase: false,
+		pathPrefix: "/regex-search",
+		numItems: 10,
+		cursor: null,
+	});
+	expect(pendingResult.items).toEqual([
+		{
+			path: "/regex-search/committed.md",
+			lineNumber: 3,
+			line: "pending alert",
+			chunkIndex: 0,
+		},
+	]);
+	expect(pendingResult.isDone).toBe(true);
+
+	await t.run(async (ctx) => {
+		const chunk = await ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", otherNodeId),
+			)
+			.first();
+		if (!chunk) {
+			throw new Error("Expected plain-text chunk");
+		}
+		const markdownChunk = await ctx.db.get("files_markdown_chunks", chunk.markdownChunkId);
+		if (!markdownChunk) {
+			throw new Error("Expected markdown chunk");
+		}
+		await ctx.db.patch("files_markdown_chunks", markdownChunk._id, { chunkIndex: 1 });
+		await ctx.db.patch("files_plain_text_chunks", chunk._id, {
+			chunkIndex: 1,
+			plainTextChunk: "broken chunk critical alert\n",
+		});
+	});
+	const broken = await asUser.query(internal.files_nodes.regex_search_plain_text_files, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		query: String.raw`broken\s+chunk\s+critical\s+alert`,
+		ignoreCase: false,
+		pathPrefix: "/regex-search",
+		numItems: 10,
+		cursor: null,
+	});
+	expect(broken.items).toEqual([]);
 });
 
 test("file_stats stay fresh after an edit: re-materialization patches the same row in place", async () => {

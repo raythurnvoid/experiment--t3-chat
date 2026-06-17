@@ -617,7 +617,10 @@ async function transcribe_audio_segment(args: {
 	});
 }
 
-async function transcribe_original_video_upload(args: { sourceAsset: Doc<"files_r2_assets">; sourceFileNode: Doc<"files_nodes"> }) {
+async function transcribe_original_video_upload(args: {
+	sourceAsset: Doc<"files_r2_assets">;
+	sourceFileNode: Doc<"files_nodes">;
+}) {
 	if (!args.sourceAsset.r2Key || !args.sourceAsset.size || args.sourceAsset.size > MEDIA_TRANSCRIPTION_MAX_BYTES) {
 		return null;
 	}
@@ -723,7 +726,7 @@ export const get_asset_by_id = internalQuery({
 	},
 });
 
-type get_asset_by_id_Result =
+export type get_asset_by_id_Result =
 	typeof get_asset_by_id extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
@@ -843,14 +846,9 @@ export const create_signed_download_url = action({
 		}
 
 		if (files_node_has_editable_yjs_state(fileNode)) {
-			if (!fileNode.yjsSnapshotId || !fileNode.yjsLastSequenceId) {
-				console.warn("Markdown file is missing Yjs pointers", {
-					fileNodeId: fileNode._id,
-					yjsSnapshotId: fileNode.yjsSnapshotId,
-					yjsLastSequenceId: fileNode.yjsLastSequenceId,
-				});
-			} else if (!materializationState) {
+			if (!materializationState) {
 				console.warn("Markdown file materialization state is missing", {
+					materializationState,
 					fileNodeId: fileNode._id,
 					yjsSnapshotId: fileNode.yjsSnapshotId,
 					yjsLastSequenceId: fileNode.yjsLastSequenceId,
@@ -2437,13 +2435,17 @@ export const process_uploaded_asset_event = internalMutation({
 					});
 				}
 
-				const workId = await upload_conversion_workpool.enqueueAction(ctx, internal.r2.summarize_video_upload_to_markdown, {
-					workspaceId: asset.workspaceId,
-					projectId: asset.projectId,
-					sourceAssetId: asset._id,
-					summaryOutputAssetId: summaryOutput._yay.assetId,
-					transcriptOutputAssetId: transcriptOutput._yay.assetId,
-				});
+				const workId = await upload_conversion_workpool.enqueueAction(
+					ctx,
+					internal.r2.summarize_video_upload_to_markdown,
+					{
+						workspaceId: asset.workspaceId,
+						projectId: asset.projectId,
+						sourceAssetId: asset._id,
+						summaryOutputAssetId: summaryOutput._yay.assetId,
+						transcriptOutputAssetId: transcriptOutput._yay.assetId,
+					},
+				);
 
 				await Promise.all([
 					ctx.db.patch("files_r2_assets", asset._id, {

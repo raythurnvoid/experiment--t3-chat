@@ -126,6 +126,7 @@ const app_convex_schema = defineSchema({
 		baseYjsUpdate: v.bytes(),
 		stagedBranchYjsUpdate: v.bytes(),
 		unstagedBranchYjsUpdate: v.bytes(),
+		size: v.number(),
 		updatedAt: v.number(),
 	})
 		.index("by_workspace_project_user_fileNode", ["workspaceId", "projectId", "userId", "fileNodeId"])
@@ -180,7 +181,9 @@ const app_convex_schema = defineSchema({
 			searchField: "plainTextChunk",
 			filterFields: ["workspaceId", "projectId", "userId"],
 		})
-		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"]),
+		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"])
+		.index("by_pendingUpdate_lineEnd_chunkIndex", ["pendingUpdateId", "lineEnd", "chunkIndex"])
+		.index("by_pendingUpdate_endIndex_chunkIndex", ["pendingUpdateId", "endIndex", "chunkIndex"]),
 
 	files_nodes: defineTable({
 		/** Workspace ID extracted from roomId */
@@ -325,16 +328,20 @@ const app_convex_schema = defineSchema({
 			"yjsSequence",
 			"chunkIndex",
 		])
-		// Seek directly to the chunks overlapping a requested line range (without scanning every
-		// preceding chunk) so committed-file line reads work at any depth. lineEnd is non-decreasing
-		// in chunkIndex; the trailing chunkIndex column breaks same-lineEnd ties (one line split across
-		// chunks) so the range scan returns chunks in chunkIndex order with no JS re-sort.
 		.index("by_workspace_project_fileNode_yjsSequence_lineEnd_chunkIndex", [
 			"workspaceId",
 			"projectId",
 			"fileNodeId",
 			"yjsSequence",
 			"lineEnd",
+			"chunkIndex",
+		])
+		.index("by_workspace_project_fileNode_yjsSequence_endIndex_chunkIndex", [
+			"workspaceId",
+			"projectId",
+			"fileNodeId",
+			"yjsSequence",
+			"endIndex",
 			"chunkIndex",
 		]),
 
@@ -360,6 +367,13 @@ const app_convex_schema = defineSchema({
 			"projectId",
 			"fileNodeId",
 			"yjsSequence",
+			"chunkIndex",
+		])
+		.index("by_workspace_project_archive_path_chunkIndex", [
+			"workspaceId",
+			"projectId",
+			"archiveOperationId",
+			"path",
 			"chunkIndex",
 		])
 		.index("by_markdownChunk", ["markdownChunkId"]),

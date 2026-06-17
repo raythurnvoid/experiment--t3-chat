@@ -73,6 +73,9 @@ describe("Result", () => {
 			const asyncNayResultFn = async () => {
 				throw Result({ _nay: { message: "async bad result thrown" } }) as any;
 			};
+			const asyncNullNayResultFn = async () => {
+				throw Result({ _nay: null }) as any;
+			};
 
 			expect((await Result_try_async(asyncSuccessFn))._yay).toBe("async success");
 
@@ -81,6 +84,9 @@ describe("Result", () => {
 
 			const badResultError = await Result_try_async(asyncNayResultFn);
 			expect(badResultError._nay?.message).toBe("async bad result thrown");
+
+			const nullResult = await Result_try_async(asyncNullNayResultFn);
+			expect(nullResult._nay?.message).toBe("unknown");
 		});
 
 		test("Result_try_promise captures errors from promises directly", async () => {
@@ -93,6 +99,10 @@ describe("Result", () => {
 				Promise.reject(Result({ _nay: { message: "promise nay result" } }) as any),
 			);
 			expect(nayResult._nay?.message).toBe("promise nay result");
+		});
+
+		test("Result_nay_from preserves null", () => {
+			expect(Result_nay_from(null)).toBeNull();
 		});
 
 		// test("BadResult.getStack builds a stack trace with causes", () => {

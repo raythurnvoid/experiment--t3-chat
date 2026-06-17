@@ -1201,6 +1201,7 @@ describe("files_pending_updates_chunks lifecycle", () => {
 		if (!pendingRow) {
 			throw new Error("Missing pending doc while testing chunk creation");
 		}
+		expect(pendingRow.size).toBe(files_get_utf8_byte_size(firstMarkdown));
 
 		const firstChunks = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
 		expect(firstChunks.length).toBeGreaterThan(0);
@@ -1229,6 +1230,13 @@ describe("files_pending_updates_chunks lifecycle", () => {
 			throw new Error(secondUpsertResult._nay.message);
 		}
 
+		const secondPendingRow = await read_pending_row({ t, ...seeded });
+		if (!secondPendingRow) {
+			throw new Error("Missing pending doc while testing chunk replacement");
+		}
+		expect(secondPendingRow._id).toBe(pendingRow._id);
+		expect(secondPendingRow.size).toBe(files_get_utf8_byte_size(secondMarkdown));
+
 		const secondChunks = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
 		expect(secondChunks.length).toBeGreaterThan(0);
 		expect(secondChunks.map((chunk) => chunk.markdownChunk).join("\n")).toContain("Chunk needle two");
@@ -1251,6 +1259,12 @@ describe("files_pending_updates_chunks lifecycle", () => {
 		if (stagedOnlyUpsertResult._nay) {
 			throw new Error(stagedOnlyUpsertResult._nay.message);
 		}
+
+		const stagedOnlyPendingRow = await read_pending_row({ t, ...seeded });
+		if (!stagedOnlyPendingRow) {
+			throw new Error("Missing pending doc while testing staged-only pending update");
+		}
+		expect(stagedOnlyPendingRow.size).toBe(secondPendingRow.size);
 
 		const stagedOnlyChunks = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
 		expect(new Set(stagedOnlyChunks.map((chunk) => chunk._id))).toEqual(new Set(secondChunks.map((chunk) => chunk._id)));
@@ -1593,17 +1607,6 @@ describe("presence.disconnect", () => {
 			throw new Error("Missing pending doc while testing multi-session disconnect cleanup");
 		}
 
-		const firstCleanupTask = await t.run(async (ctx) => {
-			const cleanupTasks = await list_pending_update_cleanup_tasks({
-				ctx,
-				pendingUpdateId: pendingRow._id,
-			});
-			return cleanupTasks[0] ?? null;
-		});
-		if (!firstCleanupTask) {
-			throw new Error("Missing first cleanup task while testing multi-session disconnect cleanup");
-		}
-
 		const roomId = `pending-edits-room-${seeded.nodeId}`;
 		const firstHeartbeatResult = await asUser.mutation(api.presence.heartbeat, {
 			roomId,
@@ -1617,6 +1620,19 @@ describe("presence.disconnect", () => {
 			sessionId: "session-second",
 			interval: presenceHeartbeatIntervalMs,
 		});
+
+		// Capture after both heartbeats so the assertion isolates disconnect from
+		// the heartbeat-driven cleanup refresh.
+		const firstCleanupTask = await t.run(async (ctx) => {
+			const cleanupTasks = await list_pending_update_cleanup_tasks({
+				ctx,
+				pendingUpdateId: pendingRow._id,
+			});
+			return cleanupTasks[0] ?? null;
+		});
+		if (!firstCleanupTask) {
+			throw new Error("Missing first cleanup task while testing multi-session disconnect cleanup");
+		}
 
 		await asUser.mutation(api.presence.disconnect, {
 			sessionToken: firstHeartbeatResult.sessionToken,

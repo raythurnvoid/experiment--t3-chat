@@ -345,6 +345,11 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
+				description: expect.stringContaining("do not run ls first to verify that folder"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
 				description: expect.stringContaining('Plain requests like "search for X with limit N" mean content search'),
 			}),
 		);
@@ -359,6 +364,13 @@ describe("ai_chat_tool_create_bash", () => {
 			expect.objectContaining({
 				description: expect.stringContaining(
 					"run search --path <folder> X or search X; do not substitute find --path-query.",
+				),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"For search --path, the same app-root path rule applies: pass /home/cloud-usr/w/personal/home/folder or relative folder, never raw /folder.",
 				),
 			}),
 		);
@@ -423,6 +435,16 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
+				description: expect.stringContaining("grep [-n] [-i] PATTERN <file>"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("textgrep [-i] PATTERN <file>"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
 				description: expect.stringContaining("with PATH they list that directory's immediate children by update time"),
 			}),
 		);
@@ -434,6 +456,16 @@ describe("ai_chat_tool_create_bash", () => {
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining("Large files are not read inline"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("cat [-n] [--] [FILE...]"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("cat unreadable-file advisories are stderr, not file content"),
 			}),
 		);
 		expect(tool).toEqual(

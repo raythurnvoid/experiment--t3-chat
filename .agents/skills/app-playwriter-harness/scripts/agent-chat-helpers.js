@@ -1,13 +1,30 @@
 // Reusable QA helpers stored on state.qa (session-persistent).
 state.qa = {
 	async newChat() {
-		const btn = state.page.getByRole("button", { name: "New chat", exact: true });
-		await btn.click();
+		const clicked = await state.page
+			.evaluate(() => {
+				const btn = Array.from(document.querySelectorAll("button")).find((el) =>
+					(el.textContent || "").trim().toLowerCase().includes("new chat"),
+				);
+				if (!btn) return false;
+				btn.click();
+				return true;
+			})
+			.catch((error) => {
+				if (String(error).includes("Execution context was destroyed")) return true;
+				throw error;
+			});
+		if (!clicked) throw new Error("New Chat button not found");
 		await state.page.waitForTimeout(500);
-		const tabs = await state.page.evaluate(() => {
-			const list = document.querySelector('[aria-label="Open chats"]');
-			return list ? (list.textContent || "").slice(0, 200) : null;
-		});
+		const tabs = await state.page
+			.evaluate(() => {
+				const list = document.querySelector('[aria-label="Open chats"]');
+				return list ? (list.textContent || "").slice(0, 200) : null;
+			})
+			.catch((error) => {
+				if (String(error).includes("Execution context was destroyed")) return null;
+				throw error;
+			});
 		console.log("newChat → tabs:", tabs);
 	},
 
@@ -20,7 +37,11 @@ state.qa = {
 			editor.focus();
 			document.execCommand("insertText", false, t);
 		}, text);
-		await state.page.locator('[data-testid="ai-chat-send-button"]').click();
+		await state.page.evaluate(() => {
+			const button = document.querySelector('[data-testid="ai-chat-send-button"]');
+			if (!(button instanceof HTMLButtonElement)) throw new Error("send button not found");
+			button.click();
+		});
 		// Wait until the run starts (Stop generating appears) or an assistant message lands fast.
 		await state.page
 			.waitForSelector('[aria-label="Stop generating"]', { timeout: 10000 })
@@ -34,15 +55,20 @@ state.qa = {
 		const start = Date.now();
 		let idleStreak = 0;
 		while (Date.now() - start < timeoutMs) {
-			const busy = await state.page.evaluate(() => {
-				const stop = !!document.querySelector('[aria-label="Stop generating"]');
-				// Hidden hoisted modals keep aria-busy=true while closed (0x0 rect) — only count visible ones.
-				const busyEl = Array.from(document.querySelectorAll('[aria-busy="true"]')).some((el) => {
-					const r = el.getBoundingClientRect();
-					return r.width > 0 && r.height > 0;
+			const busy = await state.page
+				.evaluate(() => {
+					const stop = !!document.querySelector('[aria-label="Stop generating"]');
+					// Hidden hoisted modals keep aria-busy=true while closed (0x0 rect) — only count visible ones.
+					const busyEl = Array.from(document.querySelectorAll('[aria-busy="true"]')).some((el) => {
+						const r = el.getBoundingClientRect();
+						return r.width > 0 && r.height > 0;
+					});
+					return stop || busyEl;
+				})
+				.catch((error) => {
+					if (String(error).includes("Execution context was destroyed")) return true;
+					throw error;
 				});
-				return stop || busyEl;
-			});
 			idleStreak = busy ? 0 : idleStreak + 1;
 			if (idleStreak >= 3) return true;
 			await state.page.waitForTimeout(2000);

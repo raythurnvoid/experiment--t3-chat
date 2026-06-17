@@ -52,6 +52,43 @@ pnpx playwriter -s $session -f .agents/skills/app-playwriter-harness/scripts/age
 
 A full scored scenario run is then: `state.qa.newChat()` → `state.qa.send(PROMPT)` → `state.qa.waitDone(280000)` → one `evaluate()` that dumps terminals + final `.AiChatMessage` text. Helper `console.log` output is lost across separate playwriter runs — log returned values from the calling script.
 
+## Grep Eval Recipe
+
+Use a deterministic app folder displayed as `/grep-eval` with synthetic Markdown files. In Bash, refer to it as `/home/cloud-usr/w/personal/home/grep-eval` or relative `grep-eval`, not raw `/grep-eval`. Cover single-file grep, no matches, `-n`, `-c`, `-l`, `-v`, `-A`/`-B`/`-C`, regex-looking literals, unsupported flags, recursive folder requests, Markdown formatting, and capped output. Keep setup batches small and verify with `find /home/cloud-usr/w/personal/home/grep-eval -type f --limit 20`.
+
+Run each prompt in a fresh chat and record:
+
+- first Bash command label
+- Bash terminal output
+- final assistant text
+- elapsed seconds from `send` to `waitDone`
+- whether the answer used only actual stdout/stderr
+
+Score as pass only when single-file requests use `grep`, folder/recursive content requests use `search --path` or the supported `grep -R` recovery, empty stdout with exit 1 is treated as no match, warnings do not cause retry loops, and unsupported flags lead to a concise explanation or a corrected supported command.
+
+PowerShell command shape from the repo root:
+
+```powershell
+$sessionOutput = vp env exec -- pnpx playwriter session new --browser profile:909172d3ee56c25e
+$session = ($sessionOutput | Select-String -Pattern "Session (\d+) created").Matches.Groups[1].Value
+vp env exec -- pnpx playwriter -s $session -f .agents/skills/app-playwriter-harness/scripts/install-harness.js --timeout 60000
+vp env exec -- pnpx playwriter -s $session -f .agents/skills/app-playwriter-harness/scripts/agent-chat-helpers.js --timeout 60000
+```
+
+## Cat Eval Recipe
+
+Use a deterministic app folder displayed as `/cat-eval` with synthetic Markdown files. In Bash, refer to it as `/home/cloud-usr/w/personal/home/cat-eval` or relative `cat-eval`, not raw `/cat-eval`. Cover simple `cat`, `cat -n`, `cat -- -dash.md`, `cat -- -` stdin, missing file, directory, large first-page behavior, multi-file small concatenation, multi-file large refusal, unreadable-file stderr advisories, and `cat file | grep`. Verify setup preconditions with `find` or `wc` before scoring edge cases, especially dash-leading names and over-cap files; if setup normalized or failed to materialize the fixture, record that as setup failure rather than a cat failure.
+
+Run each prompt in a fresh chat and record:
+
+- first Bash command label
+- Bash terminal stdout and stderr separately
+- final assistant text
+- elapsed seconds from `send` to `waitDone`
+- whether the answer treated stderr advisories as diagnostics rather than file content
+
+Score as pass only when the agent does not hallucinate file content, uses `head`/`sed` continuation when a large `cat` reports a bounded page, does not pipe unreadable-file advisory text into later reasoning, and does not retry-loop on missing files, directories, or unreadable source files.
+
 ## Recover a blanked tab after Convex deploy
 
 `convex dev --once` (and Vite HMR) can blank a backgrounded localhost tab: empty `<body>`, every selector gone. Recover with:
