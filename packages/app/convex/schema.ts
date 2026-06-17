@@ -257,6 +257,7 @@ const app_convex_schema = defineSchema({
 			"updatedAt",
 		])
 		.index("by_workspace_project_path_archiveOperation", ["workspaceId", "projectId", "path", "archiveOperationId"])
+		.index("by_workspace_project_treePath", ["workspaceId", "projectId", "treePath"])
 		.index("by_workspace_project_archiveOperation_treePath", [
 			"workspaceId",
 			"projectId",

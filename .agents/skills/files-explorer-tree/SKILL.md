@@ -26,7 +26,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 
 - Tree engine: `@headless-tree/core` + `@headless-tree/react`
 - Backend data: Convex `files` query/mutations
-- Primary data source: `files.get_tree_nodes_list`
+- Primary data source: `files_nodes.list_tree`
 - Local state is UI-only (`expandedItems`, search/selection, busy/pending flags) plus derived indexes from query data
 - Prefer Convex mutation `optimisticUpdate` over ad-hoc local mirrored tree state
 - Backend item types: `"root" | "node"`
@@ -106,7 +106,7 @@ Tree-item components:
 
 ## Server-Driven Data
 
-- Sidebar queries `files.get_tree_nodes_list`.
+- Sidebar queries `files_nodes.list_tree`.
 - Tree collection maps/sets are derived from query results (`useMemo`) and rebuilt from server data.
 - Loading/empty states are derived from query presence and visible IDs.
 
@@ -215,7 +215,7 @@ Tree-item components:
 
 # Verification Checklist
 
-- Tree updates come from `get_tree_nodes_list`.
+- Tree updates come from `files_nodes.list_tree`.
 - Search keeps ancestor chain for matching files/folders.
 - Search-open expands relevant branches and search-close restores prior expansion.
 - Selection modes and anchor behavior are correct.

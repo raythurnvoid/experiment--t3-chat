@@ -3,9 +3,7 @@ state.qa = {
 	async newChat() {
 		const clicked = await state.page
 			.evaluate(() => {
-				const btn = Array.from(document.querySelectorAll("button")).find((el) =>
-					(el.textContent || "").trim().toLowerCase().includes("new chat"),
-				);
+				const btn = document.querySelector('button[aria-label="New chat"]');
 				if (!btn) return false;
 				btn.click();
 				return true;

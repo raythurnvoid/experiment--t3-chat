@@ -953,11 +953,25 @@ export const generate_checkout_link = action({
 		trialIntervalCount: v.optional(v.union(v.number(), v.null())),
 		locale: v.optional(v.string()),
 	},
-	returns: v_result({
-		_yay: v.object({
-			url: v.string(),
+	returns: v.union(
+		v.object({
+			_yay: v.object({
+				url: v.string(),
+			}),
 		}),
-	}),
+		v.object({
+			_nay: v.object({
+				message: v.string(),
+				name: v.optional(v.string()),
+				cause: v.optional(
+					v.object({
+						message: v.string(),
+						name: v.optional(v.string()),
+					}),
+				),
+			}),
+		}),
+	),
 	handler: async (ctx, args) => {
 		let originParsed: URL;
 		let successParsed: URL;

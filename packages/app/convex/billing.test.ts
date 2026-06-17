@@ -2999,6 +2999,10 @@ describe("billing generate_checkout_link create session", () => {
 		});
 
 		expect(result._nay?.message).toBe("Failed to create a checkout link");
+		expect(result._nay?.cause).toMatchObject({
+			message: "polar checkout exploded",
+			name: "Error",
+		});
 	});
 
 	test("returns yay with the checkout URL", async () => {

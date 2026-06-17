@@ -640,6 +640,32 @@ describe("list_files", () => {
 });
 
 describe("paginated bash listing queries", () => {
+	test("list_tree returns active and archived nodes in treePath order", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const treeNodesList = await asUser.query(api.files_nodes.list_tree, {
+			membershipId: db.membershipId,
+		});
+
+		expect(treeNodesList.map((item) => item.path)).toEqual([
+			"/docs-archive",
+			"/docs-archive/outside.md",
+			"/docs",
+			"/docs/a.md",
+			"/docs/b.md",
+			"/docs/nested",
+			"/docs/nested/c.md",
+			"/docs/z-archived.md",
+		]);
+		expect(treeNodesList.map((item) => item.archiveOperationId)).toContain("archive-operation-test");
+	});
+
 	test("paginates direct children without descendants or archived nodes", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
@@ -757,14 +783,14 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const firstPage = await asUser.query(internal.files_nodes.list_folder_subtree, {
+		const firstPage = await asUser.query(internal.files_nodes.list_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
 			numItems: 2,
 			cursor: null,
 		});
-		const secondPage = await asUser.query(internal.files_nodes.list_folder_subtree, {
+		const secondPage = await asUser.query(internal.files_nodes.list_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -792,7 +818,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const ascending = await asUser.query(internal.files_nodes.list_folder_subtree, {
+		const ascending = await asUser.query(internal.files_nodes.list_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -800,7 +826,7 @@ describe("paginated bash listing queries", () => {
 			cursor: null,
 			order: "asc",
 		});
-		const descending = await asUser.query(internal.files_nodes.list_folder_subtree, {
+		const descending = await asUser.query(internal.files_nodes.list_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -840,7 +866,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const filesAtDepthOne = await asUser.query(internal.files_nodes.list_folder_subtree, {
+		const filesAtDepthOne = await asUser.query(internal.files_nodes.list_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -849,7 +875,7 @@ describe("paginated bash listing queries", () => {
 			kind: "file",
 			maxDepth: 1,
 		});
-		const foldersAtDepthOne = await asUser.query(internal.files_nodes.list_folder_subtree, {
+		const foldersAtDepthOne = await asUser.query(internal.files_nodes.list_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -874,7 +900,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const firstPage = await asUser.query(internal.files_nodes.list_folder_subtree, {
+		const firstPage = await asUser.query(internal.files_nodes.list_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -884,7 +910,7 @@ describe("paginated bash listing queries", () => {
 			cursor: null,
 			maxDepth: 1,
 		});
-		const secondPage = await asUser.query(internal.files_nodes.list_folder_subtree, {
+		const secondPage = await asUser.query(internal.files_nodes.list_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -912,7 +938,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const result = await asUser.query(internal.files_nodes.list_folder_subtree, {
+		const result = await asUser.query(internal.files_nodes.list_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs/",
@@ -937,7 +963,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const result = await asUser.query(internal.files_nodes.list_folder_subtree, {
+		const result = await asUser.query(internal.files_nodes.list_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs",
@@ -952,7 +978,7 @@ describe("paginated bash listing queries", () => {
 		expect(paths).not.toContain("/docs/nested");
 	});
 
-	test("returns no rows when a folder subtree scan receives a file path", async () => {
+	test("returns no docs when a folder subtree scan receives a file path", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -961,14 +987,14 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const firstPage = await asUser.query(internal.files_nodes.list_folder_subtree, {
+		const firstPage = await asUser.query(internal.files_nodes.list_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs/a.md",
 			numItems: 1,
 			cursor: null,
 		});
-		const secondPage = await asUser.query(internal.files_nodes.list_folder_subtree, {
+		const secondPage = await asUser.query(internal.files_nodes.list_subtree, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			folderPath: "/docs/a.md",
@@ -1078,7 +1104,7 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const file = await asUser.query(internal.files_nodes.get_by_path, {
+		const fileNode = await asUser.query(internal.files_nodes.get_by_path, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			path: "/docs/a.md",
@@ -1094,33 +1120,9 @@ describe("paginated bash listing queries", () => {
 			path: "/",
 		});
 
-		expect(file).toMatchObject({ path: "/docs/a.md", kind: "file" });
+		expect(fileNode).toMatchObject({ path: "/docs/a.md", kind: "file" });
 		expect(archived).toBeNull();
 		expect(root).toBeNull();
-	});
-
-	test("get_bash_stat_entry returns app metadata for a file", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Test User",
-		});
-
-		const stat = await asUser.query(internal.files_nodes.get_bash_stat_entry, {
-			workspaceId: db.workspaceId,
-			projectId: db.projectId,
-			path: "/docs/a.md",
-		});
-		const missing = await asUser.query(internal.files_nodes.get_bash_stat_entry, {
-			workspaceId: db.workspaceId,
-			projectId: db.projectId,
-			path: "/docs/does-not-exist.md",
-		});
-
-		expect(stat).toMatchObject({ path: "/docs/a.md", kind: "file", contentType: "text/markdown;charset=utf-8" });
-		expect(missing).toBeNull();
 	});
 });
 
@@ -1160,7 +1162,7 @@ test("generated sibling file is visible in tree and list queries", async () => {
 	});
 
 	const [treeNodesList, filesList] = await Promise.all([
-		asUser.query(api.files_nodes.get_file_nodes_list, {
+		asUser.query(api.files_nodes.list_tree, {
 			membershipId: db.membershipId,
 		}),
 		asUser.query(internal.files_nodes.list_files, {
@@ -1172,7 +1174,7 @@ test("generated sibling file is visible in tree and list queries", async () => {
 		}),
 	]);
 
-	const treeNodeIds = treeNodesList.map((node) => node._id);
+	const treeNodeIds = treeNodesList.map((fileNode) => fileNode._id);
 	expect(treeNodeIds).toContain(sourceNodeId);
 	expect(treeNodeIds).toContain(markdownNodeId);
 	expect(filesList.items.map((item) => item.path)).toEqual(expect.arrayContaining(["/report.pdf", "/report.pdf.md"]));
@@ -1443,10 +1445,10 @@ test("home file path stays immutable on rename and move", async () => {
 	});
 
 	await t.run(async (ctx) => {
-		const homeFile = await ctx.db.get("files_nodes", homeNodeId);
-		expect(homeFile?.name).toBe("README.md");
-		expect(homeFile?.path).toBe("/README.md");
-		expect(homeFile?.parentId).toBe(files_ROOT_ID);
+		const homeFileNode = await ctx.db.get("files_nodes", homeNodeId);
+		expect(homeFileNode?.name).toBe("README.md");
+		expect(homeFileNode?.path).toBe("/README.md");
+		expect(homeFileNode?.parentId).toBe(files_ROOT_ID);
 	});
 });
 
@@ -1583,7 +1585,7 @@ test("create_folder_node reuses active intermediate folders", async () => {
 	}
 
 	await t.run(async (ctx) => {
-		const folder = await ctx.db.get("files_nodes", result._yay.nodeId);
+		const folderFileNode = await ctx.db.get("files_nodes", result._yay.nodeId);
 		const rootFolders = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
@@ -1595,9 +1597,9 @@ test("create_folder_node reuses active intermediate folders", async () => {
 					.eq("archiveOperationId", undefined),
 			)
 			.collect()
-			.then((nodes) => nodes.filter((node) => node.kind === "folder"));
+			.then((fileNodes) => fileNodes.filter((fileNode) => fileNode.kind === "folder"));
 
-		expect(folder).toMatchObject({
+		expect(folderFileNode).toMatchObject({
 			name: "new-child",
 			path: `/${db.files.file_root_1.name}/new-child`,
 			parentId: db.files.file_root_1._id,
@@ -1629,9 +1631,9 @@ test("create_markdown_node preserves caller-provided file names", async () => {
 	}
 
 	await t.run(async (ctx) => {
-		const file = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		expect(file?.name).toBe("extensionless-create-file");
-		expect(file?.path).toBe("/extensionless-create-file");
+		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		expect(fileNode?.name).toBe("extensionless-create-file");
+		expect(fileNode?.path).toBe("/extensionless-create-file");
 	});
 });
 
@@ -1654,11 +1656,11 @@ test("create_markdown_node stores Markdown file properties", async () => {
 	}
 
 	const saved = await t.run(async (ctx) => {
-		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
-		return { node, asset };
+		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		const asset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
+		return { fileNode, asset };
 	});
-	expect(saved.node).toMatchObject({
+	expect(saved.fileNode).toMatchObject({
 		workspaceId: db.workspaceId,
 		projectId: db.projectId,
 		contentType: "text/markdown;charset=utf-8",
@@ -1693,15 +1695,15 @@ test("create_markdown_node seeds initial Yjs content on the server", async () =>
 	}
 
 	const saved = await t.run(async (ctx) => {
-		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		if (!node?.assetId || !node.yjsLastSequenceId || !node.yjsSnapshotId) {
+		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		if (!fileNode?.assetId || !fileNode.yjsLastSequenceId || !fileNode.yjsSnapshotId) {
 			throw new Error("Expected server-seeded Markdown node docs");
 		}
 
 		const [asset, lastSequence, yjsSnapshot, yjsUpdates] = await Promise.all([
-			ctx.db.get("files_r2_assets", node.assetId),
-			ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId),
-			ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId),
+			ctx.db.get("files_r2_assets", fileNode.assetId),
+			ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
+			ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
 			ctx.db
 				.query("files_yjs_updates")
 				.withIndex("by_workspace_project_fileNode_sequence", (q) =>
@@ -1712,10 +1714,10 @@ test("create_markdown_node seeds initial Yjs content on the server", async () =>
 		]);
 		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
 
-		return { node, asset, lastSequence, yjsSnapshot, yjsSnapshotAsset, yjsUpdates };
+		return { fileNode, asset, lastSequence, yjsSnapshot, yjsSnapshotAsset, yjsUpdates };
 	});
 
-	expect(saved.node.contentType).toBe("text/markdown;charset=utf-8");
+	expect(saved.fileNode.contentType).toBe("text/markdown;charset=utf-8");
 	expect(saved.asset).toMatchObject({
 		kind: "content",
 		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
@@ -1777,13 +1779,13 @@ test("create_markdown_node writes server-seeded initial content to R2", async ()
 	}
 
 	const saved = await t.run(async (ctx) => {
-		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		if (!node?.assetId || !node.yjsSnapshotId) {
+		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		if (!fileNode?.assetId || !fileNode.yjsSnapshotId) {
 			throw new Error("Expected materialized server-seeded file docs");
 		}
 
-		const asset = await ctx.db.get("files_r2_assets", node.assetId);
-		const yjsSnapshot = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
+		const asset = await ctx.db.get("files_r2_assets", fileNode.assetId);
+		const yjsSnapshot = await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId);
 		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
@@ -1855,9 +1857,9 @@ test("create_folder_node creates missing folders for nested folder paths", async
 	}
 
 	await t.run(async (ctx) => {
-		const folder = await ctx.db.get("files_nodes", result._yay.nodeId);
-		expect(folder?.name).toBe("name");
-		expect(folder?.path).toBe("/invalid/name");
+		const folderFileNode = await ctx.db.get("files_nodes", result._yay.nodeId);
+		expect(folderFileNode?.name).toBe("name");
+		expect(folderFileNode?.path).toBe("/invalid/name");
 
 		const parentFolder = await ctx.db
 			.query("files_nodes")
@@ -1867,7 +1869,7 @@ test("create_folder_node creates missing folders for nested folder paths", async
 			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 			.first();
 		expect(parentFolder?.kind).toBe("folder");
-		expect(folder?.parentId).toBe(parentFolder?._id);
+		expect(folderFileNode?.parentId).toBe(parentFolder?._id);
 	});
 });
 
@@ -1892,9 +1894,9 @@ test("create_markdown_node creates missing folders for nested file paths", async
 	}
 
 	await t.run(async (ctx) => {
-		const file = await ctx.db.get("files_nodes", result._yay.nodeId);
-		expect(file?.name).toBe("plan.md");
-		expect(file?.path).toBe("/notes/projects/plan.md");
+		const fileNode = await ctx.db.get("files_nodes", result._yay.nodeId);
+		expect(fileNode?.name).toBe("plan.md");
+		expect(fileNode?.path).toBe("/notes/projects/plan.md");
 
 		const parentFolder = await ctx.db
 			.query("files_nodes")
@@ -1904,7 +1906,7 @@ test("create_markdown_node creates missing folders for nested file paths", async
 			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 			.first();
 		expect(parentFolder?.kind).toBe("folder");
-		expect(file?.parentId).toBe(parentFolder?._id);
+		expect(fileNode?.parentId).toBe(parentFolder?._id);
 	});
 });
 
@@ -1952,8 +1954,8 @@ test("archived nodes can share path with a new active node", async () => {
 			.collect();
 
 		expect(filesAtPath).toHaveLength(2);
-		expect(filesAtPath.filter((file) => file.archiveOperationId !== undefined)).toHaveLength(1);
-		expect(filesAtPath.filter((file) => file.archiveOperationId === undefined)).toHaveLength(1);
+		expect(filesAtPath.filter((fileNode) => fileNode.archiveOperationId !== undefined)).toHaveLength(1);
+		expect(filesAtPath.filter((fileNode) => fileNode.archiveOperationId === undefined)).toHaveLength(1);
 	});
 });
 
@@ -2131,9 +2133,10 @@ describe("files_nodes.create_upload_node", () => {
 			const uploadedSources = await ctx.db
 				.query("files_nodes")
 				.collect()
-				.then((nodes) =>
-					nodes.filter(
-						(node) => node.workspaceId === db.workspaceId && node.projectId === db.projectId && node.assetId,
+				.then((fileNodes) =>
+					fileNodes.filter(
+						(fileNode) =>
+							fileNode.workspaceId === db.workspaceId && fileNode.projectId === db.projectId && fileNode.assetId,
 					),
 				);
 			return { uploadAssets, uploadedSources };
@@ -2164,9 +2167,10 @@ describe("files_nodes.create_upload_node", () => {
 			ctx.db
 				.query("files_nodes")
 				.collect()
-				.then((nodes) =>
-					nodes.filter(
-						(node) => node.workspaceId === db.workspaceId && node.projectId === db.projectId && node.assetId,
+				.then((fileNodes) =>
+					fileNodes.filter(
+						(fileNode) =>
+							fileNode.workspaceId === db.workspaceId && fileNode.projectId === db.projectId && fileNode.assetId,
 					),
 				),
 		);
@@ -2321,9 +2325,9 @@ test("rename_node preserves caller-provided file names", async () => {
 	}
 
 	await t.run(async (ctx) => {
-		const file = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		expect(file?.name).toBe("renamed-extensionless");
-		expect(file?.path).toBe("/renamed-extensionless");
+		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		expect(fileNode?.name).toBe("renamed-extensionless");
+		expect(fileNode?.path).toBe("/renamed-extensionless");
 	});
 });
 
@@ -2359,9 +2363,9 @@ test("rename_node creates missing folders for nested file paths", async () => {
 	}
 
 	await t.run(async (ctx) => {
-		const file = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		expect(file?.name).toBe("plan.md");
-		expect(file?.path).toBe("/notes/projects/plan.md");
+		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		expect(fileNode?.name).toBe("plan.md");
+		expect(fileNode?.path).toBe("/notes/projects/plan.md");
 
 		const parentFolder = await ctx.db
 			.query("files_nodes")
@@ -2371,7 +2375,7 @@ test("rename_node creates missing folders for nested file paths", async () => {
 			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 			.first();
 		expect(parentFolder?.kind).toBe("folder");
-		expect(file?.parentId).toBe(parentFolder?._id);
+		expect(fileNode?.parentId).toBe(parentFolder?._id);
 	});
 });
 
@@ -2414,9 +2418,9 @@ test("rename_node preserves caller-provided nested file names", async () => {
 	}
 
 	await t.run(async (ctx) => {
-		const file = await ctx.db.get("files_nodes", nestedFileId);
-		expect(file?.name).toBe("README");
-		expect(file?.path).toBe(`/${db.files.file_root_1.name}/README`);
+		const fileNode = await ctx.db.get("files_nodes", nestedFileId);
+		expect(fileNode?.name).toBe("README");
+		expect(fileNode?.path).toBe(`/${db.files.file_root_1.name}/README`);
 	});
 });
 
@@ -2479,9 +2483,9 @@ test("rename_node creates missing folders for nested folder paths", async () => 
 	}
 
 	await t.run(async (ctx) => {
-		const folder = await ctx.db.get("files_nodes", db.files.file_root_2._id);
-		expect(folder?.name).toBe("name");
-		expect(folder?.path).toBe("/invalid/name");
+		const folderFileNode = await ctx.db.get("files_nodes", db.files.file_root_2._id);
+		expect(folderFileNode?.name).toBe("name");
+		expect(folderFileNode?.path).toBe("/invalid/name");
 
 		const parentFolder = await ctx.db
 			.query("files_nodes")
@@ -2491,7 +2495,7 @@ test("rename_node creates missing folders for nested folder paths", async () => 
 			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 			.first();
 		expect(parentFolder?.kind).toBe("folder");
-		expect(folder?.parentId).toBe(parentFolder?._id);
+		expect(folderFileNode?.parentId).toBe(parentFolder?._id);
 	});
 });
 
@@ -2612,12 +2616,12 @@ test("archive_nodes and unarchive_nodes leave root generated siblings independen
 	});
 
 	const archivedDocs = await t.run(async (ctx) => {
-		const source = await ctx.db.get("files_nodes", sourceNodeId);
-		const generated = await ctx.db.get("files_nodes", generatedNodeId);
-		return { source, generated };
+		const sourceFileNode = await ctx.db.get("files_nodes", sourceNodeId);
+		const generatedFileNode = await ctx.db.get("files_nodes", generatedNodeId);
+		return { sourceFileNode, generatedFileNode };
 	});
-	expect(archivedDocs.source?.archiveOperationId).toEqual(expect.any(String));
-	expect(archivedDocs.generated?.archiveOperationId).toBeUndefined();
+	expect(archivedDocs.sourceFileNode?.archiveOperationId).toEqual(expect.any(String));
+	expect(archivedDocs.generatedFileNode?.archiveOperationId).toBeUndefined();
 
 	await asUser.mutation(api.files_nodes.unarchive_nodes, {
 		membershipId: db.membershipId,
@@ -2625,12 +2629,12 @@ test("archive_nodes and unarchive_nodes leave root generated siblings independen
 	});
 
 	const unarchivedDocs = await t.run(async (ctx) => {
-		const source = await ctx.db.get("files_nodes", sourceNodeId);
-		const generated = await ctx.db.get("files_nodes", generatedNodeId);
-		return { source, generated };
+		const sourceFileNode = await ctx.db.get("files_nodes", sourceNodeId);
+		const generatedFileNode = await ctx.db.get("files_nodes", generatedNodeId);
+		return { sourceFileNode, generatedFileNode };
 	});
-	expect(unarchivedDocs.source?.archiveOperationId).toBeUndefined();
-	expect(unarchivedDocs.generated?.archiveOperationId).toBeUndefined();
+	expect(unarchivedDocs.sourceFileNode?.archiveOperationId).toBeUndefined();
+	expect(unarchivedDocs.generatedFileNode?.archiveOperationId).toBeUndefined();
 });
 
 test("archive_nodes and unarchive_nodes include generated siblings as normal folder descendants", async () => {
@@ -2685,14 +2689,14 @@ test("archive_nodes and unarchive_nodes include generated siblings as normal fol
 	});
 
 	const archivedDocs = await t.run(async (ctx) => {
-		const folder = await ctx.db.get("files_nodes", folderId);
-		const source = await ctx.db.get("files_nodes", sourceNodeId);
-		const generated = await ctx.db.get("files_nodes", generatedNodeId);
-		return { folder, source, generated };
+		const folderFileNode = await ctx.db.get("files_nodes", folderId);
+		const sourceFileNode = await ctx.db.get("files_nodes", sourceNodeId);
+		const generatedFileNode = await ctx.db.get("files_nodes", generatedNodeId);
+		return { folderFileNode, sourceFileNode, generatedFileNode };
 	});
-	expect(archivedDocs.folder?.archiveOperationId).toEqual(expect.any(String));
-	expect(archivedDocs.source?.archiveOperationId).toBe(archivedDocs.folder?.archiveOperationId);
-	expect(archivedDocs.generated?.archiveOperationId).toBe(archivedDocs.folder?.archiveOperationId);
+	expect(archivedDocs.folderFileNode?.archiveOperationId).toEqual(expect.any(String));
+	expect(archivedDocs.sourceFileNode?.archiveOperationId).toBe(archivedDocs.folderFileNode?.archiveOperationId);
+	expect(archivedDocs.generatedFileNode?.archiveOperationId).toBe(archivedDocs.folderFileNode?.archiveOperationId);
 
 	await asUser.mutation(api.files_nodes.unarchive_nodes, {
 		membershipId: db.membershipId,
@@ -2700,14 +2704,14 @@ test("archive_nodes and unarchive_nodes include generated siblings as normal fol
 	});
 
 	const unarchivedDocs = await t.run(async (ctx) => {
-		const folder = await ctx.db.get("files_nodes", folderId);
-		const source = await ctx.db.get("files_nodes", sourceNodeId);
-		const generated = await ctx.db.get("files_nodes", generatedNodeId);
-		return { folder, source, generated };
+		const folderFileNode = await ctx.db.get("files_nodes", folderId);
+		const sourceFileNode = await ctx.db.get("files_nodes", sourceNodeId);
+		const generatedFileNode = await ctx.db.get("files_nodes", generatedNodeId);
+		return { folderFileNode, sourceFileNode, generatedFileNode };
 	});
-	expect(unarchivedDocs.folder?.archiveOperationId).toBeUndefined();
-	expect(unarchivedDocs.source?.archiveOperationId).toBeUndefined();
-	expect(unarchivedDocs.generated?.archiveOperationId).toBeUndefined();
+	expect(unarchivedDocs.folderFileNode?.archiveOperationId).toBeUndefined();
+	expect(unarchivedDocs.sourceFileNode?.archiveOperationId).toBeUndefined();
+	expect(unarchivedDocs.generatedFileNode?.archiveOperationId).toBeUndefined();
 });
 
 test("unarchive_nodes excludes unrequested ancestors from Archive Operation", async () => {
@@ -2815,7 +2819,7 @@ test("create_file_by_path creates active ancestors instead of reusing archived n
 			.collect();
 		expect(filesAtRoot2Path).toHaveLength(2);
 
-		const activeRoot2 = filesAtRoot2Path.find((file) => file.archiveOperationId === undefined);
+		const activeRoot2 = filesAtRoot2Path.find((fileNode) => fileNode.archiveOperationId === undefined);
 		if (!activeRoot2) {
 			throw new Error("Expected active root2 file to exist");
 		}
@@ -3210,12 +3214,12 @@ test("materialize_file_content writes empty Markdown and Yjs snapshots to R2", a
 	}
 
 	const saved = await t.run(async (ctx) => {
-		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		if (!node?.assetId || !node.yjsSnapshotId) {
+		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		if (!fileNode?.assetId || !fileNode.yjsSnapshotId) {
 			throw new Error("Expected materialized empty file docs");
 		}
-		const asset = await ctx.db.get("files_r2_assets", node.assetId);
-		const yjsSnapshot = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
+		const asset = await ctx.db.get("files_r2_assets", fileNode.assetId);
+		const yjsSnapshot = await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId);
 		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
@@ -3345,12 +3349,12 @@ test("materialize_file_content writes nonempty Markdown and Yjs snapshots to R2"
 	}
 
 	const saved = await t.run(async (ctx) => {
-		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		if (!node?.assetId || !node.yjsSnapshotId) {
+		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		if (!fileNode?.assetId || !fileNode.yjsSnapshotId) {
 			throw new Error("Expected materialized file docs");
 		}
-		const asset = await ctx.db.get("files_r2_assets", node.assetId);
-		const yjsSnapshot = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
+		const asset = await ctx.db.get("files_r2_assets", fileNode.assetId);
+		const yjsSnapshot = await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId);
 		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
@@ -3481,8 +3485,8 @@ async function test_read_committed_markdown(
 	r2Writes: Map<string, BodyInit>,
 ) {
 	return t.run(async (ctx) => {
-		const node = await ctx.db.get("files_nodes", nodeId);
-		const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		const fileNode = await ctx.db.get("files_nodes", nodeId);
+		const asset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 		return asset?.r2Key ? (r2Writes.get(asset.r2Key) as string | undefined) : undefined;
 	});
 }
@@ -3548,8 +3552,8 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	// The exact committed markdown the chunker saw is the oracle: the chunk reader must reproduce
 	// the same line ranges as slicing this text directly.
 	const { committed, chunkCount } = await t.run(async (ctx) => {
-		const node = await ctx.db.get("files_nodes", nodeId);
-		const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		const fileNode = await ctx.db.get("files_nodes", nodeId);
+		const asset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 		const chunks = await ctx.db
 			.query("files_markdown_chunks")
 			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
@@ -3627,12 +3631,12 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	// Currency gate: a stale snapshot (latest sequence ahead of the materialized snapshot) must not
 	// use chunks — the action falls back so output can never disagree with `cat`.
 	await t.run(async (ctx) => {
-		const node = await ctx.db.get("files_nodes", nodeId);
-		const snapshot = node?.yjsSnapshotId ? await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId) : null;
-		if (!node?.yjsLastSequenceId || !snapshot) {
+		const fileNode = await ctx.db.get("files_nodes", nodeId);
+		const snapshot = fileNode?.yjsSnapshotId ? await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId) : null;
+		if (!fileNode?.yjsLastSequenceId || !snapshot) {
 			throw new Error("Expected materialized yjs docs");
 		}
-		await ctx.db.patch("files_yjs_docs_last_sequences", node.yjsLastSequenceId, {
+		await ctx.db.patch("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId, {
 			lastSequence: snapshot.sequence + 1,
 		});
 	});
@@ -3999,7 +4003,7 @@ test("regex_search_plain_text_files scans committed and pending plain-text chunk
 	expect(broken.items).toEqual([]);
 });
 
-test("file_stats stay fresh after an edit: re-materialization patches the same row in place", async () => {
+test("file_stats stay fresh after an edit: re-materialization patches the same doc in place", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -4104,7 +4108,7 @@ test("file_stats stay fresh after an edit: re-materialization patches the same r
 	}).toEqual(wc(committedB));
 	expect(statsB.lineCount).toBeGreaterThan(statsA.lineCount);
 
-	// The same stats row was patched in place (back-ref unchanged) — no duplicate row was inserted.
+	// The same stats doc was patched in place (back-ref unchanged) — no duplicate doc was inserted.
 	const statsRowIdB = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.statsId ?? null);
 	expect(statsRowIdB).toBe(statsRowIdA);
 	const rowCount = await t.run(
@@ -4358,7 +4362,7 @@ test("text_search_files drops pending hits for archived files", async () => {
 	const beforeArchive = await search();
 	expect(beforeArchive.items.map((item) => item.path)).toEqual([path]);
 
-	// Archive flows never touch pending rows, so the node validation at read time must drop the hit.
+	// Archive flows never touch pending docs, so the node validation at read time must drop the hit.
 	const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
 		membershipId: db.membershipId,
 		nodeIds: [nodeId],
@@ -4394,7 +4398,7 @@ test("text_search_files paginates a multi-chunk pending file into committed resu
 	);
 
 	// Two sections that together exceed the chunker max size, so the pending file materializes as
-	// two chunk rows that both match the query.
+	// two chunk docs that both match the query.
 	const section = (label: string) => `# ${label}\n\npagingneedle ${"lorem ipsum dolor sit amet ".repeat(30)}`;
 	const unstagedMarkdown = `${section("First")}\n\n${section("Second")}`;
 	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
@@ -4689,11 +4693,11 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 	});
 	expect(readResult?.content).toBe(restoredMarkdown);
 	const saved = await t.run(async (ctx) => {
-		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		if (!node?.assetId) {
+		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		if (!fileNode?.assetId) {
 			throw new Error("Expected restored node docs");
 		}
-		const asset = await ctx.db.get("files_r2_assets", node.assetId);
+		const asset = await ctx.db.get("files_r2_assets", fileNode.assetId);
 
 		return { asset };
 	});
@@ -5090,8 +5094,8 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 	}
 
 	const { asset, yjsUpdates } = await t.run(async (ctx) => {
-		const node = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
-		const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
+		const asset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 		return {
 			asset,
 			yjsUpdates: await ctx.db

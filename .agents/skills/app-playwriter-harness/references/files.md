@@ -165,7 +165,7 @@ Use this when creating many QA files through the app agent.
 - Keep each prompt to 3-4 `write_file` paths. Larger batches can make the assistant claim success before every file is actually persisted.
 - After clicking `New chat`, verify the selected `.AiChatThread[data-thread-id]` starts with `ai_thread-` before sending. If the selected tab immediately reverts to an older persisted id, debug the optimistic tab cleanup before continuing.
 - Include a unique batch token in every requested file, but treat the Convex file-node query as the source of truth for count and paths.
-- Query actual file nodes after every batch with `app_convex.query(app_convex_api.files_nodes.get_file_nodes_list, { membershipId })`; do not rely on assistant summary text or visible tool previews for the final count.
+- Query actual file nodes after every batch with `app_convex.query(app_convex_api.files_nodes.list_tree, { membershipId })`; do not rely on assistant summary text or visible tool previews for the final count.
 - Repair missing files in separate one-file chats instead of resending a large batch.
 
 ### AI Chat Parent Id Race

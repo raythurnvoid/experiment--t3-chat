@@ -57,13 +57,12 @@ import type {
 } from "./ai_chat_files.ts";
 import type {
 	files_nodes_create_folder_node_by_path_Result,
-	files_nodes_get_bash_stat_entry_Result,
 	files_nodes_get_by_path_Result,
 	files_nodes_get_file_last_available_markdown_content_by_path_Result,
 	files_nodes_match_markdown_file_lines_Result,
 	files_nodes_match_plain_text_file_lines_Result,
 	files_nodes_list_children_Result,
-	files_nodes_list_folder_subtree_Result,
+	files_nodes_list_subtree_Result,
 	files_nodes_read_file_content_from_chunks_Result,
 	files_nodes_read_file_content_stats_Result,
 	files_nodes_read_file_line_range_Result,
@@ -177,7 +176,7 @@ const NATIVE_JUST_BASH_TMP_COMMANDS = ALLOWED_COMMANDS.filter((command) => !APP_
 /**
  * Keep the Just Bash path cache to the file-node fields the virtual filesystem needs.
  *
- * Some entries come from Convex `files_nodes` rows, others are synthetic parent
+ * Some entries come from Convex `files_nodes` docs, others are synthetic parent
  * folders created while caching descendants.
  */
 type JustBashFileNodeCacheEntry = {
@@ -2171,23 +2170,23 @@ async function ls_command_get_path_entry(args: {
 		return files_SYNTHETIC_ROOT_FOLDER;
 	}
 
-	const entry = (await args.ctx.runQuery(internal.files_nodes.get_by_path, {
+	const fileNode = (await args.ctx.runQuery(internal.files_nodes.get_by_path, {
 		workspaceId: args.ctxData.workspaceId,
 		projectId: args.ctxData.projectId,
 		path: args.appFileNodePath,
 	})) as files_nodes_get_by_path_Result;
-	if (entry) {
+	if (fileNode) {
 		args.workspaceFs.rememberEntry({
-			_id: entry._id,
-			path: entry.path,
-			name: entry.name,
-			kind: entry.kind,
-			updatedAt: entry.updatedAt,
-			updatedBy: entry.updatedBy,
-			contentType: entry.contentType,
+			_id: fileNode._id,
+			path: fileNode.path,
+			name: fileNode.name,
+			kind: fileNode.kind,
+			updatedAt: fileNode.updatedAt,
+			updatedBy: fileNode.updatedBy,
+			contentType: fileNode.contentType,
 		});
 	}
-	return entry;
+	return fileNode;
 }
 
 function ls_command_build_continuation(args: {
@@ -2390,8 +2389,8 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 			}
 
 			// Plain output only needs basic entry data. Long output asks for the
-			// full file-node row when it needs updatedBy/contentType fields.
-			const entry = await ls_command_get_path_entry({
+			// full file-node doc when it needs updatedBy/contentType fields.
+			const fileNode = await ls_command_get_path_entry({
 				ctx,
 				ctxData: workspaceFs.ctxData,
 				workspaceFs,
@@ -2399,7 +2398,7 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 				needsFullMetadata:
 					parsed._yay.long && (parsed._yay.directory || (await workspaceFs.getEntry(appFileNodePath))?.kind === "file"),
 			});
-			if (!entry) {
+			if (!fileNode) {
 				stderr += `ls: cannot access '${target.absoluteShellPath}': No such file or directory\n`;
 				if (exitCode === 0) {
 					exitCode = COMMAND_EXIT_FAILURE;
@@ -2408,7 +2407,7 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 			}
 
 			const lines: string[] = [];
-			if (parsed._yay.directory || entry.kind === "file") {
+			if (parsed._yay.directory || fileNode.kind === "file") {
 				// `-d` means "print the target itself"; files are also printed as a
 				// single target instead of being treated as directories.
 				if (parsed._yay.cursor != null) {
@@ -2420,10 +2419,10 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 				}
 				lines.push(
 					ls_command_format_item({
-						kind: entry.kind,
-						updatedAt: entry.updatedAt,
-						updatedBy: entry.updatedBy,
-						contentType: entry.contentType,
+						kind: fileNode.kind,
+						updatedAt: fileNode.updatedAt,
+						updatedBy: fileNode.updatedBy,
+						contentType: fileNode.contentType,
 						display: target.absoluteShellPath,
 						long: parsed._yay.long,
 					}),
@@ -2431,7 +2430,7 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 			} else if (parsed._yay.recursive) {
 				// Recursive listings use the subtree index and print absolute shell
 				// paths, since children can be nested at different depths.
-				const result = (await ctx.runQuery(internal.files_nodes.list_folder_subtree, {
+				const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 					workspaceId: workspaceFs.ctxData.workspaceId,
 					projectId: workspaceFs.ctxData.projectId,
 					folderPath: appFileNodePath,
@@ -2439,7 +2438,7 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 					cursor,
 					minDepth: 1,
 					order: parsed._yay.reverse ? "desc" : "asc",
-				})) as files_nodes_list_folder_subtree_Result;
+				})) as files_nodes_list_subtree_Result;
 
 				lines.push(
 					...result.page.map((item) =>
@@ -2467,10 +2466,10 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 				// Plain directory listings are a parentId query. The project root is
 				// synthetic, so its parent id is the stable root sentinel.
 				let parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
-				if (entry.path === "/") {
+				if (fileNode.path === "/") {
 					parentId = files_ROOT_ID;
 				} else {
-					parentId = entry._id as Id<"files_nodes">;
+					parentId = fileNode._id as Id<"files_nodes">;
 				}
 				const result = (await ctx.runQuery(internal.files_nodes.list_children, {
 					workspaceId: workspaceFs.ctxData.workspaceId,
@@ -2509,7 +2508,7 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 			if (lines.length === 0) {
 				lines.push("(empty directory)");
 			}
-			if (targets.length > 1 && entry.kind === "folder" && !parsed._yay.directory) {
+			if (targets.length > 1 && fileNode.kind === "folder" && !parsed._yay.directory) {
 				lines.unshift(`${target.absoluteShellPath}:`);
 			}
 			sections.push(lines.join("\n"));
@@ -2906,7 +2905,7 @@ function find_command_parse_args(args: string[]) {
  * Convert a shell prefix to the app path format used by `treePath`.
  *
  * Prefix scans do not require an existing file-node doc. They only need the normalized
- * app path that `list_folder_subtree` can turn into a trailing-slash
+ * app path that `list_subtree` can turn into a trailing-slash
  * `treePath` prefix.
  */
 function find_command_prefix_to_app_file_node_path(
@@ -3093,7 +3092,7 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 				};
 			}
 
-			const result = (await ctx.runQuery(internal.files_nodes.list_folder_subtree, {
+			const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 				workspaceId: workspaceFs.ctxData.workspaceId,
 				projectId: workspaceFs.ctxData.projectId,
 				folderPath: prefixResult._yay.appFileNodePath,
@@ -3104,7 +3103,7 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 					: parsed._yay.type === "d"
 						? { kind: "folder" as const }
 						: {}),
-			})) as files_nodes_list_folder_subtree_Result;
+			})) as files_nodes_list_subtree_Result;
 
 			const lines = result.page.map(
 				(item) =>
@@ -3148,7 +3147,7 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 			});
 		}
 
-		const entry: files_nodes_get_by_path_Result =
+		const fileNode: files_nodes_get_by_path_Result =
 			target.appFileNodePath === "/"
 				? null
 				: await ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -3157,7 +3156,7 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 						path: target.appFileNodePath,
 					});
 		// Missing concrete app paths fail normally, with a hint for prefix-style discovery.
-		if (target.appFileNodePath !== "/" && !entry) {
+		if (target.appFileNodePath !== "/" && !fileNode) {
 			return {
 				stdout: "",
 				stderr:
@@ -3228,7 +3227,7 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 				}
 			} else {
 				// A scoped path-word search starts from an exact folder.
-				if (!entry || entry.kind !== "folder") {
+				if (!fileNode || fileNode.kind !== "folder") {
 					return {
 						stdout: "",
 						stderr: "find: path word search can target the project root or an immediate folder.\n",
@@ -3268,11 +3267,11 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 				}
 
 				if (parsed._yay.maxDepth === 1) {
-					parentId = entry._id;
+					parentId = fileNode._id;
 				} else {
 					pathPrefix = target.appFileNodePath;
 					if (parsed._yay.minDepth === 1) {
-						minPathDepth = entry.pathDepth + 1;
+						minPathDepth = fileNode.pathDepth + 1;
 					}
 				}
 			}
@@ -3332,13 +3331,13 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 			}
 
 			// Exact file targets are handled without a subtree query.
-			if (entry?.kind === "file") {
+			if (fileNode?.kind === "file") {
 				const matchesDepth =
 					(parsed._yay.minDepth == null || parsed._yay.minDepth <= 0) &&
 					(parsed._yay.maxDepth == null || parsed._yay.maxDepth >= 0);
 				const lines: string[] =
-					cursor == null && matchesDepth && entry.lowercaseExtension === parsed._yay.extension
-						? [app_file_node_path_to_current_project_path(currentProjectPath, entry.path)]
+					cursor == null && matchesDepth && fileNode.lowercaseExtension === parsed._yay.extension
+						? [app_file_node_path_to_current_project_path(currentProjectPath, fileNode.path)]
 						: ["0 matches."];
 				return {
 					stdout: `${lines.join("\n")}\n`,
@@ -3347,7 +3346,7 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 				};
 			}
 
-			const result = (await ctx.runQuery(internal.files_nodes.list_folder_subtree, {
+			const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 				workspaceId: workspaceFs.ctxData.workspaceId,
 				projectId: workspaceFs.ctxData.projectId,
 				folderPath: target.appFileNodePath,
@@ -3357,7 +3356,7 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 				cursor,
 				...(parsed._yay.minDepth == null ? {} : { minDepth: parsed._yay.minDepth }),
 				...(parsed._yay.maxDepth == null ? {} : { maxDepth: parsed._yay.maxDepth }),
-			})) as files_nodes_list_folder_subtree_Result;
+			})) as files_nodes_list_subtree_Result;
 
 			const lines = result.page.map((item) =>
 				app_file_node_path_to_current_project_path(currentProjectPath, item.path),
@@ -3384,14 +3383,14 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 		}
 
 		// Plain app-file find lists the subtree through the path index with optional type/depth filters.
-		if (entry?.kind === "file") {
+		if (fileNode?.kind === "file") {
 			const matchesKind = parsed._yay.type == null || parsed._yay.type === "f";
 			const matchesDepth =
 				(parsed._yay.minDepth == null || parsed._yay.minDepth <= 0) &&
 				(parsed._yay.maxDepth == null || parsed._yay.maxDepth >= 0);
 			const lines: string[] =
 				cursor == null && matchesKind && matchesDepth
-					? [app_file_node_path_to_current_project_path(currentProjectPath, entry.path)]
+					? [app_file_node_path_to_current_project_path(currentProjectPath, fileNode.path)]
 					: ["0 matches."];
 			return {
 				stdout: `${lines.join("\n")}\n`,
@@ -3400,7 +3399,7 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 			};
 		}
 
-		const result = (await ctx.runQuery(internal.files_nodes.list_folder_subtree, {
+		const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 			workspaceId: workspaceFs.ctxData.workspaceId,
 			projectId: workspaceFs.ctxData.projectId,
 			folderPath: target.appFileNodePath,
@@ -3413,7 +3412,7 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 					: {}),
 			...(parsed._yay.minDepth == null ? {} : { minDepth: parsed._yay.minDepth }),
 			...(parsed._yay.maxDepth == null ? {} : { maxDepth: parsed._yay.maxDepth }),
-		})) as files_nodes_list_folder_subtree_Result;
+		})) as files_nodes_list_subtree_Result;
 
 		const lines = result.page.map(
 			(item) =>
@@ -3625,7 +3624,7 @@ function tree_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 
 		// The project root is synthetic and has no files_nodes doc. Every non-root
 		// app target must resolve to a real file-node doc before tree can print it.
-		const entry =
+		const fileNode =
 			target.appFileNodePath === "/"
 				? null
 				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -3635,7 +3634,7 @@ function tree_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 					})) as files_nodes_get_by_path_Result);
 
 		// Missing concrete app paths fail like normal tree paths.
-		if (target.appFileNodePath !== "/" && !entry) {
+		if (target.appFileNodePath !== "/" && !fileNode) {
 			return {
 				stdout: "",
 				stderr: `tree: ${target.absoluteShellPath}: No such file or directory\n`,
@@ -3644,7 +3643,7 @@ function tree_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 		}
 
 		// A file target is already a complete tree of one item.
-		if (entry?.kind === "file") {
+		if (fileNode?.kind === "file") {
 			return {
 				stdout: `${target.absoluteShellPath}\n`,
 				stderr: "",
@@ -3654,14 +3653,14 @@ function tree_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 
 		// Folder targets use the subtree index. minDepth excludes the folder itself
 		// because the first output line already prints the requested root path.
-		const result = (await ctx.runQuery(internal.files_nodes.list_folder_subtree, {
+		const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
 			workspaceId: workspaceFs.ctxData.workspaceId,
 			projectId: workspaceFs.ctxData.projectId,
 			folderPath: target.appFileNodePath,
 			numItems: clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
 			minDepth: 1,
-		})) as files_nodes_list_folder_subtree_Result;
+		})) as files_nodes_list_subtree_Result;
 
 		// Render each returned descendant as a simple tree branch relative to the
 		// requested root, preserving folder slashes for easy visual scanning.
@@ -4145,7 +4144,7 @@ function grep_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 					};
 				}
 
-				const entry =
+				const fileNode =
 					target.appFileNodePath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -4153,7 +4152,7 @@ function grep_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 								projectId: workspaceFs.ctxData.projectId,
 								path: target.appFileNodePath,
 							})) as files_nodes_get_by_path_Result);
-				if (!entry || entry.kind !== "file") {
+				if (!fileNode || fileNode.kind !== "file") {
 					return {
 						stdout: "",
 						stderr: `grep: ${target.inputPath}: No such file or directory\n`,
@@ -4177,7 +4176,7 @@ function grep_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 					workspaceId: workspaceFs.ctxData.workspaceId,
 					projectId: workspaceFs.ctxData.projectId,
 					userId: workspaceFs.ctxData.userId,
-					fileNodeId: entry._id,
+					fileNodeId: fileNode._id,
 					pattern: parsed._yay.pattern,
 					ignoreCase: parsed._yay.ignoreCase,
 					fixedStrings: parsed._yay.fixedStrings,
@@ -4406,7 +4405,7 @@ function grep_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 				appFileNodePath: current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
 			};
 
-			const entry =
+			const fileNode =
 				target.appFileNodePath == null || target.appFileNodePath === "/"
 					? null
 					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -4415,7 +4414,7 @@ function grep_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 							path: target.appFileNodePath,
 						})) as files_nodes_get_by_path_Result);
 
-			if (target.appFileNodePath != null && (target.appFileNodePath === "/" || entry?.kind === "folder")) {
+			if (target.appFileNodePath != null && (target.appFileNodePath === "/" || fileNode?.kind === "folder")) {
 				const recursivePattern = parsed._yay.pattern;
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
 					workspaceId: workspaceFs.ctxData.workspaceId,
@@ -4525,7 +4524,7 @@ function grep_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 					appFileNodePath: current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
 				};
 
-				const entry =
+				const fileNode =
 					target.appFileNodePath == null || target.appFileNodePath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -4534,7 +4533,7 @@ function grep_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 								path: target.appFileNodePath,
 							})) as files_nodes_get_by_path_Result);
 
-				if (target.appFileNodePath === "/" || entry?.kind === "folder") {
+				if (target.appFileNodePath === "/" || fileNode?.kind === "folder") {
 					suggestedCommand = `search --path ${shell_arg_quote(target.absoluteShellPath)} --limit 20 ${shell_arg_quote(parsed._yay.pattern)}`;
 				}
 			}
@@ -4747,7 +4746,7 @@ function textgrep_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, curre
 				};
 			}
 
-			const entry =
+			const fileNode =
 				target.appFileNodePath === "/"
 					? null
 					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -4756,7 +4755,7 @@ function textgrep_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, curre
 							path: target.appFileNodePath,
 						})) as files_nodes_get_by_path_Result);
 
-			if (!entry || entry.kind !== "file") {
+			if (!fileNode || fileNode.kind !== "file") {
 				return {
 					stdout: "",
 					stderr: `textgrep: ${target.inputPath}: No such file or directory\n`,
@@ -4768,7 +4767,7 @@ function textgrep_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, curre
 				workspaceId: workspaceFs.ctxData.workspaceId,
 				projectId: workspaceFs.ctxData.projectId,
 				userId: workspaceFs.ctxData.userId,
-				fileNodeId: entry._id,
+				fileNodeId: fileNode._id,
 				pattern: parsed._yay.pattern,
 				ignoreCase: parsed._yay.ignoreCase,
 			})) as files_nodes_match_plain_text_file_lines_Result;
@@ -5145,19 +5144,19 @@ function cat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPro
 					// query could not serve the requested page. Resolve the node only
 					// to print the native-looking failure for files, folders, or misses.
 					if (!page) {
-						const entry = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+						const fileNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 							workspaceId: workspaceFs.ctxData.workspaceId,
 							projectId: workspaceFs.ctxData.projectId,
 							path: target.appFileNodePath,
 						})) as files_nodes_get_by_path_Result;
 
-						if (entry?.kind === "file") {
-							stderr += files_node_has_editable_yjs_state(entry)
+						if (fileNode?.kind === "file") {
+							stderr += files_node_has_editable_yjs_state(fileNode)
 								? `cat: ${file}: content is not available from materialized chunks\n`
-								: build_unreadable_file_advisory(currentProjectPath, target.appFileNodePath, entry.contentType);
+								: build_unreadable_file_advisory(currentProjectPath, target.appFileNodePath, fileNode.contentType);
 						} else {
 							stderr +=
-								entry?.kind === "folder"
+								fileNode?.kind === "folder"
 									? `cat: ${file}: Is a directory\n`
 									: `cat: ${file}: No such file or directory\n`;
 						}
@@ -5209,7 +5208,7 @@ function cat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPro
 
 				// No chunk content means cat has no stdout for this operand. Check the
 				// node only to choose the right stderr message and exit status.
-				const entry: files_nodes_get_by_path_Result =
+				const fileNode: files_nodes_get_by_path_Result =
 					target.appFileNodePath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -5218,18 +5217,18 @@ function cat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPro
 								path: target.appFileNodePath,
 							})) as files_nodes_get_by_path_Result);
 
-				if (target.appFileNodePath === "/" || entry?.kind === "folder") {
+				if (target.appFileNodePath === "/" || fileNode?.kind === "folder") {
 					stderr += `cat: ${file}: Is a directory\n`;
 					exitCode = 1;
 					continue;
 				}
 
-				if (entry?.kind === "file") {
+				if (fileNode?.kind === "file") {
 					// Advisory belongs on stderr so `cat unreadable | grep ...` cannot match it
 					// as if it were file content.
-					stderr += files_node_has_editable_yjs_state(entry)
+					stderr += files_node_has_editable_yjs_state(fileNode)
 						? `cat: ${file}: content is not available from materialized chunks\n`
-						: build_unreadable_file_advisory(currentProjectPath, target.appFileNodePath, entry.contentType);
+						: build_unreadable_file_advisory(currentProjectPath, target.appFileNodePath, fileNode.contentType);
 					exitCode = 1;
 					continue;
 				}
@@ -5280,13 +5279,37 @@ const STAT_FORMAT_CTIME_SECONDS_REGEX = /%Z/g;
 function stat_command_parse_args(args: string[]) {
 	let format: string | null = null;
 	const files: string[] = [];
+	let optionsEnded = false;
+
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
+		if (optionsEnded) {
+			files.push(arg);
+			continue;
+		}
+		if (arg === "--") {
+			optionsEnded = true;
+			continue;
+		}
 		if (arg === "--help") {
 			return Result({ _yay: { delegate: true } as const });
 		}
 		if (arg === "-c") {
-			format = args[++index] ?? "";
+			const value = read_option_value("stat", args, index, "-c");
+			if (value._nay) return value;
+			format = value._yay.value;
+			index++;
+			continue;
+		}
+		if (arg === "--format") {
+			const value = read_option_value("stat", args, index, "--format");
+			if (value._nay) return value;
+			format = value._yay.value;
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--format=")) {
+			format = arg.slice("--format=".length);
 			continue;
 		}
 		if (arg.startsWith("-c")) {
@@ -5398,33 +5421,47 @@ function stat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 			}
 			const resolvedPath = resolve_path(commandCtx.cwd, file);
 			const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath);
-			try {
-				if (appFileNodePath == null) {
+
+			if (appFileNodePath == null) {
+				try {
 					const stat = await commandCtx.fs.stat(resolvedPath);
 					stdout += stat_command_render_output(parsedResult._yay.format, file, stat);
-					continue;
+				} catch {
+					stderr += `stat: cannot stat '${file}': No such file or directory\n`;
+					hasError = true;
 				}
-				const entry = (await ctx.runQuery(internal.files_nodes.get_bash_stat_entry, {
-					workspaceId: workspaceFs.ctxData.workspaceId,
-					projectId: workspaceFs.ctxData.projectId,
-					path: appFileNodePath,
-				})) as files_nodes_get_bash_stat_entry_Result;
-				if (!entry) {
-					throw new Error("missing");
-				}
-				stdout += stat_command_render_output(parsedResult._yay.format, file, {
-					isDirectory: entry.kind === "folder",
-					mode: entry.kind === "folder" ? 0o755 : 0o644,
-					// size: 0 means the committed R2 snapshot is empty (initial blank doc);
-					// treat it the same as undefined so the output says "not tracked" rather
-					// than "0 bytes", which would mislead the agent into thinking the file is empty.
-					size: entry.size || undefined,
-					mtime: new Date(entry.updatedAt),
-				});
-			} catch {
+				continue;
+			}
+
+			const fileNode: files_nodes_get_by_path_Result | typeof files_SYNTHETIC_ROOT_FOLDER =
+				appFileNodePath === "/"
+					? files_SYNTHETIC_ROOT_FOLDER
+					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+							workspaceId: workspaceFs.ctxData.workspaceId,
+							projectId: workspaceFs.ctxData.projectId,
+							path: appFileNodePath,
+						})) as files_nodes_get_by_path_Result);
+			if (!fileNode) {
 				stderr += `stat: cannot stat '${file}': No such file or directory\n`;
 				hasError = true;
+				continue;
 			}
+
+			const asset =
+				fileNode.kind === "file" && fileNode.assetId != null
+					? ((await ctx.runQuery(internal.r2.get_asset_by_id, {
+							workspaceId: workspaceFs.ctxData.workspaceId,
+							projectId: workspaceFs.ctxData.projectId,
+							assetId: fileNode.assetId,
+						})) as get_asset_by_id_Result)
+					: null;
+
+			stdout += stat_command_render_output(parsedResult._yay.format, file, {
+				isDirectory: fileNode.kind === "folder",
+				mode: fileNode.kind === "folder" ? 0o755 : 0o644,
+				size: asset?.size,
+				mtime: new Date(fileNode.updatedAt),
+			});
 		}
 
 		return { stdout, stderr, exitCode: hasError ? 1 : 0 };
@@ -5706,7 +5743,7 @@ function reader_command_create(
 					path: appFileNodePath,
 				})) as files_nodes_read_file_content_stats_Result;
 				if (!stats) {
-					const entry =
+					const fileNode =
 						appFileNodePath === "/"
 							? null
 							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -5714,8 +5751,8 @@ function reader_command_create(
 									projectId: workspaceFs.ctxData.projectId,
 									path: appFileNodePath,
 								})) as files_nodes_get_by_path_Result);
-					if (entry?.kind === "file") {
-						stderr += build_unreadable_file_advisory(currentProjectPath, appFileNodePath, entry.contentType);
+					if (fileNode?.kind === "file") {
+						stderr += build_unreadable_file_advisory(currentProjectPath, appFileNodePath, fileNode.contentType);
 					} else {
 						stderr += `wc: ${file}: No such file or directory\n`;
 					}
@@ -6575,7 +6612,7 @@ class WorkspaceFs implements IFileSystem {
 				path: normalizedPath,
 			},
 		) as Promise<files_nodes_get_file_last_available_markdown_content_by_path_Result>;
-		const nodePromise: Promise<files_nodes_get_by_path_Result> =
+		const fileNodePromise: Promise<files_nodes_get_by_path_Result> =
 			normalizedPath === "/"
 				? Promise.resolve(null)
 				: (this.ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -6583,19 +6620,19 @@ class WorkspaceFs implements IFileSystem {
 						projectId: this.ctxData.projectId,
 						path: normalizedPath,
 					}) as Promise<files_nodes_get_by_path_Result>);
-		const [fileContent, node] = await Promise.all([fileContentPromise, nodePromise]);
+		const [fileContent, fileNode] = await Promise.all([fileContentPromise, fileNodePromise]);
 
 		if (!fileContent) {
-			const entry = normalizedPath === "/" ? files_SYNTHETIC_ROOT_FOLDER : node;
-			if (entry?.kind === "file") {
-				this.rememberEntry(entry);
+			const cacheEntry = normalizedPath === "/" ? files_SYNTHETIC_ROOT_FOLDER : fileNode;
+			if (cacheEntry?.kind === "file") {
+				this.rememberEntry(cacheEntry);
 				throw new AppFileContentUnavailableError({
 					shellPath: app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath),
-					contentType: entry.contentType,
+					contentType: cacheEntry.contentType,
 				});
 			}
-			if (entry?.kind === "folder") {
-				this.rememberEntry(entry);
+			if (cacheEntry?.kind === "folder") {
+				this.rememberEntry(cacheEntry);
 				throw new Error(
 					`EISDIR: illegal operation on a directory, read '${app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 				);
@@ -6606,8 +6643,8 @@ class WorkspaceFs implements IFileSystem {
 		}
 
 		this.contentCache.set(normalizedPath, fileContent.content);
-		if (node?.kind === "file") {
-			this.rememberEntry(node);
+		if (fileNode?.kind === "file") {
+			this.rememberEntry(fileNode);
 		} else {
 			this.rememberEntry({
 				_id: fileContent.nodeId,
@@ -6643,8 +6680,8 @@ class WorkspaceFs implements IFileSystem {
 				`app file glob patterns are not supported: '${app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
-		const entry = await this.getEntry(normalizedPath);
-		if (!entry) {
+		const cacheEntry = await this.getEntry(normalizedPath);
+		if (!cacheEntry) {
 			throw new Error(
 				`ENOENT: no such file or directory, stat '${app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
@@ -6652,12 +6689,12 @@ class WorkspaceFs implements IFileSystem {
 
 		const content = this.contentCache.get(normalizedPath);
 		return {
-			isFile: entry.kind === "file",
-			isDirectory: entry.kind === "folder",
+			isFile: cacheEntry.kind === "file",
+			isDirectory: cacheEntry.kind === "folder",
 			isSymbolicLink: false,
-			mode: entry.kind === "file" ? 0o644 : 0o755,
+			mode: cacheEntry.kind === "file" ? 0o644 : 0o755,
 			size: content == null ? 0 : textEncoder.encode(content).byteLength,
-			mtime: new Date(entry.updatedAt),
+			mtime: new Date(cacheEntry.updatedAt),
 		};
 	}
 
@@ -6781,8 +6818,8 @@ class WorkspaceFs implements IFileSystem {
 		throw new ReadOnlyFileSystemError(app_file_node_path_to_current_project_path(this.currentProjectPath, path));
 	}
 
-	rememberEntry(entry: JustBashFileNodeCacheEntry) {
-		const normalizedPath = normalize_path(entry.path);
+	rememberEntry(cacheEntry: JustBashFileNodeCacheEntry) {
+		const normalizedPath = normalize_path(cacheEntry.path);
 		const segments = normalizedPath.split("/").filter(Boolean);
 		let currentPath = "";
 		for (let index = 0; index < segments.length - 1; index++) {
@@ -6792,12 +6829,12 @@ class WorkspaceFs implements IFileSystem {
 					path: currentPath,
 					name: segments[index],
 					kind: "folder",
-					updatedAt: entry.updatedAt,
+					updatedAt: cacheEntry.updatedAt,
 				});
 			}
 		}
 		this.entryCache.set(normalizedPath, {
-			...entry,
+			...cacheEntry,
 			path: normalizedPath,
 		});
 	}
@@ -6809,27 +6846,27 @@ class WorkspaceFs implements IFileSystem {
 			return cached;
 		}
 
-		const node = (await this.ctx.runQuery(internal.files_nodes.get_by_path, {
+		const fileNode = (await this.ctx.runQuery(internal.files_nodes.get_by_path, {
 			workspaceId: this.ctxData.workspaceId,
 			projectId: this.ctxData.projectId,
 			path: normalizedPath,
 		})) as files_nodes_get_by_path_Result;
 
-		if (!node) {
+		if (!fileNode) {
 			return null;
 		}
 
-		const entry = {
-			_id: node._id,
-			path: node.path,
-			name: node.name,
-			kind: node.kind,
-			updatedAt: node.updatedAt,
-			updatedBy: node.updatedBy,
-			contentType: node.contentType,
+		const cacheEntry = {
+			_id: fileNode._id,
+			path: fileNode.path,
+			name: fileNode.name,
+			kind: fileNode.kind,
+			updatedAt: fileNode.updatedAt,
+			updatedBy: fileNode.updatedBy,
+			contentType: fileNode.contentType,
 		} satisfies JustBashFileNodeCacheEntry;
-		this.rememberEntry(entry);
-		return entry;
+		this.rememberEntry(cacheEntry);
+		return cacheEntry;
 	}
 }
 
@@ -7807,7 +7844,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		}
 
 		async function get_seeded_node_id(runner: Awaited<ReturnType<typeof create_bash_runner>>, path: string) {
-			const node = await runner.t.run((ctx) =>
+			const fileNode = await runner.t.run((ctx) =>
 				ctx.db
 					.query("files_nodes")
 					.withIndex("by_workspace_project_path_archiveOperation", (q) =>
@@ -7819,10 +7856,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					)
 					.first(),
 			);
-			if (!node) {
+			if (!fileNode) {
 				throw new Error(`No seeded node at ${path}`);
 			}
-			return node._id;
+			return fileNode._id;
 		}
 
 		test("runs pwd and persists cd across invocations", async () => {
@@ -8576,7 +8613,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(extension.stdout.trim()).toBe(`${test_app_files_mount}/docs/readme.md`);
 			expect(typeFolder.stdout.trim()).toBe("0 matches.");
 			expect(tooDeep.stdout.trim()).toBe("0 matches.");
-			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:list_folder_subtree")).toBe(
+			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:list_subtree")).toBe(
 				false,
 			);
 		});
@@ -8707,7 +8744,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				new RegExp(`Next page: find ${test_app_files_mount}/docs --extension md --limit 1 --cursor \\S+`, "u"),
 			);
 			expect(runQuery).toHaveBeenCalledWith(
-				internal.files_nodes.list_folder_subtree,
+				internal.files_nodes.list_subtree,
 				expect.objectContaining({
 					folderPath: "/docs",
 					kind: "file",
@@ -9741,7 +9778,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout.trim()).toBe(`${test_app_files_mount}/docs/readme.md`);
-			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:list_folder_subtree")).toBe(
+			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:list_subtree")).toBe(
 				false,
 			);
 		});
@@ -9794,6 +9831,36 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				expect(unreadable.stdout).toContain("Markdown and plain text files only");
 				expect(unreadable.stdout).toContain(`${test_app_files_mount}/source.pdf.md`);
 			}
+		});
+
+		test("supports stat long format options and dash-leading operands after --", async () => {
+			const { run } = await create_bash_runner();
+			const readmePath = `${test_app_files_mount}/docs/readme.md`;
+
+			const shortFormat = await run(`stat -c "%F %n" ${readmePath}`);
+			const longFormat = await run(`stat --format "%F %n" ${readmePath}`);
+			const equalsFormat = await run(`stat --format=%F ${readmePath}`);
+			const dashLeadingTmp = await run("printf hi > /tmp/-dash-stat && stat -- /tmp/-dash-stat");
+
+			expect(shortFormat.metadata.exitCode).toBe(0);
+			expect(longFormat.metadata.exitCode).toBe(0);
+			expect(equalsFormat.metadata.exitCode).toBe(0);
+			expect(dashLeadingTmp.metadata.exitCode).toBe(0);
+			expect(longFormat.stdout).toBe(shortFormat.stdout);
+			expect(equalsFormat.stdout).toBe("regular file\n");
+			expect(dashLeadingTmp.stdout).toContain("File: /tmp/-dash-stat");
+		});
+
+		test("rejects stat format options without a value", async () => {
+			const { run } = await create_bash_runner();
+
+			const shortFormat = await run("stat -c");
+			const longFormat = await run("stat --format");
+
+			expect(shortFormat.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(longFormat.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(shortFormat.stderr).toContain("stat: -c requires a value");
+			expect(longFormat.stderr).toContain("stat: --format requires a value");
 		});
 
 		test("caps the number of app files a single reader command fetches", async () => {

@@ -2825,7 +2825,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
 	const selectedFilePathAutoExpandedKeyRef = useRef<string | null>(null);
 
-	const treeNodesList = useQuery(app_convex_api.files_nodes.get_file_nodes_list, {
+	const treeNodesList = useQuery(app_convex_api.files_nodes.list_tree, {
 		membershipId,
 	});
 	const treeItemsList = useMemo(
@@ -3503,7 +3503,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							return;
 						}
 
-						const treeNodesList = localStore.getQuery(app_convex_api.files_nodes.get_file_nodes_list, {
+						const treeNodesList = localStore.getQuery(app_convex_api.files_nodes.list_tree, {
 							membershipId,
 						});
 						if (!treeNodesList) {
@@ -3525,7 +3525,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						}
 
 						localStore.setQuery(
-							app_convex_api.files_nodes.get_file_nodes_list,
+							app_convex_api.files_nodes.list_tree,
 							{
 								membershipId,
 							},
@@ -5105,6 +5105,55 @@ if (import.meta.vitest) {
 					]),
 				}),
 			).toEqual([folderAlpha._id, folderBeta._id, fileTwo._id, fileTen._id]);
+		});
+
+		test("keeps visible child order that raw treePath order does not provide", () => {
+			const folderTwo = test_node({
+				id: "folder_two",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "file-2",
+			});
+			const folderTen = test_node({
+				id: "folder_ten",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "file-10",
+			});
+			const fileTwo = test_node({
+				id: "file_two",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				name: "file-2.md",
+			});
+			const fileTen = test_node({
+				id: "file_ten",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				name: "file-10.md",
+			});
+			const folderReport = test_node({
+				id: "folder_report",
+				parentId: files_ROOT_ID,
+				kind: "folder",
+				name: "report",
+			});
+			const fileReport = test_node({
+				id: "file_report",
+				parentId: files_ROOT_ID,
+				kind: "file",
+				name: "report.md",
+			});
+			const items = [folderTwo, folderTen, fileTwo, fileTen, folderReport, fileReport];
+			const itemById = new Map<string, files_TreeItem>(items.map((item) => [item._id, item]));
+			const treePathOrder = [...items].sort((left, right) => left.treePath.localeCompare(right.treePath));
+
+			expect(treePathOrder.map((item) => item._id)).not.toEqual(
+				sort_children({
+					children: items.map((item) => item._id),
+					itemById,
+				}),
+			);
 		});
 	});
 

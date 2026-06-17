@@ -2033,7 +2033,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const searchNodeId = searchParams.nodeId;
 	const isRootNodeSelected = searchNodeId === files_ROOT_ID;
 
-	const fileNodesList = useStableQuery(app_convex_api.files_nodes.get_file_nodes_list, { membershipId });
+	const fileNodesList = useStableQuery(app_convex_api.files_nodes.list_tree, { membershipId });
 
 	const resolvedNode = useStableQuery(
 		app_convex_api.files_nodes.get_file_node_for_membership,

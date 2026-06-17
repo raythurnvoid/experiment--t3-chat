@@ -157,7 +157,7 @@ Important limitation:
 - Presents `/home/cloud-usr/w/{workspaceName}/{projectName}` as the shell path for app files.
 - Does not alias `/` to app files; `/` only exposes normal mount-point directories such as `/home` and `/tmp`.
 - `cat` reads app-file operands from materialized Markdown chunks and preserves the current user's pending-update overlay. It does not fall back to full-content reconstruction for unreadable or unmaterialized files; summarize stderr as an advisory or failure, not file content.
-- Lists direct app children through `files_nodes.list_dir_children_by_parent_paginated` / `files_nodes.list_dir_children_by_parent_recency_paginated`, and folder subtrees through `files_nodes.list_folder_subtree_paginated` after exact targets are resolved with `files_nodes.get_by_path`.
+- Lists direct app children through `files_nodes.list_children`, and folder subtrees through `files_nodes.list_subtree` after exact targets are resolved with `files_nodes.get_by_path`.
 - Treats file writes under the app file tree as read-only; persistent content changes must use `write_file` or `edit_file`.
 - Convert bash paths to app paths before calling `write_file` or `edit_file` by removing the current project path prefix `/home/cloud-usr/w/{workspaceName}/{projectName}` while preserving the full remaining suffix. For example, `/home/cloud-usr/w/personal/home/folder/README.md` becomes `/folder/README.md`, never `/README.md`.
 - Creates persistent folders only through `mkdir` under the app file tree in Agent-mode `bash`; Ask-mode `bash` rejects durable folder creation.
