@@ -4069,8 +4069,8 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 		charCount: statsA.charCount,
 		byteCount: statsA.byteCount,
 	}).toEqual(wc(committedA));
-	const statsRowIdA = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.statsId ?? null);
-	expect(statsRowIdA).not.toBeNull();
+	const statsDocIdA = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.statsId ?? null);
+	expect(statsDocIdA).not.toBeNull();
 
 	// Edit: transform the live Yjs doc to B and push only the incremental diff, then re-materialize.
 	const svA = encodeStateVector(yjsDoc);
@@ -4109,9 +4109,9 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	expect(statsB.lineCount).toBeGreaterThan(statsA.lineCount);
 
 	// The same stats doc was patched in place (back-ref unchanged) — no duplicate doc was inserted.
-	const statsRowIdB = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.statsId ?? null);
-	expect(statsRowIdB).toBe(statsRowIdA);
-	const rowCount = await t.run(
+	const statsDocIdB = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.statsId ?? null);
+	expect(statsDocIdB).toBe(statsDocIdA);
+	const statsDocCount = await t.run(
 		async (ctx) =>
 			(
 				await ctx.db
@@ -4122,7 +4122,7 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 					.collect()
 			).length,
 	);
-	expect(rowCount).toBe(1);
+	expect(statsDocCount).toBe(1);
 });
 
 test("text_search_files scopes to a path prefix without sibling-prefix leakage and limits after filtering", async () => {

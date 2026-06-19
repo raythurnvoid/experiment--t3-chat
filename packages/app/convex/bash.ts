@@ -91,7 +91,10 @@ const OUTPUT_LIMIT = 30_000;
 const LISTING_PAGE_LIMIT_MAX = 200;
 const COMMAND_EXIT_FAILURE = 1;
 const COMMAND_EXIT_USAGE = 2;
+const COMMAND_EXIT_CANNOT_EXECUTE = 126;
+const COMMAND_EXIT_NOT_FOUND = 127;
 const textEncoder = new TextEncoder();
+const fatalTextDecoder = new TextDecoder("utf-8", { fatal: true });
 
 const TERMINAL_LINE_ENDING_REGEX = /\r\n?/g;
 const TERMINAL_TRAILING_NEWLINE_REGEX = /\n+$/;
@@ -172,6 +175,19 @@ const ALLOWED_COMMANDS = getCommandNames().filter(
 );
 const ALLOWED_COMMAND_NAMES = new Set<string>(ALLOWED_COMMANDS);
 const NATIVE_JUST_BASH_TMP_COMMANDS = ALLOWED_COMMANDS.filter((command) => !APP_FILE_COMMAND_NAMES.has(command));
+
+/**
+ * Custom commands registered by this module that are not Native Just Bash built-ins.
+ */
+const APP_SHELL_EXTRA_COMMANDS = ["search", "textgrep"] as const;
+
+/**
+ * Command names visible to the outer app shell, including custom app-only commands.
+ *
+ * Synthetic `/bin` and `/usr/bin` lookup stays native-only; use
+ * `ALLOWED_COMMAND_NAMES` for that path.
+ */
+const APP_SHELL_COMMAND_NAMES = new Set<string>([...ALLOWED_COMMANDS, ...APP_SHELL_EXTRA_COMMANDS]);
 
 /**
  * Keep the Just Bash path cache to the file-node fields the virtual filesystem needs.
@@ -706,6 +722,28 @@ function format_multiline_hint(command: string, lines: string[]) {
 }
 
 /**
+ * Decode Just Bash's latin1-shaped byte stdin into Unicode text for commands
+ * that parse text instead of forwarding raw bytes.
+ */
+function decode_bash_stdin_as_utf8(stdin: CommandContext["stdin"] | undefined) {
+	if (stdin == null) {
+		return "";
+	}
+	const bytes = String(stdin);
+	// Just Bash exposes stdin as a ByteString: one JS code unit per raw byte.
+	const buffer = new Uint8Array(bytes.length);
+	for (let index = 0; index < bytes.length; index++) {
+		buffer[index] = bytes.charCodeAt(index) & 0xff;
+	}
+	try {
+		return fatalTextDecoder.decode(buffer);
+	} catch {
+		// If stdin was already normal JS text, preserve it instead of making xargs fail.
+		return bytes;
+	}
+}
+
+/**
  * Read the argv value that follows an option like `--limit 10`.
  *
  * Callers own incrementing their loop index after a successful read.
@@ -1066,7 +1104,6 @@ async function delegate_native_just_bash_tmp_command(
 }
 // #endregion native just bash tmp command
 
-// #endregion just bash fs
 /**
  * Means the app file exists, but bash cannot read its body as text.
  *
@@ -1405,7 +1442,10 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 			return ["bin"];
 		}
 		if (normalizedPath === "/bin" || normalizedPath === "/usr/bin") {
-			return [...ALLOWED_COMMANDS].sort();
+			// Return only native Just Bash commands here. App-only custom commands
+			// are available to the outer shell, but not as executable files inside
+			// the restricted Native Just Bash /tmp view.
+			return ALLOWED_COMMANDS.toSorted();
 		}
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
 			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
@@ -1570,7 +1610,6 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 		await this.fs.utimes(normalizedPath, atime, mtime);
 	}
 }
-// #endregion just bash fs
 
 // #region search command
 
@@ -1902,11 +1941,10 @@ function search_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, current
 					exactQueryFilter,
 					searchResult.items.map((item) => item.markdownChunk),
 				)}`,
-				"",
-				...outputBlocks,
 			];
 			if (!res.isDone) {
-				// Print a complete command so the next request can copy the cursor without editing.
+				// Print a complete command before long result snippets so an agent asked to
+				// continue sees the exact command before a large content block.
 				const cursorId = await cursor_id_create(ctx, res.continueCursor);
 				blocks.push(
 					"",
@@ -1917,8 +1955,12 @@ function search_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, current
 						cursor: cursorId,
 						query: parsed._yay.query,
 					}),
+					parsed._yay.cursor == null
+						? "Note: if the user asked for a continuation, run the exact Next page command before answering."
+						: "Note: this output is already a continuation page; if the user asked for exactly one continuation, stop here. Run another Next page only if the user asks for more.",
 				);
 			}
+			blocks.push("", ...outputBlocks);
 			output = blocks.join("\n");
 		}
 
@@ -2528,6 +2570,7 @@ function ls_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProj
 
 const FIND_COMMAND_EXTENSION_TOKEN_REGEX = /^[a-z0-9][a-z0-9_-]*$/iu;
 const SIMPLE_PATH_WORD_GLOB_REGEX = /^\*+([a-z0-9][a-z0-9_-]*)\*+$/iu;
+const SIMPLE_PATH_WORD_PREFIX_EXTENSION_GLOB_REGEX = /^([a-z0-9][a-z0-9_-]*)\*\.[a-z0-9][a-z0-9_-]*$/iu;
 const SIMPLE_PATH_WORD_REGEX_GLOB_REGEX = /^\.\*([a-z0-9][a-z0-9_-]*)\.\*$/iu;
 const FIND_COMMAND_BUILTIN_OPTIONS_WITH_VALUES = new Set([
 	"-iname",
@@ -2542,6 +2585,7 @@ const FIND_COMMAND_BUILTIN_OPTIONS_WITH_VALUES = new Set([
 	"-perm",
 	"-printf",
 	"-regex",
+	"-regextype",
 	"-size",
 	"-type",
 ]);
@@ -2574,7 +2618,7 @@ function find_command_normalize_extension_value(extension: string) {
 /**
  * Read simple "contains this word" glob or regex-shaped mistakes.
  *
- * Accepts forms like `*readme*` and `.*readme.*`.
+ * Accepts forms like `*readme*`, `readme*.md`, and `.*readme.*`.
  *
  * Returns `null` for real globs or regexes.
  */
@@ -2587,9 +2631,33 @@ function find_command_parse_simple_path_word_glob(pattern: string) {
 		return globMatch[1].toLowerCase();
 	}
 
+	// Treat `readme*.md` as the plain path word `readme`. The command still
+	// rejects the glob; this only lets the stderr print the indexed retry.
+	const prefixExtensionGlobMatch = trimmed.match(SIMPLE_PATH_WORD_PREFIX_EXTENSION_GLOB_REGEX);
+	if (prefixExtensionGlobMatch) {
+		return prefixExtensionGlobMatch[1].toLowerCase();
+	}
+
 	// Treat `.*readme.*` the same way, without accepting full regex syntax.
 	const regexMatch = trimmed.match(SIMPLE_PATH_WORD_REGEX_GLOB_REGEX);
 	return regexMatch?.[1]?.toLowerCase() ?? null;
+}
+
+/**
+ * App-file `-name`/`-iname` are DB-backed path word searches, not exact glob
+ * filters. Strip a simple literal extension so `README.md` searches for the
+ * filename word instead of mostly matching every Markdown file by `md`.
+ */
+function find_command_normalize_name_path_query(value: string | undefined) {
+	if (value == null) {
+		return undefined;
+	}
+	const trimmed = value.trim();
+	const lastSlashIndex = trimmed.lastIndexOf("/");
+	const lastDotIndex = trimmed.lastIndexOf(".");
+	return !GLOB_METACHARACTER_REGEX.test(trimmed) && lastDotIndex > Math.max(lastSlashIndex, 0)
+		? trimmed.slice(0, lastDotIndex).toLowerCase()
+		: trimmed.toLowerCase();
 }
 
 /**
@@ -2824,7 +2892,11 @@ function find_command_parse_args(args: string[]) {
 	}
 
 	// In app-file find, -name, -iname, and --path-query use the same case-insensitive DB word search.
-	const pathQueries = [name, iname, pathQuery].filter((value): value is string => value != null);
+	const normalizedNamePathQuery = find_command_normalize_name_path_query(name);
+	const normalizedInamePathQuery = find_command_normalize_name_path_query(iname);
+	const pathQueries = [normalizedNamePathQuery, normalizedInamePathQuery, pathQuery].filter(
+		(value): value is string => value != null,
+	);
 	if (pathQueries.length > 1) {
 		return Result({ _nay: { message: "find: use only one of -name, -iname, or --path-query" } });
 	}
@@ -2853,6 +2925,7 @@ function find_command_parse_args(args: string[]) {
 								tryPathQuery: {
 									query: simplePathWordGlob,
 									...(type == null ? {} : { type }),
+									...(path == null ? {} : { path }),
 									limit: limit._yay,
 								},
 							},
@@ -2875,6 +2948,7 @@ function find_command_parse_args(args: string[]) {
 								tryPathQuery: {
 									query: simplePathWordGlob,
 									...(type == null ? {} : { type }),
+									...(path == null ? {} : { path }),
 									limit: limit._yay,
 								},
 							},
@@ -2893,8 +2967,8 @@ function find_command_parse_args(args: string[]) {
 			maxDepth,
 			minDepth,
 			type,
-			name: name == null ? undefined : normalizedPathQuery,
-			iname: iname == null ? undefined : normalizedPathQuery,
+			name: normalizedNamePathQuery == null ? undefined : normalizedPathQuery,
+			iname: normalizedInamePathQuery == null ? undefined : normalizedPathQuery,
 			pathQuery: pathQuery == null ? undefined : normalizedPathQuery,
 			extension: normalizedExtension,
 		} as const,
@@ -2979,11 +3053,16 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 		// Parse failures return usage text before any app-file or built-in command routing.
 		if (parsed._nay) {
 			const errorData = parsed._nay.data as
-				| { tryPathQuery?: { query: string; type?: string; limit: number } }
+				| { tryPathQuery?: { path?: string; query: string; type?: string; limit: number } }
 				| undefined;
 			const tryPathQuery = errorData?.tryPathQuery ?? null;
 			const tryLine =
-				tryPathQuery == null ? "" : `${find_command_build_path_query_retry_hint(currentProjectPath, tryPathQuery)}\n`;
+				tryPathQuery == null
+					? ""
+					: `${find_command_build_path_query_retry_hint(
+							tryPathQuery.path == null ? currentProjectPath : resolve_path(commandCtx.cwd, tryPathQuery.path),
+							tryPathQuery,
+						)}\n`;
 			return {
 				stdout: "",
 				stderr:
@@ -3028,10 +3107,17 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 		}
 		// App files only support predicates that can be implemented with indexed Convex queries.
 		if (parsed._yay.unsupportedAppFilePredicate != null) {
+			const regexPredicateHint =
+				parsed._yay.unsupportedAppFilePredicate === "-regex" ||
+				parsed._yay.unsupportedAppFilePredicate === "-iregex" ||
+				parsed._yay.unsupportedAppFilePredicate === "-regextype"
+					? "Regex path predicates are not available for app files; use --path-query with plain path words such as `readme`.\n"
+					: "";
 			return {
 				stdout: "",
 				stderr:
 					`find: unsupported predicate ${parsed._yay.unsupportedAppFilePredicate} for paths under ${APP_MOUNT_PATH}\n` +
+					regexPredicateHint +
 					"GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
 					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
 				exitCode: COMMAND_EXIT_USAGE,
@@ -3175,13 +3261,12 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 					stdout: "",
 					stderr:
 						"find: path word search cannot be combined with --extension for app files.\n" +
-						"Try either `find -name readme --limit " +
-						String(parsed._yay.limit) +
-						"` or `find <folder> -type f --extension " +
-						shell_arg_quote(parsed._yay.extension) +
-						" --limit " +
-						String(parsed._yay.limit) +
-						"`.\n",
+						`${find_command_build_path_query_retry_hint(target.absoluteShellPath, {
+							query: pathQuery,
+							...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
+							limit: parsed._yay.limit,
+						})}\n` +
+						`For extension-only search, use: find ${shell_arg_quote(target.absoluteShellPath)} -type f --extension ${shell_arg_quote(parsed._yay.extension)} --limit ${parsed._yay.limit}\n`,
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
@@ -3685,6 +3770,11 @@ function tree_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 					cursor: await cursor_id_create(ctx, result.continueCursor),
 				}),
 			);
+			if (parsed._yay.cursor != null) {
+				lines.push(
+					"Note: this output is already a continuation page; if the user asked for exactly one continuation, stop here. Run another Next page only if the user asks for more.",
+				);
+			}
 		}
 
 		return {
@@ -4379,6 +4469,17 @@ function grep_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 			};
 		}
 
+		if (
+			parsed._yay.operands.length > 0 &&
+			parsed._yay.operands.every(
+				(operand) =>
+					operand === "-" ||
+					current_project_path_to_app_file_node_path(currentProjectPath, resolve_path(commandCtx.cwd, operand)) == null,
+			)
+		) {
+			return await delegate_native_just_bash_tmp_command("grep", args, commandCtx, currentProjectPath);
+		}
+
 		// Recursive app-folder grep path:
 		// - maps `grep -R PATTERN <folder>` to indexed full-text search
 		// - returns search snippets, not exact line matches
@@ -4497,7 +4598,12 @@ function grep_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 					stderr:
 						`grep: unsupported option ${parsed._yay.unsupportedFlag} for app-file grep. ` +
 						"Supported: grep [-n] [-i] [-F] [--start-line N --max-lines N | --start-index N --max-chars N] PATTERN <file> with -c, -l, -v, and -A/-B/-C N. " +
-						"Drop the flag, or use search for cross-file discovery.\n",
+						"Drop the flag, or use search for cross-file discovery.\n" +
+						`Try: ${grep_command_build_command({
+							parsed: parsed._yay,
+							window: parsed._yay.window,
+							inputPath,
+						})}\n`,
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
@@ -5259,23 +5365,13 @@ function cat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPro
 
 // #region stat command
 
-const STAT_FORMAT_FILE_NAME_REGEX = /%n/g;
-const STAT_FORMAT_QUOTED_FILE_NAME_REGEX = /%N/g;
-const STAT_FORMAT_SIZE_REGEX = /%s/g;
-const STAT_FORMAT_FILE_TYPE_REGEX = /%F/g;
-const STAT_FORMAT_MODE_OCTAL_REGEX = /%a/g;
-const STAT_FORMAT_MODE_STRING_REGEX = /%A/g;
-const STAT_FORMAT_USER_ID_REGEX = /%u/g;
-const STAT_FORMAT_USER_NAME_REGEX = /%U/g;
-const STAT_FORMAT_GROUP_ID_REGEX = /%g/g;
-const STAT_FORMAT_GROUP_NAME_REGEX = /%G/g;
-const STAT_FORMAT_MTIME_HUMAN_REGEX = /%y/g;
-const STAT_FORMAT_MTIME_SECONDS_REGEX = /%Y/g;
-const STAT_FORMAT_ATIME_HUMAN_REGEX = /%x/g;
-const STAT_FORMAT_ATIME_SECONDS_REGEX = /%X/g;
-const STAT_FORMAT_CTIME_HUMAN_REGEX = /%z/g;
-const STAT_FORMAT_CTIME_SECONDS_REGEX = /%Z/g;
+const STAT_FORMAT_TOKEN_REGEX = /%[%nNsFaAuUgGyYxXzZ]/g;
+const STAT_UNSUPPORTED_FORMAT_TOKEN_REGEX = /%(?![%nNsFaAuUgGyYxXzZ])/u;
 
+/**
+ * Parse the small GNU-compatible `stat` surface this app-aware command supports:
+ * optional `-c`/`--format`, `--` for dash-leading operands, or `--help` delegation.
+ */
 function stat_command_parse_args(args: string[]) {
 	let format: string | null = null;
 	const files: string[] = [];
@@ -5321,12 +5417,17 @@ function stat_command_parse_args(args: string[]) {
 		}
 		files.push(arg);
 	}
+
 	if (files.length === 0) {
 		return Result({ _nay: { message: "stat: missing operand" } });
 	}
+
 	return Result({ _yay: { format, files } as const });
 }
 
+/**
+ * Render a POSIX-looking mode string from the fixed placeholder modes app files expose.
+ */
 function stat_command_format_mode(mode: number, isDirectory: boolean) {
 	const prefix = isDirectory ? "d" : "-";
 	const bits = [
@@ -5343,93 +5444,125 @@ function stat_command_format_mode(mode: number, isDirectory: boolean) {
 	return `${prefix}${bits.map(([bit, char]) => ((mode & bit) === bit ? char : "-")).join("")}`;
 }
 
+/**
+ * Render either `stat -c` replacement tokens or the default multi-line app metadata view.
+ */
 function stat_command_render_output(
 	format: string | null,
 	file: string,
 	stat: { isDirectory: boolean; mode: number; size: number | undefined; mtime: Date },
+	advisory?: string,
 ) {
 	const modeOctal = stat.mode.toString(8);
 	const modeStr = stat_command_format_mode(stat.mode, stat.isDirectory);
-	// When size is undefined the committed snapshot size is unknown/not tracked;
+	// When size is undefined the current app-file size is unknown/not tracked;
 	// render "?" rather than "0" so a %s format does not mislead the agent into
 	// thinking the file is empty.
 	const sizeStr = stat.size !== undefined ? String(stat.size) : "?";
 	const mtimeIso = stat.mtime.toISOString();
 	const mtimeHuman = mtimeIso.replace("T", " ").replace("Z", " +0000");
+
 	if (format != null) {
-		let output = format;
-		output = output.replace(STAT_FORMAT_FILE_NAME_REGEX, file);
-		output = output.replace(STAT_FORMAT_QUOTED_FILE_NAME_REGEX, `'${file}'`);
-		output = output.replace(STAT_FORMAT_SIZE_REGEX, sizeStr);
-		output = output.replace(STAT_FORMAT_FILE_TYPE_REGEX, stat.isDirectory ? "directory" : "regular file");
-		output = output.replace(STAT_FORMAT_MODE_OCTAL_REGEX, modeOctal);
-		output = output.replace(STAT_FORMAT_MODE_STRING_REGEX, modeStr);
-		output = output.replace(STAT_FORMAT_USER_ID_REGEX, "1000");
-		output = output.replace(STAT_FORMAT_USER_NAME_REGEX, "user");
-		output = output.replace(STAT_FORMAT_GROUP_ID_REGEX, "1000");
-		output = output.replace(STAT_FORMAT_GROUP_NAME_REGEX, "group");
-		output = output.replace(STAT_FORMAT_MTIME_HUMAN_REGEX, mtimeHuman);
-		output = output.replace(STAT_FORMAT_MTIME_SECONDS_REGEX, String(Math.floor(stat.mtime.getTime() / 1000)));
-		output = output.replace(STAT_FORMAT_ATIME_HUMAN_REGEX, mtimeHuman);
-		output = output.replace(STAT_FORMAT_ATIME_SECONDS_REGEX, String(Math.floor(stat.mtime.getTime() / 1000)));
-		output = output.replace(STAT_FORMAT_CTIME_HUMAN_REGEX, mtimeHuman);
-		output = output.replace(STAT_FORMAT_CTIME_SECONDS_REGEX, String(Math.floor(stat.mtime.getTime() / 1000)));
+		const mtimeSeconds = String(Math.floor(stat.mtime.getTime() / 1000));
+		const output = format.replace(STAT_FORMAT_TOKEN_REGEX, (token) => {
+			switch (token) {
+				case "%%":
+					return "%";
+				case "%n":
+					return file;
+				case "%N":
+					return `'${file}'`;
+				case "%s":
+					return sizeStr;
+				case "%F":
+					return stat.isDirectory ? "directory" : "regular file";
+				case "%a":
+					return modeOctal;
+				case "%A":
+					return modeStr;
+				case "%u":
+				case "%g":
+					return "1000";
+				case "%U":
+					return "user";
+				case "%G":
+					return "group";
+				case "%y":
+				case "%x":
+				case "%z":
+					return mtimeHuman;
+				case "%Y":
+				case "%X":
+				case "%Z":
+					return mtimeSeconds;
+				default:
+					return token;
+			}
+		});
 		return `${output}\n`;
 	}
+
 	const sizeDisplay =
 		stat.size !== undefined
-			? `${stat.size}\t\tBlocks: ${Math.ceil(stat.size / 512)}`
+			? String(stat.size)
 			: stat.isDirectory
 				? "(directory; no content size)"
 				: "(content size not tracked for this file)";
+
 	return [
 		`  File: ${file}`,
 		`  Size: ${sizeDisplay}`,
 		`  Type: ${stat.isDirectory ? "directory" : "regular file"}`,
 		`Access: (${modeOctal.padStart(4, "0")}/${modeStr})`,
 		`Modify: ${mtimeIso}`,
-		"[stat: Access is a fixed placeholder; app files track only Size, Type, and Modify — not POSIX permissions, owner, group, inode, or blocks]",
+		...(advisory == null ? [] : [advisory]),
 		"",
 	].join("\n");
 }
 
+/**
+ * App-aware `stat` that keeps `/tmp` behavior native and renders indexed app-file metadata.
+ */
 function stat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProjectPath: string) {
 	return defineCommand("stat", async (args, commandCtx) => {
-		const parsedResult = stat_command_parse_args(args);
-		if (parsedResult._nay) {
+		const parsed = stat_command_parse_args(args);
+		if (parsed._nay) {
 			return {
 				stdout: "",
-				stderr: `${parsedResult._nay.message}\n`,
+				stderr: `${parsed._nay.message}\nUsage: stat [-c FORMAT] [--] FILE...\n`,
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
-		if ("delegate" in parsedResult._yay) {
+
+		if ("delegate" in parsed._yay) {
 			return await delegate_builtin_command({ command: "stat", args, commandCtx });
 		}
 
-		const capError = enforce_reader_operand_cap("stat", commandCtx, currentProjectPath, parsedResult._yay.files);
+		const capError = enforce_reader_operand_cap("stat", commandCtx, currentProjectPath, parsed._yay.files);
 		if (capError != null) return capError;
 
 		let stdout = "";
 		let stderr = "";
 		let hasError = false;
-		for (const file of parsedResult._yay.files) {
-			if (GLOB_METACHARACTER_REGEX.test(file)) {
-				stderr += create_glob_syntax_unsupported_message("stat", file);
-				hasError = true;
-				continue;
-			}
+		let warnedUnsupportedAppFormatToken = false;
+		for (const file of parsed._yay.files) {
 			const resolvedPath = resolve_path(commandCtx.cwd, file);
 			const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath);
 
 			if (appFileNodePath == null) {
 				try {
 					const stat = await commandCtx.fs.stat(resolvedPath);
-					stdout += stat_command_render_output(parsedResult._yay.format, file, stat);
+					stdout += stat_command_render_output(parsed._yay.format, file, stat);
 				} catch {
 					stderr += `stat: cannot stat '${file}': No such file or directory\n`;
 					hasError = true;
 				}
+				continue;
+			}
+
+			if (GLOB_METACHARACTER_REGEX.test(file)) {
+				stderr += create_glob_syntax_unsupported_message("stat", file);
+				hasError = true;
 				continue;
 			}
 
@@ -5441,14 +5574,17 @@ function stat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 							projectId: workspaceFs.ctxData.projectId,
 							path: appFileNodePath,
 						})) as files_nodes_get_by_path_Result);
+
 			if (!fileNode) {
 				stderr += `stat: cannot stat '${file}': No such file or directory\n`;
 				hasError = true;
 				continue;
 			}
 
+			const currentAppFileSize =
+				fileNode.kind === "file" ? await get_app_file_byte_size(ctx, workspaceFs.ctxData, appFileNodePath) : null;
 			const asset =
-				fileNode.kind === "file" && fileNode.assetId != null
+				fileNode.kind === "file" && currentAppFileSize == null && fileNode.assetId != null
 					? ((await ctx.runQuery(internal.r2.get_asset_by_id, {
 							workspaceId: workspaceFs.ctxData.workspaceId,
 							projectId: workspaceFs.ctxData.projectId,
@@ -5456,36 +5592,93 @@ function stat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 						})) as get_asset_by_id_Result)
 					: null;
 
-			stdout += stat_command_render_output(parsedResult._yay.format, file, {
-				isDirectory: fileNode.kind === "folder",
-				mode: fileNode.kind === "folder" ? 0o755 : 0o644,
-				size: asset?.size,
-				mtime: new Date(fileNode.updatedAt),
-			});
+			stdout += stat_command_render_output(
+				parsed._yay.format,
+				file,
+				{
+					isDirectory: fileNode.kind === "folder",
+					mode: fileNode.kind === "folder" ? 0o755 : 0o644,
+					size: currentAppFileSize ?? asset?.size,
+					mtime: new Date(fileNode.updatedAt),
+				},
+				"[stat: Access is a fixed placeholder; app files track only Size, Type, and Modify — not POSIX permissions, owner, group, inode, or blocks]",
+			);
+			// Unsupported format tokens are preserved literally in stdout, matching the
+			// formatter above. Warn once on stderr so agents do not treat `%i`, `%b`,
+			// device ids, or filesystem ids as real app-file metadata.
+			if (
+				parsed._yay.format != null &&
+				!warnedUnsupportedAppFormatToken &&
+				STAT_UNSUPPORTED_FORMAT_TOKEN_REGEX.test(parsed._yay.format)
+			) {
+				stderr +=
+					"stat: app files support only %% %n %N %s %F %a %A %u %U %g %G %y %Y %x %X %z %Z; " +
+					"inode, blocks, device, and filesystem fields are not tracked\n";
+				warnedUnsupportedAppFormatToken = true;
+			}
 		}
 
-		return { stdout, stderr, exitCode: hasError ? 1 : 0 };
+		return { stdout, stderr, exitCode: hasError ? COMMAND_EXIT_FAILURE : 0 };
 	});
 }
 
 // #endregion stat command
 
-// #region stream utility commands
-
-function stream_utility_command_create_all(currentProjectPath: string) {
-	return [
-		native_just_bash_tmp_command_create("sort", currentProjectPath),
-		native_just_bash_tmp_command_create("uniq", currentProjectPath),
-		native_just_bash_tmp_command_create("cut", currentProjectPath),
-		native_just_bash_tmp_command_create("awk", currentProjectPath),
-	];
-}
-
-// #endregion stream utility commands
-
 // #region sed command
 
-const SED_PRINT_RANGE_REGEX = /^(\d+)(?:,(\d+))?p$/u;
+/**
+ * Negative line numbers are accepted at parse time so app-file sed returns
+ * the same clean invalid-range error as zero or reversed ranges.
+ */
+const SED_PRINT_RANGE_REGEX = /^(-?\d+)(?:,(-?\d+))?p$/u;
+
+/**
+ * Recognize the bounded app-file range form `sed -n 'A,Bp' <file>`.
+ *
+ * Other scripts are left to the /tmp-only Native Just Bash delegation path.
+ */
+function sed_command_parse_app_fast_path(args: string[]) {
+	let suppressAutoPrint = false;
+	let optionsEnded = false;
+	const operands: string[] = [];
+
+	for (const arg of args) {
+		if (!optionsEnded && operands.length === 0) {
+			if (arg === "--") {
+				optionsEnded = true;
+				continue;
+			}
+
+			if (arg === "-n") {
+				suppressAutoPrint = true;
+				continue;
+			}
+
+			if (arg.startsWith("-") && !SED_PRINT_RANGE_REGEX.test(arg)) {
+				return null;
+			}
+		}
+
+		operands.push(arg);
+	}
+
+	if (!suppressAutoPrint || operands.length !== 2) {
+		return null;
+	}
+
+	const rangeMatch = SED_PRINT_RANGE_REGEX.exec(operands[0]);
+	if (!rangeMatch) {
+		return null;
+	}
+
+	const startLine = Number(rangeMatch[1]);
+	const endLine = rangeMatch[2] != null ? Number(rangeMatch[2]) : startLine;
+	return { script: operands[0], file: operands[1], startLine, endLine } as const;
+}
+
+function sed_command_build_next_page_hint(args: { nextStartLine: number; maxLines: number; shellPath: string }) {
+	return `Next page: sed -n '${args.nextStartLine},${args.nextStartLine + args.maxLines - 1}p' ${shell_arg_quote(args.shellPath)}`;
+}
 
 /**
  * `sed` with a special fast path for bounded line-range reads of an app file:
@@ -5495,66 +5688,97 @@ const SED_PRINT_RANGE_REGEX = /^(\d+)(?:,(\d+))?p$/u;
  * app-file operands must be piped through cat; non-app operands delegate to the builtin.
  */
 function sed_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProjectPath: string) {
-	return defineCommand("sed", async (args, commandCtx) => {
-		if (args.includes("-n")) {
-			const nonFlags = args.filter((arg) => !arg.startsWith("-"));
-			const rangeMatch = nonFlags.length === 2 ? SED_PRINT_RANGE_REGEX.exec(nonFlags[0]) : null;
-			if (rangeMatch) {
-				const fileArg = nonFlags[1];
-				const appFileNodePath = current_project_path_to_app_file_node_path(
-					currentProjectPath,
-					resolve_path(commandCtx.cwd, fileArg),
-				);
-				if (appFileNodePath != null) {
-					const startLine = Number(rangeMatch[1]);
-					const endLine = rangeMatch[2] != null ? Number(rangeMatch[2]) : startLine;
-					if (endLine < startLine) {
+	const command = defineCommand("sed", async (args, commandCtx) => {
+		const fastPath = sed_command_parse_app_fast_path(args);
+		if (fastPath != null) {
+			const appFileNodePath = current_project_path_to_app_file_node_path(
+				currentProjectPath,
+				resolve_path(commandCtx.cwd, fastPath.file),
+			);
+			if (appFileNodePath != null) {
+				if (fastPath.startLine < 1 || fastPath.endLine < 1 || fastPath.endLine < fastPath.startLine) {
+					return {
+						stdout: "",
+						stderr: `sed: invalid line range '${fastPath.script}'\n`,
+						exitCode: COMMAND_EXIT_USAGE,
+					};
+				}
+
+				const maxLines = fastPath.endLine - fastPath.startLine + 1;
+				if (maxLines > READ_HEAD_LARGE_FILE_MAX_LINES) {
+					return {
+						stdout: "",
+						stderr: `sed: line range too large (${maxLines} lines; max ${READ_HEAD_LARGE_FILE_MAX_LINES} per read). Narrow the range.\n`,
+						exitCode: COMMAND_EXIT_USAGE,
+					};
+				}
+
+				const result = (await ctx.runAction(internal.files_nodes.read_file_line_range, {
+					workspaceId: workspaceFs.ctxData.workspaceId,
+					projectId: workspaceFs.ctxData.projectId,
+					userId: workspaceFs.ctxData.userId,
+					path: appFileNodePath,
+					startLine: fastPath.startLine,
+					maxLines,
+				})) as files_nodes_read_file_line_range_Result;
+				if (!result) {
+					const fileNode: files_nodes_get_by_path_Result =
+						appFileNodePath === "/"
+							? null
+							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+									workspaceId: workspaceFs.ctxData.workspaceId,
+									projectId: workspaceFs.ctxData.projectId,
+									path: appFileNodePath,
+								})) as files_nodes_get_by_path_Result);
+
+					if (appFileNodePath === "/" || fileNode?.kind === "folder") {
 						return {
 							stdout: "",
-							stderr: `sed: invalid line range '${nonFlags[0]}'\n`,
-							exitCode: COMMAND_EXIT_USAGE,
-						};
-					}
-					const maxLines = endLine - startLine + 1;
-					if (maxLines > READ_HEAD_LARGE_FILE_MAX_LINES) {
-						return {
-							stdout: "",
-							stderr: `sed: line range too large (${maxLines} lines; max ${READ_HEAD_LARGE_FILE_MAX_LINES} per read). Narrow the range.\n`,
-							exitCode: COMMAND_EXIT_USAGE,
-						};
-					}
-					const result = (await ctx.runAction(internal.files_nodes.read_file_line_range, {
-						workspaceId: workspaceFs.ctxData.workspaceId,
-						projectId: workspaceFs.ctxData.projectId,
-						userId: workspaceFs.ctxData.userId,
-						path: appFileNodePath,
-						startLine,
-						maxLines,
-					})) as files_nodes_read_file_line_range_Result;
-					if (!result) {
-						return {
-							stdout: "",
-							stderr: `sed: ${fileArg}: No such file or directory\n`,
+							stderr: `sed: ${fastPath.file}: Is a directory\n`,
 							exitCode: COMMAND_EXIT_FAILURE,
 						};
 					}
-					const stdout = result.content;
-					const notes: string[] = [];
-					if (result.moreLines && !result.scanTruncated) {
-						notes.push(
-							`More lines below. Next page: sed -n '${endLine + 1},${endLine + maxLines}p' ${shell_arg_quote(app_file_node_path_to_current_project_path(currentProjectPath, appFileNodePath))}`,
-						);
+
+					if (fileNode?.kind === "file") {
+						return {
+							stdout: "",
+							stderr: build_unreadable_file_advisory(currentProjectPath, appFileNodePath, fileNode.contentType),
+							exitCode: COMMAND_EXIT_FAILURE,
+						};
 					}
-					if (result.scanTruncated) {
-						notes.push("large file; only the scanned block was read; range may be incomplete");
-					}
-					return { stdout, stderr: format_multiline_hint("sed", notes), exitCode: 0 };
+
+					return {
+						stdout: "",
+						stderr: `sed: ${fastPath.file}: No such file or directory\n`,
+						exitCode: COMMAND_EXIT_FAILURE,
+					};
 				}
+
+				const stdout = result.content;
+				const notes: string[] = [];
+
+				if (result.moreLines && !result.scanTruncated) {
+					notes.push(
+						`More lines below. ${sed_command_build_next_page_hint({
+							nextStartLine: fastPath.endLine + 1,
+							maxLines,
+							shellPath: app_file_node_path_to_current_project_path(currentProjectPath, appFileNodePath),
+						})}`,
+					);
+				}
+
+				if (result.scanTruncated) {
+					notes.push("large file; only the scanned block was read; range may be incomplete");
+				}
+
+				return { stdout, stderr: format_multiline_hint("sed", notes), exitCode: 0 };
 			}
 		}
 
 		return await delegate_native_just_bash_tmp_command("sed", args, commandCtx, currentProjectPath);
 	});
+
+	return command;
 }
 
 // #endregion sed command
@@ -5565,11 +5789,150 @@ const READER_LINE_COUNT_REGEX = /^(\+?)(\d+)$/u;
 const WC_COMBINED_FLAGS_REGEX = /^-[lwmc]{2,}$/u;
 const OBSOLETE_LINE_COUNT_FLAG_REGEX = /^-(\d+)$/u;
 
-function reader_command_parse_line_count(value: string | undefined) {
-	if (value == null) return null;
+type WcCommandFlags = { lines: boolean; words: boolean; chars: boolean; bytes: boolean };
+
+function reader_command_parse_line_count(command: string, option: string, value: string | undefined) {
+	if (value == null) {
+		return Result({ _nay: { message: `${command}: ${option} requires a value` } });
+	}
+
 	// A leading `+` (e.g. `tail -n +K`) means "start at line K" (forward), not "last K lines".
 	const match = READER_LINE_COUNT_REGEX.exec(value.trim());
-	return match ? { count: Number(match[2]), fromStart: match[1] === "+" } : null;
+	if (!match) {
+		return Result({ _nay: { message: `${command}: ${option} must be an integer line count` } });
+	}
+
+	return Result({ _yay: { count: Number(match[2]), fromStart: match[1] === "+" } as const });
+}
+
+function wc_command_wants_default(flags: WcCommandFlags) {
+	return !flags.lines && !flags.words && !flags.chars && !flags.bytes;
+}
+
+function wc_command_build_fields(
+	flags: WcCommandFlags,
+	counts: { lineCount: number; wordCount: number; charCount: number; byteCount: number },
+) {
+	const fields: string[] = [];
+	const wantDefault = wc_command_wants_default(flags);
+
+	if (flags.lines || wantDefault) fields.push(String(counts.lineCount));
+	if (flags.words || wantDefault) fields.push(String(counts.wordCount));
+	if (flags.bytes || wantDefault) fields.push(String(counts.byteCount));
+	if (flags.chars) fields.push(String(counts.charCount));
+
+	return fields.join(" ");
+}
+
+function reader_command_parse_args(command: "head" | "tail" | "wc", args: string[]) {
+	const files: string[] = [];
+	let lineCount: number | null = null;
+	let lineCountFromStart = false;
+	let byteMode = false;
+	const wcFlags: WcCommandFlags = { lines: false, words: false, chars: false, bytes: false };
+	let optionsEnded = false;
+
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (optionsEnded) {
+			files.push(arg);
+			continue;
+		}
+
+		if (arg === "--") {
+			optionsEnded = true;
+			continue;
+		}
+
+		if (command === "wc") {
+			if (arg === "-l" || arg === "--lines") {
+				wcFlags.lines = true;
+				continue;
+			}
+			if (arg === "-w" || arg === "--words") {
+				wcFlags.words = true;
+				continue;
+			}
+			if (arg === "-c" || arg === "--bytes") {
+				wcFlags.bytes = true;
+				continue;
+			}
+			if (arg === "-m" || arg === "--chars") {
+				wcFlags.chars = true;
+				continue;
+			}
+			if (WC_COMBINED_FLAGS_REGEX.test(arg)) {
+				for (const ch of arg.slice(1)) {
+					if (ch === "l") wcFlags.lines = true;
+					else if (ch === "w") wcFlags.words = true;
+					else if (ch === "c") wcFlags.bytes = true;
+					else if (ch === "m") wcFlags.chars = true;
+				}
+				continue;
+			}
+		} else {
+			if (arg === "-n" || arg === "--lines") {
+				const parsed = reader_command_parse_line_count(command, arg, args[index + 1]);
+				if (parsed._nay) return Result({ _nay: parsed._nay });
+				lineCount = parsed._yay.count;
+				lineCountFromStart = parsed._yay.fromStart;
+				index++;
+				continue;
+			}
+			if (arg === "-c" || arg === "--bytes") {
+				byteMode = true;
+				// Keep the original argv for delegated small-file reads, but consume the
+				// byte count here so it is not mistaken for a file operand in app-file routing.
+				index++;
+				continue;
+			}
+			if (arg.startsWith("--lines=")) {
+				const parsed = reader_command_parse_line_count(command, "--lines", arg.slice("--lines=".length));
+				if (parsed._nay) return Result({ _nay: parsed._nay });
+				lineCount = parsed._yay.count;
+				lineCountFromStart = parsed._yay.fromStart;
+				continue;
+			}
+			if (arg.startsWith("--bytes=")) {
+				byteMode = true;
+				continue;
+			}
+			const obsoleteLineCount = OBSOLETE_LINE_COUNT_FLAG_REGEX.exec(arg);
+			if (obsoleteLineCount) {
+				lineCount = Number(obsoleteLineCount[1]);
+				lineCountFromStart = false;
+				continue;
+			}
+			if (arg.startsWith("-n")) {
+				const parsed = reader_command_parse_line_count(command, "-n", arg.slice(2));
+				if (parsed._nay) return Result({ _nay: parsed._nay });
+				lineCount = parsed._yay.count;
+				lineCountFromStart = parsed._yay.fromStart;
+				continue;
+			}
+			if (arg.startsWith("-c")) {
+				byteMode = true;
+				continue;
+			}
+			if (arg === "-q" || arg === "--quiet" || arg === "-v" || arg === "--verbose") {
+				continue;
+			}
+		}
+
+		if (!arg.startsWith("-") || arg === "-") {
+			files.push(arg);
+		}
+	}
+
+	return Result({
+		_yay: {
+			files,
+			lineCount,
+			lineCountFromStart,
+			byteMode,
+			wcFlags,
+		} as const,
+	});
 }
 
 /**
@@ -5586,11 +5949,13 @@ async function reader_command_find_oversized_app_operand(
 ) {
 	for (const file of files) {
 		if (file === "-") continue;
+
 		const appFileNodePath = current_project_path_to_app_file_node_path(
 			currentProjectPath,
 			resolve_path(commandCtx.cwd, file),
 		);
 		if (appFileNodePath == null) continue;
+
 		const size = await get_app_file_byte_size(ctx, ctxData, appFileNodePath);
 		if (size != null && size > READ_INLINE_MAX_BYTES) {
 			return { file, appFileNodePath, size } as const;
@@ -5599,6 +5964,13 @@ async function reader_command_find_oversized_app_operand(
 	return null;
 }
 
+/**
+ * Route `head`, `tail`, and `wc` through app-aware fast paths before falling back:
+ * app-only `wc` uses bounded stats, oversized app files use bounded pages or
+ * refusal guidance, single `--` app operands keep dash-leading file names on
+ * the app content path, unreadable app probes return app advisories, and all
+ * remaining cases delegate to the built-in command.
+ */
 function reader_command_create(
 	ctx: ActionCtx,
 	workspaceFs: WorkspaceFs,
@@ -5606,85 +5978,18 @@ function reader_command_create(
 	currentProjectPath: string,
 ) {
 	return defineCommand(command, async (args, commandCtx) => {
-		const files: string[] = [];
-		let headLineCount: number | null = null;
-		let headFromStart = false;
-		let byteMode = false;
-		const wcFlags = { lines: false, words: false, chars: false, bytes: false };
-		for (let index = 0; index < args.length; index++) {
-			const arg = args[index];
-			if (command === "wc") {
-				if (arg === "-l" || arg === "--lines") {
-					wcFlags.lines = true;
-					continue;
-				}
-				if (arg === "-w" || arg === "--words") {
-					wcFlags.words = true;
-					continue;
-				}
-				if (arg === "-c" || arg === "--bytes") {
-					wcFlags.bytes = true;
-					continue;
-				}
-				if (arg === "-m" || arg === "--chars") {
-					wcFlags.chars = true;
-					continue;
-				}
-				if (WC_COMBINED_FLAGS_REGEX.test(arg)) {
-					for (const ch of arg.slice(1)) {
-						if (ch === "l") wcFlags.lines = true;
-						else if (ch === "w") wcFlags.words = true;
-						else if (ch === "c") wcFlags.bytes = true;
-						else if (ch === "m") wcFlags.chars = true;
-					}
-					continue;
-				}
-			} else {
-				if (arg === "-n" || arg === "--lines") {
-					const parsed = reader_command_parse_line_count(args[++index]);
-					headLineCount = parsed?.count ?? null;
-					headFromStart = parsed?.fromStart ?? false;
-					continue;
-				}
-				if (arg === "-c" || arg === "--bytes") {
-					byteMode = true;
-					index++;
-					continue;
-				}
-				if (arg.startsWith("--lines=")) {
-					const parsed = reader_command_parse_line_count(arg.slice("--lines=".length));
-					headLineCount = parsed?.count ?? null;
-					headFromStart = parsed?.fromStart ?? false;
-					continue;
-				}
-				if (arg.startsWith("--bytes=")) {
-					byteMode = true;
-					continue;
-				}
-				const obsoleteLineCount = OBSOLETE_LINE_COUNT_FLAG_REGEX.exec(arg);
-				if (obsoleteLineCount) {
-					headLineCount = Number(obsoleteLineCount[1]);
-					headFromStart = false;
-					continue;
-				}
-				if (arg.startsWith("-n")) {
-					const parsed = reader_command_parse_line_count(arg.slice(2));
-					headLineCount = parsed?.count ?? null;
-					headFromStart = parsed?.fromStart ?? false;
-					continue;
-				}
-				if (arg.startsWith("-c")) {
-					byteMode = true;
-					continue;
-				}
-				if (arg === "-q" || arg === "--quiet" || arg === "-v" || arg === "--verbose") {
-					continue;
-				}
-			}
-			if (!arg.startsWith("-") || arg === "-") {
-				files.push(arg);
-			}
+		const lineCountUsage = `Usage: ${command} [-n N] [FILE...]\n`;
+		const parsed = reader_command_parse_args(command, args);
+		if (parsed._nay) {
+			return {
+				stdout: "",
+				stderr: `${parsed._nay.message}\n${lineCountUsage}`,
+				exitCode: COMMAND_EXIT_USAGE,
+			};
 		}
+
+		const { files, lineCount, lineCountFromStart, byteMode, wcFlags } = parsed._yay;
+
 		for (const file of files) {
 			if (
 				file !== "-" &&
@@ -5698,30 +6003,21 @@ function reader_command_create(
 				};
 			}
 		}
+
 		const capError = enforce_reader_operand_cap(command, commandCtx, currentProjectPath, files);
 		if (capError != null) return capError;
 
-		// Multi-file wc across app files: serve per-file + total counts from the bounded stats
-		// path (committed chunks are exact; oversized files yield windowed lower bounds) so a batch
-		// never triggers a full read per file. Mixed/real-fs/stdin batches fall through to the builtin.
+		// App-file wc uses the bounded stats path so even a single file never needs a full read.
+		// Mixed/real-fs/stdin batches fall through to the builtin.
 		if (
 			command === "wc" &&
-			files.length >= 2 &&
+			files.length >= 1 &&
 			files.every(
 				(file) =>
 					file !== "-" &&
 					current_project_path_to_app_file_node_path(currentProjectPath, resolve_path(commandCtx.cwd, file)) != null,
 			)
 		) {
-			const wantDefault = !wcFlags.lines && !wcFlags.words && !wcFlags.chars && !wcFlags.bytes;
-			const buildFields = (counts: { lineCount: number; wordCount: number; charCount: number; byteCount: number }) => {
-				const fields: string[] = [];
-				if (wcFlags.lines || wantDefault) fields.push(String(counts.lineCount));
-				if (wcFlags.words || wantDefault) fields.push(String(counts.wordCount));
-				if (wcFlags.bytes || wantDefault) fields.push(String(counts.byteCount));
-				if (wcFlags.chars) fields.push(String(counts.charCount));
-				return fields.join(" ");
-			};
 			const totals = { lineCount: 0, wordCount: 0, charCount: 0, byteCount: 0 };
 			let stdout = "";
 			let stderr = "";
@@ -5736,6 +6032,7 @@ function reader_command_create(
 					// Unreachable: the surrounding branch requires every operand to resolve to an app file path.
 					throw should_never_happen("wc: operand stopped resolving to an app file path", { file });
 				}
+
 				const stats = (await ctx.runAction(internal.files_nodes.read_file_content_stats, {
 					workspaceId: workspaceFs.ctxData.workspaceId,
 					projectId: workspaceFs.ctxData.projectId,
@@ -5751,29 +6048,44 @@ function reader_command_create(
 									projectId: workspaceFs.ctxData.projectId,
 									path: appFileNodePath,
 								})) as files_nodes_get_by_path_Result);
-					if (fileNode?.kind === "file") {
+
+					if (appFileNodePath === "/" || fileNode?.kind === "folder") {
+						stderr += `wc: ${file}: Is a directory\n`;
+					} else if (fileNode?.kind === "file") {
 						stderr += build_unreadable_file_advisory(currentProjectPath, appFileNodePath, fileNode.contentType);
+						if (wcFlags.bytes || wc_command_wants_default(wcFlags)) {
+							stderr += format_multiline_hint("wc", [
+								`For the byte size of this app file, use: stat -c %s ${shell_arg_quote(app_file_node_path_to_current_project_path(currentProjectPath, appFileNodePath))}`,
+							]);
+						}
 					} else {
 						stderr += `wc: ${file}: No such file or directory\n`;
 					}
 					exitCode = 1;
 					continue;
 				}
+
 				totals.lineCount += stats.lineCount;
 				totals.wordCount += stats.wordCount;
 				totals.charCount += stats.charCount;
 				totals.byteCount += stats.byteCount;
+
 				if (!stats.exact) anyWindowed = true;
-				stdout += `${buildFields(stats)} ${file}\n`;
+				stdout += `${wc_command_build_fields(wcFlags, stats)} ${file}\n`;
 			}
-			stdout += `${buildFields(totals)} total\n`;
+
+			if (files.length > 1) {
+				stdout += `${wc_command_build_fields(wcFlags, totals)} total\n`;
+			}
+
 			// Byte counts are always exact; only line/word/char come from a bounded window.
-			const windowedRequested = wcFlags.lines || wcFlags.words || wcFlags.chars || wantDefault;
+			const windowedRequested = wcFlags.lines || wcFlags.words || wcFlags.chars || wc_command_wants_default(wcFlags);
 			if (anyWindowed && windowedRequested) {
 				stderr += format_multiline_hint("wc", [
 					"one or more files exceed the scan window; line/word/char counts are lower bounds. Byte counts are exact.",
 				]);
 			}
+
 			return { stdout, stderr, exitCode };
 		}
 
@@ -5788,30 +6100,24 @@ function reader_command_create(
 			files,
 		);
 		if (oversized != null) {
-			const appOperandCount = files.filter(
-				(file) =>
-					file !== "-" &&
-					current_project_path_to_app_file_node_path(currentProjectPath, resolve_path(commandCtx.cwd, file)) != null,
-			).length;
-
 			// Large files are read in bounded pages. head/tail map to bounded line reads; a
 			// single file operand is required so the page output is unambiguous.
-			if ((command === "head" || command === "tail") && byteMode && appOperandCount === 1) {
+			if ((command === "head" || command === "tail") && byteMode && files.length === 1) {
 				return {
 					stdout: "",
 					stderr: `${command}: byte-range reads (-c) are not supported for large app files; use ${command} -n N (lines) or wc -c ${shell_arg_quote(app_file_node_path_to_current_project_path(currentProjectPath, oversized.appFileNodePath))} for the byte count.\n`,
 					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
-			if ((command === "head" || command === "tail") && !byteMode && appOperandCount === 1) {
+			if ((command === "head" || command === "tail") && !byteMode && files.length === 1) {
 				const oversizedAppShellPath = app_file_node_path_to_current_project_path(
 					currentProjectPath,
 					oversized.appFileNodePath,
 				);
 				// `tail -n +K`: output from line K onward — a forward read at an offset, not a trailing
 				// window. Serve it from the same bounded forward reader head uses (paged via sed).
-				if (command === "tail" && headFromStart && headLineCount != null) {
-					const startLine = Math.max(1, headLineCount);
+				if (command === "tail" && lineCountFromStart && lineCount != null) {
+					const startLine = Math.max(1, lineCount);
 					const maxLines = READ_HEAD_LARGE_FILE_MAX_LINES;
 					const result = (await ctx.runAction(internal.files_nodes.read_file_line_range, {
 						workspaceId: workspaceFs.ctxData.workspaceId,
@@ -5821,6 +6127,7 @@ function reader_command_create(
 						startLine,
 						maxLines,
 					})) as files_nodes_read_file_line_range_Result;
+
 					if (!result) {
 						return {
 							stdout: "",
@@ -5828,19 +6135,28 @@ function reader_command_create(
 							exitCode: COMMAND_EXIT_FAILURE,
 						};
 					}
+
 					const stdout = result.content;
 					const notes: string[] = [];
+
 					if (result.moreLines && !result.scanTruncated) {
 						notes.push(
-							`More lines below. Next page: sed -n '${startLine + maxLines},${startLine + maxLines * 2 - 1}p' ${shell_arg_quote(oversizedAppShellPath)}`,
+							`More lines below. ${sed_command_build_next_page_hint({
+								nextStartLine: startLine + maxLines,
+								maxLines,
+								shellPath: oversizedAppShellPath,
+							})}`,
 						);
 					}
+
 					if (result.scanTruncated) {
 						notes.push("large file; only the first scanned block was read; output may be incomplete");
 					}
+
 					return { stdout, stderr: format_multiline_hint("tail", notes), exitCode: 0 };
 				}
-				const requestedLines = headLineCount ?? 10;
+
+				const requestedLines = lineCount ?? 10;
 				// Clamp (don't refuse) an over-large -n to the per-page cap, and note it.
 				const maxLines = Math.min(requestedLines, READ_HEAD_LARGE_FILE_MAX_LINES);
 				const clampNote =
@@ -5856,6 +6172,7 @@ function reader_command_create(
 						startLine: 1,
 						maxLines,
 					})) as files_nodes_read_file_line_range_Result;
+
 					if (!result) {
 						return {
 							stdout: "",
@@ -5863,20 +6180,28 @@ function reader_command_create(
 							exitCode: COMMAND_EXIT_FAILURE,
 						};
 					}
+
 					const stdout = result.content;
 					const notes: string[] = [];
+
 					if (clampNote) notes.push(clampNote);
 					if (result.moreLines && !result.scanTruncated) {
 						// Point the agent at the next page via sed line ranges (plain bash paging).
 						notes.push(
-							`More lines below. Next page: sed -n '${maxLines + 1},${maxLines * 2}p' ${shell_arg_quote(oversizedAppShellPath)}`,
+							`More lines below. ${sed_command_build_next_page_hint({
+								nextStartLine: maxLines + 1,
+								maxLines,
+								shellPath: oversizedAppShellPath,
+							})}`,
 						);
 					}
 					if (result.scanTruncated) {
 						notes.push("large file; only the first scanned block was read; output may be incomplete");
 					}
+
 					return { stdout, stderr: format_multiline_hint("head", notes), exitCode: 0 };
 				}
+
 				const result = (await ctx.runAction(internal.files_nodes.read_file_tail_lines, {
 					workspaceId: workspaceFs.ctxData.workspaceId,
 					projectId: workspaceFs.ctxData.projectId,
@@ -5884,6 +6209,7 @@ function reader_command_create(
 					path: oversized.appFileNodePath,
 					maxLines,
 				})) as files_nodes_read_file_tail_lines_Result;
+
 				if (!result) {
 					return {
 						stdout: "",
@@ -5891,8 +6217,10 @@ function reader_command_create(
 						exitCode: COMMAND_EXIT_FAILURE,
 					};
 				}
+
 				const stdout = result.content;
 				const tailNotes: string[] = [];
+
 				if (clampNote) tailNotes.push(clampNote);
 				if (result.scanTruncated) {
 					tailNotes.push("large file; only the trailing block was read");
@@ -5902,42 +6230,8 @@ function reader_command_create(
 						`showing the last ${maxLines} lines; earlier lines precede them. Read from the top with: head -n ${maxLines} ${shell_arg_quote(oversizedAppShellPath)}`,
 					);
 				}
-				return { stdout, stderr: format_multiline_hint("tail", tailNotes), exitCode: 0 };
-			}
 
-			// wc on a large file: report counts so the agent learns the file's size (e.g. line
-			// count) instead of over-paging. Bytes are exact; line/word/char come from a bounded
-			// window (flagged as a lower bound when the file exceeds the scan window).
-			if (command === "wc" && appOperandCount === 1) {
-				const stats = (await ctx.runAction(internal.files_nodes.read_file_content_stats, {
-					workspaceId: workspaceFs.ctxData.workspaceId,
-					projectId: workspaceFs.ctxData.projectId,
-					userId: workspaceFs.ctxData.userId,
-					path: oversized.appFileNodePath,
-				})) as files_nodes_read_file_content_stats_Result;
-				if (!stats) {
-					return {
-						stdout: "",
-						stderr: `wc: ${oversized.file}: No such file or directory\n`,
-						exitCode: COMMAND_EXIT_FAILURE,
-					};
-				}
-				const wantDefault = !wcFlags.lines && !wcFlags.words && !wcFlags.chars && !wcFlags.bytes;
-				const fields: string[] = [];
-				if (wcFlags.lines || wantDefault) fields.push(String(stats.lineCount));
-				if (wcFlags.words || wantDefault) fields.push(String(stats.wordCount));
-				if (wcFlags.bytes || wantDefault) fields.push(String(stats.byteCount));
-				if (wcFlags.chars) fields.push(String(stats.charCount));
-				const stdout = `${fields.join(" ")} ${oversized.file}\n`;
-				// Byte count is always exact; only line/word/char counts are window-bounded.
-				const windowedRequested = wcFlags.lines || wcFlags.words || wcFlags.chars || wantDefault;
-				const stderr =
-					!stats.exact && windowedRequested
-						? format_multiline_hint("wc", [
-								`file exceeds the scan window; line/word/char counts are lower bounds. Byte count (${stats.byteCount}) is exact.`,
-							])
-						: "";
-				return { stdout, stderr, exitCode: 0 };
+				return { stdout, stderr: format_multiline_hint("tail", tailNotes), exitCode: 0 };
 			}
 
 			const hint =
@@ -5952,35 +6246,80 @@ function reader_command_create(
 				exitCode: COMMAND_EXIT_FAILURE,
 			};
 		}
+
+		if ((command === "head" || command === "tail") && args.includes("--") && !byteMode && files.length === 1) {
+			const file = files[0];
+			if (file !== "-") {
+				const resolvedPath = resolve_path(commandCtx.cwd, file);
+				const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath);
+
+				if (appFileNodePath != null) {
+					// The parser consumes `--`, but the delegated built-in still sees the original argv.
+					// Keep one app-file operand here so dash-leading app names read through WorkspaceFs.
+					try {
+						const content = await commandCtx.fs.readFile(resolvedPath);
+						const hasTrailingNewline = content.endsWith("\n");
+						const lines = (hasTrailingNewline ? content.slice(0, -1) : content).split("\n");
+						const requestedLines = lineCount ?? 10;
+
+						const selected =
+							command === "head"
+								? lines.slice(0, requestedLines)
+								: lineCountFromStart
+									? lines.slice(Math.max(0, requestedLines - 1))
+									: lines.slice(-requestedLines);
+
+						const stdout =
+							selected.length === 0
+								? ""
+								: `${selected.join("\n")}${hasTrailingNewline || selected.length < lines.length ? "\n" : ""}`;
+
+						return { stdout, stderr: "", exitCode: 0 };
+					} catch (error) {
+						if (error instanceof AppFileContentUnavailableError) {
+							return {
+								stdout: "",
+								stderr: build_unreadable_file_advisory(currentProjectPath, appFileNodePath, error.contentType),
+								exitCode: COMMAND_EXIT_FAILURE,
+							};
+						}
+					}
+				}
+			}
+		}
+
 		for (const file of files) {
 			if (file === "-") continue;
+
 			const resolvedPath = resolve_path(commandCtx.cwd, file);
 			const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath);
 			if (appFileNodePath == null) continue;
+
 			try {
 				await commandCtx.fs.readFile(resolvedPath);
 			} catch (error) {
 				if (error instanceof AppFileContentUnavailableError) {
 					return {
-						stdout: build_unreadable_file_advisory(currentProjectPath, appFileNodePath, error.contentType),
-						stderr: "",
-						exitCode: 0,
+						stdout: "",
+						stderr: build_unreadable_file_advisory(currentProjectPath, appFileNodePath, error.contentType),
+						exitCode: COMMAND_EXIT_FAILURE,
 					};
 				}
 			}
 		}
+
 		try {
 			return await delegate_builtin_command({ command, args, commandCtx });
 		} catch (error) {
 			if (error instanceof AppFileContentUnavailableError) {
 				return {
-					stdout: build_unreadable_file_advisory(
+					stdout: "",
+					stderr: build_unreadable_file_advisory(
 						currentProjectPath,
 						current_project_path_to_app_file_node_path(currentProjectPath, error.shellPath) ?? error.shellPath,
 						error.contentType,
 					),
-					stderr: "",
-					exitCode: 0,
+					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
 			throw error;
@@ -5992,23 +6331,93 @@ function reader_command_create(
 
 // #region touch command
 
+/**
+ * Extract only the `touch` operands that can touch app paths.
+ *
+ * This is not a full touch parser; it skips date/time values and records
+ * reference operands so both writes and app-file reference reads are rejected
+ * before the delegated built-in can mutate `/tmp`.
+ */
+function touch_command_path_operands(args: string[]) {
+	const operands: { file: string; kind: "target" | "reference" }[] = [];
+	let optionsEnded = false;
+
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (optionsEnded) {
+			operands.push({ file: arg, kind: "target" });
+			continue;
+		}
+
+		if (arg === "--") {
+			optionsEnded = true;
+			continue;
+		}
+
+		if (arg === "-d" || arg === "--date" || arg === "-t") {
+			index++;
+			continue;
+		}
+
+		if (
+			arg.startsWith("--date=") ||
+			(arg.startsWith("-d") && arg.length > 2) ||
+			(arg.startsWith("-t") && arg.length > 2)
+		) {
+			continue;
+		}
+
+		if (arg === "-r" || arg === "--reference") {
+			const file = args[index + 1];
+			if (file != null && file !== "") {
+				operands.push({ file, kind: "reference" });
+			}
+			index++;
+			continue;
+		}
+
+		if (arg.startsWith("--reference=")) {
+			const file = arg.slice("--reference=".length);
+			if (file !== "") {
+				operands.push({ file, kind: "reference" });
+			}
+			continue;
+		}
+
+		if (arg.startsWith("-r") && arg.length > 2) {
+			operands.push({ file: arg.slice(2), kind: "reference" });
+			continue;
+		}
+
+		if (!arg.startsWith("-")) {
+			operands.push({ file: arg, kind: "target" });
+		}
+	}
+
+	return operands;
+}
+
+/**
+ * Keep app files read-only for shell `touch`.
+ *
+ * The first app operand aborts the batch before delegation, so mixed app and
+ * `/tmp` invocations cannot leave partial scratch side effects.
+ */
 function touch_command_create(currentProjectPath: string) {
 	return defineCommand("touch", async (args, commandCtx) => {
-		const files: string[] = [];
-		for (let index = 0; index < args.length; index++) {
-			const arg = args[index];
-			if (arg === "-d" || arg === "--date" || arg === "-r" || arg === "-t") {
-				index++;
-				continue;
-			}
-			if (!arg.startsWith("-")) {
-				files.push(arg);
-			}
-		}
-		for (const file of files) {
+		for (const { file, kind } of touch_command_path_operands(args)) {
 			const resolvedPath = resolve_path(commandCtx.cwd, file);
-			if (is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
-				const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath) ?? file;
+			const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath);
+
+			if (appFileNodePath != null) {
+				if (kind === "reference") {
+					return {
+						stdout: "",
+						stderr: `touch: cannot use app file '${file}' as a reference file through bash (app path '${appFileNodePath}').\n`,
+						exitCode: COMMAND_EXIT_FAILURE,
+					};
+				}
+
 				return {
 					stdout: "",
 					stderr:
@@ -6019,6 +6428,7 @@ function touch_command_create(currentProjectPath: string) {
 				};
 			}
 		}
+
 		return await delegate_builtin_command({ command: "touch", args, commandCtx });
 	});
 }
@@ -6027,17 +6437,51 @@ function touch_command_create(currentProjectPath: string) {
 
 // #region rm command
 
+/**
+ * Extract `rm` operands that might delete app paths.
+ *
+ * `rm` options accepted by Just Bash are boolean flags, so skipping dash-leading
+ * tokens before `--` finds targets without swallowing option values.
+ */
+function rm_command_path_operands(args: string[]) {
+	const operands: string[] = [];
+	let optionsEnded = false;
+
+	for (const arg of args) {
+		if (optionsEnded) {
+			operands.push(arg);
+			continue;
+		}
+
+		if (arg === "--") {
+			optionsEnded = true;
+			continue;
+		}
+
+		if (arg.startsWith("-")) {
+			continue;
+		}
+
+		operands.push(arg);
+	}
+
+	return operands;
+}
+
+/**
+ * Keep app files read-only for shell `rm`; durable deletion/archival stays a UI action.
+ */
 function rm_command_create(currentProjectPath: string) {
 	return defineCommand("rm", async (args, commandCtx) => {
-		for (const arg of args) {
-			if (arg.startsWith("-")) continue;
-			const resolvedPath = resolve_path(commandCtx.cwd, arg);
-			if (is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
+		for (const file of rm_command_path_operands(args)) {
+			const resolvedPath = resolve_path(commandCtx.cwd, file);
+			const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath);
+			if (appFileNodePath != null) {
 				return {
 					stdout: "",
 					stderr:
-						`rm: cannot delete app file '${arg}' through bash.\n` +
-						`App files cannot be deleted via shell commands. Use the Files sidebar Archive action for '${arg}', or use write_file/edit_file for content changes.\n`,
+						`rm: cannot delete app file '${file}' through bash.\n` +
+						`App files cannot be deleted via shell commands. Use the Files sidebar Archive action for path '${appFileNodePath}', or use write_file/edit_file for content changes.\n`,
 					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
@@ -6048,15 +6492,35 @@ function rm_command_create(currentProjectPath: string) {
 
 // #endregion rm command
 
+/**
+ * Extract `cp`/`mv` path operands for app-path routing.
+ *
+ * This is intentionally smaller than a full parser: it tracks recursive flags
+ * including short clusters and `--`, then preserves every following token as a
+ * path operand so dash-leading app file names cannot bypass the app-mutation guards.
+ */
 function cp_mv_command_parse_operands(args: string[]) {
 	const operands: string[] = [];
 	let recursive = false;
+	let optionsEnded = false;
+
 	for (const arg of args) {
+		if (optionsEnded) {
+			operands.push(arg);
+			continue;
+		}
+		if (arg === "--") {
+			optionsEnded = true;
+			continue;
+		}
 		if (arg === "-r" || arg === "-R" || arg === "--recursive") {
 			recursive = true;
 			continue;
 		}
 		if (arg.startsWith("-")) {
+			if (!arg.startsWith("--") && [...arg.slice(1)].some((flag) => flag === "r" || flag === "R")) {
+				recursive = true;
+			}
 			continue;
 		}
 		operands.push(arg);
@@ -6073,15 +6537,27 @@ function cp_command_is_under_tmp_mount(path: string) {
 	return path === TMP_MOUNT || path.startsWith(`${TMP_MOUNT}/`);
 }
 
+/**
+ * Allow the one app-file `cp` shape that is useful to agents:
+ * copy one readable app file into `/tmp` scratch for Native Just Bash tools.
+ *
+ * Everything else involving app paths is rejected before delegation so cp never
+ * mutates the durable app tree or silently treats app destinations as scratch.
+ */
 function cp_command_create(currentProjectPath: string) {
 	return defineCommand("cp", async (args, commandCtx) => {
 		const { operands, recursive } = cp_mv_command_parse_operands(args);
+		// Classify app operands up front so any app-path command is fully preflighted
+		// before delegating to native cp, which could otherwise create /tmp side effects.
 		const appOperands = operands.filter((operand) =>
 			is_path_under_current_project_path(currentProjectPath, resolve_path(commandCtx.cwd, operand)),
 		);
+
+		// Pure scratch/non-app copies keep native Just Bash behavior.
 		if (appOperands.length === 0) {
 			return await delegate_builtin_command({ command: "cp", args, commandCtx });
 		}
+
 		for (const operand of appOperands) {
 			if (GLOB_METACHARACTER_REGEX.test(operand)) {
 				return {
@@ -6105,34 +6581,35 @@ function cp_command_create(currentProjectPath: string) {
 				stderr:
 					`cp: cannot write to app file '${operands[1]}': the app file tree is read-only for cp.\n` +
 					`To create a durable copy at '${destAppFileNodePath}', use write_file with path '${destAppFileNodePath}' and the content read from the source.\n` +
-					`cp into the app tree is never supported; only cp <app-file> /tmp/<name> (scratch copy) is allowed.\n`,
+					`cp into the app tree is never supported; only cp <app-file> /tmp[/<name>] (scratch copy) is allowed.\n`,
 				exitCode: COMMAND_EXIT_FAILURE,
 			};
 		}
+		// The only mixed form allowed is source app file first, scratch destination second.
 		if (recursive || operands.length !== 2 || appOperands.length !== 1 || appOperands[0] !== operands[0]) {
 			return {
 				stdout: "",
 				stderr:
 					"cp: app files can only be copied as one exact readable file to a /tmp destination.\n" +
-					"Usage: cp <app-file> /tmp/<name> - copies the file content to durable per-thread /tmp scratch space.\n" +
+					"Usage: cp <app-file> /tmp[/<name>] - copies the file content to durable per-thread /tmp scratch space.\n" +
 					"To duplicate an app file as a new durable file, use write_file with the new app file path (strip the current project path prefix).\n",
 				exitCode: COMMAND_EXIT_FAILURE,
 			};
 		}
 
 		const sourceShellPath = resolve_path(commandCtx.cwd, operands[0]);
-		const destShellPath = resolve_path(commandCtx.cwd, operands[1]);
+		let destShellPath = resolve_path(commandCtx.cwd, operands[1]);
 		if (!cp_command_is_under_tmp_mount(destShellPath)) {
 			const destAppFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, destShellPath);
 			const destHint =
 				destAppFileNodePath != null
 					? `To create a durable copy at '${destAppFileNodePath}', use write_file with path '${destAppFileNodePath}' and the content read from the source.`
-					: "Durable app file writes require write_file, not cp.";
+					: "Choose a /tmp/<name> destination for a scratch copy.";
 			return {
 				stdout: "",
 				stderr:
-					`cp: cannot write to '${operands[1]}': app file tree is read-only for cp.\n` +
-					`Only /tmp destinations are supported: cp ${shell_arg_quote(operands[0])} /tmp/<name>\n` +
+					`cp: cannot write app file '${operands[0]}' to '${operands[1]}': app-file cp only supports /tmp destinations.\n` +
+					`Only /tmp destinations are supported: cp ${shell_arg_quote(operands[0])} /tmp[/<name>]\n` +
 					`${destHint}\n`,
 				exitCode: COMMAND_EXIT_FAILURE,
 			};
@@ -6146,14 +6623,27 @@ function cp_command_create(currentProjectPath: string) {
 					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
+			try {
+				const destStat = await commandCtx.fs.stat(destShellPath);
+				if (destStat.isDirectory) {
+					// Match native cp's directory destination behavior within /tmp scratch.
+					destShellPath = normalize_path(`${destShellPath}/${path_name_of(sourceShellPath)}`);
+				}
+			} catch {
+				// Missing destinations are normal; writeFile creates the scratch file.
+			}
+			// Read through the mounted fs so app-file readability checks stay centralized,
+			// then write only to the already-validated scratch destination.
 			const content = await commandCtx.fs.readFileBuffer(sourceShellPath);
 			await commandCtx.fs.writeFile(destShellPath, content);
 			return { stdout: "", stderr: "", exitCode: 0 };
 		} catch (error) {
 			if (error instanceof AppFileContentUnavailableError) {
+				const appFileNodePath =
+					current_project_path_to_app_file_node_path(currentProjectPath, error.shellPath) ?? error.shellPath;
 				return {
 					stdout: "",
-					stderr: `cp: ${operands[0]}: unsupported app file content type '${error.contentType ?? "unknown"}'\n`,
+					stderr: build_unreadable_file_advisory(currentProjectPath, appFileNodePath, error.contentType),
 					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
@@ -6170,41 +6660,89 @@ function cp_command_create(currentProjectPath: string) {
 
 // #region mv command
 
+/**
+ * Keep app files read-only for shell `mv`.
+ *
+ * `/tmp` moves still delegate to the built-in. Any app source or destination
+ * aborts before delegation so a mixed command cannot leave partial scratch
+ * side effects while pretending to mutate the durable app tree.
+ */
 function mv_command_create(currentProjectPath: string) {
 	return defineCommand("mv", async (args, commandCtx) => {
 		const { operands } = cp_mv_command_parse_operands(args);
-		// Identify source and destination for better guidance
-		const srcOperand = operands[0];
-		const destOperand = operands[1];
-		for (const operand of operands) {
-			const resolvedPath = resolve_path(commandCtx.cwd, operand);
-			if (is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
-				const srcAppFileNodePath =
-					srcOperand != null
-						? (current_project_path_to_app_file_node_path(
-								currentProjectPath,
-								resolve_path(commandCtx.cwd, srcOperand),
-							) ?? srcOperand)
-						: null;
-				const destAppFileNodePath =
-					destOperand != null
-						? (current_project_path_to_app_file_node_path(
-								currentProjectPath,
-								resolve_path(commandCtx.cwd, destOperand),
-							) ?? destOperand)
-						: null;
-				const renameHint =
-					srcAppFileNodePath != null && destAppFileNodePath != null
-						? `To rename/move an app file, use the Files sidebar rename/move UI. For content changes, use write_file with path '${destAppFileNodePath}' or edit_file on '${srcAppFileNodePath}'.`
-						: "To rename/move an app file, use the Files sidebar rename/move UI. For content changes, use write_file or edit_file.";
+		const appOperands = operands.filter((operand) =>
+			is_path_under_current_project_path(currentProjectPath, resolve_path(commandCtx.cwd, operand)),
+		);
+
+		if (appOperands.length === 0) {
+			return await delegate_builtin_command({ command: "mv", args, commandCtx });
+		}
+
+		for (const operand of appOperands) {
+			if (GLOB_METACHARACTER_REGEX.test(operand)) {
 				return {
 					stdout: "",
-					stderr: `mv: cannot move or rename app files through bash.\n` + `${renameHint}\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
+					stderr: create_glob_syntax_unsupported_message("mv", operand),
+					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
 		}
-		return await delegate_builtin_command({ command: "mv", args, commandCtx });
+
+		const destOperand = operands.length >= 2 ? operands.at(-1) : undefined;
+		const sourceOperands = operands.length >= 2 ? operands.slice(0, -1) : operands;
+		const sourceAppOperand = sourceOperands.find((operand) =>
+			is_path_under_current_project_path(currentProjectPath, resolve_path(commandCtx.cwd, operand)),
+		);
+		const destAppFileNodePath =
+			destOperand == null
+				? null
+				: current_project_path_to_app_file_node_path(currentProjectPath, resolve_path(commandCtx.cwd, destOperand));
+		const sourceAppFileNodePath =
+			sourceAppOperand == null
+				? null
+				: current_project_path_to_app_file_node_path(
+						currentProjectPath,
+						resolve_path(commandCtx.cwd, sourceAppOperand),
+					);
+
+		if (sourceAppFileNodePath != null && destAppFileNodePath != null) {
+			return {
+				stdout: "",
+				stderr:
+					"mv: cannot move or rename app files through bash.\n" +
+					`Use the Files sidebar rename/move UI for app path '${sourceAppFileNodePath}' -> '${destAppFileNodePath}'. For content changes, use edit_file on '${sourceAppFileNodePath}' or write_file with path '${destAppFileNodePath}'.\n`,
+				exitCode: COMMAND_EXIT_FAILURE,
+			};
+		}
+
+		if (destAppFileNodePath != null) {
+			return {
+				stdout: "",
+				stderr:
+					`mv: cannot write to app file '${destOperand}': the app file tree is read-only for mv.\n` +
+					`To create or replace durable content at '${destAppFileNodePath}', use write_file with path '${destAppFileNodePath}' and the content read from the source.\n` +
+					"Moving /tmp files into the app tree through bash is not supported.\n",
+				exitCode: COMMAND_EXIT_FAILURE,
+			};
+		}
+
+		if (sourceAppOperand == null || sourceAppFileNodePath == null) {
+			throw should_never_happen("mv: app source path missing after destination branches", {
+				operands,
+				appOperands,
+				sourceOperands,
+				sourceAppOperand,
+				sourceAppFileNodePath,
+			});
+		}
+
+		return {
+			stdout: "",
+			stderr:
+				`mv: cannot move or rename app file '${sourceAppOperand}' through bash.\n` +
+				`Use the Files sidebar rename/move UI for app path '${sourceAppFileNodePath}'. To copy readable content into scratch for processing, use cp ${shell_arg_quote(sourceAppOperand)} /tmp/<name>.\n`,
+			exitCode: COMMAND_EXIT_FAILURE,
+		};
 	});
 }
 
@@ -6212,20 +6750,54 @@ function mv_command_create(currentProjectPath: string) {
 
 // #region tee command
 
+/**
+ * Extract `tee` operands that might write app paths.
+ *
+ * `tee` options accepted by Just Bash are boolean flags, so skipping
+ * dash-leading tokens before `--` finds targets without swallowing option values.
+ */
+function tee_command_path_operands(args: string[]) {
+	const operands: string[] = [];
+	let optionsEnded = false;
+
+	for (const arg of args) {
+		if (optionsEnded) {
+			operands.push(arg);
+			continue;
+		}
+
+		if (arg === "--") {
+			optionsEnded = true;
+			continue;
+		}
+
+		if (arg.startsWith("-")) {
+			continue;
+		}
+
+		operands.push(arg);
+	}
+
+	return operands;
+}
+
+/**
+ * Keep app files read-only for shell `tee`; durable writes must use write_file/edit_file.
+ */
 function tee_command_create(currentProjectPath: string) {
 	return defineCommand("tee", async (args, commandCtx) => {
-		const files = args.filter((arg) => !arg.startsWith("-"));
-		for (const file of files) {
+		for (const file of tee_command_path_operands(args)) {
 			const resolvedPath = resolve_path(commandCtx.cwd, file);
-			if (is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
-				const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath) ?? file;
+			const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath);
+
+			if (appFileNodePath != null) {
 				return {
-					stdout: commandCtx.stdin as unknown as string,
+					stdout: "",
 					stderr:
 						`tee: cannot write to app file '${file}' through bash.\n` +
 						`Use write_file with path '${appFileNodePath}' to write new content (strip the current project path prefix '${currentProjectPath}').\n` +
 						`Use edit_file with path '${appFileNodePath}' to apply targeted edits to an existing file.\n`,
-					exitCode: 1,
+					exitCode: COMMAND_EXIT_FAILURE,
 				};
 			}
 		}
@@ -6235,51 +6807,93 @@ function tee_command_create(currentProjectPath: string) {
 
 // #endregion tee command
 
-// #region nested shell commands
+// #region bash sh commands
 
+/**
+ * Provide the supported nested shell surface: `bash -c|-lc|-cl 'script'` and
+ * non-app script paths. App-mounted scripts are rejected, positional args are
+ * forwarded to the nested script, and every nested command still uses the same
+ * app-file guards as the outer shell.
+ */
 function nested_shell_command_create(name: "bash" | "sh", currentProjectPath: string) {
 	return defineCommand(name, async (args, commandCtx) => {
 		if (args.length === 0) {
 			return { stdout: "", stderr: "", exitCode: 0 };
 		}
+
+		let script: string;
+		let forwardArgs: string[];
+
 		// Treat the common `bash -lc` agent habit as `bash -c`; login-shell setup is irrelevant in this curated shell.
 		if (args[0] === "-c" || args[0] === "-lc" || args[0] === "-cl") {
-			const script = args[1];
-			if (script == null) {
+			if (args[1] == null) {
 				return {
 					stdout: "",
 					stderr: `${name}: -c: option requires an argument\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
+					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
-			if (!commandCtx.exec) {
-				return {
-					stdout: "",
-					stderr: `${name}: nested execution is unavailable\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
-				};
-			}
-			return await commandCtx.exec(`set -f\n${script}`, {
-				cwd: commandCtx.cwd,
-				signal: commandCtx.signal,
-				args: args.slice(2),
-			});
-		}
-		if (args[0]?.startsWith("-")) {
+			script = args[1];
+			forwardArgs = args.slice(2);
+		} else if (args[0].startsWith("-")) {
 			return {
 				stdout: "",
-				stderr: `${name}: unsupported option ${args[0]}\nOnly ${name} -c 'script' (inline script) is supported. Avoid set -euo pipefail, process substitution, and other shell-specific flags.\n`,
+				stderr: `${name}: unsupported option ${args[0]}\nSupported: ${name} -c 'script' for inline scripts, or ${name} /tmp/script.sh for non-app script files. Avoid set -euo pipefail, process substitution, and other shell-specific flags.\n`,
 				exitCode: COMMAND_EXIT_USAGE,
 			};
+		} else {
+			const scriptPath = resolve_path(commandCtx.cwd, args[0]);
+			// Script files are only executable from non-app paths such as /tmp.
+			// App files are document content, not shell entrypoints.
+			if (is_path_under_current_project_path(currentProjectPath, scriptPath)) {
+				return {
+					stdout: "",
+					stderr: `${name}: app-mounted script files are not executable through bash: ${scriptPath}\n`,
+					exitCode: COMMAND_EXIT_CANNOT_EXECUTE,
+				};
+			}
+
+			let scriptStat: FsStat;
+			try {
+				scriptStat = await commandCtx.fs.stat(scriptPath);
+			} catch {
+				return {
+					stdout: "",
+					stderr: `${name}: ${args[0]}: No such file or directory\n`,
+					exitCode: COMMAND_EXIT_NOT_FOUND,
+				};
+			}
+			if (scriptStat.isDirectory) {
+				return {
+					stdout: "",
+					stderr: `${name}: ${args[0]}: Is a directory\n`,
+					exitCode: COMMAND_EXIT_CANNOT_EXECUTE,
+				};
+			}
+
+			try {
+				// Stat and read are separated so missing files, directories, and
+				// unreadable script bodies get native-looking diagnostics.
+				script = await commandCtx.fs.readFile(scriptPath);
+				forwardArgs = args.slice(1);
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				return {
+					stdout: "",
+					stderr:
+						msg.startsWith("ENOENT") || msg.startsWith("ENOFILE")
+							? `${name}: ${args[0]}: No such file or directory\n`
+							: msg.startsWith("EACCES")
+								? `${name}: ${args[0]}: Permission denied\n`
+								: `${name}: ${args[0]}: Cannot read script file\n`,
+					exitCode:
+						msg.startsWith("ENOENT") || msg.startsWith("ENOFILE")
+							? COMMAND_EXIT_NOT_FOUND
+							: COMMAND_EXIT_CANNOT_EXECUTE,
+				};
+			}
 		}
-		const scriptPath = resolve_path(commandCtx.cwd, args[0]);
-		if (is_path_under_current_project_path(currentProjectPath, scriptPath)) {
-			return {
-				stdout: "",
-				stderr: `${name}: app-mounted script files are not executable through bash\n`,
-				exitCode: COMMAND_EXIT_FAILURE,
-			};
-		}
+
 		if (!commandCtx.exec) {
 			return {
 				stdout: "",
@@ -6287,16 +6901,20 @@ function nested_shell_command_create(name: "bash" | "sh", currentProjectPath: st
 				exitCode: COMMAND_EXIT_FAILURE,
 			};
 		}
-		const script = await commandCtx.fs.readFile(scriptPath);
+
+		// Disable pathname expansion in nested shells too. Top-level execution uses
+		// the same prefix so nested scripts cannot bypass the Convex-backed app glob policy.
 		return await commandCtx.exec(`set -f\n${script}`, {
 			cwd: commandCtx.cwd,
 			signal: commandCtx.signal,
-			args: args.slice(1),
+			args: forwardArgs,
+			stdin: commandCtx.stdin as unknown as string,
+			stdinKind: "bytes",
 		});
 	});
 }
 
-// #endregion nested shell commands
+// #endregion bash sh commands
 
 // #region xargs command
 
@@ -6305,7 +6923,15 @@ const XARGS_DELIMITER_TAB_ESCAPE_REGEX = /\\t/gu;
 const XARGS_DELIMITER_NUL_ESCAPE_REGEX = /\\0/gu;
 const XARGS_ATTACHED_MAX_ARGS_REGEX = /^-n\d+$/u;
 const SINGLE_TRAILING_NEWLINE_REGEX = /\n$/u;
+const XARGS_USAGE = "Supported: xargs [-n N] [-I REPLACE] [-d DELIM] [-0] [-t] [-r] [--] [COMMAND [ARGS...]]\n";
 
+/**
+ * Curated app-shell `xargs`.
+ *
+ * Supports the common serial forms agents use (`-n`, `-I`, `-d`, `-0`, `-t`,
+ * and the no-op safety flag `-r`) and executes each nested command through the
+ * same guarded shell context, so app-file protections still apply.
+ */
 function xargs_command_create() {
 	return defineCommand("xargs", async (args, commandCtx) => {
 		let replaceString: string | null = null;
@@ -6313,13 +6939,30 @@ function xargs_command_create() {
 		let maxArgs: number | null = null;
 		let nullSeparated = false;
 		let verbose = false;
-		let noRunIfEmpty = false;
 		let commandStart = args.length;
 
+		// Parse only xargs flags until the first command token. `commandStart`
+		// always points at the command argv that will receive the parsed stdin items.
 		for (let index = 0; index < args.length; index++) {
 			const arg = args[index];
+			if (arg === "--help") {
+				return await delegate_builtin_command({ command: "xargs", args, commandCtx });
+			}
+			if (arg === "--") {
+				commandStart = index + 1;
+				break;
+			}
 			if (arg === "-I") {
-				replaceString = args[++index] ?? "";
+				const value = args[index + 1];
+				if (value == null || value === "") {
+					return {
+						stdout: "",
+						stderr: `xargs: -I requires a value\n${XARGS_USAGE}`,
+						exitCode: COMMAND_EXIT_USAGE,
+					};
+				}
+				replaceString = value;
+				index++;
 				commandStart = index + 1;
 				continue;
 			}
@@ -6329,10 +6972,19 @@ function xargs_command_create() {
 				continue;
 			}
 			if (arg === "-d") {
-				delimiter = (args[++index] ?? "")
+				const value = args[index + 1];
+				if (value == null || value === "") {
+					return {
+						stdout: "",
+						stderr: `xargs: -d requires a value\n${XARGS_USAGE}`,
+						exitCode: COMMAND_EXIT_USAGE,
+					};
+				}
+				delimiter = value
 					.replace(XARGS_DELIMITER_NEWLINE_ESCAPE_REGEX, "\n")
 					.replace(XARGS_DELIMITER_TAB_ESCAPE_REGEX, "\t")
 					.replace(XARGS_DELIMITER_NUL_ESCAPE_REGEX, "\0");
+				index++;
 				commandStart = index + 1;
 				continue;
 			}
@@ -6350,7 +7002,7 @@ function xargs_command_create() {
 				if (rawMaxArgs == null || !NON_NEGATIVE_INTEGER_REGEX.test(rawMaxArgs) || Number(rawMaxArgs) < 1) {
 					return {
 						stdout: "",
-						stderr: "xargs: -n requires a positive integer\n",
+						stderr: `xargs: -n requires a positive integer\n${XARGS_USAGE}`,
 						exitCode: COMMAND_EXIT_USAGE,
 					};
 				}
@@ -6358,12 +7010,19 @@ function xargs_command_create() {
 				commandStart = index + 1;
 				continue;
 			}
-			if (arg.startsWith("-n") && arg.length > 2 && XARGS_ATTACHED_MAX_ARGS_REGEX.test(arg)) {
+			if (arg.startsWith("-n") && arg.length > 2) {
+				if (!XARGS_ATTACHED_MAX_ARGS_REGEX.test(arg)) {
+					return {
+						stdout: "",
+						stderr: `xargs: -n requires a positive integer\n${XARGS_USAGE}`,
+						exitCode: COMMAND_EXIT_USAGE,
+					};
+				}
 				const inlineMaxArgs = Number(arg.slice(2));
 				if (inlineMaxArgs < 1) {
 					return {
 						stdout: "",
-						stderr: "xargs: -n requires a positive integer\n",
+						stderr: `xargs: -n requires a positive integer\n${XARGS_USAGE}`,
 						exitCode: COMMAND_EXIT_USAGE,
 					};
 				}
@@ -6371,9 +7030,20 @@ function xargs_command_create() {
 				commandStart = index + 1;
 				continue;
 			}
+			// Accept `-P 0` and `-P 1` for compatibility, but keep execution serial.
+			// Parallel nested shell execution would make stdout/stderr ordering and
+			// mutation timing much harder for an agent to reason about.
 			if (arg === "-P") {
-				const value = Number(args[index + 1]);
-				if (Number.isFinite(value) && value > 1) {
+				const rawValue = args[index + 1];
+				if (rawValue == null || rawValue === "" || !NON_NEGATIVE_INTEGER_REGEX.test(rawValue)) {
+					return {
+						stdout: "",
+						stderr: `xargs: -P requires a non-negative integer\n${XARGS_USAGE}`,
+						exitCode: COMMAND_EXIT_USAGE,
+					};
+				}
+				const value = Number(rawValue);
+				if (value > 1) {
 					return {
 						stdout: "",
 						stderr: "xargs: parallel execution (-P > 1) is not supported in this app shell\n",
@@ -6385,8 +7055,16 @@ function xargs_command_create() {
 				continue;
 			}
 			if (arg.startsWith("-P") && arg.length > 2) {
-				const value = Number(arg.slice(2));
-				if (Number.isFinite(value) && value > 1) {
+				const rawValue = arg.slice(2);
+				if (!NON_NEGATIVE_INTEGER_REGEX.test(rawValue)) {
+					return {
+						stdout: "",
+						stderr: `xargs: -P requires a non-negative integer\n${XARGS_USAGE}`,
+						exitCode: COMMAND_EXIT_USAGE,
+					};
+				}
+				const value = Number(rawValue);
+				if (value > 1) {
 					return {
 						stdout: "",
 						stderr: "xargs: parallel execution (-P > 1) is not supported in this app shell\n",
@@ -6407,14 +7085,15 @@ function xargs_command_create() {
 				continue;
 			}
 			if (arg === "-r" || arg === "--no-run-if-empty") {
-				noRunIfEmpty = true;
+				// The app shell always keeps empty-input xargs as no-run for safety; accept
+				// GNU's explicit no-run flag as a compatibility no-op.
 				commandStart = index + 1;
 				continue;
 			}
 			if (arg.startsWith("-")) {
 				return {
 					stdout: "",
-					stderr: `xargs: unsupported option ${arg}\nSupported: xargs [-n N] [-I REPLACE] [-d DELIM] [-0] [-t] [-r] [COMMAND [ARGS...]]\n`,
+					stderr: `xargs: unsupported option ${arg}\n${XARGS_USAGE}`,
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
@@ -6427,19 +7106,22 @@ function xargs_command_create() {
 			command.push("echo");
 		}
 
-		const stdinText = commandCtx.stdin as unknown as string;
-		const items = nullSeparated
-			? stdinText.split("\0").filter(Boolean)
-			: delimiter != null
-				? stdinText.replace(SINGLE_TRAILING_NEWLINE_REGEX, "").split(delimiter).filter(Boolean)
-				: stdinText
-						.split(WHITESPACE_RUN_REGEX)
-						.map((item) => item.trim())
-						.filter(Boolean);
+		// xargs parses stdin as text, so decode the byte-shaped shell stream before splitting records.
+		const stdinText = decode_bash_stdin_as_utf8(commandCtx.stdin);
+		let items: string[];
+		if (nullSeparated) {
+			items = stdinText.split("\0").filter(Boolean);
+		} else if (delimiter != null) {
+			items = stdinText.replace(SINGLE_TRAILING_NEWLINE_REGEX, "").split(delimiter).filter(Boolean);
+		} else if (replaceString != null) {
+			// Replacement mode is line-oriented so filenames/items with spaces stay intact.
+			items = stdinText.replace(SINGLE_TRAILING_NEWLINE_REGEX, "").split("\n").filter(Boolean);
+		} else {
+			items = stdinText.split(WHITESPACE_RUN_REGEX).filter(Boolean);
+		}
 		if (items.length === 0) {
-			if (noRunIfEmpty) {
-				return { stdout: "", stderr: "", exitCode: 0 };
-			}
+			// Unlike POSIX xargs without -r, the app shell always treats empty input as
+			// no-run. This avoids surprising commands that run only because a pipe was empty.
 			return { stdout: "", stderr: "", exitCode: 0 };
 		}
 		if (!commandCtx.exec) {
@@ -6450,12 +7132,13 @@ function xargs_command_create() {
 			};
 		}
 
+		// Run nested commands serially through the current shell context so app-file guards still apply.
 		const commandBatches: string[][] = [];
 		if (replaceString != null) {
 			for (const item of items) {
 				commandBatches.push(command.map((part) => part.replaceAll(replaceString, item)));
 			}
-		} else if (maxArgs != null && Number.isFinite(maxArgs) && maxArgs > 0) {
+		} else if (maxArgs != null) {
 			for (let index = 0; index < items.length; index += maxArgs) {
 				commandBatches.push([...command, ...items.slice(index, index + maxArgs)]);
 			}
@@ -6492,40 +7175,68 @@ function xargs_command_create() {
 
 // #region which command
 
-const APP_COMMAND_NAMES = new Set<string>([...ALLOWED_COMMANDS, "search", "textgrep"]);
+const WHICH_USAGE = "Usage: which [-a] [-s] NAME...\n";
 
+/**
+ * Report the curated app-shell command surface.
+ *
+ * The printed `/usr/bin/<name>` and `/bin/<name>` paths are synthetic lookup
+ * paths for native Just Bash commands. App-only custom commands like `search`
+ * and `textgrep` are reported as command-availability advice from the outer
+ * shell, but are not executable synthetic files in nested Native Just Bash
+ * `/tmp` command instances.
+ */
 function which_command_create() {
 	return defineCommand("which", async (args) => {
 		let silent = false;
 		let showAll = false;
 		const names: string[] = [];
+		let optionsEnded = false;
 		for (const arg of args) {
-			if (arg === "-s") {
+			if (optionsEnded) {
+				names.push(arg);
+				continue;
+			}
+			if (arg === "--") {
+				optionsEnded = true;
+				continue;
+			}
+			if (arg === "--help") {
+				return { stdout: WHICH_USAGE, stderr: "", exitCode: 0 };
+			}
+			if (arg === "-s" || arg === "--silent") {
 				silent = true;
 				continue;
 			}
-			if (arg === "-a") {
+			if (arg === "-a" || arg === "--all") {
 				showAll = true;
 				continue;
 			}
 			if (arg.startsWith("-")) {
 				return {
 					stdout: "",
-					stderr: `which: unsupported option ${arg}\n`,
+					stderr: `which: unsupported option ${arg}\n${WHICH_USAGE}`,
 					exitCode: COMMAND_EXIT_USAGE,
 				};
 			}
 			names.push(arg);
 		}
 		if (names.length === 0) {
-			return { stdout: "", stderr: "", exitCode: 1 };
+			return {
+				stdout: "",
+				stderr: `which: missing command name\n${WHICH_USAGE}`,
+				exitCode: COMMAND_EXIT_USAGE,
+			};
 		}
 
 		let stdout = "";
 		let stderr = "";
 		let allFound = true;
 		for (const name of names) {
-			if (APP_COMMAND_NAMES.has(name)) {
+			// `which` answers for the outer app shell, so it includes app-only
+			// commands even though the restricted Native Just Bash PATH exposes
+			// only `ALLOWED_COMMANDS`.
+			if (APP_SHELL_COMMAND_NAMES.has(name)) {
 				if (!silent) {
 					stdout += `/usr/bin/${name}\n`;
 					if (showAll) {
@@ -6545,12 +7256,22 @@ function which_command_create() {
 
 // #endregion which command
 
+function stream_utility_command_create_all(currentProjectPath: string) {
+	return [
+		native_just_bash_tmp_command_create("sort", currentProjectPath),
+		native_just_bash_tmp_command_create("uniq", currentProjectPath),
+		native_just_bash_tmp_command_create("cut", currentProjectPath),
+		native_just_bash_tmp_command_create("awk", currentProjectPath),
+	];
+}
+
 // #region action
 
 const COMMAND_NOT_FOUND_REGEX = /: command not found$/m;
 const REDIRECTS_STDERR_TO_STDOUT_REGEX = /(^|[\s;&|])2\s*>\s*&\s*1(?=$|[\s;&|])/;
 const SET_INVALID_OPTION_REGEX = /bash: set: -o: invalid option/m;
 const FILE_COMMAND_OPERAND_REGEX = /(?:^|[\s;&|])file\s+([^\s;&|]+)/u;
+const SHELL_COMMENT_LINE_REGEX = /^\s*#.*$/gm;
 
 /**
  * Mount the app file tree into Just Bash as a mostly read-only filesystem.
@@ -7115,7 +7836,7 @@ async function action_run(ctx: ActionCtx, args: Infer<typeof action_run_args_val
 	) {
 		result.stderr +=
 			"bash: run 'help' to list available commands; app files are DB-backed — use search/grep for content and find/ls for paths.\n";
-		const filePathMatch = FILE_COMMAND_OPERAND_REGEX.exec(args.command);
+		const filePathMatch = FILE_COMMAND_OPERAND_REGEX.exec(args.command.replace(SHELL_COMMENT_LINE_REGEX, ""));
 		if (filePathMatch?.[1] != null) {
 			const target = shell_arg_quote(filePathMatch[1]);
 			result.stderr += `bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
@@ -8613,9 +9334,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(extension.stdout.trim()).toBe(`${test_app_files_mount}/docs/readme.md`);
 			expect(typeFolder.stdout.trim()).toBe("0 matches.");
 			expect(tooDeep.stdout.trim()).toBe("0 matches.");
-			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:list_subtree")).toBe(
-				false,
-			);
+			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:list_subtree")).toBe(false);
 		});
 
 		test("supports DB-backed find path word search", async () => {
@@ -8637,6 +9356,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const explicitResult = await run("find --path-query readme --limit 10");
 			const scopedResult = await run(`find ${test_app_files_mount}/docs -maxdepth 1 -name readme -type f --limit 10`);
 			const subtreeResult = await run(`find ${test_app_files_mount}/docs -name readme --limit 10`);
+			const dottedNameResult = await run(`find ${test_app_files_mount}/docs -type f -name 'word readme.md' --limit 10`);
 			const scopedSelfResult = await run(`find '${test_app_files_mount}/docs/scope word' --path-query word --limit 10`);
 			const scopedMindepthResult = await run(
 				`find '${test_app_files_mount}/docs/scope word' -mindepth 1 --path-query word --limit 10`,
@@ -8653,6 +9373,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(subtreeResult.metadata.exitCode).toBe(0);
 			expect(subtreeResult.stdout).toContain(`${test_app_files_mount}${wordSearchPath}`);
 			expect(subtreeResult.stdout).not.toContain(`${test_app_files_mount}${outsideWordSearchPath}`);
+			expect(dottedNameResult.metadata.exitCode).toBe(0);
+			expect(dottedNameResult.stdout).toContain(`${test_app_files_mount}${wordSearchPath}`);
+			expect(dottedNameResult.stdout).not.toContain(`${test_app_files_mount}/docs/nested/deep.md`);
 			expect(scopedSelfResult.metadata.exitCode).toBe(0);
 			expect(scopedSelfResult.stdout.trim().split("\n")).toContain(`${test_app_files_mount}/docs/scope word/`);
 			expect(scopedMindepthResult.metadata.exitCode).toBe(0);
@@ -8758,8 +9481,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const scopedDepth = await run(`find ${test_app_files_mount}/docs -maxdepth 2 -name readme --limit 10`);
 			const tokenGlobName = await run("find -type f -name '*readme*' --limit 10");
-			const complexGlobName = await run("find -name 'read*.md' --limit 10");
+			const prefixExtensionGlobName = await run(
+				`find ${test_app_files_mount}/docs -type f -name 'readme*.md' --limit 10`,
+			);
+			const complexGlobName = await run("find -name 'read.*.md' --limit 10");
 			const pathQueryGlob = await run("find --path-query '.*readme.*' --limit 10");
+			const combinedPathQueryExtension = await run(
+				`find ${test_app_files_mount}/docs -type f --extension md --path-query readme --limit 10`,
+			);
 			const recursivePathQuery = await run(
 				`find ${test_app_files_mount} -maxdepth 5 -type f --path-query readme --limit 10`,
 			);
@@ -8771,12 +9500,23 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(tokenGlobName.stderr).toContain(
 				`Try: find ${test_app_files_mount} -type f --path-query readme --limit 10`,
 			);
+			expect(prefixExtensionGlobName.metadata.exitCode).toBe(2);
+			expect(prefixExtensionGlobName.stderr).toContain(
+				`Try: find ${test_app_files_mount}/docs -type f --path-query readme --limit 10`,
+			);
 			expect(complexGlobName.metadata.exitCode).toBe(2);
 			expect(complexGlobName.stderr).toContain("not glob patterns");
 			expect(complexGlobName.stderr).toContain("Try `find <dir> -type f --extension md");
 			expect(pathQueryGlob.metadata.exitCode).toBe(2);
 			expect(pathQueryGlob.stderr).toContain("--path-query uses DB-backed path word search");
 			expect(pathQueryGlob.stderr).toContain(`Try: find ${test_app_files_mount} --path-query readme --limit 10`);
+			expect(combinedPathQueryExtension.metadata.exitCode).toBe(2);
+			expect(combinedPathQueryExtension.stderr).toContain(
+				`Try: find ${test_app_files_mount}/docs -type f --path-query readme --limit 10`,
+			);
+			expect(combinedPathQueryExtension.stderr).toContain(
+				`For extension-only search, use: find ${test_app_files_mount}/docs -type f --extension md --limit 10`,
+			);
 			expect(recursivePathQuery.metadata.exitCode).toBe(2);
 			expect(recursivePathQuery.stderr).toContain(
 				`Try: find ${test_app_files_mount} -type f --path-query readme --limit 10`,
@@ -8798,6 +9538,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run(`find ${test_app_files_mount}/docs -delete --limit 10`);
+			const regexResult = await run(
+				`find ${test_app_files_mount}/docs -regextype posix-extended -regex '.*readme.*' --limit 10`,
+			);
 			const nativeJustBashResult = await run("find /tmp -mtime 1 --limit 1");
 
 			expect(result.metadata.exitCode).toBe(2);
@@ -8805,6 +9548,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).toContain("/home/cloud-usr/w");
 			expect(result.stderr).toContain("use -name QUERY");
 			expect(result.stderr).toContain("Usage: find");
+			expect(regexResult.metadata.exitCode).toBe(2);
+			expect(regexResult.stderr).toContain("unsupported predicate -regextype");
+			expect(regexResult.stderr).toContain("--path-query with plain path words");
+			expect(regexResult.stderr).not.toContain("supports one path only");
 			expect(nativeJustBashResult.stderr).not.toContain("/home/cloud-usr/w");
 			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
 			expect(paginatedCalls).toHaveLength(0);
@@ -9267,6 +10014,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				/search-fixtures\/broad\.md .+\[word-level match; chunk does not contain 'exact-hyphen-token-2026'\]/u,
 			);
 			expect(firstPage.stdout).toMatch(/Next page: search --limit 1 --cursor \S+ exact-hyphen-token-2026/u);
+			expect(firstPage.stdout.indexOf("Next page: search")).toBeLessThan(
+				firstPage.stdout.indexOf(`${test_app_files_mount}/search-fixtures/broad.md`),
+			);
+			expect(firstPage.stdout).toContain("run the exact Next page command before answering");
 
 			const continuation = firstPage.stdout.match(/Next page: (search .+)/u)?.[1];
 			if (continuation == null) {
@@ -9771,6 +10522,28 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 		});
 
+		test("tree continuation pages remind agents to stop after one requested continuation", async () => {
+			const { run } = await create_bash_runner({
+				extraFiles: [
+					{ path: "/tree-stop/a.md", content: "a\n" },
+					{ path: "/tree-stop/b.md", content: "b\n" },
+					{ path: "/tree-stop/c.md", content: "c\n" },
+				],
+			});
+
+			const firstPage = await run(`tree ${test_app_files_mount}/tree-stop --limit 1`);
+			const continuation = firstPage.stdout.match(/Next page: (tree .+)/u)?.[1];
+			if (continuation == null) {
+				throw new Error("expected a tree continuation in the first page stdout");
+			}
+
+			const secondPage = await run(continuation);
+
+			expect(secondPage.metadata.exitCode).toBe(0);
+			expect(secondPage.stdout).toContain("Next page: tree");
+			expect(secondPage.stdout).toContain("if the user asked for exactly one continuation, stop here");
+		});
+
 		test("renders exact file tree targets without subtree pagination", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
@@ -9778,9 +10551,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout.trim()).toBe(`${test_app_files_mount}/docs/readme.md`);
-			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:list_subtree")).toBe(
-				false,
-			);
+			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:list_subtree")).toBe(false);
 		});
 
 		test("keeps tree app-only option guidance out of /tmp paths", async () => {
@@ -9827,9 +10598,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
 			expect(result.stdout).toContain("regular file");
 			for (const unreadable of [unreadableHead, unreadableTail, unreadableWc]) {
-				expect(unreadable.metadata.exitCode).toBe(0);
-				expect(unreadable.stdout).toContain("Markdown and plain text files only");
-				expect(unreadable.stdout).toContain(`${test_app_files_mount}/source.pdf.md`);
+				expect(unreadable.metadata.exitCode).toBe(1);
+				expect(unreadable.stdout).toBe("");
+				expect(unreadable.stderr).toContain("Markdown and plain text files only");
+				expect(unreadable.stderr).toContain(`${test_app_files_mount}/source.pdf.md`);
 			}
 		});
 
@@ -9840,15 +10612,114 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const shortFormat = await run(`stat -c "%F %n" ${readmePath}`);
 			const longFormat = await run(`stat --format "%F %n" ${readmePath}`);
 			const equalsFormat = await run(`stat --format=%F ${readmePath}`);
+			const literalPercent = await run(`stat -c "%% %F" ${readmePath}`);
 			const dashLeadingTmp = await run("printf hi > /tmp/-dash-stat && stat -- /tmp/-dash-stat");
 
 			expect(shortFormat.metadata.exitCode).toBe(0);
 			expect(longFormat.metadata.exitCode).toBe(0);
 			expect(equalsFormat.metadata.exitCode).toBe(0);
+			expect(literalPercent.metadata.exitCode).toBe(0);
 			expect(dashLeadingTmp.metadata.exitCode).toBe(0);
 			expect(longFormat.stdout).toBe(shortFormat.stdout);
 			expect(equalsFormat.stdout).toBe("regular file\n");
+			expect(literalPercent.stdout).toBe("% regular file\n");
 			expect(dashLeadingTmp.stdout).toContain("File: /tmp/-dash-stat");
+			expect(dashLeadingTmp.stdout).not.toContain("app files track");
+		});
+
+		test("warns about unsupported app stat format tokens without changing stdout", async () => {
+			const { run } = await create_bash_runner();
+			const readmePath = `${test_app_files_mount}/docs/readme.md`;
+
+			const appResult = await run(`stat -c "%i %b %s %%" ${readmePath}`);
+			const tmpResult = await run('printf hi > /tmp/stat-format.txt && stat -c "%i %b %s %%" /tmp/stat-format.txt');
+
+			expect(appResult.metadata.exitCode).toBe(0);
+			expect(appResult.stdout).toContain("%i %b ");
+			expect(appResult.stdout).toContain(" %\n");
+			expect(appResult.stderr).toContain("app files support only");
+			expect(appResult.stderr).toContain("inode, blocks, device, and filesystem fields are not tracked");
+			expect(tmpResult.metadata.exitCode).toBe(0);
+			expect(tmpResult.stderr).not.toContain("app files support only");
+		});
+
+		test("does not recursively expand stat format tokens introduced by file names", async () => {
+			const { run } = await create_bash_runner({
+				extraFiles: [{ path: "/docs/%s-%F.md", content: "token name\n" }],
+			});
+			const tokenPath = `${test_app_files_mount}/docs/%s-%F.md`;
+
+			const result = await run(`stat -c "%n" '${tokenPath}'`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe(`${tokenPath}\n`);
+		});
+
+		test("keeps stat glob guidance scoped to app paths", async () => {
+			const { run } = await create_bash_runner();
+
+			const tmpGlob = await run("printf hi > '/tmp/star*.txt' && stat '/tmp/star*.txt'");
+			const appGlob = await run(`stat '${test_app_files_mount}/docs/*.md'`);
+
+			expect(tmpGlob.metadata.exitCode).toBe(0);
+			expect(tmpGlob.stdout).toContain("File: /tmp/star*.txt");
+			expect(tmpGlob.stderr).not.toContain("app file glob patterns are not supported");
+			expect(appGlob.metadata.exitCode).not.toBe(0);
+			expect(appGlob.stderr).toContain("app file glob patterns are not supported");
+			expect(appGlob.stderr).toContain("find");
+		});
+
+		test("renders app stat metadata without fake block counts", async () => {
+			const { run } = await create_bash_runner();
+
+			const result = await run(`stat ${test_app_files_mount}/docs/readme.md`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toContain("  Size: ");
+			expect(result.stdout).not.toContain("Blocks:");
+			expect(result.stdout).toContain("not POSIX permissions, owner, group, inode, or blocks");
+		});
+
+		test("stat reports unsaved edit size before the committed asset size", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/draft-stat.md", content: "tiny base\n" }],
+			});
+			const { files_yjs_doc_create_from_markdown, files_u8_to_array_buffer } = await import("../server/files.ts");
+			const { encodeStateAsUpdate } = await import("yjs");
+			const baseYjsDoc = files_yjs_doc_create_from_markdown({ markdown: "tiny base" });
+			if ("_nay" in baseYjsDoc) {
+				throw new Error(baseYjsDoc._nay.message);
+			}
+			const draftNodeId = await get_seeded_node_id(runner, "/draft-stat.md");
+			const upserted = await runner.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
+				workspaceId: runner.seeded.workspaceId,
+				projectId: runner.seeded.projectId,
+				userId: runner.seeded.userId,
+				nodeId: draftNodeId,
+				baseYjsSequence: 1,
+				baseYjsUpdate: files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc)),
+				unstagedMarkdown: Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n\n"),
+			});
+			if (upserted._nay) {
+				throw new Error(upserted._nay.message);
+			}
+			const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
+				workspaceId: runner.seeded.workspaceId,
+				projectId: runner.seeded.projectId,
+				userId: runner.seeded.userId,
+				fileNodeId: draftNodeId,
+			});
+			if (pendingUpdate?.size == null) {
+				throw new Error("expected pending update size to be set for /draft-stat.md");
+			}
+			const draftPath = `${test_app_files_mount}/draft-stat.md`;
+			runner.runQuery.mockClear();
+
+			const result = await runner.run(`stat -c %s ${draftPath}`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe(`${pendingUpdate.size}\n`);
+			expect(runner.runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "r2:get_asset_by_id")).toBe(false);
 		});
 
 		test("rejects stat format options without a value", async () => {
@@ -9861,6 +10732,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(longFormat.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
 			expect(shortFormat.stderr).toContain("stat: -c requires a value");
 			expect(longFormat.stderr).toContain("stat: --format requires a value");
+			expect(shortFormat.stderr).toContain("Usage: stat [-c FORMAT] [--] FILE...");
+			expect(longFormat.stderr).toContain("Usage: stat [-c FORMAT] [--] FILE...");
 		});
 
 		test("caps the number of app files a single reader command fetches", async () => {
@@ -10037,6 +10910,46 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(tailResult.stderr).toContain(`head -n 3 ${bigPath}`);
 		});
 
+		test("rejects missing and invalid head and tail line counts", async () => {
+			const { run } = await create_bash_runner();
+			const readmePath = `${test_app_files_mount}/docs/readme.md`;
+
+			const missingHead = await run("head -n");
+			const invalidHead = await run(`head -n nope ${readmePath}`);
+			const missingTail = await run("tail --lines");
+			const invalidTail = await run(`tail --lines=nope ${readmePath}`);
+
+			expect(missingHead.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingHead.stderr).toContain("head: -n requires a value");
+			expect(invalidHead.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(invalidHead.stderr).toContain("head: -n must be an integer line count");
+			expect(missingTail.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingTail.stderr).toContain("tail: --lines requires a value");
+			expect(invalidTail.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(invalidTail.stderr).toContain("tail: --lines must be an integer line count");
+			for (const result of [missingHead, invalidHead, missingTail, invalidTail]) {
+				expect(result.stderr).toContain("Usage:");
+			}
+		});
+
+		test("supports head tail and wc end-of-options markers for app operands", async () => {
+			const { run } = await create_bash_runner({
+				initialCwd: test_app_files_mount,
+				extraFiles: [{ path: "/-reader.md", content: "dash reader\n" }],
+			});
+
+			const headResult = await run("head -n 1 -- -reader.md");
+			const tailResult = await run("tail -n +1 -- -reader.md");
+			const wcResult = await run("wc -c -- -reader.md");
+
+			expect(headResult.metadata.exitCode).toBe(0);
+			expect(headResult.stdout).toBe("dash reader\n");
+			expect(tailResult.metadata.exitCode).toBe(0);
+			expect(tailResult.stdout).toBe("dash reader\n");
+			expect(wcResult.metadata.exitCode).toBe(0);
+			expect(wcResult.stdout).toContain(`12 -reader.md`);
+		});
+
 		test("rejects byte-range reads for oversized app files with explicit guidance", async () => {
 			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
 			const bigPath = `${test_app_files_mount}/big.md`;
@@ -10050,6 +10963,37 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(tailResult.metadata.exitCode).toBe(1);
 			expect(tailResult.stderr).toContain("byte-range reads (-c) are not supported for large app files");
 			expect(tailResult.stderr).toContain(`wc -c ${bigPath}`);
+		});
+
+		test("does not drop non-app operands when a mixed reader command includes a large app file", async () => {
+			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
+			const bigPath = `${test_app_files_mount}/big.md`;
+
+			await run("printf tmp > /tmp/reader-mixed.txt");
+			const result = await run(`head -n 3 ${bigPath} /tmp/reader-mixed.txt`);
+
+			expect(result.metadata.exitCode).toBe(1);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toContain("over the");
+			expect(result.stderr).toContain("inline read limit");
+		});
+
+		test("wc over one app file uses the bounded stats path", async () => {
+			const { run, runAction } = await create_bash_runner({
+				extraFiles: [{ path: "/wc/single.md", content: "on two\nthree\nfour x\n" }],
+			});
+
+			const result = await run(`wc ${test_app_files_mount}/wc/single.md`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toContain(`3 5 20 ${test_app_files_mount}/wc/single.md`);
+			const statsCalls = runAction.mock.calls.filter((call) => {
+				const actionArgs = call[1];
+				return (
+					actionArgs && typeof actionArgs === "object" && "path" in actionArgs && actionArgs.path === "/wc/single.md"
+				);
+			});
+			expect(statsCalls).toHaveLength(1);
 		});
 
 		test("wc over multiple app files reports per-file counts plus a total via the bounded stats path", async () => {
@@ -10135,6 +11079,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stdout).toContain("3 5 20 total");
 			expect(result.stderr).toContain("Markdown and plain text files only");
 			expect(result.stderr).toContain(`${test_app_files_mount}/source.pdf.md`);
+			expect(result.stderr).toContain(`stat -c %s ${test_app_files_mount}/source.pdf`);
 		});
 
 		test("tail -n +K reads forward from line K on a large file (not the trailing window)", async () => {
@@ -10257,6 +11202,36 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(runner.runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "r2:get_asset_by_id")).toBe(false);
 		});
 
+		test("sed app line-range fast path supports -- and unreadable source advisories", async () => {
+			const { run } = await create_bash_runner();
+			const readmePath = `${test_app_files_mount}/docs/readme.md`;
+
+			const appResult = await run(`sed -n -- '1p' ${readmePath}`);
+			const tmpResult = await run("printf 'one\\ntwo\\n' > /tmp/sed.txt && sed -n '2p' /tmp/sed.txt");
+			const unreadableResult = await run(`sed -n '1p' ${test_app_files_mount}/source.pdf`);
+			const zeroResult = await run(`sed -n '0p' ${readmePath}`);
+			const negativeResult = await run(`sed -n '-1p' ${readmePath}`);
+			const folderResult = await run(`sed -n '1p' ${test_app_files_mount}/docs`);
+			const rootResult = await run(`sed -n '1p' ${test_app_files_mount}`);
+
+			expect(appResult.metadata.exitCode).toBe(0);
+			expect(appResult.stdout).toBe("# Readme\n");
+			expect(tmpResult.metadata.exitCode).toBe(0);
+			expect(tmpResult.stdout).toBe("two\n");
+			expect(unreadableResult.metadata.exitCode).toBe(1);
+			expect(unreadableResult.stderr).toContain("Markdown and plain text files only");
+			expect(unreadableResult.stderr).toContain(`${test_app_files_mount}/source.pdf.md`);
+			expect(unreadableResult.stderr).not.toContain("No such file or directory");
+			for (const result of [zeroResult, negativeResult]) {
+				expect(result.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+				expect(result.stderr).toContain("invalid line range");
+			}
+			for (const result of [folderResult, rootResult]) {
+				expect(result.metadata.exitCode).toBe(1);
+				expect(result.stderr).toContain("Is a directory");
+			}
+		});
+
 		test("allows app exact reads through stream utilities but rejects direct app operands", async () => {
 			const { run } = await create_bash_runner({
 				extraFiles: [{ path: "/docs/dupes.md", content: "alpha\nzeta\nalpha\n" }],
@@ -10304,42 +11279,124 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("rejects app writes and prevents mixed /tmp partial side effects", async () => {
-			const { run } = await create_bash_runner();
+			const { run } = await create_bash_runner({
+				initialCwd: test_app_files_mount,
+				extraFiles: [
+					{ path: "/-delete.md", content: "dash delete\n" },
+					{ path: "/-tee.md", content: "dash tee\n" },
+				],
+			});
 
 			const touchResult = await run(`touch ${test_app_files_mount}/docs/readme.md`);
+			const touchDashResult = await run("touch -- -new.md");
+			const touchDateResult = await run(`touch --date=@0 ${test_app_files_mount}/docs/readme.md`);
+			const touchTimestampResult = await run(`touch -t 202001010000 ${test_app_files_mount}/docs/readme.md`);
+			const touchReferenceResult = await run(`touch -r ${test_app_files_mount}/docs/readme.md /tmp/from-ref`);
 			const rmResult = await run(`rm -f ${test_app_files_mount}/docs/readme.md`);
+			const rmFolderResult = await run(`rm -rf ${test_app_files_mount}/docs`);
+			const rmDashResult = await run("rm -- -delete.md");
+			const cpAppDestResult = await run("printf copy > /tmp/copy-src.txt; cp /tmp/copy-src.txt -- -copy-dest.md");
 			const mvResult = await run(`mv ${test_app_files_mount}/docs/readme.md /tmp/moved.md; cat /tmp/moved.md`);
+			const mvAppDestResult = await run("printf move > /tmp/move-src.txt; mv /tmp/move-src.txt -- -move-dest.md");
+			const mvAppDestSource = await run("cat /tmp/move-src.txt");
+			const mvAppToAppResult = await run(`mv ${test_app_files_mount}/docs/readme.md renamed.md`);
+			const mvGlobResult = await run(`mv '${test_app_files_mount}/docs/*.md' /tmp/moved.md`);
+			const mvDashResult = await run("mv -- -delete.md /tmp/moved-dash.md");
 			const teeResult = await run(
 				`printf hi | tee /tmp/out.txt ${test_app_files_mount}/docs/readme.md; cat /tmp/out.txt`,
 			);
+			const teeAppendResult = await run(
+				`printf before > /tmp/appended.txt; printf hi | tee -a /tmp/appended.txt ${test_app_files_mount}/docs/readme.md`,
+			);
+			const teeAppendRead = await run("cat /tmp/appended.txt");
+			const teeDashResult = await run("printf hi | tee -- -tee.md");
+			const teeNoStdinResult = await run(`tee ${test_app_files_mount}/docs/readme.md`);
 			const redirectResult = await run(`printf hi > ${test_app_files_mount}/docs/redirect.md`);
 
 			expect(touchResult.metadata.exitCode).not.toBe(0);
 			expect(touchResult.stderr).toContain("write_file");
 			expect(touchResult.stderr).toContain("edit_file");
+			for (const result of [touchDashResult, touchDateResult, touchTimestampResult]) {
+				expect(result.metadata.exitCode).not.toBe(0);
+				expect(result.stderr).toContain("write_file");
+				expect(result.stderr).toContain("edit_file");
+			}
+			expect(touchReferenceResult.metadata.exitCode).not.toBe(0);
+			expect(touchReferenceResult.stderr).toContain("reference file");
 			expect(rmResult.metadata.exitCode).not.toBe(0);
 			expect(rmResult.stderr).toContain("cannot delete app file");
+			expect(rmResult.stderr).toContain("path '/docs/readme.md'");
+			expect(rmFolderResult.metadata.exitCode).not.toBe(0);
+			expect(rmFolderResult.stderr).toContain("cannot delete app file");
+			expect(rmFolderResult.stderr).toContain("path '/docs'");
+			expect(rmDashResult.metadata.exitCode).not.toBe(0);
+			expect(rmDashResult.stderr).toContain("cannot delete app file");
+			expect(rmDashResult.stderr).toContain("path '/-delete.md'");
+			expect(cpAppDestResult.metadata.exitCode).not.toBe(0);
+			expect(cpAppDestResult.stderr).toContain("cannot write to app file");
+			expect(cpAppDestResult.stderr).toContain("write_file");
 			expect(mvResult.metadata.exitCode).not.toBe(0);
-			expect(mvResult.stderr).toContain("cannot move or rename app files");
-			expect(mvResult.stderr).toContain("write_file");
+			expect(mvResult.stderr).toContain("cannot move or rename app file");
+			expect(mvResult.stderr).toContain("Files sidebar rename/move UI");
+			expect(mvResult.stderr).toContain("cp");
+			expect(mvAppDestResult.metadata.exitCode).not.toBe(0);
+			expect(mvAppDestResult.stderr).toContain("cannot write to app file");
+			expect(mvAppDestResult.stderr).toContain("write_file");
+			expect(mvAppDestResult.stderr).toContain("Moving /tmp files into the app tree");
+			expect(mvAppDestSource.metadata.exitCode).toBe(0);
+			expect(mvAppDestSource.stdout).toBe("move");
+			expect(mvAppToAppResult.metadata.exitCode).not.toBe(0);
+			expect(mvAppToAppResult.stderr).toContain("cannot move or rename app files");
+			expect(mvAppToAppResult.stderr).toContain("edit_file");
+			expect(mvAppToAppResult.stderr).toContain("write_file");
+			expect(mvGlobResult.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(mvGlobResult.stderr).toContain("app file glob patterns are not supported");
+			expect(mvGlobResult.stderr).toContain("find");
+			expect(mvDashResult.metadata.exitCode).not.toBe(0);
+			expect(mvDashResult.stderr).toContain("cannot move or rename app file");
 			expect(teeResult.metadata.exitCode).not.toBe(0);
-			expect(teeResult.stdout).toContain("hi");
+			expect(teeResult.stdout).toBe("");
 			expect(teeResult.stderr).toContain("write_file");
+			expect(teeAppendResult.metadata.exitCode).not.toBe(0);
+			expect(teeAppendResult.stdout).toBe("");
+			expect(teeAppendResult.stderr).toContain("write_file");
+			expect(teeAppendRead.stdout).toBe("before");
+			expect(teeDashResult.metadata.exitCode).not.toBe(0);
+			expect(teeDashResult.stdout).toBe("");
+			expect(teeDashResult.stderr).toContain("write_file");
+			expect(teeDashResult.stderr).toContain("path '/-tee.md'");
+			expect(teeNoStdinResult.metadata.exitCode).not.toBe(0);
+			expect(teeNoStdinResult.stdout).toBe("");
+			expect(teeNoStdinResult.stderr).toContain("write_file");
 			expect(redirectResult.metadata.exitCode).not.toBe(0);
 			expect(redirectResult.stderr).toContain("write_file/edit_file");
 			expect(redirectResult.stderr).toContain("shell redirects into app files are unsupported");
 		});
 
 		test("copies one exact readable app file to scratch and rejects unreadable app copies", async () => {
-			const { run } = await create_bash_runner();
+			const { run } = await create_bash_runner({
+				initialCwd: test_app_files_mount,
+				extraFiles: [{ path: "/-dash-copy.md", content: "dash cp\n" }],
+			});
 
 			const copied = await run(`cp ${test_app_files_mount}/docs/readme.md /tmp/readme.md && cat /tmp/readme.md`);
+			const dashCopied = await run("cp -- -dash-copy.md /tmp/dash-copy.md && cat /tmp/dash-copy.md");
+			const dirDestination = await run(`cp ${test_app_files_mount}/docs/readme.md /tmp && cat /tmp/readme.md`);
+			const outsideTmp = await run(`cp ${test_app_files_mount}/docs/readme.md /dev/null`);
 			const unreadable = await run(`cp ${test_app_files_mount}/source.pdf /tmp/source.pdf`);
 
 			expect(copied.metadata.exitCode).toBe(0);
 			expect(copied.stdout).toContain("unique-token");
+			expect(dashCopied.metadata.exitCode).toBe(0);
+			expect(dashCopied.stdout).toContain("dash cp");
+			expect(dirDestination.metadata.exitCode).toBe(0);
+			expect(dirDestination.stdout).toContain("unique-token");
+			expect(outsideTmp.metadata.exitCode).not.toBe(0);
+			expect(outsideTmp.stderr).toContain("only supports /tmp destinations");
+			expect(outsideTmp.stderr).not.toContain("read-only for cp");
 			expect(unreadable.metadata.exitCode).not.toBe(0);
-			expect(unreadable.stderr).toContain("unsupported app file content type");
+			expect(unreadable.stderr).toContain("Markdown and plain text files only");
+			expect(unreadable.stderr).toContain(`${test_app_files_mount}/source.pdf.md`);
 		});
 
 		test("supports the broader Native Just Bash /tmp command surface", async () => {
@@ -10371,6 +11428,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stdout).toContain("data.txt");
 			expect(result.stderr).not.toContain("Convex-backed");
 			expect(result.stderr).not.toContain("app-aware commands");
+		});
+
+		test("delegates /tmp grep file operands to Native Just Bash", async () => {
+			const { run } = await create_bash_runner();
+
+			const result = await run(
+				"printf 'example: command not found\\n' > /tmp/literal.txt && grep -n 'command not found' /tmp/literal.txt",
+			);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe("1:example: command not found\n");
+			expect(result.stderr).not.toContain("grep over multiple/app-wide files is not supported");
+			expect(result.stderr).not.toContain("Convex-backed");
 		});
 
 		test("treats /dev/null as a Native Just Bash null device outside the app mount", async () => {
@@ -10407,6 +11477,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).toContain(
 				"the Unix file command is intentionally unavailable. Try: stat /tmp/a.txt && wc -c /tmp/a.txt && head -n 5 /tmp/a.txt",
 			);
+		});
+
+		test("ignores shell comment lines when hinting unavailable file commands", async () => {
+			const { run } = await create_bash_runner();
+
+			const result = await run("# Try file (intentionally unavailable)\nprintf hi > /tmp/a.txt\nfile /tmp/a.txt");
+
+			expect(result.metadata.exitCode).not.toBe(0);
+			expect(result.stderr).toContain("file: command not found");
+			expect(result.stderr).toContain(
+				"the Unix file command is intentionally unavailable. Try: stat /tmp/a.txt && wc -c /tmp/a.txt && head -n 5 /tmp/a.txt",
+			);
+			expect(result.stderr).not.toContain("stat '(intentionally'");
 		});
 
 		test("prevents scratch symlinks from escaping into the app mount", async () => {
@@ -10478,7 +11561,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			const xargsResult = await run(`printf '${test_app_files_mount}/docs/readme.md\\n' | xargs cat`);
 			const xargsParallel = await run("printf hi | xargs -P 2 echo");
-			const whichResult = await run("which ls find cat du rg sha256sum && which -s bash");
+			const whichResult = await run("which ls find cat du rg sha256sum search textgrep && which --silent bash");
+			const whichAll = await run("which --all search");
+			const whichHelp = await run("which --help");
+			const whichMissing = await run("which");
+			const whichEndOptions = await run("which -- --not-a-command");
 
 			expect(nested.metadata.exitCode).toBe(0);
 			expect(nested.stdout).toContain("nested/");
@@ -10498,6 +11585,67 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(whichResult.stdout).toContain("/usr/bin/du");
 			expect(whichResult.stdout).toContain("/usr/bin/rg");
 			expect(whichResult.stdout).toContain("/usr/bin/sha256sum");
+			expect(whichResult.stdout).toContain("/usr/bin/search");
+			expect(whichResult.stdout).toContain("/usr/bin/textgrep");
+			expect(whichAll.metadata.exitCode).toBe(0);
+			expect(whichAll.stdout).toBe("/usr/bin/search\n/bin/search\n");
+			expect(whichHelp.metadata.exitCode).toBe(0);
+			expect(whichHelp.stdout).toContain("Usage: which [-a] [-s] NAME...");
+			expect(whichMissing.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(whichMissing.stderr).toContain("which: missing command name");
+			expect(whichMissing.stderr).toContain("Usage: which [-a] [-s] NAME...");
+			expect(whichEndOptions.metadata.exitCode).toBe(1);
+			expect(whichEndOptions.stderr).toContain("which: no --not-a-command in (/usr/bin:/bin)");
+		});
+
+		test("keeps synthetic Native Just Bash lookup paths native-only", async () => {
+			const restrictedFs = new RestrictedNativeJustBashTmpCommandFs(new InMemoryFs(), test_app_files_mount, TMP_MOUNT);
+
+			const firstRead = await restrictedFs.readdir("/usr/bin");
+			firstRead.push("mutated-entry");
+			const secondRead = await restrictedFs.readdir("/usr/bin");
+
+			expect(firstRead).toContain("grep");
+			expect(firstRead).not.toContain("file");
+			expect(firstRead).not.toContain("search");
+			expect(firstRead).not.toContain("textgrep");
+			expect(secondRead).not.toContain("mutated-entry");
+		});
+
+		test("forwards nested shell stdin and handles script files cleanly", async () => {
+			const { run } = await create_bash_runner();
+
+			const nestedStdin = await run("printf nested-stdin | bash -c 'cat'");
+			const nestedShStdin = await run("printf nested-sh-stdin | sh -c 'cat'");
+			const writeScript = await run("printf 'echo script:$1\\n' > /tmp/nested-script.sh");
+			const scriptPath = await run("bash /tmp/nested-script.sh forwarded");
+			const missingScript = await run("bash /tmp/missing-script.sh");
+			const directoryScript = await run("sh /tmp");
+			const appScript = await run(`bash ${test_app_files_mount}/docs/readme.md`);
+			const missingInlineScript = await run("bash -c");
+			const unsupportedFlag = await run("sh -e");
+
+			expect(nestedStdin.metadata.exitCode).toBe(0);
+			expect(nestedStdin.stdout).toBe("nested-stdin");
+			expect(nestedShStdin.metadata.exitCode).toBe(0);
+			expect(nestedShStdin.stdout).toBe("nested-sh-stdin");
+			expect(writeScript.metadata.exitCode).toBe(0);
+			expect(scriptPath.metadata.exitCode).toBe(0);
+			expect(scriptPath.stdout).toBe("script:forwarded\n");
+			expect(missingScript.metadata.exitCode).toBe(COMMAND_EXIT_NOT_FOUND);
+			expect(missingScript.stderr).toBe("bash: /tmp/missing-script.sh: No such file or directory\n");
+			expect(missingScript.stderr).not.toContain("ENOENT");
+			expect(directoryScript.metadata.exitCode).toBe(COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(directoryScript.stderr).toBe("sh: /tmp: Is a directory\n");
+			expect(directoryScript.stderr).not.toContain("EISDIR");
+			expect(appScript.metadata.exitCode).toBe(COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(appScript.stderr).toContain("app-mounted script files are not executable");
+			expect(appScript.stderr).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(missingInlineScript.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingInlineScript.stderr).toContain("option requires an argument");
+			expect(unsupportedFlag.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(unsupportedFlag.stderr).toContain("sh -c 'script'");
+			expect(unsupportedFlag.stderr).toContain("sh /tmp/script.sh");
 		});
 
 		test("rejects xargs -n with a non-positive or non-numeric value instead of silently batching all items", async () => {
@@ -10505,13 +11653,61 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const zero = await run("printf 'a\\nb\\nc\\n' | xargs -n 0 echo");
 			const nonNumeric = await run("printf 'a\\nb\\nc\\n' | xargs -n x echo");
+			const attachedNonNumeric = await run("printf 'a\\nb\\nc\\n' | xargs -nx echo");
 			const valid = await run("printf 'a\\nb\\nc\\n' | xargs -n 1 echo");
 
 			expect(zero.metadata.exitCode).toBe(2);
 			expect(zero.stderr).toContain("xargs: -n requires a positive integer");
+			expect(zero.stderr).toContain("Supported: xargs");
 			expect(nonNumeric.metadata.exitCode).toBe(2);
 			expect(nonNumeric.stderr).toContain("xargs: -n requires a positive integer");
+			expect(nonNumeric.stderr).toContain("Supported: xargs");
+			expect(attachedNonNumeric.metadata.exitCode).toBe(2);
+			expect(attachedNonNumeric.stderr).toContain("xargs: -n requires a positive integer");
+			expect(attachedNonNumeric.stderr).toContain("Supported: xargs");
 			expect(valid.metadata.exitCode).toBe(0);
+		});
+
+		test("validates xargs replacement delimiter and parallel option values", async () => {
+			const { run } = await create_bash_runner();
+
+			const missingReplace = await run("printf a | xargs -I");
+			const emptyReplace = await run("printf a | xargs -I '' echo");
+			const missingDelimiter = await run("printf a | xargs -d");
+			const emptyDelimiter = await run("printf a | xargs -d '' echo");
+			const missingParallel = await run("printf a | xargs -P");
+			const invalidParallel = await run("printf a | xargs -P nope echo");
+			const hugeParallel = await run(`printf a | xargs -P ${"9".repeat(400)} echo`);
+
+			expect(missingReplace.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingReplace.stderr).toContain("xargs: -I requires a value");
+			expect(emptyReplace.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(emptyReplace.stderr).toContain("xargs: -I requires a value");
+			expect(missingDelimiter.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingDelimiter.stderr).toContain("xargs: -d requires a value");
+			expect(emptyDelimiter.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(emptyDelimiter.stderr).toContain("xargs: -d requires a value");
+			expect(missingParallel.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingParallel.stderr).toContain("xargs: -P requires a non-negative integer");
+			expect(invalidParallel.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(invalidParallel.stderr).toContain("xargs: -P requires a non-negative integer");
+			expect(hugeParallel.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(hugeParallel.stderr).toContain("parallel execution");
+		});
+
+		test("keeps xargs replacement input newline-delimited and UTF-8 decoded", async () => {
+			const { run } = await create_bash_runner();
+
+			const replacement = await run("printf 'alpha beta\\ncafé file\\n' | xargs -I{} printf '<{}>\\n'");
+			const doubleDash = await run("printf ok | xargs -- echo");
+			const emptyInput = await run("printf '' | xargs echo should-not-run");
+
+			expect(replacement.metadata.exitCode).toBe(0);
+			expect(replacement.stdout).toBe("<alpha beta>\n<café file>\n");
+			expect(doubleDash.metadata.exitCode).toBe(0);
+			expect(doubleDash.stdout).toBe("ok\n");
+			expect(emptyInput.metadata.exitCode).toBe(0);
+			expect(emptyInput.stdout).toBe("");
 		});
 
 		test("parses options after the search query", async () => {
