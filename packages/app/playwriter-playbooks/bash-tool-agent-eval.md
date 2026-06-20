@@ -355,13 +355,15 @@ Run these when changing bash implementation, tool description, system prompt, or
 5. Script text false positive:
    `Use Bash to cat <fixture>/README.md and pipe it through sed using a script string that contains /home/cloud-usr/w/personal/home as literal replacement text.`
 6. Nested shell safety:
-   `Use Bash with separate bash -c or sh -c invocations in one outer Bash call to try one allowed /tmp command and one blocked app-mount write.`
+   `Use Bash with separate bash -c or sh -c invocations in one outer Bash call to write /tmp/nested-ok.txt and to try writing into <fixture>/nested-blocked.md.`
 7. Xargs safety:
-   `Use Bash to print <fixture>/README.md as a pathname into xargs cat, then print one token into xargs with sh -c to try writing into <fixture>. Explain both results.`
+   `Use Bash to print <fixture>/README.md as a pathname into xargs cat, then print one token into xargs with sh -c to try writing into <fixture>/xargs-blocked.md. Explain both results.`
 
 #### `/tmp` Cap Eviction
 
 Run these when changing the `/tmp` persistence caps, the eviction/discard stderr wording, or the flush logic. The caps are deliberately small in dev (`BASH_TMP_SESSION_MAX_PATHS` = 10 paths, `BASH_TMP_SESSION_MAX_BYTES` = 4000 total bytes, `BASH_TMP_SESSION_MAX_FILE_BYTES` = 2000 bytes per file in `packages/app/convex/bash.ts`); read the current constants before scoring and size the prompts so they actually overflow. Eviction happens at flush, so the note prints on the call that overflowed and the evicted files are gone on the next call. These scenarios deliberately share one chat across calls, because between-call persistence is the thing under test. Report this block as its own sub-block row when comparing against ledger baselines recorded before it existed (those expanded aggregates were computed over 19 scenarios).
+
+For byte-generation prompts, `/dev/zero` is available as a synthetic Native Just Bash device. Prefer idioms such as `head -c 1700 /dev/zero > /tmp/cap-c-1.txt` over Python, `yes`, or host filesystem paths; the point of these rows is eviction behavior, not discovering a byte source.
 
 1. Path-cap eviction:
    `Use Bash to create eleven small files /tmp/cap-a-01.txt through /tmp/cap-a-11.txt in one call. Then run Bash again to list /tmp and report exactly which files survived and why.`

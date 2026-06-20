@@ -470,6 +470,16 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
+				description: expect.stringContaining("Uploaded source files do not alias to generated Markdown outputs."),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("read the exact generated output path when the user wants converted text"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
 				description: expect.stringContaining("find -type f and find -type d restrict app results to files or folders."),
 			}),
 		);

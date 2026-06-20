@@ -3420,13 +3420,13 @@ async function files_resolve_readable_content_or_window(
 		};
 	}
 	// Committed and up to date: bounded byte-range read of the content object (leading window).
-	const r2Key = state.asset?.r2Key;
-	if (!r2Key) {
+	const asset = state.asset;
+	if (!asset?.r2Key) {
 		return { nodeId: state.nodeId, text: "", fetchedAllBytes: true, totalBytes: 0 };
 	}
-	const totalBytes = state.asset?.size ?? files_READ_RANGE_SCAN_MAX_BYTES;
+	const totalBytes = asset.size;
 	const endInclusive = Math.max(0, Math.min(files_READ_RANGE_SCAN_MAX_BYTES, totalBytes) - 1);
-	const response = await r2_fetch_object_range_from_bucket({ key: r2Key, start: 0, endInclusive });
+	const response = await r2_fetch_object_range_from_bucket({ key: asset.r2Key, start: 0, endInclusive });
 	const bytes = new Uint8Array(await response.arrayBuffer());
 	const text = new TextDecoder("utf-8").decode(bytes);
 	return { nodeId: state.nodeId, text, fetchedAllBytes: bytes.byteLength >= totalBytes, totalBytes };
@@ -3501,7 +3501,7 @@ async function db_resolve_committed_chunk_source(
 	return {
 		nodeId: fileNode._id,
 		yjsSequence: materializationState.yjsSnapshotDoc.sequence,
-		byteSize: materializationState.asset.size ?? 0,
+		byteSize: materializationState.asset.size,
 		counts,
 	};
 }
@@ -3853,7 +3853,7 @@ export const read_file_content_from_chunks = internalQuery({
 		if (args.mode.kind === "full") {
 			// Full reads use the asset size as the cheap cap check, then merge the
 			// materialized chunks only when the file is small enough to return inline.
-			const byteSize = materializationState.asset.size ?? 0;
+			const byteSize = materializationState.asset.size;
 			if (byteSize > args.mode.maxBytes) return null;
 
 			const chunks = await ctx.db
@@ -3904,7 +3904,7 @@ export const read_file_content_from_chunks = internalQuery({
 						.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence),
 				)
 				.first();
-			if (!anyChunk && (materializationState.asset.size ?? 0) > 0) return null;
+			if (!anyChunk && materializationState.asset.size > 0) return null;
 		}
 
 		return { nodeId: fileNode._id, content: range.content, moreLines: range.moreLines, pendingUpdateId: null };
@@ -4883,13 +4883,13 @@ export const read_file_tail_lines = internalAction({
 		}
 
 		// Committed: read a bounded trailing window from the end of the R2 object.
-		const r2Key = state.asset?.r2Key;
-		const totalBytes = state.asset?.size;
-		if (!r2Key || totalBytes == null) {
+		const asset = state.asset;
+		if (!asset?.r2Key) {
 			return { nodeId: state.nodeId, content: "", moreLines: false, scanTruncated: false };
 		}
+		const totalBytes = asset.size;
 		const start = Math.max(0, totalBytes - files_READ_RANGE_SCAN_MAX_BYTES);
-		const response = await r2_fetch_object_range_from_bucket({ key: r2Key, start, endInclusive: totalBytes - 1 });
+		const response = await r2_fetch_object_range_from_bucket({ key: asset.r2Key, start, endInclusive: totalBytes - 1 });
 		const bytes = new Uint8Array(await response.arrayBuffer());
 		const text = new TextDecoder("utf-8").decode(bytes);
 		const tail = files_tail_lines_from_text(text, maxLines);

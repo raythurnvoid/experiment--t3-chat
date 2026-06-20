@@ -3,7 +3,11 @@ state.qa = {
 	async newChat() {
 		const clicked = await state.page
 			.evaluate(() => {
-				const btn = document.querySelector('button[aria-label="New chat"]');
+				const btn =
+					document.querySelector('button[aria-label="New chat"]') ||
+					Array.from(document.querySelectorAll("button")).find(
+						(button) => (button.textContent || "").trim() === "New Chat",
+					);
 				if (!btn) return false;
 				btn.click();
 				return true;
@@ -29,17 +33,12 @@ state.qa = {
 	async send(text) {
 		// The composer can briefly unmount during optimistic→persisted thread swaps.
 		await state.page.waitForSelector(".AiChatComposer-editor-content", { timeout: 15000 });
-		await state.page.evaluate((t) => {
-			const editor = document.querySelector(".AiChatComposer-editor-content");
-			if (!editor) throw new Error("composer not found");
-			editor.focus();
-			document.execCommand("insertText", false, t);
-		}, text);
-		await state.page.evaluate(() => {
+		await state.page.locator(".AiChatComposer-editor-content").fill(text);
+		await state.page.waitForFunction(() => {
 			const button = document.querySelector('[data-testid="ai-chat-send-button"]');
-			if (!(button instanceof HTMLButtonElement)) throw new Error("send button not found");
-			button.click();
+			return button instanceof HTMLButtonElement && !button.disabled;
 		});
+		await state.page.locator('[data-testid="ai-chat-send-button"]').click();
 		// Wait until the run starts (Stop generating appears) or an assistant message lands fast.
 		await state.page
 			.waitForSelector('[aria-label="Stop generating"]', { timeout: 10000 })

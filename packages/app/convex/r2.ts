@@ -278,7 +278,7 @@ export const patch_asset = internalMutation({
 	args: {
 		assetId: v.id("files_r2_assets"),
 		r2Key: doc(app_convex_schema, "files_r2_assets").fields.r2Key,
-		size: doc(app_convex_schema, "files_r2_assets").fields.size,
+		size: v.optional(doc(app_convex_schema, "files_r2_assets").fields.size),
 		etag: doc(app_convex_schema, "files_r2_assets").fields.etag,
 		conversionWorkId: v.optional(v.union(vWorkId, v.null())),
 	},
@@ -621,7 +621,7 @@ async function transcribe_original_video_upload(args: {
 	sourceAsset: Doc<"files_r2_assets">;
 	sourceFileNode: Doc<"files_nodes">;
 }) {
-	if (!args.sourceAsset.r2Key || !args.sourceAsset.size || args.sourceAsset.size > MEDIA_TRANSCRIPTION_MAX_BYTES) {
+	if (!args.sourceAsset.r2Key || args.sourceAsset.size > MEDIA_TRANSCRIPTION_MAX_BYTES) {
 		return null;
 	}
 
@@ -1757,6 +1757,7 @@ async function create_generated_markdown_output_node(
 		projectId: args.sourceFileNode.projectId,
 		kind: "content",
 		r2Bucket: r2_get_bucket(),
+		size: 0,
 		createdBy: args.sourceFileNode.createdBy,
 		updatedAt: args.now,
 	});

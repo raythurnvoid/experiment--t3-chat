@@ -86,6 +86,10 @@ import { files_chunk_BITMASK_FLAGS, files_chunk_has_bitmask_flag } from "../serv
 const HOME = "/home/cloud-usr";
 const APP_MOUNT_PATH = `${HOME}/w`;
 const TMP_MOUNT = "/tmp";
+const DEV_NULL_PATH = "/dev/null";
+const DEV_ZERO_PATH = "/dev/zero";
+const DEV_ZERO_BYTE_COUNT = 8192;
+const DEV_ZERO_TEXT = "\0".repeat(DEV_ZERO_BYTE_COUNT);
 const DEFAULT_CWD = "~";
 const OUTPUT_LIMIT = 30_000;
 const LISTING_PAGE_LIMIT_MAX = 200;
@@ -886,7 +890,7 @@ const COMMAND_LOOKUP_PATH_REGEX = /^\/(?:usr\/)?bin\/([^/]+)$/u;
 
 /**
  * Returns whether a path is in the direct-access surface for Native Just Bash
- * commands: `/`, `/dev`, `/dev/null`, `/tmp`, or a descendant of `/tmp`.
+ * commands: `/`, `/dev`, `/dev/null`, `/dev/zero`, `/tmp`, or a descendant of `/tmp`.
  *
  * Synthetic command lookup paths are handled separately.
  */
@@ -895,7 +899,8 @@ function is_native_just_bash_tmp_path(path: string) {
 	return (
 		normalizedPath === "/" ||
 		normalizedPath === "/dev" ||
-		normalizedPath === "/dev/null" ||
+		normalizedPath === DEV_NULL_PATH ||
+		normalizedPath === DEV_ZERO_PATH ||
 		normalizedPath === TMP_MOUNT ||
 		normalizedPath.startsWith(`${TMP_MOUNT}/`)
 	);
@@ -1028,7 +1033,7 @@ function native_just_bash_tmp_command_create_all(currentProjectPath: string) {
  * This is used for Just Bash built-ins that have not been made app-file-aware:
  * they can process `/tmp` paths and stdin, but cannot directly operate on
  * Convex-backed paths under `currentProjectPath`. It keeps direct operands away
- * from the app tree, permits `/tmp`, `/dev/null`, and synthetic command lookup
+ * from the app tree, permits `/tmp`, `/dev/null`, `/dev/zero`, and synthetic command lookup
  * paths, and adds app-file guidance when the command likely failed because it
  * tried to touch the mounted project directly.
  *
@@ -1318,12 +1323,12 @@ class NativeJustBashTmpCommandAccessError extends Error {
  *
  * This is not the `/tmp` storage implementation; `BashTmpFs` owns that. This
  * wrapper sits in front of the full mounted shell filesystem for nested Native Just Bash
- * commands, allows `/tmp`, `/dev/null`, and command lookup paths, and rejects
+ * commands, allows `/tmp`, `/dev/null`, `/dev/zero`, and command lookup paths, and rejects
  * direct access to the Convex-backed app file tree with a targeted error.
  *
  * Synthetic paths are entries this wrapper reports even though they are not
  * persisted in the mounted filesystem: `/bin`, `/usr`, `/usr/bin`, executable
- * command-name files under `/bin` and `/usr/bin`, plus `/dev` and `/dev/null`.
+ * command-name files under `/bin` and `/usr/bin`, plus `/dev`, `/dev/null`, and `/dev/zero`.
  * They exist only to satisfy Just Bash command lookup and null-device behavior.
  */
 class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
@@ -1380,7 +1385,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
 			return false;
 		}
-		return normalizedPath === "/dev" || (await this.fs.exists(normalizedPath));
+		return normalizedPath === "/dev" || normalizedPath === DEV_ZERO_PATH || (await this.fs.exists(normalizedPath));
 	}
 
 	async stat(path: string): Promise<FsStat> {
@@ -1414,7 +1419,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
 		}
 
-		// /dev is synthetic; the mounted filesystem only owns /dev/null and /tmp contents.
+		// /dev is synthetic; the mounted filesystem only owns device files and /tmp contents.
 		if (normalizedPath === "/dev") {
 			return {
 				isFile: false,
@@ -1422,6 +1427,16 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 				isSymbolicLink: false,
 				mode: 0o755,
 				size: 0,
+				mtime: new Date(),
+			};
+		}
+		if (normalizedPath === DEV_ZERO_PATH) {
+			return {
+				isFile: true,
+				isDirectory: false,
+				isSymbolicLink: false,
+				mode: 0o666,
+				size: DEV_ZERO_BYTE_COUNT,
 				mtime: new Date(),
 			};
 		}
@@ -1454,7 +1469,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 			return ["dev", "tmp"];
 		}
 		if (normalizedPath === "/dev") {
-			return ["null"];
+			return ["null", "zero"];
 		}
 		return await this.fs.readdir(normalizedPath);
 	}
@@ -1504,7 +1519,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	}
 
 	getAllPaths() {
-		const paths = new Set(["/", "/dev", "/dev/null", TMP_MOUNT]);
+		const paths = new Set(["/", "/dev", DEV_NULL_PATH, DEV_ZERO_PATH, TMP_MOUNT]);
 		for (const path of this.fs.getAllPaths()) {
 			const normalizedPath = normalize_path(path);
 			if (normalizedPath === TMP_MOUNT || normalizedPath.startsWith(`${TMP_MOUNT}/`)) {
@@ -1573,7 +1588,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
 		}
 
-		if (normalizedPath === "/dev") {
+		if (normalizedPath === "/dev" || normalizedPath === DEV_ZERO_PATH) {
 			return await this.stat(normalizedPath);
 		}
 
@@ -1586,6 +1601,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 			is_native_just_bash_command_lookup_directory(normalizedPath) ||
 			native_just_bash_command_lookup_name(normalizedPath) != null
 		) {
+			return normalizedPath;
+		}
+		if (normalizedPath === DEV_ZERO_PATH) {
 			return normalizedPath;
 		}
 
@@ -2687,6 +2705,7 @@ function find_command_parse_args(args: string[]) {
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
 	let unsupportedAppFilePredicate: string | null = null;
+	let unsupportedRegexPathQuery: string | undefined;
 	let maxDepthValue: string | undefined;
 	let minDepthValue: string | undefined;
 	let type: string | undefined;
@@ -2794,6 +2813,15 @@ function find_command_parse_args(args: string[]) {
 		}
 		if (arg.startsWith("-") || arg === "!" || arg === "(" || arg === ")") {
 			unsupportedAppFilePredicate ??= arg;
+
+			if (arg === "-regex" || arg === "-iregex") {
+				const simpleRegexPathQuery =
+					args[index + 1] == null ? null : find_command_parse_simple_path_word_glob(args[index + 1]);
+				if (simpleRegexPathQuery != null) {
+					unsupportedRegexPathQuery ??= simpleRegexPathQuery;
+				}
+			}
+
 			if (FIND_COMMAND_BUILTIN_OPTIONS_WITH_VALUES.has(arg)) {
 				index++;
 			} else if (arg === "-exec" || arg === "-ok") {
@@ -2964,6 +2992,7 @@ function find_command_parse_args(args: string[]) {
 			limit: limit._yay,
 			cursor,
 			unsupportedAppFilePredicate,
+			unsupportedRegexPathQuery,
 			maxDepth,
 			minDepth,
 			type,
@@ -3113,11 +3142,22 @@ function find_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 				parsed._yay.unsupportedAppFilePredicate === "-regextype"
 					? "Regex path predicates are not available for app files; use --path-query with plain path words such as `readme`.\n"
 					: "";
+
+			const regexPathQueryRetry =
+				parsed._yay.unsupportedRegexPathQuery == null || parsed._yay.prefix != null
+					? ""
+					: `${find_command_build_path_query_retry_hint(target.absoluteShellPath, {
+							query: parsed._yay.unsupportedRegexPathQuery,
+							...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
+							limit: parsed._yay.limit,
+						})}\n`;
+
 			return {
 				stdout: "",
 				stderr:
 					`find: unsupported predicate ${parsed._yay.unsupportedAppFilePredicate} for paths under ${APP_MOUNT_PATH}\n` +
 					regexPredicateHint +
+					regexPathQueryRetry +
 					"GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
 					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
 				exitCode: COMMAND_EXIT_USAGE,
@@ -5010,43 +5050,39 @@ function enforce_reader_operand_cap(
 }
 
 /**
- * Return the current byte size used by reader commands before deciding whether
- * an app file can be read inline.
+ * Return the current byte size for a loaded app file node before deciding
+ * whether reader commands can read it inline.
  *
  * This reads metadata only: an unsaved edit's size wins over the committed
  * asset size, and the file body/chunks are never loaded. There is no local
  * cache because an earlier command in the same bash run may have changed the
  * unsaved edit.
  */
-async function get_app_file_byte_size(ctx: ActionCtx, ctxData: WorkspaceFsOptions["ctxData"], appFileNodePath: string) {
-	const normalizedPath = normalize_path(appFileNodePath);
-	if (normalizedPath === "/") {
+async function get_app_file_byte_size(args: {
+	ctx: ActionCtx;
+	ctxData: WorkspaceFsOptions["ctxData"];
+	fileNode: Doc<"files_nodes">;
+}) {
+	if (args.fileNode.kind !== "file" || args.fileNode.assetId == null) {
 		return null;
 	}
 
-	const fileNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-		workspaceId: ctxData.workspaceId,
-		projectId: ctxData.projectId,
-		path: normalizedPath,
-	})) as files_nodes_get_by_path_Result;
-	if (!files_node_has_editable_yjs_state(fileNode)) {
-		return null;
+	if (files_node_has_editable_yjs_state(args.fileNode)) {
+		const pendingUpdate = (await args.ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
+			workspaceId: args.ctxData.workspaceId,
+			projectId: args.ctxData.projectId,
+			userId: args.ctxData.userId,
+			fileNodeId: args.fileNode._id,
+		})) as files_pending_updates_get_by_file_node_Result;
+		if (pendingUpdate) {
+			return pendingUpdate.size;
+		}
 	}
 
-	const pendingUpdate = (await ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
-		workspaceId: ctxData.workspaceId,
-		projectId: ctxData.projectId,
-		userId: ctxData.userId,
-		fileNodeId: fileNode._id,
-	})) as files_pending_updates_get_by_file_node_Result;
-	if (pendingUpdate) {
-		return pendingUpdate.size ?? null;
-	}
-
-	const asset = (await ctx.runQuery(internal.r2.get_asset_by_id, {
-		workspaceId: ctxData.workspaceId,
-		projectId: ctxData.projectId,
-		assetId: fileNode.assetId,
+	const asset = (await args.ctx.runQuery(internal.r2.get_asset_by_id, {
+		workspaceId: args.ctxData.workspaceId,
+		projectId: args.ctxData.projectId,
+		assetId: args.fileNode.assetId,
 	})) as get_asset_by_id_Result;
 	return asset?.size ?? null;
 }
@@ -5159,6 +5195,10 @@ function cat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPro
 		const capError = enforce_reader_operand_cap("cat", commandCtx, currentProjectPath, targets);
 		if (capError != null) return capError;
 
+		// Cat keeps app-file size lookups inline. Routing them through
+		// get_app_file_byte_size reintroduces a TypeScript inference cycle through
+		// the inline customCommands array.
+
 		// Multi-file cat is all-or-nothing. If one app file is too large to read inline,
 		// inserting only its first page into the concatenation would look like real file
 		// content and corrupt any downstream pipe. Refuse before writing stdout.
@@ -5172,7 +5212,39 @@ function cat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPro
 				);
 				if (appFileNodePath == null) continue;
 
-				const size = await get_app_file_byte_size(ctx, workspaceFs.ctxData, appFileNodePath);
+				const fileNode: Doc<"files_nodes"> | null =
+					appFileNodePath === "/"
+						? null
+						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+								workspaceId: workspaceFs.ctxData.workspaceId,
+								projectId: workspaceFs.ctxData.projectId,
+								path: appFileNodePath,
+							})) as files_nodes_get_by_path_Result);
+				let size: number | null = null;
+				if (fileNode?.kind === "file" && fileNode.assetId != null) {
+					let hasPendingUpdate = false;
+					if (files_node_has_editable_yjs_state(fileNode)) {
+						const pendingUpdate = (await ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
+							workspaceId: workspaceFs.ctxData.workspaceId,
+							projectId: workspaceFs.ctxData.projectId,
+							userId: workspaceFs.ctxData.userId,
+							fileNodeId: fileNode._id,
+						})) as files_pending_updates_get_by_file_node_Result;
+						if (pendingUpdate) {
+							hasPendingUpdate = true;
+							size = pendingUpdate.size;
+						}
+					}
+					if (!hasPendingUpdate) {
+						const asset = (await ctx.runQuery(internal.r2.get_asset_by_id, {
+							workspaceId: workspaceFs.ctxData.workspaceId,
+							projectId: workspaceFs.ctxData.projectId,
+							assetId: fileNode.assetId,
+						})) as get_asset_by_id_Result;
+						size = asset?.size ?? null;
+					}
+				}
+
 				if (size != null && size > READ_INLINE_MAX_BYTES) {
 					return {
 						stdout: "",
@@ -5223,7 +5295,39 @@ function cat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPro
 			// Check the current byte size before reading. Unsaved edits can be larger
 			// than the committed file, and each command asks Convex for fresh metadata.
 			if (target.appFileNodePath != null) {
-				const size = await get_app_file_byte_size(ctx, workspaceFs.ctxData, target.appFileNodePath);
+				const fileNode: Doc<"files_nodes"> | null =
+					target.appFileNodePath === "/"
+						? null
+						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+								workspaceId: workspaceFs.ctxData.workspaceId,
+								projectId: workspaceFs.ctxData.projectId,
+								path: target.appFileNodePath,
+							})) as files_nodes_get_by_path_Result);
+
+				let size: number | null = null;
+				if (fileNode?.kind === "file" && fileNode.assetId != null) {
+					let hasPendingUpdate = false;
+					if (files_node_has_editable_yjs_state(fileNode)) {
+						const pendingUpdate = (await ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
+							workspaceId: workspaceFs.ctxData.workspaceId,
+							projectId: workspaceFs.ctxData.projectId,
+							userId: workspaceFs.ctxData.userId,
+							fileNodeId: fileNode._id,
+						})) as files_pending_updates_get_by_file_node_Result;
+						if (pendingUpdate) {
+							hasPendingUpdate = true;
+							size = pendingUpdate.size;
+						}
+					}
+					if (!hasPendingUpdate) {
+						const asset = (await ctx.runQuery(internal.r2.get_asset_by_id, {
+							workspaceId: workspaceFs.ctxData.workspaceId,
+							projectId: workspaceFs.ctxData.projectId,
+							assetId: fileNode.assetId,
+						})) as get_asset_by_id_Result;
+						size = asset?.size ?? null;
+					}
+				}
 
 				// Large app file: show a bounded first page instead of dumping the
 				// whole file. The footer tells the agent how to continue without
@@ -5247,15 +5351,9 @@ function cat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPro
 					})) as files_nodes_read_file_content_from_chunks_Result;
 
 					// Size metadata said this is a readable app file, but the chunk
-					// query could not serve the requested page. Resolve the node only
+					// query could not serve the requested page. Use the loaded node
 					// to print the native-looking failure for files, folders, or misses.
 					if (!page) {
-						const fileNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-							workspaceId: workspaceFs.ctxData.workspaceId,
-							projectId: workspaceFs.ctxData.projectId,
-							path: target.appFileNodePath,
-						})) as files_nodes_get_by_path_Result;
-
 						if (fileNode?.kind === "file") {
 							stderr += files_node_has_editable_yjs_state(fileNode)
 								? `cat: ${file}: content is not available from materialized chunks\n`
@@ -5314,15 +5412,6 @@ function cat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPro
 
 				// No chunk content means cat has no stdout for this operand. Check the
 				// node only to choose the right stderr message and exit status.
-				const fileNode: files_nodes_get_by_path_Result =
-					target.appFileNodePath === "/"
-						? null
-						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								workspaceId: workspaceFs.ctxData.workspaceId,
-								projectId: workspaceFs.ctxData.projectId,
-								path: target.appFileNodePath,
-							})) as files_nodes_get_by_path_Result);
-
 				if (target.appFileNodePath === "/" || fileNode?.kind === "folder") {
 					stderr += `cat: ${file}: Is a directory\n`;
 					exitCode = 1;
@@ -5450,7 +5539,7 @@ function stat_command_format_mode(mode: number, isDirectory: boolean) {
 function stat_command_render_output(
 	format: string | null,
 	file: string,
-	stat: { isDirectory: boolean; mode: number; size: number | undefined; mtime: Date },
+	stat: { isDirectory: boolean; mode: number; size: number | null | undefined; mtime: Date },
 	advisory?: string,
 ) {
 	const modeOctal = stat.mode.toString(8);
@@ -5458,7 +5547,7 @@ function stat_command_render_output(
 	// When size is undefined the current app-file size is unknown/not tracked;
 	// render "?" rather than "0" so a %s format does not mislead the agent into
 	// thinking the file is empty.
-	const sizeStr = stat.size !== undefined ? String(stat.size) : "?";
+	const sizeStr = stat.size != null ? String(stat.size) : "?";
 	const mtimeIso = stat.mtime.toISOString();
 	const mtimeHuman = mtimeIso.replace("T", " ").replace("Z", " +0000");
 
@@ -5503,7 +5592,7 @@ function stat_command_render_output(
 	}
 
 	const sizeDisplay =
-		stat.size !== undefined
+		stat.size != null
 			? String(stat.size)
 			: stat.isDirectory
 				? "(directory; no content size)"
@@ -5581,15 +5670,9 @@ function stat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 				continue;
 			}
 
-			const currentAppFileSize =
-				fileNode.kind === "file" ? await get_app_file_byte_size(ctx, workspaceFs.ctxData, appFileNodePath) : null;
-			const asset =
-				fileNode.kind === "file" && currentAppFileSize == null && fileNode.assetId != null
-					? ((await ctx.runQuery(internal.r2.get_asset_by_id, {
-							workspaceId: workspaceFs.ctxData.workspaceId,
-							projectId: workspaceFs.ctxData.projectId,
-							assetId: fileNode.assetId,
-						})) as get_asset_by_id_Result)
+			const currentAppFileSize: number | null =
+				fileNode.kind === "file"
+					? await get_app_file_byte_size({ ctx, ctxData: workspaceFs.ctxData, fileNode })
 					: null;
 
 			stdout += stat_command_render_output(
@@ -5598,7 +5681,7 @@ function stat_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentPr
 				{
 					isDirectory: fileNode.kind === "folder",
 					mode: fileNode.kind === "folder" ? 0o755 : 0o644,
-					size: currentAppFileSize ?? asset?.size,
+					size: currentAppFileSize,
 					mtime: new Date(fileNode.updatedAt),
 				},
 				"[stat: Access is a fixed placeholder; app files track only Size, Type, and Modify — not POSIX permissions, owner, group, inode, or blocks]",
@@ -5956,7 +6039,17 @@ async function reader_command_find_oversized_app_operand(
 		);
 		if (appFileNodePath == null) continue;
 
-		const size = await get_app_file_byte_size(ctx, ctxData, appFileNodePath);
+		const fileNode =
+			appFileNodePath === "/"
+				? null
+				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+						workspaceId: ctxData.workspaceId,
+						projectId: ctxData.projectId,
+						path: appFileNodePath,
+					})) as files_nodes_get_by_path_Result);
+		if (fileNode == null) continue;
+
+		const size: number | null = await get_app_file_byte_size({ ctx, ctxData, fileNode });
 		if (size != null && size > READ_INLINE_MAX_BYTES) {
 			return { file, appFileNodePath, size } as const;
 		}
@@ -6114,6 +6207,7 @@ function reader_command_create(
 					currentProjectPath,
 					oversized.appFileNodePath,
 				);
+
 				// `tail -n +K`: output from line K onward — a forward read at an offset, not a trailing
 				// window. Serve it from the same bounded forward reader head uses (paged via sed).
 				if (command === "tail" && lineCountFromStart && lineCount != null) {
@@ -6573,9 +6667,21 @@ function cp_command_create(currentProjectPath: string) {
 			operands.length === 2 &&
 			is_path_under_current_project_path(currentProjectPath, resolve_path(commandCtx.cwd, operands[1]))
 		) {
-			const destAppFileNodePath =
-				current_project_path_to_app_file_node_path(currentProjectPath, resolve_path(commandCtx.cwd, operands[1])) ??
-				operands[1];
+			const sourceShellPath = resolve_path(commandCtx.cwd, operands[0]);
+			const destShellPath = resolve_path(commandCtx.cwd, operands[1]);
+			let destAppFileNodePath =
+				current_project_path_to_app_file_node_path(currentProjectPath, destShellPath) ?? operands[1];
+			try {
+				const destStat = await commandCtx.fs.stat(destShellPath);
+				if (destStat.isDirectory) {
+					const nativeDirectoryDestPath = normalize_path(`${destShellPath}/${path_name_of(sourceShellPath)}`);
+					destAppFileNodePath =
+						current_project_path_to_app_file_node_path(currentProjectPath, nativeDirectoryDestPath) ??
+						destAppFileNodePath;
+				}
+			} catch {
+				// Missing destinations are normal; the rejected write target is the operand itself.
+			}
 			return {
 				stdout: "",
 				stderr:
@@ -6922,189 +7028,223 @@ const XARGS_DELIMITER_NEWLINE_ESCAPE_REGEX = /\\n/gu;
 const XARGS_DELIMITER_TAB_ESCAPE_REGEX = /\\t/gu;
 const XARGS_DELIMITER_NUL_ESCAPE_REGEX = /\\0/gu;
 const XARGS_ATTACHED_MAX_ARGS_REGEX = /^-n\d+$/u;
-const SINGLE_TRAILING_NEWLINE_REGEX = /\n$/u;
-const XARGS_USAGE = "Supported: xargs [-n N] [-I REPLACE] [-d DELIM] [-0] [-t] [-r] [--] [COMMAND [ARGS...]]\n";
+const XARGS_COMBINED_BOOLEAN_FLAGS_REGEX = /^-[0rt]{2,}$/u;
+const XARGS_SINGLE_TRAILING_NEWLINE_REGEX = /\n$/u;
+const XARGS_USAGE =
+	"Supported: xargs [-n N|--max-args N|--max-args=N] [-I REPLACE|--replace[=REPLACE]] [-d DELIM|--delimiter DELIM|--delimiter=DELIM] [-P 0|1] [-0] [-t] [-r] [--] [COMMAND [ARGS...]]\n";
+
+function xargs_command_parse_delimiter(value: string) {
+	return value
+		.replace(XARGS_DELIMITER_NEWLINE_ESCAPE_REGEX, "\n")
+		.replace(XARGS_DELIMITER_TAB_ESCAPE_REGEX, "\t")
+		.replace(XARGS_DELIMITER_NUL_ESCAPE_REGEX, "\0");
+}
+
+function xargs_command_parse_max_args(rawValue: string | undefined) {
+	if (rawValue == null || !NON_NEGATIVE_INTEGER_REGEX.test(rawValue) || Number(rawValue) < 1) {
+		return Result({ _nay: { message: "xargs: -n requires a positive integer" } });
+	}
+	return Result({ _yay: { maxArgs: Number(rawValue) } as const });
+}
+
+function xargs_command_parse_parallel(rawValue: string | undefined) {
+	if (rawValue == null || rawValue === "" || !NON_NEGATIVE_INTEGER_REGEX.test(rawValue)) {
+		return Result({ _nay: { message: "xargs: -P requires a non-negative integer" } });
+	}
+	if (Number(rawValue) > 1) {
+		return Result({
+			_nay: {
+				message: "xargs: parallel execution (-P > 1) is not supported in this app shell",
+				includeUsage: false,
+			} as const,
+		});
+	}
+	return Result({ _yay: {} });
+}
+
+function xargs_command_parse_args(args: string[]) {
+	let replaceString: string | null = null;
+	let delimiter: string | null = null;
+	let maxArgs: number | null = null;
+	let nullSeparated = false;
+	let verbose = false;
+	let commandStart = args.length;
+
+	// Parse only xargs flags until the first command token. `commandStart`
+	// always points at the command argv that will receive the parsed stdin items.
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "--help") {
+			return Result({ _yay: { help: true } as const });
+		}
+		if (arg === "--") {
+			commandStart = index + 1;
+			break;
+		}
+		if (arg === "--replace") {
+			replaceString = "{}";
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg === "-I") {
+			const value = args[index + 1];
+			if (value == null || value === "") {
+				return Result({ _nay: { message: "xargs: -I requires a value" } });
+			}
+			replaceString = value;
+			index++;
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg.startsWith("--replace=")) {
+			const value = arg.slice("--replace=".length);
+			if (value === "") {
+				return Result({ _nay: { message: "xargs: -I requires a value" } });
+			}
+			replaceString = value;
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg.startsWith("-I") && arg.length > 2) {
+			replaceString = arg.slice(2);
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg === "-d" || arg === "--delimiter") {
+			const value = args[index + 1];
+			if (value == null || value === "") {
+				return Result({ _nay: { message: "xargs: -d requires a value" } });
+			}
+			delimiter = xargs_command_parse_delimiter(value);
+			index++;
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg.startsWith("--delimiter=")) {
+			const value = arg.slice("--delimiter=".length);
+			if (value === "") {
+				return Result({ _nay: { message: "xargs: -d requires a value" } });
+			}
+			delimiter = xargs_command_parse_delimiter(value);
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg.startsWith("-d") && arg.length > 2) {
+			delimiter = xargs_command_parse_delimiter(arg.slice(2));
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg === "-n" || arg === "--max-args") {
+			const parsed = xargs_command_parse_max_args(args[index + 1]);
+			if (parsed._nay) return parsed;
+			maxArgs = parsed._yay.maxArgs;
+			index++;
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg.startsWith("--max-args=")) {
+			const parsed = xargs_command_parse_max_args(arg.slice("--max-args=".length));
+			if (parsed._nay) return parsed;
+			maxArgs = parsed._yay.maxArgs;
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg.startsWith("-n") && arg.length > 2) {
+			if (!XARGS_ATTACHED_MAX_ARGS_REGEX.test(arg)) {
+				return Result({ _nay: { message: "xargs: -n requires a positive integer" } });
+			}
+			const parsed = xargs_command_parse_max_args(arg.slice(2));
+			if (parsed._nay) return parsed;
+			maxArgs = parsed._yay.maxArgs;
+			commandStart = index + 1;
+			continue;
+		}
+		// Accept `-P 0` and `-P 1` for compatibility, but keep execution serial.
+		// Parallel nested shell execution would make stdout/stderr ordering and
+		// mutation timing much harder for an agent to reason about.
+		if (arg === "-P") {
+			const parsed = xargs_command_parse_parallel(args[index + 1]);
+			if (parsed._nay) return parsed;
+			index++;
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg.startsWith("-P") && arg.length > 2) {
+			const parsed = xargs_command_parse_parallel(arg.slice(2));
+			if (parsed._nay) return parsed;
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg === "-0" || arg === "--null") {
+			nullSeparated = true;
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg === "-t" || arg === "--verbose") {
+			verbose = true;
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg === "-r" || arg === "--no-run-if-empty") {
+			// The app shell always keeps empty-input xargs as no-run for safety; accept
+			// GNU's explicit no-run flag as a compatibility no-op.
+			commandStart = index + 1;
+			continue;
+		}
+		if (XARGS_COMBINED_BOOLEAN_FLAGS_REGEX.test(arg)) {
+			// Only no-value flags can be safely bundled. Value-taking flags such
+			// as -n2, -I{}, and -d, keep their dedicated parse paths above.
+			for (const flag of arg.slice(1)) {
+				if (flag === "0") nullSeparated = true;
+				if (flag === "t") verbose = true;
+			}
+			commandStart = index + 1;
+			continue;
+		}
+		if (arg.startsWith("-")) {
+			return Result({ _nay: { message: `xargs: unsupported option ${arg}` } });
+		}
+		commandStart = index;
+		break;
+	}
+
+	return Result({
+		_yay: {
+			replaceString,
+			delimiter,
+			maxArgs,
+			nullSeparated,
+			verbose,
+			command: args.slice(commandStart),
+		} as const,
+	});
+}
 
 /**
  * Curated app-shell `xargs`.
  *
- * Supports the common serial forms agents use (`-n`, `-I`, `-d`, `-0`, `-t`,
- * and the no-op safety flag `-r`) and executes each nested command through the
- * same guarded shell context, so app-file protections still apply.
+ * Supports the common serial forms agents use (`-n`/`--max-args`,
+ * `-I`/`--replace`, `-d`/`--delimiter`, serial `-P 0|1`, `-0`, `-t`, and the
+ * no-op safety flag `-r`) and executes each nested command through the same guarded shell
+ * context, so app-file protections still apply.
  */
 function xargs_command_create() {
 	return defineCommand("xargs", async (args, commandCtx) => {
-		let replaceString: string | null = null;
-		let delimiter: string | null = null;
-		let maxArgs: number | null = null;
-		let nullSeparated = false;
-		let verbose = false;
-		let commandStart = args.length;
-
-		// Parse only xargs flags until the first command token. `commandStart`
-		// always points at the command argv that will receive the parsed stdin items.
-		for (let index = 0; index < args.length; index++) {
-			const arg = args[index];
-			if (arg === "--help") {
-				return await delegate_builtin_command({ command: "xargs", args, commandCtx });
-			}
-			if (arg === "--") {
-				commandStart = index + 1;
-				break;
-			}
-			if (arg === "-I") {
-				const value = args[index + 1];
-				if (value == null || value === "") {
-					return {
-						stdout: "",
-						stderr: `xargs: -I requires a value\n${XARGS_USAGE}`,
-						exitCode: COMMAND_EXIT_USAGE,
-					};
-				}
-				replaceString = value;
-				index++;
-				commandStart = index + 1;
-				continue;
-			}
-			if (arg.startsWith("-I") && arg.length > 2) {
-				replaceString = arg.slice(2);
-				commandStart = index + 1;
-				continue;
-			}
-			if (arg === "-d") {
-				const value = args[index + 1];
-				if (value == null || value === "") {
-					return {
-						stdout: "",
-						stderr: `xargs: -d requires a value\n${XARGS_USAGE}`,
-						exitCode: COMMAND_EXIT_USAGE,
-					};
-				}
-				delimiter = value
-					.replace(XARGS_DELIMITER_NEWLINE_ESCAPE_REGEX, "\n")
-					.replace(XARGS_DELIMITER_TAB_ESCAPE_REGEX, "\t")
-					.replace(XARGS_DELIMITER_NUL_ESCAPE_REGEX, "\0");
-				index++;
-				commandStart = index + 1;
-				continue;
-			}
-			if (arg.startsWith("-d") && arg.length > 2) {
-				delimiter = arg
-					.slice(2)
-					.replace(XARGS_DELIMITER_NEWLINE_ESCAPE_REGEX, "\n")
-					.replace(XARGS_DELIMITER_TAB_ESCAPE_REGEX, "\t")
-					.replace(XARGS_DELIMITER_NUL_ESCAPE_REGEX, "\0");
-				commandStart = index + 1;
-				continue;
-			}
-			if (arg === "-n") {
-				const rawMaxArgs = args[++index];
-				if (rawMaxArgs == null || !NON_NEGATIVE_INTEGER_REGEX.test(rawMaxArgs) || Number(rawMaxArgs) < 1) {
-					return {
-						stdout: "",
-						stderr: `xargs: -n requires a positive integer\n${XARGS_USAGE}`,
-						exitCode: COMMAND_EXIT_USAGE,
-					};
-				}
-				maxArgs = Number(rawMaxArgs);
-				commandStart = index + 1;
-				continue;
-			}
-			if (arg.startsWith("-n") && arg.length > 2) {
-				if (!XARGS_ATTACHED_MAX_ARGS_REGEX.test(arg)) {
-					return {
-						stdout: "",
-						stderr: `xargs: -n requires a positive integer\n${XARGS_USAGE}`,
-						exitCode: COMMAND_EXIT_USAGE,
-					};
-				}
-				const inlineMaxArgs = Number(arg.slice(2));
-				if (inlineMaxArgs < 1) {
-					return {
-						stdout: "",
-						stderr: `xargs: -n requires a positive integer\n${XARGS_USAGE}`,
-						exitCode: COMMAND_EXIT_USAGE,
-					};
-				}
-				maxArgs = inlineMaxArgs;
-				commandStart = index + 1;
-				continue;
-			}
-			// Accept `-P 0` and `-P 1` for compatibility, but keep execution serial.
-			// Parallel nested shell execution would make stdout/stderr ordering and
-			// mutation timing much harder for an agent to reason about.
-			if (arg === "-P") {
-				const rawValue = args[index + 1];
-				if (rawValue == null || rawValue === "" || !NON_NEGATIVE_INTEGER_REGEX.test(rawValue)) {
-					return {
-						stdout: "",
-						stderr: `xargs: -P requires a non-negative integer\n${XARGS_USAGE}`,
-						exitCode: COMMAND_EXIT_USAGE,
-					};
-				}
-				const value = Number(rawValue);
-				if (value > 1) {
-					return {
-						stdout: "",
-						stderr: "xargs: parallel execution (-P > 1) is not supported in this app shell\n",
-						exitCode: COMMAND_EXIT_USAGE,
-					};
-				}
-				index++;
-				commandStart = index + 1;
-				continue;
-			}
-			if (arg.startsWith("-P") && arg.length > 2) {
-				const rawValue = arg.slice(2);
-				if (!NON_NEGATIVE_INTEGER_REGEX.test(rawValue)) {
-					return {
-						stdout: "",
-						stderr: `xargs: -P requires a non-negative integer\n${XARGS_USAGE}`,
-						exitCode: COMMAND_EXIT_USAGE,
-					};
-				}
-				const value = Number(rawValue);
-				if (value > 1) {
-					return {
-						stdout: "",
-						stderr: "xargs: parallel execution (-P > 1) is not supported in this app shell\n",
-						exitCode: COMMAND_EXIT_USAGE,
-					};
-				}
-				commandStart = index + 1;
-				continue;
-			}
-			if (arg === "-0" || arg === "--null") {
-				nullSeparated = true;
-				commandStart = index + 1;
-				continue;
-			}
-			if (arg === "-t" || arg === "--verbose") {
-				verbose = true;
-				commandStart = index + 1;
-				continue;
-			}
-			if (arg === "-r" || arg === "--no-run-if-empty") {
-				// The app shell always keeps empty-input xargs as no-run for safety; accept
-				// GNU's explicit no-run flag as a compatibility no-op.
-				commandStart = index + 1;
-				continue;
-			}
-			if (arg.startsWith("-")) {
-				return {
-					stdout: "",
-					stderr: `xargs: unsupported option ${arg}\n${XARGS_USAGE}`,
-					exitCode: COMMAND_EXIT_USAGE,
-				};
-			}
-			commandStart = index;
-			break;
+		const parsed = xargs_command_parse_args(args);
+		if (parsed._nay) {
+			const includeUsage = !("includeUsage" in parsed._nay) || parsed._nay.includeUsage !== false;
+			return {
+				stdout: "",
+				stderr: `${parsed._nay.message}\n${includeUsage ? XARGS_USAGE : ""}`,
+				exitCode: COMMAND_EXIT_USAGE,
+			};
+		}
+		if ("help" in parsed._yay) {
+			return { stdout: XARGS_USAGE, stderr: "", exitCode: 0 };
 		}
 
-		const command = args.slice(commandStart);
-		if (command.length === 0) {
-			command.push("echo");
-		}
+		const { replaceString, delimiter, maxArgs, nullSeparated, verbose } = parsed._yay;
+		const command = parsed._yay.command.length === 0 ? ["echo"] : parsed._yay.command;
 
 		// xargs parses stdin as text, so decode the byte-shaped shell stream before splitting records.
 		const stdinText = decode_bash_stdin_as_utf8(commandCtx.stdin);
@@ -7112,10 +7252,10 @@ function xargs_command_create() {
 		if (nullSeparated) {
 			items = stdinText.split("\0").filter(Boolean);
 		} else if (delimiter != null) {
-			items = stdinText.replace(SINGLE_TRAILING_NEWLINE_REGEX, "").split(delimiter).filter(Boolean);
+			items = stdinText.replace(XARGS_SINGLE_TRAILING_NEWLINE_REGEX, "").split(delimiter).filter(Boolean);
 		} else if (replaceString != null) {
 			// Replacement mode is line-oriented so filenames/items with spaces stay intact.
-			items = stdinText.replace(SINGLE_TRAILING_NEWLINE_REGEX, "").split("\n").filter(Boolean);
+			items = stdinText.replace(XARGS_SINGLE_TRAILING_NEWLINE_REGEX, "").split("\n").filter(Boolean);
 		} else {
 			items = stdinText.split(WHITESPACE_RUN_REGEX).filter(Boolean);
 		}
@@ -7176,6 +7316,7 @@ function xargs_command_create() {
 // #region which command
 
 const WHICH_USAGE = "Usage: which [-a] [-s] NAME...\n";
+const WHICH_COMBINED_FLAGS_REGEX = /^-[as]{2,}$/u;
 
 /**
  * Report the curated app-shell command surface.
@@ -7210,6 +7351,13 @@ function which_command_create() {
 			}
 			if (arg === "-a" || arg === "--all") {
 				showAll = true;
+				continue;
+			}
+			if (WHICH_COMBINED_FLAGS_REGEX.test(arg)) {
+				for (const flag of arg.slice(1)) {
+					if (flag === "a") showAll = true;
+					if (flag === "s") silent = true;
+				}
 				continue;
 			}
 			if (arg.startsWith("-")) {
@@ -7323,7 +7471,8 @@ class WorkspaceFs implements IFileSystem {
 			return chunkRead.content;
 		}
 
-		// TODO: This can be optimized
+		// The action fallback reconstructs last-available content; the parallel
+		// file-node lookup preserves precise missing/folder/unreadable errors.
 		const fileContentPromise = this.ctx.runAction(
 			internal.files_nodes.get_file_last_available_markdown_content_by_path,
 			{
@@ -7596,28 +7745,36 @@ class WorkspaceFs implements IFileSystem {
  */
 class ReadOnlyBaseFs implements IFileSystem {
 	async readFile(path: string, _options?: Parameters<IFileSystem["readFile"]>[1]): Promise<string> {
-		if (normalize_path(path) === "/dev/null") {
+		const normalizedPath = normalize_path(path);
+		if (normalizedPath === DEV_NULL_PATH) {
 			return "";
 		}
-		throw new Error(`ENOENT: no such file or directory, open '${normalize_path(path)}'`);
+		if (normalizedPath === DEV_ZERO_PATH) {
+			return DEV_ZERO_TEXT;
+		}
+		throw new Error(`ENOENT: no such file or directory, open '${normalizedPath}'`);
 	}
 
 	async readFileBuffer(path: string): Promise<Uint8Array> {
-		if (normalize_path(path) === "/dev/null") {
+		const normalizedPath = normalize_path(path);
+		if (normalizedPath === DEV_NULL_PATH) {
 			return new Uint8Array();
 		}
-		throw new Error(`ENOENT: no such file or directory, open '${normalize_path(path)}'`);
+		if (normalizedPath === DEV_ZERO_PATH) {
+			return new Uint8Array(DEV_ZERO_BYTE_COUNT);
+		}
+		throw new Error(`ENOENT: no such file or directory, open '${normalizedPath}'`);
 	}
 
 	async writeFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["writeFile"]>[2]) {
-		if (normalize_path(path) === "/dev/null") {
+		if (normalize_path(path) === DEV_NULL_PATH) {
 			return;
 		}
 		throw new ReadOnlyFileSystemError(path);
 	}
 
 	async appendFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["appendFile"]>[2]) {
-		if (normalize_path(path) === "/dev/null") {
+		if (normalize_path(path) === DEV_NULL_PATH) {
 			return;
 		}
 		throw new ReadOnlyFileSystemError(path);
@@ -7625,18 +7782,18 @@ class ReadOnlyBaseFs implements IFileSystem {
 
 	async exists(path: string) {
 		const normalizedPath = normalize_path(path);
-		return normalizedPath === "/" || normalizedPath === "/dev/null";
+		return normalizedPath === "/" || normalizedPath === DEV_NULL_PATH || normalizedPath === DEV_ZERO_PATH;
 	}
 
 	async stat(path: string): Promise<FsStat> {
 		const normalizedPath = normalize_path(path);
-		if (normalizedPath === "/dev/null") {
+		if (normalizedPath === DEV_NULL_PATH || normalizedPath === DEV_ZERO_PATH) {
 			return {
 				isFile: true,
 				isDirectory: false,
 				isSymbolicLink: false,
 				mode: 0o666,
-				size: 0,
+				size: normalizedPath === DEV_ZERO_PATH ? DEV_ZERO_BYTE_COUNT : 0,
 				mtime: new Date(),
 			};
 		}
@@ -7734,6 +7891,13 @@ const action_run_args_validator = v.object({
 	allowAppFileTreeMkdir: v.boolean(),
 });
 
+/**
+ * Run one app-shell command for an agent thread.
+ *
+ * Lifecycle: load thread state, mount Convex app files and durable `/tmp`,
+ * execute with glob expansion disabled, add agent-friendly diagnostics, persist
+ * cwd and `/tmp` deltas, then return the formatted transcript and metadata.
+ */
 async function action_run(ctx: ActionCtx, args: Infer<typeof action_run_args_validator>) {
 	const threadState = (await ctx.runQuery(internal.ai_chat.get_thread_state, {
 		workspaceId: args.workspaceId,
@@ -7781,12 +7945,14 @@ async function action_run(ctx: ActionCtx, args: Infer<typeof action_run_args_val
 		},
 		commands: ALLOWED_COMMANDS,
 		customCommands: [
+			// Indexed app discovery.
 			search_command_create(ctx, workspaceFs, currentProjectPath),
 			ls_command_create(ctx, workspaceFs, currentProjectPath),
 			find_command_create(ctx, workspaceFs, currentProjectPath),
 			tree_command_create(ctx, workspaceFs, currentProjectPath),
 			grep_command_create(ctx, workspaceFs, currentProjectPath),
 			textgrep_command_create(ctx, workspaceFs, currentProjectPath),
+			// App readers.
 			cat_command_create(ctx, workspaceFs, currentProjectPath),
 			reader_command_create(ctx, workspaceFs, "head", currentProjectPath),
 			reader_command_create(ctx, workspaceFs, "tail", currentProjectPath),
@@ -7794,15 +7960,19 @@ async function action_run(ctx: ActionCtx, args: Infer<typeof action_run_args_val
 			stat_command_create(ctx, workspaceFs, currentProjectPath),
 			...stream_utility_command_create_all(currentProjectPath),
 			sed_command_create(ctx, workspaceFs, currentProjectPath),
+			// Guarded mutators.
 			touch_command_create(currentProjectPath),
 			rm_command_create(currentProjectPath),
 			cp_command_create(currentProjectPath),
 			mv_command_create(currentProjectPath),
 			tee_command_create(currentProjectPath),
+			// Nested execution.
 			nested_shell_command_create("bash", currentProjectPath),
 			nested_shell_command_create("sh", currentProjectPath),
+			// xargs/which.
 			xargs_command_create(),
 			which_command_create(),
+			// Native /tmp wrappers.
 			...native_just_bash_tmp_command_create_all(currentProjectPath),
 		],
 		executionLimits: {
@@ -7814,7 +7984,7 @@ async function action_run(ctx: ActionCtx, args: Infer<typeof action_run_args_val
 		},
 	});
 
-	const result = await bash.exec(`set -f\n${args.command}`).catch((error) => ({
+	const result = await bash.exec(`set -f\n${args.command}`).catch((error: unknown) => ({
 		stdout: "",
 		stderr: `${error instanceof Error ? error.message : String(error)}\n`,
 		exitCode: 1,
@@ -8564,7 +8734,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			return { run, runQuery, runMutation, runAction, getCwd: () => cwd, t, seeded, threadId, ctxData, ctx };
 		}
 
-		async function get_seeded_node_id(runner: Awaited<ReturnType<typeof create_bash_runner>>, path: string) {
+		async function get_seeded_node(runner: Awaited<ReturnType<typeof create_bash_runner>>, path: string) {
 			const fileNode = await runner.t.run((ctx) =>
 				ctx.db
 					.query("files_nodes")
@@ -8580,7 +8750,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			if (!fileNode) {
 				throw new Error(`No seeded node at ${path}`);
 			}
-			return fileNode._id;
+			return fileNode;
+		}
+
+		async function get_seeded_node_id(runner: Awaited<ReturnType<typeof create_bash_runner>>, path: string) {
+			return (await get_seeded_node(runner, path))._id;
 		}
 
 		test("runs pwd and persists cd across invocations", async () => {
@@ -8766,9 +8940,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			if ("_nay" in baseYjsDoc) {
 				throw new Error(baseYjsDoc._nay.message);
 			}
-			const fileNodeId = await get_seeded_node_id(runner, "/fresh-size.md");
+			const fileNode = await get_seeded_node(runner, "/fresh-size.md");
+			const fileNodeId = fileNode._id;
 
-			const committedSize = await get_app_file_byte_size(runner.ctx, runner.ctxData, "/fresh-size.md");
+			const committedSize = await get_app_file_byte_size({
+				ctx: runner.ctx,
+				ctxData: runner.ctxData,
+				fileNode,
+			});
 
 			if (committedSize == null) {
 				throw new Error("expected committed asset size for /fresh-size.md");
@@ -8798,7 +8977,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			}
 			runner.runQuery.mockClear();
 
-			const currentSize = await get_app_file_byte_size(runner.ctx, runner.ctxData, "/fresh-size.md");
+			const currentSize = await get_app_file_byte_size({
+				ctx: runner.ctx,
+				ctxData: runner.ctxData,
+				fileNode,
+			});
 
 			expect(currentSize).toBe(pendingUpdate.size);
 			expect(currentSize).toBeGreaterThan(READ_INLINE_MAX_BYTES);
@@ -8816,7 +8999,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				throw new Error(baseYjsDoc._nay.message);
 			}
 			const yjsUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc));
-			const fileNodeId = await get_seeded_node_id(runner, "/legacy-pending.md");
+			const fileNode = await get_seeded_node(runner, "/legacy-pending.md");
+			const fileNodeId = fileNode._id;
 			const pendingSize = files_get_utf8_byte_size("base");
 			await runner.t.run(async (ctx) => {
 				await ctx.db.insert("files_pending_updates", {
@@ -8835,7 +9019,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			runner.runQuery.mockClear();
 			runner.runAction.mockClear();
 
-			const size = await get_app_file_byte_size(runner.ctx, runner.ctxData, "/legacy-pending.md");
+			const size = await get_app_file_byte_size({
+				ctx: runner.ctx,
+				ctxData: runner.ctxData,
+				fileNode,
+			});
 
 			expect(size).toBe(pendingSize);
 			expect(runner.runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "r2:get_asset_by_id")).toBe(false);
@@ -9492,6 +9680,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const recursivePathQuery = await run(
 				`find ${test_app_files_mount} -maxdepth 5 -type f --path-query readme --limit 10`,
 			);
+			const regexPathPredicate = await run(`find ${test_app_files_mount}/docs -type f -regex '.*readme.*' --limit 10`);
 
 			expect(scopedDepth.metadata.exitCode).toBe(2);
 			expect(scopedDepth.stderr).toContain("full subtree (omit -maxdepth) or immediate children with -maxdepth 1");
@@ -9520,6 +9709,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(recursivePathQuery.metadata.exitCode).toBe(2);
 			expect(recursivePathQuery.stderr).toContain(
 				`Try: find ${test_app_files_mount} -type f --path-query readme --limit 10`,
+			);
+			expect(regexPathPredicate.metadata.exitCode).toBe(2);
+			expect(regexPathPredicate.stderr).toContain(
+				`Try: find ${test_app_files_mount}/docs -type f --path-query readme --limit 10`,
 			);
 		});
 
@@ -9551,6 +9744,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(regexResult.metadata.exitCode).toBe(2);
 			expect(regexResult.stderr).toContain("unsupported predicate -regextype");
 			expect(regexResult.stderr).toContain("--path-query with plain path words");
+			expect(regexResult.stderr).toContain(`Try: find ${test_app_files_mount}/docs --path-query readme --limit 10`);
 			expect(regexResult.stderr).not.toContain("supports one path only");
 			expect(nativeJustBashResult.stderr).not.toContain("/home/cloud-usr/w");
 			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
@@ -10680,6 +10874,18 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stdout).toContain("not POSIX permissions, owner, group, inode, or blocks");
 		});
 
+		test("stat reports non-editable asset size through the shared size helper", async () => {
+			const { run, runQuery } = await create_bash_runner();
+			const sourcePath = `${test_app_files_mount}/source.pdf`;
+			runQuery.mockClear();
+
+			const result = await run(`stat -c %s ${sourcePath}`);
+
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe("4096\n");
+			expect(runQuery.mock.calls.filter(([ref]) => function_name_of(ref) === "r2:get_asset_by_id")).toHaveLength(1);
+		});
+
 		test("stat reports unsaved edit size before the committed asset size", async () => {
 			const runner = await create_bash_runner({
 				extraFiles: [{ path: "/draft-stat.md", content: "tiny base\n" }],
@@ -11296,6 +11502,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const rmFolderResult = await run(`rm -rf ${test_app_files_mount}/docs`);
 			const rmDashResult = await run("rm -- -delete.md");
 			const cpAppDestResult = await run("printf copy > /tmp/copy-src.txt; cp /tmp/copy-src.txt -- -copy-dest.md");
+			const cpAppFolderDestResult = await run(
+				`printf copy > /tmp/native-output.md; cp /tmp/native-output.md ${test_app_files_mount}/docs`,
+			);
 			const mvResult = await run(`mv ${test_app_files_mount}/docs/readme.md /tmp/moved.md; cat /tmp/moved.md`);
 			const mvAppDestResult = await run("printf move > /tmp/move-src.txt; mv /tmp/move-src.txt -- -move-dest.md");
 			const mvAppDestSource = await run("cat /tmp/move-src.txt");
@@ -11335,6 +11544,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(cpAppDestResult.metadata.exitCode).not.toBe(0);
 			expect(cpAppDestResult.stderr).toContain("cannot write to app file");
 			expect(cpAppDestResult.stderr).toContain("write_file");
+			expect(cpAppFolderDestResult.metadata.exitCode).not.toBe(0);
+			expect(cpAppFolderDestResult.stderr).toContain("cannot write to app file");
+			expect(cpAppFolderDestResult.stderr).toContain("write_file");
+			expect(cpAppFolderDestResult.stderr).toContain("path '/docs/native-output.md'");
 			expect(mvResult.metadata.exitCode).not.toBe(0);
 			expect(mvResult.stderr).toContain("cannot move or rename app file");
 			expect(mvResult.stderr).toContain("Files sidebar rename/move UI");
@@ -11443,17 +11656,22 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).not.toContain("Convex-backed");
 		});
 
-		test("treats /dev/null as a Native Just Bash null device outside the app mount", async () => {
+		test("treats /dev/null and /dev/zero as Native Just Bash devices outside the app mount", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(
+			const nullResult = await run(
 				"printf hi > /dev/null && printf 'alpha\\n' > /tmp/a.txt && tee /dev/null /tmp/b.txt < /tmp/a.txt >/dev/null && cat /tmp/b.txt",
 			);
+			const zeroResult = await run("head -c 5 /dev/zero | wc -c");
 
-			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toBe("alpha\n");
-			expect(result.stderr).not.toContain("read-only file system");
-			expect(result.stderr).not.toContain("Convex-backed");
+			expect(nullResult.metadata.exitCode).toBe(0);
+			expect(nullResult.stdout).toBe("alpha\n");
+			expect(nullResult.stderr).not.toContain("read-only file system");
+			expect(nullResult.stderr).not.toContain("Convex-backed");
+			expect(zeroResult.metadata.exitCode).toBe(0);
+			expect(zeroResult.stdout).toBe("5\n");
+			expect(zeroResult.stderr).not.toContain("No such file");
+			expect(zeroResult.stderr).not.toContain("Convex-backed");
 		});
 
 		test("does not append app-mount guidance for /tmp Native Just Bash command failures", async () => {
@@ -11561,8 +11779,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			const xargsResult = await run(`printf '${test_app_files_mount}/docs/readme.md\\n' | xargs cat`);
 			const xargsParallel = await run("printf hi | xargs -P 2 echo");
+			const xargsHelp = await run("xargs --help");
+			const xargsCombined = await run("printf 'a b' | xargs -rt echo");
+			const xargsNullCombined = await run("printf 'a\\0b\\0' | xargs -0t echo");
 			const whichResult = await run("which ls find cat du rg sha256sum search textgrep && which --silent bash");
 			const whichAll = await run("which --all search");
+			const whichCombined = await run("which -as search");
 			const whichHelp = await run("which --help");
 			const whichMissing = await run("which");
 			const whichEndOptions = await run("which -- --not-a-command");
@@ -11578,6 +11800,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(xargsResult.stdout).toContain("unique-token");
 			expect(xargsParallel.metadata.exitCode).toBe(2);
 			expect(xargsParallel.stderr).toContain("parallel execution");
+			expect(xargsHelp.metadata.exitCode).toBe(0);
+			expect(xargsHelp.stdout).toContain("[-P 0|1]");
+			expect(xargsHelp.stdout).not.toContain("-a FILE");
+			expect(xargsCombined.metadata.exitCode).toBe(0);
+			expect(xargsCombined.stdout).toBe("a b\n");
+			expect(xargsCombined.stderr).toBe("echo a b\n");
+			expect(xargsNullCombined.metadata.exitCode).toBe(0);
+			expect(xargsNullCombined.stdout).toBe("a b\n");
+			expect(xargsNullCombined.stderr).toBe("echo a b\n");
 			expect(whichResult.metadata.exitCode).toBe(0);
 			expect(whichResult.stdout).toContain("/usr/bin/ls");
 			expect(whichResult.stdout).toContain("/usr/bin/find");
@@ -11589,6 +11820,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(whichResult.stdout).toContain("/usr/bin/textgrep");
 			expect(whichAll.metadata.exitCode).toBe(0);
 			expect(whichAll.stdout).toBe("/usr/bin/search\n/bin/search\n");
+			expect(whichCombined.metadata.exitCode).toBe(0);
+			expect(whichCombined.stdout).toBe("");
 			expect(whichHelp.metadata.exitCode).toBe(0);
 			expect(whichHelp.stdout).toContain("Usage: which [-a] [-s] NAME...");
 			expect(whichMissing.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
@@ -11677,6 +11910,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const emptyDelimiter = await run("printf a | xargs -d '' echo");
 			const missingParallel = await run("printf a | xargs -P");
 			const invalidParallel = await run("printf a | xargs -P nope echo");
+			const zeroParallel = await run("printf hi | xargs -P0 echo");
+			const oneParallel = await run("printf hi | xargs -P 1 echo");
 			const hugeParallel = await run(`printf a | xargs -P ${"9".repeat(400)} echo`);
 
 			expect(missingReplace.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
@@ -11691,8 +11926,45 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(missingParallel.stderr).toContain("xargs: -P requires a non-negative integer");
 			expect(invalidParallel.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
 			expect(invalidParallel.stderr).toContain("xargs: -P requires a non-negative integer");
+			expect(zeroParallel.metadata.exitCode).toBe(0);
+			expect(zeroParallel.stdout).toBe("hi\n");
+			expect(oneParallel.metadata.exitCode).toBe(0);
+			expect(oneParallel.stdout).toBe("hi\n");
 			expect(hugeParallel.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
 			expect(hugeParallel.stderr).toContain("parallel execution");
+		});
+
+		test("supports GNU-style xargs long aliases", async () => {
+			const { run } = await create_bash_runner();
+
+			const maxArgsSeparate = await run("printf 'a b c' | xargs --max-args 2 echo");
+			const maxArgsEquals = await run("printf 'a b c' | xargs --max-args=2 echo");
+			const replaceBare = await run("printf 'a\\n' | xargs --replace echo '<{}>'");
+			const replaceEquals = await run("printf 'zeta\\n' | xargs --replace={} printf '({})\\n'");
+			const delimiterSeparate = await run("printf 'a,b,c' | xargs --delimiter , echo");
+			const delimiterEquals = await run("printf 'a:b:c' | xargs --delimiter=: echo");
+			const missingMaxArgs = await run("printf a | xargs --max-args");
+			const emptyReplace = await run("printf a | xargs --replace= echo");
+			const emptyDelimiter = await run("printf a | xargs --delimiter= echo");
+
+			expect(maxArgsSeparate.metadata.exitCode).toBe(0);
+			expect(maxArgsSeparate.stdout).toBe("a b\nc\n");
+			expect(maxArgsEquals.metadata.exitCode).toBe(0);
+			expect(maxArgsEquals.stdout).toBe("a b\nc\n");
+			expect(replaceBare.metadata.exitCode).toBe(0);
+			expect(replaceBare.stdout).toBe("<a>\n");
+			expect(replaceEquals.metadata.exitCode).toBe(0);
+			expect(replaceEquals.stdout).toBe("(zeta)\n");
+			expect(delimiterSeparate.metadata.exitCode).toBe(0);
+			expect(delimiterSeparate.stdout).toBe("a b c\n");
+			expect(delimiterEquals.metadata.exitCode).toBe(0);
+			expect(delimiterEquals.stdout).toBe("a b c\n");
+			expect(missingMaxArgs.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingMaxArgs.stderr).toContain("xargs: -n requires a positive integer");
+			expect(emptyReplace.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(emptyReplace.stderr).toContain("xargs: -I requires a value");
+			expect(emptyDelimiter.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(emptyDelimiter.stderr).toContain("xargs: -d requires a value");
 		});
 
 		test("keeps xargs replacement input newline-delimited and UTF-8 decoded", async () => {

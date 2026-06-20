@@ -458,7 +458,7 @@ const app_convex_schema = defineSchema({
 		 * has been confirmed at this deterministic key.
 		 **/
 		r2Key: v.optional(v.string()),
-		size: v.optional(v.number()),
+		size: v.number(),
 		etag: v.optional(v.string()),
 		conversionWorkId: v.optional(v.union(vWorkId, v.null())),
 		createdBy: v.id("users"),

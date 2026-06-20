@@ -141,6 +141,7 @@ Important limitation:
 - The generated Markdown stores converted Markdown only; source/conversion metadata stays in DB/R2 metadata, not visible frontmatter.
 - Editing generated Markdown does not mutate the original R2 object.
 - Agents should read generated outputs through their exact visible paths. For example, `/a.pdf.md` is the generated Markdown output for the uploaded source file `/a.pdf`.
+- If a Bash unreadable-source advisory suggests generated output paths, read the exact generated output path when the user wants converted text; do not expect the uploaded source path to auto-read or alias to that sibling.
 - For images and videos, read `/a.png.description.md`, `/clip.mp4.summary.md`, or `/clip.mp4.transcript.md`; do not treat `/a.png` or `/clip.mp4` as aliases for the generated files.
 - Bash discovery commands expose generated outputs as ordinary files. Use exact Bash reads such as `cat /home/cloud-usr/w/{workspaceName}/{projectName}/report.pdf.md` once generated output is finalized.
 - Legacy `read_file("/report.pdf")` does not read generated Markdown; `read_file("/report.pdf.md")` reads the generated output once finalized if a historical validation path still invokes that tool.

@@ -20,15 +20,16 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). E
 
 ## Composer input (ProseMirror)
 
-ProseMirror ignores Playwright `fill`/`Input.insertText`. Focus the editor and use `execCommand`:
+Use Playwright `fill()` on the editor content element, then wait for the send
+button to become enabled before clicking it:
 
 ```js
 await state.page.waitForSelector(".AiChatComposer-editor-content", { timeout: 15000 });
-await state.page.evaluate((t) => {
-	const editor = document.querySelector(".AiChatComposer-editor-content");
-	editor.focus();
-	document.execCommand("insertText", false, t);
-}, prompt);
+await state.page.locator(".AiChatComposer-editor-content").fill(prompt);
+await state.page.waitForFunction(() => {
+	const button = document.querySelector('[data-testid="ai-chat-send-button"]');
+	return button instanceof HTMLButtonElement && !button.disabled;
+});
 await state.page.locator('[data-testid="ai-chat-send-button"]').click();
 ```
 

@@ -101,6 +101,7 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 		"Use exact app paths with `cat [-n] [--] [FILE...]`, `head`, `tail`, `wc`, and `stat`; these readers fetch at most 10 app files per command: to READ specific known files, `cat` them in batches of 10 or fewer across commands; to FIND which files mention something, use `search` (it returns snippets, not whole files). `cat` unreadable-file advisories are stderr, not file content, so do not parse them as content. Large files are not read inline: a single `cat` shows a bounded first page (it prints how to page on), and a multi-file `cat` refuses when any file is too large to inline. Read a large file in bounded pages — `head -n N` (first lines; it prints the next `sed -n` page command), `sed -n 'A,Bp'` (any line range), `tail -n N` (last lines), up to " +
 			files_READ_RANGE_MAX_LINES +
 			" lines per read; run `wc` first to learn its size (line/word counts are lower bounds for very large files); `wc` accepts multiple files (per-file line plus a `total`) and does not refuse a large member. Use `search` to find content across files (or `search --path <folder>` for one folder), `grep [-n] [-i] PATTERN <file>` to find lines in ONE file, and `textgrep [-i] PATTERN <file>` or `textgrep --path <folder> PATTERN` for explicit rendered-plain-text regex. Simple `grep -R PATTERN <app-folder>` is recovered through indexed full-text search, but complex or multi-file grep forms are not exact recursive grep; prefer `search --path`. Use `tree [PATH] --limit N` only for paginated app tree shape.",
+		"Uploaded source files do not alias to generated Markdown outputs. If an unreadable-source advisory suggests generated output paths such as `<source>.pdf.md`, read the exact generated output path when the user wants converted text; do not expect the original source path to auto-read that sibling.",
 		"Keep Bash commands simple: avoid strict-mode boilerplate such as `set -euo pipefail` because `pipefail` is unsupported, comments in command strings, and process substitution. For multi-command inspection or eval checks, do not use `set -e` or hide stderr with `2>/dev/null`; later commands and visible stderr should still be observed.",
 		"Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
 		"Do not work around app read-only write, move, or delete requests by copying app files to `/tmp`; report the Bash error unless the user asked for a scratch copy.",
@@ -2289,6 +2290,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(configuration.systemPrompt).toContain(
 				"`cat` unreadable-file advisories are stderr, not file content",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"Uploaded source files do not alias to generated Markdown outputs.",
+			);
+			expect(configuration.systemPrompt).toContain(
+				"read the exact generated output path when the user wants converted text",
 			);
 			expect(configuration.systemPrompt).toContain("these readers fetch at most 10 app files per command");
 			expect(configuration.systemPrompt).toContain("accepts multiple files (per-file line plus a `total`)");

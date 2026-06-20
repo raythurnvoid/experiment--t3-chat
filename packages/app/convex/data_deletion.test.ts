@@ -1725,6 +1725,7 @@ describe("process_project_deletion_request", () => {
 				kind: "content",
 				r2Bucket: "test-bucket",
 				r2Key: "content/r2-failure",
+				size: 1,
 				createdBy: user.userId,
 				updatedAt: Date.now(),
 			});
@@ -2823,6 +2824,7 @@ describe("finalize_user_deletion_data", () => {
 					kind: "content",
 					r2Bucket: "test-bucket",
 					r2Key: markdownR2Key,
+					size: 1,
 					createdBy: deletedUser.userId,
 					updatedAt: now,
 				}),
@@ -2832,6 +2834,7 @@ describe("finalize_user_deletion_data", () => {
 					kind: "yjs_snapshot",
 					r2Bucket: "test-bucket",
 					r2Key: yjsR2Key,
+					size: 1,
 					createdBy: deletedUser.userId,
 					updatedAt: now,
 				}),
@@ -3340,6 +3343,7 @@ describe("enqueue_deletion_requests_processing", () => {
 				kind: "content",
 				r2Bucket: "test-bucket",
 				r2Key: "content/worker-r2-failure",
+				size: 1,
 				createdBy: user.userId,
 				updatedAt: Date.now(),
 			});
