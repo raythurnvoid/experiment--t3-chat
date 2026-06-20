@@ -9,16 +9,16 @@ import {
 	ArrowUpRight,
 	Clock,
 	Copy,
+	CopyX,
 	EllipsisVertical,
-	GripVertical,
 	Plus,
 	Star,
 	X,
 } from "lucide-react";
 import { AiChatThread } from "@/components/ai-chat/ai-chat.tsx";
+import { MyContextMenu, MyContextMenuPopover, MyContextMenuTrigger } from "@/components/my-context-menu.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
-import type { MyButton_ClassNames } from "@/components/my-button.tsx";
-import { MyIconButton, MyIconButtonIcon, type MyIconButton_ClassNames } from "@/components/my-icon-button.tsx";
+import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import {
 	MyMenu,
 	MyMenuItem,
@@ -49,7 +49,6 @@ import {
 	MyTabsTabPrimaryAction,
 	MyTabsTabSecondaryAction,
 	MyTabsTabSecondaryActionIcon,
-	type MyTabsTabSecondaryAction_ClassNames,
 	MyTabsTabSurface,
 } from "@/components/my-tabs.tsx";
 import {
@@ -521,7 +520,6 @@ type FileEditorSidebarAgentHeaderTabs_ClassNames =
 	| "FileEditorSidebarAgentHeaderTabs"
 	| "FileEditorSidebarAgentHeaderTabs-tabs-draggable"
 	| "FileEditorSidebarAgentHeaderTabs-tab"
-	| "FileEditorSidebarAgentHeaderTabs-tab-handle"
 	| "FileEditorSidebarAgentHeaderTabs-tab-primary-action"
 	| "FileEditorSidebarAgentHeaderTabs-tab-title"
 	| "FileEditorSidebarAgentHeaderTabs-tab-close";
@@ -604,6 +602,44 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 		controller.removeOptimisticThread(threadId);
 	});
 
+	const handleCloseTabsToRight = useFn((threadId: string) => {
+		const interactedTabIndex = openTabs.findIndex((tab) => tab.id === threadId);
+		if (interactedTabIndex < 0) {
+			return;
+		}
+
+		const closedTabs = openTabs.slice(interactedTabIndex + 1);
+		if (closedTabs.length === 0) {
+			return;
+		}
+
+		const closedTabIds = new Set(closedTabs.map((tab) => tab.id));
+		if (closedTabIds.has(selectedChatTabId) || (controller.selectedThreadId && closedTabIds.has(controller.selectedThreadId))) {
+			app_local_storage_set_value(selectedTabStorageKey, threadId);
+			controller.selectThread(threadId);
+		}
+
+		app_local_storage_set_value(openTabsStorageKey, openTabs.slice(0, interactedTabIndex + 1));
+		for (const closedTab of closedTabs) {
+			controller.removeOptimisticThread(closedTab.id);
+		}
+	});
+
+	const handleCloseOtherTabs = useFn((threadId: string) => {
+		const interactedTabIndex = openTabs.findIndex((tab) => tab.id === threadId);
+		if (interactedTabIndex < 0 || openTabs.length <= 1) {
+			return;
+		}
+
+		const closedTabs = openTabs.filter((tab) => tab.id !== threadId);
+		app_local_storage_set_value(selectedTabStorageKey, threadId);
+		controller.selectThread(threadId);
+		app_local_storage_set_value(openTabsStorageKey, [openTabs[interactedTabIndex]]);
+		for (const closedTab of closedTabs) {
+			controller.removeOptimisticThread(closedTab.id);
+		}
+	});
+
 	return (
 		<MyTabsList
 			className={cn("FileEditorSidebarAgentHeaderTabs" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames)}
@@ -622,6 +658,8 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 							>
 								{openTabs.map((entry, index) => {
 									const isSelectedTab = entry.id === selectedChatTabId;
+									const canCloseOtherTabs = openTabs.length > 1;
+									const canCloseTabsToRight = index < openTabs.length - 1;
 									// The last tab can't be closed when it is already a new chat; otherwise closing it
 									// replaces the chat with a new one rather than removing the tab.
 									const isCloseDisabled =
@@ -629,8 +667,10 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 										ai_chat_is_optimistic_thread(currentThreads.find((thread) => thread._id === entry.id));
 
 									return (
-										<Draggable key={entry.id} draggableId={entry.id} index={index}>
+										<Draggable key={entry.id} draggableId={entry.id} index={index} disableInteractiveElementBlocking>
 											{(draggableProvided, draggableSnapshot) => {
+												const { role: _dragHandleRole, tabIndex: _dragHandleTabIndex, ...dragHandleProps } =
+													draggableProvided.dragHandleProps ?? {};
 												const draggableTab = (
 													<MyTabsTabSurface
 														ref={draggableProvided.innerRef}
@@ -644,6 +684,7 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 														)}
 													>
 														<MyTabsTabPrimaryAction
+															{...dragHandleProps}
 															id={entry.id}
 															className={cn(
 																"FileEditorSidebarAgentHeaderTabs-tab-primary-action" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
@@ -657,23 +698,6 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 																{entry.title}
 															</span>
 														</MyTabsTabPrimaryAction>
-
-														<span
-															{...draggableProvided.dragHandleProps}
-															aria-label={`Drag chat tab: ${entry.title}`}
-															className={cn(
-																"FileEditorSidebarAgentHeaderTabs-tab-handle" satisfies FileEditorSidebarAgentHeaderTabs_ClassNames,
-																"MyButton" satisfies MyButton_ClassNames,
-																"MyButton-variant-ghost-highlightable" satisfies MyButton_ClassNames,
-																"MyIconButton" satisfies MyIconButton_ClassNames,
-																"MyTabsTabSecondaryAction" satisfies MyTabsTabSecondaryAction_ClassNames,
-															)}
-															tabIndex={isSelectedTab ? 0 : -1}
-														>
-															<MyTabsTabSecondaryActionIcon>
-																<GripVertical />
-															</MyTabsTabSecondaryActionIcon>
-														</span>
 
 														<MyTabsTabSecondaryAction
 															className={cn(
@@ -695,7 +719,46 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 													return createPortal(draggableTab, appHoistingContainer);
 												}
 
-												return draggableTab;
+												return (
+													<MyContextMenu>
+														<MyContextMenuTrigger>{draggableTab}</MyContextMenuTrigger>
+														<MyContextMenuPopover>
+															<MyMenuPopoverContent>
+																<MyMenuItem
+																	disabled={isCloseDisabled}
+																	onClick={() => handleCloseTab(entry.id)}
+																>
+																	<MyMenuItemContent>
+																		<MyMenuItemContentIcon>
+																			<X />
+																		</MyMenuItemContentIcon>
+																		<MyMenuItemContentPrimary>Close Tab</MyMenuItemContentPrimary>
+																	</MyMenuItemContent>
+																</MyMenuItem>
+																<MyMenuItem
+																	disabled={!canCloseOtherTabs}
+																	onClick={() => handleCloseOtherTabs(entry.id)}
+																>
+																	<MyMenuItemContent>
+																		<MyMenuItemContentIcon>
+																			<CopyX />
+																		</MyMenuItemContentIcon>
+																		<MyMenuItemContentPrimary>Close other tabs</MyMenuItemContentPrimary>
+																	</MyMenuItemContent>
+																</MyMenuItem>
+																<MyMenuItem
+																	disabled={!canCloseTabsToRight}
+																	onClick={() => handleCloseTabsToRight(entry.id)}
+																>
+																	<MyMenuItemContent>
+																		<MyMenuItemContentIcon />
+																		<MyMenuItemContentPrimary>Close tabs to the right</MyMenuItemContentPrimary>
+																	</MyMenuItemContent>
+																</MyMenuItem>
+															</MyMenuPopoverContent>
+														</MyContextMenuPopover>
+													</MyContextMenu>
+												);
 											}}
 										</Draggable>
 									);

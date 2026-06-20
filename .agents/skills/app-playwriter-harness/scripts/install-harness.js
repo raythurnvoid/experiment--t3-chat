@@ -2,9 +2,10 @@
 	const fs = require("node:fs");
 	const path = require("node:path");
 
-	const VERSION = "0.3.0";
+	const VERSION = "0.3.1";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	const MEMORY_FILES = new Set([
+		"agent-panel.md",
 		"app-map.md",
 		"files.md",
 		"known-hazards.md",
