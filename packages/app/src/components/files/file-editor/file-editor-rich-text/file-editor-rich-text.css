@@ -65,12 +65,23 @@
 
 			&::before {
 				content: "";
-				background-color: color-mix(in oklch, var(--color-accent-04) 70%, transparent);
-				border-radius: 12px;
+				background-color: color-mix(in oklch, var(--color-accent-04) 25%, transparent);
+				border-radius: 8px;
 
 				position: absolute;
 				inset: 0 -8px 0 -8px;
 				z-index: -1;
+			}
+
+			/*
+			Suppress the native text-selection highlight on the node-selected block so the soft
+			block fill above is the only selection indicator. Otherwise the node selection paints
+			a second, clashing accent-alt highlight over the text on top of the fill.
+			*/
+			&::selection,
+			& ::selection {
+				background-color: transparent;
+				color: currentColor;
 			}
 		}
 
