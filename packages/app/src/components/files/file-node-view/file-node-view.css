@@ -299,7 +299,7 @@
 	.FileNodeViewToolbar {
 		position: sticky;
 		top: 0;
-		z-index: 30;
+		z-index: 1;
 
 		width: 100%;
 		min-width: 0;

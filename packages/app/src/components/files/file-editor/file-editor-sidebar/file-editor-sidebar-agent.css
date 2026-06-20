@@ -111,22 +111,24 @@
 	/* #region header actions */
 	.FileEditorSidebarAgentHeaderActions {
 		height: 44px;
-		width: 132px;
+		width: 152px;
 
-		contain: strict;
+		contain: layout;
 
 		display: flex;
 		align-items: center;
-		gap: 4px;
 
 		flex-shrink: 0;
 
 		position: sticky;
 		right: 0;
 
-		background-color: var(--color-base-1-03);
+		/* Tabs dissolve into the bar instead of being cut on a hard seam. */
+		background: linear-gradient(to right, transparent 0, var(--color-base-1-03) 32px);
+		/* Gentle lift over the fading tabs. */
+		box-shadow: -12px 0 16px -12px color-mix(in oklch, black 50%, transparent);
 
-		padding: 4px 8px;
+		padding: 4px 8px 4px 36px;
 	}
 	/* #endregion header actions */
 

@@ -1327,6 +1327,7 @@ export function Toolbar(props: Toolbar_Props) {
 ## Component Styles
 
 - Declare a `_ClassNames` union type enumerating all CSS class strings. Class values are prefixed with the component name and use kebab-case. **Always include a root class equal to the component name**, even when styles are minimal, so the component is easy to identify in the DOM.
+- The component name, not the parent component or region name, determines the class prefix. If a child component is named `FooGrip`, its root class is `FooGrip` and its slots are `FooGrip-*`; do not use a parent-derived pseudo-slot such as `Foo-grip`.
 - Keep every suffix segment in class string literals kebab-case. Use `ComponentName-icon-wrap`, not `ComponentName-iconWrap`.
 - If sibling components own similar slots, repeat the slot suffix under each owner instead of inventing a shared pseudo-owner. Prefer `FooSelected-label` and `FooSelectable-label` over a shared `Foo-label` when `Foo` itself is only a chooser/composer.
 
@@ -1413,7 +1414,7 @@ When extracting JSX into a new component (same file or new file), rename class l
 export type AiChatMessageUser_ClassNames = "AiChatMessageUser" | "AiChatMessageUser-role-user";
 
 export function AiChatMessageUser(props: AiChatMessageUser_Props) {
-	return <div className={cn("AiChatMessageUser-role-user" satisfies AiChatMessageUser_ClassNames)} />;
+	return <div className={cn("AiChatMessageUser" satisfies AiChatMessageUser_ClassNames)} />;
 }
 ```
 

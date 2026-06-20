@@ -9,6 +9,19 @@ Use this skill when visual correctness matters and DOM inspection is not enough.
 
 The image model does not reliably remember earlier screenshots, generated references, accepted decisions, rejected ideas, or code constraints. Always provide the complete packet in the current prompt.
 
+## Image Backend: ChatGPT via Playwriter
+
+This agent has no native image-generation tool. The verification report image is generated through `chatgpt-image-generator`. Read [chatgpt-image-generator](../chatgpt-image-generator/SKILL.md) and follow its workflow to drive ChatGPT.
+
+ChatGPT-specific must-dos for verification:
+
+- Upload both `REFERENCE` / `DESIRED VERSION` and `CURRENT IMPLEMENTATION` screenshots in the same composer.
+- Open the composer plus menu and select `Create image` before submitting. This is mandatory — without it ChatGPT returns a text comparison instead of a generated report image, which is an invalid verifier run.
+- Prepend `Generate an image:` to the prompt template below, and end the prompt with `Do not answer with only text. The required output is a generated image report.`
+- Repeat the role labels in the prompt text because ChatGPT can invert `REFERENCE` and `CURRENT IMPLEMENTATION`. If the downloaded report inverts the roles or the text is unreadable, start a fresh ChatGPT tab, re-select `Create image`, and regenerate.
+- Save the report and screenshots under `tmp/visual-verification/<run-id>/`, then open the report with the Read tool before translating it into code.
+- If the generator cannot run (login wall, captcha, Playwriter unavailable), say so plainly instead of inventing a verdict.
+
 ## Core Workflow
 
 1. Capture the current implementation.

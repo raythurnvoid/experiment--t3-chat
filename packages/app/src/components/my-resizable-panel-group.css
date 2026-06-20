@@ -119,13 +119,13 @@
 		height: 16px;
 	}
 
-	.MyPanelResizeHandle[data-resize-handle-state="hover"] .MyPanelResizeHandleGrip,
-	.MyPanelResizeHandle:has(.MyPanelResizeHandleGrip:hover) .MyPanelResizeHandleGrip {
+	.MyPanelResizeHandle-control[data-resize-handle-state="hover"] .MyPanelResizeHandleGrip,
+	.MyPanelResizeHandle-control:has(.MyPanelResizeHandleGrip:hover) .MyPanelResizeHandleGrip {
 		color: var(--color-fg-10);
 	}
 
-	.MyPanelResizeHandle[data-resize-handle-state="hover"] .MyPanelResizeHandleGrip-pill,
-	.MyPanelResizeHandle:has(.MyPanelResizeHandleGrip:hover) .MyPanelResizeHandleGrip-pill {
+	.MyPanelResizeHandle-control[data-resize-handle-state="hover"] .MyPanelResizeHandleGrip-pill,
+	.MyPanelResizeHandle-control:has(.MyPanelResizeHandleGrip:hover) .MyPanelResizeHandleGrip-pill {
 		background-color: var(--color-base-alt-1-11);
 		box-shadow:
 			inset 0 1px 1px oklch(1 0 0 / 0.12),
@@ -133,57 +133,55 @@
 			0 1px 2px oklch(0 0.4 30 / 0.25);
 	}
 
-	.MyPanelResizeHandle[data-resize-handle-state="drag"] .MyPanelResizeHandleGrip,
-	.MyPanelResizeHandle:active .MyPanelResizeHandleGrip,
-	.MyPanelResizeHandle:has(.MyPanelResizeHandleGrip:active) .MyPanelResizeHandleGrip {
+	.MyPanelResizeHandle-control[data-resize-handle-state="drag"] .MyPanelResizeHandleGrip,
+	.MyPanelResizeHandle-control:active .MyPanelResizeHandleGrip,
+	.MyPanelResizeHandle-control:has(.MyPanelResizeHandleGrip:active) .MyPanelResizeHandleGrip {
 		color: var(--color-fg-12);
 	}
 
-	.MyPanelResizeHandle[data-resize-handle-state="drag"] .MyPanelResizeHandleGrip-pill,
-	.MyPanelResizeHandle:active .MyPanelResizeHandleGrip-pill,
-	.MyPanelResizeHandle:has(.MyPanelResizeHandleGrip:active) .MyPanelResizeHandleGrip-pill {
+	.MyPanelResizeHandle-control[data-resize-handle-state="drag"] .MyPanelResizeHandleGrip-pill,
+	.MyPanelResizeHandle-control:active .MyPanelResizeHandleGrip-pill,
+	.MyPanelResizeHandle-control:has(.MyPanelResizeHandleGrip:active) .MyPanelResizeHandleGrip-pill {
 		background-color: var(--color-base-alt-1-12);
 	}
 	/* #endregion handle grip */
 
 	/* #region handle */
-	.MyPanelResizeHandleContainer {
+	.MyPanelResizeHandle {
 		contain: layout style size;
 
 		position: relative;
 		z-index: 1;
 	}
 
-	.MyPanelResizeHandleContainer-orientation-vertical {
+	.MyPanelResizeHandle-orientation-vertical {
 		flex: 0 0 2px;
 	}
 
-	.MyPanelResizeHandleContainer-orientation-horizontal {
+	.MyPanelResizeHandle-orientation-horizontal {
 		flex: 0 0 2px;
 	}
 
-	.MyPanelResizeHandle {
+	.MyPanelResizeHandle-control {
 		contain: layout style;
 
 		position: absolute;
-		z-index: 1;
 
 		outline: none;
-
-		&::before {
-			content: "";
-			position: absolute;
-
-			pointer-events: none;
-
-			transition:
-				background-color 0.1s linear,
-				height 0.1s linear,
-				width 0.1s linear;
-		}
 	}
 
-	.MyPanelResizeHandle-orientation-vertical {
+	.MyPanelResizeHandle-track {
+		position: absolute;
+
+		pointer-events: none;
+
+		transition:
+			background-color 0.1s linear,
+			height 0.1s linear,
+			width 0.1s linear;
+	}
+
+	.MyPanelResizeHandle-control-orientation-vertical {
 		left: 50%;
 		top: 0;
 
@@ -197,7 +195,7 @@
 
 		transform: translateX(-50%);
 
-		&::before {
+		> .MyPanelResizeHandle-track {
 			top: 0;
 			bottom: 0;
 			left: 50%;
@@ -207,12 +205,12 @@
 			transform: translateX(-50%);
 		}
 
-		&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"])::before {
+		&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"]) > .MyPanelResizeHandle-track {
 			background-color: var(--color-base-alt-1-07);
 		}
 
-		&[data-resize-handle-state="hover"]::before,
-		&:has(.MyPanelResizeHandleGrip:hover)::before {
+		&[data-resize-handle-state="hover"] > .MyPanelResizeHandle-track,
+		&:has(.MyPanelResizeHandleGrip:hover) > .MyPanelResizeHandle-track {
 			width: 8px;
 
 			background-color: var(--color-base-alt-1-10);
@@ -222,21 +220,21 @@
 			width: 24px;
 		}
 
-		&[data-resize-handle-state="drag"]::before,
-		&:active::before,
-		&:has(.MyPanelResizeHandleGrip:active)::before {
+		&[data-resize-handle-state="drag"] > .MyPanelResizeHandle-track,
+		&:active > .MyPanelResizeHandle-track,
+		&:has(.MyPanelResizeHandleGrip:active) > .MyPanelResizeHandle-track {
 			width: 8px;
 
 			background-color: var(--color-base-alt-2-10);
 		}
 
-		&:focus-visible::before {
+		&:focus-visible > .MyPanelResizeHandle-track {
 			outline: 2px solid var(--color-fg-12);
 			outline-offset: -4px;
 		}
 	}
 
-	.MyPanelResizeHandle-orientation-horizontal {
+	.MyPanelResizeHandle-control-orientation-horizontal {
 		left: 0;
 		top: 50%;
 
@@ -250,7 +248,7 @@
 
 		transform: translateY(-50%);
 
-		&::before {
+		> .MyPanelResizeHandle-track {
 			right: 0;
 			left: 0;
 			top: 50%;
@@ -260,12 +258,12 @@
 			transform: translateY(-50%);
 		}
 
-		&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"])::before {
+		&:not([data-resize-handle-state="drag"], [data-resize-handle-state="hover"]) > .MyPanelResizeHandle-track {
 			background-color: var(--color-base-alt-1-07);
 		}
 
-		&[data-resize-handle-state="hover"]::before,
-		&:has(.MyPanelResizeHandleGrip:hover)::before {
+		&[data-resize-handle-state="hover"] > .MyPanelResizeHandle-track,
+		&:has(.MyPanelResizeHandleGrip:hover) > .MyPanelResizeHandle-track {
 			height: 8px;
 
 			background-color: var(--color-base-alt-1-10);
@@ -275,15 +273,15 @@
 			height: 24px;
 		}
 
-		&[data-resize-handle-state="drag"]::before,
-		&:active::before,
-		&:has(.MyPanelResizeHandleGrip:active)::before {
+		&[data-resize-handle-state="drag"] > .MyPanelResizeHandle-track,
+		&:active > .MyPanelResizeHandle-track,
+		&:has(.MyPanelResizeHandleGrip:active) > .MyPanelResizeHandle-track {
 			height: 8px;
 
 			background-color: var(--color-base-alt-2-10);
 		}
 
-		&:focus-visible::before {
+		&:focus-visible > .MyPanelResizeHandle-track {
 			outline: 2px solid var(--color-fg-12);
 			outline-offset: -4px;
 		}

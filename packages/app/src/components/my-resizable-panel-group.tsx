@@ -153,14 +153,15 @@ const DEFAULT_HIT_AREA = {
 } satisfies NonNullable<ComponentPropsWithRef<typeof PanelResizeHandle>["hitAreaMargins"]>;
 
 export type MyPanelResizeHandle_ClassNames =
-	| "MyPanelResizeHandleContainer"
-	| "MyPanelResizeHandleContainer-orientation-vertical"
-	| "MyPanelResizeHandleContainer-orientation-horizontal"
-	| "MyPanelResizeHandleContainer-state-open"
-	| "MyPanelResizeHandleContainer-state-closed"
 	| "MyPanelResizeHandle"
 	| "MyPanelResizeHandle-orientation-vertical"
-	| "MyPanelResizeHandle-orientation-horizontal";
+	| "MyPanelResizeHandle-orientation-horizontal"
+	| "MyPanelResizeHandle-state-open"
+	| "MyPanelResizeHandle-state-closed"
+	| "MyPanelResizeHandle-control"
+	| "MyPanelResizeHandle-control-orientation-vertical"
+	| "MyPanelResizeHandle-control-orientation-horizontal"
+	| "MyPanelResizeHandle-track";
 
 export type MyPanelResizeHandle_Props = Omit<
 	ComponentPropsWithRef<typeof PanelResizeHandle>,
@@ -217,23 +218,24 @@ export const MyPanelResizeHandle = memo(function MyPanelResizeHandle(props: MyPa
 	return (
 		<div
 			className={cn(
-				"MyPanelResizeHandleContainer" satisfies MyPanelResizeHandle_ClassNames,
+				"MyPanelResizeHandle" satisfies MyPanelResizeHandle_ClassNames,
 				orientation === "vertical" &&
-					("MyPanelResizeHandleContainer-orientation-vertical" satisfies MyPanelResizeHandle_ClassNames),
+					("MyPanelResizeHandle-orientation-vertical" satisfies MyPanelResizeHandle_ClassNames),
 				orientation === "horizontal" &&
-					("MyPanelResizeHandleContainer-orientation-horizontal" satisfies MyPanelResizeHandle_ClassNames),
-				isOpen && ("MyPanelResizeHandleContainer-state-open" satisfies MyPanelResizeHandle_ClassNames),
-				!isOpen && ("MyPanelResizeHandleContainer-state-closed" satisfies MyPanelResizeHandle_ClassNames),
+					("MyPanelResizeHandle-orientation-horizontal" satisfies MyPanelResizeHandle_ClassNames),
+				isOpen && ("MyPanelResizeHandle-state-open" satisfies MyPanelResizeHandle_ClassNames),
+				!isOpen && ("MyPanelResizeHandle-state-closed" satisfies MyPanelResizeHandle_ClassNames),
 				containerClassName,
 			)}
 			style={containerHiddenStyle}
 		>
 			<PanelResizeHandle
 				className={cn(
-					"MyPanelResizeHandle" satisfies MyPanelResizeHandle_ClassNames,
-					orientation === "vertical" && ("MyPanelResizeHandle-orientation-vertical" satisfies MyPanelResizeHandle_ClassNames),
+					"MyPanelResizeHandle-control" satisfies MyPanelResizeHandle_ClassNames,
+					orientation === "vertical" &&
+						("MyPanelResizeHandle-control-orientation-vertical" satisfies MyPanelResizeHandle_ClassNames),
 					orientation === "horizontal" &&
-						("MyPanelResizeHandle-orientation-horizontal" satisfies MyPanelResizeHandle_ClassNames),
+						("MyPanelResizeHandle-control-orientation-horizontal" satisfies MyPanelResizeHandle_ClassNames),
 					className,
 				)}
 				aria-orientation={orientation}
@@ -242,6 +244,7 @@ export const MyPanelResizeHandle = memo(function MyPanelResizeHandle(props: MyPa
 				onDragging={onDragging}
 				{...rest}
 			>
+				<span aria-hidden="true" className={"MyPanelResizeHandle-track" satisfies MyPanelResizeHandle_ClassNames}></span>
 				{children}
 				<MyPanelResizeHandleGrip orientation={orientation} />
 			</PanelResizeHandle>

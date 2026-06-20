@@ -11,11 +11,16 @@ Use this skill when the image model should help make or critique a visual produc
 
 - Use the image model when the user explicitly asks for it.
 - Tell the user plainly if a prior answer did not actually use the image model.
+- There is no native image tool here. Produce every image through `chatgpt-image-generator` (ChatGPT via Playwriter). If it cannot run, say so instead of pretending an image was generated.
 - Treat every image-model prompt as a complete, fresh design brief. The image model does not reliably remember previous prompts, screenshots, feedback, accepted decisions, rejected ideas, generated images, or code context.
 - Re-read relevant CSS, token files, and components immediately before prompting when the user says values changed.
 - Inspect generated output before summarizing it. If labels are unreadable, crowded, or contradictory, re-prompt with a smaller comparison.
 - Do not stop at image generation. After the generated image is available, continue by inspecting it and returning a written recommendation so the user never has to read the image annotations themselves.
 - Treat image-model guidance as design intent. Map it back to real app tokens, components, and CSS yourself before editing code.
+
+## Image Backend: ChatGPT via Playwriter
+
+This agent has no native image-generation tool. Every image in this skill is generated through `chatgpt-image-generator`. Read [chatgpt-image-generator](../chatgpt-image-generator/SKILL.md) and follow its workflow: open a fresh ChatGPT tab in the personal Edge profile, click the composer plus button, select `Create image`, submit the prompt, download the generated image, and inspect the saved file yourself before summarizing. Selecting `Create image` is mandatory — prompt wording alone makes ChatGPT reply with text instead of an image. Save generated images and scratch screenshots under `tmp/design-ideation/<run-id>/`.
 
 ## Core Workflow
 
