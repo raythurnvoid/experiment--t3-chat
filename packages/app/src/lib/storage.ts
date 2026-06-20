@@ -60,6 +60,7 @@ const storage_local_schema = {
 			switch (raw) {
 				case "app_file_editor_sidebar_tabs_comments":
 				case "app_file_editor_sidebar_tabs_agent":
+				case "app_file_editor_sidebar_tabs_pending":
 					return raw;
 				default:
 					return null;

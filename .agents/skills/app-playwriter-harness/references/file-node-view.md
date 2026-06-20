@@ -85,6 +85,16 @@ await page.getByRole("form", { name: "Reply to comment" }).waitFor({ state: "vis
 - On the **Agent** tab, `.FileNodeView-editor-sidebar-panel` should stay sticky during `.FileNodeView-editor-area` scroll.
 - Verify `.AiChatComposer` remains visible near the bottom of the viewport after scrolling.
 
+## Pending Changes Sidebar
+
+- Switch with `#app_file_editor_sidebar_tabs_pending`.
+- Panel region: `getByRole("region", { name: "Pending changes" })` (class `.FileEditorSidebarPending`); empty state is `.FileEditorSidebarPending-empty` ("No pending changes").
+- Each pending file is a `<details class="FileEditorSidebarPending-item">` accordion; click `.FileEditorSidebarPending-item-summary` to expand.
+- File path link: `.FileEditorSidebarPending-item-path` → navigates to `…/files?nodeId=<id>&view=diff_editor`.
+- Per-item actions (scope to the item): `getByRole("button", { name: "Accept & save" })` and `getByRole("button", { name: "Discard" })`.
+- Expanded diff window reuses `DiffMonospaceBlock`: `getByRole("textbox", { name: "Diff preview" })` / `.DiffMonospaceBlock`.
+- Items are sorted by path; **Accept & save** commits and removes the row, **Discard** reverts unstaged→staged (the row disappears when it collapses to base). Both rely on the reactive `list_files_pending_updates` query, so assert via list membership rather than a fixed index.
+
 ## Helper Recipes
 
 ```js

@@ -2,12 +2,14 @@ import "./file-editor-sidebar.css";
 import { memo, type Ref } from "react";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { FileEditorSidebarAgent } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx";
+import { FileEditorSidebarPending } from "@/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-pending.tsx";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 
 const FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS = "app_file_editor_sidebar_tabs_comments" satisfies AppElementId;
 const FILE_EDITOR_SIDEBAR_TAB_ID_AGENT = "app_file_editor_sidebar_tabs_agent" satisfies AppElementId;
+const FILE_EDITOR_SIDEBAR_TAB_ID_PENDING = "app_file_editor_sidebar_tabs_pending" satisfies AppElementId;
 
 // #region root
 export type FileEditorSidebar_ClassNames =
@@ -47,6 +49,7 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 					>
 						<MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS}>Comments</MyTabsTab>
 						<MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT}>Agent</MyTabsTab>
+						<MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_PENDING}>Pending changes</MyTabsTab>
 					</MyTabsList>
 				</div>
 				<MyTabsPanels className={cn("FileEditorSidebar-tabs-panels" satisfies FileEditorSidebar_ClassNames)}>
@@ -64,6 +67,12 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 						tabId={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT}
 					>
 						<FileEditorSidebarAgent rootTabId={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT} />
+					</MyTabsPanel>
+					<MyTabsPanel
+						className={cn("FileEditorSidebar-panel" satisfies FileEditorSidebar_ClassNames)}
+						tabId={FILE_EDITOR_SIDEBAR_TAB_ID_PENDING}
+					>
+						<FileEditorSidebarPending />
 					</MyTabsPanel>
 				</MyTabsPanels>
 			</MyTabs>

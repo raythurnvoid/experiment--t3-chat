@@ -724,9 +724,10 @@ Use region comments only when the user explicitly requests them, or when the mod
 - Do not duplicate region labels within the same file; each region label must appear at most once per file.
 - Region labels must be lowercase words and concise.
 - If a `.tsx` file has a paired `.css` file, keep region labels aligned between TSX (`// #region ...`) and CSS (`/* #region ... */`).
-- Place `// #region <label>` before the same-owner types/helpers/components and `// #endregion <label>` after that owner's body.
+- Place `// #region <label>` before the same-owner types/components and `// #endregion <label>` after that owner's body.
 - Keep owner boundaries explicit. Treat `foo` and `foo item` as different owners and different regions.
 - Do not add or remove regions in files that do not already use them unless the user explicitly requests it.
+- Do not create generic regions such as `helpers`, `types`, `constants`, or `components`; keep supporting code with the nearest concrete owner instead.
 - Do not create `#region` blocks inside a component body for "local state", "handlers", "render", etc., unless the user explicitly requests that structure.
 - If you need extra grouping inside a component, use plain comments instead of more `#region` markers.
 - When the user asks for concrete extracted components, region labels should usually match those concrete owners one-for-one (`foo selected`, `foo selectable`, `foo`) instead of using one catch-all region such as `foo components`.

@@ -1,0 +1,85 @@
+@layer components {
+	/* #region root */
+	.FileEditorSidebarPending {
+		flex: 1;
+		min-height: 0;
+
+		display: flex;
+		flex-direction: column;
+
+		overflow: hidden auto;
+	}
+
+	.FileEditorSidebarPending-empty {
+		flex: 1;
+
+		display: flex;
+		align-items: center;
+		justify-content: center;
+
+		color: var(--color-fg-06);
+	}
+
+	.FileEditorSidebarPending-list {
+		display: flex;
+		flex-direction: column;
+
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	/* #endregion root */
+
+	/* #region item */
+	.FileEditorSidebarPending-item {
+		border-bottom: 1px solid var(--color-fg-02);
+	}
+
+	.FileEditorSidebarPending-item-summary {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
+
+		padding: 6px 16px;
+		cursor: pointer;
+
+		list-style: none;
+	}
+	.FileEditorSidebarPending-item-summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.FileEditorSidebarPending-item-chevron {
+		flex: none;
+
+		color: var(--color-fg-06);
+		transition: transform 0.1s ease;
+	}
+	.FileEditorSidebarPending-item[open] .FileEditorSidebarPending-item-chevron {
+		transform: rotate(90deg);
+	}
+
+	.FileEditorSidebarPending-item-path {
+		flex: 1;
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.FileEditorSidebarPending-item-actions {
+		flex: none;
+
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.FileEditorSidebarPending-item-diff {
+		margin: 0 16px 12px;
+	}
+	/* #endregion item */
+}
