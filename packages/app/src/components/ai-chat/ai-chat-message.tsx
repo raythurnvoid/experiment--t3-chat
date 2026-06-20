@@ -1861,13 +1861,13 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 					<CopyIconButton
 						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
 						iconClassName={"AiChatMessageAgent-action-icon" satisfies AiChatMessageAgent_ClassNames}
-						variant="ghost"
+						variant="ghost-highlightable"
 						tooltipCopy="Copy message"
 						text={text ?? undefined}
 					/>
 					<MyIconButton
 						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
-						variant="ghost"
+						variant="ghost-highlightable"
 						tooltip="Branch chat here"
 						disabled={!selectedThreadId || isRunning}
 						onClick={handleBranchChat}
@@ -1878,7 +1878,7 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 						<div className={"AiChatMessageAgent-branch-controls" satisfies AiChatMessageAgent_ClassNames}>
 							<MyIconButton
 								className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
-								variant="ghost"
+								variant="ghost-highlightable"
 								tooltip="Previous branch"
 								disabled={isRunning}
 								onClick={handleBranchPrev}
@@ -1890,7 +1890,7 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 							</span>
 							<MyIconButton
 								className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
-								variant="ghost"
+								variant="ghost-highlightable"
 								tooltip="Next branch"
 								disabled={isRunning}
 								onClick={handleBranchNext}
@@ -1901,7 +1901,7 @@ const AiChatMessageAgent = memo(function AiChatMessageAgent(props: AiChatMessage
 					)}
 					<MyIconButton
 						className={"AiChatMessageAgent-action-button" satisfies AiChatMessageAgent_ClassNames}
-						variant="ghost"
+						variant="ghost-highlightable"
 						tooltip="Regenerate response"
 						onClick={handleReload}
 					>

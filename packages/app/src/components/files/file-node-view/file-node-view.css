@@ -37,8 +37,8 @@
 		container: FileNodeView-editor-area / size;
 	}
 
-	.FileNodeView-editor-area:has(.FileEditor-mode-rich-text) {
-		/* FileNodeView is the rich editor scroll owner, so keep the old bottom buffer here too. */
+	.FileNodeView-editor-area:has(.FileEditor-mode-rich-text .FileEditorRichText-editor-content-container:focus-within) {
+		/* FileNodeView is the rich editor scroll owner, so keep the editor-only bottom buffer here too. */
 		scroll-padding-bottom: 300px;
 	}
 
