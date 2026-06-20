@@ -190,7 +190,7 @@ const FileEditorSidebarAgentThreadPickerItem = memo(function FileEditorSidebarAg
 							"FileEditorSidebarAgentThreadPicker-item-action" satisfies FileEditorSidebarAgentThreadPickerItem_ClassNames,
 						)}
 						tabIndex={actionTabIndex}
-						variant="ghost-highlightable"
+						variant="ghost-highlightable-alt"
 						aria-pressed={starred}
 						tooltip={starButtonLabel}
 						onMouseDown={handleActionMouseDown}
@@ -208,7 +208,7 @@ const FileEditorSidebarAgentThreadPickerItem = memo(function FileEditorSidebarAg
 							"FileEditorSidebarAgentThreadPicker-item-action" satisfies FileEditorSidebarAgentThreadPickerItem_ClassNames,
 						)}
 						tabIndex={actionTabIndex}
-						variant="ghost-highlightable"
+						variant="ghost-highlightable-alt"
 						tooltip={archiveLabel}
 						onMouseDown={handleActionMouseDown}
 						onClick={handleToggleArchive}

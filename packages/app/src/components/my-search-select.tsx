@@ -70,7 +70,7 @@ export const MySearchSelectSearch = memo(function MySearchSelectSearch(props: My
 
 	return (
 		<div className={cn("MySearchSelectSearch" satisfies MySearchSelectSearch_ClassNames, className)}>
-			<MyInput>
+			<MyInput variant="floating">
 				<MyInputBackground />
 				<MyInputArea>
 					<Ariakit.Combobox

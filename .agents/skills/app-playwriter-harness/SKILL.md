@@ -48,6 +48,10 @@ pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab
 - Keep each execute call focused on one observation or one action, then observe again.
 - Prefer small observe-act-observe scripts over bundled multi-step runners during interactive debugging and eval inspection. Batch only when the user explicitly asks for a runner or the flow is already stable and repeatable.
 
+## Output artifacts
+
+Write every runner script, screenshot, and scratch file you generate to the personal AI folder `../t3-chat-+personal/+ai/`, grouped under a descriptive `<topic>-YYYY-MM-DD` subfolder. Never write them to the repo's own `tmp/` (it is tracked by git and pollutes status/commits) or to the OS temp dir (invisible to the user). When a runner file must live somewhere the Playwriter sandbox can read it, still put it under `../t3-chat-+personal/+ai/`. Promote a script into `scripts/` here only when it becomes a broadly reusable harness primitive (see Organization above).
+
 ## Memories
 
 Use `state.appPlaywriterHarness.appendMemory({ file, title, body })` only for reusable knowledge, such as stable selectors, route behavior, recurring blockers, or proven snippets.
