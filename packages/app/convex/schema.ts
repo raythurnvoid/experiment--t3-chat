@@ -156,11 +156,9 @@ const app_convex_schema = defineSchema({
 	}).index("by_pendingUpdate", ["pendingUpdateId"]),
 
 	/**
-	 * Search-only materialization of each pending update's `unstaged` Markdown, chunked with the
-	 * same chunker as committed content. Rows are replaced in the same mutation as every pending
-	 * row write and deleted in the same mutation as every pending row delete, so no orphan chunks
-	 * exist. Unlike committed chunks there is no denormalized path/archive scope: search joins
-	 * `files_nodes` at read time because rename/move/archive flows never touch pending updates.
+	 * Materialization of each pending update's `unstaged` Markdown for exact reads and regex scans.
+	 * Full-text search uses `files_search_chunks`, which stores both pending and committed sources
+	 * with denormalized path/archive scope.
 	 */
 	files_pending_updates_chunks: defineTable({
 		workspaceId: v.string(),
@@ -184,6 +182,44 @@ const app_convex_schema = defineSchema({
 		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"])
 		.index("by_pendingUpdate_lineEnd_chunkIndex", ["pendingUpdateId", "lineEnd", "chunkIndex"])
 		.index("by_pendingUpdate_endIndex_chunkIndex", ["pendingUpdateId", "endIndex", "chunkIndex"]),
+
+	/**
+	 * Unified full-text search projection. Pending rows are user-scoped; committed rows are global
+	 * within the workspace/project and suppressed at query time for files the acting user is editing.
+	 */
+	files_search_chunks: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		fileNodeId: v.id("files_nodes"),
+		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
+		userId: v.optional(v.string()),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		yjsSequence: v.optional(v.number()),
+		path: v.string(),
+		archiveOperationId: v.optional(v.string()),
+		chunkIndex: v.number(),
+		markdownChunk: v.string(),
+		plainTextChunk: v.string(),
+		startIndex: v.number(),
+		endIndex: v.number(),
+		lineStart: v.number(),
+		lineEnd: v.number(),
+		chunkFlags: v.number(),
+	})
+		.searchIndex("search_by_plainTextChunk", {
+			searchField: "plainTextChunk",
+			filterFields: ["workspaceId", "projectId", "archiveOperationId"],
+		})
+		.index("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", [
+			"workspaceId",
+			"projectId",
+			"sourceKind",
+			"fileNodeId",
+			"yjsSequence",
+			"chunkIndex",
+		])
+		.index("by_workspace_project_fileNode_chunkIndex", ["workspaceId", "projectId", "fileNodeId", "chunkIndex"])
+		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"]),
 
 	files_nodes: defineTable({
 		/** Workspace ID extracted from roomId */

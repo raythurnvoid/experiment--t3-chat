@@ -3,7 +3,7 @@ import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
-import { files_line_range_from_text, files_tail_lines_from_text } from "./files_nodes.ts";
+import { db_insert_file_chunks, files_line_range_from_text, files_tail_lines_from_text } from "./files_nodes.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	files_MAX_UPLOADS_BYTES,
@@ -3478,6 +3478,44 @@ async function test_materialize_markdown_file(
 	return nodeId;
 }
 
+async function test_insert_searchable_markdown_file(
+	t: ReturnType<typeof test_convex>,
+	db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
+	path: string,
+	markdown: string,
+) {
+	// Seed only the node and committed chunk projections for tests that exercise search scope.
+	return await t.run(async (ctx) => {
+		const now = Date.now();
+		const name = path.split("/").filter(Boolean).at(-1);
+		if (!name) throw new Error("Expected a root-level file path");
+		const nodeId = await ctx.db.insert("files_nodes", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			parentId: files_ROOT_ID,
+			path,
+			treePath: path,
+			pathDepth: 1,
+			lowercaseExtension: "md",
+			name,
+			kind: "file",
+			contentType: "text/markdown;charset=utf-8",
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			updatedAt: now,
+		});
+		const chunks = await db_insert_file_chunks(ctx, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			nodeId,
+			yjsSequence: 0,
+			markdownContent: markdown,
+		});
+		if (chunks._nay) throw new Error(chunks._nay.message);
+		return nodeId;
+	});
+}
+
 // Recover the exact committed markdown a file's content asset points at (the chunk-read oracle).
 async function test_read_committed_markdown(
 	t: ReturnType<typeof test_convex>,
@@ -4204,7 +4242,7 @@ test("text_search_files searches pending unstaged content instead of stale commi
 		path,
 		"# Plan\n\ncommittedneedle appears only in the committed version.",
 	);
-	await test_materialize_markdown_file(
+	const otherNodeId = await test_materialize_markdown_file(
 		t,
 		asUser,
 		db,
@@ -4235,6 +4273,20 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	});
 	if (pending._nay) throw new Error(pending._nay.message);
 
+	const otherUserId = await t.run((ctx) =>
+		ctx.db.insert("users", {
+			clerkUserId: null,
+		}),
+	);
+	const otherUserPending = await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: otherUserId,
+		nodeId: otherNodeId,
+		unstagedMarkdown: "# Other\n\nforeignpendingneedle and sharedneedle are another user's pending content.",
+	});
+	if (otherUserPending._nay) throw new Error(otherUserPending._nay.message);
+
 	// The pending item carries the real metadata produced by the shared markdown chunker.
 	const expectedChunks = await files_chunk_markdown(unstagedMarkdown);
 	if (expectedChunks._nay) throw new Error(expectedChunks._nay.message);
@@ -4263,9 +4315,28 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	expect(staleCommittedSearch.items.map((item) => item.path)).not.toContain(path);
 	expect(staleCommittedSearch.isDone).toBe(true);
 
-	// Pending hits rank first and committed hits from other files fill the same page.
+	const otherUserCommittedSearch = await asUser.query(internal.files_nodes.text_search_files, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: otherUserId,
+		query: "committedneedle",
+		numItems: 10,
+		cursor: null,
+	});
+	expect(otherUserCommittedSearch.items.map((item) => item.path)).toContain(path);
+	expect(otherUserCommittedSearch.items.map((item) => item.markdownChunk).join("\n")).not.toContain("pendingneedle");
+
+	const otherPendingSearch = await search("foreignpendingneedle");
+	expect(otherPendingSearch.items).toEqual([]);
+	expect(otherPendingSearch.isDone).toBe(true);
+
+	// Committed hits from files without this user's pending edits remain visible even when another
+	// user has pending chunks for the same file.
 	const mergedSearch = await search("sharedneedle");
-	expect(mergedSearch.items.map((item) => item.path)).toEqual([path, otherPath]);
+	expect(new Set(mergedSearch.items.map((item) => item.path))).toEqual(new Set([path, otherPath]));
+	const committedOtherItem = mergedSearch.items.find((item) => item.path === otherPath);
+	expect(committedOtherItem?.markdownChunk).toContain("another committed file");
+	expect(committedOtherItem?.markdownChunk).not.toContain("foreignpendingneedle");
 	expect(mergedSearch.isDone).toBe(true);
 });
 
@@ -4362,7 +4433,7 @@ test("text_search_files drops pending hits for archived files", async () => {
 	const beforeArchive = await search();
 	expect(beforeArchive.items.map((item) => item.path)).toEqual([path]);
 
-	// Archive flows never touch pending docs, so the node validation at read time must drop the hit.
+	// Archive patches denormalized search scope for pending search chunks, so active search excludes it.
 	const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
 		membershipId: db.membershipId,
 		nodeIds: [nodeId],
@@ -4374,7 +4445,126 @@ test("text_search_files drops pending hits for archived files", async () => {
 	expect(afterArchive.isDone).toBe(true);
 });
 
-test("text_search_files paginates a multi-chunk pending file into committed results via the composite cursor", async () => {
+test("text_search_files updates unified search scope when files are renamed and moved", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Search Scope User",
+		email: "search-scope-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const renameNodeId = await test_insert_searchable_markdown_file(
+		t,
+		db,
+		"/rename-source.md",
+		"# Rename\n\nscopecommittedneedle before rename.",
+	);
+	const moveNodeId = await test_materialize_markdown_file(t, asUser, db, "/move-source.md", "# Move\n\nbase content.");
+	const targetFolderId = await t.run(async (ctx) =>
+		ctx.db.insert("files_nodes", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			parentId: files_ROOT_ID,
+			path: "/move-target",
+			treePath: "/move-target/",
+			pathDepth: 1,
+			lowercaseExtension: null,
+			name: "move-target",
+			kind: "folder",
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			updatedAt: Date.now(),
+		}),
+	);
+
+	const pendingMove = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		nodeId: moveNodeId,
+		unstagedMarkdown: "# Move\n\nscopependingmoveneedle before move.",
+	});
+	if (pendingMove._nay) throw new Error(pendingMove._nay.message);
+
+	const search = (query: string, pathPrefix?: string) =>
+		asUser.query(internal.files_nodes.text_search_files, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			query,
+			numItems: 10,
+			cursor: null,
+			pathPrefix,
+		});
+
+	const renamed = await asUser.mutation(api.files_nodes.rename_node, {
+		membershipId: db.membershipId,
+		nodeId: renameNodeId,
+		name: "rename-target.md",
+	});
+	if (renamed._nay) throw new Error(renamed._nay.message);
+	expect((await search("scopecommittedneedle")).items.map((item) => item.path)).toEqual(["/rename-target.md"]);
+
+	const moved = await asUser.mutation(api.files_nodes.move_nodes, {
+		membershipId: db.membershipId,
+		itemIds: [moveNodeId],
+		targetParentId: targetFolderId,
+	});
+	if (moved._nay) throw new Error(moved._nay.message);
+	expect((await search("scopependingmoveneedle")).items.map((item) => item.path)).toEqual([
+		"/move-target/move-source.md",
+	]);
+	expect((await search("scopependingmoveneedle", "/move-target")).items.map((item) => item.path)).toEqual([
+		"/move-target/move-source.md",
+	]);
+});
+
+test("text_search_files updates unified committed search scope when files are archived", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Search Archive User",
+		email: "search-archive-user@example.com",
+	});
+
+	const archiveNodeId = await test_insert_searchable_markdown_file(
+		t,
+		db,
+		"/archive-source.md",
+		"# Archive\n\nscopearchivecommittedneedle before archive.",
+	);
+
+	const search = (query: string) =>
+		asUser.query(internal.files_nodes.text_search_files, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			query,
+			numItems: 10,
+			cursor: null,
+		});
+
+	const beforeArchive = await search("scopearchivecommittedneedle");
+	expect(beforeArchive.items.map((item) => item.path)).toEqual(["/archive-source.md"]);
+
+	const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+		membershipId: db.membershipId,
+		nodeIds: [archiveNodeId],
+	});
+	if (archived._nay) throw new Error(archived._nay.message);
+	const afterArchive = await search("scopearchivecommittedneedle");
+	expect(afterArchive.items).toEqual([]);
+	expect(afterArchive.isDone).toBe(true);
+});
+
+test("text_search_files paginates unified pending and committed chunks with the native cursor", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -4424,12 +4614,40 @@ test("text_search_files paginates a multi-chunk pending file into committed resu
 			cursor,
 		});
 
-	// First page is exactly the two pending chunks; the committed hit is left for the next page.
 	const firstPage = await search(null);
 	expect(firstPage.items).toHaveLength(2);
-	expect(firstPage.items.map((item) => item.path)).toEqual([pendingPath, pendingPath]);
 	expect(firstPage.isDone).toBe(false);
-	const pendingByChunkIndex = [...firstPage.items].sort((left, right) => left.chunkIndex - right.chunkIndex);
+	const parsedCursor = (() => {
+		try {
+			return JSON.parse(firstPage.continueCursor) as unknown;
+		} catch {
+			return null;
+		}
+	})();
+	expect(
+		Boolean(
+			parsedCursor &&
+				typeof parsedCursor === "object" &&
+				("pendingSkip" in parsedCursor || "pendingDone" in parsedCursor || "committed" in parsedCursor),
+		),
+	).toBe(false);
+
+	const allItems = [...firstPage.items];
+	let cursor = firstPage.continueCursor;
+	let sawDone = firstPage.isDone;
+	for (let pageGuard = 0; pageGuard < 5 && !sawDone; pageGuard++) {
+		const page = await search(cursor);
+		allItems.push(...page.items);
+		cursor = page.continueCursor;
+		sawDone = page.isDone;
+	}
+	expect(sawDone).toBe(true);
+	expect(allItems).toHaveLength(3);
+	expect(allItems.map((item) => item.path).filter((path) => path === committedPath)).toHaveLength(1);
+	const pendingByChunkIndex = allItems
+		.filter((item) => item.path === pendingPath)
+		.sort((left, right) => left.chunkIndex - right.chunkIndex);
+	expect(pendingByChunkIndex).toHaveLength(2);
 	expect(pendingByChunkIndex.map((item) => item.chunkIndex)).toEqual([0, 1]);
 	expect(pendingByChunkIndex[0]).toMatchObject({
 		markdownChunk: expectedChunks._yay[0]!.markdownChunk,
@@ -4441,19 +4659,6 @@ test("text_search_files paginates a multi-chunk pending file into committed resu
 		hasChunkAbove: true,
 		hasChunkBelow: false,
 	});
-
-	// Continue with the composite cursor until done: the only remaining match is the committed file.
-	const tailItems = [];
-	let cursor = firstPage.continueCursor;
-	let sawDone = false;
-	for (let pageGuard = 0; pageGuard < 5 && !sawDone; pageGuard++) {
-		const page = await search(cursor);
-		tailItems.push(...page.items);
-		cursor = page.continueCursor;
-		sawDone = page.isDone;
-	}
-	expect(sawDone).toBe(true);
-	expect(tailItems.map((item) => item.path)).toEqual([committedPath]);
 });
 
 test("create_file_snapshot_content_url returns a signed R2 URL without fetching snapshot Markdown", async () => {

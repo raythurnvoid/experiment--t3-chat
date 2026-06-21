@@ -39,7 +39,7 @@ Main table in `packages/app/convex/schema.ts`:
   - `size` (UTF-8 byte size of the current `unstaged` Markdown)
   - `updatedAt`
 
-Search chunk table (materialized from the `unstaged` branch Markdown, used only by full-text search):
+Pending chunk table (materialized from the `unstaged` branch Markdown for exact pending reads and regex scans):
 
 - `files_pending_updates_chunks`
   - `workspaceId`
@@ -51,8 +51,26 @@ Search chunk table (materialized from the `unstaged` branch Markdown, used only 
   - `markdownChunk`
   - `plainTextChunk`
   - `startIndex` / `endIndex` / `lineStart` / `lineEnd` / `chunkFlags`
-  - search index `search_by_plainTextChunk` (filter fields `workspaceId`, `projectId`, `userId`)
   - index `by_pendingUpdate_chunkIndex` for replace/delete and neighbor lookups
+
+Unified full-text search table:
+
+- `files_search_chunks`
+  - `workspaceId`
+  - `projectId`
+  - `fileNodeId`
+  - `sourceKind: "committed" | "pending"`
+  - optional `userId` for pending rows
+  - optional `pendingUpdateId` for pending rows
+  - optional `yjsSequence` for committed rows
+  - denormalized `path`
+  - optional `archiveOperationId`
+  - `chunkIndex`
+  - `markdownChunk`
+  - `plainTextChunk`
+  - `startIndex` / `endIndex` / `lineStart` / `lineEnd` / `chunkFlags`
+  - search index `search_by_plainTextChunk` (filter fields `workspaceId`, `projectId`, `archiveOperationId`)
+  - committed replacement, pending replacement, and scope patching indexes
 
 Saved-sequence marker table:
 
@@ -130,9 +148,11 @@ Important behavior:
 - Save applies remote drift from base into both branches before saving, persists only the `staged` diff to the live file, writes the saved-sequence marker, enqueues R2 content materialization, and keeps the row alive on partial save.
 - Public actions/mutations are rate-limited after membership validation and before writes.
 - Saves that push a live Yjs diff must pass the billing credit gate and emit one `file_save` usage event. The billing event name is intentionally unchanged for now to avoid a separate billing taxonomy migration.
-- Every pending row lifecycle path maintains `files_pending_updates_chunks` in the same mutation: row insert chunks the `unstaged` Markdown with the shared `files_chunk_markdown` chunker, patches re-chunk only when the unstaged content actually changed (staged-only changes like `Accept all` skip re-chunking), and row deletion (collapse, full save, expiry, data deletion) deletes the chunks.
+- Every pending row lifecycle path maintains both `files_pending_updates_chunks` and pending `files_search_chunks` rows in the same mutation: row insert chunks the `unstaged` Markdown with the shared `files_chunk_markdown` chunker, patches re-chunk only when the unstaged content actually changed (staged-only changes like `Accept all` skip re-chunking), and row deletion (collapse, full save, expiry, data deletion) deletes both projections.
+- Committed materialization writes committed `files_search_chunks` rows beside `files_markdown_chunks` and `files_plain_text_chunks`; committed replacement deletes the old committed search rows for that file before inserting new ones.
+- Rename, move, archive, and unarchive patch denormalized `path` and `archiveOperationId` on `files_search_chunks` as well as legacy plain-text chunks, so full-text search can filter scope before native pagination.
 - Pending row writes also store `size` from the same current `unstaged` Markdown whenever the unstaged branch is created or replaced. Staged-only changes preserve the existing size.
-- A chunking failure never fails the row write: the stale chunks are already deleted, the failure is logged, and search just misses that file until the next upsert (its committed chunks stay hidden).
+- A chunking failure never fails the row write: the stale pending chunks/search rows are already deleted, the failure is logged, and search just misses that file until the next upsert (its committed chunks stay hidden for that user).
 
 # Client Responsibilities
 
@@ -168,8 +188,8 @@ Important behavior:
 - Pending updates are per-user rows keyed by `(workspaceId, projectId, userId, nodeId)`.
 - A pending row exists only while either `staged` or `unstaged` differs from `base`.
 - AI reads must continue to see the current user's pending `unstaged` branch overlay.
-- Pending chunks are replaced in the same mutation as every pending row write/delete, so search can trust that no orphan or stale `files_pending_updates_chunks` rows exist.
-- Bash `search` (`text_search_files`) returns the acting user's pending chunk matches first, then committed matches, and hides committed chunks for files that user has pending edits on. Rename/move/archive flows never touch pending rows, so search validates the node (tenant, kind, archived, editable Yjs state, path scope) at read time.
+- Pending chunks and pending search chunks are replaced in the same mutation as every pending row write/delete, so no orphan or stale pending projection rows should exist.
+- Bash `search` (`text_search_files`) uses one Convex full-text search query against `files_search_chunks` with Convex native cursor pagination. It filters pending chunks to the acting user, filters out other users' pending chunks, and hides committed chunks for files that user has pending edits on. Pending-first ordering is not an invariant.
 - `Review changes` must switch into diff mode.
 - `Accept all` does not save by itself.
 - `Discard all` does not call a special clear mutation.

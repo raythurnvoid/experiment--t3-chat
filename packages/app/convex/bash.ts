@@ -38,6 +38,7 @@ import {
 	getCommandNames,
 	InMemoryFs,
 	MountableFs,
+	type Command,
 	type CommandContext,
 	type CommandName,
 	type CpOptions,
@@ -5873,6 +5874,13 @@ const WC_COMBINED_FLAGS_REGEX = /^-[lwmc]{2,}$/u;
 const OBSOLETE_LINE_COUNT_FLAG_REGEX = /^-(\d+)$/u;
 
 type WcCommandFlags = { lines: boolean; words: boolean; chars: boolean; bytes: boolean };
+type ReaderCommandOversizedAppOperand = {
+	file: string;
+	appFileNodePath: string;
+	size: number;
+	contentType: Doc<"files_nodes">["contentType"];
+	hasEditableYjsState: boolean;
+};
 
 function reader_command_parse_line_count(command: string, option: string, value: string | undefined) {
 	if (value == null) {
@@ -6029,7 +6037,7 @@ async function reader_command_find_oversized_app_operand(
 	commandCtx: CommandContext,
 	currentProjectPath: string,
 	files: string[],
-) {
+): Promise<ReaderCommandOversizedAppOperand | null> {
 	for (const file of files) {
 		if (file === "-") continue;
 
@@ -6039,7 +6047,7 @@ async function reader_command_find_oversized_app_operand(
 		);
 		if (appFileNodePath == null) continue;
 
-		const fileNode =
+		const fileNode: files_nodes_get_by_path_Result =
 			appFileNodePath === "/"
 				? null
 				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -6051,7 +6059,13 @@ async function reader_command_find_oversized_app_operand(
 
 		const size: number | null = await get_app_file_byte_size({ ctx, ctxData, fileNode });
 		if (size != null && size > READ_INLINE_MAX_BYTES) {
-			return { file, appFileNodePath, size } as const;
+			return {
+				file,
+				appFileNodePath,
+				size,
+				contentType: fileNode.contentType,
+				hasEditableYjsState: fileNode.kind === "file" && files_node_has_editable_yjs_state(fileNode),
+			} as const;
 		}
 	}
 	return null;
@@ -6060,16 +6074,16 @@ async function reader_command_find_oversized_app_operand(
 /**
  * Route `head`, `tail`, and `wc` through app-aware fast paths before falling back:
  * app-only `wc` uses bounded stats, oversized app files use bounded pages or
- * refusal guidance, single `--` app operands keep dash-leading file names on
- * the app content path, unreadable app probes return app advisories, and all
- * remaining cases delegate to the built-in command.
+ * refusal guidance, single app-file `head`/`tail` reads use materialized chunks,
+ * unreadable app probes return app advisories, and all remaining cases delegate
+ * to the built-in command.
  */
 function reader_command_create(
 	ctx: ActionCtx,
 	workspaceFs: WorkspaceFs,
 	command: "head" | "tail" | "wc",
 	currentProjectPath: string,
-) {
+): Command {
 	return defineCommand(command, async (args, commandCtx) => {
 		const lineCountUsage = `Usage: ${command} [-n N] [FILE...]\n`;
 		const parsed = reader_command_parse_args(command, args);
@@ -6133,7 +6147,7 @@ function reader_command_create(
 					path: appFileNodePath,
 				})) as files_nodes_read_file_content_stats_Result;
 				if (!stats) {
-					const fileNode =
+					const fileNode: files_nodes_get_by_path_Result =
 						appFileNodePath === "/"
 							? null
 							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -6225,7 +6239,13 @@ function reader_command_create(
 					if (!result) {
 						return {
 							stdout: "",
-							stderr: `tail: ${oversized.file}: No such file or directory\n`,
+							stderr: oversized.hasEditableYjsState
+								? `tail: ${oversized.file}: content is not available from materialized chunks\n`
+								: build_unreadable_file_advisory(
+										currentProjectPath,
+										oversized.appFileNodePath,
+										oversized.contentType,
+									),
 							exitCode: COMMAND_EXIT_FAILURE,
 						};
 					}
@@ -6270,7 +6290,13 @@ function reader_command_create(
 					if (!result) {
 						return {
 							stdout: "",
-							stderr: `head: ${oversized.file}: No such file or directory\n`,
+							stderr: oversized.hasEditableYjsState
+								? `head: ${oversized.file}: content is not available from materialized chunks\n`
+								: build_unreadable_file_advisory(
+										currentProjectPath,
+										oversized.appFileNodePath,
+										oversized.contentType,
+									),
 							exitCode: COMMAND_EXIT_FAILURE,
 						};
 					}
@@ -6307,7 +6333,13 @@ function reader_command_create(
 				if (!result) {
 					return {
 						stdout: "",
-						stderr: `tail: ${oversized.file}: No such file or directory\n`,
+						stderr: oversized.hasEditableYjsState
+							? `tail: ${oversized.file}: content is not available from materialized chunks\n`
+							: build_unreadable_file_advisory(
+									currentProjectPath,
+									oversized.appFileNodePath,
+									oversized.contentType,
+								),
 						exitCode: COMMAND_EXIT_FAILURE,
 					};
 				}
@@ -6341,17 +6373,26 @@ function reader_command_create(
 			};
 		}
 
-		if ((command === "head" || command === "tail") && args.includes("--") && !byteMode && files.length === 1) {
+		if ((command === "head" || command === "tail") && !byteMode && files.length === 1) {
 			const file = files[0];
 			if (file !== "-") {
 				const resolvedPath = resolve_path(commandCtx.cwd, file);
 				const appFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath);
 
 				if (appFileNodePath != null) {
-					// The parser consumes `--`, but the delegated built-in still sees the original argv.
-					// Keep one app-file operand here so dash-leading app names read through WorkspaceFs.
-					try {
-						const content = await commandCtx.fs.readFile(resolvedPath);
+					const chunkRead = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+						workspaceId: workspaceFs.ctxData.workspaceId,
+						projectId: workspaceFs.ctxData.projectId,
+						userId: workspaceFs.ctxData.userId,
+						path: appFileNodePath,
+						mode: {
+							kind: "full",
+							maxBytes: READ_INLINE_MAX_BYTES,
+						},
+					})) as files_nodes_read_file_content_from_chunks_Result;
+
+					if (chunkRead) {
+						const content = chunkRead.content;
 						const hasTrailingNewline = content.endsWith("\n");
 						const lines = (hasTrailingNewline ? content.slice(0, -1) : content).split("\n");
 						const requestedLines = lineCount ?? 10;
@@ -6369,15 +6410,40 @@ function reader_command_create(
 								: `${selected.join("\n")}${hasTrailingNewline || selected.length < lines.length ? "\n" : ""}`;
 
 						return { stdout, stderr: "", exitCode: 0 };
-					} catch (error) {
-						if (error instanceof AppFileContentUnavailableError) {
-							return {
-								stdout: "",
-								stderr: build_unreadable_file_advisory(currentProjectPath, appFileNodePath, error.contentType),
-								exitCode: COMMAND_EXIT_FAILURE,
-							};
-						}
 					}
+
+					const fileNode: files_nodes_get_by_path_Result =
+						appFileNodePath === "/"
+							? null
+							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+									workspaceId: workspaceFs.ctxData.workspaceId,
+									projectId: workspaceFs.ctxData.projectId,
+									path: appFileNodePath,
+								})) as files_nodes_get_by_path_Result);
+
+					if (appFileNodePath === "/" || fileNode?.kind === "folder") {
+						return {
+							stdout: "",
+							stderr: `${command}: ${file}: Is a directory\n`,
+							exitCode: COMMAND_EXIT_FAILURE,
+						};
+					}
+
+					if (fileNode?.kind === "file") {
+						return {
+							stdout: "",
+							stderr: files_node_has_editable_yjs_state(fileNode)
+								? `${command}: ${file}: content is not available from materialized chunks\n`
+								: build_unreadable_file_advisory(currentProjectPath, appFileNodePath, fileNode.contentType),
+							exitCode: COMMAND_EXIT_FAILURE,
+						};
+					}
+
+					return {
+						stdout: "",
+						stderr: `${command}: ${file}: No such file or directory\n`,
+						exitCode: COMMAND_EXIT_FAILURE,
+					};
 				}
 			}
 		}

@@ -328,8 +328,8 @@ async function db_purge_workspace_project_content_batch(
 ) {
 	const { workspaceId, projectId, batchSize } = args;
 
-	// Pending-update parent docs own cleanup-task and chunk docs. Delete those
-	// children first, then delete the parent pending-update doc.
+	// Pending-update parent docs own cleanup-task and chunk/search docs. Delete
+	// those children first, then delete the parent pending-update doc.
 	const pendingUpdate = await ctx.db
 		.query("files_pending_updates")
 		.withIndex("by_workspace_project_user_fileNode", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
@@ -351,6 +351,15 @@ async function db_purge_workspace_project_content_batch(
 		if (chunks.length > 0) {
 			await Promise.all(chunks.map((doc) => ctx.db.delete("files_pending_updates_chunks", doc._id)));
 			return { done: false, deletedCount: chunks.length };
+		}
+
+		const searchChunks = await ctx.db
+			.query("files_search_chunks")
+			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+			.take(batchSize);
+		if (searchChunks.length > 0) {
+			await Promise.all(searchChunks.map((doc) => ctx.db.delete("files_search_chunks", doc._id)));
+			return { done: false, deletedCount: searchChunks.length };
 		}
 
 		await ctx.db.delete("files_pending_updates", pendingUpdate._id);
@@ -420,8 +429,8 @@ async function db_purge_workspace_project_content_batch(
 		return { done: false, deletedCount: aiChatThreads.length };
 	}
 
-// Legacy chat messages are still project-scoped content and are purged with
-// the same per-call deletion limit.
+	// Legacy chat messages are still project-scoped content and are purged with
+	// the same per-call deletion limit.
 	const chatMessages = await ctx.db
 		.query("chat_messages")
 		.withIndex("by_workspace_project_thread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
@@ -433,6 +442,17 @@ async function db_purge_workspace_project_content_batch(
 
 	// File-derived content and snapshot docs are removed before jobs, assets,
 	// and file nodes, which are cleaned up at the end of this helper.
+	const searchChunks = await ctx.db
+		.query("files_search_chunks")
+		.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
+			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		)
+		.take(batchSize);
+	if (searchChunks.length > 0) {
+		await Promise.all(searchChunks.map((doc) => ctx.db.delete("files_search_chunks", doc._id)));
+		return { done: false, deletedCount: searchChunks.length };
+	}
+
 	const plainTextChunks = await ctx.db
 		.query("files_plain_text_chunks")
 		.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
@@ -960,8 +980,8 @@ async function db_finalize_deleted_user(
 	}
 
 	const userIdString = String(user._id);
-	// Pending-update parent docs have child cleanup/chunk docs. Gather children
-	// before deletion so they can be deleted before their parent docs.
+	// Pending-update parent docs have child cleanup/chunk/search docs. Gather
+	// children before deletion so they can be deleted before their parent docs.
 	const pendingUpdatesPromise = ctx.db
 		.query("files_pending_updates")
 		.withIndex("by_user_fileNode", (q) => q.eq("userId", userIdString))
@@ -976,6 +996,7 @@ async function db_finalize_deleted_user(
 		pendingUpdates,
 		pendingUpdateCleanupTasks,
 		pendingUpdateChunks,
+		pendingSearchChunks,
 		lastSequenceSaved,
 		billingUsageSnapshots,
 	] = await Promise.all([
@@ -1014,6 +1035,18 @@ async function db_finalize_deleted_user(
 					docs.map((doc) =>
 						ctx.db
 							.query("files_pending_updates_chunks")
+							.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", doc._id))
+							.collect(),
+					),
+				)
+			).flat(),
+		),
+		pendingUpdatesPromise.then(async (docs) =>
+			(
+				await Promise.all(
+					docs.map((doc) =>
+						ctx.db
+							.query("files_search_chunks")
 							.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", doc._id))
 							.collect(),
 					),
@@ -1060,6 +1093,7 @@ async function db_finalize_deleted_user(
 		Promise.all([
 			...pendingUpdateCleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)),
 			...pendingUpdateChunks.map((doc) => ctx.db.delete("files_pending_updates_chunks", doc._id)),
+			...pendingSearchChunks.map((doc) => ctx.db.delete("files_search_chunks", doc._id)),
 		]),
 	]);
 

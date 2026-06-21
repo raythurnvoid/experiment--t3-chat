@@ -174,16 +174,25 @@ async function files_pending_update_db_delete_chunks(
 	ctx: MutationCtx,
 	args: { pendingUpdateId: Id<"files_pending_updates"> },
 ) {
-	const chunks = await ctx.db
-		.query("files_pending_updates_chunks")
-		.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
-		.collect();
-	await Promise.all(chunks.map((chunk) => ctx.db.delete("files_pending_updates_chunks", chunk._id)));
+	const [chunks, searchChunks] = await Promise.all([
+		ctx.db
+			.query("files_pending_updates_chunks")
+			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+			.collect(),
+		ctx.db
+			.query("files_search_chunks")
+			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+			.collect(),
+	]);
+	await Promise.all([
+		...chunks.map((chunk) => ctx.db.delete("files_pending_updates_chunks", chunk._id)),
+		...searchChunks.map((chunk) => ctx.db.delete("files_search_chunks", chunk._id)),
+	]);
 }
 
 /**
- * Replace the search-only chunk materialization of a pending update's `unstaged` Markdown.
- * Run this in the same mutation as the pending row write so search never sees stale chunks.
+ * Replace the pending update chunk projections for `unstaged` Markdown.
+ * Run this in the same mutation as the pending row write so reads/search never see stale chunks.
  */
 async function files_pending_update_db_replace_chunks(
 	ctx: MutationCtx,
@@ -203,6 +212,18 @@ async function files_pending_update_db_replace_chunks(
 		return chunks;
 	}
 
+	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	if (!fileNode || fileNode.workspaceId !== args.workspaceId || fileNode.projectId !== args.projectId) {
+		console.error("Failed to replace pending update chunks: fileNode is missing or mismatched", {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId: args.nodeId,
+			pendingUpdateId: args.pendingUpdateId,
+			fileNode,
+		});
+		return Result({ _yay: null });
+	}
+
 	await Promise.all(
 		chunks._yay.map((chunk) =>
 			ctx.db.insert("files_pending_updates_chunks", {
@@ -211,6 +232,29 @@ async function files_pending_update_db_replace_chunks(
 				userId: args.userId,
 				fileNodeId: args.nodeId,
 				pendingUpdateId: args.pendingUpdateId,
+				chunkIndex: chunk.chunkIndex,
+				markdownChunk: chunk.markdownChunk,
+				plainTextChunk: chunk.plainTextChunk,
+				startIndex: chunk.startIndex,
+				endIndex: chunk.endIndex,
+				lineStart: chunk.lineStart,
+				lineEnd: chunk.lineEnd,
+				chunkFlags: chunk.chunkFlags,
+			}),
+		),
+	);
+
+	await Promise.all(
+		chunks._yay.map((chunk) =>
+			ctx.db.insert("files_search_chunks", {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				fileNodeId: args.nodeId,
+				sourceKind: "pending",
+				userId: args.userId,
+				pendingUpdateId: args.pendingUpdateId,
+				path: fileNode.path,
+				archiveOperationId: fileNode.archiveOperationId,
 				chunkIndex: chunk.chunkIndex,
 				markdownChunk: chunk.markdownChunk,
 				plainTextChunk: chunk.plainTextChunk,
