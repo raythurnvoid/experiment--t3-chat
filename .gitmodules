@@ -139,3 +139,6 @@
 [submodule "references-submodules/vscode-extension-samples"]
 	path = references-submodules/vscode-extension-samples
 	url = ../../microsoft/vscode-extension-samples.git
+[submodule "references-submodules/obsidian-dataview"]
+	path = references-submodules/obsidian-dataview
+	url = ../../blacksmithgu/obsidian-dataview.git
