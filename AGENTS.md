@@ -262,6 +262,45 @@ All vendored and reference submodule paths are listed below in this single secti
   - Backend folders:
     - [convex/](references-submodules/convex-sandbox/convex) - Convex schema, actions, storage-backed sandbox execution, and agent wiring
 
+- [references-submodules/space-agent/](references-submodules/space-agent) - Space Agent modular workspace/runtime reference for plugin-like capabilities.
+
+  - Documentation folders:
+    - [README.md](references-submodules/space-agent/README.md) - Workspace extension model, modular pieces, Git-backed history, and user/group layering overview
+  - Application folders:
+    - [app/](references-submodules/space-agent/app) - Runtime modules and app surfaces
+    - [server/](references-submodules/space-agent/server) - Server/runtime implementation
+
+- [references-submodules/dynamic-software/](references-submodules/dynamic-software) - Rhys Sullivan dynamic software prototypes for Cloudflare Dynamic Worker plugin execution and iframe UI.
+
+  - Documentation folders:
+    - [NOTES.md](references-submodules/dynamic-software/NOTES.md) - Runtime shape, Dynamic Worker Loader, R2 artifact storage, iframe bridge, and known gaps
+    - [plugin-runtime/README.md](references-submodules/dynamic-software/plugin-runtime/README.md) - Generic plugin contract, host core, bundle generation, and Cloudflare runner notes
+  - Package folders:
+    - [plugin-runtime/](references-submodules/dynamic-software/plugin-runtime) - App-neutral runtime prototype
+    - [executor-plugin-host/](references-submodules/dynamic-software/executor-plugin-host) - Executor-specific host/plugin prototype
+    - [dynamic-software-demo/](references-submodules/dynamic-software/dynamic-software-demo) - Live demo Worker/session prototype
+
+- [references-submodules/executor/](references-submodules/executor) - Executor tool/API discovery and execution platform reference.
+
+  - Documentation folders:
+    - [README.md](references-submodules/executor/README.md) - Tool/source discovery and execution model
+  - Package folders:
+    - [packages/](references-submodules/executor/packages) - Core packages and adapters
+
+- [references-submodules/figma-plugin-samples/](references-submodules/figma-plugin-samples) - Figma plugin examples for manifest, iframe UI, and host/plugin bridge patterns.
+
+  - Documentation folders:
+    - [README.md](references-submodules/figma-plugin-samples/README.md) - Sample index and plugin development notes
+  - Examples folders:
+    - sample directories at the repository root, each with its own manifest/source files
+
+- [references-submodules/vscode-extension-samples/](references-submodules/vscode-extension-samples) - VS Code extension API samples for manifests, activation events, contribution points, commands, and webviews.
+
+  - Documentation folders:
+    - [README.md](references-submodules/vscode-extension-samples/README.md) - Extension sample index and API coverage
+  - Examples folders:
+    - sample directories at the repository root, each self-contained around one extension concept
+
 - [references-submodules/opencode/](references-submodules/opencode) - OpenCode development platform submodule
 
   - Documentation folders:

@@ -30,6 +30,21 @@ These repositories are checked out here as submodules for reading shell-tooling,
 - bash-tool: `references-submodules/bash-tool`
 - Convex sandbox: `references-submodules/convex-sandbox`
 
+# Dynamic Plugin Platform
+
+These repositories are checked out here as submodules for researching the GitHub-sourced plugin system, Cloudflare Dynamic Worker runtime, iframe-hosted plugin UI, and manifest/contribution design.
+
+- Space Agent: `references-submodules/space-agent`
+  - Useful for modular capabilities, Git-backed rollback/history, user/group layering, and agent-built workspace surfaces.
+- Dynamic Software: `references-submodules/dynamic-software`
+  - Useful for Cloudflare Dynamic Worker plugin execution, R2-backed runtime artifacts, sandboxed iframe UI, plugin storage, host capability grants, and backend/UI artifact contracts.
+- Executor: `references-submodules/executor`
+  - Useful for operation discovery, describe/call contracts, typed tool/API surfaces, and integration-host patterns.
+- Figma plugin samples: `references-submodules/figma-plugin-samples`
+  - Useful for iframe/plugin UI separation, plugin manifests, UI bridge patterns, and examples of keeping host APIs mediated.
+- VS Code extension samples: `references-submodules/vscode-extension-samples`
+  - Useful for manifest contribution points, activation/event design, extension commands, and webview-style extension UI examples.
+
 # Convex
 
 The Convex repositories are checked out here as submodules so they can be updated easily when needed.

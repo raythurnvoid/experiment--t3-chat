@@ -124,3 +124,18 @@
 [submodule "references-submodules/convex-sandbox"]
 	path = references-submodules/convex-sandbox
 	url = ../../wantpinow/convex-sandbox.git
+[submodule "references-submodules/space-agent"]
+	path = references-submodules/space-agent
+	url = ../../agent0ai/space-agent.git
+[submodule "references-submodules/dynamic-software"]
+	path = references-submodules/dynamic-software
+	url = ../../RhysSullivan/dynamic-software.git
+[submodule "references-submodules/executor"]
+	path = references-submodules/executor
+	url = ../../RhysSullivan/executor.git
+[submodule "references-submodules/figma-plugin-samples"]
+	path = references-submodules/figma-plugin-samples
+	url = ../../figma/plugin-samples.git
+[submodule "references-submodules/vscode-extension-samples"]
+	path = references-submodules/vscode-extension-samples
+	url = ../../microsoft/vscode-extension-samples.git
