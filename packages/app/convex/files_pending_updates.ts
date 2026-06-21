@@ -39,6 +39,7 @@ import {
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
 import { r2_fetch_object_from_bucket } from "./r2.ts";
+import { files_metadata_db_delete_pending, files_metadata_db_replace_pending } from "./files_metadata.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 function files_pending_update_encode_yjs_state_update(args: { yjsDoc: YDoc }) {
@@ -187,12 +188,13 @@ async function files_pending_update_db_delete_chunks(
 	await Promise.all([
 		...chunks.map((chunk) => ctx.db.delete("files_pending_updates_chunks", chunk._id)),
 		...searchChunks.map((chunk) => ctx.db.delete("files_search_chunks", chunk._id)),
+		files_metadata_db_delete_pending(ctx, args),
 	]);
 }
 
 /**
- * Replace the pending update chunk projections for `unstaged` Markdown.
- * Run this in the same mutation as the pending row write so reads/search never see stale chunks.
+ * Replace the pending search chunks and metadata docs for `unstaged` Markdown.
+ * Run this in the same mutation as the pending row write so reads/search never see stale indexed docs.
  */
 async function files_pending_update_db_replace_chunks(
 	ctx: MutationCtx,
@@ -267,21 +269,22 @@ async function files_pending_update_db_replace_chunks(
 		),
 	);
 
+	await files_metadata_db_replace_pending(ctx, args);
+
 	return Result({ _yay: null });
 }
 
 /**
- * Chunk maintenance must not fail the pending row write: the row is the source of truth and the
- * chunks are search-only, so a chunking failure only degrades search (the file's committed chunks
- * stay excluded, matching the old reconstruct-failure skip). The stale rows were already deleted,
- * so search misses the file instead of seeing outdated chunks.
+ * Search chunk and metadata maintenance must not fail the pending row write: the row is the source of truth.
+ * A failure only degrades chunk-backed reads, search, and metadata search until the next upsert.
+ * Stale search chunks and metadata docs were already deleted, so indexed search misses instead of seeing outdated content.
  */
 function files_pending_update_log_replace_chunks_nay(
 	chunksReplaced: Awaited<ReturnType<typeof files_pending_update_db_replace_chunks>>,
 	context: { pendingUpdateId: Id<"files_pending_updates">; nodeId: Id<"files_nodes"> },
 ) {
 	if (chunksReplaced._nay) {
-		console.error("Failed to replace pending update search chunks", { chunksReplaced, ...context });
+		console.error("Failed to replace pending update search chunks and metadata docs", { chunksReplaced, ...context });
 	}
 }
 
@@ -544,7 +547,7 @@ async function files_pending_update_upsert_branch_docs(
 			}),
 		]);
 		// Staged-only changes (e.g. Accept all) keep the unstaged content intact, so the existing
-		// chunk rows stay correct and re-chunking would be wasted writes.
+		// search chunks and metadata docs stay correct and rebuilding them would be wasted writes.
 		if (args.unstagedBranchChanged) {
 			const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
 				workspaceId: args.workspaceId,
@@ -638,7 +641,7 @@ async function files_pending_update_upsert_updates(
 		stagedBranchYjsDoc,
 		unstagedBranchYjsDoc,
 		unstagedMarkdown: args.unstagedMarkdown,
-		// `false` means the projection found the branch already serialized to this markdown.
+		// `false` means the branch already matched this markdown.
 		unstagedBranchChanged: unstagedBranchProjection._yay !== false,
 	});
 }
@@ -983,7 +986,7 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 					})
 				: null;
 
-		// Rebase rewrites the unstaged branch, so always refresh the search-only chunk rows.
+		// Rebase rewrites the unstaged branch, so always refresh pending search chunks and metadata docs.
 		if (pendingUpdateId) {
 			const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
 				workspaceId: membership.workspaceId,
@@ -1455,7 +1458,7 @@ export const save_file_pending_update_in_db = internalMutation({
 			}),
 		]);
 
-		// Remote drift merged into the unstaged branch changes its content, so its search chunks
+		// Remote drift merged into the unstaged branch changes its content, so pending search chunks and metadata docs
 		// must be rebuilt; without drift the unstaged content is unchanged by a partial save.
 		if (unstagedMarkdownAfterRemoteDrift) {
 			const unstagedMarkdown = unstagedMarkdownAfterRemoteDrift;

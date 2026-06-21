@@ -328,8 +328,8 @@ async function db_purge_workspace_project_content_batch(
 ) {
 	const { workspaceId, projectId, batchSize } = args;
 
-	// Pending-update parent docs own cleanup-task and chunk/search docs. Delete
-	// those children first, then delete the parent pending-update doc.
+	// Pending-update parent docs have cleanup-task, chunk/search, and metadata
+	// children. Delete those children first, then delete the parent pending-update doc.
 	const pendingUpdate = await ctx.db
 		.query("files_pending_updates")
 		.withIndex("by_workspace_project_user_fileNode", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
@@ -360,6 +360,24 @@ async function db_purge_workspace_project_content_batch(
 		if (searchChunks.length > 0) {
 			await Promise.all(searchChunks.map((doc) => ctx.db.delete("files_search_chunks", doc._id)));
 			return { done: false, deletedCount: searchChunks.length };
+		}
+
+		const metadataFields = await ctx.db
+			.query("files_metadata_fields")
+			.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+			.take(batchSize);
+		if (metadataFields.length > 0) {
+			await Promise.all(metadataFields.map((doc) => ctx.db.delete("files_metadata_fields", doc._id)));
+			return { done: false, deletedCount: metadataFields.length };
+		}
+
+		const metadataValues = await ctx.db
+			.query("files_metadata_values")
+			.withIndex("by_pendingUpdate_qualifiedField_valueKind", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+			.take(batchSize);
+		if (metadataValues.length > 0) {
+			await Promise.all(metadataValues.map((doc) => ctx.db.delete("files_metadata_values", doc._id)));
+			return { done: false, deletedCount: metadataValues.length };
 		}
 
 		await ctx.db.delete("files_pending_updates", pendingUpdate._id);
@@ -451,6 +469,28 @@ async function db_purge_workspace_project_content_batch(
 	if (searchChunks.length > 0) {
 		await Promise.all(searchChunks.map((doc) => ctx.db.delete("files_search_chunks", doc._id)));
 		return { done: false, deletedCount: searchChunks.length };
+	}
+
+	const metadataFields = await ctx.db
+		.query("files_metadata_fields")
+		.withIndex("by_workspace_project_fileNode_qualifiedField", (q) =>
+			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		)
+		.take(batchSize);
+	if (metadataFields.length > 0) {
+		await Promise.all(metadataFields.map((doc) => ctx.db.delete("files_metadata_fields", doc._id)));
+		return { done: false, deletedCount: metadataFields.length };
+	}
+
+	const metadataValues = await ctx.db
+		.query("files_metadata_values")
+		.withIndex("by_workspace_project_fileNode_qualifiedField_valueKind", (q) =>
+			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		)
+		.take(batchSize);
+	if (metadataValues.length > 0) {
+		await Promise.all(metadataValues.map((doc) => ctx.db.delete("files_metadata_values", doc._id)));
+		return { done: false, deletedCount: metadataValues.length };
 	}
 
 	const plainTextChunks = await ctx.db
@@ -980,8 +1020,8 @@ async function db_finalize_deleted_user(
 	}
 
 	const userIdString = String(user._id);
-	// Pending-update parent docs have child cleanup/chunk/search docs. Gather
-	// children before deletion so they can be deleted before their parent docs.
+	// Pending-update parent docs have cleanup-task, chunk/search, and metadata
+	// children. Gather those children before deletion so they can be deleted before their parent docs.
 	const pendingUpdatesPromise = ctx.db
 		.query("files_pending_updates")
 		.withIndex("by_user_fileNode", (q) => q.eq("userId", userIdString))
@@ -997,6 +1037,8 @@ async function db_finalize_deleted_user(
 		pendingUpdateCleanupTasks,
 		pendingUpdateChunks,
 		pendingSearchChunks,
+		pendingMetadataFields,
+		pendingMetadataValues,
 		lastSequenceSaved,
 		billingUsageSnapshots,
 	] = await Promise.all([
@@ -1053,6 +1095,30 @@ async function db_finalize_deleted_user(
 				)
 			).flat(),
 		),
+		pendingUpdatesPromise.then(async (docs) =>
+			(
+				await Promise.all(
+					docs.map((doc) =>
+						ctx.db
+							.query("files_metadata_fields")
+							.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", doc._id))
+							.collect(),
+					),
+				)
+			).flat(),
+		),
+		pendingUpdatesPromise.then(async (docs) =>
+			(
+				await Promise.all(
+					docs.map((doc) =>
+						ctx.db
+							.query("files_metadata_values")
+							.withIndex("by_pendingUpdate_qualifiedField_valueKind", (q) => q.eq("pendingUpdateId", doc._id))
+							.collect(),
+					),
+				)
+			).flat(),
+		),
 		ctx.db
 			.query("files_pending_updates_last_sequence_saved")
 			.withIndex("by_user_fileNode", (q) => q.eq("userId", userIdString))
@@ -1094,6 +1160,8 @@ async function db_finalize_deleted_user(
 			...pendingUpdateCleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)),
 			...pendingUpdateChunks.map((doc) => ctx.db.delete("files_pending_updates_chunks", doc._id)),
 			...pendingSearchChunks.map((doc) => ctx.db.delete("files_search_chunks", doc._id)),
+			...pendingMetadataFields.map((doc) => ctx.db.delete("files_metadata_fields", doc._id)),
+			...pendingMetadataValues.map((doc) => ctx.db.delete("files_metadata_values", doc._id)),
 		]),
 	]);
 

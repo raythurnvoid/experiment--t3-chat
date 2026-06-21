@@ -73,8 +73,10 @@ import type {
 	files_nodes_text_search_files_Result,
 } from "./files_nodes.ts";
 import type { files_pending_updates_get_by_file_node_Result } from "./files_pending_updates.ts";
+import type { files_metadata_get_by_path_Result, files_metadata_search_Result } from "./files_metadata.ts";
 import type { get_asset_by_id_Result } from "./r2.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
+import { files_metadata_parse_search_where_json } from "../shared/files-metadata.ts";
 import {
 	files_ROOT_ID,
 	files_SYNTHETIC_ROOT_FOLDER,
@@ -184,7 +186,7 @@ const NATIVE_JUST_BASH_TMP_COMMANDS = ALLOWED_COMMANDS.filter((command) => !APP_
 /**
  * Custom commands registered by this module that are not Native Just Bash built-ins.
  */
-const APP_SHELL_EXTRA_COMMANDS = ["search", "textgrep"] as const;
+const APP_SHELL_EXTRA_COMMANDS = ["search", "textgrep", "meta"] as const;
 
 /**
  * Command names visible to the outer app shell, including custom app-only commands.
@@ -1992,6 +1994,395 @@ function search_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, current
 }
 
 // #endregion search command
+
+// #region meta command
+
+type MetaCommandSearchFormat = "paths" | "json";
+type MetaCommandGetFormat = "text" | "json";
+
+function meta_command_parse_search_args(args: string[], options: { currentProjectPath: string; cwd: string }) {
+	let limitValue: string | undefined;
+	let cursor: string | null = null;
+	let pathValue: string | undefined;
+	let whereJson: string | undefined;
+	let format: MetaCommandSearchFormat = "paths";
+
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "--limit") {
+			const value = read_option_value("meta search", args, index, "--limit");
+			if (value._nay) return value;
+			limitValue = value._yay.value;
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--limit=")) {
+			limitValue = arg.slice("--limit=".length);
+			continue;
+		}
+		if (arg === "--cursor") {
+			const value = read_option_value("meta search", args, index, "--cursor");
+			if (value._nay) return value;
+			cursor = value._yay.value.trim();
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--cursor=")) {
+			cursor = arg.slice("--cursor=".length).trim();
+			continue;
+		}
+		if (arg === "--path") {
+			const value = read_option_value("meta search", args, index, "--path");
+			if (value._nay) return value;
+			pathValue = value._yay.value.trim();
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--path=")) {
+			pathValue = arg.slice("--path=".length).trim();
+			continue;
+		}
+		if (arg === "--where") {
+			const value = read_option_value("meta search", args, index, "--where");
+			if (value._nay) return value;
+			whereJson = value._yay.value;
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--where=")) {
+			whereJson = arg.slice("--where=".length);
+			continue;
+		}
+		if (arg === "--format") {
+			const value = read_option_value("meta search", args, index, "--format");
+			if (value._nay) return value;
+			if (value._yay.value !== "paths" && value._yay.value !== "json") {
+				return Result({ _nay: { message: "meta search: --format must be paths or json" } });
+			}
+			format = value._yay.value;
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--format=")) {
+			const value = arg.slice("--format=".length);
+			if (value !== "paths" && value !== "json") {
+				return Result({ _nay: { message: "meta search: --format must be paths or json" } });
+			}
+			format = value;
+			continue;
+		}
+		return Result({ _nay: { message: `meta search: unsupported argument ${arg}` } });
+	}
+
+	if (whereJson == null || whereJson.trim() === "") {
+		return Result({ _nay: { message: "meta search: missing --where JSON expression" } });
+	}
+	const plan = files_metadata_parse_search_where_json(whereJson);
+	if (plan._nay) {
+		return plan;
+	}
+	const limit = parse_limit("meta search", limitValue, 20, 100);
+	if (limit._nay) {
+		return limit;
+	}
+
+	let path: string | undefined;
+	if (pathValue != null) {
+		if (pathValue === "") {
+			return Result({ _nay: { message: "meta search: --path requires a non-empty folder path" } });
+		}
+		const appFileNodePath = current_project_path_to_app_file_node_path(
+			options.currentProjectPath,
+			resolve_path(options.cwd, pathValue),
+		);
+		if (appFileNodePath == null) {
+			return Result({
+				_nay: {
+					message:
+						`meta search: --path must be a folder under the app file tree: ${pathValue}\n` +
+						`Use a path under ${options.currentProjectPath}.`,
+				},
+			});
+		}
+		path = appFileNodePath;
+	}
+
+	return Result({ _yay: { plan: plan._yay, whereJson, limit: limit._yay, cursor, path, format } });
+}
+
+function meta_command_parse_get_args(args: string[], options: { currentProjectPath: string; cwd: string }) {
+	let format: MetaCommandGetFormat = "text";
+	let pathValue: string | undefined;
+
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (arg === "--format") {
+			const value = read_option_value("meta get", args, index, "--format");
+			if (value._nay) return value;
+			if (value._yay.value !== "text" && value._yay.value !== "json") {
+				return Result({ _nay: { message: "meta get: --format must be text or json" } });
+			}
+			format = value._yay.value;
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--format=")) {
+			const value = arg.slice("--format=".length);
+			if (value !== "text" && value !== "json") {
+				return Result({ _nay: { message: "meta get: --format must be text or json" } });
+			}
+			format = value;
+			continue;
+		}
+		if (arg.startsWith("-") && arg !== "-") {
+			return Result({ _nay: { message: `meta get: unsupported option ${arg}` } });
+		}
+		if (pathValue != null) {
+			return Result({ _nay: { message: "meta get: expected exactly one file path" } });
+		}
+		pathValue = arg;
+	}
+
+	if (pathValue == null || pathValue === "") {
+		return Result({ _nay: { message: "meta get: missing file path" } });
+	}
+	const path = current_project_path_to_app_file_node_path(
+		options.currentProjectPath,
+		resolve_path(options.cwd, pathValue),
+	);
+	if (path == null) {
+		return Result({
+			_nay: {
+				message: `meta get: path must be under the app file tree: ${pathValue}\nUse a path under ${options.currentProjectPath}.`,
+			},
+		});
+	}
+	return Result({ _yay: { path, format } });
+}
+
+function meta_command_search_build_continuation(args: {
+	currentProjectPath: string;
+	path: string | undefined;
+	limit: number;
+	cursor: string;
+	whereJson: string;
+	format: MetaCommandSearchFormat;
+}) {
+	const parts = ["Next page:", "meta", "search"];
+	if (args.path != null) {
+		parts.push(
+			"--path",
+			shell_arg_quote(app_file_node_path_to_current_project_path(args.currentProjectPath, args.path)),
+		);
+	}
+	if (args.format !== "paths") {
+		parts.push("--format", args.format);
+	}
+	parts.push(
+		"--limit",
+		String(args.limit),
+		"--cursor",
+		shell_arg_quote(args.cursor),
+		"--where",
+		shell_arg_quote(args.whereJson),
+	);
+	return parts.join(" ");
+}
+
+function meta_command_search_result_value(result: files_metadata_search_Result["items"][number]) {
+	switch (result.valueKind) {
+		case "string":
+			return result.stringValue;
+		case "number":
+			return result.numberValue;
+		case "boolean":
+			return result.booleanValue;
+		case "none":
+			return undefined;
+	}
+}
+
+function meta_command_get_value(value: NonNullable<files_metadata_get_by_path_Result>["values"][number]) {
+	switch (value.valueKind) {
+		case "string":
+			return value.stringValue;
+		case "number":
+			return value.numberValue;
+		case "boolean":
+			return value.booleanValue;
+	}
+}
+
+function meta_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, currentProjectPath: string) {
+	return defineCommand("meta", async (args, commandCtx) => {
+		const subcommand = args[0];
+		if (subcommand !== "search" && subcommand !== "get") {
+			return {
+				stdout: "",
+				stderr:
+					"meta: expected subcommand search or get\n" +
+					"Usage: meta search --where '<json>' [--format paths|json] [--path <folder>] [--limit N] [--cursor CURSOR]\n" +
+					"Usage: meta get <file> [--format text|json]\n",
+				exitCode: COMMAND_EXIT_USAGE,
+			};
+		}
+
+		if (subcommand === "get") {
+			const parsed = meta_command_parse_get_args(args.slice(1), { currentProjectPath, cwd: commandCtx.cwd });
+			if (parsed._nay) {
+				return {
+					stdout: "",
+					stderr: `${parsed._nay.message}\nUsage: meta get <file> [--format text|json]\n`,
+					exitCode: COMMAND_EXIT_USAGE,
+				};
+			}
+			const result = (await ctx.runQuery(internal.files_metadata.get_by_path, {
+				workspaceId: workspaceFs.ctxData.workspaceId,
+				projectId: workspaceFs.ctxData.projectId,
+				userId: workspaceFs.ctxData.userId,
+				path: parsed._yay.path,
+			})) as files_metadata_get_by_path_Result;
+			if (!result) {
+				return {
+					stdout: "",
+					stderr: `meta get: file not found: ${app_file_node_path_to_current_project_path(currentProjectPath, parsed._yay.path)}\n`,
+					exitCode: COMMAND_EXIT_FAILURE,
+				};
+			}
+			if (parsed._yay.format === "json") {
+				return {
+					stdout: `${JSON.stringify(
+						{
+							path: app_file_node_path_to_current_project_path(currentProjectPath, result.path),
+							nodeId: result.nodeId,
+							sourceKind: result.sourceKind,
+							fields: result.fields,
+							values: result.values.map((value) => ({
+								field: value.qualifiedField,
+								valueKind: value.valueKind,
+								value: meta_command_get_value(value),
+							})),
+						},
+						null,
+						2,
+					)}\n`,
+					stderr: "",
+					exitCode: 0,
+				};
+			}
+			const lines = [`source: ${result.sourceKind}`];
+			for (const field of result.fields) {
+				lines.push(field);
+			}
+			for (const value of result.values) {
+				lines.push(`${value.qualifiedField} = ${JSON.stringify(meta_command_get_value(value))}`);
+			}
+			return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
+		}
+
+		const parsed = meta_command_parse_search_args(args.slice(1), { currentProjectPath, cwd: commandCtx.cwd });
+		if (parsed._nay) {
+			return {
+				stdout: "",
+				stderr:
+					`${parsed._nay.message}\n` +
+					"Usage: meta search --where '<json>' [--format paths|json] [--path <folder>] [--limit N] [--cursor CURSOR]\n",
+				exitCode: COMMAND_EXIT_USAGE,
+			};
+		}
+
+		let cursor: string | null = null;
+		if (parsed._yay.cursor != null) {
+			const resolvedCursor = await cursor_id_resolve(ctx, parsed._yay.cursor);
+			if (resolvedCursor._nay) {
+				return { stdout: "", stderr: `${resolvedCursor._nay.message}\n`, exitCode: COMMAND_EXIT_FAILURE };
+			}
+			cursor = resolvedCursor._yay;
+		}
+
+		if (parsed._yay.path != null && parsed._yay.path !== "/") {
+			const scopedFolder = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+				workspaceId: workspaceFs.ctxData.workspaceId,
+				projectId: workspaceFs.ctxData.projectId,
+				path: parsed._yay.path,
+			})) as files_nodes_get_by_path_Result;
+			const scopedShellPath = app_file_node_path_to_current_project_path(currentProjectPath, parsed._yay.path);
+			if (!scopedFolder) {
+				return {
+					stdout: "",
+					stderr: `meta search: --path folder does not exist: ${scopedShellPath}\n`,
+					exitCode: COMMAND_EXIT_FAILURE,
+				};
+			}
+			if (scopedFolder.kind !== "folder") {
+				return {
+					stdout: "",
+					stderr: `meta search: --path must be a folder: ${scopedShellPath}\n`,
+					exitCode: COMMAND_EXIT_USAGE,
+				};
+			}
+		}
+
+		const cwdAppFileNodePath = current_project_path_to_app_file_node_path(currentProjectPath, commandCtx.cwd);
+		const path =
+			parsed._yay.path ?? (cwdAppFileNodePath != null && cwdAppFileNodePath !== "/" ? cwdAppFileNodePath : undefined);
+		const result = (await ctx.runQuery(internal.files_metadata.search, {
+			workspaceId: workspaceFs.ctxData.workspaceId,
+			projectId: workspaceFs.ctxData.projectId,
+			userId: workspaceFs.ctxData.userId,
+			plan: parsed._yay.plan,
+			numItems: clamp_listing_page_limit(parsed._yay.limit),
+			cursor,
+			pathPrefix: path,
+		})) as files_metadata_search_Result;
+
+		const dedupedItems = [...new Map(result.items.map((item) => [item.nodeId, item])).values()];
+		const nextCursor = result.isDone ? null : await cursor_id_create(ctx, result.continueCursor);
+		if (parsed._yay.format === "json") {
+			return {
+				stdout: `${JSON.stringify(
+					{
+						results: dedupedItems.map((item) => ({
+							path: app_file_node_path_to_current_project_path(currentProjectPath, item.path),
+							nodeId: item.nodeId,
+							field: item.qualifiedField,
+							valueKind: item.valueKind,
+							matchedValue: meta_command_search_result_value(item),
+							metadataKind: item.metadataKind,
+							sourceKind: item.sourceKind,
+						})),
+						nextCursor,
+					},
+					null,
+					2,
+				)}\n`,
+				stderr: "",
+				exitCode: 0,
+			};
+		}
+
+		const stdout =
+			dedupedItems.length === 0
+				? ""
+				: `${dedupedItems
+						.map((item) => app_file_node_path_to_current_project_path(currentProjectPath, item.path))
+						.join("\n")}\n`;
+		const stderr =
+			nextCursor == null
+				? ""
+				: `${meta_command_search_build_continuation({
+						currentProjectPath,
+						path,
+						limit: parsed._yay.limit,
+						cursor: nextCursor,
+						whereJson: parsed._yay.whereJson,
+						format: parsed._yay.format,
+					})}\n`;
+		return { stdout, stderr, exitCode: 0 };
+	});
+}
+
+// #endregion meta command
 
 // Aggressive listing page sizes so even a small workspace exercises pagination like a huge
 // one: a bare ls/find returns LISTING_DEFAULT_LIMIT entries, and a larger --limit is clamped
@@ -8013,6 +8404,7 @@ async function action_run(ctx: ActionCtx, args: Infer<typeof action_run_args_val
 		customCommands: [
 			// Indexed app discovery.
 			search_command_create(ctx, workspaceFs, currentProjectPath),
+			meta_command_create(ctx, workspaceFs, currentProjectPath),
 			ls_command_create(ctx, workspaceFs, currentProjectPath),
 			find_command_create(ctx, workspaceFs, currentProjectPath),
 			tree_command_create(ctx, workspaceFs, currentProjectPath),
@@ -10441,6 +10833,69 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(invalid.stderr).toContain("invalid regex");
 		});
 
+		test("meta searches indexed frontmatter and inspects one file", async () => {
+			const { run, runQuery } = await create_bash_runner({
+				extraFiles: [
+					{
+						path: "/docs/meta-email.md",
+						content:
+							"---\nfrom: alice@example.com\ncc:\n  - Bob\n  - Jane\namount: 125\nreviewed: true\n---\n# Email\n",
+					},
+				],
+			});
+
+			const paths = await run(`meta search --where '{"eq":["frontmatter.from","alice@example.com"]}' --limit 5`);
+			const json = await run(`meta search --format json --where '{"range":["frontmatter.amount",{"gte":100}]}'`);
+			const scoped = await run(`cd ${test_app_files_mount}/docs && meta search --where '{"exists":"frontmatter.cc"}'`);
+			const get = await run(`meta get ${test_app_files_mount}/docs/meta-email.md`);
+			const invalid = await run(`meta search --where '{"eq":["from","alice@example.com"]}'`);
+
+			expect(paths.metadata.exitCode).toBe(0);
+			expect(paths.stdout).toBe(`${test_app_files_mount}/docs/meta-email.md\n`);
+			expect(paths.stderr).toBe("");
+			expect(
+				runQuery.mock.calls.some(
+					([ref, args]) =>
+						function_name_of(ref) === "files_metadata:search" &&
+						(args as { plan?: unknown }).plan != null,
+				),
+			).toBe(true);
+
+			expect(json.metadata.exitCode).toBe(0);
+			expect(json.stderr).toBe("");
+			const parsedJson = JSON.parse(json.stdout) as {
+				results: Array<{ path: string; field: string; valueKind: string; matchedValue: unknown }>;
+				nextCursor: string | null;
+			};
+			expect(parsedJson.results).toEqual([
+				expect.objectContaining({
+					path: `${test_app_files_mount}/docs/meta-email.md`,
+					field: "frontmatter.amount",
+					valueKind: "number",
+					matchedValue: 125,
+				}),
+			]);
+			expect(parsedJson.nextCursor).toBeNull();
+
+			expect(scoped.metadata.exitCode).toBe(0);
+			expect(scoped.stdout).toBe(`${test_app_files_mount}/docs/meta-email.md\n`);
+			expect(
+				runQuery.mock.calls.some(
+					([ref, args]) =>
+						function_name_of(ref) === "files_metadata:search" &&
+						(args as { pathPrefix?: string }).pathPrefix === "/docs",
+				),
+			).toBe(true);
+
+			expect(get.metadata.exitCode).toBe(0);
+			expect(get.stdout).toContain("source: committed");
+			expect(get.stdout).toContain("frontmatter.cc");
+			expect(get.stdout).toContain('frontmatter.from = "alice@example.com"');
+
+			expect(invalid.metadata.exitCode).toBe(2);
+			expect(invalid.stderr).toContain("must be qualified");
+		});
+
 		test("does not scan markdown files when indexed search misses", async () => {
 			const { run, runAction } = await create_bash_runner();
 
@@ -11848,7 +12303,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const xargsHelp = await run("xargs --help");
 			const xargsCombined = await run("printf 'a b' | xargs -rt echo");
 			const xargsNullCombined = await run("printf 'a\\0b\\0' | xargs -0t echo");
-			const whichResult = await run("which ls find cat du rg sha256sum search textgrep && which --silent bash");
+			const whichResult = await run("which ls find cat du rg sha256sum search meta textgrep && which --silent bash");
 			const whichAll = await run("which --all search");
 			const whichCombined = await run("which -as search");
 			const whichHelp = await run("which --help");
@@ -11883,6 +12338,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(whichResult.stdout).toContain("/usr/bin/rg");
 			expect(whichResult.stdout).toContain("/usr/bin/sha256sum");
 			expect(whichResult.stdout).toContain("/usr/bin/search");
+			expect(whichResult.stdout).toContain("/usr/bin/meta");
 			expect(whichResult.stdout).toContain("/usr/bin/textgrep");
 			expect(whichAll.metadata.exitCode).toBe(0);
 			expect(whichAll.stdout).toBe("/usr/bin/search\n/bin/search\n");

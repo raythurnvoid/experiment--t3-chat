@@ -184,7 +184,7 @@ const app_convex_schema = defineSchema({
 		.index("by_pendingUpdate_endIndex_chunkIndex", ["pendingUpdateId", "endIndex", "chunkIndex"]),
 
 	/**
-	 * Unified full-text search projection. Pending rows are user-scoped; committed rows are global
+	 * Unified full-text search docs. Pending docs are user-scoped; committed docs are global
 	 * within the workspace/project and suppressed at query time for files the acting user is editing.
 	 */
 	files_search_chunks: defineTable({
@@ -220,6 +220,107 @@ const app_convex_schema = defineSchema({
 		])
 		.index("by_workspace_project_fileNode_chunkIndex", ["workspaceId", "projectId", "fileNodeId", "chunkIndex"])
 		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"]),
+
+	/**
+	 * Unified metadata field-presence docs. Pending docs are user-scoped; committed docs are
+	 * suppressed at query time for files the acting user is editing.
+	 */
+	files_metadata_fields: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		fileNodeId: v.id("files_nodes"),
+		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
+		userId: v.optional(v.string()),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		yjsSequence: v.optional(v.number()),
+		path: v.string(),
+		treePath: v.string(),
+		archiveOperationId: v.optional(v.string()),
+		qualifiedField: v.string(),
+	})
+		.index("by_workspace_project_source_fileNode_qualifiedField", [
+			"workspaceId",
+			"projectId",
+			"sourceKind",
+			"fileNodeId",
+			"qualifiedField",
+		])
+		.index("by_workspace_project_fileNode_qualifiedField", [
+			"workspaceId",
+			"projectId",
+			"fileNodeId",
+			"qualifiedField",
+		])
+		.index("by_pendingUpdate_qualifiedField", ["pendingUpdateId", "qualifiedField"])
+		.index("by_workspace_project_archiveOperation_qualifiedField_treePath", [
+			"workspaceId",
+			"projectId",
+			"archiveOperationId",
+			"qualifiedField",
+			"treePath",
+		]),
+
+	/**
+	 * Searchable primitive metadata values. Arrays produce one doc per primitive item;
+	 * unsupported/null/object values stay presence-only in `files_metadata_fields`.
+	 */
+	files_metadata_values: defineTable({
+		workspaceId: v.string(),
+		projectId: v.string(),
+		fileNodeId: v.id("files_nodes"),
+		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
+		userId: v.optional(v.string()),
+		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		yjsSequence: v.optional(v.number()),
+		path: v.string(),
+		treePath: v.string(),
+		archiveOperationId: v.optional(v.string()),
+		qualifiedField: v.string(),
+		valueKind: v.union(v.literal("string"), v.literal("number"), v.literal("boolean")),
+		stringValue: v.optional(v.string()),
+		numberValue: v.optional(v.number()),
+		booleanValue: v.optional(v.boolean()),
+	})
+		.index("by_workspace_project_source_fileNode_qualifiedField_valueKind", [
+			"workspaceId",
+			"projectId",
+			"sourceKind",
+			"fileNodeId",
+			"qualifiedField",
+			"valueKind",
+		])
+		.index("by_workspace_project_fileNode_qualifiedField_valueKind", [
+			"workspaceId",
+			"projectId",
+			"fileNodeId",
+			"qualifiedField",
+			"valueKind",
+		])
+		.index("by_pendingUpdate_qualifiedField_valueKind", ["pendingUpdateId", "qualifiedField", "valueKind"])
+		.index("by_workspace_project_archive_qualifiedField_stringValue_tree", [
+			"workspaceId",
+			"projectId",
+			"archiveOperationId",
+			"qualifiedField",
+			"stringValue",
+			"treePath",
+		])
+		.index("by_workspace_project_archive_qualifiedField_numberValue_tree", [
+			"workspaceId",
+			"projectId",
+			"archiveOperationId",
+			"qualifiedField",
+			"numberValue",
+			"treePath",
+		])
+		.index("by_workspace_project_archive_qualifiedField_booleanValue_tree", [
+			"workspaceId",
+			"projectId",
+			"archiveOperationId",
+			"qualifiedField",
+			"booleanValue",
+			"treePath",
+		]),
 
 	files_nodes: defineTable({
 		/** Workspace ID extracted from roomId */

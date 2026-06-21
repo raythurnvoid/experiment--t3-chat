@@ -18,6 +18,7 @@ import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.t
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
+import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 
 let enqueueActionSpy: MockInstance;
 let generateUploadUrlSpy: ReturnType<typeof vi.fn<(customKey?: string) => Promise<{ key: string; url: string }>>>;
@@ -3484,7 +3485,7 @@ async function test_insert_searchable_markdown_file(
 	path: string,
 	markdown: string,
 ) {
-	// Seed only the node and committed chunk projections for tests that exercise search scope.
+	// Seed only the node and committed search chunk docs for tests that exercise search scope.
 	return await t.run(async (ctx) => {
 		const now = Date.now();
 		const name = path.split("/").filter(Boolean).at(-1);
@@ -4287,7 +4288,7 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	});
 	if (otherUserPending._nay) throw new Error(otherUserPending._nay.message);
 
-	// The pending item carries the real metadata produced by the shared markdown chunker.
+	// The pending item carries the real chunk metadata produced by the shared markdown chunker.
 	const expectedChunks = await files_chunk_markdown(unstagedMarkdown);
 	if (expectedChunks._nay) throw new Error(expectedChunks._nay.message);
 	const expectedChunk = expectedChunks._yay.find((chunk) => chunk.markdownChunk.includes("pendingneedle"));
@@ -4338,6 +4339,135 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	expect(committedOtherItem?.markdownChunk).toContain("another committed file");
 	expect(committedOtherItem?.markdownChunk).not.toContain("foreignpendingneedle");
 	expect(mergedSearch.isDone).toBe(true);
+});
+
+test("metadata search indexes committed frontmatter values and scopes by path", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Metadata Search User",
+		email: "metadata-search-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		"/meta/invoice.md",
+		[
+			"---",
+			"from: alice@example.com",
+			"cc:",
+			"  - bob@example.com",
+			"  - jane@example.com",
+			"amount: 120.5",
+			"hasAttachments: true",
+			"subject: Invoice reminder",
+			"---",
+			"Body",
+		].join("\n"),
+	);
+	await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		"/meta-other/outside.md",
+		["---", "from: alice@example.com", "amount: 300", "---", "Outside"].join("\n"),
+	);
+
+	const search = (plan: files_metadata_SearchPlan, pathPrefix?: string) =>
+		asUser.query(internal.files_metadata.search, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			plan,
+			pathPrefix,
+			numItems: 20,
+			cursor: null,
+		});
+
+	const fromAlice = await search({ op: "eq", qualifiedField: "frontmatter.from", value: "alice@example.com" });
+	expect(new Set(fromAlice.items.map((item) => item.path))).toEqual(
+		new Set(["/meta/invoice.md", "/meta-other/outside.md"]),
+	);
+
+	const copiedToBob = await search({ op: "eq", qualifiedField: "frontmatter.cc", value: "bob@example.com" });
+	expect(copiedToBob.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
+
+	const invoiceSubject = await search({ op: "prefix", qualifiedField: "frontmatter.subject", value: "Invoice" });
+	expect(invoiceSubject.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
+
+	const amountRange = await search({ op: "range", qualifiedField: "frontmatter.amount", gte: 100, lt: 200 });
+	expect(amountRange.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
+
+	const hasAttachments = await search({ op: "eq", qualifiedField: "frontmatter.hasAttachments", value: true });
+	expect(hasAttachments.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
+
+	const scoped = await search({ op: "exists", qualifiedField: "frontmatter.from" }, "/meta");
+	expect(scoped.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
+});
+
+test("metadata search uses current-user pending frontmatter and hides stale committed metadata", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Pending Metadata User",
+		email: "pending-metadata-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const path = "/meta-pending/message.md";
+	const nodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		path,
+		["---", "from: committed@example.com", "subject: Committed subject", "---", "Committed body"].join("\n"),
+	);
+
+	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		nodeId,
+		unstagedMarkdown: ["---", "from: pending@example.com", "subject: Pending subject", "---", "Pending body"].join("\n"),
+	});
+	if (pending._nay) throw new Error(pending._nay.message);
+
+	const otherUserId = await t.run((ctx) =>
+		ctx.db.insert("users", {
+			clerkUserId: null,
+		}),
+	);
+
+	const searchAs = (userId: Id<"users">, value: string) =>
+		asUser.query(internal.files_metadata.search, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId,
+			plan: { op: "eq", qualifiedField: "frontmatter.from", value },
+			numItems: 20,
+			cursor: null,
+		});
+
+	const pendingHit = await searchAs(db.userId, "pending@example.com");
+	expect(pendingHit.items).toMatchObject([{ path, sourceKind: "pending" }]);
+
+	const staleCommittedMiss = await searchAs(db.userId, "committed@example.com");
+	expect(staleCommittedMiss.items).toEqual([]);
+
+	const otherUserCommittedHit = await searchAs(otherUserId, "committed@example.com");
+	expect(otherUserCommittedHit.items).toMatchObject([{ path, sourceKind: "committed" }]);
+
+	const otherUserPendingMiss = await searchAs(otherUserId, "pending@example.com");
+	expect(otherUserPendingMiss.items).toEqual([]);
 });
 
 test("text_search_files scopes pending hits to a path prefix without sibling-prefix leakage", async () => {

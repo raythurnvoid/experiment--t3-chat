@@ -16,6 +16,7 @@ import type * as billing from "../billing.js";
 import type * as chat_messages from "../chat_messages.js";
 import type * as crons from "../crons.js";
 import type * as data_deletion from "../data_deletion.js";
+import type * as files_metadata from "../files_metadata.js";
 import type * as files_nodes from "../files_nodes.js";
 import type * as files_pending_updates from "../files_pending_updates.js";
 import type * as http from "../http.js";
@@ -44,6 +45,7 @@ declare const fullApi: ApiFromModules<{
   chat_messages: typeof chat_messages;
   crons: typeof crons;
   data_deletion: typeof data_deletion;
+  files_metadata: typeof files_metadata;
   files_nodes: typeof files_nodes;
   files_pending_updates: typeof files_pending_updates;
   http: typeof http;

@@ -83,6 +83,11 @@ import { access_control_db_has_permission } from "./access_control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
+	files_metadata_db_delete_committed,
+	files_metadata_db_patch_file_scope,
+	files_metadata_db_insert_committed,
+} from "./files_metadata.ts";
+import {
 	r2_get_download_url,
 	r2_generate_upload_url,
 	r2_fetch_object_from_bucket,
@@ -372,6 +377,10 @@ export async function db_patch_file_chunks_scope(
 	await Promise.all([
 		db_patch_plain_text_chunks_scope(ctx, args),
 		db_patch_search_chunks_scope(ctx, args),
+		files_metadata_db_patch_file_scope(ctx, {
+			...args,
+			...(args.path === undefined ? {} : { treePath: args.path }),
+		}),
 	]);
 }
 
@@ -465,6 +474,8 @@ export async function db_insert_file_chunks(
 		),
 	);
 
+	await files_metadata_db_insert_committed(ctx, args);
+
 	// Persist exact wc counts now, while the full markdown is in hand, so `wc` never re-reads the
 	// file (it reads the file_stats doc). Computed on the whole document → exact, no chunk-boundary
 	// word-splitting error. Updates only the stats doc on re-materialization (node untouched).
@@ -491,7 +502,7 @@ export async function db_replace_file_chunks(
 		markdownContent: string;
 	},
 ) {
-	// Delete existing chunk docs.
+	// Delete existing committed chunk/search/metadata docs.
 	await Promise.all([
 		ctx.db
 			.query("files_plain_text_chunks")
@@ -515,6 +526,7 @@ export async function db_replace_file_chunks(
 					.eq("fileNodeId", args.nodeId),
 			)
 			.collect(),
+		files_metadata_db_delete_committed(ctx, args),
 	]).then(([plainTextChunkDocs, markdownChunkDocs, searchChunkDocs]) =>
 		Promise.all([
 			...plainTextChunkDocs.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)),

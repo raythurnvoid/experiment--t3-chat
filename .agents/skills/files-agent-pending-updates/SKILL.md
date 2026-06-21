@@ -60,9 +60,9 @@ Unified full-text search table:
   - `projectId`
   - `fileNodeId`
   - `sourceKind: "committed" | "pending"`
-  - optional `userId` for pending rows
-  - optional `pendingUpdateId` for pending rows
-  - optional `yjsSequence` for committed rows
+  - optional `userId` for pending docs
+  - optional `pendingUpdateId` for pending docs
+  - optional `yjsSequence` for committed docs
   - denormalized `path`
   - optional `archiveOperationId`
   - `chunkIndex`
@@ -71,6 +71,30 @@ Unified full-text search table:
   - `startIndex` / `endIndex` / `lineStart` / `lineEnd` / `chunkFlags`
   - search index `search_by_plainTextChunk` (filter fields `workspaceId`, `projectId`, `archiveOperationId`)
   - committed replacement, pending replacement, and scope patching indexes
+
+Unified Markdown frontmatter metadata tables:
+
+- `files_metadata_fields`
+  - one presence doc per indexed field, including fields whose value is an object, array, unsupported value, or otherwise only searchable by existence
+  - `workspaceId`
+  - `projectId`
+  - `fileNodeId`
+  - `sourceKind: "committed" | "pending"`
+  - optional `userId` for pending docs
+  - optional `pendingUpdateId` for pending docs
+  - optional `yjsSequence` for committed docs
+  - denormalized `path`
+  - denormalized `treePath`
+  - optional `archiveOperationId`
+  - `qualifiedField`, currently `frontmatter.*`
+  - committed replacement, pending replacement, scope patching, and field-existence search indexes
+- `files_metadata_values`
+  - one searchable primitive value doc per field value
+  - same scope/source/path fields as `files_metadata_fields`
+  - `qualifiedField`
+  - `valueKind: "string" | "number" | "boolean"`
+  - one value column matching `valueKind`: `stringValue`, `numberValue`, or `booleanValue`
+  - string prefix/equality, numeric range/equality, boolean equality, committed replacement, pending replacement, and scope patching indexes
 
 Saved-sequence marker table:
 
@@ -148,9 +172,9 @@ Important behavior:
 - Save applies remote drift from base into both branches before saving, persists only the `staged` diff to the live file, writes the saved-sequence marker, enqueues R2 content materialization, and keeps the row alive on partial save.
 - Public actions/mutations are rate-limited after membership validation and before writes.
 - Saves that push a live Yjs diff must pass the billing credit gate and emit one `file_save` usage event. The billing event name is intentionally unchanged for now to avoid a separate billing taxonomy migration.
-- Every pending row lifecycle path maintains both `files_pending_updates_chunks` and pending `files_search_chunks` rows in the same mutation: row insert chunks the `unstaged` Markdown with the shared `files_chunk_markdown` chunker, patches re-chunk only when the unstaged content actually changed (staged-only changes like `Accept all` skip re-chunking), and row deletion (collapse, full save, expiry, data deletion) deletes both projections.
-- Committed materialization writes committed `files_search_chunks` rows beside `files_markdown_chunks` and `files_plain_text_chunks`; committed replacement deletes the old committed search rows for that file before inserting new ones.
-- Rename, move, archive, and unarchive patch denormalized `path` and `archiveOperationId` on `files_search_chunks` as well as legacy plain-text chunks, so full-text search can filter scope before native pagination.
+- Every pending doc lifecycle path maintains `files_pending_updates_chunks`, pending `files_search_chunks`, and pending metadata docs in the same mutation: doc insert chunks the `unstaged` Markdown with the shared `files_chunk_markdown` chunker and extracts Markdown YAML frontmatter into `files_metadata_fields` / `files_metadata_values`, patches rebuild search chunks and metadata docs only when the unstaged content actually changed (staged-only changes like `Accept all` skip the rebuild), and doc deletion (collapse, full save, expiry, data deletion) deletes all pending search chunks and metadata docs.
+- Committed materialization writes committed `files_search_chunks` docs and committed metadata docs beside `files_markdown_chunks` and `files_plain_text_chunks`; committed replacement deletes the old committed search and metadata docs for that file before inserting new docs.
+- Rename, move, archive, and unarchive patch denormalized `path`, `treePath`, and `archiveOperationId` on `files_search_chunks` and metadata docs as well as legacy plain-text chunks, so full-text and metadata search can filter scope before native pagination.
 - Pending row writes also store `size` from the same current `unstaged` Markdown whenever the unstaged branch is created or replaced. Staged-only changes preserve the existing size.
 - A chunking failure never fails the row write: the stale pending chunks/search rows are already deleted, the failure is logged, and search just misses that file until the next upsert (its committed chunks stay hidden for that user).
 
@@ -188,8 +212,9 @@ Important behavior:
 - Pending updates are per-user rows keyed by `(workspaceId, projectId, userId, nodeId)`.
 - A pending row exists only while either `staged` or `unstaged` differs from `base`.
 - AI reads must continue to see the current user's pending `unstaged` branch overlay.
-- Pending chunks and pending search chunks are replaced in the same mutation as every pending row write/delete, so no orphan or stale pending projection rows should exist.
+- Pending chunks, pending search chunks, and pending metadata docs are replaced in the same mutation as every pending doc write/delete, so no orphan or stale pending search/metadata docs should exist.
 - Bash `search` (`text_search_files`) uses one Convex full-text search query against `files_search_chunks` with Convex native cursor pagination. It filters pending chunks to the acting user, filters out other users' pending chunks, and hides committed chunks for files that user has pending edits on. Pending-first ordering is not an invariant.
+- Bash `meta search` uses one Convex indexed query against either `files_metadata_fields` or `files_metadata_values` per command. It filters pending metadata to the acting user, filters out other users' pending metadata, and hides committed metadata for files that user has pending edits on. Multi-predicate AND/OR is intentionally outside the command and should be composed by shell tools over path output.
 - `Review changes` must switch into diff mode.
 - `Accept all` does not save by itself.
 - `Discard all` does not call a special clear mutation.
