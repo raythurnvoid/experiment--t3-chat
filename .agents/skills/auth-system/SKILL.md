@@ -72,7 +72,7 @@ Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={App
 
 - The frontend requests a Clerk JWT with `template: "convex"`.
 - The app expects the JWT to include `external_id`, which is used as the canonical Convex `users` document id.
-- If `external_id` is missing, the frontend calls `/api/auth/resolve-user` to create/link the Convex user and then updates Clerk so future tokens include `external_id`.
+- During signed-in bootstrap, the frontend calls `/api/auth/resolve-user` to validate that `external_id` still points to a live Convex user doc. If `external_id` is missing or stale after a local/dev data reset, the route creates/links the Convex user and updates Clerk so future tokens include the current user id.
 
 ### Anonymous (not signed in)
 
@@ -117,9 +117,9 @@ Exposes public JWK(s) for the anonymous JWT signing key so JWT verifiers can val
 Purpose: ensure a Clerk identity is linked to a Convex user id, and ensure Clerk `external_id` is set.
 
 - Requires a valid Clerk-authenticated request (`ctx.auth.getUserIdentity()` must exist).
-- The route rate-limits by `identity.external_id` when present, otherwise by the Clerk subject, before returning or mutating user state. On deny it returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
-- If `identity.external_id` already exists, returns it.
-- Otherwise:
+- If `identity.external_id` already exists and resolves to a live `users` doc, returns it without consuming the auth write rate limit.
+- If `identity.external_id` is missing or points to a missing `users` doc, the route rate-limits by `identity.external_id` when present, otherwise by the Clerk subject. On deny it returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
+- After the repair/create path is allowed:
   - calls internal mutation `internal.users.resolve_user` to find/create/link the Convex user
   - calls Clerk API to set `external_id` to the Convex user id
 

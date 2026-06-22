@@ -346,123 +346,6 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	return { ...membership, docsFolderId };
 }
 
-describe("enqueue_missing_plain_text_chunk_materializations", () => {
-	test("enqueues current editable files without plain text chunks and skips repeats", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => {
-			const membership = await test_mocks_fill_db_with.membership(ctx);
-			const editableFileId = await ctx.db.insert("files_nodes", {
-				...test_mocks.files.base(),
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				createdBy: membership.userId,
-				updatedBy: membership.userId,
-				parentId: files_ROOT_ID,
-				name: "needs-index.md",
-				kind: "file",
-				path: "/needs-index.md",
-				treePath: "/needs-index.md",
-				pathDepth: 1,
-				lowercaseExtension: "md",
-				contentType: "text/markdown;charset=utf-8",
-				updatedAt: 1,
-			});
-			const rawFileId = await ctx.db.insert("files_nodes", {
-				...test_mocks.files.base(),
-				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
-				createdBy: membership.userId,
-				updatedBy: membership.userId,
-				parentId: files_ROOT_ID,
-				name: "source.pdf",
-				kind: "file",
-				path: "/source.pdf",
-				treePath: "/source.pdf",
-				pathDepth: 1,
-				lowercaseExtension: "pdf",
-				contentType: "application/pdf",
-				updatedAt: 2,
-			});
-			const [assetId, yjsSnapshotAssetId] = await Promise.all([
-				ctx.db.insert("files_r2_assets", {
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					kind: "content",
-					r2Bucket: "test",
-					size: 10,
-					createdBy: membership.userId,
-					updatedAt: 1,
-				}),
-				ctx.db.insert("files_r2_assets", {
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					kind: "yjs_snapshot",
-					r2Bucket: "test",
-					size: 10,
-					createdBy: membership.userId,
-					updatedAt: 1,
-				}),
-			]);
-			const [yjsSnapshotId, yjsLastSequenceId] = await Promise.all([
-				ctx.db.insert("files_yjs_snapshots", {
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					fileNodeId: editableFileId,
-					sequence: 0,
-					assetId: yjsSnapshotAssetId,
-					createdBy: membership.userId,
-					updatedBy: membership.userId,
-					updatedAt: 1,
-				}),
-				ctx.db.insert("files_yjs_docs_last_sequences", {
-					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
-					fileNodeId: editableFileId,
-					lastSequence: 0,
-				}),
-			]);
-			await ctx.db.patch("files_nodes", editableFileId, {
-				assetId,
-				yjsSnapshotId,
-				yjsLastSequenceId,
-			});
-			return { ...membership, editableFileId, rawFileId };
-		});
-
-		const first = await t.mutation(internal.files_nodes.enqueue_missing_plain_text_chunk_materializations, {
-			workspaceId: db.workspaceId,
-			projectId: db.projectId,
-			numItems: 10,
-			cursor: null,
-		});
-		const second = await t.mutation(internal.files_nodes.enqueue_missing_plain_text_chunk_materializations, {
-			workspaceId: db.workspaceId,
-			projectId: db.projectId,
-			numItems: 10,
-			cursor: null,
-		});
-		const jobs = await t.run(async (ctx) =>
-			ctx.db
-				.query("files_content_materialization_jobs")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", db.editableFileId))
-				.collect(),
-		);
-
-		expect(first.enqueued).toBe(1);
-		expect(first.skippedNonEditable).toBeGreaterThanOrEqual(1);
-		expect(second.enqueued).toBe(0);
-		expect(second.skippedExistingJob).toBe(1);
-		expect(jobs).toHaveLength(1);
-		expect(jobs[0]).toMatchObject({
-			workspaceId: db.workspaceId,
-			projectId: db.projectId,
-			fileNodeId: db.editableFileId,
-			targetSequence: 0,
-		});
-		expect(db.rawFileId).toBeDefined();
-	});
-});
-
 test("list_files_new", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -3485,7 +3368,7 @@ async function test_insert_searchable_markdown_file(
 	path: string,
 	markdown: string,
 ) {
-	// Seed only the node and committed search chunk docs for tests that exercise search scope.
+	// Seed only the node and committed plain-text chunk docs for tests that exercise search scope.
 	return await t.run(async (ctx) => {
 		const now = Date.now();
 		const name = path.split("/").filter(Boolean).at(-1);
@@ -3595,8 +3478,12 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 		const asset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 		const chunks = await ctx.db
 			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", nodeId),
+			.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+				q
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", nodeId),
 			)
 			.collect();
 		return {
@@ -3907,8 +3794,12 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 	await t.run(async (ctx) => {
 		const chunks = await ctx.db
 			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", cappedOutputNodeId),
+			.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+				q
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", cappedOutputNodeId),
 			)
 			.collect();
 		const secondChunk = chunks[1];
@@ -4012,8 +3903,12 @@ test("regex_search_plain_text_files scans committed and pending plain-text chunk
 	await t.run(async (ctx) => {
 		const chunk = await ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", otherNodeId),
+			.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
+				q
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", otherNodeId),
 			)
 			.first();
 		if (!chunk) {
@@ -4040,6 +3935,101 @@ test("regex_search_plain_text_files scans committed and pending plain-text chunk
 		cursor: null,
 	});
 	expect(broken.items).toEqual([]);
+});
+
+test("regex_search_plain_text_files scans pending chunks beyond the first hundred docs", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Regex Search User",
+		email: "regex-search-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const nodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		"/regex-search/many-pending.md",
+		"# Committed\n\nold content\n",
+	);
+
+	await t.run(async (ctx) => {
+		const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: String(db.userId),
+			fileNodeId: nodeId,
+			baseYjsSequence: 1,
+			baseYjsUpdate: new ArrayBuffer(0),
+			stagedBranchYjsUpdate: new ArrayBuffer(0),
+			unstagedBranchYjsUpdate: new ArrayBuffer(0),
+			size: files_get_utf8_byte_size("late pending alert\n"),
+			updatedAt: Date.now(),
+		});
+		for (let chunkIndex = 0; chunkIndex <= 100; chunkIndex++) {
+			const plainTextChunk = chunkIndex === 100 ? "late pending alert\n" : `quiet pending chunk ${chunkIndex}\n`;
+			const startIndex = chunkIndex * 100;
+			const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				fileNodeId: nodeId,
+				sourceKind: "pending",
+				userId: String(db.userId),
+				pendingUpdateId,
+				chunkIndex,
+				markdownChunk: plainTextChunk,
+				startIndex,
+				endIndex: startIndex + plainTextChunk.length,
+				lineStart: chunkIndex + 1,
+				lineEnd: chunkIndex + 1,
+				chunkFlags: 0,
+			});
+			await ctx.db.insert("files_plain_text_chunks", {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				fileNodeId: nodeId,
+				sourceKind: "pending",
+				userId: String(db.userId),
+				pendingUpdateId,
+				markdownChunkId,
+				path: "/regex-search/many-pending.md",
+				chunkIndex,
+				plainTextChunk,
+				markdownChunk: plainTextChunk,
+				startIndex,
+				endIndex: startIndex + plainTextChunk.length,
+				lineStart: chunkIndex + 1,
+				lineEnd: chunkIndex + 1,
+				chunkFlags: 0,
+				hasChunkAbove: chunkIndex > 0,
+				hasChunkBelow: chunkIndex < 100,
+			});
+		}
+	});
+
+	const result = await asUser.query(internal.files_nodes.regex_search_plain_text_files, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		query: String.raw`late\s+pending\s+alert`,
+		ignoreCase: false,
+		pathPrefix: "/regex-search",
+		numItems: 10,
+		cursor: null,
+	});
+
+	expect(result.items).toEqual([
+		{
+			path: "/regex-search/many-pending.md",
+			lineNumber: 101,
+			line: "late pending alert",
+			chunkIndex: 100,
+		},
+	]);
 });
 
 test("file_stats stay fresh after an edit: re-materialization patches the same doc in place", async () => {
@@ -4293,6 +4283,37 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	if (expectedChunks._nay) throw new Error(expectedChunks._nay.message);
 	const expectedChunk = expectedChunks._yay.find((chunk) => chunk.markdownChunk.includes("pendingneedle"));
 	if (!expectedChunk) throw new Error("Expected a chunk containing pendingneedle");
+	await t.run(async (ctx) => {
+		const pendingDoc = await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_workspace_project_user_fileNode", (q) =>
+				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("userId", db.userId).eq("fileNodeId", nodeId),
+			)
+			.first();
+		if (!pendingDoc) throw new Error("Expected pending doc");
+		const plainTextChunk = await ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
+				q.eq("pendingUpdateId", pendingDoc._id).eq("chunkIndex", expectedChunk.chunkIndex),
+			)
+			.first();
+		if (!plainTextChunk) throw new Error("Expected pending plain-text chunk");
+		expect(plainTextChunk).toMatchObject({
+			markdownChunk: expectedChunk.markdownChunk,
+			startIndex: expectedChunk.startIndex,
+			endIndex: expectedChunk.endIndex,
+			lineStart: expectedChunk.lineStart,
+			lineEnd: expectedChunk.lineEnd,
+			chunkFlags: expectedChunk.chunkFlags,
+			hasChunkAbove: expectedChunk.chunkIndex > 0,
+			hasChunkBelow: expectedChunk.chunkIndex < expectedChunks._yay.length - 1,
+		});
+		await ctx.db.patch("files_markdown_chunks", plainTextChunk.markdownChunkId, {
+			markdownChunk: "stale linked markdown chunk",
+			lineStart: 999,
+			lineEnd: 999,
+		});
+	});
 
 	const pendingSearch = await search("pendingneedle");
 	expect(pendingSearch.items).toEqual([

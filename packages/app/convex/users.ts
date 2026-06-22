@@ -1089,6 +1089,21 @@ export function users_http_routes(router: RouterForConvexModules) {
 							}
 
 							const clerkUserId = identity.subject;
+
+							// Let already-linked Clerk tokens take the read-only fast path so repeated signed-in
+							// bootstraps do not consume the auth write limiter.
+							if (identity.external_id) {
+								const user = await ctx.runQuery(internal.users.get, {
+									userId: identity.external_id,
+								});
+								if (user) {
+									return {
+										status: 200,
+										body: Result({ _yay: { userId: user._id, restoredDeletedAccount: false } }),
+									} as const;
+								}
+							}
+
 							const rateLimit = await rate_limiter_limit_by_key(ctx, {
 								name: "auth_http",
 								key: identity.external_id ?? clerkUserId,
@@ -1101,18 +1116,6 @@ export function users_http_routes(router: RouterForConvexModules) {
 										retryAfterMs: rateLimit.retryAfterMs,
 									},
 								} as const;
-							}
-
-							if (identity.external_id) {
-								const user = await ctx.runQuery(internal.users.get, {
-									userId: identity.external_id,
-								});
-								if (user) {
-									return {
-										status: 200,
-										body: Result({ _yay: { userId: user._id, restoredDeletedAccount: false } }),
-									} as const;
-								}
 							}
 
 							const displayName = identity.name || identity.nickname || users_create_fallback_display_name(clerkUserId);

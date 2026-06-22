@@ -36,7 +36,6 @@ type LegacyWorkspaceWithOwner = Omit<Doc<"workspaces">, "_id" | "_creationTime" 
 type FileNodeReferenceTable =
 	| "files_pending_updates"
 	| "files_pending_updates_last_sequence_saved"
-	| "files_pending_updates_chunks"
 	| "file_stats"
 	| "files_markdown_chunks"
 	| "files_plain_text_chunks"
@@ -362,11 +361,6 @@ export const rename_pending_update_sequences_file_node_id = app_migrations.defin
 	migrateOne: (_ctx, lastSequenceSaved) => rename_legacy_node_id_to_file_node_id(lastSequenceSaved),
 });
 
-export const rename_pending_update_chunks_file_node_id = app_migrations.define({
-	table: "files_pending_updates_chunks",
-	migrateOne: (_ctx, chunk) => rename_legacy_node_id_to_file_node_id(chunk),
-});
-
 export const rename_file_stats_file_node_id = app_migrations.define({
 	table: "file_stats",
 	migrateOne: (_ctx, stats) => rename_legacy_node_id_to_file_node_id(stats),
@@ -497,9 +491,6 @@ export const run_rename_pending_updates_file_node_id = app_migrations.runner(
 );
 export const run_rename_pending_update_sequences_file_node_id = app_migrations.runner(
 	internal.migrations.rename_pending_update_sequences_file_node_id,
-);
-export const run_rename_pending_update_chunks_file_node_id = app_migrations.runner(
-	internal.migrations.rename_pending_update_chunks_file_node_id,
 );
 export const run_rename_file_stats_file_node_id = app_migrations.runner(
 	internal.migrations.rename_file_stats_file_node_id,

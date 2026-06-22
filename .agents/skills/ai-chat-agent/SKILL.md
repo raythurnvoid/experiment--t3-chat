@@ -166,7 +166,7 @@ Important limitation:
 - Creates persistent folders only through `mkdir` under the app file tree in Agent-mode `bash`; Ask-mode `bash` rejects durable folder creation.
 - Provides `/tmp` as writable durable scratch space scoped to the chat thread. `/tmp` persists across later `bash` calls in the same chat and reloads from Convex if the warm backend runtime cache is gone, but a new chat has a separate scratch filesystem. App-mount guards should not prevent `/tmp`-only commands from using native-style scratch utilities.
 - Persists `cd` only when the final cwd is `~` or a directory below `/home/cloud-usr`. It does not persist `/tmp` or other paths outside the cloud user home.
-- Includes a custom `search [--limit N] [--cursor CURSOR] <content terms...>` command backed by the `files_nodes.text_search_files` unified plain-text index query. It expects one distinctive content word or a few plain terms from the document body, not paths, glob patterns, regexes, or exact grep syntax. Scoped `search --path` and app-cwd `search` use a DB-side filter before pagination. The query searches `files_search_chunks`, which materializes committed chunks and the acting user's pending chunks in one full-text index, then suppresses committed chunks for files that user has pending edits on. Search uses Convex native cursor pagination; do not expect or construct the old pending/committed composite cursor. Avoid broad/common scoped searches when unscoped search or a more distinctive token is enough.
+- Includes a custom `search [--limit N] [--cursor CURSOR] <content terms...>` command backed by the `files_nodes.text_search_files` unified plain-text index query. It expects one distinctive word or a few plain terms from the document body, not paths, glob patterns, regexes, or exact grep syntax. Scoped `search --path` and app-cwd `search` use a DB-side filter before pagination. The query searches `files_plain_text_chunks`, which materializes committed chunks and the acting user's pending chunks in one full-text index, then suppresses committed chunks for files that user has pending edits on. `files_search_chunks` no longer exists. Search uses Convex native cursor pagination; do not expect or construct the old pending/committed composite cursor. Avoid broad/common scoped searches when unscoped search or a more distinctive token is enough.
 - Supports `grep [-n] [-i] [-F] PATTERN <file>` for one exact app file through a bounded Markdown chunk scan. Normal single-file `grep` uses regex; `-F` / `--fixed-strings` uses literal substring matching. Bounded grep continuations use `--start-line N --max-lines N` for normal line windows and `--start-index N --max-chars N` only for long-line text slices. Supports `textgrep [-i] PATTERN <file>` and `textgrep --path <folder> PATTERN` for explicit rendered-plain-text regex scans. Simple `grep -R PATTERN <app-folder>` is recovered through indexed full-text search. Complex or multi-file grep forms print guidance to use indexed `search`.
 - Includes native `ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]` and `find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] --limit N [--cursor CURSOR]` for bounded continuation through large file trees. Short cursor ids are app Bash syntax; continuation commands are printed in stdout.
 - Runs commands under `set -f` so shell pathname expansion is disabled. General app-file glob operands are rejected. Only common simple find extension mistakes such as `*.md` are auto-fixed into indexed `--extension md` search; do not add or assume general glob or regex evaluation.
@@ -237,9 +237,9 @@ Reads:
 
 - `read_file` goes through `get_file_last_available_markdown_content_by_path`.
 - That action resolves the exact Markdown file path and checks `files_pending_updates` for `(workspaceId, projectId, userId, nodeId)`.
-- If a pending row exists, it reconstructs Markdown from the pending `unstaged` branch and returns that instead of committed Markdown.
-- Bash exact readers (`cat`, `head`, `tail`, `wc`, `grep`, and pipelines fed by `cat`) use the same pending-aware read path, with chunk/R2 fallbacks only when no pending row exists.
-- Bash `search` queries the unified `files_search_chunks` full-text search docs. Pending docs are user-scoped inside that table, other users' pending chunks are filtered out, and stale committed chunk hits are hidden only for files the acting user has pending edits on.
+- If a pending update doc exists, it reconstructs Markdown from the pending `unstaged` branch and returns that instead of committed Markdown.
+- Bash exact readers (`cat`, `head`, `tail`, `wc`, `grep`, and pipelines fed by `cat`) use the same pending-aware read path, with chunk/R2 fallbacks only when no pending update doc exists.
+- Bash `search` queries the unified `files_plain_text_chunks` full-text search docs. Pending docs are user-scoped inside that table, other users' pending chunks are filtered out, and stale committed chunk hits are hidden only for files the acting user has pending edits on. Exact Markdown reads and regex scans use unified `files_markdown_chunks`; the old separate search and pending chunk tables no longer exist.
 - Bash `meta search` queries unified `files_metadata_fields` and `files_metadata_values` docs with the same current-user pending overlay rule as Bash `search`: other users' pending metadata is invisible, and stale committed metadata is hidden for files the acting user has pending edits on.
 
 Writes:
@@ -292,20 +292,20 @@ stdout cap, and per-line display truncation at `files_READ_MAX_LINE_CHARS = 8000
 content written/typed into the workspace.
 
 - [ ] **Cap total written-document size (the real gap).** Uploads are size-capped via
-  `files_MAX_UPLOADS_BYTES` (`convex/files_nodes.ts:1236`), but typed/written Markdown has no
-  size limit. Add a content-agnostic per-document byte cap at the write choke points
-  — `write_file`/`edit_file` (`server/server-ai-tools.ts` → `create_file_by_path` /
-  `action_create_markdown_node` / the edit pending-update path in `convex/files_nodes.ts`)
-  and ideally the editor save/materialization — rejecting oversized content with a clear
-  error (mirror the upload "File too large" path). This bounds a 10 MB single line and 10 MB
-  across many lines equally, covers all write paths at one layer, and corrupts nothing.
+      `files_MAX_UPLOADS_BYTES` (`convex/files_nodes.ts:1236`), but typed/written Markdown has no
+      size limit. Add a content-agnostic per-document byte cap at the write choke points
+      — `write_file`/`edit_file` (`server/server-ai-tools.ts` → `create_file_by_path` /
+      `action_create_markdown_node` / the edit pending-update path in `convex/files_nodes.ts`)
+      and ideally the editor save/materialization — rejecting oversized content with a clear
+      error (mirror the upload "File too large" path). This bounds a 10 MB single line and 10 MB
+      across many lines equally, covers all write paths at one layer, and corrupts nothing.
 - [ ] **(Optional) Cap chunk count at materialization** so a borderline-large doc degrades
-  gracefully: index the first N chunks of `files_markdown_chunks` / `files_plain_text_chunks`
-  and mark "content too large to fully index" instead of doing unbounded chunking work in
-  `finalize_file_content_materialization` / `db_replace_file_chunks`.
+      gracefully: index the first N chunks of `files_markdown_chunks` / `files_plain_text_chunks`
+      and mark "content too large to fully index" instead of doing unbounded chunking work in
+      `finalize_file_content_materialization` / `db_replace_file_chunks`.
 - [ ] **(Optional, belt-and-suspenders) Editor-side soft guard:** warn on a "document too
-  large" threshold in the rich editor. Note this only covers the editor path (the agent/API
-  write paths bypass it), so it is a UX nicety, not the security boundary.
+      large" threshold in the rich editor. Note this only covers the editor path (the agent/API
+      write paths bypass it), so it is a UX nicety, not the security boundary.
 
 Rejected approach (do not implement): forcing a newline / hard-wrapping long lines during
 Markdown conversion or materialization. It mutates user content (breaks code fences, long

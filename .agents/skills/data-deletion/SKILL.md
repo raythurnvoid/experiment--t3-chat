@@ -142,11 +142,12 @@ Deleted-account recovery is handled in `users.resolve_user`.
 
 Current purge coverage includes:
 
-- `files_pending_updates_cleanup_tasks`, `files_pending_updates_chunks`, `files_pending_updates`
+- `files_pending_updates_cleanup_tasks`, `files_pending_updates`
 - `files_pending_updates_last_sequence_saved`
 - `ai_chat_files_content`, `ai_chat_files`
 - `ai_chat_threads_messages_aisdk_5`, `ai_chat_threads_state`, `ai_chat_threads`
 - `chat_messages`
+- `files_metadata_fields`, `files_metadata_values`
 - `files_plain_text_chunks`, `files_markdown_chunks`
 - `files_yjs_snapshots`, `files_yjs_updates`, `files_yjs_docs_last_sequences`
 - `files_snapshots`, `file_stats`

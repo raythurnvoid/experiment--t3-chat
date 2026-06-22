@@ -213,6 +213,7 @@ async function data_deletion_test_seed_project_content_bulk(
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			fileNodeId,
+			sourceKind: "committed",
 			yjsSequence: 1,
 			chunkIndex: 0,
 			markdownChunk: `# ${args.tag} ${i}`,
@@ -227,27 +228,20 @@ async function data_deletion_test_seed_project_content_bulk(
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				fileNodeId,
-				yjsSequence: 1,
-				chunkIndex: 0,
-				path: `/${args.tag}-${i}.md`,
-				plainTextChunk: `${args.tag} ${i}`,
-				markdownChunkId,
-			}),
-			ctx.db.insert("files_search_chunks", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				fileNodeId,
 				sourceKind: "committed",
 				yjsSequence: 1,
-				path: `/${args.tag}-${i}.md`,
+				markdownChunkId,
 				chunkIndex: 0,
-				markdownChunk: `# ${args.tag} ${i}`,
+				path: `/${args.tag}-${i}.md`,
 				plainTextChunk: `${args.tag} ${i}`,
+				markdownChunk: `# ${args.tag} ${i}`,
 				startIndex: 0,
 				endIndex: 12,
 				lineStart: 1,
 				lineEnd: 1,
 				chunkFlags: 0,
+				hasChunkAbove: false,
+				hasChunkBelow: false,
 			}),
 			ctx.db.insert("files_metadata_fields", {
 				workspaceId: args.workspaceId,
@@ -304,37 +298,40 @@ async function data_deletion_test_seed_project_content_bulk(
 				size: files_get_utf8_byte_size(`# pending ${i}`),
 				updatedAt: pendingUpdateUpdatedAt,
 			});
-			await ctx.db.insert("files_pending_updates_chunks", {
+			const pendingMarkdownChunkId = await ctx.db.insert("files_markdown_chunks", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
+				sourceKind: "pending",
 				userId: String(args.userId),
 				fileNodeId,
 				pendingUpdateId,
 				chunkIndex: 0,
 				markdownChunk: `# pending ${i}`,
-				plainTextChunk: `pending ${i}`,
 				startIndex: 0,
 				endIndex: 10,
 				lineStart: 1,
 				lineEnd: 1,
 				chunkFlags: 0,
 			});
-			await ctx.db.insert("files_search_chunks", {
+			await ctx.db.insert("files_plain_text_chunks", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				fileNodeId,
 				sourceKind: "pending",
 				userId: String(args.userId),
 				pendingUpdateId,
+				markdownChunkId: pendingMarkdownChunkId,
 				path: `/${args.tag}-${i}.md`,
 				chunkIndex: 0,
-				markdownChunk: `# pending ${i}`,
 				plainTextChunk: `pending ${i}`,
+				markdownChunk: `# pending ${i}`,
 				startIndex: 0,
 				endIndex: 10,
 				lineStart: 1,
 				lineEnd: 1,
 				chunkFlags: 0,
+				hasChunkAbove: false,
+				hasChunkBelow: false,
 			});
 			await Promise.all([
 				ctx.db.insert("files_metadata_fields", {
@@ -451,14 +448,16 @@ async function data_deletion_test_seed_project_content_bulk(
 	return { r2Keys };
 }
 
-async function data_deletion_test_count_project_content(ctx: MutationCtx, args: { workspaceId: string; projectId: string }) {
+async function data_deletion_test_count_project_content(
+	ctx: MutationCtx,
+	args: { workspaceId: string; projectId: string },
+) {
 	const [
 		files,
 		fileStats,
 		assets,
 		markdownChunks,
 		plainTextChunks,
-		searchChunks,
 		metadataFields,
 		metadataValues,
 		yjsSnapshots,
@@ -467,7 +466,6 @@ async function data_deletion_test_count_project_content(ctx: MutationCtx, args: 
 		snapshots,
 		pendingUpdates,
 		pendingUpdateCleanupTasks,
-		pendingUpdateChunks,
 		lastSequenceSaved,
 		materializationJobs,
 		aiThreads,
@@ -482,7 +480,6 @@ async function data_deletion_test_count_project_content(ctx: MutationCtx, args: 
 		ctx.db.query("files_r2_assets").collect(),
 		ctx.db.query("files_markdown_chunks").collect(),
 		ctx.db.query("files_plain_text_chunks").collect(),
-		ctx.db.query("files_search_chunks").collect(),
 		ctx.db.query("files_metadata_fields").collect(),
 		ctx.db.query("files_metadata_values").collect(),
 		ctx.db.query("files_yjs_snapshots").collect(),
@@ -491,7 +488,6 @@ async function data_deletion_test_count_project_content(ctx: MutationCtx, args: 
 		ctx.db.query("files_snapshots").collect(),
 		ctx.db.query("files_pending_updates").collect(),
 		ctx.db.query("files_pending_updates_cleanup_tasks").collect(),
-		ctx.db.query("files_pending_updates_chunks").collect(),
 		ctx.db.query("files_pending_updates_last_sequence_saved").collect(),
 		ctx.db.query("files_content_materialization_jobs").collect(),
 		ctx.db.query("ai_chat_threads").collect(),
@@ -511,7 +507,6 @@ async function data_deletion_test_count_project_content(ctx: MutationCtx, args: 
 			assets,
 			markdownChunks,
 			plainTextChunks,
-			searchChunks,
 			metadataFields,
 			metadataValues,
 			yjsSnapshots,
@@ -519,7 +514,6 @@ async function data_deletion_test_count_project_content(ctx: MutationCtx, args: 
 			yjsLastSequences,
 			snapshots,
 			pendingUpdates,
-			pendingUpdateChunks,
 			lastSequenceSaved,
 			materializationJobs,
 			aiThreads,
@@ -1237,9 +1231,7 @@ describe("init_user_deletion", () => {
 					.collect(),
 				ctx.db
 					.query("quotas")
-					.withIndex("by_user_quotaName", (q) =>
-						q.eq("userId", owner.userId).eq("quotaName", "extra_workspaces"),
-					)
+					.withIndex("by_user_quotaName", (q) => q.eq("userId", owner.userId).eq("quotaName", "extra_workspaces"))
 					.first(),
 			]);
 
@@ -2038,26 +2030,26 @@ describe("process_workspace_deletion_request", () => {
 				fileAssets,
 				workspaceQuotaDocs,
 			] = await Promise.all([
-					ctx.db.get("workspaces", workspace.workspaceId),
-					ctx.db.get("workspaces_projects", workspace.defaultProjectId),
-					ctx.db.get("workspaces_projects", extraProject.projectId),
-					ctx.db.get("data_deletion_requests", workspaceRequestId),
-					ctx.db.get("data_deletion_requests", projectRequestId),
-					ctx.db
-						.query("files_nodes")
-						.collect()
-						.then((rows) => rows.filter((row) => row.workspaceId === String(workspace.workspaceId))),
-					ctx.db
-						.query("files_r2_assets")
-						.withIndex("by_workspace_project", (q) =>
-							q.eq("workspaceId", String(workspace.workspaceId)).eq("projectId", String(workspace.defaultProjectId)),
-						)
-						.collect(),
-					ctx.db
-						.query("quotas")
-						.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", workspace.workspaceId))
-						.collect(),
-				]);
+				ctx.db.get("workspaces", workspace.workspaceId),
+				ctx.db.get("workspaces_projects", workspace.defaultProjectId),
+				ctx.db.get("workspaces_projects", extraProject.projectId),
+				ctx.db.get("data_deletion_requests", workspaceRequestId),
+				ctx.db.get("data_deletion_requests", projectRequestId),
+				ctx.db
+					.query("files_nodes")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspaceId === String(workspace.workspaceId))),
+				ctx.db
+					.query("files_r2_assets")
+					.withIndex("by_workspace_project", (q) =>
+						q.eq("workspaceId", String(workspace.workspaceId)).eq("projectId", String(workspace.defaultProjectId)),
+					)
+					.collect(),
+				ctx.db
+					.query("quotas")
+					.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", workspace.workspaceId))
+					.collect(),
+			]);
 
 			return {
 				workspaceDoc,
@@ -2354,8 +2346,7 @@ describe("hard_delete_user_data", () => {
 					.then((rows) =>
 						rows.filter(
 							(row) =>
-								row.workspaceId === String(user.defaultWorkspaceId) &&
-								row.projectId === String(user.defaultProjectId),
+								row.workspaceId === String(user.defaultWorkspaceId) && row.projectId === String(user.defaultProjectId),
 						),
 					),
 				ctx.db.get("workspaces_projects", seeded.extraProjectId),
@@ -2369,9 +2360,7 @@ describe("hard_delete_user_data", () => {
 					.first(),
 				ctx.db
 					.query("quotas")
-					.withIndex("by_user_quotaName", (q) =>
-						q.eq("userId", user.userId).eq("quotaName", "extra_workspaces"),
-					)
+					.withIndex("by_user_quotaName", (q) => q.eq("userId", user.userId).eq("quotaName", "extra_workspaces"))
 					.first(),
 				ctx.db.get("data_deletion_requests", seeded.userRequestId),
 				ctx.db.get("data_deletion_requests", seeded.defaultWorkspaceRequestId),
@@ -2828,22 +2817,23 @@ describe("hard_delete_user_data", () => {
 		});
 
 		const after = await t.run(async (ctx) => {
-			const [workspace, defaultProject, soloProject, sharedProject, sharedProjectFiles, projectQuota] = await Promise.all([
-				ctx.db.get("workspaces", shared.workspaceId),
-				ctx.db.get("workspaces_projects", shared.defaultProjectId),
-				ctx.db.get("workspaces_projects", shared.soloProjectId),
-				ctx.db.get("workspaces_projects", shared.sharedProjectId),
-				ctx.db
-					.query("files_nodes")
-					.collect()
-					.then((rows) => rows.filter((row) => row.projectId === String(shared.sharedProjectId))),
-				ctx.db
-					.query("quotas")
-					.withIndex("by_workspace_quotaName", (q) =>
-						q.eq("workspaceId", shared.workspaceId).eq("quotaName", "extra_projects"),
-					)
-					.first(),
-			]);
+			const [workspace, defaultProject, soloProject, sharedProject, sharedProjectFiles, projectQuota] =
+				await Promise.all([
+					ctx.db.get("workspaces", shared.workspaceId),
+					ctx.db.get("workspaces_projects", shared.defaultProjectId),
+					ctx.db.get("workspaces_projects", shared.soloProjectId),
+					ctx.db.get("workspaces_projects", shared.sharedProjectId),
+					ctx.db
+						.query("files_nodes")
+						.collect()
+						.then((rows) => rows.filter((row) => row.projectId === String(shared.sharedProjectId))),
+					ctx.db
+						.query("quotas")
+						.withIndex("by_workspace_quotaName", (q) =>
+							q.eq("workspaceId", shared.workspaceId).eq("quotaName", "extra_projects"),
+						)
+						.first(),
+				]);
 
 			return {
 				workspace,
@@ -2973,26 +2963,37 @@ describe("finalize_user_deletion_data", () => {
 		await data_deletion_test_run_worker_until_idle(t);
 
 		const after = await t.run(async (ctx) => {
-			const [user, workspace, project, files, filesR2Assets, userRequest, workspaceRequest, projectRequest, unrelatedProjectRequest] =
-				await Promise.all([
-					ctx.db.get("users", deletedUser.userId),
-					ctx.db.get("workspaces", deletedUser.defaultWorkspaceId),
-					ctx.db.get("workspaces_projects", deletedUser.defaultProjectId),
-					ctx.db
-						.query("files_nodes")
-						.collect()
-						.then((rows) => rows.filter((row) => row.workspaceId === String(deletedUser.defaultWorkspaceId))),
-					ctx.db
-						.query("files_r2_assets")
-						.withIndex("by_workspace_project", (q) =>
-							q.eq("workspaceId", String(deletedUser.defaultWorkspaceId)).eq("projectId", String(deletedUser.defaultProjectId)),
-						)
-						.collect(),
-					ctx.db.get("data_deletion_requests", requestIds.userRequestId),
-					ctx.db.get("data_deletion_requests", requestIds.workspaceRequestId),
-					ctx.db.get("data_deletion_requests", requestIds.projectRequestId),
-					ctx.db.get("data_deletion_requests", requestIds.unrelatedProjectRequestId),
-				]);
+			const [
+				user,
+				workspace,
+				project,
+				files,
+				filesR2Assets,
+				userRequest,
+				workspaceRequest,
+				projectRequest,
+				unrelatedProjectRequest,
+			] = await Promise.all([
+				ctx.db.get("users", deletedUser.userId),
+				ctx.db.get("workspaces", deletedUser.defaultWorkspaceId),
+				ctx.db.get("workspaces_projects", deletedUser.defaultProjectId),
+				ctx.db
+					.query("files_nodes")
+					.collect()
+					.then((rows) => rows.filter((row) => row.workspaceId === String(deletedUser.defaultWorkspaceId))),
+				ctx.db
+					.query("files_r2_assets")
+					.withIndex("by_workspace_project", (q) =>
+						q
+							.eq("workspaceId", String(deletedUser.defaultWorkspaceId))
+							.eq("projectId", String(deletedUser.defaultProjectId)),
+					)
+					.collect(),
+				ctx.db.get("data_deletion_requests", requestIds.userRequestId),
+				ctx.db.get("data_deletion_requests", requestIds.workspaceRequestId),
+				ctx.db.get("data_deletion_requests", requestIds.projectRequestId),
+				ctx.db.get("data_deletion_requests", requestIds.unrelatedProjectRequestId),
+			]);
 
 			return {
 				user,
@@ -3904,9 +3905,7 @@ describe("resolve_user after tombstone", () => {
 				}),
 				ctx.db
 					.query("quotas")
-					.withIndex("by_user_quotaName", (q) =>
-						q.eq("userId", deletedUser.userId).eq("quotaName", "extra_workspaces"),
-					)
+					.withIndex("by_user_quotaName", (q) => q.eq("userId", deletedUser.userId).eq("quotaName", "extra_workspaces"))
 					.first(),
 				ctx.db.get("users_anagraphics", deletedUser.anagraphicId),
 			]);

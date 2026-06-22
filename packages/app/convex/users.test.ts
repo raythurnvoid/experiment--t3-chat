@@ -304,6 +304,126 @@ describe("/api/auth/resolve-user", () => {
 		}
 	});
 
+	test("returns an existing external_id without consuming the auth write rate limit", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-resolve-existing-external-id",
+				displayName: "Resolve Existing External ID",
+				email: "resolve-existing-external-id@test.local",
+			}),
+		);
+
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify({ id: "clerk-user-resolve-existing-external-id" }), {
+				status: 200,
+				headers: {
+					"Content-Type": "application/json",
+				},
+			}),
+		);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_existing_external_id" as never);
+
+		try {
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-user-resolve-existing-external-id",
+				name: "Resolve Existing External ID",
+				email: "resolve-existing-external-id@test.local",
+				external_id: seeded.userId,
+			});
+
+			for (let index = 0; index < 3; index++) {
+				const response = await asUser.fetch("/api/auth/resolve-user", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({}),
+				});
+				const body = await response.json();
+
+				expect(response.status).toBe(200);
+				expect(body._yay?.userId).toBe(seeded.userId);
+				expect(body._yay?.restoredDeletedAccount).toBe(false);
+			}
+
+			expect(fetchSpy).not.toHaveBeenCalled();
+			expect(enqueueActionSpy).not.toHaveBeenCalled();
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	test("repairs a stale external_id after the referenced user doc is gone", async () => {
+		const t = test_convex();
+		const stale = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-resolve-stale-external-id-old",
+				displayName: "Resolve Stale External ID Old",
+				email: "resolve-stale-external-id-old@test.local",
+			}),
+		);
+		await t.run(async (ctx) => {
+			await Promise.all([ctx.db.delete("users_anagraphics", stale.anagraphicId), ctx.db.delete("users", stale.userId)]);
+		});
+
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(JSON.stringify({ id: "clerk-user-resolve-stale-external-id" }), {
+				status: 200,
+				headers: {
+					"Content-Type": "application/json",
+				},
+			}),
+		);
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_stale_external_id" as never);
+
+		try {
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-user-resolve-stale-external-id",
+				name: "Resolve Stale External ID",
+				email: "resolve-stale-external-id@test.local",
+				external_id: stale.userId,
+			});
+
+			const response = await asUser.fetch("/api/auth/resolve-user", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({}),
+			});
+			const body = await response.json();
+
+			expect(response.status).toBe(200);
+			expect(body._yay?.userId).toBeDefined();
+			expect(body._yay?.userId).not.toBe(stale.userId);
+			expect(body._yay?.restoredDeletedAccount).toBe(false);
+			expect(fetchSpy).toHaveBeenCalledWith(
+				"https://api.clerk.com/v1/users/clerk-user-resolve-stale-external-id",
+				expect.objectContaining({
+					method: "PATCH",
+				}),
+			);
+			expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.bootstrap_free_subscription, {
+				userId: body._yay.userId,
+				email: "resolve-stale-external-id@test.local",
+				name: "Resolve Stale External ID",
+			});
+
+			const user = await t.run((ctx) => ctx.db.get("users", body._yay.userId));
+
+			expect(user?.clerkUserId).toBe("clerk-user-resolve-stale-external-id");
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
 	test("passes the restore flag to Free subscription bootstrap after reclaiming a tombstoned account", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>

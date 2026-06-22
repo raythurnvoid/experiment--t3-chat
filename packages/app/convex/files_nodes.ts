@@ -331,37 +331,11 @@ async function db_patch_plain_text_chunks_scope(
 	}
 	const chunks = await ctx.db
 		.query("files_plain_text_chunks")
-		.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
-		)
-		.collect();
-	await Promise.all(chunks.map((chunk) => ctx.db.patch("files_plain_text_chunks", chunk._id, patch)));
-}
-
-async function db_patch_search_chunks_scope(
-	ctx: MutationCtx,
-	args: {
-		workspaceId: string;
-		projectId: string;
-		nodeId: Id<"files_nodes">;
-		path?: string;
-		archiveOperationId?: string;
-	},
-) {
-	const patch: Partial<Pick<Doc<"files_search_chunks">, "path" | "archiveOperationId">> = {};
-	if ("path" in args) {
-		patch.path = args.path;
-	}
-	if ("archiveOperationId" in args) {
-		patch.archiveOperationId = args.archiveOperationId;
-	}
-	const chunks = await ctx.db
-		.query("files_search_chunks")
 		.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
 			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
 		)
 		.collect();
-	await Promise.all(chunks.map((chunk) => ctx.db.patch("files_search_chunks", chunk._id, patch)));
+	await Promise.all(chunks.map((chunk) => ctx.db.patch("files_plain_text_chunks", chunk._id, patch)));
 }
 
 export async function db_patch_file_chunks_scope(
@@ -376,7 +350,6 @@ export async function db_patch_file_chunks_scope(
 ) {
 	await Promise.all([
 		db_patch_plain_text_chunks_scope(ctx, args),
-		db_patch_search_chunks_scope(ctx, args),
 		files_metadata_db_patch_file_scope(ctx, {
 			...args,
 			...(args.path === undefined ? {} : { treePath: args.path }),
@@ -424,6 +397,7 @@ export async function db_insert_file_chunks(
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				fileNodeId: args.nodeId,
+				sourceKind: "committed",
 				yjsSequence: args.yjsSequence,
 				chunkIndex: chunk.chunkIndex,
 				markdownChunk: chunk.markdownChunk,
@@ -442,34 +416,21 @@ export async function db_insert_file_chunks(
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				fileNodeId: args.nodeId,
-				yjsSequence: args.yjsSequence,
-				chunkIndex: chunk.chunkIndex,
-				path: fileNode.path,
-				archiveOperationId: fileNode.archiveOperationId,
-				plainTextChunk: chunk.plainTextChunk,
-				markdownChunkId: markdownChunkIds[index],
-			}),
-		),
-	);
-
-	await Promise.all(
-		chunks._yay.map((chunk) =>
-			ctx.db.insert("files_search_chunks", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				fileNodeId: args.nodeId,
 				sourceKind: "committed",
 				yjsSequence: args.yjsSequence,
+				markdownChunkId: markdownChunkIds[index],
+				chunkIndex: chunk.chunkIndex,
 				path: fileNode.path,
 				archiveOperationId: fileNode.archiveOperationId,
-				chunkIndex: chunk.chunkIndex,
-				markdownChunk: chunk.markdownChunk,
 				plainTextChunk: chunk.plainTextChunk,
+				markdownChunk: chunk.markdownChunk,
 				startIndex: chunk.startIndex,
 				endIndex: chunk.endIndex,
 				lineStart: chunk.lineStart,
 				lineEnd: chunk.lineEnd,
 				chunkFlags: chunk.chunkFlags,
+				hasChunkAbove: index > 0,
+				hasChunkBelow: index < chunks._yay.length - 1,
 			}),
 		),
 	);
@@ -502,22 +463,10 @@ export async function db_replace_file_chunks(
 		markdownContent: string;
 	},
 ) {
-	// Delete existing committed chunk/search/metadata docs.
+	// Delete existing committed chunk/metadata docs.
 	await Promise.all([
 		ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
-			)
-			.collect(),
-		ctx.db
-			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
-			)
-			.collect(),
-		ctx.db
-			.query("files_search_chunks")
 			.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
@@ -526,12 +475,21 @@ export async function db_replace_file_chunks(
 					.eq("fileNodeId", args.nodeId),
 			)
 			.collect(),
+		ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+				q
+					.eq("workspaceId", args.workspaceId)
+					.eq("projectId", args.projectId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", args.nodeId),
+			)
+			.collect(),
 		files_metadata_db_delete_committed(ctx, args),
-	]).then(([plainTextChunkDocs, markdownChunkDocs, searchChunkDocs]) =>
+	]).then(([plainTextChunkDocs, markdownChunkDocs]) =>
 		Promise.all([
 			...plainTextChunkDocs.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)),
 			...markdownChunkDocs.map((doc) => ctx.db.delete("files_markdown_chunks", doc._id)),
-			...searchChunkDocs.map((doc) => ctx.db.delete("files_search_chunks", doc._id)),
 		]),
 	);
 
@@ -683,6 +641,12 @@ async function resolve_parent_path_from_parent_id(
 	return parentNode.path;
 }
 
+/**
+ * Recompute path fields for descendants after a file node moves or is renamed.
+ * `parentPath` is the already-updated path for `parentId`; each child path is built from it.
+ *
+ * File descendants also update their chunk scope.
+ */
 async function cascade_file_descendants_path(
 	ctx: MutationCtx,
 	args: {
@@ -2778,109 +2742,6 @@ export type files_nodes_search_paths_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-export const enqueue_missing_plain_text_chunk_materializations = internalMutation({
-	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
-		numItems: v.optional(v.number()),
-		cursor: paginationOptsValidator.fields.cursor,
-	},
-	returns: v.object({
-		processed: v.number(),
-		editable: v.number(),
-		enqueued: v.number(),
-		skippedNonEditable: v.number(),
-		skippedExistingChunks: v.number(),
-		skippedExistingJob: v.number(),
-		skippedMissingState: v.number(),
-		continueCursor: v.string(),
-		isDone: v.boolean(),
-	}),
-	handler: async (ctx, args) => {
-		const result = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_workspace_project_archiveOperation_kind_treePath", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("archiveOperationId", undefined)
-					.eq("kind", "file"),
-			)
-			.paginate({
-				cursor: args.cursor,
-				numItems: Math.max(1, Math.min(50, Math.trunc(args.numItems ?? 25))),
-			});
-
-		let editable = 0;
-		let enqueued = 0;
-		let skippedNonEditable = 0;
-		let skippedExistingChunks = 0;
-		let skippedExistingJob = 0;
-		let skippedMissingState = 0;
-
-		for (const fileNode of result.page) {
-			if (!files_node_has_editable_yjs_state(fileNode)) {
-				skippedNonEditable++;
-				continue;
-			}
-			editable++;
-			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
-			if (
-				!lastSequenceDoc ||
-				lastSequenceDoc.workspaceId !== args.workspaceId ||
-				lastSequenceDoc.projectId !== args.projectId ||
-				lastSequenceDoc.fileNodeId !== fileNode._id
-			) {
-				skippedMissingState++;
-				continue;
-			}
-
-			const latestPlainTextChunk = await ctx.db
-				.query("files_plain_text_chunks")
-				.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
-					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", fileNode._id),
-				)
-				.order("desc")
-				.first();
-			if (latestPlainTextChunk && latestPlainTextChunk.yjsSequence >= lastSequenceDoc.lastSequence) {
-				skippedExistingChunks++;
-				continue;
-			}
-
-			const existingJobs = await ctx.db
-				.query("files_content_materialization_jobs")
-				.withIndex("by_fileNode", (q) => q.eq("fileNodeId", fileNode._id))
-				.collect();
-			if (existingJobs.some((job) => job.targetSequence >= lastSequenceDoc.lastSequence)) {
-				skippedExistingJob++;
-				continue;
-			}
-
-			await enqueue_file_content_materialization(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				nodeId: fileNode._id,
-				userId: fileNode.updatedBy,
-				targetSequence: lastSequenceDoc.lastSequence,
-				delayMs: 0,
-			});
-			enqueued++;
-		}
-
-		return {
-			processed: result.page.length,
-			editable,
-			enqueued,
-			skippedNonEditable,
-			skippedExistingChunks,
-			skippedExistingJob,
-			skippedMissingState,
-			continueCursor: result.continueCursor,
-			isDone: result.isDone,
-		};
-	},
-});
-
 function matches_path(absPath: string, include: string | undefined) {
 	return include ? minimatch(absPath, include) : true;
 }
@@ -3615,9 +3476,10 @@ function files_merge_contiguous_chunks(
 /**
  * Read a forward line window from chunks that are already ordered by their line range.
  *
- * The caller chooses the source table (pending or committed). This helper only keeps the
- * chunks that overlap the requested lines, verifies they form one contiguous text span,
- * and then slices the merged text with the same line helper used by action fallbacks.
+ * The caller chooses the source query: pending update chunks or committed snapshot chunks.
+ * This helper only keeps the chunks that overlap the requested lines, verifies they form
+ * one contiguous text span, and then slices the merged text with the same line helper used
+ * by action fallbacks.
  */
 async function files_read_forward_line_range_from_ordered_chunks(
 	chunks: AsyncIterable<{
@@ -3713,10 +3575,11 @@ export const read_committed_file_chunks_line_range = internalQuery({
 			let lastLineEnd: number | null = null;
 			for await (const chunk of ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+				.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", source.nodeId)
 						.eq("yjsSequence", source.yjsSequence),
 				)
@@ -3752,10 +3615,11 @@ export const read_committed_file_chunks_line_range = internalQuery({
 		const range = await files_read_forward_line_range_from_ordered_chunks(
 			ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_fileNode_yjsSequence_lineEnd_chunkIndex", (q) =>
+				.withIndex("by_workspace_project_source_fileNode_yjsSeq_lineEnd_chunk", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", source.nodeId)
 						.eq("yjsSequence", source.yjsSequence)
 						.gte("lineEnd", Math.max(1, Math.trunc(args.startLine))),
@@ -3769,10 +3633,11 @@ export const read_committed_file_chunks_line_range = internalQuery({
 			// materialized file) or the file is not materialized (fall back).
 			const anyChunk = await ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+				.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", source.nodeId)
 						.eq("yjsSequence", source.yjsSequence),
 				)
@@ -3879,7 +3744,7 @@ export const read_file_content_from_chunks = internalQuery({
 			// Pending chunks are already the markdown text the user sees. Full reads
 			// still honor maxBytes; line reads stream only the overlapping chunks.
 			const chunks = ctx.db
-				.query("files_pending_updates_chunks")
+				.query("files_markdown_chunks")
 				.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id));
 
 			if (args.mode.kind === "full") {
@@ -3904,7 +3769,7 @@ export const read_file_content_from_chunks = internalQuery({
 			const startLine = Math.max(1, Math.trunc(args.mode.startLine));
 			const range = await files_read_forward_line_range_from_ordered_chunks(
 				ctx.db
-					.query("files_pending_updates_chunks")
+					.query("files_markdown_chunks")
 					.withIndex("by_pendingUpdate_lineEnd_chunkIndex", (q) =>
 						q.eq("pendingUpdateId", pendingUpdate._id).gte("lineEnd", startLine),
 					),
@@ -3945,10 +3810,11 @@ export const read_file_content_from_chunks = internalQuery({
 
 			const chunks = await ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+				.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", fileNode._id)
 						.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence),
 				)
@@ -3968,10 +3834,11 @@ export const read_file_content_from_chunks = internalQuery({
 		const range = await files_read_forward_line_range_from_ordered_chunks(
 			ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_fileNode_yjsSequence_lineEnd_chunkIndex", (q) =>
+				.withIndex("by_workspace_project_source_fileNode_yjsSeq_lineEnd_chunk", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", fileNode._id)
 						.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence)
 						.gte("lineEnd", startLine),
@@ -3983,10 +3850,11 @@ export const read_file_content_from_chunks = internalQuery({
 		if (!range.hasChunks) {
 			const anyChunk = await ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+				.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
+						.eq("sourceKind", "committed")
 						.eq("fileNodeId", fileNode._id)
 						.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence),
 				)
@@ -4487,6 +4355,16 @@ async function match_plain_text_chunks_list(
 	};
 }
 
+async function* db_plain_text_chunks_with_lines(chunks: AsyncIterable<Doc<"files_plain_text_chunks">>) {
+	for await (const chunk of chunks) {
+		yield {
+			chunkIndex: chunk.chunkIndex,
+			lineStart: chunk.lineStart,
+			plainTextChunk: chunk.plainTextChunk,
+		};
+	}
+}
+
 /**
  * Match lines in Markdown chunks for the Bash `grep` command's single-file path.
  *
@@ -4607,20 +4485,20 @@ export const match_markdown_file_lines = internalQuery({
 			const chunks =
 				window?.kind === "lines"
 					? ctx.db
-							.query("files_pending_updates_chunks")
+							.query("files_markdown_chunks")
 							.withIndex("by_pendingUpdate_lineEnd_chunkIndex", (q) =>
 								q.eq("pendingUpdateId", pendingUpdateId).gte("lineEnd", Math.max(1, Math.trunc(window.startLine))),
 							)
 					: window?.kind === "slice"
 						? ctx.db
-								.query("files_pending_updates_chunks")
+								.query("files_markdown_chunks")
 								.withIndex("by_pendingUpdate_endIndex_chunkIndex", (q) =>
 									q
 										.eq("pendingUpdateId", pendingUpdateId)
 										.gte("endIndex", Math.max(0, Math.trunc(window.startIndex)) + 1),
 								)
 						: ctx.db
-								.query("files_pending_updates_chunks")
+								.query("files_markdown_chunks")
 								.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdateId));
 
 			return await match_markdown_chunks_list(chunks, {
@@ -4650,10 +4528,11 @@ export const match_markdown_file_lines = internalQuery({
 			window?.kind === "lines"
 				? ctx.db
 						.query("files_markdown_chunks")
-						.withIndex("by_workspace_project_fileNode_yjsSequence_lineEnd_chunkIndex", (q) =>
+						.withIndex("by_workspace_project_source_fileNode_yjsSeq_lineEnd_chunk", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
+								.eq("sourceKind", "committed")
 								.eq("fileNodeId", fileNode._id)
 								.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence)
 								.gte("lineEnd", Math.max(1, Math.trunc(window.startLine))),
@@ -4661,20 +4540,22 @@ export const match_markdown_file_lines = internalQuery({
 				: window?.kind === "slice"
 					? ctx.db
 							.query("files_markdown_chunks")
-							.withIndex("by_workspace_project_fileNode_yjsSequence_endIndex_chunkIndex", (q) =>
+							.withIndex("by_workspace_project_source_fileNode_yjsSeq_endIndex_chunk", (q) =>
 								q
 									.eq("workspaceId", args.workspaceId)
 									.eq("projectId", args.projectId)
+									.eq("sourceKind", "committed")
 									.eq("fileNodeId", fileNode._id)
 									.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence)
 									.gte("endIndex", Math.max(0, Math.trunc(window.startIndex)) + 1),
 							)
 					: ctx.db
 							.query("files_markdown_chunks")
-							.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+							.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
 								q
 									.eq("workspaceId", args.workspaceId)
 									.eq("projectId", args.projectId)
+									.eq("sourceKind", "committed")
 									.eq("fileNodeId", fileNode._id)
 									.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence),
 							);
@@ -4777,10 +4658,10 @@ export const match_plain_text_file_lines = internalQuery({
 
 		if (pendingUpdateId != null) {
 			const chunks = ctx.db
-				.query("files_pending_updates_chunks")
+				.query("files_plain_text_chunks")
 				.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdateId));
 
-			return await match_plain_text_chunks_list(chunks, {
+			return await match_plain_text_chunks_list(db_plain_text_chunks_with_lines(chunks), {
 				fileNodeId: fileNode._id,
 				pattern: args.pattern,
 				ignoreCase: args.ignoreCase,
@@ -4801,15 +4682,16 @@ export const match_plain_text_file_lines = internalQuery({
 
 		const chunks = ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+			.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
+					.eq("sourceKind", "committed")
 					.eq("fileNodeId", fileNode._id)
 					.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence),
 			);
 
-		return await match_plain_text_chunks_list(chunks, {
+		return await match_plain_text_chunks_list(db_plain_text_chunks_with_lines(chunks), {
 			fileNodeId: fileNode._id,
 			pattern: args.pattern,
 			ignoreCase: args.ignoreCase,
@@ -5111,7 +4993,7 @@ export const get_file_last_yjs_sequence = query({
 	},
 });
 
-function files_nodes_text_search_filtered_query(
+function db_text_search_filtered_query(
 	ctx: QueryCtx,
 	args: {
 		workspaceId: string;
@@ -5128,7 +5010,7 @@ function files_nodes_text_search_filtered_query(
 	const scopedUpperBound = `${scopedLowerBound}\uffff`;
 
 	let searchQuery = ctx.db
-		.query("files_search_chunks")
+		.query("files_plain_text_chunks")
 		.withSearchIndex("search_by_plainTextChunk", (q) =>
 			q
 				.search("plainTextChunk", args.query)
@@ -5160,49 +5042,7 @@ function files_nodes_text_search_filtered_query(
 	return searchQuery;
 }
 
-async function files_nodes_get_search_chunk_at_index(
-	ctx: QueryCtx,
-	args: {
-		searchChunk: Doc<"files_search_chunks">;
-		chunkIndex: number;
-	},
-) {
-	if (args.searchChunk.sourceKind === "pending") {
-		if (!args.searchChunk.pendingUpdateId) {
-			const errorMessage = "pending files_search_chunks doc missing pendingUpdateId";
-			const errorData = { searchChunkId: args.searchChunk._id };
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-		return await ctx.db
-			.query("files_search_chunks")
-			.withIndex("by_pendingUpdate_chunkIndex", (q) =>
-				q.eq("pendingUpdateId", args.searchChunk.pendingUpdateId).eq("chunkIndex", args.chunkIndex),
-			)
-			.first();
-	}
-
-	if (args.searchChunk.yjsSequence == null) {
-		const errorMessage = "committed files_search_chunks doc missing yjsSequence";
-		const errorData = { searchChunkId: args.searchChunk._id };
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-	return await ctx.db
-		.query("files_search_chunks")
-		.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
-			q
-				.eq("workspaceId", args.searchChunk.workspaceId)
-				.eq("projectId", args.searchChunk.projectId)
-				.eq("sourceKind", "committed")
-				.eq("fileNodeId", args.searchChunk.fileNodeId)
-				.eq("yjsSequence", args.searchChunk.yjsSequence)
-				.eq("chunkIndex", args.chunkIndex),
-		)
-		.first();
-}
-
-const files_nodes_text_search_args = {
+const text_search_args = {
 	workspaceId: v.string(),
 	projectId: v.string(),
 	userId: v.id("users"),
@@ -5211,15 +5051,9 @@ const files_nodes_text_search_args = {
 	pathPrefix: v.optional(v.string()),
 };
 
-function files_nodes_text_search_path_matches_prefix(path: string, pathPrefix: string | undefined) {
-	const rawPrefix = pathPrefix?.trim();
-	const scopePrefix = rawPrefix && rawPrefix !== "/" ? `/${rawPrefix.replace(/^\/+|\/+$/gu, "")}` : null;
-	return scopePrefix === null || path.startsWith(`${scopePrefix}/`);
-}
-
 const files_GREP_LINE_ENDING_REGEX = /\r\n?/g;
 
-function files_nodes_plain_text_regex_lines(args: {
+function plain_text_regex_lines(args: {
 	plainTextChunk: string;
 	lineStart: number;
 	pattern: string;
@@ -5254,7 +5088,7 @@ function files_nodes_plain_text_regex_lines(args: {
  * phase pages by raw-hit skip count because Convex supports a single paginated query per function
  * and the committed phase owns it.
  */
-const files_nodes_regex_search_cursor_schema = z.object({
+const regex_search_cursor_schema = z.object({
 	pendingSkip: z.number().int().nonnegative(),
 	pendingDone: z.boolean(),
 	committed: z.string().nullable(),
@@ -5262,7 +5096,7 @@ const files_nodes_regex_search_cursor_schema = z.object({
 
 export const regex_search_plain_text_files = internalQuery({
 	args: {
-		...files_nodes_text_search_args,
+		...text_search_args,
 		ignoreCase: v.boolean(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
@@ -5296,7 +5130,7 @@ export const regex_search_plain_text_files = internalQuery({
 		const cursorParse =
 			args.cursor === null
 				? null
-				: files_nodes_regex_search_cursor_schema.safeParse(
+				: regex_search_cursor_schema.safeParse(
 						((/* iife */) => {
 							try {
 								return JSON.parse(args.cursor) as unknown;
@@ -5322,6 +5156,9 @@ export const regex_search_plain_text_files = internalQuery({
 		for (const pendingUpdate of pendingUpdates) {
 			pendingNodeIds.add(pendingUpdate.fileNodeId);
 		}
+		const rawPrefix = args.pathPrefix?.trim();
+		const scopePrefix = rawPrefix && rawPrefix !== "/" ? `/${rawPrefix.replace(/^\/+|\/+$/gu, "")}` : null;
+		const lowerBound = scopePrefix === null ? "/" : `${scopePrefix}/`;
 
 		const pendingItems: Array<{
 			path: string;
@@ -5340,16 +5177,15 @@ export const regex_search_plain_text_files = internalQuery({
 					fileNode.workspaceId !== args.workspaceId ||
 					fileNode.projectId !== args.projectId ||
 					fileNode.archiveOperationId !== undefined ||
-					!files_nodes_text_search_path_matches_prefix(fileNode.path, args.pathPrefix)
+					(scopePrefix !== null && !fileNode.path.startsWith(lowerBound))
 				) {
 					continue;
 				}
 
-				const chunks = await ctx.db
-					.query("files_pending_updates_chunks")
-					.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
-					.take(100);
-				for (const chunk of chunks) {
+				const chunks = ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id));
+				for await (const chunk of chunks) {
 					if (pendingChunksToSkip > 0) {
 						pendingChunksToSkip -= 1;
 						continue;
@@ -5360,7 +5196,7 @@ export const regex_search_plain_text_files = internalQuery({
 					}
 
 					cursor.pendingSkip += 1;
-					for (const line of files_nodes_plain_text_regex_lines({
+					for (const line of plain_text_regex_lines({
 						plainTextChunk: chunk.plainTextChunk,
 						lineStart: chunk.lineStart,
 						pattern: args.query,
@@ -5394,15 +5230,13 @@ export const regex_search_plain_text_files = internalQuery({
 			};
 		}
 
-		const rawPrefix = args.pathPrefix?.trim();
-		const scopePrefix = rawPrefix && rawPrefix !== "/" ? `/${rawPrefix.replace(/^\/+|\/+$/gu, "")}` : null;
-		const lowerBound = scopePrefix === null ? "/" : `${scopePrefix}/`;
 		const result = await ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_archive_path_chunkIndex", (q) =>
+			.withIndex("by_workspace_project_source_archive_path_chunkIndex", (q) =>
 				q
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
+					.eq("sourceKind", "committed")
 					.eq("archiveOperationId", undefined)
 					.gte("path", lowerBound)
 					.lt("path", `${lowerBound}\uffff`),
@@ -5415,18 +5249,22 @@ export const regex_search_plain_text_files = internalQuery({
 			line: string;
 			chunkIndex: number;
 		}> = [];
+		// Committed pages can be short because pending overlays and broken chunk chains are dropped
+		// after native pagination. Callers must use `isDone`, not item count, to finish pagination.
 		for (const plainTextChunk of result.page) {
 			if (pendingNodeIds.has(plainTextChunk.fileNodeId)) {
 				continue;
 			}
+
 			if (plainTextChunk.chunkIndex > 0) {
 				const [firstPlainTextChunk, previousPlainTextChunk] = await Promise.all([
 					ctx.db
 						.query("files_plain_text_chunks")
-						.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+						.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
+								.eq("sourceKind", "committed")
 								.eq("fileNodeId", plainTextChunk.fileNodeId)
 								.eq("yjsSequence", plainTextChunk.yjsSequence)
 								.eq("chunkIndex", 0),
@@ -5434,10 +5272,11 @@ export const regex_search_plain_text_files = internalQuery({
 						.first(),
 					ctx.db
 						.query("files_plain_text_chunks")
-						.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+						.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
 							q
 								.eq("workspaceId", args.workspaceId)
 								.eq("projectId", args.projectId)
+								.eq("sourceKind", "committed")
 								.eq("fileNodeId", plainTextChunk.fileNodeId)
 								.eq("yjsSequence", plainTextChunk.yjsSequence)
 								.eq("chunkIndex", plainTextChunk.chunkIndex - 1),
@@ -5448,25 +5287,9 @@ export const regex_search_plain_text_files = internalQuery({
 					continue;
 				}
 			}
-			const markdownChunkDoc = await ctx.db.get("files_markdown_chunks", plainTextChunk.markdownChunkId);
-			if (
-				!markdownChunkDoc ||
-				markdownChunkDoc.workspaceId !== args.workspaceId ||
-				markdownChunkDoc.projectId !== args.projectId ||
-				markdownChunkDoc.fileNodeId !== plainTextChunk.fileNodeId ||
-				markdownChunkDoc.yjsSequence !== plainTextChunk.yjsSequence ||
-				markdownChunkDoc.chunkIndex !== plainTextChunk.chunkIndex
-			) {
-				const errorMessage = "files_plain_text_chunks doc points to an invalid files_markdown_chunks doc";
-				console.error(errorMessage, {
-					plainTextChunkId: plainTextChunk._id,
-					markdownChunkId: plainTextChunk.markdownChunkId,
-				});
-				throw should_never_happen(errorMessage);
-			}
-			for (const line of files_nodes_plain_text_regex_lines({
+			for (const line of plain_text_regex_lines({
 				plainTextChunk: plainTextChunk.plainTextChunk,
-				lineStart: markdownChunkDoc.lineStart,
+				lineStart: plainTextChunk.lineStart,
 				pattern: args.query,
 				ignoreCase: args.ignoreCase,
 			})) {
@@ -5503,7 +5326,7 @@ export type files_nodes_regex_search_plain_text_files_Result =
 
 export const text_search_files = internalQuery({
 	args: {
-		...files_nodes_text_search_args,
+		...text_search_args,
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
 	},
@@ -5554,7 +5377,7 @@ export const text_search_files = internalQuery({
 			.collect();
 		const pendingNodeIds = pendingUpdates.map((pendingUpdate) => pendingUpdate.fileNodeId);
 
-		const result = await files_nodes_text_search_filtered_query(ctx, {
+		const result = await db_text_search_filtered_query(ctx, {
 			...args,
 			pendingNodeIds,
 		}).paginate({
@@ -5562,34 +5385,18 @@ export const text_search_files = internalQuery({
 			numItems: pageLimit,
 		});
 
-		const items = await Promise.all(
-			result.page.map(async (searchChunk) => {
-				const [chunkAbove, chunkBelow] = await Promise.all([
-					searchChunk.chunkIndex > 0
-						? files_nodes_get_search_chunk_at_index(ctx, {
-								searchChunk,
-								chunkIndex: searchChunk.chunkIndex - 1,
-							})
-						: null,
-					files_nodes_get_search_chunk_at_index(ctx, {
-						searchChunk,
-						chunkIndex: searchChunk.chunkIndex + 1,
-					}),
-				]);
-				return {
-					path: searchChunk.path,
-					markdownChunk: searchChunk.markdownChunk,
-					chunkIndex: searchChunk.chunkIndex,
-					startIndex: searchChunk.startIndex,
-					endIndex: searchChunk.endIndex,
-					lineStart: searchChunk.lineStart,
-					lineEnd: searchChunk.lineEnd,
-					chunkFlags: searchChunk.chunkFlags,
-					hasChunkAbove: !!chunkAbove,
-					hasChunkBelow: !!chunkBelow,
-				};
-			}),
-		);
+		const items = result.page.map((searchChunk) => ({
+			path: searchChunk.path,
+			markdownChunk: searchChunk.markdownChunk,
+			chunkIndex: searchChunk.chunkIndex,
+			startIndex: searchChunk.startIndex,
+			endIndex: searchChunk.endIndex,
+			lineStart: searchChunk.lineStart,
+			lineEnd: searchChunk.lineEnd,
+			chunkFlags: searchChunk.chunkFlags,
+			hasChunkAbove: searchChunk.hasChunkAbove,
+			hasChunkBelow: searchChunk.hasChunkBelow,
+		}));
 
 		return {
 			items,
@@ -5603,6 +5410,32 @@ export type files_nodes_text_search_files_Result =
 	typeof text_search_files extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+export const profile_text_search_files = internalAction({
+	args: {
+		...text_search_args,
+		numItems: v.number(),
+		cursor: paginationOptsValidator.fields.cursor,
+	},
+	returns: v.object({
+		durationMs: v.number(),
+		itemCount: v.number(),
+		continueCursor: v.string(),
+		isDone: v.boolean(),
+		firstPaths: v.array(v.string()),
+	}),
+	handler: async (ctx, args) => {
+		const startedAt = Date.now();
+		const result: files_nodes_text_search_files_Result = await ctx.runQuery(internal.files_nodes.text_search_files, args);
+		return {
+			durationMs: Date.now() - startedAt,
+			itemCount: result.items.length,
+			continueCursor: result.continueCursor,
+			isDone: result.isDone,
+			firstPaths: result.items.slice(0, 5).map((item) => item.path),
+		};
+	},
+});
 
 /**
  * Create a Markdown file at a trusted path.

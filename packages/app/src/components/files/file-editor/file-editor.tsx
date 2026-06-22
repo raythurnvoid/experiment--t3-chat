@@ -69,7 +69,7 @@ export function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdates
 			<MyIcon className={cn("FileEditorPendingUpdatesFloating-icon" satisfies FileEditorPendingUpdatesFloating_ClassNames)}>
 				<Sparkles />
 			</MyIcon>
-			Agent edits are pending review
+			Pending changes
 			{showReviewButton && (
 				<MyButton
 					variant="accent"

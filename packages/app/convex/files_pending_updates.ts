@@ -175,26 +175,26 @@ async function files_pending_update_db_delete_chunks(
 	ctx: MutationCtx,
 	args: { pendingUpdateId: Id<"files_pending_updates"> },
 ) {
-	const [chunks, searchChunks] = await Promise.all([
+	const [markdownChunks, plainTextChunks] = await Promise.all([
 		ctx.db
-			.query("files_pending_updates_chunks")
+			.query("files_markdown_chunks")
 			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
 			.collect(),
 		ctx.db
-			.query("files_search_chunks")
+			.query("files_plain_text_chunks")
 			.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
 			.collect(),
 	]);
 	await Promise.all([
-		...chunks.map((chunk) => ctx.db.delete("files_pending_updates_chunks", chunk._id)),
-		...searchChunks.map((chunk) => ctx.db.delete("files_search_chunks", chunk._id)),
+		...plainTextChunks.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
+		...markdownChunks.map((chunk) => ctx.db.delete("files_markdown_chunks", chunk._id)),
 		files_metadata_db_delete_pending(ctx, args),
 	]);
 }
 
 /**
- * Replace the pending search chunks and metadata docs for `unstaged` Markdown.
- * Run this in the same mutation as the pending row write so reads/search never see stale indexed docs.
+ * Replace the pending Markdown chunk docs, plain-text chunk docs, and metadata docs for `unstaged` Markdown.
+ * Run this in the same mutation as the pending update doc write so reads/search never see stale indexed docs.
  */
 async function files_pending_update_db_replace_chunks(
 	ctx: MutationCtx,
@@ -226,17 +226,17 @@ async function files_pending_update_db_replace_chunks(
 		return Result({ _yay: null });
 	}
 
-	await Promise.all(
+	const markdownChunkIds = await Promise.all(
 		chunks._yay.map((chunk) =>
-			ctx.db.insert("files_pending_updates_chunks", {
+			ctx.db.insert("files_markdown_chunks", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
+				sourceKind: "pending",
 				userId: args.userId,
 				fileNodeId: args.nodeId,
 				pendingUpdateId: args.pendingUpdateId,
 				chunkIndex: chunk.chunkIndex,
 				markdownChunk: chunk.markdownChunk,
-				plainTextChunk: chunk.plainTextChunk,
 				startIndex: chunk.startIndex,
 				endIndex: chunk.endIndex,
 				lineStart: chunk.lineStart,
@@ -247,24 +247,27 @@ async function files_pending_update_db_replace_chunks(
 	);
 
 	await Promise.all(
-		chunks._yay.map((chunk) =>
-			ctx.db.insert("files_search_chunks", {
+		chunks._yay.map((chunk, index) =>
+			ctx.db.insert("files_plain_text_chunks", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				fileNodeId: args.nodeId,
 				sourceKind: "pending",
 				userId: args.userId,
 				pendingUpdateId: args.pendingUpdateId,
+				markdownChunkId: markdownChunkIds[index],
 				path: fileNode.path,
 				archiveOperationId: fileNode.archiveOperationId,
 				chunkIndex: chunk.chunkIndex,
-				markdownChunk: chunk.markdownChunk,
 				plainTextChunk: chunk.plainTextChunk,
+				markdownChunk: chunk.markdownChunk,
 				startIndex: chunk.startIndex,
 				endIndex: chunk.endIndex,
 				lineStart: chunk.lineStart,
 				lineEnd: chunk.lineEnd,
 				chunkFlags: chunk.chunkFlags,
+				hasChunkAbove: index > 0,
+				hasChunkBelow: index < chunks._yay.length - 1,
 			}),
 		),
 	);
@@ -275,16 +278,16 @@ async function files_pending_update_db_replace_chunks(
 }
 
 /**
- * Search chunk and metadata maintenance must not fail the pending row write: the row is the source of truth.
+ * Chunk and metadata maintenance must not fail the pending update doc write: the doc is the source of truth.
  * A failure only degrades chunk-backed reads, search, and metadata search until the next upsert.
- * Stale search chunks and metadata docs were already deleted, so indexed search misses instead of seeing outdated content.
+ * Stale chunks and metadata docs were already deleted, so indexed search misses instead of seeing outdated content.
  */
 function files_pending_update_log_replace_chunks_nay(
 	chunksReplaced: Awaited<ReturnType<typeof files_pending_update_db_replace_chunks>>,
 	context: { pendingUpdateId: Id<"files_pending_updates">; nodeId: Id<"files_nodes"> },
 ) {
 	if (chunksReplaced._nay) {
-		console.error("Failed to replace pending update search chunks and metadata docs", { chunksReplaced, ...context });
+		console.error("Failed to replace pending update chunks and metadata docs", { chunksReplaced, ...context });
 	}
 }
 
@@ -547,7 +550,7 @@ async function files_pending_update_upsert_branch_docs(
 			}),
 		]);
 		// Staged-only changes (e.g. Accept all) keep the unstaged content intact, so the existing
-		// search chunks and metadata docs stay correct and rebuilding them would be wasted writes.
+		// pending Markdown/plain-text chunk docs and metadata docs stay correct and rebuilding them would be wasted writes.
 		if (args.unstagedBranchChanged) {
 			const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
 				workspaceId: args.workspaceId,
@@ -986,7 +989,7 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 					})
 				: null;
 
-		// Rebase rewrites the unstaged branch, so always refresh pending search chunks and metadata docs.
+		// Rebase rewrites the unstaged branch, so always refresh pending Markdown/plain-text chunk docs and metadata docs.
 		if (pendingUpdateId) {
 			const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
 				workspaceId: membership.workspaceId,
@@ -1458,7 +1461,7 @@ export const save_file_pending_update_in_db = internalMutation({
 			}),
 		]);
 
-		// Remote drift merged into the unstaged branch changes its content, so pending search chunks and metadata docs
+		// Remote drift merged into the unstaged branch changes its content, so pending Markdown/plain-text chunk docs and metadata docs
 		// must be rebuilt; without drift the unstaged content is unchanged by a partial save.
 		if (unstagedMarkdownAfterRemoteDrift) {
 			const unstagedMarkdown = unstagedMarkdownAfterRemoteDrift;

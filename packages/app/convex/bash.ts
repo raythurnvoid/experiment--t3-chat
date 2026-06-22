@@ -9038,10 +9038,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				// bail out (usable: false) and the bounded R2 window fallback runs instead.
 				const chunks = await ctx.db
 					.query("files_markdown_chunks")
-					.withIndex("by_workspace_project_fileNode_yjsSequence_chunkIndex", (q) =>
+					.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
 						q
 							.eq("workspaceId", scope.workspaceId)
 							.eq("projectId", scope.projectId)
+							.eq("sourceKind", "committed")
 							.eq("fileNodeId", fileId)
 							.eq("yjsSequence", 1),
 					)
@@ -9055,6 +9056,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						workspaceId: scope.workspaceId,
 						projectId: scope.projectId,
 						fileNodeId: fileId,
+						sourceKind: "committed",
 						yjsSequence: 1,
 						chunkIndex: (first?.chunkIndex ?? 0) + 1,
 						markdownChunk: "x",

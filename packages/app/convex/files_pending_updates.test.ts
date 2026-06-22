@@ -456,16 +456,22 @@ async function list_pending_update_cleanup_tasks(args: { ctx: MutationCtx; pendi
 		.collect();
 }
 
-async function list_pending_update_chunks(args: { ctx: MutationCtx; pendingUpdateId: Id<"files_pending_updates"> }) {
+async function list_pending_update_markdown_chunks(args: {
+	ctx: MutationCtx;
+	pendingUpdateId: Id<"files_pending_updates">;
+}) {
 	return await args.ctx.db
-		.query("files_pending_updates_chunks")
+		.query("files_markdown_chunks")
 		.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
 		.collect();
 }
 
-async function list_pending_update_search_chunks(args: { ctx: MutationCtx; pendingUpdateId: Id<"files_pending_updates"> }) {
+async function list_pending_update_plain_text_chunks(args: {
+	ctx: MutationCtx;
+	pendingUpdateId: Id<"files_pending_updates">;
+}) {
 	return await args.ctx.db
-		.query("files_search_chunks")
+		.query("files_plain_text_chunks")
 		.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
 		.collect();
 }
@@ -1156,7 +1162,7 @@ describe("upsert_file_pending_update", () => {
 	});
 });
 
-describe("files_pending_updates_chunks lifecycle", () => {
+describe("pending file chunk docs lifecycle", () => {
 	const read_pending_row = async (args: {
 		t: ReturnType<typeof test_convex>;
 		workspaceId: string;
@@ -1210,23 +1216,26 @@ describe("files_pending_updates_chunks lifecycle", () => {
 		}
 		expect(pendingRow.size).toBe(files_get_utf8_byte_size(firstMarkdown));
 
-		const firstChunks = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
-		const firstSearchChunks = await t.run((ctx) =>
-			list_pending_update_search_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		const firstMarkdownChunks = await t.run((ctx) =>
+			list_pending_update_markdown_chunks({ ctx, pendingUpdateId: pendingRow._id }),
 		);
-		expect(firstChunks.length).toBeGreaterThan(0);
-		expect(firstSearchChunks).toHaveLength(firstChunks.length);
-		expect(firstChunks.map((chunk) => chunk.markdownChunk).join("\n")).toContain("Chunk needle one");
-		expect(firstChunks.map((chunk) => chunk.plainTextChunk).join("\n")).toContain("Chunk needle one");
-		expect(firstChunks[0]).toMatchObject({
+		const firstPlainTextChunks = await t.run((ctx) =>
+			list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		);
+		expect(firstMarkdownChunks.length).toBeGreaterThan(0);
+		expect(firstPlainTextChunks).toHaveLength(firstMarkdownChunks.length);
+		expect(firstMarkdownChunks.map((chunk) => chunk.markdownChunk).join("\n")).toContain("Chunk needle one");
+		expect(firstPlainTextChunks.map((chunk) => chunk.plainTextChunk).join("\n")).toContain("Chunk needle one");
+		expect(firstMarkdownChunks[0]).toMatchObject({
 			workspaceId: seeded.workspaceId,
 			projectId: seeded.projectId,
 			userId: String(seeded.userId),
 			fileNodeId: seeded.nodeId,
 			pendingUpdateId: pendingRow._id,
+			sourceKind: "pending",
 			chunkIndex: 0,
 		});
-		expect(firstSearchChunks[0]).toMatchObject({
+		expect(firstPlainTextChunks[0]).toMatchObject({
 			workspaceId: seeded.workspaceId,
 			projectId: seeded.projectId,
 			userId: String(seeded.userId),
@@ -1236,8 +1245,23 @@ describe("files_pending_updates_chunks lifecycle", () => {
 			path: "/pending-chunks-upsert",
 			chunkIndex: 0,
 		});
+		expect(new Set(firstMarkdownChunks.map((chunk) => chunk._id))).toContain(firstPlainTextChunks[0]?.markdownChunkId);
+		for (const chunk of firstPlainTextChunks) {
+			const markdownChunk = firstMarkdownChunks.find((candidate) => candidate._id === chunk.markdownChunkId);
+			if (!markdownChunk) throw new Error("Expected linked Markdown chunk");
+			expect(chunk).toMatchObject({
+				markdownChunk: markdownChunk.markdownChunk,
+				startIndex: markdownChunk.startIndex,
+				endIndex: markdownChunk.endIndex,
+				lineStart: markdownChunk.lineStart,
+				lineEnd: markdownChunk.lineEnd,
+				chunkFlags: markdownChunk.chunkFlags,
+				hasChunkAbove: chunk.chunkIndex > 0,
+				hasChunkBelow: chunk.chunkIndex < firstPlainTextChunks.length - 1,
+			});
+		}
 
-		// Unstaged content changed -> chunk rows are replaced.
+		// Unstaged content changed -> chunk docs are replaced.
 		const secondMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nChunk needle two`);
 		const secondUpsertResult = await upsert_file_pending_update_internal_for_test({
 			t,
@@ -1258,26 +1282,28 @@ describe("files_pending_updates_chunks lifecycle", () => {
 		expect(secondPendingRow._id).toBe(pendingRow._id);
 		expect(secondPendingRow.size).toBe(files_get_utf8_byte_size(secondMarkdown));
 
-		const secondChunks = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
-		const secondSearchChunks = await t.run((ctx) =>
-			list_pending_update_search_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		const secondMarkdownChunks = await t.run((ctx) =>
+			list_pending_update_markdown_chunks({ ctx, pendingUpdateId: pendingRow._id }),
 		);
-		expect(secondChunks.length).toBeGreaterThan(0);
-		expect(secondSearchChunks).toHaveLength(secondChunks.length);
-		expect(secondChunks.map((chunk) => chunk.markdownChunk).join("\n")).toContain("Chunk needle two");
-		expect(secondChunks.map((chunk) => chunk.markdownChunk).join("\n")).not.toContain("Chunk needle one");
-		expect(secondSearchChunks.map((chunk) => chunk.markdownChunk).join("\n")).toContain("Chunk needle two");
-		expect(secondSearchChunks.map((chunk) => chunk.markdownChunk).join("\n")).not.toContain("Chunk needle one");
-		const firstChunkIds = new Set(firstChunks.map((chunk) => chunk._id));
-		for (const chunk of secondChunks) {
-			expect(firstChunkIds.has(chunk._id)).toBe(false);
+		const secondPlainTextChunks = await t.run((ctx) =>
+			list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		);
+		expect(secondMarkdownChunks.length).toBeGreaterThan(0);
+		expect(secondPlainTextChunks).toHaveLength(secondMarkdownChunks.length);
+		expect(secondMarkdownChunks.map((chunk) => chunk.markdownChunk).join("\n")).toContain("Chunk needle two");
+		expect(secondMarkdownChunks.map((chunk) => chunk.markdownChunk).join("\n")).not.toContain("Chunk needle one");
+		expect(secondPlainTextChunks.map((chunk) => chunk.plainTextChunk).join("\n")).toContain("Chunk needle two");
+		expect(secondPlainTextChunks.map((chunk) => chunk.plainTextChunk).join("\n")).not.toContain("Chunk needle one");
+		const firstMarkdownChunkIds = new Set(firstMarkdownChunks.map((chunk) => chunk._id));
+		for (const chunk of secondMarkdownChunks) {
+			expect(firstMarkdownChunkIds.has(chunk._id)).toBe(false);
 		}
-		const firstSearchChunkIds = new Set(firstSearchChunks.map((chunk) => chunk._id));
-		for (const chunk of secondSearchChunks) {
-			expect(firstSearchChunkIds.has(chunk._id)).toBe(false);
+		const firstPlainTextChunkIds = new Set(firstPlainTextChunks.map((chunk) => chunk._id));
+		for (const chunk of secondPlainTextChunks) {
+			expect(firstPlainTextChunkIds.has(chunk._id)).toBe(false);
 		}
 
-		// Staged-only change (Accept all) keeps the unstaged content intact -> chunk row ids survive.
+		// Staged-only change (Accept all) keeps the unstaged content intact -> chunk doc ids survive.
 		const stagedOnlyUpsertResult = await upsert_file_pending_update_internal_for_test({
 			t,
 			workspaceId: seeded.workspaceId,
@@ -1297,16 +1323,20 @@ describe("files_pending_updates_chunks lifecycle", () => {
 		}
 		expect(stagedOnlyPendingRow.size).toBe(secondPendingRow.size);
 
-		const stagedOnlyChunks = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
-		const stagedOnlySearchChunks = await t.run((ctx) =>
-			list_pending_update_search_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		const stagedOnlyMarkdownChunks = await t.run((ctx) =>
+			list_pending_update_markdown_chunks({ ctx, pendingUpdateId: pendingRow._id }),
 		);
-		expect(new Set(stagedOnlyChunks.map((chunk) => chunk._id))).toEqual(new Set(secondChunks.map((chunk) => chunk._id)));
-		expect(new Set(stagedOnlySearchChunks.map((chunk) => chunk._id))).toEqual(
-			new Set(secondSearchChunks.map((chunk) => chunk._id)),
+		const stagedOnlyPlainTextChunks = await t.run((ctx) =>
+			list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		);
+		expect(new Set(stagedOnlyMarkdownChunks.map((chunk) => chunk._id))).toEqual(
+			new Set(secondMarkdownChunks.map((chunk) => chunk._id)),
+		);
+		expect(new Set(stagedOnlyPlainTextChunks.map((chunk) => chunk._id))).toEqual(
+			new Set(secondPlainTextChunks.map((chunk) => chunk._id)),
 		);
 
-		// Collapse back to base deletes the row and its chunks in the same mutation.
+		// Collapse back to base deletes the pending update doc and its chunk docs in the same mutation.
 		const collapseResult = await upsert_file_pending_update_internal_for_test({
 			t,
 			workspaceId: seeded.workspaceId,
@@ -1321,17 +1351,17 @@ describe("files_pending_updates_chunks lifecycle", () => {
 		}
 
 		expect(await read_pending_row({ t, ...seeded })).toBeNull();
-		const chunksAfterCollapse = await t.run((ctx) =>
-			list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		const markdownChunksAfterCollapse = await t.run((ctx) =>
+			list_pending_update_markdown_chunks({ ctx, pendingUpdateId: pendingRow._id }),
 		);
-		const searchChunksAfterCollapse = await t.run((ctx) =>
-			list_pending_update_search_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		const plainTextChunksAfterCollapse = await t.run((ctx) =>
+			list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: pendingRow._id }),
 		);
-		expect(chunksAfterCollapse).toHaveLength(0);
-		expect(searchChunksAfterCollapse).toHaveLength(0);
+		expect(markdownChunksAfterCollapse).toHaveLength(0);
+		expect(plainTextChunksAfterCollapse).toHaveLength(0);
 	});
 
-	test("full save deletes the pending chunks with the row", async () => {
+	test("full save deletes the pending chunks with the pending update doc", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -1363,12 +1393,14 @@ describe("files_pending_updates_chunks lifecycle", () => {
 		if (!pendingRow) {
 			throw new Error("Missing pending doc while testing full-save chunk cleanup");
 		}
-		const chunksBeforeSave = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
-		const searchChunksBeforeSave = await t.run((ctx) =>
-			list_pending_update_search_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		const markdownChunksBeforeSave = await t.run((ctx) =>
+			list_pending_update_markdown_chunks({ ctx, pendingUpdateId: pendingRow._id }),
 		);
-		expect(chunksBeforeSave.length).toBeGreaterThan(0);
-		expect(searchChunksBeforeSave.length).toBeGreaterThan(0);
+		const plainTextChunksBeforeSave = await t.run((ctx) =>
+			list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		);
+		expect(markdownChunksBeforeSave.length).toBeGreaterThan(0);
+		expect(plainTextChunksBeforeSave.length).toBeGreaterThan(0);
 
 		const saveResult = await asUser.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
@@ -1379,15 +1411,17 @@ describe("files_pending_updates_chunks lifecycle", () => {
 		}
 
 		expect(await read_pending_row({ t, ...seeded })).toBeNull();
-		const chunksAfterSave = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
-		const searchChunksAfterSave = await t.run((ctx) =>
-			list_pending_update_search_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		const markdownChunksAfterSave = await t.run((ctx) =>
+			list_pending_update_markdown_chunks({ ctx, pendingUpdateId: pendingRow._id }),
 		);
-		expect(chunksAfterSave).toHaveLength(0);
-		expect(searchChunksAfterSave).toHaveLength(0);
+		const plainTextChunksAfterSave = await t.run((ctx) =>
+			list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		);
+		expect(markdownChunksAfterSave).toHaveLength(0);
+		expect(plainTextChunksAfterSave).toHaveLength(0);
 	});
 
-	test("expiry cleanup deletes the pending chunks with the row", async () => {
+	test("expiry cleanup deletes the pending chunks with the pending update doc", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -1417,12 +1451,14 @@ describe("files_pending_updates_chunks lifecycle", () => {
 		if (!pendingRow) {
 			throw new Error("Missing pending doc while testing expiry chunk cleanup");
 		}
-		const chunksBeforeExpiry = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
-		const searchChunksBeforeExpiry = await t.run((ctx) =>
-			list_pending_update_search_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		const markdownChunksBeforeExpiry = await t.run((ctx) =>
+			list_pending_update_markdown_chunks({ ctx, pendingUpdateId: pendingRow._id }),
 		);
-		expect(chunksBeforeExpiry.length).toBeGreaterThan(0);
-		expect(searchChunksBeforeExpiry.length).toBeGreaterThan(0);
+		const plainTextChunksBeforeExpiry = await t.run((ctx) =>
+			list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		);
+		expect(markdownChunksBeforeExpiry.length).toBeGreaterThan(0);
+		expect(plainTextChunksBeforeExpiry.length).toBeGreaterThan(0);
 
 		const cleanupTask = await t.run(async (ctx) => {
 			const cleanupTasks = await list_pending_update_cleanup_tasks({
@@ -1441,12 +1477,14 @@ describe("files_pending_updates_chunks lifecycle", () => {
 		});
 
 		expect(await read_pending_row({ t, ...seeded })).toBeNull();
-		const chunksAfterExpiry = await t.run((ctx) => list_pending_update_chunks({ ctx, pendingUpdateId: pendingRow._id }));
-		const searchChunksAfterExpiry = await t.run((ctx) =>
-			list_pending_update_search_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		const markdownChunksAfterExpiry = await t.run((ctx) =>
+			list_pending_update_markdown_chunks({ ctx, pendingUpdateId: pendingRow._id }),
 		);
-		expect(chunksAfterExpiry).toHaveLength(0);
-		expect(searchChunksAfterExpiry).toHaveLength(0);
+		const plainTextChunksAfterExpiry = await t.run((ctx) =>
+			list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: pendingRow._id }),
+		);
+		expect(markdownChunksAfterExpiry).toHaveLength(0);
+		expect(plainTextChunksAfterExpiry).toHaveLength(0);
 	});
 });
 

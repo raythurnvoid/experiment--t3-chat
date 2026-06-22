@@ -239,6 +239,7 @@ Do not namespace module-private helpers, types, or constants with the module/fil
 - Use prefixes for exported symbols so import sites can see where a symbol comes from.
 - Keep non-exported functions like `authorize_file_download`, not `r2_authorize_file_download`.
 - Keep non-exported types and constants unprefixed too, unless a very local ambiguity makes the shorter name misleading.
+- This rule is about module/file prefixes, not meaningful boundary prefixes. If the surrounding file already uses a boundary prefix for a specific kind of helper, follow it. For example, in `files_nodes.ts`, private helpers that fetch or query Convex docs use `db_`, while pure helpers stay unprefixed.
 
 ## Inline Convex validators by default
 

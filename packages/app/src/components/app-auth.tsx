@@ -342,7 +342,20 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 		await app_router().navigate({ to: "/", replace: true });
 	});
 
-	const fetchClerkToken = async (args: { retryUntileUserIdIsSet: boolean; signal: AbortSignal }) => {
+	/**
+	 * Fetch a Clerk Convex JWT and optionally wait for its `external_id` claim to
+	 * name the exact Convex user id that `resolve_user` just returned.
+	 *
+	 * `expectedUserId` is stricter than `retryUntileUserIdIsSet`: it rejects a
+	 * cached Clerk token that has any old `external_id`, because local/dev data
+	 * resets can leave Clerk pointing at a Convex user row that no longer owns the
+	 * current app session.
+	 */
+	const fetchClerkToken = async (args: {
+		retryUntileUserIdIsSet: boolean;
+		signal: AbortSignal;
+		expectedUserId?: string;
+	}) => {
 		const maxAttempts = 20;
 		const delayMs = 500;
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -361,7 +374,11 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 
 			const userId = jwt_read_payload_claim_string(token, "external_id");
 
-			if (userId && args.retryUntileUserIdIsSet) {
+			if (args.expectedUserId) {
+				if (userId === args.expectedUserId) {
+					return { userId, token };
+				}
+			} else if (userId && args.retryUntileUserIdIsSet) {
 				return { userId, token };
 			} else if (!args.retryUntileUserIdIsSet) {
 				return { userId, token };
@@ -423,21 +440,33 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 					}
 
 					let userId = clerkTokenData.userId;
+					// Resolve on every signed-in bootstrap, even when the current token already has
+					// an `external_id`. Clerk can keep that claim after a local/dev data reset, while
+					// Convex is the source of truth for whether the pointed-at `users` doc is valid.
+					const resolveResult = await app_fetch_auth_resolve_user({
+						token: clerkTokenData.token,
+						// If this browser was anonymous before sign-in, Convex can link that anonymous
+						// user into the Clerk account instead of creating a second app user.
+						anonymousUserToken,
+						signal: tokenFlowAbortControllerRef.current.signal,
+					});
 
-					if (!userId) {
-						const resolveResult = await app_fetch_auth_resolve_user({
-							token: clerkTokenData.token,
-							anonymousUserToken,
-						});
+					if (signal.aborted) return;
 
-						if (resolveResult._nay) {
-							const errorMessage = "Signup/signin failed.";
-							console.error(`AppAuthProvider: ${errorMessage} resolve_user failed`, resolveResult._nay);
-							await handleFatalSigninError({ toastMessage: errorMessage });
-							break;
-						}
+					if (resolveResult._nay) {
+						const errorMessage = "Signup/signin failed.";
+						console.error(`AppAuthProvider: ${errorMessage} resolve_user failed`, resolveResult._nay);
+						await handleFatalSigninError({ toastMessage: errorMessage });
+						break;
+					}
 
+					const resolvedUserId = resolveResult._yay.payload._yay.userId;
+
+					// If `resolve_user` repaired or created the canonical app user id. Wait for Clerk
+					// to issue a JWT whose `external_id` matches that id before Convex auth starts.
+					if (userId !== resolvedUserId) {
 						clerkTokenData = await fetchClerkToken({
+							expectedUserId: resolvedUserId,
 							retryUntileUserIdIsSet: true,
 							signal: tokenFlowAbortControllerRef.current.signal,
 						});

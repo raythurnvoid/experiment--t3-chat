@@ -55,6 +55,7 @@ Load only the reference that matches the touched surface:
 Use this checklist before accepting a patch.
 
 - **Placement:** Code is inserted beside the nearest similar helper, command, query, mutation, hook, component, or test.
+- **Definition order:** Prefer defining module-private helpers before their users when the file can do so without breaking a stronger local grouping. Avoid leaving a new helper below its first call site.
 - **Names:** Module-private helpers follow local naming. In `bash.ts`, command-owned helpers use command-specific prefixes such as `search_command_*`, `find_command_*`, or `meta_command_*`.
 - **Regions and ordering:** If the file uses regions or ordered sections, preserve them. In `bash.ts`, keep command helpers inside the matching command region.
 - **Granularity:** Keep one-off logic inline unless a helper removes real duplication or hides a necessary external-system detail.
@@ -62,6 +63,8 @@ Use this checklist before accepting a patch.
 - **Errors:** Match the local boundary. Use Result `_nay` where the surrounding code does; use structured `console.error(errorMessage, errorData)` plus `should_never_happen(errorMessage, errorData)` for impossible Convex invariants.
 - **Indexes:** Name Convex indexes from the indexed fields in order. If the full name is too long, abbreviate the least domain-important field consistently and keep the main domain term readable.
 - **Comments:** Add comments only for non-obvious intent, gotchas, or external-system behavior. Do not narrate obvious code. Use concrete nouns from the code instead of vague abstractions.
+- **Comment placement:** Put comments that explain a branch or loop before the `if`, `for`, or `while` block so the intent remains visible when the block is collapsed in the IDE. Keep comments inside the block only when they explain a specific statement inside it.
+- **Retry helpers:** When an option changes retry acceptance, add a short JSDoc to the helper. Name the exact value being waited for, why a weaker condition is insufficient, and which external system can return stale data.
 - **Tests:** Put tests under the same `describe(...)` grouping and naming rhythm as the file already uses. Test public behavior unless a private helper is already naturally exposed by an existing pattern.
 - **Docs/specs:** Update durable skills or README/spec files only when product behavior, architecture, or agent-facing workflows changed.
 
@@ -113,6 +116,15 @@ Shared modules should stay runtime-portable and direct.
 - Keep parser normalization or coercion narrow and documented when it differs from a strict external format.
 - Prefer explicit small helpers when they mark a boundary, such as extraction, normalization, parsing, or formatting.
 - Keep tests close to supported behavior and edge cases found in real app flows.
+
+# Auth And External State Comments
+
+Auth bootstrap code often coordinates two authorities, such as Clerk token claims and Convex `users` docs. Comments in that code should explain the authority boundary and stale-state window, not restate the branch:
+
+- Name the exact external value that can lag, such as Clerk's `external_id` JWT claim.
+- Name the app-owned value that is authoritative, such as the Convex `users` id returned by `resolve_user`.
+- When retrying, document the acceptance condition. For example, say that `expectedUserId` waits for a token whose `external_id` equals the resolved Convex user id, not merely any non-empty `external_id`.
+- Mention development data resets only when they are the real reachable cause of the mismatch; otherwise keep the comment about the product invariant.
 
 # Sub-Agent Style Audit
 
