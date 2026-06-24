@@ -75,6 +75,9 @@ importers:
       '@atlaskit/pragmatic-drag-and-drop':
         specifier: ^1.8.1
         version: 1.8.1
+      '@chenglou/pretext':
+        specifier: ^0.0.8
+        version: 0.0.8
       '@clerk/backend':
         specifier: ^3.2.3
         version: 3.2.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -4521,6 +4524,9 @@ packages:
 
   '@cfcs/core@0.0.6':
     resolution: {integrity: sha512-FxfJMwoLB8MEMConeXUCqtMGqxdtePQxRBOiGip9ULcYYam3WfCgoY6xdnMaSkYvRvmosp5iuG+TiPofm65+Pw==}
+
+  '@chenglou/pretext@0.0.8':
+    resolution: {integrity: sha512-yqm2GMxnPI7VHcHwe84P8ZF0JK/2d2DMKPqMN+s95jQhwDMYYXKVFVJUMEaVWckQStdsjdLav/0Vu+d9YbtGxA==}
 
   '@chevrotain/types@11.1.2':
     resolution: {integrity: sha512-U+HFai5+zmJCkK86QsaJtoITlboZHBqrVketcO2ROv865xfCMSFpELQoz1GkX5GzME8pTa+3kbKrZHQtI0gdbw==}
@@ -23580,6 +23586,8 @@ snapshots:
   '@cfcs/core@0.0.6':
     dependencies:
       '@egjs/component': 3.0.5
+
+  '@chenglou/pretext@0.0.8': {}
 
   '@chevrotain/types@11.1.2': {}
 

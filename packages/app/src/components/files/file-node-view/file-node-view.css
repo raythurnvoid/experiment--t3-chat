@@ -95,6 +95,17 @@
 		/* Let anchored comments size themselves against the full-height route sidebar. */
 		contain: inline-size style;
 
+		/*
+		Scope the sidebar's sticky `z-index: 1` chrome (the toolbar, and each tab's
+		sticky header) to this panel so it can't tie with the sibling resize handle
+		(also `z-index: 1`) in the shared editor-area stacking context and paint over
+		the hovered handle track. `.MyPanel` normally gets this from `contain: layout`,
+		but this panel replaces that with `container-type: size` (which is not a
+		stacking context). The Agent tab only avoided the bug because the rule below
+		makes the panel `position: sticky` (a stacking context) when it's open.
+		*/
+		isolation: isolate;
+
 		> .MyPanelInfiniteBackground::before {
 			background-color: var(--color-base-1-03);
 		}

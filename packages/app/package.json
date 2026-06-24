@@ -29,6 +29,7 @@
 		"@ai-sdk/react": "2.0.171",
 		"@ariakit/react": "^0.4.19",
 		"@atlaskit/pragmatic-drag-and-drop": "^1.8.1",
+		"@chenglou/pretext": "^0.0.8",
 		"@clerk/backend": "^3.2.3",
 		"@clerk/clerk-react": "^5.61.3",
 		"@clerk/themes": "^2.4.57",

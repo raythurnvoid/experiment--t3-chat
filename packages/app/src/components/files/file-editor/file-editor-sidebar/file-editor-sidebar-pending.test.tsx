@@ -4,11 +4,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
 
-const { tenantContextMock, useQueryMock, useStableQueryMock, actionMock } = vi.hoisted(() => ({
+const { tenantContextMock, useQueryMock, useStableQueryMock, actionMock, truncatePathForWidthMock } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	useQueryMock: vi.fn(),
 	useStableQueryMock: vi.fn(),
 	actionMock: vi.fn(),
+	truncatePathForWidthMock: vi.fn((args: { path: string }) => args.path),
 }));
 
 vi.mock("convex/react", () => ({
@@ -54,6 +55,11 @@ vi.mock("@/lib/files.ts", () => ({
 	files_yjs_doc_get_markdown: ({ yjsDoc }: { yjsDoc: unknown }) => ({ _yay: yjsDoc as string }),
 }));
 
+vi.mock("@/lib/file-paths.ts", () => ({
+	files_truncate_path_for_width: (args: { path: string; width: number; font: string; letterSpacing: number }) =>
+		truncatePathForWidthMock(args),
+}));
+
 vi.mock("@/components/my-button.tsx", () => ({
 	MyButton: function MyButton(props: ComponentPropsWithRef<"button">) {
 		const { children, ...rest } = props;
@@ -86,6 +92,8 @@ vi.mock("@/components/my-link.tsx", () => ({
 		params?: Record<string, string>;
 		search?: Record<string, string>;
 		className?: string;
+		"aria-label"?: string;
+		title?: string;
 		children?: ReactNode;
 	}) {
 		let href = props.to;
@@ -94,8 +102,8 @@ vi.mock("@/components/my-link.tsx", () => ({
 		}
 		const query = props.search ? `?${new URLSearchParams(props.search).toString()}` : "";
 		return (
-			<a href={`${href}${query}`} className={props.className}>
-				{props.children}
+			<a href={`${href}${query}`} aria-label={props["aria-label"]} title={props.title}>
+				<span className={props.className}>{props.children}</span>
 			</a>
 		);
 	},
@@ -157,6 +165,8 @@ beforeEach(() => {
 	});
 	actionMock.mockReset();
 	actionMock.mockResolvedValue({ _yay: null });
+	truncatePathForWidthMock.mockReset();
+	truncatePathForWidthMock.mockImplementation((args: { path: string }) => args.path);
 	useQueryMock.mockReset();
 	useStableQueryMock.mockReset();
 });
@@ -220,19 +230,51 @@ describe("FileEditorSidebarPending", () => {
 		expect(paths).toEqual(["alpha/intro.md", "zebra/notes.md"]);
 	});
 
-	test("path link opens the file in the diff editor", () => {
+	test("path link opens the file in the diff editor and preserves the full path metadata", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/deeply/nested/intro.md" })]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
-		const link = container.querySelector(".FileEditorSidebarPending-item-path");
+		const link = screen.getByRole("link", { name: "alpha/deeply/nested/intro.md" });
 		const href = link?.getAttribute("href");
 		expect(href).toContain("/w/team/home/files");
 		expect(href).toContain("nodeId=node_a");
 		expect(href).toContain("view=diff_editor");
+		expect(link.getAttribute("aria-label")).toBe("alpha/deeply/nested/intro.md");
+		expect(link.getAttribute("title")).toBe("alpha/deeply/nested/intro.md");
+		expect(container.querySelector(".FileEditorSidebarPending-item-path")?.textContent).toBe(
+			"alpha/deeply/nested/intro.md",
+		);
+	});
+
+	test("truncates visible path text while preserving full path metadata", () => {
+		const path = "alpha/deeply/nested/intro.md";
+		const truncatedPath = "alpha/de…/intro.md";
+		const clientWidthSpy = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(80);
+		truncatePathForWidthMock.mockReturnValue(truncatedPath);
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path })]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		const link = screen.getByRole("link", { name: path });
+		const pathText = container.querySelector(".FileEditorSidebarPending-item-path-text");
+		expect(pathText?.textContent).toBe(truncatedPath);
+		expect(link.getAttribute("aria-label")).toBe(path);
+		expect(link.getAttribute("title")).toBe(path);
+		expect(truncatePathForWidthMock).toHaveBeenCalledWith({
+			path,
+			width: 80,
+			font: expect.stringContaining("system-ui"),
+			letterSpacing: 0,
+		});
+
+		clientWidthSpy.mockRestore();
 	});
 
 	test("Accept & save stages the unstaged content then saves", async () => {

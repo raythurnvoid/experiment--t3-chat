@@ -267,6 +267,8 @@
 	--FileEditorRichText-text-color-bg-gray: #f1f1ef;
 
 	/* App-specific styles */
+	/* Keep in sync with `APP_FONT_FAMILY` in `src/lib/ui.tsx`; Pretext path
+	   measurement imports that duplicate to avoid `getComputedStyle` during resize. */
 	font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
 	line-height: 1.5;
 	font-weight: 400;

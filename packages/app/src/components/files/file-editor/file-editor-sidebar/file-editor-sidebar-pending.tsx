@@ -1,6 +1,6 @@
 import "./file-editor-sidebar-pending.css";
 import { CheckCheck, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
-import { memo, useMemo, useState, type MouseEvent } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPatch } from "diff";
 import { useConvex, useQuery } from "convex/react";
 import { toast } from "sonner";
@@ -12,10 +12,77 @@ import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyLink } from "@/components/my-link.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
+import { files_truncate_path_for_width } from "@/lib/file-paths.ts";
 import { files_yjs_doc_create_from_array_buffer_update, files_yjs_doc_get_markdown } from "@/lib/files.ts";
 import { Result } from "@/lib/errors-as-values-utils.ts";
+import { APP_FONT_FAMILY } from "@/lib/ui.tsx";
 import { cn } from "@/lib/utils.ts";
 import { files_pending_changes_build_rows } from "./file-editor-sidebar-pending-rows.ts";
+
+// Keep these Pretext metrics in sync with `.FileEditorSidebarPending-item-path-text`;
+// duplicating them here avoids `getComputedStyle` during path resize work.
+const PENDING_PATH_FONT = `500 16px ${APP_FONT_FAMILY}`;
+const PENDING_PATH_LETTER_SPACING = 0;
+
+const PendingPathText = memo(function PendingPathText(props: { path: string }) {
+	const { path } = props;
+	const pathRef = useRef<HTMLSpanElement>(null);
+	const [displayPath, setDisplayPath] = useState(path);
+
+	useLayoutEffect(() => {
+		const pathElement = pathRef.current;
+		const linkElement = pathElement?.closest("a");
+		if (!pathElement || !linkElement) {
+			setDisplayPath(path);
+			return;
+		}
+
+		let cancelled = false;
+
+		const updateDisplayPath = (width?: number) => {
+			const availableWidth = width ?? linkElement.clientWidth;
+			if (availableWidth <= 0) {
+				if (!cancelled) {
+					setDisplayPath(path);
+				}
+				return;
+			}
+
+			const nextDisplayPath = files_truncate_path_for_width({
+				path,
+				width: availableWidth,
+				font: PENDING_PATH_FONT,
+				letterSpacing: PENDING_PATH_LETTER_SPACING,
+			});
+
+			if (!cancelled) {
+				setDisplayPath(nextDisplayPath);
+			}
+		};
+
+		updateDisplayPath();
+
+		const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver((entries) => {
+			updateDisplayPath(entries[0]?.contentRect.width);
+		});
+		resizeObserver?.observe(linkElement);
+		void document.fonts?.ready.then(() => updateDisplayPath());
+
+		return () => {
+			cancelled = true;
+			resizeObserver?.disconnect();
+		};
+	}, [path]);
+
+	return (
+		<span
+			ref={pathRef}
+			className={cn("FileEditorSidebarPending-item-path-text" satisfies FileEditorSidebarPending_ClassNames)}
+		>
+			{displayPath}
+		</span>
+	);
+});
 
 function decode_staged_unstaged(pendingUpdate: app_convex_Doc<"files_pending_updates">) {
 	const stagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.stagedBranchYjsUpdate);
@@ -174,8 +241,10 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						to="/w/$workspaceName/$projectName/files"
 						params={{ workspaceName, projectName }}
 						search={{ nodeId: pendingUpdate.fileNodeId, view: "diff_editor" }}
+						aria-label={path}
+						title={path}
 					>
-						{path}
+						<PendingPathText path={path} />
 					</MyLink>
 					<span className={cn("FileEditorSidebarPending-item-actions" satisfies FileEditorSidebarPending_ClassNames)}>
 						<MyButton
@@ -222,6 +291,7 @@ export type FileEditorSidebarPending_ClassNames =
 	| "FileEditorSidebarPending-item"
 	| "FileEditorSidebarPending-item-summary"
 	| "FileEditorSidebarPending-item-path"
+	| "FileEditorSidebarPending-item-path-text"
 	| "FileEditorSidebarPending-item-actions"
 	| "FileEditorSidebarPending-item-diff";
 

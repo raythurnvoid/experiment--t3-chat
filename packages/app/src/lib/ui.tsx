@@ -4,6 +4,12 @@ import { useGlobalEventList } from "./global-event.tsx";
 import { check_element_is_in_allowed_areas } from "./utils.ts";
 import { useFn } from "../hooks/utils-hooks.ts";
 
+/**
+ * This constant should be kept in sync with the root `font-family` in `src/app.css`.
+ * Used in Pretext path measurement imports to avoid calling `getComputedStyle` during resize.
+ */
+export const APP_FONT_FAMILY = "system-ui, Avenir, Helvetica, Arial, sans-serif";
+
 // #region id
 export const ui_id = ((/* iife */) => {
 	let ui_id_counter = 0;

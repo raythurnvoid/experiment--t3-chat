@@ -78,7 +78,7 @@
 	}
 
 	/* MyLink renders the className on its inner surface span, so the flex child of the summary is the
-	   <a> wrapper. Grow/clip it here so the path ellipsizes and the actions stay pinned to the right. */
+	   <a> wrapper. Grow/clip it here so the path truncates and the actions stay pinned to the right. */
 	.FileEditorSidebarPending-item-summary > a {
 		flex: 1;
 		min-width: 0;
@@ -89,12 +89,34 @@
 	}
 
 	.FileEditorSidebarPending-item-path {
+		display: block;
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
 		/* Match the files tree sidebar item text instead of the link accent color. */
 		color: var(--color-fg-07);
 
 		&:hover {
 			color: var(--color-fg-11);
 		}
+	}
+
+	.FileEditorSidebarPending-item-path-text {
+		display: block;
+		min-width: 0;
+
+		/* Keep in sync with `PENDING_PATH_FONT` / `PENDING_PATH_LETTER_SPACING`;
+		   Pretext uses those duplicated values without calling `getComputedStyle`. */
+		font-size: 16px;
+		font-weight: 500;
+		letter-spacing: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.FileEditorSidebarPending-item-actions {

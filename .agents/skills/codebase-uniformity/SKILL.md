@@ -46,6 +46,7 @@ Load only the reference that matches the touched surface:
 
 - `references/bash-command.md` for `packages/app/convex/bash.ts`.
 - `references/convex-backend.md` for `packages/app/convex/**`.
+- `references/frontend-app-code.md` for `packages/app/src/**` React components and frontend lib utilities.
 - `references/shared-parsers.md` for parser/serializer utilities under `packages/app/shared/**`.
 - `references/tests.md` for adding, moving, or reviewing tests.
 - `references/style-review-checklist.md` before finalizing a broad implementation or PR plan.
@@ -56,9 +57,10 @@ Use this checklist before accepting a patch.
 
 - **Placement:** Code is inserted beside the nearest similar helper, command, query, mutation, hook, component, or test.
 - **Definition order:** Prefer defining module-private helpers before their users when the file can do so without breaking a stronger local grouping. Avoid leaving a new helper below its first call site.
-- **Names:** Module-private helpers follow local naming. In `bash.ts`, command-owned helpers use command-specific prefixes such as `search_command_*`, `find_command_*`, or `meta_command_*`.
+- **Names:** Module-private helpers follow local naming. In `bash.ts`, command-owned helpers use command-specific prefixes such as `search_command_*`, `find_command_*`, or `meta_command_*`. In new `packages/app/src/lib/**` modules, exported functions should carry domain context such as `files_*`, while private helper symbols should stay unprefixed unless the existing file already has a stronger local convention.
 - **Regions and ordering:** If the file uses regions or ordered sections, preserve them. In `bash.ts`, keep command helpers inside the matching command region.
 - **Granularity:** Keep one-off logic inline unless a helper removes real duplication or hides a necessary external-system detail.
+- **Types:** Keep one-off callback and object shapes inline unless a named type is exported, reused, recursive, derived from an external API, or gives a real domain concept a name.
 - **Validators:** In Convex modules, keep one-off `args` and `returns` validators inline at the registered function unless there is real reuse.
 - **Errors:** Match the local boundary. Use Result `_nay` where the surrounding code does; use structured `console.error(errorMessage, errorData)` plus `should_never_happen(errorMessage, errorData)` for impossible Convex invariants.
 - **Indexes:** Name Convex indexes from the indexed fields in order. If the full name is too long, abbreviate the least domain-important field consistently and keep the main domain term readable.
