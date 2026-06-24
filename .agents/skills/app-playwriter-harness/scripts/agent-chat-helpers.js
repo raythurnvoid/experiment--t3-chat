@@ -17,7 +17,24 @@ state.qa = {
 				throw error;
 			});
 		if (!clicked) throw new Error("New Chat button not found");
-		await state.page.waitForTimeout(500);
+		await state.page.waitForTimeout(900);
+		// The sidebar agent keeps every thread as a tab and does NOT reliably auto-select the
+		// freshly-created one, so a send would otherwise land in the previously-selected (accumulated)
+		// thread and answer from its context. Explicitly select the last empty "New chat" tab so the
+		// send isolates into a clean thread.
+		await state.page
+			.evaluate(() => {
+				const emptyTabs = Array.from(document.querySelectorAll('[role="tab"]')).filter(
+					(tab) => (tab.textContent || "").trim() === "New chat",
+				);
+				const target = emptyTabs[emptyTabs.length - 1];
+				if (target) target.click();
+			})
+			.catch((error) => {
+				if (String(error).includes("Execution context was destroyed")) return;
+				throw error;
+			});
+		await state.page.waitForTimeout(700);
 		const tabs = await state.page
 			.evaluate(() => {
 				const list = document.querySelector('[aria-label="Open chats"]');
@@ -92,6 +109,33 @@ state.qa = {
 				.waitForSelector('[aria-label="Stop generating"]', { timeout: 15000 })
 				.catch(() => undefined);
 			await state.qa.waitIdle(timeoutMs);
+		}
+		// waitIdle can return during a brief between-steps lull (the Stop button blinks off after a
+		// tool result, before the next step starts), so the turn may still be streaming — and a
+		// turn that ends without a concluding sentence has no prose to anchor on. Settle on overall
+		// DOM stability instead: require the message count, terminal count, and last-message text to
+		// hold UNCHANGED across two consecutive 3s samples with no Stop button. This fully drains the
+		// turn before the caller starts the next case, which is what prevents thread-to-thread bleed.
+		let sig = null;
+		let stableStreak = 0;
+		for (let i = 0; i < 24 && Date.now() - start < timeoutMs; i++) {
+			const cur = await state.page
+				.evaluate(() => {
+					const msgs = document.querySelectorAll(".AiChatMessage");
+					const last = msgs[msgs.length - 1];
+					const terms = document.querySelectorAll('summary[aria-label^="Bash"]').length;
+					const stop = !!document.querySelector('[aria-label="Stop generating"]');
+					return JSON.stringify({ m: msgs.length, t: terms, stop, len: last ? (last.textContent || "").length : 0 });
+				})
+				.catch((error) => {
+					if (String(error).includes("Execution context was destroyed")) return null;
+					throw error;
+				});
+			const busy = !cur || JSON.parse(cur).stop;
+			stableStreak = !busy && cur === sig ? stableStreak + 1 : 0;
+			sig = cur;
+			if (stableStreak >= 2) break;
+			await state.page.waitForTimeout(3000);
 		}
 		console.log("waitDone: finished in", Math.round((Date.now() - start) / 1000), "s");
 	},

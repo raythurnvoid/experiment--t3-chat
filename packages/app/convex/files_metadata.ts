@@ -12,20 +12,23 @@ import {
 
 // #region indexed doc writes
 
-function value_insert_payload(value: files_metadata_Value) {
+function value_doc_payload(value: files_metadata_Value) {
 	switch (value.valueKind) {
 		case "string":
 			return {
+				docKind: "value" as const,
 				valueKind: "string" as const,
 				stringValue: value.value,
 			};
 		case "number":
 			return {
+				docKind: "value" as const,
 				valueKind: "number" as const,
 				numberValue: value.value,
 			};
 		case "boolean":
 			return {
+				docKind: "value" as const,
 				valueKind: "boolean" as const,
 				booleanValue: value.value,
 			};
@@ -36,52 +39,28 @@ export async function files_metadata_db_delete_committed(
 	ctx: MutationCtx,
 	args: { workspaceId: string; projectId: string; nodeId: Id<"files_nodes"> },
 ) {
-	const [fields, values] = await Promise.all([
-		ctx.db
-			.query("files_metadata_fields")
-			.withIndex("by_workspace_project_source_fileNode_qualifiedField", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", args.nodeId),
-			)
-			.collect(),
-		ctx.db
-			.query("files_metadata_values")
-			.withIndex("by_workspace_project_source_fileNode_qualifiedField_valueKind", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", args.nodeId),
-			)
-			.collect(),
-	]);
-	await Promise.all([
-		...fields.map((doc) => ctx.db.delete("files_metadata_fields", doc._id)),
-		...values.map((doc) => ctx.db.delete("files_metadata_values", doc._id)),
-	]);
+	const docs = await ctx.db
+		.query("files_metadata_docs")
+		.withIndex("by_workspace_project_source_fileNode_qualifiedField", (q) =>
+			q
+				.eq("workspaceId", args.workspaceId)
+				.eq("projectId", args.projectId)
+				.eq("sourceKind", "committed")
+				.eq("fileNodeId", args.nodeId),
+		)
+		.collect();
+	await Promise.all(docs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
 }
 
 export async function files_metadata_db_delete_pending(
 	ctx: MutationCtx,
 	args: { pendingUpdateId: Id<"files_pending_updates"> },
 ) {
-	const [fields, values] = await Promise.all([
-		ctx.db
-			.query("files_metadata_fields")
-			.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
-			.collect(),
-		ctx.db
-			.query("files_metadata_values")
-			.withIndex("by_pendingUpdate_qualifiedField_valueKind", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
-			.collect(),
-	]);
-	await Promise.all([
-		...fields.map((doc) => ctx.db.delete("files_metadata_fields", doc._id)),
-		...values.map((doc) => ctx.db.delete("files_metadata_values", doc._id)),
-	]);
+	const docs = await ctx.db
+		.query("files_metadata_docs")
+		.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+		.collect();
+	await Promise.all(docs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
 }
 
 export async function files_metadata_db_insert_committed(
@@ -113,32 +92,29 @@ export async function files_metadata_db_insert_committed(
 	}
 
 	const metadata = files_metadata_extract_frontmatter(args.markdownContent);
+	const scope = {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		fileNodeId: args.nodeId,
+		sourceKind: "committed" as const,
+		yjsSequence: args.yjsSequence,
+		path: fileNode.path,
+		treePath: fileNode.treePath,
+		archiveOperationId: fileNode.archiveOperationId,
+	};
 	await Promise.all([
 		...metadata.fields.map((qualifiedField) =>
-			ctx.db.insert("files_metadata_fields", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				fileNodeId: args.nodeId,
-				sourceKind: "committed" as const,
-				yjsSequence: args.yjsSequence,
-				path: fileNode.path,
-				treePath: fileNode.treePath,
-				archiveOperationId: fileNode.archiveOperationId,
+			ctx.db.insert("files_metadata_docs", {
+				...scope,
 				qualifiedField,
+				docKind: "field" as const,
 			}),
 		),
 		...metadata.values.map((value) =>
-			ctx.db.insert("files_metadata_values", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				fileNodeId: args.nodeId,
-				sourceKind: "committed" as const,
-				yjsSequence: args.yjsSequence,
-				path: fileNode.path,
-				treePath: fileNode.treePath,
-				archiveOperationId: fileNode.archiveOperationId,
+			ctx.db.insert("files_metadata_docs", {
+				...scope,
 				qualifiedField: value.qualifiedField,
-				...value_insert_payload(value),
+				...value_doc_payload(value),
 			}),
 		),
 	]);
@@ -170,34 +146,30 @@ export async function files_metadata_db_replace_pending(
 	}
 
 	const metadata = files_metadata_extract_frontmatter(args.unstagedMarkdown);
+	const scope = {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		fileNodeId: args.nodeId,
+		sourceKind: "pending" as const,
+		userId: args.userId,
+		pendingUpdateId: args.pendingUpdateId,
+		path: fileNode.path,
+		treePath: fileNode.treePath,
+		archiveOperationId: fileNode.archiveOperationId,
+	};
 	await Promise.all([
 		...metadata.fields.map((qualifiedField) =>
-			ctx.db.insert("files_metadata_fields", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				fileNodeId: args.nodeId,
-				sourceKind: "pending" as const,
-				userId: args.userId,
-				pendingUpdateId: args.pendingUpdateId,
-				path: fileNode.path,
-				treePath: fileNode.treePath,
-				archiveOperationId: fileNode.archiveOperationId,
+			ctx.db.insert("files_metadata_docs", {
+				...scope,
 				qualifiedField,
+				docKind: "field" as const,
 			}),
 		),
 		...metadata.values.map((value) =>
-			ctx.db.insert("files_metadata_values", {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				fileNodeId: args.nodeId,
-				sourceKind: "pending" as const,
-				userId: args.userId,
-				pendingUpdateId: args.pendingUpdateId,
-				path: fileNode.path,
-				treePath: fileNode.treePath,
-				archiveOperationId: fileNode.archiveOperationId,
+			ctx.db.insert("files_metadata_docs", {
+				...scope,
 				qualifiedField: value.qualifiedField,
-				...value_insert_payload(value),
+				...value_doc_payload(value),
 			}),
 		),
 	]);
@@ -214,7 +186,7 @@ export async function files_metadata_db_patch_file_scope(
 		archiveOperationId?: string;
 	},
 ) {
-	const patch: Partial<Pick<Doc<"files_metadata_fields">, "path" | "treePath" | "archiveOperationId">> = {};
+	const patch: Partial<Pick<Doc<"files_metadata_docs">, "path" | "treePath" | "archiveOperationId">> = {};
 	if ("path" in args) {
 		patch.path = args.path;
 	}
@@ -224,24 +196,13 @@ export async function files_metadata_db_patch_file_scope(
 	if ("archiveOperationId" in args) {
 		patch.archiveOperationId = args.archiveOperationId;
 	}
-	const [fields, values] = await Promise.all([
-		ctx.db
-			.query("files_metadata_fields")
-			.withIndex("by_workspace_project_fileNode_qualifiedField", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
-			)
-			.collect(),
-		ctx.db
-			.query("files_metadata_values")
-			.withIndex("by_workspace_project_fileNode_qualifiedField_valueKind", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
-			)
-			.collect(),
-	]);
-	await Promise.all([
-		...fields.map((doc) => ctx.db.patch("files_metadata_fields", doc._id, patch)),
-		...values.map((doc) => ctx.db.patch("files_metadata_values", doc._id, patch)),
-	]);
+	const docs = await ctx.db
+		.query("files_metadata_docs")
+		.withIndex("by_workspace_project_fileNode_qualifiedField", (q) =>
+			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
+		)
+		.collect();
+	await Promise.all(docs.map((doc) => ctx.db.patch("files_metadata_docs", doc._id, patch)));
 }
 
 // #endregion indexed doc writes
@@ -256,7 +217,7 @@ function metadata_kind_from_qualified_field(qualifiedField: string) {
 	return qualifiedField.slice(0, qualifiedField.indexOf("."));
 }
 
-async function list_pending_file_node_ids(
+async function db_list_pending_file_node_ids(
 	ctx: QueryCtx,
 	args: { workspaceId: string; projectId: string; userId: Id<"users"> },
 ) {
@@ -270,29 +231,52 @@ async function list_pending_file_node_ids(
 	return pendingUpdates.map((pendingUpdate) => pendingUpdate.fileNodeId);
 }
 
-function format_field_result(doc: Doc<"files_metadata_fields">) {
-	return {
+function format_search_result(doc: Doc<"files_metadata_docs">) {
+	const base = {
 		path: doc.path,
 		nodeId: doc.fileNodeId,
 		qualifiedField: doc.qualifiedField,
 		metadataKind: metadata_kind_from_qualified_field(doc.qualifiedField),
 		sourceKind: doc.sourceKind,
-		valueKind: "none" as const,
 	};
-}
+	if (doc.docKind === "field") {
+		return {
+			...base,
+			valueKind: "none" as const,
+		};
+	}
 
-function format_value_result(doc: Doc<"files_metadata_values">) {
-	return {
-		path: doc.path,
-		nodeId: doc.fileNodeId,
-		qualifiedField: doc.qualifiedField,
-		metadataKind: metadata_kind_from_qualified_field(doc.qualifiedField),
-		sourceKind: doc.sourceKind,
-		valueKind: doc.valueKind,
-		stringValue: doc.stringValue,
-		numberValue: doc.numberValue,
-		booleanValue: doc.booleanValue,
-	};
+	switch (doc.valueKind) {
+		case "string":
+			return {
+				...base,
+				valueKind: "string" as const,
+				stringValue: doc.stringValue,
+			};
+		case "number":
+			return {
+				...base,
+				valueKind: "number" as const,
+				numberValue: doc.numberValue,
+			};
+		case "boolean":
+			return {
+				...base,
+				valueKind: "boolean" as const,
+				booleanValue: doc.booleanValue,
+			};
+		default: {
+			const errorMessage = "metadataDoc.valueKind is not set";
+			const errorData = {
+				metadataDocId: doc._id,
+				fileNodeId: doc.fileNodeId,
+				qualifiedField: doc.qualifiedField,
+				docKind: doc.docKind,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+	}
 }
 
 function search_query(
@@ -312,12 +296,13 @@ function search_query(
 	switch (plan.op) {
 		case "exists": {
 			let query = ctx.db
-				.query("files_metadata_fields")
-				.withIndex("by_workspace_project_archiveOperation_qualifiedField_treePath", (q) => {
+				.query("files_metadata_docs")
+				.withIndex("by_workspace_project_archive_docKind_qualifiedField_tree", (q) => {
 					const base = q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
 						.eq("archiveOperationId", undefined)
+						.eq("docKind", "field")
 						.eq("qualifiedField", plan.qualifiedField);
 					return args.treePathPrefix
 						? base.gte("treePath", args.treePathPrefix).lt("treePath", `${args.treePathPrefix}\uffff`)
@@ -334,19 +319,21 @@ function search_query(
 					q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
 				);
 			}
-			return { kind: "fields" as const, query };
+			return query;
 		}
 		case "eq":
 			if (typeof plan.value === "string") {
 				const value = plan.value;
 				let query = ctx.db
-					.query("files_metadata_values")
-					.withIndex("by_workspace_project_archive_qualifiedField_stringValue_tree", (q) => {
+					.query("files_metadata_docs")
+					.withIndex("by_workspace_project_archive_docKind_qualifiedField_string_tree", (q) => {
 						const base = q
 							.eq("workspaceId", args.workspaceId)
 							.eq("projectId", args.projectId)
 							.eq("archiveOperationId", undefined)
+							.eq("docKind", "value")
 							.eq("qualifiedField", plan.qualifiedField)
+							.eq("valueKind", "string")
 							.eq("stringValue", value);
 						return args.treePathPrefix
 							? base.gte("treePath", args.treePathPrefix).lt("treePath", `${args.treePathPrefix}\uffff`)
@@ -363,18 +350,20 @@ function search_query(
 						q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
 					);
 				}
-				return { kind: "values" as const, query };
+				return query;
 			}
 			if (typeof plan.value === "number") {
 				const value = plan.value;
 				let query = ctx.db
-					.query("files_metadata_values")
-					.withIndex("by_workspace_project_archive_qualifiedField_numberValue_tree", (q) => {
+					.query("files_metadata_docs")
+					.withIndex("by_workspace_project_archive_docKind_qualifiedField_number_tree", (q) => {
 						const base = q
 							.eq("workspaceId", args.workspaceId)
 							.eq("projectId", args.projectId)
 							.eq("archiveOperationId", undefined)
+							.eq("docKind", "value")
 							.eq("qualifiedField", plan.qualifiedField)
+							.eq("valueKind", "number")
 							.eq("numberValue", value);
 						return args.treePathPrefix
 							? base.gte("treePath", args.treePathPrefix).lt("treePath", `${args.treePathPrefix}\uffff`)
@@ -391,18 +380,20 @@ function search_query(
 						q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
 					);
 				}
-				return { kind: "values" as const, query };
+				return query;
 			}
 			{
 				const value = plan.value;
 				let query = ctx.db
-					.query("files_metadata_values")
-					.withIndex("by_workspace_project_archive_qualifiedField_booleanValue_tree", (q) => {
+					.query("files_metadata_docs")
+					.withIndex("by_workspace_project_archive_docKind_qualifiedField_boolean_tree", (q) => {
 						const base = q
 							.eq("workspaceId", args.workspaceId)
 							.eq("projectId", args.projectId)
 							.eq("archiveOperationId", undefined)
+							.eq("docKind", "value")
 							.eq("qualifiedField", plan.qualifiedField)
+							.eq("valueKind", "boolean")
 							.eq("booleanValue", value);
 						return args.treePathPrefix
 							? base.gte("treePath", args.treePathPrefix).lt("treePath", `${args.treePathPrefix}\uffff`)
@@ -419,17 +410,19 @@ function search_query(
 						q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
 					);
 				}
-				return { kind: "values" as const, query };
+				return query;
 			}
 		case "prefix": {
 			let query = ctx.db
-				.query("files_metadata_values")
-				.withIndex("by_workspace_project_archive_qualifiedField_stringValue_tree", (q) =>
+				.query("files_metadata_docs")
+				.withIndex("by_workspace_project_archive_docKind_qualifiedField_string_tree", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
 						.eq("archiveOperationId", undefined)
+						.eq("docKind", "value")
 						.eq("qualifiedField", plan.qualifiedField)
+						.eq("valueKind", "string")
 						.gte("stringValue", plan.value)
 						.lt("stringValue", `${plan.value}\uffff`),
 				);
@@ -450,17 +443,19 @@ function search_query(
 					q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
 				);
 			}
-			return { kind: "values" as const, query };
+			return query;
 		}
 		case "range": {
 			let query = ctx.db
-				.query("files_metadata_values")
-				.withIndex("by_workspace_project_archive_qualifiedField_numberValue_tree", (q) => {
+				.query("files_metadata_docs")
+				.withIndex("by_workspace_project_archive_docKind_qualifiedField_number_tree", (q) => {
 					const base = q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
 						.eq("archiveOperationId", undefined)
-						.eq("qualifiedField", plan.qualifiedField);
+						.eq("docKind", "value")
+						.eq("qualifiedField", plan.qualifiedField)
+						.eq("valueKind", "number");
 					if (plan.gte != null) {
 						const lower = base.gte("numberValue", plan.gte);
 						if (plan.lte != null) return lower.lte("numberValue", plan.lte);
@@ -494,7 +489,7 @@ function search_query(
 					q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
 				);
 			}
-			return { kind: "values" as const, query };
+			return query;
 		}
 	}
 }
@@ -543,9 +538,9 @@ export const search = internalQuery({
 		isDone: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
-		const pendingNodeIds = await list_pending_file_node_ids(ctx, args);
+		const pendingNodeIds = await db_list_pending_file_node_ids(ctx, args);
 		const treePathPrefix = args.pathPrefix == null ? undefined : tree_path_from_path(args.pathPrefix);
-		const searchQuery = search_query(ctx, {
+		const query = search_query(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			plan: args.plan,
@@ -553,17 +548,9 @@ export const search = internalQuery({
 			userId: args.userId,
 			pendingNodeIds,
 		});
-		if (searchQuery.kind === "fields") {
-			const result = await searchQuery.query.paginate({ cursor: args.cursor, numItems: args.numItems });
-			return {
-				items: result.page.map(format_field_result),
-				continueCursor: result.continueCursor,
-				isDone: result.isDone,
-			};
-		}
-		const result = await searchQuery.query.paginate({ cursor: args.cursor, numItems: args.numItems });
+		const result = await query.paginate({ cursor: args.cursor, numItems: args.numItems });
 		return {
-			items: result.page.map(format_value_result),
+			items: result.page.map(format_search_result),
 			continueCursor: result.continueCursor,
 			isDone: result.isDone,
 		};
@@ -576,6 +563,40 @@ export type files_metadata_search_Result =
 // #endregion search
 
 // #region get by path
+
+function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
+	switch (doc.valueKind) {
+		case "string":
+			return {
+				qualifiedField: doc.qualifiedField,
+				valueKind: "string" as const,
+				stringValue: doc.stringValue,
+			};
+		case "number":
+			return {
+				qualifiedField: doc.qualifiedField,
+				valueKind: "number" as const,
+				numberValue: doc.numberValue,
+			};
+		case "boolean":
+			return {
+				qualifiedField: doc.qualifiedField,
+				valueKind: "boolean" as const,
+				booleanValue: doc.booleanValue,
+			};
+		default: {
+			const errorMessage = "metadataDoc.valueKind is not set";
+			const errorData = {
+				metadataDocId: doc._id,
+				fileNodeId: doc.fileNodeId,
+				qualifiedField: doc.qualifiedField,
+				docKind: doc.docKind,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+	}
+}
 
 export const get_by_path = internalQuery({
 	args: {
@@ -629,51 +650,28 @@ export const get_by_path = internalQuery({
 			.first();
 
 		const sourceKind = pendingUpdate ? ("pending" as const) : ("committed" as const);
-		const [fields, values] = await Promise.all([
-			pendingUpdate
-				? ctx.db
-						.query("files_metadata_fields")
-						.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
-						.collect()
-				: ctx.db
-						.query("files_metadata_fields")
-						.withIndex("by_workspace_project_source_fileNode_qualifiedField", (q) =>
-							q
-								.eq("workspaceId", args.workspaceId)
-								.eq("projectId", args.projectId)
-								.eq("sourceKind", "committed")
-								.eq("fileNodeId", fileNode._id),
-						)
-						.collect(),
-			pendingUpdate
-				? ctx.db
-						.query("files_metadata_values")
-						.withIndex("by_pendingUpdate_qualifiedField_valueKind", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
-						.collect()
-				: ctx.db
-						.query("files_metadata_values")
-						.withIndex("by_workspace_project_source_fileNode_qualifiedField_valueKind", (q) =>
-							q
-								.eq("workspaceId", args.workspaceId)
-								.eq("projectId", args.projectId)
-								.eq("sourceKind", "committed")
-								.eq("fileNodeId", fileNode._id),
-						)
-						.collect(),
-		]);
+		const docs = pendingUpdate
+			? await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+					.collect()
+			: await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_workspace_project_source_fileNode_qualifiedField", (q) =>
+						q
+							.eq("workspaceId", args.workspaceId)
+							.eq("projectId", args.projectId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", fileNode._id),
+					)
+					.collect();
 
 		return {
 			path: fileNode.path,
 			nodeId: fileNode._id,
 			sourceKind,
-			fields: fields.map((field) => field.qualifiedField),
-			values: values.map((value) => ({
-				qualifiedField: value.qualifiedField,
-				valueKind: value.valueKind,
-				stringValue: value.stringValue,
-				numberValue: value.numberValue,
-				booleanValue: value.booleanValue,
-			})),
+			fields: docs.filter((doc) => doc.docKind === "field").map((doc) => doc.qualifiedField),
+			values: docs.filter((doc) => doc.docKind === "value").map(format_get_by_path_value),
 		};
 	},
 });

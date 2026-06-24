@@ -19,8 +19,8 @@ Schema comments should name the concrete docs and why the table exists:
 
 - `files_plain_text_chunks` docs support full-text search and pending/committed overlay; `files_search_chunks` no longer exists.
 - `files_markdown_chunks` docs support exact Markdown reads and regex scans for both committed and pending content; the old pending-only chunk table no longer exists.
-- `files_metadata_fields` docs support field-existence search.
-- `files_metadata_values` docs support primitive value search.
+- `files_metadata_docs` field docs support field-existence search.
+- `files_metadata_docs` value docs support primitive value search.
 
 Avoid vague terms such as `projection` when `search chunks`, `metadata docs`, or `indexed docs` is clearer.
 

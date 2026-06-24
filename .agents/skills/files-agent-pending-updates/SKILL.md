@@ -77,10 +77,12 @@ Unified full-text search table:
 
 The old separate search and pending chunk tables no longer exist. Bash full-text `search` uses the unified `files_plain_text_chunks` table as a self-contained search-result doc; exact Markdown reads use `files_markdown_chunks`, while plain-text regex search reads line numbers from `files_plain_text_chunks`.
 
-Unified Markdown frontmatter metadata tables:
+Unified Markdown frontmatter metadata docs:
 
-- `files_metadata_fields`
-  - one presence doc per indexed field, including fields whose value is an object, array, unsupported value, or otherwise only searchable by existence
+- `files_metadata_docs`
+  - one table for committed and pending indexed metadata docs
+  - field docs use `docKind: "field"` and support existence search, including fields whose value is an object, array, unsupported value, or otherwise only searchable by existence
+  - value docs use `docKind: "value"` and support one searchable primitive value per field value
   - `workspaceId`
   - `projectId`
   - `fileNodeId`
@@ -92,14 +94,9 @@ Unified Markdown frontmatter metadata tables:
   - denormalized `treePath`
   - optional `archiveOperationId`
   - `qualifiedField`, currently `frontmatter.*`
-  - committed replacement, pending replacement, scope patching, and field-existence search indexes
-- `files_metadata_values`
-  - one searchable primitive value doc per field value
-  - same scope/source/path fields as `files_metadata_fields`
-  - `qualifiedField`
-  - `valueKind: "string" | "number" | "boolean"`
+  - optional `valueKind: "string" | "number" | "boolean"` for value docs
   - one value column matching `valueKind`: `stringValue`, `numberValue`, or `booleanValue`
-  - string prefix/equality, numeric range/equality, boolean equality, committed replacement, pending replacement, and scope patching indexes
+  - committed replacement, pending replacement, scope patching, field-existence search, string prefix/equality, numeric range/equality, and boolean equality indexes
 
 Saved-sequence marker table:
 
@@ -177,7 +174,7 @@ Important behavior:
 - Save applies remote drift from base into both branches before saving, persists only the `staged` diff to the live file, writes the saved-sequence marker, enqueues R2 content materialization, and keeps the pending update doc alive on partial save.
 - Public actions/mutations are rate-limited after membership validation and before writes.
 - Saves that push a live Yjs diff must pass the billing credit gate and emit one `file_save` usage event. The billing event name is intentionally unchanged for now to avoid a separate billing taxonomy migration.
-- Every pending doc lifecycle path maintains pending `files_markdown_chunks`, pending `files_plain_text_chunks`, and pending metadata docs in the same mutation: doc insert chunks the `unstaged` Markdown with the shared `files_chunk_markdown` chunker and extracts Markdown YAML frontmatter into `files_metadata_fields` / `files_metadata_values`, patches rebuild pending Markdown chunk docs, pending plain-text chunk docs, and metadata docs only when the unstaged content actually changed (staged-only changes like `Accept all` skip the rebuild), and doc deletion (collapse, full save, expiry, data deletion) deletes all pending Markdown chunks, plain-text chunks, and metadata docs.
+- Every pending doc lifecycle path maintains pending `files_markdown_chunks`, pending `files_plain_text_chunks`, and pending `files_metadata_docs` in the same mutation: doc insert chunks the `unstaged` Markdown with the shared `files_chunk_markdown` chunker and extracts Markdown YAML frontmatter into field and value metadata docs, patches rebuild pending Markdown chunk docs, pending plain-text chunk docs, and metadata docs only when the unstaged content actually changed (staged-only changes like `Accept all` skip the rebuild), and doc deletion (collapse, full save, expiry, project purge, and user purge) deletes all pending Markdown chunks, plain-text chunks, and metadata docs.
 - Committed materialization writes committed `files_markdown_chunks`, committed `files_plain_text_chunks`, and committed metadata docs; committed replacement deletes the old committed Markdown chunks, plain-text chunks, and metadata docs for that file before inserting new docs.
 - Rename, move, archive, and unarchive patch denormalized `path`, `treePath`, and `archiveOperationId` on `files_plain_text_chunks` and metadata docs, so full-text and metadata search can filter scope before native pagination.
 - Pending update doc writes also store `size` from the same current `unstaged` Markdown whenever the unstaged branch is created or replaced. Staged-only changes preserve the existing size.
@@ -219,7 +216,7 @@ Important behavior:
 - AI reads must continue to see the current user's pending `unstaged` branch overlay.
 - Pending Markdown chunk docs, pending plain-text chunk docs, and pending metadata docs are replaced in the same mutation as every pending doc write/delete, so no orphan or stale pending search/metadata docs should exist.
 - Bash `search` (`text_search_files`) uses one Convex full-text search query against `files_plain_text_chunks` with Convex native cursor pagination, and renders directly from those docs without hydrating linked Markdown chunks. It filters pending chunks to the acting user, filters out other users' pending chunks, and hides committed chunks for files that user has pending edits on. Pending-first ordering is not an invariant.
-- Bash `meta search` uses one Convex indexed query against either `files_metadata_fields` or `files_metadata_values` per command. It filters pending metadata to the acting user, filters out other users' pending metadata, and hides committed metadata for files that user has pending edits on. Multi-predicate AND/OR is intentionally outside the command and should be composed by shell tools over path output.
+- Bash `meta search` uses one Convex indexed query against `files_metadata_docs` per command. It filters pending metadata to the acting user, filters out other users' pending metadata, and hides committed metadata for files that user has pending edits on. Multi-predicate AND/OR is intentionally outside the command and should be composed by shell tools over path output.
 - `Review changes` must switch into diff mode.
 - `Accept all` does not save by itself.
 - `Discard all` does not call a special clear mutation.

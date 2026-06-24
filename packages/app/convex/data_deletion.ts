@@ -362,22 +362,13 @@ async function db_purge_workspace_project_content_batch(
 			return { done: false, deletedCount: markdownChunks.length };
 		}
 
-		const metadataFields = await ctx.db
-			.query("files_metadata_fields")
+		const metadataDocs = await ctx.db
+			.query("files_metadata_docs")
 			.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
 			.take(batchSize);
-		if (metadataFields.length > 0) {
-			await Promise.all(metadataFields.map((doc) => ctx.db.delete("files_metadata_fields", doc._id)));
-			return { done: false, deletedCount: metadataFields.length };
-		}
-
-		const metadataValues = await ctx.db
-			.query("files_metadata_values")
-			.withIndex("by_pendingUpdate_qualifiedField_valueKind", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
-			.take(batchSize);
-		if (metadataValues.length > 0) {
-			await Promise.all(metadataValues.map((doc) => ctx.db.delete("files_metadata_values", doc._id)));
-			return { done: false, deletedCount: metadataValues.length };
+		if (metadataDocs.length > 0) {
+			await Promise.all(metadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
+			return { done: false, deletedCount: metadataDocs.length };
 		}
 
 		await ctx.db.delete("files_pending_updates", pendingUpdate._id);
@@ -460,26 +451,15 @@ async function db_purge_workspace_project_content_batch(
 
 	// File-derived content and snapshot docs are removed before jobs, assets,
 	// and file nodes, which are cleaned up at the end of this helper.
-	const metadataFields = await ctx.db
-		.query("files_metadata_fields")
+	const metadataDocs = await ctx.db
+		.query("files_metadata_docs")
 		.withIndex("by_workspace_project_fileNode_qualifiedField", (q) =>
 			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
 		)
 		.take(batchSize);
-	if (metadataFields.length > 0) {
-		await Promise.all(metadataFields.map((doc) => ctx.db.delete("files_metadata_fields", doc._id)));
-		return { done: false, deletedCount: metadataFields.length };
-	}
-
-	const metadataValues = await ctx.db
-		.query("files_metadata_values")
-		.withIndex("by_workspace_project_fileNode_qualifiedField_valueKind", (q) =>
-			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
-		)
-		.take(batchSize);
-	if (metadataValues.length > 0) {
-		await Promise.all(metadataValues.map((doc) => ctx.db.delete("files_metadata_values", doc._id)));
-		return { done: false, deletedCount: metadataValues.length };
+	if (metadataDocs.length > 0) {
+		await Promise.all(metadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
+		return { done: false, deletedCount: metadataDocs.length };
 	}
 
 	const plainTextChunks = await ctx.db
@@ -1026,8 +1006,7 @@ async function db_finalize_deleted_user(
 		pendingUpdateCleanupTasks,
 		pendingMarkdownChunks,
 		pendingPlainTextChunks,
-		pendingMetadataFields,
-		pendingMetadataValues,
+		pendingMetadataDocs,
 		lastSequenceSaved,
 		billingUsageSnapshots,
 	] = await Promise.all([
@@ -1089,20 +1068,8 @@ async function db_finalize_deleted_user(
 				await Promise.all(
 					docs.map((doc) =>
 						ctx.db
-							.query("files_metadata_fields")
+							.query("files_metadata_docs")
 							.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", doc._id))
-							.collect(),
-					),
-				)
-			).flat(),
-		),
-		pendingUpdatesPromise.then(async (docs) =>
-			(
-				await Promise.all(
-					docs.map((doc) =>
-						ctx.db
-							.query("files_metadata_values")
-							.withIndex("by_pendingUpdate_qualifiedField_valueKind", (q) => q.eq("pendingUpdateId", doc._id))
 							.collect(),
 					),
 				)
@@ -1149,8 +1116,7 @@ async function db_finalize_deleted_user(
 			...pendingPlainTextChunks.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)),
 			...pendingUpdateCleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)),
 			...pendingMarkdownChunks.map((doc) => ctx.db.delete("files_markdown_chunks", doc._id)),
-			...pendingMetadataFields.map((doc) => ctx.db.delete("files_metadata_fields", doc._id)),
-			...pendingMetadataValues.map((doc) => ctx.db.delete("files_metadata_values", doc._id)),
+			...pendingMetadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)),
 		]),
 	]);
 

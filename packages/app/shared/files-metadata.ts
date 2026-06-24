@@ -297,6 +297,18 @@ export function files_metadata_parse_search_where_json(whereJson: string) {
 		});
 	}
 
+	// Exactly one predicate key is allowed. Extra keys (e.g. a second `eq`, or a stray `eq2`)
+	// must be rejected rather than silently dropped, so a caller cannot believe a combined
+	// AND query ran when only the first matched key was applied.
+	if (Object.keys(parsed).length > 1) {
+		return Result({
+			_nay: {
+				message:
+					"meta search supports one indexed field predicate per command. Run multiple meta search commands and combine path output in the shell for AND, OR, or multi-value matching.",
+			},
+		});
+	}
+
 	if ("exists" in parsed) {
 		const qualifiedField = parse_qualified_field(parsed.exists);
 		if (qualifiedField._nay) {
@@ -337,12 +349,17 @@ export function files_metadata_parse_search_where_json(whereJson: string) {
 	}
 
 	if ("range" in parsed) {
+		// range's second element is a bounds OBJECT, not a scalar — agents reliably send
+		// [field, min, max] or [field, n] and then loop on the generic array message. Surface the
+		// exact shape with an example for both structural failures so the next attempt is correct.
+		const rangeShapeMessage =
+			'range takes a field and a bounds object, e.g. {"range":["frontmatter.estimate",{"gte":5,"lte":120}]} (use any of gte, gt, lte, lt).';
 		const args = parse_binary_args(parsed.range, "range");
 		if (args._nay) {
-			return args;
+			return Result({ _nay: { message: rangeShapeMessage } });
 		}
 		if (!is_record(args._yay.value)) {
-			return Result({ _nay: { message: "range must use a bounds object with gte, gt, lte, or lt." } });
+			return Result({ _nay: { message: rangeShapeMessage } });
 		}
 		const gte = parse_range_bound(args._yay.value.gte, "gte");
 		const gt = parse_range_bound(args._yay.value.gt, "gt");

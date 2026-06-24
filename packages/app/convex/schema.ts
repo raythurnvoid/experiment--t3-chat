@@ -156,10 +156,15 @@ const app_convex_schema = defineSchema({
 	}).index("by_pendingUpdate", ["pendingUpdateId"]),
 
 	/**
-	 * Unified metadata field-presence docs. Pending docs are user-scoped; committed docs are
-	 * suppressed at query time for files the acting user is editing.
+	 * Indexed metadata docs for Markdown YAML frontmatter. Field docs support
+	 * existence search for presence-only metadata, and value docs support primitive
+	 * string, number, and boolean search. Arrays insert one value doc for each
+	 * primitive item.
+	 *
+	 * Pending docs are user-scoped. Query code filters out other users' pending docs
+	 * and hides stale committed docs for files the acting user is editing.
 	 */
-	files_metadata_fields: defineTable({
+	files_metadata_docs: defineTable({
 		workspaceId: v.string(),
 		projectId: v.string(),
 		fileNodeId: v.id("files_nodes"),
@@ -171,6 +176,11 @@ const app_convex_schema = defineSchema({
 		treePath: v.string(),
 		archiveOperationId: v.optional(v.string()),
 		qualifiedField: v.string(),
+		docKind: v.union(v.literal("field"), v.literal("value")),
+		valueKind: v.optional(v.union(v.literal("string"), v.literal("number"), v.literal("boolean"))),
+		stringValue: v.optional(v.string()),
+		numberValue: v.optional(v.number()),
+		booleanValue: v.optional(v.boolean()),
 	})
 		.index("by_workspace_project_source_fileNode_qualifiedField", [
 			"workspaceId",
@@ -181,72 +191,41 @@ const app_convex_schema = defineSchema({
 		])
 		.index("by_workspace_project_fileNode_qualifiedField", ["workspaceId", "projectId", "fileNodeId", "qualifiedField"])
 		.index("by_pendingUpdate_qualifiedField", ["pendingUpdateId", "qualifiedField"])
-		.index("by_workspace_project_archiveOperation_qualifiedField_treePath", [
+		.index("by_workspace_project_archive_docKind_qualifiedField_tree", [
 			"workspaceId",
 			"projectId",
 			"archiveOperationId",
+			"docKind",
 			"qualifiedField",
 			"treePath",
-		]),
-
-	/**
-	 * Searchable primitive metadata values. Arrays produce one doc per primitive item;
-	 * unsupported/null/object values stay presence-only in `files_metadata_fields`.
-	 */
-	files_metadata_values: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
-		fileNodeId: v.id("files_nodes"),
-		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
-		userId: v.optional(v.string()),
-		pendingUpdateId: v.optional(v.id("files_pending_updates")),
-		yjsSequence: v.optional(v.number()),
-		path: v.string(),
-		treePath: v.string(),
-		archiveOperationId: v.optional(v.string()),
-		qualifiedField: v.string(),
-		valueKind: v.union(v.literal("string"), v.literal("number"), v.literal("boolean")),
-		stringValue: v.optional(v.string()),
-		numberValue: v.optional(v.number()),
-		booleanValue: v.optional(v.boolean()),
-	})
-		.index("by_workspace_project_source_fileNode_qualifiedField_valueKind", [
-			"workspaceId",
-			"projectId",
-			"sourceKind",
-			"fileNodeId",
-			"qualifiedField",
-			"valueKind",
 		])
-		.index("by_workspace_project_fileNode_qualifiedField_valueKind", [
-			"workspaceId",
-			"projectId",
-			"fileNodeId",
-			"qualifiedField",
-			"valueKind",
-		])
-		.index("by_pendingUpdate_qualifiedField_valueKind", ["pendingUpdateId", "qualifiedField", "valueKind"])
-		.index("by_workspace_project_archive_qualifiedField_stringValue_tree", [
+		.index("by_workspace_project_archive_docKind_qualifiedField_string_tree", [
 			"workspaceId",
 			"projectId",
 			"archiveOperationId",
+			"docKind",
 			"qualifiedField",
+			"valueKind",
 			"stringValue",
 			"treePath",
 		])
-		.index("by_workspace_project_archive_qualifiedField_numberValue_tree", [
+		.index("by_workspace_project_archive_docKind_qualifiedField_number_tree", [
 			"workspaceId",
 			"projectId",
 			"archiveOperationId",
+			"docKind",
 			"qualifiedField",
+			"valueKind",
 			"numberValue",
 			"treePath",
 		])
-		.index("by_workspace_project_archive_qualifiedField_booleanValue_tree", [
+		.index("by_workspace_project_archive_docKind_qualifiedField_boolean_tree", [
 			"workspaceId",
 			"projectId",
 			"archiveOperationId",
+			"docKind",
 			"qualifiedField",
+			"valueKind",
 			"booleanValue",
 			"treePath",
 		]),

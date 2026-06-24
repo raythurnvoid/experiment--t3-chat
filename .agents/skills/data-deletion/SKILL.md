@@ -147,7 +147,7 @@ Current purge coverage includes:
 - `ai_chat_files_content`, `ai_chat_files`
 - `ai_chat_threads_messages_aisdk_5`, `ai_chat_threads_state`, `ai_chat_threads`
 - `chat_messages`
-- `files_metadata_fields`, `files_metadata_values`
+- `files_metadata_docs`
 - `files_plain_text_chunks`, `files_markdown_chunks`
 - `files_yjs_snapshots`, `files_yjs_updates`, `files_yjs_docs_last_sequences`
 - `files_snapshots`, `file_stats`

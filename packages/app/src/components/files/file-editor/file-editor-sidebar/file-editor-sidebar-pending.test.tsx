@@ -59,10 +59,23 @@ vi.mock("@/components/my-button.tsx", () => ({
 		const { children, ...rest } = props;
 		return <button {...rest}>{children}</button>;
 	},
+	MyButtonIcon: function MyButtonIcon(props: { className?: string; children?: ReactNode }) {
+		return <span className={props.className}>{props.children}</span>;
+	},
 }));
 
 vi.mock("@/components/my-icon.tsx", () => ({
 	MyIcon: function MyIcon(props: { className?: string; children?: ReactNode }) {
+		return <span className={props.className}>{props.children}</span>;
+	},
+}));
+
+vi.mock("@/components/my-icon-button.tsx", () => ({
+	MyIconButton: function MyIconButton(props: ComponentPropsWithRef<"button">) {
+		const { children, ...rest } = props;
+		return <button {...rest}>{children}</button>;
+	},
+	MyIconButtonIcon: function MyIconButtonIcon(props: { className?: string; children?: ReactNode }) {
 		return <span className={props.className}>{props.children}</span>;
 	},
 }));
@@ -262,6 +275,78 @@ describe("FileEditorSidebarPending", () => {
 			pendingUpdateId: "pu_a",
 			stagedMarkdown: "STAGED_MD",
 			unstagedMarkdown: "STAGED_MD",
+		});
+	});
+
+	test("Accept all accepts and saves every pending update", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_A", unstaged: "UNSTAGED_A" }),
+			makePendingUpdate({ id: "pu_b", fileNodeId: "node_b", staged: "STAGED_B", unstaged: "UNSTAGED_B" }),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "alpha/intro.md" }),
+			makeNode({ id: "node_b", path: "beta/readme.md" }),
+		]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept all"));
+
+		// 2 rows x (upsert + save) = 4 action calls
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(4));
+		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_a",
+			stagedMarkdown: "UNSTAGED_A",
+			unstagedMarkdown: "UNSTAGED_A",
+		});
+		expect(actionMock).toHaveBeenCalledWith("save_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_a",
+		});
+		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_b",
+			pendingUpdateId: "pu_b",
+			stagedMarkdown: "UNSTAGED_B",
+			unstagedMarkdown: "UNSTAGED_B",
+		});
+		expect(actionMock).toHaveBeenCalledWith("save_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_b",
+			pendingUpdateId: "pu_b",
+		});
+	});
+
+	test("Discard all reverts every pending update to staged", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_A", unstaged: "UNSTAGED_A" }),
+			makePendingUpdate({ id: "pu_b", fileNodeId: "node_b", staged: "STAGED_B", unstaged: "UNSTAGED_B" }),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "alpha/intro.md" }),
+			makeNode({ id: "node_b", path: "beta/readme.md" }),
+		]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Discard all"));
+
+		// 2 rows x upsert = 2 action calls, no save
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
+		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_a",
+			stagedMarkdown: "STAGED_A",
+			unstagedMarkdown: "STAGED_A",
+		});
+		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_b",
+			pendingUpdateId: "pu_b",
+			stagedMarkdown: "STAGED_B",
+			unstagedMarkdown: "STAGED_B",
 		});
 	});
 });

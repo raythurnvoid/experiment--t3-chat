@@ -20,6 +20,33 @@
 		color: var(--color-fg-06);
 	}
 
+	.FileEditorSidebarPending-header {
+		flex: none;
+
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 4px;
+
+		padding: 6px 16px;
+		background: var(--color-base-1-04);
+		border-bottom: 1px solid var(--color-fg-02);
+
+		position: sticky;
+		top: 0;
+		z-index: 1;
+	}
+
+	.FileEditorSidebarPending-header-button {
+		gap: 4px;
+	}
+
+	.FileEditorSidebarPending-header-icon {
+		width: 20px;
+		height: 20px;
+	}
+
 	.FileEditorSidebarPending-list {
 		display: flex;
 		flex-direction: column;
@@ -50,23 +77,24 @@
 		display: none;
 	}
 
-	.FileEditorSidebarPending-item-chevron {
-		flex: none;
-
-		color: var(--color-fg-06);
-		transition: transform 0.1s ease;
-	}
-	.FileEditorSidebarPending-item[open] .FileEditorSidebarPending-item-chevron {
-		transform: rotate(90deg);
-	}
-
-	.FileEditorSidebarPending-item-path {
+	/* MyLink renders the className on its inner surface span, so the flex child of the summary is the
+	   <a> wrapper. Grow/clip it here so the path ellipsizes and the actions stay pinned to the right. */
+	.FileEditorSidebarPending-item-summary > a {
 		flex: 1;
 		min-width: 0;
 
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.FileEditorSidebarPending-item-path {
+		/* Match the files tree sidebar item text instead of the link accent color. */
+		color: var(--color-fg-07);
+
+		&:hover {
+			color: var(--color-fg-11);
+		}
 	}
 
 	.FileEditorSidebarPending-item-actions {
@@ -80,6 +108,18 @@
 
 	.FileEditorSidebarPending-item-diff {
 		margin: 0 16px 12px;
+	}
+
+	/* Green accept (per-row + global), mirrors .FileEditorDiffToolbarActions-button-accept-all */
+	.FileEditorSidebarPending-accept {
+		&:not(:disabled) {
+			color: var(--color-green-11);
+
+			&:hover,
+			&:active {
+				color: var(--color-green-12);
+			}
+		}
 	}
 	/* #endregion item */
 }

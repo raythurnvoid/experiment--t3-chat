@@ -240,7 +240,7 @@ Reads:
 - If a pending update doc exists, it reconstructs Markdown from the pending `unstaged` branch and returns that instead of committed Markdown.
 - Bash exact readers (`cat`, `head`, `tail`, `wc`, `grep`, and pipelines fed by `cat`) use the same pending-aware read path, with chunk/R2 fallbacks only when no pending update doc exists.
 - Bash `search` queries the unified `files_plain_text_chunks` full-text search docs. Pending docs are user-scoped inside that table, other users' pending chunks are filtered out, and stale committed chunk hits are hidden only for files the acting user has pending edits on. Exact Markdown reads and regex scans use unified `files_markdown_chunks`; the old separate search and pending chunk tables no longer exist.
-- Bash `meta search` queries unified `files_metadata_fields` and `files_metadata_values` docs with the same current-user pending overlay rule as Bash `search`: other users' pending metadata is invisible, and stale committed metadata is hidden for files the acting user has pending edits on.
+- Bash `meta search` queries unified `files_metadata_docs` with the same current-user pending overlay rule as Bash `search`: other users' pending metadata is invisible, and stale committed metadata is hidden for files the acting user has pending edits on.
 
 Writes:
 

@@ -243,7 +243,7 @@ async function data_deletion_test_seed_project_content_bulk(
 				hasChunkAbove: false,
 				hasChunkBelow: false,
 			}),
-			ctx.db.insert("files_metadata_fields", {
+			ctx.db.insert("files_metadata_docs", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				fileNodeId,
@@ -252,8 +252,9 @@ async function data_deletion_test_seed_project_content_bulk(
 				path: `/${args.tag}-${i}.md`,
 				treePath: `/${args.tag}-${i}.md`,
 				qualifiedField: "frontmatter.cleanup",
+				docKind: "field",
 			}),
-			ctx.db.insert("files_metadata_values", {
+			ctx.db.insert("files_metadata_docs", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				fileNodeId,
@@ -262,6 +263,7 @@ async function data_deletion_test_seed_project_content_bulk(
 				path: `/${args.tag}-${i}.md`,
 				treePath: `/${args.tag}-${i}.md`,
 				qualifiedField: "frontmatter.cleanup",
+				docKind: "value",
 				valueKind: "string",
 				stringValue: args.tag,
 			}),
@@ -334,7 +336,7 @@ async function data_deletion_test_seed_project_content_bulk(
 				hasChunkBelow: false,
 			});
 			await Promise.all([
-				ctx.db.insert("files_metadata_fields", {
+				ctx.db.insert("files_metadata_docs", {
 					workspaceId: args.workspaceId,
 					projectId: args.projectId,
 					fileNodeId,
@@ -344,8 +346,9 @@ async function data_deletion_test_seed_project_content_bulk(
 					path: `/${args.tag}-${i}.md`,
 					treePath: `/${args.tag}-${i}.md`,
 					qualifiedField: "frontmatter.cleanup",
+					docKind: "field",
 				}),
-				ctx.db.insert("files_metadata_values", {
+				ctx.db.insert("files_metadata_docs", {
 					workspaceId: args.workspaceId,
 					projectId: args.projectId,
 					fileNodeId,
@@ -355,6 +358,7 @@ async function data_deletion_test_seed_project_content_bulk(
 					path: `/${args.tag}-${i}.md`,
 					treePath: `/${args.tag}-${i}.md`,
 					qualifiedField: "frontmatter.cleanup",
+					docKind: "value",
 					valueKind: "string",
 					stringValue: `pending-${args.tag}`,
 				}),
@@ -458,8 +462,7 @@ async function data_deletion_test_count_project_content(
 		assets,
 		markdownChunks,
 		plainTextChunks,
-		metadataFields,
-		metadataValues,
+		metadataDocs,
 		yjsSnapshots,
 		yjsUpdates,
 		yjsLastSequences,
@@ -480,8 +483,7 @@ async function data_deletion_test_count_project_content(
 		ctx.db.query("files_r2_assets").collect(),
 		ctx.db.query("files_markdown_chunks").collect(),
 		ctx.db.query("files_plain_text_chunks").collect(),
-		ctx.db.query("files_metadata_fields").collect(),
-		ctx.db.query("files_metadata_values").collect(),
+		ctx.db.query("files_metadata_docs").collect(),
 		ctx.db.query("files_yjs_snapshots").collect(),
 		ctx.db.query("files_yjs_updates").collect(),
 		ctx.db.query("files_yjs_docs_last_sequences").collect(),
@@ -507,8 +509,7 @@ async function data_deletion_test_count_project_content(
 			assets,
 			markdownChunks,
 			plainTextChunks,
-			metadataFields,
-			metadataValues,
+			metadataDocs,
 			yjsSnapshots,
 			yjsUpdates,
 			yjsLastSequences,

@@ -4386,6 +4386,7 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 			"  - bob@example.com",
 			"  - jane@example.com",
 			"amount: 120.5",
+			"amountString: '120.5'",
 			"hasAttachments: true",
 			"subject: Invoice reminder",
 			"---",
@@ -4425,11 +4426,36 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 	const amountRange = await search({ op: "range", qualifiedField: "frontmatter.amount", gte: 100, lt: 200 });
 	expect(amountRange.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
 
+	const amountStringMismatch = await search({ op: "eq", qualifiedField: "frontmatter.amount", value: "120.5" });
+	expect(amountStringMismatch.items).toEqual([]);
+
+	const amountString = await search({ op: "eq", qualifiedField: "frontmatter.amountString", value: "120.5" });
+	expect(amountString.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
+
+	const booleanNumberMismatch = await search({ op: "eq", qualifiedField: "frontmatter.hasAttachments", value: 1 });
+	expect(booleanNumberMismatch.items).toEqual([]);
+
 	const hasAttachments = await search({ op: "eq", qualifiedField: "frontmatter.hasAttachments", value: true });
 	expect(hasAttachments.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
 
 	const scoped = await search({ op: "exists", qualifiedField: "frontmatter.from" }, "/meta");
 	expect(scoped.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
+
+	const metadata = await asUser.query(internal.files_metadata.get_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path: "/meta/invoice.md",
+	});
+	expect(metadata).toMatchObject({
+		path: "/meta/invoice.md",
+		sourceKind: "committed",
+		fields: expect.arrayContaining(["frontmatter.cc", "frontmatter.amountString"]),
+		values: expect.arrayContaining([
+			expect.objectContaining({ qualifiedField: "frontmatter.amount", valueKind: "number", numberValue: 120.5 }),
+			expect.objectContaining({ qualifiedField: "frontmatter.amountString", valueKind: "string", stringValue: "120.5" }),
+		]),
+	});
 });
 
 test("metadata search uses current-user pending frontmatter and hides stale committed metadata", async () => {
@@ -4481,6 +4507,25 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 	const pendingHit = await searchAs(db.userId, "pending@example.com");
 	expect(pendingHit.items).toMatchObject([{ path, sourceKind: "pending" }]);
 
+	const pendingMetadata = await asUser.query(internal.files_metadata.get_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		userId: db.userId,
+		path,
+	});
+	expect(pendingMetadata).toMatchObject({
+		path,
+		sourceKind: "pending",
+		fields: expect.arrayContaining(["frontmatter.from", "frontmatter.subject"]),
+		values: expect.arrayContaining([
+			expect.objectContaining({
+				qualifiedField: "frontmatter.from",
+				valueKind: "string",
+				stringValue: "pending@example.com",
+			}),
+		]),
+	});
+
 	const staleCommittedMiss = await searchAs(db.userId, "committed@example.com");
 	expect(staleCommittedMiss.items).toEqual([]);
 
@@ -4489,6 +4534,120 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 
 	const otherUserPendingMiss = await searchAs(otherUserId, "pending@example.com");
 	expect(otherUserPendingMiss.items).toEqual([]);
+});
+
+test("metadata search updates indexed scope when files are renamed and moved", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Metadata Scope User",
+		email: "metadata-scope-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const nodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		"/metadata-scope/source.md",
+		["---", "scope: metadata-scope-value", "---", "Body"].join("\n"),
+	);
+	const targetFolderId = await t.run(async (ctx) =>
+		ctx.db.insert("files_nodes", {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			parentId: files_ROOT_ID,
+			path: "/metadata-target",
+			treePath: "/metadata-target/",
+			pathDepth: 1,
+			lowercaseExtension: null,
+			name: "metadata-target",
+			kind: "folder",
+			createdBy: db.userId,
+			updatedBy: db.userId,
+			updatedAt: Date.now(),
+		}),
+	);
+
+	const search = (pathPrefix?: string) =>
+		asUser.query(internal.files_metadata.search, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			plan: { op: "eq", qualifiedField: "frontmatter.scope", value: "metadata-scope-value" },
+			pathPrefix,
+			numItems: 10,
+			cursor: null,
+		});
+
+	expect((await search()).items.map((item) => item.path)).toEqual(["/metadata-scope/source.md"]);
+
+	const renamed = await asUser.mutation(api.files_nodes.rename_node, {
+		membershipId: db.membershipId,
+		nodeId,
+		name: "renamed.md",
+	});
+	if (renamed._nay) throw new Error(renamed._nay.message);
+	expect((await search()).items.map((item) => item.path)).toEqual(["/metadata-scope/renamed.md"]);
+
+	const moved = await asUser.mutation(api.files_nodes.move_nodes, {
+		membershipId: db.membershipId,
+		itemIds: [nodeId],
+		targetParentId: targetFolderId,
+	});
+	if (moved._nay) throw new Error(moved._nay.message);
+	expect((await search()).items.map((item) => item.path)).toEqual(["/metadata-target/renamed.md"]);
+	expect((await search("/metadata-scope")).items).toEqual([]);
+	expect((await search("/metadata-target")).items.map((item) => item.path)).toEqual(["/metadata-target/renamed.md"]);
+});
+
+test("metadata search updates indexed scope when files are archived and unarchived", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Metadata Archive User",
+		email: "metadata-archive-user@example.com",
+	});
+	test_setup_r2_capture();
+
+	const nodeId = await test_materialize_markdown_file(
+		t,
+		asUser,
+		db,
+		"/metadata-archive/source.md",
+		["---", "scope: metadata-archive-value", "---", "Body"].join("\n"),
+	);
+
+	const search = () =>
+		asUser.query(internal.files_metadata.search, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			plan: { op: "eq", qualifiedField: "frontmatter.scope", value: "metadata-archive-value" },
+			numItems: 10,
+			cursor: null,
+		});
+
+	expect((await search()).items.map((item) => item.path)).toEqual(["/metadata-archive/source.md"]);
+	const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+		membershipId: db.membershipId,
+		nodeIds: [nodeId],
+	});
+	if (archived._nay) throw new Error(archived._nay.message);
+	expect((await search()).items).toEqual([]);
+
+	const unarchived = await asUser.mutation(api.files_nodes.unarchive_nodes, {
+		membershipId: db.membershipId,
+		nodeIds: [nodeId],
+	});
+	if (unarchived._nay) throw new Error(unarchived._nay.message);
+	expect((await search()).items.map((item) => item.path)).toEqual(["/metadata-archive/source.md"]);
 });
 
 test("text_search_files scopes pending hits to a path prefix without sibling-prefix leakage", async () => {

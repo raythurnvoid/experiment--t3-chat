@@ -1910,6 +1910,8 @@ function search_command_create(ctx: ActionCtx, workspaceFs: WorkspaceFs, current
 			`The text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. ` +
 			`It is implemented with Convex full-text search, but it is not path/name/glob/regex search; ` +
 			`use find -name QUERY or find --path-query QUERY for path/name discovery. ` +
+			`YAML frontmatter fields are indexed separately from body text, so a frontmatter field or value will not match here; ` +
+			`use meta search (e.g. exists/eq) to find files by a frontmatter field or value. ` +
 			`Retry with shorter distinctive content terms if needed.`;
 
 		if (searchResult.items.length) {
@@ -10843,11 +10845,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						content:
 							"---\nfrom: alice@example.com\ncc:\n  - Bob\n  - Jane\namount: 125\nreviewed: true\n---\n# Email\n",
 					},
+					{
+						path: "/docs/meta-tags.md",
+						content: "---\ntopic:\n  - alpha\n  - atlas\n---\n# Tags\n",
+					},
 				],
 			});
 
 			const paths = await run(`meta search --where '{"eq":["frontmatter.from","alice@example.com"]}' --limit 5`);
 			const json = await run(`meta search --format json --where '{"range":["frontmatter.amount",{"gte":100}]}'`);
+			const jsonExists = await run(`meta search --format json --where '{"exists":"frontmatter.cc"}'`);
+			const dedupedPrefix = await run(`meta search --where '{"prefix":["frontmatter.topic","a"]}' --limit 5`);
 			const scoped = await run(`cd ${test_app_files_mount}/docs && meta search --where '{"exists":"frontmatter.cc"}'`);
 			const get = await run(`meta get ${test_app_files_mount}/docs/meta-email.md`);
 			const invalid = await run(`meta search --where '{"eq":["from","alice@example.com"]}'`);
@@ -10879,6 +10887,24 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			]);
 			expect(parsedJson.nextCursor).toBeNull();
 
+			expect(jsonExists.metadata.exitCode).toBe(0);
+			expect(jsonExists.stderr).toBe("");
+			const parsedExistsJson = JSON.parse(jsonExists.stdout) as {
+				results: Array<{ path: string; field: string; valueKind: string; matchedValue?: unknown }>;
+			};
+			expect(parsedExistsJson.results).toEqual([
+				expect.objectContaining({
+					path: `${test_app_files_mount}/docs/meta-email.md`,
+					field: "frontmatter.cc",
+					valueKind: "none",
+				}),
+			]);
+			expect(parsedExistsJson.results[0]).not.toHaveProperty("matchedValue");
+
+			expect(dedupedPrefix.metadata.exitCode).toBe(0);
+			expect(dedupedPrefix.stderr).toBe("");
+			expect(dedupedPrefix.stdout).toBe(`${test_app_files_mount}/docs/meta-tags.md\n`);
+
 			expect(scoped.metadata.exitCode).toBe(0);
 			expect(scoped.stdout).toBe(`${test_app_files_mount}/docs/meta-email.md\n`);
 			expect(
@@ -10906,6 +10932,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("No content matches found");
 			expect(result.stdout).toContain("find --path-query QUERY");
+			expect(result.stdout).toContain("meta search");
 			expect(runAction).not.toHaveBeenCalled();
 		});
 

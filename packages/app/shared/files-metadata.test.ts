@@ -135,4 +135,24 @@ describe("files_metadata_parse_search_where_json", () => {
 			"string values only",
 		);
 	});
+
+	test("rejects extra predicate keys instead of silently dropping them", () => {
+		expect(
+			files_metadata_parse_search_where_json('{"eq":["frontmatter.from","a@b.com"],"eq2":0}')._nay?.message,
+		).toContain("one indexed field predicate");
+		expect(
+			files_metadata_parse_search_where_json('{"eq":["frontmatter.priority",3],"exists":"frontmatter.from"}')._nay
+				?.message,
+		).toContain("one indexed field predicate");
+	});
+
+	test("range errors point at the bounds-object shape with an example", () => {
+		// [field, min, max] and [field, n] are the shapes agents actually try; both must show the example.
+		expect(files_metadata_parse_search_where_json('{"range":["frontmatter.estimate",5,120]}')._nay?.message).toContain(
+			'{"range":["frontmatter.estimate",{"gte":5,"lte":120}]}',
+		);
+		expect(files_metadata_parse_search_where_json('{"range":["frontmatter.estimate",5]}')._nay?.message).toContain(
+			"bounds object",
+		);
+	});
 });
