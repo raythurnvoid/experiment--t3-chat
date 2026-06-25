@@ -766,6 +766,62 @@ describe("resolve_user", () => {
 		expect(users).toHaveLength(2);
 	});
 
+	test("allows stale anonymous token recovery by rejecting refresh before clean anonymous creation", async () => {
+		const t = test_convex();
+		await users_test_seed_product(t, {
+			polarProductId: "users_anonymous_stale_recovery_free_product",
+			name: billing_PRODUCTS.Free.name,
+		});
+
+		const anonymousResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const anonymousPayload = (await anonymousResponse.json()) as { token: string; userId: Id<"users"> };
+
+		await t.run(async (ctx) => {
+			await ctx.db.delete("users", anonymousPayload.userId);
+		});
+
+		const refreshResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ token: anonymousPayload.token }),
+		});
+		const freshResponse = await t.fetch("/api/auth/anonymous", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		const freshPayload = (await freshResponse.json()) as { token: string; userId: Id<"users"> };
+
+		const after = await t.run(async (ctx) => {
+			const [oldUser, freshUser] = await Promise.all([
+				ctx.db.get("users", anonymousPayload.userId),
+				ctx.db.get("users", freshPayload.userId),
+			]);
+
+			return {
+				oldUser,
+				freshUser,
+			};
+		});
+
+		expect(refreshResponse.status).toBe(401);
+		expect(freshResponse.status).toBe(200);
+		expect(freshPayload.userId).not.toBe(anonymousPayload.userId);
+		expect(freshPayload.token).not.toBe(anonymousPayload.token);
+		expect(after.oldUser).toBeNull();
+		expect(after.freshUser?._id).toBe(freshPayload.userId);
+	});
+
 	test("returns a conflict when another live user already owns the email and leaves the anonymous user untouched", async () => {
 		const t = test_convex();
 		const existingUser = await t.run((ctx) =>

@@ -15,6 +15,14 @@ crons.cron("cleanup expired value store entries", "30 4 * * *", internal.value_s
 // Once daily at 05:00 UTC.
 crons.cron("cleanup old snapshots", "0 5 * * *", internal.files_nodes.cleanup_old_snapshots, {});
 
+// Once daily at 05:30 UTC.
+crons.cron(
+	"cleanup expired public API grants",
+	"30 5 * * *",
+	internal.public_api.cleanup_expired_grants_until_done,
+	{},
+);
+
 // Once daily at 06:00 UTC — workspace/content purge plus eligible hard user-account deletes.
 crons.cron("unified delayed data deletion pipeline", "0 6 * * *", internal.data_deletion.enqueue_deletion_requests_processing, {});
 

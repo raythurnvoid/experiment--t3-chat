@@ -142,3 +142,6 @@
 [submodule "references-submodules/obsidian-dataview"]
 	path = references-submodules/obsidian-dataview
 	url = ../../blacksmithgu/obsidian-dataview.git
+[submodule "references-submodules/cloudflare-agents"]
+	path = references-submodules/cloudflare-agents
+	url = ../../cloudflare/agents.git

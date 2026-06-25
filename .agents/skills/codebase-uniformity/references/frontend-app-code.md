@@ -16,9 +16,10 @@ Use this reference for `packages/app/src/**` React components and frontend lib u
 
 - Function names are snake_case for public and module-private functions. Do not introduce bare camelCase helper functions in `src/lib` modules.
 - CamelCase belongs to React components and classes. Use `useX` names for hooks.
-- Exported prefixes follow the domain vocabulary, not necessarily the filename. `date.ts` and `currency.ts` use `format_*`; file-domain exports use established `files_*` vocabulary. Do not invent filename-derived export prefixes such as `file_paths_*` when the domain prefix is already `files_*`.
+- Use prefixes deliberately, not reflexively. Exported symbols can carry domain context for import-site clarity; module-private helpers should not inherit that prefix unless they are genuine companion symbols for a component, command, class, or other named local concept.
+- When an exported prefix is needed, follow the domain vocabulary, not necessarily the filename. `date.ts` and `currency.ts` use `format_*`; file-domain exports use established `files_*` vocabulary. Do not invent filename-derived export prefixes such as `file_paths_*` when the domain prefix is already `files_*`.
 - Fixed exported constants should use uppercase names, such as `APP_FONT_FAMILY`. The lower-snake `app_*` examples are functions, objects, or non-constant values, not a reason to lowercase immutable constants.
-- In new focused lib modules, do not add the exported domain prefix to private helper symbols just because the public API has it. For example, prefer private helpers such as `segment_graphemes` or `find_max_fitting` inside a `files_*` module.
+- In new focused lib modules, keep private helper symbols plainly descriptive. For example, prefer private helpers such as `segment_graphemes` or `find_max_fitting` inside a `files_*` module.
 - Existing files can have stronger local private-helper conventions, such as `my_focus_get_rows` in `my-focus.ts`; follow those only when editing inside that existing convention.
 - Exported names should carry enough domain context for import-site clarity. Keep implementation details module-private until another module imports them.
 
@@ -42,8 +43,10 @@ Use this reference for `packages/app/src/**` React components and frontend lib u
 
 ## Comments
 
-- Use JSDoc for comments that document a function's purpose, contract, parameters, or return behavior immediately above the function definition.
+- Use JSDoc only for comments that document a function's purpose, contract, parameters, or return behavior immediately above that function definition.
 - Use ordinary `//` comments for non-obvious branches, loops, and statements inside a function body.
+- Use ordinary `//` comments for module-level notes, file overview comments, and section headers. Do not create orphan JSDoc blocks that are not attached to a symbol.
+- Do not introduce nested regions. If a file already uses `// #region`, every added region must have a matching `// #endregion` before the next region starts. Prefer plain `// Section name` comments when folding is not needed.
 
 ## Public Function Shape
 

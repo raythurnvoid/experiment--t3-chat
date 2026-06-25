@@ -38,8 +38,8 @@ The files system is a DB-backed file/folder model scoped by workspace/project me
 For `POST /api/chat`:
 
 1. Validate the request body, including allowlisted `model`, `mode`, and `trigger`, and require one of `threadId` or `clientGeneratedThreadId`.
-2. Resolve the authenticated or anonymous app user and load the app `users` row.
-3. Load the membership row, derive the agent configuration, and validate UI messages against the full tool registry.
+2. Resolve the authenticated or anonymous app user and load the app `users` doc.
+3. Load the membership doc, derive the agent configuration, and validate UI messages against the full tool registry.
 4. Resolve the existing thread or keep the optimistic client thread id for a new thread.
 5. Rate-limit and credit-gate the request before LLM work.
 6. Create the thread if needed and persist incoming user messages before generation.
@@ -55,9 +55,9 @@ Non-obvious runtime details:
 - Ask mode keeps the full tool registry for UI-message validation, but removes `write_file` and `edit_file` from `activeTools`.
 - User messages are persisted before generation so they survive aborts/stopped generations.
 - Pre-stream send failures, such as rate-limit or credit-gate HTTP failures, remain transient client state in AI SDK `chat.error`; the UI shows inline feedback on the failed user message and retries by replacing that same client-only message from its original parent without appending a duplicate.
-- Thread/file access is scoped by a `membershipId` row that determines the effective workspace/project scope.
+- Thread/file access is scoped by a `membershipId` doc that determines the effective workspace/project scope.
 - Auth falls back to an anonymous user identity when a signed-in identity is unavailable.
-- The chat HTTP action resolves the current app `users` row once and passes `user._id` into AI file tools; file-tool internals should use that id instead of re-reading auth from Convex context.
+- The chat HTTP action resolves the current app `users` doc once and passes `user._id` into AI file tools; file-tool internals should use that id instead of re-reading auth from Convex context.
 - `bash` is presented as the normal shell interface for the current project path `/home/cloud-usr/w/{workspaceName}/{projectName}` under the app mount `/home/cloud-usr/w`.
 - Client-side thread selection is surface-owned through `AiChatController` in `../../../packages/app/src/hooks/ai-chat-controller.tsx`. Surfaces pass only their typed storage key: full-page chat uses `app_state::ai_chat_last_open::scope::<membershipId>` and the `/chat` route owns the shareable `threadId` search param, while the file sidebar agent uses `app_state::file_editor_sidebar_agent_selected_tab::scope::<membershipId>` and the controller derives the matching open-tabs key internally. The full-page route should validate persisted `threadId` values through `ai_chat.thread_get`, restore the selected thread from the URL on refresh, update the URL when the selected thread changes, and clear a missing `threadId` while selecting the first visible chat. `AiChatController` is also the hook namespace for `useThreadList`, `useThreadRuntime`, and direct shared render-state selectors through `useStore`. Use `ai_chat_is_optimistic_thread` for thread objects. For stored ids, use a local `ai_thread-` prefix check whose dashed prefix satisfies `GeneratedIdPrefix`; `GeneratedIdPrefixKey` is the non-dashed key accepted by `generate_id`. The shared Zustand store keeps sessions, draft model/mode, message caches, running/error maps, and editing state, but does not own `selectedThreadId`.
 - `ai_thread-*` ids are client-only optimistic thread ids. Local-storage restore paths may rehydrate them as ordinary client sessions, drop them, or upgrade them to the persisted Convex thread id matched by `clientGeneratedId`, but must never send them as persisted thread ids. Request preparation should classify optimistic threads from the `ai_thread-*` id prefix and send `clientGeneratedThreadId`; an `ai_thread-*` id sent as `threadId` causes `/api/chat` request validation failure.
@@ -76,6 +76,7 @@ The main tool object currently contains:
 - `write_file`
 - `edit_file`
 - `web_search`
+- `execute_code`
 
 Important limitation:
 
@@ -90,7 +91,7 @@ Important limitation:
 - `/tmp` persists across Bash calls in this chat and reloads from Convex if the warm backend runtime cache is gone. It is not shared with new chats and is not app project storage; use app file tools for durable user-visible files.
 - Do not call `/tmp` ephemeral or temporary in a way that implies same-chat data loss. If a fresh chat cannot read a `/tmp` path created in another chat, that is expected evidence of per-chat isolation, not a global Bash failure.
 - The bash internal action and Just Bash filesystem implementation live in the Node-runtime `bash.run` module because Just Bash bundles Node built-ins. Keep thread-state queries/mutations in default-runtime `ai_chat.ts`.
-- `bash` persists the current working directory through the general `ai_chat.get_thread_state` / `ai_chat.set_thread_state` internal functions. The state row is stored in `ai_chat_threads_state`, linked from `ai_chat_threads.stateId` and back to `ai_chat_threads_state.threadId`. Thread creation still inserts the legacy `~` marker, but the bash action expands that initial/default marker to the current project path `/home/cloud-usr/w/{workspaceName}/{projectName}`. After `cd`, app paths persist as home-relative values such as `~/w/personal/home/docs`; an explicit home cwd persists as `/home/cloud-usr` so it is not confused with the default marker. Cwd does not live directly on `ai_chat_threads`.
+- `bash` persists the current working directory through the general `ai_chat.get_thread_state` / `ai_chat.set_thread_state` internal functions. The state doc is stored in `ai_chat_threads_state`, linked from `ai_chat_threads.stateId` and back to `ai_chat_threads_state.threadId`. Thread creation still inserts the legacy `~` marker, but the bash action expands that initial/default marker to the current project path `/home/cloud-usr/w/{workspaceName}/{projectName}`. After `cd`, app paths persist as home-relative values such as `~/w/personal/home/docs`; an explicit home cwd persists as `/home/cloud-usr` so it is not confused with the default marker. Cwd does not live directly on `ai_chat_threads`.
 - The prompt and tool description should tell the model that cwd persists across tool calls in the same chat and that it should use bare or relative commands instead of repeating `cd` when the previous Bash output already shows the desired cwd.
 - The prompt and tool description should describe `bash` as the normal shell for this environment, while explicitly warning that only app-mount files are Convex-backed and do not have full POSIX/GNU filesystem semantics.
 - For file inspection commands without a specific path, cwd is the target. New bash sessions start at the current project path, so bare or relative commands inspect app files by default without a special command-level fallback.
@@ -129,16 +130,18 @@ Important limitation:
 - `read_file` and `grep_files` read Markdown-backed content through Convex actions that overlay pending edits and fetch committed Markdown from R2 when needed. Uploaded source paths do not alias to generated Markdown outputs.
 - Uploaded source file nodes are discoverable through path listing; their raw R2 binaries are not directly read by this toolbelt.
 - `web_search` uses the server-side Exa integration and should be used for current public facts, docs, release notes, news, and information outside the workspace. Keep workspace file tools first when the answer should come from the user's files.
+- `execute_code` runs an untrusted JavaScript snippet in an isolated Cloudflare Dynamic Worker (Worker Loader) hosted by the separate `bonobo-senate-code-execution-runner` Worker, reached over HTTP from the Convex action (`CODE_EXECUTION_RUNNER_URL` + `CODE_EXECUTION_RUNNER_SECRET` env). Use it for computation, JSON shaping, parsing, quick algorithmic work, gatewayed fetches, or file-aware calculations that are better expressed in code. The snippet body is `async (input) => { ... }`: it `return`s a JSON-serializable value and may `console.*`; `input` is an opaque optional JSON argument. The app tool creates a short-lived `public_api_grants` doc with explicit file read/list scopes and a nullable path prefix, then passes the token privately to the runner gateway; the snippet sees `fetch` and `process.env.T3_APP_ORIGIN`, not the raw grant token. To read app files, code should `POST` to `${process.env.T3_APP_ORIGIN}/api/v1/files/list` for discovery, `/api/v1/files/read-many` for folder-scale reads, and `/api/v1/files/read` for one-off reads; the runner gateway authorizes those app API requests. Do not pass app file paths or contents through `input`.
+- Public file-read API credentials and public API grants both authorize through `public_api.ts`. `public_api.api_credential_create` creates reveal-once opaque `pk_...` credentials for a membership with explicit scopes (`"files:list"` and/or `"files:read"`) and requires `api.credentials.manage`. Those credentials can call `/api/v1/files/list`, `/api/v1/files/read`, and `/api/v1/files/read-many`; public API grants call the same routes through the runner gateway with the grant token injected outside the snippet. There is intentionally no UI for credential management yet.
 
 # Uploaded Source And Generated Files
 
-- Uploaded source files are visible `files_nodes` rows with an `assetId` pointing to the uploaded source R2 asset.
+- Uploaded source files are visible `files_nodes` docs with an `assetId` pointing to the uploaded source R2 asset.
 - The original uploaded binary is preserved in R2.
 - Successful PDF source-to-Markdown conversion creates a generated Markdown sibling file node such as `<source-name>.md`.
 - Successful image upload processing creates a generated Markdown sibling file node such as `<source-name>.description.md`.
 - Successful video upload processing creates two generated Markdown sibling file nodes: `<source-name>.summary.md` and `<source-name>.transcript.md`.
 - Image/video generation is orchestrated by Convex. Video frame/audio extraction uses the Cloudflare Media Transformer Worker against private R2; when Cloudflare cannot extract audio and the uploaded MP4 is still within the OpenAI transcription byte cap, Convex falls back to transcribing the original R2 upload directly. Generated transcript/summary/description Markdown is finalized into the same Yjs/chunk/snapshot shape as other editable Markdown files.
-- Upload processing is tracked by `files_r2_assets.conversionWorkId`: `undefined` means the upload/output is not accepted into processing yet, a Workpool id means processing is accepted/in flight/retrying, and `null` means terminal. Deterministic converter non-success, such as Modal `413` or `422`, is terminal and leaves generated output placeholders as stored-file/status rows rather than editable Markdown.
+- Upload processing is tracked by `files_r2_assets.conversionWorkId`: `undefined` means the upload/output is not accepted into processing yet, a Workpool id means processing is accepted/in flight/retrying, and `null` means terminal. Deterministic converter non-success, such as Modal `413` or `422`, is terminal and leaves generated output placeholders as stored-file/status docs rather than editable Markdown.
 - Generated output files are regular visible file nodes. They can be opened, moved, archived, renamed, searched, and edited independently from the uploaded source file.
 - The generated Markdown stores converted Markdown only; source/conversion metadata stays in DB/R2 metadata, not visible frontmatter.
 - Editing generated Markdown does not mutate the original R2 object.
@@ -231,6 +234,26 @@ Legacy file tools stay documented because old assistant messages may need valida
 - If the user copies text from `read_file`, they must not include line-number prefixes.
 - Generated upload outputs are editable Markdown files; pending updates belong to the generated output file node.
 
+## `execute_code`
+
+- Runs an untrusted JavaScript snippet in an isolated Cloudflare Dynamic Worker. The Convex action creates a `public_api_grants` doc, then `POST`s `{ executionId, code, input?, network, app }` to `bonobo-senate-code-execution-runner` (`/internal/execute-code`) with `Authorization: Bearer <CODE_EXECUTION_RUNNER_SECRET>`; the factory is `ai_chat_tool_create_execute_code` in `../../../packages/app/server/server-ai-tools.ts`, and the host Worker lives in `../../../packages/code-execution-runner/src/index.ts`.
+- The snippet is the body of `async (input) => { ... }`. It `return`s a JSON-serializable value (the tool reports `Result: <json>`) and may `console.log/info/warn/error` (captured, bounded to 100 lines / 16 KB). `input` is the optional JSON argument.
+- Default isolation of the runner is still sealed when no app/network capability is supplied: `globalOutbound: null` means `fetch()`/`connect()` throw and no platform `env` is passed. The app chat tool normally supplies both gatewayed public HTTP and the app file capability, so snippets can do real fetch work and can call the app file APIs directly.
+- The normal app chat path intentionally allows app file reads and public HTTPS fetches in the same snippet. Treat this as a powerful code-worker capability, not an exfiltration boundary; keep generated snippets scoped to the user's task.
+- App file access is fetch-based. Use `${process.env.T3_APP_ORIGIN}/api/v1/files/list` with `{ path, recursive, kind, extension, cursor, limit }` to discover files, following `cursor` while `isDone` is false before aggregating a whole folder.
+- Use `/api/v1/files/read-many` with `{ paths, maxBytes }` to batch-read Markdown content, and `/api/v1/files/read` with `{ path, maxBytes }` for one-off reads. Folder calculations should inspect `read-many` `errors` and `truncated`, then return compact aggregates rather than file contents so the runner result cap stays small.
+- The public file HTTP routes resolve either a user API credential or a private public API grant token through the public API verifier, enforce expiry/revocation, file scope, active membership, and optional grant path prefix, then call `internal.files_nodes.list_subtree` or `internal.files_nodes.get_file_last_available_markdown_content_by_path`; public API grant reads preserve the current user's pending `unstaged` branch overlay.
+- The runner gateway allows HTTPS fetches through `ExecuteCodeHttpGateway`, blocks IP literals, single-label hostnames, localhost/internal-style hostnames, non-443 explicit ports, and blocked redirects, and caps request/response bytes, redirects, request count, and time. It forwards deliberate public API headers such as `Authorization` but strips cookies, host/proxy/forwarded/CF/security headers. For app public file routes, it injects the private execution grant token at the gateway; the token is not exposed in `process.env`. `CODE_EXECUTION_NETWORK_DISABLED=true` disables outbound fetch.
+- Time bounds: async code is cut at an in-sandbox 5 s timeout (`status: "timed_out"`); a synchronous infinite loop cannot be preempted by either JS timer and runs until workerd's platform CPU limit (~30 s) kills the isolate, which is also reported as `timed_out`. A parent-side 7 s backstop covers a stalled RPC. There is no per-snippet `cpuMs` cap because the Worker Loader API has no `limits` field.
+- Outcomes map to `status: "succeeded" | "errored" | "timed_out"`. Caps: `code` ≤ 20 KB, direct `input` ≤ 32 KB at the app tool boundary, runner input ≤ 64 KB, per-fetch request/response bytes are capped, and result ≤ 16 KB (truncated past that). Operational logs carry only metadata (executionId, codeHash, byte sizes, hashed outbound host metadata), never raw code/input/result/logs, file contents, tokens, or raw hostnames.
+- Available in both Agent and Ask modes (it does not mutate app state). If `CODE_EXECUTION_RUNNER_URL`/`_SECRET` are unset, the tool reports that code execution is unavailable; a `CODE_EXECUTION_DISABLED` kill switch on the Worker returns "disabled".
+
+## Public Files API
+
+- Credential management and public file reads live in `../../../packages/app/convex/public_api.ts`. Credentials are reveal-once, stored as `sha256(secret)` plus an obfuscated display value, and scoped to one workspace/project/user membership.
+- The public file routes accept either a `Bearer pk_...` credential or a gateway-injected public API grant token. They check active membership through the shared verifier, enforce explicit file scopes, rate-limit both pre-auth and per principal, log route use, and update `api_credentials.lastUsedAt` for user API keys. Credential create/list/revoke/rotate requires `api.credentials.manage`.
+- There is one file HTTP route family: `/api/v1/files/list`, `/api/v1/files/read`, and `/api/v1/files/read-many`. Do not add `/api/code-execution/*` compatibility aliases.
+
 # Pending Update Integration
 
 Reads:
@@ -244,7 +267,7 @@ Reads:
 
 Writes:
 
-- `write_file` and `edit_file` call action-aware pending-update helpers so the latest R2-backed base Yjs state is resolved before internal mutations write rows.
+- `write_file` and `edit_file` call action-aware pending-update helpers so the latest R2-backed base Yjs state is resolved before internal mutations write docs.
 - They update the current user's pending `unstaged` branch.
 - The client is expected to open the diff/review UI before live file content changes.
 
@@ -256,21 +279,25 @@ Writes:
 4. `bash` can read, list, navigate, search app files, and create folders in Agent mode, but file writes under the app file tree fail by design.
 5. `bash` `mkdir` under `/home/cloud-usr/w/{workspaceName}/{projectName}` is the only AI path that creates persistent folder nodes.
 6. `write_file` and `edit_file` create pending review state, not direct committed writes.
-7. `write_file` passes the already-resolved `userId` into `create_file_by_path`; pending-update rows store the same id.
+7. `write_file` passes the already-resolved `userId` into `create_file_by_path`; pending-update docs store the same id.
 8. New generation uses Bash `search` for full-text content search, Bash `meta search` for indexed frontmatter metadata, and Bash `find` for path discovery; legacy `grep_files` / `glob_files` are validation-only surfaces.
 9. Legacy `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
-10. Request messages are persisted before generation; assistant responses are persisted after streaming finishes.
+10. Request messages are persisted before generation; assistant responses are persisted after streaming finishes. `thread_messages_add` is idempotent by thread and client-generated message id so finish/abort/retry overlap cannot create duplicate sibling messages.
 11. Current tools do not read raw uploaded R2 binaries; generated Markdown outputs from uploads are ordinary Markdown files whose committed Markdown is also stored in R2.
 12. Source-path reads must preserve the product distinction between the original R2 object and generated editable Markdown outputs.
 13. Generated upload outputs are regular visible files; tools should not apply hidden-file or path-alias behavior.
 14. Client-side failed-send feedback is not persisted; retry keeps the existing failed user message as the final chat message and resubmits it in place from that message's original persisted parent.
 15. Persisted chat-selection storage must not restore `ai_thread-*` ids as real thread ids. Rehydrate them as optimistic sessions, drop them, or replace them with the persisted Convex thread id matched by `clientGeneratedId`.
+16. Server-side AI tool calls stream and persist through `/api/chat`; the client must not use AI SDK `sendAutomaticallyWhen` to resubmit completed server-side tool messages.
 
 # Verification Checklist
 
 - New threads still dedupe optimistic entries correctly.
 - User messages persist even if generation is aborted mid-stream.
 - Assistant responses persist under the correct parent message.
+- Duplicate persistence attempts with the same client-generated message id return the existing message id and do not create branch siblings.
+- Completed server-side tool messages do not trigger an automatic client resubmit.
+- `execute_code` can list and read app files by fetching `/api/v1/files/list` and `/api/v1/files/read-many` from inside the snippet, so folder calculations such as summing `/payments/*.md` happen in code without passing paths or file contents through `input`.
 - `bash` can run `pwd`, `ls /home/cloud-usr/w/{workspaceName}/{projectName}`, `cat /home/cloud-usr/w/{workspaceName}/{projectName}/<path>`, `search --limit N <content terms>`, and preserves cwd across turns.
 - `/tmp` is durable per-thread scratch. It persists across later `bash` calls in the same chat, reloads from Convex after warm runtime cache loss, and is not app project storage.
 - `bash` file writes under the app file tree fail with a read-only filesystem error.

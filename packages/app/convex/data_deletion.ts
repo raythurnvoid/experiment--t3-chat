@@ -438,6 +438,24 @@ async function db_purge_workspace_project_content_batch(
 		return { done: false, deletedCount: aiChatThreads.length };
 	}
 
+	const apiCredentials = await ctx.db
+		.query("api_credentials")
+		.withIndex("by_workspace_project", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.take(batchSize);
+	if (apiCredentials.length > 0) {
+		await Promise.all(apiCredentials.map((doc) => ctx.db.delete("api_credentials", doc._id)));
+		return { done: false, deletedCount: apiCredentials.length };
+	}
+
+	const publicApiGrants = await ctx.db
+		.query("public_api_grants")
+		.withIndex("by_workspace_project", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.take(batchSize);
+	if (publicApiGrants.length > 0) {
+		await Promise.all(publicApiGrants.map((doc) => ctx.db.delete("public_api_grants", doc._id)));
+		return { done: false, deletedCount: publicApiGrants.length };
+	}
+
 	// Legacy chat messages are still project-scoped content and are purged with
 	// the same per-call deletion limit.
 	const chatMessages = await ctx.db
@@ -1008,6 +1026,8 @@ async function db_finalize_deleted_user(
 		pendingPlainTextChunks,
 		pendingMetadataDocs,
 		lastSequenceSaved,
+		apiCredentials,
+		publicApiGrants,
 		billingUsageSnapshots,
 	] = await Promise.all([
 		ctx.db
@@ -1079,6 +1099,14 @@ async function db_finalize_deleted_user(
 			.query("files_pending_updates_last_sequence_saved")
 			.withIndex("by_user_fileNode", (q) => q.eq("userId", userIdString))
 			.collect(),
+		ctx.db
+			.query("api_credentials")
+			.withIndex("by_user", (q) => q.eq("userId", user._id))
+			.collect(),
+		ctx.db
+			.query("public_api_grants")
+			.withIndex("by_user", (q) => q.eq("userId", user._id))
+			.collect(),
 		args.deleteBillingState
 			? ctx.db
 					.query("billing_usage_snapshots")
@@ -1130,6 +1158,8 @@ async function db_finalize_deleted_user(
 		// Remove direct permission grants for this user. Role grants are handled by
 		// workspace/project cleanup; this query targets user-principal grants.
 		...directPermissionGrants.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)),
+		...apiCredentials.map((doc) => ctx.db.delete("api_credentials", doc._id)),
+		...publicApiGrants.map((doc) => ctx.db.delete("public_api_grants", doc._id)),
 		// Keep auth identifiers for auth-preserving deletion finalization; auth purges
 		// remove both the external Clerk pointer and the anonymous token that can mint sessions.
 		...(args.deleteUserAuth ? anonymousAuthTokens.map((doc) => ctx.db.delete("users_anon_tokens", doc._id)) : []),

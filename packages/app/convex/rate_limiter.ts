@@ -27,6 +27,19 @@ const STRICT_AUTH_OR_BILLING = {
 
 const rate_limiter_CONFIG = {
 	account_delete: STRICT_AUTH_OR_BILLING,
+	api_credentials_write: STRICT_AUTH_OR_BILLING,
+	public_api_auth: {
+		kind: "token bucket",
+		rate: 60,
+		period: MINUTE,
+		capacity: 10,
+	},
+	public_api_principal: {
+		kind: "token bucket",
+		rate: 120,
+		period: MINUTE,
+		capacity: 20,
+	},
 	ai_chat_http: STRICT_AI_HTTP,
 	ai_chat_message_write: {
 		kind: "token bucket",

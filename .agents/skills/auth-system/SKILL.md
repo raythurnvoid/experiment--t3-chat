@@ -79,6 +79,7 @@ Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={App
 - The frontend calls `/api/auth/anonymous` (or refreshes it) to mint/refresh an anonymous JWT.
 - The JWT subject is the Convex `users` id.
 - The anonymous JWT is stored in `localStorage` and re-used until refreshed/cleared.
+- On anonymous startup, cached anonymous credentials are validated through `/api/auth/anonymous` before the app marks auth loaded. If refresh fails because the token is invalid, stale, or points at a missing/deleted user, the client clears both localStorage keys and calls `/api/auth/anonymous` without a token to mint a fresh anonymous user.
 
 Anonymous token caching keys (frontend):
 
@@ -373,6 +374,7 @@ If a handler intentionally treats a missing/deleted current user row as stale cl
 
 - Anonymous token fetch must be resilient and should not crash the app.
 - Token suppliers used by Convex should resolve (not reject) so auth state can transition cleanly.
+- Treat anonymous localStorage as disposable client cache. Do not let a cached anonymous JWT become the first Convex app token until `/api/auth/anonymous` has accepted/refreshed it, because local/dev data resets can leave old browser storage pointing at an invalid app principal.
 
 # Treat “public write” as intentionally unsafe
 

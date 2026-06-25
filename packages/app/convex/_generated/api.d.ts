@@ -23,6 +23,7 @@ import type * as http from "../http.js";
 import type * as migrations from "../migrations.js";
 import type * as notifications from "../notifications.js";
 import type * as presence from "../presence.js";
+import type * as public_api from "../public_api.js";
 import type * as quotas from "../quotas.js";
 import type * as r2 from "../r2.js";
 import type * as rate_limiter from "../rate_limiter.js";
@@ -52,6 +53,7 @@ declare const fullApi: ApiFromModules<{
   migrations: typeof migrations;
   notifications: typeof notifications;
   presence: typeof presence;
+  public_api: typeof public_api;
   quotas: typeof quotas;
   r2: typeof r2;
   rate_limiter: typeof rate_limiter;

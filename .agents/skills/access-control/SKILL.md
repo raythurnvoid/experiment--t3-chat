@@ -6,8 +6,8 @@ description: Backend access-control model for workspaces, projects, roles, ACL g
 # Mental model
 
 - Access control is a backend-first subsystem built on two Convex tables:
-	- `access_control_role_assignments`
-	- `access_control_permission_grants`
+  - `access_control_role_assignments`
+  - `access_control_permission_grants`
 - `workspaces_projects_users` still represents project membership. Access control represents authority.
 - Role assignments are project-scoped. A role assignment on `workspace.defaultProjectId` means workspace-wide authority; a role assignment on any other project is local to that project.
 - Product flows maintain one role assignment per `(workspaceId, projectId, userId)`. Role display queries read the first matching row and do not resolve conflicts between multiple roles at the same scope.
@@ -64,6 +64,7 @@ Initial permissions:
 - `asset.read`
 - `asset.write`
 - `asset.permissions.manage`
+- `api.credentials.manage`
 
 Use the indexes that match the principal kind:
 
@@ -122,12 +123,12 @@ These queries return the assigned role for exactly the requested project scope. 
 - `invite_user_to_workspace_project` creates `member` assignments on the workspace default project and, when different, on the selected project.
 - `access_control_db_ensure_role_assignment` is idempotent: it returns the existing assignment id without patching timestamps when the same assignment already exists.
 - Permission-grant helpers are split by principal kind so invalid argument combinations are not expressible:
-	- `access_control_db_ensure_role_permission_grant`
-	- `access_control_db_ensure_user_permission_grant`
-	- `access_control_db_ensure_public_permission_grant`
+  - `access_control_db_ensure_role_permission_grant`
+  - `access_control_db_ensure_user_permission_grant`
+  - `access_control_db_ensure_public_permission_grant`
 - Permission-grant helpers return the grant id directly, not a `Result`. They are idempotent: they return the existing grant id without patching timestamps for the same principal/resource/permission tuple.
 
-Seeded member grants stay broad for collaboration, but regular members do not receive `workspace.members.manage`, `project.members.manage`, `workspace.roles.manage`, or `asset.permissions.manage`. Future product tightening should remove or change grants and then add backend checks where needed.
+Seeded member grants stay broad for collaboration, but regular members do not receive `workspace.members.manage`, `project.members.manage`, `workspace.roles.manage`, `asset.permissions.manage`, or `api.credentials.manage`. Future product tightening should remove or change grants and then add backend checks where needed.
 
 # Ownership transfer
 

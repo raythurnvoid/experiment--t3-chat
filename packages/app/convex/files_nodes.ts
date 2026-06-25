@@ -1186,6 +1186,28 @@ export const finalize_markdown_node_creation = internalMutation({
 	},
 });
 
+export const cleanup_markdown_node_creation_assets = internalMutation({
+	args: {
+		assetIds: v.array(v.id("files_r2_assets")),
+		r2Keys: v.array(v.string()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		for (const r2Key of args.r2Keys) {
+			await r2_delete_object(ctx, r2Key);
+		}
+
+		for (const assetId of args.assetIds) {
+			const asset = await ctx.db.get("files_r2_assets", assetId);
+			if (asset) {
+				await ctx.db.delete("files_r2_assets", asset._id);
+			}
+		}
+
+		return null;
+	},
+});
+
 type create_markdown_file_node_Result =
 	typeof create_markdown_file_node extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
@@ -1261,6 +1283,41 @@ async function action_create_markdown_node(
 		assetId: versionSnapshotAssetId,
 	});
 
+	const assetIds = [markdownAssetId, yjsSnapshotAssetId, versionSnapshotAssetId];
+	const cleanupCreatedAssets = async () => {
+		await ctx.runMutation(internal.files_nodes.cleanup_markdown_node_creation_assets, {
+			assetIds,
+			r2Keys: [markdownR2Key, yjsSnapshotR2Key, versionSnapshotR2Key],
+		});
+	};
+
+	try {
+		await r2_put_object(ctx, {
+			key: markdownR2Key,
+			body: args.markdownContent,
+			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+		});
+		await r2_put_object(ctx, {
+			key: yjsSnapshotR2Key,
+			body: snapshotUpdate._yay,
+			contentType: "application/octet-stream" satisfies files_ContentType,
+		});
+		await r2_put_object(ctx, {
+			key: versionSnapshotR2Key,
+			body: args.markdownContent,
+			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+		});
+	} catch (error) {
+		await cleanupCreatedAssets();
+		console.error("Failed to write initial Markdown file assets", {
+			error,
+			markdownAssetId,
+			yjsSnapshotAssetId,
+			versionSnapshotAssetId,
+		});
+		return Result({ _nay: { message: "Failed to create file" } });
+	}
+
 	const created = (await ctx.runMutation(internal.files_nodes.create_markdown_file_node, {
 		userId: args.userId,
 		workspaceId: args.workspaceId,
@@ -1273,36 +1330,8 @@ async function action_create_markdown_node(
 		archiveOperationId: args.archiveOperationId,
 	})) as create_markdown_file_node_Result;
 	if (created._nay) {
+		await cleanupCreatedAssets();
 		return created;
-	}
-
-	try {
-		await Promise.all([
-			r2_put_object(ctx, {
-				key: markdownR2Key,
-				body: args.markdownContent,
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-			}),
-			r2_put_object(ctx, {
-				key: yjsSnapshotR2Key,
-				body: snapshotUpdate._yay,
-				contentType: "application/octet-stream" satisfies files_ContentType,
-			}),
-			r2_put_object(ctx, {
-				key: versionSnapshotR2Key,
-				body: args.markdownContent,
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-			}),
-		]);
-	} catch (error) {
-		console.error("Failed to write initial Markdown file assets", {
-			error,
-			nodeId: created._yay.nodeId,
-			markdownAssetId,
-			yjsSnapshotAssetId,
-			versionSnapshotAssetId,
-		});
-		return Result({ _nay: { message: "Failed to create file" } });
 	}
 
 	const finalized = (await ctx.runMutation(internal.files_nodes.finalize_markdown_node_creation, {
@@ -3047,6 +3076,7 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		includePending: v.optional(v.boolean()),
 	},
 	returns: v.union(
 		v.object({
@@ -3076,26 +3106,31 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 
 		if (!files_node_has_editable_yjs_state(fileNode)) return null;
 
-		const pendingUpdateById = args.pendingUpdateId
-			? await ctx.db.get("files_pending_updates", args.pendingUpdateId)
-			: null;
+		const pendingUpdateById =
+			args.includePending === false
+				? null
+				: args.pendingUpdateId
+					? await ctx.db.get("files_pending_updates", args.pendingUpdateId)
+					: null;
 		const pendingUpdate =
-			pendingUpdateById &&
-			pendingUpdateById.workspaceId === args.workspaceId &&
-			pendingUpdateById.projectId === args.projectId &&
-			pendingUpdateById.userId === args.userId &&
-			pendingUpdateById.fileNodeId === fileNode._id
-				? pendingUpdateById
-				: await ctx.db
-						.query("files_pending_updates")
-						.withIndex("by_workspace_project_user_fileNode", (q) =>
-							q
-								.eq("workspaceId", args.workspaceId)
-								.eq("projectId", args.projectId)
-								.eq("userId", args.userId)
-								.eq("fileNodeId", fileNode._id),
-						)
-						.first();
+			args.includePending === false
+				? null
+				: pendingUpdateById &&
+					  pendingUpdateById.workspaceId === args.workspaceId &&
+					  pendingUpdateById.projectId === args.projectId &&
+					  pendingUpdateById.userId === args.userId &&
+					  pendingUpdateById.fileNodeId === fileNode._id
+					? pendingUpdateById
+					: await ctx.db
+							.query("files_pending_updates")
+							.withIndex("by_workspace_project_user_fileNode", (q) =>
+								q
+									.eq("workspaceId", args.workspaceId)
+									.eq("projectId", args.projectId)
+									.eq("userId", args.userId)
+									.eq("fileNodeId", fileNode._id),
+							)
+							.first();
 		if (pendingUpdate) {
 			// Rebuild the pending branch from its recorded base so readers see the same document
 			// the pending-update save/rebase flow will later persist.
@@ -3170,6 +3205,8 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
+		includePending: v.optional(v.boolean()),
+		maxBytes: v.optional(v.number()),
 	},
 	returns: v.union(
 		v.object({
@@ -3181,25 +3218,33 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 		v.null(),
 	),
 	handler: async (ctx, args): Promise<get_file_last_available_markdown_content_by_path_Result> => {
-		const state = (await ctx.runQuery(internal.files_nodes.get_file_markdown_content_db_state_by_path, {
+		const contentState = (await ctx.runQuery(internal.files_nodes.get_file_markdown_content_db_state_by_path, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			userId: args.userId,
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
+			includePending: args.includePending,
 		})) as get_file_markdown_content_db_state_by_path_Result;
-		if (!state) {
+		if (!contentState) {
 			return null;
 		}
 
-		const materializationState = state.materializationState;
+		const maxBytes = args.maxBytes;
+		const content_exceeds_max_bytes = (content: string) =>
+			maxBytes !== undefined && files_get_utf8_byte_size(content) > maxBytes;
+		const materializationState = contentState.materializationState;
 		let content: string;
-		if (state.content !== undefined) {
-			content = state.content;
+		if (contentState.content !== undefined) {
+			content = contentState.content;
 		} else if (
 			materializationState &&
 			materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
 		) {
+			if (maxBytes !== undefined && materializationState.asset.size > maxBytes) {
+				return null;
+			}
+
 			content = await reconstruct_latest_file_content_from_materialization_state({ state: materializationState }).then(
 				(reconstructed) => {
 					if (reconstructed._nay) {
@@ -3213,16 +3258,25 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 				},
 			);
 		} else {
-			content = state.asset?.r2Key
-				? await r2_fetch_object_from_bucket({ key: state.asset.r2Key }).then((response) => response.text())
+			const asset = contentState.asset;
+			if (maxBytes !== undefined && asset && asset.size > maxBytes) {
+				return null;
+			}
+
+			content = asset?.r2Key
+				? await r2_fetch_object_from_bucket({ key: asset.r2Key }).then((response) => response.text())
 				: "";
+		}
+
+		if (content_exceeds_max_bytes(content)) {
+			return null;
 		}
 
 		return {
 			content,
-			nodeId: state.nodeId,
-			displayNodeId: state.displayNodeId,
-			pendingUpdateId: state.pendingUpdateId,
+			nodeId: contentState.nodeId,
+			displayNodeId: contentState.displayNodeId,
+			pendingUpdateId: contentState.pendingUpdateId,
 		};
 	},
 });
@@ -5426,7 +5480,10 @@ export const profile_text_search_files = internalAction({
 	}),
 	handler: async (ctx, args) => {
 		const startedAt = Date.now();
-		const result: files_nodes_text_search_files_Result = await ctx.runQuery(internal.files_nodes.text_search_files, args);
+		const result: files_nodes_text_search_files_Result = await ctx.runQuery(
+			internal.files_nodes.text_search_files,
+			args,
+		);
 		return {
 			durationMs: Date.now() - startedAt,
 			itemCount: result.items.length,

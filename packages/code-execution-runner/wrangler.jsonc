@@ -1,0 +1,18 @@
+{
+	"$schema": "https://unpkg.com/wrangler/config-schema.json",
+	"name": "bonobo-senate-code-execution-runner",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-05-11",
+	"workers_dev": true,
+	"worker_loaders": [
+		{
+			"binding": "LOADER"
+		}
+	],
+	"secrets": {
+		"required": ["CODE_EXECUTION_RUNNER_SECRET"]
+	},
+	"observability": {
+		"enabled": true
+	}
+}

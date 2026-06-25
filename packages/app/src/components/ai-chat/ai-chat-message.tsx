@@ -761,6 +761,56 @@ const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPag
 });
 // #endregion tool edit_file
 
+// #region tool execute_code
+type AiChatMessagePartToolExecuteCode_ClassNames = "AiChatMessagePartToolExecuteCode";
+
+type AiChatMessagePartToolExecuteCode_Props = {
+	className?: string | undefined;
+	args: ExtractStrict<ToolUIPart<ai_chat_AiSdk5UiTools>, { type: "tool-execute_code" }>["input"];
+	result: ai_chat_AiSdk5UiTools["execute_code"]["output"] | undefined;
+	toolState: ToolUIPart["state"];
+	isChatRunning: boolean;
+	errorText?: string | undefined;
+};
+
+const AiChatMessagePartToolExecuteCode = memo(function AiChatMessagePartToolExecuteCode(
+	props: AiChatMessagePartToolExecuteCode_Props,
+) {
+	const { className, args, result, toolState, isChatRunning, errorText } = props;
+
+	// Runner-level failures (errored / timed_out) return a normal `output-available`
+	// result, so surface them in the summary like a thrown tool error would be.
+	const isRunnerError = result?.metadata?.status === "errored" || result?.metadata?.status === "timed_out";
+	const summaryState = isRunnerError ? "output-error" : toolState;
+
+	return (
+		<AiChatMessagePartDisclosure
+			className={cn(
+				"AiChatMessagePartToolExecuteCode" satisfies AiChatMessagePartToolExecuteCode_ClassNames,
+				className,
+			)}
+		>
+			<AiChatMessagePartDisclosureButton title="Execute code" state={summaryState} isChatRunning={isChatRunning} />
+			<AiChatMessagePartToolBody>
+				<AiChatMessagePartToolTextAreaSection label="Code" code={args?.code ?? ""} maxHeight="16lh" />
+				{args?.input !== undefined && (
+					<AiChatMessagePartToolTextAreaSection label="Input" code={JSON.stringify(args.input, null, "\t")} />
+				)}
+				{errorText && <AiChatMessagePartToolTextAreaSection label="Error" code={errorText} state="error" />}
+				{result?.output && (
+					<AiChatMessagePartToolTextAreaSection
+						label={isRunnerError ? "Error" : "Result"}
+						code={result.output}
+						state={isRunnerError ? "error" : undefined}
+						maxHeight="16lh"
+					/>
+				)}
+			</AiChatMessagePartToolBody>
+		</AiChatMessagePartDisclosure>
+	);
+});
+// #endregion tool execute_code
+
 // #region tool unknown
 type AiChatMessagePartToolUnknown_ClassNames = "AiChatMessagePartToolUnknown" | "AiChatMessagePartToolUnknown-meta";
 
@@ -1159,6 +1209,17 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 			case "tool-edit_file": {
 				return (
 					<AiChatMessagePartToolEditPage
+						args={part.input}
+						result={part.output}
+						toolState={part.state}
+						isChatRunning={isChatRunning}
+						errorText={part.errorText}
+					/>
+				);
+			}
+			case "tool-execute_code": {
+				return (
+					<AiChatMessagePartToolExecuteCode
 						args={part.input}
 						result={part.output}
 						toolState={part.state}
@@ -1973,8 +2034,12 @@ export type AiChatMessage_Props = ComponentPropsWithRef<"div"> & {
 };
 
 export type AiChatMessage_CustomAttributes = {
+	"data-ai-chat-thread-id": string;
 	"data-ai-chat-message-id": string;
 	"data-ai-chat-message-role": ai_chat_AiSdk5UiMessage["role"];
+	"data-ai-chat-message-convex-id": string;
+	"data-ai-chat-message-parent-id": string;
+	"data-ai-chat-message-parent-client-id": string;
 };
 
 export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Props) {
@@ -2072,16 +2137,26 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		return null;
 	}
 
+	const messageAttributes = {
+		...(selectedThreadId ? { "data-ai-chat-thread-id": selectedThreadId } : {}),
+		"data-ai-chat-message-id": message.id,
+		"data-ai-chat-message-role": message.role,
+		...(message.metadata?.convexId ? { "data-ai-chat-message-convex-id": message.metadata.convexId } : {}),
+		...(message.metadata?.convexParentId
+			? { "data-ai-chat-message-parent-id": message.metadata.convexParentId }
+			: {}),
+		...(message.metadata?.parentClientGeneratedId
+			? { "data-ai-chat-message-parent-client-id": message.metadata.parentClientGeneratedId }
+			: {}),
+	} satisfies Partial<AiChatMessage_CustomAttributes>;
+
 	if (message.role === "user") {
 		return (
 			<AiChatMessageUser
 				ref={ref}
 				id={id}
 				className={cn("AiChatMessage" satisfies AiChatMessage_ClassNames, className)}
-				{...({
-					"data-ai-chat-message-id": message.id,
-					"data-ai-chat-message-role": message.role,
-				} satisfies Partial<AiChatMessage_CustomAttributes>)}
+				{...messageAttributes}
 				message={message}
 				selectedThreadId={selectedThreadId}
 				selectedModelId={selectedModelId}
@@ -2111,10 +2186,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 				ref={ref}
 				id={id}
 				className={cn("AiChatMessage" satisfies AiChatMessage_ClassNames, className)}
-				{...({
-					"data-ai-chat-message-id": message.id,
-					"data-ai-chat-message-role": message.role,
-				} satisfies Partial<AiChatMessage_CustomAttributes>)}
+				{...messageAttributes}
 				message={message}
 				selectedThreadId={selectedThreadId}
 				isRunning={isRunning}
@@ -2136,19 +2208,16 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 			ref={ref}
 			id={id}
 			className={cn("AiChatMessage" satisfies AiChatMessage_ClassNames, className)}
-			{...({
-				"data-ai-chat-message-id": message.id,
-				"data-ai-chat-message-role": message.role,
-			} satisfies Partial<AiChatMessage_CustomAttributes>)}
+			{...messageAttributes}
 			message={message}
 			selectedThreadId={selectedThreadId}
-		isRunning={isRunning}
-		isEditing={isEditing}
-		onToolOutput={actions.addToolOutput}
-		onToolResumeStream={actions.resumeStream}
-		onToolStop={actions.stop}
-		{...rest}
-	/>
+			isRunning={isRunning}
+			isEditing={isEditing}
+			onToolOutput={actions.addToolOutput}
+			onToolResumeStream={actions.resumeStream}
+			onToolStop={actions.stop}
+			{...rest}
+		/>
 	);
 });
 // #endregion message

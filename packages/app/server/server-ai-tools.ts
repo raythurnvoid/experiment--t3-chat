@@ -6,6 +6,7 @@ import { createPatch } from "diff";
 import type { ActionCtx } from "../convex/_generated/server";
 import type { Id } from "../convex/_generated/dataModel";
 import { internal } from "../convex/_generated/api.js";
+import { public_api_SCOPE_FILES_LIST, public_api_SCOPE_FILES_READ } from "../convex/public_api.ts";
 import { files_READ_RANGE_MAX_LINES } from "../convex/files_nodes.ts";
 import { path_name_of, server_path_normalize, server_path_parent_of } from "./server-utils.ts";
 import { minimatch } from "minimatch";
@@ -544,7 +545,7 @@ export function ai_chat_tool_create_read_file(
 			- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
 			- Any lines longer than 2000 characters will be truncated
 			- Results are returned using cat -n format, with line numbers starting at 1
-			- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful. 
+			- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
 			- Files use real Markdown paths such as /readme.md and /docs/setup.md.
 			- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.`,
 
@@ -967,8 +968,8 @@ export type ai_chat_tool_create_grep_files_ToolOutput = InferToolOutput<ai_chat_
 export function ai_chat_tool_create_bash(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		workspaceName: string;
 		projectName: string;
 		userId: Id<"users">;
@@ -1443,3 +1444,248 @@ type ai_chat_tool_create_web_search_Tool = ReturnType<typeof ai_chat_tool_create
 export type ai_chat_tool_create_web_search_ToolInput = InferToolInput<ai_chat_tool_create_web_search_Tool>;
 export type ai_chat_tool_create_web_search_ToolOutput = InferToolOutput<ai_chat_tool_create_web_search_Tool>;
 // #endregion web search
+
+// #region execute code
+const ai_chat_tool_execute_code_CODE_MAX_BYTES = 20_000;
+const ai_chat_tool_execute_code_INPUT_MAX_BYTES = 32_000;
+const ai_chat_tool_execute_code_TEXT_ENCODER = new TextEncoder();
+
+type ai_chat_tool_execute_code_RunnerResult = {
+	executionId: string;
+	status: "succeeded" | "errored" | "timed_out";
+	codeHash: string;
+	elapsedMs: number;
+	result: unknown;
+	resultTruncated: boolean;
+	logs: string[];
+	logsTruncated: boolean;
+	error: { name: string; message: string } | null;
+};
+
+const ai_chat_tool_execute_code_runner_result_schema = z.object({
+	executionId: z.string(),
+	status: z.enum(["succeeded", "errored", "timed_out"]),
+	codeHash: z.string(),
+	elapsedMs: z.number(),
+	result: z.unknown(),
+	resultTruncated: z.boolean(),
+	logs: z.array(z.string()),
+	logsTruncated: z.boolean(),
+	error: z.object({ name: z.string(), message: z.string() }).nullable(),
+});
+
+const ai_chat_tool_execute_code_runner_error_schema = z.object({
+	error: z.object({ message: z.string().optional() }).optional(),
+});
+
+function ai_chat_tool_execute_code_random_token() {
+	const bytes = new Uint8Array(32);
+	crypto.getRandomValues(bytes);
+	return Array.from(bytes)
+		.map((byte) => byte.toString(16).padStart(2, "0"))
+		.join("");
+}
+
+async function ai_chat_tool_execute_code_sha256_hex(input: string) {
+	const digest = await crypto.subtle.digest("SHA-256", ai_chat_tool_execute_code_TEXT_ENCODER.encode(input));
+	return Array.from(new Uint8Array(digest))
+		.map((byte) => byte.toString(16).padStart(2, "0"))
+		.join("");
+}
+
+function ai_chat_tool_execute_code_app_origin() {
+	const origin = process.env.VITE_CONVEX_HTTP_URL?.trim() || process.env.CONVEX_SITE_URL?.trim();
+	if (!origin) {
+		throw new Error("Code execution app access is unavailable.");
+	}
+
+	try {
+		const url = new URL(origin);
+		if (url.protocol !== "https:") {
+			throw new Error("Expected HTTPS app origin.");
+		}
+		return url.origin;
+	} catch {
+		throw new Error("Code execution app access is unavailable.");
+	}
+}
+
+function ai_chat_tool_execute_code_format_output(result: ai_chat_tool_execute_code_RunnerResult): string {
+	const blocks: string[] = [];
+
+	if (result.status === "succeeded") {
+		const resultText = result.resultTruncated
+			? "(result omitted: it exceeded the size limit)"
+			: (JSON.stringify(result.result) ?? "null");
+		blocks.push(`Result: ${resultText}`);
+	} else if (result.status === "timed_out") {
+		blocks.push("Execution timed out before completing.");
+	} else {
+		const name = result.error?.name ?? "Error";
+		const message = result.error?.message ?? "Unknown error";
+		blocks.push(`Error: ${name}: ${message}`);
+	}
+
+	if (result.logs.length > 0) {
+		blocks.push("");
+		blocks.push("Logs:");
+		for (const line of result.logs) {
+			blocks.push(`  ${line}`);
+		}
+		if (result.logsTruncated) {
+			blocks.push("  … (logs truncated)");
+		}
+	}
+
+	return blocks.join("\n");
+}
+
+/**
+ * Run a short, untrusted JavaScript snippet in the isolated Dynamic Worker
+ * sandbox (`bonobo-senate-code-execution-runner`) and return its value plus logs.
+ *
+ * Keep `CODE_EXECUTION_RUNNER_URL` / `CODE_EXECUTION_RUNNER_SECRET` on the server
+ * only. The runner receives a short-lived public API grant token for
+ * gateway-side file API authorization; the snippet sees only the app origin.
+ */
+export function ai_chat_tool_create_execute_code(
+	ctx: ActionCtx,
+	ctxData: {
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
+		workspaceName: string;
+		projectName: string;
+		userId: Id<"users">;
+	},
+	opts: {
+		getThreadId?: () => Id<"ai_chat_threads"> | null;
+	},
+) {
+	return tool({
+		description: dedent`\
+			Run a short snippet of JavaScript in a secure sandbox and get back the returned value plus console output. \
+			Use this for precise calculations, JSON transformation, parsing, public HTTPS fetches, and algorithmic logic that is error-prone to do by hand. \
+			The snippet is the body of an async function: use \`return\` to produce a JSON-serializable result, and read the optional \`input\` argument as the variable \`input\`. \
+			Modern JavaScript, JSON, and \`fetch\` are available. The snippet has \`process.env.T3_APP_ORIGIN\`; the runner gateway adds file API authorization. \
+			To read app files, fetch \`${"${process.env.T3_APP_ORIGIN}"}/api/v1/files/list\` for paths, then \`${"${process.env.T3_APP_ORIGIN}"}/api/v1/files/read-many\` for contents; follow \`cursor\` until \`isDone\`, check \`errors\` and \`truncated\`, and use \`/api/v1/files/read\` only for one known file. \
+			Do not pass app file paths or contents through \`input\`; keep \`input\` for ordinary JSON parameters, run file API fetches inside the snippet, and return a compact aggregate instead of raw file contents. \
+			Keep snippets small and deterministic: execution is time-limited and both the result and the logs are size-limited.`,
+
+		inputSchema: z
+			.object({
+				code: z
+					.string()
+					.min(1)
+					.max(ai_chat_tool_execute_code_CODE_MAX_BYTES)
+					.describe(
+						"JavaScript to run as the body of an async function. Use `return` to produce a JSON-serializable result.",
+					),
+				input: z
+					.unknown()
+					.describe("Optional JSON-serializable value passed to the snippet as the `input` variable.")
+					.optional(),
+			})
+			.strict(),
+
+		execute: async (args) => {
+			const baseUrl = process.env.CODE_EXECUTION_RUNNER_URL?.trim();
+			const secret = process.env.CODE_EXECUTION_RUNNER_SECRET?.trim();
+			if (!baseUrl || !secret) {
+				throw new Error("Code execution is unavailable.");
+			}
+
+			// Reject oversized tool payloads before the runner request; the runner
+			// still enforces its own request limits.
+			if (ai_chat_tool_execute_code_TEXT_ENCODER.encode(args.code).length > ai_chat_tool_execute_code_CODE_MAX_BYTES) {
+				throw new Error("`code` is too large.");
+			}
+
+			let inputJson: string;
+			try {
+				inputJson = args.input === undefined ? "null" : (JSON.stringify(args.input) ?? "null");
+			} catch {
+				throw new Error("`input` must be JSON-serializable.");
+			}
+			if (ai_chat_tool_execute_code_TEXT_ENCODER.encode(inputJson).length > ai_chat_tool_execute_code_INPUT_MAX_BYTES) {
+				throw new Error("`input` is too large.");
+			}
+
+			const url = `${baseUrl.replace(/\/$/u, "")}/internal/execute-code`;
+			const appOrigin = ai_chat_tool_execute_code_app_origin();
+			const executionId = crypto.randomUUID();
+			const publicApiGrantToken = ai_chat_tool_execute_code_random_token();
+			await ctx.runMutation(internal.public_api.create_grant, {
+				workspaceId: ctxData.workspaceId,
+				projectId: ctxData.projectId,
+				userId: ctxData.userId,
+				threadId: opts.getThreadId?.() ?? null,
+				principalKey: executionId,
+				tokenHash: await ai_chat_tool_execute_code_sha256_hex(publicApiGrantToken),
+				scopes: [public_api_SCOPE_FILES_LIST, public_api_SCOPE_FILES_READ],
+				pathPrefix: null,
+				now: Date.now(),
+			});
+
+			let response: Response;
+			try {
+				response = await fetch(url, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${secret}`,
+					},
+					body: JSON.stringify({
+						executionId,
+						code: args.code,
+						input: args.input ?? null,
+						network: { mode: "public_http" },
+						app: {
+							origin: appOrigin,
+							token: publicApiGrantToken,
+						},
+					}),
+				});
+			} catch (error) {
+				throw new Error(`Code execution request failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
+
+			if (!response.ok) {
+				let message = `Code execution request failed (${response.status}).`;
+				try {
+					const body = ai_chat_tool_execute_code_runner_error_schema.parse(await response.json());
+					if (body.error?.message) {
+						message = body.error.message;
+					}
+				} catch {
+					// Keep the status-code fallback message.
+				}
+				throw new Error(message);
+			}
+
+			let result: ai_chat_tool_execute_code_RunnerResult;
+			try {
+				result = ai_chat_tool_execute_code_runner_result_schema.parse(await response.json());
+			} catch {
+				throw new Error("Code execution returned an invalid response.");
+			}
+			const output = ai_chat_tool_execute_code_format_output(result);
+
+			return {
+				title: "Execute code",
+				metadata: {
+					executionId: result.executionId,
+					status: result.status,
+					elapsedMs: result.elapsedMs,
+					resultTruncated: result.resultTruncated,
+					logsTruncated: result.logsTruncated,
+				},
+				output,
+			};
+		},
+	});
+}
+
+type ai_chat_tool_create_execute_code_Tool = ReturnType<typeof ai_chat_tool_create_execute_code>;
+export type ai_chat_tool_create_execute_code_ToolInput = InferToolInput<ai_chat_tool_create_execute_code_Tool>;
+export type ai_chat_tool_create_execute_code_ToolOutput = InferToolOutput<ai_chat_tool_create_execute_code_Tool>;
+// #endregion execute code

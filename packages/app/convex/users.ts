@@ -954,7 +954,12 @@ export function users_http_routes(router: RouterForConvexModules) {
 
 							// Refresh path: if token is provided, only re-issue when it is close to expiry.
 							if (body?.token) {
-								const authFromToken = users_get_user_id_from_jwt(body.token);
+								let authFromToken: ReturnType<typeof users_get_user_id_from_jwt>;
+								try {
+									authFromToken = users_get_user_id_from_jwt(body.token);
+								} catch {
+									return { status: 401, body: { message: "Invalid token" } } as const;
+								}
 								if (!authFromToken.userId) {
 									return { status: 400, body: { message: "Invalid token subject" } } as const;
 								}

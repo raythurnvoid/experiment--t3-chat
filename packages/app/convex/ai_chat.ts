@@ -3,7 +3,12 @@ import { ai_chat_MODEL_IDS, ai_chat_MODE_IDS, type ai_chat_AiSdk5UiMessage } fro
 import { get_id_generator, math_clamp } from "../src/lib/utils.ts";
 import { query, mutation, httpAction, internalMutation, internalQuery, type ActionCtx } from "./_generated/server.js";
 import { api, internal } from "./_generated/api.js";
-import { paginationOptsValidator, paginationResultValidator, type RegisteredQuery, type RouteSpec } from "convex/server";
+import {
+	paginationOptsValidator,
+	paginationResultValidator,
+	type RegisteredQuery,
+	type RouteSpec,
+} from "convex/server";
 import { doc } from "convex-helpers/validators";
 import { v } from "convex/values";
 import { openai } from "@ai-sdk/openai";
@@ -36,6 +41,7 @@ import {
 	ai_chat_tool_create_write_file,
 	ai_chat_tool_create_edit_file,
 	ai_chat_tool_create_web_search,
+	ai_chat_tool_create_execute_code,
 	ai_chat_WRITE_TOOL_NAMES,
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
@@ -90,7 +96,7 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 		"Shell pathname expansion is disabled. General app-file glob operands are unsupported. Prefer `find <folder> --extension md -type f`; simple find patterns like `*.md` are accepted only as extension-search recovery.",
 		"`ls --limit` and `find --limit` are app-file pagination commands. Relative paths resolve against the current working directory.",
 		"Content-vs-path rule: use `search` for text inside files, and use `find` only for path/name discovery. Plain requests like `search for X with limit N` mean content search, so run `search --limit N X`. If the user says `search for the X file`, `find the X file`, `file named X`, or `path/name contains X`, use `find`. If the user says `search inside <folder> for X`, `where does X appear`, or `files mention X`, run `search --path <folder> X` or `search X`; do not substitute `find --path-query`.",
-		"`meta search --where '{\"eq\":[\"frontmatter.from\",\"alice@example.com\"]}'` searches indexed Markdown YAML frontmatter. Prefer `meta search`/`meta get` over reading raw file text when answering which files have a frontmatter field or value. Use qualified `frontmatter.*` fields; one positive predicate per command is supported: `exists`, `eq`, `prefix`, or numeric `range`. `range` takes a bounds object, e.g. `{\"range\":[\"frontmatter.estimate\",{\"gte\":5,\"lte\":120}]}` (any of `gte`/`gt`/`lte`/`lt`). The default output is paths; use `--format json` for metadata details and cursors. Combine multiple predicates outside the command with shell tools over path output. There is no `not`/`neq`: to find where a field is NOT a value, you MUST first run `exists <field>` to list every file that has the field, then remove the `eq <field> <value>` matches (e.g. `comm -23` or `grep -vxF`) — the `eq` matches are only a subset, so never infer the complement from an `eq` result alone. Use `meta get <file>` to inspect one file's indexed metadata. If metadata field names are unclear, read nearby `README.md` files because folders may document their frontmatter conventions.",
+		'`meta search --where \'{"eq":["frontmatter.from","alice@example.com"]}\'` searches indexed Markdown YAML frontmatter. Prefer `meta search`/`meta get` over reading raw file text when answering which files have a frontmatter field or value. Use qualified `frontmatter.*` fields; one positive predicate per command is supported: `exists`, `eq`, `prefix`, or numeric `range`. `range` takes a bounds object, e.g. `{"range":["frontmatter.estimate",{"gte":5,"lte":120}]}` (any of `gte`/`gt`/`lte`/`lt`). The default output is paths; use `--format json` for metadata details and cursors. Combine multiple predicates outside the command with shell tools over path output. There is no `not`/`neq`: to find where a field is NOT a value, you MUST first run `exists <field>` to list every file that has the field, then remove the `eq <field> <value>` matches (e.g. `comm -23` or `grep -vxF`) — the `eq` matches are only a subset, so never infer the complement from an `eq` result alone. Use `meta get <file>` to inspect one file\'s indexed metadata. If metadata field names are unclear, read nearby `README.md` files because folders may document their frontmatter conventions.',
 		`For \`search --path\` and \`meta search --path\`, the same app-root path rule applies: pass \`${currentProjectPath}/folder\` or relative \`folder\`, never raw \`/folder\`.`,
 		"When a content-search request already names a folder, do not run `ls` first to verify that folder; run `search --path <folder> <content terms>` directly and let search report missing or invalid scopes.",
 		"For recursive grep requests over an app folder, the first Bash command should be `search --path <folder> <content terms>`; do not run `ls`, native `rg`, or multi-file `grep` first.",
@@ -115,6 +121,11 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 		"Use `web_search` for current public facts, official documentation, release notes, news, and other information outside this workspace when file tools are not enough.",
 		"Summarize `web_search` highlight snippets in your own words.",
 		"On failed web search, continue from workspace context and state that current web results were unavailable.",
+		"Use `execute_code` to run small JavaScript snippets for precise calculations, JSON transformation, parsing, public HTTPS fetches, or algorithmic checks when doing it by hand would be error-prone.",
+		"The snippet has `fetch`, `input`, and `process.env.T3_APP_ORIGIN`; the runner gateway adds app file API authorization.",
+		"To read app files from code, fetch `${process.env.T3_APP_ORIGIN}/api/v1/files/list` for paths, then `${process.env.T3_APP_ORIGIN}/api/v1/files/read-many` for contents; follow `cursor` until `isDone`, check `errors` and `truncated`, and use `/api/v1/files/read` only for one known file.",
+		"Do not pass app file paths or contents through `input`; keep `input` for ordinary JSON parameters, run file API fetches inside the snippet, and return a compact aggregate instead of raw file contents.",
+		"Summarize `execute_code` results and logs in your answer; do not paste large raw output.",
 		"After tool results, give the user a concise direct answer and only continue using tools when it materially helps.",
 	].join("\n");
 }
@@ -195,8 +206,8 @@ function compute_token_usage_cost_cents(args: { modelId: string; inputTokens: nu
 function build_agent_configuration(input: {
 	ctx: ActionCtx;
 	ctxData: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		workspaceName: string;
 		projectName: string;
 		userId: Id<"users">;
@@ -225,6 +236,7 @@ function build_agent_configuration(input: {
 		write_file: ai_chat_tool_create_write_file(ctx, ctxData),
 		edit_file: ai_chat_tool_create_edit_file(ctx, ctxData),
 		web_search: ai_chat_tool_create_web_search(),
+		execute_code: ai_chat_tool_create_execute_code(ctx, ctxData, { getThreadId }),
 	};
 
 	const writeToolNames = new Set<string>(ai_chat_WRITE_TOOL_NAMES);
@@ -895,7 +907,7 @@ export const thread_messages_list = query({
 /**
  * Mutation to add one or more messages to a thread.
  *
- * It won't check for duplicates.
+ * Repeated client-generated ids return the existing message ids.
  */
 export const thread_messages_add = mutation({
 	args: {
@@ -938,20 +950,53 @@ export const thread_messages_add = mutation({
 
 		const parentId = args.parentId ? ctx.db.normalizeId("ai_chat_threads_messages_aisdk_5", args.parentId) : null;
 
-		const now = Date.now();
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, {
-			name: "ai_chat_message_write",
-			key: userAuth.id,
-			count: Math.max(args.messages.length, 1),
-		});
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
+		const existingIdsByClientGeneratedMessageId = new Map<string, Id<"ai_chat_threads_messages_aisdk_5">>();
+		const newClientGeneratedMessageIds = new Set<string>();
+		const existingMessages = await Promise.all(
+			args.messages.map(async (message) => ({
+				clientGeneratedMessageId: message.clientGeneratedMessageId,
+				existingMessage: await ctx.db
+					.query("ai_chat_threads_messages_aisdk_5")
+					.withIndex("by_workspace_project_thread_clientGeneratedMessageId", (q) =>
+						q
+							.eq("workspaceId", thread.workspaceId)
+							.eq("projectId", thread.projectId)
+							.eq("threadId", args.threadId)
+							.eq("clientGeneratedMessageId", message.clientGeneratedMessageId),
+					)
+					.first(),
+			})),
+		);
+		for (const { clientGeneratedMessageId, existingMessage } of existingMessages) {
+			if (existingMessage) {
+				existingIdsByClientGeneratedMessageId.set(clientGeneratedMessageId, existingMessage._id);
+			} else if (!existingIdsByClientGeneratedMessageId.has(clientGeneratedMessageId)) {
+				newClientGeneratedMessageIds.add(clientGeneratedMessageId);
+			}
 		}
 
+		if (newClientGeneratedMessageIds.size > 0) {
+			const rateLimit = await rate_limiter_limit_by_key(ctx, {
+				name: "ai_chat_message_write",
+				key: userAuth.id,
+				count: newClientGeneratedMessageIds.size,
+			});
+			if (rateLimit) {
+				return Result({ _nay: { message: rateLimit.message } });
+			}
+		}
+
+		const now = Date.now();
 		const ids: Array<Id<"ai_chat_threads_messages_aisdk_5">> = [];
 		let nextParentId = parentId;
 		for (const message of args.messages) {
+			const existingMessageId = existingIdsByClientGeneratedMessageId.get(message.clientGeneratedMessageId);
+			if (existingMessageId) {
+				ids.push(existingMessageId);
+				nextParentId = existingMessageId;
+				continue;
+			}
+
 			const messageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
 				workspaceId: thread.workspaceId,
 				projectId: thread.projectId,
@@ -963,6 +1008,7 @@ export const thread_messages_add = mutation({
 				content: message.content,
 			});
 
+			existingIdsByClientGeneratedMessageId.set(message.clientGeneratedMessageId, messageId);
 			ids.push(messageId);
 			nextParentId = messageId;
 		}
@@ -1572,10 +1618,19 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											return;
 										}
 
+										if (didStreamError) {
+											console.info("onFinish stream error", {
+												threadId,
+												parentId: resolvedParentId,
+												hasResponseMessage: Boolean(result.responseMessage),
+											});
+											return;
+										}
+
 										const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
 										const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
 										const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
-										if (capturedTotalTokens > 0 && !didStreamError) {
+										if (capturedTotalTokens > 0) {
 											await billing_ingest_events(ctx, {
 												billedUserEvents: [
 													{
@@ -1612,19 +1667,6 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											});
 										}
 
-										const responseMessage = {
-											...result.responseMessage,
-											...(result.isAborted || didStreamError
-												? {
-														metadata: {
-															...(result.responseMessage.metadata ?? {}),
-															status: result.isAborted ? ("aborted" as const) : ("errored" as const),
-															parentClientGeneratedId: result.responseMessage.metadata?.parentClientGeneratedId ?? null,
-														},
-													}
-												: {}),
-										} satisfies ai_chat_AiSdk5UiMessage;
-
 										// Persist completed assistant responses below the last persisted request message.
 										const assistantPersistResult = await ctx.runMutation(api.ai_chat.thread_messages_add, {
 											membershipId: membership._id,
@@ -1632,8 +1674,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 											parentId: resolvedParentId,
 											messages: [
 												{
-													clientGeneratedMessageId: responseMessage.id,
-													content: responseMessage,
+													clientGeneratedMessageId: result.responseMessage.id,
+													content: result.responseMessage,
 												},
 											],
 										});
@@ -1989,8 +2031,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	>;
 
 	const build_agent_configuration_test_ctx_data = {
-		workspaceId: "app_workspace_test_1",
-		projectId: "app_project_test_1",
+		workspaceId: "app_workspace_test_1" as Id<"workspaces">,
+		projectId: "app_project_test_1" as Id<"workspaces_projects">,
 		workspaceName: "personal",
 		projectName: "home",
 		userId: "user_1" as Id<"users">,
@@ -2012,6 +2054,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		"write_file",
 		"edit_file",
 		"web_search",
+		"execute_code",
 	] as const;
 
 	const makeCtx = (args?: {
@@ -2104,7 +2147,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			expect(Object.keys(configuration.tools)).toEqual(build_agent_configuration_expected_tool_keys);
-			expect(configuration.activeTools).toEqual(["bash", "write_file", "edit_file", "web_search"]);
+			expect(configuration.activeTools).toEqual(["bash", "write_file", "edit_file", "web_search", "execute_code"]);
 		});
 
 		test("keeps the full tool registry but excludes write tools from activeTools in Ask mode", () => {
@@ -2119,7 +2162,47 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			expect(Object.keys(configuration.tools)).toEqual(build_agent_configuration_expected_tool_keys);
-			expect(configuration.activeTools).toEqual(["bash", "web_search"]);
+			expect(configuration.activeTools).toEqual(["bash", "web_search", "execute_code"]);
+		});
+
+		test("accepts a historical execute_code tool part when validating stored UI messages", async () => {
+			const { ctx } = makeCtx();
+			const configuration = build_agent_configuration({
+				ctx,
+				ctxData: build_agent_configuration_test_ctx_data,
+				args: {
+					modeId: "agent",
+				},
+				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+			});
+
+			const message = {
+				id: "message_exec_1",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-execute_code",
+						toolCallId: "call_exec_1",
+						state: "output-available",
+						input: { code: "return input.n * 2;", input: { n: 2 } },
+						output: {
+							title: "Execute code",
+							output: "Result: 4",
+							metadata: {
+								executionId: "exec_1",
+								status: "succeeded",
+								elapsedMs: 3,
+								resultTruncated: false,
+								logsTruncated: false,
+							},
+						},
+					},
+				],
+			} as unknown as ai_chat_AiSdk5UiMessage;
+
+			await expect(
+				validateUIMessages<ai_chat_AiSdk5UiMessage>({ messages: [message], tools: configuration.tools }),
+			).resolves.toBeDefined();
 		});
 
 		test("appends the Ask mode instruction to the system prompt", () => {
@@ -2170,9 +2253,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(configuration.systemPrompt).toContain(
 				"Bash is the normal shell for this cloud file environment. `/tmp` supports the safe Just Bash native-style scratch command surface; app files under the app mount are Convex-backed, not POSIX files.",
 			);
-			expect(configuration.systemPrompt).toContain(
-				"Do not describe app-mount limitations as global Bash limitations.",
-			);
+			expect(configuration.systemPrompt).toContain("Do not describe app-mount limitations as global Bash limitations.");
 			expect(configuration.systemPrompt).toContain(
 				"If a command touches only `/tmp` or stdin, use normal scratch commands; if it touches the app mount, use the app-aware command forms below.",
 			);
@@ -2245,10 +2326,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"`ls -t` (newest first) and `ls -rt` (oldest first) without PATH list the whole project ordered by update time",
 			);
 			expect(configuration.systemPrompt).toContain("bare `ls -t` is still project-wide");
+			expect(configuration.systemPrompt).toContain("`ls -R` lists a paginated subtree as full app shell paths");
 			expect(configuration.systemPrompt).toContain(
-				"`ls -R` lists a paginated subtree as full app shell paths",
+				"when the user asks for tree-shaped output, use `tree`, not `ls -R`",
 			);
-			expect(configuration.systemPrompt).toContain("when the user asks for tree-shaped output, use `tree`, not `ls -R`");
 			expect(configuration.systemPrompt).toContain(
 				"Use `find -name QUERY` or `find --path-query QUERY` only for DB-backed path/name word search.",
 			);
@@ -2278,7 +2359,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"`search [--limit N] [--cursor CURSOR] <content terms...>` is full-text content search",
 			);
 			expect(configuration.systemPrompt).toContain("Pass one distinctive word or a few plain terms");
-			expect(configuration.systemPrompt).toContain("For requests like “where does X appear” or “which files mention X”, run `search` first");
+			expect(configuration.systemPrompt).toContain(
+				"For requests like “where does X appear” or “which files mention X”, run `search` first",
+			);
 			expect(configuration.systemPrompt).toContain(
 				"For recursive grep, `grep -R`, or `rg` wording over an app folder, do not try native `rg` or multi-file `grep` first",
 			);
@@ -2289,12 +2372,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(configuration.systemPrompt).toContain(
 				"Use exact app paths with `cat [-n] [--] [FILE...]`, `head`, `tail`, `wc`, and `stat`",
 			);
-			expect(configuration.systemPrompt).toContain(
-				"`cat` unreadable-file advisories are stderr, not file content",
-			);
-			expect(configuration.systemPrompt).toContain(
-				"Uploaded source files do not alias to generated Markdown outputs.",
-			);
+			expect(configuration.systemPrompt).toContain("`cat` unreadable-file advisories are stderr, not file content");
+			expect(configuration.systemPrompt).toContain("Uploaded source files do not alias to generated Markdown outputs.");
 			expect(configuration.systemPrompt).toContain(
 				"read the exact generated output path when the user wants converted text",
 			);

@@ -18,6 +18,9 @@ type MockPrepareSendMessagesRequestOptions = {
 	headers: Headers;
 	id: string;
 	messages: Array<{
+		id?: string;
+		role?: ai_chat_AiSdk5UiMessage["role"];
+		parts?: ai_chat_AiSdk5UiMessage["parts"];
 		metadata?: {
 			convexParentId?: string | null;
 		};
@@ -103,7 +106,6 @@ vi.mock("ai", async (importOriginal) => {
 				this.options = options;
 			}
 		},
-		lastAssistantMessageIsCompleteWithToolCalls: vi.fn(() => false),
 	};
 });
 
@@ -599,6 +601,9 @@ describe("AiChatController", () => {
 			id: optimisticThreadId,
 			messages: [
 				{
+					id: "client_user_restored_send",
+					role: "user",
+					parts: [{ type: "text", text: "Retry me" }],
 					metadata: {
 						convexParentId: null,
 					},
@@ -615,6 +620,73 @@ describe("AiChatController", () => {
 			clientGeneratedThreadId: optimisticThreadId,
 		});
 		expect(body.threadId).toBeUndefined();
+	});
+
+	test("does not append assistant messages when preparing a submit request", async () => {
+		render(
+			<FullPageSurface initialSelectedThreadId="thread_auto_submit_guard">
+				<RuntimeSendProbe />
+			</FullPageSurface>,
+		);
+
+		await waitFor(() => {
+			expect(hookMocks.chatInstances.some((chat) => chat.id === "thread_auto_submit_guard")).toBe(true);
+		});
+
+		const chat = hookMocks.chatInstances.find((chat) => chat.id === "thread_auto_submit_guard");
+		expect(chat).toBeDefined();
+		if (!chat) {
+			throw new Error("Expected chat instance");
+		}
+
+		const prepareSendMessagesRequest = chat.transport?.options.prepareSendMessagesRequest;
+		expect(prepareSendMessagesRequest).toBeTypeOf("function");
+		if (!prepareSendMessagesRequest) {
+			throw new Error("Expected chat transport");
+		}
+
+		const preparedRequest = await prepareSendMessagesRequest({
+			api: "/api/chat",
+			body: {},
+			headers: new Headers(),
+			id: "thread_auto_submit_guard",
+			messages: [
+				{
+					id: "msg_auto_submit_assistant",
+					role: "assistant",
+					parts: [
+						{
+							type: "tool-execute_code",
+							toolCallId: "call_auto_submit_assistant",
+							state: "output-available",
+							input: { code: "return 1;" },
+							output: {
+								title: "Execute code",
+								metadata: {
+									executionId: "exec_auto_submit_assistant",
+									status: "succeeded",
+									elapsedMs: 1,
+									resultTruncated: false,
+									logsTruncated: false,
+								},
+								output: "Result: 1",
+							},
+						},
+					],
+					metadata: {
+						convexParentId: "msg_user_before_tool",
+					},
+				},
+			],
+			trigger: "submit-message",
+		});
+
+		if (typeof preparedRequest !== "object" || preparedRequest === null || !("body" in preparedRequest)) {
+			throw new Error("Expected prepared request body");
+		}
+		const body = (preparedRequest as { body: Record<string, unknown> }).body;
+		expect(body.messages).toEqual([]);
+		expect(body.parentId).toBeNull();
 	});
 
 	test("stamps matched live messages with persisted identity before follow-up sends", async () => {
@@ -666,6 +738,68 @@ describe("AiChatController", () => {
 		expect(chat.sendMessage).toHaveBeenCalledTimes(1);
 		const sentMessage = chat.sendMessage.mock.calls.at(-1)?.[0] as ai_chat_AiSdk5UiMessage | undefined;
 		expect(sentMessage?.metadata?.convexParentId).toBe("msg_persisted_user_1");
+	});
+
+	test("keeps message references stable for cloned execute_code messages with equal content", () => {
+		AiChatController.useStore.actions.clearRenderState();
+
+		const message = {
+			id: "msg_execute_code_stable",
+			role: "assistant",
+			parts: [
+				{
+					type: "tool-execute_code",
+					toolCallId: "call_execute_code_stable",
+					state: "output-available",
+					input: {
+						code: "return input.a * input.b + input.c;",
+						input: { a: 12, b: 9, c: 7 },
+					},
+					output: {
+						title: "Execute code",
+						metadata: {
+							executionId: "exec_stable",
+							status: "succeeded",
+							elapsedMs: 7,
+							resultTruncated: false,
+							logsTruncated: false,
+						},
+						output: "Result: 115",
+					},
+				},
+			],
+			metadata: {
+				convexParentId: "msg_user_execute_code",
+				parentClientGeneratedId: null,
+			},
+		} satisfies ai_chat_AiSdk5UiMessage;
+
+		AiChatController.useStore.actions.syncThreadRenderState({
+			threadId: "thread_execute_code_stable",
+			messages: [message],
+			branchSiblingIdsByParentId: new Map([[message.metadata.convexParentId, [message.id]]]),
+			isRunning: false,
+			hasError: false,
+		});
+
+		const firstState = AiChatController.useStore.getState();
+		const firstMessageById = firstState.messageById;
+		const firstMessage = firstMessageById.get(message.id);
+		expect(firstMessage).toBe(message);
+
+		// Mirror live execute_code hydration, where equal tool content can arrive as a new object.
+		const clonedMessage = structuredClone(message) as ai_chat_AiSdk5UiMessage;
+		AiChatController.useStore.actions.syncThreadRenderState({
+			threadId: "thread_execute_code_stable",
+			messages: [clonedMessage],
+			branchSiblingIdsByParentId: new Map([[message.metadata.convexParentId, [message.id]]]),
+			isRunning: false,
+			hasError: false,
+		});
+
+		const nextState = AiChatController.useStore.getState();
+		expect(nextState.messageById).toBe(firstMessageById);
+		expect(nextState.messageById.get(message.id)).toBe(firstMessage);
 	});
 
 	test("selectBranchAnchor hydrates a missing restored persisted thread session", async () => {

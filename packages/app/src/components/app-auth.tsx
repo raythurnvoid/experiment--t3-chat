@@ -61,17 +61,12 @@ function storage_clear_anonymous_token(): void {
 	storage_local().removeItem("app::auth::anonymous_token_user_id");
 }
 
-async function auth_get_anonymous_convex_token(args?: { skipCache?: boolean }) {
+async function auth_get_anonymous_convex_token() {
 	const cached = storage_get_anonymous_token();
 
-	if (!args?.skipCache) {
-		if (cached) {
-			return cached;
-		}
-	}
-
-	// If skipCache is true and we have a cached token, ask the server to validate and refresh if needed.
-	if (args?.skipCache && cached) {
+	if (cached) {
+		// Anonymous localStorage is disposable. Validate cached tokens before app queries
+		// run so stale dev-reset sessions do not trip the route error boundary.
 		const refreshResult = await app_fetch_auth_anonymous({ token: cached.token });
 		if (refreshResult._yay) {
 			storage_set_anonymous_token({
@@ -83,7 +78,8 @@ async function auth_get_anonymous_convex_token(args?: { skipCache?: boolean }) {
 				userId: refreshResult._yay.payload.userId,
 			};
 		}
-		// If refresh failed, fall through to create new user
+
+		storage_clear_anonymous_token();
 	}
 
 	// Create new anonymous user (either no cached token, or refresh failed)
@@ -214,7 +210,7 @@ export function AppAuthProvider(props: AppAuthProvider_Props) {
 		anonymousTokenDeferredRef.current = create_deferred<AnonymousTokenResult>();
 		const deferred = anonymousTokenDeferredRef.current;
 
-		auth_get_anonymous_convex_token({ skipCache: options?.skipCache })
+		auth_get_anonymous_convex_token()
 			.then((result) => {
 				if (result) {
 					if (!signal.aborted) {

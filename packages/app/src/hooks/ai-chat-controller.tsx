@@ -1,5 +1,5 @@
 import { Chat, useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, lastAssistantMessageIsCompleteWithToolCalls, type ChatOnFinishCallback } from "ai";
+import { DefaultChatTransport, type ChatOnFinishCallback } from "ai";
 import {
 	createContext,
 	useContext,
@@ -18,6 +18,7 @@ import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { app_fetch_main_api_url } from "@/lib/fetch.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { objects_equal_deep } from "@/lib/object.ts";
 import { app_local_storage_get_value, app_local_storage_set_value, type storage_local_Key } from "@/lib/storage.ts";
 import { generate_id, get_id_generator, should_never_happen, type GeneratedIdPrefix } from "@/lib/utils.ts";
 import { useFn, useLiveRef } from "./utils-hooks.ts";
@@ -244,6 +245,27 @@ function readonly_string_arrays_equal(a: readonly string[] | undefined, b: reado
 	return true;
 }
 
+const EMPTY_MESSAGE_METADATA: Record<string, unknown> = {};
+
+// AI SDK can return fresh UIMessage objects for the same persisted tool result.
+// Compare the render-relevant fields so no-op syncs keep the existing message reference.
+function ui_messages_have_equal_render_content(
+	a: ai_chat_AiSdk5UiMessage,
+	b: ai_chat_AiSdk5UiMessage,
+) {
+	if (a === b) {
+		return true;
+	}
+	if (a.id !== b.id || a.role !== b.role) {
+		return false;
+	}
+
+	return (
+		objects_equal_deep(a.parts, b.parts) &&
+		objects_equal_deep(a.metadata ?? EMPTY_MESSAGE_METADATA, b.metadata ?? EMPTY_MESSAGE_METADATA)
+	);
+}
+
 function create_optimistic_thread(tenant: {
 	workspaceId: string;
 	projectId: string;
@@ -356,7 +378,6 @@ function create_chat_instance(args: ThreadChatArgs) {
 			api: app_fetch_main_api_url("/api/chat"),
 			prepareSendMessagesRequest: args.prepareSendMessagesRequest,
 		}),
-		sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
 		onData: (part) => {
 			if (!part.type?.startsWith("data-")) {
 				return;
@@ -492,7 +513,9 @@ const useStore = ((/* iife */) => {
 
 					let messageById = state.messageById;
 					for (const message of args.messages) {
-						if (messageById.get(message.id) === message) {
+						const storedMessage = messageById.get(message.id);
+						// Equal cloned messages should not churn the message map or remount message UI.
+						if (storedMessage && ui_messages_have_equal_render_content(storedMessage, message)) {
 							continue;
 						}
 
@@ -668,7 +691,9 @@ const useThreadList = (props?: useThreadList_Props) => {
 				headers.set("Authorization", `Bearer ${token}`);
 			}
 
-			const messagesToAppend = options.trigger === "regenerate-message" ? [] : options.messages.slice(-1);
+			const lastMessage = options.messages.at(-1);
+			const messagesToAppend =
+				options.trigger === "submit-message" && lastMessage?.role === "user" ? [lastMessage] : [];
 			const parentId =
 				options.trigger === "regenerate-message"
 					? options.messages.at(-1)?.id
@@ -1197,10 +1222,11 @@ const useThreadRuntimeController = () => {
 				headers.set("Authorization", `Bearer ${token}`);
 			}
 
-			// When regenerating the last message is a persisted assistant message,
-			// When editing or submitting the last message is the optimistic user message.
-			// The messages we send are the ones we want to persist.
-			const messagesToAppend = options.trigger === "regenerate-message" ? [] : options.messages.slice(-1);
+			// Only submit requests append the optimistic user message. Regenerate and
+			// edit requests are anchored to existing persisted messages instead.
+			const lastMessage = options.messages.at(-1);
+			const messagesToAppend =
+				options.trigger === "submit-message" && lastMessage?.role === "user" ? [lastMessage] : [];
 
 			// Keep submit-message requests anchored to the persisted parent chosen during `sendUserText`.
 			// After `stop`, `options.messages.at(-2)?.id` can still be the optimistic assistant id,

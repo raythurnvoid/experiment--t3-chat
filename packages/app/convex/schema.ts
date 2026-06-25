@@ -69,7 +69,14 @@ const app_convex_schema = defineSchema({
 		createdBy: v.id("users"),
 		/** timestamp in milliseconds */
 		updatedAt: v.number(),
-	}).index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"]),
+	})
+		.index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"])
+		.index("by_workspace_project_thread_clientGeneratedMessageId", [
+			"workspaceId",
+			"projectId",
+			"threadId",
+			"clientGeneratedMessageId",
+		]),
 
 	ai_chat_files: defineTable({
 		workspaceId: v.string(),
@@ -109,6 +116,44 @@ const app_convex_schema = defineSchema({
 		.index("by_thread_fileNode", ["threadId", "fileNodeId"]),
 
 	// #endregion ai
+
+	// #region public api
+	public_api_grants: defineTable({
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
+		userId: v.id("users"),
+		threadId: v.union(v.id("ai_chat_threads"), v.null()),
+		principalKey: v.string(),
+		tokenHash: v.string(),
+		scopes: v.array(v.union(v.literal("files:list"), v.literal("files:read"))),
+		pathPrefix: v.union(v.string(), v.null()),
+		createdAt: v.number(),
+		expiresAt: v.number(),
+	})
+		.index("by_tokenHash", ["tokenHash"])
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_workspace_project", ["workspaceId", "projectId"])
+		.index("by_user", ["userId"]),
+
+	api_credentials: defineTable({
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
+		userId: v.id("users"),
+		name: v.string(),
+		keyId: v.string(),
+		obfuscatedValue: v.string(),
+		secretHash: v.string(),
+		scopes: v.array(v.union(v.literal("files:list"), v.literal("files:read"))),
+		createdAt: v.number(),
+		revokedAt: v.union(v.number(), v.null()),
+		lastUsedAt: v.union(v.number(), v.null()),
+	})
+		.index("by_keyId", ["keyId"])
+		.index("by_workspace_project", ["workspaceId", "projectId"])
+		.index("by_workspace_project_user", ["workspaceId", "projectId", "userId"])
+		.index("by_workspace_project_user_revokedAt", ["workspaceId", "projectId", "userId", "revokedAt"])
+		.index("by_user", ["userId"]),
+	// #endregion public api
 
 	// #region value store
 	value_store: defineTable({
@@ -638,6 +683,7 @@ const app_convex_schema = defineSchema({
 			v.literal("asset.read"),
 			v.literal("asset.write"),
 			v.literal("asset.permissions.manage"),
+			v.literal("api.credentials.manage"),
 		),
 		createdAt: v.number(),
 		updatedAt: v.number(),

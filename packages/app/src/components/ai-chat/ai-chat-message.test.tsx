@@ -280,4 +280,83 @@ describe("AiChatMessage", () => {
 		expect(screen.queryByRole("region", { name: "Metadata" })).toBeNull();
 		expect(screen.queryByRole("region", { name: "Stdout" })).toBeNull();
 	});
+
+	test("renders execute_code tool output as code, input, and result sections", () => {
+		renderMessage({
+			message: {
+				id: "msg_assistant_execute_code",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-execute_code",
+						toolCallId: "call_execute_code",
+						state: "output-available",
+						input: { code: "return input.a + input.b;", input: { a: 12, b: 9 } },
+						output: {
+							title: "Execute code",
+							metadata: {
+								executionId: "exec_1",
+								status: "succeeded",
+								elapsedMs: 7,
+								resultTruncated: false,
+								logsTruncated: false,
+							},
+							output: "Result: 21",
+						},
+					},
+				],
+				metadata: {
+					convexParentId: "msg_user_failed",
+					parentClientGeneratedId: null,
+				},
+			} satisfies ai_chat_AiSdk5UiMessage,
+		});
+
+		expect(screen.getByRole("button", { name: "Execute code" })).not.toBeNull();
+		// The old generic renderer leaked type/toolCallId/state pills; the dedicated one must not.
+		expect(screen.queryByText(/toolCallId:/)).toBeNull();
+
+		fireEvent.click(screen.getByText("Execute code"));
+		expect(screen.getByRole("textbox", { name: "Code" }).textContent).toContain("return input.a + input.b;");
+		expect(screen.getByRole("textbox", { name: "Input" }).textContent).toContain('"a": 12');
+		expect(screen.getByRole("textbox", { name: "Result" }).textContent).toContain("Result: 21");
+	});
+
+	test("flags a runner-level execute_code failure in the summary and error section", () => {
+		renderMessage({
+			message: {
+				id: "msg_assistant_execute_code_error",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-execute_code",
+						toolCallId: "call_execute_code_error",
+						state: "output-available",
+						input: { code: "throw new Error('boom');" },
+						output: {
+							title: "Execute code",
+							metadata: {
+								executionId: "exec_err",
+								status: "errored",
+								elapsedMs: 3,
+								resultTruncated: false,
+								logsTruncated: false,
+							},
+							output: "Error: Error: boom",
+						},
+					},
+				],
+				metadata: {
+					convexParentId: "msg_user_failed",
+					parentClientGeneratedId: null,
+				},
+			} satisfies ai_chat_AiSdk5UiMessage,
+		});
+
+		expect(screen.getByText("failed")).not.toBeNull();
+
+		fireEvent.click(screen.getByText("Execute code"));
+		expect(screen.getByRole("textbox", { name: "Error" }).textContent).toContain("Error: Error: boom");
+		expect(screen.queryByRole("textbox", { name: "Result" })).toBeNull();
+	});
 });

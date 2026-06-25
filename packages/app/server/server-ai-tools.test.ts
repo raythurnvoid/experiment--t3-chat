@@ -30,6 +30,7 @@ import {
 	ai_chat_tool_create_write_file,
 	ai_chat_tool_create_edit_file,
 	ai_chat_tool_create_web_search,
+	ai_chat_tool_create_execute_code,
 	replace_once_or_all,
 } from "./server-ai-tools.ts";
 import { has_defined_property } from "../shared/shared-utils.ts";
@@ -39,8 +40,8 @@ type server_ai_tools_test_user_identity = NonNullable<Awaited<ReturnType<ActionC
 const server_ai_tools_test_user_id = test_mocks_hardcoded.user.user_1.id as Id<"users">;
 
 const server_ai_tools_test_ctx_data = {
-	workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-	projectId: test_mocks_hardcoded.project_id.project_1,
+	workspaceId: test_mocks_hardcoded.workspace_id.workspace_1 as Id<"workspaces">,
+	projectId: test_mocks_hardcoded.project_id.project_1 as Id<"workspaces_projects">,
 	workspaceName: "personal",
 	projectName: "home",
 	userId: server_ai_tools_test_user_id,
@@ -370,7 +371,7 @@ describe("ai_chat_tool_create_bash", () => {
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
-					"For search --path, the same app-root path rule applies: pass /home/cloud-usr/w/personal/home/folder or relative folder, never raw /folder.",
+					"For search --path and meta search --path, the same app-root path rule applies: pass /home/cloud-usr/w/personal/home/folder or relative folder, never raw /folder.",
 				),
 			}),
 		);
@@ -1161,4 +1162,378 @@ test("web_search tool: Exa SDK uses fast search, highlights, and returns compact
 			process.env.EXA_API_KEY = prevKey;
 		}
 	}
+});
+
+type execute_code_test_runner_response = {
+	ok: boolean;
+	status: number;
+	json: () => Promise<unknown>;
+};
+
+function execute_code_test_make_response(status: number, body: unknown): execute_code_test_runner_response {
+	return {
+		ok: status >= 200 && status < 300,
+		status,
+		json: async () => body,
+	};
+}
+
+async function execute_code_test_with_runner(
+	args: {
+		url?: string;
+		secret?: string;
+		appOrigin?: string;
+		fetchImpl?: (...fetchArgs: unknown[]) => Promise<execute_code_test_runner_response>;
+	},
+	run: (fetchMock: ReturnType<typeof vi.fn>) => Promise<void>,
+) {
+	const prevUrl = process.env.CODE_EXECUTION_RUNNER_URL;
+	const prevSecret = process.env.CODE_EXECUTION_RUNNER_SECRET;
+	const prevConvexHttpUrl = process.env.VITE_CONVEX_HTTP_URL;
+
+	if (args.url === undefined) {
+		delete process.env.CODE_EXECUTION_RUNNER_URL;
+	} else {
+		process.env.CODE_EXECUTION_RUNNER_URL = args.url;
+	}
+	if (args.secret === undefined) {
+		delete process.env.CODE_EXECUTION_RUNNER_SECRET;
+	} else {
+		process.env.CODE_EXECUTION_RUNNER_SECRET = args.secret;
+	}
+	process.env.VITE_CONVEX_HTTP_URL = args.appOrigin ?? "https://app.test";
+
+	const fetchMock = vi.fn(args.fetchImpl ?? (async () => execute_code_test_make_response(200, {})));
+	vi.stubGlobal("fetch", fetchMock);
+
+	try {
+		await run(fetchMock);
+	} finally {
+		vi.unstubAllGlobals();
+		if (prevUrl === undefined) {
+			delete process.env.CODE_EXECUTION_RUNNER_URL;
+		} else {
+			process.env.CODE_EXECUTION_RUNNER_URL = prevUrl;
+		}
+		if (prevSecret === undefined) {
+			delete process.env.CODE_EXECUTION_RUNNER_SECRET;
+		} else {
+			process.env.CODE_EXECUTION_RUNNER_SECRET = prevSecret;
+		}
+		if (prevConvexHttpUrl === undefined) {
+			delete process.env.VITE_CONVEX_HTTP_URL;
+		} else {
+			process.env.VITE_CONVEX_HTTP_URL = prevConvexHttpUrl;
+		}
+	}
+}
+
+function execute_code_test_make_tool() {
+	const { ctx, runMutation, runAction } = makeCtx(async () => null);
+	return {
+		tool: ai_chat_tool_create_execute_code(
+			ctx,
+			server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_execute_code>[1],
+			{ getThreadId: () => "thread123" as Id<"ai_chat_threads"> },
+		),
+		runMutation,
+		runAction,
+	};
+}
+
+test("execute_code tool: describes app file API reads", () => {
+	const { tool } = execute_code_test_make_tool();
+
+	expect(tool).toEqual(
+		expect.objectContaining({
+			description: expect.stringContaining("/api/v1/files/read-many"),
+		}),
+	);
+	expect(tool).toEqual(
+		expect.objectContaining({
+			description: expect.stringContaining("run file API fetches inside the snippet"),
+		}),
+	);
+});
+
+test("execute_code tool: posts to the runner and formats a succeeded result with logs", async () => {
+	await execute_code_test_with_runner(
+		{
+			url: "https://runner.test/",
+			secret: "test-runner-secret",
+			fetchImpl: async () =>
+				execute_code_test_make_response(200, {
+					executionId: "exec_1",
+					status: "succeeded",
+					codeHash: "hash_1",
+					elapsedMs: 3,
+					result: 4,
+					resultTruncated: false,
+					logs: ["hello"],
+					logsTruncated: false,
+					error: null,
+				}),
+		},
+		async (fetchMock) => {
+			const { tool, runMutation, runAction } = execute_code_test_make_tool();
+			const result = await tool.execute?.(
+				{ code: "return input.n * 2;", input: { n: 2, label: "payment-001" } },
+				{ toolCallId: "tool-call-1", messages: [] },
+			);
+
+			if (!result) {
+				throw new Error("`result` is undefined");
+			}
+			if (!isNotAsyncIterable(result)) {
+				throw new Error("`result` is AsyncIterable but expected sync object");
+			}
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [calledUrl, calledInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+			expect(calledUrl).toBe("https://runner.test/internal/execute-code");
+			expect(calledInit.method).toBe("POST");
+			expect((calledInit.headers as Record<string, string>).Authorization).toBe("Bearer test-runner-secret");
+			const runnerBody = JSON.parse(calledInit.body as string);
+			expect(runnerBody).toEqual({
+				executionId: expect.any(String),
+				code: "return input.n * 2;",
+				input: { n: 2, label: "payment-001" },
+				network: { mode: "public_http" },
+				app: {
+					origin: "https://app.test",
+					token: expect.any(String),
+				},
+			});
+			expect(runMutation).toHaveBeenCalledTimes(1);
+			expect(runMutation.mock.calls[0]?.[1]).toEqual({
+				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
+				projectId: test_mocks_hardcoded.project_id.project_1,
+				userId: server_ai_tools_test_user_id,
+				threadId: "thread123",
+				principalKey: runnerBody.executionId,
+				tokenHash: expect.any(String),
+				scopes: ["files:list", "files:read"],
+				pathPrefix: null,
+				now: expect.any(Number),
+			});
+			expect(runAction).not.toHaveBeenCalled();
+
+			expect(result.title).toBe("Execute code");
+			expect(result.metadata.status).toBe("succeeded");
+			expect(result.output).toContain("Result: 4");
+			expect(result.output).toContain("hello");
+		},
+	);
+});
+
+test("execute_code tool: formats an errored result", async () => {
+	await execute_code_test_with_runner(
+		{
+			url: "https://runner.test",
+			secret: "test-runner-secret",
+			fetchImpl: async () =>
+				execute_code_test_make_response(200, {
+					executionId: "exec_2",
+					status: "errored",
+					codeHash: "hash_2",
+					elapsedMs: 1,
+					result: null,
+					resultTruncated: false,
+					logs: [],
+					logsTruncated: false,
+					error: { name: "TypeError", message: "boom" },
+				}),
+		},
+		async () => {
+			const { tool } = execute_code_test_make_tool();
+			const result = await tool.execute?.({ code: "throw new TypeError('boom');" }, { toolCallId: "t", messages: [] });
+			if (!result || !isNotAsyncIterable(result)) {
+				throw new Error("unexpected result");
+			}
+			expect(result.metadata.status).toBe("errored");
+			expect(result.output).toContain("Error: TypeError: boom");
+		},
+	);
+});
+
+test("execute_code tool: formats a timed_out result", async () => {
+	await execute_code_test_with_runner(
+		{
+			url: "https://runner.test",
+			secret: "test-runner-secret",
+			fetchImpl: async () =>
+				execute_code_test_make_response(200, {
+					executionId: "exec_3",
+					status: "timed_out",
+					codeHash: "hash_3",
+					elapsedMs: 5000,
+					result: null,
+					resultTruncated: false,
+					logs: [],
+					logsTruncated: false,
+					error: { name: "TimeoutError", message: "Execution timed out." },
+				}),
+		},
+		async () => {
+			const { tool } = execute_code_test_make_tool();
+			const result = await tool.execute?.({ code: "while (true) {}" }, { toolCallId: "t", messages: [] });
+			if (!result || !isNotAsyncIterable(result)) {
+				throw new Error("unexpected result");
+			}
+			expect(result.metadata.status).toBe("timed_out");
+			expect(result.output).toContain("timed out");
+		},
+	);
+});
+
+test("execute_code tool: always sends gatewayed network and app runtime", async () => {
+	await execute_code_test_with_runner(
+		{
+			url: "https://runner.test/",
+			secret: "test-runner-secret",
+			fetchImpl: async () =>
+				execute_code_test_make_response(200, {
+					executionId: "exec_net",
+					status: "succeeded",
+					codeHash: "hash_net",
+					elapsedMs: 3,
+					result: "ok",
+					resultTruncated: false,
+					logs: [],
+					logsTruncated: false,
+					error: null,
+				}),
+		},
+		async (fetchMock) => {
+			const { tool } = execute_code_test_make_tool();
+			const result = await tool.execute?.(
+				{ code: "return await fetch('https://example.com').then(r => r.text());" },
+				{ toolCallId: "tool-call-net", messages: [] },
+			);
+
+			if (!result) {
+				throw new Error("`result` is undefined");
+			}
+			if (!isNotAsyncIterable(result)) {
+				throw new Error("`result` is AsyncIterable but expected sync object");
+			}
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [, calledInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+			expect(JSON.parse(calledInit.body as string)).toEqual(
+				expect.objectContaining({
+					code: "return await fetch('https://example.com').then(r => r.text());",
+					input: null,
+					network: { mode: "public_http" },
+					app: { origin: "https://app.test", token: expect.any(String) },
+				}),
+			);
+		},
+	);
+});
+
+test("execute_code tool: throws when the runner is not configured", async () => {
+	await execute_code_test_with_runner({ url: undefined, secret: undefined }, async (fetchMock) => {
+		const { tool } = execute_code_test_make_tool();
+		await expect(
+			tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] }),
+		).rejects.toThrow("Code execution is unavailable.");
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+});
+
+test("execute_code tool: throws when the app origin is invalid", async () => {
+	await execute_code_test_with_runner(
+		{ url: "https://runner.test", secret: "test-runner-secret", appOrigin: "http://app.test" },
+		async (fetchMock) => {
+			const { tool, runMutation } = execute_code_test_make_tool();
+			await expect(
+				tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] }),
+			).rejects.toThrow("Code execution app access is unavailable.");
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(runMutation).not.toHaveBeenCalled();
+		},
+	);
+});
+
+test("execute_code tool: surfaces the disabled kill switch", async () => {
+	await execute_code_test_with_runner(
+		{
+			url: "https://runner.test",
+			secret: "test-runner-secret",
+			fetchImpl: async () => execute_code_test_make_response(503, { ok: false, error: { code: "disabled", message: "Code execution is disabled." } }),
+		},
+		async () => {
+			const { tool } = execute_code_test_make_tool();
+			await expect(
+				tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] }),
+			).rejects.toThrow("Code execution is disabled.");
+		},
+	);
+});
+
+test("execute_code tool: surfaces a non-OK runner error, falling back to the status code", async () => {
+	await execute_code_test_with_runner(
+		{
+			url: "https://runner.test",
+			secret: "test-runner-secret",
+			fetchImpl: async () => execute_code_test_make_response(500, { ok: false, error: { code: "internal", message: "runner boom" } }),
+		},
+		async () => {
+			const { tool } = execute_code_test_make_tool();
+			await expect(tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })).rejects.toThrow("runner boom");
+		},
+	);
+
+	await execute_code_test_with_runner(
+		{
+			url: "https://runner.test",
+			secret: "test-runner-secret",
+			fetchImpl: async () => ({
+				ok: false,
+				status: 502,
+				json: async () => {
+					throw new Error("not json");
+				},
+			}),
+		},
+		async () => {
+			const { tool } = execute_code_test_make_tool();
+			await expect(tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })).rejects.toThrow("(502)");
+		},
+	);
+});
+
+test("execute_code tool: surfaces runner outbound misconfiguration", async () => {
+	await execute_code_test_with_runner(
+		{
+			url: "https://runner.test",
+			secret: "test-runner-secret",
+			fetchImpl: async () =>
+				execute_code_test_make_response(503, {
+					ok: false,
+					error: {
+						code: "misconfigured",
+						message: "Code execution outbound access is unavailable.",
+					},
+			}),
+		},
+		async () => {
+			const { tool } = execute_code_test_make_tool();
+			await expect(
+				tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] }),
+			).rejects.toThrow("outbound access is unavailable");
+		},
+	);
+});
+
+test("execute_code tool: inputSchema rejects empty and oversize code", () => {
+	const { tool } = execute_code_test_make_tool();
+	const schema = tool.inputSchema;
+	if (!has_defined_property(schema, "parse")) {
+		throw new Error("inputSchema has no parse");
+	}
+	expect(() => schema.parse({ code: "" })).toThrow();
+	expect(() => schema.parse({ code: "a".repeat(20_001) })).toThrow();
+	expect(schema.parse({ code: "return 1;" })).toEqual({ code: "return 1;" });
 });

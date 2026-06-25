@@ -1720,6 +1720,164 @@ test("create_markdown_node writes server-seeded initial content to R2", async ()
 	expect(r2Writes.has(saved.yjsSnapshotAsset!.r2Key!)).toBe(true);
 });
 
+test("create_markdown_node does not publish a file node when initial R2 writes fail", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Initial R2 Failure User",
+	});
+	const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async () => new Response(null, { status: 500 })),
+	);
+
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "broken.md",
+	});
+
+	expect(createdFile._nay?.message).toBe("Failed to create file");
+	const saved = await t.run(async (ctx) => {
+		const fileNode = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
+					.eq("path", "/broken.md")
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+		const assets = await ctx.db.query("files_r2_assets").collect();
+
+		return { assets, fileNode };
+	});
+	expect(saved.fileNode).toBeNull();
+	expect(saved.assets).toHaveLength(0);
+	expect(deleteObjectSpy).toHaveBeenCalledTimes(3);
+});
+
+test("create_markdown_node cleans up R2 objects when initial metadata sync fails", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Initial R2 Sync Failure User",
+	});
+	const r2Writes = test_setup_r2_capture();
+	vi.spyOn(R2.prototype, "syncMetadata").mockRejectedValueOnce(new Error("sync failed"));
+	const deleteObjectSpy = vi
+		.spyOn(R2.prototype, "deleteObject")
+		.mockImplementation(async (_ctx, key) => {
+			r2Writes.delete(key);
+		});
+
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "sync-failure.md",
+	});
+
+	expect(createdFile._nay?.message).toBe("Failed to create file");
+	const saved = await t.run(async (ctx) => {
+		const fileNode = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				q
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
+					.eq("path", "/sync-failure.md")
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+		const assets = await ctx.db.query("files_r2_assets").collect();
+
+		return { assets, fileNode };
+	});
+	expect(saved.fileNode).toBeNull();
+	expect(saved.assets).toHaveLength(0);
+	expect(r2Writes.size).toBe(0);
+	expect(deleteObjectSpy).toHaveBeenCalledTimes(3);
+});
+
+test("create_markdown_node cleans up R2 assets when duplicate path rejects after uploads", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Duplicate R2 Cleanup User",
+	});
+	const r2Writes = test_setup_r2_capture();
+	const deleteObjectSpy = vi
+		.spyOn(R2.prototype, "deleteObject")
+		.mockImplementation(async (_ctx, key) => {
+			r2Writes.delete(key);
+		});
+
+	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "duplicate.md",
+	});
+	if (createdFile._nay) {
+		throw new Error(createdFile._nay.message);
+	}
+
+	const beforeDuplicate = await t.run(async (ctx) => {
+		return {
+			assetCount: (await ctx.db.query("files_r2_assets").collect()).length,
+			fileCount: (
+				await ctx.db
+					.query("files_nodes")
+					.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+						q
+							.eq("workspaceId", db.workspaceId)
+							.eq("projectId", db.projectId)
+							.eq("path", "/duplicate.md")
+							.eq("archiveOperationId", undefined),
+					)
+					.collect()
+			).length,
+		};
+	});
+	const baselineKeys = Array.from(r2Writes.keys()).sort();
+
+	const duplicate = await asUser.action(api.files_nodes.create_markdown_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		name: "duplicate.md",
+	});
+
+	expect(duplicate._nay).toBeDefined();
+	const afterDuplicate = await t.run(async (ctx) => {
+		return {
+			assetCount: (await ctx.db.query("files_r2_assets").collect()).length,
+			fileCount: (
+				await ctx.db
+					.query("files_nodes")
+					.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+						q
+							.eq("workspaceId", db.workspaceId)
+							.eq("projectId", db.projectId)
+							.eq("path", "/duplicate.md")
+							.eq("archiveOperationId", undefined),
+					)
+					.collect()
+			).length,
+		};
+	});
+
+	expect(afterDuplicate).toEqual(beforeDuplicate);
+	expect(Array.from(r2Writes.keys()).sort()).toEqual(baselineKeys);
+	expect(deleteObjectSpy).toHaveBeenCalledTimes(3);
+});
+
 test("create_folder_node creates missing folders for nested folder paths", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));

@@ -2015,14 +2015,43 @@ describe("access_control", () => {
 				permission: "project.members.manage",
 				userId: adminId,
 			});
+			const memberApiCredentialAccess = await access_control_db_has_permission(ctx, {
+				workspaceId: created._yay!.workspaceId,
+				projectId: project._yay!.projectId,
+				defaultProjectId: created._yay!.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
+				resourceKind: "project",
+				resourceId: String(project._yay!.projectId),
+				permission: "api.credentials.manage",
+				userId: memberId,
+			});
+			const adminApiCredentialAccess = await access_control_db_has_permission(ctx, {
+				workspaceId: created._yay!.workspaceId,
+				projectId: project._yay!.projectId,
+				defaultProjectId: created._yay!.defaultProjectId,
+				workspaceOwnerUserId: ownerId,
+				resourceKind: "project",
+				resourceId: String(project._yay!.projectId),
+				permission: "api.credentials.manage",
+				userId: adminId,
+			});
 
-			return { memberWorkspaceAccess, adminWorkspaceAccess, memberProjectAccess, adminProjectAccess };
+			return {
+				memberWorkspaceAccess,
+				adminWorkspaceAccess,
+				memberProjectAccess,
+				adminProjectAccess,
+				memberApiCredentialAccess,
+				adminApiCredentialAccess,
+			};
 		});
 
 		expect(result.memberWorkspaceAccess).toBe(false);
 		expect(result.adminWorkspaceAccess).toBe(true);
 		expect(result.memberProjectAccess).toBe(false);
 		expect(result.adminProjectAccess).toBe(true);
+		expect(result.memberApiCredentialAccess).toBe(false);
+		expect(result.adminApiCredentialAccess).toBe(true);
 	});
 
 	test("returns current workspace permission for owners and admins but not regular members", async () => {

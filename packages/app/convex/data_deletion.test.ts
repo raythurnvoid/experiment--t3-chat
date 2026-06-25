@@ -136,6 +136,12 @@ async function data_deletion_test_seed_project_content_bulk(
 	},
 ) {
 	const r2Keys: string[] = [];
+	const apiWorkspaceId = ctx.db.normalizeId("workspaces", args.workspaceId);
+	const apiProjectId = ctx.db.normalizeId("workspaces_projects", args.projectId);
+	if (!apiWorkspaceId || !apiProjectId) {
+		throw new Error("Expected real workspace and project ids for API credential fixtures");
+	}
+
 	for (let i = 0; i < args.count; i += 1) {
 		const fileNodeId = await ctx.db.insert("files_nodes", {
 			workspaceId: args.workspaceId,
@@ -446,6 +452,31 @@ async function data_deletion_test_seed_project_content_bulk(
 				createdBy: String(args.userId),
 				content: `${args.tag} ${i}`,
 			}),
+			ctx.db.insert("api_credentials", {
+				workspaceId: apiWorkspaceId,
+				projectId: apiProjectId,
+				userId: args.userId,
+				name: `${args.tag} API key ${i}`,
+				keyId: `pk_${args.tag}_${i}`,
+				obfuscatedValue: `pk_${args.tag}_${i}.****test`,
+				secretHash: `secret_hash_${args.tag}_${i}`,
+				scopes: ["files:list", "files:read"],
+				createdAt: Date.now(),
+				revokedAt: null,
+				lastUsedAt: null,
+			}),
+			ctx.db.insert("public_api_grants", {
+				workspaceId: apiWorkspaceId,
+				projectId: apiProjectId,
+				userId: args.userId,
+				threadId,
+				principalKey: `grant_${args.tag}_${i}`,
+				tokenHash: `token_hash_${args.tag}_${i}`,
+				scopes: ["files:list", "files:read"],
+				pathPrefix: null,
+				createdAt: Date.now(),
+				expiresAt: Date.now() + 10 * 60 * 1000,
+			}),
 		]);
 	}
 
@@ -476,6 +507,8 @@ async function data_deletion_test_count_project_content(
 		aiMessages,
 		aiFiles,
 		aiFileContents,
+		apiCredentials,
+		publicApiGrants,
 		chatMessages,
 	] = await Promise.all([
 		ctx.db.query("files_nodes").collect(),
@@ -497,6 +530,8 @@ async function data_deletion_test_count_project_content(
 		ctx.db.query("ai_chat_threads_messages_aisdk_5").collect(),
 		ctx.db.query("ai_chat_files").collect(),
 		ctx.db.query("ai_chat_files_content").collect(),
+		ctx.db.query("api_credentials").collect(),
+		ctx.db.query("public_api_grants").collect(),
 		ctx.db.query("chat_messages").collect(),
 	]);
 	const inProject = (row: { workspaceId: string; projectId: string }) =>
@@ -522,6 +557,8 @@ async function data_deletion_test_count_project_content(
 			aiMessages,
 			aiFiles,
 			aiFileContents,
+			apiCredentials,
+			publicApiGrants,
 			chatMessages,
 		].reduce((total, rows) => total + rows.filter(inProject).length, 0) +
 		pendingUpdateCleanupTasks.filter((doc) => projectPendingUpdateIds.has(doc.pendingUpdateId)).length
