@@ -70,6 +70,7 @@ import {
 	files_node_has_editable_yjs_state,
 	type files_EditorView,
 	type files_SpecialFileName,
+	type files_VisibleTreeNode,
 } from "@/lib/files.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { cn, sx } from "@/lib/utils.ts";
@@ -94,16 +95,16 @@ import { toast } from "sonner";
 import { FilesSidebar } from "../files-sidebar.tsx";
 
 function get_breadcrumb_path(
-	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined,
+	fileNodesList: files_VisibleTreeNode[] | undefined,
 	nodeId: string | null | undefined,
 ) {
 	if (!fileNodesList || !nodeId || nodeId === files_ROOT_ID) {
 		return [];
 	}
 
-	const path: app_convex_Doc<"files_nodes">[] = [];
+	const path: files_VisibleTreeNode[] = [];
 	let currentId = nodeId;
-	const nodesMap = new Map<string, app_convex_Doc<"files_nodes">>();
+	const nodesMap = new Map<string, files_VisibleTreeNode>();
 
 	for (const node of fileNodesList) {
 		nodesMap.set(node._id, node);
@@ -126,7 +127,7 @@ function get_breadcrumb_path(
 }
 
 function get_folder_readme_node_id(
-	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined,
+	fileNodesList: files_VisibleTreeNode[] | undefined,
 	folderItemId: string | null | undefined,
 ): app_convex_Id<"files_nodes"> | null {
 	const readmeNode = fileNodesList?.find((node) => {
@@ -142,7 +143,7 @@ function get_folder_readme_node_id(
 }
 
 function can_move_file_node_to_parent(args: {
-	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined;
+	fileNodesList: files_VisibleTreeNode[] | undefined;
 	fileNodeId: app_convex_Id<"files_nodes">;
 	targetParentId: app_convex_Doc<"files_nodes">["parentId"];
 }) {
@@ -199,7 +200,7 @@ type FileNodeViewHeader_ClassNames =
 
 type FileNodeViewHeader_Props = {
 	selectedNodeId: string | null | undefined;
-	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined;
+	fileNodesList: files_VisibleTreeNode[] | undefined;
 	editorMode: FileEditor_Mode;
 	filesSidebarOpen: boolean;
 	showFileControls: boolean;
@@ -1423,7 +1424,7 @@ type FileNodeViewFolderExplorerRow_ClassNames =
 	| "FileNodeViewFolderExplorer-more-action";
 
 type FileNodeViewFolderExplorerRow_Props = {
-	child: app_convex_Doc<"files_nodes">;
+	child: files_VisibleTreeNode;
 	editorMode: FileEditor_Mode;
 	workspaceName: string;
 	projectName: string;
@@ -1644,7 +1645,7 @@ type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer-show-more";
 
 type FileNodeViewFolderExplorer_Props = {
-	visibleChildItems: app_convex_Doc<"files_nodes">[];
+	visibleChildItems: files_VisibleTreeNode[];
 	hiddenChildItemsCount: number;
 	editorMode: FileEditor_Mode;
 	workspaceName: string;
@@ -1838,7 +1839,7 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 type FileNodeViewContent_Props = {
 	selectedNodeId: string | null | undefined;
 	node: app_convex_Doc<"files_nodes"> | null | undefined;
-	fileNodesList: app_convex_Doc<"files_nodes">[] | undefined;
+	fileNodesList: files_VisibleTreeNode[] | undefined;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	serverSequence?: number;
 	topSafeArea: number;

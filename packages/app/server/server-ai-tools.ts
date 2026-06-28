@@ -529,8 +529,8 @@ export function replace_once_or_all(
 export function ai_chat_tool_create_read_file(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: Id<"users">;
 	},
 ) {
@@ -684,8 +684,8 @@ export type ai_chat_tool_create_read_file_ToolOutput = InferToolOutput<ai_chat_t
 export function ai_chat_tool_create_list_files(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: Id<"users">;
 	},
 ) {
@@ -754,8 +754,8 @@ export type ai_chat_tool_create_list_files_ToolOutput = InferToolOutput<ai_chat_
 export function ai_chat_tool_create_glob_files(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: Id<"users">;
 	},
 ) {
@@ -832,8 +832,8 @@ export type ai_chat_tool_create_glob_files_ToolOutput = InferToolOutput<ai_chat_
 export function ai_chat_tool_create_grep_files(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: Id<"users">;
 	},
 ) {
@@ -1068,8 +1068,8 @@ export type ai_chat_WriteToolName = (typeof ai_chat_WRITE_TOOL_NAMES)[number];
 export function ai_chat_tool_create_write_file(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: Id<"users">;
 	},
 ) {
@@ -1196,8 +1196,8 @@ export type ai_chat_tool_create_write_file_ToolOutput = InferToolOutput<ai_chat_
 export function ai_chat_tool_create_edit_file(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: Id<"users">;
 	},
 ) {

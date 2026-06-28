@@ -71,6 +71,8 @@ import { minimatch } from "minimatch";
 import { Result, Result_all } from "../shared/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
+import { workspaces_is_global_workspace_id, workspaces_is_global_github_project_id } from "../shared/workspaces.ts";
+import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import app_convex_schema from "./schema.ts";
 import { api, components, internal } from "./_generated/api.js";
 import { doc } from "convex-helpers/validators";
@@ -250,7 +252,10 @@ function is_home_file(fileNode: Partial<Pick<Doc<"files_nodes">, "path" | "paren
 	);
 }
 
-async function db_get_home_file(ctx: QueryCtx | MutationCtx, args: { workspaceId: string; projectId: string }) {
+async function db_get_home_file(
+	ctx: QueryCtx | MutationCtx,
+	args: { workspaceId: Doc<"files_nodes">["workspaceId"]; projectId: Doc<"files_nodes">["projectId"] },
+) {
 	const homeFileNode = await ctx.db
 		.query("files_nodes")
 		.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
@@ -278,8 +283,8 @@ const files_STATS_UNPROCESSABLE = -1;
 async function db_upsert_file_stats(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		nodeId: Id<"files_nodes">;
 		lineCount: number;
 		wordCount: number;
@@ -315,8 +320,8 @@ async function db_upsert_file_stats(
 async function db_patch_plain_text_chunks_scope(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		nodeId: Id<"files_nodes">;
 		path?: string;
 		archiveOperationId?: string;
@@ -341,8 +346,8 @@ async function db_patch_plain_text_chunks_scope(
 export async function db_patch_file_chunks_scope(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		nodeId: Id<"files_nodes">;
 		path?: string;
 		archiveOperationId?: string;
@@ -360,8 +365,8 @@ export async function db_patch_file_chunks_scope(
 export async function db_insert_file_chunks(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		nodeId: Id<"files_nodes">;
 		yjsSequence: number;
 		markdownContent: string;
@@ -456,8 +461,8 @@ export async function db_insert_file_chunks(
 export async function db_replace_file_chunks(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		nodeId: Id<"files_nodes">;
 		yjsSequence: number;
 		markdownContent: string;
@@ -526,8 +531,8 @@ export function files_nodes_create_yjs_snapshot_update_from_markdown(markdownCon
 async function enqueue_file_content_materialization(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		nodeId: Id<"files_nodes">;
 		userId: Id<"users">;
 		targetSequence: number;
@@ -568,7 +573,11 @@ async function enqueue_file_content_materialization(
 }
 
 export const get_by_path = internalQuery({
-	args: { workspaceId: v.string(), projectId: v.string(), path: v.string() },
+	args: {
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
+		path: v.string(),
+	},
 	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
 	handler: async (ctx, args) => {
 		if (args.path === "/") {
@@ -595,7 +604,7 @@ export type files_nodes_get_by_path_Result =
 
 async function db_resolve_tree_node_id_from_path(
 	ctx: QueryCtx,
-	args: { workspaceId: string; projectId: string; path: string },
+	args: { workspaceId: Doc<"files_nodes">["workspaceId"]; projectId: Doc<"files_nodes">["projectId"]; path: string },
 ) {
 	if (args.path === "/") return files_ROOT_ID;
 
@@ -619,8 +628,8 @@ async function db_resolve_tree_node_id_from_path(
 async function resolve_parent_path_from_parent_id(
 	ctx: QueryCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		parentId: Doc<"files_nodes">["parentId"];
 	},
 ) {
@@ -650,8 +659,8 @@ async function resolve_parent_path_from_parent_id(
 async function cascade_file_descendants_path(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		parentId: Id<"files_nodes">;
 		parentPath: string;
 	},
@@ -703,8 +712,8 @@ async function db_insert_node(
 	ctx: MutationCtx,
 	args: {
 		userId: Id<"users">;
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		parentId: Doc<"files_nodes">["parentId"];
 		name: Doc<"files_nodes">["name"];
 		path: Doc<"files_nodes">["path"];
@@ -846,8 +855,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 	ctx: MutationCtx,
 	args: {
 		userId: Id<"users">;
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		parentId: Doc<"files_nodes">["parentId"];
 		path: string;
 		kind: Doc<"files_nodes">["kind"];
@@ -1027,8 +1036,8 @@ export const create_folder_node = mutation({
  */
 export const create_folder_node_by_path = internalMutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		userId: v.id("users"),
 		path: v.string(),
 	},
@@ -1077,8 +1086,8 @@ export type files_nodes_create_folder_node_by_path_Result =
 export const create_markdown_file_node = internalMutation({
 	args: {
 		userId: v.id("users"),
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
 		name: v.string(),
 		markdownContent: v.string(),
@@ -1113,8 +1122,8 @@ export const create_markdown_file_node = internalMutation({
 export async function files_nodes_db_finalize_markdown_node_creation(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		nodeId: Id<"files_nodes">;
 		userId: Id<"users">;
 		markdownAssetId: Id<"files_r2_assets">;
@@ -1169,8 +1178,8 @@ export async function files_nodes_db_finalize_markdown_node_creation(
 
 export const finalize_markdown_node_creation = internalMutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		nodeId: v.id("files_nodes"),
 		userId: v.id("users"),
 		markdownAssetId: v.id("files_r2_assets"),
@@ -1230,8 +1239,8 @@ async function action_create_markdown_node(
 	ctx: ActionCtx,
 	args: {
 		userId: Id<"users">;
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		parentId: Doc<"files_nodes">["parentId"];
 		name: string;
 		markdownContent: string;
@@ -2420,7 +2429,30 @@ export const list_tree = query({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 	},
-	returns: v.array(doc(app_convex_schema, "files_nodes")),
+	returns: v.array(
+		v.object({
+			_id: v.id("files_nodes"),
+			_creationTime: v.number(),
+			workspaceId: v.id("workspaces"),
+			projectId: v.id("workspaces_projects"),
+			path: v.string(),
+			treePath: v.string(),
+			pathDepth: v.number(),
+			lowercaseExtension: v.union(v.string(), v.null()),
+			name: v.string(),
+			kind: doc(app_convex_schema, "files_nodes").fields.kind,
+			contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
+			statsId: doc(app_convex_schema, "files_nodes").fields.statsId,
+			yjsLastSequenceId: doc(app_convex_schema, "files_nodes").fields.yjsLastSequenceId,
+			yjsSnapshotId: doc(app_convex_schema, "files_nodes").fields.yjsSnapshotId,
+			assetId: doc(app_convex_schema, "files_nodes").fields.assetId,
+			archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
+			parentId: doc(app_convex_schema, "files_nodes").fields.parentId,
+			createdBy: v.id("users"),
+			updatedBy: v.id("users"),
+			updatedAt: v.number(),
+		}),
+	),
 	handler: async (ctx, args) => {
 		const [userAuth, membership] = await Promise.all([
 			server_convex_get_user_fallback_to_anonymous(ctx),
@@ -2441,15 +2473,34 @@ export const list_tree = query({
 			.order("asc")
 			.collect();
 
-		return fileNodes;
+		return fileNodes.map((fileNode) => {
+			if (fileNode.createdBy === users_SYSTEM_AUTHOR || fileNode.updatedBy === users_SYSTEM_AUTHOR) {
+				const errorMessage = "Reserved SYSTEM author reached visible file tree";
+				const errorData = {
+					fileNodeId: fileNode._id,
+					createdBy: fileNode.createdBy,
+					updatedBy: fileNode.updatedBy,
+				};
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+
+			return {
+				...fileNode,
+				workspaceId: membership.workspaceId,
+				projectId: membership.projectId,
+				createdBy: fileNode.createdBy,
+				updatedBy: fileNode.updatedBy,
+			};
+		});
 	},
 });
 
 async function db_list_children(
 	ctx: QueryCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		numItems: number;
 		cursor: string | null;
 		parentId?: Id<"files_nodes"> | typeof files_ROOT_ID;
@@ -2547,8 +2598,8 @@ async function db_list_children(
 
 export const list_children = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
 		parentId: v.optional(v.union(v.id("files_nodes"), v.literal(files_ROOT_ID))),
@@ -2562,7 +2613,7 @@ export const list_children = internalQuery({
 				kind: v.union(v.literal("folder"), v.literal("file")),
 				path: v.string(),
 				updatedAt: v.number(),
-				updatedBy: v.id("users"),
+				updatedBy: doc(app_convex_schema, "files_nodes").fields.updatedBy,
 				contentType: v.optional(v.string()),
 			}),
 		),
@@ -2581,8 +2632,8 @@ export type files_nodes_list_children_Result =
 
 export const list_subtree = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		folderPath: v.string(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
@@ -2675,8 +2726,8 @@ export type files_nodes_list_subtree_Result =
 
 export const search_paths = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		pathQuery: v.string(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
@@ -2777,8 +2828,8 @@ function matches_path(absPath: string, include: string | undefined) {
 
 export const list_files = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		path: v.string(),
 		maxDepth: v.number(),
 		limit: v.number(),
@@ -2941,7 +2992,7 @@ export const file_content_materialization_state_validator = v.object({
 
 export async function db_get_file_content_materialization_db_state(
 	ctx: QueryCtx,
-	args: { workspaceId: string; projectId: string; nodeId: Id<"files_nodes"> },
+	args: { workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects">; nodeId: Id<"files_nodes"> },
 ) {
 	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
 	if (!fileNode || fileNode.workspaceId !== args.workspaceId || fileNode.projectId !== args.projectId) {
@@ -3050,8 +3101,8 @@ export async function db_get_file_content_materialization_db_state(
 
 export const get_file_content_materialization_state = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		nodeId: v.id("files_nodes"),
 	},
 	returns: v.union(file_content_materialization_state_validator, v.null()),
@@ -3071,8 +3122,8 @@ export type get_file_content_materialization_state_Result =
 
 export const get_file_markdown_content_db_state_by_path = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -3104,7 +3155,33 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 						)
 						.first();
 
+		if (fileNode == null) return null;
+		// External (reserved) scope: no Yjs/pending/materialization. Read the linked R2 content asset
+		// directly and leave `content` undefined so `get_file_last_available_markdown_content_by_path`
+		// falls into its raw-R2 `.text()` branch.
+		if (workspaces_is_global_workspace_id(args.workspaceId) || workspaces_is_global_github_project_id(args.projectId)) {
+			const asset = fileNode.assetId
+				? await ctx.db
+						.get("files_r2_assets", fileNode.assetId)
+						.then((asset) =>
+							asset && asset.workspaceId === args.workspaceId && asset.projectId === args.projectId ? asset : null,
+						)
+				: null;
+			return {
+				asset,
+				nodeId: fileNode._id,
+				displayNodeId: fileNode._id,
+				pendingUpdateId: null,
+				materializationState: null,
+			};
+		}
+
 		if (!files_node_has_editable_yjs_state(fileNode)) return null;
+
+		// Tenant scope (the guards above narrowed both ids to real ids): bind them so the narrowing
+		// also reaches the `withIndex` callbacks — TS drops property narrowing at closure boundaries.
+		const workspaceId = args.workspaceId;
+		const projectId = args.projectId;
 
 		const pendingUpdateById =
 			args.includePending === false
@@ -3116,8 +3193,8 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 			args.includePending === false
 				? null
 				: pendingUpdateById &&
-					  pendingUpdateById.workspaceId === args.workspaceId &&
-					  pendingUpdateById.projectId === args.projectId &&
+					  pendingUpdateById.workspaceId === workspaceId &&
+					  pendingUpdateById.projectId === projectId &&
 					  pendingUpdateById.userId === args.userId &&
 					  pendingUpdateById.fileNodeId === fileNode._id
 					? pendingUpdateById
@@ -3125,8 +3202,8 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 							.query("files_pending_updates")
 							.withIndex("by_workspace_project_user_fileNode", (q) =>
 								q
-									.eq("workspaceId", args.workspaceId)
-									.eq("projectId", args.projectId)
+									.eq("workspaceId", workspaceId)
+									.eq("projectId", projectId)
 									.eq("userId", args.userId)
 									.eq("fileNodeId", fileNode._id),
 							)
@@ -3159,16 +3236,14 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 		const asset = fileNode.assetId
 			? await ctx.db
 					.get("files_r2_assets", fileNode.assetId)
-					.then((asset) =>
-						asset && asset.workspaceId === args.workspaceId && asset.projectId === args.projectId ? asset : null,
-					)
+					.then((asset) => (asset && asset.workspaceId === workspaceId && asset.projectId === projectId ? asset : null))
 			: null;
 
 		const materializationState = pendingUpdate
 			? null
 			: await db_get_file_content_materialization_db_state(ctx, {
-					workspaceId: args.workspaceId,
-					projectId: args.projectId,
+					workspaceId,
+					projectId,
 					nodeId: fileNode._id,
 				});
 
@@ -3200,8 +3275,8 @@ type get_file_last_available_markdown_content_by_path_Result = {
 
 export const get_file_last_available_markdown_content_by_path = internalAction({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -3377,8 +3452,8 @@ export function files_tail_lines_from_text(content: string, maxLines: number) {
 async function files_resolve_readable_content_or_window(
 	ctx: ActionCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		userId: Id<"users">;
 		path: string;
 		pendingUpdateId?: Id<"files_pending_updates">;
@@ -3443,15 +3518,14 @@ async function files_resolve_readable_content_or_window(
 async function db_resolve_committed_chunk_source(
 	ctx: QueryCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		userId: Id<"users">;
 		path: string;
 		pendingUpdateId?: Id<"files_pending_updates">;
 	},
 ): Promise<{
 	nodeId: Id<"files_nodes">;
-	yjsSequence: number;
 	byteSize: number;
 	counts: { lineCount: number; wordCount: number; charCount: number } | null;
 } | null> {
@@ -3468,15 +3542,42 @@ async function db_resolve_committed_chunk_source(
 				.eq("archiveOperationId", undefined),
 		)
 		.first();
+	if (fileNode == null) return null;
+	// Exact wc counts from the linked file_stats doc (read O(1) by id — the back-ref the node holds).
+	// null when unlinked (old file not yet migrated) or flagged unprocessable (-1), so the stats
+	// query falls back to the windowed estimate. Shared by both scopes.
+	const resolve_counts = async () => {
+		const stats = fileNode.statsId ? await ctx.db.get("file_stats", fileNode.statsId) : null;
+		return stats && stats.lineCount >= 0 && stats.wordCount >= 0 && stats.charCount >= 0
+			? { lineCount: stats.lineCount, wordCount: stats.wordCount, charCount: stats.charCount }
+			: null;
+	};
+
+	// External (reserved) scope: no Yjs/pending/materialization. Committed chunks are addressed by
+	// node id alone; byte size comes from the linked R2 content asset.
+	if (workspaces_is_global_workspace_id(args.workspaceId) || workspaces_is_global_github_project_id(args.projectId)) {
+		const asset = fileNode.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
+		const byteSize =
+			asset && asset.workspaceId === args.workspaceId && asset.projectId === args.projectId && asset.kind === "content"
+				? asset.size
+				: 0;
+		return { nodeId: fileNode._id, byteSize, counts: await resolve_counts() };
+	}
+
 	if (!files_node_has_editable_yjs_state(fileNode)) return null;
+
+	// Tenant scope (the guards above narrowed both ids): bind them so the narrowing reaches the
+	// `withIndex` callback — TS drops property narrowing at closure boundaries.
+	const workspaceId = args.workspaceId;
+	const projectId = args.projectId;
 
 	// The user's unstaged branch is not materialized into chunks; read it via the in-memory path.
 	const pendingUpdate = await ctx.db
 		.query("files_pending_updates")
 		.withIndex("by_workspace_project_user_fileNode", (q) =>
 			q
-				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
+				.eq("workspaceId", workspaceId)
+				.eq("projectId", projectId)
 				.eq("userId", args.userId)
 				.eq("fileNodeId", fileNode._id),
 		)
@@ -3484,27 +3585,18 @@ async function db_resolve_committed_chunk_source(
 	if (pendingUpdate) return null;
 
 	const materializationState = await db_get_file_content_materialization_db_state(ctx, {
-		workspaceId: args.workspaceId,
-		projectId: args.projectId,
+		workspaceId,
+		projectId,
 		nodeId: fileNode._id,
 	});
 	if (!materializationState) return null;
 	// Stale: edits exist beyond the materialized snapshot, so chunks are behind the committed view.
 	if (materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence) return null;
 
-	// Exact wc counts from the linked file_stats doc (read O(1) by id — the back-ref the node holds).
-	// null when unlinked (old file not yet migrated) or flagged unprocessable (-1), so the stats
-	// query falls back to the windowed estimate.
-	const stats = fileNode.statsId ? await ctx.db.get("file_stats", fileNode.statsId) : null;
-	const counts =
-		stats && stats.lineCount >= 0 && stats.wordCount >= 0 && stats.charCount >= 0
-			? { lineCount: stats.lineCount, wordCount: stats.wordCount, charCount: stats.charCount }
-			: null;
 	return {
 		nodeId: fileNode._id,
-		yjsSequence: materializationState.yjsSnapshotDoc.sequence,
 		byteSize: materializationState.asset.size,
-		counts,
+		counts: await resolve_counts(),
 	};
 }
 
@@ -3598,8 +3690,8 @@ async function files_read_forward_line_range_from_ordered_chunks(
  */
 export const read_committed_file_chunks_line_range = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		startLine: v.number(),
@@ -3634,8 +3726,7 @@ export const read_committed_file_chunks_line_range = internalQuery({
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
 						.eq("sourceKind", "committed")
-						.eq("fileNodeId", source.nodeId)
-						.eq("yjsSequence", source.yjsSequence),
+						.eq("fileNodeId", source.nodeId),
 				)
 				.order("desc")) {
 				if (lastLineEnd === null) lastLineEnd = chunk.lineEnd; // file's last line (first iterated, desc)
@@ -3669,13 +3760,12 @@ export const read_committed_file_chunks_line_range = internalQuery({
 		const range = await files_read_forward_line_range_from_ordered_chunks(
 			ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_source_fileNode_yjsSeq_lineEnd_chunk", (q) =>
+				.withIndex("by_workspace_project_source_fileNode_lineEnd_chunk", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
 						.eq("sourceKind", "committed")
 						.eq("fileNodeId", source.nodeId)
-						.eq("yjsSequence", source.yjsSequence)
 						.gte("lineEnd", Math.max(1, Math.trunc(args.startLine))),
 				)
 				.order("asc"),
@@ -3692,8 +3782,7 @@ export const read_committed_file_chunks_line_range = internalQuery({
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
 						.eq("sourceKind", "committed")
-						.eq("fileNodeId", source.nodeId)
-						.eq("yjsSequence", source.yjsSequence),
+						.eq("fileNodeId", source.nodeId),
 				)
 				.first();
 			if (anyChunk) return { usable: true as const, nodeId: source.nodeId, content: "", moreLines: false };
@@ -3724,8 +3813,8 @@ export type files_nodes_read_committed_file_chunks_line_range_Result =
  */
 export const read_file_content_from_chunks = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -3762,104 +3851,126 @@ export const read_file_content_from_chunks = internalQuery({
 					.eq("archiveOperationId", undefined),
 			)
 			.first();
-		if (!files_node_has_editable_yjs_state(fileNode)) return null;
+		if (fileNode == null) return null;
+		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+			if (!files_node_has_editable_yjs_state(fileNode)) return null;
 
-		// Prefer the explicit pending update when the caller is continuing a known
-		// read. Otherwise use the current pending edit for this user and file.
-		let pendingUpdate: Doc<"files_pending_updates"> | null = null;
-		if (args.pendingUpdateId != null) {
-			pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId).then((pendingUpdate) => {
-				if (
-					!pendingUpdate ||
-					pendingUpdate.workspaceId !== args.workspaceId ||
-					pendingUpdate.projectId !== args.projectId ||
-					pendingUpdate.userId !== args.userId ||
-					pendingUpdate.fileNodeId !== fileNode._id
-				) {
-					return null;
-				}
-				return pendingUpdate;
-			});
-			if (pendingUpdate == null) return null;
-		} else {
-			pendingUpdate = await ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
-					q
-						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
-						.eq("userId", args.userId)
-						.eq("fileNodeId", fileNode._id),
-				)
-				.first();
-		}
+			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
+			const workspaceId = args.workspaceId;
+			const projectId = args.projectId;
 
-		if (pendingUpdate != null) {
-			// Pending chunks are already the markdown text the user sees. Full reads
-			// still honor maxBytes; line reads stream only the overlapping chunks.
-			const chunks = ctx.db
-				.query("files_markdown_chunks")
-				.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id));
-
-			if (args.mode.kind === "full") {
-				if (pendingUpdate.size > args.mode.maxBytes) return null;
-				const collectedChunks = await chunks.collect();
-				if (collectedChunks.length === 0) {
-					return pendingUpdate.size > 0
-						? null
-						: {
-								nodeId: fileNode._id,
-								content: "",
-								moreLines: false,
-								pendingUpdateId: pendingUpdate._id,
-							};
-				}
-
-				const content = files_merge_contiguous_chunks(collectedChunks);
-				if (content == null || files_get_utf8_byte_size(content) > args.mode.maxBytes) return null;
-				return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: pendingUpdate._id };
+			// Prefer the explicit pending update when the caller is continuing a known
+			// read. Otherwise use the current pending edit for this user and file.
+			let pendingUpdate: Doc<"files_pending_updates"> | null = null;
+			if (args.pendingUpdateId != null) {
+				pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId).then((pendingUpdate) => {
+					if (
+						!pendingUpdate ||
+						pendingUpdate.workspaceId !== workspaceId ||
+						pendingUpdate.projectId !== projectId ||
+						pendingUpdate.userId !== args.userId ||
+						pendingUpdate.fileNodeId !== fileNode._id
+					) {
+						return null;
+					}
+					return pendingUpdate;
+				});
+				if (pendingUpdate == null) return null;
+			} else {
+				pendingUpdate = await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_workspace_project_user_fileNode", (q) =>
+						q
+							.eq("workspaceId", workspaceId)
+							.eq("projectId", projectId)
+							.eq("userId", args.userId)
+							.eq("fileNodeId", fileNode._id),
+					)
+					.first();
 			}
 
-			const startLine = Math.max(1, Math.trunc(args.mode.startLine));
-			const range = await files_read_forward_line_range_from_ordered_chunks(
-				ctx.db
+			if (pendingUpdate != null) {
+				// Pending chunks are already the markdown text the user sees. Full reads
+				// still honor maxBytes; line reads stream only the overlapping chunks.
+				const chunks = ctx.db
 					.query("files_markdown_chunks")
-					.withIndex("by_pendingUpdate_lineEnd_chunkIndex", (q) =>
-						q.eq("pendingUpdateId", pendingUpdate._id).gte("lineEnd", startLine),
-					),
-				{
-					startLine,
-					maxLines: args.mode.maxLines,
-				},
-			);
-			if (range == null || (!range.hasChunks && pendingUpdate.size > 0)) return null;
-			return {
-				nodeId: fileNode._id,
-				content: range.content,
-				moreLines: range.moreLines,
-				pendingUpdateId: pendingUpdate._id,
-			};
-		}
+					.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id));
 
-		// Committed chunks are safe only when the latest Yjs sequence has already
-		// been materialized. Stale materializations return null so an action caller
-		// can decide whether to reconstruct or fall back.
-		const materializationState = await db_get_file_content_materialization_db_state(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			nodeId: fileNode._id,
-		});
-		if (
-			!materializationState ||
-			materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
-		) {
+				if (args.mode.kind === "full") {
+					if (pendingUpdate.size > args.mode.maxBytes) return null;
+					const collectedChunks = await chunks.collect();
+					if (collectedChunks.length === 0) {
+						return pendingUpdate.size > 0
+							? null
+							: {
+									nodeId: fileNode._id,
+									content: "",
+									moreLines: false,
+									pendingUpdateId: pendingUpdate._id,
+								};
+					}
+
+					const content = files_merge_contiguous_chunks(collectedChunks);
+					if (content == null || files_get_utf8_byte_size(content) > args.mode.maxBytes) return null;
+					return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: pendingUpdate._id };
+				}
+
+				const startLine = Math.max(1, Math.trunc(args.mode.startLine));
+				const range = await files_read_forward_line_range_from_ordered_chunks(
+					ctx.db
+						.query("files_markdown_chunks")
+						.withIndex("by_pendingUpdate_lineEnd_chunkIndex", (q) =>
+							q.eq("pendingUpdateId", pendingUpdate._id).gte("lineEnd", startLine),
+						),
+					{
+						startLine,
+						maxLines: args.mode.maxLines,
+					},
+				);
+				if (range == null || (!range.hasChunks && pendingUpdate.size > 0)) return null;
+				return {
+					nodeId: fileNode._id,
+					content: range.content,
+					moreLines: range.moreLines,
+					pendingUpdateId: pendingUpdate._id,
+				};
+			}
+		} else if (args.pendingUpdateId != null) {
+			// External (reserved) rows never have pending docs; an explicit pending view cannot resolve.
 			return null;
 		}
 
+		// Determine the committed byte size used for the cap/empty checks below. Tenant: the materialized
+		// snapshot must be current (stale → null so the action fallback runs). External: the linked R2
+		// content asset's size.
+		let byteSize: number;
+		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: fileNode._id,
+			});
+			if (
+				!materializationState ||
+				materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
+			) {
+				return null;
+			}
+			byteSize = materializationState.asset.size;
+		} else {
+			const asset = fileNode.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
+			byteSize =
+				asset &&
+				asset.workspaceId === args.workspaceId &&
+				asset.projectId === args.projectId &&
+				asset.kind === "content"
+					? asset.size
+					: 0;
+		}
+
 		if (args.mode.kind === "full") {
-			// Full reads use the asset size as the cheap cap check, then merge the
-			// materialized chunks only when the file is small enough to return inline.
-			const byteSize = materializationState.asset.size;
+			// Full reads use the byte size as the cheap cap check, then merge the materialized chunks
+			// only when the file is small enough to return inline.
 			if (byteSize > args.mode.maxBytes) return null;
 
 			const chunks = await ctx.db
@@ -3869,8 +3980,7 @@ export const read_file_content_from_chunks = internalQuery({
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
 						.eq("sourceKind", "committed")
-						.eq("fileNodeId", fileNode._id)
-						.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence),
+						.eq("fileNodeId", fileNode._id),
 				)
 				.collect();
 			if (chunks.length === 0) {
@@ -3888,13 +3998,12 @@ export const read_file_content_from_chunks = internalQuery({
 		const range = await files_read_forward_line_range_from_ordered_chunks(
 			ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_source_fileNode_yjsSeq_lineEnd_chunk", (q) =>
+				.withIndex("by_workspace_project_source_fileNode_lineEnd_chunk", (q) =>
 					q
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
 						.eq("sourceKind", "committed")
 						.eq("fileNodeId", fileNode._id)
-						.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence)
 						.gte("lineEnd", startLine),
 				)
 				.order("asc"),
@@ -3909,11 +4018,10 @@ export const read_file_content_from_chunks = internalQuery({
 						.eq("workspaceId", args.workspaceId)
 						.eq("projectId", args.projectId)
 						.eq("sourceKind", "committed")
-						.eq("fileNodeId", fileNode._id)
-						.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence),
+						.eq("fileNodeId", fileNode._id),
 				)
 				.first();
-			if (!anyChunk && materializationState.asset.size > 0) return null;
+			if (!anyChunk && byteSize > 0) return null;
 		}
 
 		return { nodeId: fileNode._id, content: range.content, moreLines: range.moreLines, pendingUpdateId: null };
@@ -3933,8 +4041,8 @@ export type files_nodes_read_file_content_from_chunks_Result =
  */
 export const read_committed_file_chunk_stats = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -4440,8 +4548,8 @@ async function* db_plain_text_chunks_with_lines(chunks: AsyncIterable<Doc<"files
  */
 export const match_markdown_file_lines = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		fileNodeId: v.id("files_nodes"),
 		pattern: v.string(),
@@ -4496,39 +4604,53 @@ export const match_markdown_file_lines = internalQuery({
 	handler: async (ctx, args) => {
 		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
 		if (
-			!files_node_has_editable_yjs_state(fileNode) ||
+			fileNode == null ||
 			fileNode.workspaceId !== args.workspaceId ||
 			fileNode.projectId !== args.projectId ||
 			fileNode.archiveOperationId !== undefined
 		) {
 			return null;
 		}
+		if (
+			!workspaces_is_global_workspace_id(args.workspaceId) &&
+			!workspaces_is_global_github_project_id(args.projectId) &&
+			!files_node_has_editable_yjs_state(fileNode)
+		)
+			return null;
 
 		let pendingUpdateId: Id<"files_pending_updates"> | null = null;
-		if (args.pendingUpdateId != null) {
-			const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
-			if (
-				!pendingUpdate ||
-				pendingUpdate.workspaceId !== args.workspaceId ||
-				pendingUpdate.projectId !== args.projectId ||
-				pendingUpdate.userId !== args.userId ||
-				pendingUpdate.fileNodeId !== fileNode._id
-			) {
-				return null;
+		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
+			const workspaceId = args.workspaceId;
+			const projectId = args.projectId;
+			if (args.pendingUpdateId != null) {
+				const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
+				if (
+					!pendingUpdate ||
+					pendingUpdate.workspaceId !== workspaceId ||
+					pendingUpdate.projectId !== projectId ||
+					pendingUpdate.userId !== args.userId ||
+					pendingUpdate.fileNodeId !== fileNode._id
+				) {
+					return null;
+				}
+				pendingUpdateId = pendingUpdate._id;
+			} else {
+				const pendingUpdate = await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_workspace_project_user_fileNode", (q) =>
+						q
+							.eq("workspaceId", workspaceId)
+							.eq("projectId", projectId)
+							.eq("userId", args.userId)
+							.eq("fileNodeId", fileNode._id),
+					)
+					.first();
+				pendingUpdateId = pendingUpdate?._id ?? null;
 			}
-			pendingUpdateId = pendingUpdate._id;
-		} else {
-			const pendingUpdate = await ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
-					q
-						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
-						.eq("userId", args.userId)
-						.eq("fileNodeId", fileNode._id),
-				)
-				.first();
-			pendingUpdateId = pendingUpdate?._id ?? null;
+		} else if (args.pendingUpdateId != null) {
+			// External (reserved) rows never have pending docs; an explicit pending view cannot resolve.
+			return null;
 		}
 
 		let match: { kind: "substring"; needle: string; ignoreCase: boolean } | { kind: "regex"; regex: RegExp };
@@ -4579,41 +4701,41 @@ export const match_markdown_file_lines = internalQuery({
 			});
 		}
 
-		const materializationState = await db_get_file_content_materialization_db_state(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			nodeId: fileNode._id,
-		});
-		if (
-			!materializationState ||
-			materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
-		) {
-			return null;
+		// Tenant committed chunks are valid only when the latest Yjs sequence is materialized; external
+		// (reserved) rows have no Yjs/materialization state and read committed chunks by node id.
+		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: fileNode._id,
+			});
+			if (
+				!materializationState ||
+				materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
+			) {
+				return null;
+			}
 		}
 
 		const chunks =
 			window?.kind === "lines"
-				? ctx.db
-						.query("files_markdown_chunks")
-						.withIndex("by_workspace_project_source_fileNode_yjsSeq_lineEnd_chunk", (q) =>
-							q
-								.eq("workspaceId", args.workspaceId)
-								.eq("projectId", args.projectId)
-								.eq("sourceKind", "committed")
-								.eq("fileNodeId", fileNode._id)
-								.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence)
-								.gte("lineEnd", Math.max(1, Math.trunc(window.startLine))),
-						)
+				? ctx.db.query("files_markdown_chunks").withIndex("by_workspace_project_source_fileNode_lineEnd_chunk", (q) =>
+						q
+							.eq("workspaceId", args.workspaceId)
+							.eq("projectId", args.projectId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", fileNode._id)
+							.gte("lineEnd", Math.max(1, Math.trunc(window.startLine))),
+					)
 				: window?.kind === "slice"
 					? ctx.db
 							.query("files_markdown_chunks")
-							.withIndex("by_workspace_project_source_fileNode_yjsSeq_endIndex_chunk", (q) =>
+							.withIndex("by_workspace_project_source_fileNode_endIndex_chunk", (q) =>
 								q
 									.eq("workspaceId", args.workspaceId)
 									.eq("projectId", args.projectId)
 									.eq("sourceKind", "committed")
 									.eq("fileNodeId", fileNode._id)
-									.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence)
 									.gte("endIndex", Math.max(0, Math.trunc(window.startIndex)) + 1),
 							)
 					: ctx.db
@@ -4623,8 +4745,7 @@ export const match_markdown_file_lines = internalQuery({
 									.eq("workspaceId", args.workspaceId)
 									.eq("projectId", args.projectId)
 									.eq("sourceKind", "committed")
-									.eq("fileNodeId", fileNode._id)
-									.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence),
+									.eq("fileNodeId", fileNode._id),
 							);
 
 		return await match_markdown_chunks_list(chunks, {
@@ -4650,8 +4771,8 @@ export type files_nodes_match_markdown_file_lines_Result =
  */
 export const match_plain_text_file_lines = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		fileNodeId: v.id("files_nodes"),
 		pattern: v.string(),
@@ -4690,39 +4811,53 @@ export const match_plain_text_file_lines = internalQuery({
 	handler: async (ctx, args) => {
 		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
 		if (
-			!files_node_has_editable_yjs_state(fileNode) ||
+			fileNode == null ||
 			fileNode.workspaceId !== args.workspaceId ||
 			fileNode.projectId !== args.projectId ||
 			fileNode.archiveOperationId !== undefined
 		) {
 			return null;
 		}
+		if (
+			!workspaces_is_global_workspace_id(args.workspaceId) &&
+			!workspaces_is_global_github_project_id(args.projectId) &&
+			!files_node_has_editable_yjs_state(fileNode)
+		)
+			return null;
 
 		let pendingUpdateId: Id<"files_pending_updates"> | null = null;
-		if (args.pendingUpdateId != null) {
-			const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
-			if (
-				!pendingUpdate ||
-				pendingUpdate.workspaceId !== args.workspaceId ||
-				pendingUpdate.projectId !== args.projectId ||
-				pendingUpdate.userId !== args.userId ||
-				pendingUpdate.fileNodeId !== fileNode._id
-			) {
-				return null;
+		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
+			const workspaceId = args.workspaceId;
+			const projectId = args.projectId;
+			if (args.pendingUpdateId != null) {
+				const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
+				if (
+					!pendingUpdate ||
+					pendingUpdate.workspaceId !== workspaceId ||
+					pendingUpdate.projectId !== projectId ||
+					pendingUpdate.userId !== args.userId ||
+					pendingUpdate.fileNodeId !== fileNode._id
+				) {
+					return null;
+				}
+				pendingUpdateId = pendingUpdate._id;
+			} else {
+				const pendingUpdate = await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_workspace_project_user_fileNode", (q) =>
+						q
+							.eq("workspaceId", workspaceId)
+							.eq("projectId", projectId)
+							.eq("userId", args.userId)
+							.eq("fileNodeId", fileNode._id),
+					)
+					.first();
+				pendingUpdateId = pendingUpdate?._id ?? null;
 			}
-			pendingUpdateId = pendingUpdate._id;
-		} else {
-			const pendingUpdate = await ctx.db
-				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
-					q
-						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
-						.eq("userId", args.userId)
-						.eq("fileNodeId", fileNode._id),
-				)
-				.first();
-			pendingUpdateId = pendingUpdate?._id ?? null;
+		} else if (args.pendingUpdateId != null) {
+			// External (reserved) rows never have pending docs; an explicit pending view cannot resolve.
+			return null;
 		}
 
 		if (pendingUpdateId != null) {
@@ -4739,16 +4874,20 @@ export const match_plain_text_file_lines = internalQuery({
 			});
 		}
 
-		const materializationState = await db_get_file_content_materialization_db_state(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			nodeId: fileNode._id,
-		});
-		if (
-			!materializationState ||
-			materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
-		) {
-			return null;
+		// Tenant committed chunks are valid only when the latest Yjs sequence is materialized; external
+		// (reserved) rows have no Yjs/materialization state and read committed chunks by node id.
+		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
+				workspaceId: args.workspaceId,
+				projectId: args.projectId,
+				nodeId: fileNode._id,
+			});
+			if (
+				!materializationState ||
+				materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
+			) {
+				return null;
+			}
 		}
 
 		const chunks = ctx.db
@@ -4758,8 +4897,7 @@ export const match_plain_text_file_lines = internalQuery({
 					.eq("workspaceId", args.workspaceId)
 					.eq("projectId", args.projectId)
 					.eq("sourceKind", "committed")
-					.eq("fileNodeId", fileNode._id)
-					.eq("yjsSequence", materializationState.yjsSnapshotDoc.sequence),
+					.eq("fileNodeId", fileNode._id),
 			);
 
 		return await match_plain_text_chunks_list(db_plain_text_chunks_with_lines(chunks), {
@@ -4790,8 +4928,8 @@ export type files_nodes_match_plain_text_file_lines_Result =
  */
 export const read_file_line_range = internalAction({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		startLine: v.number(),
@@ -4859,8 +4997,8 @@ export type files_nodes_read_file_line_range_Result =
  */
 export const read_file_tail_lines = internalAction({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		maxLines: v.number(),
@@ -4955,8 +5093,8 @@ export type files_nodes_read_file_tail_lines_Result =
  */
 export const read_file_content_stats = internalAction({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -5069,8 +5207,8 @@ export const get_file_last_yjs_sequence = query({
 function db_text_search_filtered_query(
 	ctx: QueryCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_plain_text_chunks">["workspaceId"];
+		projectId: Doc<"files_plain_text_chunks">["projectId"];
 		userId: Id<"users">;
 		query: string;
 		pathPrefix?: string;
@@ -5116,8 +5254,8 @@ function db_text_search_filtered_query(
 }
 
 const text_search_args = {
-	workspaceId: v.string(),
-	projectId: v.string(),
+	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+	projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 	userId: v.id("users"),
 	query: v.string(),
 	/** Optional subtree scope: keep only matches whose file path is under this folder prefix. */
@@ -5168,14 +5306,22 @@ export const text_search_files = internalQuery({
 		isDone: boolean;
 	}> => {
 		const pageLimit = args.numItems;
-		const pendingUpdates = await ctx.db
-			.query("files_pending_updates")
-			.withIndex("by_workspace_project_user_fileNode", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", args.userId),
-			)
-			.order("asc")
-			.collect();
-		const pendingNodeIds = pendingUpdates.map((pendingUpdate) => pendingUpdate.fileNodeId);
+		// Reserved (external) scope has no per-user pending overlay; tenant scope suppresses committed
+		// chunks for files the acting user is currently editing.
+		let pendingNodeIds: Array<Id<"files_nodes">> = [];
+		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+			// Bind the guard-narrowed ids; TS drops property narrowing inside the closure below.
+			const workspaceId = args.workspaceId;
+			const projectId = args.projectId;
+			const pendingUpdates = await ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_workspace_project_user_fileNode", (q) =>
+					q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("userId", args.userId),
+				)
+				.order("asc")
+				.collect();
+			pendingNodeIds = pendingUpdates.map((pendingUpdate) => pendingUpdate.fileNodeId);
+		}
 
 		const result = await db_text_search_filtered_query(ctx, {
 			...args,
@@ -5247,8 +5393,8 @@ export const profile_text_search_files = internalAction({
  */
 export const create_file_by_path = internalAction({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		userId: v.id("users"),
 		path: v.string(),
 		markdownContent: v.optional(v.string()),
@@ -5479,8 +5625,8 @@ export const get_file_snapshot = query({
 async function db_get_file_snapshot_content(
 	ctx: QueryCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		nodeId: Id<"files_nodes">;
 		snapshotId: Id<"files_snapshots">;
 	},
@@ -5772,7 +5918,7 @@ export const yjs_prepare_doc_last_snapshot = action({
 
 async function yjs_increment_or_create_last_sequence(
 	ctx: MutationCtx,
-	args: { workspaceId: string; projectId: string; nodeId: Id<"files_nodes"> },
+	args: { workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects">; nodeId: Id<"files_nodes"> },
 ) {
 	let lastSequenceData = await ctx.db
 		.query("files_yjs_docs_last_sequences")
@@ -5804,8 +5950,8 @@ async function yjs_increment_or_create_last_sequence(
 export async function files_db_yjs_push_update(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		nodeId: Id<"files_nodes">;
 		update: ArrayBuffer;
 		sessionId: string;
@@ -5936,8 +6082,8 @@ export const yjs_push_update = mutation({
 		}
 
 		const pushResult = await files_db_yjs_push_update(ctx, {
-			workspaceId: fileNode.workspaceId,
-			projectId: fileNode.projectId,
+			workspaceId: membership.workspaceId,
+			projectId: membership.projectId,
 			nodeId: args.nodeId,
 			update: args.update,
 			sessionId: args.sessionId,
@@ -6036,8 +6182,8 @@ export const yjs_get_incremental_updates = query({
 // #region snapshots
 
 const store_version_snapshot_args_schema = v.object({
-	workspaceId: v.string(),
-	projectId: v.string(),
+	workspaceId: v.id("workspaces"),
+	projectId: v.id("workspaces_projects"),
 	nodeId: v.id("files_nodes"),
 	assetId: v.id("files_r2_assets"),
 	createdBy: v.id("users"),
@@ -6050,8 +6196,8 @@ function yjs_merge_updates_to_array_buffer(updates: Uint8Array[]) {
 async function db_insert_snapshot_restore_update(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: Id<"users">;
 		nodeId: Id<"files_nodes">;
 		snapshotId: Id<"files_snapshots">;
@@ -6146,8 +6292,8 @@ async function reconstruct_latest_file_content_from_materialization_state(args: 
 
 export const finalize_file_content_materialization = internalMutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		nodeId: v.id("files_nodes"),
 		userId: v.id("users"),
 		sequence: v.number(),
@@ -6274,8 +6420,8 @@ type finalize_file_content_materialization_Result =
 
 export const materialize_file_content = internalAction({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		nodeId: v.id("files_nodes"),
 		userId: v.id("users"),
 		targetSequence: v.number(),

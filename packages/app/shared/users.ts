@@ -1,6 +1,13 @@
 import { decodeJwt } from "jose";
 import { should_never_happen } from "./shared-utils.ts";
 
+/**
+ * Special non-`Id` author sentinel for system-authored rows (e.g. read-only mount content). Not a real
+ * `Id<"users">` and has no backing doc; only legal where the schema accepts it via `v.literal(...)`.
+ * The constant is the single source of truth; the schema literal and `typeof users_SYSTEM_AUTHOR` track it.
+ */
+export const users_SYSTEM_AUTHOR = "SYSTEM";
+
 const users_decode_jwt = ((/* iife */) => {
 	function value(jwt: string) {
 		return decodeJwt(jwt);

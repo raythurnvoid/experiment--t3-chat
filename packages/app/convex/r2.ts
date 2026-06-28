@@ -26,6 +26,8 @@ import {
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
+import { workspaces_GLOBAL_WORKSPACE_ID, workspaces_GLOBAL_GITHUB_PROJECT_ID } from "../shared/workspaces.ts";
+import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { workspaces_db_get_membership } from "./workspaces.ts";
 import { billing_event } from "../server/billing.ts";
 import { billing_db_check_credits, billing_ingest_events, billing_pick_billed_user_id } from "./billing.ts";
@@ -162,6 +164,37 @@ function media_compute_token_usage_cost_cents(args: { modelId: string; inputToke
 	}
 }
 
+/**
+ * Narrow file content-storage scope to a real workspace/project at a sink that cannot accept the
+ * reserved external-mount scope. Upload/media processing only ever runs on real user files, so the
+ * reserved literals are unreachable here.
+ */
+function r2_require_real_scope(
+	workspaceId: Id<"workspaces"> | typeof workspaces_GLOBAL_WORKSPACE_ID,
+	projectId: Id<"workspaces_projects"> | typeof workspaces_GLOBAL_GITHUB_PROJECT_ID,
+): { workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects"> } {
+	if (workspaceId === workspaces_GLOBAL_WORKSPACE_ID || projectId === workspaces_GLOBAL_GITHUB_PROJECT_ID) {
+		const errorMessage = "Reserved external-mount scope reached a sink that requires a real workspace/project id";
+		const errorData = { workspaceId, projectId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	return { workspaceId, projectId };
+}
+
+/**
+ * Narrow a file author to a real user id at a sink that cannot accept the reserved SYSTEM author.
+ */
+function r2_require_real_author(createdBy: Id<"users"> | typeof users_SYSTEM_AUTHOR): Id<"users"> {
+	if (createdBy === users_SYSTEM_AUTHOR) {
+		const errorMessage = "Reserved SYSTEM author reached a sink that requires a real user id";
+		const errorData = { createdBy };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	return createdBy;
+}
+
 async function ingest_media_ai_usage_event(
 	ctx: ActionCtx | MutationCtx,
 	args: {
@@ -177,6 +210,7 @@ async function ingest_media_ai_usage_event(
 		return;
 	}
 
+	const authorUserId = r2_require_real_author(args.sourceFileNode.createdBy);
 	await billing_ingest_events(ctx, {
 		billedUserEvents: [
 			{
@@ -184,7 +218,7 @@ async function ingest_media_ai_usage_event(
 				event: billing_event({
 					name: "ai_usage",
 					externalCustomerId: args.billedUser._id,
-					externalMemberId: args.sourceFileNode.createdBy,
+					externalMemberId: authorUserId,
 					externalId: composite_id(
 						"billing",
 						"ai_usage",
@@ -201,7 +235,7 @@ async function ingest_media_ai_usage_event(
 							inputTokens: args.inputTokens,
 							outputTokens: args.outputTokens,
 						}),
-						actorUserId: args.sourceFileNode.createdBy,
+						actorUserId: authorUserId,
 						billedUserId: args.billedUser._id,
 						workspaceId: args.sourceFileNode.workspaceId,
 						projectId: args.sourceFileNode.projectId,
@@ -792,8 +826,8 @@ export const get_data_for_create_signed_download_url = internalQuery({
 			asset,
 			materializationState: files_node_has_editable_yjs_state(fileNode)
 				? await db_get_file_content_materialization_db_state(ctx, {
-						workspaceId: fileNode.workspaceId,
-						projectId: fileNode.projectId,
+						workspaceId: membership.workspaceId,
+						projectId: membership.projectId,
 						nodeId: fileNode._id,
 					})
 				: null,
@@ -855,9 +889,10 @@ export const create_signed_download_url = action({
 				});
 			} else if (materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence) {
 				// Try to update the committed Markdown asset, but still allow downloading the current R2 asset if this fails.
+				const materializeScope = r2_require_real_scope(fileNode.workspaceId, fileNode.projectId);
 				const materialized = await ctx.runAction(internal.files_nodes.materialize_file_content, {
-					workspaceId: fileNode.workspaceId,
-					projectId: fileNode.projectId,
+					workspaceId: materializeScope.workspaceId,
+					projectId: materializeScope.projectId,
 					nodeId: fileNode._id,
 					userId: userAuth.id,
 					targetSequence: materializationState.yjsLastSequenceDoc.lastSequence,
@@ -928,8 +963,8 @@ export const get_asset = query({
 
 export const get_file_node_by_asset_id = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		assetId: v.id("files_r2_assets"),
 	},
 	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
@@ -951,8 +986,8 @@ type get_file_node_by_asset_id_Result =
 async function db_finalize_markdown_file_node_from_r2_assets(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		fileNodeId: Id<"files_nodes">;
 		userId: Id<"users">;
 		markdownAssetId: Id<"files_r2_assets">;
@@ -1084,8 +1119,8 @@ async function db_finalize_markdown_file_node_from_r2_assets(
  */
 export const finalize_upload_conversion_to_markdown = internalMutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		/** The original uploaded file node, such as the source PDF being converted. */
 		fileNodeId: v.id("files_nodes"),
@@ -1130,9 +1165,10 @@ export const finalize_upload_conversion_to_markdown = internalMutation({
 			return Result({ _nay: { name: "nay", message: "Not found" } });
 		}
 
+		const finalizeScope = r2_require_real_scope(args.workspaceId, args.projectId);
 		const finalized = await db_finalize_markdown_file_node_from_r2_assets(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
+			workspaceId: finalizeScope.workspaceId,
+			projectId: finalizeScope.projectId,
 			fileNodeId: output.fileNodeId,
 			userId: args.userId,
 			markdownAssetId: output.markdownAssetId,
@@ -1164,8 +1200,8 @@ type finalize_upload_conversion_to_markdown_Result =
 
 export const convert_upload_to_markdown = internalAction({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		sourceAssetId: v.id("files_r2_assets"),
 		/**
 		 * Pre-created generated Markdown asset; resolve the node by asset so
@@ -1382,7 +1418,7 @@ export const convert_upload_to_markdown = internalAction({
 		const finalizedConversion = (await ctx.runMutation(internal.r2.finalize_upload_conversion_to_markdown, {
 			workspaceId: sourceFileNode.workspaceId,
 			projectId: sourceFileNode.projectId,
-			userId: sourceFileNode.createdBy,
+			userId: r2_require_real_author(sourceFileNode.createdBy),
 			fileNodeId: sourceFileNode._id,
 			uploadAssetId: sourceAsset._id,
 			output: {
@@ -1409,8 +1445,8 @@ export const convert_upload_to_markdown = internalAction({
 
 export const finalize_markdown_file_node_from_r2_assets = internalMutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		fileNodeId: v.id("files_nodes"),
 		userId: v.id("users"),
 		markdownAssetId: v.id("files_r2_assets"),
@@ -1425,7 +1461,13 @@ export const finalize_markdown_file_node_from_r2_assets = internalMutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const now = Date.now();
-		return await db_finalize_markdown_file_node_from_r2_assets(ctx, { ...args, now });
+		const finalizeScope = r2_require_real_scope(args.workspaceId, args.projectId);
+		return await db_finalize_markdown_file_node_from_r2_assets(ctx, {
+			...args,
+			workspaceId: finalizeScope.workspaceId,
+			projectId: finalizeScope.projectId,
+			now,
+		});
 	},
 });
 
@@ -1451,8 +1493,8 @@ const uploaded_media_markdown_output_validator = v.object({
 
 export const finalize_uploaded_media_markdown_outputs = internalMutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		sourceAssetId: v.id("files_r2_assets"),
 		outputs: v.array(uploaded_media_markdown_output_validator),
@@ -1470,6 +1512,7 @@ export const finalize_uploaded_media_markdown_outputs = internalMutation({
 			return Result({ _nay: { name: "nay", message: "Not found" } });
 		}
 
+		const finalizeScope = r2_require_real_scope(args.workspaceId, args.projectId);
 		const conversionWorkAssetIds = [args.sourceAssetId, ...args.outputs.map((output) => output.markdownAssetId)];
 		for (const output of args.outputs) {
 			const outputFileNode = await ctx.db.get("files_nodes", output.fileNodeId);
@@ -1484,8 +1527,8 @@ export const finalize_uploaded_media_markdown_outputs = internalMutation({
 			}
 
 			const finalized = await db_finalize_markdown_file_node_from_r2_assets(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
+				workspaceId: finalizeScope.workspaceId,
+				projectId: finalizeScope.projectId,
 				fileNodeId: output.fileNodeId,
 				userId: args.userId,
 				markdownAssetId: output.markdownAssetId,
@@ -1621,9 +1664,10 @@ async function clear_upload_processing_assets(ctx: ActionCtx, assetIds: Array<Id
 }
 
 async function get_billed_user_for_media_processing(ctx: ActionCtx, sourceFileNode: Doc<"files_nodes">) {
+	const scope = r2_require_real_scope(sourceFileNode.workspaceId, sourceFileNode.projectId);
 	const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
-		userId: sourceFileNode.createdBy,
-		workspaceId: sourceFileNode.workspaceId as Id<"workspaces">,
+		userId: r2_require_real_author(sourceFileNode.createdBy),
+		workspaceId: scope.workspaceId,
 		minimumRequiredCents: 1,
 	});
 	if (!creditCheck.hasCredits || !creditCheck.billedUser) {
@@ -1634,16 +1678,18 @@ async function get_billed_user_for_media_processing(ctx: ActionCtx, sourceFileNo
 }
 
 async function db_has_media_processing_credits(ctx: MutationCtx, sourceFileNode: Doc<"files_nodes">) {
-	const workspace = await ctx.db.get("workspaces", sourceFileNode.workspaceId as Id<"workspaces">);
+	const scope = r2_require_real_scope(sourceFileNode.workspaceId, sourceFileNode.projectId);
+	const createdBy = r2_require_real_author(sourceFileNode.createdBy);
+	const workspace = await ctx.db.get("workspaces", scope.workspaceId);
 	if (!workspace) {
 		throw should_never_happen("Workspace not found while checking media upload credits", {
-			userId: sourceFileNode.createdBy,
-			workspaceId: sourceFileNode.workspaceId,
+			userId: createdBy,
+			workspaceId: scope.workspaceId,
 		});
 	}
 
 	const billedUserId = billing_pick_billed_user_id({
-		userId: sourceFileNode.createdBy,
+		userId: createdBy,
 		workspace,
 	});
 	const creditCheck = await billing_db_check_credits(ctx, {
@@ -1658,8 +1704,8 @@ async function archive_active_node_and_descendants(
 	args: {
 		node: {
 			_id: Id<"files_nodes">;
-			workspaceId: string;
-			projectId: string;
+			workspaceId: Doc<"files_nodes">["workspaceId"];
+			projectId: Doc<"files_nodes">["projectId"];
 			path: string;
 		};
 		updatedBy: Id<"users">;
@@ -1722,15 +1768,17 @@ async function create_generated_markdown_output_node(
 	ctx: MutationCtx,
 	args: {
 		sourceFileNode: {
-			workspaceId: string;
-			projectId: string;
+			workspaceId: Doc<"files_nodes">["workspaceId"];
+			projectId: Doc<"files_nodes">["projectId"];
 			parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
-			createdBy: Id<"users">;
+			createdBy: Doc<"files_nodes">["createdBy"];
 		};
 		name: string;
 		now: number;
 	},
 ) {
+	const authorUserId = r2_require_real_author(args.sourceFileNode.createdBy);
+	const createScope = r2_require_real_scope(args.sourceFileNode.workspaceId, args.sourceFileNode.projectId);
 	// Expose the generated output as a normal file immediately; finalization
 	// later fills in its R2 key and Yjs state.
 	const activeNameConflict = await ctx.db
@@ -1747,7 +1795,7 @@ async function create_generated_markdown_output_node(
 	if (activeNameConflict) {
 		await archive_active_node_and_descendants(ctx, {
 			node: activeNameConflict,
-			updatedBy: args.sourceFileNode.createdBy,
+			updatedBy: authorUserId,
 			now: args.now,
 		});
 	}
@@ -1763,9 +1811,9 @@ async function create_generated_markdown_output_node(
 	});
 
 	const node = await files_nodes_db_create_node_recursively_at_path(ctx, {
-		userId: args.sourceFileNode.createdBy,
-		workspaceId: args.sourceFileNode.workspaceId,
-		projectId: args.sourceFileNode.projectId,
+		userId: authorUserId,
+		workspaceId: createScope.workspaceId,
+		projectId: createScope.projectId,
 		parentId: args.sourceFileNode.parentId,
 		path: args.name,
 		kind: "file",
@@ -1782,8 +1830,8 @@ async function create_generated_markdown_output_node(
 
 export const describe_image_upload_to_markdown = internalAction({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		sourceAssetId: v.id("files_r2_assets"),
 		outputAssetId: v.id("files_r2_assets"),
 	},
@@ -1882,7 +1930,7 @@ export const describe_image_upload_to_markdown = internalAction({
 		const finalized = (await ctx.runMutation(internal.r2.finalize_uploaded_media_markdown_outputs, {
 			workspaceId: sourceFileNode.workspaceId,
 			projectId: sourceFileNode.projectId,
-			userId: sourceFileNode.createdBy,
+			userId: r2_require_real_author(sourceFileNode.createdBy),
 			sourceAssetId: sourceAsset._id,
 			outputs: [output],
 		})) as finalize_uploaded_media_markdown_outputs_Result;
@@ -1899,8 +1947,8 @@ export const describe_image_upload_to_markdown = internalAction({
 
 export const summarize_video_upload_to_markdown = internalAction({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		sourceAssetId: v.id("files_r2_assets"),
 		summaryOutputAssetId: v.id("files_r2_assets"),
 		transcriptOutputAssetId: v.id("files_r2_assets"),
@@ -2097,7 +2145,7 @@ export const summarize_video_upload_to_markdown = internalAction({
 		const finalized = (await ctx.runMutation(internal.r2.finalize_uploaded_media_markdown_outputs, {
 			workspaceId: sourceFileNode.workspaceId,
 			projectId: sourceFileNode.projectId,
-			userId: sourceFileNode.createdBy,
+			userId: r2_require_real_author(sourceFileNode.createdBy),
 			sourceAssetId: sourceAsset._id,
 			outputs: [summaryOutput, transcriptOutput],
 		})) as finalize_uploaded_media_markdown_outputs_Result;
@@ -2114,8 +2162,8 @@ export const summarize_video_upload_to_markdown = internalAction({
 
 export const finalize_uploaded_markdown_file = internalAction({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		sourceAssetId: v.id("files_r2_assets"),
 	},
 	returns: v.null(),
@@ -2248,7 +2296,7 @@ export const finalize_uploaded_markdown_file = internalAction({
 			workspaceId: sourceFileNode.workspaceId,
 			projectId: sourceFileNode.projectId,
 			fileNodeId: sourceFileNode._id,
-			userId: sourceFileNode.createdBy,
+			userId: r2_require_real_author(sourceFileNode.createdBy),
 			markdownAssetId,
 			markdownSize: files_get_utf8_byte_size(markdownContent),
 			yjsSnapshotAssetId,

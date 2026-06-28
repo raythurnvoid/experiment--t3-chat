@@ -44,7 +44,7 @@ function key_from_r2_url(url: string) {
 	return decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
 }
 
-function expected_asset_key(args: { workspaceId: string; projectId: string; assetId: string }) {
+function expected_asset_key(args: { workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects">; assetId: string }) {
 	return `workspaces/${args.workspaceId}/projects/${args.projectId}/assets/${args.assetId}`;
 }
 
@@ -245,8 +245,8 @@ async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"user
 async function get_active_file_node_by_path(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		path: string;
 	},
 ) {
@@ -265,8 +265,8 @@ async function get_active_file_node_by_path(
 async function get_pdf_output_node(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		sourceName: string;
 	},
 ) {

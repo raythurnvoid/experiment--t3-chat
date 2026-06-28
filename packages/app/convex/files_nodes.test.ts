@@ -19,6 +19,8 @@ import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
+import { workspaces_GLOBAL_WORKSPACE_ID, workspaces_GLOBAL_GITHUB_PROJECT_ID } from "../shared/workspaces.ts";
+import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
 let enqueueActionSpy: MockInstance;
 let generateUploadUrlSpy: ReturnType<typeof vi.fn<(customKey?: string) => Promise<{ key: string; url: string }>>>;
@@ -968,7 +970,7 @@ describe("paginated bash listing queries", () => {
 		});
 		const invalidParent = await asUser.query(internal.files_nodes.list_children, {
 			workspaceId: db.workspaceId,
-			projectId: "other-project",
+			projectId: "GITHUB",
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
@@ -1105,7 +1107,7 @@ test("rename_node updates descendants materialized paths", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -1197,7 +1199,7 @@ test("move_nodes updates descendants materialized paths", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -1294,7 +1296,7 @@ test("home file path stays immutable on rename and move", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -1341,7 +1343,7 @@ test("create_folder_node rejects duplicate active path", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -1452,7 +1454,7 @@ test("create_folder_node reuses active intermediate folders", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -1499,7 +1501,7 @@ test("create_markdown_node preserves caller-provided file names", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -1883,7 +1885,7 @@ test("create_folder_node creates missing folders for nested folder paths", async
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 	const result = await asUser.mutation(api.files_nodes.create_folder_node, {
@@ -1920,7 +1922,7 @@ test("create_markdown_node creates missing folders for nested file paths", async
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -1957,7 +1959,7 @@ test("archived nodes can share path with a new active node", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 	const duplicateName = "archived-duplicate-allowed.md";
@@ -2006,7 +2008,7 @@ test("create_file_by_path can reuse an existing active file", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 	const path = "/existing-by-path.md";
@@ -2309,7 +2311,7 @@ test("rename_node returns conflict and keeps original path", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2340,7 +2342,7 @@ test("rename_node preserves caller-provided file names", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2378,7 +2380,7 @@ test("rename_node creates missing folders for nested file paths", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2426,7 +2428,7 @@ test("rename_node preserves caller-provided nested file names", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2471,7 +2473,7 @@ test("rename_node preserves caller-provided file extensions", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2508,7 +2510,7 @@ test("rename_node creates missing folders for nested folder paths", async () => 
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2546,7 +2548,7 @@ test("move_nodes returns conflict and keeps original path", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2586,7 +2588,7 @@ test("unarchive_nodes returns conflict when active file already has the same pat
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2761,7 +2763,7 @@ test("unarchive_nodes excludes unrequested ancestors from Archive Operation", as
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2800,7 +2802,7 @@ test("get_by_path ignores archived files with duplicate path", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2832,7 +2834,7 @@ test("create_file_by_path creates active ancestors instead of reusing archived n
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2879,7 +2881,7 @@ test("N07 rename_node idempotency: same name no-op", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2902,7 +2904,7 @@ test("N08 move_nodes idempotency: same parent no-op", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2925,7 +2927,7 @@ test("N09 archive idempotency", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2952,7 +2954,7 @@ test("N09 unarchive idempotency", async () => {
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -2973,7 +2975,7 @@ test("N02 archive child then parent then unarchive parent restores hierarchy", a
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Test User",
 	});
 
@@ -3019,7 +3021,7 @@ test("membership-scoped file and yjs APIs reject cross-user membership ids", asy
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const ownerIdentity = {
 		issuer: "https://clerk.test",
-		external_id: db.files.file_root_1.createdBy,
+		external_id: db.userId,
 		name: "Owner User",
 	};
 	const asOwner = t.withIdentity(ownerIdentity);
@@ -4023,6 +4025,269 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 		after: 0,
 	});
 	expect(brokenGrep).toBeNull();
+});
+
+// Seed an external (reserved-scope) committed file the way a read-only mount will: a node with no
+// Yjs/pending/materialization, committed markdown + plain-text chunks with NO yjsSequence, a linked
+// R2 `content` asset, and exact wc stats. `r2Writes` gets the raw body so action-level R2 reads
+// resolve. Returns the node id. Mirrors `db_insert_file_chunks` doc shapes minus yjsSequence.
+async function test_insert_committed_external_markdown(
+	t: ReturnType<typeof test_convex>,
+	r2Writes: Map<string, BodyInit>,
+	userId: Id<"users">,
+	path: string,
+	markdown: string,
+) {
+	const chunks = await files_chunk_markdown(markdown);
+	if (chunks._nay) throw new Error(chunks._nay.message);
+	const byteSize = files_get_utf8_byte_size(markdown);
+	return await t.run(async (ctx) => {
+		const now = Date.now();
+		const name = path.split("/").filter(Boolean).at(-1);
+		if (!name) throw new Error("Expected a root-level file path");
+		const nodeId = await ctx.db.insert("files_nodes", {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			parentId: files_ROOT_ID,
+			path,
+			treePath: path,
+			pathDepth: 1,
+			lowercaseExtension: "md",
+			name,
+			kind: "file",
+			contentType: "text/markdown;charset=utf-8",
+			createdBy: users_SYSTEM_AUTHOR,
+			updatedBy: users_SYSTEM_AUTHOR,
+			updatedAt: now,
+		});
+		const assetId = await ctx.db.insert("files_r2_assets", {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			kind: "content",
+			r2Bucket: "test-bucket",
+			r2Key: `mounts${path}`,
+			size: byteSize,
+			createdBy: users_SYSTEM_AUTHOR,
+			updatedAt: now,
+		});
+		r2Writes.set(`mounts${path}`, markdown);
+		const statsId = await ctx.db.insert("file_stats", {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			fileNodeId: nodeId,
+			lineCount: (markdown.match(/\n/gu) ?? []).length,
+			wordCount: markdown.trim().length === 0 ? 0 : markdown.trim().split(/\s+/u).length,
+			charCount: Array.from(markdown).length,
+		});
+		await ctx.db.patch("files_nodes", nodeId, { assetId, statsId });
+		// Committed chunks with yjsSequence OMITTED: external rows are addressed by node id alone.
+		const markdownChunkIds = await Promise.all(
+			chunks._yay.map((chunk) =>
+				ctx.db.insert("files_markdown_chunks", {
+					workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+					projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+					fileNodeId: nodeId,
+					sourceKind: "committed",
+					chunkIndex: chunk.chunkIndex,
+					markdownChunk: chunk.markdownChunk,
+					startIndex: chunk.startIndex,
+					endIndex: chunk.endIndex,
+					lineStart: chunk.lineStart,
+					lineEnd: chunk.lineEnd,
+					chunkFlags: chunk.chunkFlags,
+				}),
+			),
+		);
+		await Promise.all(
+			chunks._yay.map((chunk, index) =>
+				ctx.db.insert("files_plain_text_chunks", {
+					workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+					projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+					fileNodeId: nodeId,
+					sourceKind: "committed",
+					markdownChunkId: markdownChunkIds[index],
+					chunkIndex: chunk.chunkIndex,
+					path,
+					plainTextChunk: chunk.plainTextChunk,
+					markdownChunk: chunk.markdownChunk,
+					startIndex: chunk.startIndex,
+					endIndex: chunk.endIndex,
+					lineStart: chunk.lineStart,
+					lineEnd: chunk.lineEnd,
+					chunkFlags: chunk.chunkFlags,
+					hasChunkAbove: index > 0,
+					hasChunkBelow: index < chunks._yay.length - 1,
+				}),
+			),
+		);
+		return nodeId;
+	});
+}
+
+test("external (reserved) scope reads committed chunks and R2 without Yjs, pending, or materialization", async () => {
+	const t = test_convex();
+	// A real acting user id (the tenant user reading an external mount); the file itself is reserved-scope.
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const r2Writes = test_setup_r2_capture();
+
+	const paragraphs = Array.from(
+		{ length: 50 },
+		(_, i) =>
+			`External paragraph ${i + 1} carries words alpha-${i} beta gamma delta epsilon zeta eta theta${i === 0 ? " 🙂" : ""}.`,
+	);
+	const path = "/.mounts/github/external-doc.md";
+	const markdown = [
+		"# External Mount Document",
+		"",
+		"externalneedle one",
+		"**critical** mount alert",
+		"externalsearchneedle appears once here.",
+		"",
+		...paragraphs,
+		"",
+		"externalneedle two",
+		"",
+	].join("\n");
+
+	const nodeId = await test_insert_committed_external_markdown(t, r2Writes, db.userId, path, markdown);
+
+	// Guard the test is meaningful: the document really spans multiple committed chunks.
+	const chunkCount = await t.run(async (ctx) =>
+		ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+				q
+					.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
+					.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", nodeId),
+			)
+			.collect()
+			.then((chunks) => chunks.length),
+	);
+	expect(chunkCount).toBeGreaterThan(1);
+
+	const readScope = {
+		workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+		projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+	} as const;
+
+	// Full read reproduces the exact committed markdown by merging chunks (no R2 fetch for chunk reads).
+	const full = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+		...readScope,
+		userId: db.userId,
+		path,
+		mode: { kind: "full", maxBytes: files_get_utf8_byte_size(markdown) + 1000 },
+	});
+	expect(full).not.toBeNull();
+	if (!full) throw new Error("expected external full read");
+	expect(full.content).toBe(markdown);
+	expect(full.moreLines).toBe(false);
+	expect(full.pendingUpdateId).toBeNull();
+
+	// Line read slices the same range as slicing the full committed text.
+	const lineRead = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+		...readScope,
+		userId: db.userId,
+		path,
+		mode: { kind: "lines", startLine: 1, maxLines: 5 },
+	});
+	expect(lineRead).not.toBeNull();
+	if (!lineRead) throw new Error("expected external line read");
+	expect(lineRead.content).toBe(files_line_range_from_text(markdown, 1, 5).content);
+
+	// read_committed_file_chunks_line_range: head / deep mid-document / tail each equal direct slicing.
+	const totalLines = markdown.split("\n").length;
+	const readRange = (startLine: number, maxLines: number, fromEnd = false) =>
+		t.query(internal.files_nodes.read_committed_file_chunks_line_range, {
+			...readScope,
+			userId: db.userId,
+			path,
+			startLine,
+			maxLines,
+			fromEnd,
+		});
+	for (const [startLine, maxLines] of [
+		[1, 5],
+		[20, 6],
+		[Math.max(1, totalLines - 3), 10],
+	] as const) {
+		const result = await readRange(startLine, maxLines);
+		expect(result.usable).toBe(true);
+		if (!result.usable) throw new Error("expected usable");
+		expect(result.content).toBe(files_line_range_from_text(markdown, startLine, maxLines).content);
+	}
+	const tail = await readRange(1, 5, true);
+	expect(tail.usable).toBe(true);
+	if (!tail.usable) throw new Error("expected usable tail");
+	expect(tail.content).toBe(files_tail_lines_from_text(markdown, 5).content);
+
+	// Exact counts come from the linked file_stats doc (byteCount from the R2 content asset size).
+	const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
+		...readScope,
+		userId: db.userId,
+		path,
+	});
+	expect(stats.usable).toBe(true);
+	if (!stats.usable) throw new Error("expected usable stats");
+	expect(stats.lineCount).toBe((markdown.match(/\n/gu) ?? []).length);
+	expect(Array.from(markdown).length).toBeLessThan(markdown.length);
+	expect(stats.charCount).toBe(Array.from(markdown).length);
+	expect(stats.byteCount).toBe(files_get_utf8_byte_size(markdown));
+	expect(stats.wordCount).toBe(markdown.trim().split(/\s+/u).length);
+
+	// match_markdown_file_lines / match_plain_text_file_lines read committed chunks with no pending gate.
+	const markdownGrep = await t.query(internal.files_nodes.match_markdown_file_lines, {
+		...readScope,
+		userId: db.userId,
+		fileNodeId: nodeId,
+		pattern: "externalneedle",
+		ignoreCase: false,
+		fixedStrings: true,
+		invert: false,
+		before: 0,
+		after: 0,
+	});
+	expect(markdownGrep).not.toBeNull();
+	if (!markdownGrep) throw new Error("expected external markdown grep");
+	expect(markdownGrep.lines.map(({ lineNumber, line }) => ({ lineNumber, line }))).toEqual([
+		{ lineNumber: 3, line: "externalneedle one" },
+		{ lineNumber: 58, line: "externalneedle two" },
+	]);
+
+	const plainGrep = await t.query(internal.files_nodes.match_plain_text_file_lines, {
+		...readScope,
+		userId: db.userId,
+		fileNodeId: nodeId,
+		pattern: "critical mount alert",
+		ignoreCase: false,
+		fixedStrings: true,
+		invert: false,
+	});
+	expect(plainGrep).not.toBeNull();
+	if (!plainGrep) throw new Error("expected external plain-text grep");
+	expect(plainGrep.lines).toEqual([{ lineNumber: 4, line: "critical mount alert", matched: true }]);
+
+	// text_search_files finds committed external content; no pending lookup runs for reserved scope.
+	const search = await t.query(internal.files_nodes.text_search_files, {
+		...readScope,
+		userId: db.userId,
+		query: "externalsearchneedle",
+		numItems: 10,
+		cursor: null,
+	});
+	expect(search.items.map((item) => item.path)).toContain(path);
+
+	// get_file_last_available_markdown_content_by_path falls into the raw-R2 `.text()` branch for external.
+	const available = await t.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+		...readScope,
+		userId: db.userId,
+		path,
+	});
+	expect(available).not.toBeNull();
+	if (!available) throw new Error("expected external available content");
+	expect(available.content).toBe(markdown);
+	expect(available.pendingUpdateId).toBeNull();
 });
 
 test("file_stats stay fresh after an edit: re-materialization patches the same doc in place", async () => {

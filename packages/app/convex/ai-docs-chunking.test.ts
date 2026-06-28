@@ -1,22 +1,19 @@
 import { expect, test } from "vitest";
 import { db_replace_file_chunks } from "./files_nodes.ts";
-import { test_convex, test_mocks_hardcoded } from "./setup.test.ts";
+import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 
 test("db_replace_file_chunks replaces existing chunk rows for a page", async () => {
 	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 
 	await t.run(async (ctx) => {
-		const userId = await ctx.db.insert("users", {
-			clerkUserId: null,
-		});
-
 		const basePageData = {
-			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-			projectId: test_mocks_hardcoded.project_id.project_1,
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
 			parentId: files_ROOT_ID,
-			createdBy: userId,
-			updatedBy: userId,
+			createdBy: db.userId,
+			updatedBy: db.userId,
 			updatedAt: Date.now(),
 		} as const;
 
@@ -31,8 +28,8 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 			archiveOperationId: undefined,
 		});
 		const oldMarkdownChunkId = await ctx.db.insert("files_markdown_chunks", {
-			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-			projectId: test_mocks_hardcoded.project_id.project_1,
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
 			fileNodeId: nodeId,
 			sourceKind: "committed",
 			yjsSequence: 1,
@@ -45,8 +42,8 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 			chunkFlags: 0,
 		});
 		const oldPlainTextChunkId = await ctx.db.insert("files_plain_text_chunks", {
-			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-			projectId: test_mocks_hardcoded.project_id.project_1,
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
 			fileNodeId: nodeId,
 			sourceKind: "committed",
 			yjsSequence: 1,
@@ -65,8 +62,8 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 		});
 
 		const result = await db_replace_file_chunks(ctx, {
-			workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-			projectId: test_mocks_hardcoded.project_id.project_1,
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
 			nodeId,
 			yjsSequence: 2,
 			markdownContent: "# Fresh heading\n\nFresh paragraph",
@@ -77,8 +74,8 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 			.query("files_markdown_chunks")
 			.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
 				q
-					.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
-					.eq("projectId", test_mocks_hardcoded.project_id.project_1)
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
 					.eq("sourceKind", "committed")
 					.eq("fileNodeId", nodeId),
 			)
@@ -87,8 +84,8 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 			.query("files_plain_text_chunks")
 			.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
 				q
-					.eq("workspaceId", test_mocks_hardcoded.workspace_id.workspace_1)
-					.eq("projectId", test_mocks_hardcoded.project_id.project_1)
+					.eq("workspaceId", db.workspaceId)
+					.eq("projectId", db.projectId)
 					.eq("sourceKind", "committed")
 					.eq("fileNodeId", nodeId),
 			)

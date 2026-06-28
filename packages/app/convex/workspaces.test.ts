@@ -154,8 +154,8 @@ async function workspaces_test_seed_project_scoped_rows(
 	ctx: MutationCtx,
 	args: {
 		userId: Id<"users">;
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		tag: string;
 	},
 ) {
@@ -932,7 +932,7 @@ describe("create_project", () => {
 									.eq("workspaceId", wsResult._yay!.workspaceId)
 									.eq("projectId", result._yay!.projectId)
 									.eq("resourceKind", "project")
-									.eq("resourceId", String(result._yay!.projectId))
+									.eq("resourceId", result._yay!.projectId)
 									.eq("principalKind", "role")
 									.eq("role", "member")
 									.eq("permission", "project.update"),
@@ -1981,7 +1981,7 @@ describe("access_control", () => {
 				defaultProjectId: created._yay!.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "workspace",
-				resourceId: String(created._yay!.workspaceId),
+				resourceId: created._yay!.workspaceId,
 				permission: "workspace.members.manage",
 				userId: memberId,
 			});
@@ -1991,7 +1991,7 @@ describe("access_control", () => {
 				defaultProjectId: created._yay!.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "workspace",
-				resourceId: String(created._yay!.workspaceId),
+				resourceId: created._yay!.workspaceId,
 				permission: "workspace.members.manage",
 				userId: adminId,
 			});
@@ -2001,7 +2001,7 @@ describe("access_control", () => {
 				defaultProjectId: created._yay!.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "project",
-				resourceId: String(project._yay!.projectId),
+				resourceId: project._yay!.projectId,
 				permission: "project.members.manage",
 				userId: memberId,
 			});
@@ -2011,7 +2011,7 @@ describe("access_control", () => {
 				defaultProjectId: created._yay!.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "project",
-				resourceId: String(project._yay!.projectId),
+				resourceId: project._yay!.projectId,
 				permission: "project.members.manage",
 				userId: adminId,
 			});
@@ -2021,7 +2021,7 @@ describe("access_control", () => {
 				defaultProjectId: created._yay!.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "project",
-				resourceId: String(project._yay!.projectId),
+				resourceId: project._yay!.projectId,
 				permission: "api.credentials.manage",
 				userId: memberId,
 			});
@@ -2031,7 +2031,7 @@ describe("access_control", () => {
 				defaultProjectId: created._yay!.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "project",
-				resourceId: String(project._yay!.projectId),
+				resourceId: project._yay!.projectId,
 				permission: "api.credentials.manage",
 				userId: adminId,
 			});
@@ -2296,7 +2296,7 @@ describe("access_control", () => {
 					workspaceId: workspace.workspaceId,
 					projectId,
 					resourceKind: "project",
-					resourceId: String(projectId),
+					resourceId: projectId,
 					role: "member",
 					permission: "project.update",
 					now,
@@ -2317,7 +2317,7 @@ describe("access_control", () => {
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "project",
-				resourceId: String(projectAId),
+				resourceId: projectAId,
 				permission: "project.update",
 				userId: scopedUserId,
 			});
@@ -2327,7 +2327,7 @@ describe("access_control", () => {
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "project",
-				resourceId: String(projectBId),
+				resourceId: projectBId,
 				permission: "project.update",
 				userId: scopedUserId,
 			});
@@ -2346,7 +2346,7 @@ describe("access_control", () => {
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "project",
-				resourceId: String(projectBId),
+				resourceId: projectBId,
 				permission: "project.update",
 				userId: scopedUserId,
 			});
@@ -2391,8 +2391,8 @@ describe("access_control", () => {
 			const now = Date.now();
 			const [nodeId, otherNodeId] = await Promise.all([
 				ctx.db.insert("files_nodes", {
-					workspaceId: String(workspace.workspaceId),
-					projectId: String(workspace.defaultProjectId),
+					workspaceId: workspace.workspaceId,
+					projectId: workspace.defaultProjectId,
 					path: "/access-user-grant",
 					treePath: "/access-user-grant",
 					pathDepth: 1,
@@ -2405,8 +2405,8 @@ describe("access_control", () => {
 					updatedAt: now,
 				}),
 				ctx.db.insert("files_nodes", {
-					workspaceId: String(workspace.workspaceId),
-					projectId: String(workspace.defaultProjectId),
+					workspaceId: workspace.workspaceId,
+					projectId: workspace.defaultProjectId,
 					path: "/access-public-other",
 					treePath: "/access-public-other",
 					pathDepth: 1,
@@ -2425,7 +2425,7 @@ describe("access_control", () => {
 					workspaceId: workspace.workspaceId,
 					projectId: workspace.defaultProjectId,
 					resourceKind: "file",
-					resourceId: String(nodeId),
+					resourceId: nodeId,
 					userId: grantedUserId,
 					permission: "asset.write",
 					now,
@@ -2434,7 +2434,7 @@ describe("access_control", () => {
 					workspaceId: workspace.workspaceId,
 					projectId: workspace.defaultProjectId,
 					resourceKind: "file",
-					resourceId: String(nodeId),
+					resourceId: nodeId,
 					permission: "asset.read",
 					now,
 				}),
@@ -2446,7 +2446,7 @@ describe("access_control", () => {
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "file",
-				resourceId: String(nodeId),
+				resourceId: nodeId,
 				permission: "asset.write",
 				userId: grantedUserId,
 			});
@@ -2456,7 +2456,7 @@ describe("access_control", () => {
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "file",
-				resourceId: String(nodeId),
+				resourceId: nodeId,
 				permission: "asset.write",
 				userId: otherUserId,
 			});
@@ -2466,7 +2466,7 @@ describe("access_control", () => {
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "file",
-				resourceId: String(nodeId),
+				resourceId: nodeId,
 				permission: "asset.read",
 				allowPublic: true,
 			});
@@ -2476,7 +2476,7 @@ describe("access_control", () => {
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "file",
-				resourceId: String(nodeId),
+				resourceId: nodeId,
 				permission: "asset.write",
 				allowPublic: true,
 			});
@@ -2486,7 +2486,7 @@ describe("access_control", () => {
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "file",
-				resourceId: String(otherNodeId),
+				resourceId: otherNodeId,
 				permission: "asset.read",
 				allowPublic: true,
 			});
@@ -2496,7 +2496,7 @@ describe("access_control", () => {
 				defaultProjectId: workspace.defaultProjectId,
 				workspaceOwnerUserId: ownerId,
 				resourceKind: "file",
-				resourceId: String(nodeId),
+				resourceId: nodeId,
 				permission: "asset.read",
 			});
 
@@ -3138,8 +3138,8 @@ describe("delete_project", () => {
 			});
 			await workspaces_test_seed_project_scoped_rows(ctx, {
 				userId,
-				workspaceId: String(created._yay!.workspaceId),
-				projectId: String(extraProject._yay!.projectId),
+				workspaceId: created._yay!.workspaceId,
+				projectId: extraProject._yay!.projectId,
 				tag: "delete-project",
 			});
 		});
@@ -3204,28 +3204,28 @@ describe("delete_project", () => {
 				permissionGrants,
 				files: files.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(extraProject._yay!.projectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === extraProject._yay!.projectId,
 				),
 				assets: assets.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(extraProject._yay!.projectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === extraProject._yay!.projectId,
 				),
 				aiThreads: aiThreads.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(extraProject._yay!.projectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === extraProject._yay!.projectId,
 				),
 				aiMessages: aiMessages.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(extraProject._yay!.projectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === extraProject._yay!.projectId,
 				),
 				chatMessages: chatMessages.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(extraProject._yay!.projectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === extraProject._yay!.projectId,
 				),
 				notifications,
 			};
@@ -3361,14 +3361,14 @@ describe("delete_workspace", () => {
 
 			await workspaces_test_seed_project_scoped_rows(ctx, {
 				userId: ownerId,
-				workspaceId: String(created._yay!.workspaceId),
-				projectId: String(created._yay!.defaultProjectId),
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
 				tag: "delete-workspace-home",
 			});
 			await workspaces_test_seed_project_scoped_rows(ctx, {
 				userId: ownerId,
-				workspaceId: String(created._yay!.workspaceId),
-				projectId: String(extraProject._yay!.projectId),
+				workspaceId: created._yay!.workspaceId,
+				projectId: extraProject._yay!.projectId,
 				tag: "delete-workspace-extra",
 			});
 		});
@@ -3445,10 +3445,10 @@ describe("delete_workspace", () => {
 				roleAssignments,
 				permissionGrants,
 				requests: requests.filter((row) => row.workspaceId === created._yay!.workspaceId),
-				files: files.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
-				aiThreads: aiThreads.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
-				aiMessages: aiMessages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
-				chatMessages: chatMessages.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
+				files: files.filter((row) => row.workspaceId === created._yay!.workspaceId),
+				aiThreads: aiThreads.filter((row) => row.workspaceId === created._yay!.workspaceId),
+				aiMessages: aiMessages.filter((row) => row.workspaceId === created._yay!.workspaceId),
+				chatMessages: chatMessages.filter((row) => row.workspaceId === created._yay!.workspaceId),
 				notifications,
 			};
 		});
@@ -3500,7 +3500,7 @@ describe("delete_workspace", () => {
 				defaultProject,
 				secondaryProject,
 				workspaceQuotas,
-				files: files.filter((row) => row.workspaceId === String(created._yay!.workspaceId)),
+				files: files.filter((row) => row.workspaceId === created._yay!.workspaceId),
 			};
 		});
 		expect(after_purge.workspace).toBeNull();
@@ -3612,14 +3612,14 @@ describe("process_project_deletion_request", () => {
 		const purgeRequest = await t.run(async (ctx) => {
 			await workspaces_test_seed_project_scoped_rows(ctx, {
 				userId,
-				workspaceId: String(created._yay!.workspaceId),
-				projectId: String(created._yay!.defaultProjectId),
+				workspaceId: created._yay!.workspaceId,
+				projectId: created._yay!.defaultProjectId,
 				tag: "purge-control",
 			});
 			await workspaces_test_seed_project_scoped_rows(ctx, {
 				userId,
-				workspaceId: String(created._yay!.workspaceId),
-				projectId: String(victimProject._yay!.projectId),
+				workspaceId: created._yay!.workspaceId,
+				projectId: victimProject._yay!.projectId,
 				tag: "purge-victim",
 			});
 
@@ -3658,53 +3658,53 @@ describe("process_project_deletion_request", () => {
 				),
 				controlPages: files.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(created._yay!.defaultProjectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === created._yay!.defaultProjectId,
 				),
 				victimPages: files.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(victimProject._yay!.projectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === victimProject._yay!.projectId,
 				),
 				controlAssets: assets.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(created._yay!.defaultProjectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === created._yay!.defaultProjectId,
 				),
 				victimAssets: assets.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(victimProject._yay!.projectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === victimProject._yay!.projectId,
 				),
 				controlAiThreads: aiThreads.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(created._yay!.defaultProjectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === created._yay!.defaultProjectId,
 				),
 				victimAiThreads: aiThreads.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(victimProject._yay!.projectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === victimProject._yay!.projectId,
 				),
 				controlAiMessages: aiMessages.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(created._yay!.defaultProjectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === created._yay!.defaultProjectId,
 				),
 				victimAiMessages: aiMessages.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(victimProject._yay!.projectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === victimProject._yay!.projectId,
 				),
 				controlChatMessages: chatMessages.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(created._yay!.defaultProjectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === created._yay!.defaultProjectId,
 				),
 				victimChatMessages: chatMessages.filter(
 					(row) =>
-						row.workspaceId === String(created._yay!.workspaceId) &&
-						row.projectId === String(victimProject._yay!.projectId),
+						row.workspaceId === created._yay!.workspaceId &&
+						row.projectId === victimProject._yay!.projectId,
 				),
 			};
 		});

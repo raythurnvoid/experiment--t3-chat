@@ -64,6 +64,17 @@ const TEXTGREP_RECURSIVE_FIXED_STRINGS_GUIDANCE =
 
 const TEXTGREP_USAGE = "Usage: textgrep [-i] [-F] [-v] [-c] [-l] [-R] PATTERN <file|folder>";
 
+type TextgrepParsedArgs = {
+	pattern: string | undefined;
+	ignoreCase: boolean;
+	fixedStrings: boolean;
+	invert: boolean;
+	recursive: boolean;
+	countOnly: boolean;
+	listOnly: boolean;
+	operands: string[];
+};
+
 function parse_args(args: string[]) {
 	let pattern: string | undefined;
 	let ignoreCase = false;
@@ -186,18 +197,18 @@ function parse_args(args: string[]) {
 		return Result({ _nay: { message: TEXTGREP_RECURSIVE_FIXED_STRINGS_GUIDANCE } });
 	}
 
-	return Result({
-		_yay: {
-			pattern,
-			ignoreCase,
-			fixedStrings,
-			invert,
-			recursive,
-			countOnly,
-			listOnly,
-			operands,
-		} as const,
-	});
+	const parsed: TextgrepParsedArgs = {
+		pattern,
+		ignoreCase,
+		fixedStrings,
+		invert,
+		recursive,
+		countOnly,
+		listOnly,
+		operands,
+	};
+
+	return Result({ _yay: parsed });
 }
 
 function guidance() {

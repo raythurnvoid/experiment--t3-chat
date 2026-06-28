@@ -20,10 +20,26 @@ import { CommentsExtension } from "@liveblocks/react-tiptap";
 import { generateJSON as tiptap_generateJSON_server } from "@tiptap/html/server";
 import { generateJSON as tiptap_generateJSON_browser } from "@tiptap/html";
 import { Result } from "./errors-as-values-utils.ts";
-import type { app_convex_Doc } from "./app-convex.ts";
+import type { app_convex_Doc, app_convex_Id } from "./app-convex.ts";
 import type { Merge } from "type-fest";
 
 export const files_ROOT_ID = "root" as const;
+
+/**
+ * Virtual mount root under which read-only mounts (e.g. the GitHub mirror) are materialized in a
+ * tenant's file tree. The constant is the shared single source of truth for the mount path prefix.
+ */
+export const files_MOUNT_ROOT = "/.mounts";
+
+export type files_VisibleTreeNode = Omit<
+	app_convex_Doc<"files_nodes">,
+	"workspaceId" | "projectId" | "createdBy" | "updatedBy"
+> & {
+	workspaceId: app_convex_Id<"workspaces">;
+	projectId: app_convex_Id<"workspaces_projects">;
+	createdBy: app_convex_Id<"users">;
+	updatedBy: app_convex_Id<"users">;
+};
 
 export const files_SYNTHETIC_ROOT_FOLDER = {
 	_id: files_ROOT_ID,
@@ -47,7 +63,7 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 	createdBy: "",
 	updatedAt: 0,
 } as const satisfies Merge<
-	app_convex_Doc<"files_nodes">,
+	files_VisibleTreeNode,
 	{
 		_id: typeof files_ROOT_ID;
 		workspaceId: "";
@@ -73,7 +89,7 @@ export const files_INITIAL_CONTENT = `\
 
 You can start editing your document here.`;
 
-export type files_ContentType = `text/${"markdown"}${"" | `;charset=${"utf-8"}`}` | "application/octet-stream";
+export type files_ContentType = `text/${"markdown" | "plain"}${"" | `;charset=${"utf-8"}`}` | "application/octet-stream";
 
 export type files_SpecialFileName = "README.md";
 
@@ -92,13 +108,13 @@ export function files_get_utf8_byte_size(content: string) {
  **/
 export const files_MAX_UPLOADS_BYTES = 50 * 1024 * 1024;
 
-export function files_create_tree_items_list_from_nodes(nodes: app_convex_Doc<"files_nodes">[]) {
+export function files_create_tree_items_list_from_nodes(nodes: files_VisibleTreeNode[]) {
 	return [files_SYNTHETIC_ROOT_FOLDER, ...nodes];
 }
 
 export type files_TreeItem = ReturnType<typeof files_create_tree_items_list_from_nodes>[number];
 
-export function files_is_node(item: files_TreeItem): item is app_convex_Doc<"files_nodes"> {
+export function files_is_node(item: files_TreeItem): item is files_VisibleTreeNode {
 	return item._id !== files_ROOT_ID;
 }
 

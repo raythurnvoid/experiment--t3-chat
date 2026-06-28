@@ -44,8 +44,8 @@ async function files_db_delete_pending_update_cleanup_task_if_present(
 export async function files_db_get_yjs_content_and_sequence(
 	ctx: QueryCtx | MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		nodeId: Id<"files_nodes">;
 	},
 ) {
@@ -135,8 +135,8 @@ export async function files_db_get_yjs_content_and_sequence(
 export async function files_db_get_pending_update(
 	ctx: QueryCtx | MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: string;
 		nodeId: Id<"files_nodes">;
 		pendingUpdateId?: Id<"files_pending_updates">;
@@ -228,8 +228,8 @@ export async function files_db_schedule_pending_update_cleanup(
 export async function files_db_reschedule_pending_update_cleanup_for_user(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: string;
 		delayMs?: number;
 	},

@@ -7,6 +7,7 @@ import {
 	files_is_node,
 	files_get_normalized_node_path_segments,
 	type files_TreeItem,
+	type files_VisibleTreeNode,
 } from "../../shared/files.ts";
 import { composite_key } from "../../shared/shared-utils.ts";
 import type { Doc } from "../../convex/_generated/dataModel";
@@ -186,7 +187,7 @@ export function files_get_node_path_validation_message(args: {
 	let currentParentId = args.parentId;
 	for (const [index, normalizedName] of normalizedPath.normalizedPathSegments.entries()) {
 		const isLeaf = index === normalizedPath.normalizedPathSegments.length - 1;
-		const existingNode = args.fileNodesList.find((item): item is app_convex_Doc<"files_nodes"> => {
+		const existingNode = args.fileNodesList.find((item): item is files_VisibleTreeNode => {
 			return (
 				files_is_node(item) &&
 				item._id !== args.nodeIdToIgnore &&

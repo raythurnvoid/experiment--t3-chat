@@ -1,8 +1,10 @@
 import { paginationOptsValidator, type RegisteredQuery } from "convex/server";
 import { v } from "convex/values";
+import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalQuery } from "./_generated/server.js";
+import app_convex_schema from "./schema.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import {
 	files_metadata_extract_frontmatter,
@@ -37,7 +39,11 @@ function value_doc_payload(value: files_metadata_Value) {
 
 export async function files_metadata_db_delete_committed(
 	ctx: MutationCtx,
-	args: { workspaceId: string; projectId: string; nodeId: Id<"files_nodes"> },
+	args: {
+		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
+		projectId: Doc<"files_metadata_docs">["projectId"];
+		nodeId: Id<"files_nodes">;
+	},
 ) {
 	const docs = await ctx.db
 		.query("files_metadata_docs")
@@ -66,8 +72,8 @@ export async function files_metadata_db_delete_pending(
 export async function files_metadata_db_insert_committed(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
+		projectId: Doc<"files_metadata_docs">["projectId"];
 		nodeId: Id<"files_nodes">;
 		yjsSequence: number;
 		markdownContent: string;
@@ -123,8 +129,8 @@ export async function files_metadata_db_insert_committed(
 export async function files_metadata_db_replace_pending(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: string;
 		nodeId: Id<"files_nodes">;
 		pendingUpdateId: Id<"files_pending_updates">;
@@ -178,8 +184,8 @@ export async function files_metadata_db_replace_pending(
 export async function files_metadata_db_patch_file_scope(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
+		projectId: Doc<"files_metadata_docs">["projectId"];
 		nodeId: Id<"files_nodes">;
 		path?: string;
 		treePath?: string;
@@ -219,7 +225,11 @@ function metadata_kind_from_qualified_field(qualifiedField: string) {
 
 async function db_list_pending_file_node_ids(
 	ctx: QueryCtx,
-	args: { workspaceId: string; projectId: string; userId: Id<"users"> },
+	args: {
+		workspaceId: Doc<"files_pending_updates">["workspaceId"];
+		projectId: Doc<"files_pending_updates">["projectId"];
+		userId: Id<"users">;
+	},
 ) {
 	const pendingUpdates = await ctx.db
 		.query("files_pending_updates")
@@ -282,8 +292,8 @@ function format_search_result(doc: Doc<"files_metadata_docs">) {
 function search_query(
 	ctx: QueryCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
+		projectId: Doc<"files_metadata_docs">["projectId"];
 		plan: files_metadata_SearchPlan;
 		treePathPrefix?: string;
 		userId: Id<"users">;
@@ -496,8 +506,9 @@ function search_query(
 
 export const search = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		// Scope accepts the reserved `/.mounts` literals so the mount-backed WorkspaceFs can search mount metadata.
+		workspaceId: doc(app_convex_schema, "files_metadata_docs").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_metadata_docs").fields.projectId,
 		userId: v.id("users"),
 		plan: v.union(
 			v.object({ op: v.literal("exists"), qualifiedField: v.string() }),
@@ -600,8 +611,9 @@ function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
 
 export const get_by_path = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		// Scope accepts the reserved `/.mounts` literals so the mount-backed WorkspaceFs can read mount metadata.
+		workspaceId: doc(app_convex_schema, "files_metadata_docs").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_metadata_docs").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 	},

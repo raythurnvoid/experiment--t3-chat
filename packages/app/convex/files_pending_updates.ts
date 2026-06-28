@@ -58,8 +58,8 @@ function files_pending_update_reconstruct_branch_docs(pendingUpdate: app_convex_
 async function files_pending_update_action_get_latest_file_yjs_state(
 	ctx: ActionCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 	},
 ) {
@@ -107,8 +107,8 @@ async function files_pending_update_action_get_latest_file_yjs_state(
 async function files_pending_update_upsert_last_sequence_saved(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: string;
 		nodeId: app_convex_Doc<"files_pending_updates_last_sequence_saved">["fileNodeId"];
 		lastSequenceSaved: number;
@@ -146,8 +146,8 @@ async function files_pending_update_upsert_last_sequence_saved(
 
 export const get_by_file_node = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		userId: v.id("users"),
 		fileNodeId: v.id("files_nodes"),
 	},
@@ -199,8 +199,8 @@ async function files_pending_update_db_delete_chunks(
 async function files_pending_update_db_replace_chunks(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: string;
 		nodeId: Id<"files_nodes">;
 		pendingUpdateId: Id<"files_pending_updates">;
@@ -383,8 +383,8 @@ function files_pending_update_branch_docs_match_existing_doc(args: {
 async function files_pending_update_resolve_branch_docs(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: string;
 		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"];
@@ -439,8 +439,8 @@ async function files_pending_update_resolve_branch_docs(
 async function files_pending_update_upsert_branch_docs(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: string;
 		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		existingPendingUpdate: app_convex_Doc<"files_pending_updates"> | null;
@@ -573,8 +573,8 @@ async function files_pending_update_upsert_branch_docs(
 async function files_pending_update_upsert_updates(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: string;
 		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"];
@@ -693,8 +693,8 @@ export const remove_file_pending_update_if_expired = internalMutation({
 
 export const upsert_file_pending_update_in_db = internalMutation({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -719,8 +719,8 @@ export type upsert_file_pending_update_in_db_Result =
 async function action_upsert_file_pending_update_in_db(
 	ctx: ActionCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: Id<"users">;
 		nodeId: Id<"files_nodes">;
 		pendingUpdateId?: Id<"files_pending_updates"> | undefined;
@@ -796,8 +796,8 @@ export const upsert_file_pending_update = action({
 
 export const upsert_file_pending_update_internal_action = internalAction({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -1134,8 +1134,8 @@ export const get_file_pending_update = query({
 
 export const get_file_pending_update_internal = internalQuery({
 	args: {
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),

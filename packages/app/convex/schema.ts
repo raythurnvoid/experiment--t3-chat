@@ -2,6 +2,8 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { vWorkId } from "@convex-dev/workpool";
 import type { ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
+import { workspaces_GLOBAL_WORKSPACE_ID, workspaces_GLOBAL_GITHUB_PROJECT_ID } from "../shared/workspaces.ts";
+import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
 const app_convex_schema = defineSchema({
 	// #region ai
@@ -163,8 +165,8 @@ const app_convex_schema = defineSchema({
 
 	// #region files
 	files_pending_updates: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		userId: v.string(),
 		fileNodeId: v.id("files_nodes"),
 		baseYjsSequence: v.number(),
@@ -178,8 +180,8 @@ const app_convex_schema = defineSchema({
 		.index("by_user_fileNode", ["userId", "fileNodeId"]),
 
 	files_pending_updates_last_sequence_saved: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		userId: v.string(),
 		fileNodeId: v.id("files_nodes"),
 		lastSequenceSaved: v.number(),
@@ -210,8 +212,8 @@ const app_convex_schema = defineSchema({
 	 * and hides stale committed docs for files the acting user is editing.
 	 */
 	files_metadata_docs: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.union(v.id("workspaces"), v.literal(workspaces_GLOBAL_WORKSPACE_ID)),
+		projectId: v.union(v.id("workspaces_projects"), v.literal(workspaces_GLOBAL_GITHUB_PROJECT_ID)),
 		fileNodeId: v.id("files_nodes"),
 		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
 		userId: v.optional(v.string()),
@@ -277,9 +279,9 @@ const app_convex_schema = defineSchema({
 
 	files_nodes: defineTable({
 		/** Workspace ID extracted from roomId */
-		workspaceId: v.string(),
+		workspaceId: v.union(v.id("workspaces"), v.literal(workspaces_GLOBAL_WORKSPACE_ID)),
 		/** Project ID extracted from roomId */
-		projectId: v.string(),
+		projectId: v.union(v.id("workspaces_projects"), v.literal(workspaces_GLOBAL_GITHUB_PROJECT_ID)),
 		/** Materialized absolute path used for path resolution */
 		path: v.string(),
 		/**
@@ -319,9 +321,9 @@ const app_convex_schema = defineSchema({
 		/** "root" for root items, otherwise parent folder `_id` */
 		parentId: v.union(v.id("files_nodes"), v.literal("root")),
 		/** Created by user ID */
-		createdBy: v.id("users"),
+		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		/** Updated by user ID */
-		updatedBy: v.id("users"),
+		updatedBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		/** timestamp in milliseconds when document was last updated */
 		updatedAt: v.number(),
 	})
@@ -388,8 +390,8 @@ const app_convex_schema = defineSchema({
 	 * the content asset (`files_r2_assets.size`, per-version). Folders have no row.
 	 */
 	file_stats: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.union(v.id("workspaces"), v.literal(workspaces_GLOBAL_WORKSPACE_ID)),
+		projectId: v.union(v.id("workspaces_projects"), v.literal(workspaces_GLOBAL_GITHUB_PROJECT_ID)),
 		fileNodeId: v.id("files_nodes"),
 		/** Newline count (`wc -l`). -1 means the content cannot be processed (non-markdown/binary). */
 		lineCount: v.number(),
@@ -404,8 +406,8 @@ const app_convex_schema = defineSchema({
 	 * Plain-text search docs point back here when callers need Markdown text, offsets, or line numbers.
 	 */
 	files_markdown_chunks: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.union(v.id("workspaces"), v.literal(workspaces_GLOBAL_WORKSPACE_ID)),
+		projectId: v.union(v.id("workspaces_projects"), v.literal(workspaces_GLOBAL_GITHUB_PROJECT_ID)),
 		fileNodeId: v.id("files_nodes"),
 		/** `committed` docs use `yjsSequence`; `pending` docs use `userId` and `pendingUpdateId`. */
 		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
@@ -433,21 +435,19 @@ const app_convex_schema = defineSchema({
 			"yjsSequence",
 			"chunkIndex",
 		])
-		.index("by_workspace_project_source_fileNode_yjsSeq_lineEnd_chunk", [
+		.index("by_workspace_project_source_fileNode_lineEnd_chunk", [
 			"workspaceId",
 			"projectId",
 			"sourceKind",
 			"fileNodeId",
-			"yjsSequence",
 			"lineEnd",
 			"chunkIndex",
 		])
-		.index("by_workspace_project_source_fileNode_yjsSeq_endIndex_chunk", [
+		.index("by_workspace_project_source_fileNode_endIndex_chunk", [
 			"workspaceId",
 			"projectId",
 			"sourceKind",
 			"fileNodeId",
-			"yjsSequence",
 			"endIndex",
 			"chunkIndex",
 		])
@@ -462,8 +462,8 @@ const app_convex_schema = defineSchema({
 	 * Search result display fields are duplicated here so full-text hits do not hydrate linked docs.
 	 */
 	files_plain_text_chunks: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.union(v.id("workspaces"), v.literal(workspaces_GLOBAL_WORKSPACE_ID)),
+		projectId: v.union(v.id("workspaces_projects"), v.literal(workspaces_GLOBAL_GITHUB_PROJECT_ID)),
 		fileNodeId: v.id("files_nodes"),
 		/** `committed` docs use `yjsSequence`; `pending` docs use `userId` and `pendingUpdateId`. */
 		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
@@ -503,19 +503,11 @@ const app_convex_schema = defineSchema({
 			"chunkIndex",
 		])
 		.index("by_workspace_project_fileNode_chunkIndex", ["workspaceId", "projectId", "fileNodeId", "chunkIndex"])
-		.index("by_workspace_project_source_archive_path_chunkIndex", [
-			"workspaceId",
-			"projectId",
-			"sourceKind",
-			"archiveOperationId",
-			"path",
-			"chunkIndex",
-		])
 		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"]),
 
 	files_yjs_snapshots: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		fileNodeId: v.id("files_nodes"),
 		sequence: v.number(),
 		/** Current R2 asset for the compacted Yjs update. */
@@ -526,8 +518,8 @@ const app_convex_schema = defineSchema({
 	}).index("by_workspace_project_fileNode_sequence", ["workspaceId", "projectId", "fileNodeId", "sequence"]),
 
 	files_yjs_updates: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		fileNodeId: v.id("files_nodes"),
 		sequence: v.number(),
 		update: v.bytes(),
@@ -553,15 +545,15 @@ const app_convex_schema = defineSchema({
 	}).index("by_workspace_project_fileNode_sequence", ["workspaceId", "projectId", "fileNodeId", "sequence"]),
 
 	files_yjs_docs_last_sequences: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		fileNodeId: v.id("files_nodes"),
 		lastSequence: v.number(),
 	}).index("by_workspace_project_fileNode", ["workspaceId", "projectId", "fileNodeId"]),
 
 	files_content_materialization_jobs: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		fileNodeId: v.id("files_nodes"),
 		jobId: vWorkId,
 		targetSequence: v.number(),
@@ -570,8 +562,8 @@ const app_convex_schema = defineSchema({
 		.index("by_workspace_project_fileNode", ["workspaceId", "projectId", "fileNodeId"]),
 
 	files_snapshots: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.id("workspaces"),
+		projectId: v.id("workspaces_projects"),
 		fileNodeId: v.id("files_nodes"),
 		assetId: v.id("files_r2_assets"),
 		createdBy: v.id("users"),
@@ -583,8 +575,8 @@ const app_convex_schema = defineSchema({
 	}).index("by_workspace_project_fileNode_archivedAt", ["workspaceId", "projectId", "fileNodeId", "archivedAt"]),
 
 	files_r2_assets: defineTable({
-		workspaceId: v.string(),
-		projectId: v.string(),
+		workspaceId: v.union(v.id("workspaces"), v.literal(workspaces_GLOBAL_WORKSPACE_ID)),
+		projectId: v.union(v.id("workspaces_projects"), v.literal(workspaces_GLOBAL_GITHUB_PROJECT_ID)),
 		kind: v.union(v.literal("upload"), v.literal("content"), v.literal("yjs_snapshot"), v.literal("content_snapshot")),
 		r2Bucket: v.string(),
 		/**
@@ -595,9 +587,38 @@ const app_convex_schema = defineSchema({
 		size: v.number(),
 		etag: v.optional(v.string()),
 		conversionWorkId: v.optional(v.union(vWorkId, v.null())),
-		createdBy: v.id("users"),
+		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		updatedAt: v.number(),
 	}).index("by_workspace_project", ["workspaceId", "projectId"]),
+
+	/**
+	 * Operational status for read-only external mounts (v1: GitHub repo mirrors). Metadata only — no
+	 * revision/staging pointer. `name` maps to `/.mounts/<name>`. This table's own scope is not a file
+	 * scope, so no reserved-literal union applies.
+	 */
+	github_sources: defineTable({
+		name: v.string(), // mount name → /.mounts/<name>
+		owner: v.string(),
+		repo: v.string(),
+		defaultBranch: v.union(v.string(), v.null()),
+		ref: v.string(), // branch name to sync (v1: branch only)
+		lastCommitSha: v.union(v.string(), v.null()),
+		lastTreeSha: v.union(v.string(), v.null()),
+		lastSyncedAt: v.union(v.number(), v.null()),
+		status: v.union(v.literal("idle"), v.literal("running"), v.literal("error")),
+		startedAt: v.union(v.number(), v.null()),
+		producerFinishedAt: v.union(v.number(), v.null()),
+		finishedAt: v.union(v.number(), v.null()),
+		lastError: v.union(v.string(), v.null()),
+		enqueuedCount: v.optional(v.number()),
+		completedCount: v.optional(v.number()),
+		failedCount: v.optional(v.number()),
+		skippedCount: v.optional(v.number()),
+		compressedBytesRead: v.optional(v.number()),
+		acceptedUncompressedBytes: v.optional(v.number()),
+		lockToken: v.optional(v.string()),
+		lockedAt: v.optional(v.number()),
+	}).index("by_name", ["name"]),
 	// #endregion files
 
 	// #region chat messages

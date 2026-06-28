@@ -809,8 +809,8 @@ class ReadOnlyBaseFs implements IFileSystem {
  */
 async function bash_fs_create(args: {
 	ctx: ActionCtx;
-	workspaceId: string;
-	projectId: string;
+	workspaceId: Id<"workspaces">;
+	projectId: Id<"workspaces_projects">;
 	workspaceName: string;
 	projectName: string;
 	userId: Id<"users">;
@@ -937,8 +937,8 @@ async function bash_fs_create(args: {
 export async function bash_run_command(
 	ctx: ActionCtx,
 	args: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		workspaceName: string;
 		projectName: string;
 		userId: Id<"users">;
@@ -1391,7 +1391,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		async function seed_workspace_folder(
 			ctx: MutationCtx,
-			scope: { workspaceId: string; projectId: string; userId: Id<"users"> },
+			scope: { workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects">; userId: Id<"users"> },
 			path: string,
 			updatedAt: number,
 		) {
@@ -1434,7 +1434,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		async function seed_workspace_node(
 			ctx: MutationCtx,
-			scope: { workspaceId: string; projectId: string; userId: Id<"users"> },
+			scope: { workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects">; userId: Id<"users"> },
 			spec: BashSeedSpec,
 			seedIndex: number,
 		) {
@@ -1573,8 +1573,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				t: unknown;
 				seeded: {
 					userId: Id<"users">;
-					workspaceId: string;
-					projectId: string;
+					workspaceId: Id<"workspaces">;
+					projectId: Id<"workspaces_projects">;
 					membershipId: Id<"workspaces_projects_users">;
 				};
 			};

@@ -173,6 +173,49 @@ export function workspaces_name_autofix_and_validate(raw: string) {
 
 // #endregion names
 
+// #region special ids
+
+/**
+ * Special non-`Id` workspace sentinel for read-only mounts (e.g. the GitHub mirror). NOT a real
+ * `Id<"workspaces">` and has no backing doc; only legal in the file/source-mount content-storage tables,
+ * where the schema accepts it via `v.literal(...)`. This constant is the single source of truth — the
+ * schema literal type and `typeof workspaces_GLOBAL_WORKSPACE_ID` track it, so changing the value propagates.
+ */
+export const workspaces_GLOBAL_WORKSPACE_ID = "GLOBAL";
+
+/**
+ * Special non-`Id` project sentinel for the GitHub read-only mount. NOT a real `Id<"workspaces_projects">`
+ * and has no backing doc; only legal in the file/source-mount content-storage tables, where the schema
+ * accepts it via `v.literal(...)`. The stored value is `"GITHUB"`. This constant is the single source of
+ * truth — the schema literal type and `typeof workspaces_GLOBAL_GITHUB_PROJECT_ID` track it, so changing
+ * the value propagates.
+ */
+export const workspaces_GLOBAL_GITHUB_PROJECT_ID = "GITHUB";
+
+/**
+ * Type guard that narrows a `realId | sentinel` workspace field to its real-id arm in the false branch
+ * (e.g. `Id<"workspaces"> | "GLOBAL"` → `Id<"workspaces">`). Generic so `shared/` stays free of the
+ * Convex `Id<...>` types; the predicate subtracts the sentinel literal from the caller's union.
+ */
+export function workspaces_is_global_workspace_id<T>(
+	workspaceId: T | typeof workspaces_GLOBAL_WORKSPACE_ID,
+): workspaceId is typeof workspaces_GLOBAL_WORKSPACE_ID {
+	return workspaceId === workspaces_GLOBAL_WORKSPACE_ID;
+}
+
+/**
+ * Type guard that narrows a `realId | sentinel` project field to its real-id arm in the false branch
+ * (e.g. `Id<"workspaces_projects"> | "GITHUB"` → `Id<"workspaces_projects">`). Generic so `shared/` stays
+ * free of the Convex `Id<...>` types; the predicate subtracts the sentinel literal from the caller's union.
+ */
+export function workspaces_is_global_github_project_id<T>(
+	projectId: T | typeof workspaces_GLOBAL_GITHUB_PROJECT_ID,
+): projectId is typeof workspaces_GLOBAL_GITHUB_PROJECT_ID {
+	return projectId === workspaces_GLOBAL_GITHUB_PROJECT_ID;
+}
+
+// #endregion special ids
+
 // #region list sort
 
 /**

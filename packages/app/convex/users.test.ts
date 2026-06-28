@@ -207,8 +207,8 @@ async function users_test_seed_page(
 	ctx: MutationCtx,
 	args: {
 		userId: Id<"users">;
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		tag: string;
 	},
 ) {
@@ -2021,8 +2021,8 @@ describe("hard_delete_user_now", () => {
 			Promise.all([
 				users_test_seed_page(ctx, {
 					userId: seeded.userId,
-					workspaceId: String(seeded.defaultWorkspaceId),
-					projectId: String(seeded.defaultProjectId),
+					workspaceId: seeded.defaultWorkspaceId,
+					projectId: seeded.defaultProjectId,
 					tag: "hard-delete-page",
 				}),
 				ctx.db.insert("billing_usage_snapshots", {
@@ -2092,7 +2092,7 @@ describe("hard_delete_user_now", () => {
 					ctx.db
 						.query("files_nodes")
 						.collect()
-						.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
+						.then((rows) => rows.filter((row) => row.workspaceId === seeded.defaultWorkspaceId)),
 					ctx.db
 						.query("billing_usage_snapshots")
 						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
@@ -2286,8 +2286,8 @@ describe("hard_delete_user_now", () => {
 			Promise.all([
 				users_test_seed_page(ctx, {
 					userId: seeded.userId,
-					workspaceId: String(seeded.defaultWorkspaceId),
-					projectId: String(seeded.defaultProjectId),
+					workspaceId: seeded.defaultWorkspaceId,
+					projectId: seeded.defaultProjectId,
 					tag: "hard-delete-purge-page",
 				}),
 				ctx.db.insert("billing_usage_snapshots", {
@@ -2756,8 +2756,8 @@ describe("hard_delete_user_now", () => {
 			await Promise.all([
 				users_test_seed_page(ctx, {
 					userId: seeded.userId,
-					workspaceId: String(seeded.defaultWorkspaceId),
-					projectId: String(seeded.defaultProjectId),
+					workspaceId: seeded.defaultWorkspaceId,
+					projectId: seeded.defaultProjectId,
 					tag: "hard-delete-initialized-page",
 				}),
 				ctx.runMutation(internal.data_deletion.init_user_deletion, {
@@ -2799,7 +2799,7 @@ describe("hard_delete_user_now", () => {
 						ctx.db
 							.query("files_nodes")
 							.collect()
-							.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
+							.then((rows) => rows.filter((row) => row.workspaceId === seeded.defaultWorkspaceId)),
 						ctx.db
 							.query("billing_usage_snapshots")
 							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
@@ -2984,8 +2984,8 @@ describe("hard_delete_user_now", () => {
 			Promise.all([
 				users_test_seed_page(ctx, {
 					userId: seeded.userId,
-					workspaceId: String(seeded.defaultWorkspaceId),
-					projectId: String(seeded.defaultProjectId),
+					workspaceId: seeded.defaultWorkspaceId,
+					projectId: seeded.defaultProjectId,
 					tag: "hard-delete-anonymous-page",
 				}),
 				ctx.db.insert("billing_usage_snapshots", {
@@ -3035,7 +3035,7 @@ describe("hard_delete_user_now", () => {
 						ctx.db
 							.query("files_nodes")
 							.collect()
-							.then((rows) => rows.filter((row) => row.workspaceId === String(seeded.defaultWorkspaceId))),
+							.then((rows) => rows.filter((row) => row.workspaceId === seeded.defaultWorkspaceId)),
 						ctx.db
 							.query("billing_usage_snapshots")
 							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))

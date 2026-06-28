@@ -7,8 +7,8 @@ import { bash_WorkspaceFs } from "./bash-utils.ts";
 
 const currentProjectPath = "/home/cloud-usr/w/personal/home";
 const ctxData = {
-	workspaceId: "workspace_1",
-	projectId: "project_1",
+	workspaceId: "workspace_1" as Id<"workspaces">,
+	projectId: "project_1" as Id<"workspaces_projects">,
 	workspaceName: "personal",
 	projectName: "home",
 	userId: "user_1" as Id<"users">,

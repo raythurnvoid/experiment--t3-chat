@@ -60,13 +60,13 @@ export function test_convex() {
 
 export const test_mocks_hardcoded = ((/* iife */) => {
 	const workspace_id = {
-		workspace_1: "app_workspace_test_1",
-		workspace_2: "app_workspace_test_2",
+		workspace_1: "app_workspace_test_1" as Id<"workspaces">,
+		workspace_2: "app_workspace_test_2" as Id<"workspaces">,
 	} as const;
 
 	const project_id = {
-		project_1: "app_project_test_1",
-		project_2: "app_project_test_2",
+		project_1: "app_project_test_1" as Id<"workspaces_projects">,
+		project_2: "app_project_test_2" as Id<"workspaces_projects">,
 	} as const;
 
 	const membership_id = {

@@ -84,8 +84,8 @@ async function data_deletion_test_seed_page(
 	ctx: MutationCtx,
 	args: {
 		userId: Id<"users">;
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		tag: string;
 	},
 ) {
@@ -129,8 +129,8 @@ async function data_deletion_test_seed_project_content_bulk(
 	ctx: MutationCtx,
 	args: {
 		userId: Id<"users">;
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		count: number;
 		tag: string;
 	},
@@ -199,7 +199,7 @@ async function data_deletion_test_seed_project_content_bulk(
 				sequence: 1,
 				assetId: yjsAssetId,
 				createdBy: args.userId,
-				updatedBy: String(args.userId),
+				updatedBy: args.userId,
 				updatedAt: Date.now(),
 			}),
 			ctx.db.insert("files_yjs_docs_last_sequences", {
@@ -297,7 +297,7 @@ async function data_deletion_test_seed_project_content_bulk(
 			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
-				userId: String(args.userId),
+				userId: args.userId,
 				fileNodeId,
 				baseYjsSequence: 0,
 				baseYjsUpdate: new ArrayBuffer(0),
@@ -310,7 +310,7 @@ async function data_deletion_test_seed_project_content_bulk(
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				sourceKind: "pending",
-				userId: String(args.userId),
+				userId: args.userId,
 				fileNodeId,
 				pendingUpdateId,
 				chunkIndex: 0,
@@ -326,7 +326,7 @@ async function data_deletion_test_seed_project_content_bulk(
 				projectId: args.projectId,
 				fileNodeId,
 				sourceKind: "pending",
-				userId: String(args.userId),
+				userId: args.userId,
 				pendingUpdateId,
 				markdownChunkId: pendingMarkdownChunkId,
 				path: `/${args.tag}-${i}.md`,
@@ -347,7 +347,7 @@ async function data_deletion_test_seed_project_content_bulk(
 					projectId: args.projectId,
 					fileNodeId,
 					sourceKind: "pending",
-					userId: String(args.userId),
+					userId: args.userId,
 					pendingUpdateId,
 					path: `/${args.tag}-${i}.md`,
 					treePath: `/${args.tag}-${i}.md`,
@@ -359,7 +359,7 @@ async function data_deletion_test_seed_project_content_bulk(
 					projectId: args.projectId,
 					fileNodeId,
 					sourceKind: "pending",
-					userId: String(args.userId),
+					userId: args.userId,
 					pendingUpdateId,
 					path: `/${args.tag}-${i}.md`,
 					treePath: `/${args.tag}-${i}.md`,
@@ -386,7 +386,7 @@ async function data_deletion_test_seed_project_content_bulk(
 		await ctx.db.insert("files_pending_updates_last_sequence_saved", {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
-			userId: String(args.userId),
+			userId: args.userId,
 			fileNodeId,
 			lastSequenceSaved: 1,
 			updatedAt: Date.now(),
@@ -449,7 +449,7 @@ async function data_deletion_test_seed_project_content_bulk(
 				threadId: null,
 				parentId: null,
 				isArchived: false,
-				createdBy: String(args.userId),
+				createdBy: args.userId,
 				content: `${args.tag} ${i}`,
 			}),
 			ctx.db.insert("api_credentials", {
@@ -485,7 +485,7 @@ async function data_deletion_test_seed_project_content_bulk(
 
 async function data_deletion_test_count_project_content(
 	ctx: MutationCtx,
-	args: { workspaceId: string; projectId: string },
+	args: { workspaceId: Id<"workspaces">; projectId: string },
 ) {
 	const [
 		files,
@@ -973,14 +973,14 @@ describe("init_user_deletion", () => {
 			await Promise.all([
 				data_deletion_test_seed_page(ctx, {
 					userId: deletedUser.userId,
-					workspaceId: String(deletedUser.defaultWorkspaceId),
-					projectId: String(deletedUser.defaultProjectId),
+					workspaceId: deletedUser.defaultWorkspaceId,
+					projectId: deletedUser.defaultProjectId,
 					tag: "phase-one-personal-page",
 				}),
 				data_deletion_test_seed_page(ctx, {
 					userId: deletedUser.userId,
-					workspaceId: String(sharedWorkspace.workspaceId),
-					projectId: String(sharedWorkspace.extraProjectId),
+					workspaceId: sharedWorkspace.workspaceId,
+					projectId: sharedWorkspace.extraProjectId,
 					tag: "phase-one-shared-extra-page",
 				}),
 				ctx.db.insert("billing_usage_snapshots", {
@@ -994,8 +994,8 @@ describe("init_user_deletion", () => {
 		});
 
 		const sharedPresenceRoomId = files_create_room_id(
-			String(sharedWorkspace.workspaceId),
-			String(sharedWorkspace.extraProjectId),
+			sharedWorkspace.workspaceId,
+			sharedWorkspace.extraProjectId,
 			"phase-one-shared-presence-page",
 		);
 		await t.run(async (ctx) => {
@@ -1058,11 +1058,11 @@ describe("init_user_deletion", () => {
 				ctx.db
 					.query("files_nodes")
 					.collect()
-					.then((rows) => rows.filter((row) => row.projectId === String(deletedUser.defaultProjectId))),
+					.then((rows) => rows.filter((row) => row.projectId === deletedUser.defaultProjectId)),
 				ctx.db
 					.query("files_nodes")
 					.collect()
-					.then((rows) => rows.filter((row) => row.projectId === String(sharedWorkspace.extraProjectId))),
+					.then((rows) => rows.filter((row) => row.projectId === sharedWorkspace.extraProjectId)),
 				ctx.db
 					.query("billing_usage_snapshots")
 					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
@@ -1323,14 +1323,14 @@ describe("process_user_deletion_request", () => {
 			});
 
 			await ctx.db.insert("files_pending_updates", {
-				workspaceId: String(created._yay.workspaceId),
-				projectId: String(created._yay.defaultProjectId),
-				userId: String(deletedUser.userId),
+				workspaceId: created._yay.workspaceId,
+				projectId: created._yay.defaultProjectId,
+				userId: deletedUser.userId,
 				fileNodeId: (
 					await data_deletion_test_seed_page(ctx, {
 						userId: deletedUser.userId,
-						workspaceId: String(created._yay.workspaceId),
-						projectId: String(created._yay.defaultProjectId),
+						workspaceId: created._yay.workspaceId,
+						projectId: created._yay.defaultProjectId,
 						tag: "shared-page",
 					})
 				).nodeId,
@@ -1343,17 +1343,17 @@ describe("process_user_deletion_request", () => {
 			});
 
 			await ctx.db.insert("files_pending_updates_last_sequence_saved", {
-				workspaceId: String(created._yay.workspaceId),
-				projectId: String(created._yay.defaultProjectId),
-				userId: String(deletedUser.userId),
+				workspaceId: created._yay.workspaceId,
+				projectId: created._yay.defaultProjectId,
+				userId: deletedUser.userId,
 				fileNodeId: await ctx.db
 					.query("files_nodes")
 					.collect()
 					.then((pages) => {
 						const page = pages.find(
 							(page) =>
-								page.workspaceId === String(created._yay.workspaceId) &&
-								page.projectId === String(created._yay.defaultProjectId) &&
+								page.workspaceId === created._yay.workspaceId &&
+								page.projectId === created._yay.defaultProjectId &&
 								page.kind === "file" &&
 								page.name === "shared-page",
 						);
@@ -1374,8 +1374,8 @@ describe("process_user_deletion_request", () => {
 			await Promise.all([
 				data_deletion_test_seed_page(ctx, {
 					userId: deletedUser.userId,
-					workspaceId: String(deletedUser.defaultWorkspaceId),
-					projectId: String(deletedUser.defaultProjectId),
+					workspaceId: deletedUser.defaultWorkspaceId,
+					projectId: deletedUser.defaultProjectId,
 					tag: "personal-page",
 				}),
 				ctx.db.insert("billing_usage_snapshots", {
@@ -1443,11 +1443,11 @@ describe("process_user_deletion_request", () => {
 					.collect(),
 				ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_user_fileNode", (q) => q.eq("userId", String(deletedUser.userId)))
+					.withIndex("by_user_fileNode", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
 				ctx.db
 					.query("files_pending_updates_last_sequence_saved")
-					.withIndex("by_user_fileNode", (q) => q.eq("userId", String(deletedUser.userId)))
+					.withIndex("by_user_fileNode", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
 				ctx.db.query("files_pending_updates_cleanup_tasks").collect(),
 				ctx.db.query("data_deletion_requests").collect(),
@@ -1460,8 +1460,8 @@ describe("process_user_deletion_request", () => {
 					.then((pages) =>
 						pages.filter(
 							(page) =>
-								page.workspaceId === String(sharedWorkspace.workspaceId) &&
-								page.projectId === String(sharedWorkspace.defaultProjectId) &&
+								page.workspaceId === sharedWorkspace.workspaceId &&
+								page.projectId === sharedWorkspace.defaultProjectId &&
 								page.kind === "file" &&
 								page.name === "shared-page",
 						),
@@ -1469,7 +1469,7 @@ describe("process_user_deletion_request", () => {
 				ctx.db
 					.query("files_nodes")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === String(deletedUser.defaultWorkspaceId))),
+					.then((rows) => rows.filter((row) => row.workspaceId === deletedUser.defaultWorkspaceId)),
 				ctx.db
 					.query("billing_usage_snapshots")
 					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
@@ -1615,8 +1615,8 @@ describe("process_user_deletion_request", () => {
 		await t.run((ctx) =>
 			data_deletion_test_seed_page(ctx, {
 				userId: deletedUser.userId,
-				workspaceId: String(sharedWorkspace.workspaceId),
-				projectId: String(sharedWorkspace.extraProjectId),
+				workspaceId: sharedWorkspace.workspaceId,
+				projectId: sharedWorkspace.extraProjectId,
 				tag: "shared-orphan-retained-page",
 			}),
 		);
@@ -1649,7 +1649,7 @@ describe("process_user_deletion_request", () => {
 					ctx.db
 						.query("files_nodes")
 						.collect()
-						.then((rows) => rows.filter((row) => row.projectId === String(sharedWorkspace.extraProjectId))),
+						.then((rows) => rows.filter((row) => row.projectId === sharedWorkspace.extraProjectId)),
 					ctx.db
 						.query("workspaces_projects_users")
 						.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser.userId))
@@ -1740,15 +1740,15 @@ describe("process_project_deletion_request", () => {
 
 			const seeded = await data_deletion_test_seed_project_content_bulk(ctx, {
 				userId: user.userId,
-				workspaceId: String(user.defaultWorkspaceId),
-				projectId: String(victimProject._yay.projectId),
+				workspaceId: user.defaultWorkspaceId,
+				projectId: victimProject._yay.projectId,
 				count: 20,
 				tag: "project-batch-victim",
 			});
 			await data_deletion_test_seed_page(ctx, {
 				userId: user.userId,
-				workspaceId: String(user.defaultWorkspaceId),
-				projectId: String(controlProject._yay.projectId),
+				workspaceId: user.defaultWorkspaceId,
+				projectId: controlProject._yay.projectId,
 				tag: "project-batch-control",
 			});
 
@@ -1768,8 +1768,8 @@ describe("process_project_deletion_request", () => {
 
 		const beforeCount = await t.run((ctx) =>
 			data_deletion_test_count_project_content(ctx, {
-				workspaceId: String(user.defaultWorkspaceId),
-				projectId: String(victimProjectId),
+				workspaceId: user.defaultWorkspaceId,
+				projectId: victimProjectId,
 			}),
 		);
 		const firstResult = await t.run((ctx) =>
@@ -1782,12 +1782,12 @@ describe("process_project_deletion_request", () => {
 			const [request, victimCount, controlCount] = await Promise.all([
 				ctx.db.get("data_deletion_requests", requestId),
 				data_deletion_test_count_project_content(ctx, {
-					workspaceId: String(user.defaultWorkspaceId),
-					projectId: String(victimProjectId),
+					workspaceId: user.defaultWorkspaceId,
+					projectId: victimProjectId,
 				}),
 				data_deletion_test_count_project_content(ctx, {
-					workspaceId: String(user.defaultWorkspaceId),
-					projectId: String(controlProjectId),
+					workspaceId: user.defaultWorkspaceId,
+					projectId: controlProjectId,
 				}),
 			]);
 
@@ -1809,12 +1809,12 @@ describe("process_project_deletion_request", () => {
 			const [request, victimCount, controlCount] = await Promise.all([
 				ctx.db.get("data_deletion_requests", requestId),
 				data_deletion_test_count_project_content(ctx, {
-					workspaceId: String(user.defaultWorkspaceId),
-					projectId: String(victimProjectId),
+					workspaceId: user.defaultWorkspaceId,
+					projectId: victimProjectId,
 				}),
 				data_deletion_test_count_project_content(ctx, {
-					workspaceId: String(user.defaultWorkspaceId),
-					projectId: String(controlProjectId),
+					workspaceId: user.defaultWorkspaceId,
+					projectId: controlProjectId,
 				}),
 			]);
 
@@ -1840,8 +1840,8 @@ describe("process_project_deletion_request", () => {
 
 		const { requestId, assetId } = await t.run(async (ctx) => {
 			const assetId = await ctx.db.insert("files_r2_assets", {
-				workspaceId: String(user.defaultWorkspaceId),
-				projectId: String(user.defaultProjectId),
+				workspaceId: user.defaultWorkspaceId,
+				projectId: user.defaultProjectId,
 				kind: "content",
 				r2Bucket: "test-bucket",
 				r2Key: "content/r2-failure",
@@ -1898,8 +1898,8 @@ describe("process_project_deletion_request", () => {
 
 		const { requestId, jobDocId, fileNodeId } = await t.run(async (ctx) => {
 			const fileNodeId = await ctx.db.insert("files_nodes", {
-				workspaceId: String(user.defaultWorkspaceId),
-				projectId: String(user.defaultProjectId),
+				workspaceId: user.defaultWorkspaceId,
+				projectId: user.defaultProjectId,
 				path: "/materialization-job.md",
 				treePath: "/materialization-job.md",
 				pathDepth: 1,
@@ -1912,8 +1912,8 @@ describe("process_project_deletion_request", () => {
 				updatedAt: Date.now(),
 			});
 			const jobDocId = await ctx.db.insert("files_content_materialization_jobs", {
-				workspaceId: String(user.defaultWorkspaceId),
-				projectId: String(user.defaultProjectId),
+				workspaceId: user.defaultWorkspaceId,
+				projectId: user.defaultProjectId,
 				fileNodeId,
 				jobId,
 				targetSequence: 1,
@@ -2023,14 +2023,14 @@ describe("process_workspace_deletion_request", () => {
 		await t.run(async (ctx) => {
 			await data_deletion_test_seed_page(ctx, {
 				userId: user.userId,
-				workspaceId: String(workspace.workspaceId),
-				projectId: String(workspace.defaultProjectId),
+				workspaceId: workspace.workspaceId,
+				projectId: workspace.defaultProjectId,
 				tag: "workspace-request-default-page",
 			});
 			await data_deletion_test_seed_page(ctx, {
 				userId: user.userId,
-				workspaceId: String(workspace.workspaceId),
-				projectId: String(extraProject.projectId),
+				workspaceId: workspace.workspaceId,
+				projectId: extraProject.projectId,
 				tag: "workspace-request-extra-page",
 			});
 		});
@@ -2076,11 +2076,11 @@ describe("process_workspace_deletion_request", () => {
 				ctx.db
 					.query("files_nodes")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === String(workspace.workspaceId))),
+					.then((rows) => rows.filter((row) => row.workspaceId === workspace.workspaceId)),
 				ctx.db
 					.query("files_r2_assets")
 					.withIndex("by_workspace_project", (q) =>
-						q.eq("workspaceId", String(workspace.workspaceId)).eq("projectId", String(workspace.defaultProjectId)),
+						q.eq("workspaceId", workspace.workspaceId).eq("projectId", workspace.defaultProjectId),
 					)
 					.collect(),
 				ctx.db
@@ -2146,15 +2146,15 @@ describe("process_workspace_deletion_request", () => {
 				await Promise.all([
 					data_deletion_test_seed_project_content_bulk(ctx, {
 						userId: user.userId,
-						workspaceId: String(workspace._yay.workspaceId),
-						projectId: String(workspace._yay.defaultProjectId),
+						workspaceId: workspace._yay.workspaceId,
+						projectId: workspace._yay.defaultProjectId,
 						count: 8,
 						tag: "workspace-default-batch",
 					}),
 					data_deletion_test_seed_project_content_bulk(ctx, {
 						userId: user.userId,
-						workspaceId: String(workspace._yay.workspaceId),
-						projectId: String(removedProject._yay.projectId),
+						workspaceId: workspace._yay.workspaceId,
+						projectId: removedProject._yay.projectId,
 						count: 20,
 						tag: "workspace-removed-batch",
 					}),
@@ -2195,12 +2195,12 @@ describe("process_workspace_deletion_request", () => {
 					ctx.db.get("data_deletion_requests", workspaceRequestId),
 					ctx.db.get("data_deletion_requests", projectRequestId),
 					data_deletion_test_count_project_content(ctx, {
-						workspaceId: String(workspaceId),
-						projectId: String(defaultProjectId),
+						workspaceId: workspaceId,
+						projectId: defaultProjectId,
 					}),
 					data_deletion_test_count_project_content(ctx, {
-						workspaceId: String(workspaceId),
-						projectId: String(removedProjectId),
+						workspaceId: workspaceId,
+						projectId: removedProjectId,
 					}),
 					ctx.db
 						.query("quotas")
@@ -2248,8 +2248,8 @@ describe("hard_delete_user_data", () => {
 		const seeded = await t.run(async (ctx) => {
 			await data_deletion_test_seed_page(ctx, {
 				userId: user.userId,
-				workspaceId: String(user.defaultWorkspaceId),
-				projectId: String(user.defaultProjectId),
+				workspaceId: user.defaultWorkspaceId,
+				projectId: user.defaultProjectId,
 				tag: "reset-default-page",
 			});
 
@@ -2265,8 +2265,8 @@ describe("hard_delete_user_data", () => {
 			}
 			await data_deletion_test_seed_page(ctx, {
 				userId: user.userId,
-				workspaceId: String(user.defaultWorkspaceId),
-				projectId: String(extraProject._yay.projectId),
+				workspaceId: user.defaultWorkspaceId,
+				projectId: extraProject._yay.projectId,
 				tag: "reset-personal-extra-page",
 			});
 
@@ -2282,8 +2282,8 @@ describe("hard_delete_user_data", () => {
 			}
 			await data_deletion_test_seed_page(ctx, {
 				userId: user.userId,
-				workspaceId: String(ownedWorkspace._yay.workspaceId),
-				projectId: String(ownedWorkspace._yay.defaultProjectId),
+				workspaceId: ownedWorkspace._yay.workspaceId,
+				projectId: ownedWorkspace._yay.defaultProjectId,
 				tag: "reset-owned-workspace-page",
 			});
 
@@ -2374,7 +2374,7 @@ describe("hard_delete_user_data", () => {
 							.eq("workspaceId", user.defaultWorkspaceId)
 							.eq("projectId", user.defaultProjectId)
 							.eq("resourceKind", "workspace")
-							.eq("resourceId", String(user.defaultWorkspaceId))
+							.eq("resourceId", user.defaultWorkspaceId)
 							.eq("principalKind", "role"),
 					)
 					.collect(),
@@ -2384,7 +2384,7 @@ describe("hard_delete_user_data", () => {
 					.then((rows) =>
 						rows.filter(
 							(row) =>
-								row.workspaceId === String(user.defaultWorkspaceId) && row.projectId === String(user.defaultProjectId),
+								row.workspaceId === user.defaultWorkspaceId && row.projectId === user.defaultProjectId,
 						),
 					),
 				ctx.db.get("workspaces_projects", seeded.extraProjectId),
@@ -2493,15 +2493,15 @@ describe("hard_delete_user_data", () => {
 			await Promise.all([
 				data_deletion_test_seed_project_content_bulk(ctx, {
 					userId: user.userId,
-					workspaceId: String(user.defaultWorkspaceId),
-					projectId: String(user.defaultProjectId),
+					workspaceId: user.defaultWorkspaceId,
+					projectId: user.defaultProjectId,
 					count: 20,
 					tag: "reset-action-default",
 				}),
 				data_deletion_test_seed_project_content_bulk(ctx, {
 					userId: user.userId,
-					workspaceId: String(user.defaultWorkspaceId),
-					projectId: String(extraProject._yay.projectId),
+					workspaceId: user.defaultWorkspaceId,
+					projectId: extraProject._yay.projectId,
 					count: 20,
 					tag: "reset-action-extra",
 				}),
@@ -2562,12 +2562,12 @@ describe("hard_delete_user_data", () => {
 					)
 					.first(),
 				data_deletion_test_count_project_content(ctx, {
-					workspaceId: String(user.defaultWorkspaceId),
-					projectId: String(user.defaultProjectId),
+					workspaceId: user.defaultWorkspaceId,
+					projectId: user.defaultProjectId,
 				}),
 				data_deletion_test_count_project_content(ctx, {
-					workspaceId: String(user.defaultWorkspaceId),
-					projectId: String(extraProjectId),
+					workspaceId: user.defaultWorkspaceId,
+					projectId: extraProjectId,
 				}),
 			]);
 
@@ -2626,8 +2626,8 @@ describe("hard_delete_user_data", () => {
 
 			await data_deletion_test_seed_project_content_bulk(ctx, {
 				userId: user.userId,
-				workspaceId: String(user.defaultWorkspaceId),
-				projectId: String(extraProject._yay.projectId),
+				workspaceId: user.defaultWorkspaceId,
+				projectId: extraProject._yay.projectId,
 				count: 3,
 				tag: "reset-deleted-project",
 			});
@@ -2655,8 +2655,8 @@ describe("hard_delete_user_data", () => {
 			const [request, contentCount, defaultWorkspace, defaultProject] = await Promise.all([
 				ctx.db.get("data_deletion_requests", requestId),
 				data_deletion_test_count_project_content(ctx, {
-					workspaceId: String(user.defaultWorkspaceId),
-					projectId: String(removedProjectId),
+					workspaceId: user.defaultWorkspaceId,
+					projectId: removedProjectId,
 				}),
 				ctx.db.get("workspaces", user.defaultWorkspaceId),
 				ctx.db.get("workspaces_projects", user.defaultProjectId),
@@ -2830,14 +2830,14 @@ describe("hard_delete_user_data", () => {
 			await Promise.all([
 				data_deletion_test_seed_page(ctx, {
 					userId: user.userId,
-					workspaceId: String(workspace._yay.workspaceId),
-					projectId: String(soloProject._yay.projectId),
+					workspaceId: workspace._yay.workspaceId,
+					projectId: soloProject._yay.projectId,
 					tag: "reset-solo-project-page",
 				}),
 				data_deletion_test_seed_page(ctx, {
 					userId: user.userId,
-					workspaceId: String(workspace._yay.workspaceId),
-					projectId: String(sharedProject._yay.projectId),
+					workspaceId: workspace._yay.workspaceId,
+					projectId: sharedProject._yay.projectId,
 					tag: "reset-shared-project-page",
 				}),
 			]);
@@ -2864,7 +2864,7 @@ describe("hard_delete_user_data", () => {
 					ctx.db
 						.query("files_nodes")
 						.collect()
-						.then((rows) => rows.filter((row) => row.projectId === String(shared.sharedProjectId))),
+						.then((rows) => rows.filter((row) => row.projectId === shared.sharedProjectId)),
 					ctx.db
 						.query("quotas")
 						.withIndex("by_workspace_quotaName", (q) =>
@@ -2925,8 +2925,8 @@ describe("finalize_user_deletion_data", () => {
 		await t.run((ctx) =>
 			data_deletion_test_seed_page(ctx, {
 				userId: deletedUser.userId,
-				workspaceId: String(deletedUser.defaultWorkspaceId),
-				projectId: String(deletedUser.defaultProjectId),
+				workspaceId: deletedUser.defaultWorkspaceId,
+				projectId: deletedUser.defaultProjectId,
 				tag: "direct-user-purge-page",
 			}),
 		);
@@ -2937,8 +2937,8 @@ describe("finalize_user_deletion_data", () => {
 
 			await Promise.all([
 				ctx.db.insert("files_r2_assets", {
-					workspaceId: String(deletedUser.defaultWorkspaceId),
-					projectId: String(deletedUser.defaultProjectId),
+					workspaceId: deletedUser.defaultWorkspaceId,
+					projectId: deletedUser.defaultProjectId,
 					kind: "content",
 					r2Bucket: "test-bucket",
 					r2Key: markdownR2Key,
@@ -2947,8 +2947,8 @@ describe("finalize_user_deletion_data", () => {
 					updatedAt: now,
 				}),
 				ctx.db.insert("files_r2_assets", {
-					workspaceId: String(deletedUser.defaultWorkspaceId),
-					projectId: String(deletedUser.defaultProjectId),
+					workspaceId: deletedUser.defaultWorkspaceId,
+					projectId: deletedUser.defaultProjectId,
 					kind: "yjs_snapshot",
 					r2Bucket: "test-bucket",
 					r2Key: yjsR2Key,
@@ -3018,13 +3018,13 @@ describe("finalize_user_deletion_data", () => {
 				ctx.db
 					.query("files_nodes")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === String(deletedUser.defaultWorkspaceId))),
+					.then((rows) => rows.filter((row) => row.workspaceId === deletedUser.defaultWorkspaceId)),
 				ctx.db
 					.query("files_r2_assets")
 					.withIndex("by_workspace_project", (q) =>
 						q
-							.eq("workspaceId", String(deletedUser.defaultWorkspaceId))
-							.eq("projectId", String(deletedUser.defaultProjectId)),
+							.eq("workspaceId", deletedUser.defaultWorkspaceId)
+							.eq("projectId", deletedUser.defaultProjectId),
 					)
 					.collect(),
 				ctx.db.get("data_deletion_requests", requestIds.userRequestId),
@@ -3075,8 +3075,8 @@ describe("finalize_user_deletion_data", () => {
 		await t.run((ctx) =>
 			data_deletion_test_seed_page(ctx, {
 				userId: deletedUser.userId,
-				workspaceId: String(deletedUser.defaultWorkspaceId),
-				projectId: String(deletedUser.defaultProjectId),
+				workspaceId: deletedUser.defaultWorkspaceId,
+				projectId: deletedUser.defaultProjectId,
 				tag: "initialized-user-purge-page",
 			}),
 		);
@@ -3114,7 +3114,7 @@ describe("finalize_user_deletion_data", () => {
 				ctx.db
 					.query("files_nodes")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === String(deletedUser.defaultWorkspaceId))),
+					.then((rows) => rows.filter((row) => row.workspaceId === deletedUser.defaultWorkspaceId)),
 				ctx.db
 					.query("billing_usage_snapshots")
 					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
@@ -3283,8 +3283,8 @@ describe("finalize_user_deletion_data", () => {
 		await t.run((ctx) =>
 			data_deletion_test_seed_page(ctx, {
 				userId: deletedUser.userId,
-				workspaceId: String(sharedWorkspace.workspaceId),
-				projectId: String(sharedWorkspace.extraProjectId),
+				workspaceId: sharedWorkspace.workspaceId,
+				projectId: sharedWorkspace.extraProjectId,
 				tag: "shared-orphan-project-page",
 			}),
 		);
@@ -3307,7 +3307,7 @@ describe("finalize_user_deletion_data", () => {
 					ctx.db
 						.query("files_nodes")
 						.collect()
-						.then((rows) => rows.filter((row) => row.projectId === String(sharedWorkspace.extraProjectId))),
+						.then((rows) => rows.filter((row) => row.projectId === sharedWorkspace.extraProjectId)),
 				]);
 
 			return {
@@ -3413,8 +3413,8 @@ describe("enqueue_deletion_requests_processing", () => {
 		const { requestId, test_now } = await t.run(async (ctx) => {
 			await data_deletion_test_seed_project_content_bulk(ctx, {
 				userId: user.userId,
-				workspaceId: String(user.defaultWorkspaceId),
-				projectId: String(user.defaultProjectId),
+				workspaceId: user.defaultWorkspaceId,
+				projectId: user.defaultProjectId,
 				count: 20,
 				tag: "worker-batch-drain",
 			});
@@ -3444,8 +3444,8 @@ describe("enqueue_deletion_requests_processing", () => {
 			const [request, contentCount] = await Promise.all([
 				ctx.db.get("data_deletion_requests", requestId),
 				data_deletion_test_count_project_content(ctx, {
-					workspaceId: String(user.defaultWorkspaceId),
-					projectId: String(user.defaultProjectId),
+					workspaceId: user.defaultWorkspaceId,
+					projectId: user.defaultProjectId,
 				}),
 			]);
 
@@ -3467,8 +3467,8 @@ describe("enqueue_deletion_requests_processing", () => {
 
 		const { requestId, assetId, test_now } = await t.run(async (ctx) => {
 			const assetId = await ctx.db.insert("files_r2_assets", {
-				workspaceId: String(user.defaultWorkspaceId),
-				projectId: String(user.defaultProjectId),
+				workspaceId: user.defaultWorkspaceId,
+				projectId: user.defaultProjectId,
 				kind: "content",
 				r2Bucket: "test-bucket",
 				r2Key: "content/worker-r2-failure",
@@ -3538,8 +3538,8 @@ describe("enqueue_deletion_requests_processing", () => {
 		await t.run((ctx) =>
 			data_deletion_test_seed_page(ctx, {
 				userId: deletedUser.userId,
-				workspaceId: String(deletedUser.defaultWorkspaceId),
-				projectId: String(deletedUser.defaultProjectId),
+				workspaceId: deletedUser.defaultWorkspaceId,
+				projectId: deletedUser.defaultProjectId,
 				tag: "pipeline-personal-page",
 			}),
 		);
@@ -3591,7 +3591,7 @@ describe("enqueue_deletion_requests_processing", () => {
 				requests,
 				workspace,
 				project,
-				files: files.filter((row) => row.workspaceId === String(deletedUser.defaultWorkspaceId)),
+				files: files.filter((row) => row.workspaceId === deletedUser.defaultWorkspaceId),
 			};
 		});
 
@@ -3746,8 +3746,8 @@ describe("resolve_user after tombstone", () => {
 		await t.run((ctx) =>
 			data_deletion_test_seed_page(ctx, {
 				userId: deletedUser.userId,
-				workspaceId: String(deletedUser.defaultWorkspaceId),
-				projectId: String(deletedUser.defaultProjectId),
+				workspaceId: deletedUser.defaultWorkspaceId,
+				projectId: deletedUser.defaultProjectId,
 				tag: "retained-personal-page",
 			}),
 		);
@@ -3782,7 +3782,7 @@ describe("resolve_user after tombstone", () => {
 				ctx.db
 					.query("files_nodes")
 					.collect()
-					.then((rows) => rows.filter((row) => row.workspaceId === String(deletedUser.defaultWorkspaceId))),
+					.then((rows) => rows.filter((row) => row.workspaceId === deletedUser.defaultWorkspaceId)),
 			]);
 
 			return {

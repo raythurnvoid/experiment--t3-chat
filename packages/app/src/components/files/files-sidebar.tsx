@@ -118,6 +118,7 @@ import {
 	type files_ContentType,
 	type files_EditorView,
 	type files_TreeItem,
+	type files_VisibleTreeNode,
 } from "@/lib/files.ts";
 import { format_relative_time } from "@/lib/date.ts";
 
@@ -2694,7 +2695,7 @@ function get_uploaded_file_rename_validation(args: {
 	let currentParentId = args.parentId;
 	for (const [index, normalizedName] of normalizedPathSegments.entries()) {
 		const isLeaf = index === normalizedPathSegments.length - 1;
-		const existingNode = args.treeItemsList?.find((item): item is app_convex_Doc<"files_nodes"> => {
+		const existingNode = args.treeItemsList?.find((item): item is files_VisibleTreeNode => {
 			return (
 				files_is_node(item) &&
 				item._id !== args.nodeIdToIgnore &&
@@ -2765,7 +2766,7 @@ function get_tree_items_list_after_optimistic_rename(args: {
 	now: number;
 }) {
 	const renamedItem = args.treeItemsList.find(
-		(treeItem): treeItem is app_convex_Doc<"files_nodes"> => files_is_node(treeItem) && treeItem._id === args.itemId,
+		(treeItem): treeItem is files_VisibleTreeNode => files_is_node(treeItem) && treeItem._id === args.itemId,
 	);
 	if (!renamedItem) {
 		return args.treeItemsList;
@@ -3517,7 +3518,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							now: Date.now(),
 						});
 						const renamedItem = nextTreeItemsList.find(
-							(treeItem): treeItem is app_convex_Doc<"files_nodes"> =>
+							(treeItem): treeItem is files_VisibleTreeNode =>
 								files_is_node(treeItem) && treeItem._id === itemId,
 						);
 						if (!renamedItem) {
@@ -4325,7 +4326,7 @@ if (import.meta.vitest) {
 		name: string;
 		path?: string;
 		archiveOperationId?: string;
-	}): app_convex_Doc<"files_nodes"> => {
+	}): files_VisibleTreeNode => {
 		const id = args.id as app_convex_Id<"files_nodes">;
 		const path = args.path ?? `/${args.name}`;
 		const lowercaseExtension =
@@ -4335,8 +4336,8 @@ if (import.meta.vitest) {
 		return {
 			_id: id,
 			_creationTime: 0,
-			workspaceId: "workspace",
-			projectId: "project",
+			workspaceId: "workspace" as app_convex_Id<"workspaces">,
+			projectId: "project" as app_convex_Id<"workspaces_projects">,
 			parentId: args.parentId === files_ROOT_ID ? files_ROOT_ID : (args.parentId as app_convex_Id<"files_nodes">),
 			path,
 			treePath: args.kind === "folder" && path !== "/" ? `${path}/` : path,

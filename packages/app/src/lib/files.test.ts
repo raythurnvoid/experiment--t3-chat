@@ -35,8 +35,8 @@ const createTreeItem = (args: {
 	return {
 		_id: id,
 		_creationTime: 0,
-		workspaceId: "workspace",
-		projectId: "project",
+		workspaceId: "workspace" as Id<"workspaces">,
+		projectId: "project" as Id<"workspaces_projects">,
 		parentId: args.parentId === files_ROOT_ID ? files_ROOT_ID : (args.parentId as Id<"files_nodes">),
 		path,
 		treePath: args.kind === "folder" && path !== "/" ? `${path}/` : path,

@@ -129,8 +129,8 @@ async function seed_file_with_markdown(args: {
 	markdown: string;
 	membership?: {
 		userId: Id<"users">;
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		membershipId: Id<"workspaces_projects_users">;
 	};
 }) {
@@ -286,8 +286,8 @@ async function read_file_yjs_snapshot_update(args: {
 
 async function read_file_markdown_from_yjs(args: {
 	ctx: MutationCtx;
-	workspaceId: string;
-	projectId: string;
+	workspaceId: Id<"workspaces">;
+	projectId: Id<"workspaces_projects">;
 	nodeId: Id<"files_nodes">;
 }) {
 	const { ctx, workspaceId, projectId, nodeId } = args;
@@ -341,8 +341,8 @@ function normalize_pending_update_markdown(markdown: string) {
 
 async function read_file_yjs_state(args: {
 	ctx: MutationCtx;
-	workspaceId: string;
-	projectId: string;
+	workspaceId: Id<"workspaces">;
+	projectId: Id<"workspaces_projects">;
 	nodeId: Id<"files_nodes">;
 }) {
 	const { ctx, workspaceId, projectId, nodeId } = args;
@@ -478,8 +478,8 @@ async function list_pending_update_plain_text_chunks(args: {
 
 async function read_pending_update_last_sequence_saved_doc(args: {
 	ctx: MutationCtx;
-	workspaceId: string;
-	projectId: string;
+	workspaceId: Id<"workspaces">;
+	projectId: Id<"workspaces_projects">;
 	userId: Id<"users">;
 	nodeId: Id<"files_nodes">;
 }) {
@@ -497,8 +497,8 @@ async function read_pending_update_last_sequence_saved_doc(args: {
 
 async function upsert_file_pending_update_internal_for_test(args: {
 	t: ReturnType<typeof test_convex>;
-	workspaceId: string;
-	projectId: string;
+	workspaceId: Id<"workspaces">;
+	projectId: Id<"workspaces_projects">;
 	userId: Id<"users">;
 	nodeId: Id<"files_nodes">;
 	pendingUpdateId?: Id<"files_pending_updates">;
@@ -1165,8 +1165,8 @@ describe("upsert_file_pending_update", () => {
 describe("pending file chunk docs lifecycle", () => {
 	const read_pending_row = async (args: {
 		t: ReturnType<typeof test_convex>;
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		userId: Id<"users">;
 		nodeId: Id<"files_nodes">;
 	}) =>

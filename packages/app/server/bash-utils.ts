@@ -184,8 +184,8 @@ type JustBashFileNodeCacheEntry = {
 export type bash_WorkspaceFsOptions = {
 	ctx: ActionCtx;
 	ctxData: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		workspaceName: string;
 		projectName: string;
 		userId: Id<"users">;
@@ -1536,8 +1536,8 @@ export function bash_enforce_reader_operand_cap(
 export async function bash_get_app_file_byte_size(args: {
 	ctx: ActionCtx;
 	ctxData: {
-		workspaceId: string;
-		projectId: string;
+		workspaceId: Id<"workspaces">;
+		projectId: Id<"workspaces_projects">;
 		workspaceName: string;
 		projectName: string;
 		userId: Id<"users">;
