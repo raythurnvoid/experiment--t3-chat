@@ -472,7 +472,6 @@ function format_bash_output(args: {
 	return lines.join("\n");
 }
 
-
 // #region native just bash tmp command
 
 function native_just_bash_tmp_command_create(command: CommandName, currentProjectPath: string) {
@@ -3375,6 +3374,83 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(lineNumbers.stderr).toContain("grep -n");
 		});
 
+		test("textgrep parses extended grep flags and rejects unsupported / recursive-fixed-string forms", async () => {
+			const { run, runQuery } = await create_bash_runner({
+				extraFiles: [{ path: "/docs/textgrep.md", content: "# Notice\n\n**critical** alert\n" }],
+			});
+			const filePath = `${test_app_files_mount}/docs/textgrep.md`;
+			const folder = `${test_app_files_mount}/docs`;
+
+			// -e / --regexp supply the pattern explicitly.
+			const dashE = await run(`textgrep -e 'critical' ${filePath}`);
+			expect(dashE.metadata.exitCode).toBe(0);
+			expect(dashE.stdout).toBe("critical alert\n");
+			const longRegexp = await run(`textgrep --regexp='critical' ${filePath}`);
+			expect(longRegexp.metadata.exitCode).toBe(0);
+			expect(longRegexp.stdout).toBe("critical alert\n");
+
+			// Combined short flags: -iF (ignore-case + fixed string), -cl (count + list → list wins).
+			const combinedIF = await run(`textgrep -iF 'CRITICAL' ${filePath}`);
+			expect(combinedIF.metadata.exitCode).toBe(0);
+			expect(combinedIF.stdout).toBe("critical alert\n");
+			const combinedCL = await run(`textgrep -cl 'critical' ${filePath}`);
+			expect(combinedCL.metadata.exitCode).toBe(0);
+			expect(combinedCL.stdout).toBe(`${filePath}\n`);
+
+			// Long aliases mirror their short forms.
+			const longFixed = await run(`textgrep --fixed-strings 'critical.alert' ${filePath}`);
+			expect(longFixed.metadata.exitCode).toBe(1);
+			expect(longFixed.stdout).toBe("");
+			const longInvert = await run(`textgrep --invert-match 'critical' ${filePath}`);
+			expect(longInvert.metadata.exitCode).toBe(0);
+			expect(longInvert.stdout).not.toContain("critical alert");
+			const longCount = await run(`textgrep --count 'critical' ${filePath}`);
+			expect(longCount.metadata.exitCode).toBe(0);
+			expect(longCount.stdout).toBe("1\n");
+			const longList = await run(`textgrep --files-with-matches 'critical' ${filePath}`);
+			expect(longList.metadata.exitCode).toBe(0);
+			expect(longList.stdout).toBe(`${filePath}\n`);
+
+			// Context flags are rejected with a pointer to grep.
+			for (const contextFlag of ["-A 1", "-B 1", "-C 1", "--context=2"]) {
+				const contextRes = await run(`textgrep ${contextFlag} 'critical' ${filePath}`);
+				expect(contextRes.metadata.exitCode).toBe(2);
+				expect(contextRes.stderr).toContain("context windows");
+			}
+
+			// Markdown scan-window flags are rejected.
+			const startLine = await run(`textgrep --start-line 2 'critical' ${filePath}`);
+			expect(startLine.metadata.exitCode).toBe(2);
+			expect(startLine.stderr).toContain("scan-window");
+			const startIndex = await run(`textgrep --start-index 0 'critical' ${filePath}`);
+			expect(startIndex.metadata.exitCode).toBe(2);
+			expect(startIndex.stderr).toContain("scan-window");
+
+			// Removed folder-regex flags now surface as unsupported options.
+			for (const removedFlag of ["--path", "--limit", "--cursor"]) {
+				const removed = await run(`textgrep ${removedFlag} 'critical' ${filePath}`);
+				expect(removed.metadata.exitCode).toBe(2);
+				expect(removed.stderr).toContain(`unsupported option ${removedFlag}`);
+			}
+
+			// Recursive -c / -l / -v fall to single-file guidance, never indexed search.
+			for (const recursiveFlag of ["-c", "-l", "-v"]) {
+				const recursive = await run(`textgrep -R ${recursiveFlag} 'critical' ${folder}`);
+				expect(recursive.metadata.exitCode).toBe(2);
+				expect(recursive.stdout).toContain("textgrep regex runs over ONE app file");
+			}
+
+			// Recursive -F is rejected: indexed scans cannot do exact fixed-string matching.
+			const recursiveFixed = await run(`textgrep -R -F 'critical' ${folder}`);
+			expect(recursiveFixed.metadata.exitCode).toBe(2);
+			expect(recursiveFixed.stderr).toContain("does not support exact fixed-string");
+
+			// None of the rejected/guidance forms above reached indexed full-text search.
+			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:text_search_files")).toBe(
+				false,
+			);
+		});
+
 		test("meta searches indexed frontmatter and inspects one file", async () => {
 			const { run, runQuery } = await create_bash_runner({
 				extraFiles: [
@@ -3504,6 +3580,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(runQuery).toHaveBeenCalledWith(
 				expect.anything(),
 				expect.objectContaining({ query: "unique-token", pathPrefix: "/docs" }),
+			);
+		});
+
+		test("rejects grep -R -F over an app folder instead of routing to indexed search", async () => {
+			const { run, runQuery } = await create_bash_runner();
+
+			const result = await run(`grep -R -F unique-token ${test_app_files_mount}/docs`);
+
+			expect(result.metadata.exitCode).toBe(2);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toContain("does not support exact fixed-string");
+			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:text_search_files")).toBe(
+				false,
 			);
 		});
 
@@ -3687,7 +3776,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(lineWindow.metadata.exitCode).toBe(0);
 			expect(lineWindow.stdout).toBe("more unique-token below\n");
 
-			const capped = await run(`grep --start-line 1 --max-lines 1 late-window-token ${test_app_files_mount}${latePath}`);
+			const capped = await run(
+				`grep --start-line 1 --max-lines 1 late-window-token ${test_app_files_mount}${latePath}`,
+			);
 			expect(capped.metadata.exitCode).toBe(1);
 			expect(capped.stdout).toBe("");
 			expect(capped.stderr).toContain("line scan cap reached");
@@ -3695,7 +3786,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				`Next scan: grep --start-line 2 --max-lines 1 late-window-token ${test_app_files_mount}${latePath}`,
 			);
 
-			const continued = await run(`grep --start-line 2 --max-lines 1 late-window-token ${test_app_files_mount}${latePath}`);
+			const continued = await run(
+				`grep --start-line 2 --max-lines 1 late-window-token ${test_app_files_mount}${latePath}`,
+			);
 			expect(continued.metadata.exitCode).toBe(0);
 			expect(continued.stdout).toBe("late-window-token\n");
 

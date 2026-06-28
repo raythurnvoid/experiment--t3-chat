@@ -3791,11 +3791,52 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 		...grepArgs,
 		pattern: String.raw`critical\s+alert`,
 		ignoreCase: false,
+		fixedStrings: false,
+		invert: false,
 	});
 	expect(committedPlainRegex).not.toBeNull();
 	if (!committedPlainRegex) throw new Error("expected committed plain-text regex grep");
 	expect(committedPlainRegex.lines).toEqual([{ lineNumber: 2, line: "critical alert", matched: true }]);
 	expect(committedPlainRegex.scanTruncated).toBe(false);
+
+	const committedPlainLiteral = await asUser.query(internal.files_nodes.match_plain_text_file_lines, {
+		...grepArgs,
+		pattern: "critical alert",
+		ignoreCase: false,
+		fixedStrings: true,
+		invert: false,
+	});
+	expect(committedPlainLiteral).not.toBeNull();
+	if (!committedPlainLiteral) throw new Error("expected committed plain-text literal grep");
+	expect(committedPlainLiteral.lines).toEqual([{ lineNumber: 2, line: "critical alert", matched: true }]);
+	expect(committedPlainLiteral.selectedCount).toBe(1);
+
+	const committedPlainLiteralMeta = await asUser.query(internal.files_nodes.match_plain_text_file_lines, {
+		...grepArgs,
+		pattern: "critical.alert",
+		ignoreCase: false,
+		fixedStrings: true,
+		invert: false,
+	});
+	expect(committedPlainLiteralMeta).not.toBeNull();
+	if (!committedPlainLiteralMeta) throw new Error("expected committed plain-text literal-meta grep");
+	// `-F` treats `.` literally, so "critical.alert" does not match "critical alert".
+	expect(committedPlainLiteralMeta.lines).toEqual([]);
+	expect(committedPlainLiteralMeta.selectedCount).toBe(0);
+
+	const committedPlainInvert = await asUser.query(internal.files_nodes.match_plain_text_file_lines, {
+		...grepArgs,
+		pattern: String.raw`critical\s+alert`,
+		ignoreCase: false,
+		fixedStrings: false,
+		invert: true,
+	});
+	expect(committedPlainInvert).not.toBeNull();
+	if (!committedPlainInvert) throw new Error("expected committed plain-text inverted grep");
+	// `-v` keeps every non-matching line, so the one matching line is excluded.
+	expect(committedPlainInvert.lines.some((line) => line.line === "critical alert")).toBe(false);
+	expect(committedPlainInvert.lines.length).toBeGreaterThan(0);
+	expect(committedPlainInvert.selectedCount).toBe(committedPlainInvert.lines.length);
 
 	const committedScan = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
 		...grepArgs,
@@ -3931,6 +3972,8 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 		...grepArgs,
 		pattern: String.raw`pending\s+alert`,
 		ignoreCase: false,
+		fixedStrings: false,
+		invert: false,
 	});
 	expect(pendingPlainRegex).not.toBeNull();
 	if (!pendingPlainRegex) throw new Error("expected pending plain-text regex grep");
@@ -3980,214 +4023,6 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 		after: 0,
 	});
 	expect(brokenGrep).toBeNull();
-});
-
-test("regex_search_plain_text_files scans committed and pending plain-text chunks", async () => {
-	const t = test_convex();
-	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
-	const asUser = t.withIdentity({
-		issuer: "https://clerk.test",
-		external_id: db.userId,
-		name: "Regex Search User",
-		email: "regex-search-user@example.com",
-	});
-	test_setup_r2_capture();
-
-	const committedNodeId = await test_materialize_markdown_file(
-		t,
-		asUser,
-		db,
-		"/regex-search/committed.md",
-		"# Committed\n\n**critical** alert\n",
-	);
-	const otherNodeId = await test_materialize_markdown_file(
-		t,
-		asUser,
-		db,
-		"/regex-search/other.md",
-		"# Other\n\nno matching text\n",
-	);
-
-	const committed = await asUser.query(internal.files_nodes.regex_search_plain_text_files, {
-		workspaceId: db.workspaceId,
-		projectId: db.projectId,
-		userId: db.userId,
-		query: String.raw`critical\s+alert`,
-		ignoreCase: false,
-		pathPrefix: "/regex-search",
-		numItems: 10,
-		cursor: null,
-	});
-	expect(committed.items).toEqual([
-		{
-			path: "/regex-search/committed.md",
-			lineNumber: 3,
-			line: "critical alert",
-			chunkIndex: 0,
-		},
-	]);
-	expect(committed.isDone).toBe(true);
-
-	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
-		workspaceId: db.workspaceId,
-		projectId: db.projectId,
-		userId: db.userId,
-		nodeId: committedNodeId,
-		unstagedMarkdown: "# Pending\n\n**pending** alert\n",
-	});
-	if (pending._nay) throw new Error(pending._nay.message);
-
-	const pendingResult = await asUser.query(internal.files_nodes.regex_search_plain_text_files, {
-		workspaceId: db.workspaceId,
-		projectId: db.projectId,
-		userId: db.userId,
-		query: String.raw`pending\s+alert`,
-		ignoreCase: false,
-		pathPrefix: "/regex-search",
-		numItems: 10,
-		cursor: null,
-	});
-	expect(pendingResult.items).toEqual([
-		{
-			path: "/regex-search/committed.md",
-			lineNumber: 3,
-			line: "pending alert",
-			chunkIndex: 0,
-		},
-	]);
-	expect(pendingResult.isDone).toBe(true);
-
-	await t.run(async (ctx) => {
-		const chunk = await ctx.db
-			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
-				q
-					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
-					.eq("sourceKind", "committed")
-					.eq("fileNodeId", otherNodeId),
-			)
-			.first();
-		if (!chunk) {
-			throw new Error("Expected plain-text chunk");
-		}
-		const markdownChunk = await ctx.db.get("files_markdown_chunks", chunk.markdownChunkId);
-		if (!markdownChunk) {
-			throw new Error("Expected markdown chunk");
-		}
-		await ctx.db.patch("files_markdown_chunks", markdownChunk._id, { chunkIndex: 1 });
-		await ctx.db.patch("files_plain_text_chunks", chunk._id, {
-			chunkIndex: 1,
-			plainTextChunk: "broken chunk critical alert\n",
-		});
-	});
-	const broken = await asUser.query(internal.files_nodes.regex_search_plain_text_files, {
-		workspaceId: db.workspaceId,
-		projectId: db.projectId,
-		userId: db.userId,
-		query: String.raw`broken\s+chunk\s+critical\s+alert`,
-		ignoreCase: false,
-		pathPrefix: "/regex-search",
-		numItems: 10,
-		cursor: null,
-	});
-	expect(broken.items).toEqual([]);
-});
-
-test("regex_search_plain_text_files scans pending chunks beyond the first hundred docs", async () => {
-	const t = test_convex();
-	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
-	const asUser = t.withIdentity({
-		issuer: "https://clerk.test",
-		external_id: db.userId,
-		name: "Regex Search User",
-		email: "regex-search-user@example.com",
-	});
-	test_setup_r2_capture();
-
-	const nodeId = await test_materialize_markdown_file(
-		t,
-		asUser,
-		db,
-		"/regex-search/many-pending.md",
-		"# Committed\n\nold content\n",
-	);
-
-	await t.run(async (ctx) => {
-		const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
-			workspaceId: db.workspaceId,
-			projectId: db.projectId,
-			userId: String(db.userId),
-			fileNodeId: nodeId,
-			baseYjsSequence: 1,
-			baseYjsUpdate: new ArrayBuffer(0),
-			stagedBranchYjsUpdate: new ArrayBuffer(0),
-			unstagedBranchYjsUpdate: new ArrayBuffer(0),
-			size: files_get_utf8_byte_size("late pending alert\n"),
-			updatedAt: Date.now(),
-		});
-		for (let chunkIndex = 0; chunkIndex <= 100; chunkIndex++) {
-			const plainTextChunk = chunkIndex === 100 ? "late pending alert\n" : `quiet pending chunk ${chunkIndex}\n`;
-			const startIndex = chunkIndex * 100;
-			const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
-				workspaceId: db.workspaceId,
-				projectId: db.projectId,
-				fileNodeId: nodeId,
-				sourceKind: "pending",
-				userId: String(db.userId),
-				pendingUpdateId,
-				chunkIndex,
-				markdownChunk: plainTextChunk,
-				startIndex,
-				endIndex: startIndex + plainTextChunk.length,
-				lineStart: chunkIndex + 1,
-				lineEnd: chunkIndex + 1,
-				chunkFlags: 0,
-			});
-			await ctx.db.insert("files_plain_text_chunks", {
-				workspaceId: db.workspaceId,
-				projectId: db.projectId,
-				fileNodeId: nodeId,
-				sourceKind: "pending",
-				userId: String(db.userId),
-				pendingUpdateId,
-				markdownChunkId,
-				path: "/regex-search/many-pending.md",
-				chunkIndex,
-				plainTextChunk,
-				markdownChunk: plainTextChunk,
-				startIndex,
-				endIndex: startIndex + plainTextChunk.length,
-				lineStart: chunkIndex + 1,
-				lineEnd: chunkIndex + 1,
-				chunkFlags: 0,
-				hasChunkAbove: chunkIndex > 0,
-				hasChunkBelow: chunkIndex < 100,
-			});
-		}
-	});
-
-	const result = await asUser.query(internal.files_nodes.regex_search_plain_text_files, {
-		workspaceId: db.workspaceId,
-		projectId: db.projectId,
-		userId: db.userId,
-		query: String.raw`late\s+pending\s+alert`,
-		ignoreCase: false,
-		pathPrefix: "/regex-search",
-		numItems: 10,
-		cursor: null,
-	});
-
-	expect(result.items).toEqual([
-		{
-			path: "/regex-search/many-pending.md",
-			lineNumber: 101,
-			line: "late pending alert",
-			chunkIndex: 100,
-		},
-	]);
 });
 
 test("file_stats stay fresh after an edit: re-materialization patches the same doc in place", async () => {

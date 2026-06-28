@@ -49,6 +49,8 @@ const GREP_NOOP_FLAGS = new Set([
 	"--color=always",
 	"--color=never",
 ]);
+const GREP_RECURSIVE_FIXED_STRINGS_GUIDANCE =
+	"grep -R over app folders uses indexed full-text search and does not support exact fixed-string (-F) matching; use `search --path <folder> <terms>` for indexed search, or `grep -F PATTERN <file>` on one exact file.";
 
 function parse_context_value(raw: string | undefined) {
 	if (raw == null) return null;
@@ -746,6 +748,16 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 						})) as files_nodes_get_by_path_Result);
 
 			if (target.appFileNodePath != null && (target.appFileNodePath === "/" || fileNode?.kind === "folder")) {
+				// `grep -R -F` over an app folder routes to tokenized indexed full-text search, which
+				// cannot honor exact fixed-string matching, so reject it rather than silently approximating.
+				if (parsed._yay.fixedStrings) {
+					return {
+						stdout: "",
+						stderr: `${GREP_RECURSIVE_FIXED_STRINGS_GUIDANCE}\n`,
+						exitCode: COMMAND_EXIT_USAGE,
+					};
+				}
+
 				const recursivePattern = parsed._yay.pattern;
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
 					workspaceId: workspaceFs.ctxData.workspaceId,

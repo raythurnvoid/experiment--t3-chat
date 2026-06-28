@@ -436,12 +436,42 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("grep [-n] [-i] PATTERN <file>"),
+				description: expect.stringContaining("grep [-n] [-i] [-F] PATTERN <file>"),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("textgrep [-i] PATTERN <file>"),
+				description: expect.stringContaining("Normal single-file grep uses regex matching"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("-F/--fixed-strings uses literal substring matching"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file>"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("For rendered plain-text chunk scans"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("regex by default; -F/--fixed-strings uses literal substring matching"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("not exact recursive regex/fixed-string grep"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("Single-file textgrep has no line numbers or context flags"),
 			}),
 		);
 		expect(tool).toEqual(

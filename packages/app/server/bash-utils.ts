@@ -1,3 +1,8 @@
+// Shared Bash utilities used by `bash.ts` and extracted command modules.
+// `bash.ts` owns command registration and the action lifecycle. This file owns
+// path conversion, the Convex app-file mount, pagination cursors, Native Just
+// Bash delegation, and common stderr text.
+
 import {
 	Bash,
 	getCommandNames,
@@ -24,6 +29,8 @@ import type { get_asset_by_id_Result } from "../convex/r2.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, files_node_has_editable_yjs_state } from "../shared/files.ts";
 import { LruCache, math_clamp, path_name_of } from "../shared/shared-utils.ts";
+
+// #region bash constants and path helpers
 
 export const bash_HOME = "/home/cloud-usr";
 export const bash_APP_MOUNT_PATH = `${bash_HOME}/w`;
@@ -154,6 +161,10 @@ export function bash_regex_validation_error(command: string, pattern: string) {
 	}
 }
 
+// #endregion bash constants and path helpers
+
+// #region app file filesystem
+
 /**
  * Keep the Just Bash path cache to the file-node fields the virtual filesystem needs.
  *
@@ -227,6 +238,10 @@ class ReadOnlyFileSystemError extends Error {
 
 /**
  * Mount the app file tree into Just Bash as a mostly read-only filesystem.
+ *
+ * `MountableFs` strips `currentProjectPath` before calls reach this class, so
+ * methods here receive Convex app file node paths like `/docs/readme.md`, not
+ * shell paths like `/home/cloud-usr/w/.../docs/readme.md`.
  */
 export class bash_WorkspaceFs implements IFileSystem {
 	readonly ctx: ActionCtx;
@@ -520,6 +535,8 @@ export class bash_WorkspaceFs implements IFileSystem {
 	async getEntry(path: string) {
 		const normalizedPath = bash_normalize_path(path);
 		const cached = this.entryCache.get(normalizedPath);
+		// Synthetic parent folders make descendant paths navigable. Except for the
+		// synthetic root, only entries with `_id` prove that an app path exists in Convex.
 		if (cached && (normalizedPath === "/" || cached._id != null)) {
 			return cached;
 		}
@@ -547,6 +564,10 @@ export class bash_WorkspaceFs implements IFileSystem {
 		return cacheEntry;
 	}
 }
+
+// #endregion app file filesystem
+
+// #region shared command helpers
 
 /**
  * Extract `cp`/`mv` path operands for app-path routing.
@@ -594,6 +615,12 @@ export function bash_shell_arg_quote(arg: string) {
 	return SHELL_ARG_SAFE_UNQUOTED_REGEX.test(arg) ? arg : `'${arg.replace(SINGLE_QUOTE_REGEX, `'\\''`)}'`;
 }
 
+/**
+ * Build the copied `Next page:` command for search-backed output.
+ *
+ * `search`, recursive `grep`, and `textgrep` all page through the same Convex
+ * text-search cursor, so continuation output always points back to `search`.
+ */
 export function bash_search_command_build_continuation(args: {
 	currentProjectPath: string;
 	path: string | undefined;
@@ -805,6 +832,10 @@ export async function bash_cursor_id_resolve(ctx: ActionCtx, cursor: string) {
 	return Result({ _yay: stored.value });
 }
 
+// #endregion shared command helpers
+
+// #region builtin command delegation
+
 /**
  * Builds argv for delegating part of an app-aware command to the original built-in.
  *
@@ -878,10 +909,10 @@ export function bash_command_build_builtin_delegation_args(
 /**
  * Run one Just Bash built-in command through an isolated Bash instance.
  *
- * Custom app-aware commands in this module intentionally shadow several
- * built-ins. Calling `ctx.exec(...)` from those overrides would resolve back to
- * the override and recurse, so this helper creates a clean nested shell whose
- * command registry contains only the requested built-in command.
+ * Custom app-aware commands registered by the outer shell intentionally shadow
+ * several built-ins. Calling `ctx.exec(...)` from those overrides would resolve
+ * back to the override and recurse, so this helper creates a clean nested shell
+ * whose command registry contains only the requested built-in command.
  *
  * Examples: app-aware `ls`, `find`, `tree`, `cat`, `stat`, `touch`, `rm`,
  * `cp`, `mv`, and `tee` call this after their app-path checks pass.
@@ -893,7 +924,7 @@ export async function bash_delegate_builtin_command(args: {
 	cwd?: string;
 }) {
 	// Custom commands shadow built-ins, so delegate through a clean nested Bash
-	// instance instead of ctx.exec, which would recurse into this override.
+	// instance instead of ctx.exec, which would recurse into the calling override.
 	const env = Object.fromEntries(args.commandCtx.env);
 	const cwd = args.cwd ?? args.commandCtx.cwd;
 	const inner = new Bash({
@@ -913,6 +944,10 @@ export async function bash_delegate_builtin_command(args: {
 		},
 	});
 }
+
+// #endregion builtin command delegation
+
+// #region native just bash tmp command
 
 /**
  * Returns whether a path is in the direct-access surface for Native Just Bash
@@ -1335,6 +1370,9 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 		if (path.startsWith("/")) {
 			return bash_normalize_path(path);
 		}
+		// The nested shell may run from `/tmp`, but relative operands typed from
+		// the app tree should still resolve against the outer command cwd so the
+		// app-file guard rejects them instead of treating them as scratch paths.
 		const basePath = is_native_just_bash_tmp_path(this.commandCwd) ? base : this.commandCwd;
 		return bash_resolve_path(basePath, path);
 	}
@@ -1450,6 +1488,16 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	}
 }
 
+// #endregion native just bash tmp command
+
+// #region reader helpers
+
+/**
+ * Limit app-file reader batches before one command starts many Convex reads.
+ *
+ * Stdin and `/tmp` files do not count. This cap is only for app paths under
+ * `currentProjectPath`.
+ */
 export function bash_enforce_reader_operand_cap(
 	command: string,
 	commandCtx: CommandContext,
@@ -1520,6 +1568,12 @@ export async function bash_get_app_file_byte_size(args: {
 	return asset?.size ?? null;
 }
 
+/**
+ * Build stderr guidance for app files whose body cannot be returned as text.
+ *
+ * The sibling paths are hints for generated Markdown or plain text output.
+ * Callers keep this advisory on stderr so it cannot be piped as file content.
+ */
 export function bash_build_unreadable_file_advisory(
 	currentProjectPath: string,
 	normalizedPath: string,
@@ -1545,3 +1599,5 @@ export function bash_build_unreadable_file_advisory(
 		"",
 	].join("\n");
 }
+
+// #endregion reader helpers

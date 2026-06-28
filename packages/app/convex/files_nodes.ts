@@ -4279,17 +4279,24 @@ async function match_plain_text_chunks_list(
 		fileNodeId: Id<"files_nodes">;
 		pattern: string;
 		ignoreCase: boolean;
+		fixedStrings: boolean;
+		invert: boolean;
 	},
 ) {
-	const regex = ((/* iife */) => {
+	let match: { kind: "substring"; needle: string; ignoreCase: boolean } | { kind: "regex"; regex: RegExp };
+	if (args.fixedStrings) {
+		// `textgrep -F` treats regex metacharacters as normal text.
+		match = {
+			kind: "substring",
+			needle: args.ignoreCase ? args.pattern.toLowerCase() : args.pattern,
+			ignoreCase: args.ignoreCase,
+		};
+	} else {
 		try {
-			return new RegExp(args.pattern, args.ignoreCase ? "iu" : "u");
+			match = { kind: "regex", regex: new RegExp(args.pattern, args.ignoreCase ? "iu" : "u") };
 		} catch {
 			return null;
 		}
-	})();
-	if (regex == null) {
-		return null;
 	}
 
 	const linesByNumber = new Map<number, { lineNumber: number; line: string; matched: boolean }>();
@@ -4345,7 +4352,13 @@ async function match_plain_text_chunks_list(
 		scannedBytes += lineBytes;
 		lastScannedLine = lineNumber;
 
-		if (args.pattern.length === 0 || !regex.test(line)) {
+		const isMatch =
+			args.pattern.length > 0 &&
+			(match.kind === "substring"
+				? (match.ignoreCase ? line.toLowerCase() : line).includes(match.needle)
+				: match.regex.test(line));
+		const selected = args.invert ? !isMatch : isMatch;
+		if (!selected) {
 			return true;
 		}
 
@@ -4643,6 +4656,8 @@ export const match_plain_text_file_lines = internalQuery({
 		fileNodeId: v.id("files_nodes"),
 		pattern: v.string(),
 		ignoreCase: v.boolean(),
+		fixedStrings: v.boolean(),
+		invert: v.boolean(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 	},
 	returns: v.union(
@@ -4719,6 +4734,8 @@ export const match_plain_text_file_lines = internalQuery({
 				fileNodeId: fileNode._id,
 				pattern: args.pattern,
 				ignoreCase: args.ignoreCase,
+				fixedStrings: args.fixedStrings,
+				invert: args.invert,
 			});
 		}
 
@@ -4749,6 +4766,8 @@ export const match_plain_text_file_lines = internalQuery({
 			fileNodeId: fileNode._id,
 			pattern: args.pattern,
 			ignoreCase: args.ignoreCase,
+			fixedStrings: args.fixedStrings,
+			invert: args.invert,
 		});
 	},
 });
@@ -5104,279 +5123,6 @@ const text_search_args = {
 	/** Optional subtree scope: keep only matches whose file path is under this folder prefix. */
 	pathPrefix: v.optional(v.string()),
 };
-
-const files_GREP_LINE_ENDING_REGEX = /\r\n?/g;
-
-function plain_text_regex_lines(args: {
-	plainTextChunk: string;
-	lineStart: number;
-	pattern: string;
-	ignoreCase: boolean;
-}) {
-	let regex: RegExp;
-	try {
-		regex = new RegExp(args.pattern, args.ignoreCase ? "iu" : "u");
-	} catch {
-		return [];
-	}
-
-	const lines = args.plainTextChunk.replace(files_GREP_LINE_ENDING_REGEX, "\n").split("\n");
-	if (args.plainTextChunk.endsWith("\n")) {
-		lines.pop();
-	}
-	return lines.flatMap((line, index) =>
-		regex.test(line)
-			? [
-					{
-						lineNumber: args.lineStart + index,
-						line: files_truncate_long_display_line(line),
-					},
-				]
-			: [],
-	);
-}
-
-/**
- * One regex search page can span the pending-chunk index and the committed-chunk index, so the
- * single cursor string exposed to callers is a JSON composite of both phase positions. The pending
- * phase pages by raw-hit skip count because Convex supports a single paginated query per function
- * and the committed phase owns it.
- */
-const regex_search_cursor_schema = z.object({
-	pendingSkip: z.number().int().nonnegative(),
-	pendingDone: z.boolean(),
-	committed: z.string().nullable(),
-});
-
-export const regex_search_plain_text_files = internalQuery({
-	args: {
-		...text_search_args,
-		ignoreCase: v.boolean(),
-		numItems: v.number(),
-		cursor: paginationOptsValidator.fields.cursor,
-	},
-	returns: v.object({
-		items: v.array(
-			v.object({
-				path: v.string(),
-				lineNumber: v.number(),
-				line: v.string(),
-				chunkIndex: v.number(),
-			}),
-		),
-		continueCursor: v.string(),
-		isDone: v.boolean(),
-	}),
-	handler: async (
-		ctx,
-		args,
-	): Promise<{
-		items: Array<{
-			path: string;
-			lineNumber: number;
-			line: string;
-			chunkIndex: number;
-		}>;
-		continueCursor: string;
-		isDone: boolean;
-	}> => {
-		const pageLimit = args.numItems;
-		const cursorParse =
-			args.cursor === null
-				? null
-				: regex_search_cursor_schema.safeParse(
-						((/* iife */) => {
-							try {
-								return JSON.parse(args.cursor) as unknown;
-							} catch {
-								return null;
-							}
-						})(),
-					);
-		if (cursorParse && !cursorParse.success) {
-			const errorMessage = "regex_search_plain_text_files received an invalid composite cursor";
-			console.error(errorMessage, { cursor: args.cursor });
-			throw should_never_happen(errorMessage);
-		}
-		const cursor = cursorParse ? cursorParse.data : { pendingSkip: 0, pendingDone: false, committed: null };
-
-		const pendingUpdates = await ctx.db
-			.query("files_pending_updates")
-			.withIndex("by_workspace_project_user_fileNode", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", args.userId),
-			)
-			.collect();
-		const pendingNodeIds = new Set<Id<"files_nodes">>();
-		for (const pendingUpdate of pendingUpdates) {
-			pendingNodeIds.add(pendingUpdate.fileNodeId);
-		}
-		const rawPrefix = args.pathPrefix?.trim();
-		const scopePrefix = rawPrefix && rawPrefix !== "/" ? `/${rawPrefix.replace(/^\/+|\/+$/gu, "")}` : null;
-		const lowerBound = scopePrefix === null ? "/" : `${scopePrefix}/`;
-
-		const pendingItems: Array<{
-			path: string;
-			lineNumber: number;
-			line: string;
-			chunkIndex: number;
-		}> = [];
-		if (!cursor.pendingDone) {
-			let pendingChunksToSkip = cursor.pendingSkip;
-			let pageFull = false;
-			cursor.pendingDone = true;
-			for (const pendingUpdate of pendingUpdates) {
-				const fileNode = await ctx.db.get("files_nodes", pendingUpdate.fileNodeId);
-				if (
-					!files_node_has_editable_yjs_state(fileNode) ||
-					fileNode.workspaceId !== args.workspaceId ||
-					fileNode.projectId !== args.projectId ||
-					fileNode.archiveOperationId !== undefined ||
-					(scopePrefix !== null && !fileNode.path.startsWith(lowerBound))
-				) {
-					continue;
-				}
-
-				const chunks = ctx.db
-					.query("files_plain_text_chunks")
-					.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id));
-				for await (const chunk of chunks) {
-					if (pendingChunksToSkip > 0) {
-						pendingChunksToSkip -= 1;
-						continue;
-					}
-					if (pageFull) {
-						cursor.pendingDone = false;
-						break;
-					}
-
-					cursor.pendingSkip += 1;
-					for (const line of plain_text_regex_lines({
-						plainTextChunk: chunk.plainTextChunk,
-						lineStart: chunk.lineStart,
-						pattern: args.query,
-						ignoreCase: args.ignoreCase,
-					})) {
-						if (pendingItems.length >= pageLimit) {
-							break;
-						}
-						pendingItems.push({ path: fileNode.path, chunkIndex: chunk.chunkIndex, ...line });
-					}
-					if (pendingItems.length >= pageLimit) {
-						pageFull = true;
-					}
-				}
-				if (!cursor.pendingDone) {
-					break;
-				}
-			}
-		}
-
-		const remainingItems = pageLimit - pendingItems.length;
-		if (!cursor.pendingDone || remainingItems <= 0) {
-			return {
-				items: pendingItems,
-				continueCursor: JSON.stringify({
-					pendingSkip: cursor.pendingSkip,
-					pendingDone: cursor.pendingDone,
-					committed: cursor.committed,
-				} satisfies typeof cursor),
-				isDone: false,
-			};
-		}
-
-		const result = await ctx.db
-			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_source_archive_path_chunkIndex", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("sourceKind", "committed")
-					.eq("archiveOperationId", undefined)
-					.gte("path", lowerBound)
-					.lt("path", `${lowerBound}\uffff`),
-			)
-			.paginate({ cursor: cursor.committed, numItems: Math.max(remainingItems, 20) });
-
-		const committedItems: Array<{
-			path: string;
-			lineNumber: number;
-			line: string;
-			chunkIndex: number;
-		}> = [];
-		// Committed pages can be short because pending overlays and broken chunk chains are dropped
-		// after native pagination. Callers must use `isDone`, not item count, to finish pagination.
-		for (const plainTextChunk of result.page) {
-			if (pendingNodeIds.has(plainTextChunk.fileNodeId)) {
-				continue;
-			}
-
-			if (plainTextChunk.chunkIndex > 0) {
-				const [firstPlainTextChunk, previousPlainTextChunk] = await Promise.all([
-					ctx.db
-						.query("files_plain_text_chunks")
-						.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
-							q
-								.eq("workspaceId", args.workspaceId)
-								.eq("projectId", args.projectId)
-								.eq("sourceKind", "committed")
-								.eq("fileNodeId", plainTextChunk.fileNodeId)
-								.eq("yjsSequence", plainTextChunk.yjsSequence)
-								.eq("chunkIndex", 0),
-						)
-						.first(),
-					ctx.db
-						.query("files_plain_text_chunks")
-						.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
-							q
-								.eq("workspaceId", args.workspaceId)
-								.eq("projectId", args.projectId)
-								.eq("sourceKind", "committed")
-								.eq("fileNodeId", plainTextChunk.fileNodeId)
-								.eq("yjsSequence", plainTextChunk.yjsSequence)
-								.eq("chunkIndex", plainTextChunk.chunkIndex - 1),
-						)
-						.first(),
-				]);
-				if (!firstPlainTextChunk || !previousPlainTextChunk) {
-					continue;
-				}
-			}
-			for (const line of plain_text_regex_lines({
-				plainTextChunk: plainTextChunk.plainTextChunk,
-				lineStart: plainTextChunk.lineStart,
-				pattern: args.query,
-				ignoreCase: args.ignoreCase,
-			})) {
-				if (committedItems.length >= remainingItems) {
-					break;
-				}
-				committedItems.push({
-					path: plainTextChunk.path,
-					chunkIndex: plainTextChunk.chunkIndex,
-					...line,
-				});
-			}
-			if (committedItems.length >= remainingItems) {
-				break;
-			}
-		}
-
-		return {
-			items: [...pendingItems, ...committedItems],
-			continueCursor: JSON.stringify({
-				pendingSkip: cursor.pendingSkip,
-				pendingDone: cursor.pendingDone,
-				committed: result.continueCursor,
-			} satisfies typeof cursor),
-			isDone: cursor.pendingDone && result.isDone,
-		};
-	},
-});
-
-export type files_nodes_regex_search_plain_text_files_Result =
-	typeof regex_search_plain_text_files extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
 
 export const text_search_files = internalQuery({
 	args: {
@@ -7761,6 +7507,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					fileNodeId: grepTestFileNodeId,
 					pattern: String.raw`critical\s+alert`,
 					ignoreCase: false,
+					fixedStrings: false,
+					invert: false,
 				},
 			);
 

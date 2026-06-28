@@ -4,340 +4,393 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import type {
 	files_nodes_get_by_path_Result,
 	files_nodes_match_plain_text_file_lines_Result,
-	files_nodes_regex_search_plain_text_files_Result,
+	files_nodes_text_search_files_Result,
 } from "../convex/files_nodes.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import {
 	bash_app_file_node_path_to_current_project_path,
-	bash_clamp_listing_page_limit,
 	bash_create_glob_syntax_unsupported_message,
 	bash_current_project_path_to_app_file_node_path,
 	bash_cursor_id_create,
-	bash_cursor_id_resolve,
 	bash_format_multiline_hint,
 	bash_GLOB_METACHARACTER_REGEX,
-	bash_LISTING_DEFAULT_LIMIT,
-	bash_LISTING_MAX_LIMIT,
-	bash_parse_limit,
 	bash_read_option_value,
 	bash_regex_validation_error,
 	bash_resolve_path,
-	bash_shell_arg_quote,
+	bash_search_command_build_continuation,
+	bash_search_command_exact_query_filter,
+	bash_search_command_exact_query_note,
+	bash_search_command_exact_query_summary,
 	type bash_WorkspaceFs,
 } from "./bash-utils.ts";
 
 const COMMAND_EXIT_FAILURE = 1;
 const COMMAND_EXIT_USAGE = 2;
 
-function parse_args(args: string[], options: { currentProjectPath: string; cwd: string }) {
-	let limitValue: string | undefined;
-	let cursor: string | null = null;
-	let pathValue: string | undefined;
+// `-R` folder scans page through the same indexed full-text search `search`/`grep -R` use.
+const TEXTGREP_RECURSIVE_PAGE_LIMIT = 20;
+
+// Short boolean flags bundled into one token, e.g. `-iF`, `-iv`, `-cl`.
+const TEXTGREP_COMBINED_SHORT_FLAGS_REGEX = /^-[a-zA-Z]{2,}$/u;
+// Context windows attached to the flag, e.g. `-A3`, `-B2`, `-C1`.
+const TEXTGREP_ATTACHED_CONTEXT_REGEX = /^-([ABC])(\d+)$/u;
+// Long context window flags with an inline count, e.g. `--context=3`.
+const TEXTGREP_LONG_CONTEXT_REGEX = /^--(after-context|before-context|context)=\d+$/u;
+
+const TEXTGREP_CONTEXT_FLAGS = new Set(["-A", "-B", "-C", "--after-context", "--before-context", "--context"]);
+const TEXTGREP_WINDOW_FLAGS = new Set(["--start-line", "--max-lines", "--start-index", "--max-chars"]);
+
+// Display-only grep flags that are accepted but have no effect on a single rendered plain-text scan.
+const TEXTGREP_NOOP_FLAGS = new Set([
+	"-H",
+	"--with-filename",
+	"-h",
+	"--no-filename",
+	"-s",
+	"-I",
+	"--color",
+	"--color=auto",
+	"--color=always",
+	"--color=never",
+]);
+
+const TEXTGREP_LINE_NUMBER_GUIDANCE =
+	"textgrep prints rendered plain text without line numbers; use `grep -n PATTERN <file>` for canonical Markdown line numbers.";
+const TEXTGREP_CONTEXT_GUIDANCE =
+	"textgrep does not support context windows over derived plain text; use `grep` for canonical file context, or `search` for cross-file snippets.";
+const TEXTGREP_WINDOW_GUIDANCE = "Markdown scan-window controls don't apply to derived plain text; use `grep`.";
+const TEXTGREP_RECURSIVE_FIXED_STRINGS_GUIDANCE =
+	"textgrep -R over app folders uses indexed full-text search and does not support exact fixed-string (-F) matching; use `search --path <folder> <terms>` for indexed search, or `textgrep -F PATTERN <file>` on one exact file.";
+
+const TEXTGREP_USAGE = "Usage: textgrep [-i] [-F] [-v] [-c] [-l] [-R] PATTERN <file|folder>";
+
+function parse_args(args: string[]) {
+	let pattern: string | undefined;
 	let ignoreCase = false;
+	let fixedStrings = false;
+	let invert = false;
+	let recursive = false;
+	let countOnly = false;
+	let listOnly = false;
 	const operands: string[] = [];
 	let optionsEnded = false;
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
 		if (optionsEnded) {
-			operands.push(arg);
+			if (pattern === undefined) {
+				pattern = arg;
+			} else {
+				operands.push(arg);
+			}
 			continue;
 		}
 		if (arg === "--") {
 			optionsEnded = true;
 			continue;
 		}
+		if (arg === "-e" || arg === "--regexp") {
+			const value = bash_read_option_value("textgrep", args, index, arg);
+			if (value._nay) return value;
+			if (pattern !== undefined) {
+				return Result({ _nay: { message: "textgrep: multiple patterns are not supported" } });
+			}
+			pattern = value._yay.value;
+			index++;
+			continue;
+		}
+		if (arg.startsWith("--regexp=")) {
+			if (pattern !== undefined) {
+				return Result({ _nay: { message: "textgrep: multiple patterns are not supported" } });
+			}
+			pattern = arg.slice("--regexp=".length);
+			continue;
+		}
 		if (arg === "-i" || arg === "--ignore-case") {
 			ignoreCase = true;
 			continue;
 		}
-		if (arg === "--limit") {
-			const value = bash_read_option_value("textgrep", args, index, "--limit");
-			if (value._nay) return value;
-			limitValue = value._yay.value;
-			index++;
+		if (arg === "-F" || arg === "--fixed-strings") {
+			fixedStrings = true;
 			continue;
 		}
-		if (arg.startsWith("--limit=")) {
-			limitValue = arg.slice("--limit=".length);
+		if (arg === "-v" || arg === "--invert-match") {
+			invert = true;
 			continue;
 		}
-		if (arg === "--cursor") {
-			const value = bash_read_option_value("textgrep", args, index, "--cursor");
-			if (value._nay) return value;
-			cursor = value._yay.value.trim();
-			index++;
+		if (arg === "-c" || arg === "--count") {
+			countOnly = true;
 			continue;
 		}
-		if (arg.startsWith("--cursor=")) {
-			cursor = arg.slice("--cursor=".length).trim();
+		if (arg === "-l" || arg === "--files-with-matches") {
+			listOnly = true;
 			continue;
 		}
-		if (arg === "--path") {
-			const value = bash_read_option_value("textgrep", args, index, "--path");
-			if (value._nay) return value;
-			pathValue = value._yay.value.trim();
-			index++;
+		if (arg === "-r" || arg === "-R" || arg === "--recursive") {
+			recursive = true;
 			continue;
 		}
-		if (arg.startsWith("--path=")) {
-			pathValue = arg.slice("--path=".length).trim();
+		if (arg === "-n" || arg === "--line-number") {
+			return Result({ _nay: { message: TEXTGREP_LINE_NUMBER_GUIDANCE } });
+		}
+		if (
+			TEXTGREP_CONTEXT_FLAGS.has(arg) ||
+			TEXTGREP_ATTACHED_CONTEXT_REGEX.test(arg) ||
+			TEXTGREP_LONG_CONTEXT_REGEX.test(arg)
+		) {
+			return Result({ _nay: { message: TEXTGREP_CONTEXT_GUIDANCE } });
+		}
+		if (TEXTGREP_WINDOW_FLAGS.has(arg) || [...TEXTGREP_WINDOW_FLAGS].some((flag) => arg.startsWith(`${flag}=`))) {
+			return Result({ _nay: { message: TEXTGREP_WINDOW_GUIDANCE } });
+		}
+		if (TEXTGREP_COMBINED_SHORT_FLAGS_REGEX.test(arg)) {
+			for (const ch of arg.slice(1)) {
+				if (ch === "i") {
+					ignoreCase = true;
+				} else if (ch === "F") {
+					fixedStrings = true;
+				} else if (ch === "v") {
+					invert = true;
+				} else if (ch === "c") {
+					countOnly = true;
+				} else if (ch === "l") {
+					listOnly = true;
+				} else if (ch === "r" || ch === "R") {
+					recursive = true;
+				} else if (ch === "H" || ch === "h" || ch === "s" || ch === "I") {
+					// Display-only flag, no effect on a single rendered plain-text scan.
+				} else if (ch === "n") {
+					return Result({ _nay: { message: TEXTGREP_LINE_NUMBER_GUIDANCE } });
+				} else {
+					return Result({ _nay: { message: `textgrep: unsupported option -${ch}` } });
+				}
+			}
+			continue;
+		}
+		if (TEXTGREP_NOOP_FLAGS.has(arg)) {
 			continue;
 		}
 		if (arg.startsWith("-") && arg !== "-") {
 			return Result({ _nay: { message: `textgrep: unsupported option ${arg}` } });
 		}
-		operands.push(arg);
-	}
-
-	const limit = bash_parse_limit("textgrep", limitValue, bash_LISTING_DEFAULT_LIMIT, bash_LISTING_MAX_LIMIT);
-	if (limit._nay) {
-		return limit;
-	}
-	if (operands.length === 0) {
-		return Result({ _nay: { message: "textgrep: missing regex pattern" } });
-	}
-	if (operands.length > 2) {
-		return Result({ _nay: { message: "textgrep: supports either PATTERN or PATTERN <file>" } });
-	}
-	if (pathValue != null && operands.length === 2) {
-		return Result({ _nay: { message: "textgrep: --path cannot be combined with a file operand" } });
-	}
-	if (pathValue === "") {
-		return Result({ _nay: { message: "textgrep: --path requires a non-empty folder path" } });
-	}
-
-	let path: string | undefined;
-	if (pathValue != null) {
-		const appFileNodePath = bash_current_project_path_to_app_file_node_path(
-			options.currentProjectPath,
-			bash_resolve_path(options.cwd, pathValue),
-		);
-		if (appFileNodePath == null) {
-			return Result({
-				_nay: {
-					message:
-						`textgrep: --path must be a folder under the app file tree: ${pathValue}\n` +
-						`Use a path under ${options.currentProjectPath}.`,
-				},
-			});
+		if (pattern === undefined) {
+			pattern = arg;
+		} else {
+			operands.push(arg);
 		}
-		path = appFileNodePath;
+	}
+
+	// `-R` routes folders through tokenized indexed full-text search, which cannot honor exact
+	// fixed-string (-F) matching, so reject the combination instead of silently approximating it.
+	if (recursive && fixedStrings) {
+		return Result({ _nay: { message: TEXTGREP_RECURSIVE_FIXED_STRINGS_GUIDANCE } });
 	}
 
 	return Result({
 		_yay: {
-			pattern: operands[0],
-			file: operands[1],
+			pattern,
 			ignoreCase,
-			limit: limit._yay,
-			cursor,
-			path,
+			fixedStrings,
+			invert,
+			recursive,
+			countOnly,
+			listOnly,
+			operands,
 		} as const,
 	});
 }
 
-function build_continuation(args: {
-	currentProjectPath: string;
-	path: string | undefined;
-	limit: number;
-	cursor: string;
-	pattern: string;
-	ignoreCase: boolean;
-}) {
-	const continuationParts = ["Next page:", "textgrep"];
-	if (args.ignoreCase) {
-		continuationParts.push("-i");
-	}
-	if (args.path != null) {
-		continuationParts.push(
-			"--path",
-			bash_shell_arg_quote(bash_app_file_node_path_to_current_project_path(args.currentProjectPath, args.path)),
-		);
-	}
-	continuationParts.push(
-		"--limit",
-		String(args.limit),
-		"--cursor",
-		bash_shell_arg_quote(args.cursor),
-		bash_shell_arg_quote(args.pattern),
-	);
-	return continuationParts.join(" ");
+function guidance() {
+	return {
+		stdout:
+			[
+				"textgrep regex runs over ONE app file's rendered plain text: textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file>.",
+				"For recursive or cross-file content, use textgrep -R PATTERN <folder> or search (indexed full-text).",
+				"For canonical Markdown line numbers or -A/-B/-C context, use grep [-n] PATTERN <file>.",
+			].join("\n") + "\n",
+		stderr: "",
+		exitCode: COMMAND_EXIT_USAGE,
+	};
 }
 
 export function bash_textgrep_command_create(ctx: ActionCtx, workspaceFs: bash_WorkspaceFs, currentProjectPath: string) {
 	return defineCommand("textgrep", async (args, commandCtx) => {
-		const parsed = parse_args(args, { currentProjectPath, cwd: commandCtx.cwd });
+		const parsed = parse_args(args);
 		if (parsed._nay) {
 			return {
 				stdout: "",
-				stderr: `${parsed._nay.message}\nUsage: textgrep [-i] [--path <folder>] [--limit N] [--cursor CURSOR] <regex> [file]\n`,
+				stderr: `${parsed._nay.message}\n${TEXTGREP_USAGE}\n`,
 				exitCode: COMMAND_EXIT_USAGE,
 			};
 		}
 
-		const regexError = bash_regex_validation_error("textgrep", parsed._yay.pattern);
-		if (regexError != null) {
-			return {
-				stdout: "",
-				stderr: regexError,
-				exitCode: COMMAND_EXIT_USAGE,
-			};
+		const { pattern, ignoreCase, fixedStrings, invert, recursive, countOnly, listOnly, operands } = parsed._yay;
+
+		if (pattern == null || pattern.length === 0) {
+			return guidance();
 		}
 
-		if (parsed._yay.file != null) {
-			// Single app-file textgrep path:
-			// - reads rendered plain-text chunks for exactly one app file
-			// - treats the pattern as a JavaScript regex
-			// This is the plain-text counterpart to Markdown-backed single-file `grep`.
-			const absoluteShellPath = bash_resolve_path(commandCtx.cwd, parsed._yay.file);
-			const target = {
-				inputPath: parsed._yay.file,
-				absoluteShellPath,
-				appFileNodePath: bash_current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
-			};
-
-			if (target.appFileNodePath == null) {
-				return {
-					stdout: "",
-					stderr: "textgrep: file operand must be an app file path\n",
-					exitCode: COMMAND_EXIT_USAGE,
-				};
-			}
-
-			if (bash_GLOB_METACHARACTER_REGEX.test(target.inputPath)) {
-				return {
-					stdout: "",
-					stderr: bash_create_glob_syntax_unsupported_message("textgrep", target.inputPath),
-					exitCode: COMMAND_EXIT_USAGE,
-				};
-			}
-
-			const fileNode =
-				target.appFileNodePath === "/"
+		// `textgrep -R PATTERN <folder>` → indexed full-text search, mirroring `grep -R`.
+		if (
+			recursive &&
+			!countOnly &&
+			!listOnly &&
+			!invert &&
+			operands.length === 1 &&
+			operands[0] !== "-" &&
+			!bash_GLOB_METACHARACTER_REGEX.test(operands[0])
+		) {
+			const absoluteShellPath = bash_resolve_path(commandCtx.cwd, operands[0]);
+			const appFileNodePath = bash_current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath);
+			const folderNode =
+				appFileNodePath == null || appFileNodePath === "/"
 					? null
 					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
 							workspaceId: workspaceFs.ctxData.workspaceId,
 							projectId: workspaceFs.ctxData.projectId,
-							path: target.appFileNodePath,
+							path: appFileNodePath,
 						})) as files_nodes_get_by_path_Result);
 
-			if (!fileNode || fileNode.kind !== "file") {
-				return {
-					stdout: "",
-					stderr: `textgrep: ${target.inputPath}: No such file or directory\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
-				};
-			}
+			if (appFileNodePath != null && (appFileNodePath === "/" || folderNode?.kind === "folder")) {
+				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+					workspaceId: workspaceFs.ctxData.workspaceId,
+					projectId: workspaceFs.ctxData.projectId,
+					userId: workspaceFs.ctxData.userId,
+					query: pattern,
+					numItems: TEXTGREP_RECURSIVE_PAGE_LIMIT,
+					cursor: null,
+					pathPrefix: appFileNodePath,
+				})) as files_nodes_text_search_files_Result;
 
-			const result = (await ctx.runQuery(internal.files_nodes.match_plain_text_file_lines, {
-				workspaceId: workspaceFs.ctxData.workspaceId,
-				projectId: workspaceFs.ctxData.projectId,
-				userId: workspaceFs.ctxData.userId,
-				fileNodeId: fileNode._id,
-				pattern: parsed._yay.pattern,
-				ignoreCase: parsed._yay.ignoreCase,
-			})) as files_nodes_match_plain_text_file_lines_Result;
+				const scopePath = bash_app_file_node_path_to_current_project_path(currentProjectPath, appFileNodePath);
+				const exactQueryFilter = bash_search_command_exact_query_filter(pattern);
+				const blocks =
+					res.items.length > 0
+						? [
+								"textgrep -R over app folders uses indexed full-text search, not exact recursive regex grep.",
+								`Found ${res.items.length} results under ${scopePath}${bash_search_command_exact_query_summary(
+									exactQueryFilter,
+									res.items.map((item) => item.markdownChunk ?? ""),
+								)}`,
+								"",
+								...res.items.map((item) => {
+									const markdownChunk = item.markdownChunk ?? "";
+									return [
+										`${bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(
+											exactQueryFilter,
+											pattern,
+											markdownChunk,
+										)}`,
+										markdownChunk,
+									].join("\n");
+								}),
+							]
+						: [
+								`No content matches found under ${scopePath}.`,
+								"textgrep -R over app folders uses indexed full-text search, not exact recursive regex grep.",
+							];
 
-			if (!result || result.lines.length === 0) {
-				return { stdout: "", stderr: "", exitCode: COMMAND_EXIT_FAILURE };
-			}
-
-			return {
-				stdout: `${result.lines.map((line) => line.line).join("\n")}\n`,
-				stderr: result.scanTruncated
-					? bash_format_multiline_hint("textgrep", ["scanned only a bounded portion of a large file"])
-					: "",
-				exitCode: 0,
-			};
-		}
-
-		let cursor: string | null = null;
-		if (parsed._yay.cursor != null) {
-			const resolvedCursor = await bash_cursor_id_resolve(ctx, parsed._yay.cursor);
-			if (resolvedCursor._nay) {
-				return {
-					stdout: "",
-					stderr: `${resolvedCursor._nay.message}\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
-				};
-			}
-			cursor = resolvedCursor._yay;
-		}
-
-		if (parsed._yay.path != null && parsed._yay.path !== "/") {
-			const scopedFolder = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-				workspaceId: workspaceFs.ctxData.workspaceId,
-				projectId: workspaceFs.ctxData.projectId,
-				path: parsed._yay.path,
-			})) as files_nodes_get_by_path_Result;
-			const scopedShellPath = bash_app_file_node_path_to_current_project_path(currentProjectPath, parsed._yay.path);
-			if (!scopedFolder) {
-				return {
-					stdout: "",
-					stderr: `textgrep: --path folder does not exist: ${scopedShellPath}\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
-				};
-			}
-			if (scopedFolder.kind !== "folder") {
-				return {
-					stdout: "",
-					stderr: `textgrep: --path must be a folder: ${scopedShellPath}\n`,
-					exitCode: COMMAND_EXIT_USAGE,
-				};
-			}
-		}
-
-		const cwdAppFileNodePath = bash_current_project_path_to_app_file_node_path(currentProjectPath, commandCtx.cwd);
-		const path =
-			parsed._yay.path ?? (cwdAppFileNodePath != null && cwdAppFileNodePath !== "/" ? cwdAppFileNodePath : undefined);
-
-		const res = (await ctx.runQuery(internal.files_nodes.regex_search_plain_text_files, {
-			workspaceId: workspaceFs.ctxData.workspaceId,
-			projectId: workspaceFs.ctxData.projectId,
-			userId: workspaceFs.ctxData.userId,
-			query: parsed._yay.pattern,
-			ignoreCase: parsed._yay.ignoreCase,
-			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
-			cursor,
-			pathPrefix: path,
-		})) as files_nodes_regex_search_plain_text_files_Result;
-
-		const scopeNote =
-			path != null ? ` under ${bash_app_file_node_path_to_current_project_path(currentProjectPath, path)}` : "";
-
-		const blocks =
-			res.items.length > 0
-				? [
-						`Found ${res.items.length} bounded plain-text regex results${scopeNote}.`,
+				if (!res.isDone) {
+					const cursorId = await bash_cursor_id_create(ctx, res.continueCursor);
+					blocks.push(
 						"",
-						...res.items.map((item) =>
-							[
-								`${bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path)}:${item.lineNumber}`,
-								item.line,
-							].join("\n"),
-						),
-					]
-				: [`No bounded plain-text regex matches found${scopeNote}.`];
+						bash_search_command_build_continuation({
+							currentProjectPath,
+							path: appFileNodePath,
+							limit: TEXTGREP_RECURSIVE_PAGE_LIMIT,
+							cursor: cursorId,
+							query: pattern,
+						}),
+					);
+				}
 
-		if (!res.isDone) {
-			blocks.push(
-				"",
-				build_continuation({
-					currentProjectPath,
-					path,
-					limit: parsed._yay.limit,
-					cursor: await bash_cursor_id_create(ctx, res.continueCursor),
-					pattern: parsed._yay.pattern,
-					ignoreCase: parsed._yay.ignoreCase,
-				}),
-			);
+				return { stdout: `${blocks.join("\n")}\n`, stderr: "", exitCode: 0 };
+			}
 		}
 
-		return {
-			stdout: `${blocks.join("\n")}\n`,
-			stderr: "",
-			exitCode: 0,
-		};
+		// `textgrep [flags] PATTERN <file>` → bounded regex over one file's rendered plain text.
+		if (!recursive && operands.length === 1 && operands[0] !== "-") {
+			const inputPath = operands[0];
+			const absoluteShellPath = bash_resolve_path(commandCtx.cwd, inputPath);
+			const appFileNodePath = bash_current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath);
+
+			if (appFileNodePath != null) {
+				if (bash_GLOB_METACHARACTER_REGEX.test(inputPath)) {
+					return {
+						stdout: "",
+						stderr: bash_create_glob_syntax_unsupported_message("textgrep", inputPath),
+						exitCode: COMMAND_EXIT_USAGE,
+					};
+				}
+
+				if (!fixedStrings) {
+					const regexError = bash_regex_validation_error("textgrep", pattern);
+					if (regexError != null) {
+						return { stdout: "", stderr: regexError, exitCode: COMMAND_EXIT_USAGE };
+					}
+				}
+
+				const fileNode =
+					appFileNodePath === "/"
+						? null
+						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+								workspaceId: workspaceFs.ctxData.workspaceId,
+								projectId: workspaceFs.ctxData.projectId,
+								path: appFileNodePath,
+							})) as files_nodes_get_by_path_Result);
+
+				if (!fileNode || fileNode.kind !== "file") {
+					return {
+						stdout: "",
+						stderr: `textgrep: ${inputPath}: No such file or directory\n`,
+						exitCode: COMMAND_EXIT_FAILURE,
+					};
+				}
+
+				const result = (await ctx.runQuery(internal.files_nodes.match_plain_text_file_lines, {
+					workspaceId: workspaceFs.ctxData.workspaceId,
+					projectId: workspaceFs.ctxData.projectId,
+					userId: workspaceFs.ctxData.userId,
+					fileNodeId: fileNode._id,
+					pattern,
+					ignoreCase,
+					fixedStrings,
+					invert,
+				})) as files_nodes_match_plain_text_file_lines_Result;
+
+				if (!result) {
+					return { stdout: "", stderr: "", exitCode: COMMAND_EXIT_FAILURE };
+				}
+
+				const truncationStderr = result.scanTruncated
+					? bash_format_multiline_hint("textgrep", ["scanned only a bounded portion of a large file"])
+					: "";
+
+				// Mirror grep's output ordering: -l and -c report before the empty-result branch,
+				// so `textgrep -c PATTERN <file>` prints `0` when nothing matches.
+				if (listOnly) {
+					return result.selectedCount > 0
+						? { stdout: `${inputPath}\n`, stderr: truncationStderr, exitCode: 0 }
+						: { stdout: "", stderr: truncationStderr, exitCode: COMMAND_EXIT_FAILURE };
+				}
+				if (countOnly) {
+					return {
+						stdout: `${result.selectedCount}\n`,
+						stderr: truncationStderr,
+						exitCode: result.selectedCount > 0 ? 0 : COMMAND_EXIT_FAILURE,
+					};
+				}
+				if (result.lines.length === 0) {
+					return { stdout: "", stderr: truncationStderr, exitCode: COMMAND_EXIT_FAILURE };
+				}
+				return {
+					stdout: `${result.lines.map((line) => line.line).join("\n")}\n`,
+					stderr: truncationStderr,
+					exitCode: 0,
+				};
+			}
+		}
+
+		return guidance();
 	});
 }
