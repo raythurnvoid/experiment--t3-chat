@@ -1,6 +1,6 @@
 ---
 name: codebase-uniformity
-description: Code aesthetic and organization alignment for this repository. Use when implementing, reviewing, or polishing changes that must look native to the surrounding codebase, especially after broad feature work, sub-agent patches, new modules, command additions such as `packages/app/convex/bash.ts`, Convex backend work, shared utilities, tests, or documentation/spec updates.
+description: Code aesthetic and organization alignment for this repository. Use when implementing, reviewing, or polishing changes that must look native to the surrounding codebase, especially after broad feature work, sub-agent patches, new modules, command additions such as `packages/app/server/bash.ts`, Convex backend work, shared utilities, tests, or documentation/spec updates.
 ---
 
 # Codebase Uniformity
@@ -44,7 +44,7 @@ Do not start from broad repository-wide style. Start from the file and its neare
 
 Load only the reference that matches the touched surface:
 
-- `references/bash-command.md` for `packages/app/convex/bash.ts`.
+- `references/bash-command.md` for `packages/app/server/bash.ts`, `packages/app/server/bash-cat-command.ts`, `packages/app/server/bash-cp-command.ts`, `packages/app/server/bash-find-command.ts`, `packages/app/server/bash-grep-command.ts`, `packages/app/server/bash-head-tail-wc-command.ts`, `packages/app/server/bash-ls-command.ts`, `packages/app/server/bash-meta-command.ts`, `packages/app/server/bash-mv-command.ts`, `packages/app/server/bash-nested-shell-command.ts`, `packages/app/server/bash-rm-command.ts`, `packages/app/server/bash-sed-command.ts`, `packages/app/server/bash-stat-command.ts`, `packages/app/server/bash-tee-command.ts`, `packages/app/server/bash-textgrep-command.ts`, `packages/app/server/bash-touch-command.ts`, `packages/app/server/bash-tree-command.ts`, `packages/app/server/bash-utils.ts`, `packages/app/server/bash-xargs-command.ts`, and `packages/app/server/bash-which-command.ts`.
 - `references/convex-backend.md` for `packages/app/convex/**`.
 - `references/frontend-app-code.md` for `packages/app/src/**` React components and frontend lib utilities.
 - `references/shared-parsers.md` for parser/serializer utilities under `packages/app/shared/**`.
@@ -57,10 +57,10 @@ Use this checklist before accepting a patch.
 
 - **Placement:** Code is inserted beside the nearest similar helper, command, query, mutation, hook, component, or test.
 - **Definition order:** Prefer defining module-private helpers before their users when the file can do so without breaking a stronger local grouping. Avoid leaving a new helper below its first call site.
-- **Names:** Module-private helpers follow local naming. Do not add a file, feature, or domain prefix by default. Prefix symbols when they are exported and need import-site context, or when they are genuinely owned by another local symbol or concept, such as command-owned helpers (`search_command_*`, `find_command_*`, `meta_command_*`) or component companion types (`Component_Props`, `Component_ClassNames`). Private helpers should stay plainly descriptive unless nearby code has a stronger local convention.
-- **Regions and ordering:** If the file uses regions or ordered sections, preserve them. Never introduce nested regions. If you add a `// #region`, close it with `// #endregion` before the next region begins; otherwise prefer plain `// Section name` comments. In `bash.ts`, keep command helpers inside the matching command region.
+- **Names:** Module-private helpers follow local naming. Do not add a file, feature, or domain prefix by default. Prefix symbols when they are exported and need import-site context, or when several owned helpers share one file, such as `search_command_*` and `find_command_*` in `server/bash.ts`. In a dedicated command module, private helpers can drop the module prefix while exported symbols keep import-site context. Private helpers should stay plainly descriptive unless nearby code has a stronger local convention.
+- **Regions and ordering:** If the file uses regions or ordered sections, preserve them. Never introduce nested regions. If you add a `// #region`, close it with `// #endregion` before the next region begins; otherwise prefer plain `// Section name` comments. In `bash.ts`, keep command helpers inside the matching command region. Dedicated `bash-*-command.ts` modules do not use command-region markers.
 - **Granularity:** Keep one-off logic inline unless a helper removes real duplication or hides a necessary external-system detail.
-- **Types:** Keep one-off callback and object shapes inline unless a named type is exported, reused, recursive, derived from an external API, or gives a real domain concept a name.
+- **Types:** Keep one-off callback and object shapes inline unless a named type is exported, reused, recursive, derived from an external API, or gives a real domain concept a name. In extracted Bash command modules, preserve the original `*_command_create` signatures instead of adding dependency object plumbing.
 - **Validators:** In Convex modules, keep one-off `args` and `returns` validators inline at the registered function unless there is real reuse.
 - **Errors:** Match the local boundary. Use Result `_nay` where the surrounding code does; use structured `console.error(errorMessage, errorData)` plus `should_never_happen(errorMessage, errorData)` for impossible Convex invariants.
 - **Indexes:** Name Convex indexes from the indexed fields in order. If the full name is too long, abbreviate the least domain-important field consistently and keep the main domain term readable.
@@ -83,16 +83,19 @@ Code uniformity includes vocabulary. After editing comments, docs, names, and lo
 
 # Bash Command Code
 
-Treat `packages/app/convex/bash.ts` as its own style island.
+Treat `packages/app/server/bash.ts`, `packages/app/server/bash-cat-command.ts`, `packages/app/server/bash-cp-command.ts`, `packages/app/server/bash-find-command.ts`, `packages/app/server/bash-grep-command.ts`, `packages/app/server/bash-head-tail-wc-command.ts`, `packages/app/server/bash-ls-command.ts`, `packages/app/server/bash-meta-command.ts`, `packages/app/server/bash-mv-command.ts`, `packages/app/server/bash-nested-shell-command.ts`, `packages/app/server/bash-rm-command.ts`, `packages/app/server/bash-sed-command.ts`, `packages/app/server/bash-stat-command.ts`, `packages/app/server/bash-tee-command.ts`, `packages/app/server/bash-textgrep-command.ts`, `packages/app/server/bash-touch-command.ts`, `packages/app/server/bash-tree-command.ts`, `packages/app/server/bash-utils.ts`, `packages/app/server/bash-xargs-command.ts`, and `packages/app/server/bash-which-command.ts` as their own style island.
 
 When adding or polishing a command:
 
-- keep option parsing in a `*_command_parse_*_args` helper when nearby commands do
+- keep option parsing in a `*_command_parse_*_args` helper when several commands share one file; use plain private names like `parse_search_args` inside a dedicated command module
+- keep extracted command modules unregioned; reserve command regions for `server/bash.ts`
+- in extracted Bash command modules, preserve the original `*_command_create` signatures instead of adding dependency object plumbing, and prefix exported command entrypoints with `bash_`, such as `bash_grep_command_*`
 - use existing `read_option_value`, `parse_limit`, cursor helpers, path conversion helpers, and command exit constants
 - print continuation commands in the same `Next page:` style as search/listing commands
 - place formatting helpers before `*_command_create`
 - return `{ stdout, stderr, exitCode }` directly
 - keep command tests in the existing in-source `action_run` group
+- keep `convex/bash.ts` to action registration and validators; `server/bash.ts` exports `bash_run_command` for that action boundary, `server/bash-utils.ts` owns prefixed path helpers, shared bash constants, and the `cp`/`mv` operand parser used by extracted command modules, and `bash_fs_create`, raw filesystem classes, command factories, tmp helpers, and formatting helpers stay module-private unless preserving an original moved signature requires exporting an existing symbol
 - verify with a focused `vitest` filter for the command behavior
 
 Do not make app Bash look like host shell code. It is an indexed Convex-backed command surface with native-looking syntax.

@@ -8,6 +8,27 @@ description: Practical guide for the current app chat agent implementation (AI S
 Primary:
 
 - `../../../packages/app/convex/ai_chat.ts`
+- `../../../packages/app/convex/bash.ts`
+- `../../../packages/app/server/bash.ts`
+- `../../../packages/app/server/bash-cat-command.ts`
+- `../../../packages/app/server/bash-cp-command.ts`
+- `../../../packages/app/server/bash-find-command.ts`
+- `../../../packages/app/server/bash-grep-command.ts`
+- `../../../packages/app/server/bash-head-tail-wc-command.ts`
+- `../../../packages/app/server/bash-ls-command.ts`
+- `../../../packages/app/server/bash-meta-command.ts`
+- `../../../packages/app/server/bash-mv-command.ts`
+- `../../../packages/app/server/bash-nested-shell-command.ts`
+- `../../../packages/app/server/bash-rm-command.ts`
+- `../../../packages/app/server/bash-sed-command.ts`
+- `../../../packages/app/server/bash-stat-command.ts`
+- `../../../packages/app/server/bash-tee-command.ts`
+- `../../../packages/app/server/bash-textgrep-command.ts`
+- `../../../packages/app/server/bash-touch-command.ts`
+- `../../../packages/app/server/bash-tree-command.ts`
+- `../../../packages/app/server/bash-utils.ts`
+- `../../../packages/app/server/bash-xargs-command.ts`
+- `../../../packages/app/server/bash-which-command.ts`
 - `../../../packages/app/server/server-ai-tools.ts`
 - `../../../packages/app/convex/files_nodes.ts`
 - `../../../packages/app/convex/r2.ts`
@@ -90,7 +111,8 @@ Important limitation:
 - When retrying a `/tmp` command option, prefer doing related scratch work in one call when convenient, but previous `/tmp` files are available in later calls in the same chat.
 - `/tmp` persists across Bash calls in this chat and reloads from Convex if the warm backend runtime cache is gone. It is not shared with new chats and is not app project storage; use app file tools for durable user-visible files.
 - Do not call `/tmp` ephemeral or temporary in a way that implies same-chat data loss. If a fresh chat cannot read a `/tmp` path created in another chat, that is expected evidence of per-chat isolation, not a global Bash failure.
-- The bash internal action and Just Bash filesystem implementation live in the Node-runtime `bash.run` module because Just Bash bundles Node built-ins. Keep thread-state queries/mutations in default-runtime `ai_chat.ts`.
+- The bash internal action lives in `../../../packages/app/convex/bash.ts` as `internal.bash.run`; keep Convex action registration and validators there. The exported `bash_run_command` runner in `../../../packages/app/server/bash.ts` owns thread-state reads/writes, `/tmp` patch mutations, logging, action result shaping, and Just Bash filesystem/runtime construction. Keep `bash_fs_create`, `BashTmpFs`, `ReadOnlyBaseFs`, command factories, helpers, and in-source command tests private there. Shared prefixed path helpers, bash constants, the `cp`/`mv` operand parser, `bash_command_build_builtin_delegation_args`, `bash_WorkspaceFs`, `bash_WorkspaceFsOptions`, and `bash_AppFileContentUnavailableError` live in `../../../packages/app/server/bash-utils.ts`. The `cat` command lives in `../../../packages/app/server/bash-cat-command.ts`, the `cp` command lives in `../../../packages/app/server/bash-cp-command.ts`, the `find` command lives in `../../../packages/app/server/bash-find-command.ts`, the `grep` command lives in `../../../packages/app/server/bash-grep-command.ts`, the `meta` command and its `meta search --where` parser live in `../../../packages/app/server/bash-meta-command.ts`, the `mv` command lives in `../../../packages/app/server/bash-mv-command.ts`, the nested `bash`/`sh` commands live in `../../../packages/app/server/bash-nested-shell-command.ts`, the `head`/`tail`/`wc` commands live in `../../../packages/app/server/bash-head-tail-wc-command.ts`, the `ls` command lives in `../../../packages/app/server/bash-ls-command.ts`, the `rm` command lives in `../../../packages/app/server/bash-rm-command.ts`, the `sed` command lives in `../../../packages/app/server/bash-sed-command.ts`, the `stat` command lives in `../../../packages/app/server/bash-stat-command.ts`, the `tee` command lives in `../../../packages/app/server/bash-tee-command.ts`, the `textgrep` command lives in `../../../packages/app/server/bash-textgrep-command.ts`, the `touch` command lives in `../../../packages/app/server/bash-touch-command.ts`, the `tree` command lives in `../../../packages/app/server/bash-tree-command.ts`, the `xargs` command lives in `../../../packages/app/server/bash-xargs-command.ts`, and the `which` command lives in `../../../packages/app/server/bash-which-command.ts`. Keep thread-state queries/mutations in default-runtime `ai_chat.ts`.
+- Extracted Bash command modules should preserve the original monolithic function signatures, use no command-region markers, and avoid factory dependency bags.
 - `bash` persists the current working directory through the general `ai_chat.get_thread_state` / `ai_chat.set_thread_state` internal functions. The state doc is stored in `ai_chat_threads_state`, linked from `ai_chat_threads.stateId` and back to `ai_chat_threads_state.threadId`. Thread creation still inserts the legacy `~` marker, but the bash action expands that initial/default marker to the current project path `/home/cloud-usr/w/{workspaceName}/{projectName}`. After `cd`, app paths persist as home-relative values such as `~/w/personal/home/docs`; an explicit home cwd persists as `/home/cloud-usr` so it is not confused with the default marker. Cwd does not live directly on `ai_chat_threads`.
 - The prompt and tool description should tell the model that cwd persists across tool calls in the same chat and that it should use bare or relative commands instead of repeating `cd` when the previous Bash output already shows the desired cwd.
 - The prompt and tool description should describe `bash` as the normal shell for this environment, while explicitly warning that only app-mount files are Convex-backed and do not have full POSIX/GNU filesystem semantics.

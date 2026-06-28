@@ -54,7 +54,7 @@ export default defineConfig({
 				extends: true,
 				test: {
 					include: ["convex/**/*.test.ts", "server/**/*.test.ts", "shared/**/*.test.ts"],
-					includeSource: ["convex/**/*.ts"],
+					includeSource: ["convex/**/*.ts", "server/bash.ts"],
 					name: "convex",
 					globals: true,
 					environment: "edge-runtime",

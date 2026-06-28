@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { files_metadata_extract_frontmatter, files_metadata_parse_search_where_json } from "./files-metadata.ts";
+import { files_metadata_extract_frontmatter } from "./files-metadata.ts";
 
 describe("files_metadata_extract_frontmatter", () => {
 	test("returns empty metadata when no closed leading frontmatter exists", () => {
@@ -98,61 +98,5 @@ describe("files_metadata_extract_frontmatter", () => {
 
 		expect(metadata.fields).toEqual(["frontmatter.date"]);
 		expect(metadata.values).toEqual([]);
-	});
-});
-
-describe("files_metadata_parse_search_where_json", () => {
-	test("accepts one positive indexed predicate", () => {
-		expect(files_metadata_parse_search_where_json('{"exists":"frontmatter.cc"}')).toEqual({
-			_yay: { op: "exists", qualifiedField: "frontmatter.cc" },
-		});
-		expect(files_metadata_parse_search_where_json('{"eq":["frontmatter.amount",120.5]}')).toEqual({
-			_yay: { op: "eq", qualifiedField: "frontmatter.amount", value: 120.5 },
-		});
-		expect(files_metadata_parse_search_where_json('{"prefix":["frontmatter.subject","Inv"]}')).toEqual({
-			_yay: { op: "prefix", qualifiedField: "frontmatter.subject", value: "Inv" },
-		});
-		expect(files_metadata_parse_search_where_json('{"range":["frontmatter.amount",{"gte":100,"lt":500}]}')).toEqual({
-			_yay: { op: "range", qualifiedField: "frontmatter.amount", gte: 100, lt: 500 },
-		});
-	});
-
-	test("rejects boolean, negative, unqualified, unknown-kind, and non-primitive filters", () => {
-		expect(files_metadata_parse_search_where_json('{"and":[{"exists":"frontmatter.cc"}]}')._nay?.message).toContain(
-			"one indexed field predicate",
-		);
-		expect(files_metadata_parse_search_where_json('{"neq":["frontmatter.cc","bob"]}')._nay?.message).toContain(
-			"positive predicates",
-		);
-		expect(files_metadata_parse_search_where_json('{"exists":"cc"}')._nay?.message).toContain("must be qualified");
-		expect(files_metadata_parse_search_where_json('{"exists":"email.from"}')._nay?.message).toContain(
-			"Unsupported metadata kind",
-		);
-		expect(files_metadata_parse_search_where_json('{"eq":["frontmatter.cc",["bob"]]}')._nay?.message).toContain(
-			"not searchable",
-		);
-		expect(files_metadata_parse_search_where_json('{"prefix":["frontmatter.amount",12]}')._nay?.message).toContain(
-			"string values only",
-		);
-	});
-
-	test("rejects extra predicate keys instead of silently dropping them", () => {
-		expect(
-			files_metadata_parse_search_where_json('{"eq":["frontmatter.from","a@b.com"],"eq2":0}')._nay?.message,
-		).toContain("one indexed field predicate");
-		expect(
-			files_metadata_parse_search_where_json('{"eq":["frontmatter.priority",3],"exists":"frontmatter.from"}')._nay
-				?.message,
-		).toContain("one indexed field predicate");
-	});
-
-	test("range errors point at the bounds-object shape with an example", () => {
-		// [field, min, max] and [field, n] are the shapes agents actually try; both must show the example.
-		expect(files_metadata_parse_search_where_json('{"range":["frontmatter.estimate",5,120]}')._nay?.message).toContain(
-			'{"range":["frontmatter.estimate",{"gte":5,"lte":120}]}',
-		);
-		expect(files_metadata_parse_search_where_json('{"range":["frontmatter.estimate",5]}')._nay?.message).toContain(
-			"bounds object",
-		);
 	});
 });
