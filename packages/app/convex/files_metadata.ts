@@ -11,6 +11,7 @@ import {
 	type files_metadata_SearchPlan,
 	type files_metadata_Value,
 } from "../shared/files-metadata.ts";
+import { workspaces_is_global_github_project_id, workspaces_is_global_workspace_id } from "../shared/workspaces.ts";
 
 // #region indexed doc writes
 
@@ -75,7 +76,7 @@ export async function files_metadata_db_insert_committed(
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
 		projectId: Doc<"files_metadata_docs">["projectId"];
 		nodeId: Id<"files_nodes">;
-		yjsSequence: number;
+		yjsSequence?: number;
 		markdownContent: string;
 	},
 ) {
@@ -103,7 +104,7 @@ export async function files_metadata_db_insert_committed(
 		projectId: args.projectId,
 		fileNodeId: args.nodeId,
 		sourceKind: "committed" as const,
-		yjsSequence: args.yjsSequence,
+		...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
 		path: fileNode.path,
 		treePath: fileNode.treePath,
 		archiveOperationId: fileNode.archiveOperationId,
@@ -506,7 +507,7 @@ function search_query(
 
 export const search = internalQuery({
 	args: {
-		// Scope accepts the reserved `/.mounts` literals so the mount-backed WorkspaceFs can search mount metadata.
+		// Scope accepts the reserved `/.mounts` literals so the mount-backed db-files FS can search mount metadata.
 		workspaceId: doc(app_convex_schema, "files_metadata_docs").fields.workspaceId,
 		projectId: doc(app_convex_schema, "files_metadata_docs").fields.projectId,
 		userId: v.id("users"),
@@ -549,7 +550,16 @@ export const search = internalQuery({
 		isDone: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
-		const pendingNodeIds = await db_list_pending_file_node_ids(ctx, args);
+		let pendingNodeIds: Array<Id<"files_nodes">> = [];
+		const workspaceId = args.workspaceId;
+		const projectId = args.projectId;
+		if (!workspaces_is_global_workspace_id(workspaceId) && !workspaces_is_global_github_project_id(projectId)) {
+			pendingNodeIds = await db_list_pending_file_node_ids(ctx, {
+				workspaceId,
+				projectId,
+				userId: args.userId,
+			});
+		}
 		const treePathPrefix = args.pathPrefix == null ? undefined : tree_path_from_path(args.pathPrefix);
 		const query = search_query(ctx, {
 			workspaceId: args.workspaceId,
@@ -569,7 +579,9 @@ export const search = internalQuery({
 });
 
 export type files_metadata_search_Result =
-	typeof search extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue> ? Awaited<ReturnValue> : never;
+	typeof search extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 // #endregion search
 
@@ -611,7 +623,7 @@ function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
 
 export const get_by_path = internalQuery({
 	args: {
-		// Scope accepts the reserved `/.mounts` literals so the mount-backed WorkspaceFs can read mount metadata.
+		// Scope accepts the reserved `/.mounts` literals so the mount-backed db-files FS can read mount metadata.
 		workspaceId: doc(app_convex_schema, "files_metadata_docs").fields.workspaceId,
 		projectId: doc(app_convex_schema, "files_metadata_docs").fields.projectId,
 		userId: v.id("users"),
@@ -650,16 +662,24 @@ export const get_by_path = internalQuery({
 			return null;
 		}
 
-		const pendingUpdate = await ctx.db
-			.query("files_pending_updates")
-			.withIndex("by_workspace_project_user_fileNode", (q) =>
-				q
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
-					.eq("userId", args.userId)
-					.eq("fileNodeId", fileNode._id),
-			)
-			.first();
+		let pendingUpdate: Doc<"files_pending_updates"> | null = null;
+		if (
+			!workspaces_is_global_workspace_id(args.workspaceId) &&
+			!workspaces_is_global_github_project_id(args.projectId)
+		) {
+			const workspaceId: Id<"workspaces"> = args.workspaceId;
+			const projectId: Id<"workspaces_projects"> = args.projectId;
+			pendingUpdate = await ctx.db
+				.query("files_pending_updates")
+				.withIndex("by_workspace_project_user_fileNode", (q) =>
+					q
+						.eq("workspaceId", workspaceId)
+						.eq("projectId", projectId)
+						.eq("userId", args.userId)
+						.eq("fileNodeId", fileNode._id),
+				)
+				.first();
+		}
 
 		const sourceKind = pendingUpdate ? ("pending" as const) : ("committed" as const);
 		const docs = pendingUpdate

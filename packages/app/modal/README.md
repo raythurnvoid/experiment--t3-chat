@@ -12,7 +12,7 @@ Convex sends `POST /markitdown` with:
 - `filename`: original filename
 - `contentType`: optional MIME type used as an additional conversion hint
 - `maxBytes`: source download limit
-- `maxMarkdownCharacters`: response size guard for Convex storage
+- `maxMarkdownBytes`: response size guard for Convex storage
 
 Modal returns:
 
@@ -32,7 +32,7 @@ Conversion behavior:
 - Downloads from the signed R2 URL with a streamed request.
 - Spools the source stream with an 8 MiB in-memory threshold before spilling to a temporary file.
 - Enforces the source size through `maxBytes`; Convex currently passes 50 MiB.
-- Enforces the Markdown response size through `maxMarkdownCharacters`; Convex currently passes 900,000 characters.
+- Enforces the Markdown response size through `maxMarkdownBytes`; Convex currently passes 900,000 bytes.
 
 Error statuses:
 

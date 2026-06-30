@@ -3495,7 +3495,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				{
 					membershipId,
 					nodeId: itemId as app_convex_Id<"files_nodes">,
-					name: normalizedName,
+					path: normalizedName,
 				},
 				{
 					optimisticUpdate: (localStore) => {
@@ -3930,12 +3930,12 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				? convex.mutation(app_convex_api.files_nodes.create_folder_node, {
 						membershipId,
 						parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
-						name: nextNodeName,
+						path: nextNodeName,
 					})
 				: convex.action(app_convex_api.files_nodes.create_markdown_node, {
 						membershipId,
 						parentId: parentNodeId === files_ROOT_ID ? files_ROOT_ID : (parentNodeId as app_convex_Id<"files_nodes">),
-						name: nextNodeName,
+						path: nextNodeName,
 					});
 
 		createNodePromise

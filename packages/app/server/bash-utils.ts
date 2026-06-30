@@ -1,6 +1,6 @@
 // Shared Bash utilities used by `bash.ts` and extracted command modules.
 // `bash.ts` owns command registration and the action lifecycle. This file owns
-// path conversion, the Convex app-file mount, pagination cursors, Native Just
+// path conversion, the db-files mounts, pagination cursors, Native Just
 // Bash delegation, and common stderr text.
 
 import {
@@ -27,8 +27,14 @@ import type {
 import type { files_pending_updates_get_by_file_node_Result } from "../convex/files_pending_updates.ts";
 import type { get_asset_by_id_Result } from "../convex/r2.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, files_node_has_editable_yjs_state } from "../shared/files.ts";
-import { LruCache, math_clamp, path_name_of } from "../shared/shared-utils.ts";
+import {
+	files_MOUNT_ROOT,
+	files_ROOT_ID,
+	files_SYNTHETIC_ROOT_FOLDER,
+	files_node_has_editable_yjs_state,
+} from "../shared/files.ts";
+import { LruCache, math_clamp, path_name_of, should_never_happen } from "../shared/shared-utils.ts";
+import { workspaces_is_global_github_project_id, workspaces_is_global_workspace_id } from "../shared/workspaces.ts";
 
 // #region bash constants and path helpers
 
@@ -39,28 +45,58 @@ export const bash_DEV_NULL_PATH = "/dev/null";
 export const bash_DEV_ZERO_PATH = "/dev/zero";
 export const bash_DEV_ZERO_BYTE_COUNT = 8192;
 export const bash_DEV_ZERO_TEXT = "\0".repeat(bash_DEV_ZERO_BYTE_COUNT);
+
+/**
+ * Shell globs may expand over `/tmp`. App files and external mounts are
+ * db-backed trees, so commands reject their glob operands and point callers
+ * to indexed commands such as `find`.
+ */
 export const bash_GLOB_METACHARACTER_REGEX = /[*?[\]]/u;
 
-// Directory and search result listings should be useful by default without letting
-// one command dump too many results into the transcript. Applies to both surface
-// (dir children) and depth (subtree) listings.
+/**
+ * Default page size for directory and search result listings.
+ *
+ * Listings should be useful without letting one command dump too many results
+ * into the transcript. Applies to both surface listings and subtree listings.
+ */
 export const bash_LISTING_DEFAULT_LIMIT = 10;
+
+/**
+ * Maximum accepted page size for directory and search result listings.
+ */
 export const bash_LISTING_MAX_LIMIT = 20;
 
-// Content readers (cat/head/tail/wc) fetch full file content from Convex per app-file
-// operand, so bound how many a single command can pull. stat reuses this for metadata fan-out.
+/**
+ * Maximum number of db-file operands one reader command can pull from the db.
+ * `stat` reuses this for metadata fan-out.
+ */
 export const bash_READER_FILE_OPERAND_MAX = 10;
 
-// A full inline read pulls the entire file content. Above this byte size, full-file readers
-// fall back to BOUNDED reads (head/tail/sed line ranges, served from materialized chunks), so a
-// large file is never loaded in one shot. DEV-PHASE AGGRESSIVE: intentionally tiny so our small
-// test files page like big ones; the agent must be able to page through content at this cap.
-// Raise before production. Tunable.
+/**
+ * Maximum byte size for a full inline file read.
+ *
+ * Above this size, full-file readers fall back to bounded reads served from
+ * materialized chunks, so a large file is never loaded in one shot. DEV-PHASE
+ * AGGRESSIVE: intentionally tiny so small test files page like large files.
+ * Raise before production.
+ */
 export const bash_READ_INLINE_MAX_BYTES = 2 * 1024;
 
-// Per-page line cap for head/sed/tail against a large file (must match the backend
-// files_READ_RANGE_MAX_LINES). DEV-PHASE AGGRESSIVE so pagination kicks in on small files.
+/**
+ * Per-page line cap for head/sed/tail against a large file.
+ *
+ * Must match the backend `files_READ_RANGE_MAX_LINES`. DEV-PHASE AGGRESSIVE so
+ * pagination kicks in on small files.
+ */
 export const bash_READ_HEAD_LARGE_FILE_MAX_LINES = 40;
+export const bash_COMMAND_EXIT_FAILURE = 1;
+export const bash_COMMAND_EXIT_USAGE = 2;
+export const bash_COMMAND_EXIT_CANNOT_EXECUTE = 126;
+export const bash_COMMAND_EXIT_NOT_FOUND = 127;
+export const bash_NON_NEGATIVE_INTEGER_REGEX = /^\d+$/u;
+export const bash_TERMINAL_LINE_ENDING_REGEX = /\r\n?/g;
+export const bash_SHELL_COMMENT_LINE_REGEX = /^\s*#.*$/gm;
+export const bash_WHITESPACE_RUN_REGEX = /\s+/u;
 
 const PAGINATION_CURSORS_CACHE_MAX_ENTRIES = 500;
 const BACKSLASH_REGEX = /\\/g;
@@ -71,7 +107,6 @@ const SEARCH_EXACT_SINGLE_TOKEN_REGEX = /^\S+$/u;
 const SEARCH_EXACT_PUNCTUATION_TOKEN_REGEX = /[-_.:@]/u;
 const SHELL_ARG_SAFE_UNQUOTED_REGEX = /^[A-Za-z0-9_/:.,=+@-]+$/;
 const COMMAND_LOOKUP_PATH_REGEX = /^\/(?:usr\/)?bin\/([^/]+)$/u;
-const COMMAND_EXIT_FAILURE = 1;
 const LISTING_PAGE_LIMIT_MAX = 200;
 const BASH_REGEX_PATTERN_MAX_LENGTH = 200;
 const textEncoder = new TextEncoder();
@@ -88,7 +123,7 @@ const ALLOWED_COMMAND_NAMES = new Set<string>(bash_ALLOWED_COMMANDS);
 const pagination_cursors_cache = new LruCache<string, string>(PAGINATION_CURSORS_CACHE_MAX_ENTRIES);
 
 /**
- * Return one clean absolute path for bash, app files, and cache keys.
+ * Return one clean absolute path for Bash, db files, and cache keys.
  */
 export function bash_normalize_path(path: string) {
 	const parts: string[] = [];
@@ -115,19 +150,19 @@ export function bash_resolve_path(base: string, path: string) {
 }
 
 /**
- * Convert a Convex app file node path to its Bash path inside currentProjectPath.
+ * Convert a db-files path to its Bash path inside currentProjectPath.
  */
-export function bash_app_file_node_path_to_current_project_path(currentProjectPath: string, path: string) {
+export function bash_db_files_path_to_current_project_path(currentProjectPath: string, path: string) {
 	const normalizedPath = bash_normalize_path(path);
 	return normalizedPath === "/" ? currentProjectPath : `${currentProjectPath}${normalizedPath}`;
 }
 
 /**
- * Convert a normalized Bash path under currentProjectPath back to a Convex app file node path.
+ * Convert a normalized Bash path under currentProjectPath back to a db-files path.
  *
  * Returns `null` for Bash paths outside currentProjectPath, like `/tmp/foo`.
  */
-export function bash_current_project_path_to_app_file_node_path(currentProjectPath: string, path: string) {
+export function bash_current_project_path_to_db_files_path(currentProjectPath: string, path: string) {
 	if (path === currentProjectPath) {
 		return "/";
 	}
@@ -142,6 +177,13 @@ export function bash_current_project_path_to_app_file_node_path(currentProjectPa
  */
 export function bash_is_path_under_current_project_path(currentProjectPath: string, path: string) {
 	return path === currentProjectPath || path.startsWith(`${currentProjectPath}/`);
+}
+
+/**
+ * Check whether a normalized path is the mounts root or inside it (`/.mounts`, `/.mounts/<name>/...`).
+ */
+export function bash_is_path_under_mounts(path: string) {
+	return path === files_MOUNT_ROOT || path.startsWith(`${files_MOUNT_ROOT}/`);
 }
 
 export function bash_clamp_listing_page_limit(limit: number) {
@@ -163,15 +205,15 @@ export function bash_regex_validation_error(command: string, pattern: string) {
 
 // #endregion bash constants and path helpers
 
-// #region app file filesystem
+// #region db files filesystem
 
 /**
- * Keep the Just Bash path cache to the file-node fields the virtual filesystem needs.
+ * Keep the Just Bash path cache to the db file fields the virtual filesystem needs.
  *
- * Some entries come from Convex `files_nodes` docs, others are synthetic parent
+ * Some entries come from `files_nodes` docs, others are synthetic parent
  * folders created while caching descendants.
  */
-type JustBashFileNodeCacheEntry = {
+type DbFilesCacheEntry = {
 	_id?: Id<"files_nodes"> | typeof files_ROOT_ID;
 	path: Doc<"files_nodes">["path"];
 	name: Doc<"files_nodes">["name"];
@@ -181,25 +223,25 @@ type JustBashFileNodeCacheEntry = {
 	contentType?: Doc<"files_nodes">["contentType"];
 };
 
-export type bash_WorkspaceFsOptions = {
+export type bash_DbFilesFsOptions = {
 	ctx: ActionCtx;
 	ctxData: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		workspaceName: string;
 		projectName: string;
 		userId: Id<"users">;
 	};
 	currentProjectPath: string;
-	allowAppFileTreeMkdir: boolean;
+	allowDbFilesMkdir: boolean;
 };
 
 /**
- * Means the app file exists, but bash cannot read its body as text.
+ * Means a db file exists, but bash cannot read its body as text.
  *
  * Keep the path and content type so command handlers can print a useful message.
  */
-export class bash_AppFileContentUnavailableError extends Error {
+export class bash_DbFilesContentUnavailableError extends Error {
 	/**
 	 * The absolute bash path the command tried to read,
 	 * like `/home/cloud-usr/w/docs/file.pdf`.
@@ -213,8 +255,8 @@ export class bash_AppFileContentUnavailableError extends Error {
 	readonly contentType: string | undefined;
 
 	constructor(args: { shellPath: string; contentType: string | undefined }) {
-		super(`unsupported app file content type '${args.contentType ?? "unknown"}'`);
-		this.name = "AppFileContentUnavailableError";
+		super(`unsupported file content type '${args.contentType ?? "unknown"}'`);
+		this.name = "DbFilesContentUnavailableError";
 		this.shellPath = args.shellPath;
 		this.contentType = args.contentType;
 	}
@@ -226,45 +268,67 @@ export class bash_AppFileContentUnavailableError extends Error {
 class ReadOnlyFileSystemError extends Error {
 	readonly path: string;
 
-	constructor(path: string) {
+	constructor(path: string, args?: { externalMount: boolean }) {
 		const normalizedPath = bash_normalize_path(path);
-		super(
-			`EROFS: read-only file system, '${normalizedPath}'. Persistent app writes must use write_file/edit_file; shell redirects into app files are unsupported.`,
-		);
+		// The same filesystem class backs tenant app files and external mounts.
+		// External mount writes need a separate message because write_file/edit_file
+		// cannot edit read-only external sources.
+		const message = args?.externalMount
+			? `EROFS: read-only file system, '${normalizedPath}'. '${files_MOUNT_ROOT}' is a read-only mount of an external source.`
+			: `EROFS: read-only file system, '${normalizedPath}'. Persistent app-file writes must use write_file/edit_file; shell redirects into app files are unsupported.`;
+		super(message);
 		this.name = "ReadOnlyFileSystemError";
 		this.path = normalizedPath;
 	}
 }
 
 /**
- * Mount the app file tree into Just Bash as a mostly read-only filesystem.
+ * Mount a db files tree into Just Bash as a mostly read-only filesystem.
  *
  * `MountableFs` strips `currentProjectPath` before calls reach this class, so
- * methods here receive Convex app file node paths like `/docs/readme.md`, not
+ * methods here receive db-files paths like `/docs/readme.md`, not
  * shell paths like `/home/cloud-usr/w/.../docs/readme.md`.
  */
-export class bash_WorkspaceFs implements IFileSystem {
+export class bash_DbFilesFs implements IFileSystem {
 	readonly ctx: ActionCtx;
-	readonly ctxData: bash_WorkspaceFsOptions["ctxData"];
+	readonly ctxData: bash_DbFilesFsOptions["ctxData"];
 	readonly currentProjectPath: string;
-	readonly allowAppFileTreeMkdir: boolean;
+	readonly allowDbFilesMkdir: boolean;
 	pathIndexTruncated = false;
-	private entryCache = new Map<string, JustBashFileNodeCacheEntry>();
+	private entryCache = new Map<string, DbFilesCacheEntry>();
 	private contentCache = new Map<string, string>();
 
-	constructor(options: bash_WorkspaceFsOptions) {
+	constructor(options: bash_DbFilesFsOptions) {
 		this.ctx = options.ctx;
 		this.ctxData = options.ctxData;
 		this.currentProjectPath = options.currentProjectPath;
-		this.allowAppFileTreeMkdir = options.allowAppFileTreeMkdir;
+		this.allowDbFilesMkdir = options.allowDbFilesMkdir;
 		this.rememberEntry(files_SYNTHETIC_ROOT_FOLDER);
 	}
 
+	/**
+	 * Build the read-only error from a db-files path.
+	 *
+	 * Methods receive db-files paths. Convert back to the shell path before
+	 * choosing the tenant file or external mount read-only message.
+	 */
+	private readOnlyFileSystemError(path: string) {
+		const shellPath = bash_db_files_path_to_current_project_path(this.currentProjectPath, path);
+		return new ReadOnlyFileSystemError(shellPath, { externalMount: bash_is_path_under_mounts(shellPath) });
+	}
+
+	/**
+	 * Read a db-files path after rejecting shell glob operands.
+	 *
+	 * Just Bash can call this filesystem with paths produced by shell glob expansion.
+	 * Db files are db-backed trees, so reject glob
+	 * metacharacters before querying the db.
+	 */
 	async readFile(path: string, _options?: Parameters<IFileSystem["readFile"]>[1]) {
 		const normalizedPath = bash_normalize_path(path);
 		if (bash_GLOB_METACHARACTER_REGEX.test(normalizedPath)) {
 			throw new Error(
-				`app file glob patterns are not supported: '${bash_app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`app file glob patterns are not supported: '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
 		const cached = this.contentCache.get(normalizedPath);
@@ -291,7 +355,7 @@ export class bash_WorkspaceFs implements IFileSystem {
 		}
 
 		// The action fallback reconstructs last-available content; the parallel
-		// file-node lookup preserves precise missing/folder/unreadable errors.
+		// db file lookup preserves precise missing/folder/unreadable errors.
 		const fileContentPromise = this.ctx.runAction(
 			internal.files_nodes.get_file_last_available_markdown_content_by_path,
 			{
@@ -301,7 +365,7 @@ export class bash_WorkspaceFs implements IFileSystem {
 				path: normalizedPath,
 			},
 		) as Promise<files_nodes_get_file_last_available_markdown_content_by_path_Result>;
-		const fileNodePromise: Promise<files_nodes_get_by_path_Result> =
+		const dbFilePromise: Promise<files_nodes_get_by_path_Result> =
 			normalizedPath === "/"
 				? Promise.resolve(null)
 				: (this.ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -309,31 +373,31 @@ export class bash_WorkspaceFs implements IFileSystem {
 						projectId: this.ctxData.projectId,
 						path: normalizedPath,
 					}) as Promise<files_nodes_get_by_path_Result>);
-		const [fileContent, fileNode] = await Promise.all([fileContentPromise, fileNodePromise]);
+		const [fileContent, dbFilesDoc] = await Promise.all([fileContentPromise, dbFilePromise]);
 
 		if (!fileContent) {
-			const cacheEntry = normalizedPath === "/" ? files_SYNTHETIC_ROOT_FOLDER : fileNode;
+			const cacheEntry = normalizedPath === "/" ? files_SYNTHETIC_ROOT_FOLDER : dbFilesDoc;
 			if (cacheEntry?.kind === "file") {
 				this.rememberEntry(cacheEntry);
-				throw new bash_AppFileContentUnavailableError({
-					shellPath: bash_app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath),
+				throw new bash_DbFilesContentUnavailableError({
+					shellPath: bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath),
 					contentType: cacheEntry.contentType,
 				});
 			}
 			if (cacheEntry?.kind === "folder") {
 				this.rememberEntry(cacheEntry);
 				throw new Error(
-					`EISDIR: illegal operation on a directory, read '${bash_app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+					`EISDIR: illegal operation on a directory, read '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 				);
 			}
 			throw new Error(
-				`ENOENT: no such file or directory, open '${bash_app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`ENOENT: no such file or directory, open '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
 
 		this.contentCache.set(normalizedPath, fileContent.content);
-		if (fileNode?.kind === "file") {
-			this.rememberEntry(fileNode);
+		if (dbFilesDoc?.kind === "file") {
+			this.rememberEntry(dbFilesDoc);
 		} else {
 			this.rememberEntry({
 				_id: fileContent.nodeId,
@@ -351,11 +415,11 @@ export class bash_WorkspaceFs implements IFileSystem {
 	}
 
 	async writeFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["writeFile"]>[2]) {
-		throw new ReadOnlyFileSystemError(bash_app_file_node_path_to_current_project_path(this.currentProjectPath, path));
+		throw this.readOnlyFileSystemError(path);
 	}
 
 	async appendFile(path: string, _content: FileContent, _options?: Parameters<IFileSystem["appendFile"]>[2]) {
-		throw new ReadOnlyFileSystemError(bash_app_file_node_path_to_current_project_path(this.currentProjectPath, path));
+		throw this.readOnlyFileSystemError(path);
 	}
 
 	async exists(path: string) {
@@ -366,13 +430,13 @@ export class bash_WorkspaceFs implements IFileSystem {
 		const normalizedPath = bash_normalize_path(path);
 		if (bash_GLOB_METACHARACTER_REGEX.test(normalizedPath)) {
 			throw new Error(
-				`app file glob patterns are not supported: '${bash_app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`app file glob patterns are not supported: '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
 		const cacheEntry = await this.getEntry(normalizedPath);
 		if (!cacheEntry) {
 			throw new Error(
-				`ENOENT: no such file or directory, stat '${bash_app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`ENOENT: no such file or directory, stat '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
 
@@ -391,7 +455,7 @@ export class bash_WorkspaceFs implements IFileSystem {
 		const normalizedPath = bash_normalize_path(path);
 		if (bash_GLOB_METACHARACTER_REGEX.test(normalizedPath)) {
 			throw new Error(
-				`app file glob patterns are not supported: '${bash_app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`app file glob patterns are not supported: '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
 		const existing = await this.getEntry(normalizedPath);
@@ -400,10 +464,13 @@ export class bash_WorkspaceFs implements IFileSystem {
 				return;
 			}
 			throw new Error(
-				`EEXIST: file already exists, mkdir '${bash_app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`EEXIST: file already exists, mkdir '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
-		if (!this.allowAppFileTreeMkdir) {
+		if (!this.allowDbFilesMkdir) {
+			if (bash_is_path_under_mounts(this.currentProjectPath)) {
+				throw this.readOnlyFileSystemError(normalizedPath);
+			}
 			throw new Error(
 				"Creating folders in the app file tree is available in Agent mode. Scratch space does not create durable folders.",
 			);
@@ -413,15 +480,22 @@ export class bash_WorkspaceFs implements IFileSystem {
 			const parent = await this.getEntry(parentPath);
 			if (!parent || parent.kind !== "folder") {
 				throw new Error(
-					`ENOENT: no such file or directory, mkdir '${bash_app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+					`ENOENT: no such file or directory, mkdir '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 				);
 			}
 		}
 
+		// mkdir only runs for the tenant app db-files root: the external mount root
+		// passes allowDbFilesMkdir=false and threw above, so the scope here is never
+		// reserved. Narrow the union before the project-only mutation, which declares strict ids.
+		const { workspaceId, projectId, userId } = this.ctxData;
+		if (workspaces_is_global_workspace_id(workspaceId) || workspaces_is_global_github_project_id(projectId)) {
+			throw should_never_happen("mkdir reached the reserved mount scope", { workspaceId, projectId });
+		}
 		const created = (await this.ctx.runMutation(internal.files_nodes.create_folder_node_by_path, {
-			workspaceId: this.ctxData.workspaceId,
-			projectId: this.ctxData.projectId,
-			userId: this.ctxData.userId,
+			workspaceId,
+			projectId,
+			userId,
 			path: normalizedPath,
 		})) as files_nodes_create_folder_node_by_path_Result;
 		if (created._nay) {
@@ -443,57 +517,57 @@ export class bash_WorkspaceFs implements IFileSystem {
 		const stat = await this.stat(normalizedPath);
 		if (!stat.isDirectory) {
 			throw new Error(
-				`ENOTDIR: not a directory, scandir '${bash_app_file_node_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`ENOTDIR: not a directory, scandir '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
 			);
 		}
-		throw new Error("app file directory enumeration is not supported; use ls --limit N or find --limit N");
+		throw new Error("db files directory enumeration is not supported; use ls --limit N or find --limit N");
 	}
 
 	async rm(path: string, options?: RmOptions) {
 		if (options?.force && !(await this.exists(path))) {
 			return;
 		}
-		throw new ReadOnlyFileSystemError(bash_app_file_node_path_to_current_project_path(this.currentProjectPath, path));
+		throw this.readOnlyFileSystemError(path);
 	}
 
 	async cp(_src: string, dest: string, _options?: CpOptions) {
-		throw new ReadOnlyFileSystemError(bash_app_file_node_path_to_current_project_path(this.currentProjectPath, dest));
+		throw this.readOnlyFileSystemError(dest);
 	}
 
 	async mv(_src: string, dest: string) {
-		throw new ReadOnlyFileSystemError(bash_app_file_node_path_to_current_project_path(this.currentProjectPath, dest));
+		throw this.readOnlyFileSystemError(dest);
 	}
 
 	resolvePath(base: string, path: string) {
 		return bash_resolve_path(base, path);
 	}
 
+	/**
+	 * Keep app files and external mounts out of shell glob candidate discovery.
+	 *
+	 * Just Bash asks for glob candidates synchronously. Do not expose cached app
+	 * file or external mount paths here, or shell glob expansion could look
+	 * successful while bypassing db pagination and returning an incomplete set.
+	 */
 	getAllPaths() {
-		// Just Bash asks for glob candidates synchronously. Do not expose cached
-		// app file paths here, or shell glob expansion could look successful while
-		// bypassing Convex pagination and returning an incomplete path set.
 		return ["/"];
 	}
 
 	async chmod(path: string, _mode: number) {
-		throw new ReadOnlyFileSystemError(bash_app_file_node_path_to_current_project_path(this.currentProjectPath, path));
+		throw this.readOnlyFileSystemError(path);
 	}
 
 	async symlink(_target: string, linkPath: string) {
-		throw new ReadOnlyFileSystemError(
-			bash_app_file_node_path_to_current_project_path(this.currentProjectPath, linkPath),
-		);
+		throw this.readOnlyFileSystemError(linkPath);
 	}
 
 	async link(_existingPath: string, newPath: string) {
-		throw new ReadOnlyFileSystemError(
-			bash_app_file_node_path_to_current_project_path(this.currentProjectPath, newPath),
-		);
+		throw this.readOnlyFileSystemError(newPath);
 	}
 
 	async readlink(path: string): Promise<string> {
 		throw new Error(
-			`EINVAL: invalid argument, readlink '${bash_app_file_node_path_to_current_project_path(this.currentProjectPath, path)}'`,
+			`EINVAL: invalid argument, readlink '${bash_db_files_path_to_current_project_path(this.currentProjectPath, path)}'`,
 		);
 	}
 
@@ -508,10 +582,10 @@ export class bash_WorkspaceFs implements IFileSystem {
 	}
 
 	async utimes(path: string, _atime: Date, _mtime: Date) {
-		throw new ReadOnlyFileSystemError(bash_app_file_node_path_to_current_project_path(this.currentProjectPath, path));
+		throw this.readOnlyFileSystemError(path);
 	}
 
-	rememberEntry(cacheEntry: JustBashFileNodeCacheEntry) {
+	rememberEntry(cacheEntry: DbFilesCacheEntry) {
 		const normalizedPath = bash_normalize_path(cacheEntry.path);
 		const segments = normalizedPath.split("/").filter(Boolean);
 		let currentPath = "";
@@ -536,38 +610,341 @@ export class bash_WorkspaceFs implements IFileSystem {
 		const normalizedPath = bash_normalize_path(path);
 		const cached = this.entryCache.get(normalizedPath);
 		// Synthetic parent folders make descendant paths navigable. Except for the
-		// synthetic root, only entries with `_id` prove that an app path exists in Convex.
+		// synthetic root, only entries with `_id` prove that an app path exists in `files_nodes`.
 		if (cached && (normalizedPath === "/" || cached._id != null)) {
 			return cached;
 		}
 
-		const fileNode = (await this.ctx.runQuery(internal.files_nodes.get_by_path, {
+		const dbFilesDoc = (await this.ctx.runQuery(internal.files_nodes.get_by_path, {
 			workspaceId: this.ctxData.workspaceId,
 			projectId: this.ctxData.projectId,
 			path: normalizedPath,
 		})) as files_nodes_get_by_path_Result;
 
-		if (!fileNode) {
+		if (!dbFilesDoc) {
 			return null;
 		}
 
 		const cacheEntry = {
-			_id: fileNode._id,
-			path: fileNode.path,
-			name: fileNode.name,
-			kind: fileNode.kind,
-			updatedAt: fileNode.updatedAt,
-			updatedBy: fileNode.updatedBy,
-			contentType: fileNode.contentType,
-		} satisfies JustBashFileNodeCacheEntry;
+			_id: dbFilesDoc._id,
+			path: dbFilesDoc.path,
+			name: dbFilesDoc.name,
+			kind: dbFilesDoc.kind,
+			updatedAt: dbFilesDoc.updatedAt,
+			updatedBy: dbFilesDoc.updatedBy,
+			contentType: dbFilesDoc.contentType,
+		} satisfies DbFilesCacheEntry;
 		this.rememberEntry(cacheEntry);
 		return cacheEntry;
 	}
 }
 
-// #endregion app file filesystem
+// #endregion db files filesystem
+
+// #region db files path resolution
+
+/**
+ * One db-files root that Bash can route paths into.
+ */
+export type bash_DbFilesRoot = {
+	currentProjectPath: string;
+	fs: bash_DbFilesFs;
+};
+
+/**
+ * The app file tree and agent-only external mount db-files roots available to Bash commands.
+ */
+export type bash_DbFilesRoots = {
+	app: bash_DbFilesRoot;
+	externalMounts: bash_DbFilesRoot;
+};
+
+/**
+ * The storage scope a normalized Bash path resolved to.
+ */
+export type bash_DbFilesShellPathKind = "app" | "outside_db_files" | "external_mount" | "external_mounts_root";
+
+export type bash_DbFilesShellPathResolution = {
+	kind: bash_DbFilesShellPathKind;
+	fs: bash_DbFilesFs;
+	ctxData: bash_DbFilesFsOptions["ctxData"];
+	/** Tenant or reserved-scope `files_nodes.path`, or `null` for paths outside db files trees. */
+	dbFilesPath: string | null;
+	/** Shell prefix used when rendering db-files paths back to users. */
+	basePath: string;
+	/** Render a db-files path back to the Bash path the user sees. */
+	renderShellPath: (dbFilesPath: string) => string;
+};
+
+/**
+ * Resolve a Bash path to the db-files root, stored path, and renderer.
+ */
+export function bash_resolve_db_files_shell_path(
+	shellPath: string,
+	dbFilesRoots: bash_DbFilesRoots,
+): bash_DbFilesShellPathResolution {
+	const normalized = bash_normalize_path(shellPath);
+
+	if (bash_is_path_under_mounts(normalized)) {
+		const renderShellPath = (dbFilesPath: string) =>
+			bash_db_files_path_to_current_project_path(dbFilesRoots.externalMounts.currentProjectPath, dbFilesPath);
+		const base = {
+			fs: dbFilesRoots.externalMounts.fs,
+			ctxData: dbFilesRoots.externalMounts.fs.ctxData,
+			basePath: dbFilesRoots.externalMounts.currentProjectPath,
+			renderShellPath,
+		} as const;
+
+		// External mount content is stored as `/<mount-name>/<relative-path>`;
+		// `/.mounts` itself maps to the synthetic reserved-scope root.
+		const dbFilesPath = bash_current_project_path_to_db_files_path(
+			dbFilesRoots.externalMounts.currentProjectPath,
+			normalized,
+		);
+		if (dbFilesPath == null || dbFilesPath === "/") {
+			return { ...base, kind: "external_mounts_root", dbFilesPath: "/" };
+		}
+
+		return { ...base, kind: "external_mount", dbFilesPath };
+	}
+
+	const renderShellPath = (dbFilesPath: string) =>
+		bash_db_files_path_to_current_project_path(dbFilesRoots.app.currentProjectPath, dbFilesPath);
+	const dbFilesPath = bash_current_project_path_to_db_files_path(dbFilesRoots.app.currentProjectPath, normalized);
+	return {
+		kind: dbFilesPath == null ? "outside_db_files" : "app",
+		fs: dbFilesRoots.app.fs,
+		ctxData: dbFilesRoots.app.fs.ctxData,
+		dbFilesPath,
+		basePath: dbFilesRoots.app.currentProjectPath,
+		renderShellPath,
+	};
+}
+
+/**
+ * Build the consistent stderr for a write attempt under a read-only external mount.
+ */
+export function bash_read_only_mount_error(command: string, shellPath: string) {
+	return `${command}: cannot modify '${bash_normalize_path(shellPath)}': '${files_MOUNT_ROOT}' is a read-only mount of an external source.\n`;
+}
+
+// #endregion db files path resolution
 
 // #region shared command helpers
+
+// These constants support the narrow `source`/`.` guard below. They identify
+// simple command boundaries, wrapper builtins, redirections, and dynamic words;
+// they are not a general shell parser.
+const SOURCE_BUILTIN_PREFIX_COMMANDS = new Set(["builtin", "command", "eval"]);
+const SOURCE_BUILTIN_CONTROL_WORDS = new Set(["!", "do", "elif", "else", "if", "then", "time", "until", "while"]);
+const SHELL_ASSIGNMENT_WORD_REGEX = /^[A-Za-z_][A-Za-z0-9_]*=/u;
+const SHELL_DYNAMIC_WORD_REGEX = /[$`]/u;
+const SHELL_REDIRECTION_WORD_REGEX = /^(?:\d*(?:<>|>>|>\||>|<|<<|<<<|<&|>&)|&>>?)(?:.+)?$/u;
+const SHELL_REDIRECTION_OPERATOR_REGEX = /^(?:\d*(?:<>|>>|>\||>|<|<<|<<<|<&|>&)|&>>?)$/u;
+
+type ShellWordToken = { kind: "separator" } | { kind: "word"; value: string };
+
+/**
+ * Split only enough shell syntax to find simple commands. Quotes and backslashes
+ * stay inside the word value, so separators inside quotes do not split the command.
+ */
+function parse_shell_word_tokens(command: string) {
+	const tokens: ShellWordToken[] = [];
+	let word = "";
+	let quote: "'" | '"' | null = null;
+
+	const pushWord = () => {
+		if (word === "") return;
+		tokens.push({ kind: "word", value: word });
+		word = "";
+	};
+
+	for (let i = 0; i < command.length; i++) {
+		const char = command[i];
+		if (quote !== null) {
+			if (char === quote) {
+				quote = null;
+			} else if (char === "\\" && quote === '"' && i + 1 < command.length) {
+				i++;
+				word += command[i];
+			} else {
+				word += char;
+			}
+			continue;
+		}
+
+		if (char === "'" || char === '"') {
+			quote = char;
+			continue;
+		}
+		if (char === "\\" && i + 1 < command.length) {
+			i++;
+			word += command[i];
+			continue;
+		}
+		if (/\s/u.test(char)) {
+			pushWord();
+			if (char === "\n") {
+				tokens.push({ kind: "separator" });
+			}
+			continue;
+		}
+		if (char === ";" || char === "|" || char === "&" || char === "(" || char === ")") {
+			pushWord();
+			tokens.push({ kind: "separator" });
+			continue;
+		}
+		word += char;
+	}
+	pushWord();
+	return tokens;
+}
+
+/**
+ * Return whether a shell word starts a redirection.
+ *
+ * Redirections can be written as a standalone operator like `>` or as a compact
+ * word like `2>/tmp/source.err`.
+ */
+function shell_word_is_redirection_prefix(word: string) {
+	return SHELL_REDIRECTION_WORD_REGEX.test(word);
+}
+
+/**
+ * Find the script path for `source`/`.` while ignoring redirection targets.
+ * Redirections can appear before or after the sourced path, so the guard must
+ * classify the script path, not the stderr/stdout path.
+ */
+function source_target_from_words(words: string[], startIndex: number) {
+	let skipRedirectionTarget = false;
+
+	for (let index = startIndex; index < words.length; index++) {
+		const word = words[index];
+		if (skipRedirectionTarget) {
+			skipRedirectionTarget = false;
+			continue;
+		}
+		if (shell_word_is_redirection_prefix(word)) {
+			skipRedirectionTarget = SHELL_REDIRECTION_OPERATOR_REGEX.test(word);
+			continue;
+		}
+		return word;
+	}
+	return null;
+}
+
+/**
+ * Decide whether a `source`/`.` target is disallowed.
+ *
+ * `source`/`.` executes inside the current shell, bypassing the explicit
+ * `bash <script>` guards for app files and external mounts. Literal targets are
+ * resolved against cwd so `/tmp/script.sh` stays allowed. Dynamic targets are
+ * blocked because their final path cannot be classified without shell expansion.
+ */
+function source_target_is_disallowed(target: string, options: { cwd: string; currentProjectPath: string }): boolean {
+	if (SHELL_DYNAMIC_WORD_REGEX.test(target)) {
+		return true;
+	}
+	const resolvedPath = bash_resolve_path(options.cwd, target);
+	return (
+		bash_is_path_under_current_project_path(options.currentProjectPath, resolvedPath) ||
+		bash_is_path_under_mounts(resolvedPath)
+	);
+}
+
+/**
+ * Inspect one simple command for a disallowed `source`/`.` target.
+ *
+ * Assignment words, redirections, and wrapper builtins can appear before
+ * `source`, so skip them before checking the script target.
+ */
+function simple_command_has_disallowed_source_target(
+	words: string[],
+	options: { cwd: string; currentProjectPath: string },
+): boolean {
+	let skipRedirectionTarget = false;
+
+	for (let index = 0; index < words.length; index++) {
+		const word = words[index];
+		if (skipRedirectionTarget) {
+			skipRedirectionTarget = false;
+			continue;
+		}
+
+		if (SHELL_ASSIGNMENT_WORD_REGEX.test(word) || shell_word_is_redirection_prefix(word)) {
+			skipRedirectionTarget = SHELL_REDIRECTION_OPERATOR_REGEX.test(word);
+			continue;
+		}
+
+		if (SOURCE_BUILTIN_CONTROL_WORDS.has(word)) {
+			continue;
+		}
+
+		if (word === "source" || word === ".") {
+			const target = source_target_from_words(words, index + 1);
+			return target == null ? false : source_target_is_disallowed(target, options);
+		}
+
+		if (word === "eval") {
+			// `eval 'source ...'` builds another command string; scan that string
+			// before Just Bash runs it.
+			return bash_command_has_disallowed_source_target(words.slice(index + 1).join(" "), options);
+		}
+
+		if (SOURCE_BUILTIN_PREFIX_COMMANDS.has(word)) {
+			// `command source file` and `builtin . file` still invoke the source builtins.
+			const command = source_target_from_words(words, index + 1);
+			if (command === "source" || command === ".") {
+				const sourceIndex = words.indexOf(command, index + 1);
+				const target = source_target_from_words(words, sourceIndex + 1);
+				return target == null ? false : source_target_is_disallowed(target, options);
+			}
+			if (command === "eval") {
+				const evalIndex = words.indexOf(command, index + 1);
+				return bash_command_has_disallowed_source_target(words.slice(evalIndex + 1).join(" "), options);
+			}
+		}
+
+		return false;
+	}
+
+	return false;
+}
+
+/**
+ * Detect `source`/`.` usage that would execute an app file or external mount.
+ *
+ * This stays a shallow shell-word scan, not a second interpreter. It only decides
+ * whether a `source`/`.` target is definitely an app file or external mount path;
+ * normal `/tmp` source usage should continue through Just Bash.
+ */
+export function bash_command_has_disallowed_source_target(
+	command: string,
+	options: { cwd: string; currentProjectPath: string },
+): boolean {
+	const tokens = parse_shell_word_tokens(command.replace(bash_SHELL_COMMENT_LINE_REGEX, ""));
+	let words: string[] = [];
+
+	for (const token of tokens) {
+		if (token.kind === "separator") {
+			if (simple_command_has_disallowed_source_target(words, options)) {
+				return true;
+			}
+			words = [];
+			continue;
+		}
+		words.push(token.value);
+	}
+
+	return simple_command_has_disallowed_source_target(words, options);
+}
+
+/**
+ * Build the message shown when `source`/`.` targets an app file or agent-only external mount.
+ */
+export function bash_disallowed_source_target_error() {
+	return "bash: source and . cannot load app files or agent-only external mounts; use bash /tmp/<script> for scratch scripts.\n";
+}
 
 /**
  * Extract `cp`/`mv` path operands for app-path routing.
@@ -632,7 +1009,7 @@ export function bash_search_command_build_continuation(args: {
 	if (args.path != null) {
 		continuationParts.push(
 			"--path",
-			bash_shell_arg_quote(bash_app_file_node_path_to_current_project_path(args.currentProjectPath, args.path)),
+			bash_shell_arg_quote(bash_db_files_path_to_current_project_path(args.currentProjectPath, args.path)),
 		);
 	}
 	continuationParts.push(
@@ -645,18 +1022,26 @@ export function bash_search_command_build_continuation(args: {
 	return continuationParts.join(" ");
 }
 
+/**
+ * Return the literal query marker for punctuation-heavy single-token searches.
+ *
+ * Db full-text search can broaden tokens with punctuation, so matching code
+ * needs the lowercase literal form to annotate whether each hit contains it.
+ */
 export function bash_search_command_exact_query_filter(query: string) {
 	const trimmedQuery = query.trim();
-	// Punctuation-heavy single tokens often get broadened by full-text search.
-	// Track the literal form so each hit can say whether the exact token is present.
 	return SEARCH_EXACT_SINGLE_TOKEN_REGEX.test(trimmedQuery) && SEARCH_EXACT_PUNCTUATION_TOKEN_REGEX.test(trimmedQuery)
 		? trimmedQuery.toLowerCase()
 		: null;
 }
 
-// Broad word-level hits stay in the page (suppressing them thins pagination); a per-hit
-// note marks whether the shown chunk contains the literal query, so fuzzy full-text
-// matches are not relayed as exact ones.
+/**
+ * Build the per-hit note for exact-query searches broadened by full-text search.
+ *
+ * Broad word-level hits stay in the page because suppressing them thins
+ * pagination; the note keeps fuzzy full-text matches from being relayed as exact
+ * matches.
+ */
 export function bash_search_command_exact_query_note(
 	exactQueryFilter: string | null,
 	query: string,
@@ -670,8 +1055,12 @@ export function bash_search_command_exact_query_note(
 		: ` [word-level match; chunk does not contain '${query}']`;
 }
 
-// Pre-counted exact/word-level split for the "Found N results" header: the model relays
-// counts, so hand it the grounded ones instead of letting it count annotated blocks itself.
+/**
+ * Build the exact/word-level split shown in the "Found N results" header.
+ *
+ * The model relays counts from command output, so give it grounded counts
+ * instead of making it count annotated result blocks itself.
+ */
 export function bash_search_command_exact_query_summary(exactQueryFilter: string | null, markdownChunks: string[]) {
 	if (exactQueryFilter == null) {
 		return "";
@@ -718,14 +1107,14 @@ export function bash_parse_simple_extension_glob(pattern: string) {
 }
 
 /**
- * Build the error text for commands that operate on Convex-backed app files
- * when a path operand contains shell glob metacharacters.
+ * Build the error text for commands that operate on db-backed app files or
+ * external mounts when a path operand contains shell glob metacharacters.
  *
- * These commands read, list, or inspect the current project tree under
- * `~/w/<workspace>/<project>`; they do not expand globs over that tree. For the common discovery
- * mistake `*.ext`, point the model at `find --extension`, which uses the indexed
- * file path query. `find` itself handles simple extension globs separately and
- * can run that indexed search directly.
+ * These commands read, list, or inspect the app file tree or `/.mounts`;
+ * they do not expand globs over those db-backed trees. For the common
+ * discovery mistake `*.ext`, point the model at `find --extension`, which uses
+ * the indexed file path query. `find` itself handles simple extension globs
+ * separately and can run that indexed search directly.
  */
 export function bash_create_glob_syntax_unsupported_message(command: string, path: string) {
 	const simpleExtensionGlob = bash_parse_simple_extension_glob(path);
@@ -739,8 +1128,8 @@ export function bash_create_glob_syntax_unsupported_message(command: string, pat
 	return (
 		`${command}: app file glob patterns are not supported: ${path}\n` +
 		`Use an exact path, or use find with a predicate:\n` +
-		`  find -name readme            # DB-backed path word search\n` +
-		`  find --path-query readme     # explicit DB-backed path word search\n`
+		`  find -name readme            # indexed app-file path word search\n` +
+		`  find --path-query readme     # explicit indexed app-file path word search\n`
 	);
 }
 
@@ -1081,10 +1470,10 @@ function native_just_bash_tmp_command_app_hint_path(
  *
  * This is used for Just Bash built-ins that have not been made app-file-aware:
  * they can process `/tmp` paths and stdin, but cannot directly operate on
- * Convex-backed paths under `currentProjectPath`. It keeps direct operands away
+ * db-backed paths under `currentProjectPath`. It keeps direct operands away
  * from the app tree, permits `/tmp`, `/dev/null`, `/dev/zero`, and synthetic command lookup
  * paths, and adds app-file guidance when the command likely failed because it
- * tried to touch the mounted project directly.
+ * tried to touch the mounted app file tree directly.
  *
  * Examples: `sort`, `uniq`, `cut`, `awk`, `sed`, `du`, `diff`, `rg`, `rev`,
  * `tac`, `nl`, `base64`, `jq`, and `sha256sum` run through this path.
@@ -1121,7 +1510,7 @@ export async function bash_delegate_native_just_bash_tmp_command(
 		return {
 			stdout: "",
 			stderr: appOperandError,
-			exitCode: COMMAND_EXIT_FAILURE,
+			exitCode: bash_COMMAND_EXIT_FAILURE,
 			env: {
 				...env,
 				PWD: ctx.cwd,
@@ -1148,7 +1537,7 @@ export async function bash_delegate_native_just_bash_tmp_command(
 	});
 
 	const guidancePath = native_just_bash_tmp_command_app_hint_path(args, ctx, currentProjectPath, result.stderr);
-	if (result.exitCode !== 0 && guidancePath != null && !result.stderr.includes("Convex-backed")) {
+	if (result.exitCode !== 0 && guidancePath != null && !result.stderr.includes("db-backed")) {
 		return {
 			...result,
 			stderr: `${result.stderr}${new NativeJustBashTmpCommandAccessError(currentProjectPath, guidancePath).message}`,
@@ -1158,17 +1547,17 @@ export async function bash_delegate_native_just_bash_tmp_command(
 }
 
 /**
- * Means a Native Just Bash /tmp command tried to access the Convex-backed app file tree.
+ * Means a Native Just Bash /tmp command tried to access the db-backed app file tree.
  */
 class NativeJustBashTmpCommandAccessError extends Error {
 	constructor(currentProjectPath: string, path: string) {
 		const normalizedPath = bash_normalize_path(path);
-		const appFileNodePath =
-			bash_current_project_path_to_app_file_node_path(currentProjectPath, normalizedPath) ?? normalizedPath;
+		const dbFilesPath =
+			bash_current_project_path_to_db_files_path(currentProjectPath, normalizedPath) ?? normalizedPath;
 		super(
 			`Native Just Bash /tmp commands cannot access app files directly: '${normalizedPath}'.\n` +
-				`The app file tree at '${currentProjectPath}' is Convex-backed, so Native Just Bash /tmp commands can use /tmp paths or stdin but not direct app-file operands.\n` +
-				`For app path '${appFileNodePath}', use app-aware commands such as search, find, grep, cat, head, tail, wc, stat, or tree. To process one readable app file with Native Just Bash /tmp tools, pipe it through cat or copy it first: cp ${bash_shell_arg_quote(normalizedPath)} /tmp/<name>\n`,
+				`The app file tree at '${currentProjectPath}' is db-backed, so Native Just Bash /tmp commands can use /tmp paths or stdin but not direct app-file operands.\n` +
+				`For app path '${dbFilesPath}', use app-aware commands such as search, find, grep, cat, head, tail, wc, stat, or tree. To process one readable app file with Native Just Bash /tmp tools, pipe it through cat or copy it first: cp ${bash_shell_arg_quote(normalizedPath)} /tmp/<name>\n`,
 		);
 		this.name = "NativeJustBashTmpCommandAccessError";
 	}
@@ -1180,7 +1569,7 @@ class NativeJustBashTmpCommandAccessError extends Error {
  * This is not the `/tmp` storage implementation; `BashTmpFs` owns that. This
  * wrapper sits in front of the full mounted shell filesystem for nested Native Just Bash
  * commands, allows `/tmp`, `/dev/null`, `/dev/zero`, and command lookup paths, and rejects
- * direct access to the Convex-backed app file tree with a targeted error.
+ * direct access to the db-backed app file tree with a targeted error.
  *
  * Synthetic paths are entries this wrapper reports even though they are not
  * persisted in the mounted filesystem: `/bin`, `/usr`, `/usr/bin`, executable
@@ -1493,10 +1882,10 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 // #region reader helpers
 
 /**
- * Limit app-file reader batches before one command starts many Convex reads.
+ * Limit db-backed reader batches before one command starts many db reads.
  *
- * Stdin and `/tmp` files do not count. This cap is only for app paths under
- * `currentProjectPath`.
+ * Stdin and `/tmp` files do not count. App files and external mount files
+ * both count because they load db file content from the db.
  */
 export function bash_enforce_reader_operand_cap(
 	command: string,
@@ -1504,28 +1893,33 @@ export function bash_enforce_reader_operand_cap(
 	currentProjectPath: string,
 	files: string[],
 ) {
-	let appFileCount = 0;
+	let fileOperandCount = 0;
 	for (const file of files) {
 		if (file === "-") continue;
-		if (bash_is_path_under_current_project_path(currentProjectPath, bash_resolve_path(commandCtx.cwd, file))) {
-			appFileCount++;
+		const resolvedPath = bash_resolve_path(commandCtx.cwd, file);
+		// Mount reads pull whole file bodies from the db too, so count them against the same batch cap.
+		if (
+			bash_is_path_under_current_project_path(currentProjectPath, resolvedPath) ||
+			bash_is_path_under_mounts(resolvedPath)
+		) {
+			fileOperandCount++;
 		}
 	}
-	if (appFileCount > bash_READER_FILE_OPERAND_MAX) {
+	if (fileOperandCount > bash_READER_FILE_OPERAND_MAX) {
 		return {
 			stdout: "",
 			stderr:
-				`${command}: app file reads are limited to ${bash_READER_FILE_OPERAND_MAX} files per command (you requested ${appFileCount}). ` +
+				`${command}: db-backed file reads are limited to ${bash_READER_FILE_OPERAND_MAX} files per command (you requested ${fileOperandCount}). ` +
 				`This is a per-command batch limit, not a total ceiling: to READ these files, ${command} them in batches of ${bash_READER_FILE_OPERAND_MAX} or fewer across multiple commands. ` +
 				`To FIND which files mention something, use search (it returns matching snippets, not whole files).\n`,
-			exitCode: 2,
+			exitCode: bash_COMMAND_EXIT_USAGE,
 		};
 	}
 	return null;
 }
 
 /**
- * Return the current byte size for a loaded app file node before deciding
+ * Return the current byte size for a loaded db file before deciding
  * whether reader commands can read it inline.
  *
  * This reads metadata only: an unsaved edit's size wins over the committed
@@ -1533,27 +1927,27 @@ export function bash_enforce_reader_operand_cap(
  * cache because an earlier command in the same bash run may have changed the
  * unsaved edit.
  */
-export async function bash_get_app_file_byte_size(args: {
+export async function bash_get_db_file_byte_size(args: {
 	ctx: ActionCtx;
-	ctxData: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
-		workspaceName: string;
-		projectName: string;
-		userId: Id<"users">;
-	};
-	fileNode: Doc<"files_nodes">;
+	ctxData: bash_DbFilesFsOptions["ctxData"];
+	dbFilesDoc: Doc<"files_nodes">;
 }) {
-	if (args.fileNode.kind !== "file" || args.fileNode.assetId == null) {
+	if (args.dbFilesDoc.kind !== "file" || args.dbFilesDoc.assetId == null) {
 		return null;
 	}
 
-	if (files_node_has_editable_yjs_state(args.fileNode)) {
+	const workspaceId = args.ctxData.workspaceId;
+	const projectId = args.ctxData.projectId;
+	if (
+		files_node_has_editable_yjs_state(args.dbFilesDoc) &&
+		!workspaces_is_global_workspace_id(workspaceId) &&
+		!workspaces_is_global_github_project_id(projectId)
+	) {
 		const pendingUpdate = (await args.ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
-			workspaceId: args.ctxData.workspaceId,
-			projectId: args.ctxData.projectId,
+			workspaceId,
+			projectId,
 			userId: args.ctxData.userId,
-			fileNodeId: args.fileNode._id,
+			fileNodeId: args.dbFilesDoc._id,
 		})) as files_pending_updates_get_by_file_node_Result;
 		if (pendingUpdate) {
 			return pendingUpdate.size;
@@ -1563,13 +1957,13 @@ export async function bash_get_app_file_byte_size(args: {
 	const asset = (await args.ctx.runQuery(internal.r2.get_asset_by_id, {
 		workspaceId: args.ctxData.workspaceId,
 		projectId: args.ctxData.projectId,
-		assetId: args.fileNode.assetId,
+		assetId: args.dbFilesDoc.assetId,
 	})) as get_asset_by_id_Result;
 	return asset?.size ?? null;
 }
 
 /**
- * Build stderr guidance for app files whose body cannot be returned as text.
+ * Build stderr guidance for db files whose body cannot be returned as text.
  *
  * The sibling paths are hints for generated Markdown or plain text output.
  * Callers keep this advisory on stderr so it cannot be piped as file content.
@@ -1579,16 +1973,16 @@ export function bash_build_unreadable_file_advisory(
 	normalizedPath: string,
 	contentType: string | undefined,
 ) {
-	const shellPath = bash_app_file_node_path_to_current_project_path(currentProjectPath, normalizedPath);
+	const shellPath = bash_db_files_path_to_current_project_path(currentProjectPath, normalizedPath);
 	const lastSlashIndex = normalizedPath.lastIndexOf("/");
 	const lastDotIndex = normalizedPath.lastIndexOf(".");
-	const appFileNodePathWithoutExtension =
+	const dbFilesPathWithoutExtension =
 		lastDotIndex > lastSlashIndex ? normalizedPath.slice(0, lastDotIndex) : normalizedPath;
 	const relatedReadablePaths = Array.from(
 		new Set([
-			bash_app_file_node_path_to_current_project_path(currentProjectPath, `${normalizedPath}.md`),
-			bash_app_file_node_path_to_current_project_path(currentProjectPath, `${appFileNodePathWithoutExtension}.md`),
-			bash_app_file_node_path_to_current_project_path(currentProjectPath, `${appFileNodePathWithoutExtension}.txt`),
+			bash_db_files_path_to_current_project_path(currentProjectPath, `${normalizedPath}.md`),
+			bash_db_files_path_to_current_project_path(currentProjectPath, `${dbFilesPathWithoutExtension}.md`),
+			bash_db_files_path_to_current_project_path(currentProjectPath, `${dbFilesPathWithoutExtension}.txt`),
 		]),
 	).filter((path) => path !== shellPath);
 	return [

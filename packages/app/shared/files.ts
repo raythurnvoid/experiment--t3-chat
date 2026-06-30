@@ -26,10 +26,19 @@ import type { Merge } from "type-fest";
 export const files_ROOT_ID = "root" as const;
 
 /**
- * Virtual mount root under which read-only mounts (e.g. the GitHub mirror) are materialized in a
- * tenant's file tree. The constant is the shared single source of truth for the mount path prefix.
+ * Virtual mount path prefix for read-only reserved-scope external mounts (e.g. the GitHub mirror). The
+ * constant is the shared single source of truth for the shell-visible mount prefix.
  */
 export const files_MOUNT_ROOT = "/.mounts";
+
+/**
+ * Whether a normalized absolute path is the mount root or inside it (`/.mounts`, `/.mounts/<name>/...`).
+ * The `/.mounts` tree is a reserved, read-only projection of external sources, so user/agent file
+ * creation and edits must never target it.
+ */
+export function files_is_path_under_mount_root(path: string) {
+	return path === files_MOUNT_ROOT || path.startsWith(`${files_MOUNT_ROOT}/`);
+}
 
 export type files_VisibleTreeNode = Omit<
 	app_convex_Doc<"files_nodes">,
@@ -95,7 +104,7 @@ export type files_SpecialFileName = "README.md";
 
 export type files_InlineAiModelId = "gpt-5-mini";
 
-export const files_MAX_MARKDOWN_CHARACTERS = 900_000;
+export const files_MAX_TEXT_CONTENT_BYTES = 900_000;
 
 export function files_get_utf8_byte_size(content: string) {
 	return stringByteLength(content);

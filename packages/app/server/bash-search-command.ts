@@ -1,19 +1,15 @@
 import { defineCommand } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
-import type {
-	files_nodes_get_by_path_Result,
-	files_nodes_text_search_files_Result,
-} from "../convex/files_nodes.ts";
+import type { files_nodes_get_by_path_Result, files_nodes_text_search_files_Result } from "../convex/files_nodes.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { files_chunk_BITMASK_FLAGS, files_chunk_has_bitmask_flag } from "./files-markdown-chunking-mastra.ts";
 import {
-	bash_app_file_node_path_to_current_project_path,
 	bash_clamp_listing_page_limit,
-	bash_current_project_path_to_app_file_node_path,
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
 	bash_is_path_under_current_project_path,
+	bash_is_path_under_mounts,
 	bash_normalize_path,
 	bash_parse_limit,
 	bash_read_option_value,
@@ -22,11 +18,11 @@ import {
 	bash_search_command_exact_query_filter,
 	bash_search_command_exact_query_note,
 	bash_search_command_exact_query_summary,
-	type bash_WorkspaceFs,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
-
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
 
 function parse_args(args: string[], options: { currentProjectPath: string; cwd: string }) {
 	let limitValue: string | undefined;
@@ -113,7 +109,8 @@ function parse_args(args: string[], options: { currentProjectPath: string; cwd: 
 			arg.startsWith("~") ||
 			arg === "." ||
 			arg === ".." ||
-			bash_is_path_under_current_project_path(options.currentProjectPath, bash_normalize_path(arg)),
+			bash_is_path_under_current_project_path(options.currentProjectPath, bash_normalize_path(arg)) ||
+			bash_is_path_under_mounts(bash_normalize_path(arg)),
 	);
 	if (pathOperand != null) {
 		return Result({
@@ -125,27 +122,14 @@ function parse_args(args: string[], options: { currentProjectPath: string; cwd: 
 		});
 	}
 
-	// Convert the user-facing folder scope to the app path used by the chunk index.
-	// The command handler verifies that this app path is an existing folder.
-	let path: string | undefined;
+	// Resolve the user-facing folder scope to an absolute shell path; the handler classifies it
+	// (project vs. mount) and verifies it is an existing folder.
+	let pathShell: string | undefined;
 	if (pathValue != null) {
 		if (pathValue === "") {
 			return Result({ _nay: { message: "search: --path requires a non-empty folder path" } });
 		}
-		const appFileNodePath = bash_current_project_path_to_app_file_node_path(
-			options.currentProjectPath,
-			bash_resolve_path(options.cwd, pathValue),
-		);
-		if (appFileNodePath == null) {
-			return Result({
-				_nay: {
-					message:
-						`search: --path must be a folder under the app file tree: ${pathValue}\n` +
-						`Use a path under ${options.currentProjectPath}.`,
-				},
-			});
-		}
-		path = appFileNodePath;
+		pathShell = bash_resolve_path(options.cwd, pathValue);
 	}
 
 	return Result({
@@ -153,19 +137,20 @@ function parse_args(args: string[], options: { currentProjectPath: string; cwd: 
 			query,
 			limit: limit._yay,
 			cursor,
-			path,
+			pathShell,
 		},
 	});
 }
 
-export function bash_search_command_create(ctx: ActionCtx, workspaceFs: bash_WorkspaceFs, currentProjectPath: string) {
+export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
 	return defineCommand("search", async (args, commandCtx) => {
 		const parsed = parse_args(args, { currentProjectPath, cwd: commandCtx.cwd });
 		if (parsed._nay) {
 			return {
 				stdout: "",
 				stderr: `${parsed._nay.message}\nUsage: search [--limit N] [--cursor CURSOR] [--path <folder>] <content terms...>\n`,
-				exitCode: 2,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
@@ -176,46 +161,66 @@ export function bash_search_command_create(ctx: ActionCtx, workspaceFs: bash_Wor
 				return {
 					stdout: "",
 					stderr: `${resolvedCursor._nay.message}\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
 			cursor = resolvedCursor._yay;
 		}
 
+		// search runs within exactly one indexed tree (the project or a single mount). The scope is the
+		// explicit --path folder when given, otherwise the cwd. Classify it to pick the right scope IDs.
+		const scopeShellPath = parsed._yay.pathShell ?? commandCtx.cwd;
+		const scope = bash_resolve_db_files_shell_path(scopeShellPath, dbFilesRoots);
+
+		if (scope.kind === "external_mounts_root") {
+			return {
+				stdout: "",
+				stderr:
+					"search: choose a single mount to search; cd into a mount or pass --path /.mounts/<name> <content terms>.\n" +
+					"Run 'ls /.mounts' to list the available mounts.\n",
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
+		}
+		// An explicit --path outside any indexed tree (e.g. /tmp) has nothing to search.
+		if (parsed._yay.pathShell != null && scope.dbFilesPath == null) {
+			return {
+				stdout: "",
+				stderr: `search: --path must be a folder under ${currentProjectPath} or ${bash_normalize_path(scopeShellPath).startsWith("/.mounts") ? "/.mounts/<name>" : "a mount"}: ${parsed._yay.pathShell}\n`,
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
+		}
+
 		// `search --path` is an exact folder scope, not a prefix scan.
-		if (parsed._yay.path != null && parsed._yay.path !== "/") {
+		if (parsed._yay.pathShell != null && scope.dbFilesPath != null && scope.dbFilesPath !== "/") {
 			const scopedFolder = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-				workspaceId: workspaceFs.ctxData.workspaceId,
-				projectId: workspaceFs.ctxData.projectId,
-				path: parsed._yay.path,
+				workspaceId: scope.ctxData.workspaceId,
+				projectId: scope.ctxData.projectId,
+				path: scope.dbFilesPath,
 			})) as files_nodes_get_by_path_Result;
-			const scopedShellPath = bash_app_file_node_path_to_current_project_path(currentProjectPath, parsed._yay.path);
+			const scopedShellPath = scope.renderShellPath(scope.dbFilesPath);
 			if (!scopedFolder) {
 				return {
 					stdout: "",
 					stderr: `search: --path folder does not exist: ${scopedShellPath}\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
 			if (scopedFolder.kind !== "folder") {
 				return {
 					stdout: "",
 					stderr: `search: --path must be a folder: ${scopedShellPath}\n`,
-					exitCode: COMMAND_EXIT_USAGE,
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 		}
 
-		const cwdAppFileNodePath = bash_current_project_path_to_app_file_node_path(currentProjectPath, commandCtx.cwd);
-
-		// Without --path, search follows cwd when it is inside currentProjectPath.
-		const path =
-			parsed._yay.path ?? (cwdAppFileNodePath != null && cwdAppFileNodePath !== "/" ? cwdAppFileNodePath : undefined);
+		// Scope the chunk scan to the classified folder; the project/mount root maps to the whole tree.
+		const path = scope.dbFilesPath != null && scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
 
 		const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
-			workspaceId: workspaceFs.ctxData.workspaceId,
-			projectId: workspaceFs.ctxData.projectId,
-			userId: workspaceFs.ctxData.userId,
+			workspaceId: scope.ctxData.workspaceId,
+			projectId: scope.ctxData.projectId,
+			userId: scope.ctxData.userId,
 			query: parsed._yay.query,
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
@@ -226,12 +231,11 @@ export function bash_search_command_create(ctx: ActionCtx, workspaceFs: bash_Wor
 		const searchResult = {
 			items: res.items.map((item) => ({
 				...item,
-				path: bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path),
+				path: scope.renderShellPath(item.path),
 			})),
 		};
 
-		const scopeNote =
-			path != null ? ` under ${bash_app_file_node_path_to_current_project_path(currentProjectPath, path)}` : "";
+		const scopeNote = path != null ? ` under ${scope.renderShellPath(path)}` : "";
 
 		// The miss text is actionable because full-text search accepts plain
 		// content terms, not path/name/glob syntax.
@@ -240,7 +244,7 @@ export function bash_search_command_create(ctx: ActionCtx, workspaceFs: bash_Wor
 			`search expects words from the file content, not a shell pattern: ` +
 			`pass one distinctive word or a few plain terms that should appear in the document body. ` +
 			`The text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. ` +
-			`It is implemented with Convex full-text search, but it is not path/name/glob/regex search; ` +
+			`It is implemented with db full-text search, but it is not path/name/glob/regex search; ` +
 			`use find -name QUERY or find --path-query QUERY for path/name discovery. ` +
 			`YAML frontmatter fields are indexed separately from body text, so a frontmatter field or value will not match here; ` +
 			`use meta search (e.g. exists/eq) to find files by a frontmatter field or value. ` +
@@ -304,7 +308,7 @@ export function bash_search_command_create(ctx: ActionCtx, workspaceFs: bash_Wor
 				blocks.push(
 					"",
 					bash_search_command_build_continuation({
-						currentProjectPath,
+						currentProjectPath: scope.basePath,
 						path,
 						limit: parsed._yay.limit,
 						cursor: cursorId,

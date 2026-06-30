@@ -320,9 +320,9 @@ const app_convex_schema = defineSchema({
 		archiveOperationId: v.optional(v.string()),
 		/** "root" for root items, otherwise parent folder `_id` */
 		parentId: v.union(v.id("files_nodes"), v.literal("root")),
-		/** Created by user ID */
+		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-workspace content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
-		/** Updated by user ID */
+		/** Updated by user ID. SYSTEM is the pseudo user ID for reserved global-workspace content. */
 		updatedBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		/** timestamp in milliseconds when document was last updated */
 		updatedAt: v.number(),
@@ -587,21 +587,23 @@ const app_convex_schema = defineSchema({
 		size: v.number(),
 		etag: v.optional(v.string()),
 		conversionWorkId: v.optional(v.union(vWorkId, v.null())),
+		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-workspace content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		updatedAt: v.number(),
 	}).index("by_workspace_project", ["workspaceId", "projectId"]),
 
 	/**
-	 * Operational status for read-only external mounts (v1: GitHub repo mirrors). Metadata only — no
-	 * revision/staging pointer. `name` maps to `/.mounts/<name>`. This table's own scope is not a file
-	 * scope, so no reserved-literal union applies.
+	 * Operational status for read-only external mounts (v1: GitHub repo mirrors). This table's own
+	 * scope is not a file scope, so no reserved-literal union applies.
 	 */
 	github_sources: defineTable({
-		name: v.string(), // mount name → /.mounts/<name>
+		/** Mount name exposed as `/.mounts/<name>`. */
+		name: v.string(),
 		owner: v.string(),
 		repo: v.string(),
 		defaultBranch: v.union(v.string(), v.null()),
-		ref: v.string(), // branch name to sync (v1: branch only)
+		/** Branch name to sync (v1: branch only). */
+		ref: v.string(),
 		lastCommitSha: v.union(v.string(), v.null()),
 		lastTreeSha: v.union(v.string(), v.null()),
 		lastSyncedAt: v.union(v.number(), v.null()),
@@ -616,8 +618,19 @@ const app_convex_schema = defineSchema({
 		skippedCount: v.optional(v.number()),
 		compressedBytesRead: v.optional(v.number()),
 		acceptedUncompressedBytes: v.optional(v.number()),
-		lockToken: v.optional(v.string()),
+		/** App-generated id for the active sync run; stale async writes must match this before writing. */
+		syncRunId: v.optional(v.string()),
 		lockedAt: v.optional(v.number()),
+		/**
+		 * Commit SHA learned at metadata-fetch time for the active sync. Finalize promotes it to
+		 * `lastCommitSha` on success or clears it on materialization failure.
+		 */
+		pendingCommitSha: v.optional(v.string()),
+		/**
+		 * Tree SHA learned at metadata-fetch time for the active sync. Kept on the source doc so the
+		 * last finishing worker can close the run without carrying per-file job metadata.
+		 */
+		pendingTreeSha: v.optional(v.string()),
 	}).index("by_name", ["name"]),
 	// #endregion files
 

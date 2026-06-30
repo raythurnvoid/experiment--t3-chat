@@ -1,9 +1,7 @@
-/*
-Files nodes are organized as a file tree where each node is either a folder or a Markdown file.
-
-This structure allows file-system-like operations such as finding all items under a path (`/docs/*`) or
-listing folder children and reading file content (`/docs/README.md`).
-*/
+// Files nodes are organized as a file tree where each node is either a folder or a Markdown file.
+//
+// This structure allows file-system-like operations such as finding all items under a path (`/docs/*`) or
+// listing folder children and reading file content (`/docs/README.md`).
 
 import {
 	httpAction,
@@ -60,6 +58,7 @@ import {
 	files_yjs_doc_create_from_tiptap_editor,
 	files_yjs_compute_diff_update_from_state_vector,
 	files_MAX_UPLOADS_BYTES,
+	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
 	type files_ContentType,
@@ -67,11 +66,17 @@ import {
 	type files_InlineAiModelId,
 } from "../server/files.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
+import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 import { minimatch } from "minimatch";
 import { Result, Result_all } from "../shared/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
-import { workspaces_is_global_workspace_id, workspaces_is_global_github_project_id } from "../shared/workspaces.ts";
+import {
+	workspaces_is_global_workspace_id,
+	workspaces_is_global_github_project_id,
+	workspaces_GLOBAL_WORKSPACE_ID,
+	workspaces_GLOBAL_GITHUB_PROJECT_ID,
+} from "../shared/workspaces.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import app_convex_schema from "./schema.ts";
 import { api, components, internal } from "./_generated/api.js";
@@ -362,48 +367,42 @@ export async function db_patch_file_chunks_scope(
 	]);
 }
 
-export async function db_insert_file_chunks(
+/**
+ * Insert a paired set of committed `files_markdown_chunks` + `files_plain_text_chunks` for one file node.
+ * Editable Markdown materialization passes a real `yjsSequence`; read-only text materialization omits it.
+ * Caller supplies the already-computed chunk array and the denormalized `path`/`archiveOperationId` for the
+ * plain-text docs. Does not touch `file_stats` or `files_metadata_docs` — callers own those.
+ */
+async function db_insert_committed_text_chunks(
 	ctx: MutationCtx,
 	args: {
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		projectId: Doc<"files_nodes">["projectId"];
 		nodeId: Id<"files_nodes">;
-		yjsSequence: number;
-		markdownContent: string;
+		path: string;
+		archiveOperationId?: string;
+		yjsSequence?: number;
+		chunks: ReadonlyArray<{
+			chunkIndex: number;
+			markdownChunk: string;
+			plainTextChunk: string;
+			startIndex: number;
+			endIndex: number;
+			lineStart: number;
+			lineEnd: number;
+			chunkFlags: number;
+		}>;
 	},
 ) {
-	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-	if (
-		!fileNode ||
-		fileNode.workspaceId !== args.workspaceId ||
-		fileNode.projectId !== args.projectId ||
-		fileNode.kind !== "file"
-	) {
-		const errorMessage = "db_insert_file_chunks expected a file node in the same workspace/project";
-		console.error(errorMessage, {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			nodeId: args.nodeId,
-			fileNode,
-		});
-		throw should_never_happen(errorMessage);
-	}
-
-	// Create new chunks from markdown.
-	const chunks = await files_chunk_markdown(args.markdownContent);
-	if (chunks._nay) {
-		return chunks;
-	}
-
 	// An empty chunk list naturally performs no inserts.
 	const markdownChunkIds = await Promise.all(
-		chunks._yay.map((chunk) =>
+		args.chunks.map((chunk) =>
 			ctx.db.insert("files_markdown_chunks", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				fileNodeId: args.nodeId,
 				sourceKind: "committed",
-				yjsSequence: args.yjsSequence,
+				...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
 				chunkIndex: chunk.chunkIndex,
 				markdownChunk: chunk.markdownChunk,
 				startIndex: chunk.startIndex,
@@ -416,17 +415,17 @@ export async function db_insert_file_chunks(
 	);
 
 	await Promise.all(
-		chunks._yay.map((chunk, index) =>
+		args.chunks.map((chunk, index) =>
 			ctx.db.insert("files_plain_text_chunks", {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
 				fileNodeId: args.nodeId,
 				sourceKind: "committed",
-				yjsSequence: args.yjsSequence,
+				...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
 				markdownChunkId: markdownChunkIds[index],
 				chunkIndex: chunk.chunkIndex,
-				path: fileNode.path,
-				archiveOperationId: fileNode.archiveOperationId,
+				path: args.path,
+				archiveOperationId: args.archiveOperationId,
 				plainTextChunk: chunk.plainTextChunk,
 				markdownChunk: chunk.markdownChunk,
 				startIndex: chunk.startIndex,
@@ -435,17 +434,65 @@ export async function db_insert_file_chunks(
 				lineEnd: chunk.lineEnd,
 				chunkFlags: chunk.chunkFlags,
 				hasChunkAbove: index > 0,
-				hasChunkBelow: index < chunks._yay.length - 1,
+				hasChunkBelow: index < args.chunks.length - 1,
 			}),
 		),
 	);
+}
 
-	await files_metadata_db_insert_committed(ctx, args);
+export async function db_insert_file_text_content(
+	ctx: MutationCtx,
+	args: {
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
+		nodeId: Id<"files_nodes">;
+		path: string;
+		archiveOperationId?: string;
+		yjsSequence?: number;
+		contentType: Doc<"files_nodes">["contentType"];
+		textContent: string;
+	},
+) {
+	const isMarkdown = args.contentType?.startsWith("text/markdown") ?? false;
+	const isPlainText = args.contentType?.startsWith("text/plain") ?? false;
+	if (!isMarkdown && !isPlainText) {
+		const errorMessage = "Unsupported text content type";
+		const errorData = {
+			contentType: args.contentType,
+			nodeId: args.nodeId,
+		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
 
-	// Persist exact wc counts now, while the full markdown is in hand, so `wc` never re-reads the
-	// file (it reads the file_stats doc). Computed on the whole document → exact, no chunk-boundary
-	// word-splitting error. Updates only the stats doc on re-materialization (node untouched).
-	const counts = files_compute_wc_counts(args.markdownContent);
+	const chunks = isMarkdown
+		? await files_chunk_markdown(args.textContent)
+		: Result({ _yay: files_chunk_plain_text(args.textContent) });
+	if (chunks._nay) {
+		return chunks;
+	}
+
+	await db_insert_committed_text_chunks(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		nodeId: args.nodeId,
+		path: args.path,
+		archiveOperationId: args.archiveOperationId,
+		yjsSequence: args.yjsSequence,
+		chunks: chunks._yay,
+	});
+
+	if (isMarkdown) {
+		await files_metadata_db_insert_committed(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId: args.nodeId,
+			yjsSequence: args.yjsSequence,
+			markdownContent: args.textContent,
+		});
+	}
+
+	const counts = files_compute_wc_counts(args.textContent);
 	await db_upsert_file_stats(ctx, {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
@@ -468,6 +515,23 @@ export async function db_replace_file_chunks(
 		markdownContent: string;
 	},
 ) {
+	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	if (
+		!fileNode ||
+		fileNode.workspaceId !== args.workspaceId ||
+		fileNode.projectId !== args.projectId ||
+		fileNode.kind !== "file"
+	) {
+		const errorMessage = "db_replace_file_chunks expected a file node in the same workspace/project";
+		console.error(errorMessage, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId: args.nodeId,
+			fileNode,
+		});
+		throw should_never_happen(errorMessage);
+	}
+
 	// Delete existing committed chunk/metadata docs.
 	await Promise.all([
 		ctx.db
@@ -498,7 +562,16 @@ export async function db_replace_file_chunks(
 		]),
 	);
 
-	return db_insert_file_chunks(ctx, args);
+	return db_insert_file_text_content(ctx, {
+		workspaceId: args.workspaceId,
+		projectId: args.projectId,
+		nodeId: args.nodeId,
+		path: fileNode.path,
+		archiveOperationId: fileNode.archiveOperationId,
+		yjsSequence: args.yjsSequence,
+		contentType: "text/markdown;charset=utf-8",
+		textContent: args.markdownContent,
+	});
 }
 
 export function files_nodes_create_yjs_snapshot_update_from_markdown(markdownContent: string) {
@@ -628,8 +701,8 @@ async function db_resolve_tree_node_id_from_path(
 async function resolve_parent_path_from_parent_id(
 	ctx: QueryCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		parentId: Doc<"files_nodes">["parentId"];
 	},
 ) {
@@ -711,9 +784,9 @@ async function cascade_file_descendants_path(
 async function db_insert_node(
 	ctx: MutationCtx,
 	args: {
-		userId: Id<"users">;
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		userId: Doc<"files_nodes">["createdBy"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		parentId: Doc<"files_nodes">["parentId"];
 		name: Doc<"files_nodes">["name"];
 		path: Doc<"files_nodes">["path"];
@@ -722,7 +795,8 @@ async function db_insert_node(
 		assetId?: Id<"files_r2_assets">;
 		yjsSnapshotAssetId?: Id<"files_r2_assets">;
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
-		markdownContent?: string;
+		textContent?: string;
+		readOnly?: boolean;
 		now: number;
 	},
 ) {
@@ -748,10 +822,9 @@ async function db_insert_node(
 		return Result({ _yay: nodeId });
 	}
 
-	if (args.markdownContent === undefined) {
-		// A file with no processable markdown content (e.g. a raw upload) still gets a stats doc,
-		// flagged unprocessable with -1; db_insert_file_chunks overwrites it with real counts if/when
-		// markdown content is materialized.
+	// A file with no processable text content (e.g. a raw upload) still gets a stats doc, flagged
+	// unprocessable with -1. A later materialization overwrites it with real counts if text appears.
+	if (args.textContent === undefined) {
 		await db_upsert_file_stats(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
@@ -763,7 +836,6 @@ async function db_insert_node(
 		return Result({ _yay: nodeId });
 	}
 
-	const markdownContent = args.markdownContent;
 	const initialYjsSequence = 0;
 
 	if (!args.assetId) {
@@ -773,6 +845,50 @@ async function db_insert_node(
 			projectId: args.projectId,
 			nodeId,
 		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	if (args.readOnly === true) {
+		await db_insert_file_text_content(ctx, {
+			workspaceId: args.workspaceId,
+			projectId: args.projectId,
+			nodeId,
+			path: args.path,
+			archiveOperationId: args.archiveOperationId,
+			contentType: args.contentType,
+			textContent: args.textContent,
+		}).then((chunks) => {
+			if (chunks._nay) {
+				throw convex_error({
+					message: "Failed to chunk",
+					cause: chunks._nay,
+				});
+			}
+			return chunks;
+		});
+
+		return Result({ _yay: nodeId });
+	}
+
+	// Writable files need editable Yjs docs, so they cannot live in the reserved global workspace.
+	// Reserved external resources are identified by workspaceId; SYSTEM and the reserved project id are
+	// valid only inside that global workspace.
+	if (workspaces_is_global_workspace_id(args.workspaceId)) {
+		const errorMessage = "Editable text content requires a real workspaceId";
+		const errorData = { workspaceId: args.workspaceId, projectId: args.projectId, nodeId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	if (workspaces_is_global_github_project_id(args.projectId)) {
+		const errorMessage = "Editable text content requires a real projectId";
+		const errorData = { workspaceId: args.workspaceId, projectId: args.projectId, nodeId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	if (args.userId === users_SYSTEM_AUTHOR) {
+		const errorMessage = "Editable text content requires a real user id";
+		const errorData = { workspaceId: args.workspaceId, projectId: args.projectId, nodeId };
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
 	}
@@ -805,12 +921,15 @@ async function db_insert_node(
 			fileNodeId: nodeId,
 			lastSequence: initialYjsSequence,
 		}),
-		db_insert_file_chunks(ctx, {
+		db_insert_file_text_content(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			nodeId,
+			path: args.path,
+			archiveOperationId: args.archiveOperationId,
 			yjsSequence: initialYjsSequence,
-			markdownContent,
+			contentType: args.contentType,
+			textContent: args.textContent,
 		}).then((chunks) => {
 			if (chunks._nay) {
 				throw convex_error({
@@ -854,9 +973,9 @@ async function db_insert_node(
 export async function files_nodes_db_create_node_recursively_at_path(
 	ctx: MutationCtx,
 	args: {
-		userId: Id<"users">;
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		userId: Doc<"files_nodes">["createdBy"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		projectId: Doc<"files_nodes">["projectId"];
 		parentId: Doc<"files_nodes">["parentId"];
 		path: string;
 		kind: Doc<"files_nodes">["kind"];
@@ -864,7 +983,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		assetId?: Id<"files_r2_assets">;
 		yjsSnapshotAssetId?: Id<"files_r2_assets">;
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
-		markdownContent?: string;
+		textContent?: string;
+		readOnly?: boolean;
 		now: number;
 	},
 ) {
@@ -958,7 +1078,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			assetId: isLeaf ? args.assetId : undefined,
 			yjsSnapshotAssetId: isLeaf ? args.yjsSnapshotAssetId : undefined,
 			archiveOperationId: isLeaf ? args.archiveOperationId : undefined,
-			markdownContent: isLeaf ? args.markdownContent : undefined,
+			textContent: isLeaf ? args.textContent : undefined,
+			readOnly: isLeaf ? args.readOnly : undefined,
 			now: args.now,
 		});
 
@@ -985,7 +1106,7 @@ export const create_folder_node = mutation({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
-		name: v.string(),
+		path: v.string(),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
@@ -1016,7 +1137,7 @@ export const create_folder_node = mutation({
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
 			parentId: args.parentId,
-			path: args.name,
+			path: args.path,
 			kind: "folder",
 			now: Date.now(),
 		});
@@ -1083,17 +1204,19 @@ export type files_nodes_create_folder_node_by_path_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-export const create_markdown_file_node = internalMutation({
+export const create_file_node = internalMutation({
 	args: {
-		userId: v.id("users"),
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		userId: doc(app_convex_schema, "files_nodes").fields.createdBy,
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
-		name: v.string(),
-		markdownContent: v.string(),
-		markdownAssetId: v.id("files_r2_assets"),
-		yjsSnapshotAssetId: v.id("files_r2_assets"),
+		path: v.string(),
+		contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
+		assetId: v.id("files_r2_assets"),
+		yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
 		archiveOperationId: v.optional(v.string()),
+		textContent: v.string(),
+		readOnly: v.boolean(),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
@@ -1102,13 +1225,14 @@ export const create_markdown_file_node = internalMutation({
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			parentId: args.parentId,
-			path: args.name,
+			path: args.path,
 			kind: "file",
-			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-			assetId: args.markdownAssetId,
+			contentType: args.contentType,
+			assetId: args.assetId,
 			yjsSnapshotAssetId: args.yjsSnapshotAssetId,
 			archiveOperationId: args.archiveOperationId,
-			markdownContent: args.markdownContent,
+			textContent: args.textContent,
+			readOnly: args.readOnly,
 			now: Date.now(),
 		});
 		if (nodeIdResult._nay) {
@@ -1119,83 +1243,130 @@ export const create_markdown_file_node = internalMutation({
 	},
 });
 
-export async function files_nodes_db_finalize_markdown_node_creation(
+export async function files_nodes_db_finalize_file_node_creation(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		workspaceId: Doc<"files_r2_assets">["workspaceId"];
+		projectId: Doc<"files_r2_assets">["projectId"];
 		nodeId: Id<"files_nodes">;
-		userId: Id<"users">;
-		markdownAssetId: Id<"files_r2_assets">;
-		markdownSize: number;
-		yjsSnapshotAssetId: Id<"files_r2_assets">;
-		yjsSnapshotSize: number;
-		versionSnapshotAssetId: Id<"files_r2_assets">;
-		versionSnapshotSize: number;
+		userId?: Id<"users">;
+		contentAssetId: Id<"files_r2_assets">;
+		contentSize: number;
+		yjsSnapshotAssetId?: Id<"files_r2_assets">;
+		yjsSnapshotSize?: number;
+		versionSnapshotAssetId?: Id<"files_r2_assets">;
+		versionSnapshotSize?: number;
 	},
 ) {
 	const now = Date.now();
+
+	if ((args.yjsSnapshotAssetId == null) !== (args.yjsSnapshotSize == null)) {
+		const errorMessage = "yjsSnapshotAssetId and yjsSnapshotSize must be set together";
+		const errorData = { nodeId: args.nodeId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	if ((args.versionSnapshotAssetId == null) !== (args.versionSnapshotSize == null)) {
+		const errorMessage = "versionSnapshotAssetId and versionSnapshotSize must be set together";
+		const errorData = { nodeId: args.nodeId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
 	await Promise.all([
-		ctx.db.patch("files_r2_assets", args.markdownAssetId, {
+		ctx.db.patch("files_r2_assets", args.contentAssetId, {
 			r2Key: r2_create_asset_key({
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
-				assetId: args.markdownAssetId,
+				assetId: args.contentAssetId,
 			}),
-			size: args.markdownSize,
+			size: args.contentSize,
 			updatedAt: now,
 		}),
-		ctx.db.patch("files_r2_assets", args.yjsSnapshotAssetId, {
-			r2Key: r2_create_asset_key({
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				assetId: args.yjsSnapshotAssetId,
-			}),
-			size: args.yjsSnapshotSize,
-			updatedAt: now,
-		}),
-		ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
-			r2Key: r2_create_asset_key({
-				workspaceId: args.workspaceId,
-				projectId: args.projectId,
-				assetId: args.versionSnapshotAssetId,
-			}),
-			size: args.versionSnapshotSize,
-			updatedAt: now,
-		}),
-		ctx.db.insert("files_snapshots", {
-			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			fileNodeId: args.nodeId,
-			assetId: args.versionSnapshotAssetId,
-			createdBy: args.userId,
-			archivedAt: -1,
-		}),
+		...((/* iife */) => {
+			if (args.yjsSnapshotAssetId === undefined || args.yjsSnapshotSize === undefined) {
+				return [];
+			}
+			return [
+				ctx.db.patch("files_r2_assets", args.yjsSnapshotAssetId, {
+					r2Key: r2_create_asset_key({
+						workspaceId: args.workspaceId,
+						projectId: args.projectId,
+						assetId: args.yjsSnapshotAssetId,
+					}),
+					size: args.yjsSnapshotSize,
+					updatedAt: now,
+				}),
+			];
+		})(),
+		...((/* iife */) => {
+			if (args.versionSnapshotAssetId === undefined || args.versionSnapshotSize === undefined) {
+				return [];
+			}
+			if (args.userId === undefined) {
+				const errorMessage = "version snapshot userId is not set";
+				const errorData = { nodeId: args.nodeId, versionSnapshotAssetId: args.versionSnapshotAssetId };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+			if (workspaces_is_global_workspace_id(args.workspaceId)) {
+				const errorMessage = "Version snapshot requires a real workspaceId";
+				const errorData = { nodeId: args.nodeId, workspaceId: args.workspaceId };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+			if (workspaces_is_global_github_project_id(args.projectId)) {
+				const errorMessage = "Version snapshot requires a real projectId";
+				const errorData = { nodeId: args.nodeId, projectId: args.projectId };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+			return [
+				ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
+					r2Key: r2_create_asset_key({
+						workspaceId: args.workspaceId,
+						projectId: args.projectId,
+						assetId: args.versionSnapshotAssetId,
+					}),
+					size: args.versionSnapshotSize,
+					updatedAt: now,
+				}),
+				ctx.db.insert("files_snapshots", {
+					workspaceId: args.workspaceId,
+					projectId: args.projectId,
+					fileNodeId: args.nodeId,
+					assetId: args.versionSnapshotAssetId,
+					createdBy: args.userId,
+					archivedAt: -1,
+				}),
+			];
+		})(),
 	]);
 
 	return Result({ _yay: null });
 }
 
-export const finalize_markdown_node_creation = internalMutation({
+export const finalize_file_node_creation = internalMutation({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		workspaceId: doc(app_convex_schema, "files_r2_assets").fields.workspaceId,
+		projectId: doc(app_convex_schema, "files_r2_assets").fields.projectId,
 		nodeId: v.id("files_nodes"),
-		userId: v.id("users"),
-		markdownAssetId: v.id("files_r2_assets"),
-		markdownSize: v.number(),
-		yjsSnapshotAssetId: v.id("files_r2_assets"),
-		yjsSnapshotSize: v.number(),
-		versionSnapshotAssetId: v.id("files_r2_assets"),
-		versionSnapshotSize: v.number(),
+		userId: v.optional(v.id("users")),
+		contentAssetId: v.id("files_r2_assets"),
+		contentSize: v.number(),
+		yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
+		yjsSnapshotSize: v.optional(v.number()),
+		versionSnapshotAssetId: v.optional(v.id("files_r2_assets")),
+		versionSnapshotSize: v.optional(v.number()),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		return await files_nodes_db_finalize_markdown_node_creation(ctx, args);
+		return await files_nodes_db_finalize_file_node_creation(ctx, args);
 	},
 });
 
-export const cleanup_markdown_node_creation_assets = internalMutation({
+export const cleanup_file_node_creation_assets = internalMutation({
 	args: {
 		assetIds: v.array(v.id("files_r2_assets")),
 		r2Keys: v.array(v.string()),
@@ -1217,8 +1388,141 @@ export const cleanup_markdown_node_creation_assets = internalMutation({
 	},
 });
 
-type create_markdown_file_node_Result =
-	typeof create_markdown_file_node extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+/**
+ * Internal file-node creation for GitHub source content.
+ *
+ * Creates a read-only text file at `path` in GLOBAL/GITHUB scope, using the SYSTEM user id,
+ * one content asset, and no Yjs or version snapshot docs.
+ */
+export const create_file_node_internal = internalAction({
+	args: {
+		path: v.string(),
+		rawText: v.string(),
+		sourceId: v.optional(v.id("github_sources")),
+		syncRunId: v.optional(v.string()),
+	},
+	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
+	handler: async (ctx, args) => {
+		if ((args.sourceId == null) !== (args.syncRunId == null)) {
+			return Result({ _nay: { message: "External source sync run requires sourceId and syncRunId" } });
+		}
+		if (args.sourceId != null && args.syncRunId != null) {
+			const source = await ctx.runQuery(internal.github_sources.get_source, { sourceId: args.sourceId });
+			if (!source || source.syncRunId !== args.syncRunId || source.status !== "running") {
+				return Result({ _nay: { message: "External source sync was superseded" } });
+			}
+			if (args.path !== `/${source.name}` && !args.path.startsWith(`/${source.name}/`)) {
+				return Result({ _nay: { message: "External source path does not belong to the active mount" } });
+			}
+		}
+
+		const byteSize = files_get_utf8_byte_size(args.rawText);
+		if (byteSize > files_MAX_TEXT_CONTENT_BYTES) {
+			return Result({
+				_nay: {
+					name: "nay",
+					message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit`,
+				},
+			});
+		}
+
+		const assetId = await ctx.runMutation(internal.r2.insert_asset, {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			kind: "content",
+			size: byteSize,
+			createdBy: users_SYSTEM_AUTHOR,
+		});
+
+		const r2Key = r2_create_asset_key({
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			assetId,
+		});
+
+		try {
+			await r2_put_object(ctx, {
+				key: r2Key,
+				body: args.rawText,
+				contentType: "text/plain;charset=utf-8" satisfies files_ContentType,
+			});
+		} catch (error) {
+			await ctx.runMutation(internal.files_nodes.cleanup_file_node_creation_assets, {
+				assetIds: [assetId],
+				r2Keys: [r2Key],
+			});
+			console.error("Failed to write external source file asset", { error, assetId, path: args.path });
+			return Result({ _nay: { message: "Failed to create external source file" } });
+		}
+
+		// Concurrent mount materialization races on shared folder creation (read-then-insert in
+		// files_nodes_db_create_node_recursively_at_path), which Convex surfaces as a commit-time write conflict.
+		// Retry the node-creation mutation a few times — the conflicting writer commits the folder, so a
+		// retry reads it and proceeds — reusing the same asset so a transient conflict leaks no orphan.
+		let created: create_file_node_Result | null = null;
+		let lastCreateError: unknown = null;
+		for (let attempt = 0; attempt < 5 && created === null; attempt++) {
+			try {
+				created = (await ctx.runMutation(internal.files_nodes.create_file_node, {
+					userId: users_SYSTEM_AUTHOR,
+					workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+					projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+					parentId: files_ROOT_ID,
+					path: args.path,
+					assetId,
+					contentType: "text/plain;charset=utf-8" satisfies files_ContentType,
+					textContent: args.rawText,
+					readOnly: true,
+				})) as create_file_node_Result;
+			} catch (error) {
+				lastCreateError = error;
+			}
+		}
+		if (created === null) {
+			await ctx.runMutation(internal.files_nodes.cleanup_file_node_creation_assets, {
+				assetIds: [assetId],
+				r2Keys: [r2Key],
+			});
+			console.error("Failed to create external source file node after retries", {
+				error: lastCreateError,
+				path: args.path,
+			});
+			return Result({ _nay: { message: "Failed to create external source file node" } });
+		}
+		if (created._nay) {
+			await ctx.runMutation(internal.files_nodes.cleanup_file_node_creation_assets, {
+				assetIds: [assetId],
+				r2Keys: [r2Key],
+			});
+			return created;
+		}
+
+		const createdNodeId = created._yay?.nodeId;
+		if (!createdNodeId) {
+			await ctx.runMutation(internal.files_nodes.cleanup_file_node_creation_assets, {
+				assetIds: [assetId],
+				r2Keys: [r2Key],
+			});
+			return Result({ _nay: { message: "Failed to create external source file node" } });
+		}
+
+		const finalized = (await ctx.runMutation(internal.files_nodes.finalize_file_node_creation, {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			nodeId: createdNodeId,
+			contentAssetId: assetId,
+			contentSize: byteSize,
+		})) as { _yay?: null; _nay?: { message: string } };
+		if (finalized._nay) {
+			return Result({ _nay: { message: finalized._nay.message } });
+		}
+
+		return Result({ _yay: { nodeId: createdNodeId } });
+	},
+});
+
+type create_file_node_Result =
+	typeof create_file_node extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -1242,7 +1546,7 @@ async function action_create_markdown_node(
 		workspaceId: Id<"workspaces">;
 		projectId: Id<"workspaces_projects">;
 		parentId: Doc<"files_nodes">["parentId"];
-		name: string;
+		path: string;
 		markdownContent: string;
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 	},
@@ -1294,7 +1598,7 @@ async function action_create_markdown_node(
 
 	const assetIds = [markdownAssetId, yjsSnapshotAssetId, versionSnapshotAssetId];
 	const cleanupCreatedAssets = async () => {
-		await ctx.runMutation(internal.files_nodes.cleanup_markdown_node_creation_assets, {
+		await ctx.runMutation(internal.files_nodes.cleanup_file_node_creation_assets, {
 			assetIds,
 			r2Keys: [markdownR2Key, yjsSnapshotR2Key, versionSnapshotR2Key],
 		});
@@ -1327,29 +1631,31 @@ async function action_create_markdown_node(
 		return Result({ _nay: { message: "Failed to create file" } });
 	}
 
-	const created = (await ctx.runMutation(internal.files_nodes.create_markdown_file_node, {
+	const created = (await ctx.runMutation(internal.files_nodes.create_file_node, {
 		userId: args.userId,
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		parentId: args.parentId,
-		name: args.name,
-		markdownContent: args.markdownContent,
-		markdownAssetId: markdownAssetId,
+		path: args.path,
+		contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+		assetId: markdownAssetId,
 		yjsSnapshotAssetId,
+		textContent: args.markdownContent,
+		readOnly: false,
 		archiveOperationId: args.archiveOperationId,
-	})) as create_markdown_file_node_Result;
+	})) as create_file_node_Result;
 	if (created._nay) {
 		await cleanupCreatedAssets();
 		return created;
 	}
 
-	const finalized = (await ctx.runMutation(internal.files_nodes.finalize_markdown_node_creation, {
+	const finalized = (await ctx.runMutation(internal.files_nodes.finalize_file_node_creation, {
 		workspaceId: args.workspaceId,
 		projectId: args.projectId,
 		nodeId: created._yay.nodeId,
 		userId: args.userId,
-		markdownAssetId,
-		markdownSize: files_get_utf8_byte_size(args.markdownContent),
+		contentAssetId: markdownAssetId,
+		contentSize: files_get_utf8_byte_size(args.markdownContent),
 		yjsSnapshotAssetId,
 		yjsSnapshotSize: snapshotUpdate._yay.byteLength,
 		versionSnapshotAssetId,
@@ -1366,7 +1672,7 @@ export const create_markdown_node = action({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
-		name: v.string(),
+		path: v.string(),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
@@ -1393,7 +1699,7 @@ export const create_markdown_node = action({
 			projectId: membership.projectId,
 			parentId: args.parentId,
 			markdownContent: files_INITIAL_CONTENT,
-			name: args.name,
+			path: args.path,
 		});
 	},
 });
@@ -1531,7 +1837,7 @@ export const rename_node = mutation({
 	args: {
 		membershipId: v.id("workspaces_projects_users"),
 		nodeId: v.id("files_nodes"),
-		name: v.string(),
+		path: v.string(),
 	},
 	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
 	handler: async (ctx, args) => {
@@ -1562,7 +1868,7 @@ export const rename_node = mutation({
 			return Result({ _yay: null });
 		}
 
-		const pathSegments = path_extract_segments_from(args.name);
+		const pathSegments = path_extract_segments_from(args.path);
 		// Resolve the target first so simple and nested renames share one conflict/write path.
 		let targetParentId = fileNode.parentId;
 		let targetParentPath: string | null;
@@ -1657,7 +1963,7 @@ export const rename_node = mutation({
 			}
 
 			targetParentPath = parentPath;
-			leafName = args.name;
+			leafName = args.path;
 		}
 
 		if (targetParentPath == null) {
@@ -3156,6 +3462,8 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 						.first();
 
 		if (fileNode == null) return null;
+		if (fileNode.kind !== "file") return null;
+
 		// External (reserved) scope: no Yjs/pending/materialization. Read the linked R2 content asset
 		// directly and leave `content` undefined so `get_file_last_available_markdown_content_by_path`
 		// falls into its raw-R2 `.text()` branch.
@@ -3510,9 +3818,9 @@ async function files_resolve_readable_content_or_window(
 }
 
 /**
- * Resolve the materialized-chunk read target for a path, or null when the chunk fast path must NOT
- * be used: a pending user overlay (not yet materialized), a stale snapshot (latest edits not yet
- * materialized — chunks would disagree with `cat`), an explicit pendingUpdateId (caller wants a
+ * Resolve the committed-chunk read target for a path, or null when the chunk fast path must NOT
+ * be used: a pending user overlay (not yet committed), a stale snapshot (latest edits not yet
+ * committed — chunks would disagree with `cat`), an explicit pendingUpdateId (caller wants a
  * pending view), or a non-file / non-editable node. `byteSize` is the committed content byte size.
  */
 async function db_resolve_committed_chunk_source(
@@ -3543,6 +3851,8 @@ async function db_resolve_committed_chunk_source(
 		)
 		.first();
 	if (fileNode == null) return null;
+	if (fileNode.kind !== "file") return null;
+
 	// Exact wc counts from the linked file_stats doc (read O(1) by id — the back-ref the node holds).
 	// null when unlinked (old file not yet migrated) or flagged unprocessable (-1), so the stats
 	// query falls back to the windowed estimate. Shared by both scopes.
@@ -3852,7 +4162,11 @@ export const read_file_content_from_chunks = internalQuery({
 			)
 			.first();
 		if (fileNode == null) return null;
-		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+		if (fileNode.kind !== "file") return null;
+		if (
+			!workspaces_is_global_workspace_id(args.workspaceId) &&
+			!workspaces_is_global_github_project_id(args.projectId)
+		) {
 			if (!files_node_has_editable_yjs_state(fileNode)) return null;
 
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
@@ -3944,7 +4258,10 @@ export const read_file_content_from_chunks = internalQuery({
 		// snapshot must be current (stale → null so the action fallback runs). External: the linked R2
 		// content asset's size.
 		let byteSize: number;
-		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+		if (
+			!workspaces_is_global_workspace_id(args.workspaceId) &&
+			!workspaces_is_global_github_project_id(args.projectId)
+		) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
@@ -4619,7 +4936,10 @@ export const match_markdown_file_lines = internalQuery({
 			return null;
 
 		let pendingUpdateId: Id<"files_pending_updates"> | null = null;
-		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+		if (
+			!workspaces_is_global_workspace_id(args.workspaceId) &&
+			!workspaces_is_global_github_project_id(args.projectId)
+		) {
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
 			const workspaceId = args.workspaceId;
 			const projectId = args.projectId;
@@ -4703,7 +5023,10 @@ export const match_markdown_file_lines = internalQuery({
 
 		// Tenant committed chunks are valid only when the latest Yjs sequence is materialized; external
 		// (reserved) rows have no Yjs/materialization state and read committed chunks by node id.
-		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+		if (
+			!workspaces_is_global_workspace_id(args.workspaceId) &&
+			!workspaces_is_global_github_project_id(args.projectId)
+		) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
@@ -4826,7 +5149,10 @@ export const match_plain_text_file_lines = internalQuery({
 			return null;
 
 		let pendingUpdateId: Id<"files_pending_updates"> | null = null;
-		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+		if (
+			!workspaces_is_global_workspace_id(args.workspaceId) &&
+			!workspaces_is_global_github_project_id(args.projectId)
+		) {
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
 			const workspaceId = args.workspaceId;
 			const projectId = args.projectId;
@@ -4876,7 +5202,10 @@ export const match_plain_text_file_lines = internalQuery({
 
 		// Tenant committed chunks are valid only when the latest Yjs sequence is materialized; external
 		// (reserved) rows have no Yjs/materialization state and read committed chunks by node id.
-		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+		if (
+			!workspaces_is_global_workspace_id(args.workspaceId) &&
+			!workspaces_is_global_github_project_id(args.projectId)
+		) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
 				workspaceId: args.workspaceId,
 				projectId: args.projectId,
@@ -5309,7 +5638,10 @@ export const text_search_files = internalQuery({
 		// Reserved (external) scope has no per-user pending overlay; tenant scope suppresses committed
 		// chunks for files the acting user is currently editing.
 		let pendingNodeIds: Array<Id<"files_nodes">> = [];
-		if (!workspaces_is_global_workspace_id(args.workspaceId) && !workspaces_is_global_github_project_id(args.projectId)) {
+		if (
+			!workspaces_is_global_workspace_id(args.workspaceId) &&
+			!workspaces_is_global_github_project_id(args.projectId)
+		) {
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closure below.
 			const workspaceId = args.workspaceId;
 			const projectId = args.projectId;
@@ -5415,7 +5747,7 @@ export const create_file_by_path = internalAction({
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			parentId: files_ROOT_ID,
-			name: args.path,
+			path: args.path,
 			markdownContent: args.markdownContent ?? "",
 		});
 	},
@@ -5531,7 +5863,7 @@ export const create_home_file = action({
 			workspaceId: membership.workspaceId,
 			projectId: membership.projectId,
 			parentId: files_ROOT_ID,
-			name: "README.md" satisfies files_SpecialFileName,
+			path: "README.md" satisfies files_SpecialFileName,
 			// Keep the auto-created home file consistent with user-created Markdown files.
 			markdownContent: files_INITIAL_CONTENT,
 		});
@@ -6186,7 +6518,7 @@ const store_version_snapshot_args_schema = v.object({
 	projectId: v.id("workspaces_projects"),
 	nodeId: v.id("files_nodes"),
 	assetId: v.id("files_r2_assets"),
-	createdBy: v.id("users"),
+	userId: v.id("users"),
 });
 
 function yjs_merge_updates_to_array_buffer(updates: Uint8Array[]) {
@@ -6242,7 +6574,7 @@ async function store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store
 		projectId: args.projectId,
 		fileNodeId: args.nodeId,
 		assetId: args.assetId,
-		createdBy: args.createdBy,
+		createdBy: args.userId,
 		archivedAt: -1,
 	});
 
@@ -6356,7 +6688,7 @@ export const finalize_file_content_materialization = internalMutation({
 				}),
 				ctx.db.patch("files_yjs_snapshots", state.yjsSnapshotDoc._id, {
 					sequence: args.sequence,
-					updatedBy: "system",
+					updatedBy: users_SYSTEM_AUTHOR,
 					updatedAt: now,
 				}),
 				...state.yjsUpdatesDocs
@@ -6374,7 +6706,7 @@ export const finalize_file_content_materialization = internalMutation({
 					projectId: args.projectId,
 					nodeId: args.nodeId,
 					assetId: args.versionSnapshotAssetId,
-					createdBy: args.userId,
+					userId: args.userId,
 				}),
 				ctx.db
 					.query("files_content_materialization_jobs")
@@ -6623,8 +6955,7 @@ export const restore_snapshot = internalMutation({
 		}
 
 		const now = Date.now();
-		const createdBy = userAuth.id;
-		const updatedBy = userAuth.id;
+		const userId = userAuth.id;
 
 		// Restoring snapshots can be destructive and we defensively store
 		// the current state as a backup snapshot
@@ -6675,7 +7006,7 @@ export const restore_snapshot = internalMutation({
 				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				assetId: args.currentSnapshotAssetId,
-				createdBy: createdBy,
+				userId,
 			}),
 
 			// Store the restored content as a new snapshot
@@ -6684,11 +7015,11 @@ export const restore_snapshot = internalMutation({
 				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				assetId: args.restoredSnapshotAssetId,
-				createdBy: createdBy,
+				userId,
 			}),
 
 			ctx.db.patch("files_nodes", fileNode._id, {
-				updatedBy: updatedBy,
+				updatedBy: userId,
 				updatedAt: now,
 			}),
 
@@ -6696,7 +7027,7 @@ export const restore_snapshot = internalMutation({
 				? db_insert_snapshot_restore_update(ctx, {
 						workspaceId: membership.workspaceId,
 						projectId: membership.projectId,
-						userId: userAuth.id,
+						userId,
 						nodeId: args.nodeId,
 						snapshotId: args.snapshotId,
 						restoreUpdate: args.restoreUpdate,

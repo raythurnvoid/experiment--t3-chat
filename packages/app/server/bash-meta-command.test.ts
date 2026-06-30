@@ -2,8 +2,10 @@ import { InMemoryFs, type CommandContext } from "just-bash/browser";
 import { describe, expect, test, vi } from "vitest";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server";
+import { files_MOUNT_ROOT } from "../shared/files.ts";
+import { workspaces_GLOBAL_GITHUB_PROJECT_ID, workspaces_GLOBAL_WORKSPACE_ID } from "../shared/workspaces.ts";
 import { bash_meta_command_create } from "./bash-meta-command.ts";
-import { bash_WorkspaceFs } from "./bash-utils.ts";
+import { bash_DbFilesFs, type bash_DbFilesRoots } from "./bash-utils.ts";
 
 const currentProjectPath = "/home/cloud-usr/w/personal/home";
 const ctxData = {
@@ -25,12 +27,36 @@ function create_command_runner() {
 		runMutation: vi.fn(),
 		runAction: vi.fn(),
 	} as unknown as ActionCtx;
-	const workspaceFs = new bash_WorkspaceFs({
+	const appDbFilesFs = new bash_DbFilesFs({
 		ctx,
 		ctxData,
 		currentProjectPath,
-		allowAppFileTreeMkdir: false,
+		allowDbFilesMkdir: false,
 	});
+	// `meta` runs against the app scope here; the external mount FS is required by the dbFilesRoots shape but is
+	// unused by these app-path cases.
+	const externalMountsDbFilesFs = new bash_DbFilesFs({
+		ctx,
+		ctxData: {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			workspaceName: "GLOBAL",
+			projectName: "GITHUB",
+			userId: ctxData.userId,
+		},
+		currentProjectPath: files_MOUNT_ROOT,
+		allowDbFilesMkdir: false,
+	});
+	const dbFilesRoots: bash_DbFilesRoots = {
+		app: {
+			currentProjectPath,
+			fs: appDbFilesFs,
+		},
+		externalMounts: {
+			currentProjectPath: files_MOUNT_ROOT,
+			fs: externalMountsDbFilesFs,
+		},
+	};
 	const commandCtx = {
 		fs: new InMemoryFs(),
 		cwd: currentProjectPath,
@@ -38,7 +64,7 @@ function create_command_runner() {
 		stdin: "" as unknown as CommandContext["stdin"],
 	} satisfies CommandContext;
 	return {
-		command: bash_meta_command_create(ctx, workspaceFs, currentProjectPath),
+		command: bash_meta_command_create(ctx, dbFilesRoots),
 		commandCtx,
 		runQuery,
 	};

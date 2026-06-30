@@ -3,10 +3,15 @@ import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { encodeStateAsUpdate, encodeStateVector } from "yjs";
 import { api, components, internal } from "./_generated/api.js";
-import { db_insert_file_chunks, files_line_range_from_text, files_tail_lines_from_text } from "./files_nodes.ts";
+import {
+	db_insert_file_text_content,
+	files_line_range_from_text,
+	files_tail_lines_from_text,
+} from "./files_nodes.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	files_MAX_UPLOADS_BYTES,
+	files_MAX_TEXT_CONTENT_BYTES,
 	files_ROOT_ID,
 	files_INITIAL_CONTENT,
 	files_get_utf8_byte_size,
@@ -1115,7 +1120,7 @@ test("rename_node updates descendants materialized paths", async () => {
 	await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: db.files.file_root_1._id,
-		name: renamedRootName,
+		path: renamedRootName,
 	});
 
 	await t.run(async (ctx) => {
@@ -1173,7 +1178,7 @@ test("rename_node leaves generated siblings independent from the source", async 
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: sourceNodeId,
-		name: "renamed.pdf",
+		path: "renamed.pdf",
 	});
 	if (renameResult._nay) {
 		throw new Error("Expected source rename with generated sibling to succeed", {
@@ -1233,7 +1238,7 @@ test("move_nodes leaves generated siblings independent from the source", async (
 	const targetFolder = await asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "received",
+		path: "received",
 	});
 	if (targetFolder._nay) {
 		throw new Error(targetFolder._nay.message);
@@ -1321,7 +1326,7 @@ test("home file path stays immutable on rename and move", async () => {
 	await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: homeNodeId,
-		name: "renamed-home.md",
+		path: "renamed-home.md",
 	});
 
 	await asUser.mutation(api.files_nodes.move_nodes, {
@@ -1349,7 +1354,7 @@ test("create_folder_node rejects duplicate active path", async () => {
 
 	const duplicateCreation = await asUser.mutation(api.files_nodes.create_folder_node, {
 		parentId: files_ROOT_ID,
-		name: db.files.file_root_1.name,
+		path: db.files.file_root_1.name,
 		membershipId: db.membershipId,
 	});
 
@@ -1387,7 +1392,7 @@ test("create_folder_node rejects active file at leaf path", async () => {
 	const result = await asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "notes",
+		path: "notes",
 	});
 
 	if (result._yay) {
@@ -1423,7 +1428,7 @@ test("create_folder_node rejects active file at intermediate path without creati
 	const result = await asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "notes/child",
+		path: "notes/child",
 	});
 
 	if (result._yay) {
@@ -1461,7 +1466,7 @@ test("create_folder_node reuses active intermediate folders", async () => {
 	const result = await asUser.mutation(api.files_nodes.create_folder_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: `${db.files.file_root_1.name}/new-child`,
+		path: `${db.files.file_root_1.name}/new-child`,
 	});
 
 	if (result._nay) {
@@ -1508,7 +1513,7 @@ test("create_markdown_node preserves caller-provided file names", async () => {
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "extensionless-create-file",
+		path: "extensionless-create-file",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected create_markdown_node to preserve caller-provided file name", {
@@ -1535,7 +1540,7 @@ test("create_markdown_node stores Markdown file properties", async () => {
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "properties.md",
+		path: "properties.md",
 	});
 	if (createdFile._nay) {
 		throw new Error(createdFile._nay.message);
@@ -1574,7 +1579,7 @@ test("create_markdown_node seeds initial Yjs content on the server", async () =>
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "server-initial.md",
+		path: "server-initial.md",
 	});
 	if (createdFile._nay) {
 		throw new Error(createdFile._nay.message);
@@ -1586,7 +1591,7 @@ test("create_markdown_node seeds initial Yjs content on the server", async () =>
 			throw new Error("Expected server-seeded Markdown node docs");
 		}
 
-		const [asset, lastSequence, yjsSnapshot, yjsUpdates] = await Promise.all([
+		const [asset, lastSequence, yjsSnapshot, yjsUpdates, markdownChunks, plainTextChunks] = await Promise.all([
 			ctx.db.get("files_r2_assets", fileNode.assetId),
 			ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
 			ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
@@ -1597,10 +1602,33 @@ test("create_markdown_node seeds initial Yjs content on the server", async () =>
 				)
 				.order("asc")
 				.collect(),
+			ctx.db
+				.query("files_markdown_chunks")
+				.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
+				)
+				.collect(),
+			ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
+					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
+				)
+				.collect(),
 		]);
 		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
+		const stats = fileNode.statsId ? await ctx.db.get("file_stats", fileNode.statsId) : null;
 
-		return { fileNode, asset, lastSequence, yjsSnapshot, yjsSnapshotAsset, yjsUpdates };
+		return {
+			fileNode,
+			asset,
+			lastSequence,
+			yjsSnapshot,
+			yjsSnapshotAsset,
+			yjsUpdates,
+			markdownChunks,
+			plainTextChunks,
+			stats,
+		};
 	});
 
 	expect(saved.fileNode.contentType).toBe("text/markdown;charset=utf-8");
@@ -1614,6 +1642,15 @@ test("create_markdown_node seeds initial Yjs content on the server", async () =>
 		kind: "yjs_snapshot",
 	});
 	expect(saved.yjsUpdates).toHaveLength(0);
+	expect(saved.markdownChunks.length).toBeGreaterThan(0);
+	expect(saved.markdownChunks.every((chunk) => chunk.yjsSequence === 0)).toBe(true);
+	expect(saved.plainTextChunks.length).toBe(saved.markdownChunks.length);
+	expect(saved.plainTextChunks.every((chunk) => chunk.yjsSequence === 0)).toBe(true);
+	expect(saved.stats).toMatchObject({
+		lineCount: 2,
+		wordCount: 9,
+		charCount: files_INITIAL_CONTENT.length,
+	});
 });
 
 test("create_markdown_node writes server-seeded initial content to R2", async () => {
@@ -1658,7 +1695,7 @@ test("create_markdown_node writes server-seeded initial content to R2", async ()
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "server-initial-materialized.md",
+		path: "server-initial-materialized.md",
 	});
 	if (createdFile._nay) {
 		throw new Error(createdFile._nay.message);
@@ -1739,7 +1776,7 @@ test("create_markdown_node does not publish a file node when initial R2 writes f
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "broken.md",
+		path: "broken.md",
 	});
 
 	expect(createdFile._nay?.message).toBe("Failed to create file");
@@ -1782,7 +1819,7 @@ test("create_markdown_node cleans up R2 objects when initial metadata sync fails
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "sync-failure.md",
+		path: "sync-failure.md",
 	});
 
 	expect(createdFile._nay?.message).toBe("Failed to create file");
@@ -1825,7 +1862,7 @@ test("create_markdown_node cleans up R2 assets when duplicate path rejects after
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "duplicate.md",
+		path: "duplicate.md",
 	});
 	if (createdFile._nay) {
 		throw new Error(createdFile._nay.message);
@@ -1853,7 +1890,7 @@ test("create_markdown_node cleans up R2 assets when duplicate path rejects after
 	const duplicate = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "duplicate.md",
+		path: "duplicate.md",
 	});
 
 	expect(duplicate._nay).toBeDefined();
@@ -1890,7 +1927,7 @@ test("create_folder_node creates missing folders for nested folder paths", async
 	});
 	const result = await asUser.mutation(api.files_nodes.create_folder_node, {
 		parentId: files_ROOT_ID,
-		name: "invalid/name",
+		path: "invalid/name",
 		membershipId: db.membershipId,
 	});
 
@@ -1929,7 +1966,7 @@ test("create_markdown_node creates missing folders for nested file paths", async
 	const result = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "notes/projects/plan.md",
+		path: "notes/projects/plan.md",
 	});
 	if (result._nay) {
 		throw new Error("Expected create_markdown_node to create the nested file path", {
@@ -1981,7 +2018,7 @@ test("archived nodes can share path with a new active node", async () => {
 
 	const recreatedFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		parentId: files_ROOT_ID,
-		name: duplicateName,
+		path: duplicateName,
 		membershipId: db.membershipId,
 	});
 	if (recreatedFile._nay) {
@@ -2049,7 +2086,7 @@ describe("files_nodes.get_authorized_by_path", () => {
 		const created = await asUser.action(api.files_nodes.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
-			name: "lookup.md",
+			path: "lookup.md",
 		});
 		if (created._nay) {
 			throw new Error(created._nay.message);
@@ -2111,7 +2148,22 @@ describe("files_nodes.create_upload_node", () => {
 		const docs = await t.run(async (ctx) => {
 			const source = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
-			return { asset, source };
+			const stats = source?.statsId ? await ctx.db.get("file_stats", source.statsId) : null;
+			const [markdownChunks, plainTextChunks] = await Promise.all([
+				ctx.db
+					.query("files_markdown_chunks")
+					.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", upload._yay.nodeId),
+					)
+					.collect(),
+				ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
+						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", upload._yay.nodeId),
+					)
+					.collect(),
+			]);
+			return { asset, source, stats, markdownChunks, plainTextChunks };
 		});
 		expect(docs.source).toMatchObject({
 			workspaceId: db.workspaceId,
@@ -2132,6 +2184,13 @@ describe("files_nodes.create_upload_node", () => {
 			size: 1234,
 		});
 		expect(docs.asset?.r2Key).toBeUndefined();
+		expect(docs.stats).toMatchObject({
+			lineCount: -1,
+			wordCount: -1,
+			charCount: -1,
+		});
+		expect(docs.markdownChunks).toEqual([]);
+		expect(docs.plainTextChunks).toEqual([]);
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
 			`workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${upload._yay.assetId}`,
 		);
@@ -2149,7 +2208,7 @@ describe("files_nodes.create_upload_node", () => {
 		const existing = await asUser.mutation(api.files_nodes.create_folder_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
-			name: "annual-report.pdf",
+			path: "annual-report.pdf",
 		});
 		if (existing._nay) {
 			throw new Error(existing._nay.message);
@@ -2318,7 +2377,7 @@ test("rename_node returns conflict and keeps original path", async () => {
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: db.files.file_root_2._id,
-		name: db.files.file_root_1.name,
+		path: db.files.file_root_1.name,
 	});
 	if (!("_nay" in renameResult)) {
 		throw new Error("Expected rename to fail with path conflict");
@@ -2349,7 +2408,7 @@ test("rename_node preserves caller-provided file names", async () => {
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "rename-source.md",
+		path: "rename-source.md",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected source file creation to succeed", {
@@ -2360,7 +2419,7 @@ test("rename_node preserves caller-provided file names", async () => {
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
-		name: "renamed-extensionless",
+		path: "renamed-extensionless",
 	});
 	if (renameResult._nay) {
 		throw new Error("Expected rename_node to preserve caller-provided file name", {
@@ -2387,7 +2446,7 @@ test("rename_node creates missing folders for nested file paths", async () => {
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "rename-path-source.md",
+		path: "rename-path-source.md",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected source file creation to succeed", {
@@ -2398,7 +2457,7 @@ test("rename_node creates missing folders for nested file paths", async () => {
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
-		name: "notes/projects/plan.md",
+		path: "notes/projects/plan.md",
 	});
 	if (renameResult._nay) {
 		throw new Error("Expected rename_node to create the nested file path", {
@@ -2453,7 +2512,7 @@ test("rename_node preserves caller-provided nested file names", async () => {
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: nestedFileId,
-		name: "README",
+		path: "README",
 	});
 	if (renameResult._nay) {
 		throw new Error("Expected rename_node to preserve nested README file name", {
@@ -2480,7 +2539,7 @@ test("rename_node preserves caller-provided file extensions", async () => {
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "unsupported-source.md",
+		path: "unsupported-source.md",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected source file creation to succeed", {
@@ -2491,7 +2550,7 @@ test("rename_node preserves caller-provided file extensions", async () => {
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
-		name: "renamed-source.txt",
+		path: "renamed-source.txt",
 	});
 
 	if (renameResult._nay) {
@@ -2517,7 +2576,7 @@ test("rename_node creates missing folders for nested folder paths", async () => 
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: db.files.file_root_2._id,
-		name: "invalid/name",
+		path: "invalid/name",
 	});
 
 	if (renameResult._nay) {
@@ -2554,7 +2613,7 @@ test("move_nodes returns conflict and keeps original path", async () => {
 
 	const conflictingSibling = await asUser.mutation(api.files_nodes.create_folder_node, {
 		parentId: db.files.file_root_2._id,
-		name: db.files.file_root_1_child_1.name,
+		path: db.files.file_root_1_child_1.name,
 		membershipId: db.membershipId,
 	});
 	if (conflictingSibling._nay) {
@@ -2581,6 +2640,33 @@ test("move_nodes returns conflict and keeps original path", async () => {
 		expect(child1?.parentId).toBe(db.files.file_root_1._id);
 		expect(child1?.path).toBe(`/${db.files.file_root_1.name}/${db.files.file_root_1_child_1.name}`);
 	});
+});
+
+test("create_folder_node allows tenant files under /.mounts", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Test User",
+	});
+
+	const result = await asUser.mutation(api.files_nodes.create_folder_node, {
+		parentId: files_ROOT_ID,
+		path: ".mounts",
+		membershipId: db.membershipId,
+	});
+	if (result._nay) {
+		throw new Error("Expected creating tenant /.mounts to succeed", { cause: result._nay });
+	}
+
+	const node = await asUser.query(internal.files_nodes.get_by_path, {
+		workspaceId: db.workspaceId,
+		projectId: db.projectId,
+		path: "/.mounts",
+	});
+	expect(node?._id).toBe(result._yay.nodeId);
+	expect(node?.name).toBe(".mounts");
 });
 
 test("unarchive_nodes returns conflict when active file already has the same path", async () => {
@@ -2814,7 +2900,7 @@ test("get_by_path ignores archived files with duplicate path", async () => {
 	const renameArchived = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: db.files.file_root_2._id,
-		name: db.files.file_root_1.name,
+		path: db.files.file_root_1.name,
 	});
 	if (renameArchived._nay) {
 		throw new Error("Expected archived rename to succeed");
@@ -2890,7 +2976,7 @@ test("N07 rename_node idempotency: same name no-op", async () => {
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: db.files.file_root_1._id,
-		name: db.files.file_root_1.name,
+		path: db.files.file_root_1.name,
 	});
 	expect(renameResult).not.toHaveProperty("_nay");
 
@@ -3040,7 +3126,7 @@ test("membership-scoped file and yjs APIs reject cross-user membership ids", asy
 	const unauthorizedRename = await asOtherUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: db.files.file_root_1._id,
-		name: "should-not-rename",
+		path: "should-not-rename",
 	});
 	if (!unauthorizedRename._nay) {
 		throw new Error("Expected rename_node to reject cross-user membership access");
@@ -3050,7 +3136,7 @@ test("membership-scoped file and yjs APIs reject cross-user membership ids", asy
 	const createdFile = await asOwner.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "membership-yjs-regression.md",
+		path: "membership-yjs-regression.md",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected owner to create regression file");
@@ -3103,7 +3189,7 @@ test("files_tree_write rate limit runs before membership validation", async () =
 		const result = await asUser.action(api.files_nodes.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
-			name: `tree-rate-limit-${i}.md`,
+			path: `tree-rate-limit-${i}.md`,
 		});
 		if (result._nay) {
 			throw new Error(`Expected tree write #${i + 1} to succeed, got: ${result._nay.message}`);
@@ -3115,7 +3201,7 @@ test("files_tree_write rate limit runs before membership validation", async () =
 	const blocked = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: otherDb.membershipId,
 		nodeId: createdNodeIds[0],
-		name: "should-rate-limit-before-membership.md",
+		path: "should-rate-limit-before-membership.md",
 	});
 
 	expect(blocked._nay?.message).toBe("Rate limit exceeded");
@@ -3548,12 +3634,14 @@ async function test_insert_searchable_markdown_file(
 			updatedBy: db.userId,
 			updatedAt: now,
 		});
-		const chunks = await db_insert_file_chunks(ctx, {
+		const chunks = await db_insert_file_text_content(ctx, {
 			workspaceId: db.workspaceId,
 			projectId: db.projectId,
 			nodeId,
+			path,
 			yjsSequence: 0,
-			markdownContent: markdown,
+			contentType: "text/markdown;charset=utf-8",
+			textContent: markdown,
 		});
 		if (chunks._nay) throw new Error(chunks._nay.message);
 		return nodeId;
@@ -4030,7 +4118,7 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 // Seed an external (reserved-scope) committed file the way a read-only mount will: a node with no
 // Yjs/pending/materialization, committed markdown + plain-text chunks with NO yjsSequence, a linked
 // R2 `content` asset, and exact wc stats. `r2Writes` gets the raw body so action-level R2 reads
-// resolve. Returns the node id. Mirrors `db_insert_file_chunks` doc shapes minus yjsSequence.
+// resolve. Returns the node id. Mirrors committed chunk doc shapes minus yjsSequence.
 async function test_insert_committed_external_markdown(
 	t: ReturnType<typeof test_convex>,
 	r2Writes: Map<string, BodyInit>,
@@ -4846,7 +4934,7 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 	const renamed = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId,
-		name: "renamed.md",
+		path: "renamed.md",
 	});
 	if (renamed._nay) throw new Error(renamed._nay.message);
 	expect((await search()).items.map((item) => item.path)).toEqual(["/metadata-scope/renamed.md"]);
@@ -5072,7 +5160,7 @@ test("text_search_files updates unified search scope when files are renamed and 
 	const renamed = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: renameNodeId,
-		name: "rename-target.md",
+		path: "rename-target.md",
 	});
 	if (renamed._nay) throw new Error(renamed._nay.message);
 	expect((await search("scopecommittedneedle")).items.map((item) => item.path)).toEqual(["/rename-target.md"]);
@@ -5245,7 +5333,7 @@ test("create_file_snapshot_content_url returns a signed R2 URL without fetching 
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "snapshot-r2.md",
+		path: "snapshot-r2.md",
 	});
 	if (createdFile._nay) {
 		throw new Error(createdFile._nay.message);
@@ -5310,7 +5398,7 @@ test("create_file_snapshot_content_url fails when a snapshot asset has no R2 key
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "missing-snapshot-r2.md",
+		path: "missing-snapshot-r2.md",
 	});
 	if (createdFile._nay) {
 		throw new Error(createdFile._nay.message);
@@ -5498,7 +5586,7 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 	const createdFile = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "rate-limit.md",
+		path: "rate-limit.md",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected owner to create rate-limit file");
@@ -5584,7 +5672,7 @@ test("yjs_push_update rate limit applies to anonymous JWT identities", async () 
 	const createdFile = await asAnonymous.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		name: "rate-limit-anonymous.md",
+		path: "rate-limit-anonymous.md",
 	});
 	if (createdFile._nay) {
 		throw new Error("Expected anonymous user to create rate-limit file");
@@ -6012,5 +6100,330 @@ describe("files_nodes.cleanup_old_snapshots", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("external/system mount text materialization (Phase D)", () => {
+	// Capture R2 PUT bodies by key so we can assert the single content asset was written and is
+	// addressable for hard-delete cleanup (Phase E). Mirrors the snapshot-restore test's capture setup.
+	function install_r2_object_capture() {
+		const r2Objects = new Map<string, BodyInit>();
+		generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
+			const key = customKey ?? "test-upload-key";
+			return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
+		});
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+				const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+				if (urlString.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
+					const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
+					r2Objects.set(key, init.body ?? "");
+					return new Response(null, { status: 200 });
+				}
+				return new Response(null, { status: 404 });
+			}),
+		);
+		return r2Objects;
+	}
+
+	// Same line/word/char accounting the production materializer applies, replicated locally so the
+	// expected file_stats are derived from the source rather than hard-coded.
+	function expected_wc_counts(text: string) {
+		let lineCount = 0;
+		let charCount = 0;
+		for (let index = 0; index < text.length; index++) {
+			const code = text.charCodeAt(index);
+			if (code === 10) lineCount++;
+			if (code < 0xdc00 || code > 0xdfff) charCount++;
+		}
+		const trimmed = text.trim();
+		const wordCount = trimmed.length === 0 ? 0 : trimmed.split(/\s+/u).length;
+		return { lineCount, wordCount, charCount };
+	}
+
+	// Markdown-hostile, plus a final line with no trailing newline and a non-ASCII line, to prove the
+	// plain-text chunker round-trips raw bytes unchanged (no markdown parsing, no normalization).
+	// Stored reserved-scope paths are `/<mount-name>/<rel>` — the `/.mounts` prefix is a bash-VFS mount
+	// point only, never persisted (see Phase F prefix knob).
+	const MOUNT_FILE_PATH = "/t3-chat/docs/notes.md";
+	const MOUNT_RAW_TEXT = [
+		"# heading-like but stored as plain text",
+		"```ts",
+		'const broken = "<unterminated string',
+		"| col_a | col_b |",
+		"plain Zorptelemetry marker line",
+		"\ttab-indented literal not code",
+		"",
+		"final line with no trailing newline",
+	].join("\n");
+
+	test("materializes a SYSTEM-authored reserved-scope text node readable byte-identical", async () => {
+		const t = test_convex();
+		const r2Objects = install_r2_object_capture();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+
+		const created = await t.action(internal.files_nodes.create_file_node_internal, {
+			path: MOUNT_FILE_PATH,
+			rawText: MOUNT_RAW_TEXT,
+		});
+		if (created._nay) {
+			throw new Error(`Expected external text node creation to succeed: ${created._nay.message}`);
+		}
+
+		// Full read reconstructs the source exactly (markdown-hostile content, no trailing newline).
+		const full = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			userId: db.userId,
+			path: MOUNT_FILE_PATH,
+			mode: { kind: "full", maxBytes: 1_000_000 },
+		});
+		expect(full?.content).toBe(MOUNT_RAW_TEXT);
+
+		// Line-range read matches the same window computed directly from the source.
+		const lineRange = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			userId: db.userId,
+			path: MOUNT_FILE_PATH,
+			mode: { kind: "lines", startLine: 4, maxLines: 2 },
+		});
+		expect(lineRange?.content).toBe(files_line_range_from_text(MOUNT_RAW_TEXT, 4, 2).content);
+
+		// Exact wc/stat from file_stats (read O(1), not estimated).
+		const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			userId: db.userId,
+			path: MOUNT_FILE_PATH,
+		});
+		const expectedCounts = expected_wc_counts(MOUNT_RAW_TEXT);
+		expect(stats).toMatchObject({
+			usable: true,
+			lineCount: expectedCounts.lineCount,
+			wordCount: expectedCounts.wordCount,
+			charCount: expectedCounts.charCount,
+			byteCount: files_get_utf8_byte_size(MOUNT_RAW_TEXT),
+		});
+
+		// Node + intermediate folders are reserved-scope and SYSTEM-authored; the content asset is keyed
+		// (so Phase E hard-delete can clean its R2 object) and holds the exact bytes.
+		const docs = await t.run(async (ctx) => {
+			const fileNode = await ctx.db.get("files_nodes", created._yay.nodeId);
+			const asset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
+			const [markdownChunks, plainTextChunks, metadataDocs, yjsSnapshots, yjsLastSequences] = await Promise.all([
+				ctx.db
+					.query("files_markdown_chunks")
+					.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
+						q
+							.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
+							.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+							.eq("fileNodeId", created._yay.nodeId),
+					)
+					.collect(),
+				ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
+						q
+							.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
+							.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+							.eq("fileNodeId", created._yay.nodeId),
+					)
+					.collect(),
+				ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_workspace_project_fileNode_qualifiedField", (q) =>
+						q
+							.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
+							.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+							.eq("fileNodeId", created._yay.nodeId),
+					)
+					.collect(),
+				ctx.db.query("files_yjs_snapshots").collect(),
+				ctx.db.query("files_yjs_docs_last_sequences").collect(),
+			]);
+			const mountFolder = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+					q
+						.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
+						.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+						.eq("path", "/t3-chat")
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			const docsFolder = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+					q
+						.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
+						.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+						.eq("path", "/t3-chat/docs")
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			return {
+				fileNode,
+				asset,
+				mountFolder,
+				docsFolder,
+				markdownChunks,
+				plainTextChunks,
+				metadataDocs,
+				yjsSnapshots,
+				yjsLastSequences,
+			};
+		});
+		expect(docs.fileNode).toMatchObject({
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			kind: "file",
+			contentType: "text/plain;charset=utf-8",
+			createdBy: users_SYSTEM_AUTHOR,
+			updatedBy: users_SYSTEM_AUTHOR,
+		});
+		expect(docs.fileNode?.yjsSnapshotId).toBeUndefined();
+		expect(docs.fileNode?.yjsLastSequenceId).toBeUndefined();
+		expect(docs.mountFolder).toMatchObject({
+			kind: "folder",
+			createdBy: users_SYSTEM_AUTHOR,
+			updatedBy: users_SYSTEM_AUTHOR,
+		});
+		expect(docs.docsFolder).toMatchObject({
+			kind: "folder",
+			createdBy: users_SYSTEM_AUTHOR,
+			updatedBy: users_SYSTEM_AUTHOR,
+		});
+		expect(docs.asset?.kind).toBe("content");
+		expect(docs.asset?.size).toBe(files_get_utf8_byte_size(MOUNT_RAW_TEXT));
+		const liveR2Key = docs.asset?.r2Key;
+		if (!liveR2Key) {
+			throw new Error("Expected external content asset to be keyed");
+		}
+		expect(r2Objects.get(liveR2Key)).toBe(MOUNT_RAW_TEXT);
+		expect(docs.markdownChunks.map((chunk) => chunk.markdownChunk).join("")).toBe(MOUNT_RAW_TEXT);
+		expect(docs.plainTextChunks.map((chunk) => chunk.plainTextChunk).join("")).toBe(MOUNT_RAW_TEXT);
+		expect(docs.markdownChunks.every((chunk) => chunk.yjsSequence === undefined)).toBe(true);
+		expect(docs.plainTextChunks.every((chunk) => chunk.yjsSequence === undefined)).toBe(true);
+		expect(docs.metadataDocs).toEqual([]);
+		expect(docs.yjsSnapshots).toEqual([]);
+		expect(docs.yjsLastSequences).toEqual([]);
+	});
+
+	test("grep-style line matching maps to raw source line numbers", async () => {
+		const t = test_convex();
+		install_r2_object_capture();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+
+		const created = await t.action(internal.files_nodes.create_file_node_internal, {
+			path: MOUNT_FILE_PATH,
+			rawText: MOUNT_RAW_TEXT,
+		});
+		if (created._nay) {
+			throw new Error(`Expected external text node creation to succeed: ${created._nay.message}`);
+		}
+
+		const plainMatch = await t.query(internal.files_nodes.match_plain_text_file_lines, {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			userId: db.userId,
+			fileNodeId: created._yay.nodeId,
+			pattern: "Zorptelemetry",
+			ignoreCase: false,
+			fixedStrings: true,
+			invert: false,
+		});
+		const plainMatchedLines = plainMatch?.lines.filter((line) => line.matched) ?? [];
+		expect(plainMatchedLines.map((line) => line.lineNumber)).toEqual([5]);
+		expect(plainMatchedLines[0]?.line).toContain("Zorptelemetry");
+
+		const markdownMatch = await t.query(internal.files_nodes.match_markdown_file_lines, {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			userId: db.userId,
+			fileNodeId: created._yay.nodeId,
+			pattern: "Zorptelemetry",
+			ignoreCase: false,
+			fixedStrings: true,
+			invert: false,
+			before: 0,
+			after: 0,
+		});
+		const markdownMatchedLines = markdownMatch?.lines.filter((line) => line.matched) ?? [];
+		expect(markdownMatchedLines.map((line) => line.lineNumber)).toEqual([5]);
+	});
+
+	test("search finds external chunks under pathPrefix and stays isolated from tenant scope", async () => {
+		const t = test_convex();
+		install_r2_object_capture();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+
+		const created = await t.action(internal.files_nodes.create_file_node_internal, {
+			path: MOUNT_FILE_PATH,
+			rawText: MOUNT_RAW_TEXT,
+		});
+		if (created._nay) {
+			throw new Error(`Expected external text node creation to succeed: ${created._nay.message}`);
+		}
+
+		const reservedHit = await t.query(internal.files_nodes.text_search_files, {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			userId: db.userId,
+			query: "Zorptelemetry",
+			pathPrefix: "/t3-chat",
+			numItems: 20,
+			cursor: null,
+		});
+		expect(reservedHit.items.map((item) => item.path)).toContain(MOUNT_FILE_PATH);
+
+		// A real tenant cannot see reserved-scope mount content.
+		const tenantMiss = await t.query(internal.files_nodes.text_search_files, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			query: "Zorptelemetry",
+			numItems: 20,
+			cursor: null,
+		});
+		expect(tenantMiss.items).toEqual([]);
+	});
+
+	test("oversize external file is skipped (returns _nay) rather than thrown", async () => {
+		const t = test_convex();
+		install_r2_object_capture();
+
+		const oversizePath = "/t3-chat/big.txt";
+		const result = await t.action(internal.files_nodes.create_file_node_internal, {
+			path: oversizePath,
+			rawText: "a".repeat(files_MAX_TEXT_CONTENT_BYTES + 1),
+		});
+		expect(result._nay).toBeTruthy();
+
+		const leaked = await t.run(async (ctx) => {
+			const node = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+					q
+						.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
+						.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+						.eq("path", oversizePath)
+						.eq("archiveOperationId", undefined),
+				)
+				.first();
+			const assets = await ctx.db
+				.query("files_r2_assets")
+				.withIndex("by_workspace_project", (q) =>
+					q.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID).eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID),
+				)
+				.collect();
+			return { node, assetCount: assets.length };
+		});
+		expect(leaked.node).toBeNull();
+		expect(leaked.assetCount).toBe(0);
 	});
 });

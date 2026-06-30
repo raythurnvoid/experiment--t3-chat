@@ -8,9 +8,7 @@ import type {
 } from "../convex/files_nodes.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import {
-	bash_app_file_node_path_to_current_project_path,
 	bash_create_glob_syntax_unsupported_message,
-	bash_current_project_path_to_app_file_node_path,
 	bash_cursor_id_create,
 	bash_delegate_native_just_bash_tmp_command,
 	bash_format_multiline_hint,
@@ -23,13 +21,13 @@ import {
 	bash_search_command_exact_query_note,
 	bash_search_command_exact_query_summary,
 	bash_shell_arg_quote,
-	type bash_WorkspaceFs,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	bash_NON_NEGATIVE_INTEGER_REGEX,
+	bash_TERMINAL_LINE_ENDING_REGEX,
+	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
-
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
-const TERMINAL_LINE_ENDING_REGEX = /\r\n?/g;
-const NON_NEGATIVE_INTEGER_REGEX = /^\d+$/u;
 
 const GREP_ATTACHED_CONTEXT_REGEX = /^-([ABC])(\d+)$/u;
 const GREP_LONG_CONTEXT_REGEX = /^--(after-context|before-context|context)=(\d+)$/u;
@@ -59,7 +57,7 @@ function parse_context_value(raw: string | undefined) {
 }
 
 function parse_window_value(option: string, raw: string, min: number) {
-	if (!NON_NEGATIVE_INTEGER_REGEX.test(raw.trim())) {
+	if (!bash_NON_NEGATIVE_INTEGER_REGEX.test(raw.trim())) {
 		return Result({ _nay: { message: `grep: ${option} must be an integer` } });
 	}
 	const value = Number(raw);
@@ -317,9 +315,7 @@ function parse_args(args: string[]) {
 	});
 }
 
-function build_window_args(
-	window: NonNullable<ReturnType<typeof parse_args>["_yay"]>["window"],
-) {
+function build_window_args(window: NonNullable<ReturnType<typeof parse_args>["_yay"]>["window"]) {
 	if (window?.kind === "slice") {
 		return ["--start-index", String(window.startIndex), "--max-chars", String(window.maxChars)];
 	}
@@ -410,9 +406,7 @@ function build_truncation_stderr(args: {
 	]);
 }
 
-function slice_mode_stderr(
-	window: NonNullable<ReturnType<typeof parse_args>["_yay"]>["window"],
-) {
+function slice_mode_stderr(window: NonNullable<ReturnType<typeof parse_args>["_yay"]>["window"]) {
 	return window?.kind === "slice"
 		? bash_format_multiline_hint("grep", [
 				"slice mode scans a text slice, not a full native line window; output may contain partial line text",
@@ -420,7 +414,8 @@ function slice_mode_stderr(
 		: "";
 }
 
-export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_WorkspaceFs, currentProjectPath: string) {
+export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
 	return defineCommand("grep", async (args, commandCtx) => {
 		// Parse only the bounded grep subset that maps cleanly to app-file queries.
 		// Unsupported flags stay recorded so later branches can return focused guidance.
@@ -431,7 +426,7 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 				stderr:
 					`${parsed._nay.message}\n` +
 					"Usage: grep [-n] [-i] [-F] [--start-line N --max-lines N | --start-index N --max-chars N] PATTERN <file>\n",
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
@@ -450,34 +445,36 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 		) {
 			const inputPath = parsed._yay.operands[0];
 			const absoluteShellPath = bash_resolve_path(commandCtx.cwd, inputPath);
+			const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
 			const target = {
 				inputPath,
 				absoluteShellPath,
-				appFileNodePath: bash_current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
+				pathResolution,
+				dbFilesPath: pathResolution.dbFilesPath,
 			};
 
-			if (target.appFileNodePath != null) {
+			if (target.dbFilesPath != null) {
 				if (bash_GLOB_METACHARACTER_REGEX.test(target.inputPath)) {
 					return {
 						stdout: "",
 						stderr: bash_create_glob_syntax_unsupported_message("grep", target.inputPath),
-						exitCode: COMMAND_EXIT_USAGE,
+						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
 
-				const fileNode =
-					target.appFileNodePath === "/"
+				const dbFilesDoc =
+					target.dbFilesPath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								workspaceId: workspaceFs.ctxData.workspaceId,
-								projectId: workspaceFs.ctxData.projectId,
-								path: target.appFileNodePath,
+								workspaceId: pathResolution.ctxData.workspaceId,
+								projectId: pathResolution.ctxData.projectId,
+								path: target.dbFilesPath,
 							})) as files_nodes_get_by_path_Result);
-				if (!fileNode || fileNode.kind !== "file") {
+				if (!dbFilesDoc || dbFilesDoc.kind !== "file") {
 					return {
 						stdout: "",
 						stderr: `grep: ${target.inputPath}: No such file or directory\n`,
-						exitCode: COMMAND_EXIT_FAILURE,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
 
@@ -488,16 +485,16 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 						return {
 							stdout: "",
 							stderr: regexError,
-							exitCode: COMMAND_EXIT_USAGE,
+							exitCode: bash_COMMAND_EXIT_USAGE,
 						};
 					}
 				}
 
 				const result = (await ctx.runQuery(internal.files_nodes.match_markdown_file_lines, {
-					workspaceId: workspaceFs.ctxData.workspaceId,
-					projectId: workspaceFs.ctxData.projectId,
-					userId: workspaceFs.ctxData.userId,
-					fileNodeId: fileNode._id,
+					workspaceId: pathResolution.ctxData.workspaceId,
+					projectId: pathResolution.ctxData.projectId,
+					userId: pathResolution.ctxData.userId,
+					fileNodeId: dbFilesDoc._id,
 					pattern: parsed._yay.pattern,
 					ignoreCase: parsed._yay.ignoreCase,
 					fixedStrings: parsed._yay.fixedStrings,
@@ -508,7 +505,7 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 				})) as files_nodes_match_markdown_file_lines_Result;
 
 				if (!result) {
-					return { stdout: "", stderr: "", exitCode: 1 };
+					return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_FAILURE };
 				}
 
 				const sliceModeWarning = slice_mode_stderr(parsed._yay.window);
@@ -538,7 +535,7 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 								inputPath: target.inputPath,
 								mode: "list",
 							}),
-						exitCode: 1,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
 
@@ -553,7 +550,7 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 								inputPath: target.inputPath,
 								mode: "count",
 							}),
-						exitCode: result.selectedCount > 0 ? 0 : 1,
+						exitCode: result.selectedCount > 0 ? 0 : bash_COMMAND_EXIT_FAILURE,
 					};
 				}
 
@@ -569,7 +566,7 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 								inputPath: target.inputPath,
 								mode: "matches",
 							}),
-						exitCode: 1,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
 
@@ -627,7 +624,7 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 					return {
 						stdout: "",
 						stderr: regexError,
-						exitCode: COMMAND_EXIT_USAGE,
+						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
 				regex = new RegExp(parsed._yay.pattern, parsed._yay.ignoreCase ? "iu" : "u");
@@ -635,7 +632,7 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 
 			const text = String(commandCtx.stdin ?? "");
 			const normalizedNeedle = parsed._yay.ignoreCase ? parsed._yay.pattern.toLowerCase() : parsed._yay.pattern;
-			const lines = text.replace(TERMINAL_LINE_ENDING_REGEX, "\n").split("\n");
+			const lines = text.replace(bash_TERMINAL_LINE_ENDING_REGEX, "\n").split("\n");
 			if (text.endsWith("\n")) {
 				lines.pop();
 			}
@@ -655,7 +652,7 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 				return {
 					stdout: selected.size > 0 ? "(standard input)\n" : "",
 					stderr: "",
-					exitCode: selected.size > 0 ? 0 : 1,
+					exitCode: selected.size > 0 ? 0 : bash_COMMAND_EXIT_FAILURE,
 				};
 			}
 
@@ -663,12 +660,12 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 				return {
 					stdout: `${selected.size}\n`,
 					stderr: "",
-					exitCode: selected.size > 0 ? 0 : 1,
+					exitCode: selected.size > 0 ? 0 : bash_COMMAND_EXIT_FAILURE,
 				};
 			}
 
 			if (selected.size === 0) {
-				return { stdout: "", stderr: "", exitCode: 1 };
+				return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_FAILURE };
 			}
 
 			const outputIndexes = new Set<number>();
@@ -705,8 +702,8 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 			parsed._yay.operands.every(
 				(operand) =>
 					operand === "-" ||
-					bash_current_project_path_to_app_file_node_path(currentProjectPath, bash_resolve_path(commandCtx.cwd, operand)) ==
-						null,
+					bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, operand), dbFilesRoots).kind ===
+						"outside_db_files",
 			)
 		) {
 			return await bash_delegate_native_just_bash_tmp_command("grep", args, commandCtx, currentProjectPath);
@@ -732,44 +729,46 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 		) {
 			const inputPath = parsed._yay.operands[0];
 			const absoluteShellPath = bash_resolve_path(commandCtx.cwd, inputPath);
+			const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
 			const target = {
 				inputPath,
 				absoluteShellPath,
-				appFileNodePath: bash_current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
+				pathResolution,
+				dbFilesPath: pathResolution.dbFilesPath,
 			};
 
-			const fileNode =
-				target.appFileNodePath == null || target.appFileNodePath === "/"
+			const dbFilesDoc =
+				target.dbFilesPath == null || target.dbFilesPath === "/"
 					? null
 					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-							workspaceId: workspaceFs.ctxData.workspaceId,
-							projectId: workspaceFs.ctxData.projectId,
-							path: target.appFileNodePath,
+							workspaceId: pathResolution.ctxData.workspaceId,
+							projectId: pathResolution.ctxData.projectId,
+							path: target.dbFilesPath,
 						})) as files_nodes_get_by_path_Result);
 
-			if (target.appFileNodePath != null && (target.appFileNodePath === "/" || fileNode?.kind === "folder")) {
+			if (target.dbFilesPath != null && (target.dbFilesPath === "/" || dbFilesDoc?.kind === "folder")) {
 				// `grep -R -F` over an app folder routes to tokenized indexed full-text search, which
 				// cannot honor exact fixed-string matching, so reject it rather than silently approximating.
 				if (parsed._yay.fixedStrings) {
 					return {
 						stdout: "",
 						stderr: `${GREP_RECURSIVE_FIXED_STRINGS_GUIDANCE}\n`,
-						exitCode: COMMAND_EXIT_USAGE,
+						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
 
 				const recursivePattern = parsed._yay.pattern;
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
-					workspaceId: workspaceFs.ctxData.workspaceId,
-					projectId: workspaceFs.ctxData.projectId,
-					userId: workspaceFs.ctxData.userId,
+					workspaceId: pathResolution.ctxData.workspaceId,
+					projectId: pathResolution.ctxData.projectId,
+					userId: pathResolution.ctxData.userId,
 					query: recursivePattern,
 					numItems: 20,
 					cursor: null,
-					pathPrefix: target.appFileNodePath,
+					pathPrefix: target.dbFilesPath,
 				})) as files_nodes_text_search_files_Result;
 
-				const scopePath = bash_app_file_node_path_to_current_project_path(currentProjectPath, target.appFileNodePath);
+				const scopePath = pathResolution.renderShellPath(target.dbFilesPath);
 
 				// Same exact-query annotation as search: hyphenated single-token patterns get a
 				// per-hit note saying whether the literal pattern appears in the shown chunk.
@@ -786,7 +785,7 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 								...res.items.map((item) => {
 									const markdownChunk = item.markdownChunk ?? "";
 									return [
-										`${bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(exactQueryFilter, recursivePattern, markdownChunk)}`,
+										`${pathResolution.renderShellPath(item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(exactQueryFilter, recursivePattern, markdownChunk)}`,
 										markdownChunk,
 									].join("\n");
 								}),
@@ -801,8 +800,8 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 					blocks.push(
 						"",
 						bash_search_command_build_continuation({
-							currentProjectPath,
-							path: target.appFileNodePath,
+							currentProjectPath: pathResolution.basePath,
+							path: target.dbFilesPath,
 							limit: 20,
 							cursor: cursorId,
 							query: recursivePattern,
@@ -828,13 +827,15 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 		) {
 			const inputPath = parsed._yay.operands[0];
 			const absoluteShellPath = bash_resolve_path(commandCtx.cwd, inputPath);
+			const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
 			const target = {
 				inputPath,
 				absoluteShellPath,
-				appFileNodePath: bash_current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
+				pathResolution,
+				dbFilesPath: pathResolution.dbFilesPath,
 			};
 
-			if (target.appFileNodePath != null) {
+			if (target.dbFilesPath != null) {
 				return {
 					stdout: "",
 					stderr:
@@ -846,7 +847,7 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 							window: parsed._yay.window,
 							inputPath,
 						})}\n`,
-					exitCode: COMMAND_EXIT_USAGE,
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 		}
@@ -860,29 +861,30 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 			const firstAppOperand = parsed._yay.operands.find((operand) => {
 				if (operand === "-" || bash_GLOB_METACHARACTER_REGEX.test(operand)) return false;
 				return (
-					bash_current_project_path_to_app_file_node_path(currentProjectPath, bash_resolve_path(commandCtx.cwd, operand)) !=
-					null
+					bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, operand), dbFilesRoots).dbFilesPath != null
 				);
 			});
 
 			if (firstAppOperand != null) {
 				const absoluteShellPath = bash_resolve_path(commandCtx.cwd, firstAppOperand);
+				const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
 				const target = {
 					inputPath: firstAppOperand,
 					absoluteShellPath,
-					appFileNodePath: bash_current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
+					pathResolution,
+					dbFilesPath: pathResolution.dbFilesPath,
 				};
 
-				const fileNode =
-					target.appFileNodePath == null || target.appFileNodePath === "/"
+				const dbFilesDoc =
+					target.dbFilesPath == null || target.dbFilesPath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								workspaceId: workspaceFs.ctxData.workspaceId,
-								projectId: workspaceFs.ctxData.projectId,
-								path: target.appFileNodePath,
+								workspaceId: pathResolution.ctxData.workspaceId,
+								projectId: pathResolution.ctxData.projectId,
+								path: target.dbFilesPath,
 							})) as files_nodes_get_by_path_Result);
 
-				if (target.appFileNodePath === "/" || fileNode?.kind === "folder") {
+				if (target.dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
 					suggestedCommand = `search --path ${bash_shell_arg_quote(target.absoluteShellPath)} --limit 20 ${bash_shell_arg_quote(parsed._yay.pattern)}`;
 				}
 			}
@@ -896,13 +898,13 @@ export function bash_grep_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 					`Try: ${suggestedCommand}`,
 					"If the Try command matches the user's request, run it next before answering.",
 					"IMPORTANT: search is full-text, not grep. Pass one distinctive word or a few plain terms; the text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term.",
-					"It is implemented with Convex full-text search, but it is not regex/glob/exact substring matching.",
+					"It is implemented with db full-text search, but it is not regex/glob/exact substring matching.",
 					"To grep ONE file, pass exactly one app file path: grep [-n] [-i] [-F] PATTERN <file> (regex match; -F uses fixed strings; -n prints line numbers).",
 					"To restrict search to a folder, cd there or use search --path <folder> <content terms>; broad scopes with common terms can be heavier.",
 					"The search command returns matching file paths with snippets.",
 				].join("\n") + "\n",
 			stderr: "",
-			exitCode: 2,
+			exitCode: bash_COMMAND_EXIT_USAGE,
 		};
 	});
 }

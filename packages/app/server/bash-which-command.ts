@@ -1,7 +1,6 @@
 import { defineCommand } from "just-bash/browser";
-import { bash_ALLOWED_COMMANDS } from "./bash-utils.ts";
+import { bash_ALLOWED_COMMANDS, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE } from "./bash-utils.ts";
 
-const COMMAND_EXIT_USAGE = 2;
 const WHICH_USAGE = "Usage: which [-a] [-s] NAME...\n";
 const WHICH_COMBINED_FLAGS_REGEX = /^-[as]{2,}$/u;
 
@@ -57,7 +56,7 @@ export function bash_which_command_create() {
 				return {
 					stdout: "",
 					stderr: `which: unsupported option ${arg}\n${WHICH_USAGE}`,
-					exitCode: COMMAND_EXIT_USAGE,
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 			names.push(arg);
@@ -66,7 +65,7 @@ export function bash_which_command_create() {
 			return {
 				stdout: "",
 				stderr: `which: missing command name\n${WHICH_USAGE}`,
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
@@ -91,6 +90,6 @@ export function bash_which_command_create() {
 				}
 			}
 		}
-		return { stdout, stderr, exitCode: allFound ? 0 : 1 };
+		return { stdout, stderr, exitCode: allFound ? 0 : bash_COMMAND_EXIT_FAILURE };
 	});
 }

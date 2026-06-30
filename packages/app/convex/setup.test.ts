@@ -49,6 +49,7 @@ export function test_convex() {
 	workpool_test.register(t, "files_content_materialization_workpool");
 	workpool_test.register(t, "files_upload_conversion_workpool");
 	workpool_test.register(t, "data_deletion_workpool");
+	workpool_test.register(t, "github_sources_workpool");
 	rate_limiter_test.register(t, "rate_limiter");
 	r2_test.register(t as unknown as Parameters<typeof r2_test.register>[0]);
 	return t;

@@ -3,19 +3,17 @@ import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_get_by_path_Result, files_nodes_read_file_line_range_Result } from "../convex/files_nodes.ts";
 import {
-	bash_app_file_node_path_to_current_project_path,
 	bash_build_unreadable_file_advisory,
-	bash_current_project_path_to_app_file_node_path,
 	bash_delegate_native_just_bash_tmp_command,
 	bash_format_multiline_hint,
 	bash_READ_HEAD_LARGE_FILE_MAX_LINES,
 	bash_resolve_path,
 	bash_shell_arg_quote,
-	type bash_WorkspaceFs,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
-
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
 
 /**
  * Negative line numbers are accepted at parse time so app-file sed returns
@@ -67,7 +65,11 @@ function parse_app_fast_path(args: string[]) {
 	return { script: operands[0], file: operands[1], startLine, endLine } as const;
 }
 
-export function bash_sed_command_build_next_page_hint(args: { nextStartLine: number; maxLines: number; shellPath: string }) {
+export function bash_sed_command_build_next_page_hint(args: {
+	nextStartLine: number;
+	maxLines: number;
+	shellPath: string;
+}) {
 	return `Next page: sed -n '${args.nextStartLine},${args.nextStartLine + args.maxLines - 1}p' ${bash_shell_arg_quote(args.shellPath)}`;
 }
 
@@ -78,20 +80,22 @@ export function bash_sed_command_build_next_page_hint(args: { nextStartLine: num
  * continuation hints point to). Any other sed usage falls back to the standard guard:
  * app-file operands must be piped through cat; non-app operands delegate to the builtin.
  */
-export function bash_sed_command_create(ctx: ActionCtx, workspaceFs: bash_WorkspaceFs, currentProjectPath: string) {
+export function bash_sed_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
 	const command = defineCommand("sed", async (args, commandCtx) => {
 		const fastPath = parse_app_fast_path(args);
 		if (fastPath != null) {
-			const appFileNodePath = bash_current_project_path_to_app_file_node_path(
-				currentProjectPath,
+			const pathResolution = bash_resolve_db_files_shell_path(
 				bash_resolve_path(commandCtx.cwd, fastPath.file),
+				dbFilesRoots,
 			);
-			if (appFileNodePath != null) {
+			const dbFilesPath = pathResolution.dbFilesPath;
+			if (dbFilesPath != null) {
 				if (fastPath.startLine < 1 || fastPath.endLine < 1 || fastPath.endLine < fastPath.startLine) {
 					return {
 						stdout: "",
 						stderr: `sed: invalid line range '${fastPath.script}'\n`,
-						exitCode: COMMAND_EXIT_USAGE,
+						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
 
@@ -100,48 +104,48 @@ export function bash_sed_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 					return {
 						stdout: "",
 						stderr: `sed: line range too large (${maxLines} lines; max ${bash_READ_HEAD_LARGE_FILE_MAX_LINES} per read). Narrow the range.\n`,
-						exitCode: COMMAND_EXIT_USAGE,
+						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
 
 				const result = (await ctx.runAction(internal.files_nodes.read_file_line_range, {
-					workspaceId: workspaceFs.ctxData.workspaceId,
-					projectId: workspaceFs.ctxData.projectId,
-					userId: workspaceFs.ctxData.userId,
-					path: appFileNodePath,
+					workspaceId: pathResolution.ctxData.workspaceId,
+					projectId: pathResolution.ctxData.projectId,
+					userId: pathResolution.ctxData.userId,
+					path: dbFilesPath,
 					startLine: fastPath.startLine,
 					maxLines,
 				})) as files_nodes_read_file_line_range_Result;
 				if (!result) {
-					const fileNode: files_nodes_get_by_path_Result =
-						appFileNodePath === "/"
+					const dbFilesDoc: files_nodes_get_by_path_Result =
+						dbFilesPath === "/"
 							? null
 							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-									workspaceId: workspaceFs.ctxData.workspaceId,
-									projectId: workspaceFs.ctxData.projectId,
-									path: appFileNodePath,
+									workspaceId: pathResolution.ctxData.workspaceId,
+									projectId: pathResolution.ctxData.projectId,
+									path: dbFilesPath,
 								})) as files_nodes_get_by_path_Result);
 
-					if (appFileNodePath === "/" || fileNode?.kind === "folder") {
+					if (dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
 						return {
 							stdout: "",
 							stderr: `sed: ${fastPath.file}: Is a directory\n`,
-							exitCode: COMMAND_EXIT_FAILURE,
+							exitCode: bash_COMMAND_EXIT_FAILURE,
 						};
 					}
 
-					if (fileNode?.kind === "file") {
+					if (dbFilesDoc?.kind === "file") {
 						return {
 							stdout: "",
-							stderr: bash_build_unreadable_file_advisory(currentProjectPath, appFileNodePath, fileNode.contentType),
-							exitCode: COMMAND_EXIT_FAILURE,
+							stderr: bash_build_unreadable_file_advisory(pathResolution.basePath, dbFilesPath, dbFilesDoc.contentType),
+							exitCode: bash_COMMAND_EXIT_FAILURE,
 						};
 					}
 
 					return {
 						stdout: "",
 						stderr: `sed: ${fastPath.file}: No such file or directory\n`,
-						exitCode: COMMAND_EXIT_FAILURE,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
 
@@ -153,7 +157,7 @@ export function bash_sed_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 						`More lines below. ${bash_sed_command_build_next_page_hint({
 							nextStartLine: fastPath.endLine + 1,
 							maxLines,
-							shellPath: bash_app_file_node_path_to_current_project_path(currentProjectPath, appFileNodePath),
+							shellPath: pathResolution.renderShellPath(dbFilesPath),
 						})}`,
 					);
 				}

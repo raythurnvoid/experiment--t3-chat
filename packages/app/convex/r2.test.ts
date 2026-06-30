@@ -5,6 +5,7 @@ import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	files_INITIAL_CONTENT,
+	files_MAX_TEXT_CONTENT_BYTES,
 	files_ROOT_ID,
 	files_u8_to_array_buffer,
 	files_yjs_compute_diff_update_from_yjs_doc,
@@ -86,13 +87,20 @@ function bytes_to_response_body(bytes: Uint8Array) {
 }
 
 function stub_r2_and_modal_fetch(
-	args: { markdown?: string; modalStatus?: number; mediaTransformerAlwaysFails?: boolean; transcriptionText?: string } = {},
+	args: {
+		markdown?: string;
+		modalStatus?: number;
+		mediaTransformerAlwaysFails?: boolean;
+		transcriptionText?: string;
+		onModalRequest?: (body: Record<string, unknown>) => void;
+	} = {},
 ) {
 	const {
 		markdown = "# Converted\n\nPDF body",
 		modalStatus = 200,
 		mediaTransformerAlwaysFails = false,
 		transcriptionText = "Transcript segment body",
+		onModalRequest,
 	} = args;
 
 	vi.stubGlobal(
@@ -112,6 +120,7 @@ function stub_r2_and_modal_fetch(
 			}
 
 			if (url === process.env.MODAL_FILE_CONVERTER_URL) {
+				onModalRequest?.(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
 				if (modalStatus !== 200) {
 					return new Response("failed", { status: modalStatus });
 				}
@@ -321,7 +330,7 @@ describe("r2 asset content", () => {
 		const created = await asUser.action(api.files_nodes.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
-			name: "README.md",
+			path: "README.md",
 		});
 		if (created._nay) {
 			throw new Error(created._nay.message);
@@ -395,7 +404,7 @@ describe("r2 asset content", () => {
 		const created = await asUser.action(api.files_nodes.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
-			name: "stale-read.md",
+			path: "stale-read.md",
 		});
 		if (created._nay) {
 			throw new Error(created._nay.message);
@@ -476,7 +485,7 @@ describe("r2 asset content", () => {
 		const created = await asUser.action(api.files_nodes.create_markdown_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
-			name: "pending-read.md",
+			path: "pending-read.md",
 		});
 		if (created._nay) {
 			throw new Error(created._nay.message);
@@ -582,6 +591,9 @@ describe("r2 asset content", () => {
 	});
 
 	test("R2 events create a visible generated PDF output and conversion finalizes it by node id", async () => {
+		const modalRequests: Record<string, unknown>[] = [];
+		stub_r2_and_modal_fetch({ onModalRequest: (body) => modalRequests.push(body) });
+
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -673,6 +685,9 @@ describe("r2 asset content", () => {
 			sourceAssetId: upload._yay.assetId,
 			outputAssetId: pendingDocs.outputs.convertedMarkdown.assetId,
 		});
+		expect(modalRequests).toHaveLength(1);
+		expect(modalRequests[0]).toMatchObject({ maxMarkdownBytes: files_MAX_TEXT_CONTENT_BYTES });
+		expect(modalRequests[0]).not.toHaveProperty("maxMarkdownCharacters");
 
 		const docs = await t.run(async (ctx) => {
 			const sourceNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
@@ -1269,6 +1284,89 @@ describe("r2 asset content", () => {
 		expect(docs.sourceNode?.assetId).toBe(upload._yay.assetId);
 		expect(docs.nextSourceAsset?.conversionWorkId).toBeNull();
 		expect(docs.convertedAsset?.conversionWorkId).toBeNull();
+	});
+
+	test("marks oversized converted Markdown terminal by UTF-8 byte size", async () => {
+		const oversizedMarkdown = "é".repeat(Math.floor(files_MAX_TEXT_CONTENT_BYTES / 2) + 1);
+		expect(oversizedMarkdown.length).toBeLessThanOrEqual(files_MAX_TEXT_CONTENT_BYTES);
+		stub_r2_and_modal_fetch({ markdown: oversizedMarkdown });
+
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "modal-byte-limit.pdf",
+			contentType: "application/pdf",
+			size: 1024,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const sourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!sourceAsset) {
+			throw new Error("Expected upload asset");
+		}
+		const sourceAssetR2Key = expected_asset_key({
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			assetId: sourceAsset._id,
+		});
+		const response = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_modal_byte_limit",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: sourceAsset.r2Bucket,
+					object: {
+						key: sourceAssetR2Key,
+						size: 1024,
+						eTag: "etag_modal_byte_limit",
+					},
+					eventTime: "2026-05-11T00:00:00.000Z",
+				},
+			}),
+		});
+		expect(response.status).toBe(204);
+		const outputs = await t.run(async (ctx) =>
+			get_pdf_output_node(ctx, {
+				workspaceId: db.workspaceId,
+				projectId: db.projectId,
+				sourceName: "modal-byte-limit.pdf",
+			}),
+		);
+
+		await asUser.action(internal.r2.convert_upload_to_markdown, {
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			sourceAssetId: upload._yay.assetId,
+			outputAssetId: outputs.convertedMarkdown.assetId,
+		});
+
+		const docs = await t.run(async (ctx) => {
+			const nextSourceAsset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+			const convertedAsset = outputs.convertedMarkdown.assetId
+				? await ctx.db.get("files_r2_assets", outputs.convertedMarkdown.assetId)
+				: null;
+
+			return { nextSourceAsset, convertedAsset };
+		});
+
+		expect(docs.nextSourceAsset?.conversionWorkId).toBeNull();
+		expect(docs.convertedAsset?.conversionWorkId).toBeNull();
+		expect(docs.convertedAsset?.r2Key).toBeUndefined();
 	});
 
 	test("archives active generated output name conflicts before creating placeholders", async () => {

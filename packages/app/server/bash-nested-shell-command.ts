@@ -1,10 +1,15 @@
 import { defineCommand, type FsStat } from "just-bash/browser";
-import { bash_is_path_under_current_project_path, bash_resolve_path } from "./bash-utils.ts";
-
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
-const COMMAND_EXIT_CANNOT_EXECUTE = 126;
-const COMMAND_EXIT_NOT_FOUND = 127;
+import {
+	bash_command_has_disallowed_source_target,
+	bash_is_path_under_current_project_path,
+	bash_is_path_under_mounts,
+	bash_resolve_path,
+	bash_disallowed_source_target_error,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	bash_COMMAND_EXIT_CANNOT_EXECUTE,
+	bash_COMMAND_EXIT_NOT_FOUND,
+} from "./bash-utils.ts";
 
 /**
  * Provide the supported nested shell surface: `bash -c|-lc|-cl 'script'` and
@@ -19,7 +24,8 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", currentPro
 		}
 
 		let script: string;
-		let forwardArgs: string[];
+		let scriptName: string;
+		let scriptArgs: string[];
 
 		// Treat the common `bash -lc` agent habit as `bash -c`; login-shell setup is irrelevant in this curated shell.
 		if (args[0] === "-c" || args[0] === "-lc" || args[0] === "-cl") {
@@ -27,16 +33,17 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", currentPro
 				return {
 					stdout: "",
 					stderr: `${name}: -c: option requires an argument\n`,
-					exitCode: COMMAND_EXIT_USAGE,
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 			script = args[1];
-			forwardArgs = args.slice(2);
+			scriptName = args[2] ?? name;
+			scriptArgs = args.slice(3);
 		} else if (args[0].startsWith("-")) {
 			return {
 				stdout: "",
 				stderr: `${name}: unsupported option ${args[0]}\nSupported: ${name} -c 'script' for inline scripts, or ${name} /tmp/script.sh for non-app script files. Avoid set -euo pipefail, process substitution, and other shell-specific flags.\n`,
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		} else {
 			const scriptPath = bash_resolve_path(commandCtx.cwd, args[0]);
@@ -46,7 +53,15 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", currentPro
 				return {
 					stdout: "",
 					stderr: `${name}: app-mounted script files are not executable through bash: ${scriptPath}\n`,
-					exitCode: COMMAND_EXIT_CANNOT_EXECUTE,
+					exitCode: bash_COMMAND_EXIT_CANNOT_EXECUTE,
+				};
+			}
+			// Mounted external-source files are read-only document content, not shell entrypoints.
+			if (bash_is_path_under_mounts(scriptPath)) {
+				return {
+					stdout: "",
+					stderr: `${name}: mounted external-source files are not executable through bash: ${scriptPath}\n`,
+					exitCode: bash_COMMAND_EXIT_CANNOT_EXECUTE,
 				};
 			}
 
@@ -57,14 +72,14 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", currentPro
 				return {
 					stdout: "",
 					stderr: `${name}: ${args[0]}: No such file or directory\n`,
-					exitCode: COMMAND_EXIT_NOT_FOUND,
+					exitCode: bash_COMMAND_EXIT_NOT_FOUND,
 				};
 			}
 			if (scriptStat.isDirectory) {
 				return {
 					stdout: "",
 					stderr: `${name}: ${args[0]}: Is a directory\n`,
-					exitCode: COMMAND_EXIT_CANNOT_EXECUTE,
+					exitCode: bash_COMMAND_EXIT_CANNOT_EXECUTE,
 				};
 			}
 
@@ -72,7 +87,8 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", currentPro
 				// Stat and read are separated so missing files, directories, and
 				// unreadable script bodies get native-looking diagnostics.
 				script = await commandCtx.fs.readFile(scriptPath);
-				forwardArgs = args.slice(1);
+				scriptName = args[0];
+				scriptArgs = args.slice(1);
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
 				return {
@@ -85,8 +101,8 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", currentPro
 								: `${name}: ${args[0]}: Cannot read script file\n`,
 					exitCode:
 						msg.startsWith("ENOENT") || msg.startsWith("ENOFILE")
-							? COMMAND_EXIT_NOT_FOUND
-							: COMMAND_EXIT_CANNOT_EXECUTE,
+							? bash_COMMAND_EXIT_NOT_FOUND
+							: bash_COMMAND_EXIT_CANNOT_EXECUTE,
 				};
 			}
 		}
@@ -95,16 +111,32 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", currentPro
 			return {
 				stdout: "",
 				stderr: `${name}: nested execution is unavailable\n`,
-				exitCode: COMMAND_EXIT_FAILURE,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
+			};
+		}
+		if (bash_command_has_disallowed_source_target(script, { cwd: commandCtx.cwd, currentProjectPath })) {
+			return {
+				stdout: "",
+				stderr: bash_disallowed_source_target_error(),
+				exitCode: bash_COMMAND_EXIT_CANNOT_EXECUTE,
 			};
 		}
 
-		// Disable pathname expansion in nested shells too. Top-level execution uses
-		// the same prefix so nested scripts cannot bypass the Convex-backed app glob policy.
-		return await commandCtx.exec(`set -f\n${script}`, {
+		const positionalEnv: Record<string, string> = {
+			...(commandCtx.exportedEnv ?? {}),
+			"0": scriptName,
+			"#": String(scriptArgs.length),
+			"@": scriptArgs.join(" "),
+			"*": scriptArgs.join(" "),
+		};
+		scriptArgs.forEach((arg, index) => {
+			positionalEnv[String(index + 1)] = arg;
+		});
+
+		return await commandCtx.exec(script, {
 			cwd: commandCtx.cwd,
+			env: positionalEnv,
 			signal: commandCtx.signal,
-			args: forwardArgs,
 			stdin: commandCtx.stdin as unknown as string,
 			stdinKind: "bytes",
 		});

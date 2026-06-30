@@ -37,7 +37,7 @@ def files_markitdown_create_app(requests_module=None, converter=None, stream_inf
         filename: str = Field(min_length=1, max_length=255)
         contentType: str | None = Field(default=None, max_length=255)
         maxBytes: int = Field(default=50 * 1024 * 1024, ge=1, le=200 * 1024 * 1024)
-        maxMarkdownCharacters: int = Field(default=900_000, ge=1, le=950_000)
+        maxMarkdownBytes: int = Field(default=900_000, ge=1, le=950_000)
 
     class ConvertResponse(BaseModel):
         markdown: str
@@ -109,7 +109,7 @@ def files_markitdown_create_app(requests_module=None, converter=None, stream_inf
                 raise HTTPException(status_code=422, detail="Failed to convert source file") from error
 
         markdown = result.text_content
-        if len(markdown) > request.maxMarkdownCharacters:
+        if len(markdown.encode("utf-8")) > request.maxMarkdownBytes:
             raise HTTPException(status_code=413, detail="Converted markdown is too large")
 
         return ConvertResponse(

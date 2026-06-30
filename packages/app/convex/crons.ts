@@ -6,6 +6,9 @@ const crons = cronJobs();
 // Once daily at 00:00 UTC.
 crons.cron("reset due anonymous billing credits", "0 0 * * *", internal.billing.reset_due_anonymous_credits, {});
 
+// Once daily at 03:00 UTC — refresh read-only GitHub repo mounts (real work only on commit movement).
+crons.cron("sync github sources", "0 3 * * *", internal.github_sources.sync_all_sources, {});
+
 // Once daily at 04:00 UTC.
 crons.cron("cleanup extra notifications", "0 4 * * *", internal.notifications.cleanup_extra_notifications, {});
 

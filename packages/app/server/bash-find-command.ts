@@ -11,11 +11,9 @@ import { Result } from "../shared/errors-as-values-utils.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import {
-	bash_app_file_node_path_to_current_project_path,
 	bash_APP_MOUNT_PATH,
 	bash_clamp_listing_page_limit,
 	bash_command_build_builtin_delegation_args,
-	bash_current_project_path_to_app_file_node_path,
 	bash_create_glob_syntax_unsupported_message,
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
@@ -23,6 +21,7 @@ import {
 	bash_GLOB_METACHARACTER_REGEX,
 	bash_HOME,
 	bash_is_path_under_current_project_path,
+	bash_is_path_under_mounts,
 	bash_LISTING_DEFAULT_LIMIT,
 	bash_LISTING_MAX_LIMIT,
 	bash_normalize_path,
@@ -31,12 +30,13 @@ import {
 	bash_read_option_value,
 	bash_resolve_path,
 	bash_shell_arg_quote,
-	type bash_WorkspaceFs,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	bash_NON_NEGATIVE_INTEGER_REGEX,
+	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
-const NON_NEGATIVE_INTEGER_REGEX = /^\d+$/u;
 const EXTENSION_TOKEN_REGEX = /^[a-z0-9][a-z0-9_-]*$/iu;
 const SIMPLE_PATH_WORD_GLOB_REGEX = /^\*+([a-z0-9][a-z0-9_-]*)\*+$/iu;
 const SIMPLE_PATH_WORD_PREFIX_EXTENSION_GLOB_REGEX = /^([a-z0-9][a-z0-9_-]*)\*\.[a-z0-9][a-z0-9_-]*$/iu;
@@ -113,7 +113,7 @@ function parse_simple_path_word_glob(pattern: string) {
 }
 
 /**
- * App-file `-name`/`-iname` are DB-backed path word searches, not exact glob
+ * App-file `-name`/`-iname` are indexed app-file path word searches, not exact glob
  * filters. Strip a simple literal extension so `README.md` searches for the
  * filename word instead of mostly matching every Markdown file by `md`.
  */
@@ -155,7 +155,7 @@ function parse_args(args: string[]) {
 	let prefix: string | undefined;
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
-	let unsupportedAppFilePredicate: string | null = null;
+	let unsupportedDbFilesPredicate: string | null = null;
 	let unsupportedRegexPathQuery: string | undefined;
 	let maxDepthValue: string | undefined;
 	let minDepthValue: string | undefined;
@@ -263,11 +263,10 @@ function parse_args(args: string[]) {
 			continue;
 		}
 		if (arg.startsWith("-") || arg === "!" || arg === "(" || arg === ")") {
-			unsupportedAppFilePredicate ??= arg;
+			unsupportedDbFilesPredicate ??= arg;
 
 			if (arg === "-regex" || arg === "-iregex") {
-				const simpleRegexPathQuery =
-					args[index + 1] == null ? null : parse_simple_path_word_glob(args[index + 1]);
+				const simpleRegexPathQuery = args[index + 1] == null ? null : parse_simple_path_word_glob(args[index + 1]);
 				if (simpleRegexPathQuery != null) {
 					unsupportedRegexPathQuery ??= simpleRegexPathQuery;
 				}
@@ -318,7 +317,7 @@ function parse_args(args: string[]) {
 
 	let maxDepth: number | null = null;
 	if (maxDepthValue != null) {
-		if (!NON_NEGATIVE_INTEGER_REGEX.test(maxDepthValue.trim())) {
+		if (!bash_NON_NEGATIVE_INTEGER_REGEX.test(maxDepthValue.trim())) {
 			return Result({ _nay: { message: "find: -maxdepth must be a non-negative integer" } });
 		}
 		maxDepth = Number(maxDepthValue);
@@ -326,7 +325,7 @@ function parse_args(args: string[]) {
 
 	let minDepth: number | null = null;
 	if (minDepthValue != null) {
-		if (!NON_NEGATIVE_INTEGER_REGEX.test(minDepthValue.trim())) {
+		if (!bash_NON_NEGATIVE_INTEGER_REGEX.test(minDepthValue.trim())) {
 			return Result({ _nay: { message: "find: -mindepth must be a non-negative integer" } });
 		}
 		minDepth = Number(minDepthValue);
@@ -370,7 +369,7 @@ function parse_args(args: string[]) {
 		iname = undefined;
 	}
 
-	// In app-file find, -name, -iname, and --path-query use the same case-insensitive DB word search.
+	// In app-file find, -name, -iname, and --path-query use the same case-insensitive db word search.
 	const normalizedNamePathQuery = normalize_name_path_query(name);
 	const normalizedInamePathQuery = normalize_name_path_query(iname);
 	const pathQueries = [normalizedNamePathQuery, normalizedInamePathQuery, pathQuery].filter(
@@ -380,7 +379,7 @@ function parse_args(args: string[]) {
 		return Result({ _nay: { message: "find: use only one of -name, -iname, or --path-query" } });
 	}
 
-	// Empty search text cannot produce meaningful DB word-search results.
+	// Empty search text cannot produce meaningful db word-search results.
 	const normalizedPathQuery = pathQueries.at(0)?.trim();
 	if (normalizedPathQuery === "") {
 		return Result({ _nay: { message: "find: path search requires a non-empty query" } });
@@ -396,7 +395,7 @@ function parse_args(args: string[]) {
 		return Result({
 			_nay: {
 				message:
-					"find: -name/-iname use DB-backed path word search for app files, not glob patterns. Try `find <dir> -type f --extension md --limit 20` for simple extension searches, or use words like `readme`.",
+					"find: -name/-iname use indexed app-file path word search for app files, not glob patterns. Try `find <dir> -type f --extension md --limit 20` for simple extension searches, or use words like `readme`.",
 				...(simplePathWordGlob == null
 					? {}
 					: {
@@ -419,7 +418,7 @@ function parse_args(args: string[]) {
 		return Result({
 			_nay: {
 				message:
-					"find: --path-query uses DB-backed path word search, not regex/glob patterns. Use plain tokens like `readme`.",
+					"find: --path-query uses indexed app-file path word search, not regex/glob patterns. Use plain tokens like `readme`.",
 				...(simplePathWordGlob == null
 					? {}
 					: {
@@ -442,7 +441,7 @@ function parse_args(args: string[]) {
 			prefix,
 			limit: limit._yay,
 			cursor,
-			unsupportedAppFilePredicate,
+			unsupportedDbFilesPredicate,
 			unsupportedRegexPathQuery,
 			maxDepth,
 			minDepth,
@@ -456,17 +455,13 @@ function parse_args(args: string[]) {
 }
 
 /**
- * Convert a shell prefix to the app path format used by `treePath`.
+ * Resolve a shell prefix to the absolute shell path the subtree scan starts from.
  *
- * Prefix scans do not require an existing file-node doc. They only need the normalized
- * app path that `list_subtree` can turn into a trailing-slash
- * `treePath` prefix.
+ * Prefix scans do not require an existing files_nodes doc. The caller classifies the
+ * returned shell path to pick the right scope and convert it into a trailing-slash
+ * `treePath` prefix via `list_subtree`.
  */
-function prefix_to_app_file_node_path(
-	commandCtx: CommandContext,
-	currentProjectPath: string,
-	prefix: string,
-) {
+function prefix_to_shell_path(commandCtx: CommandContext, currentProjectPath: string, prefix: string) {
 	if (bash_GLOB_METACHARACTER_REGEX.test(prefix)) {
 		return Result({ _nay: { message: bash_create_glob_syntax_unsupported_message("find", prefix) } });
 	}
@@ -474,21 +469,14 @@ function prefix_to_app_file_node_path(
 		const shellPath = prefix.startsWith("~/")
 			? bash_normalize_path(`${bash_HOME}/${prefix.slice(2)}`)
 			: bash_normalize_path(prefix);
-		const currentProjectAppFileNodePath = bash_current_project_path_to_app_file_node_path(currentProjectPath, shellPath);
-		return Result({ _yay: { appFileNodePath: currentProjectAppFileNodePath ?? bash_normalize_path(prefix) } });
+		return Result({ _yay: { shellPath } });
 	}
 
 	const cwd = bash_normalize_path(commandCtx.cwd);
-	if (bash_is_path_under_current_project_path(currentProjectPath, cwd)) {
-		return Result({
-			_yay: {
-				appFileNodePath:
-					bash_current_project_path_to_app_file_node_path(currentProjectPath, bash_resolve_path(commandCtx.cwd, prefix)) ??
-					bash_normalize_path(prefix),
-			},
-		});
+	if (bash_is_path_under_current_project_path(currentProjectPath, cwd) || bash_is_path_under_mounts(cwd)) {
+		return Result({ _yay: { shellPath: bash_resolve_path(commandCtx.cwd, prefix) } });
 	}
-	return Result({ _yay: { appFileNodePath: bash_normalize_path(prefix) } });
+	return Result({ _yay: { shellPath: bash_normalize_path(prefix) } });
 }
 
 function build_continuation(args: {
@@ -529,7 +517,8 @@ function build_continuation(args: {
 	return continuationParts.join(" ");
 }
 
-export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_WorkspaceFs, currentProjectPath: string) {
+export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
 	return defineCommand("find", async (args, commandCtx) => {
 		const parsed = parse_args(args);
 		// Parse failures return usage text before any app-file or built-in command routing.
@@ -551,7 +540,7 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 					`${parsed._nay.message}\n` +
 					tryLine +
 					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
-				exitCode: 2,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 		// AI agents commonly hallucinate `--next-page`; reject it after parse
@@ -563,21 +552,25 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 					"find: --next-page is not supported\n" +
 					"Copy the exact `Next page: find ... --limit N --cursor ...` command from the previous find output.\n" +
 					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 		const pathQuery = parsed._yay.name ?? parsed._yay.iname ?? parsed._yay.pathQuery;
 
 		let cursor: string | null = null;
 		const absoluteShellPath = bash_resolve_path(commandCtx.cwd, parsed._yay.path ?? commandCtx.cwd);
+		// Classify the search root: project / mount db-files path, the synthetic `/.mounts` root,
+		// or an external (non-app) path. The reserved `/.mounts` root is listed from reserved-root `"/"`.
+		const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
 		const target = {
 			inputPath: parsed._yay.path,
 			absoluteShellPath,
-			appFileNodePath: bash_current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
+			pathResolution,
+			dbFilesPath: pathResolution.dbFilesPath,
 			builtinOperand: parsed._yay.path ?? ".",
 		};
 		// Non-app targets belong to Just Bash's built-in find unless the caller requested app-file prefix search.
-		if (parsed._yay.prefix == null && target.appFileNodePath == null) {
+		if (parsed._yay.prefix == null && pathResolution.kind === "outside_db_files") {
 			return await bash_delegate_builtin_command({
 				command: "find",
 				args: bash_command_build_builtin_delegation_args(args, [target.builtinOperand], {
@@ -587,12 +580,12 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 				commandCtx,
 			});
 		}
-		// App files only support predicates that can be implemented with indexed Convex queries.
-		if (parsed._yay.unsupportedAppFilePredicate != null) {
+		// App files only support predicates that can be implemented with indexed db queries.
+		if (parsed._yay.unsupportedDbFilesPredicate != null) {
 			const regexPredicateHint =
-				parsed._yay.unsupportedAppFilePredicate === "-regex" ||
-				parsed._yay.unsupportedAppFilePredicate === "-iregex" ||
-				parsed._yay.unsupportedAppFilePredicate === "-regextype"
+				parsed._yay.unsupportedDbFilesPredicate === "-regex" ||
+				parsed._yay.unsupportedDbFilesPredicate === "-iregex" ||
+				parsed._yay.unsupportedDbFilesPredicate === "-regextype"
 					? "Regex path predicates are not available for app files; use --path-query with plain path words such as `readme`.\n"
 					: "";
 
@@ -608,12 +601,12 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 			return {
 				stdout: "",
 				stderr:
-					`find: unsupported predicate ${parsed._yay.unsupportedAppFilePredicate} for paths under ${bash_APP_MOUNT_PATH}\n` +
+					`find: unsupported predicate ${parsed._yay.unsupportedDbFilesPredicate} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
 					regexPredicateHint +
 					regexPathQueryRetry +
 					"GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
 					"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 		// Cursor ids are opaque handles stored outside the command output; resolve them before querying.
@@ -623,7 +616,7 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 				return {
 					stdout: "",
 					stderr: `${resolvedCursor._nay.message}\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
 			cursor = resolvedCursor._yay;
@@ -642,7 +635,7 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 						" --limit " +
 						String(parsed._yay.limit) +
 						"\n",
-					exitCode: COMMAND_EXIT_USAGE,
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 
@@ -652,29 +645,30 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 					stdout: "",
 					stderr:
 						"find: --prefix cannot be combined with path word search for app files.\n" +
-						"Use `find --prefix PREFIX` for indexed descendant path discovery, or `find -name QUERY` for DB-backed path word search.\n",
-					exitCode: COMMAND_EXIT_USAGE,
+						"Use `find --prefix PREFIX` for indexed descendant path discovery, or `find -name QUERY` for indexed app-file path word search.\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 
-			// Convert to the app path format that matches folder treePath prefixes.
-			const prefixResult = prefix_to_app_file_node_path(
-				commandCtx,
-				currentProjectPath,
-				parsed._yay.prefix,
-			);
+			// Resolve the prefix to a shell path, then classify it to pick the right scope and renderer.
+			const prefixResult = prefix_to_shell_path(commandCtx, currentProjectPath, parsed._yay.prefix);
 			if (prefixResult._nay) {
 				return {
 					stdout: "",
 					stderr: prefixResult._nay.message,
-					exitCode: COMMAND_EXIT_USAGE,
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 
+			// The reserved `/.mounts` root scans from reserved-root `"/"`; other targets scan from their
+			// db-files path. External prefixes keep the prior raw-path behavior on the project FS.
+			const prefixResolution = bash_resolve_db_files_shell_path(prefixResult._yay.shellPath, dbFilesRoots);
+			const prefixFolderPath = prefixResolution.dbFilesPath ?? prefixResult._yay.shellPath;
+
 			const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
-				workspaceId: workspaceFs.ctxData.workspaceId,
-				projectId: workspaceFs.ctxData.projectId,
-				folderPath: prefixResult._yay.appFileNodePath,
+				workspaceId: prefixResolution.ctxData.workspaceId,
+				projectId: prefixResolution.ctxData.projectId,
+				folderPath: prefixFolderPath,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
 				...(parsed._yay.type === "f"
@@ -685,8 +679,7 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 			})) as files_nodes_list_subtree_Result;
 
 			const lines = result.page.map(
-				(item) =>
-					`${bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
+				(item) => `${prefixResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
 			if (!result.isDone) {
 				lines.push(
@@ -694,7 +687,7 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 					build_continuation({
 						parsed: parsed._yay,
 						target: null,
-						prefix: bash_app_file_node_path_to_current_project_path(currentProjectPath, prefixResult._yay.appFileNodePath),
+						prefix: prefixResolution.renderShellPath(prefixFolderPath),
 						cursor: await bash_cursor_id_create(ctx, result.continueCursor),
 					}),
 				);
@@ -714,35 +707,35 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 			return {
 				stdout: "",
 				stderr: bash_create_glob_syntax_unsupported_message("find", target.inputPath),
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
 		// Non-prefix app-file execution should only reach this point after target path resolution succeeded.
-		if (target.appFileNodePath == null) {
+		if (target.dbFilesPath == null) {
 			throw should_never_happen("find: app file path missing after built-in and prefix branches", {
 				absoluteShellPath: target.absoluteShellPath,
 				prefix: parsed._yay.prefix,
 			});
 		}
 
-		const fileNode: files_nodes_get_by_path_Result =
-			target.appFileNodePath === "/"
+		const dbFilesDoc: files_nodes_get_by_path_Result =
+			target.dbFilesPath === "/"
 				? null
 				: await ctx.runQuery(internal.files_nodes.get_by_path, {
-						workspaceId: workspaceFs.ctxData.workspaceId,
-						projectId: workspaceFs.ctxData.projectId,
-						path: target.appFileNodePath,
+						workspaceId: pathResolution.ctxData.workspaceId,
+						projectId: pathResolution.ctxData.projectId,
+						path: target.dbFilesPath,
 					});
 		// Missing concrete app paths fail normally, with a hint for prefix-style discovery.
-		if (target.appFileNodePath !== "/" && !fileNode) {
+		if (target.dbFilesPath !== "/" && !dbFilesDoc) {
 			return {
 				stdout: "",
 				stderr:
 					`find: ${target.absoluteShellPath}: No such file or directory\n` +
 					`If you intended a path-prefix subtree search, run:\n` +
 					`  find --prefix ${bash_shell_arg_quote(target.absoluteShellPath)} --limit ${parsed._yay.limit}\n`,
-				exitCode: COMMAND_EXIT_FAILURE,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
 
@@ -760,7 +753,7 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 							limit: parsed._yay.limit,
 						})}\n` +
 						`For extension-only search, use: find ${bash_shell_arg_quote(target.absoluteShellPath)} -type f --extension ${bash_shell_arg_quote(parsed._yay.extension)} --limit ${parsed._yay.limit}\n`,
-					exitCode: COMMAND_EXIT_USAGE,
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 
@@ -768,7 +761,7 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 			let parentId: Id<"files_nodes"> | typeof files_ROOT_ID | undefined = undefined;
 			let pathPrefix: string | undefined = undefined;
 			let minPathDepth: number | undefined = undefined;
-			if (target.appFileNodePath === "/") {
+			if (target.dbFilesPath === "/") {
 				// At root, -maxdepth 1 is the direct children query.
 				if (parsed._yay.maxDepth != null && parsed._yay.maxDepth !== 1) {
 					return {
@@ -780,11 +773,11 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 								...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
 								limit: parsed._yay.limit,
 							})}\n`,
-						exitCode: COMMAND_EXIT_USAGE,
+						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
 
-				// Root has no file-node doc, so only the natural child floor is supported.
+				// Root has no files_nodes doc, so only the natural child floor is supported.
 				if (parsed._yay.minDepth != null && parsed._yay.minDepth !== 1) {
 					return {
 						stdout: "",
@@ -796,7 +789,7 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 								limit: parsed._yay.limit,
 							})}\n` +
 							"Filter deeper paths from those results if needed.\n",
-						exitCode: COMMAND_EXIT_USAGE,
+						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
 
@@ -805,11 +798,11 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 				}
 			} else {
 				// A scoped path-word search starts from an exact folder.
-				if (!fileNode || fileNode.kind !== "folder") {
+				if (!dbFilesDoc || dbFilesDoc.kind !== "folder") {
 					return {
 						stdout: "",
 						stderr: "find: path word search can target the project root or an immediate folder.\n",
-						exitCode: COMMAND_EXIT_USAGE,
+						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
 
@@ -824,7 +817,7 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 								...(parsed._yay.type == null ? {} : { type: parsed._yay.type }),
 								limit: parsed._yay.limit,
 							})}\n`,
-						exitCode: COMMAND_EXIT_USAGE,
+						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
 
@@ -840,23 +833,23 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 								limit: parsed._yay.limit,
 							})}\n` +
 							"Filter deeper paths from those results if needed.\n",
-						exitCode: COMMAND_EXIT_USAGE,
+						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
 
 				if (parsed._yay.maxDepth === 1) {
-					parentId = fileNode._id;
+					parentId = dbFilesDoc._id;
 				} else {
-					pathPrefix = target.appFileNodePath;
+					pathPrefix = target.dbFilesPath;
 					if (parsed._yay.minDepth === 1) {
-						minPathDepth = fileNode.pathDepth + 1;
+						minPathDepth = dbFilesDoc.pathDepth + 1;
 					}
 				}
 			}
 
 			const result = (await ctx.runQuery(internal.files_nodes.search_paths, {
-				workspaceId: workspaceFs.ctxData.workspaceId,
-				projectId: workspaceFs.ctxData.projectId,
+				workspaceId: pathResolution.ctxData.workspaceId,
+				projectId: pathResolution.ctxData.projectId,
 				pathQuery,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
@@ -871,8 +864,7 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 			})) as files_nodes_search_paths_Result;
 
 			const lines = result.items.map(
-				(item) =>
-					`${bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
+				(item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
 
 			// Path word search emits the next-page command or a zero-match marker after pagination.
@@ -909,13 +901,13 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 			}
 
 			// Exact file targets are handled without a subtree query.
-			if (fileNode?.kind === "file") {
+			if (dbFilesDoc?.kind === "file") {
 				const matchesDepth =
 					(parsed._yay.minDepth == null || parsed._yay.minDepth <= 0) &&
 					(parsed._yay.maxDepth == null || parsed._yay.maxDepth >= 0);
 				const lines: string[] =
-					cursor == null && matchesDepth && fileNode.lowercaseExtension === parsed._yay.extension
-						? [bash_app_file_node_path_to_current_project_path(currentProjectPath, fileNode.path)]
+					cursor == null && matchesDepth && dbFilesDoc.lowercaseExtension === parsed._yay.extension
+						? [pathResolution.renderShellPath(dbFilesDoc.path)]
 						: ["0 matches."];
 				return {
 					stdout: `${lines.join("\n")}\n`,
@@ -925,9 +917,9 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 			}
 
 			const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
-				workspaceId: workspaceFs.ctxData.workspaceId,
-				projectId: workspaceFs.ctxData.projectId,
-				folderPath: target.appFileNodePath,
+				workspaceId: pathResolution.ctxData.workspaceId,
+				projectId: pathResolution.ctxData.projectId,
+				folderPath: target.dbFilesPath,
 				kind: "file" as const,
 				lowercaseExtension: parsed._yay.extension,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
@@ -936,9 +928,7 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 				...(parsed._yay.maxDepth == null ? {} : { maxDepth: parsed._yay.maxDepth }),
 			})) as files_nodes_list_subtree_Result;
 
-			const lines = result.page.map((item) =>
-				bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path),
-			);
+			const lines = result.page.map((item) => pathResolution.renderShellPath(item.path));
 			if (!result.isDone) {
 				lines.push(
 					"",
@@ -961,14 +951,14 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 		}
 
 		// Plain app-file find lists the subtree through the path index with optional type/depth filters.
-		if (fileNode?.kind === "file") {
+		if (dbFilesDoc?.kind === "file") {
 			const matchesKind = parsed._yay.type == null || parsed._yay.type === "f";
 			const matchesDepth =
 				(parsed._yay.minDepth == null || parsed._yay.minDepth <= 0) &&
 				(parsed._yay.maxDepth == null || parsed._yay.maxDepth >= 0);
 			const lines: string[] =
 				cursor == null && matchesKind && matchesDepth
-					? [bash_app_file_node_path_to_current_project_path(currentProjectPath, fileNode.path)]
+					? [pathResolution.renderShellPath(dbFilesDoc.path)]
 					: ["0 matches."];
 			return {
 				stdout: `${lines.join("\n")}\n`,
@@ -978,9 +968,9 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 		}
 
 		const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
-			workspaceId: workspaceFs.ctxData.workspaceId,
-			projectId: workspaceFs.ctxData.projectId,
-			folderPath: target.appFileNodePath,
+			workspaceId: pathResolution.ctxData.workspaceId,
+			projectId: pathResolution.ctxData.projectId,
+			folderPath: target.dbFilesPath,
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
 			...(parsed._yay.type === "f"
@@ -993,8 +983,7 @@ export function bash_find_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 		})) as files_nodes_list_subtree_Result;
 
 		const lines = result.page.map(
-			(item) =>
-				`${bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
+			(item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
 		);
 
 		// Plain subtree listings emit the next-page command or a zero-match marker after pagination.

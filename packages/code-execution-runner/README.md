@@ -111,7 +111,9 @@ Pre-flight failures (`disabled`, `unauthorized`, `invalid_json`, `invalid_reques
   the gateway and is injected only for `/api/v1/files/*` requests at the configured
   app origin. The snippet can use `process.env.T3_APP_ORIGIN`; it cannot read the
   raw token. Use `/api/v1/files/list` for discovery, `/api/v1/files/read-many` for
-  folder-scale reads, and `/api/v1/files/read` for one-off reads.
+  folder-scale reads, and `/api/v1/files/read` for one-off reads. The gateway only
+  injects the grant; tenant isolation is enforced by the app public file API. The
+  grant does not authorize reserved `GLOBAL`/`GITHUB` mount docs.
 - **No platform bindings/secrets.** No Worker Loader `env` is passed to the Dynamic Worker.
   Synthetic `process.env` values are lexical harness variables, not platform bindings.
 - **Time bound.** An in-sandbox `Promise.race` rejects after `LIMITS.sandboxTimeoutMs` (5s); a

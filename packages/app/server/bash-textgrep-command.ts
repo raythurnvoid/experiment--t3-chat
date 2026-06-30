@@ -8,9 +8,7 @@ import type {
 } from "../convex/files_nodes.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import {
-	bash_app_file_node_path_to_current_project_path,
 	bash_create_glob_syntax_unsupported_message,
-	bash_current_project_path_to_app_file_node_path,
 	bash_cursor_id_create,
 	bash_format_multiline_hint,
 	bash_GLOB_METACHARACTER_REGEX,
@@ -21,11 +19,11 @@ import {
 	bash_search_command_exact_query_filter,
 	bash_search_command_exact_query_note,
 	bash_search_command_exact_query_summary,
-	type bash_WorkspaceFs,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
-
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
 
 // `-R` folder scans page through the same indexed full-text search `search`/`grep -R` use.
 const TEXTGREP_RECURSIVE_PAGE_LIMIT = 20;
@@ -220,18 +218,18 @@ function guidance() {
 				"For canonical Markdown line numbers or -A/-B/-C context, use grep [-n] PATTERN <file>.",
 			].join("\n") + "\n",
 		stderr: "",
-		exitCode: COMMAND_EXIT_USAGE,
+		exitCode: bash_COMMAND_EXIT_USAGE,
 	};
 }
 
-export function bash_textgrep_command_create(ctx: ActionCtx, workspaceFs: bash_WorkspaceFs, currentProjectPath: string) {
+export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
 	return defineCommand("textgrep", async (args, commandCtx) => {
 		const parsed = parse_args(args);
 		if (parsed._nay) {
 			return {
 				stdout: "",
 				stderr: `${parsed._nay.message}\n${TEXTGREP_USAGE}\n`,
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
@@ -252,28 +250,29 @@ export function bash_textgrep_command_create(ctx: ActionCtx, workspaceFs: bash_W
 			!bash_GLOB_METACHARACTER_REGEX.test(operands[0])
 		) {
 			const absoluteShellPath = bash_resolve_path(commandCtx.cwd, operands[0]);
-			const appFileNodePath = bash_current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath);
+			const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
+			const dbFilesPath = pathResolution.dbFilesPath;
 			const folderNode =
-				appFileNodePath == null || appFileNodePath === "/"
+				dbFilesPath == null || dbFilesPath === "/"
 					? null
 					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-							workspaceId: workspaceFs.ctxData.workspaceId,
-							projectId: workspaceFs.ctxData.projectId,
-							path: appFileNodePath,
+							workspaceId: pathResolution.ctxData.workspaceId,
+							projectId: pathResolution.ctxData.projectId,
+							path: dbFilesPath,
 						})) as files_nodes_get_by_path_Result);
 
-			if (appFileNodePath != null && (appFileNodePath === "/" || folderNode?.kind === "folder")) {
+			if (dbFilesPath != null && (dbFilesPath === "/" || folderNode?.kind === "folder")) {
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
-					workspaceId: workspaceFs.ctxData.workspaceId,
-					projectId: workspaceFs.ctxData.projectId,
-					userId: workspaceFs.ctxData.userId,
+					workspaceId: pathResolution.ctxData.workspaceId,
+					projectId: pathResolution.ctxData.projectId,
+					userId: pathResolution.ctxData.userId,
 					query: pattern,
 					numItems: TEXTGREP_RECURSIVE_PAGE_LIMIT,
 					cursor: null,
-					pathPrefix: appFileNodePath,
+					pathPrefix: dbFilesPath,
 				})) as files_nodes_text_search_files_Result;
 
-				const scopePath = bash_app_file_node_path_to_current_project_path(currentProjectPath, appFileNodePath);
+				const scopePath = pathResolution.renderShellPath(dbFilesPath);
 				const exactQueryFilter = bash_search_command_exact_query_filter(pattern);
 				const blocks =
 					res.items.length > 0
@@ -287,7 +286,7 @@ export function bash_textgrep_command_create(ctx: ActionCtx, workspaceFs: bash_W
 								...res.items.map((item) => {
 									const markdownChunk = item.markdownChunk ?? "";
 									return [
-										`${bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(
+										`${pathResolution.renderShellPath(item.path)} (lines ${item.lineStart}-${item.lineEnd}, chars ${item.startIndex}-${item.endIndex}, chunk #${item.chunkIndex})${bash_search_command_exact_query_note(
 											exactQueryFilter,
 											pattern,
 											markdownChunk,
@@ -306,8 +305,8 @@ export function bash_textgrep_command_create(ctx: ActionCtx, workspaceFs: bash_W
 					blocks.push(
 						"",
 						bash_search_command_build_continuation({
-							currentProjectPath,
-							path: appFileNodePath,
+							currentProjectPath: pathResolution.basePath,
+							path: dbFilesPath,
 							limit: TEXTGREP_RECURSIVE_PAGE_LIMIT,
 							cursor: cursorId,
 							query: pattern,
@@ -323,46 +322,47 @@ export function bash_textgrep_command_create(ctx: ActionCtx, workspaceFs: bash_W
 		if (!recursive && operands.length === 1 && operands[0] !== "-") {
 			const inputPath = operands[0];
 			const absoluteShellPath = bash_resolve_path(commandCtx.cwd, inputPath);
-			const appFileNodePath = bash_current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath);
+			const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
+			const dbFilesPath = pathResolution.dbFilesPath;
 
-			if (appFileNodePath != null) {
+			if (dbFilesPath != null) {
 				if (bash_GLOB_METACHARACTER_REGEX.test(inputPath)) {
 					return {
 						stdout: "",
 						stderr: bash_create_glob_syntax_unsupported_message("textgrep", inputPath),
-						exitCode: COMMAND_EXIT_USAGE,
+						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
 
 				if (!fixedStrings) {
 					const regexError = bash_regex_validation_error("textgrep", pattern);
 					if (regexError != null) {
-						return { stdout: "", stderr: regexError, exitCode: COMMAND_EXIT_USAGE };
+						return { stdout: "", stderr: regexError, exitCode: bash_COMMAND_EXIT_USAGE };
 					}
 				}
 
-				const fileNode =
-					appFileNodePath === "/"
+				const dbFilesDoc =
+					dbFilesPath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								workspaceId: workspaceFs.ctxData.workspaceId,
-								projectId: workspaceFs.ctxData.projectId,
-								path: appFileNodePath,
+								workspaceId: pathResolution.ctxData.workspaceId,
+								projectId: pathResolution.ctxData.projectId,
+								path: dbFilesPath,
 							})) as files_nodes_get_by_path_Result);
 
-				if (!fileNode || fileNode.kind !== "file") {
+				if (!dbFilesDoc || dbFilesDoc.kind !== "file") {
 					return {
 						stdout: "",
 						stderr: `textgrep: ${inputPath}: No such file or directory\n`,
-						exitCode: COMMAND_EXIT_FAILURE,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
 
 				const result = (await ctx.runQuery(internal.files_nodes.match_plain_text_file_lines, {
-					workspaceId: workspaceFs.ctxData.workspaceId,
-					projectId: workspaceFs.ctxData.projectId,
-					userId: workspaceFs.ctxData.userId,
-					fileNodeId: fileNode._id,
+					workspaceId: pathResolution.ctxData.workspaceId,
+					projectId: pathResolution.ctxData.projectId,
+					userId: pathResolution.ctxData.userId,
+					fileNodeId: dbFilesDoc._id,
 					pattern,
 					ignoreCase,
 					fixedStrings,
@@ -370,7 +370,7 @@ export function bash_textgrep_command_create(ctx: ActionCtx, workspaceFs: bash_W
 				})) as files_nodes_match_plain_text_file_lines_Result;
 
 				if (!result) {
-					return { stdout: "", stderr: "", exitCode: COMMAND_EXIT_FAILURE };
+					return { stdout: "", stderr: "", exitCode: bash_COMMAND_EXIT_FAILURE };
 				}
 
 				const truncationStderr = result.scanTruncated
@@ -382,17 +382,17 @@ export function bash_textgrep_command_create(ctx: ActionCtx, workspaceFs: bash_W
 				if (listOnly) {
 					return result.selectedCount > 0
 						? { stdout: `${inputPath}\n`, stderr: truncationStderr, exitCode: 0 }
-						: { stdout: "", stderr: truncationStderr, exitCode: COMMAND_EXIT_FAILURE };
+						: { stdout: "", stderr: truncationStderr, exitCode: bash_COMMAND_EXIT_FAILURE };
 				}
 				if (countOnly) {
 					return {
 						stdout: `${result.selectedCount}\n`,
 						stderr: truncationStderr,
-						exitCode: result.selectedCount > 0 ? 0 : COMMAND_EXIT_FAILURE,
+						exitCode: result.selectedCount > 0 ? 0 : bash_COMMAND_EXIT_FAILURE,
 					};
 				}
 				if (result.lines.length === 0) {
-					return { stdout: "", stderr: truncationStderr, exitCode: COMMAND_EXIT_FAILURE };
+					return { stdout: "", stderr: truncationStderr, exitCode: bash_COMMAND_EXIT_FAILURE };
 				}
 				return {
 					stdout: `${result.lines.map((line) => line.line).join("\n")}\n`,

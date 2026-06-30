@@ -630,7 +630,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			.action(app_convex_api.files_nodes.create_markdown_node, {
 				membershipId,
 				parentId: folderItemId,
-				name: "README.md" satisfies files_SpecialFileName,
+				path: "README.md" satisfies files_SpecialFileName,
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -1075,7 +1075,7 @@ type FileNodeViewFolderCreateNodeModal_Props = {
 	fileNodesList: FileNodeViewFolder_Props["fileNodesList"];
 	siblingNames: Iterable<string>;
 	isCreatingNode: boolean;
-	onCreateNode: (args: { kind: app_convex_Doc<"files_nodes">["kind"]; name: string }) => Promise<string | null>;
+	onCreateNode: (args: { kind: app_convex_Doc<"files_nodes">["kind"]; path: string }) => Promise<string | null>;
 };
 
 const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreateNodeModal(
@@ -1143,7 +1143,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 		}
 
 		setError(null);
-		onCreateNode({ kind, name: normalizedPath.normalizedPathSegments.join("/") })
+		onCreateNode({ kind, path: normalizedPath.normalizedPathSegments.join("/") })
 			.then((serverErrorMessage) => {
 				if (!serverErrorMessage) {
 					closeModal();
@@ -1311,8 +1311,8 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 		createNodeModalRef.current?.open(kind);
 	});
 
-	const handleCreateNodeSubmit = useFn((args: { kind: app_convex_Doc<"files_nodes">["kind"]; name: string }) => {
-		const { kind, name } = args;
+	const handleCreateNodeSubmit = useFn((args: { kind: app_convex_Doc<"files_nodes">["kind"]; path: string }) => {
+		const { kind, path } = args;
 		if (!folderItemId) {
 			return Promise.resolve("Select a folder before creating a node.");
 		}
@@ -1323,12 +1323,12 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 				? convex.mutation(app_convex_api.files_nodes.create_folder_node, {
 						membershipId,
 						parentId: folderItemId,
-						name,
+						path,
 					})
 				: convex.action(app_convex_api.files_nodes.create_markdown_node, {
 						membershipId,
 						parentId: folderItemId,
-						name,
+						path,
 					});
 
 		return createNodePromise

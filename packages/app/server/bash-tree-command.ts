@@ -8,7 +8,6 @@ import {
 	bash_clamp_listing_page_limit,
 	bash_command_build_builtin_delegation_args,
 	bash_create_glob_syntax_unsupported_message,
-	bash_current_project_path_to_app_file_node_path,
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
 	bash_delegate_builtin_command,
@@ -19,11 +18,12 @@ import {
 	bash_read_option_value,
 	bash_resolve_path,
 	bash_shell_arg_quote,
-	type bash_WorkspaceFs,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
 const BUILTIN_OPTIONS_WITH_VALUES = new Set(["-L", "-P", "-I", "--filelimit", "-o"]);
 
 /**
@@ -43,7 +43,7 @@ function parse_args(args: string[]) {
 	let path: string | undefined;
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
-	let unsupportedAppFileOption: string | null = null;
+	let unsupportedDbFilesOption: string | null = null;
 
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
@@ -73,13 +73,13 @@ function parse_args(args: string[]) {
 		}
 
 		if (BUILTIN_OPTIONS_WITH_VALUES.has(arg)) {
-			unsupportedAppFileOption ??= arg;
+			unsupportedDbFilesOption ??= arg;
 			index++;
 			continue;
 		}
 
 		if (arg.startsWith("-")) {
-			unsupportedAppFileOption ??= arg;
+			unsupportedDbFilesOption ??= arg;
 			continue;
 		}
 
@@ -100,7 +100,7 @@ function parse_args(args: string[]) {
 			path,
 			limit: limit._yay,
 			cursor,
-			unsupportedAppFileOption,
+			unsupportedDbFilesOption,
 		} as const,
 	});
 }
@@ -117,14 +117,14 @@ function build_continuation(args: { target: string; limit: number; cursor: strin
 	].join(" ");
 }
 
-export function bash_tree_command_create(ctx: ActionCtx, workspaceFs: bash_WorkspaceFs, currentProjectPath: string) {
+export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
 	return defineCommand("tree", async (args, commandCtx) => {
 		const parsed = parse_args(args);
 		if (parsed._nay) {
 			return {
 				stdout: "",
 				stderr: `${parsed._nay.message}\nUsage: tree [PATH] [--limit N] [--cursor CURSOR]\n`,
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
@@ -137,22 +137,24 @@ export function bash_tree_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 					"tree: --next-page is not supported\n" +
 					"Copy the exact `Next page: tree <path> --limit N --cursor ...` command from the previous tree output.\n" +
 					"Usage: tree [PATH] [--limit N] [--cursor CURSOR]\n",
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
-		// Turn the tree target into a shell path and, when possible, an app file node path.
+		// Turn the tree target into a shell path and classify it (app tree / mount / synthetic root / external).
 		const absoluteShellPath = bash_resolve_path(commandCtx.cwd, parsed._yay.path ?? commandCtx.cwd);
+		const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
 		const target = {
 			inputPath: parsed._yay.path,
 			absoluteShellPath,
-			appFileNodePath: bash_current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
+			pathResolution,
+			dbFilesPath: pathResolution.dbFilesPath,
 			builtinOperand: parsed._yay.path ?? ".",
 		};
 
-		// Non-app paths are normal Just Bash filesystem paths. Delegate them so native
-		// `tree` behavior is preserved outside the app file mount.
-		if (target.appFileNodePath == null) {
+		// Non-db-files paths are normal Just Bash filesystem paths. Delegate them so native
+		// `tree` behavior is preserved outside the app file tree and external mounts.
+		if (target.dbFilesPath == null) {
 			return await bash_delegate_builtin_command({
 				command: "tree",
 				args: bash_command_build_builtin_delegation_args(args, [target.builtinOperand], {
@@ -163,25 +165,25 @@ export function bash_tree_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 			});
 		}
 
-		// Option parsing happens before target routing. Once the target is an app-file
+		// Option parsing happens before target routing. Once the target is a db-files
 		// path, reject options that only the built-in `tree` implementation can handle.
-		if (parsed._yay.unsupportedAppFileOption != null) {
+		if (parsed._yay.unsupportedDbFilesOption != null) {
 			return {
 				stdout: "",
 				stderr:
-					`tree: unsupported option ${parsed._yay.unsupportedAppFileOption} for paths under ${bash_APP_MOUNT_PATH}\n` +
+					`tree: unsupported option ${parsed._yay.unsupportedDbFilesOption} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
 					"Usage: tree [PATH] [--limit N] [--cursor CURSOR]\n",
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
-		// App files are DB-backed docs, so shell globs cannot be expanded without an
+		// App files are files_nodes docs, so shell globs cannot be expanded without an
 		// unbounded scan. Point callers to indexed discovery commands instead.
 		if (target.inputPath != null && bash_GLOB_METACHARACTER_REGEX.test(target.inputPath)) {
 			return {
 				stdout: "",
 				stderr: bash_create_glob_syntax_unsupported_message("tree", target.inputPath),
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
@@ -194,34 +196,38 @@ export function bash_tree_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 				return {
 					stdout: "",
 					stderr: `${resolvedCursor._nay.message}\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
 			cursor = resolvedCursor._yay;
 		}
 
-		// The project root is synthetic and has no files_nodes doc. Every non-root
-		// app target must resolve to a real file-node doc before tree can print it.
-		const fileNode =
-			target.appFileNodePath === "/"
+		// The `/.mounts` root spans every materialized mount: its content lives at the reserved scope root,
+		// so `target.dbFilesPath` is `"/"` and renders descendants as `/.mounts/<name>/...`.
+		const rootDbFilesPath = target.dbFilesPath;
+
+		// The project root and the `/.mounts` root are synthetic and have no files_nodes doc.
+		// Every other app target must resolve to a real files_nodes doc before tree can print it.
+		const dbFilesDoc =
+			rootDbFilesPath === "/"
 				? null
 				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-						workspaceId: workspaceFs.ctxData.workspaceId,
-						projectId: workspaceFs.ctxData.projectId,
-						path: target.appFileNodePath,
+						workspaceId: target.pathResolution.ctxData.workspaceId,
+						projectId: target.pathResolution.ctxData.projectId,
+						path: rootDbFilesPath,
 					})) as files_nodes_get_by_path_Result);
 
 		// Missing concrete app paths fail like normal tree paths.
-		if (target.appFileNodePath !== "/" && !fileNode) {
+		if (rootDbFilesPath !== "/" && !dbFilesDoc) {
 			return {
 				stdout: "",
 				stderr: `tree: ${target.absoluteShellPath}: No such file or directory\n`,
-				exitCode: COMMAND_EXIT_FAILURE,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
 
 		// A file target is already a complete tree of one item.
-		if (fileNode?.kind === "file") {
+		if (dbFilesDoc?.kind === "file") {
 			return {
 				stdout: `${target.absoluteShellPath}\n`,
 				stderr: "",
@@ -232,9 +238,9 @@ export function bash_tree_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 		// Folder targets use the subtree index. minDepth excludes the folder itself
 		// because the first output line already prints the requested root path.
 		const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
-			workspaceId: workspaceFs.ctxData.workspaceId,
-			projectId: workspaceFs.ctxData.projectId,
-			folderPath: target.appFileNodePath,
+			workspaceId: target.pathResolution.ctxData.workspaceId,
+			projectId: target.pathResolution.ctxData.projectId,
+			folderPath: rootDbFilesPath,
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 			cursor,
 			minDepth: 1,
@@ -244,7 +250,7 @@ export function bash_tree_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 		// requested root, preserving folder slashes for easy visual scanning.
 		const lines = [target.absoluteShellPath];
 		for (const item of result.page) {
-			const segments = relative_segments(target.appFileNodePath, item.path);
+			const segments = relative_segments(rootDbFilesPath, item.path);
 			if (segments.length === 0) {
 				continue;
 			}

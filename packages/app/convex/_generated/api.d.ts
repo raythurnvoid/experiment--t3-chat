@@ -19,6 +19,7 @@ import type * as data_deletion from "../data_deletion.js";
 import type * as files_metadata from "../files_metadata.js";
 import type * as files_nodes from "../files_nodes.js";
 import type * as files_pending_updates from "../files_pending_updates.js";
+import type * as github_sources from "../github_sources.js";
 import type * as http from "../http.js";
 import type * as migrations from "../migrations.js";
 import type * as notifications from "../notifications.js";
@@ -49,6 +50,7 @@ declare const fullApi: ApiFromModules<{
   files_metadata: typeof files_metadata;
   files_nodes: typeof files_nodes;
   files_pending_updates: typeof files_pending_updates;
+  github_sources: typeof github_sources;
   http: typeof http;
   migrations: typeof migrations;
   notifications: typeof notifications;
@@ -98,6 +100,7 @@ export declare const components: {
   files_content_materialization_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"files_content_materialization_workpool">;
   files_upload_conversion_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"files_upload_conversion_workpool">;
   data_deletion_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"data_deletion_workpool">;
+  github_sources_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"github_sources_workpool">;
   rate_limiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rate_limiter">;
   r2: import("@convex-dev/r2/_generated/component.js").ComponentApi<"r2">;
 };

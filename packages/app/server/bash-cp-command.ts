@@ -1,22 +1,23 @@
 import { defineCommand } from "just-bash/browser";
 import { path_name_of } from "../shared/shared-utils.ts";
 import {
-	bash_AppFileContentUnavailableError,
+	bash_DbFilesContentUnavailableError,
 	bash_build_unreadable_file_advisory,
 	bash_create_glob_syntax_unsupported_message,
-	bash_current_project_path_to_app_file_node_path,
+	bash_current_project_path_to_db_files_path,
 	bash_delegate_builtin_command,
 	bash_GLOB_METACHARACTER_REGEX,
 	bash_is_path_under_current_project_path,
+	bash_is_path_under_mounts,
 	bash_normalize_path,
 	bash_parse_cp_mv_operands,
 	bash_resolve_path,
 	bash_shell_arg_quote,
 	bash_TMP_MOUNT,
+	bash_read_only_mount_error,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
 } from "./bash-utils.ts";
-
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
 
 /**
  * Check whether a normalized path is inside the per-command scratch mount.
@@ -35,6 +36,21 @@ function is_under_tmp_mount(path: string) {
 export function bash_cp_command_create(currentProjectPath: string) {
 	return defineCommand("cp", async (args, commandCtx) => {
 		const { operands, recursive } = bash_parse_cp_mv_operands(args);
+
+		// Mounts are read-only: reject any cp whose destination (the last operand) is under /.mounts,
+		// before native delegation could write into the reserved mount tree. Copying a mount file OUT
+		// to /tmp scratch stays allowed (the source may be a mount path).
+		if (operands.length >= 2) {
+			const destResolved = bash_resolve_path(commandCtx.cwd, operands[operands.length - 1]);
+			if (bash_is_path_under_mounts(destResolved)) {
+				return {
+					stdout: "",
+					stderr: bash_read_only_mount_error("cp", destResolved),
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
+		}
+
 		// Classify app operands up front so any app-path command is fully preflighted
 		// before delegating to native cp, which could otherwise create /tmp side effects.
 		const appOperands = operands.filter((operand) =>
@@ -51,7 +67,7 @@ export function bash_cp_command_create(currentProjectPath: string) {
 				return {
 					stdout: "",
 					stderr: bash_create_glob_syntax_unsupported_message("cp", operand),
-					exitCode: COMMAND_EXIT_USAGE,
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 		}
@@ -63,15 +79,14 @@ export function bash_cp_command_create(currentProjectPath: string) {
 		) {
 			const sourceShellPath = bash_resolve_path(commandCtx.cwd, operands[0]);
 			const destShellPath = bash_resolve_path(commandCtx.cwd, operands[1]);
-			let destAppFileNodePath =
-				bash_current_project_path_to_app_file_node_path(currentProjectPath, destShellPath) ?? operands[1];
+			let destDbFilesPath =
+				bash_current_project_path_to_db_files_path(currentProjectPath, destShellPath) ?? operands[1];
 			try {
 				const destStat = await commandCtx.fs.stat(destShellPath);
 				if (destStat.isDirectory) {
 					const nativeDirectoryDestPath = bash_normalize_path(`${destShellPath}/${path_name_of(sourceShellPath)}`);
-					destAppFileNodePath =
-						bash_current_project_path_to_app_file_node_path(currentProjectPath, nativeDirectoryDestPath) ??
-						destAppFileNodePath;
+					destDbFilesPath =
+						bash_current_project_path_to_db_files_path(currentProjectPath, nativeDirectoryDestPath) ?? destDbFilesPath;
 				}
 			} catch {
 				// Missing destinations are normal; the rejected write target is the operand itself.
@@ -80,9 +95,9 @@ export function bash_cp_command_create(currentProjectPath: string) {
 				stdout: "",
 				stderr:
 					`cp: cannot write to app file '${operands[1]}': the app file tree is read-only for cp.\n` +
-					`To create a durable copy at '${destAppFileNodePath}', use write_file with path '${destAppFileNodePath}' and the content read from the source.\n` +
+					`To create a durable copy at '${destDbFilesPath}', use write_file with path '${destDbFilesPath}' and the content read from the source.\n` +
 					`cp into the app tree is never supported; only cp <app-file> /tmp[/<name>] (scratch copy) is allowed.\n`,
-				exitCode: COMMAND_EXIT_FAILURE,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
 		// The only mixed form allowed is source app file first, scratch destination second.
@@ -93,17 +108,17 @@ export function bash_cp_command_create(currentProjectPath: string) {
 					"cp: app files can only be copied as one exact readable file to a /tmp destination.\n" +
 					"Usage: cp <app-file> /tmp[/<name>] - copies the file content to durable per-thread /tmp scratch space.\n" +
 					"To duplicate an app file as a new durable file, use write_file with the new app file path (strip the current project path prefix).\n",
-				exitCode: COMMAND_EXIT_FAILURE,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
 
 		const sourceShellPath = bash_resolve_path(commandCtx.cwd, operands[0]);
 		let destShellPath = bash_resolve_path(commandCtx.cwd, operands[1]);
 		if (!is_under_tmp_mount(destShellPath)) {
-			const destAppFileNodePath = bash_current_project_path_to_app_file_node_path(currentProjectPath, destShellPath);
+			const destDbFilesPath = bash_current_project_path_to_db_files_path(currentProjectPath, destShellPath);
 			const destHint =
-				destAppFileNodePath != null
-					? `To create a durable copy at '${destAppFileNodePath}', use write_file with path '${destAppFileNodePath}' and the content read from the source.`
+				destDbFilesPath != null
+					? `To create a durable copy at '${destDbFilesPath}', use write_file with path '${destDbFilesPath}' and the content read from the source.`
 					: "Choose a /tmp/<name> destination for a scratch copy.";
 			return {
 				stdout: "",
@@ -111,7 +126,7 @@ export function bash_cp_command_create(currentProjectPath: string) {
 					`cp: cannot write app file '${operands[0]}' to '${operands[1]}': app-file cp only supports /tmp destinations.\n` +
 					`Only /tmp destinations are supported: cp ${bash_shell_arg_quote(operands[0])} /tmp[/<name>]\n` +
 					`${destHint}\n`,
-				exitCode: COMMAND_EXIT_FAILURE,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
 		try {
@@ -120,7 +135,7 @@ export function bash_cp_command_create(currentProjectPath: string) {
 				return {
 					stdout: "",
 					stderr: "cp: recursive app directory copy is not supported\n",
-					exitCode: COMMAND_EXIT_FAILURE,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
 			try {
@@ -138,19 +153,19 @@ export function bash_cp_command_create(currentProjectPath: string) {
 			await commandCtx.fs.writeFile(destShellPath, content);
 			return { stdout: "", stderr: "", exitCode: 0 };
 		} catch (error) {
-			if (error instanceof bash_AppFileContentUnavailableError) {
-				const appFileNodePath =
-					bash_current_project_path_to_app_file_node_path(currentProjectPath, error.shellPath) ?? error.shellPath;
+			if (error instanceof bash_DbFilesContentUnavailableError) {
+				const dbFilesPath =
+					bash_current_project_path_to_db_files_path(currentProjectPath, error.shellPath) ?? error.shellPath;
 				return {
 					stdout: "",
-					stderr: bash_build_unreadable_file_advisory(currentProjectPath, appFileNodePath, error.contentType),
-					exitCode: COMMAND_EXIT_FAILURE,
+					stderr: bash_build_unreadable_file_advisory(currentProjectPath, dbFilesPath, error.contentType),
+					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
 			return {
 				stdout: "",
 				stderr: `cp: cannot copy '${operands[0]}'\n`,
-				exitCode: COMMAND_EXIT_FAILURE,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
 	});

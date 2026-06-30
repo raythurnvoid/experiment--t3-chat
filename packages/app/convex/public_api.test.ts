@@ -11,6 +11,7 @@ import {
 } from "../server/files.ts";
 import { r2_create_asset_key } from "./r2.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
+import { workspaces_GLOBAL_GITHUB_PROJECT_ID, workspaces_GLOBAL_WORKSPACE_ID } from "../shared/workspaces.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 const textEncoder = new TextEncoder();
@@ -18,13 +19,23 @@ const r2Objects = new Map<string, string | ArrayBuffer>();
 
 function install_r2_object_reads() {
 	r2Objects.clear();
+	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (customKey?: string) => {
+		const key = customKey ?? "test-upload-key";
+		return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
+	});
 	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
 		async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
 	);
+	vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
 	vi.stubGlobal(
 		"fetch",
-		vi.fn(async (url: string | URL | Request) => {
+		vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
 			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlString.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
+				const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
+				r2Objects.set(key, init.body instanceof ArrayBuffer || typeof init.body === "string" ? init.body : "");
+				return new Response(null, { status: 200 });
+			}
 			if (!urlString.startsWith("https://r2.test/object?key=")) {
 				return new Response(null, { status: 404 });
 			}
@@ -347,6 +358,97 @@ describe("public files API", () => {
 			body: JSON.stringify({ path: "/" }),
 		});
 		expect(afterRevoke.status).toBe(401);
+	});
+
+	test("keeps public file routes scoped to tenant files and excludes reserved GLOBAL/GITHUB mounts", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-mount-isolation" });
+		const mountSentinel = "reserved mount sentinel Zorptelemetry\n";
+
+		await seed_markdown_file({
+			t,
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			path: "/tenant-visible.md",
+			committedMarkdown: "tenant visible content\n",
+		});
+		const mounted = await t.action(internal.files_nodes.create_file_node_internal, {
+			path: "/t3-chat/README.md",
+			rawText: mountSentinel,
+		});
+		if (mounted._nay) {
+			throw new Error(`Expected reserved mount fixture to materialize: ${mounted._nay.message}`);
+		}
+
+		const reservedRead = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			userId: db.userId,
+			path: "/t3-chat/README.md",
+			mode: { kind: "full", maxBytes: 1_000_000 },
+		});
+		expect(reservedRead?.content).toBe(mountSentinel);
+
+		const token = "8".repeat(64);
+		await seed_public_api_grant({
+			t,
+			workspaceId: db.workspaceId,
+			projectId: db.projectId,
+			userId: db.userId,
+			token,
+		});
+
+		const listRoot = await t.fetch("/api/v1/files/list", {
+			method: "POST",
+			headers: auth_headers(token),
+			body: JSON.stringify({ path: "/", recursive: true }),
+		});
+		expect(listRoot.status).toBe(200);
+		const listRootBody = (await listRoot.json()) as { items: Array<{ path: string }> };
+		expect(listRootBody.items.map((item) => item.path)).toEqual(["/tenant-visible.md"]);
+
+		for (const path of ["/t3-chat", "/.mounts/t3-chat"]) {
+			const listMount = await t.fetch("/api/v1/files/list", {
+				method: "POST",
+				headers: auth_headers(token),
+				body: JSON.stringify({ path, recursive: true }),
+			});
+			expect(listMount.status).toBe(200);
+			const listMountBody = (await listMount.json()) as { items: Array<{ path: string }> };
+			expect(listMountBody.items).toEqual([]);
+		}
+
+		for (const path of ["/t3-chat/README.md", "/.mounts/t3-chat/README.md"]) {
+			const readMount = await t.fetch("/api/v1/files/read", {
+				method: "POST",
+				headers: auth_headers(token),
+				body: JSON.stringify({ path }),
+			});
+			expect(readMount.status).toBe(404);
+		}
+
+		const readMany = await t.fetch("/api/v1/files/read-many", {
+			method: "POST",
+			headers: auth_headers(token),
+			body: JSON.stringify({
+				paths: ["/tenant-visible.md", "/t3-chat/README.md", "/.mounts/t3-chat/README.md"],
+			}),
+		});
+		expect(readMany.status).toBe(200);
+		const readManyBody = (await readMany.json()) as {
+			files: Array<{ path: string; content: string }>;
+			errors: Array<{ path: string; message: string }>;
+		};
+		expect(readManyBody.files).toEqual([
+			expect.objectContaining({ path: "/tenant-visible.md", content: expect.stringContaining("tenant visible") }),
+		]);
+		expect(readManyBody.errors.map((error) => error.path)).toEqual([
+			"/t3-chat/README.md",
+			"/.mounts/t3-chat/README.md",
+		]);
+		expect(JSON.stringify(readManyBody)).not.toContain("Zorptelemetry");
 	});
 
 	test("rotates an API credential and refuses to rotate revoked credentials", async () => {

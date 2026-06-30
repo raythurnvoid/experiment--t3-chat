@@ -2,9 +2,9 @@ import { decodeJwt } from "jose";
 import { should_never_happen } from "./shared-utils.ts";
 
 /**
- * Special non-`Id` author sentinel for system-authored rows (e.g. read-only mount content). Not a real
- * `Id<"users">` and has no backing doc; only legal where the schema accepts it via `v.literal(...)`.
- * The constant is the single source of truth; the schema literal and `typeof users_SYSTEM_AUTHOR` track it.
+ * Pseudo user ID for system-authored docs in the reserved global workspace (e.g. read-only mount content).
+ * Not a real `Id<"users">` and has no backing doc; only legal where the schema accepts it via
+ * `v.literal(...)`.
  */
 export const users_SYSTEM_AUTHOR = "SYSTEM";
 
@@ -48,4 +48,3 @@ export function users_create_anonymouse_user_display_name(userId: string) {
 export function users_create_fallback_display_name(userId: string) {
 	return `User ${userId}`;
 }
-

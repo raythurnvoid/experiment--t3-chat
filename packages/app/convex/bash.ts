@@ -16,7 +16,7 @@ export const run = internalAction({
 		userId: v.id("users"),
 		threadId: v.id("ai_chat_threads"),
 		command: v.string(),
-		allowAppFileTreeMkdir: v.boolean(),
+		allowDbFilesMkdir: v.boolean(),
 	},
 	returns: v.object({
 		title: v.string(),

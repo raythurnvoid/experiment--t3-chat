@@ -32,7 +32,7 @@ import { workspaces_db_get_membership } from "./workspaces.ts";
 import { billing_event } from "../server/billing.ts";
 import { billing_db_check_credits, billing_ingest_events, billing_pick_billed_user_id } from "./billing.ts";
 import {
-	files_MAX_MARKDOWN_CHARACTERS,
+	files_MAX_TEXT_CONTENT_BYTES,
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
 	files_get_utf8_byte_size,
@@ -43,7 +43,7 @@ import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import {
-	db_insert_file_chunks,
+	db_insert_file_text_content,
 	db_patch_file_chunks_scope,
 	db_get_file_content_materialization_db_state,
 	files_nodes_create_yjs_snapshot_update_from_markdown,
@@ -989,6 +989,8 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 		workspaceId: Id<"workspaces">;
 		projectId: Id<"workspaces_projects">;
 		fileNodeId: Id<"files_nodes">;
+		path: Doc<"files_nodes">["path"];
+		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 		userId: Id<"users">;
 		markdownAssetId: Id<"files_r2_assets">;
 		markdownSize: number;
@@ -1024,12 +1026,15 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 			fileNodeId: args.fileNodeId,
 			lastSequence: 0,
 		}),
-		db_insert_file_chunks(ctx, {
+		db_insert_file_text_content(ctx, {
 			workspaceId: args.workspaceId,
 			projectId: args.projectId,
 			nodeId: args.fileNodeId,
+			path: args.path,
+			archiveOperationId: args.archiveOperationId,
 			yjsSequence: 0,
-			markdownContent: args.markdownContent,
+			contentType: "text/markdown;charset=utf-8",
+			textContent: args.markdownContent,
 		}).then((chunks) => {
 			if (chunks._nay) {
 				throw convex_error({
@@ -1170,6 +1175,8 @@ export const finalize_upload_conversion_to_markdown = internalMutation({
 			workspaceId: finalizeScope.workspaceId,
 			projectId: finalizeScope.projectId,
 			fileNodeId: output.fileNodeId,
+			path: outputFileNode.path,
+			archiveOperationId: outputFileNode.archiveOperationId,
 			userId: args.userId,
 			markdownAssetId: output.markdownAssetId,
 			markdownSize: output.markdownSize,
@@ -1278,7 +1285,7 @@ export const convert_upload_to_markdown = internalAction({
 					filename: sourceFileNode.name,
 					contentType: sourceFileNode.contentType,
 					maxBytes: files_MAX_UPLOADS_BYTES,
-					maxMarkdownCharacters: files_MAX_MARKDOWN_CHARACTERS,
+					maxMarkdownBytes: files_MAX_TEXT_CONTENT_BYTES,
 				}),
 			});
 		} catch (error) {
@@ -1342,13 +1349,19 @@ export const convert_upload_to_markdown = internalAction({
 		}
 
 		// Keep converted Markdown within the same product limit as first-party Markdown content.
-		if (conversionPayload._yay.markdown.length > files_MAX_MARKDOWN_CHARACTERS) {
-			throw convex_error({
-				message: "Failed to convert uploaded file",
-				cause: {
-					message: "Converted markdown is too large",
-				},
-			});
+		const convertedMarkdownBytes = files_get_utf8_byte_size(conversionPayload._yay.markdown);
+		if (convertedMarkdownBytes > files_MAX_TEXT_CONTENT_BYTES) {
+			await Promise.all([
+				ctx.runMutation(internal.r2.patch_asset, {
+					assetId: sourceAsset._id,
+					conversionWorkId: null,
+				}),
+				ctx.runMutation(internal.r2.patch_asset, {
+					assetId: args.outputAssetId,
+					conversionWorkId: null,
+				}),
+			]);
+			return null;
 		}
 
 		// Build the editable Markdown state from Modal output, but do not publish
@@ -1448,6 +1461,8 @@ export const finalize_markdown_file_node_from_r2_assets = internalMutation({
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		fileNodeId: v.id("files_nodes"),
+		path: doc(app_convex_schema, "files_nodes").fields.path,
+		archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
 		userId: v.id("users"),
 		markdownAssetId: v.id("files_r2_assets"),
 		markdownSize: v.number(),
@@ -1530,6 +1545,8 @@ export const finalize_uploaded_media_markdown_outputs = internalMutation({
 				workspaceId: finalizeScope.workspaceId,
 				projectId: finalizeScope.projectId,
 				fileNodeId: output.fileNodeId,
+				path: outputFileNode.path,
+				archiveOperationId: outputFileNode.archiveOperationId,
 				userId: args.userId,
 				markdownAssetId: output.markdownAssetId,
 				markdownSize: output.markdownSize,
@@ -1568,12 +1585,13 @@ async function write_uploaded_media_markdown_output_objects(
 		markdownContent: string;
 	},
 ) {
-	if (args.markdownContent.length > files_MAX_MARKDOWN_CHARACTERS) {
+	const markdownSize = files_get_utf8_byte_size(args.markdownContent);
+	if (markdownSize > files_MAX_TEXT_CONTENT_BYTES) {
 		throw convex_error({
 			message: "Generated media markdown is too large",
 			cause: {
 				nodeId: args.outputFileNode._id,
-				length: args.markdownContent.length,
+				byteSize: markdownSize,
 			},
 		});
 	}
@@ -1586,7 +1604,6 @@ async function write_uploaded_media_markdown_output_objects(
 		});
 	}
 
-	const markdownSize = files_get_utf8_byte_size(args.markdownContent);
 	const [yjsSnapshotAssetId, versionSnapshotAssetId] = (await Promise.all([
 		ctx.runMutation(internal.r2.insert_asset, {
 			workspaceId: args.sourceFileNode.workspaceId,
@@ -1888,7 +1905,7 @@ export const describe_image_upload_to_markdown = internalAction({
 		const result = await generateText({
 			model: openai(MEDIA_DESCRIPTION_MODEL_ID),
 			system:
-				"Describe uploaded images for a project file tree. " +
+				"Describe uploaded images for an app file tree. " +
 				"Write useful, concrete Markdown for a reader who cannot see the image. " +
 				"Include visible text, UI details, objects, people, layout, and any uncertainty. " +
 				"Return raw Markdown without wrapping it in a code fence.",
@@ -2095,7 +2112,7 @@ export const summarize_video_upload_to_markdown = internalAction({
 			const result = await generateText({
 				model: openai(MEDIA_DESCRIPTION_MODEL_ID),
 				system:
-					"Summarize uploaded videos for a project file tree. " +
+					"Summarize uploaded videos for an app file tree. " +
 					"Use the transcript and sampled frames to produce concise, useful Markdown. " +
 					"Call out visible UI, slides, people, actions, and uncertainty when the samples are incomplete. " +
 					"Return raw Markdown without wrapping it in a code fence.",
@@ -2216,7 +2233,7 @@ export const finalize_uploaded_markdown_file = internalAction({
 
 		const response = await r2_fetch_object_from_bucket({ key: sourceAsset.r2Key });
 		const markdownContent = await response.text();
-		if (markdownContent.length > files_MAX_MARKDOWN_CHARACTERS) {
+		if (files_get_utf8_byte_size(markdownContent) > files_MAX_TEXT_CONTENT_BYTES) {
 			// Treat over-limit Markdown uploads as processed stored files; retrying cannot make the content smaller.
 			await ctx.runMutation(internal.r2.patch_asset, {
 				assetId: sourceAsset._id,
@@ -2296,6 +2313,8 @@ export const finalize_uploaded_markdown_file = internalAction({
 			workspaceId: sourceFileNode.workspaceId,
 			projectId: sourceFileNode.projectId,
 			fileNodeId: sourceFileNode._id,
+			path: sourceFileNode.path,
+			archiveOperationId: sourceFileNode.archiveOperationId,
 			userId: r2_require_real_author(sourceFileNode.createdBy),
 			markdownAssetId,
 			markdownSize: files_get_utf8_byte_size(markdownContent),

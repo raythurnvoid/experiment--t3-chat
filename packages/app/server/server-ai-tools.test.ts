@@ -46,7 +46,7 @@ const server_ai_tools_test_ctx_data = {
 	projectName: "home",
 	userId: server_ai_tools_test_user_id,
 } as const;
-const server_ai_tools_test_app_files_mount = "/home/cloud-usr/w/personal/home";
+const server_ai_tools_test_db_files_mount = "/home/cloud-usr/w/personal/home";
 
 const server_ai_tools_test_user_identity_default = {
 	issuer: "https://clerk.test",
@@ -92,18 +92,18 @@ describe("ai_chat_tool_create_bash", () => {
 	test("forwards execution to the bash action after thread resolution", async () => {
 		const { ctx, runAction } = makeCtx(async () => null, {
 			runActionImpl: async () => ({
-				title: `exit 0 · ${server_ai_tools_test_app_files_mount}`,
+				title: `exit 0 · ${server_ai_tools_test_db_files_mount}`,
 				output: "$ pwd",
-				stdout: `${server_ai_tools_test_app_files_mount}\n`,
+				stdout: `${server_ai_tools_test_db_files_mount}\n`,
 				stderr: "",
 				metadata: {
 					command: "pwd",
-					cwd: server_ai_tools_test_app_files_mount,
-					nextCwd: server_ai_tools_test_app_files_mount,
+					cwd: server_ai_tools_test_db_files_mount,
+					nextCwd: server_ai_tools_test_db_files_mount,
 					exitCode: 0,
 					stdoutTruncated: false,
 					stderrTruncated: false,
-					stdoutLength: server_ai_tools_test_app_files_mount.length + 1,
+					stdoutLength: server_ai_tools_test_db_files_mount.length + 1,
 					stderrLength: 0,
 					pathIndexTruncated: false,
 				},
@@ -111,7 +111,7 @@ describe("ai_chat_tool_create_bash", () => {
 		});
 		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
 			getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-			allowAppFileTreeMkdir: true,
+			allowDbFilesMkdir: true,
 		});
 
 		const result = await tool.execute?.({ command: "pwd" }, { toolCallId: "test", messages: [] });
@@ -123,7 +123,7 @@ describe("ai_chat_tool_create_bash", () => {
 			throw new Error("`result` is AsyncIterable but expected sync object");
 		}
 
-		expect(result.stdout).toBe(`${server_ai_tools_test_app_files_mount}\n`);
+		expect(result.stdout).toBe(`${server_ai_tools_test_db_files_mount}\n`);
 		expect(runAction).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({
@@ -132,7 +132,7 @@ describe("ai_chat_tool_create_bash", () => {
 				userId: server_ai_tools_test_user_id,
 				workspaceName: "personal",
 				projectName: "home",
-				allowAppFileTreeMkdir: true,
+				allowDbFilesMkdir: true,
 			}),
 		);
 	});
@@ -141,12 +141,14 @@ describe("ai_chat_tool_create_bash", () => {
 		const { ctx } = makeCtx(async () => null);
 		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
 			getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-			allowAppFileTreeMkdir: true,
+			allowDbFilesMkdir: true,
 		});
 
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("Use ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...] for app listings."),
+				description: expect.stringContaining(
+					"Use ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...] for app listings.",
+				),
 			}),
 		);
 		expect(tool).toEqual(
@@ -158,7 +160,9 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("App-mount limitations apply only to paths under /home/cloud-usr/w/personal/home or /home/cloud-usr/w."),
+				description: expect.stringContaining(
+					"App-mount limitations apply only to paths under /home/cloud-usr/w/personal/home or /home/cloud-usr/w.",
+				),
 			}),
 		);
 		expect(tool).toEqual(
@@ -185,17 +189,23 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("It is not shared with new chats and is not app project storage; use app file tools for durable user-visible files."),
+				description: expect.stringContaining(
+					"It is not shared with new chats and is not app file storage; use app file tools for durable user-visible files.",
+				),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("Do not call /tmp ephemeral or temporary in a way that implies same-chat data loss."),
+				description: expect.stringContaining(
+					"Do not call /tmp ephemeral or temporary in a way that implies same-chat data loss.",
+				),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("that is expected evidence of per-chat isolation, not a global Bash failure."),
+				description: expect.stringContaining(
+					"that is expected evidence of per-chat isolation, not a global Bash failure.",
+				),
 			}),
 		);
 		expect(tool).toEqual(
@@ -212,12 +222,16 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("/tmp native commands are Just Bash browser commands, not host GNU coreutils."),
+				description: expect.stringContaining(
+					"/tmp native commands are Just Bash browser commands, not host GNU coreutils.",
+				),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("if a /tmp option fails but the command is useful, retry once with simpler native syntax."),
+				description: expect.stringContaining(
+					"if a /tmp option fails but the command is useful, retry once with simpler native syntax.",
+				),
 			}),
 		);
 		expect(tool).toEqual(
@@ -234,7 +248,9 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("If file fails or the user asks for it, do not stop after reporting that it is unavailable"),
+				description: expect.stringContaining(
+					"If file fails or the user asks for it, do not stop after reporting that it is unavailable",
+				),
 			}),
 		);
 		expect(tool).toEqual(
@@ -284,7 +300,9 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("avoid strict-mode boilerplate such as set -euo pipefail because pipefail is unsupported"),
+				description: expect.stringContaining(
+					"avoid strict-mode boilerplate such as set -euo pipefail because pipefail is unsupported",
+				),
 			}),
 		);
 		expect(tool).toEqual(
@@ -312,7 +330,7 @@ describe("ai_chat_tool_create_bash", () => {
 		const { ctx } = makeCtx(async () => null);
 		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
 			getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
-			allowAppFileTreeMkdir: true,
+			allowDbFilesMkdir: true,
 		});
 
 		expect(tool).toEqual(
@@ -327,13 +345,15 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("find -maxdepth N and find -mindepth N filter non-search app subtree results by depth."),
+				description: expect.stringContaining(
+					"find -maxdepth N and find -mindepth N filter non-search app subtree results by depth.",
+				),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
-					'Content-vs-path rule: use search for text inside files, and use find only for path/name discovery.',
+					"Content-vs-path rule: use search for text inside files, and use find only for path/name discovery.",
 				),
 			}),
 		);
@@ -377,7 +397,9 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("Use find -name QUERY or find --path-query QUERY only for DB-backed path/name word search"),
+				description: expect.stringContaining(
+					"Use find -name QUERY or find --path-query QUERY only for indexed app-file path/name word search",
+				),
 			}),
 		);
 		expect(tool).toEqual(
@@ -387,7 +409,9 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("Use find <path> --extension md -type f for exact indexed extension search"),
+				description: expect.stringContaining(
+					"Use find <path> --extension md -type f for exact indexed extension search",
+				),
 			}),
 		);
 		expect(tool).toEqual(
@@ -405,13 +429,13 @@ describe("ai_chat_tool_create_bash", () => {
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining(
-					"find --prefix <prefix> --limit N [--cursor CURSOR] only for raw startsWith path discovery",
+					"find --prefix <prefix> --limit N [--cursor CURSOR] for a folder-boundary subtree scan",
 				),
 			}),
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("prefix mode may match sibling prefixes such as /docs-archive"),
+				description: expect.stringContaining("sibling-prefix paths such as /docs-archive are excluded from /docs"),
 			}),
 		);
 		expect(tool).toEqual(
@@ -431,7 +455,9 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search"),
+				description: expect.stringContaining(
+					"Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search",
+				),
 			}),
 		);
 		expect(tool).toEqual(
@@ -531,7 +557,9 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining('For requests like "where does X appear" or "which files mention X", run search first'),
+				description: expect.stringContaining(
+					'For requests like "where does X appear" or "which files mention X", run search first',
+				),
 			}),
 		);
 		expect(tool).toEqual(
@@ -705,7 +733,7 @@ test("glob_files tool: executes traversal with include pattern and sorts newest 
 	expect(result.output).toBe("/docs/new-target.md\n/docs/old-target.md");
 });
 
-test("grep_files tool: searches markdown content for listed file nodes", async () => {
+test("grep_files tool: searches markdown content for listed files", async () => {
 	const listReturn = {
 		items: [
 			{ path: "/docs", kind: "folder", updatedAt: 20, depthTruncated: false },
@@ -868,26 +896,26 @@ test("write_file tool normalizes missing file paths before creating with the age
 	const pendingUpdateId = "pending999";
 
 	let runActionCallCount = 0;
-	const { ctx, runQuery, runMutation, runAction } = makeCtx(
-		async () => ({ _id: pendingUpdateId }),
-		{
-			runActionImpl: async () => {
-				runActionCallCount += 1;
-				if (runActionCallCount === 1) {
-					return null;
-				}
-				if (runActionCallCount === 2) {
-					return { _yay: { nodeId } };
-				}
+	const { ctx, runQuery, runMutation, runAction } = makeCtx(async () => ({ _id: pendingUpdateId }), {
+		runActionImpl: async () => {
+			runActionCallCount += 1;
+			if (runActionCallCount === 1) {
 				return null;
-			},
+			}
+			if (runActionCallCount === 2) {
+				return { _yay: { nodeId } };
+			}
+			return null;
 		},
-	);
+	});
 	const tool = ai_chat_tool_create_write_file(
 		ctx,
 		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_write_file>[1],
 	);
-	const result = await tool.execute?.({ path: "/docs/New Plan", content: "# New" }, { toolCallId: "test", messages: [] });
+	const result = await tool.execute?.(
+		{ path: "/docs/New Plan", content: "# New" },
+		{ toolCallId: "test", messages: [] },
+	);
 
 	if (!result) {
 		throw new Error("`result` is undefined");
@@ -1465,9 +1493,9 @@ test("execute_code tool: always sends gatewayed network and app runtime", async 
 test("execute_code tool: throws when the runner is not configured", async () => {
 	await execute_code_test_with_runner({ url: undefined, secret: undefined }, async (fetchMock) => {
 		const { tool } = execute_code_test_make_tool();
-		await expect(
-			tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] }),
-		).rejects.toThrow("Code execution is unavailable.");
+		await expect(tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })).rejects.toThrow(
+			"Code execution is unavailable.",
+		);
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 });
@@ -1477,9 +1505,9 @@ test("execute_code tool: throws when the app origin is invalid", async () => {
 		{ url: "https://runner.test", secret: "test-runner-secret", appOrigin: "http://app.test" },
 		async (fetchMock) => {
 			const { tool, runMutation } = execute_code_test_make_tool();
-			await expect(
-				tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] }),
-			).rejects.toThrow("Code execution app access is unavailable.");
+			await expect(tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })).rejects.toThrow(
+				"Code execution app access is unavailable.",
+			);
 			expect(fetchMock).not.toHaveBeenCalled();
 			expect(runMutation).not.toHaveBeenCalled();
 		},
@@ -1491,13 +1519,17 @@ test("execute_code tool: surfaces the disabled kill switch", async () => {
 		{
 			url: "https://runner.test",
 			secret: "test-runner-secret",
-			fetchImpl: async () => execute_code_test_make_response(503, { ok: false, error: { code: "disabled", message: "Code execution is disabled." } }),
+			fetchImpl: async () =>
+				execute_code_test_make_response(503, {
+					ok: false,
+					error: { code: "disabled", message: "Code execution is disabled." },
+				}),
 		},
 		async () => {
 			const { tool } = execute_code_test_make_tool();
-			await expect(
-				tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] }),
-			).rejects.toThrow("Code execution is disabled.");
+			await expect(tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })).rejects.toThrow(
+				"Code execution is disabled.",
+			);
 		},
 	);
 });
@@ -1507,11 +1539,14 @@ test("execute_code tool: surfaces a non-OK runner error, falling back to the sta
 		{
 			url: "https://runner.test",
 			secret: "test-runner-secret",
-			fetchImpl: async () => execute_code_test_make_response(500, { ok: false, error: { code: "internal", message: "runner boom" } }),
+			fetchImpl: async () =>
+				execute_code_test_make_response(500, { ok: false, error: { code: "internal", message: "runner boom" } }),
 		},
 		async () => {
 			const { tool } = execute_code_test_make_tool();
-			await expect(tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })).rejects.toThrow("runner boom");
+			await expect(tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })).rejects.toThrow(
+				"runner boom",
+			);
 		},
 	);
 
@@ -1546,13 +1581,13 @@ test("execute_code tool: surfaces runner outbound misconfiguration", async () =>
 						code: "misconfigured",
 						message: "Code execution outbound access is unavailable.",
 					},
-			}),
+				}),
 		},
 		async () => {
 			const { tool } = execute_code_test_make_tool();
-			await expect(
-				tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] }),
-			).rejects.toThrow("outbound access is unavailable");
+			await expect(tool.execute?.({ code: "return 1;" }, { toolCallId: "t", messages: [] })).rejects.toThrow(
+				"outbound access is unavailable",
+			);
 		},
 	);
 });

@@ -10,11 +10,10 @@ import type {
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER } from "../shared/files.ts";
 import {
-	bash_app_file_node_path_to_current_project_path,
 	bash_APP_MOUNT_PATH,
+	bash_db_files_path_to_current_project_path,
 	bash_clamp_listing_page_limit,
 	bash_command_build_builtin_delegation_args,
-	bash_current_project_path_to_app_file_node_path,
 	bash_create_glob_syntax_unsupported_message,
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
@@ -26,20 +25,22 @@ import {
 	bash_read_option_value,
 	bash_resolve_path,
 	bash_shell_arg_quote,
-	type bash_WorkspaceFs,
-	type bash_WorkspaceFsOptions,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	bash_resolve_db_files_shell_path,
+	type bash_DbFilesFs,
+	type bash_DbFilesFsOptions,
+	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 
 const PATH_OPERAND_MAX = 20;
 const BUILTIN_OPTIONS_WITH_VALUES = new Set<string>();
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
 
 function parse_args(args: string[]) {
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
 	const paths: string[] = [];
-	let unsupportedAppFileOption: string | null = null;
+	let unsupportedDbFilesOption: string | null = null;
 	let recursive = false;
 	let directory = false;
 	let reverse = false;
@@ -98,7 +99,7 @@ function parse_args(args: string[]) {
 			const value = bash_read_option_value("ls", args, index, "--indicator-style");
 			if (value._nay) return value;
 			if (value._yay.value !== "slash") {
-				unsupportedAppFileOption ??= `--indicator-style=${value._yay.value}`;
+				unsupportedDbFilesOption ??= `--indicator-style=${value._yay.value}`;
 			}
 			index++;
 			continue;
@@ -106,7 +107,7 @@ function parse_args(args: string[]) {
 		if (arg.startsWith("--indicator-style=")) {
 			const value = arg.slice("--indicator-style=".length);
 			if (value !== "slash") {
-				unsupportedAppFileOption ??= arg;
+				unsupportedDbFilesOption ??= arg;
 			}
 			continue;
 		}
@@ -116,7 +117,7 @@ function parse_args(args: string[]) {
 			if (value._yay.value === "time" || value._yay.value === "mtime") {
 				time = true;
 			} else if (value._yay.value !== "name") {
-				unsupportedAppFileOption ??= `--sort=${value._yay.value}`;
+				unsupportedDbFilesOption ??= `--sort=${value._yay.value}`;
 			}
 			index++;
 			continue;
@@ -126,12 +127,12 @@ function parse_args(args: string[]) {
 			if (value === "time" || value === "mtime") {
 				time = true;
 			} else if (value !== "name") {
-				unsupportedAppFileOption ??= arg;
+				unsupportedDbFilesOption ??= arg;
 			}
 			continue;
 		}
 		if (arg.startsWith("--")) {
-			unsupportedAppFileOption ??= arg;
+			unsupportedDbFilesOption ??= arg;
 			continue;
 		}
 		if (arg.startsWith("-") && arg !== "-") {
@@ -159,7 +160,7 @@ function parse_args(args: string[]) {
 					time = true;
 					continue;
 				}
-				unsupportedAppFileOption ??= `-${flag}`;
+				unsupportedDbFilesOption ??= `-${flag}`;
 			}
 			continue;
 		}
@@ -186,7 +187,7 @@ function parse_args(args: string[]) {
 			paths,
 			limit: limit._yay,
 			cursor,
-			unsupportedAppFileOption,
+			unsupportedDbFilesOption,
 			recursive,
 			directory,
 			reverse,
@@ -218,17 +219,17 @@ function format_item(args: {
 
 async function get_path_entry(args: {
 	ctx: ActionCtx;
-	ctxData: bash_WorkspaceFsOptions["ctxData"];
-	workspaceFs: bash_WorkspaceFs;
-	appFileNodePath: string;
+	ctxData: bash_DbFilesFsOptions["ctxData"];
+	dbFilesFs: bash_DbFilesFs;
+	dbFilesPath: string;
 	needsFullMetadata: boolean;
 }) {
 	if (!args.needsFullMetadata) {
-		const cached = await args.workspaceFs.getEntry(args.appFileNodePath);
+		const cached = await args.dbFilesFs.getEntry(args.dbFilesPath);
 		if (!cached) {
 			return null;
 		}
-		if (args.appFileNodePath === "/") {
+		if (args.dbFilesPath === "/") {
 			return files_SYNTHETIC_ROOT_FOLDER;
 		}
 		if (cached._id != null) {
@@ -244,27 +245,27 @@ async function get_path_entry(args: {
 		}
 	}
 
-	if (args.appFileNodePath === "/") {
+	if (args.dbFilesPath === "/") {
 		return files_SYNTHETIC_ROOT_FOLDER;
 	}
 
-	const fileNode = (await args.ctx.runQuery(internal.files_nodes.get_by_path, {
+	const dbFilesDoc = (await args.ctx.runQuery(internal.files_nodes.get_by_path, {
 		workspaceId: args.ctxData.workspaceId,
 		projectId: args.ctxData.projectId,
-		path: args.appFileNodePath,
+		path: args.dbFilesPath,
 	})) as files_nodes_get_by_path_Result;
-	if (fileNode) {
-		args.workspaceFs.rememberEntry({
-			_id: fileNode._id,
-			path: fileNode.path,
-			name: fileNode.name,
-			kind: fileNode.kind,
-			updatedAt: fileNode.updatedAt,
-			updatedBy: fileNode.updatedBy,
-			contentType: fileNode.contentType,
+	if (dbFilesDoc) {
+		args.dbFilesFs.rememberEntry({
+			_id: dbFilesDoc._id,
+			path: dbFilesDoc.path,
+			name: dbFilesDoc.name,
+			kind: dbFilesDoc.kind,
+			updatedAt: dbFilesDoc.updatedAt,
+			updatedBy: dbFilesDoc.updatedBy,
+			contentType: dbFilesDoc.contentType,
 		});
 	}
-	return fileNode;
+	return dbFilesDoc;
 }
 
 function build_continuation(args: {
@@ -292,14 +293,15 @@ function build_continuation(args: {
 	return continuationParts.join(" ");
 }
 
-export function bash_ls_command_create(ctx: ActionCtx, workspaceFs: bash_WorkspaceFs, currentProjectPath: string) {
+export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
 	return defineCommand("ls", async (args, commandCtx) => {
 		const parsed = parse_args(args);
 		if (parsed._nay) {
 			return {
 				stdout: "",
 				stderr: `${parsed._nay.message}\nUsage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n`,
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
@@ -312,54 +314,59 @@ export function bash_ls_command_create(ctx: ActionCtx, workspaceFs: bash_Workspa
 					"ls: --next-page is not supported\n" +
 					"Copy the exact `Next page: ls --limit N --cursor ... <path>` command from the previous ls output.\n" +
 					"Usage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n",
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
 		const targetInputs = parsed._yay.paths.length > 0 ? parsed._yay.paths : [undefined];
 
-		// Turn each ls target into a shell path and, when possible, an app file node path.
+		// Turn each ls target into a shell path and classify it (project / mount / synthetic root / external).
 		const targets = targetInputs.map((path) => {
 			const absoluteShellPath = bash_resolve_path(commandCtx.cwd, path ?? commandCtx.cwd);
+			const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
 			return {
 				inputPath: path,
 				absoluteShellPath,
-				appFileNodePath: bash_current_project_path_to_app_file_node_path(currentProjectPath, absoluteShellPath),
+				pathResolution,
+				dbFilesPath: pathResolution.dbFilesPath,
 				builtinOperand: path ?? ".",
 			};
 		});
 
-		const hasAppFileNodeTarget = targets.some((target) => target.appFileNodePath != null);
+		// App-aware = a db file listing target: a project/mount db-files path, including the reserved
+		// `/.mounts` root which maps to `"/"` in the reserved scope.
+		const hasDbFilesPathTarget = targets.some((target) => target.dbFilesPath != null);
 
-		if (hasAppFileNodeTarget && parsed._yay.unsupportedAppFileOption != null) {
-			const opt = parsed._yay.unsupportedAppFileOption;
-			const hint = `ls under ${bash_APP_MOUNT_PATH} supports name and time order only; use find/search for pattern and content discovery.`;
+		if (hasDbFilesPathTarget && parsed._yay.unsupportedDbFilesOption != null) {
+			const opt = parsed._yay.unsupportedDbFilesOption;
+			const hint = `ls on db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts supports name and time order only; use find/search for pattern and content discovery.`;
 			return {
 				stdout: "",
-				stderr: `ls: unsupported option ${opt} for paths under ${bash_APP_MOUNT_PATH}\n${hint}\nUsage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n`,
-				exitCode: COMMAND_EXIT_USAGE,
+				stderr: `ls: unsupported option ${opt} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n${hint}\nUsage: ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]\n`,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
 		let cursor: string | null = null;
-		if (hasAppFileNodeTarget && parsed._yay.cursor != null) {
+		if (hasDbFilesPathTarget && parsed._yay.cursor != null) {
 			const resolvedCursor = await bash_cursor_id_resolve(ctx, parsed._yay.cursor);
 			if (resolvedCursor._nay) {
 				return {
 					stdout: "",
 					stderr: `${resolvedCursor._nay.message}\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
 			cursor = resolvedCursor._yay;
 		}
 
 		// Pathless `ls -t` is the project-wide recency view, so the agent can ask
-		// "what changed recently?" without first discovering every folder.
-		if (hasAppFileNodeTarget && parsed._yay.time && parsed._yay.paths.length === 0) {
+		// "what changed recently?" without first discovering every folder. Only for a project cwd —
+		// inside a mount there is no project-wide view, so it falls to the per-target mount listing below.
+		if (parsed._yay.time && parsed._yay.paths.length === 0 && targets[0]?.pathResolution.kind === "app") {
 			const result = (await ctx.runQuery(internal.files_nodes.list_children, {
-				workspaceId: workspaceFs.ctxData.workspaceId,
-				projectId: workspaceFs.ctxData.projectId,
+				workspaceId: targets[0].pathResolution.ctxData.workspaceId,
+				projectId: targets[0].pathResolution.ctxData.projectId,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
 				orderBy: "updatedAt",
@@ -368,7 +375,7 @@ export function bash_ls_command_create(ctx: ActionCtx, workspaceFs: bash_Workspa
 
 			const lines = result.items.map(
 				(item) =>
-					`${new Date(item.updatedAt).toISOString()}\t${bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
+					`${new Date(item.updatedAt).toISOString()}\t${bash_db_files_path_to_current_project_path(currentProjectPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
 			if (!result.isDone) {
 				lines.push(
@@ -386,28 +393,28 @@ export function bash_ls_command_create(ctx: ActionCtx, workspaceFs: bash_Workspa
 
 		// There is no single indexed query for recursive subtree results ordered by
 		// updatedAt, so reject instead of loading and sorting a whole tree in memory.
-		if (hasAppFileNodeTarget && parsed._yay.time && parsed._yay.recursive && !parsed._yay.directory) {
+		if (hasDbFilesPathTarget && parsed._yay.time && parsed._yay.recursive && !parsed._yay.directory) {
 			return {
 				stdout: "",
 				stderr:
 					"ls -t -R is not supported for app file paths.\n" +
 					"Use `ls -t` for project-wide recency, `ls -t <dir>` for immediate children, or `find <dir>` for recursive path discovery.\n",
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
-		// App file node paths are DB-backed. Native Just Bash glob expansion would require
+		// db-files paths are db-backed. Native Just Bash glob expansion would require
 		// unbounded client-side filtering, so guide callers to indexed commands.
 		for (const target of targets) {
 			if (
-				target.appFileNodePath != null &&
+				target.dbFilesPath != null &&
 				target.inputPath != null &&
 				bash_GLOB_METACHARACTER_REGEX.test(target.inputPath)
 			) {
 				return {
 					stdout: "",
 					stderr: bash_create_glob_syntax_unsupported_message("ls", target.inputPath),
-					exitCode: COMMAND_EXIT_USAGE,
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 		}
@@ -417,10 +424,11 @@ export function bash_ls_command_create(ctx: ActionCtx, workspaceFs: bash_Workspa
 		let exitCode = 0;
 		for (let targetIndex = 0; targetIndex < targets.length; targetIndex++) {
 			const target = targets[targetIndex];
-			const appFileNodePath = target.appFileNodePath;
-			if (appFileNodePath == null) {
+			const dbFilesPath = target.dbFilesPath;
+
+			if (dbFilesPath == null) {
 				const builtinTargets = [target];
-				while (targetIndex + 1 < targets.length && targets[targetIndex + 1].appFileNodePath == null) {
+				while (targetIndex + 1 < targets.length && targets[targetIndex + 1].dbFilesPath == null) {
 					targetIndex++;
 					builtinTargets.push(targets[targetIndex]);
 				}
@@ -467,40 +475,41 @@ export function bash_ls_command_create(ctx: ActionCtx, workspaceFs: bash_Workspa
 			}
 
 			// Plain output only needs basic entry data. Long output asks for the
-			// full file-node doc when it needs updatedBy/contentType fields.
-			const fileNode = await get_path_entry({
+			// full files_nodes doc when it needs updatedBy/contentType fields.
+			const dbFilesDoc = await get_path_entry({
 				ctx,
-				ctxData: workspaceFs.ctxData,
-				workspaceFs,
-				appFileNodePath,
+				ctxData: target.pathResolution.ctxData,
+				dbFilesFs: target.pathResolution.fs,
+				dbFilesPath,
 				needsFullMetadata:
-					parsed._yay.long && (parsed._yay.directory || (await workspaceFs.getEntry(appFileNodePath))?.kind === "file"),
+					parsed._yay.long &&
+					(parsed._yay.directory || (await target.pathResolution.fs.getEntry(dbFilesPath))?.kind === "file"),
 			});
-			if (!fileNode) {
+			if (!dbFilesDoc) {
 				stderr += `ls: cannot access '${target.absoluteShellPath}': No such file or directory\n`;
 				if (exitCode === 0) {
-					exitCode = COMMAND_EXIT_FAILURE;
+					exitCode = bash_COMMAND_EXIT_FAILURE;
 				}
 				continue;
 			}
 
 			const lines: string[] = [];
-			if (parsed._yay.directory || fileNode.kind === "file") {
+			if (parsed._yay.directory || dbFilesDoc.kind === "file") {
 				// `-d` means "print the target itself"; files are also printed as a
 				// single target instead of being treated as directories.
 				if (parsed._yay.cursor != null) {
 					return {
 						stdout: "",
 						stderr: `ls: --cursor can only continue a directory or recursive listing\n`,
-						exitCode: COMMAND_EXIT_USAGE,
+						exitCode: bash_COMMAND_EXIT_USAGE,
 					};
 				}
 				lines.push(
 					format_item({
-						kind: fileNode.kind,
-						updatedAt: fileNode.updatedAt,
-						updatedBy: fileNode.updatedBy,
-						contentType: fileNode.contentType,
+						kind: dbFilesDoc.kind,
+						updatedAt: dbFilesDoc.updatedAt,
+						updatedBy: dbFilesDoc.updatedBy,
+						contentType: dbFilesDoc.contentType,
 						display: target.absoluteShellPath,
 						long: parsed._yay.long,
 					}),
@@ -509,9 +518,9 @@ export function bash_ls_command_create(ctx: ActionCtx, workspaceFs: bash_Workspa
 				// Recursive listings use the subtree index and print absolute shell
 				// paths, since children can be nested at different depths.
 				const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
-					workspaceId: workspaceFs.ctxData.workspaceId,
-					projectId: workspaceFs.ctxData.projectId,
-					folderPath: appFileNodePath,
+					workspaceId: target.pathResolution.ctxData.workspaceId,
+					projectId: target.pathResolution.ctxData.projectId,
+					folderPath: dbFilesPath,
 					numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 					cursor,
 					minDepth: 1,
@@ -525,7 +534,7 @@ export function bash_ls_command_create(ctx: ActionCtx, workspaceFs: bash_Workspa
 							updatedAt: item.updatedAt,
 							updatedBy: item.updatedBy,
 							contentType: item.contentType,
-							display: bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path),
+							display: target.pathResolution.renderShellPath(item.path),
 							long: parsed._yay.long,
 						}),
 					),
@@ -544,14 +553,14 @@ export function bash_ls_command_create(ctx: ActionCtx, workspaceFs: bash_Workspa
 				// Plain directory listings are a parentId query. The project root is
 				// synthetic, so its parent id is the stable root sentinel.
 				let parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
-				if (fileNode.path === "/") {
+				if (dbFilesDoc.path === "/") {
 					parentId = files_ROOT_ID;
 				} else {
-					parentId = fileNode._id as Id<"files_nodes">;
+					parentId = dbFilesDoc._id as Id<"files_nodes">;
 				}
 				const result = (await ctx.runQuery(internal.files_nodes.list_children, {
-					workspaceId: workspaceFs.ctxData.workspaceId,
-					projectId: workspaceFs.ctxData.projectId,
+					workspaceId: target.pathResolution.ctxData.workspaceId,
+					projectId: target.pathResolution.ctxData.projectId,
 					parentId,
 					numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 					cursor,
@@ -586,7 +595,7 @@ export function bash_ls_command_create(ctx: ActionCtx, workspaceFs: bash_Workspa
 			if (lines.length === 0) {
 				lines.push("(empty directory)");
 			}
-			if (targets.length > 1 && fileNode.kind === "folder" && !parsed._yay.directory) {
+			if (targets.length > 1 && dbFilesDoc.kind === "folder" && !parsed._yay.directory) {
 				lines.unshift(`${target.absoluteShellPath}:`);
 			}
 			sections.push(lines.join("\n"));

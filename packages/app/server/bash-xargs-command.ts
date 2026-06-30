@@ -1,12 +1,14 @@
 import { defineCommand, type CommandContext } from "just-bash/browser";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import { bash_shell_arg_quote } from "./bash-utils.ts";
+import {
+	bash_shell_arg_quote,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	bash_NON_NEGATIVE_INTEGER_REGEX,
+	bash_WHITESPACE_RUN_REGEX,
+} from "./bash-utils.ts";
 
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
 const fatalTextDecoder = new TextDecoder("utf-8", { fatal: true });
-const NON_NEGATIVE_INTEGER_REGEX = /^\d+$/u;
-const WHITESPACE_RUN_REGEX = /\s+/u;
 const XARGS_DELIMITER_NEWLINE_ESCAPE_REGEX = /\\n/gu;
 const XARGS_DELIMITER_TAB_ESCAPE_REGEX = /\\t/gu;
 const XARGS_DELIMITER_NUL_ESCAPE_REGEX = /\\0/gu;
@@ -46,14 +48,14 @@ function parse_delimiter(value: string) {
 }
 
 function parse_max_args(rawValue: string | undefined) {
-	if (rawValue == null || !NON_NEGATIVE_INTEGER_REGEX.test(rawValue) || Number(rawValue) < 1) {
+	if (rawValue == null || !bash_NON_NEGATIVE_INTEGER_REGEX.test(rawValue) || Number(rawValue) < 1) {
 		return Result({ _nay: { message: "xargs: -n requires a positive integer" } });
 	}
 	return Result({ _yay: { maxArgs: Number(rawValue) } as const });
 }
 
 function parse_parallel(rawValue: string | undefined) {
-	if (rawValue == null || rawValue === "" || !NON_NEGATIVE_INTEGER_REGEX.test(rawValue)) {
+	if (rawValue == null || rawValue === "" || !bash_NON_NEGATIVE_INTEGER_REGEX.test(rawValue)) {
 		return Result({ _nay: { message: "xargs: -P requires a non-negative integer" } });
 	}
 	if (Number(rawValue) > 1) {
@@ -241,7 +243,7 @@ export function bash_xargs_command_create() {
 			return {
 				stdout: "",
 				stderr: `${parsed._nay.message}\n${includeUsage ? XARGS_USAGE : ""}`,
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 		if ("help" in parsed._yay) {
@@ -262,7 +264,7 @@ export function bash_xargs_command_create() {
 			// Replacement mode is line-oriented so filenames/items with spaces stay intact.
 			items = stdinText.replace(XARGS_SINGLE_TRAILING_NEWLINE_REGEX, "").split("\n").filter(Boolean);
 		} else {
-			items = stdinText.split(WHITESPACE_RUN_REGEX).filter(Boolean);
+			items = stdinText.split(bash_WHITESPACE_RUN_REGEX).filter(Boolean);
 		}
 		if (items.length === 0) {
 			// Unlike POSIX xargs without -r, the app shell always treats empty input as
@@ -273,7 +275,7 @@ export function bash_xargs_command_create() {
 			return {
 				stdout: "",
 				stderr: "xargs: nested execution is unavailable\n",
-				exitCode: COMMAND_EXIT_FAILURE,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
 

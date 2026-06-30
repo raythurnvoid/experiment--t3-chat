@@ -12,11 +12,11 @@ Use this reference when touching `packages/app/server/bash.ts`, `packages/app/se
 - Option parsing should reuse local helpers like `read_option_value`, `parse_limit`, cursor helpers, and path conversion helpers.
 - Continuations should print in the same `Next page:` style as listing/search commands.
 - Command tests live in the in-source `action_run` group in `server/bash.ts` unless a nearby test file already owns the behavior.
-- `convex/bash.ts` should only register the action and validators. `server/bash.ts` exposes `bash_run_command` for that action boundary. Shared app-path helpers such as `bash_normalize_path`, `bash_resolve_path`, and `bash_is_path_under_current_project_path`, shared bash constants, the `cp`/`mv` operand parser, cursor helpers, `bash_command_build_builtin_delegation_args`, `bash_delegate_native_just_bash_tmp_command`, `bash_WorkspaceFs`, `bash_WorkspaceFsOptions`, and `bash_AppFileContentUnavailableError` live in `server/bash-utils.ts`. Keep `bash_fs_create`, `BashTmpFs`, `ReadOnlyBaseFs`, tmp helpers, command factories, and formatting helpers private.
+- `convex/bash.ts` should only register the action and validators. `server/bash.ts` exposes `bash_run_command` for that action boundary. Shared Bash path helpers such as `bash_normalize_path`, `bash_resolve_path`, and `bash_is_path_under_current_project_path`, shared bash constants, the `cp`/`mv` operand parser, cursor helpers, `bash_command_build_builtin_delegation_args`, `bash_delegate_native_just_bash_tmp_command`, db-files shell-path resolution helpers, `bash_DbFilesFs`, `bash_DbFilesFsOptions`, and `bash_DbFilesContentUnavailableError` live in `server/bash-utils.ts`. Keep `bash_fs_create`, `BashTmpFs`, `ReadOnlyBaseFs`, tmp helpers, command factories, and formatting helpers private.
 
 ## Review
 
 - In `server/bash.ts`, verify command helpers stay inside the matching command region.
 - Prefer behavior-first test names over implementation names.
 - Keep stdout/stderr/exitCode returns direct and shaped like nearby commands.
-- Avoid making app Bash read like host-shell code; it is a Convex-backed command surface.
+- Avoid making app Bash read like host-shell code; it is a db-backed command surface.

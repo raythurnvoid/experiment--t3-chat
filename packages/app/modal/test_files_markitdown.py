@@ -116,7 +116,7 @@ def test_convert_stream_uses_filename_extension_and_content_type_hints(monkeypat
             "filename": "folder\\Annual Report.pdf",
             "contentType": " application/pdf ",
             "maxBytes": 100,
-            "maxMarkdownCharacters": 1000,
+            "maxMarkdownBytes": 1000,
         },
     )
 
@@ -200,6 +200,30 @@ def test_source_byte_limit_stops_before_conversion(monkeypatch):
     assert converter.calls == []
 
 
+def test_markdown_byte_limit_uses_utf8_size(monkeypatch):
+    monkeypatch.setenv("BONOBO_SENATE_PRESS", "secret")
+    client = TestClient(
+        files_markitdown_create_app(
+            requests_module=FakeRequests(FakeResponse([b"hello"])),
+            converter=FakeConverter(markdown="ééé"),
+            stream_info_class=FakeStreamInfo,
+        )
+    )
+
+    response = client.post(
+        "/markitdown",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "sourceUrl": "https://r2.test/source",
+            "filename": "file.pdf",
+            "maxMarkdownBytes": 5,
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "Converted markdown is too large"}
+
+
 def test_converter_failure_returns_unprocessable_entity(monkeypatch):
     monkeypatch.setenv("BONOBO_SENATE_PRESS", "secret")
     client = TestClient(
@@ -221,4 +245,3 @@ def test_converter_failure_returns_unprocessable_entity(monkeypatch):
 
     assert response.status_code == 422
     assert response.json() == {"detail": "Failed to convert source file"}
-

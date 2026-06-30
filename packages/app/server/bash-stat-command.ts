@@ -6,18 +6,18 @@ import { Result } from "../shared/errors-as-values-utils.ts";
 import { files_SYNTHETIC_ROOT_FOLDER } from "../shared/files.ts";
 import {
 	bash_create_glob_syntax_unsupported_message,
-	bash_current_project_path_to_app_file_node_path,
 	bash_delegate_builtin_command,
 	bash_enforce_reader_operand_cap,
 	bash_GLOB_METACHARACTER_REGEX,
-	bash_get_app_file_byte_size,
+	bash_get_db_file_byte_size,
 	bash_read_option_value,
 	bash_resolve_path,
-	type bash_WorkspaceFs,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
 const STAT_FORMAT_TOKEN_REGEX = /%[%nNsFaAuUgGyYxXzZ]/g;
 const STAT_UNSUPPORTED_FORMAT_TOKEN_REGEX = /%(?![%nNsFaAuUgGyYxXzZ])/u;
 
@@ -176,14 +176,16 @@ function render_output(
 /**
  * App-aware `stat` that keeps `/tmp` behavior native and renders indexed app-file metadata.
  */
-export function bash_stat_command_create(ctx: ActionCtx, workspaceFs: bash_WorkspaceFs, currentProjectPath: string) {
+export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
+
 	return defineCommand("stat", async (args, commandCtx) => {
 		const parsed = parse_args(args);
 		if (parsed._nay) {
 			return {
 				stdout: "",
 				stderr: `${parsed._nay.message}\nUsage: stat [-c FORMAT] [--] FILE...\n`,
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
@@ -200,9 +202,10 @@ export function bash_stat_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 		let warnedUnsupportedAppFormatToken = false;
 		for (const file of parsed._yay.files) {
 			const resolvedPath = bash_resolve_path(commandCtx.cwd, file);
-			const appFileNodePath = bash_current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath);
+			const pathResolution = bash_resolve_db_files_shell_path(resolvedPath, dbFilesRoots);
+			const dbFilesPath = pathResolution.dbFilesPath;
 
-			if (appFileNodePath == null) {
+			if (dbFilesPath == null) {
 				try {
 					const stat = await commandCtx.fs.stat(resolvedPath);
 					stdout += render_output(parsed._yay.format, file, stat);
@@ -219,34 +222,34 @@ export function bash_stat_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 				continue;
 			}
 
-			const fileNode: files_nodes_get_by_path_Result | typeof files_SYNTHETIC_ROOT_FOLDER =
-				appFileNodePath === "/"
+			const dbFilesDoc: files_nodes_get_by_path_Result | typeof files_SYNTHETIC_ROOT_FOLDER =
+				dbFilesPath === "/"
 					? files_SYNTHETIC_ROOT_FOLDER
 					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-							workspaceId: workspaceFs.ctxData.workspaceId,
-							projectId: workspaceFs.ctxData.projectId,
-							path: appFileNodePath,
+							workspaceId: pathResolution.ctxData.workspaceId,
+							projectId: pathResolution.ctxData.projectId,
+							path: dbFilesPath,
 						})) as files_nodes_get_by_path_Result);
 
-			if (!fileNode) {
+			if (!dbFilesDoc) {
 				stderr += `stat: cannot stat '${file}': No such file or directory\n`;
 				hasError = true;
 				continue;
 			}
 
-			const currentAppFileSize: number | null =
-				fileNode.kind === "file"
-					? await bash_get_app_file_byte_size({ ctx, ctxData: workspaceFs.ctxData, fileNode })
+			const currentDbFileSize: number | null =
+				dbFilesDoc.kind === "file"
+					? await bash_get_db_file_byte_size({ ctx, ctxData: pathResolution.ctxData, dbFilesDoc })
 					: null;
 
 			stdout += render_output(
 				parsed._yay.format,
 				file,
 				{
-					isDirectory: fileNode.kind === "folder",
-					mode: fileNode.kind === "folder" ? 0o755 : 0o644,
-					size: currentAppFileSize,
-					mtime: new Date(fileNode.updatedAt),
+					isDirectory: dbFilesDoc.kind === "folder",
+					mode: dbFilesDoc.kind === "folder" ? 0o755 : 0o644,
+					size: currentDbFileSize,
+					mtime: new Date(dbFilesDoc.updatedAt),
 				},
 				"[stat: Access is a fixed placeholder; app files track only Size, Type, and Modify — not POSIX permissions, owner, group, inode, or blocks]",
 			);
@@ -265,6 +268,6 @@ export function bash_stat_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 			}
 		}
 
-		return { stdout, stderr, exitCode: hasError ? COMMAND_EXIT_FAILURE : 0 };
+		return { stdout, stderr, exitCode: hasError ? bash_COMMAND_EXIT_FAILURE : 0 };
 	});
 }

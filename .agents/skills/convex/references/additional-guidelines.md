@@ -180,6 +180,8 @@ Standard `_nay.message` values for Result-returning handlers:
 - `"Not found"`: the requested id is invalid, the requested doc is missing, or the requested doc is archived when active content is required.
 - `"Permission denied"`: the user and resource are valid, but an explicit permission check failed.
 
+Validate requested docs at the supported handler boundary that loads them. If a private helper only runs after that handler has already checked existence, scope, and kind, do not repeat those defensive checks inside the helper. Pass the already-validated fields the helper needs, such as `path` or `archiveOperationId`, and trust the caller contract.
+
 If a validated requested resource points to missing server-owned data, treat that as a server bug instead of a user-facing not-found branch. Log the invariant failure with `console.error(errorMessage, errorData)` and then throw `should_never_happen(errorMessage, errorData)` with structured ids for missing linked docs such as file properties, asset docs, content docs, scheduled jobs, or other relationships that supported write paths must keep valid.
 
 For missing fields that supported write paths must set, use the exact field path in the invariant message: `"fileNode.yjsLastSequenceId is not set"` or `"workspace.defaultProjectId is not set"`. Use `fileNode`, not `file`, when the doc is from `files_nodes`.

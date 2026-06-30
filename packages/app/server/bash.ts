@@ -1,7 +1,7 @@
 // This module is not a full POSIX shell.
-// It gives the AI a bash-shaped interface over Convex-backed app files.
-// Convex file discovery has to stay index-friendly, so Native Just Bash glob expansion,
-// recursive grep, and arbitrary regex scans are not the default way to query app file node paths.
+// It gives the AI a bash-shaped interface over db files.
+// Db file discovery has to stay index-friendly, so Native Just Bash glob expansion,
+// recursive grep, and arbitrary regex scans are not the default way to query db-files paths.
 // Prefer custom app-aware commands and flags that map directly to indexed queries,
 // such as `find --extension`, `find --path-query`, `search --path`, and exact file reads.
 // When the model still writes common glob or regex-shaped commands, recover only the
@@ -10,22 +10,22 @@
 //
 // Path vocabulary:
 // - Bash path: an absolute path in the Just Bash filesystem. It may point at
-//   app files, `/tmp`, or synthetic base directories.
+//   db files, `/tmp`, or synthetic base directories.
 // - `HOME`: the bash home/user path, `/home/cloud-usr`.
 // - `APP_MOUNT_PATH`: the parent mount path for app workspaces,
 //   `/home/cloud-usr/w`.
-// - `currentProjectPath`: the mounted project file tree path,
+// - `currentProjectPath`: the mounted app file tree path,
 //   `/home/cloud-usr/w/<workspaceName>/<projectName>`.
-// - App file node path: the Convex `files_nodes.path` inside the current
-//   project tree. It is project-relative, but still starts with `/`; examples
-//   are `/docs/readme.md` and `/` for the project root.
+// - dbFilesPath: the Convex `files_nodes.path` inside the selected db-files
+//   file tree. It is root-relative, but still starts with `/`; examples are
+//   `/docs/readme.md`, `/<mount-name>/README.md`, and `/` for a tree root.
 // - Persisted cwd path: the thread-state representation. `~` (the creation
 //   default) means "start in currentProjectPath"; anything else is an absolute
 //   Bash path under `HOME` or `/tmp`.
 //
 // Command operands start raw. Command handlers resolve them against `cwd` into a
 // normalized Bash path, then strip the current project path before querying
-// Convex. `bash_WorkspaceFs` receives already-stripped app file paths from
+// Convex. `bash_DbFilesFs` receives already-stripped db-files paths from
 // `MountableFs`.
 
 import { getFunctionName } from "convex/server";
@@ -50,7 +50,8 @@ import type {
 	ai_chat_files_load_thread_tmp_files_Result,
 	ai_chat_files_patch_thread_tmp_files_Args,
 } from "../convex/ai_chat_files.ts";
-import { files_ROOT_ID, files_get_utf8_byte_size } from "../shared/files.ts";
+import { files_MOUNT_ROOT, files_ROOT_ID, files_get_utf8_byte_size } from "../shared/files.ts";
+import { workspaces_GLOBAL_GITHUB_PROJECT_ID, workspaces_GLOBAL_WORKSPACE_ID } from "../shared/workspaces.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { bash_cat_command_create } from "./bash-cat-command.ts";
 import { bash_cp_command_create } from "./bash-cp-command.ts";
@@ -72,12 +73,13 @@ import { bash_touch_command_create } from "./bash-touch-command.ts";
 import {
 	bash_ALLOWED_COMMANDS,
 	bash_APP_MOUNT_PATH,
+	bash_command_has_disallowed_source_target,
 	bash_delegate_native_just_bash_tmp_command,
 	bash_DEV_NULL_PATH,
 	bash_DEV_ZERO_BYTE_COUNT,
 	bash_DEV_ZERO_PATH,
 	bash_DEV_ZERO_TEXT,
-	bash_get_app_file_byte_size,
+	bash_get_db_file_byte_size,
 	bash_HOME,
 	bash_normalize_path,
 	bash_READER_FILE_OPERAND_MAX,
@@ -85,47 +87,49 @@ import {
 	bash_READ_INLINE_MAX_BYTES,
 	bash_resolve_path,
 	bash_shell_arg_quote,
+	bash_disallowed_source_target_error,
 	bash_TMP_MOUNT,
-	bash_WorkspaceFs,
+	bash_DbFilesFs,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	bash_COMMAND_EXIT_CANNOT_EXECUTE,
+	bash_COMMAND_EXIT_NOT_FOUND,
+	bash_TERMINAL_LINE_ENDING_REGEX,
+	bash_SHELL_COMMENT_LINE_REGEX,
+	bash_WHITESPACE_RUN_REGEX,
+	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 import { bash_which_command_create } from "./bash-which-command.ts";
 import { bash_xargs_command_create } from "./bash-xargs-command.ts";
 
 const DEFAULT_CWD = "~";
 const OUTPUT_LIMIT = 30_000;
-const COMMAND_EXIT_USAGE = 2;
-const COMMAND_EXIT_CANNOT_EXECUTE = 126;
-const COMMAND_EXIT_NOT_FOUND = 127;
 
-const TERMINAL_LINE_ENDING_REGEX = /\r\n?/g;
 const TERMINAL_TRAILING_NEWLINE_REGEX = /\n+$/;
 
 const COMMAND_NOT_FOUND_REGEX = /: command not found$/m;
 const REDIRECTS_STDERR_TO_STDOUT_REGEX = /(^|[\s;&|])2\s*>\s*&\s*1(?=$|[\s;&|])/;
 const SET_INVALID_OPTION_REGEX = /bash: set: -o: invalid option/m;
 const FILE_COMMAND_OPERAND_REGEX = /(?:^|[\s;&|])file\s+([^\s;&|]+)/u;
-const SHELL_COMMENT_LINE_REGEX = /^\s*#.*$/gm;
-const WHITESPACE_RUN_REGEX = /\s+/u;
 
 // Deliberately tiny caps so /tmp eviction is exercised while testing the app.
 const BASH_TMP_SESSION_MAX_PATHS = 10;
 const BASH_TMP_SESSION_MAX_BYTES = 4_000;
 const BASH_TMP_SESSION_MAX_FILE_BYTES = 2_000;
 
-type BashTmpFileNode = ai_chat_files_patch_thread_tmp_files_Args["fileNodes"][number];
+type BashTmpPatchEntry = ai_chat_files_patch_thread_tmp_files_Args["fileNodes"][number];
 
-type BashTmpFileNodesContentDict = ai_chat_files_patch_thread_tmp_files_Args["fileNodesContentDict"];
+type BashTmpPatchContentDict = ai_chat_files_patch_thread_tmp_files_Args["fileNodesContentDict"];
 
 /**
- * Whitelist of commands allowed to operate on paths under `bash_APP_MOUNT_PATH`, the
- * app files mount folder.
+ * Whitelist of commands allowed to operate on db-files roots.
  *
  * These commands have app-aware handlers backed by indexed Convex
  * `files_nodes` queries. Every other allowed Native Just Bash command is wrapped as a
- * /tmp-only command (see `NATIVE_JUST_BASH_TMP_COMMANDS`) that rejects app file
- * paths with a hint instead of touching the mounted project tree.
+ * /tmp-only command (see `NATIVE_JUST_BASH_TMP_COMMANDS`) that rejects db-file
+ * paths with a hint instead of touching the mounted db-files trees.
  */
-const APP_FILE_COMMANDS = [
+const DB_FILES_COMMANDS = [
 	"echo",
 	"cat",
 	"printf",
@@ -162,8 +166,8 @@ const APP_FILE_COMMANDS = [
 	"seq",
 ] as const satisfies CommandName[];
 
-const APP_FILE_COMMAND_NAMES = new Set<string>(APP_FILE_COMMANDS);
-const NATIVE_JUST_BASH_TMP_COMMANDS = bash_ALLOWED_COMMANDS.filter((command) => !APP_FILE_COMMAND_NAMES.has(command));
+const DB_FILES_COMMAND_NAMES = new Set<string>(DB_FILES_COMMANDS);
+const NATIVE_JUST_BASH_TMP_COMMANDS = bash_ALLOWED_COMMANDS.filter((command) => !DB_FILES_COMMAND_NAMES.has(command));
 
 /**
  * Changed and deleted paths since the baseline, for `patch_thread_tmp_files`.
@@ -172,8 +176,8 @@ async function tmp_fs_delta_payload(tmpFs: BashTmpFs) {
 	const finalPaths = tmpFs.fs.getAllPaths().filter((path) => path !== "/");
 	const finalPathSet = new Set(finalPaths);
 	const deletePaths = [...tmpFs.baselinePaths].filter((path) => !finalPathSet.has(path)).sort();
-	const fileNodesContentDict: BashTmpFileNodesContentDict = {};
-	const fileNodePromises: Promise<BashTmpFileNode>[] = [];
+	const tmpFilesContentDict: BashTmpPatchContentDict = {};
+	const tmpFileEntryPromises: Promise<BashTmpPatchEntry>[] = [];
 
 	for (const path of finalPaths) {
 		let shouldUpsert = !tmpFs.baselinePaths.has(path);
@@ -189,7 +193,7 @@ async function tmp_fs_delta_payload(tmpFs: BashTmpFs) {
 			continue;
 		}
 
-		fileNodePromises.push(
+		tmpFileEntryPromises.push(
 			(async (/** iife */) => {
 				const stat = await tmpFs.fs.lstat(path);
 				const mtime = stat.mtime.getTime();
@@ -215,7 +219,7 @@ async function tmp_fs_delta_payload(tmpFs: BashTmpFs) {
 				}
 
 				const bytes = await tmpFs.fs.readFileBuffer(path);
-				fileNodesContentDict[path] = new Uint8Array(bytes).buffer;
+				tmpFilesContentDict[path] = new Uint8Array(bytes).buffer;
 				return {
 					path,
 					kind: "file" as const,
@@ -227,10 +231,10 @@ async function tmp_fs_delta_payload(tmpFs: BashTmpFs) {
 		);
 	}
 
-	const fileNodes = await Promise.all(fileNodePromises);
+	const tmpFileEntries = await Promise.all(tmpFileEntryPromises);
 	return {
-		fileNodes,
-		fileNodesContentDict,
+		fileNodes: tmpFileEntries,
+		fileNodesContentDict: tmpFilesContentDict,
 		deletePaths,
 	};
 }
@@ -453,8 +457,12 @@ function format_bash_output(args: {
 	stdout: string;
 	stderr: string;
 }) {
-	const stdout = args.stdout.replace(TERMINAL_LINE_ENDING_REGEX, "\n").replace(TERMINAL_TRAILING_NEWLINE_REGEX, "");
-	const stderr = args.stderr.replace(TERMINAL_LINE_ENDING_REGEX, "\n").replace(TERMINAL_TRAILING_NEWLINE_REGEX, "");
+	const stdout = args.stdout
+		.replace(bash_TERMINAL_LINE_ENDING_REGEX, "\n")
+		.replace(TERMINAL_TRAILING_NEWLINE_REGEX, "");
+	const stderr = args.stderr
+		.replace(bash_TERMINAL_LINE_ENDING_REGEX, "\n")
+		.replace(TERMINAL_TRAILING_NEWLINE_REGEX, "");
 	const lines = [`${args.cwd}$ ${args.command}`];
 	if (stdout) {
 		lines.push("", stdout);
@@ -496,7 +504,7 @@ class ReadOnlyFileSystemError extends Error {
 	constructor(path: string) {
 		const normalizedPath = bash_normalize_path(path);
 		super(
-			`EROFS: read-only file system, '${normalizedPath}'. Persistent app writes must use write_file/edit_file; shell redirects into app files are unsupported.`,
+			`EROFS: read-only file system, '${normalizedPath}'. Persistent app-file writes must use write_file/edit_file; shell redirects into app files are unsupported.`,
 		);
 		this.name = "ReadOnlyFileSystemError";
 		this.path = normalizedPath;
@@ -508,7 +516,7 @@ class ReadOnlyFileSystemError extends Error {
  * every bash call and flushed back at the end; nothing survives the call in
  * memory, so any Convex action runtime sees the same durable state.
  *
- * Mutating operations mark the touched roots dirty so the end-of-call flush
+ * Mutating operations mark touched `/tmp` paths dirty so the end-of-call flush
  * can persist a delta instead of the whole scratch.
  */
 class BashTmpFs implements IFileSystem {
@@ -536,22 +544,22 @@ class BashTmpFs implements IFileSystem {
 		})) as ai_chat_files_load_thread_tmp_files_Result;
 
 		const tmpFs = new BashTmpFs();
-		for (const fileNode of loaded.file_nodes) {
-			if (fileNode.kind === "directory") {
-				await tmpFs.fs.mkdir(fileNode.path, { recursive: true });
-				await tmpFs.fs.chmod(fileNode.path, fileNode.mode);
-				await tmpFs.fs.utimes(fileNode.path, new Date(fileNode.mtime), new Date(fileNode.mtime));
-			} else if (fileNode.kind === "symlink") {
-				await tmpFs.fs.symlink(fileNode.symlinkTargetPath ?? "", fileNode.path);
-				await tmpFs.fs.chmod(fileNode.path, fileNode.mode);
+		for (const tmpFile of loaded.file_nodes) {
+			if (tmpFile.kind === "directory") {
+				await tmpFs.fs.mkdir(tmpFile.path, { recursive: true });
+				await tmpFs.fs.chmod(tmpFile.path, tmpFile.mode);
+				await tmpFs.fs.utimes(tmpFile.path, new Date(tmpFile.mtime), new Date(tmpFile.mtime));
+			} else if (tmpFile.kind === "symlink") {
+				await tmpFs.fs.symlink(tmpFile.symlinkTargetPath ?? "", tmpFile.path);
+				await tmpFs.fs.chmod(tmpFile.path, tmpFile.mode);
 			} else {
-				const bytes = loaded.file_nodes_content_dict[fileNode._id]?.bytes ?? new ArrayBuffer(0);
-				tmpFs.fs.writeFileSync(fileNode.path, new Uint8Array(bytes), undefined, {
-					mode: fileNode.mode,
-					mtime: new Date(fileNode.mtime),
+				const bytes = loaded.file_nodes_content_dict[tmpFile._id]?.bytes ?? new ArrayBuffer(0);
+				tmpFs.fs.writeFileSync(tmpFile.path, new Uint8Array(bytes), undefined, {
+					mode: tmpFile.mode,
+					mtime: new Date(tmpFile.mtime),
 				});
 			}
-			tmpFs.baselinePaths.add(fileNode.path);
+			tmpFs.baselinePaths.add(tmpFile.path);
 		}
 		return tmpFs;
 	}
@@ -816,7 +824,7 @@ async function bash_fs_create(args: {
 	userId: Id<"users">;
 	threadId: Id<"ai_chat_threads">;
 	persistedCwd: string;
-	allowAppFileTreeMkdir: boolean;
+	allowDbFilesMkdir: boolean;
 }) {
 	// Workspace and project names are validated slugs, so they are stable shell
 	// path segments and do not need path-segment encoding here.
@@ -824,7 +832,7 @@ async function bash_fs_create(args: {
 
 	const tmpFs = await BashTmpFs.create(args.ctx, args.threadId);
 
-	const workspaceFs = new bash_WorkspaceFs({
+	const appDbFilesFs = new bash_DbFilesFs({
 		ctx: args.ctx,
 		ctxData: {
 			workspaceId: args.workspaceId,
@@ -834,16 +842,44 @@ async function bash_fs_create(args: {
 			userId: args.userId,
 		},
 		currentProjectPath,
-		allowAppFileTreeMkdir: args.allowAppFileTreeMkdir,
+		allowDbFilesMkdir: args.allowDbFilesMkdir,
+	});
+
+	// Read-only external mounts share one reserved-scope (`GLOBAL`/`GITHUB`) filesystem mounted at
+	// `/.mounts`. `MountableFs` strips `/.mounts`, so this FS receives the stored `/<name>/<rel>` path
+	// directly. Mount visibility is whatever top-level folders exist in that reserved files tree.
+	const externalMountsDbFilesFs = new bash_DbFilesFs({
+		ctx: args.ctx,
+		ctxData: {
+			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
+			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			workspaceName: "GLOBAL",
+			projectName: "GITHUB",
+			userId: args.userId,
+		},
+		currentProjectPath: files_MOUNT_ROOT,
+		allowDbFilesMkdir: false,
 	});
 
 	const fs = new MountableFs({
 		base: new ReadOnlyBaseFs(),
 		mounts: [
-			{ mountPoint: currentProjectPath, filesystem: workspaceFs },
+			{ mountPoint: currentProjectPath, filesystem: appDbFilesFs },
+			{ mountPoint: files_MOUNT_ROOT, filesystem: externalMountsDbFilesFs },
 			{ mountPoint: bash_TMP_MOUNT, filesystem: tmpFs },
 		],
 	});
+
+	const dbFilesRoots: bash_DbFilesRoots = {
+		app: {
+			currentProjectPath,
+			fs: appDbFilesFs,
+		},
+		externalMounts: {
+			currentProjectPath: files_MOUNT_ROOT,
+			fs: externalMountsDbFilesFs,
+		},
+	};
 
 	// The persisted cwd can vanish between runs (deleted folder, pruned /tmp).
 	const cwd =
@@ -859,21 +895,21 @@ async function bash_fs_create(args: {
 		commands: bash_ALLOWED_COMMANDS,
 		customCommands: [
 			// Indexed app discovery.
-			bash_search_command_create(args.ctx, workspaceFs, currentProjectPath),
-			bash_meta_command_create(args.ctx, workspaceFs, currentProjectPath),
-			bash_ls_command_create(args.ctx, workspaceFs, currentProjectPath),
-			bash_find_command_create(args.ctx, workspaceFs, currentProjectPath),
-			bash_tree_command_create(args.ctx, workspaceFs, currentProjectPath),
-			bash_grep_command_create(args.ctx, workspaceFs, currentProjectPath),
-			bash_textgrep_command_create(args.ctx, workspaceFs, currentProjectPath),
+			bash_search_command_create(args.ctx, dbFilesRoots),
+			bash_meta_command_create(args.ctx, dbFilesRoots),
+			bash_ls_command_create(args.ctx, dbFilesRoots),
+			bash_find_command_create(args.ctx, dbFilesRoots),
+			bash_tree_command_create(args.ctx, dbFilesRoots),
+			bash_grep_command_create(args.ctx, dbFilesRoots),
+			bash_textgrep_command_create(args.ctx, dbFilesRoots),
 			// App readers.
-			bash_cat_command_create(args.ctx, workspaceFs, currentProjectPath),
-			bash_head_tail_wc_command_create(args.ctx, workspaceFs, "head", currentProjectPath),
-			bash_head_tail_wc_command_create(args.ctx, workspaceFs, "tail", currentProjectPath),
-			bash_head_tail_wc_command_create(args.ctx, workspaceFs, "wc", currentProjectPath),
-			bash_stat_command_create(args.ctx, workspaceFs, currentProjectPath),
+			bash_cat_command_create(args.ctx, dbFilesRoots),
+			bash_head_tail_wc_command_create(args.ctx, dbFilesRoots, "head"),
+			bash_head_tail_wc_command_create(args.ctx, dbFilesRoots, "tail"),
+			bash_head_tail_wc_command_create(args.ctx, dbFilesRoots, "wc"),
+			bash_stat_command_create(args.ctx, dbFilesRoots),
 			...stream_utility_command_create_all(currentProjectPath),
-			bash_sed_command_create(args.ctx, workspaceFs, currentProjectPath),
+			bash_sed_command_create(args.ctx, dbFilesRoots),
 			// Guarded mutators.
 			bash_touch_command_create(currentProjectPath),
 			bash_rm_command_create(currentProjectPath),
@@ -901,15 +937,31 @@ async function bash_fs_create(args: {
 	return {
 		cwd,
 		currentProjectPath,
-		run_command: async (command: string) =>
-			await bash.exec(`set -f\n${command}`).catch((error: unknown) => ({
+		run_command: async (command: string) => {
+			// `source` and `.` execute inside the current shell, so block mounted
+			// file targets before Just Bash can load them.
+			if (bash_command_has_disallowed_source_target(command, { cwd, currentProjectPath })) {
+				return {
+					stdout: "",
+					stderr: bash_disallowed_source_target_error(),
+					exitCode: bash_COMMAND_EXIT_CANNOT_EXECUTE,
+					env: {
+						PWD: cwd,
+					},
+				};
+			}
+
+			// Surface unexpected Just Bash failures as terminal stderr instead of
+			// failing the Convex action.
+			return await bash.exec(command).catch((error: unknown) => ({
 				stdout: "",
 				stderr: `${error instanceof Error ? error.message : String(error)}\n`,
-				exitCode: 1,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
 				env: {
 					PWD: cwd,
 				},
-			})),
+			}));
+		},
 		nearest_existing_dir: (path: string) => nearest_existing_dir(fs, path),
 		evict_tmp_to_limits: () => tmp_fs_evict_to_limits(tmpFs),
 		create_tmp_patch: async () => {
@@ -921,7 +973,7 @@ async function bash_fs_create(args: {
 		mark_tmp_clean: () => {
 			tmpFs.dirty = false;
 		},
-		path_index_truncated: () => workspaceFs.pathIndexTruncated,
+		path_index_truncated: () => appDbFilesFs.pathIndexTruncated,
 		truncate_output,
 		format_output: format_bash_output,
 	};
@@ -931,8 +983,8 @@ async function bash_fs_create(args: {
  * Run one app-shell command for an agent thread.
  *
  * Lifecycle: load thread state, mount Convex app files and durable `/tmp`,
- * execute with glob expansion disabled, add agent-friendly diagnostics, persist
- * cwd and `/tmp` deltas, then return the formatted transcript and metadata.
+ * execute the command, add agent-friendly diagnostics, persist cwd and `/tmp`
+ * deltas, then return the formatted transcript and metadata.
  */
 export async function bash_run_command(
 	ctx: ActionCtx,
@@ -944,7 +996,7 @@ export async function bash_run_command(
 		userId: Id<"users">;
 		threadId: Id<"ai_chat_threads">;
 		command: string;
-		allowAppFileTreeMkdir: boolean;
+		allowDbFilesMkdir: boolean;
 	},
 ) {
 	const threadState = (await ctx.runQuery(internal.ai_chat.get_thread_state, {
@@ -962,7 +1014,7 @@ export async function bash_run_command(
 		userId: args.userId,
 		threadId: args.threadId,
 		persistedCwd: threadState.bashCwd,
-		allowAppFileTreeMkdir: args.allowAppFileTreeMkdir,
+		allowDbFilesMkdir: args.allowDbFilesMkdir,
 	});
 
 	const result = await bashFs.run_command(args.command);
@@ -979,8 +1031,8 @@ export async function bash_run_command(
 		(redirectsStderrToStdout && COMMAND_NOT_FOUND_REGEX.test(result.stdout))
 	) {
 		result.stderr +=
-			"bash: run 'help' to list available commands; app files are DB-backed — use search/grep for content and find/ls for paths.\n";
-		const filePathMatch = FILE_COMMAND_OPERAND_REGEX.exec(args.command.replace(SHELL_COMMENT_LINE_REGEX, ""));
+			"bash: run 'help' to list available commands; app files are db-backed — use search/grep for content and find/ls for paths.\n";
+		const filePathMatch = FILE_COMMAND_OPERAND_REGEX.exec(args.command.replace(bash_SHELL_COMMENT_LINE_REGEX, ""));
 		if (filePathMatch?.[1] != null) {
 			const target = bash_shell_arg_quote(filePathMatch[1]);
 			result.stderr += `bash: the Unix file command is intentionally unavailable. Try: stat ${target} && wc -c ${target} && head -n 5 ${target}\n`;
@@ -995,26 +1047,29 @@ export async function bash_run_command(
 		result.stderr += "bash: `set -euo pipefail` is unsupported; retry without strict-mode boilerplate.\n";
 	}
 
-	// Only paths under HOME and `/tmp` survive between runs (`/tmp` is restored
-	// from the DB; everything else is synthetic mount scaffolding).
+	// Only paths under HOME, `/tmp`, and the read-only `/.mounts` tree survive between runs (`/tmp` is
+	// restored from the db; mounts are reconstructed from the reserved scope; everything else is synthetic
+	// mount scaffolding).
 	if (
 		nextCwd !== bash_HOME &&
 		!nextCwd.startsWith(`${bash_HOME}/`) &&
 		nextCwd !== bash_TMP_MOUNT &&
-		!nextCwd.startsWith(`${bash_TMP_MOUNT}/`)
+		!nextCwd.startsWith(`${bash_TMP_MOUNT}/`) &&
+		nextCwd !== files_MOUNT_ROOT &&
+		!nextCwd.startsWith(`${files_MOUNT_ROOT}/`)
 	) {
-		console.warn("Bash cwd is not persistable, resetting to the project root", {
+		console.warn("Bash cwd is not persistable, resetting to the app root", {
 			threadId: args.threadId,
 			cwd: rawNextCwd,
 		});
 		nextCwd = bashFs.currentProjectPath;
 	}
 
-	// `/tmp` persists to the DB, so bound its durable footprint before flushing:
+	// `/tmp` persists to the db, so bound its durable footprint before flushing:
 	// discard files over the per-file cap, then evict the oldest leaves (files,
 	// symlinks, and empty directories, by mtime then path) until both thread
 	// caps are satisfied — this call's writes have fresh mtimes and survive.
-	// Deletions go through `tmpFs.rm` so they mark the fs dirty and reach the DB.
+	// Deletions go through `tmpFs.rm` so they mark the fs dirty and reach the db.
 	result.stderr += await bashFs.evict_tmp_to_limits();
 
 	const pendingMutations: Promise<unknown>[] = [];
@@ -1058,7 +1113,7 @@ export async function bash_run_command(
 	const pathIndexTruncated = bashFs.path_index_truncated();
 	console.debug("Bash command completed", {
 		threadId: args.threadId,
-		commandName: args.command.trim().split(WHITESPACE_RUN_REGEX, 1)[0] ?? "",
+		commandName: args.command.trim().split(bash_WHITESPACE_RUN_REGEX, 1)[0] ?? "",
 		exitCode: result.exitCode,
 		stdoutLength,
 		stderrLength,
@@ -1099,7 +1154,7 @@ export async function bash_run_command(
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, test, expect, vi, beforeEach, afterEach } = import.meta.vitest;
 
-	const test_app_files_mount = "/home/cloud-usr/w/personal/home";
+	const test_db_files_mount = "/home/cloud-usr/w/personal/home";
 	const function_name_of = (ref: unknown) => {
 		try {
 			return getFunctionName(ref as Parameters<typeof getFunctionName>[0]);
@@ -1222,7 +1277,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				command: "cat missing.md",
 				cwd: "/home/cloud-usr",
 				nextCwd: "/home/cloud-usr",
-				exitCode: 1,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
 				stdout: "",
 				stderr: "No such file\n",
 			});
@@ -1439,7 +1494,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			seedIndex: number,
 		) {
 			const { test_mocks } = await import("../convex/setup.test.ts");
-			const { db_insert_file_chunks } = await import("../convex/files_nodes.ts");
+			const { db_insert_file_text_content } = await import("../convex/files_nodes.ts");
 			// Deterministic, distinct recency: later seeds are newer.
 			const updatedAt = spec.updatedAt ?? Date.now() - 1_000_000 + seedIndex * 1000;
 			const segments = spec.path.split("/").filter(Boolean);
@@ -1517,12 +1572,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			if (spec.materialized === false) {
 				return;
 			}
-			const chunked = await db_insert_file_chunks(ctx, {
+			const chunked = await db_insert_file_text_content(ctx, {
 				workspaceId: scope.workspaceId,
 				projectId: scope.projectId,
 				nodeId: fileId,
+				path: spec.path,
 				yjsSequence: 1,
-				markdownContent: content,
+				contentType: spec.contentType ?? "text/markdown;charset=utf-8",
+				textContent: content,
 			});
 			if (chunked._nay) {
 				throw new Error(`Seed chunking failed for ${spec.path}: ${chunked._nay.message}`);
@@ -1566,7 +1623,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		async function create_bash_runner(opts?: {
 			initialCwd?: string;
-			allowAppFileTreeMkdir?: boolean;
+			allowDbFilesMkdir?: boolean;
 			extraFiles?: BashSeedSpec[];
 			/** Reuse another runner's database (fresh thread, no default tree re-seed). */
 			shared?: {
@@ -1648,7 +1705,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				cwd = state.bashCwd ?? opts.initialCwd;
 			}
 
-			// Spy-delegate ctx: every downstream function runs for real against the in-memory DB
+			// Spy-delegate ctx: every downstream function runs for real against the in-memory db
 			// while the spies keep call-shape assertions (toHaveBeenCalledWith) working.
 			const testQuery = t.query as unknown as (ref: unknown, args: Record<string, unknown>) => Promise<unknown>;
 			const testMutation = t.mutation as unknown as (ref: unknown, args: Record<string, unknown>) => Promise<unknown>;
@@ -1673,7 +1730,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					...ctxData,
 					threadId,
 					command,
-					allowAppFileTreeMkdir: opts?.allowAppFileTreeMkdir ?? true,
+					allowDbFilesMkdir: opts?.allowDbFilesMkdir ?? true,
 				});
 				const state = await t.query(internal.ai_chat.get_thread_state, {
 					workspaceId: seeded.workspaceId,
@@ -1688,7 +1745,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		}
 
 		async function get_seeded_node(runner: Awaited<ReturnType<typeof create_bash_runner>>, path: string) {
-			const fileNode = await runner.t.run((ctx) =>
+			const dbFilesDoc = await runner.t.run((ctx) =>
 				ctx.db
 					.query("files_nodes")
 					.withIndex("by_workspace_project_path_archiveOperation", (q) =>
@@ -1700,10 +1757,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					)
 					.first(),
 			);
-			if (!fileNode) {
+			if (!dbFilesDoc) {
 				throw new Error(`No seeded node at ${path}`);
 			}
-			return fileNode;
+			return dbFilesDoc;
 		}
 
 		async function get_seeded_node_id(runner: Awaited<ReturnType<typeof create_bash_runner>>, path: string) {
@@ -1714,16 +1771,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run, getCwd } = await create_bash_runner();
 
 			const pwdResult = await run("pwd");
-			expect(pwdResult.stdout.trim()).toBe(test_app_files_mount);
-			expect(pwdResult.metadata.cwd).toBe(test_app_files_mount);
-			expect(getCwd()).toBe(test_app_files_mount);
+			expect(pwdResult.stdout.trim()).toBe(test_db_files_mount);
+			expect(pwdResult.metadata.cwd).toBe(test_db_files_mount);
+			expect(getCwd()).toBe(test_db_files_mount);
 
-			const cdResult = await run(`cd ${test_app_files_mount}/docs`);
-			expect(cdResult.metadata.nextCwd).toBe(`${test_app_files_mount}/docs`);
-			expect(getCwd()).toBe(`${test_app_files_mount}/docs`);
+			const cdResult = await run(`cd ${test_db_files_mount}/docs`);
+			expect(cdResult.metadata.nextCwd).toBe(`${test_db_files_mount}/docs`);
+			expect(getCwd()).toBe(`${test_db_files_mount}/docs`);
 
 			const nextPwdResult = await run("pwd");
-			expect(nextPwdResult.stdout.trim()).toBe(`${test_app_files_mount}/docs`);
+			expect(nextPwdResult.stdout.trim()).toBe(`${test_db_files_mount}/docs`);
 		});
 
 		test("sets HOME to the cloud user home", async () => {
@@ -1771,8 +1828,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				extraFiles: [{ path: literalPath, content: "example: command not found\n" }],
 			});
 
-			const catResult = await run(`cat ${test_app_files_mount}${literalPath}`);
-			const grepResult = await run(`grep "command not found" ${test_app_files_mount}${literalPath}`);
+			const catResult = await run(`cat ${test_db_files_mount}${literalPath}`);
+			const grepResult = await run(`grep "command not found" ${test_db_files_mount}${literalPath}`);
 
 			expect(catResult.stdout).toContain("example: command not found");
 			expect(catResult.stderr).not.toContain("run 'help' to list available commands");
@@ -1783,7 +1840,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("reads markdown files through the chunk-backed file content query", async () => {
 			const { run, runQuery, runAction, seeded } = await create_bash_runner();
 
-			const result = await run(`cat ${test_app_files_mount}/docs/readme.md`);
+			const result = await run(`cat ${test_db_files_mount}/docs/readme.md`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("# Readme");
@@ -1804,7 +1861,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("supports cat end-of-options marker for dash-leading operands", async () => {
 			const { run } = await create_bash_runner({
-				initialCwd: test_app_files_mount,
+				initialCwd: test_db_files_mount,
 				extraFiles: [
 					{ path: "/-dash.md", content: "dash file\n" },
 					{ path: "/--help", content: "help file\n" },
@@ -1853,12 +1910,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				extraFiles: [{ path: "/docs/unmaterialized.md", content: "hidden fallback\n", materialized: false }],
 			});
 
-			const result = await run(`cat ${test_app_files_mount}/docs/unmaterialized.md`);
+			const result = await run(`cat ${test_db_files_mount}/docs/unmaterialized.md`);
 
 			expect(result.metadata.exitCode).toBe(1);
 			expect(result.stdout).toBe("");
 			expect(result.stderr).toContain("content is not available from materialized chunks");
-			expect(result.stderr).toContain(`${test_app_files_mount}/docs/unmaterialized.md`);
+			expect(result.stderr).toContain(`${test_db_files_mount}/docs/unmaterialized.md`);
 			expect(
 				runAction.mock.calls.some(
 					([ref]) => function_name_of(ref) === "files_nodes:get_file_last_available_markdown_content_by_path",
@@ -1870,7 +1927,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run(
-				`cat ${test_app_files_mount}/docs/readme.md && cat ${test_app_files_mount}/docs/readme.md`,
+				`cat ${test_db_files_mount}/docs/readme.md && cat ${test_db_files_mount}/docs/readme.md`,
 			);
 			const readCalls = runQuery.mock.calls.filter(
 				([ref, queryArgs]) =>
@@ -1893,13 +1950,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			if ("_nay" in baseYjsDoc) {
 				throw new Error(baseYjsDoc._nay.message);
 			}
-			const fileNode = await get_seeded_node(runner, "/fresh-size.md");
-			const fileNodeId = fileNode._id;
+			const dbFilesDoc = await get_seeded_node(runner, "/fresh-size.md");
+			const dbFilesDocId = dbFilesDoc._id;
 
-			const committedSize = await bash_get_app_file_byte_size({
+			const committedSize = await bash_get_db_file_byte_size({
 				ctx: runner.ctx,
 				ctxData: runner.ctxData,
-				fileNode,
+				dbFilesDoc,
 			});
 
 			if (committedSize == null) {
@@ -1911,7 +1968,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				workspaceId: runner.seeded.workspaceId,
 				projectId: runner.seeded.projectId,
 				userId: runner.seeded.userId,
-				nodeId: fileNodeId,
+				nodeId: dbFilesDocId,
 				baseYjsSequence: 1,
 				baseYjsUpdate: files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc)),
 				unstagedMarkdown: Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n\n"),
@@ -1923,17 +1980,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				workspaceId: runner.seeded.workspaceId,
 				projectId: runner.seeded.projectId,
 				userId: runner.seeded.userId,
-				fileNodeId,
+				fileNodeId: dbFilesDocId,
 			});
 			if (pendingUpdate?.size == null) {
 				throw new Error("expected pending update size to be set for /fresh-size.md");
 			}
 			runner.runQuery.mockClear();
 
-			const currentSize = await bash_get_app_file_byte_size({
+			const currentSize = await bash_get_db_file_byte_size({
 				ctx: runner.ctx,
 				ctxData: runner.ctxData,
-				fileNode,
+				dbFilesDoc,
 			});
 
 			expect(currentSize).toBe(pendingUpdate.size);
@@ -1952,15 +2009,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				throw new Error(baseYjsDoc._nay.message);
 			}
 			const yjsUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc));
-			const fileNode = await get_seeded_node(runner, "/legacy-pending.md");
-			const fileNodeId = fileNode._id;
+			const dbFilesDoc = await get_seeded_node(runner, "/legacy-pending.md");
+			const dbFilesDocId = dbFilesDoc._id;
 			const pendingSize = files_get_utf8_byte_size("base");
 			await runner.t.run(async (ctx) => {
 				await ctx.db.insert("files_pending_updates", {
 					workspaceId: runner.seeded.workspaceId,
 					projectId: runner.seeded.projectId,
 					userId: runner.seeded.userId,
-					fileNodeId,
+					fileNodeId: dbFilesDocId,
 					baseYjsSequence: 1,
 					baseYjsUpdate: yjsUpdate,
 					stagedBranchYjsUpdate: yjsUpdate,
@@ -1972,10 +2029,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			runner.runQuery.mockClear();
 			runner.runAction.mockClear();
 
-			const size = await bash_get_app_file_byte_size({
+			const size = await bash_get_db_file_byte_size({
 				ctx: runner.ctx,
 				ctxData: runner.ctxData,
-				fileNode,
+				dbFilesDoc,
 			});
 
 			expect(size).toBe(pendingSize);
@@ -1994,33 +2051,33 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				extraFiles: [{ path: unicodePath, content }],
 			});
 
-			const result = await run(`cat ${test_app_files_mount}${unicodePath} | cat`);
+			const result = await run(`cat ${test_db_files_mount}${unicodePath} | cat`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toBe(content);
 		});
 
-		test("supports ls, find, and stat over file-node paths", async () => {
+		test("supports ls, find, and stat over db-files paths", async () => {
 			const { run } = await create_bash_runner();
 
 			const result = await run(
-				`ls ${test_app_files_mount}/docs && find ${test_app_files_mount}/docs -maxdepth 1 -type f && stat ${test_app_files_mount}/docs/readme.md`,
+				`ls ${test_db_files_mount}/docs && find ${test_db_files_mount}/docs -maxdepth 1 -type f && stat ${test_db_files_mount}/docs/readme.md`,
 			);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("readme.md");
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 		});
 
 		test("keeps valid ls operands when another operand is missing", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`ls ${test_app_files_mount}/docs ${test_app_files_mount}/missing`);
+			const result = await run(`ls ${test_db_files_mount}/docs ${test_db_files_mount}/missing`);
 
 			expect(result.metadata.exitCode).toBe(1);
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs:`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs:`);
 			expect(result.stdout).toContain("readme.md");
-			expect(result.stderr).toContain(`ls: cannot access '${test_app_files_mount}/missing': No such file or directory`);
+			expect(result.stderr).toContain(`ls: cannot access '${test_db_files_mount}/missing': No such file or directory`);
 		});
 
 		test("supports paginated ls with a continuation command", async () => {
@@ -2028,12 +2085,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run, runQuery } = runner;
 			const docsId = await get_seeded_node_id(runner, "/docs");
 
-			const result = await run(`ls --limit 1 ${test_app_files_mount}/docs`);
+			const result = await run(`ls --limit 1 ${test_db_files_mount}/docs`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("nested/");
 			expect(result.stdout).toContain("Next page:");
-			expect(result.stdout).toMatch(new RegExp(`ls --limit 1 --cursor \\S+ ${test_app_files_mount}/docs`, "u"));
+			expect(result.stdout).toMatch(new RegExp(`ls --limit 1 --cursor \\S+ ${test_db_files_mount}/docs`, "u"));
 			expect(result.stderr).not.toContain("directory listing truncated");
 			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
 			expect(paginatedCalls).toEqual(
@@ -2053,7 +2110,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const docsId = await get_seeded_node_id(runner, "/docs");
 			const nestedId = await get_seeded_node_id(runner, "/docs/nested");
 
-			await run(`cd ${test_app_files_mount}/docs`);
+			await run(`cd ${test_db_files_mount}/docs`);
 			const bareResult = await run("ls --limit 10");
 			const dotResult = await run("ls --limit 10 .");
 			const relativeResult = await run("ls --limit 10 nested");
@@ -2107,7 +2164,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("reports unknown ls cursor ids with recovery guidance", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`ls --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs`);
+			const result = await run(`ls --limit 1 --cursor cursor-1 ${test_db_files_mount}/docs`);
 
 			expect(result.metadata.exitCode).toBe(1);
 			expect(result.stdout).toBe("");
@@ -2118,7 +2175,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("resolves stored cursor ids from memory before querying value_store", async () => {
 			const { run, runQuery, runMutation } = await create_bash_runner();
 
-			const firstPage = await run(`ls --limit 1 ${test_app_files_mount}/docs`);
+			const firstPage = await run(`ls --limit 1 ${test_db_files_mount}/docs`);
 			const cursorId = firstPage.stdout.match(/--cursor '?([^' ]+)'?/u)?.[1];
 			if (cursorId == null) {
 				throw new Error("expected a cursor id in the first page stdout");
@@ -2131,7 +2188,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			}
 
 			runQuery.mockClear();
-			const secondPage = await run(`ls --limit 1 --cursor '${cursorId}' ${test_app_files_mount}/docs`);
+			const secondPage = await run(`ls --limit 1 --cursor '${cursorId}' ${test_db_files_mount}/docs`);
 
 			expect(secondPage.metadata.exitCode).toBe(0);
 			expect(secondPage.stdout).toContain("readme.md");
@@ -2147,7 +2204,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("falls back to value_store when a cursor id is not in memory", async () => {
 			const { run, runQuery, runMutation, t } = await create_bash_runner();
 
-			const firstPage = await run(`ls --limit 1 ${test_app_files_mount}/docs`);
+			const firstPage = await run(`ls --limit 1 ${test_db_files_mount}/docs`);
 			const warmedCursorId = firstPage.stdout.match(/--cursor '?([^' ]+)'?/u)?.[1];
 			if (warmedCursorId == null) {
 				throw new Error("expected a cursor id in the first page stdout");
@@ -2167,7 +2224,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				}
 			});
 			runQuery.mockClear();
-			const secondPage = await run(`ls --limit 1 --cursor '${cursorId}' ${test_app_files_mount}/docs`);
+			const secondPage = await run(`ls --limit 1 --cursor '${cursorId}' ${test_db_files_mount}/docs`);
 
 			expect(secondPage.metadata.exitCode).toBe(0);
 			expect(secondPage.stdout).toContain("readme.md");
@@ -2187,7 +2244,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("reports missing cursor ids with recovery guidance", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`ls --limit 1 --cursor missing ${test_app_files_mount}/docs`);
+			const result = await run(`ls --limit 1 --cursor missing ${test_db_files_mount}/docs`);
 
 			expect(result.metadata.exitCode).toBe(1);
 			expect(result.stderr).toContain("cursor missing expired, is unavailable, or was copied incorrectly");
@@ -2198,16 +2255,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run } = await create_bash_runner();
 
 			const result = await run(
-				`ls --limit 1 ${test_app_files_mount}/docs ${test_app_files_mount} ${test_app_files_mount}/docs/readme.md`,
+				`ls --limit 1 ${test_db_files_mount}/docs ${test_db_files_mount} ${test_db_files_mount}/docs/readme.md`,
 			);
 
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs:\nnested/`);
-			expect(result.stdout).toContain(`${test_app_files_mount}:\ndocs/`);
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs:\nnested/`);
+			expect(result.stdout).toContain(`${test_db_files_mount}:\ndocs/`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 			expect(result.stdout.match(/Next page:/gu)).toHaveLength(2);
 			const continuations = [...result.stdout.matchAll(/Next page: ls --limit 1 --cursor (\S+) (\S+)/gu)];
-			expect(continuations.map((m) => m[2])).toEqual([`${test_app_files_mount}/docs`, test_app_files_mount]);
+			expect(continuations.map((m) => m[2])).toEqual([`${test_db_files_mount}/docs`, test_db_files_mount]);
 			expect(continuations[0][1]).not.toBe(continuations[1][1]);
 		});
 
@@ -2215,32 +2272,32 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run } = await create_bash_runner();
 
 			const tmpFirst = await run(
-				`printf hi > /tmp/mixed-tmp-a.txt && printf hi > /tmp/mixed-tmp-b.txt && ls /tmp/mixed-tmp-a.txt /tmp/mixed-tmp-b.txt ${test_app_files_mount}/docs`,
+				`printf hi > /tmp/mixed-tmp-a.txt && printf hi > /tmp/mixed-tmp-b.txt && ls /tmp/mixed-tmp-a.txt /tmp/mixed-tmp-b.txt ${test_db_files_mount}/docs`,
 			);
 			const tmpAppTmp = await run(
-				`printf hi > /tmp/mixed-tmp-a.txt && printf hi > /tmp/mixed-tmp-b.txt && ls /tmp/mixed-tmp-a.txt ${test_app_files_mount}/docs /tmp/mixed-tmp-b.txt`,
+				`printf hi > /tmp/mixed-tmp-a.txt && printf hi > /tmp/mixed-tmp-b.txt && ls /tmp/mixed-tmp-a.txt ${test_db_files_mount}/docs /tmp/mixed-tmp-b.txt`,
 			);
 
 			expect(tmpFirst.metadata.exitCode).toBe(0);
 			expect(tmpFirst.stdout).toContain("/tmp/mixed-tmp-a.txt");
 			expect(tmpFirst.stdout).toContain("/tmp/mixed-tmp-b.txt");
-			expect(tmpFirst.stdout).toContain(`${test_app_files_mount}/docs:\nnested/`);
+			expect(tmpFirst.stdout).toContain(`${test_db_files_mount}/docs:\nnested/`);
 			expect(tmpFirst.stdout.indexOf("/tmp/mixed-tmp-a.txt")).toBeLessThan(
 				tmpFirst.stdout.indexOf("/tmp/mixed-tmp-b.txt"),
 			);
 			expect(tmpFirst.stdout.indexOf("/tmp/mixed-tmp-b.txt")).toBeLessThan(
-				tmpFirst.stdout.indexOf(`${test_app_files_mount}/docs:`),
+				tmpFirst.stdout.indexOf(`${test_db_files_mount}/docs:`),
 			);
 			expect(tmpFirst.stderr).not.toContain("cannot mix app file paths");
 
 			expect(tmpAppTmp.metadata.exitCode).toBe(0);
 			expect(tmpAppTmp.stdout).toContain("/tmp/mixed-tmp-a.txt");
-			expect(tmpAppTmp.stdout).toContain(`${test_app_files_mount}/docs:\nnested/`);
+			expect(tmpAppTmp.stdout).toContain(`${test_db_files_mount}/docs:\nnested/`);
 			expect(tmpAppTmp.stdout).toContain("/tmp/mixed-tmp-b.txt");
 			expect(tmpAppTmp.stdout.indexOf("/tmp/mixed-tmp-a.txt")).toBeLessThan(
-				tmpAppTmp.stdout.indexOf(`${test_app_files_mount}/docs:`),
+				tmpAppTmp.stdout.indexOf(`${test_db_files_mount}/docs:`),
 			);
-			expect(tmpAppTmp.stdout.indexOf(`${test_app_files_mount}/docs:`)).toBeLessThan(
+			expect(tmpAppTmp.stdout.indexOf(`${test_db_files_mount}/docs:`)).toBeLessThan(
 				tmpAppTmp.stdout.indexOf("/tmp/mixed-tmp-b.txt"),
 			);
 			expect(tmpAppTmp.stderr).not.toContain("cannot mix app file paths");
@@ -2250,23 +2307,23 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run } = await create_bash_runner();
 
 			const result = await run(
-				`mkdir -p /tmp/mixed-ls-dir && printf hi > /tmp/mixed-ls-dir/tmp.txt && ls ${test_app_files_mount}/docs /tmp/mixed-ls-dir`,
+				`mkdir -p /tmp/mixed-ls-dir && printf hi > /tmp/mixed-ls-dir/tmp.txt && ls ${test_db_files_mount}/docs /tmp/mixed-ls-dir`,
 			);
 			const relativeResult = await run(
-				`cd /tmp && mkdir -p mixed-ls-relative-dir && printf hi > mixed-ls-relative-dir/tmp.txt && ls mixed-ls-relative-dir ${test_app_files_mount}/docs`,
+				`cd /tmp && mkdir -p mixed-ls-relative-dir && printf hi > mixed-ls-relative-dir/tmp.txt && ls mixed-ls-relative-dir ${test_db_files_mount}/docs`,
 			);
 
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs:\nnested/`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs:\nnested/`);
 			expect(result.stdout).toContain("/tmp/mixed-ls-dir:\ntmp.txt");
 			expect(result.stdout.trim().split("\n\n")).toEqual([
-				`${test_app_files_mount}/docs:\nnested/\nreadme.md\ntutorial.md`,
+				`${test_db_files_mount}/docs:\nnested/\nreadme.md\ntutorial.md`,
 				"/tmp/mixed-ls-dir:\ntmp.txt",
 			]);
 			expect(relativeResult.metadata.exitCode).toBe(0);
 			expect(relativeResult.stdout.trim().split("\n\n")).toEqual([
 				"mixed-ls-relative-dir:\ntmp.txt",
-				`${test_app_files_mount}/docs:\nnested/\nreadme.md\ntutorial.md`,
+				`${test_db_files_mount}/docs:\nnested/\nreadme.md\ntutorial.md`,
 			]);
 		});
 
@@ -2274,14 +2331,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run } = await create_bash_runner();
 
 			const result = await run(
-				`mkdir -p /tmp/mixed-ls-a /tmp/mixed-ls-b && ls -d /tmp/mixed-ls-a /tmp/mixed-ls-b ${test_app_files_mount}/docs`,
+				`mkdir -p /tmp/mixed-ls-a /tmp/mixed-ls-b && ls -d /tmp/mixed-ls-a /tmp/mixed-ls-b ${test_db_files_mount}/docs`,
 			);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout.trim().split("\n\n")).toEqual([
 				"/tmp/mixed-ls-a",
 				"/tmp/mixed-ls-b",
-				`${test_app_files_mount}/docs/`,
+				`${test_db_files_mount}/docs/`,
 			]);
 		});
 
@@ -2289,9 +2346,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run(
-				`ls --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs ${test_app_files_mount}/reports`,
+				`ls --limit 1 --cursor cursor-1 ${test_db_files_mount}/docs ${test_db_files_mount}/reports`,
 			);
-			const mixedResult = await run(`ls --limit 1 --cursor cursor-1 ${test_app_files_mount}/docs /tmp`);
+			const mixedResult = await run(`ls --limit 1 --cursor cursor-1 ${test_db_files_mount}/docs /tmp`);
 
 			expect(result.metadata.exitCode).toBe(2);
 			expect(result.stderr).toContain("--cursor can only continue one listing target");
@@ -2304,22 +2361,22 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("supports ls -d and lets directory mode win over recursive mode", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`ls -dR ${test_app_files_mount}/docs`);
+			const result = await run(`ls -dR ${test_db_files_mount}/docs`);
 
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout.trim()).toBe(`${test_app_files_mount}/docs/`);
+			expect(result.stdout.trim()).toBe(`${test_db_files_mount}/docs/`);
 			expect(result.stdout).not.toContain("readme.md");
 		});
 
 		test("supports recursive ls with full app shell paths", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`ls -R --limit 10 ${test_app_files_mount}/docs`);
+			const result = await run(`ls -R --limit 10 ${test_db_files_mount}/docs`);
 
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs/nested/`);
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs/nested/deep.md`);
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs/nested/`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs/nested/deep.md`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 		});
 
 		test("supports reverse ls order through the paginated query", async () => {
@@ -2327,7 +2384,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run, runQuery } = runner;
 			const docsId = await get_seeded_node_id(runner, "/docs");
 
-			const result = await run(`ls -r --limit 10 ${test_app_files_mount}/docs`);
+			const result = await run(`ls -r --limit 10 ${test_db_files_mount}/docs`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout.trim().split("\n")).toEqual(["tutorial.md", "readme.md", "nested/"]);
@@ -2352,10 +2409,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const newest = await run("ls -t --limit 50");
 			const oldest = await run("ls -rt --limit 50");
-			const scopedNewest = await run(`ls -t --limit 10 ${test_app_files_mount}/docs`);
-			const scopedOldest = await run(`ls -rt --limit 10 ${test_app_files_mount}/docs`);
-			const scopedPaged = await run(`ls -t --limit 1 ${test_app_files_mount}/docs`);
-			const recursiveScoped = await run(`ls -Rt ${test_app_files_mount}/docs`);
+			const scopedNewest = await run(`ls -t --limit 10 ${test_db_files_mount}/docs`);
+			const scopedOldest = await run(`ls -rt --limit 10 ${test_db_files_mount}/docs`);
+			const scopedPaged = await run(`ls -t --limit 1 ${test_db_files_mount}/docs`);
+			const recursiveScoped = await run(`ls -Rt ${test_db_files_mount}/docs`);
 			const projectPaged = await run("ls -t --limit 1");
 
 			expect(newest.metadata.exitCode).toBe(0);
@@ -2374,7 +2431,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(scopedOldest.metadata.exitCode).toBe(0);
 			expect(scopedOldest.stdout.trim().split("\n").at(0)).toBe("aaa-old.md");
 			expect(scopedPaged.stdout).toMatch(
-				new RegExp(`Next page: ls -t --limit 1 --cursor \\S+ ${test_app_files_mount}/docs`, "u"),
+				new RegExp(`Next page: ls -t --limit 1 --cursor \\S+ ${test_db_files_mount}/docs`, "u"),
 			);
 			expect(recursiveScoped.metadata.exitCode).toBe(2);
 			expect(recursiveScoped.stderr).toContain("ls -t -R is not supported");
@@ -2392,7 +2449,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("supports app-specific long ls output", async () => {
 			const { run, seeded } = await create_bash_runner();
 
-			const result = await run(`ls -la --limit 10 ${test_app_files_mount}/docs`);
+			const result = await run(`ls -la --limit 10 ${test_db_files_mount}/docs`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toMatch(new RegExp(`folder\\t[^\\t]+Z\\tupdatedBy=${seeded.userId}\\tnested/`, "u"));
@@ -2407,20 +2464,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("accepts ls no-op presentation flags and name sort alias", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`ls -1apF --sort=name --indicator-style=slash --limit 10 ${test_app_files_mount}/docs`);
+			const result = await run(`ls -1apF --sort=name --indicator-style=slash --limit 10 ${test_db_files_mount}/docs`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout.trim().split("\n")).toEqual(["nested/", "readme.md", "tutorial.md"]);
 		});
 
-		test("rejects unsupported ls sorting and size flags only when app file node paths are involved", async () => {
+		test("rejects unsupported ls sorting and size flags only when db-files paths are involved", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			const sortResult = await run(`ls --sort=size ${test_app_files_mount}/docs`);
-			const sizeResult = await run(`ls -S ${test_app_files_mount}/docs`);
+			const sortResult = await run(`ls --sort=size ${test_db_files_mount}/docs`);
+			const sizeResult = await run(`ls -S ${test_db_files_mount}/docs`);
 			const nativeJustBashResult = await run("ls --sort=size /tmp");
 			const mixedResult = await run(
-				`printf hi > /tmp/unsupported-ls-tmp.txt && ls --sort=size /tmp/unsupported-ls-tmp.txt ${test_app_files_mount}/docs`,
+				`printf hi > /tmp/unsupported-ls-tmp.txt && ls --sort=size /tmp/unsupported-ls-tmp.txt ${test_db_files_mount}/docs`,
 			);
 
 			expect(sortResult.metadata.exitCode).toBe(2);
@@ -2441,7 +2498,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("guides invented ls pagination flags back to the printed cursor command", async () => {
 			const { run } = await create_bash_runner();
 
-			const appResult = await run(`ls --limit 1 --next-page ${test_app_files_mount}/docs`);
+			const appResult = await run(`ls --limit 1 --next-page ${test_db_files_mount}/docs`);
 			const nativeJustBashResult = await run("ls --next-page /tmp");
 
 			for (const result of [appResult, nativeJustBashResult]) {
@@ -2455,12 +2512,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("supports paginated find with maxdepth and type filters", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			const result = await run(`find ${test_app_files_mount}/docs -maxdepth 1 -type f --limit 10`);
+			const result = await run(`find ${test_db_files_mount}/docs -maxdepth 1 -type f --limit 10`);
 
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs/tutorial.md`);
-			expect(result.stdout).not.toContain(`${test_app_files_mount}/docs/nested/deep.md`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs/tutorial.md`);
+			expect(result.stdout).not.toContain(`${test_db_files_mount}/docs/nested/deep.md`);
 			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
 			expect(paginatedCalls).toEqual(
 				expect.arrayContaining([
@@ -2478,21 +2535,21 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("handles exact file find targets locally with type depth and extension filters", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			const plain = await run(`find ${test_app_files_mount}/docs/readme.md --limit 10`);
-			const extension = await run(`find ${test_app_files_mount}/docs/readme.md --extension md --limit 10`);
-			const typeFolder = await run(`find ${test_app_files_mount}/docs/readme.md -type d --limit 10`);
-			const tooDeep = await run(`find ${test_app_files_mount}/docs/readme.md -mindepth 1 --limit 10`);
+			const plain = await run(`find ${test_db_files_mount}/docs/readme.md --limit 10`);
+			const extension = await run(`find ${test_db_files_mount}/docs/readme.md --extension md --limit 10`);
+			const typeFolder = await run(`find ${test_db_files_mount}/docs/readme.md -type d --limit 10`);
+			const tooDeep = await run(`find ${test_db_files_mount}/docs/readme.md -mindepth 1 --limit 10`);
 
 			expect(plain.metadata.exitCode).toBe(0);
-			expect(plain.stdout.trim()).toBe(`${test_app_files_mount}/docs/readme.md`);
+			expect(plain.stdout.trim()).toBe(`${test_db_files_mount}/docs/readme.md`);
 			expect(extension.metadata.exitCode).toBe(0);
-			expect(extension.stdout.trim()).toBe(`${test_app_files_mount}/docs/readme.md`);
+			expect(extension.stdout.trim()).toBe(`${test_db_files_mount}/docs/readme.md`);
 			expect(typeFolder.stdout.trim()).toBe("0 matches.");
 			expect(tooDeep.stdout.trim()).toBe("0 matches.");
 			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:list_subtree")).toBe(false);
 		});
 
-		test("supports DB-backed find path word search", async () => {
+		test("supports indexed app-file find path word search", async () => {
 			// convex-test's search index splits document words on whitespace only, so the word
 			// query can only land on a path segment that follows a space in the file name.
 			const wordSearchPath = "/docs/word readme.md";
@@ -2509,34 +2566,34 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const nameResult = await run("find -name readme --limit 10");
 			const explicitResult = await run("find --path-query readme --limit 10");
-			const scopedResult = await run(`find ${test_app_files_mount}/docs -maxdepth 1 -name readme -type f --limit 10`);
-			const subtreeResult = await run(`find ${test_app_files_mount}/docs -name readme --limit 10`);
-			const dottedNameResult = await run(`find ${test_app_files_mount}/docs -type f -name 'word readme.md' --limit 10`);
-			const scopedSelfResult = await run(`find '${test_app_files_mount}/docs/scope word' --path-query word --limit 10`);
+			const scopedResult = await run(`find ${test_db_files_mount}/docs -maxdepth 1 -name readme -type f --limit 10`);
+			const subtreeResult = await run(`find ${test_db_files_mount}/docs -name readme --limit 10`);
+			const dottedNameResult = await run(`find ${test_db_files_mount}/docs -type f -name 'word readme.md' --limit 10`);
+			const scopedSelfResult = await run(`find '${test_db_files_mount}/docs/scope word' --path-query word --limit 10`);
 			const scopedMindepthResult = await run(
-				`find '${test_app_files_mount}/docs/scope word' -mindepth 1 --path-query word --limit 10`,
+				`find '${test_db_files_mount}/docs/scope word' -mindepth 1 --path-query word --limit 10`,
 			);
 
 			expect(nameResult.metadata.exitCode).toBe(0);
-			expect(nameResult.stdout).toContain(`${test_app_files_mount}${wordSearchPath}`);
-			expect(nameResult.stdout).toContain(`${test_app_files_mount}${outsideWordSearchPath}`);
+			expect(nameResult.stdout).toContain(`${test_db_files_mount}${wordSearchPath}`);
+			expect(nameResult.stdout).toContain(`${test_db_files_mount}${outsideWordSearchPath}`);
 			expect(explicitResult.metadata.exitCode).toBe(0);
-			expect(explicitResult.stdout).toContain(`${test_app_files_mount}${wordSearchPath}`);
+			expect(explicitResult.stdout).toContain(`${test_db_files_mount}${wordSearchPath}`);
 			expect(scopedResult.metadata.exitCode).toBe(0);
-			expect(scopedResult.stdout).toContain(`${test_app_files_mount}${wordSearchPath}`);
+			expect(scopedResult.stdout).toContain(`${test_db_files_mount}${wordSearchPath}`);
 			// Without -maxdepth, a folder scope searches the full subtree and filters out the rest.
 			expect(subtreeResult.metadata.exitCode).toBe(0);
-			expect(subtreeResult.stdout).toContain(`${test_app_files_mount}${wordSearchPath}`);
-			expect(subtreeResult.stdout).not.toContain(`${test_app_files_mount}${outsideWordSearchPath}`);
+			expect(subtreeResult.stdout).toContain(`${test_db_files_mount}${wordSearchPath}`);
+			expect(subtreeResult.stdout).not.toContain(`${test_db_files_mount}${outsideWordSearchPath}`);
 			expect(dottedNameResult.metadata.exitCode).toBe(0);
-			expect(dottedNameResult.stdout).toContain(`${test_app_files_mount}${wordSearchPath}`);
-			expect(dottedNameResult.stdout).not.toContain(`${test_app_files_mount}/docs/nested/deep.md`);
+			expect(dottedNameResult.stdout).toContain(`${test_db_files_mount}${wordSearchPath}`);
+			expect(dottedNameResult.stdout).not.toContain(`${test_db_files_mount}/docs/nested/deep.md`);
 			expect(scopedSelfResult.metadata.exitCode).toBe(0);
-			expect(scopedSelfResult.stdout.trim().split("\n")).toContain(`${test_app_files_mount}/docs/scope word/`);
+			expect(scopedSelfResult.stdout.trim().split("\n")).toContain(`${test_db_files_mount}/docs/scope word/`);
 			expect(scopedMindepthResult.metadata.exitCode).toBe(0);
-			expect(scopedMindepthResult.stdout.trim().split("\n")).not.toContain(`${test_app_files_mount}/docs/scope word/`);
+			expect(scopedMindepthResult.stdout.trim().split("\n")).not.toContain(`${test_db_files_mount}/docs/scope word/`);
 			expect(scopedMindepthResult.stdout.trim().split("\n")).toContain(
-				`${test_app_files_mount}/docs/scope word/child.md`,
+				`${test_db_files_mount}/docs/scope word/child.md`,
 			);
 			expect(runQuery).toHaveBeenCalledWith(
 				internal.files_nodes.search_paths,
@@ -2563,26 +2620,26 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("supports find -mindepth and accepts -print as a no-op", async () => {
 			const { run } = await create_bash_runner();
 
-			const deepOnly = await run(`find ${test_app_files_mount}/docs -mindepth 2 --limit 50`);
-			const directOnly = await run(`find ${test_app_files_mount}/docs -mindepth 1 -maxdepth 1 --limit 50`);
-			const printed = await run(`find ${test_app_files_mount}/docs -maxdepth 1 -print --limit 50`);
+			const deepOnly = await run(`find ${test_db_files_mount}/docs -mindepth 2 --limit 50`);
+			const directOnly = await run(`find ${test_db_files_mount}/docs -mindepth 1 -maxdepth 1 --limit 50`);
+			const printed = await run(`find ${test_db_files_mount}/docs -maxdepth 1 -print --limit 50`);
 
 			expect(deepOnly.metadata.exitCode).toBe(0);
-			expect(deepOnly.stdout).toContain(`${test_app_files_mount}/docs/nested/deep.md`);
-			expect(deepOnly.stdout).not.toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(deepOnly.stdout).toContain(`${test_db_files_mount}/docs/nested/deep.md`);
+			expect(deepOnly.stdout).not.toContain(`${test_db_files_mount}/docs/readme.md`);
 			expect(directOnly.metadata.exitCode).toBe(0);
-			expect(directOnly.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
-			expect(directOnly.stdout).toContain(`${test_app_files_mount}/docs/nested/`);
-			expect(directOnly.stdout).not.toContain(`${test_app_files_mount}/docs/nested/deep.md`);
+			expect(directOnly.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
+			expect(directOnly.stdout).toContain(`${test_db_files_mount}/docs/nested/`);
+			expect(directOnly.stdout).not.toContain(`${test_db_files_mount}/docs/nested/deep.md`);
 			expect(printed.metadata.exitCode).toBe(0);
-			expect(printed.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(printed.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 		});
 
 		test("rejects a non-integer find -mindepth and round-trips it in the continuation", async () => {
 			const { run } = await create_bash_runner();
 
-			const invalid = await run(`find ${test_app_files_mount}/docs -mindepth x --limit 10`);
-			const paged = await run(`find ${test_app_files_mount}/docs -mindepth 1 --limit 1`);
+			const invalid = await run(`find ${test_db_files_mount}/docs -mindepth x --limit 10`);
+			const paged = await run(`find ${test_db_files_mount}/docs -mindepth 1 --limit 1`);
 
 			expect(invalid.metadata.exitCode).toBe(2);
 			expect(invalid.stderr).toContain("-mindepth must be a non-negative integer");
@@ -2594,8 +2651,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("rejects find --prefix combined with depth flags", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			const maxResult = await run(`find --prefix ${test_app_files_mount}/docs -maxdepth 1 --limit 10`);
-			const minResult = await run(`find --prefix ${test_app_files_mount}/docs -mindepth 2 --limit 10`);
+			const maxResult = await run(`find --prefix ${test_db_files_mount}/docs -maxdepth 1 --limit 10`);
+			const minResult = await run(`find --prefix ${test_db_files_mount}/docs -mindepth 2 --limit 10`);
 
 			expect(maxResult.metadata.exitCode).toBe(2);
 			expect(maxResult.stderr).toContain("--prefix cannot be combined with -maxdepth/-mindepth");
@@ -2605,21 +2662,21 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(paginatedCalls).toHaveLength(0);
 		});
 
-		test("supports DB-backed find extension search and simple extension glob recovery", async () => {
+		test("supports indexed app-file find extension search and simple extension glob recovery", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
 			const globName = await run("find -name '*.md' --limit 10");
-			const extension = await run(`find ${test_app_files_mount}/docs --extension md --limit 10`);
-			const pathGlob = await run(`find ${test_app_files_mount}/docs/*.md --limit 1`);
+			const extension = await run(`find ${test_db_files_mount}/docs --extension md --limit 10`);
+			const pathGlob = await run(`find ${test_db_files_mount}/docs/*.md --limit 1`);
 
 			expect(globName.metadata.exitCode).toBe(0);
-			expect(globName.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(globName.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 			expect(extension.metadata.exitCode).toBe(0);
-			expect(extension.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(extension.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 			expect(pathGlob.metadata.exitCode).toBe(0);
-			expect(pathGlob.stdout).toContain(`${test_app_files_mount}/docs/nested/deep.md`);
+			expect(pathGlob.stdout).toContain(`${test_db_files_mount}/docs/nested/deep.md`);
 			expect(pathGlob.stdout).toMatch(
-				new RegExp(`Next page: find ${test_app_files_mount}/docs --extension md --limit 1 --cursor \\S+`, "u"),
+				new RegExp(`Next page: find ${test_db_files_mount}/docs --extension md --limit 1 --cursor \\S+`, "u"),
 			);
 			expect(runQuery).toHaveBeenCalledWith(
 				internal.files_nodes.list_subtree,
@@ -2631,65 +2688,63 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 		});
 
-		test("rejects find combinations that still cannot stay DB-backed", async () => {
+		test("rejects find combinations that still cannot stay indexed", async () => {
 			const { run } = await create_bash_runner();
 
-			const scopedDepth = await run(`find ${test_app_files_mount}/docs -maxdepth 2 -name readme --limit 10`);
+			const scopedDepth = await run(`find ${test_db_files_mount}/docs -maxdepth 2 -name readme --limit 10`);
 			const tokenGlobName = await run("find -type f -name '*readme*' --limit 10");
 			const prefixExtensionGlobName = await run(
-				`find ${test_app_files_mount}/docs -type f -name 'readme*.md' --limit 10`,
+				`find ${test_db_files_mount}/docs -type f -name 'readme*.md' --limit 10`,
 			);
 			const complexGlobName = await run("find -name 'read.*.md' --limit 10");
 			const pathQueryGlob = await run("find --path-query '.*readme.*' --limit 10");
 			const combinedPathQueryExtension = await run(
-				`find ${test_app_files_mount}/docs -type f --extension md --path-query readme --limit 10`,
+				`find ${test_db_files_mount}/docs -type f --extension md --path-query readme --limit 10`,
 			);
 			const recursivePathQuery = await run(
-				`find ${test_app_files_mount} -maxdepth 5 -type f --path-query readme --limit 10`,
+				`find ${test_db_files_mount} -maxdepth 5 -type f --path-query readme --limit 10`,
 			);
-			const regexPathPredicate = await run(`find ${test_app_files_mount}/docs -type f -regex '.*readme.*' --limit 10`);
+			const regexPathPredicate = await run(`find ${test_db_files_mount}/docs -type f -regex '.*readme.*' --limit 10`);
 
 			expect(scopedDepth.metadata.exitCode).toBe(2);
 			expect(scopedDepth.stderr).toContain("full subtree (omit -maxdepth) or immediate children with -maxdepth 1");
-			expect(scopedDepth.stderr).toContain(`Try: find ${test_app_files_mount}/docs --path-query readme --limit 10`);
+			expect(scopedDepth.stderr).toContain(`Try: find ${test_db_files_mount}/docs --path-query readme --limit 10`);
 			expect(tokenGlobName.metadata.exitCode).toBe(2);
-			expect(tokenGlobName.stderr).toContain(
-				`Try: find ${test_app_files_mount} -type f --path-query readme --limit 10`,
-			);
+			expect(tokenGlobName.stderr).toContain(`Try: find ${test_db_files_mount} -type f --path-query readme --limit 10`);
 			expect(prefixExtensionGlobName.metadata.exitCode).toBe(2);
 			expect(prefixExtensionGlobName.stderr).toContain(
-				`Try: find ${test_app_files_mount}/docs -type f --path-query readme --limit 10`,
+				`Try: find ${test_db_files_mount}/docs -type f --path-query readme --limit 10`,
 			);
 			expect(complexGlobName.metadata.exitCode).toBe(2);
 			expect(complexGlobName.stderr).toContain("not glob patterns");
 			expect(complexGlobName.stderr).toContain("Try `find <dir> -type f --extension md");
 			expect(pathQueryGlob.metadata.exitCode).toBe(2);
-			expect(pathQueryGlob.stderr).toContain("--path-query uses DB-backed path word search");
-			expect(pathQueryGlob.stderr).toContain(`Try: find ${test_app_files_mount} --path-query readme --limit 10`);
+			expect(pathQueryGlob.stderr).toContain("--path-query uses indexed app-file path word search");
+			expect(pathQueryGlob.stderr).toContain(`Try: find ${test_db_files_mount} --path-query readme --limit 10`);
 			expect(combinedPathQueryExtension.metadata.exitCode).toBe(2);
 			expect(combinedPathQueryExtension.stderr).toContain(
-				`Try: find ${test_app_files_mount}/docs -type f --path-query readme --limit 10`,
+				`Try: find ${test_db_files_mount}/docs -type f --path-query readme --limit 10`,
 			);
 			expect(combinedPathQueryExtension.stderr).toContain(
-				`For extension-only search, use: find ${test_app_files_mount}/docs -type f --extension md --limit 10`,
+				`For extension-only search, use: find ${test_db_files_mount}/docs -type f --extension md --limit 10`,
 			);
 			expect(recursivePathQuery.metadata.exitCode).toBe(2);
 			expect(recursivePathQuery.stderr).toContain(
-				`Try: find ${test_app_files_mount} -type f --path-query readme --limit 10`,
+				`Try: find ${test_db_files_mount} -type f --path-query readme --limit 10`,
 			);
 			expect(regexPathPredicate.metadata.exitCode).toBe(2);
 			expect(regexPathPredicate.stderr).toContain(
-				`Try: find ${test_app_files_mount}/docs -type f --path-query readme --limit 10`,
+				`Try: find ${test_db_files_mount}/docs -type f --path-query readme --limit 10`,
 			);
 		});
 
 		test("filters non-search find pages before pagination", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`find ${test_app_files_mount}/docs -maxdepth 1 -type f --limit 1`);
+			const result = await run(`find ${test_db_files_mount}/docs -maxdepth 1 -type f --limit 1`);
 
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 			expect(result.stdout).not.toContain("No matches in this page; more pages exist.");
 			expect(result.stdout).toContain("Next page:");
 		});
@@ -2697,9 +2752,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("rejects unsupported find predicates when pagination is requested", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			const result = await run(`find ${test_app_files_mount}/docs -delete --limit 10`);
+			const result = await run(`find ${test_db_files_mount}/docs -delete --limit 10`);
 			const regexResult = await run(
-				`find ${test_app_files_mount}/docs -regextype posix-extended -regex '.*readme.*' --limit 10`,
+				`find ${test_db_files_mount}/docs -regextype posix-extended -regex '.*readme.*' --limit 10`,
 			);
 			const nativeJustBashResult = await run("find /tmp -mtime 1 --limit 1");
 
@@ -2711,7 +2766,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(regexResult.metadata.exitCode).toBe(2);
 			expect(regexResult.stderr).toContain("unsupported predicate -regextype");
 			expect(regexResult.stderr).toContain("--path-query with plain path words");
-			expect(regexResult.stderr).toContain(`Try: find ${test_app_files_mount}/docs --path-query readme --limit 10`);
+			expect(regexResult.stderr).toContain(`Try: find ${test_db_files_mount}/docs --path-query readme --limit 10`);
 			expect(regexResult.stderr).not.toContain("supports one path only");
 			expect(nativeJustBashResult.stderr).not.toContain("/home/cloud-usr/w");
 			const paginatedCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "numItems" in args);
@@ -2749,7 +2804,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("does not use the legacy capped list_files query for app ls", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			await run(`ls ${test_app_files_mount}/docs`);
+			await run(`ls ${test_db_files_mount}/docs`);
 
 			const listCalls = runQuery.mock.calls
 				.map((call) => call[1])
@@ -2757,10 +2812,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(listCalls).toHaveLength(0);
 		});
 
-		test("resolves exact parent folders through app file node path lookups", async () => {
+		test("resolves exact parent folders through db-files path lookups", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			const result = await run(`cd ${test_app_files_mount}/reports && pwd`);
+			const result = await run(`cd ${test_db_files_mount}/reports && pwd`);
 			const reportsLookupCalls = runQuery.mock.calls.filter((call) => {
 				const queryArgs = call[1];
 				return (
@@ -2773,19 +2828,40 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout.trim()).toBe(`${test_app_files_mount}/reports`);
+			expect(result.stdout.trim()).toBe(`${test_db_files_mount}/reports`);
 			expect(reportsLookupCalls.length).toBeGreaterThan(0);
 		});
 
 		test("rejects app glob patterns without falling back to capped enumeration", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`ls ${test_app_files_mount}/docs/*.md`);
+			const result = await run(`ls ${test_db_files_mount}/docs/*.md`);
 
 			expect(result.metadata.exitCode).toBe(2);
 			expect(result.metadata.pathIndexTruncated).toBe(false);
 			expect(result.stderr).toContain("app file glob patterns are not supported");
-			expect(result.stderr).toContain(`Try: find ${test_app_files_mount}/docs -type f --extension md --limit 20`);
+			expect(result.stderr).toContain(`Try: find ${test_db_files_mount}/docs -type f --extension md --limit 20`);
+		});
+
+		test("expands scratch globs but rejects app globs after cwd resolution", async () => {
+			const { run } = await create_bash_runner();
+
+			const writeTmp = await run("printf 'alpha\\n' > /tmp/a.txt && printf 'beta\\n' > /tmp/b.txt");
+			const cdTmp = await run("cd /tmp");
+			const tmpGlob = await run("cat *.txt");
+			const cdApp = await run(`cd ${test_db_files_mount}/docs`);
+			const appGlob = await run("ls *.md");
+
+			expect(writeTmp.metadata.exitCode).toBe(0);
+			expect(cdTmp.metadata.exitCode).toBe(0);
+			expect(tmpGlob.metadata.exitCode).toBe(0);
+			expect(tmpGlob.stdout).toContain("alpha\n");
+			expect(tmpGlob.stdout).toContain("beta\n");
+			expect(tmpGlob.stderr).not.toContain("app file glob patterns are not supported");
+			expect(cdApp.metadata.exitCode).toBe(0);
+			expect(appGlob.metadata.exitCode).toBe(2);
+			expect(appGlob.stderr).toContain("app file glob patterns are not supported");
+			expect(appGlob.stderr).toContain("Try: find . -type f --extension md --limit 20");
 		});
 
 		test("does not alias root listing to app files", async () => {
@@ -2813,21 +2889,21 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("explains unreadable uploaded source files through bash cat", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`cat ${test_app_files_mount}/source.pdf`);
+			const result = await run(`cat ${test_db_files_mount}/source.pdf`);
 
 			expect(result.metadata.exitCode).toBe(1);
 			expect(result.stdout).toBe("");
 			expect(result.stderr).toContain("content type is 'application/pdf'");
 			expect(result.stderr).toContain("Markdown and plain text files only");
-			expect(result.stderr).toContain(`${test_app_files_mount}/source.pdf.md`);
-			expect(result.stderr).toContain(`${test_app_files_mount}/source.md`);
-			expect(result.stderr).toContain(`${test_app_files_mount}/source.txt`);
+			expect(result.stderr).toContain(`${test_db_files_mount}/source.pdf.md`);
+			expect(result.stderr).toContain(`${test_db_files_mount}/source.md`);
+			expect(result.stderr).toContain(`${test_db_files_mount}/source.txt`);
 		});
 
 		test("keeps unreadable cat advisories out of pipelines", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`cat ${test_app_files_mount}/source.pdf | grep application/pdf`);
+			const result = await run(`cat ${test_db_files_mount}/source.pdf | grep application/pdf`);
 
 			expect(result.metadata.exitCode).toBe(1);
 			expect(result.stdout).toBe("");
@@ -2837,7 +2913,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("does not suggest rereading the same unreadable file path", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`cat ${test_app_files_mount}/uploaded.md`);
+			const result = await run(`cat ${test_db_files_mount}/uploaded.md`);
 			const suggestionLine = result.stderr
 				.split("\n")
 				.find((line) => line.startsWith("To read generated text output for this file"));
@@ -2846,16 +2922,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stdout).toBe("");
 			expect(suggestionLine).toBeDefined();
 			// The advisory must suggest readable siblings, never re-reading the same unreadable path.
-			expect(suggestionLine).not.toContain(`${test_app_files_mount}/uploaded.md,`);
-			expect(suggestionLine?.endsWith(`${test_app_files_mount}/uploaded.md`)).toBe(false);
-			expect(suggestionLine).toContain(`${test_app_files_mount}/uploaded.md.md`);
-			expect(suggestionLine).toContain(`${test_app_files_mount}/uploaded.txt`);
+			expect(suggestionLine).not.toContain(`${test_db_files_mount}/uploaded.md,`);
+			expect(suggestionLine?.endsWith(`${test_db_files_mount}/uploaded.md`)).toBe(false);
+			expect(suggestionLine).toContain(`${test_db_files_mount}/uploaded.md.md`);
+			expect(suggestionLine).toContain(`${test_db_files_mount}/uploaded.txt`);
 		});
 
 		test("rejects workspace writes and persists same-thread /tmp scratch files", async () => {
 			const { run, runMutation } = await create_bash_runner();
 
-			const workspaceWrite = await run(`echo nope > ${test_app_files_mount}/docs/new.md`);
+			const workspaceWrite = await run(`echo nope > ${test_db_files_mount}/docs/new.md`);
 			expect(workspaceWrite.metadata.exitCode).not.toBe(0);
 			expect(workspaceWrite.stderr).toContain("read-only file system");
 
@@ -2886,12 +2962,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			const lastPatchArgs = patchCalls.at(-1)?.[1] as
 				| {
-						fileNodes: BashTmpFileNode[];
-						fileNodesContentDict: BashTmpFileNodesContentDict;
+						fileNodes: BashTmpPatchEntry[];
+						fileNodesContentDict: BashTmpPatchContentDict;
 						deletePaths: string[];
 				  }
 				| undefined;
-			expect(lastPatchArgs?.fileNodes.map((fileNode) => fileNode.path)).toEqual(["/a.txt"]);
+			expect(lastPatchArgs?.fileNodes.map((tmpFile) => tmpFile.path)).toEqual(["/a.txt"]);
 			expect(lastPatchArgs?.fileNodesContentDict).toEqual({ "/a.txt": expect.any(ArrayBuffer) });
 			expect(lastPatchArgs?.deletePaths).toEqual([]);
 
@@ -2961,12 +3037,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			const lastPatchArgs = patchCalls.at(-1)?.[1] as
 				| {
-						fileNodes: BashTmpFileNode[];
-						fileNodesContentDict: BashTmpFileNodesContentDict;
+						fileNodes: BashTmpPatchEntry[];
+						fileNodesContentDict: BashTmpPatchContentDict;
 						deletePaths: string[];
 				  }
 				| undefined;
-			expect(lastPatchArgs?.fileNodes.map((fileNode) => fileNode.path)).toEqual([
+			expect(lastPatchArgs?.fileNodes.map((tmpFile) => tmpFile.path)).toEqual([
 				"/copy-dir/a.txt",
 				"/move-dir/to-move.txt",
 			]);
@@ -3063,10 +3139,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("creates persistent app file tree folders through bash mkdir when allowed", async () => {
-			const { run, runMutation, seeded } = await create_bash_runner({ allowAppFileTreeMkdir: true });
+			const { run, runMutation, seeded } = await create_bash_runner({ allowDbFilesMkdir: true });
 
 			const result = await run(
-				`mkdir ${test_app_files_mount}/bash-created && stat ${test_app_files_mount}/bash-created && ls ${test_app_files_mount}`,
+				`mkdir ${test_db_files_mount}/bash-created && stat ${test_db_files_mount}/bash-created && ls ${test_db_files_mount}`,
 			);
 
 			expect(result.metadata.exitCode).toBe(0);
@@ -3082,9 +3158,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("blocks app file tree folder creation through bash mkdir when not allowed", async () => {
-			const { run, runMutation } = await create_bash_runner({ allowAppFileTreeMkdir: false });
+			const { run, runMutation } = await create_bash_runner({ allowDbFilesMkdir: false });
 
-			const result = await run(`mkdir ${test_app_files_mount}/ask-denied`);
+			const result = await run(`mkdir ${test_db_files_mount}/ask-denied`);
 
 			expect(result.metadata.exitCode).not.toBe(0);
 			expect(result.stderr).toContain("Agent mode");
@@ -3104,7 +3180,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("unique-token");
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 			expect(runQuery).toHaveBeenCalledWith(
 				expect.anything(),
 				expect.objectContaining({
@@ -3119,7 +3195,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("runs indexed search with equals-form options", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			const result = await run(`search --path=${test_app_files_mount}/docs --limit=5 unique-token`);
+			const result = await run(`search --path=${test_db_files_mount}/docs --limit=5 unique-token`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(runQuery).toHaveBeenCalledWith(
@@ -3176,7 +3252,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(firstPage.stdout).toMatch(/Next page: search --limit 1 --cursor \S+ exact-hyphen-token-2026/u);
 			expect(firstPage.stdout.indexOf("Next page: search")).toBeLessThan(
-				firstPage.stdout.indexOf(`${test_app_files_mount}/search-fixtures/broad.md`),
+				firstPage.stdout.indexOf(`${test_db_files_mount}/search-fixtures/broad.md`),
 			);
 			expect(firstPage.stdout).toContain("run the exact Next page command before answering");
 
@@ -3201,7 +3277,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(runQuery.mock.calls.some(([, queryArgs]) => "query" in queryArgs)).toBe(false);
 		});
 
-		test("prints a search continuation when indexed search has another DB page", async () => {
+		test("prints a search continuation when indexed search has another db page", async () => {
 			const { run, runQuery } = await create_bash_runner({
 				extraFiles: [
 					{ path: "/docs/paged-a.md", content: "paged-token alpha\n" },
@@ -3242,7 +3318,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				],
 			});
 
-			const result = await run(`search --path ${test_app_files_mount}/docs --limit 1 paged-token`);
+			const result = await run(`search --path ${test_db_files_mount}/docs --limit 1 paged-token`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("Next page: search --path");
@@ -3257,10 +3333,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(pageProbeCalls).toHaveLength(0);
 		});
 
-		test("rejects app file node path operands in indexed search instead of folding them into the query", async () => {
+		test("rejects db-files path operands in indexed search instead of folding them into the query", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			const result = await run(`search --limit 5 unique-token ${test_app_files_mount}`);
+			const result = await run(`search --limit 5 unique-token ${test_db_files_mount}`);
 
 			expect(result.metadata.exitCode).toBe(2);
 			expect(result.stderr).toContain("path operands are not supported");
@@ -3271,56 +3347,56 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("scopes indexed search to a folder with --path", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			// In-scope folder -> hit, and the app file node path is passed through to the query.
-			const inScope = await run(`search --path ${test_app_files_mount}/docs unique-token`);
+			// In-scope folder -> hit, and the db-files path is passed through to the query.
+			const inScope = await run(`search --path ${test_db_files_mount}/docs unique-token`);
 			expect(inScope.metadata.exitCode).toBe(0);
-			expect(inScope.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
-			expect(inScope.stdout).toContain(`under ${test_app_files_mount}/docs`);
+			expect(inScope.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
+			expect(inScope.stdout).toContain(`under ${test_db_files_mount}/docs`);
 			expect(runQuery).toHaveBeenCalledWith(
 				expect.anything(),
 				expect.objectContaining({ query: "unique-token", pathPrefix: "/docs" }),
 			);
 
-			// Bare search follows the current app cwd so "cd dir && search term" stays DB-scoped.
-			const cwdScope = await run(`cd ${test_app_files_mount}/docs && search unique-token`);
+			// Bare search follows the current app cwd so "cd dir && search term" stays db-scoped.
+			const cwdScope = await run(`cd ${test_db_files_mount}/docs && search unique-token`);
 			expect(cwdScope.metadata.exitCode).toBe(0);
-			expect(cwdScope.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
-			expect(cwdScope.stdout).toContain(`under ${test_app_files_mount}/docs`);
+			expect(cwdScope.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
+			expect(cwdScope.stdout).toContain(`under ${test_db_files_mount}/docs`);
 			const searchCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "query" in args);
 			expect(searchCalls.at(-1)).toEqual(expect.objectContaining({ query: "unique-token", pathPrefix: "/docs" }));
 
 			// Relative --path (including `.`) resolves against the current working directory.
-			const relScope = await run(`cd ${test_app_files_mount} && search --path docs unique-token`);
+			const relScope = await run(`cd ${test_db_files_mount} && search --path docs unique-token`);
 			expect(relScope.metadata.exitCode).toBe(0);
-			expect(relScope.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
-			expect(relScope.stdout).toContain(`under ${test_app_files_mount}/docs`);
+			expect(relScope.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
+			expect(relScope.stdout).toContain(`under ${test_db_files_mount}/docs`);
 
-			const dotScope = await run(`cd ${test_app_files_mount}/docs && search --path . unique-token`);
+			const dotScope = await run(`cd ${test_db_files_mount}/docs && search --path . unique-token`);
 			expect(dotScope.metadata.exitCode).toBe(0);
-			expect(dotScope.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(dotScope.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 			const relCalls = runQuery.mock.calls.map((call) => call[1]).filter((args) => "query" in args);
 			expect(relCalls.at(-1)).toEqual(expect.objectContaining({ query: "unique-token", pathPrefix: "/docs" }));
 
 			// Explicit --path scopes must be real app folders.
-			const missingScope = await run(`search --path ${test_app_files_mount}/other unique-token`);
+			const missingScope = await run(`search --path ${test_db_files_mount}/other unique-token`);
 			expect(missingScope.metadata.exitCode).toBe(1);
 			expect(missingScope.stderr).toContain("--path folder does not exist");
 
-			const fileScope = await run(`search --path ${test_app_files_mount}/docs/readme.md unique-token`);
+			const fileScope = await run(`search --path ${test_db_files_mount}/docs/readme.md unique-token`);
 			expect(fileScope.metadata.exitCode).toBe(2);
 			expect(fileScope.stderr).toContain("--path must be a folder");
 
-			// A --path outside currentProjectPath is rejected.
+			// A --path outside currentProjectPath (and outside any mount) is rejected.
 			const bad = await run("search --path /etc unique-token");
 			expect(bad.metadata.exitCode).toBe(2);
-			expect(bad.stderr).toContain("must be a folder under the app file tree");
+			expect(bad.stderr).toContain("--path must be a folder under");
 		});
 
 		test("textgrep scans one file's rendered plain text and maps -R to indexed search", async () => {
 			const { run, runQuery } = await create_bash_runner({
 				extraFiles: [{ path: "/docs/textgrep.md", content: "# Notice\n\n**critical** alert\n" }],
 			});
-			const filePath = `${test_app_files_mount}/docs/textgrep.md`;
+			const filePath = `${test_db_files_mount}/docs/textgrep.md`;
 
 			// Single-file regex over rendered plain text: no line numbers, no separators.
 			const singleFile = await run(`textgrep 'critical\\s+alert' ${filePath}`);
@@ -3352,11 +3428,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(invert.stdout).not.toContain("critical alert");
 
 			// -R folder scan routes to indexed full-text search, mirroring grep -R.
-			const recursive = await run(`textgrep -R unique-token ${test_app_files_mount}/docs`);
+			const recursive = await run(`textgrep -R unique-token ${test_db_files_mount}/docs`);
 			expect(recursive.metadata.exitCode).toBe(0);
 			expect(recursive.stdout).toContain("uses indexed full-text search");
-			expect(recursive.stdout).toContain(`Found 1 results under ${test_app_files_mount}/docs`);
-			expect(recursive.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(recursive.stdout).toContain(`Found 1 results under ${test_db_files_mount}/docs`);
+			expect(recursive.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:text_search_files")).toBe(true);
 			expect(runQuery).toHaveBeenCalledWith(
 				expect.anything(),
@@ -3378,8 +3454,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run, runQuery } = await create_bash_runner({
 				extraFiles: [{ path: "/docs/textgrep.md", content: "# Notice\n\n**critical** alert\n" }],
 			});
-			const filePath = `${test_app_files_mount}/docs/textgrep.md`;
-			const folder = `${test_app_files_mount}/docs`;
+			const filePath = `${test_db_files_mount}/docs/textgrep.md`;
+			const folder = `${test_db_files_mount}/docs`;
 
 			// -e / --regexp supply the pattern explicitly.
 			const dashE = await run(`textgrep -e 'critical' ${filePath}`);
@@ -3470,12 +3546,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const json = await run(`meta search --format json --where '{"range":["frontmatter.amount",{"gte":100}]}'`);
 			const jsonExists = await run(`meta search --format json --where '{"exists":"frontmatter.cc"}'`);
 			const dedupedPrefix = await run(`meta search --where '{"prefix":["frontmatter.topic","a"]}' --limit 5`);
-			const scoped = await run(`cd ${test_app_files_mount}/docs && meta search --where '{"exists":"frontmatter.cc"}'`);
-			const get = await run(`meta get ${test_app_files_mount}/docs/meta-email.md`);
+			const scoped = await run(`cd ${test_db_files_mount}/docs && meta search --where '{"exists":"frontmatter.cc"}'`);
+			const get = await run(`meta get ${test_db_files_mount}/docs/meta-email.md`);
 			const invalid = await run(`meta search --where '{"eq":["from","alice@example.com"]}'`);
 
 			expect(paths.metadata.exitCode).toBe(0);
-			expect(paths.stdout).toBe(`${test_app_files_mount}/docs/meta-email.md\n`);
+			expect(paths.stdout).toBe(`${test_db_files_mount}/docs/meta-email.md\n`);
 			expect(paths.stderr).toBe("");
 			expect(
 				runQuery.mock.calls.some(
@@ -3492,7 +3568,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			};
 			expect(parsedJson.results).toEqual([
 				expect.objectContaining({
-					path: `${test_app_files_mount}/docs/meta-email.md`,
+					path: `${test_db_files_mount}/docs/meta-email.md`,
 					field: "frontmatter.amount",
 					valueKind: "number",
 					matchedValue: 125,
@@ -3507,7 +3583,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			};
 			expect(parsedExistsJson.results).toEqual([
 				expect.objectContaining({
-					path: `${test_app_files_mount}/docs/meta-email.md`,
+					path: `${test_db_files_mount}/docs/meta-email.md`,
 					field: "frontmatter.cc",
 					valueKind: "none",
 				}),
@@ -3516,10 +3592,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(dedupedPrefix.metadata.exitCode).toBe(0);
 			expect(dedupedPrefix.stderr).toBe("");
-			expect(dedupedPrefix.stdout).toBe(`${test_app_files_mount}/docs/meta-tags.md\n`);
+			expect(dedupedPrefix.stdout).toBe(`${test_db_files_mount}/docs/meta-tags.md\n`);
 
 			expect(scoped.metadata.exitCode).toBe(0);
-			expect(scoped.stdout).toBe(`${test_app_files_mount}/docs/meta-email.md\n`);
+			expect(scoped.stdout).toBe(`${test_db_files_mount}/docs/meta-email.md\n`);
 			expect(
 				runQuery.mock.calls.some(
 					([ref, args]) =>
@@ -3570,13 +3646,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("maps simple recursive app grep to indexed search", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			const result = await run(`grep -R unique-token ${test_app_files_mount}/docs`);
+			const result = await run(`grep -R unique-token ${test_db_files_mount}/docs`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stderr).toBe("");
 			expect(result.stdout).toContain("uses indexed full-text search");
-			expect(result.stdout).toContain(`Found 1 results under ${test_app_files_mount}/docs`);
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(result.stdout).toContain(`Found 1 results under ${test_db_files_mount}/docs`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 			expect(runQuery).toHaveBeenCalledWith(
 				expect.anything(),
 				expect.objectContaining({ query: "unique-token", pathPrefix: "/docs" }),
@@ -3586,7 +3662,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("rejects grep -R -F over an app folder instead of routing to indexed search", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			const result = await run(`grep -R -F unique-token ${test_app_files_mount}/docs`);
+			const result = await run(`grep -R -F unique-token ${test_db_files_mount}/docs`);
 
 			expect(result.metadata.exitCode).toBe(2);
 			expect(result.stdout).toBe("");
@@ -3606,11 +3682,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				],
 			});
 
-			const result = await run(`grep -R exact-hyphen-token-2026 ${test_app_files_mount}/grep-fixtures`);
+			const result = await run(`grep -R exact-hyphen-token-2026 ${test_db_files_mount}/grep-fixtures`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain(
-				`Found 2 results under ${test_app_files_mount}/grep-fixtures (exact matches: 1, word-level-only matches: 1; see per-hit notes)`,
+				`Found 2 results under ${test_db_files_mount}/grep-fixtures (exact matches: 1, word-level-only matches: 1; see per-hit notes)`,
 			);
 			expect(result.stdout).toMatch(/grep-fixtures\/hyphen\.md .+\[contains exact 'exact-hyphen-token-2026'\]/u);
 			expect(result.stdout).toMatch(
@@ -3625,11 +3701,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				],
 			});
 
-			const result = await run(`grep -R exact-hyphen-token-2026 ${test_app_files_mount}/grep-fixtures`);
+			const result = await run(`grep -R exact-hyphen-token-2026 ${test_db_files_mount}/grep-fixtures`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain(
-				`Found 1 results under ${test_app_files_mount}/grep-fixtures (exact matches: 0, word-level-only matches: 1; see per-hit notes)`,
+				`Found 1 results under ${test_db_files_mount}/grep-fixtures (exact matches: 0, word-level-only matches: 1; see per-hit notes)`,
 			);
 			expect(result.stdout).toMatch(
 				/grep-fixtures\/broad\.md .+\[word-level match; chunk does not contain 'exact-hyphen-token-2026'\]/u,
@@ -3640,115 +3716,115 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run } = await create_bash_runner();
 
 			// Single app file prints raw matching lines by default, like native grep.
-			const hit = await run(`grep unique-token ${test_app_files_mount}/docs/readme.md`);
+			const hit = await run(`grep unique-token ${test_db_files_mount}/docs/readme.md`);
 			expect(hit.metadata.exitCode).toBe(0);
 			expect(hit.stdout).toBe("unique-token here\nmore unique-token below\n");
 
 			// Single-file app grep supports regex because it scans one bounded chunk stream.
-			const regexHit = await run(`grep 'unique.*below' ${test_app_files_mount}/docs/readme.md`);
+			const regexHit = await run(`grep 'unique.*below' ${test_db_files_mount}/docs/readme.md`);
 			expect(regexHit.metadata.exitCode).toBe(0);
 			expect(regexHit.stdout).toBe("more unique-token below\n");
 
-			const invalidRegex = await run(`grep '[' ${test_app_files_mount}/docs/readme.md`);
+			const invalidRegex = await run(`grep '[' ${test_db_files_mount}/docs/readme.md`);
 			expect(invalidRegex.metadata.exitCode).toBe(2);
 			expect(invalidRegex.stderr).toContain("invalid regex");
 
 			// -F switches back to fixed-string semantics.
-			const fixedMiss = await run(`grep -F 'unique.*below' ${test_app_files_mount}/docs/readme.md`);
+			const fixedMiss = await run(`grep -F 'unique.*below' ${test_db_files_mount}/docs/readme.md`);
 			expect(fixedMiss.metadata.exitCode).toBe(1);
 			expect(fixedMiss.stdout).toBe("");
 
 			// -n switches to 1-based line numbers.
-			const numberedHit = await run(`grep -n unique-token ${test_app_files_mount}/docs/readme.md`);
+			const numberedHit = await run(`grep -n unique-token ${test_db_files_mount}/docs/readme.md`);
 			expect(numberedHit.metadata.exitCode).toBe(0);
 			expect(numberedHit.stdout).toBe("2:unique-token here\n3:more unique-token below\n");
 
-			const dashPattern = await run(`grep -- -token ${test_app_files_mount}/docs/readme.md`);
+			const dashPattern = await run(`grep -- -token ${test_db_files_mount}/docs/readme.md`);
 			expect(dashPattern.metadata.exitCode).toBe(0);
 			expect(dashPattern.stdout).toBe("unique-token here\nmore unique-token below\n");
 
-			const piped = await run(`cat ${test_app_files_mount}/docs/readme.md | head -n 20 | grep -n unique-token`);
+			const piped = await run(`cat ${test_db_files_mount}/docs/readme.md | head -n 20 | grep -n unique-token`);
 			expect(piped.metadata.exitCode).toBe(0);
 			expect(piped.stdout).toBe("2:unique-token here\n3:more unique-token below\n");
 
-			const pipedRegex = await run(`cat ${test_app_files_mount}/docs/readme.md | grep 'unique.*below'`);
+			const pipedRegex = await run(`cat ${test_db_files_mount}/docs/readme.md | grep 'unique.*below'`);
 			expect(pipedRegex.metadata.exitCode).toBe(0);
 			expect(pipedRegex.stdout).toBe("more unique-token below\n");
 
-			const pipedFixedMiss = await run(`cat ${test_app_files_mount}/docs/readme.md | grep -F 'unique.*below'`);
+			const pipedFixedMiss = await run(`cat ${test_db_files_mount}/docs/readme.md | grep -F 'unique.*below'`);
 			expect(pipedFixedMiss.metadata.exitCode).toBe(1);
 			expect(pipedFixedMiss.stdout).toBe("");
 
 			// Case-insensitive.
-			const ci = await run(`grep -i ALPHA ${test_app_files_mount}/docs/tutorial.md`);
+			const ci = await run(`grep -i ALPHA ${test_db_files_mount}/docs/tutorial.md`);
 			expect(ci.metadata.exitCode).toBe(0);
 			expect(ci.stdout).toBe("alpha\nALPHA\n");
 
 			// No match → exit 1, no output (real grep semantics).
-			const none = await run(`grep zzz-nope ${test_app_files_mount}/docs/readme.md`);
+			const none = await run(`grep zzz-nope ${test_db_files_mount}/docs/readme.md`);
 			expect(none.metadata.exitCode).toBe(1);
 			expect(none.stdout).toBe("");
 
 			// Multiple files → falls back to guidance (we only handle one file).
 			const multi = await run(
-				`grep token ${test_app_files_mount}/docs/readme.md ${test_app_files_mount}/docs/tutorial.md`,
+				`grep token ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/tutorial.md`,
 			);
 			expect(multi.metadata.exitCode).toBe(2);
 			expect(multi.stdout).toContain("is not supported");
 
-			const unsupportedSingleFileFlag = await run(`grep -o token ${test_app_files_mount}/docs/readme.md`);
+			const unsupportedSingleFileFlag = await run(`grep -o token ${test_db_files_mount}/docs/readme.md`);
 			expect(unsupportedSingleFileFlag.metadata.exitCode).toBe(2);
 			expect(unsupportedSingleFileFlag.stderr).toContain("unsupported option -o");
 			expect(unsupportedSingleFileFlag.stderr).toContain("Supported: grep [-n] [-i] [-F]");
 
 			// -c counts matching lines ("token" is on lines 2 and 3).
-			const counted = await run(`grep -c token ${test_app_files_mount}/docs/readme.md`);
+			const counted = await run(`grep -c token ${test_db_files_mount}/docs/readme.md`);
 			expect(counted.metadata.exitCode).toBe(0);
 			expect(counted.stdout).toBe("2\n");
 
 			// Multiple -e patterns (OR semantics we don't reproduce) → guidance, not a silent
 			// single-pattern match.
-			const multiE = await run(`grep -e token -e other ${test_app_files_mount}/docs/readme.md`);
+			const multiE = await run(`grep -e token -e other ${test_db_files_mount}/docs/readme.md`);
 			expect(multiE.metadata.exitCode).toBe(2);
 
 			// Combined short flags: -in (= -i -n) takes the single-file fast path, case-insensitively.
-			const combined = await run(`grep -in ALPHA ${test_app_files_mount}/docs/tutorial.md`);
+			const combined = await run(`grep -in ALPHA ${test_db_files_mount}/docs/tutorial.md`);
 			expect(combined.metadata.exitCode).toBe(0);
 			expect(combined.stdout).toBe("2:alpha\n3:ALPHA\n");
 
-			const fixedCombined = await run(`grep -Fin alpha ${test_app_files_mount}/docs/tutorial.md`);
+			const fixedCombined = await run(`grep -Fin alpha ${test_db_files_mount}/docs/tutorial.md`);
 			expect(fixedCombined.metadata.exitCode).toBe(0);
 			expect(fixedCombined.stdout).toBe("2:alpha\n3:ALPHA\n");
 
 			// -iv (= -i -v) inverts: only line 1 lacks "token" (case-insensitively).
-			const combinedV = await run(`grep -iv token ${test_app_files_mount}/docs/readme.md`);
+			const combinedV = await run(`grep -iv token ${test_db_files_mount}/docs/readme.md`);
 			expect(combinedV.metadata.exitCode).toBe(0);
 			expect(combinedV.stdout).toBe("# Readme\n");
 
 			// -l prints the file path when it has a match, and exits 1 (no output) when it does not.
-			const listed = await run(`grep -l unique-token ${test_app_files_mount}/docs/readme.md`);
+			const listed = await run(`grep -l unique-token ${test_db_files_mount}/docs/readme.md`);
 			expect(listed.metadata.exitCode).toBe(0);
-			expect(listed.stdout).toBe(`${test_app_files_mount}/docs/readme.md\n`);
-			const listedNone = await run(`grep -l zzz-nope ${test_app_files_mount}/docs/readme.md`);
+			expect(listed.stdout).toBe(`${test_db_files_mount}/docs/readme.md\n`);
+			const listedNone = await run(`grep -l zzz-nope ${test_db_files_mount}/docs/readme.md`);
 			expect(listedNone.metadata.exitCode).toBe(1);
 			expect(listedNone.stdout).toBe("");
 
 			// -B N adds leading context. Without -n, both matching and context lines are raw text.
-			const before = await run(`grep -B 1 ALPHA ${test_app_files_mount}/docs/tutorial.md`);
+			const before = await run(`grep -B 1 ALPHA ${test_db_files_mount}/docs/tutorial.md`);
 			expect(before.metadata.exitCode).toBe(0);
 			expect(before.stdout).toBe("alpha\nALPHA\n");
 
 			// With -n, context lines use "-" and selected lines use ":".
-			const beforeNumbered = await run(`grep -n -B 1 ALPHA ${test_app_files_mount}/docs/tutorial.md`);
+			const beforeNumbered = await run(`grep -n -B 1 ALPHA ${test_db_files_mount}/docs/tutorial.md`);
 			expect(beforeNumbered.metadata.exitCode).toBe(0);
 			expect(beforeNumbered.stdout).toBe("2-alpha\n3:ALPHA\n");
 
 			// -v without context stays native-like: non-contiguous selected lines are printed directly.
-			const invertGap = await run(`grep -v alpha ${test_app_files_mount}/docs/tutorial.md`);
+			const invertGap = await run(`grep -v alpha ${test_db_files_mount}/docs/tutorial.md`);
 			expect(invertGap.metadata.exitCode).toBe(0);
 			expect(invertGap.stdout).toBe("zeta\nALPHA\n");
 
-			const pipedInvertGap = await run(`cat ${test_app_files_mount}/docs/tutorial.md | grep -v alpha`);
+			const pipedInvertGap = await run(`cat ${test_db_files_mount}/docs/tutorial.md | grep -v alpha`);
 			expect(pipedInvertGap.metadata.exitCode).toBe(0);
 			expect(pipedInvertGap.stdout).toBe("zeta\nALPHA\n");
 		});
@@ -3771,28 +3847,26 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			const lineWindow = await run(
-				`grep --start-line 3 --max-lines 1 unique-token ${test_app_files_mount}/docs/readme.md`,
+				`grep --start-line 3 --max-lines 1 unique-token ${test_db_files_mount}/docs/readme.md`,
 			);
 			expect(lineWindow.metadata.exitCode).toBe(0);
 			expect(lineWindow.stdout).toBe("more unique-token below\n");
 
-			const capped = await run(
-				`grep --start-line 1 --max-lines 1 late-window-token ${test_app_files_mount}${latePath}`,
-			);
+			const capped = await run(`grep --start-line 1 --max-lines 1 late-window-token ${test_db_files_mount}${latePath}`);
 			expect(capped.metadata.exitCode).toBe(1);
 			expect(capped.stdout).toBe("");
 			expect(capped.stderr).toContain("line scan cap reached");
 			expect(capped.stderr).toContain(
-				`Next scan: grep --start-line 2 --max-lines 1 late-window-token ${test_app_files_mount}${latePath}`,
+				`Next scan: grep --start-line 2 --max-lines 1 late-window-token ${test_db_files_mount}${latePath}`,
 			);
 
 			const continued = await run(
-				`grep --start-line 2 --max-lines 1 late-window-token ${test_app_files_mount}${latePath}`,
+				`grep --start-line 2 --max-lines 1 late-window-token ${test_db_files_mount}${latePath}`,
 			);
 			expect(continued.metadata.exitCode).toBe(0);
 			expect(continued.stdout).toBe("late-window-token\n");
 
-			const byteCapped = await run(`grep needle-after-long-prefix ${test_app_files_mount}${longPath}`);
+			const byteCapped = await run(`grep needle-after-long-prefix ${test_db_files_mount}${longPath}`);
 			expect(byteCapped.metadata.exitCode).toBe(1);
 			expect(byteCapped.stdout).toBe("");
 			expect(byteCapped.stderr).toContain("byte scan cap reached");
@@ -3800,10 +3874,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				/Next scan: (grep --start-index 0 --max-chars \d+ needle-after-long-prefix [^\n]+)/u,
 			)?.[1];
 			expect(byteContinuationCommand?.startsWith("grep --start-index 0 --max-chars ")).toBe(true);
-			expect(byteContinuationCommand).toContain(` needle-after-long-prefix ${test_app_files_mount}${longPath}`);
+			expect(byteContinuationCommand).toContain(` needle-after-long-prefix ${test_db_files_mount}${longPath}`);
 
 			const slice = await run(
-				`grep --start-index ${longPrefix.length - 8} --max-chars 128 needle-after-long-prefix ${test_app_files_mount}${longPath}`,
+				`grep --start-index ${longPrefix.length - 8} --max-chars 128 needle-after-long-prefix ${test_db_files_mount}${longPath}`,
 			);
 			expect(slice.metadata.exitCode).toBe(0);
 			expect(slice.stdout).toBe(`xxxxxxxxneedle-after-long-prefix\n`);
@@ -3813,9 +3887,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("uses regex for single-file app grep patterns that look like regex", async () => {
 			const { run } = await create_bash_runner();
 
-			const anchored = await run(`grep '^# Readme' ${test_app_files_mount}/docs/readme.md`);
-			const wildcard = await run(`grep 'unique.*token' ${test_app_files_mount}/docs/readme.md`);
-			const fixed = await run(`grep -F '^# Readme' ${test_app_files_mount}/docs/readme.md`);
+			const anchored = await run(`grep '^# Readme' ${test_db_files_mount}/docs/readme.md`);
+			const wildcard = await run(`grep 'unique.*token' ${test_db_files_mount}/docs/readme.md`);
+			const fixed = await run(`grep -F '^# Readme' ${test_db_files_mount}/docs/readme.md`);
 
 			expect(anchored.metadata.exitCode).toBe(0);
 			expect(anchored.stdout).toBe("# Readme\n");
@@ -3838,7 +3912,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				],
 			});
 
-			const capped = await run(`grep cap-token ${test_app_files_mount}${path}`);
+			const capped = await run(`grep cap-token ${test_db_files_mount}${path}`);
 
 			expect(capped.metadata.exitCode).toBe(0);
 			expect(capped.stdout.split("\n").filter(Boolean)).toHaveLength(100);
@@ -3857,7 +3931,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					},
 				],
 			});
-			const shellPath = `${test_app_files_mount}${path}`;
+			const shellPath = `${test_db_files_mount}${path}`;
 
 			const match = await run(`grep match-token ${shellPath}`);
 			const noMatch = await run(`grep missing-token ${shellPath}`);
@@ -3872,25 +3946,25 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("uses prefix find and renders app tree pages", async () => {
 			const { run } = await create_bash_runner();
-			const scopedRunner = await create_bash_runner({ initialCwd: `${test_app_files_mount}/docs` });
+			const scopedRunner = await create_bash_runner({ initialCwd: `${test_db_files_mount}/docs` });
 
 			const prefixResult = await run("find --prefix /docs --limit 20 -type f");
 			const relativePrefixResult = await scopedRunner.run("find --prefix nested --limit 1");
-			const treeResult = await run(`tree ${test_app_files_mount}/docs --limit 2`);
+			const treeResult = await run(`tree ${test_db_files_mount}/docs --limit 2`);
 
 			expect(prefixResult.metadata.exitCode).toBe(0);
-			expect(prefixResult.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
-			expect(prefixResult.stdout).toContain(`${test_app_files_mount}/docs/tutorial.md`);
+			expect(prefixResult.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
+			expect(prefixResult.stdout).toContain(`${test_db_files_mount}/docs/tutorial.md`);
 			expect(relativePrefixResult.metadata.exitCode).toBe(0);
 			expect(relativePrefixResult.stdout).toMatch(
-				new RegExp(`Next page: find --prefix ${test_app_files_mount}/docs/nested --limit 1 --cursor \\S+`, "u"),
+				new RegExp(`Next page: find --prefix ${test_db_files_mount}/docs/nested --limit 1 --cursor \\S+`, "u"),
 			);
 			expect(treeResult.metadata.exitCode).toBe(0);
-			expect(treeResult.stdout).toContain(test_app_files_mount + "/docs");
+			expect(treeResult.stdout).toContain(test_db_files_mount + "/docs");
 			expect(treeResult.stdout).toContain("|-- nested/");
 			expect(treeResult.stdout).toContain("|   |-- deep.md");
 			expect(treeResult.stdout).toMatch(
-				new RegExp(`Next page: tree ${test_app_files_mount}/docs --limit 2 --cursor \\S+`, "u"),
+				new RegExp(`Next page: tree ${test_db_files_mount}/docs --limit 2 --cursor \\S+`, "u"),
 			);
 		});
 
@@ -3903,7 +3977,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				],
 			});
 
-			const firstPage = await run(`tree ${test_app_files_mount}/tree-stop --limit 1`);
+			const firstPage = await run(`tree ${test_db_files_mount}/tree-stop --limit 1`);
 			const continuation = firstPage.stdout.match(/Next page: (tree .+)/u)?.[1];
 			if (continuation == null) {
 				throw new Error("expected a tree continuation in the first page stdout");
@@ -3919,10 +3993,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("renders exact file tree targets without subtree pagination", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
-			const result = await run(`tree ${test_app_files_mount}/docs/readme.md --limit 2`);
+			const result = await run(`tree ${test_db_files_mount}/docs/readme.md --limit 2`);
 
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout.trim()).toBe(`${test_app_files_mount}/docs/readme.md`);
+			expect(result.stdout.trim()).toBe(`${test_db_files_mount}/docs/readme.md`);
 			expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:list_subtree")).toBe(false);
 		});
 
@@ -3932,9 +4006,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const nativeJustBashResult = await run(
 				"mkdir -p /tmp/tree-tmp && printf hi > /tmp/tree-tmp/a.md && tree -P '*.md' /tmp/tree-tmp",
 			);
-			const appResult = await run(`tree -P '*.md' ${test_app_files_mount}/docs`);
+			const appResult = await run(`tree -P '*.md' ${test_db_files_mount}/docs`);
 			const nativeJustBashNextPage = await run("tree --next-page /tmp");
-			const appNextPage = await run(`tree --next-page ${test_app_files_mount}/docs`);
+			const appNextPage = await run(`tree --next-page ${test_db_files_mount}/docs`);
 
 			expect(nativeJustBashResult.stderr).not.toContain("/home/cloud-usr/w");
 			expect(appResult.metadata.exitCode).toBe(2);
@@ -3954,32 +4028,32 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const result = await run(
 				[
-					`head -n 1 ${test_app_files_mount}/docs/readme.md`,
-					`tail -n +2 ${test_app_files_mount}/docs/readme.md`,
-					`wc -c ${test_app_files_mount}/docs/readme.md`,
-					`stat -c "%F %n" ${test_app_files_mount}/docs/readme.md`,
+					`head -n 1 ${test_db_files_mount}/docs/readme.md`,
+					`tail -n +2 ${test_db_files_mount}/docs/readme.md`,
+					`wc -c ${test_db_files_mount}/docs/readme.md`,
+					`stat -c "%F %n" ${test_db_files_mount}/docs/readme.md`,
 				].join(" && "),
 			);
-			const unreadableHead = await run(`head ${test_app_files_mount}/source.pdf`);
-			const unreadableTail = await run(`tail ${test_app_files_mount}/source.pdf`);
-			const unreadableWc = await run(`wc ${test_app_files_mount}/source.pdf`);
+			const unreadableHead = await run(`head ${test_db_files_mount}/source.pdf`);
+			const unreadableTail = await run(`tail ${test_db_files_mount}/source.pdf`);
+			const unreadableWc = await run(`wc ${test_db_files_mount}/source.pdf`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("# Readme");
 			expect(result.stdout).toContain("unique-token");
-			expect(result.stdout).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(result.stdout).toContain(`${test_db_files_mount}/docs/readme.md`);
 			expect(result.stdout).toContain("regular file");
 			for (const unreadable of [unreadableHead, unreadableTail, unreadableWc]) {
 				expect(unreadable.metadata.exitCode).toBe(1);
 				expect(unreadable.stdout).toBe("");
 				expect(unreadable.stderr).toContain("Markdown and plain text files only");
-				expect(unreadable.stderr).toContain(`${test_app_files_mount}/source.pdf.md`);
+				expect(unreadable.stderr).toContain(`${test_db_files_mount}/source.pdf.md`);
 			}
 		});
 
 		test("supports stat long format options and dash-leading operands after --", async () => {
 			const { run } = await create_bash_runner();
-			const readmePath = `${test_app_files_mount}/docs/readme.md`;
+			const readmePath = `${test_db_files_mount}/docs/readme.md`;
 
 			const shortFormat = await run(`stat -c "%F %n" ${readmePath}`);
 			const longFormat = await run(`stat --format "%F %n" ${readmePath}`);
@@ -4001,7 +4075,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("warns about unsupported app stat format tokens without changing stdout", async () => {
 			const { run } = await create_bash_runner();
-			const readmePath = `${test_app_files_mount}/docs/readme.md`;
+			const readmePath = `${test_db_files_mount}/docs/readme.md`;
 
 			const appResult = await run(`stat -c "%i %b %s %%" ${readmePath}`);
 			const tmpResult = await run('printf hi > /tmp/stat-format.txt && stat -c "%i %b %s %%" /tmp/stat-format.txt');
@@ -4019,7 +4093,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run } = await create_bash_runner({
 				extraFiles: [{ path: "/docs/%s-%F.md", content: "token name\n" }],
 			});
-			const tokenPath = `${test_app_files_mount}/docs/%s-%F.md`;
+			const tokenPath = `${test_db_files_mount}/docs/%s-%F.md`;
 
 			const result = await run(`stat -c "%n" '${tokenPath}'`);
 
@@ -4031,7 +4105,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const { run } = await create_bash_runner();
 
 			const tmpGlob = await run("printf hi > '/tmp/star*.txt' && stat '/tmp/star*.txt'");
-			const appGlob = await run(`stat '${test_app_files_mount}/docs/*.md'`);
+			const appGlob = await run(`stat '${test_db_files_mount}/docs/*.md'`);
 
 			expect(tmpGlob.metadata.exitCode).toBe(0);
 			expect(tmpGlob.stdout).toContain("File: /tmp/star*.txt");
@@ -4044,7 +4118,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("renders app stat metadata without fake block counts", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`stat ${test_app_files_mount}/docs/readme.md`);
+			const result = await run(`stat ${test_db_files_mount}/docs/readme.md`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("  Size: ");
@@ -4054,7 +4128,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("stat reports non-editable asset size through the shared size helper", async () => {
 			const { run, runQuery } = await create_bash_runner();
-			const sourcePath = `${test_app_files_mount}/source.pdf`;
+			const sourcePath = `${test_db_files_mount}/source.pdf`;
 			runQuery.mockClear();
 
 			const result = await run(`stat -c %s ${sourcePath}`);
@@ -4096,7 +4170,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			if (pendingUpdate?.size == null) {
 				throw new Error("expected pending update size to be set for /draft-stat.md");
 			}
-			const draftPath = `${test_app_files_mount}/draft-stat.md`;
+			const draftPath = `${test_db_files_mount}/draft-stat.md`;
 			runner.runQuery.mockClear();
 
 			const result = await runner.run(`stat -c %s ${draftPath}`);
@@ -4112,8 +4186,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const shortFormat = await run("stat -c");
 			const longFormat = await run("stat --format");
 
-			expect(shortFormat.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
-			expect(longFormat.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(shortFormat.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
+			expect(longFormat.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(shortFormat.stderr).toContain("stat: -c requires a value");
 			expect(longFormat.stderr).toContain("stat: --format requires a value");
 			expect(shortFormat.stderr).toContain("Usage: stat [-c FORMAT] [--] FILE...");
@@ -4125,11 +4199,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const overCapFiles = Array.from(
 				{ length: bash_READER_FILE_OPERAND_MAX + 1 },
-				(_, index) => `${test_app_files_mount}/doc-${index}.md`,
+				(_, index) => `${test_db_files_mount}/doc-${index}.md`,
 			).join(" ");
 			const atCapFiles = Array.from(
 				{ length: bash_READER_FILE_OPERAND_MAX },
-				(_, index) => `${test_app_files_mount}/doc-${index}.md`,
+				(_, index) => `${test_db_files_mount}/doc-${index}.md`,
 			).join(" ");
 
 			// The over-cap reads must short-circuit before any content fetch, so assert no
@@ -4137,7 +4211,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const overCap = await run(`cat ${overCapFiles}`);
 			expect(overCap.metadata.exitCode).toBe(2);
 			expect(overCap.stderr).toContain(
-				`cat: app file reads are limited to ${bash_READER_FILE_OPERAND_MAX} files per command`,
+				`cat: db-backed file reads are limited to ${bash_READER_FILE_OPERAND_MAX} files per command`,
 			);
 			expect(overCap.stderr).toContain(`you requested ${bash_READER_FILE_OPERAND_MAX + 1}`);
 			expect(runAction).not.toHaveBeenCalled();
@@ -4148,24 +4222,24 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const atCap = await run(`cat ${atCapFiles}`);
 
 			expect(headOverCap.metadata.exitCode).toBe(2);
-			expect(headOverCap.stderr).toContain(`head: app file reads are limited to ${bash_READER_FILE_OPERAND_MAX}`);
+			expect(headOverCap.stderr).toContain(`head: db-backed file reads are limited to ${bash_READER_FILE_OPERAND_MAX}`);
 			expect(wcOverCap.metadata.exitCode).toBe(2);
-			expect(wcOverCap.stderr).toContain(`wc: app file reads are limited to ${bash_READER_FILE_OPERAND_MAX}`);
+			expect(wcOverCap.stderr).toContain(`wc: db-backed file reads are limited to ${bash_READER_FILE_OPERAND_MAX}`);
 			expect(statOverCap.metadata.exitCode).toBe(2);
-			expect(statOverCap.stderr).toContain(`stat: app file reads are limited to ${bash_READER_FILE_OPERAND_MAX}`);
-			expect(atCap.stderr).not.toContain("app file reads are limited");
+			expect(statOverCap.stderr).toContain(`stat: db-backed file reads are limited to ${bash_READER_FILE_OPERAND_MAX}`);
+			expect(atCap.stderr).not.toContain("db-backed file reads are limited");
 		});
 
-		test("counts only app-file operands toward the reader cap, not /tmp scratch", async () => {
+		test("counts only db-file operands toward the reader cap, not /tmp scratch", async () => {
 			const { run } = await create_bash_runner();
 
 			const tmpFiles = Array.from({ length: 20 }, (_, index) => `/tmp/scratch-${index}.txt`).join(" ");
-			const appFiles = Array.from(
+			const dbFileOperands = Array.from(
 				{ length: bash_READER_FILE_OPERAND_MAX + 1 },
-				(_, index) => `${test_app_files_mount}/doc-${index}.md`,
+				(_, index) => `${test_db_files_mount}/doc-${index}.md`,
 			).join(" ");
 
-			const result = await run(`cat ${tmpFiles} ${appFiles}`);
+			const result = await run(`cat ${tmpFiles} ${dbFileOperands}`);
 
 			expect(result.metadata.exitCode).toBe(2);
 			expect(result.stderr).toContain(`you requested ${bash_READER_FILE_OPERAND_MAX + 1}`);
@@ -4173,7 +4247,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("pages large files smoothly: cat/head/sed/tail return bounded pages with hints, wc reports counts", async () => {
 			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
-			const bigPath = `${test_app_files_mount}/big.md`;
+			const bigPath = `${test_db_files_mount}/big.md`;
 
 			const catResult = await run(`cat ${bigPath}`);
 			const wcResult = await run(`wc -l ${bigPath}`);
@@ -4181,7 +4255,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const sedResult = await run(`sed -n '4,6p' ${bigPath}`);
 			const tailResult = await run(`tail -n 3 ${bigPath}`);
 			const headOverCap = await run(`head -n 9999 ${bigPath}`);
-			const smallStillWorks = await run(`cat ${test_app_files_mount}/docs/readme.md`);
+			const smallStillWorks = await run(`cat ${test_db_files_mount}/docs/readme.md`);
 
 			// cat no longer refuses: it returns a bounded first page on stdout, with the advisory
 			// on stderr so it never contaminates a pipe.
@@ -4218,7 +4292,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("large cat uses query-only chunk line range reads", async () => {
 			const { run, runQuery, runAction } = await create_bash_runner({ extraFiles: [big_md_file] });
-			const bigPath = `${test_app_files_mount}/big.md`;
+			const bigPath = `${test_db_files_mount}/big.md`;
 
 			const result = await run(`cat ${bigPath}`);
 
@@ -4233,9 +4307,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 		});
 
-		test("prints absolute app file node paths in large-file reader continuations", async () => {
-			const { run } = await create_bash_runner({ initialCwd: test_app_files_mount, extraFiles: [big_md_file] });
-			const bigPath = `${test_app_files_mount}/big.md`;
+		test("prints absolute db-files paths in large-file reader continuations", async () => {
+			const { run } = await create_bash_runner({ initialCwd: test_db_files_mount, extraFiles: [big_md_file] });
+			const bigPath = `${test_db_files_mount}/big.md`;
 
 			const catResult = await run("cat big.md");
 			const headResult = await run("head -n 3 big.md");
@@ -4266,7 +4340,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					},
 				],
 			});
-			const bigPath = `${test_app_files_mount}/big.md`;
+			const bigPath = `${test_db_files_mount}/big.md`;
 
 			const headResult = await run(`head -n 3 ${bigPath}`);
 			const tailForwardResult = await run(`tail -n +5 ${bigPath}`);
@@ -4281,7 +4355,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("supports obsolete head and tail line-count flags on large files", async () => {
 			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
-			const bigPath = `${test_app_files_mount}/big.md`;
+			const bigPath = `${test_db_files_mount}/big.md`;
 
 			const headResult = await run(`head -5 ${bigPath}`);
 			const tailResult = await run(`tail -3 ${bigPath}`);
@@ -4296,20 +4370,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("rejects missing and invalid head and tail line counts", async () => {
 			const { run } = await create_bash_runner();
-			const readmePath = `${test_app_files_mount}/docs/readme.md`;
+			const readmePath = `${test_db_files_mount}/docs/readme.md`;
 
 			const missingHead = await run("head -n");
 			const invalidHead = await run(`head -n nope ${readmePath}`);
 			const missingTail = await run("tail --lines");
 			const invalidTail = await run(`tail --lines=nope ${readmePath}`);
 
-			expect(missingHead.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingHead.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(missingHead.stderr).toContain("head: -n requires a value");
-			expect(invalidHead.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(invalidHead.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(invalidHead.stderr).toContain("head: -n must be an integer line count");
-			expect(missingTail.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingTail.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(missingTail.stderr).toContain("tail: --lines requires a value");
-			expect(invalidTail.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(invalidTail.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(invalidTail.stderr).toContain("tail: --lines must be an integer line count");
 			for (const result of [missingHead, invalidHead, missingTail, invalidTail]) {
 				expect(result.stderr).toContain("Usage:");
@@ -4318,7 +4392,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("supports head tail and wc end-of-options markers for app operands", async () => {
 			const { run } = await create_bash_runner({
-				initialCwd: test_app_files_mount,
+				initialCwd: test_db_files_mount,
 				extraFiles: [{ path: "/-reader.md", content: "dash reader\n" }],
 			});
 
@@ -4336,7 +4410,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("rejects byte-range reads for oversized app files with explicit guidance", async () => {
 			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
-			const bigPath = `${test_app_files_mount}/big.md`;
+			const bigPath = `${test_db_files_mount}/big.md`;
 
 			const headResult = await run(`head -c 100 ${bigPath}`);
 			const tailResult = await run(`tail -c 100 ${bigPath}`);
@@ -4351,7 +4425,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("does not drop non-app operands when a mixed reader command includes a large app file", async () => {
 			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
-			const bigPath = `${test_app_files_mount}/big.md`;
+			const bigPath = `${test_db_files_mount}/big.md`;
 
 			await run("printf tmp > /tmp/reader-mixed.txt");
 			const result = await run(`head -n 3 ${bigPath} /tmp/reader-mixed.txt`);
@@ -4367,10 +4441,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				extraFiles: [{ path: "/wc/single.md", content: "on two\nthree\nfour x\n" }],
 			});
 
-			const result = await run(`wc ${test_app_files_mount}/wc/single.md`);
+			const result = await run(`wc ${test_db_files_mount}/wc/single.md`);
 
 			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toContain(`3 5 20 ${test_app_files_mount}/wc/single.md`);
+			expect(result.stdout).toContain(`3 5 20 ${test_db_files_mount}/wc/single.md`);
 			const statsCalls = runAction.mock.calls.filter((call) => {
 				const actionArgs = call[1];
 				return (
@@ -4388,12 +4462,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				],
 			});
 
-			const result = await run(`wc ${test_app_files_mount}/wc/a.md ${test_app_files_mount}/wc/b.md`);
+			const result = await run(`wc ${test_db_files_mount}/wc/a.md ${test_db_files_mount}/wc/b.md`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			// Default triad (lines words bytes) per file, then a summed total line.
-			expect(result.stdout).toContain(`3 5 20 ${test_app_files_mount}/wc/a.md`);
-			expect(result.stdout).toContain(`2 4 12 ${test_app_files_mount}/wc/b.md`);
+			expect(result.stdout).toContain(`3 5 20 ${test_db_files_mount}/wc/a.md`);
+			expect(result.stdout).toContain(`2 4 12 ${test_db_files_mount}/wc/b.md`);
 			expect(result.stdout).toContain("5 9 32 total");
 			// Each file is counted via the bounded stats action — never a full content read.
 			const statsCalls = runAction.mock.calls.filter((call) => {
@@ -4408,22 +4482,22 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(statsCalls).toHaveLength(2);
 
 			// -l restricts the columns to the line count; the total still sums.
-			const linesOnly = await run(`wc -l ${test_app_files_mount}/wc/a.md ${test_app_files_mount}/wc/b.md`);
+			const linesOnly = await run(`wc -l ${test_db_files_mount}/wc/a.md ${test_db_files_mount}/wc/b.md`);
 			expect(linesOnly.metadata.exitCode).toBe(0);
-			expect(linesOnly.stdout).toContain(`3 ${test_app_files_mount}/wc/a.md`);
-			expect(linesOnly.stdout).toContain(`2 ${test_app_files_mount}/wc/b.md`);
+			expect(linesOnly.stdout).toContain(`3 ${test_db_files_mount}/wc/a.md`);
+			expect(linesOnly.stdout).toContain(`2 ${test_db_files_mount}/wc/b.md`);
 			expect(linesOnly.stdout).toContain("5 total");
 
-			const combinedLinesWords = await run(`wc -lw ${test_app_files_mount}/wc/a.md ${test_app_files_mount}/wc/b.md`);
+			const combinedLinesWords = await run(`wc -lw ${test_db_files_mount}/wc/a.md ${test_db_files_mount}/wc/b.md`);
 			expect(combinedLinesWords.metadata.exitCode).toBe(0);
-			expect(combinedLinesWords.stdout).toContain(`3 5 ${test_app_files_mount}/wc/a.md`);
-			expect(combinedLinesWords.stdout).toContain(`2 4 ${test_app_files_mount}/wc/b.md`);
+			expect(combinedLinesWords.stdout).toContain(`3 5 ${test_db_files_mount}/wc/a.md`);
+			expect(combinedLinesWords.stdout).toContain(`2 4 ${test_db_files_mount}/wc/b.md`);
 			expect(combinedLinesWords.stdout).toContain("5 9 total");
 
-			const combinedCharsBytes = await run(`wc -mc ${test_app_files_mount}/wc/a.md ${test_app_files_mount}/wc/b.md`);
+			const combinedCharsBytes = await run(`wc -mc ${test_db_files_mount}/wc/a.md ${test_db_files_mount}/wc/b.md`);
 			expect(combinedCharsBytes.metadata.exitCode).toBe(0);
-			expect(combinedCharsBytes.stdout).toContain(`20 20 ${test_app_files_mount}/wc/a.md`);
-			expect(combinedCharsBytes.stdout).toContain(`12 12 ${test_app_files_mount}/wc/b.md`);
+			expect(combinedCharsBytes.stdout).toContain(`20 20 ${test_db_files_mount}/wc/a.md`);
+			expect(combinedCharsBytes.stdout).toContain(`12 12 ${test_db_files_mount}/wc/b.md`);
 			expect(combinedCharsBytes.stdout).toContain("32 32 total");
 		});
 
@@ -4440,12 +4514,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				],
 			});
 
-			const result = await run(`wc -l ${test_app_files_mount}/wc/windowed.md ${test_app_files_mount}/wc/missing.md`);
+			const result = await run(`wc -l ${test_db_files_mount}/wc/windowed.md ${test_db_files_mount}/wc/missing.md`);
 
 			// A missing operand reports an error and exit 1, but the readable file still counts.
 			expect(result.metadata.exitCode).toBe(1);
-			expect(result.stderr).toContain(`wc: ${test_app_files_mount}/wc/missing.md: No such file or directory`);
-			expect(result.stdout).toContain(`40 ${test_app_files_mount}/wc/windowed.md`);
+			expect(result.stderr).toContain(`wc: ${test_db_files_mount}/wc/missing.md: No such file or directory`);
+			expect(result.stdout).toContain(`40 ${test_db_files_mount}/wc/windowed.md`);
 			expect(result.stdout).toContain("40 total");
 			// The windowed file makes line/word/char counts lower bounds (bytes stay exact).
 			expect(result.stderr).toContain("lower bounds");
@@ -4456,19 +4530,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				extraFiles: [{ path: "/wc/a.md", content: "on two\nthree\nfour x\n" }],
 			});
 
-			const result = await run(`wc ${test_app_files_mount}/wc/a.md ${test_app_files_mount}/source.pdf`);
+			const result = await run(`wc ${test_db_files_mount}/wc/a.md ${test_db_files_mount}/source.pdf`);
 
 			expect(result.metadata.exitCode).toBe(1);
-			expect(result.stdout).toContain(`3 5 20 ${test_app_files_mount}/wc/a.md`);
+			expect(result.stdout).toContain(`3 5 20 ${test_db_files_mount}/wc/a.md`);
 			expect(result.stdout).toContain("3 5 20 total");
 			expect(result.stderr).toContain("Markdown and plain text files only");
-			expect(result.stderr).toContain(`${test_app_files_mount}/source.pdf.md`);
-			expect(result.stderr).toContain(`stat -c %s ${test_app_files_mount}/source.pdf`);
+			expect(result.stderr).toContain(`${test_db_files_mount}/source.pdf.md`);
+			expect(result.stderr).toContain(`stat -c %s ${test_db_files_mount}/source.pdf`);
 		});
 
 		test("tail -n +K reads forward from line K on a large file (not the trailing window)", async () => {
 			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
-			const bigPath = `${test_app_files_mount}/big.md`;
+			const bigPath = `${test_db_files_mount}/big.md`;
 
 			const result = await run(`tail -n +5 ${bigPath}`);
 
@@ -4484,8 +4558,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("cat refuses a multi-file concatenation when a member is too large to inline", async () => {
 			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
-			const bigPath = `${test_app_files_mount}/big.md`;
-			const smallPath = `${test_app_files_mount}/docs/readme.md`;
+			const bigPath = `${test_db_files_mount}/big.md`;
+			const smallPath = `${test_db_files_mount}/docs/readme.md`;
 
 			const result = await run(`cat ${bigPath} ${smallPath}`);
 
@@ -4497,7 +4571,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("piping a large cat keeps the advisory out of the pipe", async () => {
 			const { run } = await create_bash_runner({ extraFiles: [big_md_file] });
-			const bigPath = `${test_app_files_mount}/big.md`;
+			const bigPath = `${test_db_files_mount}/big.md`;
 
 			const result = await run(`cat ${bigPath} | cat`);
 
@@ -4516,7 +4590,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					},
 				],
 			});
-			const bigPath = `${test_app_files_mount}/chunk-unavailable.md`;
+			const bigPath = `${test_db_files_mount}/chunk-unavailable.md`;
 
 			const result = await run(`cat ${bigPath} | grep materialized`);
 
@@ -4564,7 +4638,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				throw new Error("expected pending update size to be set for /draft.md");
 			}
 			expect(pendingUpdate.size).toBeGreaterThan(bash_READ_INLINE_MAX_BYTES);
-			const draftPath = `${test_app_files_mount}/draft.md`;
+			const draftPath = `${test_db_files_mount}/draft.md`;
 			runner.runQuery.mockClear();
 			runner.runAction.mockClear();
 
@@ -4588,15 +4662,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("sed app line-range fast path supports -- and unreadable source advisories", async () => {
 			const { run } = await create_bash_runner();
-			const readmePath = `${test_app_files_mount}/docs/readme.md`;
+			const readmePath = `${test_db_files_mount}/docs/readme.md`;
 
 			const appResult = await run(`sed -n -- '1p' ${readmePath}`);
 			const tmpResult = await run("printf 'one\\ntwo\\n' > /tmp/sed.txt && sed -n '2p' /tmp/sed.txt");
-			const unreadableResult = await run(`sed -n '1p' ${test_app_files_mount}/source.pdf`);
+			const unreadableResult = await run(`sed -n '1p' ${test_db_files_mount}/source.pdf`);
 			const zeroResult = await run(`sed -n '0p' ${readmePath}`);
 			const negativeResult = await run(`sed -n '-1p' ${readmePath}`);
-			const folderResult = await run(`sed -n '1p' ${test_app_files_mount}/docs`);
-			const rootResult = await run(`sed -n '1p' ${test_app_files_mount}`);
+			const folderResult = await run(`sed -n '1p' ${test_db_files_mount}/docs`);
+			const rootResult = await run(`sed -n '1p' ${test_db_files_mount}`);
 
 			expect(appResult.metadata.exitCode).toBe(0);
 			expect(appResult.stdout).toBe("# Readme\n");
@@ -4604,10 +4678,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(tmpResult.stdout).toBe("two\n");
 			expect(unreadableResult.metadata.exitCode).toBe(1);
 			expect(unreadableResult.stderr).toContain("Markdown and plain text files only");
-			expect(unreadableResult.stderr).toContain(`${test_app_files_mount}/source.pdf.md`);
+			expect(unreadableResult.stderr).toContain(`${test_db_files_mount}/source.pdf.md`);
 			expect(unreadableResult.stderr).not.toContain("No such file or directory");
 			for (const result of [zeroResult, negativeResult]) {
-				expect(result.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+				expect(result.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 				expect(result.stderr).toContain("invalid line range");
 			}
 			for (const result of [folderResult, rootResult]) {
@@ -4623,15 +4697,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const pipeline = await run(
 				[
-					`cat ${test_app_files_mount}/docs/dupes.md | sort | uniq -c`,
-					`cat ${test_app_files_mount}/docs/nested/deep.md | cut -d ':' -f 2`,
-					`cat ${test_app_files_mount}/docs/readme.md | sed 's/Readme/Guide/'`,
-					`cat ${test_app_files_mount}/docs/readme.md | awk '{print $1}'`,
+					`cat ${test_db_files_mount}/docs/dupes.md | sort | uniq -c`,
+					`cat ${test_db_files_mount}/docs/nested/deep.md | cut -d ':' -f 2`,
+					`cat ${test_db_files_mount}/docs/readme.md | sed 's/Readme/Guide/'`,
+					`cat ${test_db_files_mount}/docs/readme.md | awk '{print $1}'`,
 				].join(" && "),
 			);
-			const directSort = await run(`sort ${test_app_files_mount}/docs/tutorial.md`);
-			const directSed = await run(`sed 's/a/b/' ${test_app_files_mount}/docs/tutorial.md`);
-			const directAwk = await run(`awk '{print $1}' ${test_app_files_mount}/docs/tutorial.md`);
+			const directSort = await run(`sort ${test_db_files_mount}/docs/tutorial.md`);
+			const directSed = await run(`sed 's/a/b/' ${test_db_files_mount}/docs/tutorial.md`);
+			const directAwk = await run(`awk '{print $1}' ${test_db_files_mount}/docs/tutorial.md`);
 
 			expect(pipeline.metadata.exitCode).toBe(0);
 			expect(pipeline.stdout).toContain("2 alpha");
@@ -4639,13 +4713,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(pipeline.stdout).toContain("# Guide");
 			expect(pipeline.stdout).toContain("#");
 			expect(directSort.metadata.exitCode).not.toBe(0);
-			expect(directSort.stderr).toContain("Convex-backed");
+			expect(directSort.stderr).toContain("db-backed");
 			expect(directSort.stderr).toContain("pipe it through cat");
 			expect(directSed.metadata.exitCode).not.toBe(0);
-			expect(directSed.stderr).toContain("Convex-backed");
+			expect(directSed.stderr).toContain("db-backed");
 			expect(directSed.stderr).toContain("pipe it through cat");
 			expect(directAwk.metadata.exitCode).not.toBe(0);
-			expect(directAwk.stderr).toContain("Convex-backed");
+			expect(directAwk.stderr).toContain("db-backed");
 			expect(directAwk.stderr).toContain("pipe it through cat");
 		});
 
@@ -4654,7 +4728,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			// The mount path appears inside the sed SCRIPT, not as a file operand; piping via cat
 			// must run, not be rejected by an over-broad substring guard.
-			const result = await run(`cat ${test_app_files_mount}/docs/readme.md | sed 's|${test_app_files_mount}|X|'`);
+			const result = await run(`cat ${test_db_files_mount}/docs/readme.md | sed 's|${test_db_files_mount}|X|'`);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("# Readme");
@@ -4664,41 +4738,41 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("rejects app writes and prevents mixed /tmp partial side effects", async () => {
 			const { run } = await create_bash_runner({
-				initialCwd: test_app_files_mount,
+				initialCwd: test_db_files_mount,
 				extraFiles: [
 					{ path: "/-delete.md", content: "dash delete\n" },
 					{ path: "/-tee.md", content: "dash tee\n" },
 				],
 			});
 
-			const touchResult = await run(`touch ${test_app_files_mount}/docs/readme.md`);
+			const touchResult = await run(`touch ${test_db_files_mount}/docs/readme.md`);
 			const touchDashResult = await run("touch -- -new.md");
-			const touchDateResult = await run(`touch --date=@0 ${test_app_files_mount}/docs/readme.md`);
-			const touchTimestampResult = await run(`touch -t 202001010000 ${test_app_files_mount}/docs/readme.md`);
-			const touchReferenceResult = await run(`touch -r ${test_app_files_mount}/docs/readme.md /tmp/from-ref`);
-			const rmResult = await run(`rm -f ${test_app_files_mount}/docs/readme.md`);
-			const rmFolderResult = await run(`rm -rf ${test_app_files_mount}/docs`);
+			const touchDateResult = await run(`touch --date=@0 ${test_db_files_mount}/docs/readme.md`);
+			const touchTimestampResult = await run(`touch -t 202001010000 ${test_db_files_mount}/docs/readme.md`);
+			const touchReferenceResult = await run(`touch -r ${test_db_files_mount}/docs/readme.md /tmp/from-ref`);
+			const rmResult = await run(`rm -f ${test_db_files_mount}/docs/readme.md`);
+			const rmFolderResult = await run(`rm -rf ${test_db_files_mount}/docs`);
 			const rmDashResult = await run("rm -- -delete.md");
 			const cpAppDestResult = await run("printf copy > /tmp/copy-src.txt; cp /tmp/copy-src.txt -- -copy-dest.md");
 			const cpAppFolderDestResult = await run(
-				`printf copy > /tmp/native-output.md; cp /tmp/native-output.md ${test_app_files_mount}/docs`,
+				`printf copy > /tmp/native-output.md; cp /tmp/native-output.md ${test_db_files_mount}/docs`,
 			);
-			const mvResult = await run(`mv ${test_app_files_mount}/docs/readme.md /tmp/moved.md; cat /tmp/moved.md`);
+			const mvResult = await run(`mv ${test_db_files_mount}/docs/readme.md /tmp/moved.md; cat /tmp/moved.md`);
 			const mvAppDestResult = await run("printf move > /tmp/move-src.txt; mv /tmp/move-src.txt -- -move-dest.md");
 			const mvAppDestSource = await run("cat /tmp/move-src.txt");
-			const mvAppToAppResult = await run(`mv ${test_app_files_mount}/docs/readme.md renamed.md`);
-			const mvGlobResult = await run(`mv '${test_app_files_mount}/docs/*.md' /tmp/moved.md`);
+			const mvAppToAppResult = await run(`mv ${test_db_files_mount}/docs/readme.md renamed.md`);
+			const mvGlobResult = await run(`mv '${test_db_files_mount}/docs/*.md' /tmp/moved.md`);
 			const mvDashResult = await run("mv -- -delete.md /tmp/moved-dash.md");
 			const teeResult = await run(
-				`printf hi | tee /tmp/out.txt ${test_app_files_mount}/docs/readme.md; cat /tmp/out.txt`,
+				`printf hi | tee /tmp/out.txt ${test_db_files_mount}/docs/readme.md; cat /tmp/out.txt`,
 			);
 			const teeAppendResult = await run(
-				`printf before > /tmp/appended.txt; printf hi | tee -a /tmp/appended.txt ${test_app_files_mount}/docs/readme.md`,
+				`printf before > /tmp/appended.txt; printf hi | tee -a /tmp/appended.txt ${test_db_files_mount}/docs/readme.md`,
 			);
 			const teeAppendRead = await run("cat /tmp/appended.txt");
 			const teeDashResult = await run("printf hi | tee -- -tee.md");
-			const teeNoStdinResult = await run(`tee ${test_app_files_mount}/docs/readme.md`);
-			const redirectResult = await run(`printf hi > ${test_app_files_mount}/docs/redirect.md`);
+			const teeNoStdinResult = await run(`tee ${test_db_files_mount}/docs/readme.md`);
+			const redirectResult = await run(`printf hi > ${test_db_files_mount}/docs/redirect.md`);
 
 			expect(touchResult.metadata.exitCode).not.toBe(0);
 			expect(touchResult.stderr).toContain("write_file");
@@ -4740,7 +4814,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(mvAppToAppResult.stderr).toContain("cannot move or rename app files");
 			expect(mvAppToAppResult.stderr).toContain("edit_file");
 			expect(mvAppToAppResult.stderr).toContain("write_file");
-			expect(mvGlobResult.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(mvGlobResult.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(mvGlobResult.stderr).toContain("app file glob patterns are not supported");
 			expect(mvGlobResult.stderr).toContain("find");
 			expect(mvDashResult.metadata.exitCode).not.toBe(0);
@@ -4766,15 +4840,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("copies one exact readable app file to scratch and rejects unreadable app copies", async () => {
 			const { run } = await create_bash_runner({
-				initialCwd: test_app_files_mount,
+				initialCwd: test_db_files_mount,
 				extraFiles: [{ path: "/-dash-copy.md", content: "dash cp\n" }],
 			});
 
-			const copied = await run(`cp ${test_app_files_mount}/docs/readme.md /tmp/readme.md && cat /tmp/readme.md`);
+			const copied = await run(`cp ${test_db_files_mount}/docs/readme.md /tmp/readme.md && cat /tmp/readme.md`);
 			const dashCopied = await run("cp -- -dash-copy.md /tmp/dash-copy.md && cat /tmp/dash-copy.md");
-			const dirDestination = await run(`cp ${test_app_files_mount}/docs/readme.md /tmp && cat /tmp/readme.md`);
-			const outsideTmp = await run(`cp ${test_app_files_mount}/docs/readme.md /dev/null`);
-			const unreadable = await run(`cp ${test_app_files_mount}/source.pdf /tmp/source.pdf`);
+			const dirDestination = await run(`cp ${test_db_files_mount}/docs/readme.md /tmp && cat /tmp/readme.md`);
+			const outsideTmp = await run(`cp ${test_db_files_mount}/docs/readme.md /dev/null`);
+			const unreadable = await run(`cp ${test_db_files_mount}/source.pdf /tmp/source.pdf`);
 
 			expect(copied.metadata.exitCode).toBe(0);
 			expect(copied.stdout).toContain("unique-token");
@@ -4787,7 +4861,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(outsideTmp.stderr).not.toContain("read-only for cp");
 			expect(unreadable.metadata.exitCode).not.toBe(0);
 			expect(unreadable.stderr).toContain("Markdown and plain text files only");
-			expect(unreadable.stderr).toContain(`${test_app_files_mount}/source.pdf.md`);
+			expect(unreadable.stderr).toContain(`${test_db_files_mount}/source.pdf.md`);
 		});
 
 		test("supports the broader Native Just Bash /tmp command surface", async () => {
@@ -4817,7 +4891,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stdout).toContain("YWxwaGE=");
 			expect(result.stdout).toContain("alpha");
 			expect(result.stdout).toContain("data.txt");
-			expect(result.stderr).not.toContain("Convex-backed");
+			expect(result.stderr).not.toContain("db-backed");
 			expect(result.stderr).not.toContain("app-aware commands");
 		});
 
@@ -4831,7 +4905,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toBe("1:example: command not found\n");
 			expect(result.stderr).not.toContain("grep over multiple/app-wide files is not supported");
-			expect(result.stderr).not.toContain("Convex-backed");
+			expect(result.stderr).not.toContain("db-backed");
 		});
 
 		test("treats /dev/null and /dev/zero as Native Just Bash devices outside the app mount", async () => {
@@ -4845,11 +4919,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(nullResult.metadata.exitCode).toBe(0);
 			expect(nullResult.stdout).toBe("alpha\n");
 			expect(nullResult.stderr).not.toContain("read-only file system");
-			expect(nullResult.stderr).not.toContain("Convex-backed");
+			expect(nullResult.stderr).not.toContain("db-backed");
 			expect(zeroResult.metadata.exitCode).toBe(0);
 			expect(zeroResult.stdout).toBe("5\n");
 			expect(zeroResult.stderr).not.toContain("No such file");
-			expect(zeroResult.stderr).not.toContain("Convex-backed");
+			expect(zeroResult.stderr).not.toContain("db-backed");
 		});
 
 		test("does not append app-mount guidance for /tmp Native Just Bash command failures", async () => {
@@ -4858,7 +4932,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const result = await run("printf alpha > /tmp/a.txt && rg missing /tmp/a.txt");
 
 			expect(result.metadata.exitCode).not.toBe(0);
-			expect(result.stderr).not.toContain("Convex-backed");
+			expect(result.stderr).not.toContain("db-backed");
 			expect(result.stderr).not.toContain("Native Just Bash /tmp commands cannot access app files directly");
 		});
 
@@ -4891,40 +4965,40 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("prevents scratch symlinks from escaping into the app mount", async () => {
 			const { run } = await create_bash_runner();
 
-			const result = await run(`ln -s ${test_app_files_mount}/docs/readme.md /tmp/readme-link && cat /tmp/readme-link`);
+			const result = await run(`ln -s ${test_db_files_mount}/docs/readme.md /tmp/readme-link && cat /tmp/readme-link`);
 
 			expect(result.metadata.exitCode).not.toBe(0);
 			expect(result.stdout).not.toContain("unique-token");
-			expect(result.stderr).toContain("Convex-backed");
+			expect(result.stderr).toContain("db-backed");
 			expect(result.stderr).toContain("Native Just Bash /tmp commands cannot access app files directly");
 			// Pre-checked before the inner shell, so the sanitizer never redacts the paths.
-			expect(result.stderr).toContain(`${test_app_files_mount}/docs/readme.md`);
+			expect(result.stderr).toContain(`${test_db_files_mount}/docs/readme.md`);
 			expect(result.stderr).not.toContain("<path>");
 		});
 
 		test("rejects expanded Native Just Bash /tmp commands when direct app operands are involved", async () => {
 			const { run } = await create_bash_runner();
 
-			const duResult = await run(`du ${test_app_files_mount}/docs`);
-			const rgResult = await run(`rg unique-token ${test_app_files_mount}/docs/readme.md`);
+			const duResult = await run(`du ${test_db_files_mount}/docs`);
+			const rgResult = await run(`rg unique-token ${test_db_files_mount}/docs/readme.md`);
 			const diffResult = await run(
-				`printf '# Readme\\n' > /tmp/readme.md && diff ${test_app_files_mount}/docs/readme.md /tmp/readme.md`,
+				`printf '# Readme\\n' > /tmp/readme.md && diff ${test_db_files_mount}/docs/readme.md /tmp/readme.md`,
 			);
-			const duWithFlagsResult = await run(`du -sh ${test_app_files_mount}/docs`);
-			const defaultCwdResult = await run(`cd ${test_app_files_mount}/docs && du`);
+			const duWithFlagsResult = await run(`du -sh ${test_db_files_mount}/docs`);
+			const defaultCwdResult = await run(`cd ${test_db_files_mount}/docs && du`);
 
 			for (const result of [duResult, rgResult, diffResult, duWithFlagsResult, defaultCwdResult]) {
 				expect(result.metadata.exitCode).not.toBe(0);
-				expect(result.stderr).toContain("Convex-backed");
+				expect(result.stderr).toContain("db-backed");
 				expect(result.stderr).toContain("app-aware commands");
 			}
-			expect(duResult.stderr).toContain(test_app_files_mount);
+			expect(duResult.stderr).toContain(test_db_files_mount);
 			expect(duResult.stderr).not.toContain("No such file or directory");
 			expect(duResult.stderr).toContain(
-				`du: app-mount paths do not expose POSIX disk usage. Try: stat ${test_app_files_mount}/docs && find ${test_app_files_mount}/docs -type f --limit 20`,
+				`du: app-mount paths do not expose POSIX disk usage. Try: stat ${test_db_files_mount}/docs && find ${test_db_files_mount}/docs -type f --limit 20`,
 			);
 			expect(rgResult.stderr).toContain(
-				`rg: app paths do not support direct Native Just Bash rg. Try: grep unique-token ${test_app_files_mount}/docs/readme.md`,
+				`rg: app paths do not support direct Native Just Bash rg. Try: grep unique-token ${test_db_files_mount}/docs/readme.md`,
 			);
 			expect(duWithFlagsResult.stderr).not.toContain("No such file or directory");
 			expect(diffResult.stderr).not.toContain("No such file or directory");
@@ -4936,26 +5010,26 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const result = await run(
 				[
-					`cat ${test_app_files_mount}/docs/readme.md | rev | head -n 1`,
-					`cat ${test_app_files_mount}/docs/readme.md | sha256sum`,
+					`cat ${test_db_files_mount}/docs/readme.md | rev | head -n 1`,
+					`cat ${test_db_files_mount}/docs/readme.md | sha256sum`,
 				].join(" && "),
 			);
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toContain("emdaeR #");
 			expect(result.stdout).toContain("-");
-			expect(result.stderr).not.toContain("Convex-backed");
+			expect(result.stderr).not.toContain("db-backed");
 		});
 
 		test("keeps nested shells, xargs, and which inside the curated command surface", async () => {
 			const { run } = await create_bash_runner();
 
-			const nested = await run(`bash -c 'ls --limit 1 ${test_app_files_mount}/docs'`);
-			const nestedLoginForm = await run(`bash -lc 'ls --limit 1 ${test_app_files_mount}/docs'`);
+			const nested = await run(`bash -c 'ls --limit 1 ${test_db_files_mount}/docs'`);
+			const nestedLoginForm = await run(`bash -lc 'ls --limit 1 ${test_db_files_mount}/docs'`);
 			const nestedMixed = await run(
-				`bash -c 'printf nested-ok > /tmp/nested-ok.txt && cat /tmp/nested-ok.txt'; bash -c 'printf blocked > ${test_app_files_mount}/nested-blocked.md'`,
+				`bash -c 'printf nested-ok > /tmp/nested-ok.txt && cat /tmp/nested-ok.txt'; bash -c 'printf blocked > ${test_db_files_mount}/nested-blocked.md'`,
 			);
-			const xargsResult = await run(`printf '${test_app_files_mount}/docs/readme.md\\n' | xargs cat`);
+			const xargsResult = await run(`printf '${test_db_files_mount}/docs/readme.md\\n' | xargs cat`);
 			const xargsParallel = await run("printf hi | xargs -P 2 echo");
 			const xargsHelp = await run("xargs --help");
 			const xargsCombined = await run("printf 'a b' | xargs -rt echo");
@@ -5003,7 +5077,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(whichCombined.stdout).toBe("");
 			expect(whichHelp.metadata.exitCode).toBe(0);
 			expect(whichHelp.stdout).toContain("Usage: which [-a] [-s] NAME...");
-			expect(whichMissing.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(whichMissing.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(whichMissing.stderr).toContain("which: missing command name");
 			expect(whichMissing.stderr).toContain("Usage: which [-a] [-s] NAME...");
 			expect(whichEndOptions.metadata.exitCode).toBe(1);
@@ -5027,11 +5101,32 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			const nestedStdin = await run("printf nested-stdin | bash -c 'cat'");
 			const nestedShStdin = await run("printf nested-sh-stdin | sh -c 'cat'");
+			const nestedInlineArgs = await run("bash -c 'echo inline:$0:$1:$#' script forwarded");
 			const writeScript = await run("printf 'echo script:$1\\n' > /tmp/nested-script.sh");
 			const scriptPath = await run("bash /tmp/nested-script.sh forwarded");
+			const nestedTmpGlob = await run(
+				"printf 'nested-a\\n' > /tmp/nested-a.txt && printf 'nested-b\\n' > /tmp/nested-b.txt && bash -c 'cat /tmp/nested-*.txt'",
+			);
+			const sourceTmpScript = await run(
+				"printf 'echo sourced:$BONOBO\\n' > /tmp/source-script.sh && BONOBO=ok source /tmp/source-script.sh",
+			);
+			const cdTmpBeforeDot = await run("cd /tmp");
+			const dotTmpScriptFromCwd = await run(". source-script.sh");
 			const missingScript = await run("bash /tmp/missing-script.sh");
 			const directoryScript = await run("sh /tmp");
-			const appScript = await run(`bash ${test_app_files_mount}/docs/readme.md`);
+			const appScript = await run(`bash ${test_db_files_mount}/docs/readme.md`);
+			const appSourceScript = await run(`source ${test_db_files_mount}/docs/readme.md`);
+			const appDotScript = await run(`. ${test_db_files_mount}/docs/readme.md`);
+			const appEnvSourceScript = await run(`BONOBO=1 source ${test_db_files_mount}/docs/readme.md`);
+			const appRedirectSourceScript = await run(`2>/tmp/source.err source ${test_db_files_mount}/docs/readme.md`);
+			const appCommandSourceScript = await run(`command source ${test_db_files_mount}/docs/readme.md`);
+			const appEvalSourceScript = await run(`eval 'source ${test_db_files_mount}/docs/readme.md'`);
+			const appEvalEnvSourceScript = await run(`eval 'BONOBO=1 source ${test_db_files_mount}/docs/readme.md'`);
+			const nestedAppSourceScript = await run(`bash -c 'source ${test_db_files_mount}/docs/readme.md'`);
+			const nestedAppRedirectSourceScript = await run(
+				`bash -c '2>/tmp/source.err source ${test_db_files_mount}/docs/readme.md'`,
+			);
+			const nestedEchoSource = await run("bash -c 'echo source'");
 			const missingInlineScript = await run("bash -c");
 			const unsupportedFlag = await run("sh -e");
 
@@ -5039,21 +5134,51 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(nestedStdin.stdout).toBe("nested-stdin");
 			expect(nestedShStdin.metadata.exitCode).toBe(0);
 			expect(nestedShStdin.stdout).toBe("nested-sh-stdin");
+			expect(nestedInlineArgs.metadata.exitCode).toBe(0);
+			expect(nestedInlineArgs.stdout).toBe("inline:script:forwarded:1\n");
 			expect(writeScript.metadata.exitCode).toBe(0);
 			expect(scriptPath.metadata.exitCode).toBe(0);
 			expect(scriptPath.stdout).toBe("script:forwarded\n");
-			expect(missingScript.metadata.exitCode).toBe(COMMAND_EXIT_NOT_FOUND);
+			expect(nestedTmpGlob.metadata.exitCode).toBe(0);
+			expect(nestedTmpGlob.stdout).toContain("nested-a\n");
+			expect(nestedTmpGlob.stdout).toContain("nested-b\n");
+			expect(sourceTmpScript.metadata.exitCode).toBe(0);
+			expect(sourceTmpScript.stdout).toBe("sourced:ok\n");
+			expect(cdTmpBeforeDot.metadata.exitCode).toBe(0);
+			expect(dotTmpScriptFromCwd.metadata.exitCode).toBe(0);
+			expect(dotTmpScriptFromCwd.stdout).toBe("sourced:\n");
+			expect(missingScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_NOT_FOUND);
 			expect(missingScript.stderr).toBe("bash: /tmp/missing-script.sh: No such file or directory\n");
 			expect(missingScript.stderr).not.toContain("ENOENT");
-			expect(directoryScript.metadata.exitCode).toBe(COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(directoryScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_CANNOT_EXECUTE);
 			expect(directoryScript.stderr).toBe("sh: /tmp: Is a directory\n");
 			expect(directoryScript.stderr).not.toContain("EISDIR");
-			expect(appScript.metadata.exitCode).toBe(COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(appScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_CANNOT_EXECUTE);
 			expect(appScript.stderr).toContain("app-mounted script files are not executable");
-			expect(appScript.stderr).toContain(`${test_app_files_mount}/docs/readme.md`);
-			expect(missingInlineScript.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(appScript.stderr).toContain(`${test_db_files_mount}/docs/readme.md`);
+			expect(appSourceScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(appSourceScript.stderr).toContain("cannot load app files or agent-only external mounts");
+			expect(appDotScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(appDotScript.stderr).toContain("cannot load app files or agent-only external mounts");
+			expect(appEnvSourceScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(appEnvSourceScript.stderr).toContain("cannot load app files or agent-only external mounts");
+			expect(appRedirectSourceScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(appRedirectSourceScript.stderr).toContain("cannot load app files or agent-only external mounts");
+			expect(appCommandSourceScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(appCommandSourceScript.stderr).toContain("cannot load app files or agent-only external mounts");
+			expect(appEvalSourceScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(appEvalSourceScript.stderr).toContain("cannot load app files or agent-only external mounts");
+			expect(appEvalEnvSourceScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(appEvalEnvSourceScript.stderr).toContain("cannot load app files or agent-only external mounts");
+			expect(nestedAppSourceScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(nestedAppSourceScript.stderr).toContain("cannot load app files or agent-only external mounts");
+			expect(nestedAppRedirectSourceScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_CANNOT_EXECUTE);
+			expect(nestedAppRedirectSourceScript.stderr).toContain("cannot load app files or agent-only external mounts");
+			expect(nestedEchoSource.metadata.exitCode).toBe(0);
+			expect(nestedEchoSource.stdout).toBe("source\n");
+			expect(missingInlineScript.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(missingInlineScript.stderr).toContain("option requires an argument");
-			expect(unsupportedFlag.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(unsupportedFlag.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(unsupportedFlag.stderr).toContain("sh -c 'script'");
 			expect(unsupportedFlag.stderr).toContain("sh /tmp/script.sh");
 		});
@@ -5091,23 +5216,23 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const oneParallel = await run("printf hi | xargs -P 1 echo");
 			const hugeParallel = await run(`printf a | xargs -P ${"9".repeat(400)} echo`);
 
-			expect(missingReplace.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingReplace.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(missingReplace.stderr).toContain("xargs: -I requires a value");
-			expect(emptyReplace.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(emptyReplace.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(emptyReplace.stderr).toContain("xargs: -I requires a value");
-			expect(missingDelimiter.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingDelimiter.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(missingDelimiter.stderr).toContain("xargs: -d requires a value");
-			expect(emptyDelimiter.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(emptyDelimiter.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(emptyDelimiter.stderr).toContain("xargs: -d requires a value");
-			expect(missingParallel.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingParallel.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(missingParallel.stderr).toContain("xargs: -P requires a non-negative integer");
-			expect(invalidParallel.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(invalidParallel.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(invalidParallel.stderr).toContain("xargs: -P requires a non-negative integer");
 			expect(zeroParallel.metadata.exitCode).toBe(0);
 			expect(zeroParallel.stdout).toBe("hi\n");
 			expect(oneParallel.metadata.exitCode).toBe(0);
 			expect(oneParallel.stdout).toBe("hi\n");
-			expect(hugeParallel.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(hugeParallel.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(hugeParallel.stderr).toContain("parallel execution");
 		});
 
@@ -5136,11 +5261,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(delimiterSeparate.stdout).toBe("a b c\n");
 			expect(delimiterEquals.metadata.exitCode).toBe(0);
 			expect(delimiterEquals.stdout).toBe("a b c\n");
-			expect(missingMaxArgs.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(missingMaxArgs.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(missingMaxArgs.stderr).toContain("xargs: -n requires a positive integer");
-			expect(emptyReplace.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(emptyReplace.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(emptyReplace.stderr).toContain("xargs: -I requires a value");
-			expect(emptyDelimiter.metadata.exitCode).toBe(COMMAND_EXIT_USAGE);
+			expect(emptyDelimiter.metadata.exitCode).toBe(bash_COMMAND_EXIT_USAGE);
 			expect(emptyDelimiter.stderr).toContain("xargs: -d requires a value");
 		});
 
@@ -5182,6 +5307,247 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.metadata.stdoutLength).toBeGreaterThan(30_000);
 			expect(result.metadata.pathIndexTruncated).toBe(false);
 			expect(result.stdout).toContain("[truncated after 30000 characters]");
+		});
+
+		describe("github mounts (Phase F7)", () => {
+			// README content is markdown-hostile on purpose and small enough to read inline from the
+			// committed plain-text chunks (no R2 round-trip), matching how the sync materializes external mount content.
+			const README_TEXT = "# experiment--t3-chat\n\nMounted repo readme.\nZorptelemetry marker line.\n";
+			const GUIDE_TEXT = "guide alpha\nguide beta\n";
+
+			// Seed reserved-scope (`GLOBAL`/`GITHUB`) plain-text nodes via the real Phase D path. The Bash
+			// mount root lists top-level folders from files_nodes, so no github_sources metadata is needed.
+			async function seed_github_mount(
+				runner: Awaited<ReturnType<typeof create_bash_runner>>,
+				name: string,
+				files: { path: string; rawText: string }[],
+			) {
+				for (const file of files) {
+					const created = (await runner.t.action(internal.files_nodes.create_file_node_internal, {
+						path: `/${name}${file.path}`,
+						rawText: file.rawText,
+					})) as { _yay?: unknown; _nay?: { message: string } };
+					if (!created._yay) {
+						throw new Error(`Failed to seed mount file /${name}${file.path}: ${created._nay?.message}`);
+					}
+				}
+			}
+
+			test("lists reserved top-level mount folders at the synthetic /.mounts root", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [{ path: "/README.md", rawText: README_TEXT }]);
+				await seed_github_mount(runner, "examples", [{ path: "/hello.md", rawText: "hello\n" }]);
+
+				const result = await runner.run("ls /.mounts");
+
+				expect(result.metadata.exitCode).toBe(0);
+				expect(result.stdout).toContain("t3-chat");
+				expect(result.stdout).toContain("examples");
+			});
+
+			test("lists and reads files inside a mount byte-identically", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [
+					{ path: "/README.md", rawText: README_TEXT },
+					{ path: "/docs/guide.md", rawText: GUIDE_TEXT },
+				]);
+
+				const listing = await runner.run("ls /.mounts/t3-chat");
+				expect(listing.metadata.exitCode).toBe(0);
+				expect(listing.stdout).toContain("README.md");
+				expect(listing.stdout).toContain("docs");
+
+				runner.runQuery.mockClear();
+				const readme = await runner.run("cat /.mounts/t3-chat/README.md");
+				expect(readme.metadata.exitCode).toBe(0);
+				expect(readme.stdout).toBe(README_TEXT);
+
+				const guide = await runner.run("cat /.mounts/t3-chat/docs/guide.md");
+				expect(guide.metadata.exitCode).toBe(0);
+				expect(guide.stdout).toBe(GUIDE_TEXT);
+				expect(
+					runner.runQuery.mock.calls.some(
+						([ref]) => function_name_of(ref) === "files_pending_updates:get_by_file_node",
+					),
+				).toBe(false);
+			});
+
+			test("rejects mount glob patterns without shell-expanding reserved db files", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [{ path: "/README.md", rawText: README_TEXT }]);
+
+				const result = await runner.run("ls /.mounts/t3-chat/*.md");
+
+				expect(result.metadata.exitCode).toBe(2);
+				expect(result.stdout).toBe("");
+				expect(result.stderr).toContain("app file glob patterns are not supported");
+				expect(result.stderr).toContain("Try: find /.mounts/t3-chat -type f --extension md --limit 20");
+			});
+
+			test("reports mount folders as directories for readers", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [{ path: "/docs/guide.md", rawText: GUIDE_TEXT }]);
+
+				for (const command of [
+					"cat /.mounts/t3-chat/docs",
+					"head /.mounts/t3-chat/docs",
+					"sed -n '1p' /.mounts/t3-chat/docs",
+					"wc /.mounts/t3-chat/docs",
+				]) {
+					const result = await runner.run(command);
+					expect(result.metadata.exitCode).not.toBe(0);
+					expect(result.stdout).toBe("");
+					expect(result.stderr).toContain("Is a directory");
+				}
+			});
+
+			test("cd into a mount persists across invocations", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [{ path: "/docs/guide.md", rawText: GUIDE_TEXT }]);
+
+				const moved = await runner.run("cd /.mounts/t3-chat/docs");
+				expect(moved.metadata.exitCode).toBe(0);
+
+				const here = await runner.run("pwd");
+				expect(here.metadata.exitCode).toBe(0);
+				expect(here.stdout).toBe("/.mounts/t3-chat/docs\n");
+			});
+
+			test("grep and search find content scoped to a mount", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [{ path: "/README.md", rawText: README_TEXT }]);
+
+				const grepped = await runner.run("grep Zorptelemetry /.mounts/t3-chat/README.md");
+				expect(grepped.metadata.exitCode).toBe(0);
+				expect(grepped.stdout).toContain("Zorptelemetry marker line.");
+
+				const searched = await runner.run("search --path /.mounts/t3-chat Zorptelemetry");
+				expect(searched.metadata.exitCode).toBe(0);
+				expect(searched.stdout).toContain("README.md");
+			});
+
+			test("find --prefix resolves relative to mount cwd and returns zero matches for absent prefixes", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [
+					{ path: "/docs/guide.md", rawText: GUIDE_TEXT },
+					{ path: "/docs/notes.md", rawText: "notes\n" },
+					{ path: "/docs-archive/leak.md", rawText: "leak\n" },
+				]);
+
+				const fromMount = await runner.run("cd /.mounts/t3-chat && find --prefix docs --limit 20 -type f");
+				expect(fromMount.metadata.exitCode).toBe(0);
+				expect(fromMount.stdout).toContain("/.mounts/t3-chat/docs/guide.md");
+				expect(fromMount.stdout).toContain("/.mounts/t3-chat/docs/notes.md");
+				expect(fromMount.stdout).not.toContain("/.mounts/t3-chat/docs-archive/leak.md");
+
+				const fromDocs = await runner.run("cd /.mounts/t3-chat/docs && find --prefix . --limit 1");
+				expect(fromDocs.metadata.exitCode).toBe(0);
+				expect(fromDocs.stdout).toContain("/.mounts/t3-chat/docs/");
+
+				const paged = await runner.run("cd /.mounts/t3-chat && find --prefix docs --limit 1");
+				expect(paged.metadata.exitCode).toBe(0);
+				expect(paged.stdout).toMatch(/Next page: find --prefix \/.mounts\/t3-chat\/docs --limit 1 --cursor \S+/u);
+
+				const missing = await runner.run("find --prefix /.mounts/nope --limit 20");
+				expect(missing.metadata.exitCode).toBe(0);
+				expect(missing.stdout).toContain("0 matches.");
+			});
+
+			test("keeps mount content isolated from the tenant app file tree", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [{ path: "/README.md", rawText: README_TEXT }]);
+
+				// The default app file tree has no Zorptelemetry marker, so an app-scope search misses it:
+				// the reserved mount scope is reachable only through the /.mounts prefix.
+				const projectSearch = await runner.run("search Zorptelemetry");
+				expect(projectSearch.metadata.exitCode).toBe(0);
+				expect(projectSearch.stdout).not.toContain("README.md");
+
+				// The runner starts in the app file tree root; listing it shows app folders, never mounts.
+				const projectRoot = await runner.run("ls");
+				expect(projectRoot.metadata.exitCode).toBe(0);
+				expect(projectRoot.stdout).toContain("docs");
+				expect(projectRoot.stdout).not.toContain("t3-chat");
+
+				// The stored reserved path (without the /.mounts prefix) is not addressable from the shell.
+				const bare = await runner.run("cat /t3-chat/README.md");
+				expect(bare.metadata.exitCode).not.toBe(0);
+			});
+
+			test("rejects every write into a read-only mount and leaves it intact", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [{ path: "/README.md", rawText: README_TEXT }]);
+
+				const writes = [
+					"touch /.mounts/t3-chat/new.txt",
+					"rm /.mounts/t3-chat/README.md",
+					"mv /.mounts/t3-chat/README.md /.mounts/t3-chat/renamed.md",
+					"echo hi | tee /.mounts/t3-chat/new.txt",
+					"cp /.mounts/t3-chat/README.md /.mounts/t3-chat/copy.md",
+				];
+				for (const command of writes) {
+					const result = await runner.run(command);
+					expect(result.metadata.exitCode).not.toBe(0);
+					expect(result.stderr).toContain("is a read-only mount of an external source");
+				}
+
+				// The mount file is still present and unchanged after all rejected writes.
+				const readme = await runner.run("cat /.mounts/t3-chat/README.md");
+				expect(readme.metadata.exitCode).toBe(0);
+				expect(readme.stdout).toBe(README_TEXT);
+			});
+
+			test("allows copying a mount file out to /tmp scratch", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [{ path: "/README.md", rawText: README_TEXT }]);
+
+				const copied = await runner.run("cp /.mounts/t3-chat/README.md /tmp/readme.md && cat /tmp/readme.md");
+				expect(copied.metadata.exitCode).toBe(0);
+				expect(copied.stdout).toBe(README_TEXT);
+			});
+
+			test("refuses to execute a mount file through bash", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [{ path: "/script.sh", rawText: "echo pwned\n" }]);
+
+				for (const command of ["bash /.mounts/t3-chat/script.sh"]) {
+					const result = await runner.run(command);
+					expect(result.metadata.exitCode).not.toBe(0);
+					expect(result.stdout).not.toContain("pwned");
+					expect(result.stderr).toContain("not executable through bash");
+				}
+
+				for (const command of [
+					"source /.mounts/t3-chat/script.sh",
+					". /.mounts/t3-chat/script.sh",
+					"BONOBO=1 source /.mounts/t3-chat/script.sh",
+					"2>/tmp/source.err source /.mounts/t3-chat/script.sh",
+					"command source /.mounts/t3-chat/script.sh",
+					"eval 'source /.mounts/t3-chat/script.sh'",
+					"eval 'BONOBO=1 source /.mounts/t3-chat/script.sh'",
+					"bash -c 'source /.mounts/t3-chat/script.sh'",
+					"bash -c '2>/tmp/source.err source /.mounts/t3-chat/script.sh'",
+					"sh -c '. /.mounts/t3-chat/script.sh'",
+				]) {
+					const result = await runner.run(command);
+					expect(result.metadata.exitCode).not.toBe(0);
+					expect(result.stdout).not.toContain("pwned");
+					expect(result.stderr).toContain("cannot load app files or agent-only external mounts");
+				}
+			});
+
+			test("reports missing mount targets as no such file", async () => {
+				const runner = await create_bash_runner();
+				await seed_github_mount(runner, "t3-chat", [{ path: "/README.md", rawText: README_TEXT }]);
+
+				const listMissing = await runner.run("ls /.mounts/nope");
+				expect(listMissing.metadata.exitCode).not.toBe(0);
+				expect(listMissing.stderr).toContain("No such file");
+
+				const catMissing = await runner.run("cat /.mounts/nope/x.md");
+				expect(catMissing.metadata.exitCode).not.toBe(0);
+				expect(catMissing.stderr).toContain("No such file");
+			});
 		});
 	});
 }

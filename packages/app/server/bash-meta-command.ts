@@ -6,19 +6,19 @@ import type { files_metadata_get_by_path_Result, files_metadata_search_Result } 
 import { Result } from "../shared/errors-as-values-utils.ts";
 import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 import {
-	bash_app_file_node_path_to_current_project_path,
-	bash_current_project_path_to_app_file_node_path,
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
+	bash_normalize_path,
 	bash_parse_limit,
 	bash_read_option_value,
 	bash_resolve_path,
 	bash_shell_arg_quote,
-	type bash_WorkspaceFs,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
 const FIELD_SEGMENT_REGEX = /^[A-Za-z0-9_-]+$/u;
 const SUPPORTED_METADATA_KINDS = new Set(["frontmatter"]);
 
@@ -217,7 +217,7 @@ function parse_search_where_json(whereJson: string) {
 	});
 }
 
-function parse_search_args(args: string[], options: { currentProjectPath: string; cwd: string }) {
+function parse_search_args(args: string[], options: { cwd: string }) {
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
 	let pathValue: string | undefined;
@@ -303,31 +303,20 @@ function parse_search_args(args: string[], options: { currentProjectPath: string
 		return limit;
 	}
 
-	let path: string | undefined;
+	// Resolve the user-facing folder scope to an absolute shell path; the handler classifies it
+	// (project vs. mount) and verifies it is an existing folder.
+	let pathShell: string | undefined;
 	if (pathValue != null) {
 		if (pathValue === "") {
 			return Result({ _nay: { message: "meta search: --path requires a non-empty folder path" } });
 		}
-		const appFileNodePath = bash_current_project_path_to_app_file_node_path(
-			options.currentProjectPath,
-			bash_resolve_path(options.cwd, pathValue),
-		);
-		if (appFileNodePath == null) {
-			return Result({
-				_nay: {
-					message:
-						`meta search: --path must be a folder under the app file tree: ${pathValue}\n` +
-						`Use a path under ${options.currentProjectPath}.`,
-				},
-			});
-		}
-		path = appFileNodePath;
+		pathShell = bash_resolve_path(options.cwd, pathValue);
 	}
 
-	return Result({ _yay: { plan: plan._yay, whereJson, limit: limit._yay, cursor, path, format } });
+	return Result({ _yay: { plan: plan._yay, whereJson, limit: limit._yay, cursor, pathShell, format } });
 }
 
-function parse_get_args(args: string[], options: { currentProjectPath: string; cwd: string }) {
+function parse_get_args(args: string[], options: { cwd: string }) {
 	let format: MetaCommandGetFormat = "text";
 	let pathValue: string | undefined;
 
@@ -363,22 +352,13 @@ function parse_get_args(args: string[], options: { currentProjectPath: string; c
 	if (pathValue == null || pathValue === "") {
 		return Result({ _nay: { message: "meta get: missing file path" } });
 	}
-	const path = bash_current_project_path_to_app_file_node_path(
-		options.currentProjectPath,
-		bash_resolve_path(options.cwd, pathValue),
-	);
-	if (path == null) {
-		return Result({
-			_nay: {
-				message: `meta get: path must be under the app file tree: ${pathValue}\nUse a path under ${options.currentProjectPath}.`,
-			},
-		});
-	}
-	return Result({ _yay: { path, format } });
+	// Keep the file as an absolute shell path; the handler classifies it (project vs. mount).
+	const pathShell = bash_resolve_path(options.cwd, pathValue);
+	return Result({ _yay: { pathShell, format } });
 }
 
 function build_search_continuation(args: {
-	currentProjectPath: string;
+	renderShellPath: (dbFilesPath: string) => string;
 	path: string | undefined;
 	limit: number;
 	cursor: string;
@@ -387,10 +367,7 @@ function build_search_continuation(args: {
 }) {
 	const parts = ["Next page:", "meta", "search"];
 	if (args.path != null) {
-		parts.push(
-			"--path",
-			bash_shell_arg_quote(bash_app_file_node_path_to_current_project_path(args.currentProjectPath, args.path)),
-		);
+		parts.push("--path", bash_shell_arg_quote(args.renderShellPath(args.path)));
 	}
 	if (args.format !== "paths") {
 		parts.push("--format", args.format);
@@ -430,7 +407,8 @@ function get_value(value: NonNullable<files_metadata_get_by_path_Result>["values
 	}
 }
 
-export function bash_meta_command_create(ctx: ActionCtx, workspaceFs: bash_WorkspaceFs, currentProjectPath: string) {
+export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
 	return defineCommand("meta", async (args, commandCtx) => {
 		const subcommand = args[0];
 		if (subcommand !== "search" && subcommand !== "get") {
@@ -440,37 +418,55 @@ export function bash_meta_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 					"meta: expected subcommand search or get\n" +
 					"Usage: meta search --where '<json>' [--format paths|json] [--path <folder>] [--limit N] [--cursor CURSOR]\n" +
 					"Usage: meta get <file> [--format text|json]\n",
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
 		if (subcommand === "get") {
-			const parsed = parse_get_args(args.slice(1), { currentProjectPath, cwd: commandCtx.cwd });
+			const parsed = parse_get_args(args.slice(1), { cwd: commandCtx.cwd });
 			if (parsed._nay) {
 				return {
 					stdout: "",
 					stderr: `${parsed._nay.message}\nUsage: meta get <file> [--format text|json]\n`,
-					exitCode: COMMAND_EXIT_USAGE,
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+			}
+			// meta get reads one file; classify its path to pick the project or mount scope.
+			const target = bash_resolve_db_files_shell_path(parsed._yay.pathShell, dbFilesRoots);
+			if (target.kind === "external_mounts_root") {
+				return {
+					stdout: "",
+					stderr:
+						`meta get: ${bash_normalize_path(parsed._yay.pathShell)} is the mounts root, not a file; pick a file under /.mounts/<name>.\n` +
+						"Run 'ls /.mounts' to list the available mounts.\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+			}
+			if (target.dbFilesPath == null) {
+				return {
+					stdout: "",
+					stderr: `meta get: path must be under ${currentProjectPath} or /.mounts/<name>: ${bash_normalize_path(parsed._yay.pathShell)}\n`,
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 			const result = (await ctx.runQuery(internal.files_metadata.get_by_path, {
-				workspaceId: workspaceFs.ctxData.workspaceId,
-				projectId: workspaceFs.ctxData.projectId,
-				userId: workspaceFs.ctxData.userId,
-				path: parsed._yay.path,
+				workspaceId: target.ctxData.workspaceId,
+				projectId: target.ctxData.projectId,
+				userId: target.ctxData.userId,
+				path: target.dbFilesPath,
 			})) as files_metadata_get_by_path_Result;
 			if (!result) {
 				return {
 					stdout: "",
-					stderr: `meta get: file not found: ${bash_app_file_node_path_to_current_project_path(currentProjectPath, parsed._yay.path)}\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
+					stderr: `meta get: file not found: ${target.renderShellPath(target.dbFilesPath)}\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
 			if (parsed._yay.format === "json") {
 				return {
 					stdout: `${JSON.stringify(
 						{
-							path: bash_app_file_node_path_to_current_project_path(currentProjectPath, result.path),
+							path: target.renderShellPath(result.path),
 							nodeId: result.nodeId,
 							sourceKind: result.sourceKind,
 							fields: result.fields,
@@ -497,14 +493,14 @@ export function bash_meta_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 			return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
 		}
 
-		const parsed = parse_search_args(args.slice(1), { currentProjectPath, cwd: commandCtx.cwd });
+		const parsed = parse_search_args(args.slice(1), { cwd: commandCtx.cwd });
 		if (parsed._nay) {
 			return {
 				stdout: "",
 				stderr:
 					`${parsed._nay.message}\n` +
 					"Usage: meta search --where '<json>' [--format paths|json] [--path <folder>] [--limit N] [--cursor CURSOR]\n",
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
@@ -512,42 +508,63 @@ export function bash_meta_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 		if (parsed._yay.cursor != null) {
 			const resolvedCursor = await bash_cursor_id_resolve(ctx, parsed._yay.cursor);
 			if (resolvedCursor._nay) {
-				return { stdout: "", stderr: `${resolvedCursor._nay.message}\n`, exitCode: COMMAND_EXIT_FAILURE };
+				return { stdout: "", stderr: `${resolvedCursor._nay.message}\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
 			}
 			cursor = resolvedCursor._yay;
 		}
 
-		if (parsed._yay.path != null && parsed._yay.path !== "/") {
+		// meta search runs within exactly one indexed tree (the project or a single mount). The scope is the
+		// explicit --path folder when given, otherwise the cwd. Classify it to pick the right scope IDs.
+		const scopeShellPath = parsed._yay.pathShell ?? commandCtx.cwd;
+		const scope = bash_resolve_db_files_shell_path(scopeShellPath, dbFilesRoots);
+
+		if (scope.kind === "external_mounts_root") {
+			return {
+				stdout: "",
+				stderr:
+					"meta search: choose a single mount to search; cd into a mount or pass --path /.mounts/<name> --where '<json>'.\n" +
+					"Run 'ls /.mounts' to list the available mounts.\n",
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
+		}
+		// An explicit --path outside any indexed tree (e.g. /tmp) has nothing to search.
+		if (parsed._yay.pathShell != null && scope.dbFilesPath == null) {
+			return {
+				stdout: "",
+				stderr: `meta search: --path must be a folder under ${currentProjectPath} or /.mounts/<name>: ${parsed._yay.pathShell}\n`,
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
+		}
+
+		if (parsed._yay.pathShell != null && scope.dbFilesPath != null && scope.dbFilesPath !== "/") {
 			const scopedFolder = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-				workspaceId: workspaceFs.ctxData.workspaceId,
-				projectId: workspaceFs.ctxData.projectId,
-				path: parsed._yay.path,
+				workspaceId: scope.ctxData.workspaceId,
+				projectId: scope.ctxData.projectId,
+				path: scope.dbFilesPath,
 			})) as files_nodes_get_by_path_Result;
-			const scopedShellPath = bash_app_file_node_path_to_current_project_path(currentProjectPath, parsed._yay.path);
+			const scopedShellPath = scope.renderShellPath(scope.dbFilesPath);
 			if (!scopedFolder) {
 				return {
 					stdout: "",
 					stderr: `meta search: --path folder does not exist: ${scopedShellPath}\n`,
-					exitCode: COMMAND_EXIT_FAILURE,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
 			if (scopedFolder.kind !== "folder") {
 				return {
 					stdout: "",
 					stderr: `meta search: --path must be a folder: ${scopedShellPath}\n`,
-					exitCode: COMMAND_EXIT_USAGE,
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 		}
 
-		// Without --path, meta search follows cwd when it is inside currentProjectPath.
-		const cwdAppFileNodePath = bash_current_project_path_to_app_file_node_path(currentProjectPath, commandCtx.cwd);
-		const path =
-			parsed._yay.path ?? (cwdAppFileNodePath != null && cwdAppFileNodePath !== "/" ? cwdAppFileNodePath : undefined);
+		// Scope the metadata scan to the classified folder; the project/mount root maps to the whole tree.
+		const path = scope.dbFilesPath != null && scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
 		const result = (await ctx.runQuery(internal.files_metadata.search, {
-			workspaceId: workspaceFs.ctxData.workspaceId,
-			projectId: workspaceFs.ctxData.projectId,
-			userId: workspaceFs.ctxData.userId,
+			workspaceId: scope.ctxData.workspaceId,
+			projectId: scope.ctxData.projectId,
+			userId: scope.ctxData.userId,
 			plan: parsed._yay.plan,
 			numItems: parsed._yay.limit,
 			cursor,
@@ -562,7 +579,7 @@ export function bash_meta_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 				stdout: `${JSON.stringify(
 					{
 						results: dedupedItems.map((item) => ({
-							path: bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path),
+							path: scope.renderShellPath(item.path),
 							nodeId: item.nodeId,
 							field: item.qualifiedField,
 							valueKind: item.valueKind,
@@ -581,16 +598,12 @@ export function bash_meta_command_create(ctx: ActionCtx, workspaceFs: bash_Works
 		}
 
 		const stdout =
-			dedupedItems.length === 0
-				? ""
-				: `${dedupedItems
-						.map((item) => bash_app_file_node_path_to_current_project_path(currentProjectPath, item.path))
-						.join("\n")}\n`;
+			dedupedItems.length === 0 ? "" : `${dedupedItems.map((item) => scope.renderShellPath(item.path)).join("\n")}\n`;
 		const stderr =
 			nextCursor == null
 				? ""
 				: `${build_search_continuation({
-						currentProjectPath,
+						renderShellPath: scope.renderShellPath,
 						path,
 						limit: parsed._yay.limit,
 						cursor: nextCursor,

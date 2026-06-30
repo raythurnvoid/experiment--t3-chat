@@ -2,6 +2,7 @@ import { MDocument } from "@mastra/rag";
 import { files_tiptap_markdown_to_plain_text as files_tiptap_markdown_to_plain_text } from "./files.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { should_never_happen } from "./server-utils.ts";
+import { create_line_start_offsets, get_line_number_from_offset } from "./files-line-offsets.ts";
 
 export const files_chunk_BITMASK_FLAGS = {
 	isCode: 1 << 0,
@@ -17,70 +18,6 @@ const MAX_CHUNK_SIZE = 1200;
 // Observation: we removed local fallback searching and now rely on Mastra startIndex metadata directly.
 // Also tests would need to be updated to handle overlap.
 const OVERLAP = 0;
-
-function create_line_start_offsets(markdownContent: string) {
-	const lineStartOffsets = [0];
-	for (let index = 0; index < markdownContent.length; index++) {
-		if (markdownContent[index] === "\n") {
-			lineStartOffsets.push(index + 1);
-		}
-	}
-	return lineStartOffsets;
-}
-
-/**
- * Resolves the 1-based line number for a character offset in a text document.
- *
- * `lineStartOffsetsAsc` contains for each line the character index (offset) at which it starts.
- *
- * Line 1 starts at index 0.
- *
- * This function uses binary search to find the line number that contains the target offset.
- *
- * @param args.targetOffset Character offset in the source text (negative values map to line 1).
- * @param args.lineStartOffsetsAsc Per-line start character offsets in ascending order.
- * @returns 1-based line number containing `targetOffset` (line number = matched array index + 1).
- */
-function get_line_number_from_offset(args: { targetOffset: number; lineStartOffsetsAsc: number[] }) {
-	const maxOffset = args.lineStartOffsetsAsc.at(-1);
-	if (maxOffset === undefined) {
-		throw should_never_happen("lineStartOffsetsAsc is empty", {
-			lineStartOffsetsAsc: args.lineStartOffsetsAsc,
-		});
-	}
-
-	// if the target offset is before the first line, return line 1.
-	if (args.targetOffset <= 0) {
-		return 1;
-	}
-
-	// if the target offset is after the last line, return the last line.
-	if (args.targetOffset >= maxOffset) {
-		return args.lineStartOffsetsAsc.length;
-	}
-
-	// use binary search to find the line number for the target offset.
-	let low = 0;
-	let high = args.lineStartOffsetsAsc.length - 1;
-	let best = 0;
-	while (low <= high) {
-		const mid = Math.floor((low + high) / 2);
-		const value = args.lineStartOffsetsAsc[mid];
-		if (value <= args.targetOffset) {
-			best = mid;
-			low = mid + 1;
-
-			// If we find an exact match, exit the loop.
-			if (value === args.targetOffset) {
-				break;
-			}
-		} else {
-			high = mid - 1;
-		}
-	}
-
-	return best + 1;
-}
 
 /**
  * Builds per-line markdown classification data used for chunk flag mapping.

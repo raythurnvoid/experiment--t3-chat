@@ -10,10 +10,9 @@ import type { files_pending_updates_get_by_file_node_Result } from "../convex/fi
 import type { get_asset_by_id_Result } from "../convex/r2.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { files_node_has_editable_yjs_state } from "../shared/files.ts";
+import { workspaces_is_global_github_project_id, workspaces_is_global_workspace_id } from "../shared/workspaces.ts";
 import {
-	bash_app_file_node_path_to_current_project_path,
 	bash_build_unreadable_file_advisory,
-	bash_current_project_path_to_app_file_node_path,
 	bash_create_glob_syntax_unsupported_message,
 	bash_delegate_builtin_command,
 	bash_enforce_reader_operand_cap,
@@ -23,11 +22,11 @@ import {
 	bash_READ_INLINE_MAX_BYTES,
 	bash_resolve_path,
 	bash_shell_arg_quote,
-	type bash_WorkspaceFs,
+	bash_resolve_db_files_shell_path,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
-
-const COMMAND_EXIT_FAILURE = 1;
-const COMMAND_EXIT_USAGE = 2;
 
 function parse_args(args: string[]) {
 	let showLineNumbers = false;
@@ -86,8 +85,9 @@ function add_line_numbers(content: string, startLine: number) {
 	};
 }
 
-export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_WorkspaceFs, currentProjectPath: string) {
-	const appContentCache = new Map<string, string>();
+export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
+	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
+	const fileContentCache = new Map<string, string>();
 
 	return defineCommand("cat", async (args, commandCtx) => {
 		const parsed = parse_args(args);
@@ -95,7 +95,7 @@ export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 			return {
 				stdout: "",
 				stderr: `${parsed._nay.message}\nUsage: cat [-n] [--] [FILE...]\n`,
-				exitCode: COMMAND_EXIT_USAGE,
+				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
@@ -110,7 +110,7 @@ export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 		if (capError != null) return capError;
 
 		// Cat keeps app-file size lookups inline. Routing them through
-		// get_app_file_byte_size reintroduces a TypeScript inference cycle through
+		// bash_get_db_file_byte_size reintroduces a TypeScript inference cycle through
 		// the inline customCommands array.
 
 		// Multi-file cat is all-or-nothing. If one app file is too large to read inline,
@@ -120,29 +120,32 @@ export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 			for (const file of targets) {
 				if (file === "-" || bash_GLOB_METACHARACTER_REGEX.test(file)) continue;
 
-				const appFileNodePath = bash_current_project_path_to_app_file_node_path(
-					currentProjectPath,
-					bash_resolve_path(commandCtx.cwd, file),
-				);
-				if (appFileNodePath == null) continue;
+				const pathResolution = bash_resolve_db_files_shell_path(bash_resolve_path(commandCtx.cwd, file), dbFilesRoots);
+				if (pathResolution.dbFilesPath == null) continue;
 
-				const fileNode: Doc<"files_nodes"> | null =
-					appFileNodePath === "/"
+				const dbFilesDoc: Doc<"files_nodes"> | null =
+					pathResolution.dbFilesPath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								workspaceId: workspaceFs.ctxData.workspaceId,
-								projectId: workspaceFs.ctxData.projectId,
-								path: appFileNodePath,
+								workspaceId: pathResolution.ctxData.workspaceId,
+								projectId: pathResolution.ctxData.projectId,
+								path: pathResolution.dbFilesPath,
 							})) as files_nodes_get_by_path_Result);
 				let size: number | null = null;
-				if (fileNode?.kind === "file" && fileNode.assetId != null) {
+				if (dbFilesDoc?.kind === "file" && dbFilesDoc.assetId != null) {
 					let hasPendingUpdate = false;
-					if (files_node_has_editable_yjs_state(fileNode)) {
+					const workspaceId = pathResolution.ctxData.workspaceId;
+					const projectId = pathResolution.ctxData.projectId;
+					if (
+						files_node_has_editable_yjs_state(dbFilesDoc) &&
+						!workspaces_is_global_workspace_id(workspaceId) &&
+						!workspaces_is_global_github_project_id(projectId)
+					) {
 						const pendingUpdate = (await ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
-							workspaceId: workspaceFs.ctxData.workspaceId,
-							projectId: workspaceFs.ctxData.projectId,
-							userId: workspaceFs.ctxData.userId,
-							fileNodeId: fileNode._id,
+							workspaceId,
+							projectId,
+							userId: pathResolution.ctxData.userId,
+							fileNodeId: dbFilesDoc._id,
 						})) as files_pending_updates_get_by_file_node_Result;
 						if (pendingUpdate) {
 							hasPendingUpdate = true;
@@ -151,9 +154,9 @@ export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 					}
 					if (!hasPendingUpdate) {
 						const asset = (await ctx.runQuery(internal.r2.get_asset_by_id, {
-							workspaceId: workspaceFs.ctxData.workspaceId,
-							projectId: workspaceFs.ctxData.projectId,
-							assetId: fileNode.assetId,
+							workspaceId: pathResolution.ctxData.workspaceId,
+							projectId: pathResolution.ctxData.projectId,
+							assetId: dbFilesDoc.assetId,
 						})) as get_asset_by_id_Result;
 						size = asset?.size ?? null;
 					}
@@ -163,7 +166,7 @@ export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 					return {
 						stdout: "",
 						stderr: `cat: ${file}: ${size} bytes — too large to concatenate. Read large files one at a time (e.g. head -n ${bash_READ_HEAD_LARGE_FILE_MAX_LINES} ${bash_shell_arg_quote(file)} or wc ${bash_shell_arg_quote(file)}).\n`,
-						exitCode: COMMAND_EXIT_FAILURE,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
 			}
@@ -196,37 +199,44 @@ export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 				return {
 					stdout: "",
 					stderr: bash_create_glob_syntax_unsupported_message("cat", file),
-					exitCode: COMMAND_EXIT_USAGE,
+					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 
 			const resolvedPath = bash_resolve_path(commandCtx.cwd, file);
+			const pathResolution = bash_resolve_db_files_shell_path(resolvedPath, dbFilesRoots);
 			const target = {
 				resolvedPath,
-				appFileNodePath: bash_current_project_path_to_app_file_node_path(currentProjectPath, resolvedPath),
+				dbFilesPath: pathResolution.dbFilesPath,
 			};
 
 			// Check the current byte size before reading. Unsaved edits can be larger
 			// than the committed file, and each command asks Convex for fresh metadata.
-			if (target.appFileNodePath != null) {
-				const fileNode: Doc<"files_nodes"> | null =
-					target.appFileNodePath === "/"
+			if (target.dbFilesPath != null) {
+				const dbFilesDoc: Doc<"files_nodes"> | null =
+					target.dbFilesPath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
-								workspaceId: workspaceFs.ctxData.workspaceId,
-								projectId: workspaceFs.ctxData.projectId,
-								path: target.appFileNodePath,
+								workspaceId: pathResolution.ctxData.workspaceId,
+								projectId: pathResolution.ctxData.projectId,
+								path: target.dbFilesPath,
 							})) as files_nodes_get_by_path_Result);
 
 				let size: number | null = null;
-				if (fileNode?.kind === "file" && fileNode.assetId != null) {
+				if (dbFilesDoc?.kind === "file" && dbFilesDoc.assetId != null) {
 					let hasPendingUpdate = false;
-					if (files_node_has_editable_yjs_state(fileNode)) {
+					const workspaceId = pathResolution.ctxData.workspaceId;
+					const projectId = pathResolution.ctxData.projectId;
+					if (
+						files_node_has_editable_yjs_state(dbFilesDoc) &&
+						!workspaces_is_global_workspace_id(workspaceId) &&
+						!workspaces_is_global_github_project_id(projectId)
+					) {
 						const pendingUpdate = (await ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
-							workspaceId: workspaceFs.ctxData.workspaceId,
-							projectId: workspaceFs.ctxData.projectId,
-							userId: workspaceFs.ctxData.userId,
-							fileNodeId: fileNode._id,
+							workspaceId,
+							projectId,
+							userId: pathResolution.ctxData.userId,
+							fileNodeId: dbFilesDoc._id,
 						})) as files_pending_updates_get_by_file_node_Result;
 						if (pendingUpdate) {
 							hasPendingUpdate = true;
@@ -235,9 +245,9 @@ export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 					}
 					if (!hasPendingUpdate) {
 						const asset = (await ctx.runQuery(internal.r2.get_asset_by_id, {
-							workspaceId: workspaceFs.ctxData.workspaceId,
-							projectId: workspaceFs.ctxData.projectId,
-							assetId: fileNode.assetId,
+							workspaceId: pathResolution.ctxData.workspaceId,
+							projectId: pathResolution.ctxData.projectId,
+							assetId: dbFilesDoc.assetId,
 						})) as get_asset_by_id_Result;
 						size = asset?.size ?? null;
 					}
@@ -247,16 +257,13 @@ export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 				// whole file. The footer tells the agent how to continue without
 				// implying that stdout contains the complete file.
 				if (size != null && size > bash_READ_INLINE_MAX_BYTES) {
-					const resolvedAppShellPath = bash_app_file_node_path_to_current_project_path(
-						currentProjectPath,
-						target.appFileNodePath,
-					);
+					const resolvedAppShellPath = pathResolution.renderShellPath(target.dbFilesPath);
 
 					const page = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
-						workspaceId: workspaceFs.ctxData.workspaceId,
-						projectId: workspaceFs.ctxData.projectId,
-						userId: workspaceFs.ctxData.userId,
-						path: target.appFileNodePath,
+						workspaceId: pathResolution.ctxData.workspaceId,
+						projectId: pathResolution.ctxData.projectId,
+						userId: pathResolution.ctxData.userId,
+						path: target.dbFilesPath,
 						mode: {
 							kind: "lines",
 							startLine: 1,
@@ -268,17 +275,21 @@ export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 					// query could not serve the requested page. Use the loaded node
 					// to print the native-looking failure for files, folders, or misses.
 					if (!page) {
-						if (fileNode?.kind === "file") {
-							stderr += files_node_has_editable_yjs_state(fileNode)
+						if (dbFilesDoc?.kind === "file") {
+							stderr += files_node_has_editable_yjs_state(dbFilesDoc)
 								? `cat: ${file}: content is not available from materialized chunks\n`
-								: bash_build_unreadable_file_advisory(currentProjectPath, target.appFileNodePath, fileNode.contentType);
+								: bash_build_unreadable_file_advisory(
+										pathResolution.basePath,
+										target.dbFilesPath,
+										dbFilesDoc.contentType,
+									);
 						} else {
 							stderr +=
-								fileNode?.kind === "folder"
+								dbFilesDoc?.kind === "folder"
 									? `cat: ${file}: Is a directory\n`
 									: `cat: ${file}: No such file or directory\n`;
 						}
-						exitCode = 1;
+						exitCode = bash_COMMAND_EXIT_FAILURE;
 						continue;
 					}
 
@@ -297,21 +308,21 @@ export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 					continue;
 				}
 
-				// Small app-file cat stays query-only and chunk-backed. bash_WorkspaceFs.readFile
+				// Small app-file cat stays query-only and chunk-backed. bash_DbFilesFs.readFile
 				// still has a legacy full-content action fallback for other callers, but
 				// cat output should be predictable and should not pull a whole file through
 				// the action path after chunks say they cannot serve it.
-				const cached = appContentCache.get(target.appFileNodePath);
+				const cached = fileContentCache.get(target.dbFilesPath);
 				if (cached != null) {
 					appendContent(cached, parsed._yay.showLineNumbers);
 					continue;
 				}
 
 				const chunkRead = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
-					workspaceId: workspaceFs.ctxData.workspaceId,
-					projectId: workspaceFs.ctxData.projectId,
-					userId: workspaceFs.ctxData.userId,
-					path: target.appFileNodePath,
+					workspaceId: pathResolution.ctxData.workspaceId,
+					projectId: pathResolution.ctxData.projectId,
+					userId: pathResolution.ctxData.userId,
+					path: target.dbFilesPath,
 					mode: {
 						kind: "full",
 						maxBytes: bash_READ_INLINE_MAX_BYTES,
@@ -319,31 +330,31 @@ export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 				})) as files_nodes_read_file_content_from_chunks_Result;
 
 				if (chunkRead) {
-					appContentCache.set(target.appFileNodePath, chunkRead.content);
+					fileContentCache.set(target.dbFilesPath, chunkRead.content);
 					appendContent(chunkRead.content, parsed._yay.showLineNumbers);
 					continue;
 				}
 
 				// No chunk content means cat has no stdout for this operand. Check the
 				// node only to choose the right stderr message and exit status.
-				if (target.appFileNodePath === "/" || fileNode?.kind === "folder") {
+				if (target.dbFilesPath === "/" || dbFilesDoc?.kind === "folder") {
 					stderr += `cat: ${file}: Is a directory\n`;
-					exitCode = 1;
+					exitCode = bash_COMMAND_EXIT_FAILURE;
 					continue;
 				}
 
-				if (fileNode?.kind === "file") {
+				if (dbFilesDoc?.kind === "file") {
 					// Advisory belongs on stderr so `cat unreadable | grep ...` cannot match it
 					// as if it were file content.
-					stderr += files_node_has_editable_yjs_state(fileNode)
+					stderr += files_node_has_editable_yjs_state(dbFilesDoc)
 						? `cat: ${file}: content is not available from materialized chunks\n`
-						: bash_build_unreadable_file_advisory(currentProjectPath, target.appFileNodePath, fileNode.contentType);
-					exitCode = 1;
+						: bash_build_unreadable_file_advisory(pathResolution.basePath, target.dbFilesPath, dbFilesDoc.contentType);
+					exitCode = bash_COMMAND_EXIT_FAILURE;
 					continue;
 				}
 
 				stderr += `cat: ${file}: No such file or directory\n`;
-				exitCode = 1;
+				exitCode = bash_COMMAND_EXIT_FAILURE;
 				continue;
 			}
 
@@ -356,7 +367,7 @@ export function bash_cat_command_create(ctx: ActionCtx, workspaceFs: bash_Worksp
 				stderr += msg.startsWith("EISDIR")
 					? `cat: ${file}: Is a directory\n`
 					: `cat: ${file}: No such file or directory\n`;
-				exitCode = 1;
+				exitCode = bash_COMMAND_EXIT_FAILURE;
 			}
 		}
 
