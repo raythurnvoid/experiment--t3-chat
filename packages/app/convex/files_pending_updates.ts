@@ -21,7 +21,7 @@ import { billing_event } from "../server/billing.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { Result } from "../src/lib/errors-as-values-utils.ts";
-import { workspaces_db_get_membership } from "./workspaces.ts";
+import { organizations_db_get_membership } from "./organizations.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_db_cancel_pending_update_cleanup_tasks,
@@ -58,8 +58,8 @@ function files_pending_update_reconstruct_branch_docs(pendingUpdate: app_convex_
 async function files_pending_update_action_get_latest_file_yjs_state(
 	ctx: ActionCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 	},
 ) {
@@ -107,8 +107,8 @@ async function files_pending_update_action_get_latest_file_yjs_state(
 async function files_pending_update_upsert_last_sequence_saved(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: string;
 		nodeId: app_convex_Doc<"files_pending_updates_last_sequence_saved">["fileNodeId"];
 		lastSequenceSaved: number;
@@ -117,10 +117,10 @@ async function files_pending_update_upsert_last_sequence_saved(
 ) {
 	const existingRow = await ctx.db
 		.query("files_pending_updates_last_sequence_saved")
-		.withIndex("by_workspace_project_user_fileNode", (q) =>
+		.withIndex("by_organization_workspace_user_fileNode", (q) =>
 			q
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("userId", args.userId)
 				.eq("fileNodeId", args.nodeId),
 		)
@@ -128,8 +128,8 @@ async function files_pending_update_upsert_last_sequence_saved(
 
 	if (!existingRow) {
 		await ctx.db.insert("files_pending_updates_last_sequence_saved", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			userId: args.userId,
 			fileNodeId: args.nodeId,
 			lastSequenceSaved: args.lastSequenceSaved,
@@ -146,8 +146,8 @@ async function files_pending_update_upsert_last_sequence_saved(
 
 export const get_by_file_node = internalQuery({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		fileNodeId: v.id("files_nodes"),
 	},
@@ -155,10 +155,10 @@ export const get_by_file_node = internalQuery({
 	handler: async (ctx, args) => {
 		return await ctx.db
 			.query("files_pending_updates")
-			.withIndex("by_workspace_project_user_fileNode", (q) =>
+			.withIndex("by_organization_workspace_user_fileNode", (q) =>
 				q
+					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
 					.eq("userId", args.userId)
 					.eq("fileNodeId", args.fileNodeId),
 			)
@@ -199,8 +199,8 @@ async function files_pending_update_db_delete_chunks(
 async function files_pending_update_db_replace_chunks(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: string;
 		nodeId: Id<"files_nodes">;
 		pendingUpdateId: Id<"files_pending_updates">;
@@ -215,10 +215,10 @@ async function files_pending_update_db_replace_chunks(
 	}
 
 	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-	if (!fileNode || fileNode.workspaceId !== args.workspaceId || fileNode.projectId !== args.projectId) {
+	if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
 		console.error("Failed to replace pending update chunks: fileNode is missing or mismatched", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 			pendingUpdateId: args.pendingUpdateId,
 			fileNode,
@@ -229,8 +229,8 @@ async function files_pending_update_db_replace_chunks(
 	const markdownChunkIds = await Promise.all(
 		chunks._yay.map((chunk) =>
 			ctx.db.insert("files_markdown_chunks", {
+				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				projectId: args.projectId,
 				sourceKind: "pending",
 				userId: args.userId,
 				fileNodeId: args.nodeId,
@@ -249,8 +249,8 @@ async function files_pending_update_db_replace_chunks(
 	await Promise.all(
 		chunks._yay.map((chunk, index) =>
 			ctx.db.insert("files_plain_text_chunks", {
+				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				projectId: args.projectId,
 				fileNodeId: args.nodeId,
 				sourceKind: "pending",
 				userId: args.userId,
@@ -291,7 +291,7 @@ function files_pending_update_log_replace_chunks_nay(
 	}
 }
 
-function files_pending_update_project_markdown_to_branch(args: { mut_yjsDoc: YDoc; markdown: string }) {
+function files_pending_update_workspace_markdown_to_branch(args: { mut_yjsDoc: YDoc; markdown: string }) {
 	const currentMarkdown = files_yjs_doc_get_markdown({
 		yjsDoc: args.mut_yjsDoc,
 	});
@@ -383,8 +383,8 @@ function files_pending_update_branch_docs_match_existing_doc(args: {
 async function files_pending_update_resolve_branch_docs(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: string;
 		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"];
@@ -393,8 +393,8 @@ async function files_pending_update_resolve_branch_docs(
 	},
 ) {
 	const existingPendingUpdate = await files_db_get_pending_update(ctx, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		userId: args.userId,
 		nodeId: args.nodeId,
 		pendingUpdateId: args.pendingUpdateId,
@@ -439,8 +439,8 @@ async function files_pending_update_resolve_branch_docs(
 async function files_pending_update_upsert_branch_docs(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: string;
 		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		existingPendingUpdate: app_convex_Doc<"files_pending_updates"> | null;
@@ -509,8 +509,8 @@ async function files_pending_update_upsert_branch_docs(
 
 	if (!args.existingPendingUpdate) {
 		const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			userId: args.userId,
 			fileNodeId: args.nodeId,
 			baseYjsSequence: args.baseYjsSequence,
@@ -525,8 +525,8 @@ async function files_pending_update_upsert_branch_docs(
 			expectedUpdatedAt: now,
 		});
 		const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			userId: args.userId,
 			nodeId: args.nodeId,
 			pendingUpdateId,
@@ -553,8 +553,8 @@ async function files_pending_update_upsert_branch_docs(
 		// pending Markdown/plain-text chunk docs and metadata docs stay correct and rebuilding them would be wasted writes.
 		if (args.unstagedBranchChanged) {
 			const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
+				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				projectId: args.projectId,
 				userId: args.userId,
 				nodeId: args.nodeId,
 				pendingUpdateId: args.existingPendingUpdate._id,
@@ -573,8 +573,8 @@ async function files_pending_update_upsert_branch_docs(
 async function files_pending_update_upsert_updates(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: string;
 		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"];
@@ -585,13 +585,13 @@ async function files_pending_update_upsert_updates(
 	},
 ) {
 	const file = await ctx.db.get("files_nodes", args.nodeId);
-	if (!file || file.workspaceId !== args.workspaceId || file.projectId !== args.projectId) {
+	if (!file || file.organizationId !== args.organizationId || file.workspaceId !== args.workspaceId) {
 		return Result({ _nay: { message: "Not found" } });
 	}
 
 	const branchDocsResult = await files_pending_update_resolve_branch_docs(ctx, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		userId: args.userId,
 		nodeId: file._id,
 		pendingUpdateId: args.pendingUpdateId,
@@ -606,36 +606,36 @@ async function files_pending_update_upsert_updates(
 		branchDocsResult._yay;
 
 	if (args.stagedMarkdown !== undefined) {
-		const stagedBranchProjection = files_pending_update_project_markdown_to_branch({
+		const stagedBranchProjection = files_pending_update_workspace_markdown_to_branch({
 			mut_yjsDoc: stagedBranchYjsDoc,
 			markdown: args.stagedMarkdown,
 		});
 		if (stagedBranchProjection._nay) {
 			return Result({
 				_nay: {
-					message: "Failed to project staged markdown into pending branch",
+					message: "Failed to workspace staged markdown into pending branch",
 					cause: stagedBranchProjection._nay,
 				},
 			});
 		}
 	}
 
-	const unstagedBranchProjection = files_pending_update_project_markdown_to_branch({
+	const unstagedBranchProjection = files_pending_update_workspace_markdown_to_branch({
 		mut_yjsDoc: unstagedBranchYjsDoc,
 		markdown: args.unstagedMarkdown,
 	});
 	if (unstagedBranchProjection._nay) {
 		return Result({
 			_nay: {
-				message: "Failed to project unstaged markdown into pending branch",
+				message: "Failed to workspace unstaged markdown into pending branch",
 				cause: unstagedBranchProjection._nay.cause,
 			},
 		});
 	}
 
 	return await files_pending_update_upsert_branch_docs(ctx, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		userId: args.userId,
 		nodeId: file._id,
 		existingPendingUpdate,
@@ -693,8 +693,8 @@ export const remove_file_pending_update_if_expired = internalMutation({
 
 export const upsert_file_pending_update_in_db = internalMutation({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -719,8 +719,8 @@ export type upsert_file_pending_update_in_db_Result =
 async function action_upsert_file_pending_update_in_db(
 	ctx: ActionCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		nodeId: Id<"files_nodes">;
 		pendingUpdateId?: Id<"files_pending_updates"> | undefined;
@@ -740,7 +740,7 @@ async function action_upsert_file_pending_update_in_db(
 
 export const upsert_file_pending_update = action({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		stagedMarkdown: v.optional(v.string()),
@@ -754,7 +754,7 @@ export const upsert_file_pending_update = action({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const membership = await ctx.runQuery(api.workspaces.get_membership, {
+		const membership = await ctx.runQuery(api.organizations.get_membership, {
 			membershipId: args.membershipId,
 		});
 		if (!membership || membership.userId !== userAuth.id) {
@@ -767,8 +767,8 @@ export const upsert_file_pending_update = action({
 		}
 
 		const base = await files_pending_update_action_get_latest_file_yjs_state(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			nodeId: args.nodeId,
 		});
 		if (base._nay) {
@@ -776,8 +776,8 @@ export const upsert_file_pending_update = action({
 		}
 
 		const upserted = await action_upsert_file_pending_update_in_db(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			userId: userAuth.id,
 			nodeId: args.nodeId,
 			pendingUpdateId: args.pendingUpdateId,
@@ -796,8 +796,8 @@ export const upsert_file_pending_update = action({
 
 export const upsert_file_pending_update_internal_action = internalAction({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -809,8 +809,8 @@ export const upsert_file_pending_update_internal_action = internalAction({
 	}),
 	handler: async (ctx, args) => {
 		const base = await files_pending_update_action_get_latest_file_yjs_state(ctx, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 		});
 		if (base._nay) {
@@ -832,7 +832,7 @@ export const upsert_file_pending_update_internal_action = internalAction({
 
 export const persist_file_pending_update_rebased_state_in_db = internalMutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		baseYjsSequence: v.number(),
@@ -852,7 +852,7 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -861,8 +861,8 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 		}
 
 		const existingPendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			userId: userAuth.id,
 			nodeId: args.nodeId,
 			pendingUpdateId: args.pendingUpdateId,
@@ -951,8 +951,8 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 
 		if (!existingPendingUpdate) {
 			pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				userId: userAuth.id,
 				fileNodeId: args.nodeId,
 				baseYjsSequence: args.baseYjsSequence,
@@ -992,8 +992,8 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 		// Rebase rewrites the unstaged branch, so always refresh pending Markdown/plain-text chunk docs and metadata docs.
 		if (pendingUpdateId) {
 			const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				userId: userAuth.id,
 				nodeId: args.nodeId,
 				pendingUpdateId,
@@ -1034,7 +1034,7 @@ export type persist_file_pending_update_rebased_state_in_db_Result =
 async function action_persist_file_pending_update_rebased_state_in_db(
 	ctx: ActionCtx,
 	args: {
-		membershipId: app_convex_Doc<"workspaces_projects_users">["_id"];
+		membershipId: app_convex_Doc<"organizations_workspaces_users">["_id"];
 		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"] | undefined;
 		baseYjsSequence: number;
@@ -1055,7 +1055,7 @@ async function action_persist_file_pending_update_rebased_state_in_db(
 
 export const persist_file_pending_update_rebased_state = action({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		baseYjsSequence: v.number(),
@@ -1073,7 +1073,7 @@ export const persist_file_pending_update_rebased_state = action({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const membership = await ctx.runQuery(api.workspaces.get_membership, {
+		const membership = await ctx.runQuery(api.organizations.get_membership, {
 			membershipId: args.membershipId,
 		});
 		if (!membership || membership.userId !== userAuth.id) {
@@ -1081,8 +1081,8 @@ export const persist_file_pending_update_rebased_state = action({
 		}
 
 		const latestBase = await files_pending_update_action_get_latest_file_yjs_state(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			nodeId: args.nodeId,
 		});
 		if (latestBase._nay) {
@@ -1104,7 +1104,7 @@ export const persist_file_pending_update_rebased_state = action({
 
 export const get_file_pending_update = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 	},
@@ -1114,7 +1114,7 @@ export const get_file_pending_update = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -1123,8 +1123,8 @@ export const get_file_pending_update = query({
 		}
 
 		return await files_db_get_pending_update(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			userId: userAuth.id,
 			nodeId: args.nodeId,
 			pendingUpdateId: args.pendingUpdateId,
@@ -1134,8 +1134,8 @@ export const get_file_pending_update = query({
 
 export const get_file_pending_update_internal = internalQuery({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -1148,7 +1148,7 @@ export const get_file_pending_update_internal = internalQuery({
 
 export const list_files_pending_updates = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 	},
 	returns: v.array(doc(app_convex_schema, "files_pending_updates")),
 	handler: async (ctx, args) => {
@@ -1156,7 +1156,7 @@ export const list_files_pending_updates = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -1166,8 +1166,8 @@ export const list_files_pending_updates = query({
 
 		const filesPendingUpdates = await ctx.db
 			.query("files_pending_updates")
-			.withIndex("by_workspace_project_user_fileNode", (q) =>
-				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("userId", userAuth.id),
+			.withIndex("by_organization_workspace_user_fileNode", (q) =>
+				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId).eq("userId", userAuth.id),
 			)
 			.order("asc")
 			.collect();
@@ -1178,7 +1178,7 @@ export const list_files_pending_updates = query({
 
 export const get_file_pending_update_last_sequence_saved = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 	},
 	returns: v.union(doc(app_convex_schema, "files_pending_updates_last_sequence_saved"), v.null()),
@@ -1187,7 +1187,7 @@ export const get_file_pending_update_last_sequence_saved = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -1197,10 +1197,10 @@ export const get_file_pending_update_last_sequence_saved = query({
 
 		return await ctx.db
 			.query("files_pending_updates_last_sequence_saved")
-			.withIndex("by_workspace_project_user_fileNode", (q) =>
+			.withIndex("by_organization_workspace_user_fileNode", (q) =>
 				q
+					.eq("organizationId", membership.organizationId)
 					.eq("workspaceId", membership.workspaceId)
-					.eq("projectId", membership.projectId)
 					.eq("userId", userAuth.id)
 					.eq("fileNodeId", args.nodeId),
 			)
@@ -1210,7 +1210,7 @@ export const get_file_pending_update_last_sequence_saved = query({
 
 export const save_file_pending_update_in_db = internalMutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		baseYjsSequence: v.number(),
@@ -1236,7 +1236,7 @@ export const save_file_pending_update_in_db = internalMutation({
 		if (!user) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: user._id,
 			membershipId: args.membershipId,
 		});
@@ -1245,8 +1245,8 @@ export const save_file_pending_update_in_db = internalMutation({
 		}
 
 		const pendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			userId: user._id,
 			nodeId: args.nodeId,
 			pendingUpdateId: args.pendingUpdateId,
@@ -1286,13 +1286,13 @@ export const save_file_pending_update_in_db = internalMutation({
 			yjsDoc: latestFileYjsDoc,
 		});
 		if (diffUpdateForLatestFileYjsDoc) {
-			const workspace = await ctx.db.get("workspaces", membership.workspaceId);
-			if (!workspace) {
-				const errorMessage = "membership.workspaceId points to a missing workspaces doc";
+			const organization = await ctx.db.get("organizations", membership.organizationId);
+			if (!organization) {
+				const errorMessage = "membership.organizationId points to a missing organizations doc";
 				const errorData = {
 					membershipId: membership._id,
+					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
 					nodeId: args.nodeId,
 					pendingUpdateId: args.pendingUpdateId,
 				};
@@ -1301,14 +1301,14 @@ export const save_file_pending_update_in_db = internalMutation({
 			}
 			const billedUserId = billing_pick_billed_user_id({
 				userId: user._id,
-				workspace,
+				organization,
 			});
 			const billedUser = await ctx.db.get("users", billedUserId);
 			if (!billedUser) {
 				const errorMessage = "billedUserId points to a missing users doc";
 				const errorData = {
 					userId: user._id,
-					workspaceId: workspace._id,
+					organizationId: organization._id,
 					billedUserId,
 				};
 				console.error(errorMessage, errorData);
@@ -1327,8 +1327,8 @@ export const save_file_pending_update_in_db = internalMutation({
 				});
 			}
 			const result = await files_db_yjs_push_update(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				update: files_u8_to_array_buffer(diffUpdateForLatestFileYjsDoc),
 				sessionId: `files_pending_update:${user._id}`,
@@ -1352,8 +1352,8 @@ export const save_file_pending_update_in_db = internalMutation({
 								"file_save",
 								billedUser._id,
 								user._id,
+								membership.organizationId,
 								membership.workspaceId,
-								membership.projectId,
 								args.nodeId,
 								result._yay.newSequence,
 							),
@@ -1361,8 +1361,8 @@ export const save_file_pending_update_in_db = internalMutation({
 								amount: 1,
 								actorUserId: user._id,
 								billedUserId: billedUser._id,
+								organizationId: membership.organizationId,
 								workspaceId: membership.workspaceId,
-								projectId: membership.projectId,
 								nodeId: args.nodeId,
 								yjsSequence: String(result._yay.newSequence),
 							},
@@ -1395,8 +1395,8 @@ export const save_file_pending_update_in_db = internalMutation({
 		if (unstagedMatchesSavedBase._yay) {
 			await Promise.all([
 				files_pending_update_upsert_last_sequence_saved(ctx, {
+					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
 					userId: user._id,
 					nodeId: args.nodeId,
 					lastSequenceSaved: nextBaseYjsSequence,
@@ -1452,8 +1452,8 @@ export const save_file_pending_update_in_db = internalMutation({
 				expectedUpdatedAt: now,
 			}),
 			files_pending_update_upsert_last_sequence_saved(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				userId: user._id,
 				nodeId: args.nodeId,
 				lastSequenceSaved: nextBaseYjsSequence,
@@ -1466,8 +1466,8 @@ export const save_file_pending_update_in_db = internalMutation({
 		if (unstagedMarkdownAfterRemoteDrift) {
 			const unstagedMarkdown = unstagedMarkdownAfterRemoteDrift;
 			const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				userId: user._id,
 				nodeId: args.nodeId,
 				pendingUpdateId: pendingUpdate._id,
@@ -1495,7 +1495,7 @@ export type save_file_pending_update_in_db_Result =
 async function action_save_file_pending_update_in_db(
 	ctx: ActionCtx,
 	args: {
-		membershipId: app_convex_Doc<"workspaces_projects_users">["_id"];
+		membershipId: app_convex_Doc<"organizations_workspaces_users">["_id"];
 		nodeId: app_convex_Doc<"files_pending_updates">["fileNodeId"];
 		pendingUpdateId?: app_convex_Doc<"files_pending_updates">["_id"] | undefined;
 		baseYjsSequence: number;
@@ -1512,7 +1512,7 @@ async function action_save_file_pending_update_in_db(
 
 export const save_file_pending_update = action({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 	},
@@ -1526,7 +1526,7 @@ export const save_file_pending_update = action({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const membership = await ctx.runQuery(api.workspaces.get_membership, {
+		const membership = await ctx.runQuery(api.organizations.get_membership, {
 			membershipId: args.membershipId,
 		});
 		if (!membership || membership.userId !== userAuth.id) {
@@ -1534,8 +1534,8 @@ export const save_file_pending_update = action({
 		}
 
 		const base = await files_pending_update_action_get_latest_file_yjs_state(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			nodeId: args.nodeId,
 		});
 		if (base._nay) {

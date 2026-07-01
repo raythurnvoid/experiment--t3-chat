@@ -8,7 +8,7 @@ import {
 	bash_clamp_listing_page_limit,
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
-	bash_is_path_under_current_project_path,
+	bash_is_path_under_current_workspace_path,
 	bash_is_path_under_mounts,
 	bash_normalize_path,
 	bash_parse_limit,
@@ -24,7 +24,7 @@ import {
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 
-function parse_args(args: string[], options: { currentProjectPath: string; cwd: string }) {
+function parse_args(args: string[], options: { currentWorkspacePath: string; cwd: string }) {
 	let limitValue: string | undefined;
 	let cursor: string | null = null;
 	let pathValue: string | undefined;
@@ -109,7 +109,7 @@ function parse_args(args: string[], options: { currentProjectPath: string; cwd: 
 			arg.startsWith("~") ||
 			arg === "." ||
 			arg === ".." ||
-			bash_is_path_under_current_project_path(options.currentProjectPath, bash_normalize_path(arg)) ||
+			bash_is_path_under_current_workspace_path(options.currentWorkspacePath, bash_normalize_path(arg)) ||
 			bash_is_path_under_mounts(bash_normalize_path(arg)),
 	);
 	if (pathOperand != null) {
@@ -123,7 +123,7 @@ function parse_args(args: string[], options: { currentProjectPath: string; cwd: 
 	}
 
 	// Resolve the user-facing folder scope to an absolute shell path; the handler classifies it
-	// (project vs. mount) and verifies it is an existing folder.
+	// (workspace vs. mount) and verifies it is an existing folder.
 	let pathShell: string | undefined;
 	if (pathValue != null) {
 		if (pathValue === "") {
@@ -143,9 +143,9 @@ function parse_args(args: string[], options: { currentProjectPath: string; cwd: 
 }
 
 export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
-	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
+	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("search", async (args, commandCtx) => {
-		const parsed = parse_args(args, { currentProjectPath, cwd: commandCtx.cwd });
+		const parsed = parse_args(args, { currentWorkspacePath, cwd: commandCtx.cwd });
 		if (parsed._nay) {
 			return {
 				stdout: "",
@@ -167,7 +167,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 			cursor = resolvedCursor._yay;
 		}
 
-		// search runs within exactly one indexed tree (the project or a single mount). The scope is the
+		// search runs within exactly one indexed tree (the workspace or a single mount). The scope is the
 		// explicit --path folder when given, otherwise the cwd. Classify it to pick the right scope IDs.
 		const scopeShellPath = parsed._yay.pathShell ?? commandCtx.cwd;
 		const scope = bash_resolve_db_files_shell_path(scopeShellPath, dbFilesRoots);
@@ -185,7 +185,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 		if (parsed._yay.pathShell != null && scope.dbFilesPath == null) {
 			return {
 				stdout: "",
-				stderr: `search: --path must be a folder under ${currentProjectPath} or ${bash_normalize_path(scopeShellPath).startsWith("/.mounts") ? "/.mounts/<name>" : "a mount"}: ${parsed._yay.pathShell}\n`,
+				stderr: `search: --path must be a folder under ${currentWorkspacePath} or ${bash_normalize_path(scopeShellPath).startsWith("/.mounts") ? "/.mounts/<name>" : "a mount"}: ${parsed._yay.pathShell}\n`,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -193,8 +193,8 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 		// `search --path` is an exact folder scope, not a prefix scan.
 		if (parsed._yay.pathShell != null && scope.dbFilesPath != null && scope.dbFilesPath !== "/") {
 			const scopedFolder = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+				organizationId: scope.ctxData.organizationId,
 				workspaceId: scope.ctxData.workspaceId,
-				projectId: scope.ctxData.projectId,
 				path: scope.dbFilesPath,
 			})) as files_nodes_get_by_path_Result;
 			const scopedShellPath = scope.renderShellPath(scope.dbFilesPath);
@@ -214,12 +214,12 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 			}
 		}
 
-		// Scope the chunk scan to the classified folder; the project/mount root maps to the whole tree.
+		// Scope the chunk scan to the classified folder; the workspace/mount root maps to the whole tree.
 		const path = scope.dbFilesPath != null && scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
 
 		const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+			organizationId: scope.ctxData.organizationId,
 			workspaceId: scope.ctxData.workspaceId,
-			projectId: scope.ctxData.projectId,
 			userId: scope.ctxData.userId,
 			query: parsed._yay.query,
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
@@ -308,7 +308,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				blocks.push(
 					"",
 					bash_search_command_build_continuation({
-						currentProjectPath: scope.basePath,
+						currentWorkspacePath: scope.basePath,
 						path,
 						limit: parsed._yay.limit,
 						cursor: cursorId,

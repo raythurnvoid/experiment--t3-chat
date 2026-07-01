@@ -2,10 +2,10 @@ import { defineCommand } from "just-bash/browser";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import {
 	bash_create_glob_syntax_unsupported_message,
-	bash_current_project_path_to_db_files_path,
+	bash_current_workspace_path_to_db_files_path,
 	bash_delegate_builtin_command,
 	bash_GLOB_METACHARACTER_REGEX,
-	bash_is_path_under_current_project_path,
+	bash_is_path_under_current_workspace_path,
 	bash_is_path_under_mounts,
 	bash_parse_cp_mv_operands,
 	bash_resolve_path,
@@ -22,7 +22,7 @@ import {
  * aborts before delegation so a mixed command cannot leave partial scratch
  * side effects while pretending to mutate the durable app tree.
  */
-export function bash_mv_command_create(currentProjectPath: string) {
+export function bash_mv_command_create(currentWorkspacePath: string) {
 	return defineCommand("mv", async (args, commandCtx) => {
 		const { operands } = bash_parse_cp_mv_operands(args);
 
@@ -40,7 +40,7 @@ export function bash_mv_command_create(currentProjectPath: string) {
 		}
 
 		const appOperands = operands.filter((operand) =>
-			bash_is_path_under_current_project_path(currentProjectPath, bash_resolve_path(commandCtx.cwd, operand)),
+			bash_is_path_under_current_workspace_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand)),
 		);
 
 		if (appOperands.length === 0) {
@@ -60,20 +60,20 @@ export function bash_mv_command_create(currentProjectPath: string) {
 		const destOperand = operands.length >= 2 ? operands.at(-1) : undefined;
 		const sourceOperands = operands.length >= 2 ? operands.slice(0, -1) : operands;
 		const sourceAppPathOperand = sourceOperands.find((operand) =>
-			bash_is_path_under_current_project_path(currentProjectPath, bash_resolve_path(commandCtx.cwd, operand)),
+			bash_is_path_under_current_workspace_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand)),
 		);
 		const destDbFilesPath =
 			destOperand == null
 				? null
-				: bash_current_project_path_to_db_files_path(
-						currentProjectPath,
+				: bash_current_workspace_path_to_db_files_path(
+						currentWorkspacePath,
 						bash_resolve_path(commandCtx.cwd, destOperand),
 					);
 		const sourceDbFilesPath =
 			sourceAppPathOperand == null
 				? null
-				: bash_current_project_path_to_db_files_path(
-						currentProjectPath,
+				: bash_current_workspace_path_to_db_files_path(
+						currentWorkspacePath,
 						bash_resolve_path(commandCtx.cwd, sourceAppPathOperand),
 					);
 

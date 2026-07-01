@@ -1,6 +1,6 @@
 ---
 name: data-deletion
-description: Data deletion, account deletion, admin user data reset, delayed purge queues, R2 asset cleanup, and Workpool deletion orchestration. Use when changing `packages/app/convex/data_deletion.ts`, `data_deletion_requests`, `users.delete_current_user_account`, `users.hard_delete_user_now`, workspace/project delete purge behavior, or tests for deletion retention and cleanup.
+description: Data deletion, account deletion, admin user data reset, delayed purge queues, R2 asset cleanup, and Workpool deletion orchestration. Use when changing `packages/app/convex/data_deletion.ts`, `data_deletion_requests`, `users.delete_current_user_account`, `users.hard_delete_user_now`, organization/workspace delete purge behavior, or tests for deletion retention and cleanup.
 ---
 
 # Scope
@@ -9,48 +9,48 @@ Use this skill as the canonical map for the deletion system. Also load:
 
 - `../convex/SKILL.md` before changing Convex functions, validators, schema, or tests.
 - `../auth-system/SKILL.md` for user-facing account deletion, deleted-account recovery, Clerk cleanup, anonymous auth, and billing cancellation behavior.
-- `../workspaces-tenancy/SKILL.md` for workspace/project ownership, memberships, default tenant rules, and tenant purge semantics.
+- `../organizations-tenancy/SKILL.md` for organization/workspace ownership, memberships, default tenant rules, and tenant purge semantics.
 - `../quotas/SKILL.md` when quota docs or usage counters are touched.
 - `../access-control/SKILL.md` when role assignments or permission grants are touched.
 
 # Mental Model
 
 - `packages/app/convex/data_deletion.ts` owns delayed and destructive cleanup.
-- `data_deletion_requests` is the shared queue. `scope` is `"user"`, `"workspace"`, or `"project"`. `eligibleAt` gates retention/delay.
+- `data_deletion_requests` is the shared queue. `scope` is `"user"`, `"organization"`, or `"workspace"`. `eligibleAt` gates retention/delay.
 - User deletion is two-phase: phase 1 tombstones and deactivates access, phase 2 finalizes after retention.
-- Workspace/project deletion is also split: UI-facing mutations remove structure/access immediately where needed, then the data deletion worker purges heavy tenant content in batches.
+- Organization/workspace deletion is also split: UI-facing mutations remove structure/access immediately where needed, then the data deletion worker purges heavy tenant content in batches.
 - Admin data reset is not account deletion. It preserves the account and default tenant while deleting reset-owned content.
 - Large deletes must remain retryable, bounded, and idempotent. Keep limited indexed reads and leave queue docs in place while work remains.
 
 # Primary Files
 
-- `packages/app/convex/data_deletion.ts`: queue helper, phase 1/2 user deletion, project/workspace purge batches, admin data reset, Workpool actions.
+- `packages/app/convex/data_deletion.ts`: queue helper, phase 1/2 user deletion, organization/workspace purge batches, admin data reset, Workpool actions.
 - `packages/app/convex/users.ts`: `delete_current_user_account`, deleted-user recovery in `resolve_user`, `hard_delete_user_now`, `purge_deleted_user_tombstone`.
-- `packages/app/convex/workspaces.ts`: `delete_project` and `delete_workspace` phase-1 behavior.
+- `packages/app/convex/organizations.ts`: `delete_workspace` and `delete_organization` phase-1 behavior.
 - `packages/app/convex/schema.ts`: `data_deletion_requests` and indexes.
 - `packages/app/convex/crons.ts`: daily enqueue of `data_deletion.enqueue_deletion_requests_processing`.
 - `packages/app/convex/data_deletion.test.ts`: main behavioral coverage.
 
 # Function Map
 
-- `data_deletion_db_request`: creates or reuses exactly one queue doc for the requested user, workspace, or project scope.
+- `data_deletion_db_request`: creates or reuses exactly one queue doc for the requested user, organization, or workspace scope.
 - `db_prepare_user_for_deletion`: phase 1 for a user. It tombstones the user, deactivates memberships, and removes presence.
-- `db_finalize_deleted_user`: phase 2 for a tombstoned user. It deletes user-scoped docs and returns workspaces that became empty.
-- `db_purge_workspace_project_content_batch`: deletes tenant content for one `(workspaceId, projectId)` in bounded batches.
-- `db_delete_project_structure_batch`: deletes project notifications, memberships, access-control docs, and then the project doc after content is gone.
-- `db_delete_project_batch`: full project deletion used by workspace deletion and admin reset flows where the project doc may still exist.
-- `db_delete_workspace_batch`: drains queued project content, deletes remaining projects, deletes workspace structure, then deletes the workspace doc.
-- `process_user_deletion_request`, `process_workspace_deletion_request`, and `process_project_deletion_request`: own one queued request at a time and leave the queue doc in place while covered work remains.
+- `db_finalize_deleted_user`: phase 2 for a tombstoned user. It deletes user-scoped docs and returns organizations that became empty.
+- `db_purge_organization_workspace_content_batch`: deletes tenant content for one `(organizationId, workspaceId)` in bounded batches.
+- `db_delete_workspace_structure_batch`: deletes workspace notifications, memberships, access-control docs, and then the workspace doc after content is gone.
+- `db_delete_workspace_batch`: full workspace deletion used by organization deletion and admin reset flows where the workspace doc may still exist.
+- `db_delete_organization_batch`: drains queued workspace content, deletes remaining workspaces, deletes organization structure, then deletes the organization doc.
+- `process_user_deletion_request`, `process_organization_deletion_request`, and `process_workspace_deletion_request`: own one queued request at a time and leave the queue doc in place while covered work remains.
 - `run_deletion_request_batches`: Workpool action body that processes due requests in priority order within a fixed mutation-step budget.
 
 # Queue Semantics
 
 - Create requests through `data_deletion_db_request`, not direct inserts, unless a test is intentionally seeding a specific queue shape.
 - User requests dedupe by `(userId, scope: "user")`.
-- Workspace requests dedupe by `(workspaceId, scope: "workspace")`.
-- Project requests dedupe by `(workspaceId, projectId, scope: "project")`.
+- Organization requests dedupe by `(organizationId, scope: "organization")`.
+- Workspace requests dedupe by `(organizationId, workspaceId, scope: "workspace")`.
 - Repeated requests keep the earliest `eligibleAt`.
-- User requests normally use the retention window. Workspace/project requests use the same helper and may be immediate when an admin/finalization path passes `eligibleAt: now`.
+- User requests normally use the retention window. Organization/workspace requests use the same helper and may be immediate when an admin/finalization path passes `eligibleAt: now`.
 - Do not delete a queue doc until the owning processor has finished all covered work, except invalid request docs that cannot target anything.
 
 # User Deletion
@@ -61,7 +61,7 @@ Use this skill as the canonical map for the deletion system. Also load:
 
 - Resolve the current user and return `Unauthenticated` when no app user doc exists.
 - Rate-limit before starting local deletion, Clerk cleanup, or billing cleanup.
-- Block deletion while the user owns non-personal workspaces not already queued for workspace deletion.
+- Block deletion while the user owns non-personal organizations not already queued for organization deletion.
 - Call `internal.data_deletion.init_user_deletion` to apply local phase 1 before attempting external cleanup.
 - Treat Clerk delete as best-effort after local deletion; do not fail local deletion because Clerk cleanup failed.
 - Schedule Polar subscription period-end cancellation as deletion cleanup. Keep local Polar mirror docs Polar-owned.
@@ -70,7 +70,7 @@ Use this skill as the canonical map for the deletion system. Also load:
 
 `init_user_deletion`:
 
-- Internal/admin callers may still reach this with owned non-default workspaces. Queue those workspaces first through `db_queue_workspace_deletion_for_owner_account_deletion`.
+- Internal/admin callers may still reach this with owned non-default organizations. Queue those organizations first through `db_queue_organization_deletion_for_owner_account_deletion`.
 - `db_prepare_user_for_deletion` sets `users.deletedAt`, marks memberships inactive, and removes presence docs.
 - Phase 1 keeps the user doc, anagraphic, auth pointers, billing state, tenant docs, files, and queue docs needed for recovery.
 - Phase 1 creates or reuses one user-scope `data_deletion_requests` doc.
@@ -81,7 +81,7 @@ Deleted-account recovery is handled in `users.resolve_user`.
 
 - Recovery is same normalized verified-email only.
 - Reclaim the same Convex `users` doc, clear `deletedAt`, relink the new Clerk id, reactivate memberships, remove only the user-scope deletion request, and mark the auth response so billing bootstrap can restore a deletion-triggered Polar period-end cancellation when possible.
-- Do not remove resource-scope workspace/project requests during account recovery.
+- Do not remove resource-scope organization/workspace requests during account recovery.
 - Do not backfill missing anagraphic email as part of deletion recovery.
 
 ## Phase 2
@@ -94,51 +94,51 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - `db_finalize_deleted_user` deletes user-scoped memberships, role assignments, direct user grants, pending-update docs, last-sequence docs, and user quota docs.
 - Keep `billing_usage_snapshots` whenever the `users` doc is retained. Delete them only when the full user-record purge path passes `deleteBillingState`.
 - Auth pointers and anonymous tokens are removed only when the caller passes `deleteUserAuth`.
-- After finalization, queue now-empty workspaces with immediate workspace requests.
+- After finalization, queue now-empty organizations with immediate organization requests.
 - Leave the tombstoned user doc unless `users.purge_deleted_user_tombstone` runs later.
 
-# Workspace And Project Deletion
-
-## Project Delete
-
-`workspaces.delete_project`:
-
-- Rejects default projects.
-- Queues a project-scope request.
-- Releases one `extra_projects` quota unit.
-- Removes project invite notifications, memberships, role assignments, permission grants, then deletes the project doc.
-- The queued project request later purges heavy content for the deleted project id, even though the project doc is already gone.
-
-`process_project_deletion_request`:
-
-- Only owns project-scope request docs.
-- Requires both `workspaceId` and `projectId`; invalid docs are removed.
-- Calls `db_purge_workspace_project_content_batch`.
-- Keeps the queue doc while content remains.
-- Does not delete project structure. The UI-facing `workspaces.delete_project` path already removed project memberships, access docs, quota usage, and the project doc during phase 1. Use `db_delete_project_batch` only from flows that still need full content-plus-structure project deletion.
+# Organization And Workspace Deletion
 
 ## Workspace Delete
 
-`workspaces.delete_workspace`:
+`organizations.delete_workspace`:
 
-- Rejects the default workspace and requires `workspaces.ownerUserId` ownership.
-- Queues one workspace-scope request.
-- Removes workspace notifications, access-control docs, and all project memberships.
-- Releases one owner `extra_workspaces` quota unit.
-- Ensures affected users still have a default tenant.
-- Defers workspace/project docs, quota docs, and heavy content to the worker.
+- Rejects default workspaces.
+- Queues a workspace-scope request.
+- Releases one `extra_workspaces` quota unit.
+- Removes workspace invite notifications, memberships, role assignments, permission grants, then deletes the workspace doc.
+- The queued workspace request later purges heavy content for the deleted workspace id, even though the workspace doc is already gone.
 
 `process_workspace_deletion_request`:
 
 - Only owns workspace-scope request docs.
-- Processes queued project requests in that workspace first, including project ids whose project docs were already removed.
-- Then deletes remaining project docs through `db_delete_project_batch`.
-- Then deletes workspace notifications, access-control docs, workspace quota docs, and the workspace doc.
+- Requires both `organizationId` and `workspaceId`; invalid docs are removed.
+- Calls `db_purge_organization_workspace_content_batch`.
+- Keeps the queue doc while content remains.
+- Does not delete workspace structure. The UI-facing `organizations.delete_workspace` path already removed workspace memberships, access docs, quota usage, and the workspace doc during phase 1. Use `db_delete_workspace_batch` only from flows that still need full content-plus-structure workspace deletion.
+
+## Organization Delete
+
+`organizations.delete_organization`:
+
+- Rejects the default organization and requires `organizations.ownerUserId` ownership.
+- Queues one organization-scope request.
+- Removes organization notifications, access-control docs, and all workspace memberships.
+- Releases one owner `extra_organizations` quota unit.
+- Ensures affected users still have a default tenant.
+- Defers organization/workspace docs, quota docs, and heavy content to the worker.
+
+`process_organization_deletion_request`:
+
+- Only owns organization-scope request docs.
+- Processes queued workspace requests in that organization first, including workspace ids whose workspace docs were already removed.
+- Then deletes remaining workspace docs through `db_delete_workspace_batch`.
+- Then deletes organization notifications, access-control docs, organization quota docs, and the organization doc.
 - Keeps the queue doc while structure or content remains.
 
-# Project Content Purge Coverage
+# Workspace Content Purge Coverage
 
-`db_purge_workspace_project_content_batch` is the tenant-content purge order. When adding a tenant-scoped table with project data, update this function and add a narrow index or a parent-doc batching strategy.
+`db_purge_organization_workspace_content_batch` is the tenant-content purge order. When adding a tenant-scoped table with workspace data, update this function and add a narrow index or a parent-doc batching strategy.
 
 Current purge coverage includes:
 
@@ -160,7 +160,7 @@ Use limited `.take(batchSize)` reads for growing tables. Do not reintroduce tena
 
 When adding a new purge target:
 
-- Add or reuse an index that starts with `workspaceId` and `projectId`, unless the table is reached safely through a bounded parent doc.
+- Add or reuse an index that starts with `organizationId` and `workspaceId`, unless the table is reached safely through a bounded parent doc.
 - Put child docs before parent docs.
 - Cancel external or Workpool-owned work before deleting the tracking doc.
 - Delete external storage objects before deleting the Convex doc that stores the object key.
@@ -170,7 +170,7 @@ When adding a new purge target:
 
 `users.hard_delete_user_now` has three modes:
 
-- `"data"`: data-only reset. Preserve `users`, auth ids, anonymous auth, anagraphic/profile, billing state, default `personal` workspace, and default `home` project. Clear the user-scope deletion request. Purge content from the preserved home project. Delete extra personal projects, and delete non-default workspaces/projects only when the reset user is the only active participant in that tenant scope.
+- `"data"`: data-only reset. Preserve `users`, auth ids, anonymous auth, anagraphic/profile, billing state, default `personal` organization, and default `home` workspace. Clear the user-scope deletion request. Purge content from the preserved home workspace. Delete extra personal workspaces, and delete non-default organizations/workspaces only when the reset user is the only active participant in that tenant scope.
 - `"data_and_auth"`: delete tenant/user data and auth state, attempt Clerk deletion, remove anonymous auth tokens, keep the final tombstoned user doc, preserve `billing_usage_snapshots`, schedule period-end subscription cancellation, and drain or schedule queued tenant purge requests.
 - `"data_auth_and_user_record"`: delete tenant/user data and auth state, revoke paid subscription immediately, delete the Polar customer immediately, delete `billing_usage_snapshots`, drain or schedule queued tenant purge requests, then purge the local tombstone.
 
@@ -181,15 +181,15 @@ For data-only reset, treat missing or inconsistent default tenant state as an in
 - The daily cron enqueues `data_deletion.enqueue_deletion_requests_processing`.
 - `process_deletion_requests` runs through `data_deletion_workpool` with `maxParallelism: 1`.
 - Each worker run has a limited mutation-step budget.
-- Processing order is user requests, then workspace requests, then project requests.
+- Processing order is user requests, then organization requests, then workspace requests.
 - Each request is attempted independently; one failure should be logged and should not stop the whole batch.
 - If work remains, enqueue another Workpool action instead of letting one action run unbounded.
 - Tests may pass `_test_now`, `_test_batchSize`, and `_test_disableReschedule`; do not use those in production flows.
 
 # Batching Boundaries
 
-- Project content purge, project structure deletion, workspace deletion, and the Workpool loop are explicitly bounded and retryable.
-- `process_project_deletion_request` deletes content only; `db_delete_project_batch` deletes content and structure.
+- Workspace content purge, workspace structure deletion, organization deletion, and the Workpool loop are explicitly bounded and retryable.
+- `process_workspace_deletion_request` deletes content only; `db_delete_workspace_batch` deletes content and structure.
 - `db_finalize_deleted_user` currently finalizes user-scoped docs in one mutation after loading them with bounded-by-user queries. If user-scoped memberships, grants, pending updates, auth docs, quota docs, or billing snapshots can grow beyond one safe mutation, split user finalization into its own batched phases before relying on it for large accounts.
 
 # Guardrails
@@ -202,7 +202,7 @@ For data-only reset, treat missing or inconsistent default tenant state as an in
 - Keep queue docs scoped; user restore removes only user-scope requests.
 - Keep billing snapshot deletion tied to full user-record purge, not normal account deletion or data reset.
 - Keep public/user-facing mutations responsible for phase-1 permissions, rate limits, quota release, and immediate access removal.
-- Keep heavy content deletion in `data_deletion.ts`, not inside UI-facing workspace/user mutations.
+- Keep heavy content deletion in `data_deletion.ts`, not inside UI-facing organization/user mutations.
 
 # Validation
 
@@ -215,7 +215,7 @@ vp env exec pnpm --dir packages/app exec vitest run convex/data_deletion.test.ts
 Also consider:
 
 - `convex/users.test.ts` when deleted-account recovery, Clerk cleanup, auth pointers, or `hard_delete_user_now` behavior changes.
-- `convex/workspaces.test.ts` when workspace/project delete phase-1 behavior changes.
+- `convex/organizations.test.ts` when organization/workspace delete phase-1 behavior changes.
 - Quota tests when quota counters or quota doc cleanup changes.
 
 Do not run lint/typecheck/full test suites unless the user asked for broad verification.

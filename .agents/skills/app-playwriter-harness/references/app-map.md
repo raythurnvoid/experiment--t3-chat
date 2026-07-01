@@ -5,7 +5,7 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 ## Local App
 
 - Development app URL: `http://localhost:5173/`.
-- Files route shape: `/w/:workspaceName/:projectName/files`.
+- Files route shape: `/w/:organizationName/:workspaceName/files`.
 - The `/files` route accepts `nodeId` and optional `view` search params.
 - Known page editor views: `rich_text_editor`, `plain_text_editor`, `diff_editor`.
 
@@ -20,17 +20,17 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 - Closed sidebar state uses `.MySidebar-state-closed`.
 - Collapsed main sidebar state uses `.MainAppSidebar-state-collapsed`.
 
-## Workspace / Project Switcher
+## Organization / Workspace Switcher
 
-- Header switcher button accessible name starts with `Open workspace and project switcher`.
-- Switcher dialog heading: `Workspaces and projects`.
-- Switcher close button accessible name: `Close workspace switcher`.
-- Workspace billing close button accessible name: `Close workspace billing dialog`.
-- Workspace pane selector: `.MainAppHeaderWorkspaceSwitcherModalSelectPane[aria-label="Workspaces"]`.
-- Project pane selector: `.MainAppHeaderWorkspaceSwitcherModalSelectPane[aria-label="Projects"]`.
-- Pane lists use `.MainAppHeaderWorkspaceSwitcherModalSelectList` and expose scroll metrics through `inspectElement(...)`.
-- Row primary actions use `Select workspace: <name>` / `Select project: <name>`.
-- Row overflow menus use `More actions for workspace: <name>` / `More actions for project: <name>`.
+- Header switcher button accessible name starts with `Open organization and workspace switcher`.
+- Switcher dialog heading: `Organizations and workspaces`.
+- Switcher close button accessible name: `Close organization switcher`.
+- Organization billing close button accessible name: `Close organization billing dialog`.
+- Organization pane selector: `.MainAppHeaderOrganizationSwitcherModalSelectPane[aria-label="Organizations"]`.
+- Workspace pane selector: `.MainAppHeaderOrganizationSwitcherModalSelectPane[aria-label="Workspaces"]`.
+- Pane lists use `.MainAppHeaderOrganizationSwitcherModalSelectList` and expose scroll metrics through `inspectElement(...)`.
+- List item primary actions use `Select organization: <name>` / `Select workspace: <name>`.
+- List item overflow menus use `More actions for organization: <name>` / `More actions for workspace: <name>`.
 
 ## Stable App Element IDs
 

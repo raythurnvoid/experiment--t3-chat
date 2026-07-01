@@ -4,7 +4,7 @@ Use this for the selected-file editor surface under `/files?nodeId=<file-id>`. K
 
 ## Route And Layout
 
-- Editor route shape: `/w/:workspaceName/:projectName/files?nodeId=<id>`.
+- Editor route shape: `/w/:organizationName/:workspaceName/files?nodeId=<id>`.
 - Editor mode query values: `view=rich_text_editor`, `view=plain_text_editor`, `view=diff_editor`.
 - Scroll owner: `.FileNodeView-editor-area`.
 - Content panel: `.FileNodeView-content-panel`.

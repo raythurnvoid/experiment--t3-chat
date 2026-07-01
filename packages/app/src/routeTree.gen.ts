@@ -10,90 +10,90 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as WWorkspaceNameProjectNameRouteRouteImport } from './routes/w/$workspaceName/$projectName/route'
-import { Route as WWorkspaceNameProjectNameUsersIndexRouteImport } from './routes/w/$workspaceName/$projectName/users/index'
-import { Route as WWorkspaceNameProjectNameFilesIndexRouteImport } from './routes/w/$workspaceName/$projectName/files/index'
-import { Route as WWorkspaceNameProjectNameChatIndexRouteImport } from './routes/w/$workspaceName/$projectName/chat/index'
+import { Route as WOrganizationNameWorkspaceNameRouteRouteImport } from './routes/w/$organizationName/$workspaceName/route'
+import { Route as WOrganizationNameWorkspaceNameUsersIndexRouteImport } from './routes/w/$organizationName/$workspaceName/users/index'
+import { Route as WOrganizationNameWorkspaceNameFilesIndexRouteImport } from './routes/w/$organizationName/$workspaceName/files/index'
+import { Route as WOrganizationNameWorkspaceNameChatIndexRouteImport } from './routes/w/$organizationName/$workspaceName/chat/index'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const WWorkspaceNameProjectNameRouteRoute =
-  WWorkspaceNameProjectNameRouteRouteImport.update({
-    id: '/w/$workspaceName/$projectName',
-    path: '/w/$workspaceName/$projectName',
+const WOrganizationNameWorkspaceNameRouteRoute =
+  WOrganizationNameWorkspaceNameRouteRouteImport.update({
+    id: '/w/$organizationName/$workspaceName',
+    path: '/w/$organizationName/$workspaceName',
     getParentRoute: () => rootRouteImport,
   } as any)
-const WWorkspaceNameProjectNameUsersIndexRoute =
-  WWorkspaceNameProjectNameUsersIndexRouteImport.update({
+const WOrganizationNameWorkspaceNameUsersIndexRoute =
+  WOrganizationNameWorkspaceNameUsersIndexRouteImport.update({
     id: '/users/',
     path: '/users/',
-    getParentRoute: () => WWorkspaceNameProjectNameRouteRoute,
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
-const WWorkspaceNameProjectNameFilesIndexRoute =
-  WWorkspaceNameProjectNameFilesIndexRouteImport.update({
+const WOrganizationNameWorkspaceNameFilesIndexRoute =
+  WOrganizationNameWorkspaceNameFilesIndexRouteImport.update({
     id: '/files/',
     path: '/files/',
-    getParentRoute: () => WWorkspaceNameProjectNameRouteRoute,
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
-const WWorkspaceNameProjectNameChatIndexRoute =
-  WWorkspaceNameProjectNameChatIndexRouteImport.update({
+const WOrganizationNameWorkspaceNameChatIndexRoute =
+  WOrganizationNameWorkspaceNameChatIndexRouteImport.update({
     id: '/chat/',
     path: '/chat/',
-    getParentRoute: () => WWorkspaceNameProjectNameRouteRoute,
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/w/$workspaceName/$projectName': typeof WWorkspaceNameProjectNameRouteRouteWithChildren
-  '/w/$workspaceName/$projectName/chat/': typeof WWorkspaceNameProjectNameChatIndexRoute
-  '/w/$workspaceName/$projectName/files/': typeof WWorkspaceNameProjectNameFilesIndexRoute
-  '/w/$workspaceName/$projectName/users/': typeof WWorkspaceNameProjectNameUsersIndexRoute
+  '/w/$organizationName/$workspaceName': typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
+  '/w/$organizationName/$workspaceName/chat/': typeof WOrganizationNameWorkspaceNameChatIndexRoute
+  '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
+  '/w/$organizationName/$workspaceName/users/': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/w/$workspaceName/$projectName': typeof WWorkspaceNameProjectNameRouteRouteWithChildren
-  '/w/$workspaceName/$projectName/chat': typeof WWorkspaceNameProjectNameChatIndexRoute
-  '/w/$workspaceName/$projectName/files': typeof WWorkspaceNameProjectNameFilesIndexRoute
-  '/w/$workspaceName/$projectName/users': typeof WWorkspaceNameProjectNameUsersIndexRoute
+  '/w/$organizationName/$workspaceName': typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
+  '/w/$organizationName/$workspaceName/chat': typeof WOrganizationNameWorkspaceNameChatIndexRoute
+  '/w/$organizationName/$workspaceName/files': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
+  '/w/$organizationName/$workspaceName/users': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/w/$workspaceName/$projectName': typeof WWorkspaceNameProjectNameRouteRouteWithChildren
-  '/w/$workspaceName/$projectName/chat/': typeof WWorkspaceNameProjectNameChatIndexRoute
-  '/w/$workspaceName/$projectName/files/': typeof WWorkspaceNameProjectNameFilesIndexRoute
-  '/w/$workspaceName/$projectName/users/': typeof WWorkspaceNameProjectNameUsersIndexRoute
+  '/w/$organizationName/$workspaceName': typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
+  '/w/$organizationName/$workspaceName/chat/': typeof WOrganizationNameWorkspaceNameChatIndexRoute
+  '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
+  '/w/$organizationName/$workspaceName/users/': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/w/$workspaceName/$projectName'
-    | '/w/$workspaceName/$projectName/chat/'
-    | '/w/$workspaceName/$projectName/files/'
-    | '/w/$workspaceName/$projectName/users/'
+    | '/w/$organizationName/$workspaceName'
+    | '/w/$organizationName/$workspaceName/chat/'
+    | '/w/$organizationName/$workspaceName/files/'
+    | '/w/$organizationName/$workspaceName/users/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/w/$workspaceName/$projectName'
-    | '/w/$workspaceName/$projectName/chat'
-    | '/w/$workspaceName/$projectName/files'
-    | '/w/$workspaceName/$projectName/users'
+    | '/w/$organizationName/$workspaceName'
+    | '/w/$organizationName/$workspaceName/chat'
+    | '/w/$organizationName/$workspaceName/files'
+    | '/w/$organizationName/$workspaceName/users'
   id:
     | '__root__'
     | '/'
-    | '/w/$workspaceName/$projectName'
-    | '/w/$workspaceName/$projectName/chat/'
-    | '/w/$workspaceName/$projectName/files/'
-    | '/w/$workspaceName/$projectName/users/'
+    | '/w/$organizationName/$workspaceName'
+    | '/w/$organizationName/$workspaceName/chat/'
+    | '/w/$organizationName/$workspaceName/files/'
+    | '/w/$organizationName/$workspaceName/users/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  WWorkspaceNameProjectNameRouteRoute: typeof WWorkspaceNameProjectNameRouteRouteWithChildren
+  WOrganizationNameWorkspaceNameRouteRoute: typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -105,62 +105,62 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/w/$workspaceName/$projectName': {
-      id: '/w/$workspaceName/$projectName'
-      path: '/w/$workspaceName/$projectName'
-      fullPath: '/w/$workspaceName/$projectName'
-      preLoaderRoute: typeof WWorkspaceNameProjectNameRouteRouteImport
+    '/w/$organizationName/$workspaceName': {
+      id: '/w/$organizationName/$workspaceName'
+      path: '/w/$organizationName/$workspaceName'
+      fullPath: '/w/$organizationName/$workspaceName'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/w/$workspaceName/$projectName/users/': {
-      id: '/w/$workspaceName/$projectName/users/'
+    '/w/$organizationName/$workspaceName/users/': {
+      id: '/w/$organizationName/$workspaceName/users/'
       path: '/users'
-      fullPath: '/w/$workspaceName/$projectName/users/'
-      preLoaderRoute: typeof WWorkspaceNameProjectNameUsersIndexRouteImport
-      parentRoute: typeof WWorkspaceNameProjectNameRouteRoute
+      fullPath: '/w/$organizationName/$workspaceName/users/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameUsersIndexRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
-    '/w/$workspaceName/$projectName/files/': {
-      id: '/w/$workspaceName/$projectName/files/'
+    '/w/$organizationName/$workspaceName/files/': {
+      id: '/w/$organizationName/$workspaceName/files/'
       path: '/files'
-      fullPath: '/w/$workspaceName/$projectName/files/'
-      preLoaderRoute: typeof WWorkspaceNameProjectNameFilesIndexRouteImport
-      parentRoute: typeof WWorkspaceNameProjectNameRouteRoute
+      fullPath: '/w/$organizationName/$workspaceName/files/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameFilesIndexRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
-    '/w/$workspaceName/$projectName/chat/': {
-      id: '/w/$workspaceName/$projectName/chat/'
+    '/w/$organizationName/$workspaceName/chat/': {
+      id: '/w/$organizationName/$workspaceName/chat/'
       path: '/chat'
-      fullPath: '/w/$workspaceName/$projectName/chat/'
-      preLoaderRoute: typeof WWorkspaceNameProjectNameChatIndexRouteImport
-      parentRoute: typeof WWorkspaceNameProjectNameRouteRoute
+      fullPath: '/w/$organizationName/$workspaceName/chat/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameChatIndexRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
   }
 }
 
-interface WWorkspaceNameProjectNameRouteRouteChildren {
-  WWorkspaceNameProjectNameChatIndexRoute: typeof WWorkspaceNameProjectNameChatIndexRoute
-  WWorkspaceNameProjectNameFilesIndexRoute: typeof WWorkspaceNameProjectNameFilesIndexRoute
-  WWorkspaceNameProjectNameUsersIndexRoute: typeof WWorkspaceNameProjectNameUsersIndexRoute
+interface WOrganizationNameWorkspaceNameRouteRouteChildren {
+  WOrganizationNameWorkspaceNameChatIndexRoute: typeof WOrganizationNameWorkspaceNameChatIndexRoute
+  WOrganizationNameWorkspaceNameFilesIndexRoute: typeof WOrganizationNameWorkspaceNameFilesIndexRoute
+  WOrganizationNameWorkspaceNameUsersIndexRoute: typeof WOrganizationNameWorkspaceNameUsersIndexRoute
 }
 
-const WWorkspaceNameProjectNameRouteRouteChildren: WWorkspaceNameProjectNameRouteRouteChildren =
+const WOrganizationNameWorkspaceNameRouteRouteChildren: WOrganizationNameWorkspaceNameRouteRouteChildren =
   {
-    WWorkspaceNameProjectNameChatIndexRoute:
-      WWorkspaceNameProjectNameChatIndexRoute,
-    WWorkspaceNameProjectNameFilesIndexRoute:
-      WWorkspaceNameProjectNameFilesIndexRoute,
-    WWorkspaceNameProjectNameUsersIndexRoute:
-      WWorkspaceNameProjectNameUsersIndexRoute,
+    WOrganizationNameWorkspaceNameChatIndexRoute:
+      WOrganizationNameWorkspaceNameChatIndexRoute,
+    WOrganizationNameWorkspaceNameFilesIndexRoute:
+      WOrganizationNameWorkspaceNameFilesIndexRoute,
+    WOrganizationNameWorkspaceNameUsersIndexRoute:
+      WOrganizationNameWorkspaceNameUsersIndexRoute,
   }
 
-const WWorkspaceNameProjectNameRouteRouteWithChildren =
-  WWorkspaceNameProjectNameRouteRoute._addFileChildren(
-    WWorkspaceNameProjectNameRouteRouteChildren,
+const WOrganizationNameWorkspaceNameRouteRouteWithChildren =
+  WOrganizationNameWorkspaceNameRouteRoute._addFileChildren(
+    WOrganizationNameWorkspaceNameRouteRouteChildren,
   )
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  WWorkspaceNameProjectNameRouteRoute:
-    WWorkspaceNameProjectNameRouteRouteWithChildren,
+  WOrganizationNameWorkspaceNameRouteRoute:
+    WOrganizationNameWorkspaceNameRouteRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

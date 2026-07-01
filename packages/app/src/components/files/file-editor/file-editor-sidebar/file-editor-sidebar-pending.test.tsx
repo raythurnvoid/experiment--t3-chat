@@ -131,8 +131,8 @@ function makePendingUpdate(args: {
 	return {
 		_id: args.id,
 		_creationTime: 0,
+		organizationId: "organization_1",
 		workspaceId: "workspace_1",
-		projectId: "project_1",
 		userId: "user_1",
 		fileNodeId: args.fileNodeId,
 		baseYjsSequence: 0,
@@ -153,15 +153,15 @@ function makeNode(args: { id: string; path: string }): app_convex_Doc<"files_nod
 	} as unknown as app_convex_Doc<"files_nodes">;
 }
 
-const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"workspaces_projects_users">;
+const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 
 beforeEach(() => {
 	tenantContextMock.mockReturnValue({
 		membershipId: MEMBERSHIP_ID,
+		organizationId: "organization_1",
+		organizationName: "team",
 		workspaceId: "workspace_1",
-		workspaceName: "team",
-		projectId: "project_1",
-		projectName: "home",
+		workspaceName: "home",
 	});
 	actionMock.mockReset();
 	actionMock.mockResolvedValue({ _yay: null });

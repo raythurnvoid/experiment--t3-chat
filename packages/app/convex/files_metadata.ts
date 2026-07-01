@@ -11,7 +11,7 @@ import {
 	type files_metadata_SearchPlan,
 	type files_metadata_Value,
 } from "../shared/files-metadata.ts";
-import { workspaces_is_global_github_project_id, workspaces_is_global_workspace_id } from "../shared/workspaces.ts";
+import { organizations_is_global_github_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
 
 // #region indexed doc writes
 
@@ -41,17 +41,17 @@ function value_doc_payload(value: files_metadata_Value) {
 export async function files_metadata_db_delete_committed(
 	ctx: MutationCtx,
 	args: {
+		organizationId: Doc<"files_metadata_docs">["organizationId"];
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
-		projectId: Doc<"files_metadata_docs">["projectId"];
 		nodeId: Id<"files_nodes">;
 	},
 ) {
 	const docs = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_workspace_project_source_fileNode_qualifiedField", (q) =>
+		.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
 			q
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("sourceKind", "committed")
 				.eq("fileNodeId", args.nodeId),
 		)
@@ -73,8 +73,8 @@ export async function files_metadata_db_delete_pending(
 export async function files_metadata_db_insert_committed(
 	ctx: MutationCtx,
 	args: {
+		organizationId: Doc<"files_metadata_docs">["organizationId"];
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
-		projectId: Doc<"files_metadata_docs">["projectId"];
 		nodeId: Id<"files_nodes">;
 		yjsSequence?: number;
 		markdownContent: string;
@@ -83,14 +83,14 @@ export async function files_metadata_db_insert_committed(
 	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
 	if (
 		!fileNode ||
+		fileNode.organizationId !== args.organizationId ||
 		fileNode.workspaceId !== args.workspaceId ||
-		fileNode.projectId !== args.projectId ||
 		fileNode.kind !== "file"
 	) {
 		const errorMessage = "fileNode is missing or mismatched";
 		const errorData = {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 			fileNode,
 		};
@@ -100,8 +100,8 @@ export async function files_metadata_db_insert_committed(
 
 	const metadata = files_metadata_extract_frontmatter(args.markdownContent);
 	const scope = {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		fileNodeId: args.nodeId,
 		sourceKind: "committed" as const,
 		...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
@@ -130,8 +130,8 @@ export async function files_metadata_db_insert_committed(
 export async function files_metadata_db_replace_pending(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: string;
 		nodeId: Id<"files_nodes">;
 		pendingUpdateId: Id<"files_pending_updates">;
@@ -141,10 +141,10 @@ export async function files_metadata_db_replace_pending(
 	await files_metadata_db_delete_pending(ctx, { pendingUpdateId: args.pendingUpdateId });
 
 	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-	if (!fileNode || fileNode.workspaceId !== args.workspaceId || fileNode.projectId !== args.projectId) {
+	if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
 		console.error("Failed to replace pending metadata: fileNode is missing or mismatched", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 			pendingUpdateId: args.pendingUpdateId,
 			fileNode,
@@ -154,8 +154,8 @@ export async function files_metadata_db_replace_pending(
 
 	const metadata = files_metadata_extract_frontmatter(args.unstagedMarkdown);
 	const scope = {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		fileNodeId: args.nodeId,
 		sourceKind: "pending" as const,
 		userId: args.userId,
@@ -185,8 +185,8 @@ export async function files_metadata_db_replace_pending(
 export async function files_metadata_db_patch_file_scope(
 	ctx: MutationCtx,
 	args: {
+		organizationId: Doc<"files_metadata_docs">["organizationId"];
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
-		projectId: Doc<"files_metadata_docs">["projectId"];
 		nodeId: Id<"files_nodes">;
 		path?: string;
 		treePath?: string;
@@ -205,8 +205,8 @@ export async function files_metadata_db_patch_file_scope(
 	}
 	const docs = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_workspace_project_fileNode_qualifiedField", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
+		.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
 		)
 		.collect();
 	await Promise.all(docs.map((doc) => ctx.db.patch("files_metadata_docs", doc._id, patch)));
@@ -227,15 +227,15 @@ function metadata_kind_from_qualified_field(qualifiedField: string) {
 async function db_list_pending_file_node_ids(
 	ctx: QueryCtx,
 	args: {
+		organizationId: Doc<"files_pending_updates">["organizationId"];
 		workspaceId: Doc<"files_pending_updates">["workspaceId"];
-		projectId: Doc<"files_pending_updates">["projectId"];
 		userId: Id<"users">;
 	},
 ) {
 	const pendingUpdates = await ctx.db
 		.query("files_pending_updates")
-		.withIndex("by_workspace_project_user_fileNode", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", args.userId),
+		.withIndex("by_organization_workspace_user_fileNode", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
 		)
 		.order("asc")
 		.collect();
@@ -293,8 +293,8 @@ function format_search_result(doc: Doc<"files_metadata_docs">) {
 function search_query(
 	ctx: QueryCtx,
 	args: {
+		organizationId: Doc<"files_metadata_docs">["organizationId"];
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
-		projectId: Doc<"files_metadata_docs">["projectId"];
 		plan: files_metadata_SearchPlan;
 		treePathPrefix?: string;
 		userId: Id<"users">;
@@ -308,10 +308,10 @@ function search_query(
 		case "exists": {
 			let query = ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_workspace_project_archive_docKind_qualifiedField_tree", (q) => {
+				.withIndex("by_org_workspace_archive_docKind_qualifiedField_tree", (q) => {
 					const base = q
+						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "field")
 						.eq("qualifiedField", plan.qualifiedField);
@@ -337,10 +337,10 @@ function search_query(
 				const value = plan.value;
 				let query = ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_workspace_project_archive_docKind_qualifiedField_string_tree", (q) => {
+					.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) => {
 						const base = q
+							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
 							.eq("archiveOperationId", undefined)
 							.eq("docKind", "value")
 							.eq("qualifiedField", plan.qualifiedField)
@@ -367,10 +367,10 @@ function search_query(
 				const value = plan.value;
 				let query = ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_workspace_project_archive_docKind_qualifiedField_number_tree", (q) => {
+					.withIndex("by_org_workspace_archive_docKind_qualifiedField_number_tree", (q) => {
 						const base = q
+							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
 							.eq("archiveOperationId", undefined)
 							.eq("docKind", "value")
 							.eq("qualifiedField", plan.qualifiedField)
@@ -397,10 +397,10 @@ function search_query(
 				const value = plan.value;
 				let query = ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_workspace_project_archive_docKind_qualifiedField_boolean_tree", (q) => {
+					.withIndex("by_org_workspace_archive_docKind_qualifiedField_boolean_tree", (q) => {
 						const base = q
+							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
 							.eq("archiveOperationId", undefined)
 							.eq("docKind", "value")
 							.eq("qualifiedField", plan.qualifiedField)
@@ -426,10 +426,10 @@ function search_query(
 		case "prefix": {
 			let query = ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_workspace_project_archive_docKind_qualifiedField_string_tree", (q) =>
+				.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) =>
 					q
+						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "value")
 						.eq("qualifiedField", plan.qualifiedField)
@@ -459,10 +459,10 @@ function search_query(
 		case "range": {
 			let query = ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_workspace_project_archive_docKind_qualifiedField_number_tree", (q) => {
+				.withIndex("by_org_workspace_archive_docKind_qualifiedField_number_tree", (q) => {
 					const base = q
+						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "value")
 						.eq("qualifiedField", plan.qualifiedField)
@@ -508,8 +508,8 @@ function search_query(
 export const search = internalQuery({
 	args: {
 		// Scope accepts the reserved `/.mounts` literals so the mount-backed db-files FS can search mount metadata.
+		organizationId: doc(app_convex_schema, "files_metadata_docs").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_metadata_docs").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_metadata_docs").fields.projectId,
 		userId: v.id("users"),
 		plan: v.union(
 			v.object({ op: v.literal("exists"), qualifiedField: v.string() }),
@@ -551,19 +551,19 @@ export const search = internalQuery({
 	}),
 	handler: async (ctx, args) => {
 		let pendingNodeIds: Array<Id<"files_nodes">> = [];
+		const organizationId = args.organizationId;
 		const workspaceId = args.workspaceId;
-		const projectId = args.projectId;
-		if (!workspaces_is_global_workspace_id(workspaceId) && !workspaces_is_global_github_project_id(projectId)) {
+		if (!organizations_is_global_organization_id(organizationId) && !organizations_is_global_github_workspace_id(workspaceId)) {
 			pendingNodeIds = await db_list_pending_file_node_ids(ctx, {
+				organizationId,
 				workspaceId,
-				projectId,
 				userId: args.userId,
 			});
 		}
 		const treePathPrefix = args.pathPrefix == null ? undefined : tree_path_from_path(args.pathPrefix);
 		const query = search_query(ctx, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			plan: args.plan,
 			treePathPrefix,
 			userId: args.userId,
@@ -624,8 +624,8 @@ function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
 export const get_by_path = internalQuery({
 	args: {
 		// Scope accepts the reserved `/.mounts` literals so the mount-backed db-files FS can read mount metadata.
+		organizationId: doc(app_convex_schema, "files_metadata_docs").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_metadata_docs").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_metadata_docs").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 	},
@@ -650,10 +650,10 @@ export const get_by_path = internalQuery({
 	handler: async (ctx, args) => {
 		const fileNode = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q
+					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
 					.eq("path", args.path)
 					.eq("archiveOperationId", undefined),
 			)
@@ -664,17 +664,17 @@ export const get_by_path = internalQuery({
 
 		let pendingUpdate: Doc<"files_pending_updates"> | null = null;
 		if (
-			!workspaces_is_global_workspace_id(args.workspaceId) &&
-			!workspaces_is_global_github_project_id(args.projectId)
+			!organizations_is_global_organization_id(args.organizationId) &&
+			!organizations_is_global_github_workspace_id(args.workspaceId)
 		) {
-			const workspaceId: Id<"workspaces"> = args.workspaceId;
-			const projectId: Id<"workspaces_projects"> = args.projectId;
+			const organizationId: Id<"organizations"> = args.organizationId;
+			const workspaceId: Id<"organizations_workspaces"> = args.workspaceId;
 			pendingUpdate = await ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", organizationId)
 						.eq("workspaceId", workspaceId)
-						.eq("projectId", projectId)
 						.eq("userId", args.userId)
 						.eq("fileNodeId", fileNode._id),
 				)
@@ -689,10 +689,10 @@ export const get_by_path = internalQuery({
 					.collect()
 			: await ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_workspace_project_source_fileNode_qualifiedField", (q) =>
+					.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
 						q
+							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
 							.eq("sourceKind", "committed")
 							.eq("fileNodeId", fileNode._id),
 					)

@@ -5,7 +5,7 @@ description: Run live Convex admin/operational CLI tasks safely in this repo, es
 
 # Convex Admin Ops
 
-Use this skill for live Convex control-plane or data-plane operations. Also load the domain skill for the behavior being changed or invoked, such as `convex`, `auth-system`, `workspaces-tenancy`, or `billing-system`.
+Use this skill for live Convex control-plane or data-plane operations. Also load the domain skill for the behavior being changed or invoked, such as `convex`, `auth-system`, `organizations-tenancy`, or `billing-system`.
 
 ## Safety Workflow
 

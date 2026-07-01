@@ -10,7 +10,7 @@ import type { files_pending_updates_get_by_file_node_Result } from "../convex/fi
 import type { get_asset_by_id_Result } from "../convex/r2.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { files_node_has_editable_yjs_state } from "../shared/files.ts";
-import { workspaces_is_global_github_project_id, workspaces_is_global_workspace_id } from "../shared/workspaces.ts";
+import { organizations_is_global_github_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
 import {
 	bash_build_unreadable_file_advisory,
 	bash_create_glob_syntax_unsupported_message,
@@ -86,7 +86,7 @@ function add_line_numbers(content: string, startLine: number) {
 }
 
 export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
-	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
+	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	const fileContentCache = new Map<string, string>();
 
 	return defineCommand("cat", async (args, commandCtx) => {
@@ -106,7 +106,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 		}
 
 		const targets = parsed._yay.files.length ? parsed._yay.files : ["-"];
-		const capError = bash_enforce_reader_operand_cap("cat", commandCtx, currentProjectPath, targets);
+		const capError = bash_enforce_reader_operand_cap("cat", commandCtx, currentWorkspacePath, targets);
 		if (capError != null) return capError;
 
 		// Cat keeps app-file size lookups inline. Routing them through
@@ -127,23 +127,23 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					pathResolution.dbFilesPath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+								organizationId: pathResolution.ctxData.organizationId,
 								workspaceId: pathResolution.ctxData.workspaceId,
-								projectId: pathResolution.ctxData.projectId,
 								path: pathResolution.dbFilesPath,
 							})) as files_nodes_get_by_path_Result);
 				let size: number | null = null;
 				if (dbFilesDoc?.kind === "file" && dbFilesDoc.assetId != null) {
 					let hasPendingUpdate = false;
+					const organizationId = pathResolution.ctxData.organizationId;
 					const workspaceId = pathResolution.ctxData.workspaceId;
-					const projectId = pathResolution.ctxData.projectId;
 					if (
 						files_node_has_editable_yjs_state(dbFilesDoc) &&
-						!workspaces_is_global_workspace_id(workspaceId) &&
-						!workspaces_is_global_github_project_id(projectId)
+						!organizations_is_global_organization_id(organizationId) &&
+						!organizations_is_global_github_workspace_id(workspaceId)
 					) {
 						const pendingUpdate = (await ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
+							organizationId,
 							workspaceId,
-							projectId,
 							userId: pathResolution.ctxData.userId,
 							fileNodeId: dbFilesDoc._id,
 						})) as files_pending_updates_get_by_file_node_Result;
@@ -154,8 +154,8 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					}
 					if (!hasPendingUpdate) {
 						const asset = (await ctx.runQuery(internal.r2.get_asset_by_id, {
+							organizationId: pathResolution.ctxData.organizationId,
 							workspaceId: pathResolution.ctxData.workspaceId,
-							projectId: pathResolution.ctxData.projectId,
 							assetId: dbFilesDoc.assetId,
 						})) as get_asset_by_id_Result;
 						size = asset?.size ?? null;
@@ -217,24 +217,24 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					target.dbFilesPath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+								organizationId: pathResolution.ctxData.organizationId,
 								workspaceId: pathResolution.ctxData.workspaceId,
-								projectId: pathResolution.ctxData.projectId,
 								path: target.dbFilesPath,
 							})) as files_nodes_get_by_path_Result);
 
 				let size: number | null = null;
 				if (dbFilesDoc?.kind === "file" && dbFilesDoc.assetId != null) {
 					let hasPendingUpdate = false;
+					const organizationId = pathResolution.ctxData.organizationId;
 					const workspaceId = pathResolution.ctxData.workspaceId;
-					const projectId = pathResolution.ctxData.projectId;
 					if (
 						files_node_has_editable_yjs_state(dbFilesDoc) &&
-						!workspaces_is_global_workspace_id(workspaceId) &&
-						!workspaces_is_global_github_project_id(projectId)
+						!organizations_is_global_organization_id(organizationId) &&
+						!organizations_is_global_github_workspace_id(workspaceId)
 					) {
 						const pendingUpdate = (await ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
+							organizationId,
 							workspaceId,
-							projectId,
 							userId: pathResolution.ctxData.userId,
 							fileNodeId: dbFilesDoc._id,
 						})) as files_pending_updates_get_by_file_node_Result;
@@ -245,8 +245,8 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					}
 					if (!hasPendingUpdate) {
 						const asset = (await ctx.runQuery(internal.r2.get_asset_by_id, {
+							organizationId: pathResolution.ctxData.organizationId,
 							workspaceId: pathResolution.ctxData.workspaceId,
-							projectId: pathResolution.ctxData.projectId,
 							assetId: dbFilesDoc.assetId,
 						})) as get_asset_by_id_Result;
 						size = asset?.size ?? null;
@@ -260,8 +260,8 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					const resolvedAppShellPath = pathResolution.renderShellPath(target.dbFilesPath);
 
 					const page = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+						organizationId: pathResolution.ctxData.organizationId,
 						workspaceId: pathResolution.ctxData.workspaceId,
-						projectId: pathResolution.ctxData.projectId,
 						userId: pathResolution.ctxData.userId,
 						path: target.dbFilesPath,
 						mode: {
@@ -319,8 +319,8 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				}
 
 				const chunkRead = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
-					projectId: pathResolution.ctxData.projectId,
 					userId: pathResolution.ctxData.userId,
 					path: target.dbFilesPath,
 					mode: {

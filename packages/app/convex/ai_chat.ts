@@ -29,7 +29,7 @@ import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
-import { workspaces_db_get_membership } from "./workspaces.ts";
+import { organizations_db_get_membership } from "./organizations.ts";
 import { files_READ_RANGE_MAX_LINES } from "./files_nodes.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
@@ -70,14 +70,14 @@ const TITLE_SYSTEM_PROMPT = [
 	"Respond with ONLY the title, no quotes or extra text.",
 ].join("\n");
 
-function ai_chat_system_prompt(args: { workspaceName: string; projectName: string }) {
+function ai_chat_system_prompt(args: { organizationName: string; workspaceName: string }) {
 	const HOME = "/home/cloud-usr";
 	const appMountPath = `${HOME}/w`;
-	const currentProjectPath = `${appMountPath}/${args.workspaceName}/${args.projectName}`;
+	const currentWorkspacePath = `${appMountPath}/${args.organizationName}/${args.workspaceName}`;
 	return [
-		"You are the app chat agent for the user's workspace.",
-		"Use the available tools as the working interface for the workspace.",
-		`Bash starts in the current project path at \`~/w/${args.workspaceName}/${args.projectName}\` (\`${currentProjectPath}\`). \`~\` is \`${HOME}\`, the app mount is \`${appMountPath}\`, and \`/tmp\` is durable scratch scoped to this chat thread.`,
+		"You are the app chat agent for the user's organization.",
+		"Use the available tools as the working interface for the organization.",
+		`Bash starts in the current workspace path at \`~/w/${args.organizationName}/${args.workspaceName}\` (\`${currentWorkspacePath}\`). \`~\` is \`${HOME}\`, the app mount is \`${appMountPath}\`, and \`/tmp\` is durable scratch scoped to this chat thread.`,
 		"`/tmp` persists across Bash calls in this chat and reloads from Convex if the warm backend runtime cache is gone. It is not shared with new chats and is not app file storage; use app file tools for durable user-visible files.",
 		"Do not call `/tmp` ephemeral or temporary in a way that implies same-chat data loss. If a fresh chat cannot read a `/tmp` path created in another chat, that is expected evidence of per-chat isolation, not a global Bash failure.",
 		"Bash cwd persists across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating `cd`.",
@@ -89,7 +89,7 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 		"When retrying a `/tmp` command option, prefer doing related scratch work in one call when convenient, but previous `/tmp` files are available in later calls in the same chat.",
 		"When reporting Bash results, treat app-only flags such as `--limit`, `--cursor`, `--path-query`, and `--extension` as supported app Bash syntax; do not warn that a successful app command is non-standard.",
 		"Printed `Next page:` commands use short cursor ids without an `@` prefix; run the exact printed command to continue. If the user asks for exactly one continuation, one continuation, or one next page, run only the first printed continuation and then stop even if that page prints another `Next page:` command. If the user asked for continuations from multiple commands, continue each requested command before summarizing.",
-		`When a user names an app-root path like \`/docs\`, run it as \`${currentProjectPath}/docs\` or \`cd ${currentProjectPath}\` and use \`docs\`; do not treat \`/docs\` as a host-root path.`,
+		`When a user names an app-root path like \`/docs\`, run it as \`${currentWorkspacePath}/docs\` or \`cd ${currentWorkspacePath}\` and use \`docs\`; do not treat \`/docs\` as a host-root path.`,
 		"If a failed Bash command prints a `Try:` command that directly matches the user's request, run that `Try:` command next instead of only reporting the failure.",
 		"When using `bash -c` or `sh -c` to compare `/tmp` and app-mount behavior, use separate nested invocations in one outer Bash call so a blocked app redirect cannot hide earlier `/tmp` stdout.",
 		"For `xargs` path checks, print pathnames into `xargs` such as `printf '%s\\n' <path> | xargs cat`; do not pipe file content to `xargs` when the input is meant to be a pathname.",
@@ -97,11 +97,11 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 		"`ls --limit` and `find --limit` are app-file pagination commands. Relative paths resolve against the current working directory.",
 		"Content-vs-path rule: use `search` for text inside files, and use `find` only for path/name discovery. Plain requests like `search for X with limit N` mean content search, so run `search --limit N X`. If the user says `search for the X file`, `find the X file`, `file named X`, or `path/name contains X`, use `find`. If the user says `search inside <folder> for X`, `where does X appear`, or `files mention X`, run `search --path <folder> X` or `search X`; do not substitute `find --path-query`.",
 		'`meta search --where \'{"eq":["frontmatter.from","alice@example.com"]}\'` searches indexed Markdown YAML frontmatter. Prefer `meta search`/`meta get` over reading raw file text when answering which files have a frontmatter field or value. Use qualified `frontmatter.*` fields; one positive predicate per command is supported: `exists`, `eq`, `prefix`, or numeric `range`. `range` takes a bounds object, e.g. `{"range":["frontmatter.estimate",{"gte":5,"lte":120}]}` (any of `gte`/`gt`/`lte`/`lt`). The default output is paths; use `--format json` for metadata details and cursors. Combine multiple predicates outside the command with shell tools over path output. There is no `not`/`neq`: to find where a field is NOT a value, you MUST first run `exists <field>` to list every file that has the field, then remove the `eq <field> <value>` matches (e.g. `comm -23` or `grep -vxF`) — the `eq` matches are only a subset, so never infer the complement from an `eq` result alone. Use `meta get <file>` to inspect one file\'s indexed metadata. If metadata field names are unclear, read nearby `README.md` files because folders may document their frontmatter conventions.',
-		`For \`search --path\` and \`meta search --path\`, the same app-root path rule applies: pass \`${currentProjectPath}/folder\` or relative \`folder\`, never raw \`/folder\`.`,
+		`For \`search --path\` and \`meta search --path\`, the same app-root path rule applies: pass \`${currentWorkspacePath}/folder\` or relative \`folder\`, never raw \`/folder\`.`,
 		"When a content-search request already names a folder, do not run `ls` first to verify that folder; run `search --path <folder> <content terms>` directly and let search report missing or invalid scopes.",
 		"For recursive grep requests over an app folder, the first Bash command should be `search --path <folder> <content terms>`; do not run `ls`, native `rg`, or multi-file `grep` first.",
 		"When listing the current directory, prefer `ls --limit N` over `ls --limit N <current-cwd>`. Do not restate the current cwd as a path argument just for certainty.",
-		"Use `ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current directory. `--cursor` continues one listing target only; when asked to continue, run the printed `Next page:` command as the next Bash call and do not invent `--next-page`. `ls -t` (newest first) and `ls -rt` (oldest first) without PATH list the whole project ordered by update time; with PATH they list that directory's immediate children by update time. For recent immediate children after `cd` into a folder, use `ls -t --limit N .`; bare `ls -t` is still project-wide. `ls -Rt PATH` is unsupported.",
+		"Use `ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current directory. `--cursor` continues one listing target only; when asked to continue, run the printed `Next page:` command as the next Bash call and do not invent `--next-page`. `ls -t` (newest first) and `ls -rt` (oldest first) without PATH list the whole workspace ordered by update time; with PATH they list that directory's immediate children by update time. For recent immediate children after `cd` into a folder, use `ls -t --limit N .`; bare `ls -t` is still workspace-wide. `ls -Rt PATH` is unsupported.",
 		"`ls -R` lists a paginated subtree as full app shell paths; when the user asks for tree-shaped output, use `tree`, not `ls -R`. `ls -d` lists the target entry itself and wins over `-R`; `ls -l` uses app metadata, not POSIX permissions, owners, groups, inodes, blocks, symlinks, or real sizes; `stat` reports the same app metadata, so its Access/owner/group fields are placeholders, not real POSIX values. Unsupported sort/filter flags still fail.",
 		"Use `find -name QUERY` or `find --path-query QUERY` only for indexed app-file path/name word search. Prefer `--path-query QUERY` for natural “path/name contains QUERY” requests; pass a plain token such as `readme`, not `*readme*`. For regex path requests against app files, say regex is unsupported and use token search when a plain token is obvious; do not summarize successful `--path-query` output as native glob/regex syntax. Use `find <dir> -name QUERY` for indexed app-file path search across one directory's subtree; add `-maxdepth 1` to limit it to immediate children. Use `find <path> --extension md -type f` for exact indexed extension search; simple `find -name '*.md'` and `find <dir>/*.md` are accepted as extension-search recovery, not general glob support. Use `find <path> --limit N` for subtree pages, and `find --prefix <prefix> --limit N` for a folder-boundary subtree scan that does not require the prefix to resolve to an existing folder first; sibling-prefix paths such as `/docs-archive` are excluded from `/docs`. `find` searches app paths/names only, not file content. When asked for app files under a folder, include `-type f`; when asked for folders, include `-type d`. `find -maxdepth N` and `find -mindepth N` filter non-search app subtree results by depth. `find -type f` and `find -type d` restrict app results to files or folders. General glob/regex patterns and GNU find extensions are unsupported for app paths, but native `find` syntax can be used for `/tmp` paths.",
 		"`search [--limit N] [--cursor CURSOR] <content terms...>` is full-text content search across Markdown/text content. Pass one distinctive word or a few plain terms that should appear in the document body; the text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. It is implemented with db full-text search, but it is not regex, glob, path/name search, or exact grep. For requests like “where does X appear” or “which files mention X”, run `search` first; do not substitute `find`, which only searches paths/names. For recursive grep, `grep -R`, or `rg` wording over an app folder, do not try native `rg` or multi-file `grep` first; run `search --path <folder> <content terms>` directly. Scope to one folder with `search --path <folder> <content terms>` when useful, but broad folder scopes with common terms can be heavier. If cwd is inside the app tree, bare `search` scopes to that cwd; pass `--path` to choose another folder, follow printed `Next page:` commands, and do not use `search` as a pipeline filter. To search a SINGLE file's content use `grep [-n] [-i] [-F] PATTERN <file>` over Markdown chunks (regex by default; `-F`/`--fixed-strings` uses literal substring matching; `-n` prints `lineNumber:line`, and without `-n` it prints raw matching lines; also `-c`/`-l`/`-v` and `-A`/`-B`/`-C N` context). For rendered plain-text chunk scans, use `textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file>` for one app file (regex by default; `-F`/`--fixed-strings` uses literal substring matching, `-v` inverts, `-c` counts, `-l` prints the path), or `textgrep -R PATTERN <folder>` for a recursive folder scan via indexed full-text search (not exact recursive regex/fixed-string grep); single-file `textgrep` has no line numbers or context flags, so use `grep` for `-n` or `-A`/`-B`/`-C` context.",
@@ -114,13 +114,13 @@ function ai_chat_system_prompt(args: { workspaceName: string; projectName: strin
 		"Do not work around app read-only write, move, or delete requests by copying app files to `/tmp`; report the Bash error unless the user asked for a scratch copy.",
 		"In Agent mode, `mkdir` under the app file tree creates durable folders.",
 		"File content changes use `write_file` or `edit_file` so the user can review them.",
-		`Convert bash paths under \`${currentProjectPath}\` to app paths before calling \`write_file\` or \`edit_file\`; for example \`${currentProjectPath}/docs/readme.md\` becomes \`/docs/readme.md\`. Preserve the full remaining suffix: \`${currentProjectPath}/folder/README.md\` becomes \`/folder/README.md\`, never \`/README.md\`.`,
+		`Convert bash paths under \`${currentWorkspacePath}\` to app paths before calling \`write_file\` or \`edit_file\`; for example \`${currentWorkspacePath}/docs/readme.md\` becomes \`/docs/readme.md\`. Preserve the full remaining suffix: \`${currentWorkspacePath}/folder/README.md\` becomes \`/folder/README.md\`, never \`/README.md\`.`,
 		"`write_file` and `edit_file` create pending review changes for the user to apply.",
 		"After `write_file` or `edit_file`, Bash exact readers (`cat`, `head`, `tail`, `wc`, `grep`) and Bash `search` read the current user's pending unstaged version, so use them normally to verify follow-up edits before the user applies the changes.",
 		"Use tools to clarify uncertain reads, searches, and path lookups instead of inventing content or paths.",
-		"Use `web_search` for current public facts, official documentation, release notes, news, and other information outside this workspace when file tools are not enough.",
+		"Use `web_search` for current public facts, official documentation, release notes, news, and other information outside this organization when file tools are not enough.",
 		"Summarize `web_search` highlight snippets in your own words.",
-		"On failed web search, continue from workspace context and state that current web results were unavailable.",
+		"On failed web search, continue from organization context and state that current web results were unavailable.",
 		"Use `execute_code` to run small JavaScript snippets for precise calculations, JSON transformation, parsing, public HTTPS fetches, or algorithmic checks when doing it by hand would be error-prone.",
 		"The snippet has `fetch`, `input`, and `process.env.T3_APP_ORIGIN`; the runner gateway adds app file API authorization.",
 		"To read app files from code, fetch `${process.env.T3_APP_ORIGIN}/api/v1/files/list` for paths, then `${process.env.T3_APP_ORIGIN}/api/v1/files/read-many` for contents; follow `cursor` until `isDone`, check `errors` and `truncated`, and use `/api/v1/files/read` only for one known file.",
@@ -206,10 +206,10 @@ function compute_token_usage_cost_cents(args: { modelId: string; inputTokens: nu
 function build_agent_configuration(input: {
 	ctx: ActionCtx;
 	ctxData: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		organizationName: string;
 		workspaceName: string;
-		projectName: string;
 		userId: Id<"users">;
 	};
 	args: {
@@ -263,8 +263,8 @@ function build_agent_configuration(input: {
 
 export const get_thread_state = internalQuery({
 	args: {
+		organizationId: v.string(),
 		workspaceId: v.string(),
-		projectId: v.string(),
 		threadId: v.id("ai_chat_threads"),
 	},
 	returns: doc(app_convex_schema, "ai_chat_threads_state"),
@@ -273,7 +273,7 @@ export const get_thread_state = internalQuery({
 		if (!thread) {
 			throw convex_error({ message: "Not found" });
 		}
-		if (thread.workspaceId !== args.workspaceId || thread.projectId !== args.projectId) {
+		if (thread.organizationId !== args.organizationId || thread.workspaceId !== args.workspaceId) {
 			throw convex_error({ message: "Unauthorized" });
 		}
 		if (!thread.stateId) {
@@ -285,8 +285,8 @@ export const get_thread_state = internalQuery({
 		const state = await ctx.db.get("ai_chat_threads_state", thread.stateId);
 		if (
 			!state ||
+			state.organizationId !== args.organizationId ||
 			state.workspaceId !== args.workspaceId ||
-			state.projectId !== args.projectId ||
 			state.threadId !== args.threadId
 		) {
 			throw should_never_happen("AI chat thread state missing or mismatched", {
@@ -306,8 +306,8 @@ export type ai_chat_get_thread_state_Result =
 
 export const set_thread_state = internalMutation({
 	args: {
+		organizationId: v.string(),
 		workspaceId: v.string(),
-		projectId: v.string(),
 		threadId: v.id("ai_chat_threads"),
 		userId: v.id("users"),
 		patch: v.object({
@@ -320,7 +320,7 @@ export const set_thread_state = internalMutation({
 		if (!thread) {
 			throw convex_error({ message: "Not found" });
 		}
-		if (thread.workspaceId !== args.workspaceId || thread.projectId !== args.projectId) {
+		if (thread.organizationId !== args.organizationId || thread.workspaceId !== args.workspaceId) {
 			throw convex_error({ message: "Unauthorized" });
 		}
 		if (!thread.stateId) {
@@ -333,8 +333,8 @@ export const set_thread_state = internalMutation({
 		const state = await ctx.db.get("ai_chat_threads_state", thread.stateId);
 		if (
 			!state ||
+			state.organizationId !== args.organizationId ||
 			state.workspaceId !== args.workspaceId ||
-			state.projectId !== args.projectId ||
 			state.threadId !== args.threadId
 		) {
 			throw should_never_happen("AI chat thread state missing or mismatched", {
@@ -359,7 +359,7 @@ export const set_thread_state = internalMutation({
 
 export const threads_list = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		paginationOpts: paginationOptsValidator,
 		archived: v.optional(v.boolean()),
 	},
@@ -369,7 +369,7 @@ export const threads_list = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -387,8 +387,8 @@ export const threads_list = query({
 
 		const threads_query = ctx.db
 			.query("ai_chat_threads")
-			.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
-				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("archived", archived),
+			.withIndex("by_organization_workspace_archived_lastMessageAt", (q) =>
+				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId).eq("archived", archived),
 			);
 
 		const result = await threads_query.order("desc").paginate({
@@ -405,7 +405,7 @@ export const threads_list = query({
  */
 export const thread_get = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		/**
 		 * Can be a temporary ID generated by Assistant UI
 		 **/
@@ -417,7 +417,7 @@ export const thread_get = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -433,7 +433,7 @@ export const thread_get = query({
 
 		const thread = await ctx.db.get("ai_chat_threads", id_normalized);
 
-		if (!thread || thread.workspaceId !== membership.workspaceId || thread.projectId !== membership.projectId) {
+		if (!thread || thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
 			return null;
 		}
 
@@ -446,7 +446,7 @@ export const thread_get = query({
  */
 export const thread_create = mutation({
 	args: v.object({
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		clientGeneratedId: app_convex_schema.tables.ai_chat_threads.validator.fields.clientGeneratedId,
 		title: v.optional(app_convex_schema.tables.ai_chat_threads.validator.fields.title),
 		lastMessageAt: app_convex_schema.tables.ai_chat_threads.validator.fields.lastMessageAt,
@@ -462,7 +462,7 @@ export const thread_create = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -478,8 +478,8 @@ export const thread_create = mutation({
 		}
 
 		const threadId = await ctx.db.insert("ai_chat_threads", {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			clientGeneratedId: args.clientGeneratedId,
 			title: args.title ?? null,
 			lastMessageAt: args.lastMessageAt,
@@ -492,8 +492,8 @@ export const thread_create = mutation({
 			starred: false,
 		});
 		const stateId = await ctx.db.insert("ai_chat_threads_state", {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			threadId,
 			bashCwd: "~",
 			updatedBy: userAuth.id,
@@ -514,7 +514,7 @@ export const thread_create = mutation({
  */
 export const thread_branch = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		threadId: v.string(),
 		messageId: v.optional(v.string()),
 	},
@@ -529,7 +529,7 @@ export const thread_branch = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -546,18 +546,18 @@ export const thread_branch = mutation({
 		if (!thread) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (thread.workspaceId !== membership.workspaceId || thread.projectId !== membership.projectId) {
+		if (thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
 		const now = Date.now();
+		const organizationId = thread.organizationId;
 		const workspaceId = thread.workspaceId;
-		const projectId = thread.projectId;
 
 		const allMessages = await ctx.db
 			.query("ai_chat_threads_messages_aisdk_5")
-			.withIndex("by_workspace_project_thread", (q) =>
-				q.eq("workspaceId", thread.workspaceId).eq("projectId", thread.projectId).eq("threadId", threadId),
+			.withIndex("by_organization_workspace_thread", (q) =>
+				q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", threadId),
 			)
 			.collect();
 
@@ -575,15 +575,15 @@ export const thread_branch = mutation({
 
 		const unarchivedThreads = await ctx.db
 			.query("ai_chat_threads")
-			.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
-				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("archived", false),
+			.withIndex("by_organization_workspace_archived_lastMessageAt", (q) =>
+				q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("archived", false),
 			)
 			.collect();
 
 		const archivedThreads = await ctx.db
 			.query("ai_chat_threads")
-			.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
-				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("archived", true),
+			.withIndex("by_organization_workspace_archived_lastMessageAt", (q) =>
+				q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("archived", true),
 			)
 			.collect();
 
@@ -638,8 +638,8 @@ export const thread_branch = mutation({
 		}
 
 		const newThreadId = await ctx.db.insert("ai_chat_threads", {
+			organizationId,
 			workspaceId,
-			projectId,
 			clientGeneratedId,
 			title,
 			lastMessageAt: now,
@@ -652,8 +652,8 @@ export const thread_branch = mutation({
 			starred: false,
 		});
 		const stateId = await ctx.db.insert("ai_chat_threads_state", {
+			organizationId,
 			workspaceId,
-			projectId,
 			threadId: newThreadId,
 			bashCwd: sourceState.bashCwd,
 			updatedBy: userAuth.id,
@@ -661,8 +661,8 @@ export const thread_branch = mutation({
 		});
 		await ctx.db.patch("ai_chat_threads", newThreadId, { stateId });
 		await ctx.runMutation(internal.ai_chat_files.copy_thread_tmp_files, {
+			organizationId,
 			workspaceId,
-			projectId,
 			sourceThreadId: threadId,
 			targetThreadId: newThreadId,
 		});
@@ -707,8 +707,8 @@ export const thread_branch = mutation({
 			const insertedId: Id<"ai_chat_threads_messages_aisdk_5"> = await ctx.db.insert(
 				"ai_chat_threads_messages_aisdk_5",
 				{
+					organizationId,
 					workspaceId,
-					projectId,
 					parentId: nextParentId,
 					threadId: newThreadId,
 					createdBy: userAuth.id,
@@ -736,7 +736,7 @@ export const thread_branch = mutation({
  */
 export const thread_update = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		threadId: v.string(),
 		title: v.optional(v.union(v.string(), v.null())),
 		isArchived: v.optional(v.boolean()),
@@ -749,7 +749,7 @@ export const thread_update = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -766,7 +766,7 @@ export const thread_update = mutation({
 		if (!thread) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (thread.workspaceId !== membership.workspaceId || thread.projectId !== membership.projectId) {
+		if (thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
@@ -810,7 +810,7 @@ export const thread_update = mutation({
  */
 export const thread_archive = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		threadId: v.id("ai_chat_threads"),
 	},
 	returns: v_result({ _yay: v.null() }),
@@ -820,7 +820,7 @@ export const thread_archive = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -833,7 +833,7 @@ export const thread_archive = mutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		if (thread.workspaceId !== membership.workspaceId || thread.projectId !== membership.projectId) {
+		if (thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
@@ -859,7 +859,7 @@ export const thread_archive = mutation({
  */
 export const thread_messages_list = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		threadId: v.string(),
 		order: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
 	},
@@ -874,7 +874,7 @@ export const thread_messages_list = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -888,14 +888,14 @@ export const thread_messages_list = query({
 		}
 
 		const thread = await ctx.db.get("ai_chat_threads", threadId);
-		if (!thread || thread.workspaceId !== membership.workspaceId || thread.projectId !== membership.projectId) {
+		if (!thread || thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
 			return null;
 		}
 
 		const messages = await ctx.db
 			.query("ai_chat_threads_messages_aisdk_5")
-			.withIndex("by_workspace_project_thread", (q) =>
-				q.eq("workspaceId", thread.workspaceId).eq("projectId", thread.projectId).eq("threadId", threadId),
+			.withIndex("by_organization_workspace_thread", (q) =>
+				q.eq("organizationId", thread.organizationId).eq("workspaceId", thread.workspaceId).eq("threadId", threadId),
 			)
 			.order(args.order ?? "desc")
 			.collect();
@@ -911,7 +911,7 @@ export const thread_messages_list = query({
  */
 export const thread_messages_add = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		threadId: v.id("ai_chat_threads"),
 		parentId: v.optional(v.union(v.string(), v.null())),
 		messages: v.array(
@@ -932,7 +932,7 @@ export const thread_messages_add = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -944,7 +944,7 @@ export const thread_messages_add = mutation({
 		if (!thread) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (thread.workspaceId !== membership.workspaceId || thread.projectId !== membership.projectId) {
+		if (thread.organizationId !== membership.organizationId || thread.workspaceId !== membership.workspaceId) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
@@ -957,10 +957,10 @@ export const thread_messages_add = mutation({
 				clientGeneratedMessageId: message.clientGeneratedMessageId,
 				existingMessage: await ctx.db
 					.query("ai_chat_threads_messages_aisdk_5")
-					.withIndex("by_workspace_project_thread_clientGeneratedMessageId", (q) =>
+					.withIndex("by_organization_workspace_thread_clientGeneratedMessageId", (q) =>
 						q
+							.eq("organizationId", thread.organizationId)
 							.eq("workspaceId", thread.workspaceId)
-							.eq("projectId", thread.projectId)
 							.eq("threadId", args.threadId)
 							.eq("clientGeneratedMessageId", message.clientGeneratedMessageId),
 					)
@@ -998,8 +998,8 @@ export const thread_messages_add = mutation({
 			}
 
 			const messageId = await ctx.db.insert("ai_chat_threads_messages_aisdk_5", {
+				organizationId: thread.organizationId,
 				workspaceId: thread.workspaceId,
-				projectId: thread.projectId,
 				parentId: nextParentId,
 				threadId: args.threadId,
 				createdBy: userAuth.id,
@@ -1068,7 +1068,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 							/**
 							 * Authenticated membership scope.
 							 *
-							 * Server derives workspace/project from this row.
+							 * Server derives organization/workspace from this row.
 							 **/
 							membershipId: z.string(),
 						});
@@ -1114,7 +1114,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								const membership = await ctx.runQuery(api.workspaces.get_membership, {
+								const membership = await ctx.runQuery(api.organizations.get_membership, {
 									membershipId: body.membershipId,
 								});
 
@@ -1126,9 +1126,9 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 										},
 									} as const;
 								}
-								const tenant = await ctx.runQuery(internal.workspaces.get_tenant, {
+								const tenant = await ctx.runQuery(internal.organizations.get_tenant, {
+									organizationId: membership.organizationId,
 									workspaceId: membership.workspaceId,
-									projectId: membership.projectId,
 								});
 
 								if (body.threadId == null && body.clientGeneratedThreadId == null) {
@@ -1145,10 +1145,10 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								const { systemPrompt, tools, activeTools } = build_agent_configuration({
 									ctx,
 									ctxData: {
+										organizationId: membership.organizationId,
 										workspaceId: membership.workspaceId,
-										projectId: membership.projectId,
+										organizationName: tenant.organization.name,
 										workspaceName: tenant.workspace.name,
-										projectName: tenant.project.name,
 										// Pass the same user id into file tools so pending overlays and file-create audit fields
 										// use the identity already accepted by this chat action.
 										userId: user._id,
@@ -1259,7 +1259,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								// Check credits after cheap request validation but before any LLM work.
 								const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
 									userId: user._id,
-									workspaceId: membership.workspaceId,
+									organizationId: membership.organizationId,
 									minimumRequiredCents: 1,
 								});
 								if (!creditCheck.hasCredits) {
@@ -1272,9 +1272,9 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								}
 								const billedUser = creditCheck.billedUser;
 								if (!billedUser) {
-									throw should_never_happen("Workspace credit check did not return billed user", {
+									throw should_never_happen("Organization credit check did not return billed user", {
 										userId: user._id,
-										workspaceId: membership.workspaceId,
+										organizationId: membership.organizationId,
 									});
 								}
 
@@ -1568,8 +1568,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 																	"ai_usage",
 																	billedUser._id,
 																	user._id,
+																	membership.organizationId,
 																	membership.workspaceId,
-																	membership.projectId,
 																	String(threadId ?? ""),
 																	// TODO: Evaluate if this is a good idea to pass "title" as messageId
 																	"title",
@@ -1582,8 +1582,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 																	}),
 																	actorUserId: user._id,
 																	billedUserId: billedUser._id,
+																	organizationId: membership.organizationId,
 																	workspaceId: membership.workspaceId,
-																	projectId: membership.projectId,
 																	modelId: TITLE_MODEL_ID,
 																	inputTokens: titleInputTokens,
 																	outputTokens: titleOutputTokens,
@@ -1644,8 +1644,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 																"ai_usage",
 																billedUser._id,
 																user._id,
+																membership.organizationId,
 																membership.workspaceId,
-																membership.projectId,
 																String(threadId ?? ""),
 																String(result.responseMessage.id ?? ""),
 															),
@@ -1653,8 +1653,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 																amount: capturedActualCents,
 																actorUserId: user._id,
 																billedUserId: billedUser._id,
+																organizationId: membership.organizationId,
 																workspaceId: membership.workspaceId,
-																projectId: membership.projectId,
 																modelId: body.model,
 																inputTokens: capturedInputTokens,
 																outputTokens: capturedOutputTokens,
@@ -1750,7 +1750,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 							/**
 							 * Authenticated membership scope.
 							 *
-							 * Server derives workspace/project from this row.
+							 * Server derives organization/workspace from this row.
 							 **/
 							membershipId: z.string(),
 							thread_id: z.string(),
@@ -1786,7 +1786,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								const membership = await ctx.runQuery(api.workspaces.get_membership, {
+								const membership = await ctx.runQuery(api.organizations.get_membership, {
 									membershipId: body.membershipId,
 								});
 
@@ -1851,7 +1851,7 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								// "title" discriminator keeps the usage event id stable across HTTP retries.
 								const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
 									userId: user._id,
-									workspaceId: membership.workspaceId,
+									organizationId: membership.organizationId,
 									minimumRequiredCents: 1,
 								});
 								if (!creditCheck.hasCredits) {
@@ -1862,9 +1862,9 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 								}
 								const billedUser = creditCheck.billedUser;
 								if (!billedUser) {
-									throw should_never_happen("Workspace credit check did not return billed user", {
+									throw should_never_happen("Organization credit check did not return billed user", {
 										userId: user._id,
-										workspaceId: membership.workspaceId,
+										organizationId: membership.organizationId,
 									});
 								}
 
@@ -1923,8 +1923,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 																"ai_usage",
 																billedUser._id,
 																user._id,
+																membership.organizationId,
 																membership.workspaceId,
-																membership.projectId,
 																thread_id,
 																// TODO: Evaluate if this is a good idea to pass "title" as messageId
 																"title",
@@ -1933,8 +1933,8 @@ export function ai_chat_http_routes(router: RouterForConvexModules) {
 																amount: titleCostCents,
 																actorUserId: user._id,
 																billedUserId: billedUser._id,
+																organizationId: membership.organizationId,
 																workspaceId: membership.workspaceId,
-																projectId: membership.projectId,
 																modelId: TITLE_MODEL_ID,
 																inputTokens: titleInputTokens,
 																outputTokens: titleOutputTokens,
@@ -2031,10 +2031,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	>;
 
 	const build_agent_configuration_test_ctx_data = {
-		workspaceId: "app_workspace_test_1" as Id<"workspaces">,
-		projectId: "app_project_test_1" as Id<"workspaces_projects">,
-		workspaceName: "personal",
-		projectName: "home",
+		organizationId: "app_organization_test_1" as Id<"organizations">,
+		workspaceId: "app_workspace_test_1" as Id<"organizations_workspaces">,
+		organizationName: "personal",
+		workspaceName: "home",
 		userId: "user_1" as Id<"users">,
 	} as const;
 
@@ -2233,7 +2233,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 
 			expect(configuration.systemPrompt).toContain(
-				"Bash starts in the current project path at `~/w/personal/home` (`/home/cloud-usr/w/personal/home`). `~` is `/home/cloud-usr`, the app mount is `/home/cloud-usr/w`, and `/tmp` is durable scratch scoped to this chat thread.",
+				"Bash starts in the current workspace path at `~/w/personal/home` (`/home/cloud-usr/w/personal/home`). `~` is `/home/cloud-usr`, the app mount is `/home/cloud-usr/w`, and `/tmp` is durable scratch scoped to this chat thread.",
 			);
 			expect(configuration.systemPrompt).toContain(
 				"`/tmp` persists across Bash calls in this chat and reloads from Convex if the warm backend runtime cache is gone.",
@@ -2323,9 +2323,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"Use `ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...]` for app listings. Bare `ls --limit N` lists the current directory.",
 			);
 			expect(configuration.systemPrompt).toContain(
-				"`ls -t` (newest first) and `ls -rt` (oldest first) without PATH list the whole project ordered by update time",
+				"`ls -t` (newest first) and `ls -rt` (oldest first) without PATH list the whole workspace ordered by update time",
 			);
-			expect(configuration.systemPrompt).toContain("bare `ls -t` is still project-wide");
+			expect(configuration.systemPrompt).toContain("bare `ls -t` is still workspace-wide");
 			expect(configuration.systemPrompt).toContain("`ls -R` lists a paginated subtree as full app shell paths");
 			expect(configuration.systemPrompt).toContain(
 				"when the user asks for tree-shaped output, use `tree`, not `ls -R`",

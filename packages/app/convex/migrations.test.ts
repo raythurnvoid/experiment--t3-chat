@@ -12,15 +12,15 @@ const migrations_test_schema = defineSchema({
 	users: defineTable({
 		clerkUserId: v.union(v.string(), v.null()),
 	}).index("by_clerkUser", ["clerkUserId"]),
-	workspaces: defineTable({
+	organizations: defineTable({
 		name: v.string(),
 		description: v.string(),
 		default: v.boolean(),
-		defaultProjectId: v.optional(v.id("workspaces_projects")),
+		defaultWorkspaceId: v.optional(v.id("organizations_workspaces")),
 		updatedAt: v.number(),
 	}),
-	workspaces_projects: defineTable({
-		workspaceId: v.id("workspaces"),
+	organizations_workspaces: defineTable({
+		organizationId: v.id("organizations"),
 		name: v.string(),
 		description: v.string(),
 		default: v.boolean(),
@@ -28,20 +28,20 @@ const migrations_test_schema = defineSchema({
 	}),
 	notifications: defineTable({
 		userId: v.id("users"),
-		kind: v.literal("workspace_project_invite"),
+		kind: v.literal("organization_workspace_invite"),
 		read: v.boolean(),
 		actorUserId: v.id("users"),
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		createdAt: v.optional(v.number()),
 		updatedAt: v.number(),
 	})
 		.index("by_user_read", ["userId", "read"])
-		.index("by_workspace_user_read", ["workspaceId", "userId", "read"])
-		.index("by_workspace_project_user", ["workspaceId", "projectId", "userId"]),
+		.index("by_organization_user_read", ["organizationId", "userId", "read"])
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"]),
 	files_nodes: defineTable({
+		organizationId: v.string(),
 		workspaceId: v.string(),
-		projectId: v.string(),
 		path: v.string(),
 		pathDepth: v.optional(v.number()),
 		lowercaseExtension: v.optional(v.union(v.string(), v.null())),
@@ -54,8 +54,8 @@ const migrations_test_schema = defineSchema({
 		updatedAt: v.number(),
 	}),
 	files_markdown_chunks: defineTable({
+		organizationId: v.string(),
 		workspaceId: v.string(),
-		projectId: v.string(),
 		fileNodeId: v.id("files_nodes"),
 		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
 		userId: v.optional(v.string()),
@@ -70,8 +70,8 @@ const migrations_test_schema = defineSchema({
 		chunkFlags: v.number(),
 	}),
 	files_plain_text_chunks: defineTable({
+		organizationId: v.string(),
 		workspaceId: v.string(),
-		projectId: v.string(),
 		fileNodeId: v.optional(v.id("files_nodes")),
 		nodeId: v.optional(v.id("files_nodes")),
 		yjsSequence: v.number(),
@@ -90,8 +90,8 @@ describe("rename_plain_text_chunks_file_node_id", () => {
 		const legacy = await t.run(async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-user-files-node-id-rename" });
 			const fileId = await ctx.db.insert("files_nodes", {
+				organizationId: "organization-files-node-id-rename",
 				workspaceId: "workspace-files-node-id-rename",
-				projectId: "project-files-node-id-rename",
 				path: "/docs/readme.md",
 				name: "readme.md",
 				kind: "file",
@@ -101,8 +101,8 @@ describe("rename_plain_text_chunks_file_node_id", () => {
 				updatedAt: 100,
 			});
 			const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
+				organizationId: "organization-files-node-id-rename",
 				workspaceId: "workspace-files-node-id-rename",
-				projectId: "project-files-node-id-rename",
 				fileNodeId: fileId,
 				sourceKind: "committed",
 				yjsSequence: 0,
@@ -115,8 +115,8 @@ describe("rename_plain_text_chunks_file_node_id", () => {
 				chunkFlags: 0,
 			});
 			const plainTextChunkId = await ctx.db.insert("files_plain_text_chunks", {
+				organizationId: "organization-files-node-id-rename",
 				workspaceId: "workspace-files-node-id-rename",
-				projectId: "project-files-node-id-rename",
 				nodeId: fileId,
 				yjsSequence: 0,
 				chunkIndex: 0,
@@ -151,14 +151,14 @@ describe("remove_notifications_created_at", () => {
 				ctx.db.insert("users", { clerkUserId: "clerk-user-legacy-notification-created-at" }),
 				ctx.db.insert("users", { clerkUserId: "clerk-user-legacy-notification-created-at-actor" }),
 			]);
-			const workspaceId = await ctx.db.insert("workspaces", {
-				name: "legacy-notification-created-at-workspace",
+			const organizationId = await ctx.db.insert("organizations", {
+				name: "legacy-notification-created-at-organization",
 				description: "",
 				default: false,
 				updatedAt: 100,
 			});
-			const projectId = await ctx.db.insert("workspaces_projects", {
-				workspaceId,
+			const workspaceId = await ctx.db.insert("organizations_workspaces", {
+				organizationId,
 				name: "home",
 				description: "",
 				default: true,
@@ -166,16 +166,16 @@ describe("remove_notifications_created_at", () => {
 			});
 			const notificationId = await ctx.db.insert("notifications", {
 				userId,
-				kind: "workspace_project_invite",
+				kind: "organization_workspace_invite",
 				read: false,
 				actorUserId,
+				organizationId,
 				workspaceId,
-				projectId,
 				createdAt: 100,
 				updatedAt: 100,
 			});
 
-			return { notificationId, userId, actorUserId, workspaceId, projectId };
+			return { notificationId, userId, actorUserId, organizationId, workspaceId };
 		});
 
 		const notification = await t.run(async (ctx) => {
@@ -186,11 +186,11 @@ describe("remove_notifications_created_at", () => {
 
 		expect(notification).toMatchObject({
 			userId: legacy.userId,
-			kind: "workspace_project_invite",
+			kind: "organization_workspace_invite",
 			read: false,
 			actorUserId: legacy.actorUserId,
+			organizationId: legacy.organizationId,
 			workspaceId: legacy.workspaceId,
-			projectId: legacy.projectId,
 			updatedAt: 100,
 		});
 		expect(notification).not.toHaveProperty("createdAt");
@@ -204,8 +204,8 @@ describe("files chunk search backfills", () => {
 		const legacy = await t.run(async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-user-files-backfill" });
 			const fileId = await ctx.db.insert("files_nodes", {
+				organizationId: "organization-files-backfill",
 				workspaceId: "workspace-files-backfill",
-				projectId: "project-files-backfill",
 				path: "/docs/readme.md",
 				name: "readme.md",
 				kind: "file",
@@ -216,8 +216,8 @@ describe("files chunk search backfills", () => {
 				updatedAt: 100,
 			});
 			const markdownChunkId = await ctx.db.insert("files_markdown_chunks", {
+				organizationId: "organization-files-backfill",
 				workspaceId: "workspace-files-backfill",
-				projectId: "project-files-backfill",
 				fileNodeId: fileId,
 				sourceKind: "committed",
 				yjsSequence: 0,
@@ -230,8 +230,8 @@ describe("files chunk search backfills", () => {
 				chunkFlags: 0,
 			});
 			const plainTextChunkId = await ctx.db.insert("files_plain_text_chunks", {
+				organizationId: "organization-files-backfill",
 				workspaceId: "workspace-files-backfill",
-				projectId: "project-files-backfill",
 				fileNodeId: fileId,
 				yjsSequence: 0,
 				chunkIndex: 0,
@@ -265,8 +265,8 @@ describe("files chunk search backfills", () => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-user-files-extension-backfill" });
 			const [markdownFileId, folderId, extensionlessFileId] = await Promise.all([
 				ctx.db.insert("files_nodes", {
+					organizationId: "organization-files-extension-backfill",
 					workspaceId: "workspace-files-extension-backfill",
-					projectId: "project-files-extension-backfill",
 					path: "/docs/README.MD",
 					name: "README.MD",
 					kind: "file",
@@ -276,8 +276,8 @@ describe("files chunk search backfills", () => {
 					updatedAt: 100,
 				}),
 				ctx.db.insert("files_nodes", {
+					organizationId: "organization-files-extension-backfill",
 					workspaceId: "workspace-files-extension-backfill",
-					projectId: "project-files-extension-backfill",
 					path: "/docs",
 					name: "docs",
 					kind: "folder",
@@ -287,8 +287,8 @@ describe("files chunk search backfills", () => {
 					updatedAt: 100,
 				}),
 				ctx.db.insert("files_nodes", {
+					organizationId: "organization-files-extension-backfill",
 					workspaceId: "workspace-files-extension-backfill",
-					projectId: "project-files-extension-backfill",
 					path: "/LICENSE",
 					name: "LICENSE",
 					kind: "file",

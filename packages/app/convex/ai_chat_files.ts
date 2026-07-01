@@ -41,8 +41,8 @@ export type ai_chat_files_load_thread_tmp_files_Result =
 
 export const patch_thread_tmp_files = internalMutation({
 	args: {
+		organizationId: v.string(),
 		workspaceId: v.string(),
-		projectId: v.string(),
 		threadId: v.id("ai_chat_threads"),
 		fileNodes: v.array(
 			v.object({
@@ -85,8 +85,8 @@ export const patch_thread_tmp_files = internalMutation({
 		await Promise.all(
 			args.fileNodes.map(async (fileNode) => {
 				const doc = {
+					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					projectId: args.projectId,
 					threadId: args.threadId,
 					path: fileNode.path,
 					kind: fileNode.kind,
@@ -123,8 +123,8 @@ export const patch_thread_tmp_files = internalMutation({
 					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", fileNodeId))
 					.first();
 				const contentDoc = {
+					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					projectId: args.projectId,
 					threadId: args.threadId,
 					fileNodeId,
 					bytes,
@@ -148,8 +148,8 @@ export type ai_chat_files_patch_thread_tmp_files_Args =
 
 export const copy_thread_tmp_files = internalMutation({
 	args: {
+		organizationId: v.string(),
 		workspaceId: v.string(),
-		projectId: v.string(),
 		sourceThreadId: v.id("ai_chat_threads"),
 		targetThreadId: v.id("ai_chat_threads"),
 	},
@@ -169,8 +169,8 @@ export const copy_thread_tmp_files = internalMutation({
 		await Promise.all(
 			sourceAiChatFiles.map(async (fileNode) => {
 				const fileNodeId = await ctx.db.insert("ai_chat_files", {
+					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					projectId: args.projectId,
 					threadId: args.targetThreadId,
 					path: fileNode.path,
 					kind: fileNode.kind,
@@ -182,8 +182,8 @@ export const copy_thread_tmp_files = internalMutation({
 				const content = contentByFileNodeId.get(fileNode._id);
 				if (content) {
 					await ctx.db.insert("ai_chat_files_content", {
+						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						projectId: args.projectId,
 						threadId: args.targetThreadId,
 						fileNodeId,
 						bytes: content.bytes,

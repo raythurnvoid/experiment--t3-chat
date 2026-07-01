@@ -219,7 +219,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 		onEditorModeChange,
 	} = props;
 
-	const { workspaceName, projectName } = AppTenantProvider.useContext();
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 
 	const breadcrumbPath = get_breadcrumb_path(fileNodesList, selectedNodeId);
 
@@ -244,8 +244,8 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 								<MyLink
 									aria-label="Home"
 									className={cn("FileNodeViewHeader-breadcrumb-home" satisfies FileNodeViewHeader_ClassNames)}
-									to="/w/$workspaceName/$projectName/files"
-									params={{ workspaceName, projectName }}
+									to="/w/$organizationName/$workspaceName/files"
+									params={{ organizationName, workspaceName }}
 									search={{ nodeId: files_ROOT_ID, view: editorMode }}
 									variant="button-icon-ghost-highlightable"
 									tooltip="Home"
@@ -274,8 +274,8 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 													className={cn(
 														"FileNodeViewHeader-breadcrumb-segment" satisfies FileNodeViewHeader_ClassNames,
 													)}
-													to="/w/$workspaceName/$projectName/files"
-													params={{ workspaceName, projectName }}
+													to="/w/$organizationName/$workspaceName/files"
+													params={{ organizationName, workspaceName }}
 													search={{ nodeId: item._id, view: editorMode }}
 													variant="button-tertiary"
 												>
@@ -598,7 +598,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		toolbarPortalHost,
 		onEditorModeChange,
 	} = props;
-	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
+	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const convex = useConvex();
 
 	const [showAllItems, setShowAllItems] = useState(false);
@@ -752,8 +752,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 				visibleChildItems={visibleChildItems}
 				hiddenChildItemsCount={hiddenChildItemsCount}
 				editorMode={editorMode}
+				organizationName={organizationName}
 				workspaceName={workspaceName}
-				projectName={projectName}
 				pendingActionNodeIds={pendingActionNodeIds}
 				canMoveFileNodeToParent={handleCanMoveFileNodeToParent}
 				onArchiveNode={handleArchiveNode}
@@ -1070,7 +1070,7 @@ type FileNodeViewFolderCreateNodeModal_Ref = {
 
 type FileNodeViewFolderCreateNodeModal_Props = {
 	ref: React.Ref<FileNodeViewFolderCreateNodeModal_Ref>;
-	membershipId: app_convex_Id<"workspaces_projects_users">;
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	folderItemId: FileNodeViewFolder_Props["folderItemId"];
 	fileNodesList: FileNodeViewFolder_Props["fileNodesList"];
 	siblingNames: Iterable<string>;
@@ -1282,7 +1282,7 @@ const FileNodeViewFolderCreateNodeModal = memo(function FileNodeViewFolderCreate
 type FileNodeViewToolbarCreateNodeActions_Props = {
 	children: (folderActionsSlot: FileNodeViewToolbar_Props["folderActionsSlot"]) => React.ReactNode;
 	folderItemId: FileNodeViewFolder_Props["folderItemId"] | null;
-	membershipId: app_convex_Id<"workspaces_projects_users">;
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	fileNodesList: FileNodeViewFolder_Props["fileNodesList"];
 };
 
@@ -1426,8 +1426,8 @@ type FileNodeViewFolderExplorerRow_ClassNames =
 type FileNodeViewFolderExplorerRow_Props = {
 	child: files_VisibleTreeNode;
 	editorMode: FileEditor_Mode;
+	organizationName: string;
 	workspaceName: string;
-	projectName: string;
 	isPendingAction: boolean;
 	canMoveFileNodeToParent: (args: {
 		fileNodeId: app_convex_Id<"files_nodes">;
@@ -1446,8 +1446,8 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 	const {
 		child,
 		editorMode,
+		organizationName,
 		workspaceName,
-		projectName,
 		isPendingAction,
 		canMoveFileNodeToParent,
 		onArchiveNode,
@@ -1560,8 +1560,8 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 			<Link
 				aria-label={`Open ${child.name}`}
 				className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
-				to="/w/$workspaceName/$projectName/files"
-				params={{ workspaceName, projectName }}
+				to="/w/$organizationName/$workspaceName/files"
+				params={{ organizationName, workspaceName }}
 				search={{ nodeId: child._id, view: editorMode }}
 				draggable={false}
 			/>
@@ -1648,8 +1648,8 @@ type FileNodeViewFolderExplorer_Props = {
 	visibleChildItems: files_VisibleTreeNode[];
 	hiddenChildItemsCount: number;
 	editorMode: FileEditor_Mode;
+	organizationName: string;
 	workspaceName: string;
-	projectName: string;
 	pendingActionNodeIds: ReadonlySet<string>;
 	canMoveFileNodeToParent: (args: {
 		fileNodeId: app_convex_Id<"files_nodes">;
@@ -1668,8 +1668,8 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		visibleChildItems,
 		hiddenChildItemsCount,
 		editorMode,
+		organizationName,
 		workspaceName,
-		projectName,
 		pendingActionNodeIds,
 		canMoveFileNodeToParent,
 		onArchiveNode,
@@ -1697,8 +1697,8 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 									key={child._id}
 									child={child}
 									editorMode={editorMode}
+									organizationName={organizationName}
 									workspaceName={workspaceName}
-									projectName={projectName}
 									isPendingAction={isPendingAction}
 									canMoveFileNodeToParent={canMoveFileNodeToParent}
 									onArchiveNode={onArchiveNode}

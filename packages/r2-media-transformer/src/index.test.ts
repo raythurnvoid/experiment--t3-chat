@@ -11,7 +11,7 @@ function make_env(args: { object?: Uint8Array | null } = {}) {
 	const object = Object.hasOwn(args, "object") ? args.object : new Uint8Array([1, 2, 3]);
 	const env: Env = {
 		MEDIA_TRANSFORMER_SECRET: "secret",
-		R2_UPLOAD_PREFIX: "workspaces/",
+		R2_UPLOAD_PREFIX: "organizations/",
 		FILES_BUCKET: {
 			get: vi.fn(async () => (object ? { body: new Response(object).body! } : null)),
 		},
@@ -58,7 +58,7 @@ describe("handle_frame_request", () => {
 		const { env, outputCalls, transformCalls } = make_env();
 
 		const response = await handle_frame_request(
-			authed_request("/api/media/frame", { key: "workspaces/w/projects/p/assets/a", timeSeconds: 5 }),
+			authed_request("/api/media/frame", { key: "organizations/w/workspaces/p/assets/a", timeSeconds: 5 }),
 			env,
 		);
 
@@ -83,7 +83,7 @@ describe("handle_frame_request", () => {
 		const { env } = make_env();
 
 		const response = await handle_frame_request(
-			authed_request("/api/media/frame", { key: "workspaces/w/projects/p/assets/a", timeSeconds: 5 }, "wrong"),
+			authed_request("/api/media/frame", { key: "organizations/w/workspaces/p/assets/a", timeSeconds: 5 }, "wrong"),
 			env,
 		);
 
@@ -97,7 +97,7 @@ describe("handle_audio_segment_request", () => {
 
 		const response = await handle_audio_segment_request(
 			authed_request("/api/media/audio-segment", {
-				key: "workspaces/w/projects/p/assets/a",
+				key: "organizations/w/workspaces/p/assets/a",
 				startSeconds: 10,
 				durationSeconds: 30,
 			}),
@@ -113,7 +113,7 @@ describe("handle_audio_segment_request", () => {
 
 		const response = await handle_audio_segment_request(
 			authed_request("/api/media/audio-segment", {
-				key: "workspaces/w/projects/p/assets/a",
+				key: "organizations/w/workspaces/p/assets/a",
 				startSeconds: 0,
 				durationSeconds: 121,
 			}),
@@ -128,7 +128,7 @@ describe("handle_audio_segment_request", () => {
 
 		const response = await handle_audio_segment_request(
 			authed_request("/api/media/audio-segment", {
-				key: "workspaces/w/projects/p/assets/a",
+				key: "organizations/w/workspaces/p/assets/a",
 				startSeconds: 0,
 				durationSeconds: 30,
 			}),

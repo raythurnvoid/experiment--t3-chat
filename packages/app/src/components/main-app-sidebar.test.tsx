@@ -34,8 +34,8 @@ vi.mock("convex/react", () => ({
 
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex_api: {
-		workspaces: {
-			list: "workspaces.list",
+		organizations: {
+			list: "organizations.list",
 		},
 	},
 }));
@@ -203,19 +203,19 @@ import { MainAppSidebar } from "./main-app-sidebar.tsx";
 function createTenantContext() {
 	return {
 		membershipId: "membership_1" as AppTenantContextValue["membershipId"],
-		projectId: "project_1" as AppTenantContextValue["projectId"],
-		projectName: "home",
 		workspaceId: "workspace_1" as AppTenantContextValue["workspaceId"],
-		workspaceName: "team",
+		workspaceName: "home",
+		organizationId: "organization_1" as AppTenantContextValue["organizationId"],
+		organizationName: "team",
 	} satisfies AppTenantContextValue;
 }
 
-function createWorkspaceList(args: { workspaceIsDefault: boolean }) {
+function createOrganizationList(args: { organizationIsDefault: boolean }) {
 	return {
-		workspaces: [
+		organizations: [
 			{
-				_id: "workspace_1",
-				default: args.workspaceIsDefault,
+				_id: "organization_1",
+				default: args.organizationIsDefault,
 			},
 		],
 	};
@@ -224,7 +224,7 @@ function createWorkspaceList(args: { workspaceIsDefault: boolean }) {
 describe("MainAppSidebar", () => {
 	beforeEach(() => {
 		tenantContextMock.mockReturnValue(createTenantContext());
-		useQueryMock.mockReturnValue(createWorkspaceList({ workspaceIsDefault: false }));
+		useQueryMock.mockReturnValue(createOrganizationList({ organizationIsDefault: false }));
 	});
 
 	afterEach(() => {
@@ -232,8 +232,8 @@ describe("MainAppSidebar", () => {
 		vi.clearAllMocks();
 	});
 
-	test("hides Users navigation in the personal workspace", () => {
-		useQueryMock.mockReturnValue(createWorkspaceList({ workspaceIsDefault: true }));
+	test("hides Users navigation in the personal organization", () => {
+		useQueryMock.mockReturnValue(createOrganizationList({ organizationIsDefault: true }));
 
 		render(<MainAppSidebar />);
 
@@ -242,7 +242,7 @@ describe("MainAppSidebar", () => {
 		expect(screen.queryByText("Users")).toBeNull();
 	});
 
-	test("shows Users navigation in non-default workspaces", () => {
+	test("shows Users navigation in non-default organizations", () => {
 		render(<MainAppSidebar />);
 
 		expect(screen.getByText("Users")).not.toBeNull();

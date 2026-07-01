@@ -12,31 +12,31 @@ export async function quotas_db_get(
 	ctx: QueryCtx | MutationCtx,
 	args:
 		| {
-				quotaName: "extra_workspaces";
+				quotaName: "extra_organizations";
 				userId: Id<"users">;
 		  }
 		| {
-				quotaName: "extra_projects";
-				workspaceId: Id<"workspaces">;
+				quotaName: "extra_workspaces";
+				organizationId: Id<"organizations">;
 		  },
 ) {
 	const quota =
-		args.quotaName === "extra_workspaces"
+		args.quotaName === "extra_organizations"
 			? await ctx.db
 					.query("quotas")
 					.withIndex("by_user_quotaName", (q) => q.eq("userId", args.userId).eq("quotaName", args.quotaName))
 					.first()
 			: await ctx.db
 					.query("quotas")
-					.withIndex("by_workspace_quotaName", (q) =>
-						q.eq("workspaceId", args.workspaceId).eq("quotaName", args.quotaName),
+					.withIndex("by_organization_quotaName", (q) =>
+						q.eq("organizationId", args.organizationId).eq("quotaName", args.quotaName),
 					)
 					.first();
 
 	if (!quota) {
 		throw should_never_happen("Missing quota doc", {
 			quotaName: args.quotaName,
-			...(args.quotaName === "extra_workspaces" ? { userId: args.userId } : { workspaceId: args.workspaceId }),
+			...(args.quotaName === "extra_organizations" ? { userId: args.userId } : { organizationId: args.organizationId }),
 		});
 	}
 
@@ -47,27 +47,27 @@ export async function quotas_db_ensure(
 	ctx: MutationCtx,
 	args:
 		| {
-				quotaName: "extra_workspaces";
+				quotaName: "extra_organizations";
 				userId: Id<"users">;
 				now: number;
 		  }
 		| {
-				quotaName: "extra_projects";
-				workspaceId: Id<"workspaces">;
+				quotaName: "extra_workspaces";
+				organizationId: Id<"organizations">;
 				now: number;
 		  },
 ) {
 	const quotaDefinition = quotas[args.quotaName];
 	const existing =
-		args.quotaName === "extra_workspaces"
+		args.quotaName === "extra_organizations"
 			? await ctx.db
 					.query("quotas")
 					.withIndex("by_user_quotaName", (q) => q.eq("userId", args.userId).eq("quotaName", args.quotaName))
 					.first()
 			: await ctx.db
 					.query("quotas")
-					.withIndex("by_workspace_quotaName", (q) =>
-						q.eq("workspaceId", args.workspaceId).eq("quotaName", args.quotaName),
+					.withIndex("by_organization_quotaName", (q) =>
+						q.eq("organizationId", args.organizationId).eq("quotaName", args.quotaName),
 					)
 					.first();
 	if (existing) {
@@ -76,7 +76,7 @@ export async function quotas_db_ensure(
 
 	return await ctx.db.insert("quotas", {
 		quotaName: args.quotaName,
-		...(args.quotaName === "extra_workspaces" ? { userId: args.userId } : { workspaceId: args.workspaceId }),
+		...(args.quotaName === "extra_organizations" ? { userId: args.userId } : { organizationId: args.organizationId }),
 		usedCount: 0,
 		maxCount: quotaDefinition.maxCount,
 		createdAt: args.now,
@@ -91,7 +91,7 @@ export const get = query({
 	args: {
 		quotaName: app_convex_schema.tables.quotas.validator.fields.quotaName,
 		userId: v.optional(v.id("users")),
-		workspaceId: v.optional(v.id("workspaces")),
+		organizationId: v.optional(v.id("organizations")),
 	},
 	returns: v.union(doc(app_convex_schema, "quotas"), v.null()),
 	handler: async (ctx, args) => {
@@ -108,7 +108,7 @@ export const get = query({
 			return null;
 		}
 
-		if (args.quotaName === "extra_workspaces") {
+		if (args.quotaName === "extra_organizations") {
 			// A user quota is private to the same user id as the authenticated app user.
 			if (!args.userId || args.userId !== userAuth.id) {
 				return null;
@@ -120,19 +120,19 @@ export const get = query({
 			});
 		}
 
-		if (args.quotaName === "extra_projects") {
-			const workspaceId = args.workspaceId;
-			if (!workspaceId) {
+		if (args.quotaName === "extra_workspaces") {
+			const organizationId = args.organizationId;
+			if (!organizationId) {
 				return null;
 			}
 
-			// Workspace quotas are scoped to the whole workspace. Any active
-			// membership in that workspace is enough to read the quota, regardless
-			// of which project created the membership doc.
+			// Organization quotas are scoped to the whole organization. Any active
+			// membership in that organization is enough to read the quota, regardless
+			// of which workspace created the membership doc.
 			const membershipDoc = await ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) =>
-					q.eq("active", true).eq("userId", userAuth.id).eq("workspaceId", workspaceId),
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q.eq("active", true).eq("userId", userAuth.id).eq("organizationId", organizationId),
 				)
 				.first();
 
@@ -142,7 +142,7 @@ export const get = query({
 
 			return await quotas_db_get(ctx, {
 				quotaName: args.quotaName,
-				workspaceId,
+				organizationId,
 			});
 		}
 

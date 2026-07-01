@@ -322,7 +322,7 @@ const AiChatMessagePartToolReadPage = memo(function AiChatMessagePartToolReadPag
 ) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
-	const { workspaceName, projectName } = AppTenantProvider.useContext();
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 
 	return (
 		<AiChatMessagePartDisclosure
@@ -338,8 +338,8 @@ const AiChatMessagePartToolReadPage = memo(function AiChatMessagePartToolReadPag
 				{result?.metadata?.nodeId && (
 					<MyLink
 						className={"AiChatMessagePartToolReadPage-link" satisfies AiChatMessagePartToolReadPage_ClassNames}
-						to="/w/$workspaceName/$projectName/files"
-						params={{ workspaceName, projectName }}
+						to="/w/$organizationName/$workspaceName/files"
+						params={{ organizationName, workspaceName }}
 						search={{ nodeId: result.metadata.nodeId }}
 						variant="button-ghost-accent"
 					>
@@ -586,7 +586,7 @@ const AiChatMessagePartToolWritePage = memo(function AiChatMessagePartToolWriteP
 ) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
-	const { workspaceName, projectName } = AppTenantProvider.useContext();
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 
 	const deferredContent = useDeferredValue(args?.content);
 
@@ -606,8 +606,8 @@ const AiChatMessagePartToolWritePage = memo(function AiChatMessagePartToolWriteP
 			{nodeId ? (
 				<MyLink
 					className={"AiChatMessagePartToolWritePage-header" satisfies AiChatMessagePartToolWritePage_ClassNames}
-					to="/w/$workspaceName/$projectName/files"
-					params={{ workspaceName, projectName }}
+					to="/w/$organizationName/$workspaceName/files"
+					params={{ organizationName, workspaceName }}
 					search={{ nodeId, view: "diff_editor" }}
 					variant="button-ghost-accent"
 				>
@@ -717,7 +717,7 @@ const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPag
 ) {
 	const { className, args, result, toolState, isChatRunning, errorText } = props;
 
-	const { workspaceName, projectName } = AppTenantProvider.useContext();
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 
 	const text = result?.metadata?.path
 		? path_name_of(result.metadata.path)
@@ -741,8 +741,8 @@ const AiChatMessagePartToolEditPage = memo(function AiChatMessagePartToolEditPag
 				{result?.metadata?.nodeId && (
 					<MyLink
 						className={"AiChatMessagePartToolEditPage-link" satisfies AiChatMessagePartToolEditPage_ClassNames}
-						to="/w/$workspaceName/$projectName/files"
-						params={{ workspaceName, projectName }}
+						to="/w/$organizationName/$workspaceName/files"
+						params={{ organizationName, workspaceName }}
 						search={{ nodeId: result.metadata.nodeId }}
 						variant="button-ghost-accent"
 					>

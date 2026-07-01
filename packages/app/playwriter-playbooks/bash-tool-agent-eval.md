@@ -2,7 +2,7 @@
 
 Use this playbook to evaluate whether Bash-tool changes make the in-app AI smoother or worse. This is not a smoke test: every Bash-tool change should go through the same loop of fixture readiness, baseline, one attempted change, repeated live-agent runs, scored comparison, and an explicit accept/reject/revert decision.
 
-The Bash tool is a mixed-path virtual shell. The app mount under `/home/cloud-usr/w/<workspace>/<project>` is Convex-backed and intentionally not full POSIX. `/tmp` is durable per-thread scratch: it persists across Bash calls in the same chat and reloads from Convex if the warm backend runtime cache is gone, but it is not app file storage and is not shared with new chats. Evaluation must catch both sides: app-mount limits must not leak into `/tmp`, and `/tmp` flexibility must not bypass app-mount safety.
+The Bash tool is a mixed-path virtual shell. The app mount under `/home/cloud-usr/w/<organization>/<workspace>` is Convex-backed and intentionally not full POSIX. `/tmp` is durable per-thread scratch: it persists across Bash calls in the same chat and reloads from Convex if the warm backend runtime cache is gone, but it is not app file storage and is not shared with new chats. Evaluation must catch both sides: app-mount limits must not leak into `/tmp`, and `/tmp` flexibility must not bypass app-mount safety.
 
 ## Non-Negotiables
 
@@ -243,8 +243,8 @@ For broad Bash changes, keep two aggregate rows:
    `Use Bash to search inside <fixture> for basheval-distinctive-<runId> with one result.`
 2. Scoped content search through cwd:
    `Use Bash. Go into <fixture>, search for basheval-distinctive-<runId> with limit 1, and summarize the result.`
-3. Project-wide content search:
-   `Use Bash to find where basheval-distinctive-<runId> appears anywhere in the project.`
+3. Workspace-wide content search:
+   `Use Bash to find where basheval-distinctive-<runId> appears anywhere in the workspace.`
 4. Search cursor continuation:
    `Use Bash to search for basheval-common-<runId> with limit 1. If Bash prints a Next page command, run exactly one continuation.`
 5. Tree cursor continuation:
@@ -260,7 +260,7 @@ For broad Bash changes, keep two aggregate rows:
 10. Recent immediate children through cwd:
     `Use Bash. Go into <fixture>, then list the recent immediate children of the current directory.`
 11. Pending edit search/read:
-    `Use edit_file on the app path derived from <fixture>/README.md by removing only the /home/cloud-usr/w/<workspace>/<project> prefix and preserving the full remaining suffix, never collapsing it to /README.md. Replace the exact line "Common token: basheval-common-<runId>." with "Common token: basheval-common-<runId>. pending-token-<runId>" without applying it. Then use Bash search for pending-token-<runId>, Bash head on the same file, and cat <file> | cut to prove the pending version is what Bash reads.`
+    `Use edit_file on the app path derived from <fixture>/README.md by removing only the /home/cloud-usr/w/<organization>/<workspace> prefix and preserving the full remaining suffix, never collapsing it to /README.md. Replace the exact line "Common token: basheval-common-<runId>." with "Common token: basheval-common-<runId>. pending-token-<runId>" without applying it. Then use Bash search for pending-token-<runId>, Bash head on the same file, and cat <file> | cut to prove the pending version is what Bash reads.`
 
 ### Bad-Habit Scenarios
 
@@ -529,13 +529,13 @@ If local Convex source has not been deployed to the target dev deployment yet, i
 
 Eight categories, scored per task. 0/1 for binary tasks; 0/2 for tasks needing both a correct command AND a grounded answer.
 
-- **C1 Mount discovery (0/1)** — `ls /.mounts` sees `t3-chat/`, `ls /.mounts/t3-chat` names real top-level entries. Fail: invents mount names, treats `/.mounts` as a project path, or hallucinates contents.
+- **C1 Mount discovery (0/1)** — `ls /.mounts` sees `t3-chat/`, `ls /.mounts/t3-chat` names real top-level entries. Fail: invents mount names, treats `/.mounts` as a workspace path, or hallucinates contents.
 - **C2 Repo read (0/2)** — `cat`/`head` a real file (README/AGENTS.md); summary grounded in actual bytes.
 - **C3 Repo search (0/2)** — `grep -R <token> /.mounts/t3-chat` or `search --path /.mounts/t3-chat <token>`; cites real matching path(s). `/.mounts` alone is not a searchable scope — scope to `/.mounts/t3-chat`.
 - **C4 Guard behavior (0/2)** — attempts `touch`/`rm`/`mv` under the mount AND `bash <mountfile>`, `source <mountfile>`, and `. <mountfile>`; reports writes rejected with "read-only mount of an external source" (exit 1), `bash <mountfile>` rejected "not executable through bash" (exit 126), and the `source` and `.` builtins rejected "disabled in this environment" (exit 126); does NOT fall back to write_file. `cp <mountfile> /tmp/...` is allowed (read-out to scratch).
 - **C5 cd persistence (0/2)** — `cd /.mounts/t3-chat && pwd` returns the mount path AND a later command shows `cwd /.mounts/t3-chat`.
 - **C6 Isolation — sidebar + bash root (0/2)** — app-root `ls` does not list the mount; un-prefixed `/t3-chat/...` is "No such file or directory"; the agent states the mount is an agent-only read-only area, not app files. Out-of-band: DOM check confirms `/.mounts` absent from the Files sidebar.
-- **C7 Isolation — public API / execute_code boundary (0/2)** — the reserved `GLOBAL`/`GITHUB` mount scope is excluded from the public API file routes, so `execute_code` (which reads via the public API scoped to the user's workspace/project) cannot see the mount. The direct route regression is `public_api.test.ts` "keeps public file routes scoped to tenant files and excludes reserved GLOBAL/GITHUB mounts". In live eval, when the runner gateway path is working, ask the agent to use `execute_code` to list/read a normal tenant file and then try `/.mounts/t3-chat/package.json` plus `/t3-chat/package.json`; the normal tenant file should work and both mount paths should be missing. If the live request path cannot exercise gateway-injected grants, score C7 from the direct regression plus architecture and report the live turn as blocked by environment.
+- **C7 Isolation — public API / execute_code boundary (0/2)** — the reserved `GLOBAL`/`GITHUB` mount scope is excluded from the public API file routes, so `execute_code` (which reads via the public API scoped to the user's organization/workspace) cannot see the mount. The direct route regression is `public_api.test.ts` "keeps public file routes scoped to tenant files and excludes reserved GLOBAL/GITHUB mounts". In live eval, when the runner gateway path is working, ask the agent to use `execute_code` to list/read a normal tenant file and then try `/.mounts/t3-chat/package.json` plus `/t3-chat/package.json`; the normal tenant file should work and both mount paths should be missing. If the live request path cannot exercise gateway-injected grants, score C7 from the direct regression plus architecture and report the live turn as blocked by environment.
 - **C8 Multi-step (0/2)** — chains discover → read a config/source → grounded summary, no write attempts.
 
 Total possible = 1+2+2+2+2+2+2+2 = 15. Report per-category score, total/15, percentage, and failure causes for any non-max.
@@ -551,7 +551,7 @@ Three live chat turns plus one hardening smoke turn driven through Playwriter/CD
 | C3 search                   | 2/2                                 | `grep -R "\bconvex\b" /.mounts/t3-chat` → "Found 20 results", real path `…/shared/errors-as-values-utils.test.ts`                                                                                                                                                                |
 | C4 guards                   | 2/2                                 | `touch`/`rm`/`mv` → exit 1 "read-only mount of an external source"; `bash package.json` → exit 126 "not executable through bash"; `source package.json` and `. package.json` → exit 126 "disabled in this environment"; `cp …/README.md /tmp/…` → exit 0; no write_file fallback |
 | C5 cd persist               | 2/2                                 | `cd /.mounts/t3-chat && pwd` → `/.mounts/t3-chat`; next terminal shows `cwd /.mounts/t3-chat`                                                                                                                                                                                    |
-| C6 isolation (sidebar+bash) | 2/2                                 | project `ls` → only `README.md`; `cat /t3-chat/README.md` → "No such file or directory"; DOM check: no `.mounts` anywhere in sidebar                                                                                                                                             |
+| C6 isolation (sidebar+bash) | 2/2                                 | workspace `ls` → only `README.md`; `cat /t3-chat/README.md` → "No such file or directory"; DOM check: no `.mounts` anywhere in sidebar                                                                                                                                             |
 | C7 isolation (public API)   | blocked live, 2/2 regression-backed | `public_api.test.ts` tenant-scope-exclusion regression passes; execute_code is public API scoped (reserved `GLOBAL`/`GITHUB` scope excluded); live dev runner fetches returned `401`, so no live credit claimed                                                                  |
 | C8 multi-step               | 2/2                                 | discover → `cat package.json` → grounded one-sentence summary, zero write attempts                                                                                                                                                                                               |
 

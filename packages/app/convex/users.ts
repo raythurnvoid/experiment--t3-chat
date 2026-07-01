@@ -28,7 +28,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_fetch_json } from "../server/server-fetch.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
-import { workspaces_db_ensure_default_workspace_and_project_for_user } from "./workspaces.ts";
+import { organizations_db_ensure_default_organization_and_workspace_for_user } from "./organizations.ts";
 import {
 	billing_action_delete_polar_customer_by_user_id,
 	billing_action_revoke_polar_subscription,
@@ -154,12 +154,12 @@ export const create_anonymous_user = internalMutation({
 		});
 
 		await quotas_db_ensure(ctx, {
-			quotaName: "extra_workspaces",
+			quotaName: "extra_organizations",
 			userId,
 			now,
 		});
 
-		await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+		await organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
 			userId,
 			now,
 		});
@@ -278,58 +278,58 @@ function users_resolve_user_is_bad_request_message(message: string) {
 	return USERS_RESOLVE_USER_BAD_REQUEST_MESSAGES.some((value) => value === message);
 }
 
-const users_v_account_deletion_blocking_workspaces = v.array(
+const users_v_account_deletion_blocking_organizations = v.array(
 	v.object({
-		workspace: doc(app_convex_schema, "workspaces"),
-		defaultProject: doc(app_convex_schema, "workspaces_projects"),
+		organization: doc(app_convex_schema, "organizations"),
+		defaultWorkspace: doc(app_convex_schema, "organizations_workspaces"),
 	}),
 );
 
-type Users_AccountDeletionBlockingWorkspace = {
-	workspace: Doc<"workspaces">;
-	defaultProject: Doc<"workspaces_projects">;
+type Users_AccountDeletionBlockingOrganization = {
+	organization: Doc<"organizations">;
+	defaultWorkspace: Doc<"organizations_workspaces">;
 };
 
-async function users_db_list_account_deletion_blocking_workspaces(ctx: QueryCtx, args: { userId: Id<"users"> }) {
-	const ownedWorkspaces = await ctx.db
-		.query("workspaces")
+async function users_db_list_account_deletion_blocking_organizations(ctx: QueryCtx, args: { userId: Id<"users"> }) {
+	const ownedOrganizations = await ctx.db
+		.query("organizations")
 		.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", args.userId))
 		.collect();
 
-	const blockingWorkspaces = await Promise.all(
-		ownedWorkspaces.map(async (workspace) => {
-			if (workspace.default || !workspace.defaultProjectId) {
+	const blockingOrganizations = await Promise.all(
+		ownedOrganizations.map(async (organization) => {
+			if (organization.default || !organization.defaultWorkspaceId) {
 				return null;
 			}
 
-			const [defaultProject, deletionRequest] = await Promise.all([
-				ctx.db.get("workspaces_projects", workspace.defaultProjectId),
+			const [defaultWorkspace, deletionRequest] = await Promise.all([
+				ctx.db.get("organizations_workspaces", organization.defaultWorkspaceId),
 				ctx.db
 					.query("data_deletion_requests")
-					.withIndex("by_workspace_scope", (q) => q.eq("workspaceId", workspace._id).eq("scope", "workspace"))
+					.withIndex("by_organization_scope", (q) => q.eq("organizationId", organization._id).eq("scope", "organization"))
 					.first(),
 			]);
-			// Treat a workspace already queued through `delete_workspace` as resolved for account deletion.
+			// Treat an organization already queued through `delete_organization` as resolved for account deletion.
 			if (deletionRequest) {
 				return null;
 			}
-			if (!defaultProject) {
+			if (!defaultWorkspace) {
 				return null;
 			}
 
 			return {
-				workspace,
-				defaultProject,
+				organization,
+				defaultWorkspace,
 			};
 		}),
 	);
 
-	return blockingWorkspaces
-		.filter((workspace): workspace is Users_AccountDeletionBlockingWorkspace => workspace !== null)
+	return blockingOrganizations
+		.filter((organization): organization is Users_AccountDeletionBlockingOrganization => organization !== null)
 		.sort(
 			(left, right) =>
-				left.workspace.name.localeCompare(right.workspace.name) ||
-				String(left.workspace._id).localeCompare(String(right.workspace._id)),
+				left.organization.name.localeCompare(right.organization.name) ||
+				String(left.organization._id).localeCompare(String(right.organization._id)),
 		);
 }
 
@@ -440,9 +440,9 @@ export const get_anagraphic = query({
 	},
 });
 
-export const list_current_user_account_deletion_blocking_workspaces = query({
+export const list_current_user_account_deletion_blocking_organizations = query({
 	args: {},
-	returns: users_v_account_deletion_blocking_workspaces,
+	returns: users_v_account_deletion_blocking_organizations,
 	handler: async (ctx) => {
 		const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((userAuth) =>
 			userAuth ? ctx.db.get("users", userAuth.id) : null,
@@ -451,19 +451,19 @@ export const list_current_user_account_deletion_blocking_workspaces = query({
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
-		return await users_db_list_account_deletion_blocking_workspaces(ctx, {
+		return await users_db_list_account_deletion_blocking_organizations(ctx, {
 			userId: user._id,
 		});
 	},
 });
 
-export const list_account_deletion_blocking_workspaces = internalQuery({
+export const list_account_deletion_blocking_organizations = internalQuery({
 	args: {
 		userId: v.id("users"),
 	},
-	returns: users_v_account_deletion_blocking_workspaces,
+	returns: users_v_account_deletion_blocking_organizations,
 	handler: async (ctx, args) => {
-		return await users_db_list_account_deletion_blocking_workspaces(ctx, args);
+		return await users_db_list_account_deletion_blocking_organizations(ctx, args);
 	},
 });
 
@@ -522,11 +522,11 @@ export const resolve_user = internalMutation({
 					now,
 				}),
 				quotas_db_ensure(ctx, {
-					quotaName: "extra_workspaces",
+					quotaName: "extra_organizations",
 					userId: existingLiveUser._id,
 					now,
 				}),
-				workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+				organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
 					userId: existingLiveUser._id,
 					now,
 				}),
@@ -557,8 +557,8 @@ export const resolve_user = internalMutation({
 		if (deletedUser) {
 			const [memberships, deletionRequests] = await Promise.all([
 				ctx.db
-					.query("workspaces_projects_users")
-					.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", deletedUser._id))
+					.query("organizations_workspaces_users")
+					.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", deletedUser._id))
 					.collect(),
 				ctx.db
 					.query("data_deletion_requests")
@@ -579,14 +579,14 @@ export const resolve_user = internalMutation({
 					now,
 				}),
 				quotas_db_ensure(ctx, {
-					quotaName: "extra_workspaces",
+					quotaName: "extra_organizations",
 					userId: deletedUser._id,
 					now,
 				}),
 				...memberships
 					.filter((membership) => membership.active === false)
 					.map((membership) =>
-						ctx.db.patch("workspaces_projects_users", membership._id, {
+						ctx.db.patch("organizations_workspaces_users", membership._id, {
 							active: true,
 							updatedAt: now,
 						}),
@@ -596,7 +596,7 @@ export const resolve_user = internalMutation({
 					.map((row) => ctx.db.delete("data_deletion_requests", row._id)),
 			]);
 
-			await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+			await organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
 				userId: deletedUser._id,
 				now,
 			});
@@ -675,12 +675,12 @@ export const resolve_user = internalMutation({
 					}),
 
 					quotas_db_ensure(ctx, {
-						quotaName: "extra_workspaces",
+						quotaName: "extra_organizations",
 						userId,
 						now,
 					}),
 
-					workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+					organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
 						userId,
 						now,
 					}),
@@ -712,11 +712,11 @@ export const resolve_user = internalMutation({
 					now,
 				}),
 				quotas_db_ensure(ctx, {
-					quotaName: "extra_workspaces",
+					quotaName: "extra_organizations",
 					userId,
 					now,
 				}),
-				workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+				organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
 					userId,
 					now,
 				}),
@@ -732,7 +732,7 @@ export const resolve_user = internalMutation({
 
 		await Promise.all([
 			quotas_db_ensure(ctx, {
-				quotaName: "extra_workspaces",
+				quotaName: "extra_organizations",
 				userId,
 				now,
 			}),
@@ -743,7 +743,7 @@ export const resolve_user = internalMutation({
 				email,
 				now,
 			}),
-			workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+			organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
 				userId,
 				now,
 			}),
@@ -814,16 +814,16 @@ export const delete_current_user_account = action({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const blockingWorkspaces: Users_AccountDeletionBlockingWorkspace[] = await ctx.runQuery(
-			internal.users.list_account_deletion_blocking_workspaces,
+		const blockingOrganizations: Users_AccountDeletionBlockingOrganization[] = await ctx.runQuery(
+			internal.users.list_account_deletion_blocking_organizations,
 			{
 				userId: user._id,
 			},
 		);
-		if (blockingWorkspaces.length > 0) {
+		if (blockingOrganizations.length > 0) {
 			return Result({
 				_nay: {
-					message: "Resolve owned workspaces before deleting account",
+					message: "Resolve owned organizations before deleting account",
 				},
 			});
 		}

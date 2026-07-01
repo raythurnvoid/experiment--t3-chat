@@ -138,45 +138,45 @@ type MainAppHeaderBillingIndicator_ClassNames =
 export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingIndicator() {
 	const auth = AppAuthProvider.useAuth();
 	const convexAuth = useConvexAuth();
-	const { workspaceId } = AppTenantProvider.useContext();
+	const { organizationId } = AppTenantProvider.useContext();
 
 	const shouldQuery = auth.isLoaded && auth.isAuthenticated && convexAuth.isAuthenticated && auth.isAnonymous === false;
 
-	const workspaceList = useQuery(app_convex_api.workspaces.list, shouldQuery ? {} : "skip");
-	const currentWorkspace = workspaceList?.workspaces.find((workspace) => workspace._id === workspaceId);
-	const isOwnerBilledWorkspace =
-		currentWorkspace !== undefined && !currentWorkspace.default && currentWorkspace.billingMode === "workspace_owner";
-	const workspaceOwnerUserId = isOwnerBilledWorkspace ? currentWorkspace.ownerUserId : null;
-	const ownerBilledToAnotherUser = workspaceOwnerUserId !== null && workspaceOwnerUserId !== auth.userId;
-	const shouldShowCurrentUserBalance = shouldQuery && currentWorkspace !== undefined && !ownerBilledToAnotherUser;
+	const organizationList = useQuery(app_convex_api.organizations.list, shouldQuery ? {} : "skip");
+	const currentOrganization = organizationList?.organizations.find((organization) => organization._id === organizationId);
+	const isOwnerBilledOrganization =
+		currentOrganization !== undefined && !currentOrganization.default && currentOrganization.billingMode === "organization_owner";
+	const organizationOwnerUserId = isOwnerBilledOrganization ? currentOrganization.ownerUserId : null;
+	const ownerBilledToAnotherUser = organizationOwnerUserId !== null && organizationOwnerUserId !== auth.userId;
+	const shouldShowCurrentUserBalance = shouldQuery && currentOrganization !== undefined && !ownerBilledToAnotherUser;
 
 	const billingUsageSnapshot = useQuery(
 		app_convex_api.billing.get_usage_snapshot,
 		shouldShowCurrentUserBalance ? {} : "skip",
 	);
 	const products = useQuery(app_convex_api.billing.list_products, shouldShowCurrentUserBalance ? {} : "skip");
-	const workspaceOwnerAnagraphic = useQuery(
+	const organizationOwnerAnagraphic = useQuery(
 		app_convex_api.users.get_anagraphic,
-		shouldQuery && workspaceOwnerUserId !== null ? { userId: workspaceOwnerUserId } : "skip",
+		shouldQuery && organizationOwnerUserId !== null ? { userId: organizationOwnerUserId } : "skip",
 	);
 
 	if (!shouldQuery) {
 		return null;
 	}
 
-	if (!currentWorkspace) {
+	if (!currentOrganization) {
 		return null;
 	}
 
-	const ownerLabel = workspaceOwnerAnagraphic
-		? workspaceOwnerAnagraphic.email
-			? `${workspaceOwnerAnagraphic.displayName} (${workspaceOwnerAnagraphic.email})`
-			: workspaceOwnerAnagraphic.displayName
-		: "the workspace owner";
-	const ownerBillingBadgeLabel = ownerBilledToAnotherUser ? "Owner billing" : "Workspace billing";
+	const ownerLabel = organizationOwnerAnagraphic
+		? organizationOwnerAnagraphic.email
+			? `${organizationOwnerAnagraphic.displayName} (${organizationOwnerAnagraphic.email})`
+			: organizationOwnerAnagraphic.displayName
+		: "the organization owner";
+	const ownerBillingBadgeLabel = ownerBilledToAnotherUser ? "Owner billing" : "Organization billing";
 	const ownerBillingTooltip = ownerBilledToAnotherUser
-		? `Usage in this workspace is billed to ${ownerLabel}.`
-		: "Usage by members in this workspace is billed to your account because you own the workspace.";
+		? `Usage in this organization is billed to ${ownerLabel}.`
+		: "Usage by members in this organization is billed to your account because you own the organization.";
 	const ownerBillingBadge = (
 		<MyTooltip placement="bottom">
 			<MyTooltipInfoTrigger>
@@ -234,7 +234,7 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 				|
 			</span>
 			<MainAppHeaderBillingIndicatorRemaining value={creditsLeftText} isExhausted={isExhausted} />
-			{isOwnerBilledWorkspace ? ownerBillingBadge : null}
+			{isOwnerBilledOrganization ? ownerBillingBadge : null}
 		</div>
 	);
 });

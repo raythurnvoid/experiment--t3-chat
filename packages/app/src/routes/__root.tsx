@@ -82,7 +82,7 @@ function RootLayoutAuthState() {
 			className={cn("RootLayoutAuthState" satisfies RootLayout_ClassNames)}
 			role="status"
 			aria-live="polite"
-			aria-label="Preparing workspace"
+			aria-label="Preparing organization"
 		>
 			<div className={cn("RootLayoutAuthState-panel" satisfies RootLayout_ClassNames)}>
 				<Logo className={"RootLayoutAuthState-logo" satisfies RootLayout_ClassNames} />
@@ -91,9 +91,9 @@ function RootLayoutAuthState() {
 					color="var(--color-accent-07)"
 					className={"RootLayoutAuthState-spinner" satisfies RootLayout_ClassNames}
 				/>
-				<div className={"RootLayoutAuthState-title" satisfies RootLayout_ClassNames}>Preparing workspace</div>
+				<div className={"RootLayoutAuthState-title" satisfies RootLayout_ClassNames}>Preparing organization</div>
 				<div className={"RootLayoutAuthState-description" satisfies RootLayout_ClassNames}>
-					Finish loading authentication, workspace access, and billing setup.
+					Finish loading authentication, organization access, and billing setup.
 				</div>
 			</div>
 		</div>

@@ -177,7 +177,7 @@ function render_output(
  * App-aware `stat` that keeps `/tmp` behavior native and renders indexed app-file metadata.
  */
 export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
-	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
+	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 
 	return defineCommand("stat", async (args, commandCtx) => {
 		const parsed = parse_args(args);
@@ -193,7 +193,7 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			return await bash_delegate_builtin_command({ command: "stat", args, commandCtx });
 		}
 
-		const capError = bash_enforce_reader_operand_cap("stat", commandCtx, currentProjectPath, parsed._yay.files);
+		const capError = bash_enforce_reader_operand_cap("stat", commandCtx, currentWorkspacePath, parsed._yay.files);
 		if (capError != null) return capError;
 
 		let stdout = "";
@@ -226,8 +226,8 @@ export function bash_stat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				dbFilesPath === "/"
 					? files_SYNTHETIC_ROOT_FOLDER
 					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+							organizationId: pathResolution.ctxData.organizationId,
 							workspaceId: pathResolution.ctxData.workspaceId,
-							projectId: pathResolution.ctxData.projectId,
 							path: dbFilesPath,
 						})) as files_nodes_get_by_path_Result);
 

@@ -85,7 +85,7 @@ function createUserMessage() {
 	return {
 		id: "msg_user_failed",
 		role: "user",
-		parts: [{ type: "text", text: "Can you summarize my project notes?" }],
+		parts: [{ type: "text", text: "Can you summarize my workspace notes?" }],
 		metadata: {
 			convexParentId: null,
 			parentClientGeneratedId: null,
@@ -145,7 +145,7 @@ function renderMessage(args: {
 }
 
 describe("AiChatMessage", () => {
-	const bashProjectMount = "/home/cloud-usr/w/personal/home";
+	const bashWorkspaceMount = "/home/cloud-usr/w/personal/home";
 
 	afterEach(() => {
 		cleanup();
@@ -167,7 +167,7 @@ describe("AiChatMessage", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
-		expect(hookMocks.actions.sendUserText).toHaveBeenCalledWith("thread_1", "Can you summarize my project notes?", {
+		expect(hookMocks.actions.sendUserText).toHaveBeenCalledWith("thread_1", "Can you summarize my workspace notes?", {
 			messageId: "msg_user_failed",
 		});
 	});
@@ -244,18 +244,18 @@ describe("AiChatMessage", () => {
 						state: "output-available",
 						input: { command: "pwd" },
 						output: {
-							title: `exit 0 · ${bashProjectMount}`,
-							output: `$ pwd\ncwd: ${bashProjectMount}\nnext cwd: ${bashProjectMount}\nexit: 0\n\n<stdout>\n${bashProjectMount}\n</stdout>`,
-							stdout: `${bashProjectMount}\n`,
+							title: `exit 0 · ${bashWorkspaceMount}`,
+							output: `$ pwd\ncwd: ${bashWorkspaceMount}\nnext cwd: ${bashWorkspaceMount}\nexit: 0\n\n<stdout>\n${bashWorkspaceMount}\n</stdout>`,
+							stdout: `${bashWorkspaceMount}\n`,
 							stderr: "",
 							metadata: {
 								command: "pwd",
-								cwd: bashProjectMount,
-								nextCwd: bashProjectMount,
+								cwd: bashWorkspaceMount,
+								nextCwd: bashWorkspaceMount,
 								exitCode: 0,
 								stdoutTruncated: false,
 								stderrTruncated: false,
-								stdoutLength: bashProjectMount.length + 1,
+								stdoutLength: bashWorkspaceMount.length + 1,
 								stderrLength: 0,
 								pathIndexTruncated: false,
 							},
@@ -274,9 +274,9 @@ describe("AiChatMessage", () => {
 		expect(screen.getByRole("button", { name: "Bash: pwd" })).not.toBeNull();
 		fireEvent.click(screen.getByText("Bash:"));
 		const terminal = screen.getByRole("textbox", { name: "Bash terminal output" });
-		expect(terminal.textContent).toContain(`${bashProjectMount}$ pwd`);
-		expect(terminal.textContent).toContain(bashProjectMount);
-		expect(terminal.textContent).toContain(`exit 0 · cwd ${bashProjectMount}`);
+		expect(terminal.textContent).toContain(`${bashWorkspaceMount}$ pwd`);
+		expect(terminal.textContent).toContain(bashWorkspaceMount);
+		expect(terminal.textContent).toContain(`exit 0 · cwd ${bashWorkspaceMount}`);
 		expect(screen.queryByRole("region", { name: "Metadata" })).toBeNull();
 		expect(screen.queryByRole("region", { name: "Stdout" })).toBeNull();
 	});

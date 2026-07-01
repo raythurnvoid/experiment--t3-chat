@@ -149,7 +149,7 @@ describe("RootLayout", () => {
 		const RootLayout = Route.options.component as () => JSX.Element;
 		render(<RootLayout />);
 
-		expect(screen.getByText("Preparing workspace")).not.toBeNull();
+		expect(screen.getByText("Preparing organization")).not.toBeNull();
 		expect(screen.getByText(/billing setup/)).not.toBeNull();
 		expect(screen.queryByText("App ready")).toBeNull();
 	});
@@ -166,7 +166,7 @@ describe("RootLayout", () => {
 		const RootLayout = Route.options.component as () => JSX.Element;
 		render(<RootLayout />);
 
-		expect(screen.getByText("Preparing workspace")).not.toBeNull();
+		expect(screen.getByText("Preparing organization")).not.toBeNull();
 		expect(screen.queryByText("App ready")).toBeNull();
 	});
 
@@ -183,7 +183,7 @@ describe("RootLayout", () => {
 		const RootLayout = Route.options.component as () => JSX.Element;
 		render(<RootLayout />);
 
-		expect(screen.getByText("Preparing workspace")).not.toBeNull();
+		expect(screen.getByText("Preparing organization")).not.toBeNull();
 		expect(screen.queryByText("App ready")).toBeNull();
 	});
 

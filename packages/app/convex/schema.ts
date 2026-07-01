@@ -2,14 +2,14 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { vWorkId } from "@convex-dev/workpool";
 import type { ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
-import { workspaces_GLOBAL_WORKSPACE_ID, workspaces_GLOBAL_GITHUB_PROJECT_ID } from "../shared/workspaces.ts";
+import { organizations_GLOBAL_ORGANIZATION_ID, organizations_GLOBAL_GITHUB_WORKSPACE_ID } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
 const app_convex_schema = defineSchema({
 	// #region ai
 	ai_chat_threads: defineTable({
+		organizationId: v.string(),
 		workspaceId: v.string(),
-		projectId: v.string(),
 
 		/**
 		 * Necessary to link the optimistic update to the persisted thread
@@ -32,25 +32,25 @@ const app_convex_schema = defineSchema({
 		 * timestamp in milliseconds
 		 **/
 		lastMessageAt: v.optional(v.number()),
-	}).index("by_workspace_project_archived_lastMessageAt", ["workspaceId", "projectId", "archived", "lastMessageAt"]),
+	}).index("by_organization_workspace_archived_lastMessageAt", ["organizationId", "workspaceId", "archived", "lastMessageAt"]),
 
 	ai_chat_threads_state: defineTable({
+		organizationId: v.string(),
 		workspaceId: v.string(),
-		projectId: v.string(),
 		threadId: v.id("ai_chat_threads"),
 		bashCwd: v.string(),
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
 	})
 		.index("by_thread", ["threadId"])
-		.index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"]),
+		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 
 	/**
 	 * Each doc should be compatible with {@link ai_chat_AiSdk5UiMessage}.
 	 */
 	ai_chat_threads_messages_aisdk_5: defineTable({
+		organizationId: v.string(),
 		workspaceId: v.string(),
-		projectId: v.string(),
 
 		/**
 		 * Root messages have `parentId: null`.
@@ -72,17 +72,17 @@ const app_convex_schema = defineSchema({
 		/** timestamp in milliseconds */
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"])
-		.index("by_workspace_project_thread_clientGeneratedMessageId", [
+		.index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"])
+		.index("by_organization_workspace_thread_clientGeneratedMessageId", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"threadId",
 			"clientGeneratedMessageId",
 		]),
 
 	ai_chat_files: defineTable({
+		organizationId: v.string(),
 		workspaceId: v.string(),
-		projectId: v.string(),
 		threadId: v.id("ai_chat_threads"),
 		path: v.string(),
 		kind: v.union(v.literal("file"), v.literal("directory"), v.literal("symlink")),
@@ -104,25 +104,25 @@ const app_convex_schema = defineSchema({
 		symlinkTargetPath: v.optional(v.string()),
 	})
 		.index("by_thread_path", ["threadId", "path"])
-		.index("by_workspace_project_thread_path", ["workspaceId", "projectId", "threadId", "path"]),
+		.index("by_organization_workspace_thread_path", ["organizationId", "workspaceId", "threadId", "path"]),
 
 	ai_chat_files_content: defineTable({
+		organizationId: v.string(),
 		workspaceId: v.string(),
-		projectId: v.string(),
 		threadId: v.id("ai_chat_threads"),
 		fileNodeId: v.id("ai_chat_files"),
 		bytes: v.bytes(),
 	})
 		.index("by_fileNode", ["fileNodeId"])
-		.index("by_workspace_project_fileNode", ["workspaceId", "projectId", "fileNodeId"])
+		.index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"])
 		.index("by_thread_fileNode", ["threadId", "fileNodeId"]),
 
 	// #endregion ai
 
 	// #region public api
 	public_api_grants: defineTable({
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		threadId: v.union(v.id("ai_chat_threads"), v.null()),
 		principalKey: v.string(),
@@ -134,12 +134,12 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_tokenHash", ["tokenHash"])
 		.index("by_expiresAt", ["expiresAt"])
-		.index("by_workspace_project", ["workspaceId", "projectId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_user", ["userId"]),
 
 	api_credentials: defineTable({
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		name: v.string(),
 		keyId: v.string(),
@@ -151,9 +151,9 @@ const app_convex_schema = defineSchema({
 		lastUsedAt: v.union(v.number(), v.null()),
 	})
 		.index("by_keyId", ["keyId"])
-		.index("by_workspace_project", ["workspaceId", "projectId"])
-		.index("by_workspace_project_user", ["workspaceId", "projectId", "userId"])
-		.index("by_workspace_project_user_revokedAt", ["workspaceId", "projectId", "userId", "revokedAt"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
+		.index("by_organization_workspace_user_revokedAt", ["organizationId", "workspaceId", "userId", "revokedAt"])
 		.index("by_user", ["userId"]),
 	// #endregion public api
 
@@ -165,8 +165,8 @@ const app_convex_schema = defineSchema({
 
 	// #region files
 	files_pending_updates: defineTable({
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.string(),
 		fileNodeId: v.id("files_nodes"),
 		baseYjsSequence: v.number(),
@@ -176,19 +176,19 @@ const app_convex_schema = defineSchema({
 		size: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_user_fileNode", ["workspaceId", "projectId", "userId", "fileNodeId"])
+		.index("by_organization_workspace_user_fileNode", ["organizationId", "workspaceId", "userId", "fileNodeId"])
 		.index("by_user_fileNode", ["userId", "fileNodeId"]),
 
 	files_pending_updates_last_sequence_saved: defineTable({
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.string(),
 		fileNodeId: v.id("files_nodes"),
 		lastSequenceSaved: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_user_fileNode", ["workspaceId", "projectId", "userId", "fileNodeId"])
-		.index("by_workspace_project_fileNode_user", ["workspaceId", "projectId", "fileNodeId", "userId"])
+		.index("by_organization_workspace_user_fileNode", ["organizationId", "workspaceId", "userId", "fileNodeId"])
+		.index("by_organization_workspace_fileNode_user", ["organizationId", "workspaceId", "fileNodeId", "userId"])
 		.index("by_user_fileNode", ["userId", "fileNodeId"]),
 
 	/**
@@ -212,8 +212,8 @@ const app_convex_schema = defineSchema({
 	 * and hides stale committed docs for files the acting user is editing.
 	 */
 	files_metadata_docs: defineTable({
-		workspaceId: v.union(v.id("workspaces"), v.literal(workspaces_GLOBAL_WORKSPACE_ID)),
-		projectId: v.union(v.id("workspaces_projects"), v.literal(workspaces_GLOBAL_GITHUB_PROJECT_ID)),
+		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
+		workspaceId: v.union(v.id("organizations_workspaces"), v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID)),
 		fileNodeId: v.id("files_nodes"),
 		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
 		userId: v.optional(v.string()),
@@ -229,26 +229,26 @@ const app_convex_schema = defineSchema({
 		numberValue: v.optional(v.number()),
 		booleanValue: v.optional(v.boolean()),
 	})
-		.index("by_workspace_project_source_fileNode_qualifiedField", [
+		.index("by_organization_workspace_source_fileNode_qualifiedField", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"sourceKind",
 			"fileNodeId",
 			"qualifiedField",
 		])
-		.index("by_workspace_project_fileNode_qualifiedField", ["workspaceId", "projectId", "fileNodeId", "qualifiedField"])
+		.index("by_organization_workspace_fileNode_qualifiedField", ["organizationId", "workspaceId", "fileNodeId", "qualifiedField"])
 		.index("by_pendingUpdate_qualifiedField", ["pendingUpdateId", "qualifiedField"])
-		.index("by_workspace_project_archive_docKind_qualifiedField_tree", [
+		.index("by_org_workspace_archive_docKind_qualifiedField_tree", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"archiveOperationId",
 			"docKind",
 			"qualifiedField",
 			"treePath",
 		])
-		.index("by_workspace_project_archive_docKind_qualifiedField_string_tree", [
+		.index("by_org_workspace_archive_docKind_qualifiedField_string_tree", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"archiveOperationId",
 			"docKind",
 			"qualifiedField",
@@ -256,9 +256,9 @@ const app_convex_schema = defineSchema({
 			"stringValue",
 			"treePath",
 		])
-		.index("by_workspace_project_archive_docKind_qualifiedField_number_tree", [
+		.index("by_org_workspace_archive_docKind_qualifiedField_number_tree", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"archiveOperationId",
 			"docKind",
 			"qualifiedField",
@@ -266,9 +266,9 @@ const app_convex_schema = defineSchema({
 			"numberValue",
 			"treePath",
 		])
-		.index("by_workspace_project_archive_docKind_qualifiedField_boolean_tree", [
+		.index("by_org_workspace_archive_docKind_qualifiedField_boolean_tree", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"archiveOperationId",
 			"docKind",
 			"qualifiedField",
@@ -278,10 +278,10 @@ const app_convex_schema = defineSchema({
 		]),
 
 	files_nodes: defineTable({
+		/** Organization ID extracted from roomId */
+		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
 		/** Workspace ID extracted from roomId */
-		workspaceId: v.union(v.id("workspaces"), v.literal(workspaces_GLOBAL_WORKSPACE_ID)),
-		/** Project ID extracted from roomId */
-		projectId: v.union(v.id("workspaces_projects"), v.literal(workspaces_GLOBAL_GITHUB_PROJECT_ID)),
+		workspaceId: v.union(v.id("organizations_workspaces"), v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID)),
 		/** Materialized absolute path used for path resolution */
 		path: v.string(),
 		/**
@@ -320,67 +320,67 @@ const app_convex_schema = defineSchema({
 		archiveOperationId: v.optional(v.string()),
 		/** "root" for root items, otherwise parent folder `_id` */
 		parentId: v.union(v.id("files_nodes"), v.literal("root")),
-		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-workspace content. */
+		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
-		/** Updated by user ID. SYSTEM is the pseudo user ID for reserved global-workspace content. */
+		/** Updated by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		updatedBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		/** timestamp in milliseconds when document was last updated */
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_parent_name_archiveOperation", [
+		.index("by_organization_workspace_parent_name_archiveOperation", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"parentId",
 			"name",
 			"archiveOperationId",
 		])
-		.index("by_workspace_project_parent_archiveOperation_name", [
+		.index("by_organization_workspace_parent_archiveOperation_name", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"parentId",
 			"archiveOperationId",
 			"name",
 		])
-		.index("by_workspace_project_parent_archiveOperation_updatedAt", [
+		.index("by_organization_workspace_parent_archiveOperation_updatedAt", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"parentId",
 			"archiveOperationId",
 			"updatedAt",
 		])
-		.index("by_workspace_project_path_archiveOperation", ["workspaceId", "projectId", "path", "archiveOperationId"])
-		.index("by_workspace_project_treePath", ["workspaceId", "projectId", "treePath"])
-		.index("by_workspace_project_archiveOperation_treePath", [
+		.index("by_organization_workspace_path_archiveOperation", ["organizationId", "workspaceId", "path", "archiveOperationId"])
+		.index("by_organization_workspace_treePath", ["organizationId", "workspaceId", "treePath"])
+		.index("by_organization_workspace_archiveOperation_treePath", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"archiveOperationId",
 			"treePath",
 		])
-		.index("by_workspace_project_archiveOperation_kind_treePath", [
+		.index("by_organization_workspace_archiveOperation_kind_treePath", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"archiveOperationId",
 			"kind",
 			"treePath",
 		])
-		.index("by_workspace_project_archive_kind_lowercaseExtension_tree", [
+		.index("by_organization_workspace_archive_kind_lowercaseExtension_tree", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"archiveOperationId",
 			"kind",
 			"lowercaseExtension",
 			"treePath",
 		])
-		.index("by_workspace_project_archiveOperation_updatedAt", [
+		.index("by_organization_workspace_archiveOperation_updatedAt", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"archiveOperationId",
 			"updatedAt",
 		])
-		.index("by_workspace_project_asset", ["workspaceId", "projectId", "assetId"])
+		.index("by_organization_workspace_asset", ["organizationId", "workspaceId", "assetId"])
 		.searchIndex("search_path", {
 			searchField: "path",
-			filterFields: ["workspaceId", "projectId", "archiveOperationId", "kind", "parentId"],
+			filterFields: ["organizationId", "workspaceId", "archiveOperationId", "kind", "parentId"],
 		}),
 
 	/**
@@ -390,8 +390,8 @@ const app_convex_schema = defineSchema({
 	 * the content asset (`files_r2_assets.size`, per-version). Folders have no row.
 	 */
 	file_stats: defineTable({
-		workspaceId: v.union(v.id("workspaces"), v.literal(workspaces_GLOBAL_WORKSPACE_ID)),
-		projectId: v.union(v.id("workspaces_projects"), v.literal(workspaces_GLOBAL_GITHUB_PROJECT_ID)),
+		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
+		workspaceId: v.union(v.id("organizations_workspaces"), v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID)),
 		fileNodeId: v.id("files_nodes"),
 		/** Newline count (`wc -l`). -1 means the content cannot be processed (non-markdown/binary). */
 		lineCount: v.number(),
@@ -399,15 +399,15 @@ const app_convex_schema = defineSchema({
 		wordCount: v.number(),
 		/** Unicode code-point count (`wc -m`, not UTF-16 units). -1 means cannot be processed. */
 		charCount: v.number(),
-	}).index("by_workspace_project_fileNode", ["workspaceId", "projectId", "fileNodeId"]),
+	}).index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"]),
 
 	/**
 	 * Exact Markdown chunk docs for committed Yjs materializations and per-user pending updates.
 	 * Plain-text search docs point back here when callers need Markdown text, offsets, or line numbers.
 	 */
 	files_markdown_chunks: defineTable({
-		workspaceId: v.union(v.id("workspaces"), v.literal(workspaces_GLOBAL_WORKSPACE_ID)),
-		projectId: v.union(v.id("workspaces_projects"), v.literal(workspaces_GLOBAL_GITHUB_PROJECT_ID)),
+		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
+		workspaceId: v.union(v.id("organizations_workspaces"), v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID)),
 		fileNodeId: v.id("files_nodes"),
 		/** `committed` docs use `yjsSequence`; `pending` docs use `userId` and `pendingUpdateId`. */
 		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
@@ -427,43 +427,43 @@ const app_convex_schema = defineSchema({
 		lineEnd: v.number(),
 		chunkFlags: v.number(),
 	})
-		.index("by_workspace_project_source_fileNode_yjsSeq_chunk", [
+		.index("by_organization_workspace_source_fileNode_yjsSeq_chunk", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"sourceKind",
 			"fileNodeId",
 			"yjsSequence",
 			"chunkIndex",
 		])
-		.index("by_workspace_project_source_fileNode_lineEnd_chunk", [
+		.index("by_organization_workspace_source_fileNode_lineEnd_chunk", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"sourceKind",
 			"fileNodeId",
 			"lineEnd",
 			"chunkIndex",
 		])
-		.index("by_workspace_project_source_fileNode_endIndex_chunk", [
+		.index("by_organization_workspace_source_fileNode_endIndex_chunk", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"sourceKind",
 			"fileNodeId",
 			"endIndex",
 			"chunkIndex",
 		])
-		.index("by_workspace_project_fileNode_chunkIndex", ["workspaceId", "projectId", "fileNodeId", "chunkIndex"])
+		.index("by_organization_workspace_fileNode_chunkIndex", ["organizationId", "workspaceId", "fileNodeId", "chunkIndex"])
 		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"])
 		.index("by_pendingUpdate_lineEnd_chunkIndex", ["pendingUpdateId", "lineEnd", "chunkIndex"])
 		.index("by_pendingUpdate_endIndex_chunkIndex", ["pendingUpdateId", "endIndex", "chunkIndex"]),
 
 	/**
 	 * Unified plain-text search docs. Pending docs are user-scoped; committed docs are global within
-	 * the workspace/project and suppressed at query time for files the acting user is editing.
+	 * the organization/workspace and suppressed at query time for files the acting user is editing.
 	 * Search result display fields are duplicated here so full-text hits do not hydrate linked docs.
 	 */
 	files_plain_text_chunks: defineTable({
-		workspaceId: v.union(v.id("workspaces"), v.literal(workspaces_GLOBAL_WORKSPACE_ID)),
-		projectId: v.union(v.id("workspaces_projects"), v.literal(workspaces_GLOBAL_GITHUB_PROJECT_ID)),
+		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
+		workspaceId: v.union(v.id("organizations_workspaces"), v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID)),
 		fileNodeId: v.id("files_nodes"),
 		/** `committed` docs use `yjsSequence`; `pending` docs use `userId` and `pendingUpdateId`. */
 		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
@@ -492,22 +492,22 @@ const app_convex_schema = defineSchema({
 	})
 		.searchIndex("search_by_plainTextChunk", {
 			searchField: "plainTextChunk",
-			filterFields: ["workspaceId", "projectId", "archiveOperationId"],
+			filterFields: ["organizationId", "workspaceId", "archiveOperationId"],
 		})
-		.index("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", [
+		.index("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"sourceKind",
 			"fileNodeId",
 			"yjsSequence",
 			"chunkIndex",
 		])
-		.index("by_workspace_project_fileNode_chunkIndex", ["workspaceId", "projectId", "fileNodeId", "chunkIndex"])
+		.index("by_organization_workspace_fileNode_chunkIndex", ["organizationId", "workspaceId", "fileNodeId", "chunkIndex"])
 		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"]),
 
 	files_yjs_snapshots: defineTable({
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		fileNodeId: v.id("files_nodes"),
 		sequence: v.number(),
 		/** Current R2 asset for the compacted Yjs update. */
@@ -515,11 +515,11 @@ const app_convex_schema = defineSchema({
 		createdBy: v.id("users"),
 		updatedBy: v.string(),
 		updatedAt: v.number(),
-	}).index("by_workspace_project_fileNode_sequence", ["workspaceId", "projectId", "fileNodeId", "sequence"]),
+	}).index("by_organization_workspace_fileNode_sequence", ["organizationId", "workspaceId", "fileNodeId", "sequence"]),
 
 	files_yjs_updates: defineTable({
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		fileNodeId: v.id("files_nodes"),
 		sequence: v.number(),
 		update: v.bytes(),
@@ -542,28 +542,28 @@ const app_convex_schema = defineSchema({
 		),
 		createdBy: v.id("users"),
 		createdAt: v.number(),
-	}).index("by_workspace_project_fileNode_sequence", ["workspaceId", "projectId", "fileNodeId", "sequence"]),
+	}).index("by_organization_workspace_fileNode_sequence", ["organizationId", "workspaceId", "fileNodeId", "sequence"]),
 
 	files_yjs_docs_last_sequences: defineTable({
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		fileNodeId: v.id("files_nodes"),
 		lastSequence: v.number(),
-	}).index("by_workspace_project_fileNode", ["workspaceId", "projectId", "fileNodeId"]),
+	}).index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"]),
 
 	files_content_materialization_jobs: defineTable({
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		fileNodeId: v.id("files_nodes"),
 		jobId: vWorkId,
 		targetSequence: v.number(),
 	})
 		.index("by_fileNode", ["fileNodeId"])
-		.index("by_workspace_project_fileNode", ["workspaceId", "projectId", "fileNodeId"]),
+		.index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"]),
 
 	files_snapshots: defineTable({
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		fileNodeId: v.id("files_nodes"),
 		assetId: v.id("files_r2_assets"),
 		createdBy: v.id("users"),
@@ -572,11 +572,11 @@ const app_convex_schema = defineSchema({
 		 * unarchived, and > 0 for the archive timestamp in milliseconds.
 		 */
 		archivedAt: v.number(),
-	}).index("by_workspace_project_fileNode_archivedAt", ["workspaceId", "projectId", "fileNodeId", "archivedAt"]),
+	}).index("by_organization_workspace_fileNode_archivedAt", ["organizationId", "workspaceId", "fileNodeId", "archivedAt"]),
 
 	files_r2_assets: defineTable({
-		workspaceId: v.union(v.id("workspaces"), v.literal(workspaces_GLOBAL_WORKSPACE_ID)),
-		projectId: v.union(v.id("workspaces_projects"), v.literal(workspaces_GLOBAL_GITHUB_PROJECT_ID)),
+		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
+		workspaceId: v.union(v.id("organizations_workspaces"), v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID)),
 		kind: v.union(v.literal("upload"), v.literal("content"), v.literal("yjs_snapshot"), v.literal("content_snapshot")),
 		r2Bucket: v.string(),
 		/**
@@ -587,10 +587,10 @@ const app_convex_schema = defineSchema({
 		size: v.number(),
 		etag: v.optional(v.string()),
 		conversionWorkId: v.optional(v.union(vWorkId, v.null())),
-		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-workspace content. */
+		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		updatedAt: v.number(),
-	}).index("by_workspace_project", ["workspaceId", "projectId"]),
+	}).index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
 	/**
 	 * Operational status for read-only external mounts (v1: GitHub repo mirrors). This table's own
@@ -644,10 +644,10 @@ const app_convex_schema = defineSchema({
 	 * the thread id for future children.
 	 */
 	chat_messages: defineTable({
+		/** Organization ID for multi-tenant scoping */
+		organizationId: v.string(),
 		/** Workspace ID for multi-tenant scoping */
 		workspaceId: v.string(),
-		/** Project ID for multi-tenant scoping */
-		projectId: v.string(),
 		/**
 		 * null → this row is a top-level root message.
 		 * non-null → this row is a child message belonging to the message whose id is threadId.
@@ -664,56 +664,56 @@ const app_convex_schema = defineSchema({
 		createdBy: v.string(),
 		/** Markdown content; produced from TipTap rich text on submit */
 		content: v.string(),
-	}).index("by_workspace_project_thread", ["workspaceId", "projectId", "threadId"]),
+	}).index("by_organization_workspace_thread", ["organizationId", "workspaceId", "threadId"]),
 	// #endregion chat messages
 
 	// #region data deletion
 	data_deletion_requests: defineTable({
 		userId: v.id("users"),
-		workspaceId: v.optional(v.id("workspaces")),
-		projectId: v.optional(v.id("workspaces_projects")),
-		scope: v.union(v.literal("project"), v.literal("workspace"), v.literal("user")),
+		organizationId: v.optional(v.id("organizations")),
+		workspaceId: v.optional(v.id("organizations_workspaces")),
+		scope: v.union(v.literal("workspace"), v.literal("organization"), v.literal("user")),
 		eligibleAt: v.number(),
 	})
 		.index("by_scope_eligibleAt", ["scope", "eligibleAt"])
-		.index("by_workspace_project", ["workspaceId", "projectId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_user_scope", ["userId", "scope"])
-		.index("by_workspace_scope", ["workspaceId", "scope"])
-		.index("by_workspace_project_scope", ["workspaceId", "projectId", "scope"])
+		.index("by_organization_scope", ["organizationId", "scope"])
+		.index("by_organization_workspace_scope", ["organizationId", "workspaceId", "scope"])
 		.index("by_user", ["userId"]),
 	// #endregion data deletion
 
 	// #region access control
 	access_control_role_assignments: defineTable({
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		role: v.union(v.literal("owner"), v.literal("admin"), v.literal("member")),
 		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_project_user_role", ["workspaceId", "projectId", "userId", "role"])
-		.index("by_workspace_project_role_user", ["workspaceId", "projectId", "role", "userId"])
-		.index("by_user_role_workspace_project", ["userId", "role", "workspaceId", "projectId"])
-		.index("by_workspace_user_project_role", ["workspaceId", "userId", "projectId", "role"]),
+		.index("by_organization_workspace_user_role", ["organizationId", "workspaceId", "userId", "role"])
+		.index("by_organization_workspace_role_user", ["organizationId", "workspaceId", "role", "userId"])
+		.index("by_user_role_organization_workspace", ["userId", "role", "organizationId", "workspaceId"])
+		.index("by_organization_user_workspace_role", ["organizationId", "userId", "workspaceId", "role"]),
 
 	access_control_permission_grants: defineTable({
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
-		resourceKind: v.union(v.literal("workspace"), v.literal("project"), v.literal("file"), v.literal("thread")),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		resourceKind: v.union(v.literal("organization"), v.literal("workspace"), v.literal("file"), v.literal("thread")),
 		resourceId: v.string(),
 		principalKind: v.union(v.literal("role"), v.literal("user"), v.literal("public")),
 		userId: v.optional(v.id("users")),
 		role: v.optional(v.union(v.literal("owner"), v.literal("admin"), v.literal("member"))),
 		permission: v.union(
+			v.literal("organization.update"),
+			v.literal("organization.delete"),
+			v.literal("organization.members.manage"),
+			v.literal("organization.roles.manage"),
+			v.literal("workspace.create"),
 			v.literal("workspace.update"),
 			v.literal("workspace.delete"),
 			v.literal("workspace.members.manage"),
-			v.literal("workspace.roles.manage"),
-			v.literal("project.create"),
-			v.literal("project.update"),
-			v.literal("project.delete"),
-			v.literal("project.members.manage"),
 			v.literal("asset.read"),
 			v.literal("asset.write"),
 			v.literal("asset.permissions.manage"),
@@ -722,45 +722,45 @@ const app_convex_schema = defineSchema({
 		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_workspace_user_project_resource_permission", [
-			"workspaceId",
+		.index("by_organization_user_workspace_resource_permission", [
+			"organizationId",
 			"userId",
-			"projectId",
+			"workspaceId",
 			"resourceKind",
 			"resourceId",
 			"principalKind",
 			"permission",
 		])
-		.index("by_user_workspace_project_resource_permission", [
+		.index("by_user_organization_workspace_resource_permission", [
 			"userId",
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"resourceKind",
 			"resourceId",
 			"principalKind",
 			"permission",
 		])
-		.index("by_workspace_project_resource_user_permission", [
+		.index("by_organization_workspace_resource_user_permission", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"resourceKind",
 			"resourceId",
 			"principalKind",
 			"userId",
 			"permission",
 		])
-		.index("by_workspace_project_resource_role_permission", [
+		.index("by_organization_workspace_resource_role_permission", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"resourceKind",
 			"resourceId",
 			"principalKind",
 			"role",
 			"permission",
 		])
-		.index("by_workspace_project_resource_public_permission", [
+		.index("by_organization_workspace_resource_public_permission", [
+			"organizationId",
 			"workspaceId",
-			"projectId",
 			"resourceKind",
 			"resourceId",
 			"principalKind",
@@ -768,30 +768,30 @@ const app_convex_schema = defineSchema({
 		]),
 	// #endregion access control
 
-	// #region workspaces
-	workspaces: defineTable({
+	// #region organizations
+	organizations: defineTable({
 		name: v.string(),
 		description: v.string(),
 		default: v.boolean(),
-		billingMode: v.union(v.literal("user"), v.literal("workspace_owner")),
+		billingMode: v.union(v.literal("user"), v.literal("organization_owner")),
 		ownerUserId: v.id("users"),
-		defaultProjectId: v.optional(v.id("workspaces_projects")),
+		defaultWorkspaceId: v.optional(v.id("organizations_workspaces")),
 		updatedAt: v.number(),
 	})
 		.index("by_name", ["name"])
 		.index("by_ownerUser", ["ownerUserId"]),
 
-	workspaces_projects: defineTable({
-		workspaceId: v.id("workspaces"),
+	organizations_workspaces: defineTable({
+		organizationId: v.id("organizations"),
 		name: v.string(),
 		description: v.string(),
 		default: v.boolean(),
 		updatedAt: v.number(),
-	}).index("by_workspace_default", ["workspaceId", "default"]),
+	}).index("by_organization_default", ["organizationId", "default"]),
 
-	workspaces_projects_users: defineTable({
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+	organizations_workspaces_users: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		updatedAt: v.optional(v.number()),
 		/**
@@ -800,23 +800,23 @@ const app_convex_schema = defineSchema({
 		 */
 		active: v.boolean(),
 	})
-		.index("by_project_user_active", ["projectId", "userId", "active"])
-		.index("by_user_workspace_project_active", ["userId", "workspaceId", "projectId", "active"])
-		.index("by_active_workspace_project_user", ["active", "workspaceId", "projectId", "userId"])
-		.index("by_active_user_workspace_project", ["active", "userId", "workspaceId", "projectId"]),
+		.index("by_workspace_user_active", ["workspaceId", "userId", "active"])
+		.index("by_user_organization_workspace_active", ["userId", "organizationId", "workspaceId", "active"])
+		.index("by_active_organization_workspace_user", ["active", "organizationId", "workspaceId", "userId"])
+		.index("by_active_user_organization_workspace", ["active", "userId", "organizationId", "workspaceId"]),
 
 	quotas: defineTable({
-		quotaName: v.union(v.literal("extra_workspaces"), v.literal("extra_projects")),
+		quotaName: v.union(v.literal("extra_organizations"), v.literal("extra_workspaces")),
 		userId: v.optional(v.id("users")),
-		workspaceId: v.optional(v.id("workspaces")),
+		organizationId: v.optional(v.id("organizations")),
 		usedCount: v.number(),
 		maxCount: v.number(),
 		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
 		.index("by_user_quotaName", ["userId", "quotaName"])
-		.index("by_workspace_quotaName", ["workspaceId", "quotaName"]),
-	// #endregion workspaces
+		.index("by_organization_quotaName", ["organizationId", "quotaName"]),
+	// #endregion organizations
 
 	// #region billing
 	/**
@@ -874,8 +874,8 @@ const app_convex_schema = defineSchema({
 		/** Clerk user ID, null for anonymous users */
 		clerkUserId: v.union(v.string(), v.null()),
 		anonymousAuthToken: v.optional(v.id("users_anon_tokens")),
-		defaultWorkspaceId: v.optional(v.id("workspaces")),
-		defaultProjectId: v.optional(v.id("workspaces_projects")),
+		defaultOrganizationId: v.optional(v.id("organizations")),
+		defaultWorkspaceId: v.optional(v.id("organizations_workspaces")),
 		anagraphic: v.optional(v.id("users_anagraphics")),
 		deletedAt: v.optional(v.number()),
 	}).index("by_clerkUser", ["clerkUserId"]),
@@ -901,17 +901,17 @@ const app_convex_schema = defineSchema({
 
 	notifications: defineTable({
 		userId: v.id("users"),
-		kind: v.literal("workspace_project_invite"),
+		kind: v.literal("organization_workspace_invite"),
 		read: v.boolean(),
 		actorUserId: v.id("users"),
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		updatedAt: v.number(),
 	})
 		.index("by_user", ["userId"])
 		.index("by_user_read", ["userId", "read"])
-		.index("by_workspace_user_read", ["workspaceId", "userId", "read"])
-		.index("by_workspace_project_user", ["workspaceId", "projectId", "userId"]),
+		.index("by_organization_user_read", ["organizationId", "userId", "read"])
+		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"]),
 
 	// #endregion users
 });

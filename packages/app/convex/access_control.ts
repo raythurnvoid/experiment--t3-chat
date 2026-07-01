@@ -16,36 +16,36 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
-export const access_control_workspace_role_permission_grants = [
+export const access_control_organization_role_permission_grants = [
+	{ role: "admin", permission: "organization.update" },
+	{ role: "admin", permission: "organization.members.manage" },
+	{ role: "admin", permission: "workspace.create" },
 	{ role: "admin", permission: "workspace.update" },
+	{ role: "admin", permission: "workspace.delete" },
 	{ role: "admin", permission: "workspace.members.manage" },
-	{ role: "admin", permission: "project.create" },
-	{ role: "admin", permission: "project.update" },
-	{ role: "admin", permission: "project.delete" },
-	{ role: "admin", permission: "project.members.manage" },
 	{ role: "admin", permission: "asset.read" },
 	{ role: "admin", permission: "asset.write" },
-	{ role: "admin", permission: "workspace.roles.manage" },
+	{ role: "admin", permission: "organization.roles.manage" },
 	{ role: "admin", permission: "asset.permissions.manage" },
 	{ role: "admin", permission: "api.credentials.manage" },
+	{ role: "member", permission: "organization.update" },
+	{ role: "member", permission: "workspace.create" },
 	{ role: "member", permission: "workspace.update" },
-	{ role: "member", permission: "project.create" },
-	{ role: "member", permission: "project.update" },
-	{ role: "member", permission: "project.delete" },
+	{ role: "member", permission: "workspace.delete" },
 	{ role: "member", permission: "asset.read" },
 	{ role: "member", permission: "asset.write" },
 ] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
 
-export const access_control_project_role_permission_grants = [
-	{ role: "admin", permission: "project.update" },
-	{ role: "admin", permission: "project.delete" },
-	{ role: "admin", permission: "project.members.manage" },
+export const access_control_workspace_role_permission_grants = [
+	{ role: "admin", permission: "workspace.update" },
+	{ role: "admin", permission: "workspace.delete" },
+	{ role: "admin", permission: "workspace.members.manage" },
 	{ role: "admin", permission: "asset.read" },
 	{ role: "admin", permission: "asset.write" },
 	{ role: "admin", permission: "asset.permissions.manage" },
 	{ role: "admin", permission: "api.credentials.manage" },
-	{ role: "member", permission: "project.update" },
-	{ role: "member", permission: "project.delete" },
+	{ role: "member", permission: "workspace.update" },
+	{ role: "member", permission: "workspace.delete" },
 	{ role: "member", permission: "asset.read" },
 	{ role: "member", permission: "asset.write" },
 ] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
@@ -53,8 +53,8 @@ export const access_control_project_role_permission_grants = [
 export async function access_control_db_ensure_role_assignment(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		role: access_control_Role;
 		now: number;
@@ -62,10 +62,10 @@ export async function access_control_db_ensure_role_assignment(
 ) {
 	const existing = await ctx.db
 		.query("access_control_role_assignments")
-		.withIndex("by_workspace_project_user_role", (q) =>
+		.withIndex("by_organization_workspace_user_role", (q) =>
 			q
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("userId", args.userId)
 				.eq("role", args.role),
 		)
@@ -76,8 +76,8 @@ export async function access_control_db_ensure_role_assignment(
 	}
 
 	return await ctx.db.insert("access_control_role_assignments", {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		userId: args.userId,
 		role: args.role,
 		createdAt: args.now,
@@ -88,8 +88,8 @@ export async function access_control_db_ensure_role_assignment(
 export async function access_control_db_ensure_role_permission_grant(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		resourceKind: access_control_ResourceKind;
 		resourceId: string;
 		role: access_control_Role;
@@ -100,10 +100,10 @@ export async function access_control_db_ensure_role_permission_grant(
 	// Callers must load the protected resource first and derive this scope from it.
 	const existing = await ctx.db
 		.query("access_control_permission_grants")
-		.withIndex("by_workspace_project_resource_role_permission", (q) =>
+		.withIndex("by_organization_workspace_resource_role_permission", (q) =>
 			q
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("resourceKind", args.resourceKind)
 				.eq("resourceId", args.resourceId)
 				.eq("principalKind", "role")
@@ -116,8 +116,8 @@ export async function access_control_db_ensure_role_permission_grant(
 	}
 
 	return await ctx.db.insert("access_control_permission_grants", {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		resourceKind: args.resourceKind,
 		resourceId: args.resourceId,
 		principalKind: "role",
@@ -131,8 +131,8 @@ export async function access_control_db_ensure_role_permission_grant(
 export async function access_control_db_ensure_user_permission_grant(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		resourceKind: access_control_ResourceKind;
 		resourceId: string;
 		userId: Id<"users">;
@@ -143,10 +143,10 @@ export async function access_control_db_ensure_user_permission_grant(
 	// Callers must load the protected resource first and derive this scope from it.
 	const existing = await ctx.db
 		.query("access_control_permission_grants")
-		.withIndex("by_workspace_project_resource_user_permission", (q) =>
+		.withIndex("by_organization_workspace_resource_user_permission", (q) =>
 			q
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("resourceKind", args.resourceKind)
 				.eq("resourceId", args.resourceId)
 				.eq("principalKind", "user")
@@ -159,8 +159,8 @@ export async function access_control_db_ensure_user_permission_grant(
 	}
 
 	return await ctx.db.insert("access_control_permission_grants", {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		resourceKind: args.resourceKind,
 		resourceId: args.resourceId,
 		principalKind: "user",
@@ -174,8 +174,8 @@ export async function access_control_db_ensure_user_permission_grant(
 export async function access_control_db_ensure_public_permission_grant(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		resourceKind: access_control_ResourceKind;
 		resourceId: string;
 		permission: access_control_Permission;
@@ -185,10 +185,10 @@ export async function access_control_db_ensure_public_permission_grant(
 	// Callers must load the protected resource first and derive this scope from it.
 	const existing = await ctx.db
 		.query("access_control_permission_grants")
-		.withIndex("by_workspace_project_resource_public_permission", (q) =>
+		.withIndex("by_organization_workspace_resource_public_permission", (q) =>
 			q
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("resourceKind", args.resourceKind)
 				.eq("resourceId", args.resourceId)
 				.eq("principalKind", "public")
@@ -200,8 +200,8 @@ export async function access_control_db_ensure_public_permission_grant(
 	}
 
 	return await ctx.db.insert("access_control_permission_grants", {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		resourceKind: args.resourceKind,
 		resourceId: args.resourceId,
 		principalKind: "public",
@@ -214,14 +214,14 @@ export async function access_control_db_ensure_public_permission_grant(
 /**
  * Check permission against an access-control tuple that the caller already proved exists.
  *
- * Callers must load the protected resource, project, or workspace first and pass the
- * derived workspace/project ids plus the workspace default project id. This helper
- * does not fetch the workspace or validate resource scope.
+ * Callers must load the protected resource, workspace, or organization first and pass the
+ * derived organization/workspace ids plus the organization default workspace id. This helper
+ * does not fetch the organization or validate resource scope.
  *
- * Use `workspaceId`, `defaultProjectId`, and `ownerUserId` from the workspace.
+ * Use `organizationId`, `defaultWorkspaceId`, and `ownerUserId` from the organization.
  *
- * Use `projectId` from the resource/project scope being checked, which may be a
- * non-default project. Use `resourceKind` and `resourceId` from the protected doc;
+ * Use `workspaceId` from the resource/workspace scope being checked, which may be a
+ * non-default workspace. Use `resourceKind` and `resourceId` from the protected doc;
  * `resourceId` must be `String(doc._id)`.
  *
  * Pass `userId` for authenticated user access checks.
@@ -232,10 +232,10 @@ export async function access_control_db_ensure_public_permission_grant(
 export async function access_control_db_has_permission(
 	ctx: QueryCtx | MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
-		defaultProjectId: Id<"workspaces_projects">;
-		workspaceOwnerUserId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		defaultWorkspaceId: Id<"organizations_workspaces">;
+		organizationOwnerUserId: Id<"users">;
 		resourceKind: access_control_ResourceKind;
 		resourceId: string;
 		permission: access_control_Permission;
@@ -246,17 +246,17 @@ export async function access_control_db_has_permission(
 	const userId = args.userId;
 
 	if (userId) {
-		// Keep workspace ownership sourced from `workspaces.ownerUserId`; role docs are only the ACL mirror.
-		if (userId === args.workspaceOwnerUserId) {
+		// Keep organization ownership sourced from `organizations.ownerUserId`; role docs are only the ACL mirror.
+		if (userId === args.organizationOwnerUserId) {
 			return true;
 		}
 
 		const directGrant = await ctx.db
 			.query("access_control_permission_grants")
-			.withIndex("by_workspace_project_resource_user_permission", (q) =>
+			.withIndex("by_organization_workspace_resource_user_permission", (q) =>
 				q
+					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
 					.eq("resourceKind", args.resourceKind)
 					.eq("resourceId", args.resourceId)
 					.eq("principalKind", "user")
@@ -272,10 +272,10 @@ export async function access_control_db_has_permission(
 	if (args.allowPublic) {
 		const publicGrant = await ctx.db
 			.query("access_control_permission_grants")
-			.withIndex("by_workspace_project_resource_public_permission", (q) =>
+			.withIndex("by_organization_workspace_resource_public_permission", (q) =>
 				q
+					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
 					.eq("resourceKind", args.resourceKind)
 					.eq("resourceId", args.resourceId)
 					.eq("principalKind", "public")
@@ -291,26 +291,26 @@ export async function access_control_db_has_permission(
 		return false;
 	}
 
-	// Use the first role assignment; product flows keep one role per user/project.
-	const projectRoleAssignment = await ctx.db
+	// Use the first role assignment; product flows keep one role per user/workspace.
+	const workspaceRoleAssignment = await ctx.db
 		.query("access_control_role_assignments")
-		.withIndex("by_workspace_project_user_role", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", userId),
+		.withIndex("by_organization_workspace_user_role", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", userId),
 		)
 		.first();
 
 	if (
-		projectRoleAssignment &&
+		workspaceRoleAssignment &&
 		(await ctx.db
 			.query("access_control_permission_grants")
-			.withIndex("by_workspace_project_resource_role_permission", (q) =>
+			.withIndex("by_organization_workspace_resource_role_permission", (q) =>
 				q
+					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
 					.eq("resourceKind", args.resourceKind)
 					.eq("resourceId", args.resourceId)
 					.eq("principalKind", "role")
-					.eq("role", projectRoleAssignment.role)
+					.eq("role", workspaceRoleAssignment.role)
 					.eq("permission", args.permission),
 			)
 			.first())
@@ -318,29 +318,29 @@ export async function access_control_db_has_permission(
 		return true;
 	}
 
-	if (args.projectId === args.defaultProjectId) {
+	if (args.workspaceId === args.defaultWorkspaceId) {
 		return false;
 	}
 
-	const defaultProjectRoleAssignment = await ctx.db
+	const defaultWorkspaceRoleAssignment = await ctx.db
 		.query("access_control_role_assignments")
-		.withIndex("by_workspace_project_user_role", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.defaultProjectId).eq("userId", userId),
+		.withIndex("by_organization_workspace_user_role", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.defaultWorkspaceId).eq("userId", userId),
 		)
 		.first();
 
 	return Boolean(
-		defaultProjectRoleAssignment &&
+		defaultWorkspaceRoleAssignment &&
 			(await ctx.db
 				.query("access_control_permission_grants")
-				.withIndex("by_workspace_project_resource_role_permission", (q) =>
+				.withIndex("by_organization_workspace_resource_role_permission", (q) =>
 					q
-						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.defaultProjectId)
-						.eq("resourceKind", "workspace")
-						.eq("resourceId", String(args.workspaceId))
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.defaultWorkspaceId)
+						.eq("resourceKind", "organization")
+						.eq("resourceId", String(args.organizationId))
 						.eq("principalKind", "role")
-						.eq("role", defaultProjectRoleAssignment.role)
+						.eq("role", defaultWorkspaceRoleAssignment.role)
 						.eq("permission", args.permission),
 				)
 				.first()),
@@ -349,8 +349,8 @@ export async function access_control_db_has_permission(
 
 export const get_current_user_role = query({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 	},
 	returns: v.union(doc(app_convex_schema, "access_control_role_assignments").fields.role, v.null()),
 	handler: async (ctx, args) => {
@@ -359,20 +359,20 @@ export const get_current_user_role = query({
 			return null;
 		}
 
-		const projectAssignment = await ctx.db
+		const workspaceAssignment = await ctx.db
 			.query("access_control_role_assignments")
-			.withIndex("by_workspace_project_user_role", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", userAuth.id),
+			.withIndex("by_organization_workspace_user_role", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", userAuth.id),
 			)
 			.first();
 
-		return projectAssignment?.role ?? null;
+		return workspaceAssignment?.role ?? null;
 	},
 });
 
-export const get_current_user_workspace_permission = query({
+export const get_current_user_organization_permission = query({
 	args: {
-		workspaceId: v.id("workspaces"),
+		organizationId: v.id("organizations"),
 		permission: doc(app_convex_schema, "access_control_permission_grants").fields.permission,
 	},
 	returns: v.boolean(),
@@ -382,48 +382,48 @@ export const get_current_user_workspace_permission = query({
 			return false;
 		}
 
-		const workspace = await ctx.db.get("workspaces", args.workspaceId);
-		if (!workspace) {
+		const organization = await ctx.db.get("organizations", args.organizationId);
+		if (!organization) {
 			return false;
 		}
 
-		if (!workspace.defaultProjectId) {
-			console.error("workspace.defaultProjectId is not set", {
-				workspaceId: workspace._id,
+		if (!organization.defaultWorkspaceId) {
+			console.error("organization.defaultWorkspaceId is not set", {
+				organizationId: organization._id,
 			});
 			return false;
 		}
 
-		const defaultProjectId = workspace.defaultProjectId;
+		const defaultWorkspaceId = organization.defaultWorkspaceId;
 
-		const [defaultProject, currentHomeMembership] = await Promise.all([
-			ctx.db.get("workspaces_projects", defaultProjectId),
-			// Keep workspace-level permission UI tied to home membership; direct grants do not make non-members workspace members.
+		const [defaultWorkspace, currentHomeMembership] = await Promise.all([
+			ctx.db.get("organizations_workspaces", defaultWorkspaceId),
+			// Keep organization-level permission UI tied to home membership; direct grants do not make non-members organization members.
 			ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) =>
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
 					q
 						.eq("active", true)
 						.eq("userId", userAuth.id)
-						.eq("workspaceId", workspace._id)
-						.eq("projectId", defaultProjectId),
+						.eq("organizationId", organization._id)
+						.eq("workspaceId", defaultWorkspaceId),
 				)
 				.first(),
 		]);
 
-		if (!defaultProject) {
-			console.error("workspace.defaultProjectId points to a missing workspaces_projects doc", {
-				workspaceId: workspace._id,
-				defaultProjectId,
+		if (!defaultWorkspace) {
+			console.error("organization.defaultWorkspaceId points to a missing organizations_workspaces doc", {
+				organizationId: organization._id,
+				defaultWorkspaceId,
 			});
 			return false;
 		}
 
-		if (defaultProject.workspaceId !== workspace._id) {
-			console.error("Default project workspace mismatch", {
-				workspaceId: workspace._id,
-				defaultProjectId,
-				defaultProjectWorkspaceId: defaultProject.workspaceId,
+		if (defaultWorkspace.organizationId !== organization._id) {
+			console.error("Default workspace organization mismatch", {
+				organizationId: organization._id,
+				defaultWorkspaceId,
+				defaultWorkspaceOrganizationId: defaultWorkspace.organizationId,
 			});
 			return false;
 		}
@@ -433,12 +433,12 @@ export const get_current_user_workspace_permission = query({
 		}
 
 		return await access_control_db_has_permission(ctx, {
-			workspaceId: workspace._id,
-			projectId: defaultProjectId,
-			defaultProjectId,
-			workspaceOwnerUserId: workspace.ownerUserId,
-			resourceKind: "workspace",
-			resourceId: String(workspace._id),
+			organizationId: organization._id,
+			workspaceId: defaultWorkspaceId,
+			defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			resourceKind: "organization",
+			resourceId: String(organization._id),
 			permission: args.permission,
 			userId: userAuth.id,
 		});
@@ -446,14 +446,14 @@ export const get_current_user_workspace_permission = query({
 });
 
 /**
- * Return one user's role in one project scope only when the current user can see
- * that project membership. The default/home project acts as the workspace role
- * view; non-default projects show only project-local roles.
+ * Return one user's role in one workspace scope only when the current user can see
+ * that workspace membership. The default/home workspace acts as the organization role
+ * view; non-default workspaces show only workspace-local roles.
  */
-export const get_workspace_project_user_role = query({
+export const get_organization_workspace_user_role = query({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 	},
 	returns: v.union(doc(app_convex_schema, "access_control_role_assignments").fields.role, v.null()),
@@ -463,39 +463,39 @@ export const get_workspace_project_user_role = query({
 			return null;
 		}
 
-		const [currentProjectMembership, projectAssignment] = await Promise.all([
-			// Check if the current user is part of the requested project.
+		const [currentWorkspaceMembership, workspaceAssignment] = await Promise.all([
+			// Check if the current user is part of the requested workspace.
 			ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) =>
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
 					q
 						.eq("active", true)
 						.eq("userId", userAuth.id)
-						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId),
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId),
 				)
 				.first(),
-			// Read only the target user's role at this exact project scope.
+			// Read only the target user's role at this exact workspace scope.
 			ctx.db
 				.query("access_control_role_assignments")
-				.withIndex("by_workspace_project_user_role", (q) =>
-					q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", args.userId),
+				.withIndex("by_organization_workspace_user_role", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
 				)
 				.first(),
 		]);
 
-		// Return nothing unless the current user can see the requested project.
-		if (!currentProjectMembership) {
+		// Return nothing unless the current user can see the requested workspace.
+		if (!currentWorkspaceMembership) {
 			return null;
 		}
 
-		return projectAssignment?.role ?? null;
+		return workspaceAssignment?.role ?? null;
 	},
 });
 
-export const transfer_workspace_ownership = mutation({
+export const transfer_organization_ownership = mutation({
 	args: {
-		workspaceId: v.id("workspaces"),
+		organizationId: v.id("organizations"),
 		newOwnerUserId: v.id("users"),
 	},
 	returns: v_result({
@@ -509,34 +509,34 @@ export const transfer_workspace_ownership = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "workspaces_write", key: user._id });
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "organizations_write", key: user._id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
 		const now = Date.now();
-		const workspace = await ctx.db.get("workspaces", args.workspaceId);
-		if (!workspace) {
+		const organization = await ctx.db.get("organizations", args.organizationId);
+		if (!organization) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		if (workspace.default) {
-			return Result({ _nay: { message: "Cannot transfer ownership of the default workspace" } });
+		if (organization.default) {
+			return Result({ _nay: { message: "Cannot transfer ownership of the default organization" } });
 		}
 
-		if (workspace.ownerUserId !== user._id) {
+		if (organization.ownerUserId !== user._id) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		if (workspace.ownerUserId === args.newOwnerUserId) {
-			return Result({ _nay: { message: "User is already the workspace owner" } });
+		if (organization.ownerUserId === args.newOwnerUserId) {
+			return Result({ _nay: { message: "User is already the organization owner" } });
 		}
 
-		const defaultProjectId = workspace.defaultProjectId;
-		if (!defaultProjectId) {
-			const errorMessage = "workspace.defaultProjectId is not set";
+		const defaultWorkspaceId = organization.defaultWorkspaceId;
+		if (!defaultWorkspaceId) {
+			const errorMessage = "organization.defaultWorkspaceId is not set";
 			const errorData = {
-				workspaceId: workspace._id,
+				organizationId: organization._id,
 			};
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
@@ -546,40 +546,40 @@ export const transfer_workspace_ownership = mutation({
 			await Promise.all([
 				ctx.db
 					.query("access_control_role_assignments")
-					.withIndex("by_workspace_project_role_user", (q) =>
-						q.eq("workspaceId", args.workspaceId).eq("projectId", defaultProjectId).eq("role", "owner"),
+					.withIndex("by_organization_workspace_role_user", (q) =>
+						q.eq("organizationId", args.organizationId).eq("workspaceId", defaultWorkspaceId).eq("role", "owner"),
 					)
 					.collect(),
 				ctx.db.get("users", args.newOwnerUserId),
 				ctx.db
-					.query("workspaces_projects_users")
-					.withIndex("by_active_user_workspace_project", (q) =>
+					.query("organizations_workspaces_users")
+					.withIndex("by_active_user_organization_workspace", (q) =>
 						q
 							.eq("active", true)
 							.eq("userId", args.newOwnerUserId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", defaultProjectId),
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", defaultWorkspaceId),
 					)
 					.first(),
 				quotas_db_get(ctx, {
-					quotaName: "extra_workspaces",
+					quotaName: "extra_organizations",
 					userId: user._id,
 				}),
 				quotas_db_get(ctx, {
-					quotaName: "extra_workspaces",
+					quotaName: "extra_organizations",
 					userId: args.newOwnerUserId,
 				}),
 			]);
 
 		if (!newOwnerUser || newOwnerUser.deletedAt != null || !newOwnerHomeMembership) {
-			return Result({ _nay: { message: "New owner must be an active workspace member" } });
+			return Result({ _nay: { message: "New owner must be an active organization member" } });
 		}
 
 		const newOwnerRemainingCount = Math.max(0, newOwnerQuota.maxCount - newOwnerQuota.usedCount);
 		if (newOwnerRemainingCount <= 0) {
 			return Result({
 				_nay: {
-					message: "Workspace quota reached",
+					message: "Organization quota reached",
 				},
 			});
 		}
@@ -589,7 +589,7 @@ export const transfer_workspace_ownership = mutation({
 		);
 
 		await Promise.all([
-			ctx.db.patch("workspaces", workspace._id, {
+			ctx.db.patch("organizations", organization._id, {
 				ownerUserId: args.newOwnerUserId,
 				updatedAt: now,
 			}),
@@ -602,15 +602,15 @@ export const transfer_workspace_ownership = mutation({
 				updatedAt: now,
 			}),
 			access_control_db_ensure_role_assignment(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: defaultProjectId,
+				organizationId: args.organizationId,
+				workspaceId: defaultWorkspaceId,
 				userId: user._id,
 				role: "member",
 				now,
 			}),
 			access_control_db_ensure_role_assignment(ctx, {
-				workspaceId: args.workspaceId,
-				projectId: defaultProjectId,
+				organizationId: args.organizationId,
+				workspaceId: defaultWorkspaceId,
 				userId: args.newOwnerUserId,
 				role: "owner",
 				now,

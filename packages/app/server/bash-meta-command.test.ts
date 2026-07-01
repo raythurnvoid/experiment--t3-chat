@@ -3,16 +3,16 @@ import { describe, expect, test, vi } from "vitest";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server";
 import { files_MOUNT_ROOT } from "../shared/files.ts";
-import { workspaces_GLOBAL_GITHUB_PROJECT_ID, workspaces_GLOBAL_WORKSPACE_ID } from "../shared/workspaces.ts";
+import { organizations_GLOBAL_GITHUB_WORKSPACE_ID, organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import { bash_meta_command_create } from "./bash-meta-command.ts";
 import { bash_DbFilesFs, type bash_DbFilesRoots } from "./bash-utils.ts";
 
-const currentProjectPath = "/home/cloud-usr/w/personal/home";
+const currentWorkspacePath = "/home/cloud-usr/w/personal/home";
 const ctxData = {
-	workspaceId: "workspace_1" as Id<"workspaces">,
-	projectId: "project_1" as Id<"workspaces_projects">,
-	workspaceName: "personal",
-	projectName: "home",
+	organizationId: "organization_1" as Id<"organizations">,
+	workspaceId: "workspace_1" as Id<"organizations_workspaces">,
+	organizationName: "personal",
+	workspaceName: "home",
 	userId: "user_1" as Id<"users">,
 };
 
@@ -30,7 +30,7 @@ function create_command_runner() {
 	const appDbFilesFs = new bash_DbFilesFs({
 		ctx,
 		ctxData,
-		currentProjectPath,
+		currentWorkspacePath,
 		allowDbFilesMkdir: false,
 	});
 	// `meta` runs against the app scope here; the external mount FS is required by the dbFilesRoots shape but is
@@ -38,28 +38,28 @@ function create_command_runner() {
 	const externalMountsDbFilesFs = new bash_DbFilesFs({
 		ctx,
 		ctxData: {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
-			workspaceName: "GLOBAL",
-			projectName: "GITHUB",
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+			organizationName: "GLOBAL",
+			workspaceName: "GITHUB",
 			userId: ctxData.userId,
 		},
-		currentProjectPath: files_MOUNT_ROOT,
+		currentWorkspacePath: files_MOUNT_ROOT,
 		allowDbFilesMkdir: false,
 	});
 	const dbFilesRoots: bash_DbFilesRoots = {
 		app: {
-			currentProjectPath,
+			currentWorkspacePath,
 			fs: appDbFilesFs,
 		},
 		externalMounts: {
-			currentProjectPath: files_MOUNT_ROOT,
+			currentWorkspacePath: files_MOUNT_ROOT,
 			fs: externalMountsDbFilesFs,
 		},
 	};
 	const commandCtx = {
 		fs: new InMemoryFs(),
-		cwd: currentProjectPath,
+		cwd: currentWorkspacePath,
 		env: new Map(),
 		stdin: "" as unknown as CommandContext["stdin"],
 	} satisfies CommandContext;

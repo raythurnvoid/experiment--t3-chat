@@ -91,7 +91,7 @@ const corpusSeeds = [
 	{
 		name: "ascii markdown",
 		seed: [
-			"# Project Notes",
+			"# Workspace Notes",
 			"",
 			"- Save the current draft",
 			"- Compare byte counters",

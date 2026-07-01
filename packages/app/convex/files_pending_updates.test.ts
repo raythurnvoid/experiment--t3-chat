@@ -129,14 +129,14 @@ async function seed_file_with_markdown(args: {
 	markdown: string;
 	membership?: {
 		userId: Id<"users">;
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
-		membershipId: Id<"workspaces_projects_users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		membershipId: Id<"organizations_workspaces_users">;
 	};
 }) {
 	const { ctx, path, name, markdown } = args;
 	const membership = args.membership ?? (await test_mocks_fill_db_with.membership(ctx));
-	const { userId, workspaceId, projectId, membershipId } = membership;
+	const { userId, organizationId, workspaceId, membershipId } = membership;
 	await seed_billing_snapshot_for_user(ctx, userId);
 
 	const baseYjsDoc = new YDoc();
@@ -157,15 +157,15 @@ async function seed_file_with_markdown(args: {
 
 	const now = Date.now();
 	const markdownAssetId = await ctx.db.insert("files_r2_assets", {
+		organizationId,
 		workspaceId,
-		projectId,
 		kind: "content",
 		r2Bucket: "test-bucket",
 		size: files_get_utf8_byte_size(baseMarkdownResult._yay),
 		createdBy: userId,
 		updatedAt: now,
 	});
-	const markdownAssetKey = r2_create_asset_key({ workspaceId, projectId, assetId: markdownAssetId });
+	const markdownAssetKey = r2_create_asset_key({ organizationId, workspaceId, assetId: markdownAssetId });
 	await ctx.db.patch("files_r2_assets", markdownAssetId, {
 		r2Key: markdownAssetKey,
 	});
@@ -173,23 +173,23 @@ async function seed_file_with_markdown(args: {
 
 	const yjsSnapshotUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc));
 	const yjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
+		organizationId,
 		workspaceId,
-		projectId,
 		kind: "yjs_snapshot",
 		r2Bucket: "test-bucket",
 		size: yjsSnapshotUpdate.byteLength,
 		createdBy: userId,
 		updatedAt: now,
 	});
-	const yjsSnapshotAssetKey = r2_create_asset_key({ workspaceId, projectId, assetId: yjsSnapshotAssetId });
+	const yjsSnapshotAssetKey = r2_create_asset_key({ organizationId, workspaceId, assetId: yjsSnapshotAssetId });
 	await ctx.db.patch("files_r2_assets", yjsSnapshotAssetId, {
 		r2Key: yjsSnapshotAssetKey,
 	});
 	r2Objects.set(yjsSnapshotAssetKey, yjsSnapshotUpdate);
 
 	const nodeId = await ctx.db.insert("files_nodes", {
+		organizationId,
 		workspaceId,
-		projectId,
 		path,
 		treePath: path,
 		pathDepth: path === "/" ? 0 : path.split("/").filter(Boolean).length,
@@ -206,8 +206,8 @@ async function seed_file_with_markdown(args: {
 	});
 
 	const snapshotId = await ctx.db.insert("files_yjs_snapshots", {
+		organizationId: organizationId,
 		workspaceId: workspaceId,
-		projectId: projectId,
 		fileNodeId: nodeId,
 		sequence: 0,
 		assetId: yjsSnapshotAssetId,
@@ -217,8 +217,8 @@ async function seed_file_with_markdown(args: {
 	});
 
 	const lastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+		organizationId: organizationId,
 		workspaceId: workspaceId,
-		projectId: projectId,
 		fileNodeId: nodeId,
 		lastSequence: 0,
 	});
@@ -229,8 +229,8 @@ async function seed_file_with_markdown(args: {
 	});
 
 	return {
+		organizationId,
 		workspaceId,
-		projectId,
 		membershipId,
 		userId,
 		nodeId,
@@ -286,11 +286,11 @@ async function read_file_yjs_snapshot_update(args: {
 
 async function read_file_markdown_from_yjs(args: {
 	ctx: MutationCtx;
-	workspaceId: Id<"workspaces">;
-	projectId: Id<"workspaces_projects">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
 	nodeId: Id<"files_nodes">;
 }) {
-	const { ctx, workspaceId, projectId, nodeId } = args;
+	const { ctx, organizationId, workspaceId, nodeId } = args;
 	const fileNode = await ctx.db.get("files_nodes", nodeId);
 	if (!fileNode) {
 		throw new Error("nodeId points to a missing files_nodes doc while reading markdown from Yjs");
@@ -299,8 +299,8 @@ async function read_file_markdown_from_yjs(args: {
 
 	const updates = await ctx.db
 		.query("files_yjs_updates")
-		.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-			q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("fileNodeId", fileNode._id),
+		.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("fileNodeId", fileNode._id),
 		)
 		.order("asc")
 		.collect();
@@ -341,11 +341,11 @@ function normalize_pending_update_markdown(markdown: string) {
 
 async function read_file_yjs_state(args: {
 	ctx: MutationCtx;
-	workspaceId: Id<"workspaces">;
-	projectId: Id<"workspaces_projects">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
 	nodeId: Id<"files_nodes">;
 }) {
-	const { ctx, workspaceId, projectId, nodeId } = args;
+	const { ctx, organizationId, workspaceId, nodeId } = args;
 	const fileNode = await ctx.db.get("files_nodes", nodeId);
 	if (!fileNode) {
 		throw new Error("nodeId points to a missing files_nodes doc while reading Yjs state");
@@ -362,8 +362,8 @@ async function read_file_yjs_state(args: {
 		ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
 		ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-				q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("fileNodeId", fileNode._id),
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("fileNodeId", fileNode._id),
 			)
 			.order("asc")
 			.collect(),
@@ -478,17 +478,17 @@ async function list_pending_update_plain_text_chunks(args: {
 
 async function read_pending_update_last_sequence_saved_doc(args: {
 	ctx: MutationCtx;
-	workspaceId: Id<"workspaces">;
-	projectId: Id<"workspaces_projects">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
 	userId: Id<"users">;
 	nodeId: Id<"files_nodes">;
 }) {
 	return await args.ctx.db
 		.query("files_pending_updates_last_sequence_saved")
-		.withIndex("by_workspace_project_user_fileNode", (q) =>
+		.withIndex("by_organization_workspace_user_fileNode", (q) =>
 			q
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("userId", args.userId)
 				.eq("fileNodeId", args.nodeId),
 		)
@@ -497,8 +497,8 @@ async function read_pending_update_last_sequence_saved_doc(args: {
 
 async function upsert_file_pending_update_internal_for_test(args: {
 	t: ReturnType<typeof test_convex>;
-	workspaceId: Id<"workspaces">;
-	projectId: Id<"workspaces_projects">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
 	userId: Id<"users">;
 	nodeId: Id<"files_nodes">;
 	pendingUpdateId?: Id<"files_pending_updates">;
@@ -506,8 +506,8 @@ async function upsert_file_pending_update_internal_for_test(args: {
 	unstagedMarkdown: string;
 }) {
 	return await args.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		userId: args.userId,
 		nodeId: args.nodeId,
 		...(args.pendingUpdateId ? { pendingUpdateId: args.pendingUpdateId } : {}),
@@ -561,10 +561,10 @@ describe("upsert_file_pending_update", () => {
 		const firstPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -574,8 +574,8 @@ describe("upsert_file_pending_update", () => {
 
 		const readyAgain = await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: changedMarkdown,
@@ -589,10 +589,10 @@ describe("upsert_file_pending_update", () => {
 		const secondPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -611,8 +611,8 @@ describe("upsert_file_pending_update", () => {
 
 		const discarded = await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -626,10 +626,10 @@ describe("upsert_file_pending_update", () => {
 		const pendingAfterDiscard = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -666,10 +666,10 @@ describe("upsert_file_pending_update", () => {
 		const firstPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -694,10 +694,10 @@ describe("upsert_file_pending_update", () => {
 		const secondPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -732,8 +732,8 @@ describe("upsert_file_pending_update", () => {
 
 		await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -743,10 +743,10 @@ describe("upsert_file_pending_update", () => {
 		const stalePendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -758,8 +758,8 @@ describe("upsert_file_pending_update", () => {
 
 		await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -768,8 +768,8 @@ describe("upsert_file_pending_update", () => {
 
 		await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -779,10 +779,10 @@ describe("upsert_file_pending_update", () => {
 		const currentPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -808,10 +808,10 @@ describe("upsert_file_pending_update", () => {
 		const pendingRowAfterFallback = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -858,10 +858,10 @@ describe("upsert_file_pending_update", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -922,10 +922,10 @@ describe("upsert_file_pending_update", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -974,10 +974,10 @@ describe("upsert_file_pending_update", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -1035,10 +1035,10 @@ describe("upsert_file_pending_update", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -1078,10 +1078,10 @@ describe("upsert_file_pending_update", () => {
 		const firstPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -1116,10 +1116,10 @@ describe("upsert_file_pending_update", () => {
 		const secondPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -1141,8 +1141,8 @@ describe("upsert_file_pending_update", () => {
 
 		const discardResult = await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -1165,18 +1165,18 @@ describe("upsert_file_pending_update", () => {
 describe("pending file chunk docs lifecycle", () => {
 	const read_pending_row = async (args: {
 		t: ReturnType<typeof test_convex>;
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		nodeId: Id<"files_nodes">;
 	}) =>
 		await args.t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
 						.eq("userId", args.userId)
 						.eq("fileNodeId", args.nodeId),
 				)
@@ -1227,8 +1227,8 @@ describe("pending file chunk docs lifecycle", () => {
 		expect(firstMarkdownChunks.map((chunk) => chunk.markdownChunk).join("\n")).toContain("Chunk needle one");
 		expect(firstPlainTextChunks.map((chunk) => chunk.plainTextChunk).join("\n")).toContain("Chunk needle one");
 		expect(firstMarkdownChunks[0]).toMatchObject({
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: String(seeded.userId),
 			fileNodeId: seeded.nodeId,
 			pendingUpdateId: pendingRow._id,
@@ -1236,8 +1236,8 @@ describe("pending file chunk docs lifecycle", () => {
 			chunkIndex: 0,
 		});
 		expect(firstPlainTextChunks[0]).toMatchObject({
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: String(seeded.userId),
 			fileNodeId: seeded.nodeId,
 			pendingUpdateId: pendingRow._id,
@@ -1265,8 +1265,8 @@ describe("pending file chunk docs lifecycle", () => {
 		const secondMarkdown = normalize_pending_update_markdown(`${seeded.baseMarkdown}\n\nChunk needle two`);
 		const secondUpsertResult = await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
 			unstagedMarkdown: secondMarkdown,
@@ -1306,8 +1306,8 @@ describe("pending file chunk docs lifecycle", () => {
 		// Staged-only change (Accept all) keeps the unstaged content intact -> chunk doc ids survive.
 		const stagedOnlyUpsertResult = await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: secondMarkdown,
@@ -1339,8 +1339,8 @@ describe("pending file chunk docs lifecycle", () => {
 		// Collapse back to base deletes the pending update doc and its chunk docs in the same mutation.
 		const collapseResult = await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -1520,10 +1520,10 @@ describe("files_db_reschedule_pending_update_cleanup_for_user", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -1546,8 +1546,8 @@ describe("files_db_reschedule_pending_update_cleanup_for_user", () => {
 
 		await t.run((ctx) =>
 			files_db_reschedule_pending_update_cleanup_for_user(ctx, {
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				userId: seeded.userId,
 			}),
 		);
@@ -1600,10 +1600,10 @@ describe("presence.disconnect", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -1689,10 +1689,10 @@ describe("presence.disconnect", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -1881,8 +1881,8 @@ describe("save_file_pending_update", () => {
 		const savedMarkdownAfterDeniedSave = await t.run(async (ctx) =>
 			read_file_markdown_from_yjs({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				nodeId: seeded.nodeId,
 			}),
 		);
@@ -1957,8 +1957,8 @@ describe("save_file_pending_update", () => {
 		const savedMarkdownAfterDeniedSave = await t.run(async (ctx) =>
 			read_file_markdown_from_yjs({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				nodeId: seeded.nodeId,
 			}),
 		);
@@ -2024,8 +2024,8 @@ describe("save_file_pending_update", () => {
 		const savedMarkdown = await t.run(async (ctx) =>
 			read_file_markdown_from_yjs({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				nodeId: seeded.nodeId,
 			}),
 		);
@@ -2074,13 +2074,13 @@ describe("save_file_pending_update", () => {
 				expect.objectContaining({
 					name: "file_save",
 					externalCustomerId: seeded.userId,
-					externalId: `file_save::${seeded.userId}::${seeded.userId}::${seeded.workspaceId}::${seeded.projectId}::${seeded.nodeId}::${saveResult._yay.newSequence}`,
+					externalId: `file_save::${seeded.userId}::${seeded.userId}::${seeded.organizationId}::${seeded.workspaceId}::${seeded.nodeId}::${saveResult._yay.newSequence}`,
 					metadata: expect.objectContaining({
 						amount: 1,
 						actorUserId: seeded.userId,
 						billedUserId: seeded.userId,
+						organizationId: seeded.organizationId,
 						workspaceId: seeded.workspaceId,
-						projectId: seeded.projectId,
 						nodeId: seeded.nodeId,
 						yjsSequence: String(saveResult._yay.newSequence),
 					}),
@@ -2091,8 +2091,8 @@ describe("save_file_pending_update", () => {
 		const yjsUpdatesAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_yjs_updates")
-				.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-					q.eq("workspaceId", seeded.workspaceId).eq("projectId", seeded.projectId).eq("fileNodeId", seeded.nodeId),
+				.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+					q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId),
 				)
 				.order("asc")
 				.collect(),
@@ -2103,8 +2103,8 @@ describe("save_file_pending_update", () => {
 		const pendingUpdateLastSequenceSaved = await t.run(async (ctx) =>
 			read_pending_update_last_sequence_saved_doc({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				userId: seeded.userId,
 				nodeId: seeded.nodeId,
 			}),
@@ -2115,10 +2115,10 @@ describe("save_file_pending_update", () => {
 		const pendingAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -2138,8 +2138,8 @@ describe("save_file_pending_update", () => {
 		const savedMarkdownAfterPartialSave = await t.run(async (ctx) =>
 			read_file_markdown_from_yjs({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				nodeId: seeded.nodeId,
 			}),
 		);
@@ -2206,10 +2206,10 @@ describe("save_file_pending_update", () => {
 		const pendingAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -2220,8 +2220,8 @@ describe("save_file_pending_update", () => {
 		const savedMarkdownAfterFullSave = await t.run(async (ctx) =>
 			read_file_markdown_from_yjs({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				nodeId: seeded.nodeId,
 			}),
 		);
@@ -2248,8 +2248,8 @@ describe("save_file_pending_update", () => {
 		const staleMarkdown = `${seeded.baseMarkdown}\n\nStale doc`;
 		await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: staleMarkdown,
@@ -2259,10 +2259,10 @@ describe("save_file_pending_update", () => {
 		const stalePendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -2274,8 +2274,8 @@ describe("save_file_pending_update", () => {
 
 		await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: seeded.baseMarkdown,
@@ -2285,8 +2285,8 @@ describe("save_file_pending_update", () => {
 		const currentMarkdown = `${seeded.baseMarkdown}\n\nCurrent doc`;
 		await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
 			stagedMarkdown: currentMarkdown,
@@ -2296,10 +2296,10 @@ describe("save_file_pending_update", () => {
 		const currentPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -2326,10 +2326,10 @@ describe("save_file_pending_update", () => {
 		const pendingAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -2347,8 +2347,8 @@ describe("save_file_pending_update", () => {
 		const savedMarkdownAfterFallbackSave = await t.run(async (ctx) =>
 			read_file_markdown_from_yjs({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				nodeId: seeded.nodeId,
 			}),
 		);
@@ -2409,8 +2409,8 @@ describe("save_file_pending_update", () => {
 		const pendingUpdateLastSequenceSaved = await t.run(async (ctx) =>
 			read_pending_update_last_sequence_saved_doc({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				userId: seeded.userId,
 				nodeId: seeded.nodeId,
 			}),
@@ -2421,10 +2421,10 @@ describe("save_file_pending_update", () => {
 		const pendingAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -2445,8 +2445,8 @@ describe("save_file_pending_update", () => {
 		const savedMarkdownAfterNoStagedSave = await t.run(async (ctx) =>
 			read_file_markdown_from_yjs({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				nodeId: seeded.nodeId,
 			}),
 		);
@@ -2487,10 +2487,10 @@ describe("save_file_pending_update", () => {
 		const pendingBeforeSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -2510,8 +2510,8 @@ describe("save_file_pending_update", () => {
 			const saveMarkdown = `${seeded.baseMarkdown}\n\nStaged change ${i + 1}`;
 			const upsert = await upsert_file_pending_update_internal_for_test({
 				t,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				userId: seeded.userId,
 				nodeId: seeded.nodeId,
 				stagedMarkdown: saveMarkdown,
@@ -2525,10 +2525,10 @@ describe("save_file_pending_update", () => {
 		const pendingBeforeBlockedSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -2554,10 +2554,10 @@ describe("save_file_pending_update", () => {
 		const pendingAfterSave = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -2576,14 +2576,14 @@ describe("save_file_pending_update", () => {
 			Promise.all([
 				ctx.db
 					.query("files_yjs_updates")
-					.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-						q.eq("workspaceId", seeded.workspaceId).eq("projectId", seeded.projectId).eq("fileNodeId", seeded.nodeId),
+					.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+						q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId),
 					)
 					.collect(),
 				ctx.db
 					.query("files_yjs_docs_last_sequences")
-					.withIndex("by_workspace_project_fileNode", (q) =>
-						q.eq("workspaceId", seeded.workspaceId).eq("projectId", seeded.projectId).eq("fileNodeId", seeded.nodeId),
+					.withIndex("by_organization_workspace_fileNode", (q) =>
+						q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId).eq("fileNodeId", seeded.nodeId),
 					)
 					.first(),
 			]).then(([updates, lastSequence]) => ({
@@ -2642,8 +2642,8 @@ describe("files_pending_updates_last_sequence_saved", () => {
 		const latestFileState = await t.run(async (ctx) =>
 			read_file_yjs_state({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				nodeId: seeded.nodeId,
 			}),
 		);
@@ -2726,8 +2726,8 @@ describe("persist_file_pending_update_rebased_state", () => {
 		const latestFileState = await t.run(async (ctx) =>
 			read_file_yjs_state({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				nodeId: seeded.nodeId,
 			}),
 		);
@@ -2761,10 +2761,10 @@ describe("persist_file_pending_update_rebased_state", () => {
 		const pendingAfterPersist = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -2801,8 +2801,8 @@ describe("persist_file_pending_update_rebased_state", () => {
 
 			return {
 				membershipId: fileA.membershipId,
+				organizationId: fileA.organizationId,
 				workspaceId: fileA.workspaceId,
-				projectId: fileA.projectId,
 				userId: fileA.userId,
 				fileAId: fileA.nodeId,
 				fileABaseMarkdown: fileA.baseMarkdown,
@@ -2818,8 +2818,8 @@ describe("persist_file_pending_update_rebased_state", () => {
 
 		await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.fileAId,
 			stagedMarkdown: seeded.fileABaseMarkdown,
@@ -2827,8 +2827,8 @@ describe("persist_file_pending_update_rebased_state", () => {
 		});
 		await upsert_file_pending_update_internal_for_test({
 			t,
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			userId: seeded.userId,
 			nodeId: seeded.fileBId,
 			stagedMarkdown: seeded.fileBBaseMarkdown,
@@ -2839,20 +2839,20 @@ describe("persist_file_pending_update_rebased_state", () => {
 			Promise.all([
 				ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_workspace_project_user_fileNode", (q) =>
+					.withIndex("by_organization_workspace_user_fileNode", (q) =>
 						q
+							.eq("organizationId", seeded.organizationId)
 							.eq("workspaceId", seeded.workspaceId)
-							.eq("projectId", seeded.projectId)
 							.eq("userId", seeded.userId)
 							.eq("fileNodeId", seeded.fileAId),
 					)
 					.first(),
 				ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_workspace_project_user_fileNode", (q) =>
+					.withIndex("by_organization_workspace_user_fileNode", (q) =>
 						q
+							.eq("organizationId", seeded.organizationId)
 							.eq("workspaceId", seeded.workspaceId)
-							.eq("projectId", seeded.projectId)
 							.eq("userId", seeded.userId)
 							.eq("fileNodeId", seeded.fileBId),
 					)
@@ -2866,8 +2866,8 @@ describe("persist_file_pending_update_rebased_state", () => {
 		const latestFileState = await t.run(async (ctx) =>
 			read_file_yjs_state({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				nodeId: seeded.fileAId,
 			}),
 		);
@@ -2902,20 +2902,20 @@ describe("persist_file_pending_update_rebased_state", () => {
 			Promise.all([
 				ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_workspace_project_user_fileNode", (q) =>
+					.withIndex("by_organization_workspace_user_fileNode", (q) =>
 						q
+							.eq("organizationId", seeded.organizationId)
 							.eq("workspaceId", seeded.workspaceId)
-							.eq("projectId", seeded.projectId)
 							.eq("userId", seeded.userId)
 							.eq("fileNodeId", seeded.fileAId),
 					)
 					.first(),
 				ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_workspace_project_user_fileNode", (q) =>
+					.withIndex("by_organization_workspace_user_fileNode", (q) =>
 						q
+							.eq("organizationId", seeded.organizationId)
 							.eq("workspaceId", seeded.workspaceId)
-							.eq("projectId", seeded.projectId)
 							.eq("userId", seeded.userId)
 							.eq("fileNodeId", seeded.fileBId),
 					)
@@ -2964,8 +2964,8 @@ describe("persist_file_pending_update_rebased_state", () => {
 		const latestFileState = await t.run(async (ctx) =>
 			read_file_yjs_state({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				nodeId: seeded.nodeId,
 			}),
 		);
@@ -2986,10 +2986,10 @@ describe("persist_file_pending_update_rebased_state", () => {
 		const pendingAfterClear = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -3018,8 +3018,8 @@ describe("persist_file_pending_update_rebased_state", () => {
 		const staleFileState = await t.run(async (ctx) =>
 			read_file_yjs_state({
 				ctx,
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				nodeId: seeded.nodeId,
 			}),
 		);
@@ -3085,10 +3085,10 @@ describe("remove_file_pending_update_if_expired", () => {
 		const firstPendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -3130,10 +3130,10 @@ describe("remove_file_pending_update_if_expired", () => {
 		const pendingAfterStaleCleanup = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -3182,10 +3182,10 @@ describe("remove_file_pending_update_if_expired", () => {
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)
@@ -3214,10 +3214,10 @@ describe("remove_file_pending_update_if_expired", () => {
 		const pendingAfterCleanup = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", seeded.organizationId)
 						.eq("workspaceId", seeded.workspaceId)
-						.eq("projectId", seeded.projectId)
 						.eq("userId", seeded.userId)
 						.eq("fileNodeId", seeded.nodeId),
 				)

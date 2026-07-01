@@ -26,23 +26,23 @@ describe("MyFocus", () => {
 
 	test("Should initialize roving tabIndex from the selected row", () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A" },
-			{ label: "Workspace B", ariaCurrent: true },
-			{ label: "Workspace C" },
+			{ label: "Organization A" },
+			{ label: "Organization B", ariaCurrent: true },
+			{ label: "Organization C" },
 		]);
 		const activeRowChanges = listen_for_active_row_changes(fixture.containerEl);
 
 		fixture.focus.start();
 
 		try {
-			expect(fixture.getRow("Workspace A").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace B").tabIndex).toBe(0);
-			expect(fixture.getRow("Workspace C").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization A").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization B").tabIndex).toBe(0);
+			expect(fixture.getRow("Organization C").tabIndex).toBe(-1);
 
 			expect(activeRowChanges).toHaveLength(1);
 			expect(activeRowChanges[0]).toMatchObject({
 				container: fixture.containerEl,
-				row: fixture.getRow("Workspace B"),
+				row: fixture.getRow("Organization B"),
 				reason: "start",
 			} satisfies Partial<MyFocus_ActiveRowChangeDetail>);
 		} finally {
@@ -52,18 +52,18 @@ describe("MyFocus", () => {
 
 	test("Should initialize roving tabIndex from aria-selected=\"true\" without aria-current", () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A" },
-			{ label: "Workspace B", ariaSelected: true },
-			{ label: "Workspace C" },
+			{ label: "Organization A" },
+			{ label: "Organization B", ariaSelected: true },
+			{ label: "Organization C" },
 		]);
 
 		fixture.focus.start();
 
 		try {
-			expect(fixture.getRow("Workspace A").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace B").tabIndex).toBe(0);
-			expect(fixture.getRow("Workspace C").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
+			expect(fixture.getRow("Organization A").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization B").tabIndex).toBe(0);
+			expect(fixture.getRow("Organization C").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
 		} finally {
 			fixture.focus.stop();
 		}
@@ -71,18 +71,18 @@ describe("MyFocus", () => {
 
 	test("Should initialize roving tabIndex from data-selected=\"true\" without aria-current", () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A" },
-			{ label: "Workspace B", dataSelected: true },
-			{ label: "Workspace C" },
+			{ label: "Organization A" },
+			{ label: "Organization B", dataSelected: true },
+			{ label: "Organization C" },
 		]);
 
 		fixture.focus.start();
 
 		try {
-			expect(fixture.getRow("Workspace A").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace B").tabIndex).toBe(0);
-			expect(fixture.getRow("Workspace C").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
+			expect(fixture.getRow("Organization A").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization B").tabIndex).toBe(0);
+			expect(fixture.getRow("Organization C").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
 		} finally {
 			fixture.focus.stop();
 		}
@@ -90,9 +90,9 @@ describe("MyFocus", () => {
 
 	test("Should seed roving from semantic selection without requiring a static MyFocus-row-active marker", () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A" },
-			{ label: "Draft workspace", ariaCurrent: true, dataSelected: true },
-			{ label: "Workspace C" },
+			{ label: "Organization A" },
+			{ label: "Draft organization", ariaCurrent: true, dataSelected: true },
+			{ label: "Organization C" },
 		]);
 
 		const rowsBeforeStart = Array.from(fixture.containerEl.querySelectorAll<HTMLButtonElement>(".MyFocus-row"));
@@ -107,8 +107,8 @@ describe("MyFocus", () => {
 
 			expect(focusableRows).toHaveLength(1);
 			expect(activeRows).toHaveLength(1);
-			expect(focusableRows[0]).toBe(fixture.getRow("Draft workspace"));
-			expect(activeRows[0]).toBe(fixture.getRow("Draft workspace"));
+			expect(focusableRows[0]).toBe(fixture.getRow("Draft organization"));
+			expect(activeRows[0]).toBe(fixture.getRow("Draft organization"));
 		} finally {
 			fixture.focus.stop();
 		}
@@ -116,18 +116,18 @@ describe("MyFocus", () => {
 
 	test("Should prefer MyFocus-row-active over aria-current when nothing in the list is focused", () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A" },
-			{ label: "Workspace B", ariaCurrent: true },
-			{ label: "Workspace C", explicitActive: true },
+			{ label: "Organization A" },
+			{ label: "Organization B", ariaCurrent: true },
+			{ label: "Organization C", explicitActive: true },
 		]);
 
 		fixture.focus.start();
 
 		try {
-			expect(fixture.getRow("Workspace B").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace C").tabIndex).toBe(0);
-			expect(fixture.getRow("Workspace C").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
-			expect(fixture.getRow("Workspace B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
+			expect(fixture.getRow("Organization B").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization C").tabIndex).toBe(0);
+			expect(fixture.getRow("Organization C").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
+			expect(fixture.getRow("Organization B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
 		} finally {
 			fixture.focus.stop();
 		}
@@ -135,21 +135,21 @@ describe("MyFocus", () => {
 
 	test("Should prefer the currently focused row over MyFocus-row-active on start", () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A" },
-			{ label: "Workspace B", explicitActive: true },
-			{ label: "Workspace C" },
+			{ label: "Organization A" },
+			{ label: "Organization B", explicitActive: true },
+			{ label: "Organization C" },
 		]);
-		const currentRow = fixture.getRow("Workspace C");
+		const currentRow = fixture.getRow("Organization C");
 		currentRow.focus();
 
 		fixture.focus.start();
 
 		try {
 			expect(document.activeElement).toBe(currentRow);
-			expect(fixture.getRow("Workspace B").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization B").tabIndex).toBe(-1);
 			expect(currentRow.tabIndex).toBe(0);
 			expect(currentRow.classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
-			expect(fixture.getRow("Workspace B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
+			expect(fixture.getRow("Organization B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
 		} finally {
 			fixture.focus.stop();
 		}
@@ -157,15 +157,15 @@ describe("MyFocus", () => {
 
 	test("Should ignore non-focusable rows marked active and fall back to semantic selection", () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A", ariaCurrent: true },
-			{ label: "Workspace B", explicitActive: true, hidden: true },
+			{ label: "Organization A", ariaCurrent: true },
+			{ label: "Organization B", explicitActive: true, hidden: true },
 		]);
 
 		fixture.focus.start();
 
 		try {
-			expect(fixture.getRow("Workspace A").tabIndex).toBe(0);
-			expect(fixture.getRow("Workspace B").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization A").tabIndex).toBe(0);
+			expect(fixture.getRow("Organization B").tabIndex).toBe(-1);
 		} finally {
 			fixture.focus.stop();
 		}
@@ -173,17 +173,17 @@ describe("MyFocus", () => {
 
 	test("Should treat the first focusable explicit marker as the active row when duplicates exist", () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A", explicitActive: true },
-			{ label: "Workspace B", explicitActive: true },
+			{ label: "Organization A", explicitActive: true },
+			{ label: "Organization B", explicitActive: true },
 		]);
 
 		fixture.focus.start();
 
 		try {
-			expect(fixture.getRow("Workspace A").tabIndex).toBe(0);
-			expect(fixture.getRow("Workspace B").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
-			expect(fixture.getRow("Workspace B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
+			expect(fixture.getRow("Organization A").tabIndex).toBe(0);
+			expect(fixture.getRow("Organization B").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
+			expect(fixture.getRow("Organization B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
 		} finally {
 			fixture.focus.stop();
 		}
@@ -191,19 +191,19 @@ describe("MyFocus", () => {
 
 	test("Should prefer the currently focused row over a selected row on start", () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A" },
-			{ label: "Workspace B", ariaCurrent: true },
-			{ label: "Workspace C" },
+			{ label: "Organization A" },
+			{ label: "Organization B", ariaCurrent: true },
+			{ label: "Organization C" },
 		]);
-		const currentRow = fixture.getRow("Workspace C");
+		const currentRow = fixture.getRow("Organization C");
 		currentRow.focus();
 
 		fixture.focus.start();
 
 		try {
 			expect(document.activeElement).toBe(currentRow);
-			expect(fixture.getRow("Workspace A").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace B").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization A").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization B").tabIndex).toBe(-1);
 			expect(currentRow.tabIndex).toBe(0);
 		} finally {
 			fixture.focus.stop();
@@ -212,9 +212,9 @@ describe("MyFocus", () => {
 
 	test("Should keep one focusable active row after sync() runs post-start", () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A" },
-			{ label: "Draft workspace", ariaCurrent: true, dataSelected: true },
-			{ label: "Workspace C" },
+			{ label: "Organization A" },
+			{ label: "Draft organization", ariaCurrent: true, dataSelected: true },
+			{ label: "Organization C" },
 		]);
 
 		fixture.focus.start();
@@ -227,8 +227,8 @@ describe("MyFocus", () => {
 
 			expect(focusableRows).toHaveLength(1);
 			expect(activeRows).toHaveLength(1);
-			expect(focusableRows[0]).toBe(fixture.getRow("Draft workspace"));
-			expect(activeRows[0]).toBe(fixture.getRow("Draft workspace"));
+			expect(focusableRows[0]).toBe(fixture.getRow("Draft organization"));
+			expect(activeRows[0]).toBe(fixture.getRow("Draft organization"));
 		} finally {
 			fixture.focus.stop();
 		}
@@ -236,24 +236,24 @@ describe("MyFocus", () => {
 
 	test("Should keep the focused row active when sync() runs with focus already inside the list", async () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A", ariaCurrent: true },
-			{ label: "Workspace B" },
-			{ label: "Workspace C" },
+			{ label: "Organization A", ariaCurrent: true },
+			{ label: "Organization B" },
+			{ label: "Organization C" },
 		]);
 
 		fixture.focus.start();
 
 		try {
-			await page.getByRole("button", { name: "Workspace C" }).click();
-			expect(document.activeElement).toBe(fixture.getRow("Workspace C"));
+			await page.getByRole("button", { name: "Organization C" }).click();
+			expect(document.activeElement).toBe(fixture.getRow("Organization C"));
 
 			fixture.focus.sync();
 
-			expect(document.activeElement).toBe(fixture.getRow("Workspace C"));
-			expect(fixture.getRow("Workspace A").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
-			expect(fixture.getRow("Workspace C").tabIndex).toBe(0);
-			expect(fixture.getRow("Workspace C").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
+			expect(document.activeElement).toBe(fixture.getRow("Organization C"));
+			expect(fixture.getRow("Organization A").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
+			expect(fixture.getRow("Organization C").tabIndex).toBe(0);
+			expect(fixture.getRow("Organization C").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
 		} finally {
 			fixture.focus.stop();
 		}
@@ -261,9 +261,9 @@ describe("MyFocus", () => {
 
 	test("Should not emit a duplicate start event when sync() re-selects the same row", () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A" },
-			{ label: "Draft workspace", ariaCurrent: true, dataSelected: true },
-			{ label: "Workspace C" },
+			{ label: "Organization A" },
+			{ label: "Draft organization", ariaCurrent: true, dataSelected: true },
+			{ label: "Organization C" },
 		]);
 		const activeRowChanges = listen_for_active_row_changes(fixture.containerEl);
 
@@ -274,7 +274,7 @@ describe("MyFocus", () => {
 			expect(activeRowChanges).toHaveLength(1);
 			expect(activeRowChanges[0]).toMatchObject({
 				container: fixture.containerEl,
-				row: fixture.getRow("Draft workspace"),
+				row: fixture.getRow("Draft organization"),
 				reason: "start",
 			} satisfies Partial<MyFocus_ActiveRowChangeDetail>);
 		} finally {
@@ -284,32 +284,32 @@ describe("MyFocus", () => {
 
 	test("Should move focus with arrow keys, wrap, and skip aria-disabled rows", async () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A", ariaCurrent: true },
-			{ label: "Workspace B", ariaDisabled: true },
-			{ label: "Workspace C" },
+			{ label: "Organization A", ariaCurrent: true },
+			{ label: "Organization B", ariaDisabled: true },
+			{ label: "Organization C" },
 		]);
 
 		fixture.focus.start();
 
 		try {
-			await page.getByRole("button", { name: "Workspace A" }).click();
-			expect(document.activeElement).toBe(fixture.getRow("Workspace A"));
+			await page.getByRole("button", { name: "Organization A" }).click();
+			expect(document.activeElement).toBe(fixture.getRow("Organization A"));
 
 			await userEvent.keyboard("{ArrowDown}");
-			expect(document.activeElement).toBe(fixture.getRow("Workspace C"));
-			expect(fixture.getRow("Workspace A").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace B").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace C").tabIndex).toBe(0);
-			expect(fixture.getRow("Workspace A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
-			expect(fixture.getRow("Workspace B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
-			expect(fixture.getRow("Workspace C").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
+			expect(document.activeElement).toBe(fixture.getRow("Organization C"));
+			expect(fixture.getRow("Organization A").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization B").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization C").tabIndex).toBe(0);
+			expect(fixture.getRow("Organization A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
+			expect(fixture.getRow("Organization B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
+			expect(fixture.getRow("Organization C").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
 
 			await userEvent.keyboard("{ArrowDown}");
-			expect(document.activeElement).toBe(fixture.getRow("Workspace A"));
-			expect(fixture.getRow("Workspace A").tabIndex).toBe(0);
-			expect(fixture.getRow("Workspace C").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
-			expect(fixture.getRow("Workspace C").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
+			expect(document.activeElement).toBe(fixture.getRow("Organization A"));
+			expect(fixture.getRow("Organization A").tabIndex).toBe(0);
+			expect(fixture.getRow("Organization C").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(true);
+			expect(fixture.getRow("Organization C").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
 		} finally {
 			fixture.focus.stop();
 		}
@@ -317,26 +317,26 @@ describe("MyFocus", () => {
 
 	test("Should update the active row and emit a focus event when focus enters another row", async () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A", ariaCurrent: true },
-			{ label: "Workspace B" },
-			{ label: "Workspace C" },
+			{ label: "Organization A", ariaCurrent: true },
+			{ label: "Organization B" },
+			{ label: "Organization C" },
 		]);
 		const activeRowChanges = listen_for_active_row_changes(fixture.containerEl);
 
 		fixture.focus.start();
 
 		try {
-			await page.getByRole("button", { name: "Workspace C" }).click();
+			await page.getByRole("button", { name: "Organization C" }).click();
 
-			expect(document.activeElement).toBe(fixture.getRow("Workspace C"));
-			expect(fixture.getRow("Workspace A").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace C").tabIndex).toBe(0);
+			expect(document.activeElement).toBe(fixture.getRow("Organization C"));
+			expect(fixture.getRow("Organization A").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization C").tabIndex).toBe(0);
 
 			expect(activeRowChanges).toHaveLength(2);
 			expect(activeRowChanges[1]).toMatchObject({
 				container: fixture.containerEl,
-				row: fixture.getRow("Workspace C"),
-				previousRow: fixture.getRow("Workspace A"),
+				row: fixture.getRow("Organization C"),
+				previousRow: fixture.getRow("Organization A"),
 				reason: "focus",
 			} satisfies Partial<MyFocus_ActiveRowChangeDetail>);
 		} finally {
@@ -360,20 +360,20 @@ describe("MyFocus", () => {
 
 	test("Should leave the container inert when every row is non-focusable", () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A", ariaCurrent: true },
-			{ label: "Workspace B", ariaDisabled: true },
+			{ label: "Organization A", ariaCurrent: true },
+			{ label: "Organization B", ariaDisabled: true },
 		]);
 		const activeRowChanges = listen_for_active_row_changes(fixture.containerEl);
 
-		fixture.getRow("Workspace A").setAttribute("disabled", "");
+		fixture.getRow("Organization A").setAttribute("disabled", "");
 
 		fixture.focus.start();
 
 		try {
-			expect(fixture.getRow("Workspace A").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace B").tabIndex).toBe(-1);
-			expect(fixture.getRow("Workspace A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
-			expect(fixture.getRow("Workspace B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
+			expect(fixture.getRow("Organization A").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization B").tabIndex).toBe(-1);
+			expect(fixture.getRow("Organization A").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
+			expect(fixture.getRow("Organization B").classList.contains(my_focus_ROW_ACTIVE_CLASS)).toBe(false);
 			expect(activeRowChanges).toHaveLength(0);
 		} finally {
 			fixture.focus.stop();
@@ -484,12 +484,12 @@ describe("MyFocus", () => {
 
 	test("Should not move focus when a row keydown handler prevents ArrowDown", async () => {
 		const fixture = setup_focus_fixture([
-			{ label: "Workspace A", ariaCurrent: true },
-			{ label: "Workspace B" },
-			{ label: "Workspace C" },
+			{ label: "Organization A", ariaCurrent: true },
+			{ label: "Organization B" },
+			{ label: "Organization C" },
 		]);
-		const currentRow = fixture.getRow("Workspace A");
-		const nextRow = fixture.getRow("Workspace B");
+		const currentRow = fixture.getRow("Organization A");
+		const nextRow = fixture.getRow("Organization B");
 		let didPreventArrowDown = false;
 
 		currentRow.addEventListener("keydown", (event) => {
@@ -502,7 +502,7 @@ describe("MyFocus", () => {
 		fixture.focus.start();
 
 		try {
-			await page.getByRole("button", { name: "Workspace A" }).click();
+			await page.getByRole("button", { name: "Organization A" }).click();
 			await userEvent.keyboard("{ArrowDown}");
 
 			expect(didPreventArrowDown).toBe(true);

@@ -1,4 +1,4 @@
-import "./main-app-header-workspace-controls-modal.css";
+import "./main-app-header-organization-controls-modal.css";
 
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import {
@@ -71,27 +71,27 @@ import { MyTooltip, MyTooltipContent, MyTooltipInfoTrigger, MyTooltipTrigger } f
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { MyFocus, type MyFocus_ClassNames } from "@/lib/my-focus.ts";
 import {
-	workspaces_DESCRIPTION_MAX_LENGTH,
-	workspaces_NAME_MAX_LENGTH,
-	workspaces_NAME_MIN_LENGTH,
-	workspaces_description_normalize,
-	workspaces_name_autofix,
-	workspaces_name_validate,
-} from "@/lib/workspaces.ts";
+	organizations_DESCRIPTION_MAX_LENGTH,
+	organizations_NAME_MAX_LENGTH,
+	organizations_NAME_MIN_LENGTH,
+	organizations_description_normalize,
+	organizations_name_autofix,
+	organizations_name_validate,
+} from "@/lib/organizations.ts";
 import { cn } from "@/lib/utils.ts";
 import { quotas } from "../../shared/quotas.ts";
 
 function is_rejected_name_message(validationMessage: string) {
-	return validationMessage === "Workspace name already exists" || validationMessage === "Project name already exists";
+	return validationMessage === "Organization name already exists" || validationMessage === "Workspace name already exists";
 }
 
 // Use canonical submit values so autofix-only edits do not enable Save.
 function get_canonical_name_value(value: string) {
-	return workspaces_name_autofix(value);
+	return organizations_name_autofix(value);
 }
 
 function get_canonical_description_value(value: string) {
-	const validatedDescription = workspaces_description_normalize(value);
+	const validatedDescription = organizations_description_normalize(value);
 
 	return validatedDescription._nay ? value.trim() : validatedDescription._yay;
 }
@@ -101,12 +101,12 @@ function validate_name_field_input(
 	canonicalName: string,
 	rejectedValueMessagesMap: Map<string, string>,
 ) {
-	const normalized = workspaces_name_autofix(el.value, { trim_trailing_hyphens: false });
+	const normalized = organizations_name_autofix(el.value, { trim_trailing_hyphens: false });
 	if (el.value !== normalized) {
 		el.value = normalized;
 	}
 
-	const validated = workspaces_name_validate(normalized);
+	const validated = organizations_name_validate(normalized);
 	const rejectedValueMessage = validated._yay ? rejectedValueMessagesMap.get(canonicalName) : undefined;
 	const validationMessage = validated._nay?.message ?? (validated._yay ? rejectedValueMessage : undefined);
 
@@ -114,14 +114,14 @@ function validate_name_field_input(
 }
 
 function validate_description_field_input(el: HTMLInputElement) {
-	const validated = workspaces_description_normalize(el.value);
+	const validated = organizations_description_normalize(el.value);
 	const validationMessage = validated._nay?.message;
 
 	return { validationMessage };
 }
 
 // #region list item model
-export type MainAppHeaderWorkspaceSwitcherModal_ListItem = {
+export type MainAppHeaderOrganizationSwitcherModal_ListItem = {
 	id: string;
 	label: string;
 	description: string;
@@ -137,59 +137,59 @@ export type MainAppHeaderWorkspaceSwitcherModal_ListItem = {
 // #endregion list item model
 
 // #region edit target / callback
-export type MainAppHeaderWorkspaceSwitcherModal_EditTarget =
+export type MainAppHeaderOrganizationSwitcherModal_EditTarget =
+	| {
+			kind: "organization";
+			id: string;
+			initialName: string;
+			initialDescription: string;
+			defaultWorkspaceId: app_convex_Id<"organizations_workspaces">;
+	  }
 	| {
 			kind: "workspace";
 			id: string;
 			initialName: string;
 			initialDescription: string;
-			defaultProjectId: app_convex_Id<"workspaces_projects">;
-	  }
-	| {
-			kind: "project";
-			id: string;
-			initialName: string;
-			initialDescription: string;
-			workspaceId: app_convex_Id<"workspaces">;
-			defaultProjectId: app_convex_Id<"workspaces_projects">;
+			organizationId: app_convex_Id<"organizations">;
+			defaultWorkspaceId: app_convex_Id<"organizations_workspaces">;
 	  };
 
-export type MainAppHeaderWorkspaceSwitcherModal_AfterEdit = {
-	kind: "project" | "workspace";
+export type MainAppHeaderOrganizationSwitcherModal_AfterEdit = {
+	kind: "workspace" | "organization";
 	oldName: string;
 	newName: string;
-	workspaceId: app_convex_Id<"workspaces">;
-	projectId?: app_convex_Id<"workspaces_projects">;
+	organizationId: app_convex_Id<"organizations">;
+	workspaceId?: app_convex_Id<"organizations_workspaces">;
 };
 
-export type MainAppHeaderWorkspaceSwitcherModal_BillingTarget = {
-	workspaceId: app_convex_Id<"workspaces">;
-	workspaceName: string;
-	billingMode: "user" | "workspace_owner";
+export type MainAppHeaderOrganizationSwitcherModal_BillingTarget = {
+	organizationId: app_convex_Id<"organizations">;
+	organizationName: string;
+	billingMode: "user" | "organization_owner";
 };
 // #endregion edit target / callback
 
 // #region list item
-type MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames =
-	| "MainAppHeaderWorkspaceSwitcherModalListItem"
-	| "MainAppHeaderWorkspaceSwitcherModalListItem-primary"
-	| "MainAppHeaderWorkspaceSwitcherModalListItem-label-row"
-	| "MainAppHeaderWorkspaceSwitcherModalListItem-label"
-	| "MainAppHeaderWorkspaceSwitcherModalListItem-badge"
-	| "MainAppHeaderWorkspaceSwitcherModalListItem-ownership-badge"
-	| "MainAppHeaderWorkspaceSwitcherModalListItem-billing-badge"
-	| "MainAppHeaderWorkspaceSwitcherModalListItem-description"
-	| "MainAppHeaderWorkspaceSwitcherModalListItem-actions"
-	| "MainAppHeaderWorkspaceSwitcherModalListItem-action"
-	| "MainAppHeaderWorkspaceSwitcherModalListItem-current-border";
+type MainAppHeaderOrganizationSwitcherModalListItem_ClassNames =
+	| "MainAppHeaderOrganizationSwitcherModalListItem"
+	| "MainAppHeaderOrganizationSwitcherModalListItem-primary"
+	| "MainAppHeaderOrganizationSwitcherModalListItem-label-row"
+	| "MainAppHeaderOrganizationSwitcherModalListItem-label"
+	| "MainAppHeaderOrganizationSwitcherModalListItem-badge"
+	| "MainAppHeaderOrganizationSwitcherModalListItem-ownership-badge"
+	| "MainAppHeaderOrganizationSwitcherModalListItem-billing-badge"
+	| "MainAppHeaderOrganizationSwitcherModalListItem-description"
+	| "MainAppHeaderOrganizationSwitcherModalListItem-actions"
+	| "MainAppHeaderOrganizationSwitcherModalListItem-action"
+	| "MainAppHeaderOrganizationSwitcherModalListItem-current-border";
 
-export type MainAppHeaderWorkspaceSwitcherModalListItem_Props = {
-	item: MainAppHeaderWorkspaceSwitcherModal_ListItem;
-	kind: "project" | "workspace";
+export type MainAppHeaderOrganizationSwitcherModalListItem_Props = {
+	item: MainAppHeaderOrganizationSwitcherModal_ListItem;
+	kind: "workspace" | "organization";
 };
 
-export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainAppHeaderWorkspaceSwitcherModalListItem(
-	props: MainAppHeaderWorkspaceSwitcherModalListItem_Props,
+export const MainAppHeaderOrganizationSwitcherModalListItem = memo(function MainAppHeaderOrganizationSwitcherModalListItem(
+	props: MainAppHeaderOrganizationSwitcherModalListItem_Props,
 ) {
 	const { item, kind } = props;
 
@@ -217,7 +217,7 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 	const isDefault = Boolean(item.isDefault);
 	const canDelete = !isDefault && Boolean(item.onDelete);
 	const showMenu = Boolean(item.onManageBilling || item.onEdit || item.onDelete);
-	const itemKindLabel = kind === "workspace" ? "workspace" : "project";
+	const itemKindLabel = kind === "organization" ? "organization" : "workspace";
 	const itemActionLabel = `${itemKindLabel}: ${item.label}`;
 	const selectLabel = isCurrent ? `Current ${itemActionLabel}` : `Select ${itemActionLabel}`;
 	const moreActionsLabel = `More actions for ${itemActionLabel}`;
@@ -241,12 +241,12 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 	return (
 		<li
 			className={cn(
-				"MainAppHeaderWorkspaceSwitcherModalListItem" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+				"MainAppHeaderOrganizationSwitcherModalListItem" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 			)}
 		>
 			<MyPrimaryAction
 				className={cn(
-					"MainAppHeaderWorkspaceSwitcherModalListItem-primary" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+					"MainAppHeaderOrganizationSwitcherModalListItem-primary" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 					"MyFocus-row" satisfies MyFocus_ClassNames,
 				)}
 				selected={isCurrent}
@@ -259,7 +259,7 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 				{isCurrent && (
 					<div
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalListItem-current-border" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+							"MainAppHeaderOrganizationSwitcherModalListItem-current-border" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 						)}
 						aria-hidden
 					/>
@@ -267,12 +267,12 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 
 				<div
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalListItem-label-row" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalListItem-label-row" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 					)}
 				>
 					<div
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalListItem-label" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+							"MainAppHeaderOrganizationSwitcherModalListItem-label" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 						)}
 					>
 						{item.label}
@@ -280,8 +280,8 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 					{ownershipBadgeLabel ? (
 						<span
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalListItem-badge" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
-								"MainAppHeaderWorkspaceSwitcherModalListItem-ownership-badge" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalListItem-badge" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalListItem-ownership-badge" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 							)}
 						>
 							{ownershipBadgeLabel}
@@ -290,8 +290,8 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 					{billingBadgeLabel ? (
 						<span
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalListItem-badge" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
-								"MainAppHeaderWorkspaceSwitcherModalListItem-billing-badge" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalListItem-badge" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalListItem-billing-badge" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 							)}
 						>
 							{billingBadgeLabel}
@@ -301,7 +301,7 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 
 				<div
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalListItem-description" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalListItem-description" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 					)}
 				>
 					{descriptionText}
@@ -311,14 +311,14 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 			{showMenu ? (
 				<div
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalListItem-actions" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalListItem-actions" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 					)}
 				>
 					<MyMenu>
 						<MyMenuTrigger>
 							<MyIconButton
 								className={cn(
-									"MainAppHeaderWorkspaceSwitcherModalListItem-action" satisfies MainAppHeaderWorkspaceSwitcherModalListItem_ClassNames,
+									"MainAppHeaderOrganizationSwitcherModalListItem-action" satisfies MainAppHeaderOrganizationSwitcherModalListItem_ClassNames,
 								)}
 								variant="ghost-highlightable"
 								tooltip={moreActionsLabel}
@@ -376,21 +376,21 @@ export const MainAppHeaderWorkspaceSwitcherModalListItem = memo(function MainApp
 // #endregion list item
 
 // #region select head
-type MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames =
-	| "MainAppHeaderWorkspaceSwitcherModalSelectHead"
-	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-copy"
-	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-icon"
-	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row"
-	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-title"
-	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-quota"
-	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-help"
-	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-create-trigger"
-	| "MainAppHeaderWorkspaceSwitcherModalSelectHead-create";
+type MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames =
+	| "MainAppHeaderOrganizationSwitcherModalSelectHead"
+	| "MainAppHeaderOrganizationSwitcherModalSelectHead-copy"
+	| "MainAppHeaderOrganizationSwitcherModalSelectHead-icon"
+	| "MainAppHeaderOrganizationSwitcherModalSelectHead-title-row"
+	| "MainAppHeaderOrganizationSwitcherModalSelectHead-title"
+	| "MainAppHeaderOrganizationSwitcherModalSelectHead-quota"
+	| "MainAppHeaderOrganizationSwitcherModalSelectHead-help"
+	| "MainAppHeaderOrganizationSwitcherModalSelectHead-create-trigger"
+	| "MainAppHeaderOrganizationSwitcherModalSelectHead-create";
 
-export type MainAppHeaderWorkspaceSwitcherModalSelectHead_Props = {
+export type MainAppHeaderOrganizationSwitcherModalSelectHead_Props = {
 	title: string;
 	titleId: string;
-	kind: "project" | "workspace";
+	kind: "workspace" | "organization";
 	createDisabled?: boolean;
 	createDisabledReason?: string;
 	quotaFraction?: string;
@@ -399,8 +399,8 @@ export type MainAppHeaderWorkspaceSwitcherModalSelectHead_Props = {
 	iconSlot: ReactNode;
 };
 
-export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
-	function MainAppHeaderWorkspaceSwitcherModalSelectHead(props: MainAppHeaderWorkspaceSwitcherModalSelectHead_Props) {
+export const MainAppHeaderOrganizationSwitcherModalSelectHead = memo(
+	function MainAppHeaderOrganizationSwitcherModalSelectHead(props: MainAppHeaderOrganizationSwitcherModalSelectHead_Props) {
 		const {
 			title,
 			titleId,
@@ -414,17 +414,17 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 		} = props;
 
 		const createDisabledTooltip = createDisabled ? createDisabledReason : undefined;
-		const createLabel = kind === "workspace" ? "Create workspace" : "Create project";
+		const createLabel = kind === "organization" ? "Create organization" : "Create workspace";
 
 		return (
 			<div
 				className={cn(
-					"MainAppHeaderWorkspaceSwitcherModalSelectHead" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+					"MainAppHeaderOrganizationSwitcherModalSelectHead" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 				)}
 			>
 				<MyIcon
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalSelectHead-icon" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalSelectHead-icon" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 					)}
 					aria-hidden
 				>
@@ -432,19 +432,19 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 				</MyIcon>
 				<div
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalSelectHead-copy" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalSelectHead-copy" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 					)}
 				>
 					{quotaFraction && quotaTooltip ? (
 						<div
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalSelectHead-title-row" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 							)}
 						>
 							<h2
 								id={titleId}
 								className={cn(
-									"MainAppHeaderWorkspaceSwitcherModalSelectHead-title" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+									"MainAppHeaderOrganizationSwitcherModalSelectHead-title" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 								)}
 							>
 								{title}
@@ -453,13 +453,13 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 								<MyTooltipInfoTrigger>
 									<span
 										className={cn(
-											"MainAppHeaderWorkspaceSwitcherModalSelectHead-quota" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+											"MainAppHeaderOrganizationSwitcherModalSelectHead-quota" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 										)}
 									>
 										{quotaFraction}
 										<MyIcon
 											className={cn(
-												"MainAppHeaderWorkspaceSwitcherModalSelectHead-help" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+												"MainAppHeaderOrganizationSwitcherModalSelectHead-help" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 											)}
 											aria-hidden
 										>
@@ -475,13 +475,13 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 					) : (
 						<div
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalSelectHead-title-row" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 							)}
 						>
 							<h2
 								id={titleId}
 								className={cn(
-									"MainAppHeaderWorkspaceSwitcherModalSelectHead-title" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+									"MainAppHeaderOrganizationSwitcherModalSelectHead-title" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 								)}
 							>
 								{title}
@@ -489,7 +489,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 							{quotaFraction ? (
 								<span
 									className={cn(
-										"MainAppHeaderWorkspaceSwitcherModalSelectHead-quota" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+										"MainAppHeaderOrganizationSwitcherModalSelectHead-quota" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 									)}
 								>
 									({quotaFraction})
@@ -503,12 +503,12 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 						<MyTooltipTrigger>
 							<span
 								className={cn(
-									"MainAppHeaderWorkspaceSwitcherModalSelectHead-create-trigger" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+									"MainAppHeaderOrganizationSwitcherModalSelectHead-create-trigger" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 								)}
 							>
 								<MyButton
 									className={cn(
-										"MainAppHeaderWorkspaceSwitcherModalSelectHead-create" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+										"MainAppHeaderOrganizationSwitcherModalSelectHead-create" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 									)}
 									type="button"
 									disabled
@@ -528,7 +528,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 				) : (
 					<MyButton
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalSelectHead-create" satisfies MainAppHeaderWorkspaceSwitcherModalSelectHead_ClassNames,
+							"MainAppHeaderOrganizationSwitcherModalSelectHead-create" satisfies MainAppHeaderOrganizationSwitcherModalSelectHead_ClassNames,
 						)}
 						type="button"
 						disabled={Boolean(createDisabled)}
@@ -547,16 +547,16 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectHead = memo(
 // #endregion select head
 
 // #region select list
-type MainAppHeaderWorkspaceSwitcherModalSelectList_ClassNames = "MainAppHeaderWorkspaceSwitcherModalSelectList";
+type MainAppHeaderOrganizationSwitcherModalSelectList_ClassNames = "MainAppHeaderOrganizationSwitcherModalSelectList";
 
-export type MainAppHeaderWorkspaceSwitcherModalSelectList_Props = {
+export type MainAppHeaderOrganizationSwitcherModalSelectList_Props = {
 	myFocusSyncKey: string;
 	ariaLabel: string;
 	children: ReactNode;
 };
 
-export const MainAppHeaderWorkspaceSwitcherModalSelectList = memo(
-	function MainAppHeaderWorkspaceSwitcherModalSelectList(props: MainAppHeaderWorkspaceSwitcherModalSelectList_Props) {
+export const MainAppHeaderOrganizationSwitcherModalSelectList = memo(
+	function MainAppHeaderOrganizationSwitcherModalSelectList(props: MainAppHeaderOrganizationSwitcherModalSelectList_Props) {
 		const { myFocusSyncKey, ariaLabel, children } = props;
 
 		const [list, setList] = useState<HTMLUListElement | null>(null);
@@ -585,7 +585,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectList = memo(
 			<ul
 				ref={setList}
 				className={cn(
-					"MainAppHeaderWorkspaceSwitcherModalSelectList" satisfies MainAppHeaderWorkspaceSwitcherModalSelectList_ClassNames,
+					"MainAppHeaderOrganizationSwitcherModalSelectList" satisfies MainAppHeaderOrganizationSwitcherModalSelectList_ClassNames,
 					"MyFocus-container" satisfies MyFocus_ClassNames,
 				)}
 				aria-label={ariaLabel}
@@ -598,45 +598,45 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectList = memo(
 // #endregion select list
 
 // #region select pane list
-export type MainAppHeaderWorkspaceSwitcherModalSelectPaneList_Props = {
+export type MainAppHeaderOrganizationSwitcherModalSelectPaneList_Props = {
 	dialogOpen: boolean;
 	title: string;
-	kind: "project" | "workspace";
-	items: MainAppHeaderWorkspaceSwitcherModalSelectPane_Props["items"];
+	kind: "workspace" | "organization";
+	items: MainAppHeaderOrganizationSwitcherModalSelectPane_Props["items"];
 	selectedItemId: string;
 };
 
-export const MainAppHeaderWorkspaceSwitcherModalSelectPaneList = memo(
-	function MainAppHeaderWorkspaceSwitcherModalSelectPaneList(
-		props: MainAppHeaderWorkspaceSwitcherModalSelectPaneList_Props,
+export const MainAppHeaderOrganizationSwitcherModalSelectPaneList = memo(
+	function MainAppHeaderOrganizationSwitcherModalSelectPaneList(
+		props: MainAppHeaderOrganizationSwitcherModalSelectPaneList_Props,
 	) {
 		const { dialogOpen, title, kind, items, selectedItemId } = props;
 
 		const myFocusSyncKey = `${dialogOpen}:${selectedItemId}:${items.map((item) => item.id).join(",")}`;
 
 		return (
-			<MainAppHeaderWorkspaceSwitcherModalSelectList myFocusSyncKey={myFocusSyncKey} ariaLabel={`${title} list`}>
+			<MainAppHeaderOrganizationSwitcherModalSelectList myFocusSyncKey={myFocusSyncKey} ariaLabel={`${title} list`}>
 				{items.map((item) => (
-					<MainAppHeaderWorkspaceSwitcherModalListItem
+					<MainAppHeaderOrganizationSwitcherModalListItem
 						key={item.id}
 						kind={kind}
 						item={{ ...item, isCurrent: item.id === selectedItemId }}
 					/>
 				))}
-			</MainAppHeaderWorkspaceSwitcherModalSelectList>
+			</MainAppHeaderOrganizationSwitcherModalSelectList>
 		);
 	},
 );
 // #endregion select pane list
 
 // #region select pane
-type MainAppHeaderWorkspaceSwitcherModalSelectPane_ClassNames = "MainAppHeaderWorkspaceSwitcherModalSelectPane";
+type MainAppHeaderOrganizationSwitcherModalSelectPane_ClassNames = "MainAppHeaderOrganizationSwitcherModalSelectPane";
 
-export type MainAppHeaderWorkspaceSwitcherModalSelectPane_Props = {
+export type MainAppHeaderOrganizationSwitcherModalSelectPane_Props = {
 	dialogOpen: boolean;
 	title: string;
-	kind: "project" | "workspace";
-	items: Omit<MainAppHeaderWorkspaceSwitcherModal_ListItem, "isCurrent">[];
+	kind: "workspace" | "organization";
+	items: Omit<MainAppHeaderOrganizationSwitcherModal_ListItem, "isCurrent">[];
 	selectedItemId: string;
 	createDisabled?: boolean;
 	createDisabledReason?: string;
@@ -646,8 +646,8 @@ export type MainAppHeaderWorkspaceSwitcherModalSelectPane_Props = {
 	icon: ReactNode;
 };
 
-export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
-	function MainAppHeaderWorkspaceSwitcherModalSelectPane(props: MainAppHeaderWorkspaceSwitcherModalSelectPane_Props) {
+export const MainAppHeaderOrganizationSwitcherModalSelectPane = memo(
+	function MainAppHeaderOrganizationSwitcherModalSelectPane(props: MainAppHeaderOrganizationSwitcherModalSelectPane_Props) {
 		const {
 			dialogOpen,
 			title,
@@ -661,16 +661,16 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 			onCreate,
 			icon,
 		} = props;
-		const titleId = `MainAppHeaderWorkspaceSwitcherModalSelectPane-title-${kind}-${useId().replace(/:/g, "")}`;
+		const titleId = `MainAppHeaderOrganizationSwitcherModalSelectPane-title-${kind}-${useId().replace(/:/g, "")}`;
 
 		return (
 			<section
 				className={cn(
-					"MainAppHeaderWorkspaceSwitcherModalSelectPane" satisfies MainAppHeaderWorkspaceSwitcherModalSelectPane_ClassNames,
+					"MainAppHeaderOrganizationSwitcherModalSelectPane" satisfies MainAppHeaderOrganizationSwitcherModalSelectPane_ClassNames,
 				)}
 				aria-label={title}
 			>
-				<MainAppHeaderWorkspaceSwitcherModalSelectHead
+				<MainAppHeaderOrganizationSwitcherModalSelectHead
 					title={title}
 					titleId={titleId}
 					kind={kind}
@@ -682,7 +682,7 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 					iconSlot={icon}
 				/>
 
-				<MainAppHeaderWorkspaceSwitcherModalSelectPaneList
+				<MainAppHeaderOrganizationSwitcherModalSelectPaneList
 					dialogOpen={dialogOpen}
 					title={title}
 					kind={kind}
@@ -696,14 +696,14 @@ export const MainAppHeaderWorkspaceSwitcherModalSelectPane = memo(
 // #endregion select pane
 
 // #region create edit form field
-type MainAppHeaderWorkspaceCreateEditFormField_ClassNames =
-	| "MainAppHeaderWorkspaceCreateEditFormField-label-optional"
-	| "MainAppHeaderWorkspaceCreateEditFormField-helper-row"
-	| "MainAppHeaderWorkspaceCreateEditFormField-helper-message"
-	| "MainAppHeaderWorkspaceCreateEditFormField-helper-counter"
-	| "MainAppHeaderWorkspaceCreateEditFormField-helper-state-error";
+type MainAppHeaderOrganizationCreateEditFormField_ClassNames =
+	| "MainAppHeaderOrganizationCreateEditFormField-label-optional"
+	| "MainAppHeaderOrganizationCreateEditFormField-helper-row"
+	| "MainAppHeaderOrganizationCreateEditFormField-helper-message"
+	| "MainAppHeaderOrganizationCreateEditFormField-helper-counter"
+	| "MainAppHeaderOrganizationCreateEditFormField-helper-state-error";
 
-type MainAppHeaderWorkspaceCreateEditFormField_Props = {
+type MainAppHeaderOrganizationCreateEditFormField_Props = {
 	validationMessage?: string;
 	displayValidationMessage?: string;
 	inputRef: RefObject<HTMLInputElement | null>;
@@ -723,8 +723,8 @@ type MainAppHeaderWorkspaceCreateEditFormField_Props = {
 	onPaste?: ComponentPropsWithoutRef<"input">["onPaste"];
 };
 
-const MainAppHeaderWorkspaceCreateEditFormField = memo(function MainAppHeaderWorkspaceCreateEditFormField(
-	props: MainAppHeaderWorkspaceCreateEditFormField_Props,
+const MainAppHeaderOrganizationCreateEditFormField = memo(function MainAppHeaderOrganizationCreateEditFormField(
+	props: MainAppHeaderOrganizationCreateEditFormField_Props,
 ) {
 	const {
 		validationMessage,
@@ -772,21 +772,21 @@ const MainAppHeaderWorkspaceCreateEditFormField = memo(function MainAppHeaderWor
 			<MyInputBox />
 			<MyInputHelperText
 				className={cn(
-					"MainAppHeaderWorkspaceCreateEditFormField-helper-row" satisfies MainAppHeaderWorkspaceCreateEditFormField_ClassNames,
+					"MainAppHeaderOrganizationCreateEditFormField-helper-row" satisfies MainAppHeaderOrganizationCreateEditFormField_ClassNames,
 				)}
 			>
 				<span
 					className={cn(
-						"MainAppHeaderWorkspaceCreateEditFormField-helper-message" satisfies MainAppHeaderWorkspaceCreateEditFormField_ClassNames,
+						"MainAppHeaderOrganizationCreateEditFormField-helper-message" satisfies MainAppHeaderOrganizationCreateEditFormField_ClassNames,
 						isHelperTextInvalid &&
-							("MainAppHeaderWorkspaceCreateEditFormField-helper-state-error" satisfies MainAppHeaderWorkspaceCreateEditFormField_ClassNames),
+							("MainAppHeaderOrganizationCreateEditFormField-helper-state-error" satisfies MainAppHeaderOrganizationCreateEditFormField_ClassNames),
 					)}
 				>
 					{helperText}
 				</span>
 				<span
 					className={cn(
-						"MainAppHeaderWorkspaceCreateEditFormField-helper-counter" satisfies MainAppHeaderWorkspaceCreateEditFormField_ClassNames,
+						"MainAppHeaderOrganizationCreateEditFormField-helper-counter" satisfies MainAppHeaderOrganizationCreateEditFormField_ClassNames,
 					)}
 				>
 					{draftValueLength}/{maxLength}
@@ -798,15 +798,15 @@ const MainAppHeaderWorkspaceCreateEditFormField = memo(function MainAppHeaderWor
 // #endregion create edit form field
 
 // #region create edit name field
-type MainAppHeaderWorkspaceNameField_Ref = {
+type MainAppHeaderOrganizationNameField_Ref = {
 	setRejectedNameValidationMessage: (name: string, validationMessage: string) => void;
 };
 
-type MainAppHeaderWorkspaceNameField_Props = {
-	ref: Ref<MainAppHeaderWorkspaceNameField_Ref>;
+type MainAppHeaderOrganizationNameField_Props = {
+	ref: Ref<MainAppHeaderOrganizationNameField_Ref>;
 	resetKey: string;
 	initialValue: string;
-	kind: "project" | "workspace";
+	kind: "workspace" | "organization";
 	label: ReactNode;
 	submitValidationMessage?: string;
 	isSubmitting: boolean;
@@ -814,8 +814,8 @@ type MainAppHeaderWorkspaceNameField_Props = {
 	onUserInput: () => void;
 };
 
-const MainAppHeaderWorkspaceNameField = memo(function MainAppHeaderWorkspaceNameField(
-	props: MainAppHeaderWorkspaceNameField_Props,
+const MainAppHeaderOrganizationNameField = memo(function MainAppHeaderOrganizationNameField(
+	props: MainAppHeaderOrganizationNameField_Props,
 ) {
 	const {
 		ref,
@@ -919,8 +919,8 @@ const MainAppHeaderWorkspaceNameField = memo(function MainAppHeaderWorkspaceName
 
 		const el = inputRef.current;
 		if (!el) {
-			const validated = workspaces_name_validate(
-				workspaces_name_autofix(initialValue, { trim_trailing_hyphens: false }),
+			const validated = organizations_name_validate(
+				organizations_name_autofix(initialValue, { trim_trailing_hyphens: false }),
 			);
 			setValidationMessage(validated._nay?.message);
 			setDraftValueLength(initialValue.length);
@@ -974,19 +974,19 @@ const MainAppHeaderWorkspaceNameField = memo(function MainAppHeaderWorkspaceName
 		displayValidationMessage !== "Name must be at least 3 characters";
 	const helperText = showValidationErrorMessage
 		? displayValidationMessage
-		: `Min ${workspaces_NAME_MIN_LENGTH} characters`;
+		: `Min ${organizations_NAME_MIN_LENGTH} characters`;
 
 	return (
-		<MainAppHeaderWorkspaceCreateEditFormField
+		<MainAppHeaderOrganizationCreateEditFormField
 			validationMessage={validationMessage}
 			displayValidationMessage={displayValidationMessage}
 			inputRef={inputRef}
 			label={label}
-			placeholder={kind === "workspace" ? "acme-labs" : "my-project"}
+			placeholder={kind === "organization" ? "acme-labs" : "my-workspace"}
 			draftValueLength={draftValueLength}
 			required
-			minLength={workspaces_NAME_MIN_LENGTH}
-			maxLength={workspaces_NAME_MAX_LENGTH}
+			minLength={organizations_NAME_MIN_LENGTH}
+			maxLength={organizations_NAME_MAX_LENGTH}
 			helperText={helperText}
 			isHelperTextInvalid={Boolean(displayValidationMessage)}
 			isSubmitting={isSubmitting}
@@ -1001,21 +1001,21 @@ const MainAppHeaderWorkspaceNameField = memo(function MainAppHeaderWorkspaceName
 // #endregion create edit name field
 
 // #region create edit description field
-type MainAppHeaderWorkspaceDescriptionField_Ref = {
+type MainAppHeaderOrganizationDescriptionField_Ref = {
 	setServerValidationMessage: (validationMessage: string) => void;
 };
 
-type MainAppHeaderWorkspaceDescriptionField_Props = {
-	ref: Ref<MainAppHeaderWorkspaceDescriptionField_Ref>;
+type MainAppHeaderOrganizationDescriptionField_Props = {
+	ref: Ref<MainAppHeaderOrganizationDescriptionField_Ref>;
 	resetKey: string;
 	initialValue: string;
-	kind: "project" | "workspace";
+	kind: "workspace" | "organization";
 	isSubmitting: boolean;
 	onValidationStateChange: (state: { validationMessage?: string; canonicalValue: string }) => void;
 };
 
-const MainAppHeaderWorkspaceDescriptionField = memo(function MainAppHeaderWorkspaceDescriptionField(
-	props: MainAppHeaderWorkspaceDescriptionField_Props,
+const MainAppHeaderOrganizationDescriptionField = memo(function MainAppHeaderOrganizationDescriptionField(
+	props: MainAppHeaderOrganizationDescriptionField_Props,
 ) {
 	const { ref, resetKey, initialValue, kind, isSubmitting, onValidationStateChange } = props;
 
@@ -1072,7 +1072,7 @@ const MainAppHeaderWorkspaceDescriptionField = memo(function MainAppHeaderWorksp
 
 		const el = inputRef.current;
 		if (!el) {
-			const validated = workspaces_description_normalize(initialValue);
+			const validated = organizations_description_normalize(initialValue);
 			setValidationMessage(validated._nay?.message);
 			setDraftValueLength(initialValue.length);
 			onValidationStateChangeRef.current({
@@ -1109,7 +1109,7 @@ const MainAppHeaderWorkspaceDescriptionField = memo(function MainAppHeaderWorksp
 	);
 
 	return (
-		<MainAppHeaderWorkspaceCreateEditFormField
+		<MainAppHeaderOrganizationCreateEditFormField
 			validationMessage={validationMessage}
 			displayValidationMessage={displayValidationMessage}
 			inputRef={inputRef}
@@ -1118,16 +1118,16 @@ const MainAppHeaderWorkspaceDescriptionField = memo(function MainAppHeaderWorksp
 					Description{" "}
 					<span
 						className={cn(
-							"MainAppHeaderWorkspaceCreateEditFormField-label-optional" satisfies MainAppHeaderWorkspaceCreateEditFormField_ClassNames,
+							"MainAppHeaderOrganizationCreateEditFormField-label-optional" satisfies MainAppHeaderOrganizationCreateEditFormField_ClassNames,
 						)}
 					>
 						(optional)
 					</span>
 				</>
 			}
-			placeholder={kind === "workspace" ? "What is this workspace used for?" : "What is this project used for?"}
+			placeholder={kind === "organization" ? "What is this organization used for?" : "What is this workspace used for?"}
 			draftValueLength={draftValueLength}
-			maxLength={workspaces_DESCRIPTION_MAX_LENGTH}
+			maxLength={organizations_DESCRIPTION_MAX_LENGTH}
 			helperText={displayValidationMessage}
 			isHelperTextInvalid={Boolean(displayValidationMessage)}
 			isSubmitting={isSubmitting}
@@ -1141,57 +1141,57 @@ const MainAppHeaderWorkspaceDescriptionField = memo(function MainAppHeaderWorksp
 
 // #region create modal
 
-type MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames =
-	| "MainAppHeaderWorkspaceSwitcherModalCreateModal"
-	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-sub"
-	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-body"
-	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form"
-	| "MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-form";
+type MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames =
+	| "MainAppHeaderOrganizationSwitcherModalCreateModal"
+	| "MainAppHeaderOrganizationSwitcherModalCreateModal-sub"
+	| "MainAppHeaderOrganizationSwitcherModalCreateModal-sub-body"
+	| "MainAppHeaderOrganizationSwitcherModalCreateModal-create-form"
+	| "MainAppHeaderOrganizationSwitcherModalCreateModal-sub-form";
 
-type MainAppHeaderWorkspaceSwitcherModalCreateModal_Props = {
+type MainAppHeaderOrganizationSwitcherModalCreateModal_Props = {
 	open: boolean;
 	setOpen: Dispatch<SetStateAction<boolean>>;
-	kind: "project" | "workspace";
-	workspaceId: FunctionArgs<typeof app_convex_api.workspaces.create_project>["workspaceId"];
-	workspaceName: string;
+	kind: "workspace" | "organization";
+	organizationId: FunctionArgs<typeof app_convex_api.organizations.create_workspace>["organizationId"];
+	organizationName: string;
+	createOrganization: (
+		args: FunctionArgs<typeof app_convex_api.organizations.create_organization>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.organizations.create_organization> | undefined>;
 	createWorkspace: (
-		args: FunctionArgs<typeof app_convex_api.workspaces.create_workspace>,
-	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.create_workspace> | undefined>;
-	createProject: (
-		args: FunctionArgs<typeof app_convex_api.workspaces.create_project>,
-	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.create_project> | undefined>;
-	onAfterCreateWorkspace: (args: {
-		workspaceId: app_convex_Id<"workspaces">;
-		projectId: app_convex_Id<"workspaces_projects">;
+		args: FunctionArgs<typeof app_convex_api.organizations.create_workspace>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.organizations.create_workspace> | undefined>;
+	onAfterCreateOrganization: (args: {
+		organizationId: app_convex_Id<"organizations">;
+		workspaceId: app_convex_Id<"organizations_workspaces">;
+		organizationName: string;
 		workspaceName: string;
-		projectName: string;
 	}) => void;
-	onAfterCreateProject: (args: {
-		workspaceId: app_convex_Id<"workspaces">;
-		projectId: app_convex_Id<"workspaces_projects">;
+	onAfterCreateWorkspace: (args: {
+		organizationId: app_convex_Id<"organizations">;
+		workspaceId: app_convex_Id<"organizations_workspaces">;
+		organizationName: string;
 		workspaceName: string;
-		projectName: string;
 	}) => void;
 };
 
-export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
-	function MainAppHeaderWorkspaceSwitcherModalCreateModal(props: MainAppHeaderWorkspaceSwitcherModalCreateModal_Props) {
+export const MainAppHeaderOrganizationSwitcherModalCreateModal = memo(
+	function MainAppHeaderOrganizationSwitcherModalCreateModal(props: MainAppHeaderOrganizationSwitcherModalCreateModal_Props) {
 		const {
 			open,
 			setOpen,
 			kind,
-			workspaceId,
-			workspaceName,
+			organizationId,
+			organizationName,
+			createOrganization,
 			createWorkspace,
-			createProject,
+			onAfterCreateOrganization,
 			onAfterCreateWorkspace,
-			onAfterCreateProject,
 		} = props;
 
-		const createFormDomId = `MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form-${useId().replace(/:/g, "")}`;
+		const createFormDomId = `MainAppHeaderOrganizationSwitcherModalCreateModal-create-form-${useId().replace(/:/g, "")}`;
 
-		const nameFieldRef = useRef<MainAppHeaderWorkspaceNameField_Ref>(null);
-		const descriptionFieldRef = useRef<MainAppHeaderWorkspaceDescriptionField_Ref>(null);
+		const nameFieldRef = useRef<MainAppHeaderOrganizationNameField_Ref>(null);
+		const descriptionFieldRef = useRef<MainAppHeaderOrganizationDescriptionField_Ref>(null);
 		const [isNameValid, setIsNameValid] = useState(false);
 		const [isDescriptionValid, setIsDescriptionValid] = useState(true);
 		const [nameCanonicalValue, setNameCanonicalValue] = useState("");
@@ -1201,7 +1201,7 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 
 		const createFormResetKey = open ? `open:${kind}` : `closed:${kind}`;
 
-		const handleNameValidationStateChange = useFn<MainAppHeaderWorkspaceNameField_Props["onValidationStateChange"]>(
+		const handleNameValidationStateChange = useFn<MainAppHeaderOrganizationNameField_Props["onValidationStateChange"]>(
 			(state) => {
 				setIsNameValid(!state.validationMessage);
 				setNameCanonicalValue(state.canonicalValue);
@@ -1209,7 +1209,7 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 		);
 
 		const handleDescriptionValidationStateChange = useFn<
-			MainAppHeaderWorkspaceDescriptionField_Props["onValidationStateChange"]
+			MainAppHeaderOrganizationDescriptionField_Props["onValidationStateChange"]
 		>((state) => {
 			setIsDescriptionValid(!state.validationMessage);
 			setDescriptionCanonicalValue(state.canonicalValue);
@@ -1236,16 +1236,16 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 				setIsSubmitting(true);
 				setSubmitValidationMessage(undefined);
 
-				if (kind === "workspace") {
-					const result = await createWorkspace({ name, description });
+				if (kind === "organization") {
+					const result = await createOrganization({ name, description });
 
 					if (result == null) {
 						return;
 					}
 
 					if (result._nay) {
-						if (result._nay.message === "Workspace quota reached") {
-							setSubmitValidationMessage(quotas.extra_workspaces.disabledReason);
+						if (result._nay.message === "Organization quota reached") {
+							setSubmitValidationMessage(quotas.extra_organizations.disabledReason);
 						} else if (result._nay.message === "Description is too long") {
 							descriptionFieldRef.current?.setServerValidationMessage(result._nay.message);
 						} else if (is_rejected_name_message(result._nay.message)) {
@@ -1256,27 +1256,27 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 						return;
 					}
 
-					await app_convex.query(app_convex_api.workspaces.list, {});
+					await app_convex.query(app_convex_api.organizations.list, {});
 
 					setOpen(false);
-					onAfterCreateWorkspace({
-						workspaceId: result._yay.workspaceId,
-						projectId: result._yay.defaultProjectId,
-						workspaceName: result._yay.name,
-						projectName: result._yay.defaultProjectName,
+					onAfterCreateOrganization({
+						organizationId: result._yay.organizationId,
+						workspaceId: result._yay.defaultWorkspaceId,
+						organizationName: result._yay.name,
+						workspaceName: result._yay.defaultWorkspaceName,
 					});
 					return;
 				}
 
-				const result = await createProject({ name, workspaceId, description });
+				const result = await createWorkspace({ name, organizationId, description });
 
 				if (result == null) {
 					return;
 				}
 
 				if (result._nay) {
-					if (result._nay.message === "Project quota reached") {
-						setSubmitValidationMessage(quotas.extra_projects.disabledReason);
+					if (result._nay.message === "Workspace quota reached") {
+						setSubmitValidationMessage(quotas.extra_workspaces.disabledReason);
 					} else if (result._nay.message === "Description is too long") {
 						descriptionFieldRef.current?.setServerValidationMessage(result._nay.message);
 					} else if (is_rejected_name_message(result._nay.message)) {
@@ -1287,18 +1287,18 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 					return;
 				}
 
-				await app_convex.query(app_convex_api.workspaces.list, {});
+				await app_convex.query(app_convex_api.organizations.list, {});
 
 				setOpen(false);
-				onAfterCreateProject({
+				onAfterCreateWorkspace({
+					organizationId: result._yay.organizationId,
 					workspaceId: result._yay.workspaceId,
-					projectId: result._yay.projectId,
-					workspaceName,
-					projectName: result._yay.name,
+					organizationName,
+					workspaceName: result._yay.name,
 				});
 			})()
 				.catch((error) => {
-					console.error("[MainAppHeaderWorkspaceSwitcherModalCreateModal] Unexpected create error", {
+					console.error("[MainAppHeaderOrganizationSwitcherModalCreateModal] Unexpected create error", {
 						error,
 						kind,
 					});
@@ -1324,15 +1324,15 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 			setDescriptionCanonicalValue("");
 		}, [open, kind]);
 
-		const dialogTitle = kind === "workspace" ? "Create workspace" : "Create project";
-		const nameFieldLabel = kind === "workspace" ? "Workspace name" : "Project name";
+		const dialogTitle = kind === "organization" ? "Create organization" : "Create workspace";
+		const nameFieldLabel = kind === "organization" ? "Organization name" : "Workspace name";
 
 		return (
 			<MyModal open={open} setOpen={setOpen}>
 				<MyModalPopover
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalCreateModal" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
-						"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalCreateModal" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalCreateModal-sub" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
 					)}
 				>
 					<MyModalHeader>
@@ -1341,23 +1341,23 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 
 					<MyModalScrollableArea
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-body" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+							"MainAppHeaderOrganizationSwitcherModalCreateModal-sub-body" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
 						)}
 					>
 						<form
 							id={createFormDomId}
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalCreateModal-create-form" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
 							)}
 							noValidate
 							onSubmit={handleFormSubmit}
 						>
 							<div
 								className={cn(
-									"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-form" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+									"MainAppHeaderOrganizationSwitcherModalCreateModal-sub-form" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
 								)}
 							>
-								<MainAppHeaderWorkspaceNameField
+								<MainAppHeaderOrganizationNameField
 									ref={nameFieldRef}
 									resetKey={createFormResetKey}
 									initialValue=""
@@ -1368,7 +1368,7 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 									onValidationStateChange={handleNameValidationStateChange}
 									onUserInput={handleNameUserInput}
 								/>
-								<MainAppHeaderWorkspaceDescriptionField
+								<MainAppHeaderOrganizationDescriptionField
 									ref={descriptionFieldRef}
 									resetKey={createFormResetKey}
 									initialValue=""
@@ -1403,27 +1403,27 @@ export const MainAppHeaderWorkspaceSwitcherModalCreateModal = memo(
 // #endregion create modal
 
 // #region edit modal
-type MainAppHeaderWorkspaceSwitcherModalEditModal_Props = {
-	target: MainAppHeaderWorkspaceSwitcherModal_EditTarget | null;
+type MainAppHeaderOrganizationSwitcherModalEditModal_Props = {
+	target: MainAppHeaderOrganizationSwitcherModal_EditTarget | null;
+	editOrganization: (
+		args: FunctionArgs<typeof app_convex_api.organizations.edit_organization>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.organizations.edit_organization> | undefined>;
 	editWorkspace: (
-		args: FunctionArgs<typeof app_convex_api.workspaces.edit_workspace>,
-	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.edit_workspace> | undefined>;
-	editProject: (
-		args: FunctionArgs<typeof app_convex_api.workspaces.edit_project>,
-	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.edit_project> | undefined>;
-	setTarget: Dispatch<SetStateAction<MainAppHeaderWorkspaceSwitcherModal_EditTarget | null>>;
-	onAfterEdit: (args: MainAppHeaderWorkspaceSwitcherModal_AfterEdit) => void;
+		args: FunctionArgs<typeof app_convex_api.organizations.edit_workspace>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.organizations.edit_workspace> | undefined>;
+	setTarget: Dispatch<SetStateAction<MainAppHeaderOrganizationSwitcherModal_EditTarget | null>>;
+	onAfterEdit: (args: MainAppHeaderOrganizationSwitcherModal_AfterEdit) => void;
 };
 
-export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAppHeaderWorkspaceSwitcherModalEditModal(
-	props: MainAppHeaderWorkspaceSwitcherModalEditModal_Props,
+export const MainAppHeaderOrganizationSwitcherModalEditModal = memo(function MainAppHeaderOrganizationSwitcherModalEditModal(
+	props: MainAppHeaderOrganizationSwitcherModalEditModal_Props,
 ) {
-	const { target, editWorkspace, editProject, setTarget, onAfterEdit } = props;
+	const { target, editOrganization, editWorkspace, setTarget, onAfterEdit } = props;
 
-	const editFormDomId = `MainAppHeaderWorkspaceSwitcherModalEditModal-form-${useId().replace(/:/g, "")}`;
+	const editFormDomId = `MainAppHeaderOrganizationSwitcherModalEditModal-form-${useId().replace(/:/g, "")}`;
 
-	const nameFieldRef = useRef<MainAppHeaderWorkspaceNameField_Ref>(null);
-	const descriptionFieldRef = useRef<MainAppHeaderWorkspaceDescriptionField_Ref>(null);
+	const nameFieldRef = useRef<MainAppHeaderOrganizationNameField_Ref>(null);
+	const descriptionFieldRef = useRef<MainAppHeaderOrganizationDescriptionField_Ref>(null);
 	const [isNameValid, setIsNameValid] = useState(false);
 	const [isDescriptionValid, setIsDescriptionValid] = useState(true);
 	const [nameCanonicalValue, setNameCanonicalValue] = useState("");
@@ -1440,7 +1440,7 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 		? `${target.kind}:${target.id}:${target.initialName}:${target.initialDescription}`
 		: "closed";
 
-	const handleNameValidationStateChange = useFn<MainAppHeaderWorkspaceNameField_Props["onValidationStateChange"]>(
+	const handleNameValidationStateChange = useFn<MainAppHeaderOrganizationNameField_Props["onValidationStateChange"]>(
 		(state) => {
 			setIsNameValid(!state.validationMessage);
 			setNameCanonicalValue(state.canonicalValue);
@@ -1448,7 +1448,7 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 	);
 
 	const handleDescriptionValidationStateChange = useFn<
-		MainAppHeaderWorkspaceDescriptionField_Props["onValidationStateChange"]
+		MainAppHeaderOrganizationDescriptionField_Props["onValidationStateChange"]
 	>((state) => {
 		setIsDescriptionValid(!state.validationMessage);
 		setDescriptionCanonicalValue(state.canonicalValue);
@@ -1482,10 +1482,10 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 			setIsSubmitting(true);
 			setSubmitValidationMessage(undefined);
 
-			if (activeTarget.kind === "workspace") {
-				const result = await editWorkspace({
-					workspaceId: activeTarget.id as app_convex_Id<"workspaces">,
-					defaultProjectId: activeTarget.defaultProjectId,
+			if (activeTarget.kind === "organization") {
+				const result = await editOrganization({
+					organizationId: activeTarget.id as app_convex_Id<"organizations">,
+					defaultWorkspaceId: activeTarget.defaultWorkspaceId,
 					name,
 					description,
 				});
@@ -1505,22 +1505,22 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 					return;
 				}
 
-				await app_convex.query(app_convex_api.workspaces.list, {});
+				await app_convex.query(app_convex_api.organizations.list, {});
 
 				setTarget(null);
 				onAfterEdit({
-					kind: "workspace",
+					kind: "organization",
 					oldName: activeTarget.initialName,
 					newName: result._yay.name,
-					workspaceId: activeTarget.id as app_convex_Id<"workspaces">,
+					organizationId: activeTarget.id as app_convex_Id<"organizations">,
 				});
 				return;
 			}
 
-			const result = await editProject({
-				workspaceId: activeTarget.workspaceId,
-				defaultProjectId: activeTarget.defaultProjectId,
-				projectId: activeTarget.id as app_convex_Id<"workspaces_projects">,
+			const result = await editWorkspace({
+				organizationId: activeTarget.organizationId,
+				defaultWorkspaceId: activeTarget.defaultWorkspaceId,
+				workspaceId: activeTarget.id as app_convex_Id<"organizations_workspaces">,
 				name,
 				description,
 			});
@@ -1540,19 +1540,19 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 				return;
 			}
 
-			await app_convex.query(app_convex_api.workspaces.list, {});
+			await app_convex.query(app_convex_api.organizations.list, {});
 
 			setTarget(null);
 			onAfterEdit({
-				kind: "project",
+				kind: "workspace",
 				oldName: activeTarget.initialName,
 				newName: result._yay.name,
-				workspaceId: result._yay.workspaceId,
-				projectId: activeTarget.id as app_convex_Id<"workspaces_projects">,
+				organizationId: result._yay.organizationId,
+				workspaceId: activeTarget.id as app_convex_Id<"organizations_workspaces">,
 			});
 		})()
 			.catch((error) => {
-				console.error("[MainAppHeaderWorkspaceSwitcherModalEditModal] Unexpected edit error", {
+				console.error("[MainAppHeaderOrganizationSwitcherModalEditModal] Unexpected edit error", {
 					error,
 					kind: activeTarget.kind,
 				});
@@ -1583,16 +1583,16 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 		setDescriptionCanonicalValue(get_canonical_description_value(target.initialDescription));
 	}, [target]);
 
-	const dialogTitle = target ? (target.kind === "workspace" ? "Edit workspace" : "Edit project") : "Edit";
-	const nameFieldLabel = target ? (target.kind === "workspace" ? "Workspace name" : "Project name") : "Name";
+	const dialogTitle = target ? (target.kind === "organization" ? "Edit organization" : "Edit workspace") : "Edit";
+	const nameFieldLabel = target ? (target.kind === "organization" ? "Organization name" : "Workspace name") : "Name";
 	const editOpen = target !== null;
 
 	return (
 		<MyModal open={editOpen} setOpen={handleEditModalSetOpen}>
 			<MyModalPopover
 				className={cn(
-					"MainAppHeaderWorkspaceSwitcherModalCreateModal" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
-					"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+					"MainAppHeaderOrganizationSwitcherModalCreateModal" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
+					"MainAppHeaderOrganizationSwitcherModalCreateModal-sub" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
 				)}
 			>
 				<MyModalHeader>
@@ -1601,38 +1601,38 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 
 				<MyModalScrollableArea
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-body" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalCreateModal-sub-body" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
 					)}
 				>
 					<form
 						id={editFormDomId}
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+							"MainAppHeaderOrganizationSwitcherModalCreateModal-create-form" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
 						)}
 						noValidate
 						onSubmit={handleFormSubmit}
 					>
 						<div
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-form" satisfies MainAppHeaderWorkspaceSwitcherModalCreateModal_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalCreateModal-sub-form" satisfies MainAppHeaderOrganizationSwitcherModalCreateModal_ClassNames,
 							)}
 						>
-							<MainAppHeaderWorkspaceNameField
+							<MainAppHeaderOrganizationNameField
 								ref={nameFieldRef}
 								resetKey={editFormResetKey}
 								initialValue={target?.initialName ?? ""}
-								kind={target?.kind ?? "workspace"}
+								kind={target?.kind ?? "organization"}
 								label={nameFieldLabel}
 								submitValidationMessage={submitValidationMessage}
 								isSubmitting={isSubmitting}
 								onValidationStateChange={handleNameValidationStateChange}
 								onUserInput={handleNameUserInput}
 							/>
-							<MainAppHeaderWorkspaceDescriptionField
+							<MainAppHeaderOrganizationDescriptionField
 								ref={descriptionFieldRef}
 								resetKey={editFormResetKey}
 								initialValue={target?.initialDescription ?? ""}
-								kind={target?.kind ?? "workspace"}
+								kind={target?.kind ?? "organization"}
 								isSubmitting={isSubmitting}
 								onValidationStateChange={handleDescriptionValidationStateChange}
 							/>
@@ -1661,22 +1661,22 @@ export const MainAppHeaderWorkspaceSwitcherModalEditModal = memo(function MainAp
 });
 // #endregion edit modal
 
-type MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames =
-	| "MainAppHeaderWorkspaceSwitcherModalBillingModal"
-	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-body"
-	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-options"
-	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-option"
-	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-option-title"
-	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-option-description"
-	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-note"
-	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-note-icon"
-	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-note-copy"
-	| "MainAppHeaderWorkspaceSwitcherModalBillingModal-message";
+type MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames =
+	| "MainAppHeaderOrganizationSwitcherModalBillingModal"
+	| "MainAppHeaderOrganizationSwitcherModalBillingModal-body"
+	| "MainAppHeaderOrganizationSwitcherModalBillingModal-options"
+	| "MainAppHeaderOrganizationSwitcherModalBillingModal-option"
+	| "MainAppHeaderOrganizationSwitcherModalBillingModal-option-title"
+	| "MainAppHeaderOrganizationSwitcherModalBillingModal-option-description"
+	| "MainAppHeaderOrganizationSwitcherModalBillingModal-note"
+	| "MainAppHeaderOrganizationSwitcherModalBillingModal-note-icon"
+	| "MainAppHeaderOrganizationSwitcherModalBillingModal-note-copy"
+	| "MainAppHeaderOrganizationSwitcherModalBillingModal-message";
 
 // #region billing modal option
-type MainAppHeaderWorkspaceSwitcherModalBillingModalOption_Props = {
+type MainAppHeaderOrganizationSwitcherModalBillingModalOption_Props = {
 	name: string;
-	value: "user" | "workspace_owner";
+	value: "user" | "organization_owner";
 	checked: boolean;
 	disabled: boolean;
 	title: string;
@@ -1684,9 +1684,9 @@ type MainAppHeaderWorkspaceSwitcherModalBillingModalOption_Props = {
 	onChange: NonNullable<ComponentPropsWithoutRef<"input">["onChange"]>;
 };
 
-const MainAppHeaderWorkspaceSwitcherModalBillingModalOption = memo(
-	function MainAppHeaderWorkspaceSwitcherModalBillingModalOption(
-		props: MainAppHeaderWorkspaceSwitcherModalBillingModalOption_Props,
+const MainAppHeaderOrganizationSwitcherModalBillingModalOption = memo(
+	function MainAppHeaderOrganizationSwitcherModalBillingModalOption(
+		props: MainAppHeaderOrganizationSwitcherModalBillingModalOption_Props,
 	) {
 		const { name, value, checked, disabled, title, description, onChange } = props;
 
@@ -1697,7 +1697,7 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModalOption = memo(
 		return (
 			<MyRadioCard
 				className={cn(
-					"MainAppHeaderWorkspaceSwitcherModalBillingModal-option" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+					"MainAppHeaderOrganizationSwitcherModalBillingModal-option" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 				)}
 				id={radioId}
 				name={name}
@@ -1710,7 +1710,7 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModalOption = memo(
 				<MyRadioCardLabel
 					htmlFor={radioId}
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalBillingModal-option-title" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalBillingModal-option-title" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 					)}
 				>
 					{title}
@@ -1718,7 +1718,7 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModalOption = memo(
 				<MyRadioCardDescription
 					id={descriptionId}
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalBillingModal-option-description" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalBillingModal-option-description" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 					)}
 				>
 					{description}
@@ -1730,22 +1730,22 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModalOption = memo(
 // #endregion billing modal option
 
 // #region billing modal
-type MainAppHeaderWorkspaceSwitcherModalBillingModal_Props = {
-	target: MainAppHeaderWorkspaceSwitcherModal_BillingTarget | null;
-	setTarget: Dispatch<SetStateAction<MainAppHeaderWorkspaceSwitcherModal_BillingTarget | null>>;
-	setWorkspaceBillingMode: (
-		args: FunctionArgs<typeof app_convex_api.workspaces.set_workspace_billing_mode>,
-	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.set_workspace_billing_mode> | undefined>;
+type MainAppHeaderOrganizationSwitcherModalBillingModal_Props = {
+	target: MainAppHeaderOrganizationSwitcherModal_BillingTarget | null;
+	setTarget: Dispatch<SetStateAction<MainAppHeaderOrganizationSwitcherModal_BillingTarget | null>>;
+	setOrganizationBillingMode: (
+		args: FunctionArgs<typeof app_convex_api.organizations.set_organization_billing_mode>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.organizations.set_organization_billing_mode> | undefined>;
 };
 
-const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHeaderWorkspaceSwitcherModalBillingModal(
-	props: MainAppHeaderWorkspaceSwitcherModalBillingModal_Props,
+const MainAppHeaderOrganizationSwitcherModalBillingModal = memo(function MainAppHeaderOrganizationSwitcherModalBillingModal(
+	props: MainAppHeaderOrganizationSwitcherModalBillingModal_Props,
 ) {
-	const { target, setTarget, setWorkspaceBillingMode } = props;
+	const { target, setTarget, setOrganizationBillingMode } = props;
 
-	const billingModeRadioName = `MainAppHeaderWorkspaceSwitcherModalBillingModal-${useId()}`;
+	const billingModeRadioName = `MainAppHeaderOrganizationSwitcherModalBillingModal-${useId()}`;
 
-	const [selectedMode, setSelectedMode] = useState<"user" | "workspace_owner">("user");
+	const [selectedMode, setSelectedMode] = useState<"user" | "organization_owner">("user");
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [message, setMessage] = useState<string | undefined>(undefined);
 
@@ -1768,7 +1768,7 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHea
 			return;
 		}
 
-		setSelectedMode(event.currentTarget.value as "user" | "workspace_owner");
+		setSelectedMode(event.currentTarget.value as "user" | "organization_owner");
 	});
 
 	const handleSave = useFn(() => {
@@ -1781,8 +1781,8 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHea
 			setIsSubmitting(true);
 			setMessage(undefined);
 
-			const result = await setWorkspaceBillingMode({
-				workspaceId: activeTarget.workspaceId,
+			const result = await setOrganizationBillingMode({
+				organizationId: activeTarget.organizationId,
 				billingMode: selectedMode,
 			});
 			if (result == null) {
@@ -1794,13 +1794,13 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHea
 				return;
 			}
 
-			await app_convex.query(app_convex_api.workspaces.list, {});
+			await app_convex.query(app_convex_api.organizations.list, {});
 			setTarget(null);
 		})()
 			.catch((error) => {
-				console.error("[MainAppHeaderWorkspaceSwitcherModalBillingModal] Unexpected billing mode error", {
+				console.error("[MainAppHeaderOrganizationSwitcherModalBillingModal] Unexpected billing mode error", {
 					error,
-					workspaceId: activeTarget.workspaceId,
+					organizationId: activeTarget.organizationId,
 				});
 			})
 			.finally(() => {
@@ -1821,30 +1821,30 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHea
 		<MyModal open={billingOpen} setOpen={handleSetOpen}>
 			<MyModalPopover
 				className={cn(
-					"MainAppHeaderWorkspaceSwitcherModalBillingModal" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+					"MainAppHeaderOrganizationSwitcherModalBillingModal" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 				)}
 			>
 				<MyModalHeader>
-					<MyModalHeading>Workspace billing</MyModalHeading>
+					<MyModalHeading>Organization billing</MyModalHeading>
 					<MyModalDescription>
-						Choose who pays for usage in {target ? target.workspaceName : "this workspace"}.
+						Choose who pays for usage in {target ? target.organizationName : "this organization"}.
 					</MyModalDescription>
 				</MyModalHeader>
 
 				<MyModalScrollableArea
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModalBillingModal-body" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModalBillingModal-body" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 					)}
 				>
 					<div
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalBillingModal-options" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+							"MainAppHeaderOrganizationSwitcherModalBillingModal-options" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 						)}
 						role="radiogroup"
-						aria-label="Workspace billing source"
+						aria-label="Organization billing source"
 						aria-disabled={isSubmitting || undefined}
 					>
-						<MainAppHeaderWorkspaceSwitcherModalBillingModalOption
+						<MainAppHeaderOrganizationSwitcherModalBillingModalOption
 							name={billingModeRadioName}
 							value="user"
 							checked={selectedMode === "user"}
@@ -1853,40 +1853,40 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHea
 							title="Bill each member"
 							description="Each member uses their own balance for their activity."
 						/>
-						<MainAppHeaderWorkspaceSwitcherModalBillingModalOption
+						<MainAppHeaderOrganizationSwitcherModalBillingModalOption
 							name={billingModeRadioName}
-							value="workspace_owner"
-							checked={selectedMode === "workspace_owner"}
+							value="organization_owner"
+							checked={selectedMode === "organization_owner"}
 							disabled={isSubmitting}
 							onChange={handleBillingModeChange}
 							title="Bill my balance"
-							description="All workspace usage is charged to your balance."
+							description="All organization usage is charged to your balance."
 						/>
 					</div>
 					<div
 						role="note"
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModalBillingModal-note" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+							"MainAppHeaderOrganizationSwitcherModalBillingModal-note" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 						)}
 					>
 						<Info
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalBillingModal-note-icon" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalBillingModal-note-icon" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 							)}
 							aria-hidden
 						/>
 						<span
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalBillingModal-note-copy" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalBillingModal-note-copy" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 							)}
 						>
-							This setting applies to all future usage in this workspace. You can change it again at any time.
+							This setting applies to all future usage in this organization. You can change it again at any time.
 						</span>
 					</div>
 					{message ? (
 						<div
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModalBillingModal-message" satisfies MainAppHeaderWorkspaceSwitcherModalBillingModal_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModalBillingModal-message" satisfies MainAppHeaderOrganizationSwitcherModalBillingModal_ClassNames,
 							)}
 						>
 							{message}
@@ -1911,154 +1911,154 @@ const MainAppHeaderWorkspaceSwitcherModalBillingModal = memo(function MainAppHea
 // #endregion billing modal
 
 // #region root
-type MainAppHeaderWorkspaceSwitcherModal_ClassNames =
-	| "MainAppHeaderWorkspaceSwitcherModal"
-	| "MainAppHeaderWorkspaceSwitcherModal-body"
-	| "MainAppHeaderWorkspaceSwitcherModal-summary"
-	| "MainAppHeaderWorkspaceSwitcherModal-summary-label"
-	| "MainAppHeaderWorkspaceSwitcherModal-summary-value"
-	| "MainAppHeaderWorkspaceSwitcherModal-summary-chevron"
-	| "MainAppHeaderWorkspaceSwitcherModal-columns"
-	| "MainAppHeaderWorkspaceSwitcherModal-footer";
+type MainAppHeaderOrganizationSwitcherModal_ClassNames =
+	| "MainAppHeaderOrganizationSwitcherModal"
+	| "MainAppHeaderOrganizationSwitcherModal-body"
+	| "MainAppHeaderOrganizationSwitcherModal-summary"
+	| "MainAppHeaderOrganizationSwitcherModal-summary-label"
+	| "MainAppHeaderOrganizationSwitcherModal-summary-value"
+	| "MainAppHeaderOrganizationSwitcherModal-summary-chevron"
+	| "MainAppHeaderOrganizationSwitcherModal-columns"
+	| "MainAppHeaderOrganizationSwitcherModal-footer";
 
-export type MainAppHeaderWorkspaceSwitcherModal_Props = {
+export type MainAppHeaderOrganizationSwitcherModal_Props = {
 	dialogOpen: boolean;
 	listLoaded: boolean;
-	draftProjectId: app_convex_Id<"workspaces_projects">;
-	draftWorkspaceId: FunctionArgs<typeof app_convex_api.workspaces.create_project>["workspaceId"];
+	draftWorkspaceId: app_convex_Id<"organizations_workspaces">;
+	draftOrganizationId: FunctionArgs<typeof app_convex_api.organizations.create_workspace>["organizationId"];
+	summaryOrganizationName: string;
 	summaryWorkspaceName: string;
-	summaryProjectName: string;
-	/** Workspace name for create-project flow (draft row), not necessarily the routed tenant. */
-	workspaceName: string;
-	workspaceItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[];
-	projectItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[];
+	/** Organization name for create-workspace flow (draft row), not necessarily the routed tenant. */
+	organizationName: string;
+	organizationItems: MainAppHeaderOrganizationSwitcherModal_ListItem[];
+	workspaceItems: MainAppHeaderOrganizationSwitcherModal_ListItem[];
+	createOrganizationDisabled: boolean;
+	createOrganizationDisabledReason?: string;
 	createWorkspaceDisabled: boolean;
 	createWorkspaceDisabledReason?: string;
-	createProjectDisabled: boolean;
-	createProjectDisabledReason?: string;
+	organizationQuotaFraction?: string;
+	organizationQuotaTooltip?: string;
 	workspaceQuotaFraction?: string;
 	workspaceQuotaTooltip?: string;
-	projectQuotaFraction?: string;
-	projectQuotaTooltip?: string;
 	switchDisabled: boolean;
-	editTarget: MainAppHeaderWorkspaceSwitcherModal_EditTarget | null;
-	billingTarget: MainAppHeaderWorkspaceSwitcherModal_BillingTarget | null;
+	editTarget: MainAppHeaderOrganizationSwitcherModal_EditTarget | null;
+	billingTarget: MainAppHeaderOrganizationSwitcherModal_BillingTarget | null;
+	createOrganization: (
+		args: FunctionArgs<typeof app_convex_api.organizations.create_organization>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.organizations.create_organization> | undefined>;
 	createWorkspace: (
-		args: FunctionArgs<typeof app_convex_api.workspaces.create_workspace>,
-	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.create_workspace> | undefined>;
-	createProject: (
-		args: FunctionArgs<typeof app_convex_api.workspaces.create_project>,
-	) => Promise<FunctionReturnType<typeof app_convex_api.workspaces.create_project> | undefined>;
-	editWorkspace: MainAppHeaderWorkspaceSwitcherModalEditModal_Props["editWorkspace"];
-	editProject: MainAppHeaderWorkspaceSwitcherModalEditModal_Props["editProject"];
-	setEditTarget: MainAppHeaderWorkspaceSwitcherModalEditModal_Props["setTarget"];
-	setBillingTarget: MainAppHeaderWorkspaceSwitcherModalBillingModal_Props["setTarget"];
-	setWorkspaceBillingMode: MainAppHeaderWorkspaceSwitcherModalBillingModal_Props["setWorkspaceBillingMode"];
+		args: FunctionArgs<typeof app_convex_api.organizations.create_workspace>,
+	) => Promise<FunctionReturnType<typeof app_convex_api.organizations.create_workspace> | undefined>;
+	editOrganization: MainAppHeaderOrganizationSwitcherModalEditModal_Props["editOrganization"];
+	editWorkspace: MainAppHeaderOrganizationSwitcherModalEditModal_Props["editWorkspace"];
+	setEditTarget: MainAppHeaderOrganizationSwitcherModalEditModal_Props["setTarget"];
+	setBillingTarget: MainAppHeaderOrganizationSwitcherModalBillingModal_Props["setTarget"];
+	setOrganizationBillingMode: MainAppHeaderOrganizationSwitcherModalBillingModal_Props["setOrganizationBillingMode"];
+	onAfterCreateOrganization: (args: {
+		organizationId: app_convex_Id<"organizations">;
+		workspaceId: app_convex_Id<"organizations_workspaces">;
+		organizationName: string;
+		workspaceName: string;
+	}) => void;
 	onAfterCreateWorkspace: (args: {
-		workspaceId: app_convex_Id<"workspaces">;
-		projectId: app_convex_Id<"workspaces_projects">;
+		organizationId: app_convex_Id<"organizations">;
+		workspaceId: app_convex_Id<"organizations_workspaces">;
+		organizationName: string;
 		workspaceName: string;
-		projectName: string;
 	}) => void;
-	onAfterCreateProject: (args: {
-		workspaceId: app_convex_Id<"workspaces">;
-		projectId: app_convex_Id<"workspaces_projects">;
-		workspaceName: string;
-		projectName: string;
-	}) => void;
-	onAfterEdit: (args: MainAppHeaderWorkspaceSwitcherModal_AfterEdit) => void;
+	onAfterEdit: (args: MainAppHeaderOrganizationSwitcherModal_AfterEdit) => void;
 	onCancel: () => void;
 	onSwitch: () => void;
 };
 
-export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWorkspaceSwitcherModal(
-	props: MainAppHeaderWorkspaceSwitcherModal_Props,
+export const MainAppHeaderOrganizationSwitcherModal = memo(function MainAppHeaderOrganizationSwitcherModal(
+	props: MainAppHeaderOrganizationSwitcherModal_Props,
 ) {
 	const {
 		dialogOpen,
 		listLoaded,
-		draftProjectId,
 		draftWorkspaceId,
+		draftOrganizationId,
+		summaryOrganizationName,
 		summaryWorkspaceName,
-		summaryProjectName,
-		workspaceName,
+		organizationName,
+		organizationItems,
 		workspaceItems,
-		projectItems,
+		createOrganizationDisabled,
+		createOrganizationDisabledReason,
 		createWorkspaceDisabled,
 		createWorkspaceDisabledReason,
-		createProjectDisabled,
-		createProjectDisabledReason,
+		organizationQuotaFraction,
+		organizationQuotaTooltip,
 		workspaceQuotaFraction,
 		workspaceQuotaTooltip,
-		projectQuotaFraction,
-		projectQuotaTooltip,
 		switchDisabled,
 		editTarget,
 		billingTarget,
+		createOrganization,
 		createWorkspace,
-		createProject,
+		editOrganization,
 		editWorkspace,
-		editProject,
 		setEditTarget,
 		setBillingTarget,
-		setWorkspaceBillingMode,
+		setOrganizationBillingMode,
+		onAfterCreateOrganization,
 		onAfterCreateWorkspace,
-		onAfterCreateProject,
 		onAfterEdit,
 		onCancel,
 		onSwitch,
 	} = props;
 
 	const [createDialogOpen, setCreateDialogOpen] = useState(false);
-	const [createDialogKind, setCreateDialogKind] = useState<"project" | "workspace">("workspace");
+	const [createDialogKind, setCreateDialogKind] = useState<"workspace" | "organization">("organization");
+
+	const handleOpenCreateOrganizationDialog = useFn(() => {
+		setCreateDialogKind("organization");
+		setCreateDialogOpen(true);
+	});
 
 	const handleOpenCreateWorkspaceDialog = useFn(() => {
 		setCreateDialogKind("workspace");
 		setCreateDialogOpen(true);
 	});
 
-	const handleOpenCreateProjectDialog = useFn(() => {
-		setCreateDialogKind("project");
-		setCreateDialogOpen(true);
-	});
-
 	return (
 		<>
 			<MyModalPopover
-				className={cn("MainAppHeaderWorkspaceSwitcherModal" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames)}
+				className={cn("MainAppHeaderOrganizationSwitcherModal" satisfies MainAppHeaderOrganizationSwitcherModal_ClassNames)}
 			>
 				<MyModalHeader>
-					<MyModalHeading>Workspaces and projects</MyModalHeading>
-					<MyModalDescription>Switch workspaces, choose a project, or manage settings.</MyModalDescription>
+					<MyModalHeading>Organizations and workspaces</MyModalHeading>
+					<MyModalDescription>Switch organizations, choose a workspace, or manage settings.</MyModalDescription>
 				</MyModalHeader>
 
 				<div
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModal-body" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModal-body" satisfies MainAppHeaderOrganizationSwitcherModal_ClassNames,
 					)}
 				>
 					<div
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModal-summary" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
+							"MainAppHeaderOrganizationSwitcherModal-summary" satisfies MainAppHeaderOrganizationSwitcherModal_ClassNames,
 						)}
 					>
 						<span
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModal-summary-label" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModal-summary-label" satisfies MainAppHeaderOrganizationSwitcherModal_ClassNames,
 							)}
 						>
 							Current:
 						</span>{" "}
 						<span
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModal-summary-value" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModal-summary-value" satisfies MainAppHeaderOrganizationSwitcherModal_ClassNames,
 							)}
 						>
-							{listLoaded ? summaryWorkspaceName : "…"}
+							{listLoaded ? summaryOrganizationName : "…"}
 						</span>{" "}
 						<MyIcon
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModal-summary-chevron" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModal-summary-chevron" satisfies MainAppHeaderOrganizationSwitcherModal_ClassNames,
 							)}
 							aria-hidden
 						>
@@ -2066,19 +2066,33 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 						</MyIcon>{" "}
 						<span
 							className={cn(
-								"MainAppHeaderWorkspaceSwitcherModal-summary-value" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
+								"MainAppHeaderOrganizationSwitcherModal-summary-value" satisfies MainAppHeaderOrganizationSwitcherModal_ClassNames,
 							)}
 						>
-							{listLoaded ? summaryProjectName : "…"}
+							{listLoaded ? summaryWorkspaceName : "…"}
 						</span>
 					</div>
 
 					<div
 						className={cn(
-							"MainAppHeaderWorkspaceSwitcherModal-columns" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
+							"MainAppHeaderOrganizationSwitcherModal-columns" satisfies MainAppHeaderOrganizationSwitcherModal_ClassNames,
 						)}
 					>
-						<MainAppHeaderWorkspaceSwitcherModalSelectPane
+						<MainAppHeaderOrganizationSwitcherModalSelectPane
+							dialogOpen={dialogOpen}
+							title="Organizations"
+							kind="organization"
+							items={organizationItems}
+							selectedItemId={draftOrganizationId}
+							createDisabled={createOrganizationDisabled}
+							createDisabledReason={createOrganizationDisabledReason}
+							quotaFraction={organizationQuotaFraction}
+							quotaTooltip={organizationQuotaTooltip}
+							onCreate={handleOpenCreateOrganizationDialog}
+							icon={<Building2 />}
+						/>
+
+						<MainAppHeaderOrganizationSwitcherModalSelectPane
 							dialogOpen={dialogOpen}
 							title="Workspaces"
 							kind="workspace"
@@ -2089,20 +2103,6 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 							quotaFraction={workspaceQuotaFraction}
 							quotaTooltip={workspaceQuotaTooltip}
 							onCreate={handleOpenCreateWorkspaceDialog}
-							icon={<Building2 />}
-						/>
-
-						<MainAppHeaderWorkspaceSwitcherModalSelectPane
-							dialogOpen={dialogOpen}
-							title="Projects"
-							kind="project"
-							items={projectItems}
-							selectedItemId={draftProjectId}
-							createDisabled={createProjectDisabled}
-							createDisabledReason={createProjectDisabledReason}
-							quotaFraction={projectQuotaFraction}
-							quotaTooltip={projectQuotaTooltip}
-							onCreate={handleOpenCreateProjectDialog}
 							icon={<FolderKanban />}
 						/>
 					</div>
@@ -2110,7 +2110,7 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 
 				<MyModalFooter
 					className={cn(
-						"MainAppHeaderWorkspaceSwitcherModal-footer" satisfies MainAppHeaderWorkspaceSwitcherModal_ClassNames,
+						"MainAppHeaderOrganizationSwitcherModal-footer" satisfies MainAppHeaderOrganizationSwitcherModal_ClassNames,
 					)}
 				>
 					<MyButton type="button" variant="outline" onClick={onCancel}>
@@ -2121,29 +2121,29 @@ export const MainAppHeaderWorkspaceSwitcherModal = memo(function MainAppHeaderWo
 					</MyButton>
 				</MyModalFooter>
 
-				<MyModalCloseTrigger tooltip="Close workspace switcher" />
-				<MainAppHeaderWorkspaceSwitcherModalCreateModal
+				<MyModalCloseTrigger tooltip="Close organization switcher" />
+				<MainAppHeaderOrganizationSwitcherModalCreateModal
 					open={createDialogOpen}
 					setOpen={setCreateDialogOpen}
 					kind={createDialogKind}
-					workspaceId={draftWorkspaceId}
-					workspaceName={workspaceName}
+					organizationId={draftOrganizationId}
+					organizationName={organizationName}
+					createOrganization={createOrganization}
 					createWorkspace={createWorkspace}
-					createProject={createProject}
+					onAfterCreateOrganization={onAfterCreateOrganization}
 					onAfterCreateWorkspace={onAfterCreateWorkspace}
-					onAfterCreateProject={onAfterCreateProject}
 				/>
-				<MainAppHeaderWorkspaceSwitcherModalEditModal
+				<MainAppHeaderOrganizationSwitcherModalEditModal
 					target={editTarget}
-					editProject={editProject}
 					editWorkspace={editWorkspace}
+					editOrganization={editOrganization}
 					setTarget={setEditTarget}
 					onAfterEdit={onAfterEdit}
 				/>
-				<MainAppHeaderWorkspaceSwitcherModalBillingModal
+				<MainAppHeaderOrganizationSwitcherModalBillingModal
 					target={billingTarget}
 					setTarget={setBillingTarget}
-					setWorkspaceBillingMode={setWorkspaceBillingMode}
+					setOrganizationBillingMode={setOrganizationBillingMode}
 				/>
 			</MyModalPopover>
 		</>

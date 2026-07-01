@@ -42,10 +42,10 @@ export function files_is_path_under_mount_root(path: string) {
 
 export type files_VisibleTreeNode = Omit<
 	app_convex_Doc<"files_nodes">,
-	"workspaceId" | "projectId" | "createdBy" | "updatedBy"
+	"organizationId" | "workspaceId" | "createdBy" | "updatedBy"
 > & {
-	workspaceId: app_convex_Id<"workspaces">;
-	projectId: app_convex_Id<"workspaces_projects">;
+	organizationId: app_convex_Id<"organizations">;
+	workspaceId: app_convex_Id<"organizations_workspaces">;
 	createdBy: app_convex_Id<"users">;
 	updatedBy: app_convex_Id<"users">;
 };
@@ -53,8 +53,8 @@ export type files_VisibleTreeNode = Omit<
 export const files_SYNTHETIC_ROOT_FOLDER = {
 	_id: files_ROOT_ID,
 	_creationTime: 0,
+	organizationId: "",
 	workspaceId: "",
-	projectId: "",
 	path: "/",
 	treePath: "/",
 	pathDepth: 0,
@@ -75,8 +75,8 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 	files_VisibleTreeNode,
 	{
 		_id: typeof files_ROOT_ID;
+		organizationId: "";
 		workspaceId: "";
-		projectId: "";
 		parentId: "";
 		name: "";
 		path: "/";
@@ -127,8 +127,8 @@ export function files_is_node(item: files_TreeItem): item is files_VisibleTreeNo
 	return item._id !== files_ROOT_ID;
 }
 
-export function files_create_room_id(workspaceId: string, projectId: string, nodeId: string) {
-	return composite_id("rooms", "files_nodes", workspaceId, projectId, nodeId);
+export function files_create_room_id(organizationId: string, workspaceId: string, nodeId: string) {
+	return composite_id("rooms", "files_nodes", organizationId, workspaceId, nodeId);
 }
 
 /**

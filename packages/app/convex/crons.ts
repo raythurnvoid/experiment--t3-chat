@@ -26,7 +26,7 @@ crons.cron(
 	{},
 );
 
-// Once daily at 06:00 UTC — workspace/content purge plus eligible hard user-account deletes.
+// Once daily at 06:00 UTC — organization/content purge plus eligible hard user-account deletes.
 crons.cron("unified delayed data deletion pipeline", "0 6 * * *", internal.data_deletion.enqueue_deletion_requests_processing, {});
 
 export default crons;

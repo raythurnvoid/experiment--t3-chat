@@ -24,7 +24,7 @@ import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
-import { workspaces_GLOBAL_WORKSPACE_ID, workspaces_GLOBAL_GITHUB_PROJECT_ID } from "../shared/workspaces.ts";
+import { organizations_GLOBAL_ORGANIZATION_ID, organizations_GLOBAL_GITHUB_WORKSPACE_ID } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
 let enqueueActionSpy: MockInstance;
@@ -174,8 +174,8 @@ async function seed_file_first_list_fixture(ctx: MutationCtx) {
 	const membership = await test_mocks_fill_db_with.membership(ctx);
 	const fixtureFolderId = await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
-		projectId: membership.projectId,
 		createdBy: membership.userId,
 		updatedBy: membership.userId,
 		parentId: files_ROOT_ID,
@@ -187,8 +187,8 @@ async function seed_file_first_list_fixture(ctx: MutationCtx) {
 	});
 	await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
-		projectId: membership.projectId,
 		createdBy: membership.userId,
 		updatedBy: membership.userId,
 		parentId: fixtureFolderId,
@@ -200,8 +200,8 @@ async function seed_file_first_list_fixture(ctx: MutationCtx) {
 	});
 	const nestedFolderId = await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
-		projectId: membership.projectId,
 		createdBy: membership.userId,
 		updatedBy: membership.userId,
 		parentId: fixtureFolderId,
@@ -213,8 +213,8 @@ async function seed_file_first_list_fixture(ctx: MutationCtx) {
 	});
 	await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
-		projectId: membership.projectId,
 		createdBy: membership.userId,
 		updatedBy: membership.userId,
 		parentId: nestedFolderId,
@@ -232,8 +232,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	const membership = await test_mocks_fill_db_with.membership(ctx);
 	const docsFolderId = await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
-		projectId: membership.projectId,
 		createdBy: membership.userId,
 		updatedBy: membership.userId,
 		parentId: files_ROOT_ID,
@@ -246,8 +246,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	});
 	await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
-		projectId: membership.projectId,
 		createdBy: membership.userId,
 		updatedBy: membership.userId,
 		parentId: docsFolderId,
@@ -262,8 +262,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	});
 	await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
-		projectId: membership.projectId,
 		createdBy: membership.userId,
 		updatedBy: membership.userId,
 		parentId: docsFolderId,
@@ -277,8 +277,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	});
 	const nestedFolderId = await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
-		projectId: membership.projectId,
 		createdBy: membership.userId,
 		updatedBy: membership.userId,
 		parentId: docsFolderId,
@@ -291,8 +291,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	});
 	await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
-		projectId: membership.projectId,
 		createdBy: membership.userId,
 		updatedBy: membership.userId,
 		parentId: nestedFolderId,
@@ -306,8 +306,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	});
 	await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
-		projectId: membership.projectId,
 		createdBy: membership.userId,
 		updatedBy: membership.userId,
 		parentId: docsFolderId,
@@ -322,8 +322,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	});
 	const siblingPrefixFolderId = await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
-		projectId: membership.projectId,
 		createdBy: membership.userId,
 		updatedBy: membership.userId,
 		parentId: files_ROOT_ID,
@@ -336,8 +336,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	});
 	await ctx.db.insert("files_nodes", {
 		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
-		projectId: membership.projectId,
 		createdBy: membership.userId,
 		updatedBy: membership.userId,
 		parentId: siblingPrefixFolderId,
@@ -363,8 +363,8 @@ test("list_files_new", async () => {
 	});
 
 	const result_root = await asUser.query(internal.files_nodes.list_files, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		path: "/",
 		maxDepth: 10,
 		limit: 100,
@@ -395,8 +395,8 @@ test("list_files_new", async () => {
 	expect(result_root.truncated).toBe(false);
 
 	const result_under_root1 = await asUser.query(internal.files_nodes.list_files, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		path: `/${db.files.file_root_1.name}`,
 		maxDepth: 10,
 		limit: 100,
@@ -415,8 +415,8 @@ test("list_files_new", async () => {
 
 	// Depth truncation flagging: with maxDepth 1, the first child with deeper matches should be marked
 	const result_depth1 = await asUser.query(internal.files_nodes.list_files, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		path: "/",
 		maxDepth: 1,
 		limit: 100,
@@ -439,8 +439,8 @@ describe("list_files", () => {
 				const name = `file-${String(index).padStart(2, "0")}.md`;
 				await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
+					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
 					createdBy: membership.userId,
 					updatedBy: membership.userId,
 					parentId: files_ROOT_ID,
@@ -460,8 +460,8 @@ describe("list_files", () => {
 		});
 
 		const result = await asUser.query(internal.files_nodes.list_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			path: "/",
 			maxDepth: 10,
 			limit: 100,
@@ -483,8 +483,8 @@ describe("list_files", () => {
 		});
 
 		const result = await asUser.query(internal.files_nodes.list_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			path: "/fixture",
 			maxDepth: 10,
 			limit: 10,
@@ -508,8 +508,8 @@ describe("list_files", () => {
 		});
 
 		const result = await asUser.query(internal.files_nodes.list_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			path: "/fixture",
 			maxDepth: 10,
 			limit: 10,
@@ -567,16 +567,16 @@ describe("paginated bash listing queries", () => {
 		});
 
 		const firstPage = await asUser.query(internal.files_nodes.list_children, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			parentId: db.docsFolderId,
 			numItems: 2,
 			cursor: null,
 			orderBy: "name",
 		});
 		const secondPage = await asUser.query(internal.files_nodes.list_children, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			parentId: db.docsFolderId,
 			numItems: 2,
 			cursor: firstPage.continueCursor,
@@ -601,8 +601,8 @@ describe("paginated bash listing queries", () => {
 		});
 
 		const ascending = await asUser.query(internal.files_nodes.list_children, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
@@ -610,8 +610,8 @@ describe("paginated bash listing queries", () => {
 			order: "asc",
 		});
 		const descending = await asUser.query(internal.files_nodes.list_children, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
@@ -641,16 +641,16 @@ describe("paginated bash listing queries", () => {
 		});
 
 		const descending = await asUser.query(internal.files_nodes.list_children, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
 			orderBy: "updatedAt",
 		});
 		const ascending = await asUser.query(internal.files_nodes.list_children, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
@@ -675,15 +675,15 @@ describe("paginated bash listing queries", () => {
 		});
 
 		const firstPage = await asUser.query(internal.files_nodes.list_subtree, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			folderPath: "/docs",
 			numItems: 2,
 			cursor: null,
 		});
 		const secondPage = await asUser.query(internal.files_nodes.list_subtree, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			folderPath: "/docs",
 			numItems: 10,
 			cursor: firstPage.continueCursor,
@@ -710,16 +710,16 @@ describe("paginated bash listing queries", () => {
 		});
 
 		const ascending = await asUser.query(internal.files_nodes.list_subtree, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			folderPath: "/docs",
 			numItems: 10,
 			cursor: null,
 			order: "asc",
 		});
 		const descending = await asUser.query(internal.files_nodes.list_subtree, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			folderPath: "/docs",
 			numItems: 10,
 			cursor: null,
@@ -758,8 +758,8 @@ describe("paginated bash listing queries", () => {
 		});
 
 		const filesAtDepthOne = await asUser.query(internal.files_nodes.list_subtree, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			folderPath: "/docs",
 			numItems: 10,
 			cursor: null,
@@ -767,8 +767,8 @@ describe("paginated bash listing queries", () => {
 			maxDepth: 1,
 		});
 		const foldersAtDepthOne = await asUser.query(internal.files_nodes.list_subtree, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			folderPath: "/docs",
 			numItems: 10,
 			cursor: null,
@@ -792,8 +792,8 @@ describe("paginated bash listing queries", () => {
 		});
 
 		const firstPage = await asUser.query(internal.files_nodes.list_subtree, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			folderPath: "/docs",
 			kind: "file",
 			lowercaseExtension: "md",
@@ -802,8 +802,8 @@ describe("paginated bash listing queries", () => {
 			maxDepth: 1,
 		});
 		const secondPage = await asUser.query(internal.files_nodes.list_subtree, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			folderPath: "/docs",
 			kind: "file",
 			lowercaseExtension: "md",
@@ -830,8 +830,8 @@ describe("paginated bash listing queries", () => {
 		});
 
 		const result = await asUser.query(internal.files_nodes.list_subtree, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			folderPath: "/docs/",
 			numItems: 20,
 			cursor: null,
@@ -855,8 +855,8 @@ describe("paginated bash listing queries", () => {
 		});
 
 		const result = await asUser.query(internal.files_nodes.list_subtree, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			folderPath: "/docs",
 			numItems: 20,
 			cursor: null,
@@ -879,15 +879,15 @@ describe("paginated bash listing queries", () => {
 		});
 
 		const firstPage = await asUser.query(internal.files_nodes.list_subtree, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			folderPath: "/docs/a.md",
 			numItems: 1,
 			cursor: null,
 		});
 		const secondPage = await asUser.query(internal.files_nodes.list_subtree, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			folderPath: "/docs/a.md",
 			numItems: 1,
 			cursor: firstPage.continueCursor,
@@ -899,7 +899,7 @@ describe("paginated bash listing queries", () => {
 		expect(secondPage.isDone).toBe(true);
 	});
 
-	test("list_children returns project recency newest-first and paginates without gaps", async () => {
+	test("list_children returns workspace recency newest-first and paginates without gaps", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -909,15 +909,15 @@ describe("paginated bash listing queries", () => {
 		});
 
 		const desc = await asUser.query(internal.files_nodes.list_children, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			numItems: 50,
 			cursor: null,
 			orderBy: "updatedAt",
 		});
 		const asc = await asUser.query(internal.files_nodes.list_children, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			numItems: 50,
 			cursor: null,
 			orderBy: "updatedAt",
@@ -941,8 +941,8 @@ describe("paginated bash listing queries", () => {
 			const result: { items: Array<{ path: string }>; continueCursor: string; isDone: boolean } = await asUser.query(
 				internal.files_nodes.list_children,
 				{
+					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
-					projectId: db.projectId,
 					numItems: 3,
 					cursor,
 					orderBy: "updatedAt",
@@ -966,23 +966,23 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const projectNameOrder = await asUser.query(internal.files_nodes.list_children, {
+		const workspaceNameOrder = await asUser.query(internal.files_nodes.list_children, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			numItems: 10,
 			cursor: null,
 			orderBy: "name",
 		});
 		const invalidParent = await asUser.query(internal.files_nodes.list_children, {
-			workspaceId: db.workspaceId,
-			projectId: "GITHUB",
+			organizationId: db.organizationId,
+			workspaceId: "GITHUB",
 			parentId: db.docsFolderId,
 			numItems: 10,
 			cursor: null,
 			orderBy: "name",
 		});
 
-		expect(projectNameOrder).toEqual({ items: [], continueCursor: "", isDone: true });
+		expect(workspaceNameOrder).toEqual({ items: [], continueCursor: "", isDone: true });
 		expect(invalidParent).toEqual({ items: [], continueCursor: "", isDone: true });
 	});
 
@@ -996,18 +996,18 @@ describe("paginated bash listing queries", () => {
 		});
 
 		const fileNode = await asUser.query(internal.files_nodes.get_by_path, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			path: "/docs/a.md",
 		});
 		const archived = await asUser.query(internal.files_nodes.get_by_path, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			path: "/docs/z-archived.md",
 		});
 		const root = await asUser.query(internal.files_nodes.get_by_path, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			path: "/",
 		});
 
@@ -1029,8 +1029,8 @@ test("generated sibling file is visible in tree and list queries", async () => {
 	const { sourceNodeId, markdownNodeId } = await t.run(async (ctx) => {
 		const sharedNode = {
 			...test_mocks.files.base(),
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			parentId: files_ROOT_ID as typeof files_ROOT_ID,
@@ -1057,8 +1057,8 @@ test("generated sibling file is visible in tree and list queries", async () => {
 			membershipId: db.membershipId,
 		}),
 		asUser.query(internal.files_nodes.list_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			path: "/",
 			maxDepth: 10,
 			limit: 100,
@@ -1086,18 +1086,18 @@ test("get_by_path uses materialized paths", async () => {
 
 	const [root1, child1, deep1] = await Promise.all([
 		asUser.query(internal.files_nodes.get_by_path, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			path: root1Path,
 		}),
 		asUser.query(internal.files_nodes.get_by_path, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			path: child1Path,
 		}),
 		asUser.query(internal.files_nodes.get_by_path, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			path: deep1Path,
 		}),
 	]);
@@ -1149,8 +1149,8 @@ test("rename_node leaves generated siblings independent from the source", async 
 	const { sourceNodeId, generatedNodeId } = await t.run(async (ctx) => {
 		const sourceNodeId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			parentId: files_ROOT_ID as typeof files_ROOT_ID,
@@ -1161,8 +1161,8 @@ test("rename_node leaves generated siblings independent from the source", async 
 		});
 		const generatedNodeId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			parentId: files_ROOT_ID as typeof files_ROOT_ID,
@@ -1246,8 +1246,8 @@ test("move_nodes leaves generated siblings independent from the source", async (
 	const { sourceNodeId, generatedNodeId } = await t.run(async (ctx) => {
 		const sourceNodeId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			parentId: files_ROOT_ID,
@@ -1258,8 +1258,8 @@ test("move_nodes leaves generated siblings independent from the source", async (
 		});
 		const generatedNodeId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			parentId: files_ROOT_ID,
@@ -1307,8 +1307,8 @@ test("home file path stays immutable on rename and move", async () => {
 
 	const homeNodeId = await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			createdBy: db.userId,
 			updatedAt: Date.now(),
 			updatedBy: db.userId,
@@ -1377,8 +1377,8 @@ test("create_folder_node rejects active file at leaf path", async () => {
 	await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			parentId: files_ROOT_ID,
@@ -1413,8 +1413,8 @@ test("create_folder_node rejects active file at intermediate path without creati
 	const fileNodeId = await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			parentId: files_ROOT_ID,
@@ -1440,10 +1440,10 @@ test("create_folder_node rejects active file at intermediate path without creati
 		const existingFile = await ctx.db.get("files_nodes", fileNodeId);
 		const child = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q
+					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
 					.eq("path", "/notes/child")
 					.eq("archiveOperationId", undefined),
 			)
@@ -1479,10 +1479,10 @@ test("create_folder_node reuses active intermediate folders", async () => {
 		const folderFileNode = await ctx.db.get("files_nodes", result._yay.nodeId);
 		const rootFolders = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
+			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 				q
+					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
 					.eq("parentId", files_ROOT_ID)
 					.eq("name", db.files.file_root_1.name)
 					.eq("archiveOperationId", undefined),
@@ -1552,19 +1552,19 @@ test("create_markdown_node stores Markdown file properties", async () => {
 		return { fileNode, asset };
 	});
 	expect(saved.fileNode).toMatchObject({
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		contentType: "text/markdown;charset=utf-8",
 		assetId: saved.asset?._id,
 	});
 	expect(saved.asset).toMatchObject({
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		kind: "content",
 		r2Bucket: "test-files-bucket",
 		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
 	});
-	expect(saved.asset?.r2Key).toBe(`workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.asset?._id}`);
+	expect(saved.asset?.r2Key).toBe(`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.asset?._id}`);
 });
 
 test("create_markdown_node seeds initial Yjs content on the server", async () => {
@@ -1597,21 +1597,21 @@ test("create_markdown_node seeds initial Yjs content on the server", async () =>
 			ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
 			ctx.db
 				.query("files_yjs_updates")
-				.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
+				.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
 				)
 				.order("asc")
 				.collect(),
 			ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
-					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
 				)
 				.collect(),
 			ctx.db
 				.query("files_plain_text_chunks")
-				.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
-					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
 				)
 				.collect(),
 		]);
@@ -1712,16 +1712,16 @@ test("create_markdown_node writes server-seeded initial content to R2", async ()
 		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const versionSnapshot = await ctx.db
 			.query("files_snapshots")
-			.withIndex("by_workspace_project_fileNode_archivedAt", (q) =>
+			.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
 				q
+					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
 					.eq("fileNodeId", createdFile._yay.nodeId)
 					.eq("archivedAt", -1),
 			)
@@ -1741,17 +1741,17 @@ test("create_markdown_node writes server-seeded initial content to R2", async ()
 	});
 
 	expect(saved.asset).toMatchObject({
-		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.asset?._id}`,
+		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.asset?._id}`,
 		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
 	});
 	expect(saved.yjsSnapshot?.sequence).toBe(0);
 	expect(saved.yjsSnapshotAsset).toMatchObject({
-		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.yjsSnapshotAsset?._id}`,
+		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.yjsSnapshotAsset?._id}`,
 	});
 	expect(saved.yjsUpdates).toHaveLength(0);
 	expect(saved.versionSnapshot?.fileNodeId).toBe(createdFile._yay.nodeId);
 	expect(saved.versionSnapshotAsset).toMatchObject({
-		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.versionSnapshotAsset?._id}`,
+		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.versionSnapshotAsset?._id}`,
 		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
 	});
 	expect(r2Writes.get(saved.asset!.r2Key!)).toBe(files_INITIAL_CONTENT);
@@ -1783,10 +1783,10 @@ test("create_markdown_node does not publish a file node when initial R2 writes f
 	const saved = await t.run(async (ctx) => {
 		const fileNode = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q
+					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
 					.eq("path", "/broken.md")
 					.eq("archiveOperationId", undefined),
 			)
@@ -1826,10 +1826,10 @@ test("create_markdown_node cleans up R2 objects when initial metadata sync fails
 	const saved = await t.run(async (ctx) => {
 		const fileNode = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q
+					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
 					.eq("path", "/sync-failure.md")
 					.eq("archiveOperationId", undefined),
 			)
@@ -1874,10 +1874,10 @@ test("create_markdown_node cleans up R2 assets when duplicate path rejects after
 			fileCount: (
 				await ctx.db
 					.query("files_nodes")
-					.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
+							.eq("organizationId", db.organizationId)
 							.eq("workspaceId", db.workspaceId)
-							.eq("projectId", db.projectId)
 							.eq("path", "/duplicate.md")
 							.eq("archiveOperationId", undefined),
 					)
@@ -1900,10 +1900,10 @@ test("create_markdown_node cleans up R2 assets when duplicate path rejects after
 			fileCount: (
 				await ctx.db
 					.query("files_nodes")
-					.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
+							.eq("organizationId", db.organizationId)
 							.eq("workspaceId", db.workspaceId)
-							.eq("projectId", db.projectId)
 							.eq("path", "/duplicate.md")
 							.eq("archiveOperationId", undefined),
 					)
@@ -1944,8 +1944,8 @@ test("create_folder_node creates missing folders for nested folder paths", async
 
 		const parentFolder = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", "/invalid"),
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", "/invalid"),
 			)
 			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 			.first();
@@ -1966,7 +1966,7 @@ test("create_markdown_node creates missing folders for nested file paths", async
 	const result = await asUser.action(api.files_nodes.create_markdown_node, {
 		membershipId: db.membershipId,
 		parentId: files_ROOT_ID,
-		path: "notes/projects/plan.md",
+		path: "notes/workspaces/plan.md",
 	});
 	if (result._nay) {
 		throw new Error("Expected create_markdown_node to create the nested file path", {
@@ -1977,12 +1977,12 @@ test("create_markdown_node creates missing folders for nested file paths", async
 	await t.run(async (ctx) => {
 		const fileNode = await ctx.db.get("files_nodes", result._yay.nodeId);
 		expect(fileNode?.name).toBe("plan.md");
-		expect(fileNode?.path).toBe("/notes/projects/plan.md");
+		expect(fileNode?.path).toBe("/notes/workspaces/plan.md");
 
 		const parentFolder = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", "/notes/projects"),
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", "/notes/workspaces"),
 			)
 			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 			.first();
@@ -2002,8 +2002,8 @@ test("archived nodes can share path with a new active node", async () => {
 	const duplicateName = "archived-duplicate-allowed.md";
 
 	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: `/${duplicateName}`,
 	});
@@ -2029,8 +2029,8 @@ test("archived nodes can share path with a new active node", async () => {
 		const path = `/${duplicateName}`;
 		const filesAtPath = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", path),
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", path),
 			)
 			.collect();
 
@@ -2051,8 +2051,8 @@ test("create_file_by_path can reuse an existing active file", async () => {
 	const path = "/existing-by-path.md";
 
 	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path,
 	});
@@ -2061,8 +2061,8 @@ test("create_file_by_path can reuse an existing active file", async () => {
 	}
 
 	const reusedFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path,
 	});
@@ -2152,22 +2152,22 @@ describe("files_nodes.create_upload_node", () => {
 			const [markdownChunks, plainTextChunks] = await Promise.all([
 				ctx.db
 					.query("files_markdown_chunks")
-					.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
-						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", upload._yay.nodeId),
+					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", upload._yay.nodeId),
 					)
 					.collect(),
 				ctx.db
 					.query("files_plain_text_chunks")
-					.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
-						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", upload._yay.nodeId),
+					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", upload._yay.nodeId),
 					)
 					.collect(),
 			]);
 			return { asset, source, stats, markdownChunks, plainTextChunks };
 		});
 		expect(docs.source).toMatchObject({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			parentId: files_ROOT_ID,
 			name: "annual-report.pdf",
 			kind: "file",
@@ -2176,8 +2176,8 @@ describe("files_nodes.create_upload_node", () => {
 		});
 		expect(docs.source?.archiveOperationId).toBeUndefined();
 		expect(docs.asset).toMatchObject({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			kind: "upload",
 			createdBy: db.userId,
 			r2Bucket: "test-files-bucket",
@@ -2192,7 +2192,7 @@ describe("files_nodes.create_upload_node", () => {
 		expect(docs.markdownChunks).toEqual([]);
 		expect(docs.plainTextChunks).toEqual([]);
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
-			`workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${upload._yay.assetId}`,
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${upload._yay.assetId}`,
 		);
 	});
 
@@ -2230,7 +2230,7 @@ describe("files_nodes.create_upload_node", () => {
 				.then((assets) =>
 					assets.filter(
 						(asset) =>
-							asset.workspaceId === db.workspaceId && asset.projectId === db.projectId && asset.kind === "upload",
+							asset.organizationId === db.organizationId && asset.workspaceId === db.workspaceId && asset.kind === "upload",
 					),
 				);
 			const uploadedSources = await ctx.db
@@ -2239,7 +2239,7 @@ describe("files_nodes.create_upload_node", () => {
 				.then((fileNodes) =>
 					fileNodes.filter(
 						(fileNode) =>
-							fileNode.workspaceId === db.workspaceId && fileNode.projectId === db.projectId && fileNode.assetId,
+							fileNode.organizationId === db.organizationId && fileNode.workspaceId === db.workspaceId && fileNode.assetId,
 					),
 				);
 			return { uploadAssets, uploadedSources };
@@ -2273,7 +2273,7 @@ describe("files_nodes.create_upload_node", () => {
 				.then((fileNodes) =>
 					fileNodes.filter(
 						(fileNode) =>
-							fileNode.workspaceId === db.workspaceId && fileNode.projectId === db.projectId && fileNode.assetId,
+							fileNode.organizationId === db.organizationId && fileNode.workspaceId === db.workspaceId && fileNode.assetId,
 					),
 				),
 		);
@@ -2301,19 +2301,19 @@ describe("files_nodes.create_upload_node", () => {
 		}
 		const generatedNodeId = await t.run(async (ctx) => {
 			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				kind: "content",
 				r2Bucket: "test-files-bucket",
-				r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/generated-test-asset`,
+				r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/generated-test-asset`,
 				size: 0,
 				createdBy: db.userId,
 				updatedAt: Date.now(),
 			});
 			return await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				parentId: files_ROOT_ID,
@@ -2360,7 +2360,7 @@ describe("files_nodes.create_upload_node", () => {
 			size: 2048,
 		});
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
-			`workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${replacement._yay.assetId}`,
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${replacement._yay.assetId}`,
 		);
 	});
 });
@@ -2457,7 +2457,7 @@ test("rename_node creates missing folders for nested file paths", async () => {
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
-		path: "notes/projects/plan.md",
+		path: "notes/workspaces/plan.md",
 	});
 	if (renameResult._nay) {
 		throw new Error("Expected rename_node to create the nested file path", {
@@ -2468,12 +2468,12 @@ test("rename_node creates missing folders for nested file paths", async () => {
 	await t.run(async (ctx) => {
 		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
 		expect(fileNode?.name).toBe("plan.md");
-		expect(fileNode?.path).toBe("/notes/projects/plan.md");
+		expect(fileNode?.path).toBe("/notes/workspaces/plan.md");
 
 		const parentFolder = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", "/notes/projects"),
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", "/notes/workspaces"),
 			)
 			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 			.first();
@@ -2493,8 +2493,8 @@ test("rename_node preserves caller-provided nested file names", async () => {
 
 	const nestedFileId = await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			createdBy: db.userId,
 			updatedAt: Date.now(),
 			updatedBy: db.userId,
@@ -2592,8 +2592,8 @@ test("rename_node creates missing folders for nested folder paths", async () => 
 
 		const parentFolder = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", "/invalid"),
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", "/invalid"),
 			)
 			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
 			.first();
@@ -2661,8 +2661,8 @@ test("create_folder_node allows tenant files under /.mounts", async () => {
 	}
 
 	const node = await asUser.query(internal.files_nodes.get_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		path: "/.mounts",
 	});
 	expect(node?._id).toBe(result._yay.nodeId);
@@ -2717,8 +2717,8 @@ test("archive_nodes and unarchive_nodes leave root generated siblings independen
 	const { sourceNodeId, generatedNodeId } = await t.run(async (ctx) => {
 		const sharedNode = {
 			...test_mocks.files.base(),
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			parentId: files_ROOT_ID as typeof files_ROOT_ID,
@@ -2778,8 +2778,8 @@ test("archive_nodes and unarchive_nodes include generated siblings as normal fol
 	const { folderId, sourceNodeId, generatedNodeId } = await t.run(async (ctx) => {
 		const folderId = await ctx.db.insert("files_nodes", {
 			...test_mocks.files.base(),
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			parentId: files_ROOT_ID,
@@ -2790,8 +2790,8 @@ test("archive_nodes and unarchive_nodes include generated siblings as normal fol
 		});
 		const sharedNode = {
 			...test_mocks.files.base(),
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			createdBy: db.userId,
 			updatedBy: db.userId,
 			parentId: folderId,
@@ -2907,8 +2907,8 @@ test("get_by_path ignores archived files with duplicate path", async () => {
 	}
 
 	const resolvedRoot1 = await asUser.query(internal.files_nodes.get_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		path: `/${db.files.file_root_1.name}`,
 	});
 
@@ -2930,8 +2930,8 @@ test("create_file_by_path creates active ancestors instead of reusing archived n
 	});
 
 	const createByPath = await asUser.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: `/${db.files.file_root_2.name}/new-leaf.md`,
 	});
@@ -2943,8 +2943,8 @@ test("create_file_by_path creates active ancestors instead of reusing archived n
 		const root2Path = `/${db.files.file_root_2.name}`;
 		const filesAtRoot2Path = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("path", root2Path),
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", root2Path),
 			)
 			.collect();
 		expect(filesAtRoot2Path).toHaveLength(2);
@@ -3174,8 +3174,8 @@ test("files_tree_write rate limit runs before membership validation", async () =
 
 		return await test_mocks_fill_db_with.membership(ctx, {
 			userId: otherUserId,
-			workspaceName: "rl-other-ws",
-			projectName: "rl-other-prj",
+			organizationName: "rl-other-ws",
+			workspaceName: "rl-other-prj",
 		});
 	});
 	const asUser = t.withIdentity({
@@ -3213,18 +3213,18 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 	const restoreAssets = await t.run(async (ctx) => {
 		const [snapshotAssetId, currentSnapshotAssetId, restoredSnapshotAssetId] = await Promise.all([
 			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				kind: "content_snapshot",
 				r2Bucket: "test-bucket",
-				r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/snapshot-rate-limit`,
+				r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/snapshot-rate-limit`,
 				size: 0,
 				createdBy: db.userId,
 				updatedAt: Date.now(),
 			}),
 			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				kind: "content_snapshot",
 				r2Bucket: "test-bucket",
 				size: 0,
@@ -3232,8 +3232,8 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 				updatedAt: Date.now(),
 			}),
 			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				kind: "content_snapshot",
 				r2Bucket: "test-bucket",
 				size: 0,
@@ -3242,8 +3242,8 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 			}),
 		]);
 		const snapshotId = await ctx.db.insert("files_snapshots", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			fileNodeId: db.files.file_root_1._id,
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
@@ -3323,8 +3323,8 @@ test("materialize_file_content writes empty Markdown and Yjs snapshots to R2", a
 	);
 
 	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: "/empty-materialized.md",
 	});
@@ -3333,8 +3333,8 @@ test("materialize_file_content writes empty Markdown and Yjs snapshots to R2", a
 	}
 
 	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		nodeId: createdFile._yay.nodeId,
 		userId: db.userId,
 		targetSequence: 0,
@@ -3353,16 +3353,16 @@ test("materialize_file_content writes empty Markdown and Yjs snapshots to R2", a
 		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const versionSnapshots = await ctx.db
 			.query("files_snapshots")
-			.withIndex("by_workspace_project_fileNode_archivedAt", (q) =>
+			.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
 				q
+					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
 					.eq("fileNodeId", createdFile._yay.nodeId)
 					.eq("archivedAt", -1),
 			)
@@ -3383,17 +3383,17 @@ test("materialize_file_content writes empty Markdown and Yjs snapshots to R2", a
 
 	const versionSnapshotAsset = saved.versionSnapshotAssets.find((asset) => asset?.size === 0);
 	expect(saved.asset).toMatchObject({
-		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.asset?._id}`,
+		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.asset?._id}`,
 		size: 0,
 	});
 	expect(saved.yjsSnapshot?.sequence).toBe(0);
 	expect(saved.yjsSnapshotAsset).toMatchObject({
-		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.yjsSnapshotAsset?._id}`,
+		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.yjsSnapshotAsset?._id}`,
 	});
 	expect(saved.yjsUpdates).toHaveLength(0);
 	expect(saved.versionSnapshots.length).toBeGreaterThan(0);
 	expect(versionSnapshotAsset).toMatchObject({
-		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${versionSnapshotAsset?._id}`,
+		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${versionSnapshotAsset?._id}`,
 		size: 0,
 	});
 	expect(r2Writes.get(saved.asset!.r2Key!)).toBe("");
@@ -3442,8 +3442,8 @@ test("materialize_file_content writes nonempty Markdown and Yjs snapshots to R2"
 	);
 
 	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: "/materialized.md",
 	});
@@ -3468,8 +3468,8 @@ test("materialize_file_content writes nonempty Markdown and Yjs snapshots to R2"
 	}
 
 	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		nodeId: createdFile._yay.nodeId,
 		userId: db.userId,
 		targetSequence: 1,
@@ -3488,16 +3488,16 @@ test("materialize_file_content writes nonempty Markdown and Yjs snapshots to R2"
 		const yjsSnapshotAsset = yjsSnapshot?.assetId ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
 		const yjsUpdates = await ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const versionSnapshots = await ctx.db
 			.query("files_snapshots")
-			.withIndex("by_workspace_project_fileNode_archivedAt", (q) =>
+			.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
 				q
+					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
 					.eq("fileNodeId", createdFile._yay.nodeId)
 					.eq("archivedAt", -1),
 			)
@@ -3520,17 +3520,17 @@ test("materialize_file_content writes nonempty Markdown and Yjs snapshots to R2"
 		(asset) => asset?.size === files_get_utf8_byte_size(markdown),
 	);
 	expect(saved.asset).toMatchObject({
-		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.asset?._id}`,
+		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.asset?._id}`,
 		size: files_get_utf8_byte_size(markdown),
 	});
 	expect(saved.yjsSnapshot?.sequence).toBe(1);
 	expect(saved.yjsSnapshotAsset).toMatchObject({
-		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${saved.yjsSnapshotAsset?._id}`,
+		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.yjsSnapshotAsset?._id}`,
 	});
 	expect(saved.yjsUpdates).toHaveLength(0);
 	expect(saved.versionSnapshots.length).toBeGreaterThan(0);
 	expect(versionSnapshotAsset).toMatchObject({
-		r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${versionSnapshotAsset?._id}`,
+		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${versionSnapshotAsset?._id}`,
 		size: files_get_utf8_byte_size(markdown),
 	});
 	expect(r2Writes.get(saved.asset!.r2Key!)).toBe(markdown);
@@ -3580,8 +3580,8 @@ async function test_materialize_markdown_file(
 	markdown: string,
 ) {
 	const created = await asUser.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path,
 	});
@@ -3598,8 +3598,8 @@ async function test_materialize_markdown_file(
 	yjsDoc.destroy();
 	if (pushResult._nay) throw new Error(pushResult._nay.message);
 	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		nodeId,
 		userId: db.userId,
 		targetSequence: 1,
@@ -3620,8 +3620,8 @@ async function test_insert_searchable_markdown_file(
 		const name = path.split("/").filter(Boolean).at(-1);
 		if (!name) throw new Error("Expected a root-level file path");
 		const nodeId = await ctx.db.insert("files_nodes", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			parentId: files_ROOT_ID,
 			path,
 			treePath: path,
@@ -3635,8 +3635,8 @@ async function test_insert_searchable_markdown_file(
 			updatedAt: now,
 		});
 		const chunks = await db_insert_file_text_content(ctx, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			nodeId,
 			path,
 			yjsSequence: 0,
@@ -3683,8 +3683,8 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	const markdown = `# Chunked Document\n\n${paragraphs.join("\n\n")}`;
 
 	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: "/chunked.md",
 	});
@@ -3709,8 +3709,8 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	}
 
 	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		nodeId,
 		userId: db.userId,
 		targetSequence: 1,
@@ -3726,10 +3726,10 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 		const asset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 		const chunks = await ctx.db
 			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 				q
+					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
 					.eq("sourceKind", "committed")
 					.eq("fileNodeId", nodeId),
 			)
@@ -3748,8 +3748,8 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 	const totalLines = committed.split("\n").length;
 	const readRange = (startLine: number, maxLines: number, fromEnd = false) =>
 		asUser.query(internal.files_nodes.read_committed_file_chunks_line_range, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			path: "/chunked.md",
 			startLine,
@@ -3788,8 +3788,8 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 
 	// Exact counts from chunks match counting the full committed text.
 	const stats = await asUser.query(internal.files_nodes.read_committed_file_chunk_stats, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: "/chunked.md",
 	});
@@ -3837,8 +3837,8 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 	if (committed === undefined) throw new Error("Expected committed markdown");
 
 	const grepArgs = {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		fileNodeId: nodeId,
 	};
@@ -3981,8 +3981,8 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 		cappedOutputMarkdown,
 	);
 	const cappedContextScan = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		fileNodeId: cappedOutputNodeId,
 		pattern: "outputneedle-01",
@@ -4000,8 +4000,8 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 	expect(cappedContextScan.scanTruncated).toBe(true);
 
 	const cappedOutputScan = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		fileNodeId: cappedOutputNodeId,
 		pattern: "outputneedle",
@@ -4018,8 +4018,8 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 
 	const pendingMarkdown = "pending context\n**pending** alert\npendingneedle only in the pending version\n";
 	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		nodeId,
 		unstagedMarkdown: pendingMarkdown,
@@ -4085,10 +4085,10 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 	await t.run(async (ctx) => {
 		const chunks = await ctx.db
 			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 				q
+					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
 					.eq("sourceKind", "committed")
 					.eq("fileNodeId", cappedOutputNodeId),
 			)
@@ -4101,8 +4101,8 @@ test("match_markdown_file_lines and match_plain_text_file_lines query committed 
 	});
 
 	const brokenGrep = await asUser.query(internal.files_nodes.match_markdown_file_lines, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		fileNodeId: cappedOutputNodeId,
 		pattern: "outputneedle",
@@ -4134,8 +4134,8 @@ async function test_insert_committed_external_markdown(
 		const name = path.split("/").filter(Boolean).at(-1);
 		if (!name) throw new Error("Expected a root-level file path");
 		const nodeId = await ctx.db.insert("files_nodes", {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			parentId: files_ROOT_ID,
 			path,
 			treePath: path,
@@ -4149,8 +4149,8 @@ async function test_insert_committed_external_markdown(
 			updatedAt: now,
 		});
 		const assetId = await ctx.db.insert("files_r2_assets", {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			kind: "content",
 			r2Bucket: "test-bucket",
 			r2Key: `mounts${path}`,
@@ -4160,8 +4160,8 @@ async function test_insert_committed_external_markdown(
 		});
 		r2Writes.set(`mounts${path}`, markdown);
 		const statsId = await ctx.db.insert("file_stats", {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			fileNodeId: nodeId,
 			lineCount: (markdown.match(/\n/gu) ?? []).length,
 			wordCount: markdown.trim().length === 0 ? 0 : markdown.trim().split(/\s+/u).length,
@@ -4172,8 +4172,8 @@ async function test_insert_committed_external_markdown(
 		const markdownChunkIds = await Promise.all(
 			chunks._yay.map((chunk) =>
 				ctx.db.insert("files_markdown_chunks", {
-					workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-					projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+					organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+					workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 					fileNodeId: nodeId,
 					sourceKind: "committed",
 					chunkIndex: chunk.chunkIndex,
@@ -4189,8 +4189,8 @@ async function test_insert_committed_external_markdown(
 		await Promise.all(
 			chunks._yay.map((chunk, index) =>
 				ctx.db.insert("files_plain_text_chunks", {
-					workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-					projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+					organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+					workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 					fileNodeId: nodeId,
 					sourceKind: "committed",
 					markdownChunkId: markdownChunkIds[index],
@@ -4243,10 +4243,10 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	const chunkCount = await t.run(async (ctx) =>
 		ctx.db
 			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 				q
-					.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-					.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 					.eq("sourceKind", "committed")
 					.eq("fileNodeId", nodeId),
 			)
@@ -4256,8 +4256,8 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	expect(chunkCount).toBeGreaterThan(1);
 
 	const readScope = {
-		workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-		projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+		organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+		workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	} as const;
 
 	// Full read reproduces the exact committed markdown by merging chunks (no R2 fetch for chunk reads).
@@ -4394,8 +4394,8 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	const markdownB = `${markdownA}\n\nThird paragraph gamma delta epsilon.\n\nFourth paragraph zeta eta theta iota.`;
 
 	const created = await asUser.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: "/stats-edit.md",
 	});
@@ -4412,8 +4412,8 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	});
 	if (pushA._nay) throw new Error(pushA._nay.message);
 	const matA = await t.action(internal.files_nodes.materialize_file_content, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		nodeId,
 		userId: db.userId,
 		targetSequence: 1,
@@ -4427,8 +4427,8 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 		byteCount: files_get_utf8_byte_size(text),
 	});
 	const statsArgs = {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: "/stats-edit.md",
 	};
@@ -4460,8 +4460,8 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	yjsDoc.destroy();
 	if (pushB._nay) throw new Error(pushB._nay.message);
 	const matB = await t.action(internal.files_nodes.materialize_file_content, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		nodeId,
 		userId: db.userId,
 		targetSequence: 2,
@@ -4491,8 +4491,8 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 			(
 				await ctx.db
 					.query("file_stats")
-					.withIndex("by_workspace_project_fileNode", (q) =>
-						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", nodeId),
+					.withIndex("by_organization_workspace_fileNode", (q) =>
+						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
 					)
 					.collect()
 			).length,
@@ -4521,8 +4521,8 @@ test("text_search_files scopes to a path prefix without sibling-prefix leakage a
 
 	const search = (pathPrefix: string | undefined, numItems: number, cursor: string | null = null) =>
 		asUser.query(internal.files_nodes.text_search_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			query: "scopeneedle",
 			numItems,
@@ -4589,8 +4589,8 @@ test("text_search_files searches pending unstaged content instead of stale commi
 
 	const search = (query: string) =>
 		asUser.query(internal.files_nodes.text_search_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			query,
 			numItems: 10,
@@ -4602,8 +4602,8 @@ test("text_search_files searches pending unstaged content instead of stale commi
 
 	const unstagedMarkdown = "# Plan\n\npendingneedle and sharedneedle appear only in the pending version.";
 	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		nodeId,
 		unstagedMarkdown,
@@ -4616,8 +4616,8 @@ test("text_search_files searches pending unstaged content instead of stale commi
 		}),
 	);
 	const otherUserPending = await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: otherUserId,
 		nodeId: otherNodeId,
 		unstagedMarkdown: "# Other\n\nforeignpendingneedle and sharedneedle are another user's pending content.",
@@ -4632,8 +4632,8 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	await t.run(async (ctx) => {
 		const pendingDoc = await ctx.db
 			.query("files_pending_updates")
-			.withIndex("by_workspace_project_user_fileNode", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("userId", db.userId).eq("fileNodeId", nodeId),
+			.withIndex("by_organization_workspace_user_fileNode", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("userId", db.userId).eq("fileNodeId", nodeId),
 			)
 			.first();
 		if (!pendingDoc) throw new Error("Expected pending doc");
@@ -4684,8 +4684,8 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	expect(staleCommittedSearch.isDone).toBe(true);
 
 	const otherUserCommittedSearch = await asUser.query(internal.files_nodes.text_search_files, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: otherUserId,
 		query: "committedneedle",
 		numItems: 10,
@@ -4749,8 +4749,8 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 
 	const search = (plan: files_metadata_SearchPlan, pathPrefix?: string) =>
 		asUser.query(internal.files_metadata.search, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			plan,
 			pathPrefix,
@@ -4788,8 +4788,8 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 	expect(scoped.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
 
 	const metadata = await asUser.query(internal.files_metadata.get_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: "/meta/invoice.md",
 	});
@@ -4826,8 +4826,8 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 	);
 
 	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		nodeId,
 		unstagedMarkdown: ["---", "from: pending@example.com", "subject: Pending subject", "---", "Pending body"].join("\n"),
@@ -4842,8 +4842,8 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 
 	const searchAs = (userId: Id<"users">, value: string) =>
 		asUser.query(internal.files_metadata.search, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId,
 			plan: { op: "eq", qualifiedField: "frontmatter.from", value },
 			numItems: 20,
@@ -4854,8 +4854,8 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 	expect(pendingHit.items).toMatchObject([{ path, sourceKind: "pending" }]);
 
 	const pendingMetadata = await asUser.query(internal.files_metadata.get_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path,
 	});
@@ -4903,8 +4903,8 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 	);
 	const targetFolderId = await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			parentId: files_ROOT_ID,
 			path: "/metadata-target",
 			treePath: "/metadata-target/",
@@ -4920,8 +4920,8 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 
 	const search = (pathPrefix?: string) =>
 		asUser.query(internal.files_metadata.search, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			plan: { op: "eq", qualifiedField: "frontmatter.scope", value: "metadata-scope-value" },
 			pathPrefix,
@@ -4972,8 +4972,8 @@ test("metadata search updates indexed scope when files are archived and unarchiv
 
 	const search = () =>
 		asUser.query(internal.files_metadata.search, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			plan: { op: "eq", qualifiedField: "frontmatter.scope", value: "metadata-archive-value" },
 			numItems: 10,
@@ -5018,8 +5018,8 @@ test("text_search_files scopes pending hits to a path prefix without sibling-pre
 		[collideNodeId, "Collide"],
 	] as const) {
 		const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			nodeId,
 			unstagedMarkdown: `# ${label}\n\npendingscopeneedle for ${label}.`,
@@ -5029,8 +5029,8 @@ test("text_search_files scopes pending hits to a path prefix without sibling-pre
 
 	const search = (pathPrefix: string | undefined) =>
 		asUser.query(internal.files_nodes.text_search_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			query: "pendingscopeneedle",
 			numItems: 10,
@@ -5068,8 +5068,8 @@ test("text_search_files drops pending hits for archived files", async () => {
 	const nodeId = await test_materialize_markdown_file(t, asUser, db, path, "# Doc\n\nbase content.");
 
 	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		nodeId,
 		unstagedMarkdown: "# Doc\n\narchivedpendingneedle added before archiving.",
@@ -5078,8 +5078,8 @@ test("text_search_files drops pending hits for archived files", async () => {
 
 	const search = () =>
 		asUser.query(internal.files_nodes.text_search_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			query: "archivedpendingneedle",
 			numItems: 10,
@@ -5122,8 +5122,8 @@ test("text_search_files updates unified search scope when files are renamed and 
 	const moveNodeId = await test_materialize_markdown_file(t, asUser, db, "/move-source.md", "# Move\n\nbase content.");
 	const targetFolderId = await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			parentId: files_ROOT_ID,
 			path: "/move-target",
 			treePath: "/move-target/",
@@ -5138,8 +5138,8 @@ test("text_search_files updates unified search scope when files are renamed and 
 	);
 
 	const pendingMove = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		nodeId: moveNodeId,
 		unstagedMarkdown: "# Move\n\nscopependingmoveneedle before move.",
@@ -5148,8 +5148,8 @@ test("text_search_files updates unified search scope when files are renamed and 
 
 	const search = (query: string, pathPrefix?: string) =>
 		asUser.query(internal.files_nodes.text_search_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			query,
 			numItems: 10,
@@ -5199,8 +5199,8 @@ test("text_search_files updates unified committed search scope when files are ar
 
 	const search = (query: string) =>
 		asUser.query(internal.files_nodes.text_search_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			query,
 			numItems: 10,
@@ -5248,8 +5248,8 @@ test("text_search_files paginates unified pending and committed chunks with the 
 	const section = (label: string) => `# ${label}\n\npagingneedle ${"lorem ipsum dolor sit amet ".repeat(30)}`;
 	const unstagedMarkdown = `${section("First")}\n\n${section("Second")}`;
 	const pending = await asUser.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		nodeId: pendingNodeId,
 		unstagedMarkdown,
@@ -5262,8 +5262,8 @@ test("text_search_files paginates unified pending and committed chunks with the 
 
 	const search = (cursor: string | null) =>
 		asUser.query(internal.files_nodes.text_search_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			query: "pagingneedle",
 			numItems: 2,
@@ -5340,10 +5340,10 @@ test("create_file_snapshot_content_url returns a signed R2 URL without fetching 
 	}
 	const nodeId = createdFile._yay.nodeId;
 	const { snapshotId } = await t.run(async (ctx) => {
-		const r2Key = `content/workspaces/${db.workspaceId}/projects/${db.projectId}/nodes/${nodeId}/versions/42/markdown`;
+		const r2Key = `content/organizations/${db.organizationId}/workspaces/${db.workspaceId}/nodes/${nodeId}/versions/42/markdown`;
 		const assetId = await ctx.db.insert("files_r2_assets", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			kind: "content_snapshot",
 			r2Bucket: "test-bucket",
 			r2Key,
@@ -5352,8 +5352,8 @@ test("create_file_snapshot_content_url returns a signed R2 URL without fetching 
 			updatedAt: Date.now(),
 		});
 		const snapshotId = await ctx.db.insert("files_snapshots", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			fileNodeId: nodeId,
 			assetId,
 			createdBy: db.userId,
@@ -5375,12 +5375,12 @@ test("create_file_snapshot_content_url returns a signed R2 URL without fetching 
 	});
 	expect(contentUrl).toMatchObject({
 		url: `https://r2.test/object?key=${encodeURIComponent(
-			`content/workspaces/${db.workspaceId}/projects/${db.projectId}/nodes/${nodeId}/versions/42/markdown`,
+			`content/organizations/${db.organizationId}/workspaces/${db.workspaceId}/nodes/${nodeId}/versions/42/markdown`,
 		)}`,
 		snapshotId,
 	});
 	expect(getUrlSpy).toHaveBeenCalledWith(
-		`content/workspaces/${db.workspaceId}/projects/${db.projectId}/nodes/${nodeId}/versions/42/markdown`,
+		`content/organizations/${db.organizationId}/workspaces/${db.workspaceId}/nodes/${nodeId}/versions/42/markdown`,
 		{ expiresIn: 15 * 60 },
 	);
 	expect(fetchSpy).not.toHaveBeenCalled();
@@ -5406,8 +5406,8 @@ test("create_file_snapshot_content_url fails when a snapshot asset has no R2 key
 	const nodeId = createdFile._yay.nodeId;
 	const { snapshotId } = await t.run(async (ctx) => {
 		const assetId = await ctx.db.insert("files_r2_assets", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			kind: "content_snapshot",
 			r2Bucket: "test-bucket",
 			size: 1,
@@ -5415,8 +5415,8 @@ test("create_file_snapshot_content_url fails when a snapshot asset has no R2 key
 			updatedAt: Date.now(),
 		});
 		const snapshotId = await ctx.db.insert("files_snapshots", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			fileNodeId: nodeId,
 			assetId,
 			createdBy: db.userId,
@@ -5476,8 +5476,8 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 	);
 
 	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: "/restore-r2.md",
 	});
@@ -5500,8 +5500,8 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 		throw new Error(pushResult._nay.message);
 	}
 	const materialized = await t.action(internal.files_nodes.materialize_file_content, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		nodeId: createdFile._yay.nodeId,
 		userId: db.userId,
 		targetSequence: 1,
@@ -5513,20 +5513,20 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 	const restoredMarkdown = "# Restored\n\nFrom R2 snapshot.";
 	const { snapshotId } = await t.run(async (ctx) => {
 		const snapshotAssetId = await ctx.db.insert("files_r2_assets", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			kind: "content_snapshot",
 			r2Bucket: "test-bucket",
 			size: files_get_utf8_byte_size(restoredMarkdown),
 			createdBy: db.userId,
 			updatedAt: Date.now(),
 		});
-		const snapshotR2Key = `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${snapshotAssetId}`;
+		const snapshotR2Key = `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${snapshotAssetId}`;
 		r2Objects.set(snapshotR2Key, restoredMarkdown);
 		await ctx.db.patch("files_r2_assets", snapshotAssetId, { r2Key: snapshotR2Key });
 		const snapshotId = await ctx.db.insert("files_snapshots", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			fileNodeId: createdFile._yay.nodeId,
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
@@ -5547,8 +5547,8 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 	}
 
 	const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: "/restore-r2.md",
 	});
@@ -5619,8 +5619,8 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 
 		return await test_mocks_fill_db_with.membership(ctx, {
 			userId: otherUserId,
-			workspaceName: "yjs-rl-ws",
-			projectName: "yjs-rl-prj",
+			organizationName: "yjs-rl-ws",
+			workspaceName: "yjs-rl-prj",
 		});
 	});
 	const blockedBeforeMembership = await asUser.mutation(api.files_nodes.yjs_push_update, {
@@ -5633,14 +5633,14 @@ test("yjs_push_update enforces per-user rate limit and leaves DB untouched on re
 	const stateAfterBlock = await t.run(async (ctx) => {
 		const updates = await ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect();
 		const lastSequence = await ctx.db
 			.query("files_yjs_docs_last_sequences")
-			.withIndex("by_workspace_project_fileNode", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
+			.withIndex("by_organization_workspace_fileNode", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.first();
 		return {
@@ -5711,8 +5711,8 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 	});
 
 	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: "/restore-credit.md",
 	});
@@ -5738,18 +5738,18 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 
 		const [snapshotAssetId, currentSnapshotAssetId, restoredSnapshotAssetId] = await Promise.all([
 			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				kind: "content_snapshot",
 				r2Bucket: "test-bucket",
-				r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/restore-credit-snapshot`,
+				r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/restore-credit-snapshot`,
 				size: files_get_utf8_byte_size(restoredMarkdown),
 				createdBy: db.userId,
 				updatedAt: Date.now(),
 			}),
 			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				kind: "content_snapshot",
 				r2Bucket: "test-bucket",
 				size: 0,
@@ -5757,8 +5757,8 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 				updatedAt: Date.now(),
 			}),
 			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				kind: "content_snapshot",
 				r2Bucket: "test-bucket",
 				size: files_get_utf8_byte_size(restoredMarkdown),
@@ -5767,8 +5767,8 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 			}),
 		]);
 		const snapshotId = await ctx.db.insert("files_snapshots", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			fileNodeId: createdFile._yay.nodeId,
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
@@ -5794,8 +5794,8 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 	const yjsUpdates = await t.run((ctx) =>
 		ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-				q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
 			)
 			.collect(),
 	);
@@ -5874,8 +5874,8 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 	});
 
 	const createdFile = await asUser.action(internal.files_nodes.create_file_by_path, {
+		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		projectId: db.projectId,
 		userId: db.userId,
 		path: "/restore-billing.md",
 	});
@@ -5887,18 +5887,18 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 	const restoreAssets = await t.run(async (ctx) => {
 		const [snapshotAssetId, currentSnapshotAssetId, restoredSnapshotAssetId] = await Promise.all([
 			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				kind: "content_snapshot",
 				r2Bucket: "test-bucket",
-				r2Key: `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/restore-billing-snapshot`,
+				r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/restore-billing-snapshot`,
 				size: files_get_utf8_byte_size(restoredMarkdown),
 				createdBy: db.userId,
 				updatedAt: Date.now(),
 			}),
 			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				kind: "content_snapshot",
 				r2Bucket: "test-bucket",
 				size: 0,
@@ -5906,8 +5906,8 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 				updatedAt: Date.now(),
 			}),
 			ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				kind: "content_snapshot",
 				r2Bucket: "test-bucket",
 				size: files_get_utf8_byte_size(restoredMarkdown),
@@ -5916,8 +5916,8 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 			}),
 		]);
 		const snapshotId = await ctx.db.insert("files_snapshots", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			fileNodeId: createdFile._yay.nodeId,
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
@@ -5961,8 +5961,8 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 			asset,
 			yjsUpdates: await ctx.db
 				.query("files_yjs_updates")
-				.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-					q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", createdFile._yay.nodeId),
+				.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", createdFile._yay.nodeId),
 				)
 				.collect(),
 		};
@@ -5977,13 +5977,13 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 			expect.objectContaining({
 				name: "file_save",
 				externalCustomerId: db.userId,
-				externalId: `file_save::${db.userId}::${db.userId}::${db.workspaceId}::${db.projectId}::${createdFile._yay.nodeId}::${yjsUpdates[0]?.sequence}`,
+				externalId: `file_save::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::${createdFile._yay.nodeId}::${yjsUpdates[0]?.sequence}`,
 				metadata: expect.objectContaining({
 					amount: 1,
 					actorUserId: db.userId,
 					billedUserId: db.userId,
+					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
-					projectId: db.projectId,
 					nodeId: createdFile._yay.nodeId,
 					yjsSequence: String(yjsUpdates[0]?.sequence),
 				}),
@@ -6004,8 +6004,8 @@ describe("files_nodes.cleanup_old_snapshots", () => {
 			const nodeId = await t.run(async (ctx) =>
 				ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
+					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
-					projectId: db.projectId,
 					createdBy: db.userId,
 					updatedBy: db.userId,
 					parentId: files_ROOT_ID,
@@ -6018,10 +6018,10 @@ describe("files_nodes.cleanup_old_snapshots", () => {
 			const insertSnapshot = async (label: string, timestamp: string) => {
 				vi.setSystemTime(new Date(timestamp));
 				return await t.run(async (ctx) => {
-					const r2Key = `workspaces/${db.workspaceId}/projects/${db.projectId}/assets/${label}`;
+					const r2Key = `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${label}`;
 					const assetId = await ctx.db.insert("files_r2_assets", {
+						organizationId: db.organizationId,
 						workspaceId: db.workspaceId,
-						projectId: db.projectId,
 						kind: "content_snapshot",
 						r2Bucket: "test-bucket",
 						r2Key,
@@ -6030,8 +6030,8 @@ describe("files_nodes.cleanup_old_snapshots", () => {
 						updatedAt: Date.now(),
 					});
 					const snapshotId = await ctx.db.insert("files_snapshots", {
+						organizationId: db.organizationId,
 						workspaceId: db.workspaceId,
-						projectId: db.projectId,
 						fileNodeId: nodeId,
 						assetId,
 						createdBy: db.userId,
@@ -6058,8 +6058,8 @@ describe("files_nodes.cleanup_old_snapshots", () => {
 					await Promise.all([
 						ctx.db
 							.query("files_snapshots")
-							.withIndex("by_workspace_project_fileNode_archivedAt", (q) =>
-								q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", nodeId),
+							.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+								q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
 							)
 							.collect(),
 						ctx.db.get("files_r2_assets", outsideScanWindowKept.assetId),
@@ -6176,8 +6176,8 @@ describe("external/system mount text materialization (Phase D)", () => {
 
 		// Full read reconstructs the source exactly (markdown-hostile content, no trailing newline).
 		const full = await t.query(internal.files_nodes.read_file_content_from_chunks, {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
 			path: MOUNT_FILE_PATH,
 			mode: { kind: "full", maxBytes: 1_000_000 },
@@ -6186,8 +6186,8 @@ describe("external/system mount text materialization (Phase D)", () => {
 
 		// Line-range read matches the same window computed directly from the source.
 		const lineRange = await t.query(internal.files_nodes.read_file_content_from_chunks, {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
 			path: MOUNT_FILE_PATH,
 			mode: { kind: "lines", startLine: 4, maxLines: 2 },
@@ -6196,8 +6196,8 @@ describe("external/system mount text materialization (Phase D)", () => {
 
 		// Exact wc/stat from file_stats (read O(1), not estimated).
 		const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
 			path: MOUNT_FILE_PATH,
 		});
@@ -6218,28 +6218,28 @@ describe("external/system mount text materialization (Phase D)", () => {
 			const [markdownChunks, plainTextChunks, metadataDocs, yjsSnapshots, yjsLastSequences] = await Promise.all([
 				ctx.db
 					.query("files_markdown_chunks")
-					.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
+					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 						q
-							.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-							.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+							.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 							.eq("fileNodeId", created._yay.nodeId),
 					)
 					.collect(),
 				ctx.db
 					.query("files_plain_text_chunks")
-					.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
+					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 						q
-							.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-							.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+							.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 							.eq("fileNodeId", created._yay.nodeId),
 					)
 					.collect(),
 				ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_workspace_project_fileNode_qualifiedField", (q) =>
+					.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
 						q
-							.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-							.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+							.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 							.eq("fileNodeId", created._yay.nodeId),
 					)
 					.collect(),
@@ -6248,20 +6248,20 @@ describe("external/system mount text materialization (Phase D)", () => {
 			]);
 			const mountFolder = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
-						.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-						.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.eq("path", "/t3-chat")
 						.eq("archiveOperationId", undefined),
 				)
 				.first();
 			const docsFolder = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
-						.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-						.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.eq("path", "/t3-chat/docs")
 						.eq("archiveOperationId", undefined),
 				)
@@ -6279,8 +6279,8 @@ describe("external/system mount text materialization (Phase D)", () => {
 			};
 		});
 		expect(docs.fileNode).toMatchObject({
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			kind: "file",
 			contentType: "text/plain;charset=utf-8",
 			createdBy: users_SYSTEM_AUTHOR,
@@ -6328,8 +6328,8 @@ describe("external/system mount text materialization (Phase D)", () => {
 		}
 
 		const plainMatch = await t.query(internal.files_nodes.match_plain_text_file_lines, {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
 			fileNodeId: created._yay.nodeId,
 			pattern: "Zorptelemetry",
@@ -6342,8 +6342,8 @@ describe("external/system mount text materialization (Phase D)", () => {
 		expect(plainMatchedLines[0]?.line).toContain("Zorptelemetry");
 
 		const markdownMatch = await t.query(internal.files_nodes.match_markdown_file_lines, {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
 			fileNodeId: created._yay.nodeId,
 			pattern: "Zorptelemetry",
@@ -6371,8 +6371,8 @@ describe("external/system mount text materialization (Phase D)", () => {
 		}
 
 		const reservedHit = await t.query(internal.files_nodes.text_search_files, {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
 			query: "Zorptelemetry",
 			pathPrefix: "/t3-chat",
@@ -6383,8 +6383,8 @@ describe("external/system mount text materialization (Phase D)", () => {
 
 		// A real tenant cannot see reserved-scope mount content.
 		const tenantMiss = await t.query(internal.files_nodes.text_search_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			query: "Zorptelemetry",
 			numItems: 20,
@@ -6407,18 +6407,18 @@ describe("external/system mount text materialization (Phase D)", () => {
 		const leaked = await t.run(async (ctx) => {
 			const node = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
-						.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-						.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.eq("path", oversizePath)
 						.eq("archiveOperationId", undefined),
 				)
 				.first();
 			const assets = await ctx.db
 				.query("files_r2_assets")
-				.withIndex("by_workspace_project", (q) =>
-					q.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID).eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID),
+				.withIndex("by_organization_workspace", (q) =>
+					q.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID).eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 				)
 				.collect();
 			return { node, assetCount: assets.length };

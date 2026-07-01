@@ -319,28 +319,28 @@ async function seed_billing_usage_snapshot(
 	});
 }
 
-let seed_workspace_billing_scope_counter = 0;
+let seed_organization_billing_scope_counter = 0;
 
-async function seed_workspace_billing_scope(
+async function seed_organization_billing_scope(
 	t: ReturnType<typeof test_convex>,
 	args: {
-		billingMode: "user" | "workspace_owner";
+		billingMode: "user" | "organization_owner";
 		member?: boolean;
 	},
 ) {
-	const suffix = seed_workspace_billing_scope_counter++;
+	const suffix = seed_organization_billing_scope_counter++;
 
 	return await t.run(async (ctx) => {
 		const now = Date.now();
 		const ownerId = await ctx.db.insert("users", {
-			clerkUserId: `clerk-workspace-billing-owner-${suffix}`,
+			clerkUserId: `clerk-organization-billing-owner-${suffix}`,
 		});
 		const ownerMembership = await test_mocks_fill_db_with.membership(ctx, {
 			userId: ownerId,
-			workspaceName: `billing-workspace-${suffix}`,
-			projectName: "home",
+			organizationName: `billing-organization-${suffix}`,
+			workspaceName: "home",
 		});
-		await ctx.db.patch("workspaces", ownerMembership.workspaceId, {
+		await ctx.db.patch("organizations", ownerMembership.organizationId, {
 			billingMode: args.billingMode,
 		});
 
@@ -348,29 +348,29 @@ async function seed_workspace_billing_scope(
 			return {
 				ownerId,
 				actorUserId: ownerId,
+				organizationId: ownerMembership.organizationId,
 				workspaceId: ownerMembership.workspaceId,
-				projectId: ownerMembership.projectId,
 			};
 		}
 
 		const memberId = await ctx.db.insert("users", {
-			clerkUserId: `clerk-workspace-billing-member-${suffix}`,
+			clerkUserId: `clerk-organization-billing-member-${suffix}`,
 		});
 		await test_mocks_fill_db_with.membership(ctx, {
 			userId: memberId,
-			workspaceName: "personal",
-			projectName: "home",
+			organizationName: "personal",
+			workspaceName: "home",
 		});
-		await ctx.db.insert("workspaces_projects_users", {
+		await ctx.db.insert("organizations_workspaces_users", {
+			organizationId: ownerMembership.organizationId,
 			workspaceId: ownerMembership.workspaceId,
-			projectId: ownerMembership.projectId,
 			userId: memberId,
 			active: true,
 			updatedAt: now,
 		});
 		await access_control_db_ensure_role_assignment(ctx, {
+			organizationId: ownerMembership.organizationId,
 			workspaceId: ownerMembership.workspaceId,
-			projectId: ownerMembership.projectId,
 			userId: memberId,
 			role: "member",
 			now,
@@ -379,8 +379,8 @@ async function seed_workspace_billing_scope(
 		return {
 			ownerId,
 			actorUserId: memberId,
+			organizationId: ownerMembership.organizationId,
 			workspaceId: ownerMembership.workspaceId,
-			projectId: ownerMembership.projectId,
 		};
 	});
 }
@@ -673,17 +673,17 @@ describe("check_credits", () => {
 	});
 });
 
-describe("workspace billing check", () => {
-	test("personal workspaces bill the actor", async () => {
+describe("organization billing check", () => {
+	test("personal organizations bill the actor", async () => {
 		const t = test_convex();
 		const personalScope = await t.run(async (ctx) => {
 			return await test_mocks_fill_db_with.membership(ctx, {
-				workspaceName: "personal",
-				projectName: "home",
+				organizationName: "personal",
+				workspaceName: "home",
 			});
 		});
 		const { polarProductId } = await seed_free_product(t, {
-			polarProductId: "prod_workspace_personal_actor",
+			polarProductId: "prod_organization_personal_actor",
 		});
 		await seed_billing_usage_snapshot(t, {
 			userId: personalScope.userId,
@@ -693,7 +693,7 @@ describe("workspace billing check", () => {
 
 		const result = await t.query(internal.billing.check_credits, {
 			userId: personalScope.userId,
-			workspaceId: personalScope.workspaceId,
+			organizationId: personalScope.organizationId,
 			minimumRequiredCents: 1,
 		});
 
@@ -701,11 +701,11 @@ describe("workspace billing check", () => {
 		expect(result.billedUser?._id).toBe(personalScope.userId);
 	});
 
-	test("created user-billed workspaces bill the actor", async () => {
+	test("created user-billed organizations bill the actor", async () => {
 		const t = test_convex();
-		const scope = await seed_workspace_billing_scope(t, { billingMode: "user", member: true });
+		const scope = await seed_organization_billing_scope(t, { billingMode: "user", member: true });
 		const { polarProductId } = await seed_free_product(t, {
-			polarProductId: "prod_workspace_user_billing_actor",
+			polarProductId: "prod_organization_user_billing_actor",
 		});
 		await seed_billing_usage_snapshot(t, {
 			userId: scope.actorUserId,
@@ -715,7 +715,7 @@ describe("workspace billing check", () => {
 
 		const result = await t.query(internal.billing.check_credits, {
 			userId: scope.actorUserId,
-			workspaceId: scope.workspaceId,
+			organizationId: scope.organizationId,
 			minimumRequiredCents: 1,
 		});
 
@@ -723,11 +723,11 @@ describe("workspace billing check", () => {
 		expect(result.billedUser?._id).toBe(scope.actorUserId);
 	});
 
-	test("owner-billed workspaces bill the current workspace owner", async () => {
+	test("owner-billed organizations bill the current organization owner", async () => {
 		const t = test_convex();
-		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner", member: true });
+		const scope = await seed_organization_billing_scope(t, { billingMode: "organization_owner", member: true });
 		const { polarProductId } = await seed_free_product(t, {
-			polarProductId: "prod_workspace_owner_billing_owner",
+			polarProductId: "prod_organization_owner_billing_owner",
 		});
 		await seed_billing_usage_snapshot(t, {
 			userId: scope.ownerId,
@@ -737,7 +737,7 @@ describe("workspace billing check", () => {
 
 		const result = await t.query(internal.billing.check_credits, {
 			userId: scope.actorUserId,
-			workspaceId: scope.workspaceId,
+			organizationId: scope.organizationId,
 			minimumRequiredCents: 1,
 		});
 
@@ -745,11 +745,11 @@ describe("workspace billing check", () => {
 		expect(result.billedUser?._id).toBe(scope.ownerId);
 	});
 
-	test("owner acting in their own owner-billed workspace bills the owner", async () => {
+	test("owner acting in their own owner-billed organization bills the owner", async () => {
 		const t = test_convex();
-		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner" });
+		const scope = await seed_organization_billing_scope(t, { billingMode: "organization_owner" });
 		const { polarProductId } = await seed_free_product(t, {
-			polarProductId: "prod_workspace_owner_billing_owner_actor",
+			polarProductId: "prod_organization_owner_billing_owner_actor",
 		});
 		await seed_billing_usage_snapshot(t, {
 			userId: scope.ownerId,
@@ -759,7 +759,7 @@ describe("workspace billing check", () => {
 
 		const result = await t.query(internal.billing.check_credits, {
 			userId: scope.ownerId,
-			workspaceId: scope.workspaceId,
+			organizationId: scope.organizationId,
 			minimumRequiredCents: 1,
 		});
 
@@ -769,9 +769,9 @@ describe("workspace billing check", () => {
 
 	test("ownership transfer changes future owner-billed usage", async () => {
 		const t = test_convex();
-		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner", member: true });
+		const scope = await seed_organization_billing_scope(t, { billingMode: "organization_owner", member: true });
 		const { polarProductId } = await seed_free_product(t, {
-			polarProductId: "prod_workspace_owner_billing_transfer",
+			polarProductId: "prod_organization_owner_billing_transfer",
 		});
 		await seed_billing_usage_snapshot(t, {
 			userId: scope.actorUserId,
@@ -781,19 +781,19 @@ describe("workspace billing check", () => {
 		const ownerClient = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: scope.ownerId,
-			name: "Workspace Billing Owner",
-			email: "workspace-billing-owner@test.local",
+			name: "Organization Billing Owner",
+			email: "organization-billing-owner@test.local",
 		});
 
-		const transferResult = await ownerClient.mutation(api.access_control.transfer_workspace_ownership, {
-			workspaceId: scope.workspaceId,
+		const transferResult = await ownerClient.mutation(api.access_control.transfer_organization_ownership, {
+			organizationId: scope.organizationId,
 			newOwnerUserId: scope.actorUserId,
 		});
 		expect(transferResult._yay).toBeNull();
 
 		const result = await t.query(internal.billing.check_credits, {
 			userId: scope.ownerId,
-			workspaceId: scope.workspaceId,
+			organizationId: scope.organizationId,
 			minimumRequiredCents: 1,
 		});
 
@@ -801,11 +801,11 @@ describe("workspace billing check", () => {
 		expect(result.billedUser?._id).toBe(scope.actorUserId);
 	});
 
-	test("ownership transfer does not affect user-billed workspace usage", async () => {
+	test("ownership transfer does not affect user-billed organization usage", async () => {
 		const t = test_convex();
-		const scope = await seed_workspace_billing_scope(t, { billingMode: "user", member: true });
+		const scope = await seed_organization_billing_scope(t, { billingMode: "user", member: true });
 		const { polarProductId } = await seed_free_product(t, {
-			polarProductId: "prod_workspace_user_billing_transfer",
+			polarProductId: "prod_organization_user_billing_transfer",
 		});
 		await seed_billing_usage_snapshot(t, {
 			userId: scope.ownerId,
@@ -819,15 +819,15 @@ describe("workspace billing check", () => {
 			email: "user-billing-owner@test.local",
 		});
 
-		const transferResult = await ownerClient.mutation(api.access_control.transfer_workspace_ownership, {
-			workspaceId: scope.workspaceId,
+		const transferResult = await ownerClient.mutation(api.access_control.transfer_organization_ownership, {
+			organizationId: scope.organizationId,
 			newOwnerUserId: scope.actorUserId,
 		});
 		expect(transferResult._yay).toBeNull();
 
 		const result = await t.query(internal.billing.check_credits, {
 			userId: scope.ownerId,
-			workspaceId: scope.workspaceId,
+			organizationId: scope.organizationId,
 			minimumRequiredCents: 1,
 		});
 
@@ -835,11 +835,11 @@ describe("workspace billing check", () => {
 		expect(result.billedUser?._id).toBe(scope.ownerId);
 	});
 
-	test("owner-billed workspaces read the owner from the workspace doc", async () => {
+	test("owner-billed organizations read the owner from the organization doc", async () => {
 		const t = test_convex();
-		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner", member: true });
+		const scope = await seed_organization_billing_scope(t, { billingMode: "organization_owner", member: true });
 		const { polarProductId } = await seed_free_product(t, {
-			polarProductId: "prod_workspace_owner_billing_doc_owner",
+			polarProductId: "prod_organization_owner_billing_doc_owner",
 		});
 		await seed_billing_usage_snapshot(t, {
 			userId: scope.ownerId,
@@ -849,8 +849,8 @@ describe("workspace billing check", () => {
 		await t.run(async (ctx) => {
 			const ownerAssignment = await ctx.db
 				.query("access_control_role_assignments")
-				.withIndex("by_workspace_project_role_user", (q) =>
-					q.eq("workspaceId", scope.workspaceId).eq("projectId", scope.projectId).eq("role", "owner"),
+				.withIndex("by_organization_workspace_role_user", (q) =>
+					q.eq("organizationId", scope.organizationId).eq("workspaceId", scope.workspaceId).eq("role", "owner"),
 				)
 				.first();
 			if (!ownerAssignment) {
@@ -861,7 +861,7 @@ describe("workspace billing check", () => {
 
 		const result = await t.query(internal.billing.check_credits, {
 			userId: scope.actorUserId,
-			workspaceId: scope.workspaceId,
+			organizationId: scope.organizationId,
 			minimumRequiredCents: 1,
 		});
 
@@ -871,13 +871,13 @@ describe("workspace billing check", () => {
 
 	test("checks the relevant payer snapshot", async () => {
 		const t = test_convex();
-		const userBilledScope = await seed_workspace_billing_scope(t, { billingMode: "user", member: true });
-		const ownerBilledScope = await seed_workspace_billing_scope(t, {
-			billingMode: "workspace_owner",
+		const userBilledScope = await seed_organization_billing_scope(t, { billingMode: "user", member: true });
+		const ownerBilledScope = await seed_organization_billing_scope(t, {
+			billingMode: "organization_owner",
 			member: true,
 		});
 		const { polarProductId } = await seed_free_product(t, {
-			polarProductId: "prod_workspace_context_relevant_payer",
+			polarProductId: "prod_organization_context_relevant_payer",
 		});
 		await seed_billing_usage_snapshot(t, {
 			userId: ownerBilledScope.ownerId,
@@ -892,12 +892,12 @@ describe("workspace billing check", () => {
 
 		const userBilledResult = await t.query(internal.billing.check_credits, {
 			userId: userBilledScope.actorUserId,
-			workspaceId: userBilledScope.workspaceId,
+			organizationId: userBilledScope.organizationId,
 			minimumRequiredCents: 1,
 		});
 		const ownerBilledResult = await t.query(internal.billing.check_credits, {
 			userId: ownerBilledScope.actorUserId,
-			workspaceId: ownerBilledScope.workspaceId,
+			organizationId: ownerBilledScope.organizationId,
 			minimumRequiredCents: 1,
 		});
 
@@ -909,9 +909,9 @@ describe("workspace billing check", () => {
 
 	test("allows paid owner-billed usage even when the owner balance is negative", async () => {
 		const t = test_convex();
-		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner", member: true });
+		const scope = await seed_organization_billing_scope(t, { billingMode: "organization_owner", member: true });
 		const { polarProductId } = await seed_pay_as_you_go_product(t, {
-			polarProductId: "prod_workspace_paid_owner_negative",
+			polarProductId: "prod_organization_paid_owner_negative",
 		});
 		await seed_billing_usage_snapshot(t, {
 			userId: scope.ownerId,
@@ -921,7 +921,7 @@ describe("workspace billing check", () => {
 
 		const result = await t.query(internal.billing.check_credits, {
 			userId: scope.actorUserId,
-			workspaceId: scope.workspaceId,
+			organizationId: scope.organizationId,
 			minimumRequiredCents: 1,
 		});
 
@@ -931,9 +931,9 @@ describe("workspace billing check", () => {
 
 	test("blocks owner-billed member usage when the free owner is below the minimum", async () => {
 		const t = test_convex();
-		const scope = await seed_workspace_billing_scope(t, { billingMode: "workspace_owner", member: true });
+		const scope = await seed_organization_billing_scope(t, { billingMode: "organization_owner", member: true });
 		const { polarProductId } = await seed_free_product(t, {
-			polarProductId: "prod_workspace_free_owner_zero",
+			polarProductId: "prod_organization_free_owner_zero",
 		});
 		await seed_billing_usage_snapshot(t, {
 			userId: scope.ownerId,
@@ -943,7 +943,7 @@ describe("workspace billing check", () => {
 
 		const result = await t.query(internal.billing.check_credits, {
 			userId: scope.actorUserId,
-			workspaceId: scope.workspaceId,
+			organizationId: scope.organizationId,
 			minimumRequiredCents: 1,
 		});
 
@@ -4193,13 +4193,13 @@ describe("ingest_events", () => {
 						name: "file_save",
 						externalCustomerId: billedUserId,
 						externalMemberId: actorUserId,
-						externalId: `file_save::${billedUserId}::${actorUserId}::workspace_1::project_1::file_1::1`,
+						externalId: `file_save::${billedUserId}::${actorUserId}::organization_1::workspace_1::file_1::1`,
 						metadata: {
 							amount: 1,
 							actorUserId,
 							billedUserId,
+							organizationId: "organization_1",
 							workspaceId: "workspace_1",
-							projectId: "project_1",
 							nodeId: "file_1",
 							yjsSequence: "1",
 						},
@@ -4334,8 +4334,8 @@ describe("ingest_events", () => {
 								amount: 1,
 								actorUserId: userId,
 								billedUserId: userId,
+								organizationId: "organization_1",
 								workspaceId: "workspace_1",
-								projectId: "project_1",
 								nodeId: "file_1",
 								yjsSequence: "1",
 							},

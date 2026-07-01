@@ -9,38 +9,38 @@ import { AppNotifications } from "@/components/app-notifications.tsx";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import {
-	MainAppHeaderWorkspaceSwitcherModal,
-	type MainAppHeaderWorkspaceSwitcherModal_ListItem,
-	type MainAppHeaderWorkspaceSwitcherModal_Props,
-	type MainAppHeaderWorkspaceSwitcherModal_EditTarget,
-	type MainAppHeaderWorkspaceSwitcherModal_BillingTarget,
-} from "@/components/main-app-header-workspace-controls-modal.tsx";
+	MainAppHeaderOrganizationSwitcherModal,
+	type MainAppHeaderOrganizationSwitcherModal_ListItem,
+	type MainAppHeaderOrganizationSwitcherModal_Props,
+	type MainAppHeaderOrganizationSwitcherModal_EditTarget,
+	type MainAppHeaderOrganizationSwitcherModal_BillingTarget,
+} from "@/components/main-app-header-organization-controls-modal.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyModal, MyModalTrigger } from "@/components/my-modal.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import type { AppElementId } from "@/lib/dom-utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { app_tenant_default_project_for_workspace, app_tenant_primary_project_for_workspace } from "@/lib/urls.ts";
-import { workspaces_switcher_list_secondary_line } from "@/lib/workspaces.ts";
+import { app_tenant_default_workspace_for_organization, app_tenant_primary_workspace_for_organization } from "@/lib/urls.ts";
+import { organizations_switcher_list_secondary_line } from "@/lib/organizations.ts";
 import { cn } from "@/lib/utils.ts";
 import { quotas } from "../../shared/quotas.ts";
 
-// #region workspace controls
-type MainAppHeaderWorkspaceControls_ClassNames =
-	| "MainAppHeaderWorkspaceControls"
-	| "MainAppHeaderWorkspaceControls-button"
-	| "MainAppHeaderWorkspaceControls-text"
-	| "MainAppHeaderWorkspaceControls-primary-text"
-	| "MainAppHeaderWorkspaceControls-secondary-text"
-	| "MainAppHeaderWorkspaceControls-icon";
+// #region organization controls
+type MainAppHeaderOrganizationControls_ClassNames =
+	| "MainAppHeaderOrganizationControls"
+	| "MainAppHeaderOrganizationControls-button"
+	| "MainAppHeaderOrganizationControls-text"
+	| "MainAppHeaderOrganizationControls-primary-text"
+	| "MainAppHeaderOrganizationControls-secondary-text"
+	| "MainAppHeaderOrganizationControls-icon";
 
-type MainAppHeaderWorkspaceControls_LocalDraft = {
-	workspaceId: app_convex_Id<"workspaces">;
-	projectId: app_convex_Id<"workspaces_projects">;
+type MainAppHeaderOrganizationControls_LocalDraft = {
+	organizationId: app_convex_Id<"organizations">;
+	workspaceId: app_convex_Id<"organizations_workspaces">;
 };
 
-function main_app_header_workspace_controls_move_list_item_to_front_by_id<T extends { id: string }>(
+function main_app_header_organization_controls_move_list_item_to_front_by_id<T extends { id: string }>(
 	items: T[],
 	id: string | undefined,
 ): T[] {
@@ -58,27 +58,27 @@ function main_app_header_workspace_controls_move_list_item_to_front_by_id<T exte
 	return picked ? [picked, ...next] : items;
 }
 
-function main_app_header_workspace_controls_quota_tooltip(args: {
-	kind: "project" | "workspace";
+function main_app_header_organization_controls_quota_tooltip(args: {
+	kind: "workspace" | "organization";
 	currentCount: number | undefined;
 	maxCount: number | undefined;
 }) {
 	const { kind, currentCount, maxCount } = args;
 
 	if (currentCount === undefined || maxCount === undefined) {
-		return kind === "workspace" ? "Loading workspace quota." : "Loading project quota.";
+		return kind === "organization" ? "Loading organization quota." : "Loading workspace quota.";
 	}
 
 	const maxTotal = 1 + maxCount;
 	const remaining = Math.max(0, maxTotal - currentCount);
 
-	return kind === "workspace"
-		? `Using ${currentCount} of ${maxTotal} total workspaces. ${remaining} remaining available.`
-		: `Using ${currentCount} of ${maxTotal} total projects in this workspace. ${remaining} remaining available.`;
+	return kind === "organization"
+		? `Using ${currentCount} of ${maxTotal} total organizations. ${remaining} remaining available.`
+		: `Using ${currentCount} of ${maxTotal} total workspaces in this organization. ${remaining} remaining available.`;
 }
 
-function main_app_header_workspace_controls_create_disabled_tooltip(args: {
-	kind: "project" | "workspace";
+function main_app_header_organization_controls_create_disabled_tooltip(args: {
+	kind: "workspace" | "organization";
 	createDisabled: boolean;
 	createDisabledReason: string | undefined;
 	maxCount: number | undefined;
@@ -94,44 +94,44 @@ function main_app_header_workspace_controls_create_disabled_tooltip(args: {
 	}
 
 	if (maxCount === undefined) {
-		return kind === "workspace" ? "Loading workspace quota." : "Loading project quota.";
+		return kind === "organization" ? "Loading organization quota." : "Loading workspace quota.";
 	}
 
 	const maxTotal = 1 + maxCount;
 
-	return kind === "workspace"
-		? `All ${maxTotal} available workspace slots are already in use.`
-		: `All ${maxTotal} available project slots in this workspace are already in use.`;
+	return kind === "organization"
+		? `All ${maxTotal} available organization slots are already in use.`
+		: `All ${maxTotal} available workspace slots in this organization are already in use.`;
 }
 
-const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceControls() {
+const MainAppHeaderOrganizationControls = memo(function MainAppHeaderOrganizationControls() {
 	const navigate = useNavigate();
 	const auth = AppAuthProvider.useAuth();
 
-	const { workspaceId, workspaceName, projectId, projectName } = AppTenantProvider.useContext();
+	const { organizationId, organizationName, workspaceId, workspaceName } = AppTenantProvider.useContext();
 
-	const workspaceList = useQuery(app_convex_api.workspaces.list);
+	const organizationList = useQuery(app_convex_api.organizations.list);
 
 	const [isOpen, setIsOpen] = useState(false);
-	const [localDraft, setLocalDraft] = useState<MainAppHeaderWorkspaceControls_LocalDraft | null>(null);
-	const [editTarget, setEditTarget] = useState<MainAppHeaderWorkspaceSwitcherModal_EditTarget | null>(null);
-	const [billingTarget, setBillingTarget] = useState<MainAppHeaderWorkspaceSwitcherModal_BillingTarget | null>(null);
+	const [localDraft, setLocalDraft] = useState<MainAppHeaderOrganizationControls_LocalDraft | null>(null);
+	const [editTarget, setEditTarget] = useState<MainAppHeaderOrganizationSwitcherModal_EditTarget | null>(null);
+	const [billingTarget, setBillingTarget] = useState<MainAppHeaderOrganizationSwitcherModal_BillingTarget | null>(null);
 
-	const workspaces = workspaceList?.workspaces;
-	const projects = workspaceId ? workspaceList?.workspaceIdsProjectsDict[workspaceId] : undefined;
+	const organizations = organizationList?.organizations;
+	const workspaces = organizationId ? organizationList?.organizationIdsWorkspacesDict[organizationId] : undefined;
 
-	const workspaceRoleQueryResults = useQueries(
+	const organizationRoleQueryResults = useQueries(
 		Object.fromEntries(
-			(workspaces ?? []).flatMap((w) =>
-				w.defaultProjectId
+			(organizations ?? []).flatMap((w) =>
+				w.defaultWorkspaceId
 					? [
 							[
 								w._id,
 								{
 									query: app_convex_api.access_control.get_current_user_role,
 									args: {
-										workspaceId: w._id,
-										projectId: w.defaultProjectId,
+										organizationId: w._id,
+										workspaceId: w.defaultWorkspaceId,
 									},
 								},
 							] as const,
@@ -141,167 +141,167 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 		),
 	);
 
+	const draftOrganizationId = localDraft?.organizationId ?? organizationId;
 	const draftWorkspaceId = localDraft?.workspaceId ?? workspaceId;
-	const draftProjectId = localDraft?.projectId ?? projectId;
-	const createWorkspaceQuota = useQuery(
+	const createOrganizationQuota = useQuery(
 		app_convex_api.quotas.get,
 		auth.userId
 			? {
-					quotaName: "extra_workspaces",
+					quotaName: "extra_organizations",
 					userId: auth.userId,
 				}
 			: "skip",
 	);
-	const draftProjectCreateQuota = useQuery(
+	const draftWorkspaceCreateQuota = useQuery(
 		app_convex_api.quotas.get,
-		draftWorkspaceId
+		draftOrganizationId
 			? {
-					quotaName: "extra_projects",
-					workspaceId: draftWorkspaceId,
+					quotaName: "extra_workspaces",
+					organizationId: draftOrganizationId,
 				}
 			: "skip",
 	);
 
-	const draftProjects =
-		draftWorkspaceId && workspaceList ? workspaceList.workspaceIdsProjectsDict[draftWorkspaceId] : undefined;
+	const draftWorkspaces =
+		draftOrganizationId && organizationList ? organizationList.organizationIdsWorkspacesDict[draftOrganizationId] : undefined;
 
-	const currentWorkspaceName = workspaces?.find((w) => w._id === workspaceId)?.name ?? workspaceName ?? "…";
-	const currentProjectName = projects?.find((p) => p._id === projectId)?.name ?? projectName ?? "…";
+	const currentOrganizationName = organizations?.find((w) => w._id === organizationId)?.name ?? organizationName ?? "…";
+	const currentWorkspaceName = workspaces?.find((p) => p._id === workspaceId)?.name ?? workspaceName ?? "…";
 
-	const draftWorkspaceRecord = workspaces?.find((w) => w._id === draftWorkspaceId);
-	const draftWorkspaceName = draftWorkspaceRecord?.name ?? workspaceName ?? "…";
+	const draftOrganizationRecord = organizations?.find((w) => w._id === draftOrganizationId);
+	const draftOrganizationName = draftOrganizationRecord?.name ?? organizationName ?? "…";
 
-	const listLoaded = workspaces !== undefined;
-	const createWorkspaceRemainingCount = createWorkspaceQuota
-		? Math.max(0, createWorkspaceQuota.maxCount - createWorkspaceQuota.usedCount)
+	const listLoaded = organizations !== undefined;
+	const createOrganizationRemainingCount = createOrganizationQuota
+		? Math.max(0, createOrganizationQuota.maxCount - createOrganizationQuota.usedCount)
 		: undefined;
-	const createProjectRemainingCount = draftProjectCreateQuota
-		? Math.max(0, draftProjectCreateQuota.maxCount - draftProjectCreateQuota.usedCount)
+	const createWorkspaceRemainingCount = draftWorkspaceCreateQuota
+		? Math.max(0, draftWorkspaceCreateQuota.maxCount - draftWorkspaceCreateQuota.usedCount)
 		: undefined;
+	const createOrganizationDisabled =
+		!listLoaded || createOrganizationRemainingCount === undefined || createOrganizationRemainingCount <= 0;
 	const createWorkspaceDisabled =
 		!listLoaded || createWorkspaceRemainingCount === undefined || createWorkspaceRemainingCount <= 0;
-	const createProjectDisabled =
-		!listLoaded || createProjectRemainingCount === undefined || createProjectRemainingCount <= 0;
-	const createWorkspaceDisabledReason = main_app_header_workspace_controls_create_disabled_tooltip({
+	const createOrganizationDisabledReason = main_app_header_organization_controls_create_disabled_tooltip({
+		kind: "organization",
+		createDisabled: createOrganizationDisabled,
+		createDisabledReason:
+			createOrganizationRemainingCount !== undefined && createOrganizationRemainingCount <= 0
+				? quotas.extra_organizations.disabledReason
+				: undefined,
+		maxCount: createOrganizationQuota?.maxCount,
+	});
+	const createWorkspaceDisabledReason = main_app_header_organization_controls_create_disabled_tooltip({
 		kind: "workspace",
 		createDisabled: createWorkspaceDisabled,
 		createDisabledReason:
 			createWorkspaceRemainingCount !== undefined && createWorkspaceRemainingCount <= 0
 				? quotas.extra_workspaces.disabledReason
 				: undefined,
-		maxCount: createWorkspaceQuota?.maxCount,
+		maxCount: draftWorkspaceCreateQuota?.maxCount,
 	});
-	const createProjectDisabledReason = main_app_header_workspace_controls_create_disabled_tooltip({
-		kind: "project",
-		createDisabled: createProjectDisabled,
-		createDisabledReason:
-			createProjectRemainingCount !== undefined && createProjectRemainingCount <= 0
-				? quotas.extra_projects.disabledReason
-				: undefined,
-		maxCount: draftProjectCreateQuota?.maxCount,
-	});
-	const workspaceQuotaFraction = auth.userId
-		? workspaces && createWorkspaceQuota
-			? `${workspaces.length}/${1 + createWorkspaceQuota.maxCount}`
+	const organizationQuotaFraction = auth.userId
+		? organizations && createOrganizationQuota
+			? `${organizations.length}/${1 + createOrganizationQuota.maxCount}`
 			: "…/…"
 		: undefined;
-	const projectQuotaFraction = auth.userId
-		? draftProjects && draftProjectCreateQuota
-			? `${draftProjects.length}/${1 + draftProjectCreateQuota.maxCount}`
+	const workspaceQuotaFraction = auth.userId
+		? draftWorkspaces && draftWorkspaceCreateQuota
+			? `${draftWorkspaces.length}/${1 + draftWorkspaceCreateQuota.maxCount}`
 			: "…/…"
+		: undefined;
+	const organizationQuotaTooltip = auth.userId
+		? main_app_header_organization_controls_quota_tooltip({
+				kind: "organization",
+				currentCount: organizations?.length,
+				maxCount: createOrganizationQuota?.maxCount,
+			})
 		: undefined;
 	const workspaceQuotaTooltip = auth.userId
-		? main_app_header_workspace_controls_quota_tooltip({
+		? main_app_header_organization_controls_quota_tooltip({
 				kind: "workspace",
-				currentCount: workspaces?.length,
-				maxCount: createWorkspaceQuota?.maxCount,
-			})
-		: undefined;
-	const projectQuotaTooltip = auth.userId
-		? main_app_header_workspace_controls_quota_tooltip({
-				kind: "project",
-				currentCount: draftProjects?.length,
-				maxCount: draftProjectCreateQuota?.maxCount,
+				currentCount: draftWorkspaces?.length,
+				maxCount: draftWorkspaceCreateQuota?.maxCount,
 			})
 		: undefined;
 
-	const switchDisabled = !listLoaded || (draftWorkspaceId === workspaceId && draftProjectId === projectId);
+	const switchDisabled = !listLoaded || (draftOrganizationId === organizationId && draftWorkspaceId === workspaceId);
 
-	const navigateToWorkspaceProject = useFn((nextWorkspaceName: string, nextProjectName: string) => {
+	const navigateToOrganizationWorkspace = useFn((nextOrganizationName: string, nextWorkspaceName: string) => {
 		// Keep the current leaf route and replace only the tenant path params.
 		navigate({
 			to: ".",
 			params: (current) => ({
 				...current,
+				organizationName: nextOrganizationName,
 				workspaceName: nextWorkspaceName,
-				projectName: nextProjectName,
 			}),
 		});
 		setIsOpen(false);
 	});
 
-	const workspaceItems: MainAppHeaderWorkspaceSwitcherModal_ListItem[] =
-		main_app_header_workspace_controls_move_list_item_to_front_by_id(
-			(workspaces ?? []).map((w) => {
-				const currentUserWorkspaceRoleResult = workspaceRoleQueryResults[w._id];
-				const currentUserWorkspaceRole =
-					currentUserWorkspaceRoleResult instanceof Error || currentUserWorkspaceRoleResult === undefined
+	const organizationItems: MainAppHeaderOrganizationSwitcherModal_ListItem[] =
+		main_app_header_organization_controls_move_list_item_to_front_by_id(
+			(organizations ?? []).map((w) => {
+				const currentUserOrganizationRoleResult = organizationRoleQueryResults[w._id];
+				const currentUserOrganizationRole =
+					currentUserOrganizationRoleResult instanceof Error || currentUserOrganizationRoleResult === undefined
 						? null
-						: currentUserWorkspaceRoleResult;
-				const ownsWorkspace = !w.default && w.ownerUserId === auth.userId;
-				const primaryProject = workspaceList
-					? app_tenant_primary_project_for_workspace({
-							workspace: w,
-							projects: workspaceList.workspaceIdsProjectsDict[w._id] ?? [],
+						: currentUserOrganizationRoleResult;
+				const ownsOrganization = !w.default && w.ownerUserId === auth.userId;
+				const primaryWorkspace = organizationList
+					? app_tenant_primary_workspace_for_organization({
+							organization: w,
+							workspaces: organizationList.organizationIdsWorkspacesDict[w._id] ?? [],
 						})
 					: null;
 
 				return {
 					id: w._id,
 					label: w.name,
-					description: workspaces_switcher_list_secondary_line({
+					description: organizations_switcher_list_secondary_line({
 						storedDescription: w.description ?? "",
-						isDefaultWorkspace: w.default,
-						isPrimaryProject: false,
+						isDefaultOrganization: w.default,
+						isPrimaryWorkspace: false,
 					}),
 					isDefault: w.default,
-					ownershipBadge: w.default ? "personal" : ownsWorkspace ? "owner" : "member",
+					ownershipBadge: w.default ? "personal" : ownsOrganization ? "owner" : "member",
 					billingBadge: w.default
 						? undefined
 						: w.billingMode === "user"
 							? "members_pay"
-							: ownsWorkspace
+							: ownsOrganization
 								? "my_balance"
 								: "owner_pays",
 					onManageBilling:
-						w.default || currentUserWorkspaceRole !== "owner"
+						w.default || currentUserOrganizationRole !== "owner"
 							? undefined
 							: () => {
 									setBillingTarget({
-										workspaceId: w._id,
-										workspaceName: w.name,
+										organizationId: w._id,
+										organizationName: w.name,
 										billingMode: w.billingMode,
 									});
 								},
 					onEdit:
-						w.default || !primaryProject
+						w.default || !primaryWorkspace
 							? undefined
 							: () => {
 									setEditTarget({
-										kind: "workspace",
+										kind: "organization",
 										id: w._id,
 										initialName: w.name,
 										initialDescription: w.description ?? "",
-										defaultProjectId: primaryProject._id as app_convex_Id<"workspaces_projects">,
+										defaultWorkspaceId: primaryWorkspace._id as app_convex_Id<"organizations_workspaces">,
 									});
 								},
 					onDelete:
-						w.default || currentUserWorkspaceRole !== "owner"
+						w.default || currentUserOrganizationRole !== "owner"
 							? undefined
 							: () => {
 									void (async (/* iife */) => {
-										const result = await app_convex.mutation(app_convex_api.workspaces.delete_workspace, {
-											workspaceId: w._id,
+										const result = await app_convex.mutation(app_convex_api.organizations.delete_organization, {
+											organizationId: w._id,
 										});
 
 										if (result == null) {
@@ -309,124 +309,124 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 										}
 
 										if (result._nay) {
-											console.error("[MainAppHeaderWorkspaceControls] Failed to delete workspace", {
+											console.error("[MainAppHeaderOrganizationControls] Failed to delete organization", {
 												result,
-												workspaceId: w._id,
+												organizationId: w._id,
 											});
 											return;
 										}
 
-										await app_convex.query(app_convex_api.workspaces.list, {});
+										await app_convex.query(app_convex_api.organizations.list, {});
 
-										if (w._id === workspaceId && workspaces && workspaceList) {
-											const remaining = workspaces.filter((row) => row._id !== w._id);
+										if (w._id === organizationId && organizations && organizationList) {
+											const remaining = organizations.filter((row) => row._id !== w._id);
 											const fallback = remaining[0];
 											if (!fallback) {
 												return;
 											}
 
-											const defaultProject = app_tenant_default_project_for_workspace({
-												workspace: fallback,
-												projects: workspaceList.workspaceIdsProjectsDict[fallback._id] ?? [],
+											const defaultWorkspace = app_tenant_default_workspace_for_organization({
+												organization: fallback,
+												workspaces: organizationList.organizationIdsWorkspacesDict[fallback._id] ?? [],
 											});
 
-											if (!defaultProject) {
+											if (!defaultWorkspace) {
 												console.error(
-													"[MainAppHeaderWorkspaceControls] Failed to resolve default project after workspace delete",
-													{ workspaceId: fallback._id },
+													"[MainAppHeaderOrganizationControls] Failed to resolve default workspace after organization delete",
+													{ organizationId: fallback._id },
 												);
 												return;
 											}
 
-											navigateToWorkspaceProject(fallback.name, defaultProject.name);
+											navigateToOrganizationWorkspace(fallback.name, defaultWorkspace.name);
 											return;
 										}
 
-										if (w._id === draftWorkspaceId && w._id !== workspaceId && workspaceId && projectId) {
-											setLocalDraft({ workspaceId, projectId });
+										if (w._id === draftOrganizationId && w._id !== organizationId && organizationId && workspaceId) {
+											setLocalDraft({ organizationId, workspaceId });
 										}
 									})().catch((error) => {
-										console.error("[MainAppHeaderWorkspaceControls] Unexpected delete workspace error", {
+										console.error("[MainAppHeaderOrganizationControls] Unexpected delete organization error", {
 											error,
-											workspaceId: w._id,
+											organizationId: w._id,
 										});
 									});
 								},
 					onSelect: () => {
-						if (w._id === draftWorkspaceId) {
+						if (w._id === draftOrganizationId) {
 							return;
 						}
 
-						if (!workspaceList) {
-							console.error("[MainAppHeaderWorkspaceControls] Workspace list not loaded");
+						if (!organizationList) {
+							console.error("[MainAppHeaderOrganizationControls] Organization list not loaded");
 							return;
 						}
 
-						const defaultProject = app_tenant_default_project_for_workspace({
-							workspace: w,
-							projects: workspaceList.workspaceIdsProjectsDict[w._id] ?? [],
+						const defaultWorkspace = app_tenant_default_workspace_for_organization({
+							organization: w,
+							workspaces: organizationList.organizationIdsWorkspacesDict[w._id] ?? [],
 						});
 
-						if (!defaultProject) {
-							console.error("[MainAppHeaderWorkspaceControls] Failed to resolve default project for workspace", {
-								workspaceId: w._id,
+						if (!defaultWorkspace) {
+							console.error("[MainAppHeaderOrganizationControls] Failed to resolve default workspace for organization", {
+								organizationId: w._id,
 							});
 							return;
 						}
 
 						setLocalDraft({
-							workspaceId: w._id,
-							projectId: defaultProject._id as app_convex_Id<"workspaces_projects">,
+							organizationId: w._id,
+							workspaceId: defaultWorkspace._id as app_convex_Id<"organizations_workspaces">,
 						});
 					},
 				};
 			}),
-			workspaceId,
+			organizationId,
 		);
 
-	const projectItemsRaw: MainAppHeaderWorkspaceSwitcherModal_ListItem[] = (draftProjects ?? []).map((p) => {
-		const primaryProject =
-			draftWorkspaceRecord && workspaceList
-				? app_tenant_primary_project_for_workspace({
-						workspace: draftWorkspaceRecord,
-						projects: workspaceList.workspaceIdsProjectsDict[draftWorkspaceRecord._id] ?? [],
+	const workspaceItemsRaw: MainAppHeaderOrganizationSwitcherModal_ListItem[] = (draftWorkspaces ?? []).map((p) => {
+		const primaryWorkspace =
+			draftOrganizationRecord && organizationList
+				? app_tenant_primary_workspace_for_organization({
+						organization: draftOrganizationRecord,
+						workspaces: organizationList.organizationIdsWorkspacesDict[draftOrganizationRecord._id] ?? [],
 					})
 				: null;
-		const projectIsPrimary = primaryProject?._id === p._id;
+		const workspaceIsPrimary = primaryWorkspace?._id === p._id;
 
 		return {
 			id: p._id,
 			label: p.name,
-			description: workspaces_switcher_list_secondary_line({
+			description: organizations_switcher_list_secondary_line({
 				storedDescription: p.description ?? "",
-				isDefaultWorkspace: false,
-				isPrimaryProject: projectIsPrimary,
+				isDefaultOrganization: false,
+				isPrimaryWorkspace: workspaceIsPrimary,
 			}),
 			isDefault: p.default,
 			onEdit:
-				projectIsPrimary || !primaryProject
+				workspaceIsPrimary || !primaryWorkspace
 					? undefined
 					: () => {
-							if (!draftWorkspaceRecord) {
-								console.error("[MainAppHeaderWorkspaceControls] Missing draft workspace for project edit");
+							if (!draftOrganizationRecord) {
+								console.error("[MainAppHeaderOrganizationControls] Missing draft organization for workspace edit");
 								return;
 							}
 
 							setEditTarget({
-								kind: "project",
+								kind: "workspace",
 								id: p._id,
 								initialName: p.name,
 								initialDescription: p.description ?? "",
-								workspaceId: draftWorkspaceRecord._id,
-								defaultProjectId: primaryProject._id as app_convex_Id<"workspaces_projects">,
+								organizationId: draftOrganizationRecord._id,
+								defaultWorkspaceId: primaryWorkspace._id as app_convex_Id<"organizations_workspaces">,
 							});
 						},
 			onDelete: p.default
 				? undefined
 				: () => {
 						void (async (/* iife */) => {
-							const result = await app_convex.mutation(app_convex_api.workspaces.delete_project, {
-								projectId: p._id,
+							const result = await app_convex.mutation(app_convex_api.organizations.delete_workspace, {
+								workspaceId: p._id,
 							});
 
 							if (result == null) {
@@ -434,150 +434,151 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 							}
 
 							if (result._nay) {
-								console.error("[MainAppHeaderWorkspaceControls] Failed to delete project", {
+								console.error("[MainAppHeaderOrganizationControls] Failed to delete workspace", {
 									result,
-									projectId: p._id,
+									workspaceId: p._id,
 								});
 								return;
 							}
 
-							await app_convex.query(app_convex_api.workspaces.list, {});
+							await app_convex.query(app_convex_api.organizations.list, {});
 
-							if (p._id === projectId && workspaceId && projects && workspaces) {
-								const ws = workspaces.find((row) => row._id === workspaceId);
+							if (p._id === workspaceId && organizationId && workspaces && organizations) {
+								const ws = organizations.find((row) => row._id === organizationId);
 								if (!ws) {
 									return;
 								}
 
-								const remaining = projects.filter((row) => row._id !== p._id);
+								const remaining = workspaces.filter((row) => row._id !== p._id);
 								const fallback = remaining.find((row) => row.default) ?? remaining[0];
 								if (!fallback) {
 									return;
 								}
 
-								navigateToWorkspaceProject(ws.name, fallback.name);
+								navigateToOrganizationWorkspace(ws.name, fallback.name);
 								return;
 							}
 
-							if (p._id === draftProjectId && draftWorkspaceId && workspaceList) {
-								const projs = workspaceList.workspaceIdsProjectsDict[draftWorkspaceId] ?? [];
+							if (p._id === draftWorkspaceId && draftOrganizationId && organizationList) {
+								const nextWorkspaces = organizationList.organizationIdsWorkspacesDict[draftOrganizationId] ?? [];
 								const fallback =
-									projs.find((row) => row._id !== p._id && row.default) ?? projs.find((row) => row._id !== p._id);
+									nextWorkspaces.find((row) => row._id !== p._id && row.default) ??
+									nextWorkspaces.find((row) => row._id !== p._id);
 								if (!fallback) {
-									if (workspaceId && projectId) {
-										setLocalDraft({ workspaceId, projectId });
+									if (organizationId && workspaceId) {
+										setLocalDraft({ organizationId, workspaceId });
 									}
 									return;
 								}
 
 								setLocalDraft({
-									workspaceId: draftWorkspaceId,
-									projectId: fallback._id as app_convex_Id<"workspaces_projects">,
+									organizationId: draftOrganizationId,
+									workspaceId: fallback._id as app_convex_Id<"organizations_workspaces">,
 								});
 							}
 						})().catch((error) => {
-							console.error("[MainAppHeaderWorkspaceControls] Unexpected delete project error", {
+							console.error("[MainAppHeaderOrganizationControls] Unexpected delete workspace error", {
 								error,
-								projectId: p._id,
+								workspaceId: p._id,
 							});
 						});
 					},
 			onSelect: () => {
-				if (p._id === draftProjectId) {
+				if (p._id === draftWorkspaceId) {
 					return;
 				}
 
 				setLocalDraft({
-					workspaceId: draftWorkspaceId,
-					projectId: p._id,
+					organizationId: draftOrganizationId,
+					workspaceId: p._id,
 				});
 			},
 		};
 	});
 
-	const projectItems =
-		draftWorkspaceId === workspaceId
-			? main_app_header_workspace_controls_move_list_item_to_front_by_id(projectItemsRaw, projectId)
-			: projectItemsRaw;
+	const workspaceItems =
+		draftOrganizationId === organizationId
+			? main_app_header_organization_controls_move_list_item_to_front_by_id(workspaceItemsRaw, workspaceId)
+			: workspaceItemsRaw;
 
-	const handleWorkspaceSwitcherSwitch = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["onSwitch"]>(() => {
-		if (!workspaceList || !workspaces) {
-			console.error("[MainAppHeaderWorkspaceControls] Workspace list not loaded");
+	const handleOrganizationSwitcherSwitch = useFn<MainAppHeaderOrganizationSwitcherModal_Props["onSwitch"]>(() => {
+		if (!organizationList || !organizations) {
+			console.error("[MainAppHeaderOrganizationControls] Organization list not loaded");
 			return;
 		}
 
-		const nextWorkspace = workspaces.find((w) => w._id === draftWorkspaceId);
-		const nextProjects = workspaceList.workspaceIdsProjectsDict[draftWorkspaceId] ?? [];
-		const nextProject = nextProjects.find((p) => p._id === draftProjectId);
+		const nextOrganization = organizations.find((w) => w._id === draftOrganizationId);
+		const nextWorkspaces = organizationList.organizationIdsWorkspacesDict[draftOrganizationId] ?? [];
+		const nextWorkspace = nextWorkspaces.find((p) => p._id === draftWorkspaceId);
 
-		if (!nextWorkspace || !nextProject) {
-			console.error("[MainAppHeaderWorkspaceControls] Failed to resolve draft workspace/project", {
+		if (!nextOrganization || !nextWorkspace) {
+			console.error("[MainAppHeaderOrganizationControls] Failed to resolve draft organization/workspace", {
+				draftOrganizationId,
 				draftWorkspaceId,
-				draftProjectId,
 			});
 			return;
 		}
 
-		navigateToWorkspaceProject(nextWorkspace.name, nextProject.name);
+		navigateToOrganizationWorkspace(nextOrganization.name, nextWorkspace.name);
 	});
 
-	const handleWorkspaceSwitcherAfterCreate = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["onAfterCreateWorkspace"]>(
+	const handleOrganizationSwitcherAfterCreate = useFn<MainAppHeaderOrganizationSwitcherModal_Props["onAfterCreateOrganization"]>(
 		(selection) => {
 			setLocalDraft({
+				organizationId: selection.organizationId,
 				workspaceId: selection.workspaceId,
-				projectId: selection.projectId,
 			});
 		},
 	);
 
-	const handleWorkspaceSwitcherAfterEdit = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["onAfterEdit"]>((args) => {
-		if (args.kind === "workspace") {
-			if (workspaceId === args.workspaceId && currentWorkspaceName === args.oldName) {
-				navigateToWorkspaceProject(args.newName, currentProjectName);
+	const handleOrganizationSwitcherAfterEdit = useFn<MainAppHeaderOrganizationSwitcherModal_Props["onAfterEdit"]>((args) => {
+		if (args.kind === "organization") {
+			if (organizationId === args.organizationId && currentOrganizationName === args.oldName) {
+				navigateToOrganizationWorkspace(args.newName, currentWorkspaceName);
 			}
 			return;
 		}
 
-		if (args.projectId && projectId === args.projectId && currentProjectName === args.oldName) {
-			navigateToWorkspaceProject(currentWorkspaceName, args.newName);
+		if (args.workspaceId && workspaceId === args.workspaceId && currentWorkspaceName === args.oldName) {
+			navigateToOrganizationWorkspace(currentOrganizationName, args.newName);
 		}
 	});
 
-	const handleWorkspaceSwitcherCancel = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["onCancel"]>(() => {
+	const handleOrganizationSwitcherCancel = useFn<MainAppHeaderOrganizationSwitcherModal_Props["onCancel"]>(() => {
 		setIsOpen(false);
 	});
 
-	const handleWorkspaceSwitcherCreateWorkspace = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["createWorkspace"]>(
+	const handleOrganizationSwitcherCreateOrganization = useFn<MainAppHeaderOrganizationSwitcherModal_Props["createOrganization"]>(
 		(args) => {
-			return app_convex.mutation(app_convex_api.workspaces.create_workspace, args);
+			return app_convex.mutation(app_convex_api.organizations.create_organization, args);
 		},
 	);
 
-	const handleWorkspaceSwitcherCreateProject = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["createProject"]>(
+	const handleOrganizationSwitcherCreateWorkspace = useFn<MainAppHeaderOrganizationSwitcherModal_Props["createWorkspace"]>(
 		(args) => {
-			return app_convex.mutation(app_convex_api.workspaces.create_project, args);
+			return app_convex.mutation(app_convex_api.organizations.create_workspace, args);
 		},
 	);
 
-	const handleWorkspaceSwitcherEditWorkspace = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["editWorkspace"]>(
+	const handleOrganizationSwitcherEditOrganization = useFn<MainAppHeaderOrganizationSwitcherModal_Props["editOrganization"]>(
 		(args) => {
-			return app_convex.mutation(app_convex_api.workspaces.edit_workspace, args);
+			return app_convex.mutation(app_convex_api.organizations.edit_organization, args);
 		},
 	);
 
-	const handleWorkspaceSwitcherEditProject = useFn<MainAppHeaderWorkspaceSwitcherModal_Props["editProject"]>((args) => {
-		return app_convex.mutation(app_convex_api.workspaces.edit_project, args);
+	const handleOrganizationSwitcherEditWorkspace = useFn<MainAppHeaderOrganizationSwitcherModal_Props["editWorkspace"]>((args) => {
+		return app_convex.mutation(app_convex_api.organizations.edit_workspace, args);
 	});
 
-	const handleWorkspaceSwitcherSetWorkspaceBillingMode = useFn<
-		MainAppHeaderWorkspaceSwitcherModal_Props["setWorkspaceBillingMode"]
+	const handleOrganizationSwitcherSetOrganizationBillingMode = useFn<
+		MainAppHeaderOrganizationSwitcherModal_Props["setOrganizationBillingMode"]
 	>((args) => {
-		return app_convex.mutation(app_convex_api.workspaces.set_workspace_billing_mode, args);
+		return app_convex.mutation(app_convex_api.organizations.set_organization_billing_mode, args);
 	});
-	const workspaceControlsButtonLabel =
-		workspaces === undefined
-			? "Open workspace and project switcher. Current workspace and project are loading."
-			: `Open workspace and project switcher. Current workspace: ${currentWorkspaceName}. Current project: ${currentProjectName}.`;
+	const organizationControlsButtonLabel =
+		organizations === undefined
+			? "Open organization and workspace switcher. Current organization and workspace are loading."
+			: `Open organization and workspace switcher. Current organization: ${currentOrganizationName}. Current workspace: ${currentWorkspaceName}.`;
 
 	useEffect(() => {
 		if (!isOpen) {
@@ -586,81 +587,81 @@ const MainAppHeaderWorkspaceControls = memo(function MainAppHeaderWorkspaceContr
 			return;
 		}
 
-		if (!workspaceId || !projectId) {
+		if (!organizationId || !workspaceId) {
 			return;
 		}
 
-		setLocalDraft({ workspaceId, projectId });
-	}, [isOpen, workspaceId, projectId]);
+		setLocalDraft({ organizationId, workspaceId });
+	}, [isOpen, organizationId, workspaceId]);
 
 	return (
 		<MyModal open={isOpen} setOpen={setIsOpen}>
 			<MyModalTrigger>
 				<MyButton
-					className={"MainAppHeaderWorkspaceControls" satisfies MainAppHeaderWorkspaceControls_ClassNames}
+					className={"MainAppHeaderOrganizationControls" satisfies MainAppHeaderOrganizationControls_ClassNames}
 					variant="default"
-					aria-label={workspaceControlsButtonLabel}
+					aria-label={organizationControlsButtonLabel}
 				>
 					<span
 						className={cn(
-							"MainAppHeaderWorkspaceControls-primary-text" satisfies MainAppHeaderWorkspaceControls_ClassNames,
+							"MainAppHeaderOrganizationControls-primary-text" satisfies MainAppHeaderOrganizationControls_ClassNames,
 						)}
 					>
-						{workspaces === undefined ? "Loading…" : currentWorkspaceName}
+						{organizations === undefined ? "Loading…" : currentOrganizationName}
 					</span>
 
 					<span
 						className={cn(
-							"MainAppHeaderWorkspaceControls-secondary-text" satisfies MainAppHeaderWorkspaceControls_ClassNames,
+							"MainAppHeaderOrganizationControls-secondary-text" satisfies MainAppHeaderOrganizationControls_ClassNames,
 						)}
 					>
-						{projects === undefined ? "…" : currentProjectName}
+						{workspaces === undefined ? "…" : currentWorkspaceName}
 					</span>
 
 					<ChevronsUpDown
-						className={cn("MainAppHeaderWorkspaceControls-icon" satisfies MainAppHeaderWorkspaceControls_ClassNames)}
+						className={cn("MainAppHeaderOrganizationControls-icon" satisfies MainAppHeaderOrganizationControls_ClassNames)}
 					/>
 				</MyButton>
 			</MyModalTrigger>
 
-			<MainAppHeaderWorkspaceSwitcherModal
+			<MainAppHeaderOrganizationSwitcherModal
 				dialogOpen={isOpen}
 				listLoaded={listLoaded}
-				draftProjectId={draftProjectId}
 				draftWorkspaceId={draftWorkspaceId}
+				draftOrganizationId={draftOrganizationId}
+				summaryOrganizationName={currentOrganizationName}
 				summaryWorkspaceName={currentWorkspaceName}
-				summaryProjectName={currentProjectName}
-				workspaceName={draftWorkspaceName}
+				organizationName={draftOrganizationName}
+				organizationItems={organizationItems}
 				workspaceItems={workspaceItems}
-				projectItems={projectItems}
+				createOrganizationDisabled={createOrganizationDisabled}
+				createOrganizationDisabledReason={createOrganizationDisabledReason}
 				createWorkspaceDisabled={createWorkspaceDisabled}
 				createWorkspaceDisabledReason={createWorkspaceDisabledReason}
-				createProjectDisabled={createProjectDisabled}
-				createProjectDisabledReason={createProjectDisabledReason}
+				organizationQuotaFraction={organizationQuotaFraction}
+				organizationQuotaTooltip={organizationQuotaTooltip}
 				workspaceQuotaFraction={workspaceQuotaFraction}
 				workspaceQuotaTooltip={workspaceQuotaTooltip}
-				projectQuotaFraction={projectQuotaFraction}
-				projectQuotaTooltip={projectQuotaTooltip}
 				switchDisabled={switchDisabled}
 				editTarget={editTarget}
 				billingTarget={billingTarget}
-				createWorkspace={handleWorkspaceSwitcherCreateWorkspace}
-				createProject={handleWorkspaceSwitcherCreateProject}
-				editWorkspace={handleWorkspaceSwitcherEditWorkspace}
-				editProject={handleWorkspaceSwitcherEditProject}
+				createOrganization={handleOrganizationSwitcherCreateOrganization}
+				createWorkspace={handleOrganizationSwitcherCreateWorkspace}
+				editOrganization={handleOrganizationSwitcherEditOrganization}
+				editWorkspace={handleOrganizationSwitcherEditWorkspace}
 				setEditTarget={setEditTarget}
 				setBillingTarget={setBillingTarget}
-				setWorkspaceBillingMode={handleWorkspaceSwitcherSetWorkspaceBillingMode}
-				onAfterCreateWorkspace={handleWorkspaceSwitcherAfterCreate}
-				onAfterCreateProject={handleWorkspaceSwitcherAfterCreate}
-				onAfterEdit={handleWorkspaceSwitcherAfterEdit}
-				onCancel={handleWorkspaceSwitcherCancel}
-				onSwitch={handleWorkspaceSwitcherSwitch}
+				setOrganizationBillingMode={handleOrganizationSwitcherSetOrganizationBillingMode}
+				onAfterCreateOrganization={handleOrganizationSwitcherAfterCreate}
+				onAfterCreateWorkspace={handleOrganizationSwitcherAfterCreate}
+				onAfterEdit={handleOrganizationSwitcherAfterEdit}
+				onCancel={handleOrganizationSwitcherCancel}
+				onSwitch={handleOrganizationSwitcherSwitch}
 			/>
 		</MyModal>
 	);
 });
-// #endregion workspace controls
+// #endregion organization controls
 
 // #region root
 type MainAppHeader_ClassNames = "MainAppHeader" | "MainAppHeader-content" | "MainAppHeader-actions";
@@ -674,14 +675,14 @@ export const MainAppHeader = memo(function MainAppHeader(props: MainAppHeader_Pr
 	// FileNodeView renders its own inline billing indicator, so suppress the bar-level copy there.
 	const isFilesRoute =
 		useMatch({
-			from: "/w/$workspaceName/$projectName/files/",
+			from: "/w/$organizationName/$workspaceName/files/",
 			shouldThrow: false,
 			select: () => true,
 		}) ?? false;
 
 	return (
 		<header ref={ref} id={id} className={cn("MainAppHeader" satisfies MainAppHeader_ClassNames, className)} {...rest}>
-			<MainAppHeaderWorkspaceControls />
+			<MainAppHeaderOrganizationControls />
 			<div
 				id={"app_main_header_content" satisfies AppElementId}
 				className={cn("MainAppHeader-content" satisfies MainAppHeader_ClassNames)}

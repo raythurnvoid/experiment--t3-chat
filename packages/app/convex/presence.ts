@@ -49,8 +49,8 @@ export const heartbeat = mutation({
 
 		if (result.isNewSession) {
 			const memberships = await ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) => q.eq("active", true).eq("userId", userAuth.id))
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) => q.eq("active", true).eq("userId", userAuth.id))
 				.collect();
 
 			await Promise.all([
@@ -64,8 +64,8 @@ export const heartbeat = mutation({
 				// the user's scopes, so an active user never loses pending edits to expiry.
 				...memberships.map((membership) =>
 					files_db_reschedule_pending_update_cleanup_for_user(ctx, {
+						organizationId: membership.organizationId,
 						workspaceId: membership.workspaceId,
-						projectId: membership.projectId,
 						userId: userAuth.id,
 					}),
 				),

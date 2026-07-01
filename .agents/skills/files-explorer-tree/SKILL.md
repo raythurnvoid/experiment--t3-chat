@@ -11,7 +11,7 @@ Primary:
 - `../../../packages/app/src/components/file-node-view/files-sidebar.css`
 - `../../../packages/app/src/components/file-node-view/file-node-view.tsx`
 - `../../../packages/app/src/components/file-node-view/file-node-view.css`
-- `../../../packages/app/src/routes/w/$workspaceName/$projectName/files/index.tsx`
+- `../../../packages/app/src/routes/w/$organizationName/$workspaceName/files/index.tsx`
 - `../../../packages/app/convex/files_nodes.ts`
 - `../../../packages/app/convex/r2.ts`
 - `../../../packages/app/shared/files.ts`
@@ -51,7 +51,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Assets are the single R2 object metadata record for source binaries, live Markdown, compacted Yjs snapshots, and version snapshot Markdown. Owners point to assets; assets do not own relationships between source files and generated outputs.
 - Source/conversion metadata stays in DB/R2 metadata, not visible generated Markdown.
 - Upload status is derived in the UI from the selected node and its asset: missing `r2Key` is waiting for upload, `conversionWorkId` means processing, and `null` means terminal.
-- R2 asset keys use `workspaces/<workspaceId>/projects/<projectId>/assets/<assetId>` for every asset kind. Convex uses `files_r2_assets.kind` to decide upload finalization behavior.
+- R2 asset keys use `organizations/<organizationId>/workspaces/<workspaceId>/assets/<assetId>` for every asset kind. Convex uses `files_r2_assets.kind` to decide upload finalization behavior.
 - Upload max is 50 MiB; converted Markdown max is 900,000 bytes.
 
 # Uploaded Source And Generated Files

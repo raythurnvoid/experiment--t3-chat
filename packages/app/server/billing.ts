@@ -33,7 +33,7 @@ export const billing_POLAR_METER_EVENT = "press_usage_event";
  * - `name`: Redirected to `metadata.name`; Polar's `name` is always
  *   `billing_POLAR_METER_EVENT` because one meter tracks both charges and credits.
  * - `externalCustomerId`: Sent as Polar `externalCustomerId`; this is the
- *   Convex user id of the payer/billed user. Workspace usage may bill a
+ *   Convex user id of the payer/billed user. Organization usage may bill a
  *   different user than the actor who performed the operation.
  * - `externalMemberId`: Optional actor attribution for usage events. When
  *   present, Polar receives it as top-level member attribution; metadata always

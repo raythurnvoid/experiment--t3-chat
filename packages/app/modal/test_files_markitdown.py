@@ -112,7 +112,7 @@ def test_convert_stream_uses_filename_extension_and_content_type_hints(monkeypat
         "/markitdown",
         headers={"Authorization": "Bearer secret"},
         json={
-            "sourceUrl": "https://r2.test/workspaces/ws/projects/pr/nodes/node/source",
+            "sourceUrl": "https://r2.test/organizations/ws/workspaces/pr/nodes/node/source",
             "filename": "folder\\Annual Report.pdf",
             "contentType": " application/pdf ",
             "maxBytes": 100,
@@ -130,7 +130,7 @@ def test_convert_stream_uses_filename_extension_and_content_type_hints(monkeypat
     }
     assert fake_requests.calls == [
         {
-            "source_url": "https://r2.test/workspaces/ws/projects/pr/nodes/node/source",
+            "source_url": "https://r2.test/organizations/ws/workspaces/pr/nodes/node/source",
             "stream": True,
             "timeout": (10, 120),
         }

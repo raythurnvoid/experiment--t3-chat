@@ -256,15 +256,15 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 				dbFilesPath == null || dbFilesPath === "/"
 					? null
 					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+							organizationId: pathResolution.ctxData.organizationId,
 							workspaceId: pathResolution.ctxData.workspaceId,
-							projectId: pathResolution.ctxData.projectId,
 							path: dbFilesPath,
 						})) as files_nodes_get_by_path_Result);
 
 			if (dbFilesPath != null && (dbFilesPath === "/" || folderNode?.kind === "folder")) {
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
-					projectId: pathResolution.ctxData.projectId,
 					userId: pathResolution.ctxData.userId,
 					query: pattern,
 					numItems: TEXTGREP_RECURSIVE_PAGE_LIMIT,
@@ -305,7 +305,7 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 					blocks.push(
 						"",
 						bash_search_command_build_continuation({
-							currentProjectPath: pathResolution.basePath,
+							currentWorkspacePath: pathResolution.basePath,
 							path: dbFilesPath,
 							limit: TEXTGREP_RECURSIVE_PAGE_LIMIT,
 							cursor: cursorId,
@@ -345,8 +345,8 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 					dbFilesPath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+								organizationId: pathResolution.ctxData.organizationId,
 								workspaceId: pathResolution.ctxData.workspaceId,
-								projectId: pathResolution.ctxData.projectId,
 								path: dbFilesPath,
 							})) as files_nodes_get_by_path_Result);
 
@@ -359,8 +359,8 @@ export function bash_textgrep_command_create(ctx: ActionCtx, dbFilesRoots: bash_
 				}
 
 				const result = (await ctx.runQuery(internal.files_nodes.match_plain_text_file_lines, {
+					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
-					projectId: pathResolution.ctxData.projectId,
 					userId: pathResolution.ctxData.userId,
 					fileNodeId: dbFilesDoc._id,
 					pattern,

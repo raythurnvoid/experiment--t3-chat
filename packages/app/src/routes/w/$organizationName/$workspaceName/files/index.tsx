@@ -10,12 +10,12 @@ import { z } from "zod";
 const RouteFiles = memo(function RouteFiles() {
 	const navigate = Route.useNavigate();
 	const searchParams = Route.useSearch();
-	const { workspaceName, projectName } = AppTenantProvider.useContext();
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 
 	const handleNavigateSearch = useFn<FileNodeView_Props["onNavigateSearch"]>((search) => {
 		navigate({
-			to: "/w/$workspaceName/$projectName/files",
-			params: { workspaceName, projectName },
+			to: "/w/$organizationName/$workspaceName/files",
+			params: { organizationName, workspaceName },
 			search,
 		}).catch((error) => {
 			console.error("[RouteFiles.handleNavigateSearch] Error navigating to files search", { error, search });
@@ -25,7 +25,7 @@ const RouteFiles = memo(function RouteFiles() {
 	return <FileNodeView searchParams={searchParams} onNavigateSearch={handleNavigateSearch} />;
 });
 
-const Route = createFileRoute("/w/$workspaceName/$projectName/files/")({
+const Route = createFileRoute("/w/$organizationName/$workspaceName/files/")({
 	component: RouteFiles,
 	validateSearch: zodValidator(
 		z.object({

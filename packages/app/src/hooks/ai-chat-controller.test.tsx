@@ -38,8 +38,8 @@ const hookMocks = vi.hoisted(() => {
 	return {
 		tenant: {
 			membershipId: "membership_test",
+			organizationId: "organization_test",
 			workspaceId: "workspace_test",
-			projectId: "project_test",
 		},
 		threads: [] as Array<{ archived: boolean; [key: string]: unknown }>,
 		threadMessages: [] as Array<{
@@ -153,8 +153,8 @@ function createThread(args: { id: string; title?: string | null; clientGenerated
 	return {
 		_id: args.id,
 		_creationTime: 1,
+		organizationId: hookMocks.tenant.organizationId,
 		workspaceId: hookMocks.tenant.workspaceId,
-		projectId: hookMocks.tenant.projectId,
 		clientGeneratedId: args.clientGeneratedId ?? null,
 		title: args.title ?? null,
 		archived: args.archived ?? false,
@@ -407,8 +407,8 @@ function FullPageSurface(props: { children: ReactNode; initialSelectedThreadId?:
 describe("AiChatController", () => {
 	beforeEach(() => {
 		hookMocks.tenant.membershipId = `membership_${crypto.randomUUID()}`;
+		hookMocks.tenant.organizationId = "organization_test";
 		hookMocks.tenant.workspaceId = "workspace_test";
-		hookMocks.tenant.projectId = "project_test";
 		hookMocks.threads = [];
 		hookMocks.threadMessages = [];
 		hookMocks.chatInstances = [];

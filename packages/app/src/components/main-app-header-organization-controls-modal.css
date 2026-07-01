@@ -1,6 +1,6 @@
 @layer components {
 	/* #region root */
-	.MainAppHeaderWorkspaceSwitcherModal {
+	.MainAppHeaderOrganizationSwitcherModal {
 		display: flex;
 		flex-direction: column;
 
@@ -14,7 +14,7 @@
 	/* #endregion root */
 
 	/* #region body */
-	.MainAppHeaderWorkspaceSwitcherModal-body {
+	.MainAppHeaderOrganizationSwitcherModal-body {
 		display: flex;
 		flex-direction: column;
 		flex: 1 1 auto;
@@ -28,29 +28,29 @@
 		padding: 20px;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModal-summary {
+	.MainAppHeaderOrganizationSwitcherModal-summary {
 		font-size: 0.875rem;
 
 		text-box-trim: trim-both;
 		text-box-edge: cap alphabetic;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModal-summary-label {
+	.MainAppHeaderOrganizationSwitcherModal-summary-label {
 		color: var(--color-fg-07);
 
 		margin-right: 6px;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModal-summary-value {
+	.MainAppHeaderOrganizationSwitcherModal-summary-value {
 		color: var(--color-fg-11);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModal-summary-chevron {
+	.MainAppHeaderOrganizationSwitcherModal-summary-chevron {
 		color: var(--color-fg-07);
 		vertical-align: middle;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModal-columns {
+	.MainAppHeaderOrganizationSwitcherModal-columns {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr);
 		flex: 1 1 auto;
@@ -61,16 +61,16 @@
 		min-height: 0;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModal-columns > * {
+	.MainAppHeaderOrganizationSwitcherModal-columns > * {
 		min-height: 0;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModal-footer {
+	.MainAppHeaderOrganizationSwitcherModal-footer {
 		flex-shrink: 0;
 	}
 
 	@media (min-width: 520px) {
-		.MainAppHeaderWorkspaceSwitcherModal-columns {
+		.MainAppHeaderOrganizationSwitcherModal-columns {
 			grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 			gap: 20px;
 		}
@@ -78,21 +78,21 @@
 	/* #endregion body */
 
 	/* #region create modal */
-	.MyModalPopover.MainAppHeaderWorkspaceSwitcherModalCreateModal-sub {
+	.MyModalPopover.MainAppHeaderOrganizationSwitcherModalCreateModal-sub {
 		max-width: 440px;
 		width: min(94vw, 440px);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalCreateModal-create-form {
+	.MainAppHeaderOrganizationSwitcherModalCreateModal-create-form {
 		margin: 0;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-body {
+	.MainAppHeaderOrganizationSwitcherModalCreateModal-sub-body {
 		padding-top: 12px;
 		padding-bottom: 12px;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalCreateModal-sub-form {
+	.MainAppHeaderOrganizationSwitcherModalCreateModal-sub-form {
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
@@ -104,11 +104,11 @@
 	/* #endregion create modal */
 
 	/* #region create edit form field */
-	.MainAppHeaderWorkspaceCreateEditFormField-label-optional {
+	.MainAppHeaderOrganizationCreateEditFormField-label-optional {
 		color: var(--color-fg-07);
 	}
 
-	.MainAppHeaderWorkspaceCreateEditFormField-helper-row {
+	.MainAppHeaderOrganizationCreateEditFormField-helper-row {
 		display: flex;
 		align-items: baseline;
 		justify-content: space-between;
@@ -117,7 +117,7 @@
 		min-height: 1.25em;
 	}
 
-	.MainAppHeaderWorkspaceCreateEditFormField-helper-message {
+	.MainAppHeaderOrganizationCreateEditFormField-helper-message {
 		min-width: 0;
 
 		overflow: hidden;
@@ -125,11 +125,11 @@
 		white-space: nowrap;
 	}
 
-	.MainAppHeaderWorkspaceCreateEditFormField-helper-state-error {
+	.MainAppHeaderOrganizationCreateEditFormField-helper-state-error {
 		color: var(--color-red-09);
 	}
 
-	.MainAppHeaderWorkspaceCreateEditFormField-helper-counter {
+	.MainAppHeaderOrganizationCreateEditFormField-helper-counter {
 		flex-shrink: 0;
 		margin-left: auto;
 
@@ -138,38 +138,38 @@
 	/* #endregion create edit form field */
 
 	/* #region billing modal */
-	.MyModalPopover.MainAppHeaderWorkspaceSwitcherModalBillingModal {
+	.MyModalPopover.MainAppHeaderOrganizationSwitcherModalBillingModal {
 		max-width: 460px;
 		width: min(94vw, 460px);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalBillingModal-body {
+	.MainAppHeaderOrganizationSwitcherModalBillingModal-body {
 		padding-top: 12px;
 		padding-bottom: 12px;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalBillingModal-options {
+	.MainAppHeaderOrganizationSwitcherModalBillingModal-options {
 		display: grid;
 		gap: 8px;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalBillingModal-option {
+	.MainAppHeaderOrganizationSwitcherModalBillingModal-option {
 		width: 100%;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalBillingModal-option-title {
+	.MainAppHeaderOrganizationSwitcherModalBillingModal-option-title {
 		color: var(--color-fg-10);
 
 		font-weight: 600;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalBillingModal-option-description {
+	.MainAppHeaderOrganizationSwitcherModalBillingModal-option-description {
 		color: var(--color-fg-07);
 
 		font-size: 0.875em;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalBillingModal-note {
+	.MainAppHeaderOrganizationSwitcherModalBillingModal-note {
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr);
 		align-items: start;
@@ -183,21 +183,21 @@
 		color: var(--color-fg-07);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalBillingModal-note-icon {
+	.MainAppHeaderOrganizationSwitcherModalBillingModal-note-icon {
 		width: 18px;
 		height: 18px;
 
 		color: var(--color-fg-07);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalBillingModal-note-copy {
+	.MainAppHeaderOrganizationSwitcherModalBillingModal-note-copy {
 		min-width: 0;
 
 		font-size: 0.875em;
 		line-height: 1.35;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalBillingModal-message {
+	.MainAppHeaderOrganizationSwitcherModalBillingModal-message {
 		margin-top: 10px;
 
 		color: var(--color-red-09);
@@ -207,7 +207,7 @@
 	/* #endregion billing modal */
 
 	/* #region select head */
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead {
+	.MainAppHeaderOrganizationSwitcherModalSelectHead {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -215,7 +215,7 @@
 		padding-bottom: 2px;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead-copy {
+	.MainAppHeaderOrganizationSwitcherModalSelectHead-copy {
 		display: grid;
 		flex: 1;
 		gap: 4px;
@@ -223,13 +223,13 @@
 		min-width: 0;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead-icon {
+	.MainAppHeaderOrganizationSwitcherModalSelectHead-icon {
 		flex-shrink: 0;
 
 		color: var(--color-fg-08);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead-title-row {
+	.MainAppHeaderOrganizationSwitcherModalSelectHead-title-row {
 		display: flex;
 		align-items: center;
 		gap: 6px;
@@ -241,7 +241,7 @@
 		line-height: 1;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead-title {
+	.MainAppHeaderOrganizationSwitcherModalSelectHead-title {
 		display: flex;
 		align-items: baseline;
 
@@ -251,7 +251,7 @@
 		font-size: inherit;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead-quota {
+	.MainAppHeaderOrganizationSwitcherModalSelectHead-quota {
 		display: inline-flex;
 		flex-shrink: 0;
 		align-items: center;
@@ -263,7 +263,7 @@
 		text-box-edge: cap alphabetic;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead-help {
+	.MainAppHeaderOrganizationSwitcherModalSelectHead-help {
 		flex-shrink: 0;
 
 		color: var(--color-fg-06);
@@ -271,18 +271,18 @@
 		font-size: 12px;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead-create-trigger {
+	.MainAppHeaderOrganizationSwitcherModalSelectHead-create-trigger {
 		display: inline-flex;
 		flex-shrink: 0;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalSelectHead-create {
+	.MainAppHeaderOrganizationSwitcherModalSelectHead-create {
 		flex-shrink: 0;
 	}
 	/* #endregion select head */
 
 	/* #region select list */
-	.MainAppHeaderWorkspaceSwitcherModalSelectList {
+	.MainAppHeaderOrganizationSwitcherModalSelectList {
 		display: flex;
 		flex-direction: column;
 
@@ -304,7 +304,7 @@
 	/* #endregion select list */
 
 	/* #region select pane */
-	.MainAppHeaderWorkspaceSwitcherModalSelectPane {
+	.MainAppHeaderOrganizationSwitcherModalSelectPane {
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
@@ -316,7 +316,7 @@
 	/* #endregion select pane */
 
 	/* #region list item */
-	.MainAppHeaderWorkspaceSwitcherModalListItem {
+	.MainAppHeaderOrganizationSwitcherModalListItem {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) auto;
 		grid-template-rows: auto auto;
@@ -334,7 +334,7 @@
 		border-radius: 8px;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalListItem-current-border {
+	.MainAppHeaderOrganizationSwitcherModalListItem-current-border {
 		position: absolute;
 		z-index: -1;
 		inset: 0;
@@ -349,7 +349,7 @@
 		pointer-events: none;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalListItem-label-row {
+	.MainAppHeaderOrganizationSwitcherModalListItem-label-row {
 		grid-column: 1;
 		grid-row: 1;
 
@@ -361,7 +361,7 @@
 		gap: 6px;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalListItem-label {
+	.MainAppHeaderOrganizationSwitcherModalListItem-label {
 		flex: 0 1 auto;
 		min-width: 0;
 
@@ -376,7 +376,7 @@
 		white-space: nowrap;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalListItem-badge {
+	.MainAppHeaderOrganizationSwitcherModalListItem-badge {
 		display: inline-flex;
 		flex-shrink: 0;
 		align-items: center;
@@ -394,17 +394,17 @@
 		white-space: nowrap;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalListItem-ownership-badge {
+	.MainAppHeaderOrganizationSwitcherModalListItem-ownership-badge {
 		height: 20px;
 		padding: 0 8px;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalListItem-billing-badge {
+	.MainAppHeaderOrganizationSwitcherModalListItem-billing-badge {
 		height: 20px;
 		padding: 0 8px;
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalListItem-description {
+	.MainAppHeaderOrganizationSwitcherModalListItem-description {
 		grid-column: 1;
 		grid-row: 2;
 
@@ -423,7 +423,7 @@
 		color: var(--color-fg-08);
 	}
 
-	.MainAppHeaderWorkspaceSwitcherModalListItem-actions {
+	.MainAppHeaderOrganizationSwitcherModalListItem-actions {
 		grid-column: 2;
 		grid-row: 1 / span 2;
 
@@ -440,7 +440,7 @@
 
 	/* #endregion list item */
 
-	.MainAppHeaderWorkspaceSwitcherModalListItem-primary {
+	.MainAppHeaderOrganizationSwitcherModalListItem-primary {
 		position: relative;
 
 		display: grid;
@@ -480,11 +480,11 @@
 				inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 60%, transparent),
 				0 2px 4px color-mix(in oklch, black 35%, transparent);
 
-			.MainAppHeaderWorkspaceSwitcherModalListItem-label {
+			.MainAppHeaderOrganizationSwitcherModalListItem-label {
 				color: var(--color-fg-11);
 			}
 
-			.MainAppHeaderWorkspaceSwitcherModalListItem-description {
+			.MainAppHeaderOrganizationSwitcherModalListItem-description {
 				color: var(--color-fg-09);
 			}
 		}
@@ -496,11 +496,11 @@
 				inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 70%, transparent),
 				0 4px 10px color-mix(in oklch, black 38%, transparent);
 
-			.MainAppHeaderWorkspaceSwitcherModalListItem-label {
+			.MainAppHeaderOrganizationSwitcherModalListItem-label {
 				color: var(--color-fg-11);
 			}
 
-			.MainAppHeaderWorkspaceSwitcherModalListItem-description {
+			.MainAppHeaderOrganizationSwitcherModalListItem-description {
 				color: var(--color-fg-10);
 			}
 		}
@@ -511,11 +511,11 @@
 				inset 0 2px 4px color-mix(in oklch, black 32%, transparent),
 				inset 0 -1px 0 color-mix(in oklch, var(--color-fg-11) 5%, transparent);
 
-			.MainAppHeaderWorkspaceSwitcherModalListItem-label {
+			.MainAppHeaderOrganizationSwitcherModalListItem-label {
 				color: var(--color-fg-12);
 			}
 
-			.MainAppHeaderWorkspaceSwitcherModalListItem-description {
+			.MainAppHeaderOrganizationSwitcherModalListItem-description {
 				color: var(--color-fg-10);
 			}
 		}

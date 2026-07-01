@@ -130,10 +130,10 @@ vi.mock("@/components/my-link.tsx", () => ({
 	MyLink: function MyLink(props: {
 		children?: ReactNode;
 		onClick?: () => void;
-		params?: { workspaceName: string; projectName: string };
+		params?: { organizationName: string; workspaceName: string };
 		to: string;
 	}) {
-		const href = props.params ? `/w/${props.params.workspaceName}/${props.params.projectName}/users` : props.to;
+		const href = props.params ? `/w/${props.params.organizationName}/${props.params.workspaceName}/users` : props.to;
 
 		return (
 			<a href={href} onClick={props.onClick}>
@@ -220,11 +220,11 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		users: {
 			delete_current_user_account: "users.delete_current_user_account",
 			get_anagraphic: "users.get_anagraphic",
-			list_current_user_account_deletion_blocking_workspaces:
-				"users.list_current_user_account_deletion_blocking_workspaces",
+			list_current_user_account_deletion_blocking_organizations:
+				"users.list_current_user_account_deletion_blocking_organizations",
 		},
-		workspaces: {
-			delete_workspace: "workspaces.delete_workspace",
+		organizations: {
+			delete_organization: "organizations.delete_organization",
 		},
 	},
 }));
@@ -237,15 +237,15 @@ function renderAccountManagement(args: { open?: boolean } = {}) {
 	render(<MainAppAccountManagement open={args.open ?? true} onOpenChange={onOpenChangeMock} />);
 }
 
-function createBlockingWorkspace() {
+function createBlockingOrganization() {
 	return {
-		workspace: {
-			_id: "workspace_1",
-			description: "Team workspace for product work",
+		organization: {
+			_id: "organization_1",
+			description: "Team organization for product work",
 			name: "team",
 		},
-		defaultProject: {
-			_id: "project_1",
+		defaultWorkspace: {
+			_id: "workspace_1",
 			name: "home",
 		},
 	};
@@ -276,19 +276,19 @@ describe("MainAppAccountManagement", () => {
 		expect(useQueryMock).not.toHaveBeenCalled();
 	});
 
-	test("renders Transfer ownership links when account deletion is blocked by owned workspaces", async () => {
-		appConvexQueryMock.mockResolvedValue([createBlockingWorkspace()]);
+	test("renders Transfer ownership links when account deletion is blocked by owned organizations", async () => {
+		appConvexQueryMock.mockResolvedValue([createBlockingOrganization()]);
 
 		renderAccountManagement();
 
 		fireEvent.change(screen.getByPlaceholderText("delete"), { target: { value: "delete" } });
 		fireEvent.click(screen.getByRole("button", { name: "Delete account" }));
 
-		expect(await screen.findByText("Resolve owned workspaces")).not.toBeNull();
+		expect(await screen.findByText("Resolve owned organizations")).not.toBeNull();
 		const transferOwnershipLink = await screen.findByRole("link", { name: "Transfer ownership" });
 		expect(transferOwnershipLink.getAttribute("href")).toBe("/w/team/home/users");
 		expect(screen.getByText("team")).not.toBeNull();
-		expect(screen.getByText("Team workspace for product work")).not.toBeNull();
+		expect(screen.getByText("Team organization for product work")).not.toBeNull();
 		expect(appConvexActionMock).not.toHaveBeenCalled();
 
 		fireEvent.click(transferOwnershipLink);
@@ -296,8 +296,8 @@ describe("MainAppAccountManagement", () => {
 		expect(onOpenChangeMock).toHaveBeenCalledWith(false);
 	});
 
-	test("keeps resolver submit disabled until every workspace has a valid resolution", async () => {
-		appConvexQueryMock.mockResolvedValue([createBlockingWorkspace()]);
+	test("keeps resolver submit disabled until every organization has a valid resolution", async () => {
+		appConvexQueryMock.mockResolvedValue([createBlockingOrganization()]);
 
 		renderAccountManagement();
 
@@ -310,32 +310,32 @@ describe("MainAppAccountManagement", () => {
 		expect(submitButton.disabled).toBe(true);
 		expect(
 			screen.getByText(
-				"Before you can delete your account, transfer ownership of each workspace or confirm deleting the workspace.",
+				"Before you can delete your account, transfer ownership of each organization or confirm deleting the organization.",
 			),
 		).not.toBeNull();
 
-		fireEvent.click(screen.getByLabelText("Delete workspace and data"));
+		fireEvent.click(screen.getByLabelText("Delete organization and data"));
 
 		expect(
 			(screen.getByRole("button", { name: "Confirm account deletion" }) as HTMLButtonElement).disabled,
 		).toBe(false);
 	});
 
-	test("deletes a workspace before account deletion", async () => {
-		const blockingWorkspace = createBlockingWorkspace();
-		appConvexQueryMock.mockResolvedValueOnce([blockingWorkspace]).mockResolvedValueOnce([]);
+	test("deletes an organization before account deletion", async () => {
+		const blockingOrganization = createBlockingOrganization();
+		appConvexQueryMock.mockResolvedValueOnce([blockingOrganization]).mockResolvedValueOnce([]);
 
 		renderAccountManagement();
 
 		fireEvent.change(screen.getByPlaceholderText("delete"), { target: { value: "delete" } });
 		fireEvent.click(screen.getByRole("button", { name: "Delete account" }));
-		await screen.findByText("Resolve owned workspaces");
-		fireEvent.click(screen.getByLabelText("Delete workspace and data"));
+		await screen.findByText("Resolve owned organizations");
+		fireEvent.click(screen.getByLabelText("Delete organization and data"));
 		fireEvent.click(screen.getByRole("button", { name: "Confirm account deletion" }));
 
 		await waitFor(() => {
-			expect(appConvexMutationMock).toHaveBeenCalledWith(app_convex_api.workspaces.delete_workspace, {
-				workspaceId: blockingWorkspace.workspace._id,
+			expect(appConvexMutationMock).toHaveBeenCalledWith(app_convex_api.organizations.delete_organization, {
+				organizationId: blockingOrganization.organization._id,
 			});
 		});
 		await waitFor(() => {
@@ -343,11 +343,11 @@ describe("MainAppAccountManagement", () => {
 		});
 	});
 
-	test("leaves resolver open when a workspace resolution mutation fails", async () => {
-		appConvexQueryMock.mockResolvedValue([createBlockingWorkspace()]);
+	test("leaves resolver open when an organization resolution mutation fails", async () => {
+		appConvexQueryMock.mockResolvedValue([createBlockingOrganization()]);
 		appConvexMutationMock.mockResolvedValue({
 			_nay: {
-				message: "Workspace quota reached",
+				message: "Organization quota reached",
 			},
 		});
 
@@ -355,18 +355,18 @@ describe("MainAppAccountManagement", () => {
 
 		fireEvent.change(screen.getByPlaceholderText("delete"), { target: { value: "delete" } });
 		fireEvent.click(screen.getByRole("button", { name: "Delete account" }));
-		await screen.findByText("Resolve owned workspaces");
-		fireEvent.click(screen.getByLabelText("Delete workspace and data"));
+		await screen.findByText("Resolve owned organizations");
+		fireEvent.click(screen.getByLabelText("Delete organization and data"));
 		fireEvent.click(screen.getByRole("button", { name: "Confirm account deletion" }));
 
 		await waitFor(() => {
 			expect(appConvexMutationMock).toHaveBeenCalled();
 		});
 		expect(appConvexActionMock).not.toHaveBeenCalled();
-		expect(screen.getByText("Resolve owned workspaces")).not.toBeNull();
+		expect(screen.getByText("Resolve owned organizations")).not.toBeNull();
 	});
 
-	test("calls the delete action when no owned workspaces block account deletion", async () => {
+	test("calls the delete action when no owned organizations block account deletion", async () => {
 		renderAccountManagement();
 
 		fireEvent.change(screen.getByPlaceholderText("delete"), { target: { value: "delete" } });

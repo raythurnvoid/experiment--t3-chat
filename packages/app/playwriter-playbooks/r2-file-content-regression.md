@@ -2,7 +2,7 @@
 
 Goal: validate the unified R2-backed file-content flows after the asset-first refactor.
 
-Route: an already-open Playwriter-enabled `/w/:workspaceName/:projectName/files` tab.
+Route: an already-open Playwriter-enabled `/w/:organizationName/:workspaceName/files` tab.
 
 ## Scope
 

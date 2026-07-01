@@ -44,13 +44,13 @@ async function files_db_delete_pending_update_cleanup_task_if_present(
 export async function files_db_get_yjs_content_and_sequence(
 	ctx: QueryCtx | MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
 	},
 ) {
 	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-	if (!fileNode || fileNode.workspaceId !== args.workspaceId || fileNode.projectId !== args.projectId) {
+	if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
 		return null;
 	}
 
@@ -78,8 +78,8 @@ export async function files_db_get_yjs_content_and_sequence(
 		ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
 		ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
 			)
 			.order("asc")
 			.collect(),
@@ -89,16 +89,16 @@ export async function files_db_get_yjs_content_and_sequence(
 
 	if (
 		!yjsSnapshotDoc ||
-		yjsSnapshotDoc.workspaceId !== args.workspaceId ||
-		yjsSnapshotDoc.projectId !== args.projectId
+		yjsSnapshotDoc.organizationId !== args.organizationId ||
+		yjsSnapshotDoc.workspaceId !== args.workspaceId
 	) {
 		const errorMessage = "fileNode.yjsSnapshotId points to a missing or mismatched files_yjs_snapshots doc";
 		const errorData = {
 			nodeId: args.nodeId,
 			yjsSnapshotId: fileNode.yjsSnapshotId,
 			yjsSnapshotDoc,
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 		};
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
@@ -106,8 +106,8 @@ export async function files_db_get_yjs_content_and_sequence(
 
 	if (
 		!yjsLastSequenceDoc ||
-		yjsLastSequenceDoc.workspaceId !== args.workspaceId ||
-		yjsLastSequenceDoc.projectId !== args.projectId
+		yjsLastSequenceDoc.organizationId !== args.organizationId ||
+		yjsLastSequenceDoc.workspaceId !== args.workspaceId
 	) {
 		const errorMessage =
 			"fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
@@ -115,8 +115,8 @@ export async function files_db_get_yjs_content_and_sequence(
 			nodeId: args.nodeId,
 			yjsLastSequenceId: fileNode.yjsLastSequenceId,
 			yjsLastSequenceDoc,
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 		};
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
@@ -135,8 +135,8 @@ export async function files_db_get_yjs_content_and_sequence(
 export async function files_db_get_pending_update(
 	ctx: QueryCtx | MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: string;
 		nodeId: Id<"files_nodes">;
 		pendingUpdateId?: Id<"files_pending_updates">;
@@ -147,17 +147,17 @@ export async function files_db_get_pending_update(
 		: null;
 	const pendingUpdate =
 		pendingUpdateById &&
+		pendingUpdateById.organizationId === args.organizationId &&
 		pendingUpdateById.workspaceId === args.workspaceId &&
-		pendingUpdateById.projectId === args.projectId &&
 		pendingUpdateById.userId === args.userId &&
 		pendingUpdateById.fileNodeId === args.nodeId
 			? pendingUpdateById
 			: await ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_workspace_project_user_fileNode", (q) =>
+					.withIndex("by_organization_workspace_user_fileNode", (q) =>
 						q
+							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
 							.eq("userId", args.userId)
 							.eq("fileNodeId", args.nodeId),
 					)
@@ -228,16 +228,16 @@ export async function files_db_schedule_pending_update_cleanup(
 export async function files_db_reschedule_pending_update_cleanup_for_user(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: string;
 		delayMs?: number;
 	},
 ) {
 	const pendingUpdates = await ctx.db
 		.query("files_pending_updates")
-		.withIndex("by_workspace_project_user_fileNode", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("userId", args.userId),
+		.withIndex("by_organization_workspace_user_fileNode", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("userId", args.userId),
 		)
 		.collect();
 

@@ -40,7 +40,7 @@ vp env exec pnpx wrangler queues create bonobo-senate-press-r2-upload-events
 vp env exec pnpx wrangler queues create bonobo-senate-press-r2-upload-events-dlq
 vp env exec pnpx wrangler deploy --config packages/r2-upload-finalizer/wrangler.jsonc
 vp env exec pnpx wrangler secret put EVENTS_SECRET --config packages/r2-upload-finalizer/wrangler.jsonc
-vp env exec pnpx wrangler r2 bucket notification create bonobo-senate-press-files --event-type object-create --queue bonobo-senate-press-r2-upload-events --prefix "workspaces/"
+vp env exec pnpx wrangler r2 bucket notification create bonobo-senate-press-files --event-type object-create --queue bonobo-senate-press-r2-upload-events --prefix "organizations/"
 vp env exec pnpx wrangler r2 bucket notification list bonobo-senate-press-files
 vp env exec pnpx wrangler tail bonobo-senate-r2-upload-finalizer
 ```
@@ -395,7 +395,7 @@ Current spec-style skills include:
 - `.agents/skills/auth-system/SKILL.md`
 - `.agents/skills/billing-system/SKILL.md`
 - `.agents/skills/access-control/SKILL.md`
-- `.agents/skills/workspaces-tenancy/SKILL.md`
+- `.agents/skills/organizations-tenancy/SKILL.md`
 - `.agents/skills/quotas/SKILL.md`
 - `.agents/skills/data-deletion/SKILL.md`
 - `.agents/skills/ai-chat-agent/SKILL.md`
@@ -965,15 +965,15 @@ When a private type supports generic module machinery rather than one specific e
 export const ai_chat_MAIN_MODEL_IDS = ["gpt-5.4-nano", "gpt-5.4-mini"] as const;
 
 export class ai_chat_MyClass {
-	constructor(public projectId: string) {}
+	constructor(public workspaceId: string) {}
 }
 
 export interface ai_chat_MyInterface {
-	projectId: string;
+	workspaceId: string;
 }
 
 export type ai_chat_MyType = {
-	projectId: string;
+	workspaceId: string;
 };
 
 type OpenTabRecord = {
@@ -985,13 +985,13 @@ type PendingEditSyncResult = {
 	aborted: boolean;
 };
 
-export function ai_chat_my_function(projectId: string) {
-	const processedResult = processData(projectId);
+export function ai_chat_my_function(workspaceId: string) {
+	const processedResult = processData(workspaceId);
 	return processedResult;
 }
 
 export enum ai_chat_MyEnum {
-	PROJECT_ID = "app_project_local_dev",
+	WORKSPACE_ID = "app_workspace_local_dev",
 }
 
 class LatestSerializedRunner {}
@@ -1026,7 +1026,7 @@ For function-owned types, one-off shapes are often easier inline, while owner-li
 function ai_chat_example_function() {
 	const bodyResult = await request.json();
 	const generationResult = await generateObject();
-	const workspacePattern = `${orgId}:${projectId}:*`;
+	const organizationPattern = `${orgId}:${workspaceId}:*`;
 
 	const processData = (inputValue: string, optionFlags: boolean) => {
 		return {
@@ -1186,7 +1186,7 @@ Prefer module-level keyed storage when all of these are true:
 
 - The cached value is derived from stable semantic inputs and does not itself drive React updates.
 - The value exists to preserve object identity or avoid non-deterministic rebuilds such as `Date.now()`.
-- The key includes every scope needed to prevent cross-tenant/cross-project collisions.
+- The key includes every scope needed to prevent cross-tenant/cross-workspace collisions.
 - There is a clear cleanup point if the cache can grow across user/session/tenant changes.
 
 Keep the lookup policy local to the actual use case. A cache may create on miss, return `undefined`, prepopulate from an effect, or delete entries explicitly; do not make AGENTS guidance imply one policy is required.

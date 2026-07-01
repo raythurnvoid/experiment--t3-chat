@@ -5,7 +5,7 @@
 	"compatibility_date": "2026-05-11",
 	"vars": {
 		"R2_FILES_BUCKET": "bonobo-senate-press-files",
-		"R2_UPLOAD_PREFIX": "workspaces/"
+		"R2_UPLOAD_PREFIX": "organizations/"
 	},
 	"secrets": {
 		"required": ["CONVEX_HTTP_URL", "EVENTS_SECRET"]

@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server";
 import { files_MOUNT_ROOT } from "../shared/files.ts";
-import { workspaces_GLOBAL_GITHUB_PROJECT_ID, workspaces_GLOBAL_WORKSPACE_ID } from "../shared/workspaces.ts";
+import { organizations_GLOBAL_GITHUB_WORKSPACE_ID, organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import {
 	bash_resolve_db_files_shell_path,
 	bash_read_only_mount_error,
@@ -10,7 +10,7 @@ import {
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 
-const currentProjectPath = "/home/cloud-usr/w/personal/home";
+const currentWorkspacePath = "/home/cloud-usr/w/personal/home";
 const MOUNT_NAME = "t3-chat";
 
 // The resolver is pure w.r.t. Convex, so these filesystem objects only need to
@@ -22,32 +22,32 @@ function create_db_files_roots(): bash_DbFilesRoots {
 		runAction: vi.fn(),
 	} as unknown as ActionCtx;
 	const ctxData = {
-		workspaceId: "workspace_1" as Id<"workspaces">,
-		projectId: "project_1" as Id<"workspaces_projects">,
-		workspaceName: "personal",
-		projectName: "home",
+		organizationId: "organization_1" as Id<"organizations">,
+		workspaceId: "workspace_1" as Id<"organizations_workspaces">,
+		organizationName: "personal",
+		workspaceName: "home",
 		userId: "user_1" as Id<"users">,
 	};
-	const appFs = new bash_DbFilesFs({ ctx, ctxData, currentProjectPath, allowDbFilesMkdir: false });
+	const appFs = new bash_DbFilesFs({ ctx, ctxData, currentWorkspacePath, allowDbFilesMkdir: false });
 	const externalMountsDbFilesFs = new bash_DbFilesFs({
 		ctx,
 		ctxData: {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
-			workspaceName: "GLOBAL",
-			projectName: "GITHUB",
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+			organizationName: "GLOBAL",
+			workspaceName: "GITHUB",
 			userId: ctxData.userId,
 		},
-		currentProjectPath: files_MOUNT_ROOT,
+		currentWorkspacePath: files_MOUNT_ROOT,
 		allowDbFilesMkdir: false,
 	});
 	return {
 		app: {
-			currentProjectPath,
+			currentWorkspacePath,
 			fs: appFs,
 		},
 		externalMounts: {
-			currentProjectPath: files_MOUNT_ROOT,
+			currentWorkspacePath: files_MOUNT_ROOT,
 			fs: externalMountsDbFilesFs,
 		},
 	};
@@ -91,15 +91,15 @@ describe("bash_resolve_db_files_shell_path", () => {
 	test("classifies app paths and resolves the app-db-files path", () => {
 		const dbFilesRoots = create_db_files_roots();
 
-		const root = bash_resolve_db_files_shell_path(currentProjectPath, dbFilesRoots);
+		const root = bash_resolve_db_files_shell_path(currentWorkspacePath, dbFilesRoots);
 		expect(root.kind).toBe("app");
 		expect(root.dbFilesPath).toBe("/");
 		expect(root.fs).toBe(dbFilesRoots.app.fs);
 
-		const file = bash_resolve_db_files_shell_path(`${currentProjectPath}/notes/todo.md`, dbFilesRoots);
+		const file = bash_resolve_db_files_shell_path(`${currentWorkspacePath}/notes/todo.md`, dbFilesRoots);
 		expect(file.kind).toBe("app");
 		expect(file.dbFilesPath).toBe("/notes/todo.md");
-		expect(file.basePath).toBe(currentProjectPath);
+		expect(file.basePath).toBe(currentWorkspacePath);
 	});
 
 	test("classifies paths outside db files trees", () => {
@@ -131,8 +131,8 @@ describe("bash_resolve_db_files_shell_path", () => {
 		const mount = bash_resolve_db_files_shell_path(`/.mounts/${MOUNT_NAME}/README.md`, dbFilesRoots);
 		expect(mount.renderShellPath(`/${MOUNT_NAME}/README.md`)).toBe(`/.mounts/${MOUNT_NAME}/README.md`);
 
-		const app = bash_resolve_db_files_shell_path(`${currentProjectPath}/notes.md`, dbFilesRoots);
-		expect(app.renderShellPath("/notes.md")).toBe(`${currentProjectPath}/notes.md`);
+		const app = bash_resolve_db_files_shell_path(`${currentWorkspacePath}/notes.md`, dbFilesRoots);
+		expect(app.renderShellPath("/notes.md")).toBe(`${currentWorkspacePath}/notes.md`);
 	});
 });
 

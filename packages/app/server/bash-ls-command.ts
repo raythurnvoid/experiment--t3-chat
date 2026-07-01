@@ -11,7 +11,7 @@ import { Result } from "../shared/errors-as-values-utils.ts";
 import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER } from "../shared/files.ts";
 import {
 	bash_APP_MOUNT_PATH,
-	bash_db_files_path_to_current_project_path,
+	bash_db_files_path_to_current_workspace_path,
 	bash_clamp_listing_page_limit,
 	bash_command_build_builtin_delegation_args,
 	bash_create_glob_syntax_unsupported_message,
@@ -250,8 +250,8 @@ async function get_path_entry(args: {
 	}
 
 	const dbFilesDoc = (await args.ctx.runQuery(internal.files_nodes.get_by_path, {
+		organizationId: args.ctxData.organizationId,
 		workspaceId: args.ctxData.workspaceId,
-		projectId: args.ctxData.projectId,
 		path: args.dbFilesPath,
 	})) as files_nodes_get_by_path_Result;
 	if (dbFilesDoc) {
@@ -294,7 +294,7 @@ function build_continuation(args: {
 }
 
 export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
-	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
+	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("ls", async (args, commandCtx) => {
 		const parsed = parse_args(args);
 		if (parsed._nay) {
@@ -320,7 +320,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 
 		const targetInputs = parsed._yay.paths.length > 0 ? parsed._yay.paths : [undefined];
 
-		// Turn each ls target into a shell path and classify it (project / mount / synthetic root / external).
+		// Turn each ls target into a shell path and classify it (workspace / mount / synthetic root / external).
 		const targets = targetInputs.map((path) => {
 			const absoluteShellPath = bash_resolve_path(commandCtx.cwd, path ?? commandCtx.cwd);
 			const pathResolution = bash_resolve_db_files_shell_path(absoluteShellPath, dbFilesRoots);
@@ -333,7 +333,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			};
 		});
 
-		// App-aware = a db file listing target: a project/mount db-files path, including the reserved
+		// App-aware = a db file listing target: a workspace/mount db-files path, including the reserved
 		// `/.mounts` root which maps to `"/"` in the reserved scope.
 		const hasDbFilesPathTarget = targets.some((target) => target.dbFilesPath != null);
 
@@ -360,13 +360,13 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			cursor = resolvedCursor._yay;
 		}
 
-		// Pathless `ls -t` is the project-wide recency view, so the agent can ask
-		// "what changed recently?" without first discovering every folder. Only for a project cwd —
-		// inside a mount there is no project-wide view, so it falls to the per-target mount listing below.
+		// Pathless `ls -t` is the workspace-wide recency view, so the agent can ask
+		// "what changed recently?" without first discovering every folder. Only for a workspace cwd —
+		// inside a mount there is no workspace-wide view, so it falls to the per-target mount listing below.
 		if (parsed._yay.time && parsed._yay.paths.length === 0 && targets[0]?.pathResolution.kind === "app") {
 			const result = (await ctx.runQuery(internal.files_nodes.list_children, {
+				organizationId: targets[0].pathResolution.ctxData.organizationId,
 				workspaceId: targets[0].pathResolution.ctxData.workspaceId,
-				projectId: targets[0].pathResolution.ctxData.projectId,
 				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 				cursor,
 				orderBy: "updatedAt",
@@ -375,7 +375,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 
 			const lines = result.items.map(
 				(item) =>
-					`${new Date(item.updatedAt).toISOString()}\t${bash_db_files_path_to_current_project_path(currentProjectPath, item.path)}${item.kind === "folder" ? "/" : ""}`,
+					`${new Date(item.updatedAt).toISOString()}\t${bash_db_files_path_to_current_workspace_path(currentWorkspacePath, item.path)}${item.kind === "folder" ? "/" : ""}`,
 			);
 			if (!result.isDone) {
 				lines.push(
@@ -398,7 +398,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				stdout: "",
 				stderr:
 					"ls -t -R is not supported for app file paths.\n" +
-					"Use `ls -t` for project-wide recency, `ls -t <dir>` for immediate children, or `find <dir>` for recursive path discovery.\n",
+					"Use `ls -t` for workspace-wide recency, `ls -t <dir>` for immediate children, or `find <dir>` for recursive path discovery.\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -518,8 +518,8 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				// Recursive listings use the subtree index and print absolute shell
 				// paths, since children can be nested at different depths.
 				const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+					organizationId: target.pathResolution.ctxData.organizationId,
 					workspaceId: target.pathResolution.ctxData.workspaceId,
-					projectId: target.pathResolution.ctxData.projectId,
 					folderPath: dbFilesPath,
 					numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 					cursor,
@@ -550,7 +550,7 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					);
 				}
 			} else {
-				// Plain directory listings are a parentId query. The project root is
+				// Plain directory listings are a parentId query. The workspace root is
 				// synthetic, so its parent id is the stable root sentinel.
 				let parentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 				if (dbFilesDoc.path === "/") {
@@ -559,8 +559,8 @@ export function bash_ls_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					parentId = dbFilesDoc._id as Id<"files_nodes">;
 				}
 				const result = (await ctx.runQuery(internal.files_nodes.list_children, {
+					organizationId: target.pathResolution.ctxData.organizationId,
 					workspaceId: target.pathResolution.ctxData.workspaceId,
-					projectId: target.pathResolution.ctxData.projectId,
 					parentId,
 					numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 					cursor,

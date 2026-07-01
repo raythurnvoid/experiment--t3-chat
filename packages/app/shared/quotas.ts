@@ -1,18 +1,18 @@
 import type { Doc } from "../convex/_generated/dataModel";
 
 export const quotas = {
-	extra_workspaces: {
-		disabledReason: "You can only create 2 extra workspaces in addition to your personal workspace",
+	extra_organizations: {
+		disabledReason: "You can only create 2 extra organizations in addition to your personal organization",
 		maxCount: 2,
 		tooltip_explanation:
-			"Includes your personal workspace and any extra workspaces your plan allows. The fraction is how many workspaces you have out of the maximum total.",
+			"Includes your personal organization and any extra organizations your plan allows. The fraction is how many organizations you have out of the maximum total.",
 	},
-	extra_projects: {
+	extra_workspaces: {
 		disabledReason:
-			"This workspace already has 6 projects. Each workspace can contain up to 6 projects total, including home",
+			"This organization already has 6 workspaces. Each organization can contain up to 6 workspaces total, including home",
 		maxCount: 5,
 		tooltip_explanation:
-			"Includes the default home project and any extra projects this workspace allows. The fraction is how many projects this workspace has out of the maximum total.",
+			"Includes the default home workspace and any extra workspaces this organization allows. The fraction is how many workspaces this organization has out of the maximum total.",
 	},
 } as const satisfies Record<
 	Doc<"quotas">["quotaName"],

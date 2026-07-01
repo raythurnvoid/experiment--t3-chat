@@ -23,6 +23,7 @@ import type * as github_sources from "../github_sources.js";
 import type * as http from "../http.js";
 import type * as migrations from "../migrations.js";
 import type * as notifications from "../notifications.js";
+import type * as organizations from "../organizations.js";
 import type * as presence from "../presence.js";
 import type * as public_api from "../public_api.js";
 import type * as quotas from "../quotas.js";
@@ -30,7 +31,6 @@ import type * as r2 from "../r2.js";
 import type * as rate_limiter from "../rate_limiter.js";
 import type * as users from "../users.js";
 import type * as value_store from "../value_store.js";
-import type * as workspaces from "../workspaces.js";
 
 import type {
   ApiFromModules,
@@ -54,6 +54,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   migrations: typeof migrations;
   notifications: typeof notifications;
+  organizations: typeof organizations;
   presence: typeof presence;
   public_api: typeof public_api;
   quotas: typeof quotas;
@@ -61,7 +62,6 @@ declare const fullApi: ApiFromModules<{
   rate_limiter: typeof rate_limiter;
   users: typeof users;
   value_store: typeof value_store;
-  workspaces: typeof workspaces;
 }>;
 
 /**

@@ -415,7 +415,7 @@ function slice_mode_stderr(window: NonNullable<ReturnType<typeof parse_args>["_y
 }
 
 export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
-	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
+	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("grep", async (args, commandCtx) => {
 		// Parse only the bounded grep subset that maps cleanly to app-file queries.
 		// Unsupported flags stay recorded so later branches can return focused guidance.
@@ -466,8 +466,8 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					target.dbFilesPath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+								organizationId: pathResolution.ctxData.organizationId,
 								workspaceId: pathResolution.ctxData.workspaceId,
-								projectId: pathResolution.ctxData.projectId,
 								path: target.dbFilesPath,
 							})) as files_nodes_get_by_path_Result);
 				if (!dbFilesDoc || dbFilesDoc.kind !== "file") {
@@ -491,8 +491,8 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				}
 
 				const result = (await ctx.runQuery(internal.files_nodes.match_markdown_file_lines, {
+					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
-					projectId: pathResolution.ctxData.projectId,
 					userId: pathResolution.ctxData.userId,
 					fileNodeId: dbFilesDoc._id,
 					pattern: parsed._yay.pattern,
@@ -706,7 +706,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						"outside_db_files",
 			)
 		) {
-			return await bash_delegate_native_just_bash_tmp_command("grep", args, commandCtx, currentProjectPath);
+			return await bash_delegate_native_just_bash_tmp_command("grep", args, commandCtx, currentWorkspacePath);
 		}
 
 		// Recursive app-folder grep path:
@@ -741,8 +741,8 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				target.dbFilesPath == null || target.dbFilesPath === "/"
 					? null
 					: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+							organizationId: pathResolution.ctxData.organizationId,
 							workspaceId: pathResolution.ctxData.workspaceId,
-							projectId: pathResolution.ctxData.projectId,
 							path: target.dbFilesPath,
 						})) as files_nodes_get_by_path_Result);
 
@@ -759,8 +759,8 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 
 				const recursivePattern = parsed._yay.pattern;
 				const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
-					projectId: pathResolution.ctxData.projectId,
 					userId: pathResolution.ctxData.userId,
 					query: recursivePattern,
 					numItems: 20,
@@ -800,7 +800,7 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					blocks.push(
 						"",
 						bash_search_command_build_continuation({
-							currentProjectPath: pathResolution.basePath,
+							currentWorkspacePath: pathResolution.basePath,
 							path: target.dbFilesPath,
 							limit: 20,
 							cursor: cursorId,
@@ -879,8 +879,8 @@ export function bash_grep_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					target.dbFilesPath == null || target.dbFilesPath === "/"
 						? null
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+								organizationId: pathResolution.ctxData.organizationId,
 								workspaceId: pathResolution.ctxData.workspaceId,
-								projectId: pathResolution.ctxData.projectId,
 								path: target.dbFilesPath,
 							})) as files_nodes_get_by_path_Result);
 

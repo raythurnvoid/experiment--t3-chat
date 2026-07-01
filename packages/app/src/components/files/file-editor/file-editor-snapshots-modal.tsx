@@ -404,7 +404,7 @@ type FileEditorSnapshotsModalPreviewModal_Props = {
 	isNextDisabled: boolean;
 	isPreviousDisabled: boolean;
 	isRestoring: boolean;
-	membershipId: app_convex_Id<"workspaces_projects_users">;
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	nextSnapshot: FileEditorSnapshotsModal_ListSnapshot | null;
 	open: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
@@ -687,7 +687,7 @@ type FileEditorSnapshotsModalListModal_Props = {
 	isPreviousDisabled: boolean;
 	isRestoring: boolean;
 	listShowSkeletonWhenLoading: boolean;
-	membershipId: app_convex_Id<"workspaces_projects_users">;
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	nextSnapshot: FileEditorSnapshotsModal_ListSnapshot | null;
 	nodeId: app_convex_Id<"files_nodes">;
 	previousSnapshot: FileEditorSnapshotsModal_ListSnapshot | null;

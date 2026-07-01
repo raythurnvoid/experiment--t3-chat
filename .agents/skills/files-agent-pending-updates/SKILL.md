@@ -28,8 +28,8 @@ That separation enables per-hunk accept/discard, `Accept all` without saving, pa
 Main table in `packages/app/convex/schema.ts`:
 
 - `files_pending_updates`
+  - `organizationId`
   - `workspaceId`
-  - `projectId`
   - `userId`
   - `nodeId`
   - `baseYjsSequence`
@@ -42,8 +42,8 @@ Main table in `packages/app/convex/schema.ts`:
 Unified exact Markdown chunk table:
 
 - `files_markdown_chunks`
+  - `organizationId`
   - `workspaceId`
-  - `projectId`
   - `fileNodeId`
   - `sourceKind: "committed" | "pending"`
   - optional `userId` for pending docs
@@ -57,8 +57,8 @@ Unified exact Markdown chunk table:
 Unified full-text search table:
 
 - `files_plain_text_chunks`
+  - `organizationId`
   - `workspaceId`
-  - `projectId`
   - `fileNodeId`
   - `sourceKind: "committed" | "pending"`
   - optional `userId` for pending docs
@@ -72,7 +72,7 @@ Unified full-text search table:
   - `markdownChunk`
   - `startIndex` / `endIndex` / `lineStart` / `lineEnd` / `chunkFlags`
   - `hasChunkAbove` / `hasChunkBelow`
-  - search index `search_by_plainTextChunk` (filter fields `workspaceId`, `projectId`, `archiveOperationId`)
+  - search index `search_by_plainTextChunk` (filter fields `organizationId`, `workspaceId`, `archiveOperationId`)
   - committed replacement, pending replacement, and scope patching indexes
 
 The old separate search and pending chunk tables no longer exist. Bash full-text `search` uses the unified `files_plain_text_chunks` table as a self-contained search-result doc; exact Markdown reads use `files_markdown_chunks`, while plain-text regex search reads line numbers from `files_plain_text_chunks`.
@@ -83,8 +83,8 @@ Unified Markdown frontmatter metadata docs:
   - one table for committed and pending indexed metadata docs
   - field docs use `docKind: "field"` and support existence search, including fields whose value is an object, array, unsupported value, or otherwise only searchable by existence
   - value docs use `docKind: "value"` and support one searchable primitive value per field value
+  - `organizationId`
   - `workspaceId`
-  - `projectId`
   - `fileNodeId`
   - `sourceKind: "committed" | "pending"`
   - optional `userId` for pending docs
@@ -101,8 +101,8 @@ Unified Markdown frontmatter metadata docs:
 Saved-sequence marker table:
 
 - `files_pending_updates_last_sequence_saved`
+  - `organizationId`
   - `workspaceId`
-  - `projectId`
   - `userId`
   - `nodeId`
   - `lastSequenceSaved`
@@ -132,7 +132,7 @@ Pending updates attach to Markdown-backed `files_nodes` docs.
 2. That read path overlays the current user's pending `unstaged` branch when one exists.
 3. `write_file` and `edit_file` normalize line endings/trailing newline shape, compute a preview diff, and call `internal.files_pending_updates.upsert_file_pending_update_internal_action` so the base Yjs state can be fetched from R2 before the mutation writes.
 4. Agent calls omit `stagedMarkdown`, so the backend preserves the current `staged` branch and updates only `unstaged`.
-5. `files_pending_updates` creates or updates a doc for `(workspaceId, projectId, userId, nodeId)`.
+5. `files_pending_updates` creates or updates a doc for `(organizationId, workspaceId, userId, nodeId)`.
 6. `FileEditor` queries `list_files_pending_updates` and shows the floating pending banner whenever the user has any pending updates.
 7. `Review changes` switches the `/files` route to `view=diff_editor`.
 8. `FileEditorDiff` bootstraps from the pending update doc if present, otherwise from live file Yjs state.
@@ -169,12 +169,12 @@ Public and internal functions:
 
 Important behavior:
 
-- Upsert reconstructs existing branch docs or clones the live file base, projects incoming Markdown into `unstaged`, projects `staged` only when `stagedMarkdown` is provided, and deletes the pending update doc if both branches match base.
+- Upsert reconstructs existing branch docs or clones the live file base, applies incoming Markdown to `unstaged`, applies `staged` only when `stagedMarkdown` is provided, and deletes the pending update doc if both branches match base.
 - Rebase persistence rejects stale live bases and only accepts rebased state built from the current live file snapshot.
 - Save applies remote drift from base into both branches before saving, persists only the `staged` diff to the live file, writes the saved-sequence marker, enqueues R2 content materialization, and keeps the pending update doc alive on partial save.
 - Public actions/mutations are rate-limited after membership validation and before writes.
 - Saves that push a live Yjs diff must pass the billing credit gate and emit one `file_save` usage event. The billing event name is intentionally unchanged for now to avoid a separate billing taxonomy migration.
-- Every pending doc lifecycle path maintains pending `files_markdown_chunks`, pending `files_plain_text_chunks`, and pending `files_metadata_docs` in the same mutation: doc insert chunks the `unstaged` Markdown with the shared `files_chunk_markdown` chunker and extracts Markdown YAML frontmatter into field and value metadata docs, patches rebuild pending Markdown chunk docs, pending plain-text chunk docs, and metadata docs only when the unstaged content actually changed (staged-only changes like `Accept all` skip the rebuild), and doc deletion (collapse, full save, expiry, project purge, and user purge) deletes all pending Markdown chunks, plain-text chunks, and metadata docs.
+- Every pending doc lifecycle path maintains pending `files_markdown_chunks`, pending `files_plain_text_chunks`, and pending `files_metadata_docs` in the same mutation: doc insert chunks the `unstaged` Markdown with the shared `files_chunk_markdown` chunker and extracts Markdown YAML frontmatter into field and value metadata docs, patches rebuild pending Markdown chunk docs, pending plain-text chunk docs, and metadata docs only when the unstaged content actually changed (staged-only changes like `Accept all` skip the rebuild), and doc deletion (collapse, full save, expiry, workspace purge, and user purge) deletes all pending Markdown chunks, plain-text chunks, and metadata docs.
 - Committed materialization writes committed `files_markdown_chunks`, committed `files_plain_text_chunks`, and committed metadata docs; committed replacement deletes the old committed Markdown chunks, plain-text chunks, and metadata docs for that file before inserting new docs.
 - Rename, move, archive, and unarchive patch denormalized `path`, `treePath`, and `archiveOperationId` on `files_plain_text_chunks` and metadata docs, so full-text and metadata search can filter scope before native pagination.
 - Pending update doc writes also store `size` from the same current `unstaged` Markdown whenever the unstaged branch is created or replaced. Staged-only changes preserve the existing size.
@@ -211,7 +211,7 @@ Important behavior:
 
 # Architectural Invariants
 
-- Pending updates are per-user docs keyed by `(workspaceId, projectId, userId, nodeId)`.
+- Pending updates are per-user docs keyed by `(organizationId, workspaceId, userId, nodeId)`.
 - A pending update doc exists only while either `staged` or `unstaged` differs from `base`.
 - AI reads must continue to see the current user's pending `unstaged` branch overlay.
 - Pending Markdown chunk docs, pending plain-text chunk docs, and pending metadata docs are replaced in the same mutation as every pending doc write/delete, so no orphan or stale pending search/metadata docs should exist.

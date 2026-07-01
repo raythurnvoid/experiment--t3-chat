@@ -98,7 +98,7 @@ function decode_staged_unstaged(pendingUpdate: app_convex_Doc<"files_pending_upd
 
 async function files_pending_accept_and_save(
 	convex: ReturnType<typeof useConvex>,
-	membershipId: app_convex_Id<"workspaces_projects_users">,
+	membershipId: app_convex_Id<"organizations_workspaces_users">,
 	pendingUpdate: app_convex_Doc<"files_pending_updates">,
 ) {
 	const decoded = decode_staged_unstaged(pendingUpdate);
@@ -122,7 +122,7 @@ async function files_pending_accept_and_save(
 
 async function files_pending_discard(
 	convex: ReturnType<typeof useConvex>,
-	membershipId: app_convex_Id<"workspaces_projects_users">,
+	membershipId: app_convex_Id<"organizations_workspaces_users">,
 	pendingUpdate: app_convex_Doc<"files_pending_updates">,
 ) {
 	const decoded = decode_staged_unstaged(pendingUpdate);
@@ -148,7 +148,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	props: FileEditorSidebarPendingItem_Props,
 ) {
 	const { pendingUpdate, path, disabled } = props;
-	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
+	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const convex = useConvex();
 
 	const [isOpen, setIsOpen] = useState(false);
@@ -238,8 +238,8 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 					</MyIconButton>
 					<MyLink
 						className={cn("FileEditorSidebarPending-item-path" satisfies FileEditorSidebarPending_ClassNames)}
-						to="/w/$workspaceName/$projectName/files"
-						params={{ workspaceName, projectName }}
+						to="/w/$organizationName/$workspaceName/files"
+						params={{ organizationName, workspaceName }}
 						search={{ nodeId: pendingUpdate.fileNodeId, view: "diff_editor" }}
 						aria-label={path}
 						title={path}

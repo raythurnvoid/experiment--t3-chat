@@ -30,33 +30,33 @@ type AppNotificationsListItem_Props = {
 	notification: app_convex_FunctionReturnType<
 		typeof app_convex_api.notifications.list_current_notifications
 	>[number];
-	workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number] | null;
-	project:
+	organization: app_convex_FunctionReturnType<typeof app_convex_api.organizations.list>["organizations"][number] | null;
+	workspace:
 		| app_convex_FunctionReturnType<
-				typeof app_convex_api.workspaces.list
-		  >["workspaceIdsProjectsDict"][app_convex_Id<"workspaces">][number]
+				typeof app_convex_api.organizations.list
+		  >["organizationIdsWorkspacesDict"][app_convex_Id<"organizations">][number]
 		| null;
 	actorName: string;
 	targetLoading: boolean;
 	onMarkRead: (notificationId: app_convex_Id<"notifications">) => void;
-	onOpenProject: (args: {
+	onOpenWorkspace: (args: {
 		notification: app_convex_FunctionReturnType<
 			typeof app_convex_api.notifications.list_current_notifications
 		>[number];
-		workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number];
-		project: app_convex_FunctionReturnType<
-			typeof app_convex_api.workspaces.list
-		>["workspaceIdsProjectsDict"][app_convex_Id<"workspaces">][number];
+		organization: app_convex_FunctionReturnType<typeof app_convex_api.organizations.list>["organizations"][number];
+		workspace: app_convex_FunctionReturnType<
+			typeof app_convex_api.organizations.list
+		>["organizationIdsWorkspacesDict"][app_convex_Id<"organizations">][number];
 	}) => void;
 };
 
 const AppNotificationsListItem = memo(function AppNotificationsListItem(props: AppNotificationsListItem_Props) {
-	const { notification, workspace, project, actorName, targetLoading, onMarkRead, onOpenProject } = props;
+	const { notification, organization, workspace, actorName, targetLoading, onMarkRead, onOpenWorkspace } = props;
 
 	const title =
-		targetLoading || !workspace || !project
+		targetLoading || !organization || !workspace
 			? "Loading invitation..."
-			: `${actorName} invited you to ${workspace.name} / ${project.name}`;
+			: `${actorName} invited you to ${organization.name} / ${workspace.name}`;
 
 	return (
 		<article
@@ -74,8 +74,8 @@ const AppNotificationsListItem = memo(function AppNotificationsListItem(props: A
 					variant="secondary"
 					disabled={targetLoading}
 					onClick={() => {
-						if (!workspace || !project) return;
-						onOpenProject({ notification, workspace, project });
+						if (!organization || !workspace) return;
+						onOpenWorkspace({ notification, organization, workspace });
 					}}
 				>
 					Open
@@ -100,21 +100,21 @@ type AppNotificationsList_Props = {
 	notifications:
 		| app_convex_FunctionReturnType<typeof app_convex_api.notifications.list_current_notifications>
 		| undefined;
-	workspaceList: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list> | undefined;
+	organizationList: app_convex_FunctionReturnType<typeof app_convex_api.organizations.list> | undefined;
 	onMarkRead: (notificationId: app_convex_Id<"notifications">) => void;
-	onOpenProject: (args: {
+	onOpenWorkspace: (args: {
 		notification: app_convex_FunctionReturnType<
 			typeof app_convex_api.notifications.list_current_notifications
 		>[number];
-		workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number];
-		project: app_convex_FunctionReturnType<
-			typeof app_convex_api.workspaces.list
-		>["workspaceIdsProjectsDict"][app_convex_Id<"workspaces">][number];
+		organization: app_convex_FunctionReturnType<typeof app_convex_api.organizations.list>["organizations"][number];
+		workspace: app_convex_FunctionReturnType<
+			typeof app_convex_api.organizations.list
+		>["organizationIdsWorkspacesDict"][app_convex_Id<"organizations">][number];
 	}) => void;
 };
 
 const AppNotificationsList = memo(function AppNotificationsList(props: AppNotificationsList_Props) {
-	const { notifications, workspaceList, onMarkRead, onOpenProject } = props;
+	const { notifications, organizationList, onMarkRead, onOpenWorkspace } = props;
 
 	const notificationItems = notifications ?? [];
 
@@ -141,27 +141,27 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 				<div className={"AppNotificationsList-empty" satisfies AppNotificationsList_ClassNames}>No notifications</div>
 			) : (
 				notificationItems.map((notification) => {
-					const workspace =
-						workspaceList?.workspaces.find((workspace) => workspace._id === notification.workspaceId) ?? null;
-					const invitedProject =
-						workspaceList?.workspaceIdsProjectsDict[notification.workspaceId]?.find(
-							(project) => project._id === notification.projectId,
+					const organization =
+						organizationList?.organizations.find((organization) => organization._id === notification.organizationId) ?? null;
+					const invitedWorkspace =
+						organizationList?.organizationIdsWorkspacesDict[notification.organizationId]?.find(
+							(workspace) => workspace._id === notification.workspaceId,
 						) ?? null;
-					const defaultProjectOfInvitedWorkspace =
-						// Keep workspace-valid invites actionable after the originally invited project is deleted.
-						workspaceList?.workspaceIdsProjectsDict[notification.workspaceId]?.find(
-							(project) => project._id === workspace?.defaultProjectId || project.default,
+					const defaultWorkspaceOfInvitedOrganization =
+						// Keep organization-valid invites actionable after the originally invited workspace is deleted.
+						organizationList?.organizationIdsWorkspacesDict[notification.organizationId]?.find(
+							(workspace) => workspace._id === organization?.defaultWorkspaceId || workspace.default,
 						) ?? null;
-					const project = invitedProject ?? defaultProjectOfInvitedWorkspace;
+					const workspace = invitedWorkspace ?? defaultWorkspaceOfInvitedOrganization;
 					const actorAnagraphicQueryResult = actorAnagraphicQueryResults[notification.actorUserId];
 					const actorAnagraphic =
 						actorAnagraphicQueryResult === undefined || actorAnagraphicQueryResult instanceof Error
 							? null
 							: actorAnagraphicQueryResult;
-					const targetLoading = workspaceList === undefined;
+					const targetLoading = organizationList === undefined;
 					const actorName = actorAnagraphic?.displayName?.trim() || "Someone";
 
-					if (!targetLoading && (!workspace || !project)) {
+					if (!targetLoading && (!organization || !workspace)) {
 						return null;
 					}
 
@@ -169,12 +169,12 @@ const AppNotificationsList = memo(function AppNotificationsList(props: AppNotifi
 						<AppNotificationsListItem
 							key={notification._id}
 							notification={notification}
+							organization={organization}
 							workspace={workspace}
-							project={project}
 							actorName={actorName}
 							targetLoading={targetLoading}
 							onMarkRead={onMarkRead}
-							onOpenProject={onOpenProject}
+							onOpenWorkspace={onOpenWorkspace}
 						/>
 					);
 				})
@@ -197,7 +197,7 @@ export const AppNotifications = memo(function AppNotifications() {
 	const navigate = useNavigate();
 
 	const notifications = useQuery(app_convex_api.notifications.list_current_notifications);
-	const workspaceList = useQuery(app_convex_api.workspaces.list);
+	const organizationList = useQuery(app_convex_api.organizations.list);
 
 	const [open, setOpen] = useState(false);
 
@@ -229,28 +229,28 @@ export const AppNotifications = memo(function AppNotifications() {
 			});
 	});
 
-	const handleOpenProject = useFn(
+	const handleOpenWorkspace = useFn(
 		(args: {
 			notification: app_convex_FunctionReturnType<
 				typeof app_convex_api.notifications.list_current_notifications
 			>[number];
-			workspace: app_convex_FunctionReturnType<typeof app_convex_api.workspaces.list>["workspaces"][number];
-			project: app_convex_FunctionReturnType<
-				typeof app_convex_api.workspaces.list
-			>["workspaceIdsProjectsDict"][app_convex_Id<"workspaces">][number];
+			organization: app_convex_FunctionReturnType<typeof app_convex_api.organizations.list>["organizations"][number];
+			workspace: app_convex_FunctionReturnType<
+				typeof app_convex_api.organizations.list
+			>["organizationIdsWorkspacesDict"][app_convex_Id<"organizations">][number];
 		}) => {
-			const { notification, project, workspace } = args;
+			const { notification, workspace, organization } = args;
 
 			onMarkRead(notification._id);
 			setOpen(false);
 			navigate({
-				to: "/w/$workspaceName/$projectName/chat",
+				to: "/w/$organizationName/$workspaceName/chat",
 				params: {
+					organizationName: organization.name,
 					workspaceName: workspace.name,
-					projectName: project.name,
 				},
 			}).catch((error) => {
-				console.error("[AppNotifications.handleOpenProject] Failed to navigate to invite target", {
+				console.error("[AppNotifications.handleOpenWorkspace] Failed to navigate to invite target", {
 					error,
 					notificationId: notification._id,
 				});
@@ -288,9 +288,9 @@ export const AppNotifications = memo(function AppNotifications() {
 
 				<AppNotificationsList
 					notifications={notifications}
-					workspaceList={workspaceList}
+					organizationList={organizationList}
 					onMarkRead={onMarkRead}
-					onOpenProject={handleOpenProject}
+					onOpenWorkspace={handleOpenWorkspace}
 				/>
 			</MyPopoverContent>
 		</MyPopover>

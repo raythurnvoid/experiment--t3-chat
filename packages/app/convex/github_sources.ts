@@ -3,7 +3,7 @@ Read-only GitHub repo mirror ("mount") sync pipeline.
 
 A `github_sources` doc maps a public GitHub repo to a mount name → `/.mounts/<name>` in the bash tool.
 When the commit moves, sync hard-deletes the whole mount, then re-ingests fresh from ONE commit-pinned
-codeload ZIP into reserved scope (`workspaceId="GLOBAL"`, `projectId="GITHUB"`, author `"SYSTEM"`). No user
+codeload ZIP into reserved scope (`organizationId="GLOBAL"`, `workspaceId="GITHUB"`, author `"SYSTEM"`). No user
 file staging, no revisions, no yjs. A crash leaves partial data; rerunning deletes-then-ingests again
 (decision 1).
 
@@ -22,9 +22,9 @@ import app_convex_schema from "./schema.ts";
 import { internalAction, internalMutation, internalQuery, type ActionCtx, type MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
-	workspaces_GLOBAL_WORKSPACE_ID,
-	workspaces_GLOBAL_GITHUB_PROJECT_ID,
-} from "../shared/workspaces.ts";
+	organizations_GLOBAL_ORGANIZATION_ID,
+	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+} from "../shared/organizations.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { json_parse_and_validate } from "../server/server-utils.ts";
@@ -612,10 +612,10 @@ export const delete_mount_content_batch = internalMutation({
 		while (deletedCount < batchSize) {
 			const node = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_treePath", (q) =>
+				.withIndex("by_organization_workspace_treePath", (q) =>
 					q
-						.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-						.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.gte("treePath", lower)
 						.lt("treePath", upper),
 				)
@@ -628,10 +628,10 @@ export const delete_mount_content_batch = internalMutation({
 			const remainingPlainTextChunks = batchSize - deletedCount;
 			const plainTextChunks = await ctx.db
 				.query("files_plain_text_chunks")
-				.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 					q
-						.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-						.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.eq("fileNodeId", node._id),
 				)
 				.take(remainingPlainTextChunks);
@@ -646,10 +646,10 @@ export const delete_mount_content_batch = internalMutation({
 			const remainingMarkdownChunks = batchSize - deletedCount;
 			const markdownChunks = await ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
 					q
-						.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-						.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.eq("fileNodeId", node._id),
 				)
 				.take(remainingMarkdownChunks);
@@ -664,10 +664,10 @@ export const delete_mount_content_batch = internalMutation({
 			const remainingFileStats = batchSize - deletedCount;
 			const fileStats = await ctx.db
 				.query("file_stats")
-				.withIndex("by_workspace_project_fileNode", (q) =>
+				.withIndex("by_organization_workspace_fileNode", (q) =>
 					q
-						.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-						.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.eq("fileNodeId", node._id),
 				)
 				.take(remainingFileStats);
@@ -682,10 +682,10 @@ export const delete_mount_content_batch = internalMutation({
 			const remainingMetadataDocs = batchSize - deletedCount;
 			const metadataDocs = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_workspace_project_fileNode_qualifiedField", (q) =>
+				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
 					q
-						.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-						.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.eq("fileNodeId", node._id),
 				)
 				.take(remainingMetadataDocs);
@@ -722,10 +722,10 @@ export const delete_mount_content_batch = internalMutation({
 
 		const remaining = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_treePath", (q) =>
+			.withIndex("by_organization_workspace_treePath", (q) =>
 				q
-					.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-					.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 					.gte("treePath", lower)
 					.lt("treePath", upper),
 			)

@@ -28,9 +28,9 @@
 	}
 	/* #endregion root */
 
-	/* #region workspace controls */
+	/* #region organization controls */
 
-	.MainAppHeaderWorkspaceControls {
+	.MainAppHeaderOrganizationControls {
 		display: grid;
 		grid-template-columns: 1fr 16px;
 		grid-template-rows: auto auto;
@@ -46,27 +46,27 @@
 		border-bottom-left-radius: 0;
 	}
 
-	.MainAppHeaderWorkspaceControls-primary-text,
-	.MainAppHeaderWorkspaceControls-secondary-text {
+	.MainAppHeaderOrganizationControls-primary-text,
+	.MainAppHeaderOrganizationControls-secondary-text {
 		contain: content;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		line-height: 1.1;
 	}
 
-	.MainAppHeaderWorkspaceControls-primary-text {
+	.MainAppHeaderOrganizationControls-primary-text {
 		grid-row: 1;
 		grid-column: 1;
 		align-self: end;
 
 		color: var(--color-fg-11);
 
-		.MainAppHeaderWorkspaceControls:hover & {
+		.MainAppHeaderOrganizationControls:hover & {
 			color: var(--color-fg-12);
 		}
 	}
 
-	.MainAppHeaderWorkspaceControls-secondary-text {
+	.MainAppHeaderOrganizationControls-secondary-text {
 		grid-row: 2;
 		grid-column: 1;
 		align-self: start;
@@ -75,12 +75,12 @@
 
 		color: var(--color-fg-09);
 
-		.MainAppHeaderWorkspaceControls:hover & {
+		.MainAppHeaderOrganizationControls:hover & {
 			color: var(--color-fg-10);
 		}
 	}
 
-	.MainAppHeaderWorkspaceControls-icon {
+	.MainAppHeaderOrganizationControls-icon {
 		grid-row: 1 / 3;
 		grid-column: 2;
 
@@ -89,9 +89,9 @@
 
 		color: var(--color-fg-09);
 
-		.MainAppHeaderWorkspaceControls:hover & {
+		.MainAppHeaderOrganizationControls:hover & {
 			color: var(--color-fg-10);
 		}
 	}
-	/* #endregion workspace controls */
+	/* #endregion organization controls */
 }

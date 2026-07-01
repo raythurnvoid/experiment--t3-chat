@@ -45,8 +45,8 @@ function key_from_r2_url(url: string) {
 	return decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
 }
 
-function expected_asset_key(args: { workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects">; assetId: string }) {
-	return `workspaces/${args.workspaceId}/projects/${args.projectId}/assets/${args.assetId}`;
+function expected_asset_key(args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; assetId: string }) {
+	return `organizations/${args.organizationId}/workspaces/${args.workspaceId}/assets/${args.assetId}`;
 }
 
 async function body_to_bytes(body: BodyInit | null | undefined) {
@@ -254,17 +254,17 @@ async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"user
 async function get_active_file_node_by_path(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		path: string;
 	},
 ) {
 	return await ctx.db
 		.query("files_nodes")
-		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 			q
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("path", args.path)
 				.eq("archiveOperationId", undefined),
 		)
@@ -274,14 +274,14 @@ async function get_active_file_node_by_path(
 async function get_pdf_output_node(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		sourceName: string;
 	},
 ) {
 	const convertedMarkdown = await get_active_file_node_by_path(ctx, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		path: `/${args.sourceName}.md`,
 	});
 	if (!convertedMarkdown) {
@@ -346,14 +346,14 @@ describe("r2 asset content", () => {
 				ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId),
 				ctx.db
 					.query("files_yjs_updates")
-					.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", node._id),
+					.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", node._id),
 					)
 					.collect(),
 				ctx.db
 					.query("files_snapshots")
-					.withIndex("by_workspace_project_fileNode_archivedAt", (q) =>
-						q.eq("workspaceId", db.workspaceId).eq("projectId", db.projectId).eq("fileNodeId", node._id),
+					.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", node._id),
 					)
 					.collect(),
 			]);
@@ -367,8 +367,8 @@ describe("r2 asset content", () => {
 		expect(docs.markdownAsset?.kind).toBe("content");
 		expect(docs.markdownAsset?.r2Key).toBe(
 			expected_asset_key({
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				assetId: docs.markdownAsset?._id ?? "",
 			}),
 		);
@@ -377,8 +377,8 @@ describe("r2 asset content", () => {
 		expect(docs.yjsAsset?.kind).toBe("yjs_snapshot");
 		expect(docs.yjsAsset?.r2Key).toBe(
 			expected_asset_key({
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				assetId: docs.yjsAsset?._id ?? "",
 			}),
 		);
@@ -463,8 +463,8 @@ describe("r2 asset content", () => {
 
 		expect(r2_text(assets.markdownR2Key)).toBe(files_INITIAL_CONTENT);
 		const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			path: "/stale-read.md",
 		});
@@ -495,8 +495,8 @@ describe("r2 asset content", () => {
 		const upsertResult = await asUser.action(
 			internal.files_pending_updates.upsert_file_pending_update_internal_action,
 			{
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				userId: db.userId,
 				nodeId: created._yay.nodeId,
 				unstagedMarkdown: pendingMarkdown,
@@ -509,10 +509,10 @@ describe("r2 asset content", () => {
 		const pendingUpdate = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
 					q
+						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
-						.eq("projectId", db.projectId)
 						.eq("userId", db.userId)
 						.eq("fileNodeId", created._yay.nodeId),
 				)
@@ -532,8 +532,8 @@ describe("r2 asset content", () => {
 		expect(pendingRowMarkdown._yay).toBe(pendingMarkdown);
 
 		const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			path: "/pending-read.md",
 			pendingUpdateId: pendingUpdate._id,
@@ -577,8 +577,8 @@ describe("r2 asset content", () => {
 		expect(created._yay.url).toContain(
 			encodeURIComponent(
 				expected_asset_key({
+					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
-					projectId: db.projectId,
 					assetId: created._yay.assetId,
 				}),
 			),
@@ -617,8 +617,8 @@ describe("r2 asset content", () => {
 			throw new Error("Expected upload asset");
 		}
 		const sourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			assetId: sourceAsset._id,
 		});
 
@@ -651,16 +651,16 @@ describe("r2 asset content", () => {
 		expect(uploadedAsset?.conversionWorkId).toBe("work_asset_refactor");
 		const pendingDocs = await t.run(async (ctx) => {
 			const outputs = await get_pdf_output_node(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				sourceName: "event.pdf",
 			});
 			const convertedAsset = outputs.convertedMarkdown.assetId
 				? await ctx.db.get("files_r2_assets", outputs.convertedMarkdown.assetId)
 				: null;
 			const testOutput = await get_active_file_node_by_path(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				path: "/event.pdf.test.md",
 			});
 
@@ -680,8 +680,8 @@ describe("r2 asset content", () => {
 		expect(signedDownload._yay?.url).toContain(encodeURIComponent(sourceAssetR2Key));
 
 		await asUser.action(internal.r2.convert_upload_to_markdown, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			sourceAssetId: upload._yay.assetId,
 			outputAssetId: pendingDocs.outputs.convertedMarkdown.assetId,
 		});
@@ -692,8 +692,8 @@ describe("r2 asset content", () => {
 		const docs = await t.run(async (ctx) => {
 			const sourceNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			const outputs = await get_pdf_output_node(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				sourceName: "event.pdf",
 			});
 			const outputNode = outputs.convertedMarkdown;
@@ -772,8 +772,8 @@ describe("r2 asset content", () => {
 			throw new Error("Expected upload asset");
 		}
 		const sourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			assetId: sourceAsset._id,
 		});
 
@@ -802,8 +802,8 @@ describe("r2 asset content", () => {
 
 		const pendingOutput = await t.run(async (ctx) => {
 			const output = await get_active_file_node_by_path(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				path: "/photo.png.description.md",
 			});
 			if (!output?.assetId) {
@@ -819,15 +819,15 @@ describe("r2 asset content", () => {
 		expect(pendingOutput.asset?.conversionWorkId).toBe("work_asset_refactor");
 
 		await asUser.action(internal.r2.describe_image_upload_to_markdown, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			sourceAssetId: upload._yay.assetId,
 			outputAssetId: pendingOutput.output.assetId,
 		});
 
 		const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			path: "/photo.png.description.md",
 		});
@@ -864,8 +864,8 @@ describe("r2 asset content", () => {
 			throw new Error("Expected upload asset");
 		}
 		const sourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			assetId: sourceAsset._id,
 		});
 
@@ -895,13 +895,13 @@ describe("r2 asset content", () => {
 		const pendingOutputs = await t.run(async (ctx) => {
 			const [summary, transcript] = await Promise.all([
 				get_active_file_node_by_path(ctx, {
+					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
-					projectId: db.projectId,
 					path: "/clip.mp4.summary.md",
 				}),
 				get_active_file_node_by_path(ctx, {
+					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
-					projectId: db.projectId,
 					path: "/clip.mp4.transcript.md",
 				}),
 			]);
@@ -916,8 +916,8 @@ describe("r2 asset content", () => {
 		});
 
 		await asUser.action(internal.r2.summarize_video_upload_to_markdown, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			sourceAssetId: upload._yay.assetId,
 			summaryOutputAssetId: pendingOutputs.summary.assetId,
 			transcriptOutputAssetId: pendingOutputs.transcript.assetId,
@@ -925,14 +925,14 @@ describe("r2 asset content", () => {
 
 		const [summaryReadResult, transcriptReadResult] = await Promise.all([
 			asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				userId: db.userId,
 				path: "/clip.mp4.summary.md",
 			}),
 			asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				userId: db.userId,
 				path: "/clip.mp4.transcript.md",
 			}),
@@ -976,8 +976,8 @@ describe("r2 asset content", () => {
 			throw new Error("Expected upload asset");
 		}
 		const sourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			assetId: sourceAsset._id,
 		});
 		r2Objects.set(sourceAssetR2Key, new Uint8Array([1, 2, 3, 4]));
@@ -1008,13 +1008,13 @@ describe("r2 asset content", () => {
 		const pendingOutputs = await t.run(async (ctx) => {
 			const [summary, transcript] = await Promise.all([
 				get_active_file_node_by_path(ctx, {
+					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
-					projectId: db.projectId,
 					path: "/long-clip.mp4.summary.md",
 				}),
 				get_active_file_node_by_path(ctx, {
+					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
-					projectId: db.projectId,
 					path: "/long-clip.mp4.transcript.md",
 				}),
 			]);
@@ -1029,8 +1029,8 @@ describe("r2 asset content", () => {
 		});
 
 		await asUser.action(internal.r2.summarize_video_upload_to_markdown, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			sourceAssetId: upload._yay.assetId,
 			summaryOutputAssetId: pendingOutputs.summary.assetId,
 			transcriptOutputAssetId: pendingOutputs.transcript.assetId,
@@ -1038,14 +1038,14 @@ describe("r2 asset content", () => {
 
 		const [summaryReadResult, transcriptReadResult] = await Promise.all([
 			asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				userId: db.userId,
 				path: "/long-clip.mp4.summary.md",
 			}),
 			asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				userId: db.userId,
 				path: "/long-clip.mp4.transcript.md",
 			}),
@@ -1080,8 +1080,8 @@ describe("r2 asset content", () => {
 			throw new Error("Expected upload asset");
 		}
 		const sourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			assetId: sourceAsset._id,
 		});
 		const markdownContent = "# Uploaded\n\nMarkdown body";
@@ -1114,8 +1114,8 @@ describe("r2 asset content", () => {
 		expect(uploadedAsset?.conversionWorkId).toBe("work_asset_refactor");
 
 		await asUser.action(internal.r2.finalize_uploaded_markdown_file, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			sourceAssetId: upload._yay.assetId,
 		});
 
@@ -1160,8 +1160,8 @@ describe("r2 asset content", () => {
 			throw new Error("Expected upload asset");
 		}
 		const sourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			assetId: sourceAsset._id,
 		});
 		enqueueActionSpy.mockClear();
@@ -1192,8 +1192,8 @@ describe("r2 asset content", () => {
 		const docs = await t.run(async (ctx) => {
 			const nextSourceAsset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
 			const generated = await get_active_file_node_by_path(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				path: "/not-a-pdf.pdf.md",
 			});
 			return { nextSourceAsset, generated };
@@ -1230,8 +1230,8 @@ describe("r2 asset content", () => {
 			throw new Error("Expected upload asset");
 		}
 		const sourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			assetId: sourceAsset._id,
 		});
 		const response = await t.fetch("/api/r2/event", {
@@ -1258,15 +1258,15 @@ describe("r2 asset content", () => {
 		expect(response.status).toBe(204);
 		const outputs = await t.run(async (ctx) =>
 			get_pdf_output_node(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				sourceName: "modal-limit.pdf",
 			}),
 		);
 
 		await asUser.action(internal.r2.convert_upload_to_markdown, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			sourceAssetId: upload._yay.assetId,
 			outputAssetId: outputs.convertedMarkdown.assetId,
 		});
@@ -1314,8 +1314,8 @@ describe("r2 asset content", () => {
 			throw new Error("Expected upload asset");
 		}
 		const sourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			assetId: sourceAsset._id,
 		});
 		const response = await t.fetch("/api/r2/event", {
@@ -1342,15 +1342,15 @@ describe("r2 asset content", () => {
 		expect(response.status).toBe(204);
 		const outputs = await t.run(async (ctx) =>
 			get_pdf_output_node(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				sourceName: "modal-byte-limit.pdf",
 			}),
 		);
 
 		await asUser.action(internal.r2.convert_upload_to_markdown, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			sourceAssetId: upload._yay.assetId,
 			outputAssetId: outputs.convertedMarkdown.assetId,
 		});
@@ -1391,8 +1391,8 @@ describe("r2 asset content", () => {
 		const existingGeneratedId = await t.run(async (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				parentId: files_ROOT_ID,
@@ -1407,8 +1407,8 @@ describe("r2 asset content", () => {
 			throw new Error("Expected upload asset");
 		}
 		const sourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			assetId: sourceAsset._id,
 		});
 		const response = await t.fetch("/api/r2/event", {
@@ -1438,13 +1438,13 @@ describe("r2 asset content", () => {
 			const source = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			const oldGenerated = await ctx.db.get("files_nodes", existingGeneratedId);
 			const outputs = await get_pdf_output_node(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				sourceName: "collision.pdf",
 			});
 			const activeGeneratedAtPath = await get_active_file_node_by_path(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				path: "/collision.pdf.md",
 			});
 			return { source, oldGenerated, outputs, activeGeneratedAtPath };
@@ -1488,8 +1488,8 @@ describe("r2 asset content", () => {
 			throw new Error("Expected upload asset");
 		}
 		const sourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			assetId: sourceAsset._id,
 		});
 		const response = await t.fetch("/api/r2/event", {
@@ -1516,16 +1516,16 @@ describe("r2 asset content", () => {
 		expect(response.status).toBe(204);
 		const outputs = await t.run(async (ctx) =>
 			get_pdf_output_node(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				sourceName: "broken.pdf",
 			}),
 		);
 
 		await expect(
 			asUser.action(internal.r2.convert_upload_to_markdown, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				sourceAssetId: upload._yay.assetId,
 				outputAssetId: outputs.convertedMarkdown.assetId,
 			}),
@@ -1569,8 +1569,8 @@ describe("r2 asset content", () => {
 			throw new Error("Expected upload asset");
 		}
 		const sourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			assetId: sourceAsset._id,
 		});
 		const response = await t.fetch("/api/r2/event", {
@@ -1597,16 +1597,16 @@ describe("r2 asset content", () => {
 		expect(response.status).toBe(204);
 		const outputs = await t.run(async (ctx) =>
 			get_pdf_output_node(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				sourceName: "moved.pdf",
 			}),
 		);
 		await t.run(async (ctx) => {
 			const folderId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				parentId: files_ROOT_ID,
@@ -1624,8 +1624,8 @@ describe("r2 asset content", () => {
 		});
 
 		await asUser.action(internal.r2.convert_upload_to_markdown, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			sourceAssetId: upload._yay.assetId,
 			outputAssetId: outputs.convertedMarkdown.assetId,
 		});
@@ -1637,8 +1637,8 @@ describe("r2 asset content", () => {
 			]);
 			const movedAsset = movedOutput?.assetId ? await ctx.db.get("files_r2_assets", movedOutput.assetId) : null;
 			const oldRootOutput = await get_active_file_node_by_path(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				path: "/moved.pdf.md",
 			});
 			return { source, movedOutput, movedAsset, oldRootOutput };
@@ -1680,8 +1680,8 @@ describe("r2 asset content", () => {
 			throw new Error("Expected upload asset");
 		}
 		const sourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			assetId: sourceAsset._id,
 		});
 		const response = await t.fetch("/api/r2/event", {
@@ -1708,15 +1708,15 @@ describe("r2 asset content", () => {
 		expect(response.status).toBe(204);
 		const outputs = await t.run(async (ctx) =>
 			get_pdf_output_node(ctx, {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				sourceName: "readable.pdf",
 			}),
 		);
 
 		await asUser.action(internal.r2.convert_upload_to_markdown, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			sourceAssetId: upload._yay.assetId,
 			outputAssetId: outputs.convertedMarkdown.assetId,
 		});
@@ -1724,8 +1724,8 @@ describe("r2 asset content", () => {
 		const sourceReadResult = await asUser.action(
 			internal.files_nodes.get_file_last_available_markdown_content_by_path,
 			{
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				userId: db.userId,
 				path: "/readable.pdf",
 			},
@@ -1733,8 +1733,8 @@ describe("r2 asset content", () => {
 		expect(sourceReadResult).toBeNull();
 
 		const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			path: "/readable.pdf.md",
 		});
@@ -1746,8 +1746,8 @@ describe("r2 asset content", () => {
 		expect(readResult.nodeId).toBe(outputs.convertedMarkdown._id);
 
 		const searchResult = await asUser.query(internal.files_nodes.text_search_files, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			query: "PDF body",
 			numItems: 10,

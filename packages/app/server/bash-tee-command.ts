@@ -1,6 +1,6 @@
 import { defineCommand } from "just-bash/browser";
 import {
-	bash_current_project_path_to_db_files_path,
+	bash_current_workspace_path_to_db_files_path,
 	bash_delegate_builtin_command,
 	bash_is_path_under_mounts,
 	bash_resolve_path,
@@ -42,7 +42,7 @@ function path_operands(args: string[]) {
 /**
  * Keep app files read-only for shell `tee`; durable writes must use write_file/edit_file.
  */
-export function bash_tee_command_create(currentProjectPath: string) {
+export function bash_tee_command_create(currentWorkspacePath: string) {
 	return defineCommand("tee", async (args, commandCtx) => {
 		for (const file of path_operands(args)) {
 			const resolvedPath = bash_resolve_path(commandCtx.cwd, file);
@@ -55,14 +55,14 @@ export function bash_tee_command_create(currentProjectPath: string) {
 				};
 			}
 
-			const dbFilesPath = bash_current_project_path_to_db_files_path(currentProjectPath, resolvedPath);
+			const dbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, resolvedPath);
 
 			if (dbFilesPath != null) {
 				return {
 					stdout: "",
 					stderr:
 						`tee: cannot write to app file '${file}' through bash.\n` +
-						`Use write_file with path '${dbFilesPath}' to write new content (strip the current project path prefix '${currentProjectPath}').\n` +
+						`Use write_file with path '${dbFilesPath}' to write new content (strip the current workspace path prefix '${currentWorkspacePath}').\n` +
 						`Use edit_file with path '${dbFilesPath}' to apply targeted edits to an existing file.\n`,
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};

@@ -3,26 +3,26 @@ import { useQuery } from "convex/react";
 import { memo, useEffect } from "react";
 
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { url_path_files, app_tenant_defaults_from_workspace_list } from "@/lib/urls.ts";
+import { url_path_files, app_tenant_defaults_from_organization_list } from "@/lib/urls.ts";
 
 const IndexRedirect = memo(function IndexRedirect() {
 	const navigate = Route.useNavigate();
-	const list = useQuery(app_convex_api.workspaces.list);
+	const list = useQuery(app_convex_api.organizations.list);
 
 	useEffect(() => {
 		if (list === undefined) {
 			return;
 		}
 
-		const defaults = app_tenant_defaults_from_workspace_list(list);
+		const defaults = app_tenant_defaults_from_organization_list(list);
 		if (defaults === null) {
-			console.error("[IndexRedirect] Missing default workspace/project for user");
+			console.error("[IndexRedirect] Missing default organization/workspace for user");
 			return;
 		}
 
 		const target = url_path_files({
+			organizationName: defaults.organizationName,
 			workspaceName: defaults.workspaceName,
-			projectName: defaults.projectName,
 		});
 
 		navigate({ to: target, replace: true }).catch((error: unknown) => {
@@ -31,8 +31,8 @@ const IndexRedirect = memo(function IndexRedirect() {
 	}, [list, navigate]);
 
 	return (
-		<main role="status" aria-live="polite" aria-label="Workspace redirect">
-			Redirecting to workspace
+		<main role="status" aria-live="polite" aria-label="Organization redirect">
+			Redirecting to organization
 		</main>
 	);
 });

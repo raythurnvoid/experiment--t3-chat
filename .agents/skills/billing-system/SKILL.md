@@ -69,8 +69,8 @@ Server-side usage-event typing lives in [billing.ts](../../../packages/app/serve
 - `billing_Event` is inferred from the `ingest_events` action validator and is the source-of-truth discriminated union for app-owned billing usage events keyed by `name`: `manual_credit`, `file_save`, `monthly_credit`, and `ai_usage`.
 - `billing_Event` is the only supported billing usage event shape. It mirrors Polar's event fields with `{ name, externalCustomerId, externalMemberId?, externalId, metadata }`, except `name` is the app event name; `ingest_events` rewrites that field to the single Polar meter event and stores the app event name in `metadata.name`. `externalCustomerId` is the payer/billed Convex user id, not necessarily the actor.
 - `billing_event` is a typed identity helper for preserving the narrow `billing_Event` variant at call sites. It does not build full event payloads; callers own the metadata they emit.
-- Usage-event `externalId` values are built directly with the shared `composite_id("billing", ...)` helper. Its `AppCompositeIds.billing` tuple union keeps billing IDs strict and always joins parts with `::`; workspace usage event ids include the billed user, actor, workspace, and project.
-- Workspace usage events (`file_save`, `ai_usage`) always include `metadata.actorUserId`, `metadata.billedUserId`, `metadata.workspaceId`, and `metadata.projectId`. `externalMemberId` is optional actor attribution; when present, `ingest_events` passes it through to Polar.
+- Usage-event `externalId` values are built directly with the shared `composite_id("billing", ...)` helper. Its `AppCompositeIds.billing` tuple union keeps billing IDs strict and always joins parts with `::`; organization usage event ids include the billed user, actor, organization, and workspace.
+- Organization usage events (`file_save`, `ai_usage`) always include `metadata.actorUserId`, `metadata.billedUserId`, `metadata.organizationId`, and `metadata.workspaceId`. `externalMemberId` is optional actor attribution; when present, `ingest_events` passes it through to Polar.
 - `billing_ingest_events` is the mandatory exported local emission helper for billing usage events. It accepts `{ event, billedUser }` pairs using the real payer `users` row, routes signed-in billed rows (`billedUser.clerkUserId != null`) to the `billing_workpool_usage_event` retry path, and routes anonymous billed rows (`billedUser.clerkUserId == null`) to a local mutation that applies the synthetic snapshot directly. The enqueued `ingest_events` action remains the only code path that should call Polar `eventsIngest`.
 
 See [Glossary — server/billing.ts](#glossary--serverbillingts) and [Glossary — event ingestion](#glossary--event-ingestion) for precise signatures and behavior.
@@ -92,19 +92,19 @@ The backend billing module lives in [billing.ts](../../../packages/app/convex/bi
 
 See [Glossary — convex/billing.ts](#glossary--convexbillingts).
 
-## Workspace billing modes
+## Organization billing modes
 
-Workspace-scoped paid operations resolve the billed user before paid work starts.
+Organization-scoped paid operations resolve the billed user before paid work starts.
 
-- Personal/default workspaces always use normal user billing.
-- Created/non-personal workspaces store `workspaces.billingMode`, with `"user"` as the default.
+- Personal/default organizations always use normal user billing.
+- Created/non-personal organizations store `organizations.billingMode`, with `"user"` as the default.
 - `"user"` bills the acting member. The billed user and actor are the same user id.
-- `"workspace_owner"` bills `workspaces.ownerUserId`. The actor is attribution only.
-- `workspaces.ownerUserId` is trusted as the owner source of truth. The default-project owner role assignment is only the access-control/role-display mirror.
+- `"organization_owner"` bills `organizations.ownerUserId`. The actor is attribution only.
+- `organizations.ownerUserId` is trusted as the owner source of truth. The default-workspace owner role assignment is only the access-control/role-display mirror.
 - Ownership transfer changes future owner-billed operations only. In-flight chat/file operations keep the billed user captured before the operation started.
 - There is no company table, sponsorship ledger, employee balance table, allowance model, balance transfer, or Polar team-customer migration in this model.
 
-`billing_usage_snapshots.userId` remains the Polar external customer id. For workspace operations, read the snapshot for the resolved billed user; do not calculate or mutate a separate member balance.
+`billing_usage_snapshots.userId` remains the Polar external customer id. For organization operations, read the snapshot for the resolved billed user; do not calculate or mutate a separate member balance.
 
 ## Webhook ownership
 
@@ -155,8 +155,8 @@ Do not reintroduce a shared `credits_policy_allow_spend` helper for this rule. T
 There is one DB credit gate plus the action-facing query wrapper:
 
 - `billing_db_check_credits(ctx, { userId, minimumRequiredCents })` — loads the synced Polar product from `snapshot.subscription.productId`, reads `snapshot.meter?.balance ?? 0`, and returns `{ hasCredits }`. Missing billing state, missing products, and insufficient Free-plan balance return `hasCredits: false`; paid plans return `hasCredits: true` even with a negative balance.
-- `internal.billing.check_credits` — `internalQuery` wrapper for action code such as chat routes. Without `workspaceId`, it returns `{ hasCredits }`. With `workspaceId`, it resolves the workspace payer and returns `{ hasCredits, billedUser }` so actions can freeze the billed user before paid work starts. Missing workspace or billed-user rows are impossible states from membership-derived inputs and should throw instead of returning `Result` or `null`.
-- DB-capable file mutations resolve `workspace`, optional owner assignment, and `billedUser` inline before calling `billing_db_check_credits`. Keep that local instead of reintroducing a workspace credit helper.
+- `internal.billing.check_credits` — `internalQuery` wrapper for action code such as chat routes. Without `organizationId`, it returns `{ hasCredits }`. With `organizationId`, it resolves the organization payer and returns `{ hasCredits, billedUser }` so actions can freeze the billed user before paid work starts. Missing organization or billed-user docs are impossible states from membership-derived inputs and should throw instead of returning `Result` or `null`.
+- DB-capable file mutations resolve `organization`, optional owner assignment, and `billedUser` inline before calling `billing_db_check_credits`. Keep that local instead of reintroducing an organization credit helper.
 
 Missing snapshots or subscriptions are treated as `hasCredits: false` in gate helpers. Billing UI hides until the subscription, product list, and usage snapshot are ready.
 
@@ -166,7 +166,7 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 
 - On deny the handler returns `402` with `{ message: "Insufficient funds" }`. If the UI needs richer plan-aware copy, add a separate query for that UI surface instead of expanding the gate result.
 - On successful finish, chat flows always emit direct `billing_event("ai_usage")` events through `billing_ingest_events` when AI SDK reports non-zero token usage. Signed-in billed rows go to Polar via the workpool; anonymous billed rows apply locally to the synthetic snapshot. The main stream emits one event for response usage, and title generation emits a separate title event when title tokens were used.
-- Use deterministic `externalId` values built with `composite_id("billing", "ai_usage", billedUserId, actorUserId, workspaceId, projectId, threadId, messageId)` so Polar dedupes HTTP retries and ownership-transfer races cannot collide. For title events, the final part is the literal `"title"`.
+- Use deterministic `externalId` values built with `composite_id("billing", "ai_usage", billedUserId, actorUserId, organizationId, workspaceId, threadId, messageId)` so Polar dedupes HTTP retries and ownership-transfer races cannot collide. For title events, the final part is the literal `"title"`.
 - Keep the token-pricing switch local to `compute_token_usage_cost_cents` in `ai_chat.ts`. Do not recreate a shared entitlements module, exported pricing type, or helper for the current pricing table.
 - Do not store chat spend locally. Do not estimate or reserve worst-case cost. Do not stop a live stream when the balance goes below zero in the current implementation; stream cutoff is a future billing-lock feature.
 
@@ -177,14 +177,14 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 - The route rate-limits first, then checks credits with `minimumRequiredCents: 1` before `streamText` for the inline popover path or `generateText` for the Liveblocks contextual resolver JSON path.
 - On rate-limit deny it returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
 - On credit deny it returns `402` with `{ message: "Insufficient funds" }`.
-- On successful finish/completion, it emits one `billing_event("ai_usage")` when AI SDK reports non-zero token usage. The deterministic external id is `composite_id("billing", "ai_usage", billedUserId, actorUserId, workspaceId, projectId, "inline_ai", requestId)`, with metadata `threadId: "inline_ai"` and `messageId: requestId`.
+- On successful finish/completion, it emits one `billing_event("ai_usage")` when AI SDK reports non-zero token usage. The deterministic external id is `composite_id("billing", "ai_usage", billedUserId, actorUserId, organizationId, workspaceId, "inline_ai", requestId)`, with metadata `threadId: "inline_ai"` and `messageId: requestId`.
 - Keep the current inline-AI pricing helper local to `files_nodes.ts` while pricing remains hardcoded.
 
 ### Media upload AI check and usage event
 
 Image/video upload processing in [r2.ts](../../../packages/app/convex/r2.ts) uses the existing `ai_usage` event family.
 
-- The R2 upload-event mutation gates image/video media work before enqueueing the Workpool action. It resolves the workspace payer with the same `billing_pick_billed_user_id` rule used by file saves, then calls `billing_db_check_credits(ctx, { minimumRequiredCents: 1 })`.
+- The R2 upload-event mutation gates image/video media work before enqueueing the Workpool action. It resolves the organization payer with the same `billing_pick_billed_user_id` rule used by file saves, then calls `billing_db_check_credits(ctx, { minimumRequiredCents: 1 })`.
 - The media Workpool actions check credits again through `internal.billing.check_credits` before calling OpenAI. If the payer no longer has credits, they clear `conversionWorkId` on the source/output assets and do not generate Markdown.
 - Image descriptions, video transcripts, and video summaries emit `billing_event("ai_usage")` through `billing_ingest_events` when token usage is non-zero. Deterministic ids use `threadId: "media:<sourceFileNodeId>"` and operation ids such as `"image_description"`, `"video_transcript"`, and `"video_summary"` as the `messageId`/last composite id part.
 - Keep media pricing local to `r2.ts` while pricing remains hardcoded. Do not introduce a shared pricing catalog unless the product rule changes across multiple call sites.
@@ -193,9 +193,9 @@ Image/video upload processing in [r2.ts](../../../packages/app/convex/r2.ts) use
 
 File saves ([yjs_push_update](../../../packages/app/convex/files_nodes.ts), [save_file_pending_update](../../../packages/app/convex/files_pending_updates.ts), and snapshot restore through [restore_snapshot_r2](../../../packages/app/convex/files_nodes.ts) / [restore_snapshot](../../../packages/app/convex/files_nodes.ts)) fail fast before the yjs push or restore write:
 
-1. Resolve `workspace`, optional owner assignment, and `billedUser` inline, then call `billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 })`. When it returns `hasCredits: false`, the caller returns `_nay` with the literal `"Insufficient funds"` message to the frontend.
+1. Resolve `organization`, optional owner assignment, and `billedUser` inline, then call `billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 })`. When it returns `hasCredits: false`, the caller returns `_nay` with the literal `"Insufficient funds"` message to the frontend.
 2. Run the yjs push; obtain the new sequence.
-3. Emit the existing `billing_event("file_save")` through `billing_ingest_events` with `externalId = composite_id("billing", "file_save", billedUserId, actorUserId, workspaceId, projectId, fileId, yjsSequence)` and literal `metadata.amount: 1`.
+3. Emit the existing `billing_event("file_save")` through `billing_ingest_events` with `externalId = composite_id("billing", "file_save", billedUserId, actorUserId, organizationId, workspaceId, fileId, yjsSequence)` and literal `metadata.amount: 1`.
 
 For signed-in users there is no local credit debit after save; Polar usage events and subsequent customer-state refreshes are the only path that changes the synced meter. For anonymous users the shared ingest helper applies the same one-cent event locally after a successful save. Snapshot restore bills only when `write_markdown_to_yjs_sync` produced a new Yjs sequence. Do not reintroduce a shared `credits_FILE_SAVE_COST_CENTS` constant for the current one-cent file-save rule; keep the literal at the call sites unless the product rule changes.
 
@@ -215,13 +215,13 @@ Anonymous users participate in credit gating through a **synthetic `billing_usag
 
 ### UI surface: billing indicator
 
-The billing indicator ([main-app-header-billing-indicator.tsx](../../../packages/app/src/components/main-app-header-billing-indicator.tsx)) composes existing user and workspace data:
+The billing indicator ([main-app-header-billing-indicator.tsx](../../../packages/app/src/components/main-app-header-billing-indicator.tsx)) composes existing user and organization data:
 
-- `api.workspaces.list` for the current workspace billing mode and owner id.
+- `api.organizations.list` for the current organization billing mode and owner id.
 - `api.users.get_anagraphic` for the owner label used by the owner-billing tooltip.
 - `api.billing.get_usage_snapshot` and `api.billing.list_products` only when the current signed-in user is the displayed payer.
 
-The indicator displays the current user's balance for personal workspaces, `"user"` workspaces, and owner-billed workspaces where the current user is the owner. Do not show a billing-mode badge for personal or `"user"` workspaces. For owner-billed workspaces, show a badge with an info tooltip: members see `Owner billing` and copy naming the owner as the billed user; owners see `Workspace billing` and copy explaining that member usage in the workspace is billed to their account. For owner-billed workspaces viewed by a non-owner member, do not query or expose the owner's usage snapshot. Billing portal actions stay current-user-only; members do not receive the owner payer's Polar portal link.
+The indicator displays the current user's balance for personal organizations, `"user"` organizations, and owner-billed organizations where the current user is the owner. Do not show a billing-mode badge for personal or `"user"` organizations. For owner-billed organizations, show a badge with an info tooltip: members see `Owner billing` and copy naming the owner as the billed user; owners see `Organization billing` and copy explaining that member usage in the organization is billed to their account. For owner-billed organizations viewed by a non-owner member, do not query or expose the owner's usage snapshot. Billing portal actions stay current-user-only; members do not receive the owner payer's Polar portal link.
 
 ## Function definitions
 
@@ -277,7 +277,7 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 
 - **Module:** [packages/app/server/billing.ts](../../../packages/app/server/billing.ts)
 - **Kind:** inferred type alias from `FunctionArgs<typeof internal.billing.ingest_events>["events"][number]`.
-- **Role:** Canonical app-owned billing event union. Variants are discriminated by `name` (`manual_credit`, `file_save`, `monthly_credit`, `ai_usage`) and otherwise mirror the Polar event envelope fields the app supports: `externalCustomerId`, optional `externalMemberId` for workspace usage attribution, `externalId`, and event-specific `metadata`.
+- **Role:** Canonical app-owned billing event union. Variants are discriminated by `name` (`manual_credit`, `file_save`, `monthly_credit`, `ai_usage`) and otherwise mirror the Polar event envelope fields the app supports: `externalCustomerId`, optional `externalMemberId` for organization usage attribution, `externalId`, and event-specific `metadata`.
 
 #### `billing_event`
 
@@ -320,8 +320,8 @@ Use this section as the authoritative glossary for symbols named elsewhere in th
 #### `check_credits`
 
 - **Kind:** `internalQuery`
-- **Args:** `{ userId, workspaceId?, minimumRequiredCents }`
-- **Role:** Action-facing wrapper around `billing_db_check_credits`, used by chat and inline-editor HTTP flows before LLM work starts. When `workspaceId` is present, resolves the billed user from the workspace billing mode and returns `{ hasCredits, billedUser }`; HTTP callers freeze that billed row and convert `hasCredits: false` into `402` with `{ message: "Insufficient funds" }`. This internal query follows the query convention: it does not return `Result`; invariant violations throw because callers pass trusted membership-derived workspace data.
+- **Args:** `{ userId, organizationId?, minimumRequiredCents }`
+- **Role:** Action-facing wrapper around `billing_db_check_credits`, used by chat and inline-editor HTTP flows before LLM work starts. When `organizationId` is present, resolves the billed user from the organization billing mode and returns `{ hasCredits, billedUser }`; HTTP callers freeze that billed user doc and convert `hasCredits: false` into `402` with `{ message: "Insufficient funds" }`. This internal query follows the query convention: it does not return `Result`; invariant violations throw because callers pass trusted membership-derived organization data.
 
 #### `billing_db_ensure_anonymous_user_usage_snapshot`
 
@@ -480,7 +480,7 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 - Treat Polar benefit descriptions as exact identifiers in app code: `Free Included Usage`, `Free Usage`, and `Pro Included Usage`. These names remain stable in the catalog because tests and historical webhook payloads still reference them.
 - Treat the Polar meter display name `Press app usage` as the canonical usage meter name in the catalog.
 - Treat the Polar usage event name `press_usage_event` as the canonical event name for usage ingestion.
-- Treat `manual_credit`, `file_save`, `monthly_credit`, and `ai_usage` as the canonical usage event names. When listing billing event names in validators, tuple unions, tests, docs, or specs, put `manual_credit` first because it is the manual/admin variant, then list `file_save`, `monthly_credit`, and `ai_usage`. Usage-event `externalId` values use `::` as the only separator. Workspace usage ids include the `billing::` prefix plus billed user, actor, workspace, and project (`billing::file_save::...`, `billing::ai_usage::...`); manual and monthly credit ids remain customer-targeted.
+- Treat `manual_credit`, `file_save`, `monthly_credit`, and `ai_usage` as the canonical usage event names. When listing billing event names in validators, tuple unions, tests, docs, or specs, put `manual_credit` first because it is the manual/admin variant, then list `file_save`, `monthly_credit`, and `ai_usage`. Usage-event `externalId` values use `::` as the only separator. Organization usage ids include the `billing::` prefix plus billed user, actor, organization, and workspace (`billing::file_save::...`, `billing::ai_usage::...`); manual and monthly credit ids remain customer-targeted.
 - Treat Polar meter amounts as a signed sum ledger: positive `metadata.amount` values are usage that consumes/decreases balance, while negative values are credits or payments that increase balance. `grant_credit` normalizes dashboard input to a negative `manual_credit` event by default. QA/admin drain flows may pass `allowNegative: true` with a negative `amount`, which records a positive manual usage event and reduces the balance.
 - Keep the current file-save usage amount as a literal `1` at each call site, and keep the current chat token-pricing switch local to `packages/app/convex/ai_chat.ts`.
 - Keep `meter_credit` benefits detached from every Polar product. The Convex monthly credits engine is the only code path that grants recurring credits; running both would double-grant.

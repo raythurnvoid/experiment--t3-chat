@@ -40,10 +40,10 @@ type server_ai_tools_test_user_identity = NonNullable<Awaited<ReturnType<ActionC
 const server_ai_tools_test_user_id = test_mocks_hardcoded.user.user_1.id as Id<"users">;
 
 const server_ai_tools_test_ctx_data = {
-	workspaceId: test_mocks_hardcoded.workspace_id.workspace_1 as Id<"workspaces">,
-	projectId: test_mocks_hardcoded.project_id.project_1 as Id<"workspaces_projects">,
-	workspaceName: "personal",
-	projectName: "home",
+	organizationId: test_mocks_hardcoded.organization_id.organization_1 as Id<"organizations">,
+	workspaceId: test_mocks_hardcoded.workspace_id.workspace_1 as Id<"organizations_workspaces">,
+	organizationName: "personal",
+	workspaceName: "home",
 	userId: server_ai_tools_test_user_id,
 } as const;
 const server_ai_tools_test_db_files_mount = "/home/cloud-usr/w/personal/home";
@@ -130,8 +130,8 @@ describe("ai_chat_tool_create_bash", () => {
 				command: "pwd",
 				threadId: "thread_1",
 				userId: server_ai_tools_test_user_id,
-				workspaceName: "personal",
-				projectName: "home",
+				organizationName: "personal",
+				workspaceName: "home",
 				allowDbFilesMkdir: true,
 			}),
 		);
@@ -507,7 +507,7 @@ describe("ai_chat_tool_create_bash", () => {
 		);
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining("bare ls -t is still project-wide"),
+				description: expect.stringContaining("bare ls -t is still workspace-wide"),
 			}),
 		);
 		expect(tool).toEqual(
@@ -676,8 +676,8 @@ test("list_files tool: execute renders files and folders, applies ignore, and ca
 	const [, args] = calls[0];
 	expect(args).toEqual({
 		path: "/",
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		maxDepth: 10,
 		limit: 100,
 	});
@@ -723,8 +723,8 @@ test("glob_files tool: executes traversal with include pattern and sorts newest 
 	const [, args] = runQuery.mock.calls[0]!;
 	expect(args).toEqual({
 		path: "/docs",
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		maxDepth: 10,
 		limit: 20,
 		include: "**/*target.md",
@@ -770,8 +770,8 @@ test("grep_files tool: searches markdown content for listed files", async () => 
 	const [, queryArgs] = runQuery.mock.calls[0]!;
 	expect(queryArgs).toEqual({
 		path: "/docs",
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		maxDepth: 5,
 		limit: 50,
 		include: undefined,
@@ -780,8 +780,8 @@ test("grep_files tool: searches markdown content for listed files", async () => 
 	const [, actionArgs] = runAction.mock.calls[0]!;
 	expect(actionArgs).toEqual({
 		path: "/docs/readme.md",
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
 	});
 	expect(result.metadata).toEqual({ matches: 1, truncated: false });
@@ -819,8 +819,8 @@ test("read_file tool forwards pendingUpdateId and returns it in metadata", async
 	const [, args] = runAction.mock.calls[0]!;
 	expect(args).toEqual({
 		path: "/docs/plan.md",
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
 		pendingUpdateId,
 	});
@@ -869,16 +869,16 @@ test("write_file tool stores pending unstaged branch updates from the agent", as
 	expect(runAction).toHaveBeenCalledTimes(2);
 	const [, firstQueryArgs] = runAction.mock.calls[0]!;
 	expect(firstQueryArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
 		path: "/docs/plan.md",
 		pendingUpdateId: undefined,
 	});
 	const [, pendingArgs] = runAction.mock.calls[1]!;
 	expect(pendingArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
 		nodeId,
 		pendingUpdateId,
@@ -928,8 +928,8 @@ test("write_file tool normalizes missing file paths before creating with the age
 	expect(runQuery).toHaveBeenCalledTimes(1);
 	const [, firstQueryArgs] = runAction.mock.calls[0]!;
 	expect(firstQueryArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
 		path: "/docs/new-plan.md",
 		pendingUpdateId: undefined,
@@ -938,15 +938,15 @@ test("write_file tool normalizes missing file paths before creating with the age
 	expect(runMutation).not.toHaveBeenCalled();
 	const [, createArgs] = runAction.mock.calls[1]!;
 	expect(createArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
 		path: "/docs/new-plan.md",
 	});
 	const [, pendingArgs] = runAction.mock.calls[2]!;
 	expect(pendingArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
 		nodeId,
 		pendingUpdateId: undefined,
@@ -998,16 +998,16 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	expect(runAction).toHaveBeenCalledTimes(2);
 	const [, firstQueryArgs] = runAction.mock.calls[0]!;
 	expect(firstQueryArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
 		path: "/docs/hello.md",
 		pendingUpdateId: undefined,
 	});
 	const [, pendingArgs] = runAction.mock.calls[1]!;
 	expect(pendingArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
 		nodeId,
 		pendingUpdateId,
@@ -1137,8 +1137,8 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 
 	const [, firstQueryArgs] = runAction.mock.calls[0]!;
 	expect(firstQueryArgs).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
 		path: "/docs/newline.md",
 		pendingUpdateId: undefined,
@@ -1146,8 +1146,8 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 
 	const [, args] = runAction.mock.calls[1]!;
 	expect(args).toEqual({
+		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		projectId: test_mocks_hardcoded.project_id.project_1,
 		userId: server_ai_tools_test_user_id,
 		nodeId,
 		pendingUpdateId,
@@ -1364,8 +1364,8 @@ test("execute_code tool: posts to the runner and formats a succeeded result with
 			});
 			expect(runMutation).toHaveBeenCalledTimes(1);
 			expect(runMutation.mock.calls[0]?.[1]).toEqual({
+				organizationId: test_mocks_hardcoded.organization_id.organization_1,
 				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-				projectId: test_mocks_hardcoded.project_id.project_1,
 				userId: server_ai_tools_test_user_id,
 				threadId: "thread123",
 				principalKey: runnerBody.executionId,

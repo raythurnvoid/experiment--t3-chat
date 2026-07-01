@@ -1,7 +1,7 @@
 import { defineCommand, type FsStat } from "just-bash/browser";
 import {
 	bash_command_has_disallowed_source_target,
-	bash_is_path_under_current_project_path,
+	bash_is_path_under_current_workspace_path,
 	bash_is_path_under_mounts,
 	bash_resolve_path,
 	bash_disallowed_source_target_error,
@@ -17,7 +17,7 @@ import {
  * forwarded to the nested script, and every nested command still uses the same
  * app-file guards as the outer shell.
  */
-export function bash_nested_shell_command_create(name: "bash" | "sh", currentProjectPath: string) {
+export function bash_nested_shell_command_create(name: "bash" | "sh", currentWorkspacePath: string) {
 	return defineCommand(name, async (args, commandCtx) => {
 		if (args.length === 0) {
 			return { stdout: "", stderr: "", exitCode: 0 };
@@ -49,7 +49,7 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", currentPro
 			const scriptPath = bash_resolve_path(commandCtx.cwd, args[0]);
 			// Script files are only executable from non-app paths such as /tmp.
 			// App files are document content, not shell entrypoints.
-			if (bash_is_path_under_current_project_path(currentProjectPath, scriptPath)) {
+			if (bash_is_path_under_current_workspace_path(currentWorkspacePath, scriptPath)) {
 				return {
 					stdout: "",
 					stderr: `${name}: app-mounted script files are not executable through bash: ${scriptPath}\n`,
@@ -114,7 +114,7 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", currentPro
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
-		if (bash_command_has_disallowed_source_target(script, { cwd: commandCtx.cwd, currentProjectPath })) {
+		if (bash_command_has_disallowed_source_target(script, { cwd: commandCtx.cwd, currentWorkspacePath })) {
 			return {
 				stdout: "",
 				stderr: bash_disallowed_source_target_error(),

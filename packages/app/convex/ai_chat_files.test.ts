@@ -18,8 +18,8 @@ async function create_thread() {
 	const t = test_convex();
 	const seeded = await t.run((ctx) =>
 		test_mocks_fill_db_with.membership(ctx, {
-			workspaceName: "personal",
-			projectName: "home",
+			organizationName: "personal",
+			workspaceName: "home",
 		}),
 	);
 	const asUser = t.withIdentity({
@@ -39,8 +39,8 @@ async function create_thread() {
 	return {
 		t,
 		asUser,
+		organizationId: seeded.organizationId,
 		workspaceId: seeded.workspaceId,
-		projectId: seeded.projectId,
 		userId: seeded.userId,
 		membershipId: seeded.membershipId,
 		threadId: created._yay!.threadId as Id<"ai_chat_threads">,
@@ -54,8 +54,8 @@ describe("ai_chat_files /tmp persistence", () => {
 
 		await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
 				fileNodes: [
 					{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
@@ -71,8 +71,8 @@ describe("ai_chat_files /tmp persistence", () => {
 
 		await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
 				fileNodes: [{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now + 1 }],
 				fileNodesContentDict: { "/a.txt": bytes("ONE") },
@@ -100,8 +100,8 @@ describe("ai_chat_files /tmp persistence", () => {
 
 		await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
 				fileNodes: [{ path: "/node", kind: "file", mode: 0o100644, size: 4, mtime: now }],
 				fileNodesContentDict: { "/node": bytes("file") },
@@ -111,8 +111,8 @@ describe("ai_chat_files /tmp persistence", () => {
 
 		await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
 				fileNodes: [{ path: "/node", kind: "directory", mode: 0o40755, size: 0, mtime: now + 1 }],
 				fileNodesContentDict: {},
@@ -144,8 +144,8 @@ describe("ai_chat_files /tmp persistence", () => {
 
 		await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				threadId: ctxData.threadId,
 				fileNodes: [
 					{ path: "/a.txt", kind: "file", mode: 0o100644, size: 3, mtime: now },
@@ -159,8 +159,8 @@ describe("ai_chat_files /tmp persistence", () => {
 
 		await ctxData.t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat_files.copy_thread_tmp_files, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				sourceThreadId: ctxData.threadId,
 				targetThreadId,
 			}),

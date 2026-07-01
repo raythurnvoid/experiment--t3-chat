@@ -21,13 +21,13 @@ test("billing_event preserves the matching source-specific payload type", () => 
 		name: "file_save",
 		externalCustomerId: "billed_user_1" as Id<"users">,
 		externalMemberId: "actor_user_1" as Id<"users">,
-		externalId: "file_save::billed_user_1::actor_user_1::workspace_1::project_1::file_1::1",
+		externalId: "file_save::billed_user_1::actor_user_1::organization_1::workspace_1::file_1::1",
 		metadata: {
 			amount: 1,
 			actorUserId: "actor_user_1" as Id<"users">,
 			billedUserId: "billed_user_1" as Id<"users">,
+			organizationId: "organization_1",
 			workspaceId: "workspace_1",
-			projectId: "project_1",
 			nodeId: "file_1",
 			yjsSequence: "1",
 		},
@@ -39,8 +39,8 @@ test("billing_event preserves the matching source-specific payload type", () => 
 	expectTypeOf(fileSaveEvent.externalId).toBeString();
 	expectTypeOf(fileSaveEvent.metadata.actorUserId).toEqualTypeOf<Id<"users">>();
 	expectTypeOf(fileSaveEvent.metadata.billedUserId).toEqualTypeOf<Id<"users">>();
+	expectTypeOf(fileSaveEvent.metadata.organizationId).toBeString();
 	expectTypeOf(fileSaveEvent.metadata.workspaceId).toBeString();
-	expectTypeOf(fileSaveEvent.metadata.projectId).toBeString();
 	expectTypeOf(fileSaveEvent.metadata.nodeId).toBeString();
 	expectTypeOf(fileSaveEvent.metadata.yjsSequence).toBeString();
 });

@@ -5,13 +5,13 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import type { Doc } from "./_generated/dataModel.js";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { workspaces_db_get_membership } from "./workspaces.ts";
+import { organizations_db_get_membership } from "./organizations.ts";
 
 function chat_messages_has_membership_scope(
 	message: Doc<"chat_messages">,
-	membership: Doc<"workspaces_projects_users">,
+	membership: Doc<"organizations_workspaces_users">,
 ) {
-	return message.workspaceId === membership.workspaceId && message.projectId === membership.projectId;
+	return message.organizationId === membership.organizationId && message.workspaceId === membership.workspaceId;
 }
 
 /**
@@ -21,7 +21,7 @@ function chat_messages_has_membership_scope(
  */
 export const chat_messages_threads_create = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		content: v.string(),
 	},
 	returns: v_result({ _yay: v.object({ threadId: v.id("chat_messages") }) }),
@@ -31,7 +31,7 @@ export const chat_messages_threads_create = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			membershipId: args.membershipId,
 			userId: userAuth.id,
 		});
@@ -45,8 +45,8 @@ export const chat_messages_threads_create = mutation({
 		}
 
 		const threadId = await ctx.db.insert("chat_messages", {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			threadId: null,
 			parentId: null,
 			isArchived: false,
@@ -65,7 +65,7 @@ export const chat_messages_threads_create = mutation({
  */
 export const chat_messages_add = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		rootId: v.id("chat_messages"),
 		content: v.string(),
 	},
@@ -76,7 +76,7 @@ export const chat_messages_add = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			membershipId: args.membershipId,
 			userId: userAuth.id,
 		});
@@ -99,8 +99,8 @@ export const chat_messages_add = mutation({
 		}
 
 		const messageId = await ctx.db.insert("chat_messages", {
+			organizationId: root.organizationId,
 			workspaceId: root.workspaceId,
-			projectId: root.projectId,
 			threadId: args.rootId,
 			parentId: args.rootId,
 			isArchived: false,
@@ -119,7 +119,7 @@ export const chat_messages_add = mutation({
  */
 export const chat_messages_list = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		threadId: v.id("chat_messages"),
 		limit: v.number(),
 	},
@@ -129,7 +129,7 @@ export const chat_messages_list = query({
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			membershipId: args.membershipId,
 			userId: userAuth.id,
 		});
@@ -144,8 +144,8 @@ export const chat_messages_list = query({
 
 		const children = await ctx.db
 			.query("chat_messages")
-			.withIndex("by_workspace_project_thread", (q) =>
-				q.eq("workspaceId", root.workspaceId).eq("projectId", root.projectId).eq("threadId", args.threadId),
+			.withIndex("by_organization_workspace_thread", (q) =>
+				q.eq("organizationId", root.organizationId).eq("workspaceId", root.workspaceId).eq("threadId", args.threadId),
 			)
 			.order("asc")
 			.take(Math.max(0, args.limit - 1));
@@ -163,7 +163,7 @@ export const chat_messages_list = query({
  */
 export const chat_messages_archive = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		messageId: v.id("chat_messages"),
 	},
 	returns: v_result({ _yay: v.object({ success: v.boolean() }) }),
@@ -173,7 +173,7 @@ export const chat_messages_archive = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			membershipId: args.membershipId,
 			userId: userAuth.id,
 		});
@@ -208,7 +208,7 @@ export const chat_messages_archive = mutation({
  */
 export const chat_messages_get = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		messageId: v.id("chat_messages"),
 	},
 	handler: async (ctx, args) => {
@@ -217,7 +217,7 @@ export const chat_messages_get = query({
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			membershipId: args.membershipId,
 			userId: userAuth.id,
 		});
@@ -239,7 +239,7 @@ export const chat_messages_get = query({
  */
 export const chat_messages_threads_list = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		threadIds: v.array(v.string()),
 		isArchived: v.optional(v.union(v.boolean(), v.null())),
 	},
@@ -261,7 +261,7 @@ export const chat_messages_threads_list = query({
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			membershipId: args.membershipId,
 			userId: userAuth.id,
 		});
@@ -292,8 +292,8 @@ export const chat_messages_threads_list = query({
 
 					const lastChild = await ctx.db
 						.query("chat_messages")
-						.withIndex("by_workspace_project_thread", (q) =>
-							q.eq("workspaceId", message.workspaceId).eq("projectId", message.projectId).eq("threadId", message._id),
+						.withIndex("by_organization_workspace_thread", (q) =>
+							q.eq("organizationId", message.organizationId).eq("workspaceId", message.workspaceId).eq("threadId", message._id),
 						)
 						.order("desc")
 						.first();

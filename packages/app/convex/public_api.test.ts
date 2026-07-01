@@ -11,7 +11,7 @@ import {
 } from "../server/files.ts";
 import { r2_create_asset_key } from "./r2.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
-import { workspaces_GLOBAL_GITHUB_PROJECT_ID, workspaces_GLOBAL_WORKSPACE_ID } from "../shared/workspaces.ts";
+import { organizations_GLOBAL_GITHUB_WORKSPACE_ID, organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 const textEncoder = new TextEncoder();
@@ -72,14 +72,14 @@ async function seed_signed_in_membership(args: { t: ReturnType<typeof test_conve
 
 async function seed_public_api_grant(args: {
 	t: ReturnType<typeof test_convex>;
-	workspaceId: Id<"workspaces">;
-	projectId: Id<"workspaces_projects">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
 	userId: Id<"users">;
 	token: string;
 }) {
 	await args.t.mutation(internal.public_api.create_grant, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		userId: args.userId,
 		threadId: null,
 		principalKey: "grant_public_test",
@@ -92,8 +92,8 @@ async function seed_public_api_grant(args: {
 
 async function seed_markdown_file(args: {
 	t: ReturnType<typeof test_convex>;
-	workspaceId: Id<"workspaces">;
-	projectId: Id<"workspaces_projects">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
 	userId: Id<"users">;
 	path: string;
 	committedMarkdown: string;
@@ -110,10 +110,10 @@ async function seed_markdown_file(args: {
 		if (parentPath !== "/") {
 			const existingParent = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
+						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
 						.eq("path", parentPath)
 						.eq("archiveOperationId", undefined),
 				)
@@ -126,8 +126,8 @@ async function seed_markdown_file(args: {
 					throw new Error("Expected a parent folder path");
 				}
 				parentId = await ctx.db.insert("files_nodes", {
+					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					projectId: args.projectId,
 					path: parentPath,
 					treePath: `${parentPath}/`,
 					pathDepth: parentPath.split("/").filter(Boolean).length,
@@ -158,8 +158,8 @@ async function seed_markdown_file(args: {
 		}
 
 		const markdownAssetId = await ctx.db.insert("files_r2_assets", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			kind: "content",
 			r2Bucket: "test-bucket",
 			size: files_get_utf8_byte_size(baseMarkdownResult._yay),
@@ -167,8 +167,8 @@ async function seed_markdown_file(args: {
 			updatedAt: now,
 		});
 		const markdownAssetKey = r2_create_asset_key({
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			assetId: markdownAssetId,
 		});
 		await ctx.db.patch("files_r2_assets", markdownAssetId, {
@@ -179,8 +179,8 @@ async function seed_markdown_file(args: {
 		const yjsSnapshotUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(baseYjsDoc));
 		baseYjsDoc.destroy();
 		const yjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			kind: "yjs_snapshot",
 			r2Bucket: "test-bucket",
 			size: yjsSnapshotUpdate.byteLength,
@@ -188,8 +188,8 @@ async function seed_markdown_file(args: {
 			updatedAt: now,
 		});
 		const yjsSnapshotAssetKey = r2_create_asset_key({
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			assetId: yjsSnapshotAssetId,
 		});
 		await ctx.db.patch("files_r2_assets", yjsSnapshotAssetId, {
@@ -198,8 +198,8 @@ async function seed_markdown_file(args: {
 		r2Objects.set(yjsSnapshotAssetKey, yjsSnapshotUpdate);
 
 		const fileNodeId = await ctx.db.insert("files_nodes", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			path: args.path,
 			treePath: args.path,
 			pathDepth: args.path.split("/").filter(Boolean).length,
@@ -214,8 +214,8 @@ async function seed_markdown_file(args: {
 			updatedAt: now,
 		});
 		const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			fileNodeId,
 			sequence: 0,
 			assetId: yjsSnapshotAssetId,
@@ -224,8 +224,8 @@ async function seed_markdown_file(args: {
 			updatedAt: now,
 		});
 		const yjsLastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			fileNodeId,
 			lastSequence: 0,
 		});
@@ -249,8 +249,8 @@ async function seed_markdown_file(args: {
 		baseYjsDoc.destroy();
 
 		const pending = await args.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			userId: args.userId,
 			nodeId,
 			baseYjsSequence: 0,
@@ -272,8 +272,8 @@ describe("public files API", () => {
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-files" });
 		await seed_markdown_file({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			path: "/payments/payment-001.md",
 			committedMarkdown: "---\namount: 12.50\n---\nPayment one\n",
@@ -368,8 +368,8 @@ describe("public files API", () => {
 
 		await seed_markdown_file({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			path: "/tenant-visible.md",
 			committedMarkdown: "tenant visible content\n",
@@ -383,8 +383,8 @@ describe("public files API", () => {
 		}
 
 		const reservedRead = await t.query(internal.files_nodes.read_file_content_from_chunks, {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: db.userId,
 			path: "/t3-chat/README.md",
 			mode: { kind: "full", maxBytes: 1_000_000 },
@@ -394,8 +394,8 @@ describe("public files API", () => {
 		const token = "8".repeat(64);
 		await seed_public_api_grant({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			token,
 		});
@@ -503,17 +503,17 @@ describe("public files API", () => {
 			const userId = await ctx.db.insert("users", {
 				clerkUserId: "clerk-public-api-permission-member",
 			});
-			const membershipId = await ctx.db.insert("workspaces_projects_users", {
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
-				projectId: owner.projectId,
 				userId,
 				active: true,
 			});
 			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
-				projectId: owner.projectId,
-				resourceKind: "project",
-				resourceId: String(owner.projectId),
+				resourceKind: "workspace",
+				resourceId: String(owner.workspaceId),
 				principalKind: "user",
 				userId,
 				permission: "asset.permissions.manage",
@@ -537,7 +537,7 @@ describe("public files API", () => {
 		expect(created._nay?.message).toBe("Permission denied");
 	});
 
-	test("allows seeded project admins to create API credentials", async () => {
+	test("allows seeded workspace admins to create API credentials", async () => {
 		const t = test_convex();
 		const owner = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-admin-owner" });
 		const admin = await t.run(async (ctx) => {
@@ -545,15 +545,15 @@ describe("public files API", () => {
 			const userId = await ctx.db.insert("users", {
 				clerkUserId: "clerk-public-api-admin",
 			});
-			const membershipId = await ctx.db.insert("workspaces_projects_users", {
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
-				projectId: owner.projectId,
 				userId,
 				active: true,
 			});
 			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
-				projectId: owner.projectId,
 				userId,
 				role: "admin",
 				createdAt: now,
@@ -612,8 +612,8 @@ describe("public files API", () => {
 		const publicApiGrantToken = "3".repeat(64);
 		await seed_public_api_grant({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			token: publicApiGrantToken,
 		});
@@ -636,15 +636,15 @@ describe("public files API", () => {
 			const userId = await ctx.db.insert("users", {
 				clerkUserId: "clerk-public-api-no-read",
 			});
-			await ctx.db.insert("workspaces_projects_users", {
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
-				projectId: owner.projectId,
 				userId,
 				active: true,
 			});
 			await ctx.db.insert("api_credentials", {
+				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
-				projectId: owner.projectId,
 				userId,
 				name: "No read permission",
 				keyId,
@@ -672,8 +672,8 @@ describe("public files API", () => {
 			for (let index = 0; index < 101; index += 1) {
 				const keyId = `pk_${index.toString(16).padStart(32, "0")}`;
 				await ctx.db.insert("api_credentials", {
+					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
-					projectId: db.projectId,
 					userId: db.userId,
 					name: `Revoked ${index}`,
 					keyId,
@@ -686,8 +686,8 @@ describe("public files API", () => {
 				});
 			}
 			await ctx.db.insert("api_credentials", {
+				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				projectId: db.projectId,
 				userId: db.userId,
 				name: "Active key",
 				keyId: `pk_${"a".repeat(32)}`,

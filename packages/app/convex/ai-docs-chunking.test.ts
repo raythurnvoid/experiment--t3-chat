@@ -9,8 +9,8 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 
 	await t.run(async (ctx) => {
 		const basePageData = {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			parentId: files_ROOT_ID,
 			createdBy: db.userId,
 			updatedBy: db.userId,
@@ -28,8 +28,8 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 			archiveOperationId: undefined,
 		});
 		const oldMarkdownChunkId = await ctx.db.insert("files_markdown_chunks", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			fileNodeId: nodeId,
 			sourceKind: "committed",
 			yjsSequence: 1,
@@ -42,8 +42,8 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 			chunkFlags: 0,
 		});
 		const oldPlainTextChunkId = await ctx.db.insert("files_plain_text_chunks", {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			fileNodeId: nodeId,
 			sourceKind: "committed",
 			yjsSequence: 1,
@@ -62,8 +62,8 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 		});
 
 		const result = await db_replace_file_chunks(ctx, {
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			nodeId,
 			yjsSequence: 2,
 			markdownContent: "# Fresh heading\n\nFresh paragraph",
@@ -72,20 +72,20 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 
 		const markdownChunks = await ctx.db
 			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 				q
+					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
 					.eq("sourceKind", "committed")
 					.eq("fileNodeId", nodeId),
 			)
 			.collect();
 		const plainTextChunks = await ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
+			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 				q
+					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
-					.eq("projectId", db.projectId)
 					.eq("sourceKind", "committed")
 					.eq("fileNodeId", nodeId),
 			)

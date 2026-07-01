@@ -79,9 +79,9 @@ const billing_workpool_usage_event = new Workpool(components.billing_workpool_us
 
 export function billing_pick_billed_user_id(args: {
 	userId: Id<"users">;
-	workspace: Pick<Doc<"workspaces">, "default" | "billingMode" | "ownerUserId">;
+	organization: Pick<Doc<"organizations">, "default" | "billingMode" | "ownerUserId">;
 }) {
-	if (!args.workspace.default && args.workspace.billingMode === "workspace_owner") return args.workspace.ownerUserId;
+	if (!args.organization.default && args.organization.billingMode === "organization_owner") return args.organization.ownerUserId;
 	return args.userId;
 }
 
@@ -122,7 +122,7 @@ export async function billing_db_check_credits(
 export const check_credits = internalQuery({
 	args: {
 		userId: v.id("users"),
-		workspaceId: v.optional(v.id("workspaces")),
+		organizationId: v.optional(v.id("organizations")),
 		minimumRequiredCents: v.number(),
 	},
 	returns: v.object({
@@ -131,27 +131,27 @@ export const check_credits = internalQuery({
 	}),
 	handler: async (ctx, args) => {
 		let billedUser: Doc<"users"> | null = null;
-		if (args.workspaceId) {
-			const workspace = await ctx.db.get("workspaces", args.workspaceId);
-			if (!workspace) {
-				throw should_never_happen("Workspace not found while checking credits", {
+		if (args.organizationId) {
+			const organization = await ctx.db.get("organizations", args.organizationId);
+			if (!organization) {
+				throw should_never_happen("Organization not found while checking credits", {
 					userId: args.userId,
-					workspaceId: args.workspaceId,
+					organizationId: args.organizationId,
 				});
 			}
 
-			// Use the current workspace owner as the payer only for owner-billed workspaces.
+			// Use the current organization owner as the payer only for owner-billed organizations.
 			// Ownership transfer changes future billing; in-flight operations keep their frozen billed user.
 			const billedUserId = billing_pick_billed_user_id({
 				userId: args.userId,
-				workspace,
+				organization,
 			});
 
 			billedUser = await ctx.db.get("users", billedUserId);
 			if (!billedUser) {
 				throw should_never_happen("Billed user not found while checking credits", {
 					userId: args.userId,
-					workspaceId: args.workspaceId,
+					organizationId: args.organizationId,
 					billedUserId,
 				});
 			}
@@ -1661,8 +1661,8 @@ const billing_event_validator = v.union(
 			amount: v.number(),
 			actorUserId: v.id("users"),
 			billedUserId: v.id("users"),
+			organizationId: v.string(),
 			workspaceId: v.string(),
-			projectId: v.string(),
 			nodeId: v.string(),
 			yjsSequence: v.string(),
 		}),
@@ -1688,8 +1688,8 @@ const billing_event_validator = v.union(
 			amount: v.number(),
 			actorUserId: v.id("users"),
 			billedUserId: v.id("users"),
+			organizationId: v.string(),
 			workspaceId: v.string(),
-			projectId: v.string(),
 			modelId: v.string(),
 			inputTokens: v.number(),
 			outputTokens: v.number(),

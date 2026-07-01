@@ -2,7 +2,7 @@ import { decodeJwt } from "jose";
 import { should_never_happen } from "./shared-utils.ts";
 
 /**
- * Pseudo user ID for system-authored docs in the reserved global workspace (e.g. read-only mount content).
+ * Pseudo user ID for system-authored docs in the reserved global organization (e.g. read-only mount content).
  * Not a real `Id<"users">` and has no backing doc; only legal where the schema accepts it via
  * `v.literal(...)`.
  */

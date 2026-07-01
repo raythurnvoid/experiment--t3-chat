@@ -121,7 +121,7 @@ async function create_credential_secret(ctx: MutationCtx) {
 async function authorize_credential_management(
 	ctx: QueryCtx | MutationCtx,
 	args: {
-		membershipId: Id<"workspaces_projects_users">;
+		membershipId: Id<"organizations_workspaces_users">;
 	},
 ) {
 	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -134,33 +134,33 @@ async function authorize_credential_management(
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 
-	const membership = await ctx.db.get("workspaces_projects_users", args.membershipId);
+	const membership = await ctx.db.get("organizations_workspaces_users", args.membershipId);
 	if (!membership || !membership.active || membership.userId !== user._id) {
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
 
-	const [workspace, project] = await Promise.all([
-		ctx.db.get("workspaces", membership.workspaceId),
-		ctx.db.get("workspaces_projects", membership.projectId),
+	const [organization, workspace] = await Promise.all([
+		ctx.db.get("organizations", membership.organizationId),
+		ctx.db.get("organizations_workspaces", membership.workspaceId),
 	]);
 	if (
+		!organization ||
 		!workspace ||
-		!project ||
-		!workspace.defaultProjectId ||
-		project.workspaceId !== workspace._id ||
-		membership.workspaceId !== workspace._id ||
-		membership.projectId !== project._id
+		!organization.defaultWorkspaceId ||
+		workspace.organizationId !== organization._id ||
+		membership.organizationId !== organization._id ||
+		membership.workspaceId !== workspace._id
 	) {
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
 
 	const hasPermission = await access_control_db_has_permission(ctx, {
+		organizationId: organization._id,
 		workspaceId: workspace._id,
-		projectId: project._id,
-		defaultProjectId: workspace.defaultProjectId,
-		workspaceOwnerUserId: workspace.ownerUserId,
-		resourceKind: "project",
-		resourceId: String(project._id),
+		defaultWorkspaceId: organization.defaultWorkspaceId,
+		organizationOwnerUserId: organization.ownerUserId,
+		resourceKind: "workspace",
+		resourceId: String(workspace._id),
 		permission: "api.credentials.manage",
 		userId: user._id,
 	});
@@ -168,32 +168,32 @@ async function authorize_credential_management(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
-	return Result({ _yay: { user, membership, workspace, project } });
+	return Result({ _yay: { user, membership, organization, workspace } });
 }
 
 async function has_file_read_access(
 	ctx: QueryCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 	},
 ) {
-	const [workspace, project] = await Promise.all([
-		ctx.db.get("workspaces", args.workspaceId),
-		ctx.db.get("workspaces_projects", args.projectId),
+	const [organization, workspace] = await Promise.all([
+		ctx.db.get("organizations", args.organizationId),
+		ctx.db.get("organizations_workspaces", args.workspaceId),
 	]);
-	if (!workspace || !project || !workspace.defaultProjectId || project.workspaceId !== workspace._id) {
+	if (!organization || !workspace || !organization.defaultWorkspaceId || workspace.organizationId !== organization._id) {
 		return false;
 	}
 
 	return await access_control_db_has_permission(ctx, {
+		organizationId: organization._id,
 		workspaceId: workspace._id,
-		projectId: project._id,
-		defaultProjectId: workspace.defaultProjectId,
-		workspaceOwnerUserId: workspace.ownerUserId,
-		resourceKind: "project",
-		resourceId: String(project._id),
+		defaultWorkspaceId: organization.defaultWorkspaceId,
+		organizationOwnerUserId: organization.ownerUserId,
+		resourceKind: "workspace",
+		resourceId: String(workspace._id),
 		permission: "asset.read",
 		userId: args.userId,
 	});
@@ -203,8 +203,8 @@ async function has_file_read_access(
 
 export const create_grant = internalMutation({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		threadId: v.union(v.id("ai_chat_threads"), v.null()),
 		principalKey: v.string(),
@@ -216,13 +216,13 @@ export const create_grant = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const membership = await ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_active_user_workspace_project", (q) =>
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
 				q
 					.eq("active", true)
 					.eq("userId", args.userId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId),
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
 			)
 			.first();
 		if (!membership) {
@@ -239,8 +239,8 @@ export const create_grant = internalMutation({
 		await Promise.all(expired.map((grant) => ctx.db.delete("public_api_grants", grant._id)));
 
 		await ctx.db.insert("public_api_grants", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			userId: args.userId,
 			threadId: args.threadId,
 			principalKey: args.principalKey,
@@ -315,7 +315,7 @@ async function cleanup_expired_grants_batch(
 
 export const api_credential_create = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		name: v.string(),
 		scopes: v.array(v.union(v.literal(public_api_SCOPE_FILES_LIST), v.literal(public_api_SCOPE_FILES_READ))),
 	},
@@ -346,8 +346,8 @@ export const api_credential_create = mutation({
 		const now = Date.now();
 		const secret = await create_credential_secret(ctx);
 		const credentialId = await ctx.db.insert("api_credentials", {
+			organizationId: credentialManagement._yay.organization._id,
 			workspaceId: credentialManagement._yay.workspace._id,
-			projectId: credentialManagement._yay.project._id,
 			userId: credentialManagement._yay.user._id,
 			name: args.name.trim() || "API key",
 			keyId: secret.keyId,
@@ -371,7 +371,7 @@ export const api_credential_create = mutation({
 
 export const api_credentials_list = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 	},
 	returns: v_result({
 		_yay: v.array(
@@ -393,10 +393,10 @@ export const api_credentials_list = query({
 
 		const activeCredentials = await ctx.db
 			.query("api_credentials")
-			.withIndex("by_workspace_project_user_revokedAt", (q) =>
+			.withIndex("by_organization_workspace_user_revokedAt", (q) =>
 				q
+					.eq("organizationId", credentialManagement._yay.organization._id)
 					.eq("workspaceId", credentialManagement._yay.workspace._id)
-					.eq("projectId", credentialManagement._yay.project._id)
 					.eq("userId", credentialManagement._yay.user._id)
 					.eq("revokedAt", null),
 			)
@@ -405,10 +405,10 @@ export const api_credentials_list = query({
 			activeCredentials.length < 100
 				? await ctx.db
 						.query("api_credentials")
-						.withIndex("by_workspace_project_user", (q) =>
+						.withIndex("by_organization_workspace_user", (q) =>
 							q
+								.eq("organizationId", credentialManagement._yay.organization._id)
 								.eq("workspaceId", credentialManagement._yay.workspace._id)
-								.eq("projectId", credentialManagement._yay.project._id)
 								.eq("userId", credentialManagement._yay.user._id),
 						)
 						.filter((q) => q.neq(q.field("revokedAt"), null))
@@ -433,7 +433,7 @@ export const api_credentials_list = query({
 
 export const api_credential_revoke = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		credentialId: v.id("api_credentials"),
 	},
 	returns: v_result({ _yay: v.null() }),
@@ -444,8 +444,8 @@ export const api_credential_revoke = mutation({
 		const credential = await ctx.db.get("api_credentials", args.credentialId);
 		if (
 			!credential ||
+			credential.organizationId !== credentialManagement._yay.organization._id ||
 			credential.workspaceId !== credentialManagement._yay.workspace._id ||
-			credential.projectId !== credentialManagement._yay.project._id ||
 			credential.userId !== credentialManagement._yay.user._id
 		) {
 			return Result({ _nay: { message: "Not found" } });
@@ -469,7 +469,7 @@ export const api_credential_revoke = mutation({
 
 export const api_credential_rotate = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		credentialId: v.id("api_credentials"),
 	},
 	returns: v_result({
@@ -486,8 +486,8 @@ export const api_credential_rotate = mutation({
 		const credential = await ctx.db.get("api_credentials", args.credentialId);
 		if (
 			!credential ||
+			credential.organizationId !== credentialManagement._yay.organization._id ||
 			credential.workspaceId !== credentialManagement._yay.workspace._id ||
-			credential.projectId !== credentialManagement._yay.project._id ||
 			credential.userId !== credentialManagement._yay.user._id
 		) {
 			return Result({ _nay: { message: "Not found" } });
@@ -508,8 +508,8 @@ export const api_credential_rotate = mutation({
 		const secret = await create_credential_secret(ctx);
 		await ctx.db.patch("api_credentials", credential._id, { revokedAt: now });
 		const credentialId = await ctx.db.insert("api_credentials", {
+			organizationId: credentialManagement._yay.organization._id,
 			workspaceId: credentialManagement._yay.workspace._id,
-			projectId: credentialManagement._yay.project._id,
 			userId: credentialManagement._yay.user._id,
 			name: credential.name,
 			keyId: secret.keyId,
@@ -541,8 +541,8 @@ export const resolve_principal = internalQuery({
 	returns: v_result({
 		_yay: v.object({
 			kind: v.union(v.literal("public_api_grant"), v.literal("user_api_key")),
-			workspaceId: v.id("workspaces"),
-			projectId: v.id("workspaces_projects"),
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
 			userId: v.id("users"),
 			scopes: v.array(v.union(v.literal(public_api_SCOPE_FILES_LIST), v.literal(public_api_SCOPE_FILES_READ))),
 			principalKey: v.string(),
@@ -617,13 +617,13 @@ export const resolve_principal = internalQuery({
 			}
 
 			const membership = await ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) =>
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
 					q
 						.eq("active", true)
 						.eq("userId", credential.userId)
-						.eq("workspaceId", credential.workspaceId)
-						.eq("projectId", credential.projectId),
+						.eq("organizationId", credential.organizationId)
+						.eq("workspaceId", credential.workspaceId),
 				)
 				.first();
 			if (!membership) {
@@ -636,8 +636,8 @@ export const resolve_principal = internalQuery({
 			}
 			if (
 				!(await has_file_read_access(ctx, {
+					organizationId: credential.organizationId,
 					workspaceId: credential.workspaceId,
-					projectId: credential.projectId,
 					userId: credential.userId,
 				}))
 			) {
@@ -652,8 +652,8 @@ export const resolve_principal = internalQuery({
 			return Result({
 				_yay: {
 					kind: "user_api_key" as const,
+					organizationId: credential.organizationId,
 					workspaceId: credential.workspaceId,
-					projectId: credential.projectId,
 					userId: credential.userId,
 					scopes: credential.scopes,
 					principalKey: credential.keyId,
@@ -678,13 +678,13 @@ export const resolve_principal = internalQuery({
 		}
 
 		const membership = await ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_active_user_workspace_project", (q) =>
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
 				q
 					.eq("active", true)
 					.eq("userId", grant.userId)
-					.eq("workspaceId", grant.workspaceId)
-					.eq("projectId", grant.projectId),
+					.eq("organizationId", grant.organizationId)
+					.eq("workspaceId", grant.workspaceId),
 			)
 			.first();
 		if (!membership) {
@@ -697,8 +697,8 @@ export const resolve_principal = internalQuery({
 		}
 		if (
 			!(await has_file_read_access(ctx, {
+				organizationId: grant.organizationId,
 				workspaceId: grant.workspaceId,
-				projectId: grant.projectId,
 				userId: grant.userId,
 			}))
 		) {
@@ -713,8 +713,8 @@ export const resolve_principal = internalQuery({
 		return Result({
 			_yay: {
 				kind: "public_api_grant" as const,
+				organizationId: grant.organizationId,
 				workspaceId: grant.workspaceId,
-				projectId: grant.projectId,
 				userId: grant.userId,
 				scopes: grant.scopes,
 				principalKey: grant.principalKey,
@@ -929,8 +929,8 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const lowercaseExtension = normalize_extension(body._yay.extension);
 							const numItems = Math.min(body._yay.limit ?? FILES_LIST_MAX_ITEMS, FILES_LIST_MAX_ITEMS);
 							const result = await ctx.runQuery(internal.files_nodes.list_subtree, {
+								organizationId: principal.organizationId,
 								workspaceId: principal.workspaceId,
-								projectId: principal.projectId,
 								folderPath: requestedPath,
 								numItems,
 								cursor: body._yay.cursor ?? null,
@@ -1026,8 +1026,8 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const content = await ctx.runAction(
 								internal.files_nodes.get_file_last_available_markdown_content_by_path,
 								{
+									organizationId: principal.organizationId,
 									workspaceId: principal.workspaceId,
-									projectId: principal.projectId,
 									userId: principal.userId,
 									path: requestedPath,
 									includePending: principal.kind === "public_api_grant",
@@ -1126,8 +1126,8 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								requestedPaths.map(async (filePath) => ({
 									path: filePath,
 									content: await ctx.runAction(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+										organizationId: principal.organizationId,
 										workspaceId: principal.workspaceId,
-										projectId: principal.projectId,
 										userId: principal.userId,
 										path: filePath,
 										includePending: principal.kind === "public_api_grant",

@@ -22,7 +22,7 @@ import {
 	bash_format_multiline_hint,
 	bash_GLOB_METACHARACTER_REGEX,
 	bash_get_db_file_byte_size,
-	bash_is_path_under_current_project_path,
+	bash_is_path_under_current_workspace_path,
 	bash_READ_HEAD_LARGE_FILE_MAX_LINES,
 	bash_READ_INLINE_MAX_BYTES,
 	bash_resolve_path,
@@ -213,8 +213,8 @@ async function find_oversized_file_operand(
 			pathResolution.dbFilesPath === "/"
 				? null
 				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+						organizationId: pathResolution.ctxData.organizationId,
 						workspaceId: pathResolution.ctxData.workspaceId,
-						projectId: pathResolution.ctxData.projectId,
 						path: pathResolution.dbFilesPath,
 					})) as files_nodes_get_by_path_Result);
 		if (dbFilesDoc == null) continue;
@@ -246,7 +246,7 @@ export function bash_head_tail_wc_command_create(
 	dbFilesRoots: bash_DbFilesRoots,
 	command: "head" | "tail" | "wc",
 ): Command {
-	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
+	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand(command, async (args, commandCtx) => {
 		const lineCountUsage = `Usage: ${command} [-n N] [FILE...]\n`;
 		const parsed = parse_args(command, args);
@@ -264,7 +264,7 @@ export function bash_head_tail_wc_command_create(
 			if (
 				file !== "-" &&
 				bash_GLOB_METACHARACTER_REGEX.test(file) &&
-				bash_is_path_under_current_project_path(currentProjectPath, bash_resolve_path(commandCtx.cwd, file))
+				bash_is_path_under_current_workspace_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, file))
 			) {
 				return {
 					stdout: "",
@@ -274,7 +274,7 @@ export function bash_head_tail_wc_command_create(
 			}
 		}
 
-		const capError = bash_enforce_reader_operand_cap(command, commandCtx, currentProjectPath, files);
+		const capError = bash_enforce_reader_operand_cap(command, commandCtx, currentWorkspacePath, files);
 		if (capError != null) return capError;
 
 		// App-file wc uses the bounded stats path so even a single file never needs a full read.
@@ -302,8 +302,8 @@ export function bash_head_tail_wc_command_create(
 				}
 
 				const stats = (await ctx.runAction(internal.files_nodes.read_file_content_stats, {
+					organizationId: pathResolution.ctxData.organizationId,
 					workspaceId: pathResolution.ctxData.workspaceId,
-					projectId: pathResolution.ctxData.projectId,
 					userId: pathResolution.ctxData.userId,
 					path: dbFilesPath,
 				})) as files_nodes_read_file_content_stats_Result;
@@ -312,8 +312,8 @@ export function bash_head_tail_wc_command_create(
 						dbFilesPath === "/"
 							? null
 							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+									organizationId: pathResolution.ctxData.organizationId,
 									workspaceId: pathResolution.ctxData.workspaceId,
-									projectId: pathResolution.ctxData.projectId,
 									path: dbFilesPath,
 								})) as files_nodes_get_by_path_Result);
 
@@ -382,8 +382,8 @@ export function bash_head_tail_wc_command_create(
 					const startLine = Math.max(1, lineCount);
 					const maxLines = bash_READ_HEAD_LARGE_FILE_MAX_LINES;
 					const result = (await ctx.runAction(internal.files_nodes.read_file_line_range, {
+						organizationId: oversized.pathResolution.ctxData.organizationId,
 						workspaceId: oversized.pathResolution.ctxData.workspaceId,
-						projectId: oversized.pathResolution.ctxData.projectId,
 						userId: oversized.pathResolution.ctxData.userId,
 						path: oversized.dbFilesPath,
 						startLine,
@@ -433,8 +433,8 @@ export function bash_head_tail_wc_command_create(
 						: null;
 				if (command === "head") {
 					const result = (await ctx.runAction(internal.files_nodes.read_file_line_range, {
+						organizationId: oversized.pathResolution.ctxData.organizationId,
 						workspaceId: oversized.pathResolution.ctxData.workspaceId,
-						projectId: oversized.pathResolution.ctxData.projectId,
 						userId: oversized.pathResolution.ctxData.userId,
 						path: oversized.dbFilesPath,
 						startLine: 1,
@@ -477,8 +477,8 @@ export function bash_head_tail_wc_command_create(
 				}
 
 				const result = (await ctx.runAction(internal.files_nodes.read_file_tail_lines, {
+					organizationId: oversized.pathResolution.ctxData.organizationId,
 					workspaceId: oversized.pathResolution.ctxData.workspaceId,
-					projectId: oversized.pathResolution.ctxData.projectId,
 					userId: oversized.pathResolution.ctxData.userId,
 					path: oversized.dbFilesPath,
 					maxLines,
@@ -538,8 +538,8 @@ export function bash_head_tail_wc_command_create(
 
 				if (dbFilesPath != null) {
 					const chunkRead = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+						organizationId: pathResolution.ctxData.organizationId,
 						workspaceId: pathResolution.ctxData.workspaceId,
-						projectId: pathResolution.ctxData.projectId,
 						userId: pathResolution.ctxData.userId,
 						path: dbFilesPath,
 						mode: {
@@ -573,8 +573,8 @@ export function bash_head_tail_wc_command_create(
 						dbFilesPath === "/"
 							? null
 							: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+									organizationId: pathResolution.ctxData.organizationId,
 									workspaceId: pathResolution.ctxData.workspaceId,
-									projectId: pathResolution.ctxData.projectId,
 									path: dbFilesPath,
 								})) as files_nodes_get_by_path_Result);
 

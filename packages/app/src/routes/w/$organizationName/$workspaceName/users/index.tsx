@@ -56,10 +56,10 @@ type RouteUsersUserListItem_Props = {
 	authUserId: app_convex_Id<"users"> | null;
 	displayName: string;
 	role: NonNullable<
-		app_convex_FunctionReturnType<typeof app_convex_api.access_control.get_workspace_project_user_role>
+		app_convex_FunctionReturnType<typeof app_convex_api.access_control.get_organization_workspace_user_role>
 	>;
 	canManageMembers: boolean;
-	canLeaveWorkspace: boolean;
+	canLeaveOrganization: boolean;
 	canTransferOwnership: boolean;
 	onRemove: (userId: app_convex_Id<"users">) => void;
 	onTransfer: (userId: app_convex_Id<"users">, displayName: string) => void;
@@ -72,7 +72,7 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 		displayName,
 		role,
 		canManageMembers,
-		canLeaveWorkspace,
+		canLeaveOrganization,
 		canTransferOwnership,
 		onRemove,
 		onTransfer,
@@ -80,12 +80,12 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 
 	const isCurrentUser = userId === authUserId;
 	const removeLabel = isCurrentUser ? "Leave" : "Remove";
-	const removeDisabled = role === "owner" || (isCurrentUser ? !canLeaveWorkspace : !canManageMembers);
+	const removeDisabled = role === "owner" || (isCurrentUser ? !canLeaveOrganization : !canManageMembers);
 	const removeDisabledTooltip =
 		isCurrentUser && role === "owner"
-			? "Before leaving this workspace, transfer ownership to another member."
+			? "Before leaving this organization, transfer ownership to another member."
 			: !isCurrentUser && !canManageMembers
-				? "You don't have permission to remove users from the workspace."
+				? "You don't have permission to remove users from the organization."
 				: null;
 	const removeButton = (
 		<MyButton variant="ghost_destructive" disabled={removeDisabled} onClick={() => onRemove(userId)}>
@@ -141,20 +141,20 @@ const RouteUsersUserListItem = memo(function RouteUsersUserListItem(props: Route
 
 // #region user list
 type RouteUsersList_Props = {
-	projectUserIds: app_convex_Id<"users">[];
+	workspaceUserIds: app_convex_Id<"users">[];
 	userAnagraphicDict: Record<
 		app_convex_Id<"users">,
 		app_convex_FunctionReturnType<typeof app_convex_api.users.get_anagraphic> | undefined | Error
 	>;
 	userRoleDict: Record<
 		app_convex_Id<"users">,
-		| app_convex_FunctionReturnType<typeof app_convex_api.access_control.get_workspace_project_user_role>
+		| app_convex_FunctionReturnType<typeof app_convex_api.access_control.get_organization_workspace_user_role>
 		| undefined
 		| Error
 	>;
 	authUserId: app_convex_Id<"users"> | null;
 	canManageMembers: boolean;
-	canLeaveWorkspace: boolean;
+	canLeaveOrganization: boolean;
 	canTransferOwnership: boolean;
 	onRemove: (userId: app_convex_Id<"users">) => void;
 	onTransfer: (userId: app_convex_Id<"users">, displayName: string) => void;
@@ -162,18 +162,18 @@ type RouteUsersList_Props = {
 
 const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props) {
 	const {
-		projectUserIds,
+		workspaceUserIds,
 		userAnagraphicDict,
 		userRoleDict,
 		authUserId,
 		canManageMembers,
-		canLeaveWorkspace,
+		canLeaveOrganization,
 		canTransferOwnership,
 		onRemove,
 		onTransfer,
 	} = props;
 
-	const userRowsLoading = projectUserIds.some((userId) => {
+	const userRowsLoading = workspaceUserIds.some((userId) => {
 		const anagraphic = userAnagraphicDict[userId];
 
 		return anagraphic === undefined;
@@ -187,16 +187,16 @@ const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props)
 		);
 	}
 
-	const userRowsUnavailable = projectUserIds.some((userId) => {
+	const userRowsUnavailable = workspaceUserIds.some((userId) => {
 		const anagraphic = userAnagraphicDict[userId];
 
 		return anagraphic === null || anagraphic instanceof Error;
 	});
 	if (userRowsUnavailable) {
-		return <div className={"RouteUsers-empty" satisfies RouteUsers_ClassNames}>Workspace users unavailable.</div>;
+		return <div className={"RouteUsers-empty" satisfies RouteUsers_ClassNames}>Organization users unavailable.</div>;
 	}
 
-	const sortedProjectUserIds = projectUserIds.toSorted((a, b) => {
+	const sortedWorkspaceUserIds = workspaceUserIds.toSorted((a, b) => {
 		const aRoleDictValue = userRoleDict[a];
 		const aRole =
 			aRoleDictValue === undefined || aRoleDictValue === null || aRoleDictValue instanceof Error
@@ -226,7 +226,7 @@ const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props)
 
 	return (
 		<div className={"RouteUsers-list" satisfies RouteUsers_ClassNames}>
-			{sortedProjectUserIds.map((userId) => {
+			{sortedWorkspaceUserIds.map((userId) => {
 				const anagraphic = userAnagraphicDict[userId];
 				if (anagraphic === undefined || anagraphic === null || anagraphic instanceof Error) {
 					return null;
@@ -246,7 +246,7 @@ const RouteUsersList = memo(function RouteUsersList(props: RouteUsersList_Props)
 						displayName={anagraphic.displayName}
 						role={role}
 						canManageMembers={canManageMembers}
-						canLeaveWorkspace={canLeaveWorkspace}
+						canLeaveOrganization={canLeaveOrganization}
 						canTransferOwnership={canTransferOwnership && role !== "owner"}
 						onRemove={onRemove}
 						onTransfer={onTransfer}
@@ -263,41 +263,41 @@ type RouteUsersInviteModal_ClassNames =
 	| "RouteUsersInviteModal"
 	| "RouteUsersInviteModal-trigger"
 	| "RouteUsersInviteModal-form"
-	| "RouteUsersInviteModal-project-trigger"
+	| "RouteUsersInviteModal-workspace-trigger"
 	| "RouteUsersInviteModal-actions";
 
 type RouteUsersInviteModal_Props = {
-	projects: app_convex_FunctionReturnType<
-		typeof app_convex_api.workspaces.list
-	>["workspaceIdsProjectsDict"][app_convex_Id<"workspaces">];
+	workspaces: app_convex_FunctionReturnType<
+		typeof app_convex_api.organizations.list
+	>["organizationIdsWorkspacesDict"][app_convex_Id<"organizations">];
 	inviteButtonDisabled: boolean;
 	inviteButtonDisabledTooltip: string | null;
 	inviteModalOpen: boolean;
 	inviteEmail: string;
-	inviteProjectId: app_convex_Id<"workspaces_projects">;
-	invitedProject?: app_convex_FunctionReturnType<
-		typeof app_convex_api.workspaces.list
-	>["workspaceIdsProjectsDict"][app_convex_Id<"workspaces">][number];
+	inviteWorkspaceId: app_convex_Id<"organizations_workspaces">;
+	invitedWorkspace?: app_convex_FunctionReturnType<
+		typeof app_convex_api.organizations.list
+	>["organizationIdsWorkspacesDict"][app_convex_Id<"organizations">][number];
 	inviting: boolean;
 	onInviteModalOpenChange: (open: boolean) => void;
 	onInviteEmailChange: (email: string) => void;
-	onInviteProjectIdChange: (projectId: app_convex_Id<"workspaces_projects">) => void;
+	onInviteWorkspaceIdChange: (workspaceId: app_convex_Id<"organizations_workspaces">) => void;
 	onInvite: () => void;
 };
 
 const RouteUsersInviteModal = memo(function RouteUsersInviteModal(props: RouteUsersInviteModal_Props) {
 	const {
-		projects,
+		workspaces,
 		inviteButtonDisabled,
 		inviteButtonDisabledTooltip,
 		inviteModalOpen,
 		inviteEmail,
-		inviteProjectId,
-		invitedProject,
+		inviteWorkspaceId,
+		invitedWorkspace,
 		inviting,
 		onInviteModalOpenChange,
 		onInviteEmailChange,
-		onInviteProjectIdChange,
+		onInviteWorkspaceIdChange,
 		onInvite,
 	} = props;
 
@@ -351,26 +351,26 @@ const RouteUsersInviteModal = memo(function RouteUsersInviteModal(props: RouteUs
 					</MyInput>
 
 					<MySelect
-						value={inviteProjectId}
-						setValue={(value) => onInviteProjectIdChange(value as app_convex_Id<"workspaces_projects">)}
+						value={inviteWorkspaceId}
+						setValue={(value) => onInviteWorkspaceIdChange(value as app_convex_Id<"organizations_workspaces">)}
 					>
 						<MySelectTrigger>
 							<MyButton
 								type="button"
 								variant="outline"
-								className={"RouteUsersInviteModal-project-trigger" satisfies RouteUsersInviteModal_ClassNames}
+								className={"RouteUsersInviteModal-workspace-trigger" satisfies RouteUsersInviteModal_ClassNames}
 							>
-								<span>{invitedProject?.name ?? "Select project"}</span>
+								<span>{invitedWorkspace?.name ?? "Select workspace"}</span>
 								<MySelectOpenIndicator />
 							</MyButton>
 						</MySelectTrigger>
 						<MySelectPopover sameWidth>
 							<MySelectPopoverScrollableArea>
 								<MySelectPopoverContent>
-									{projects.map((project) => (
-										<MySelectItem key={project._id} value={project._id}>
-											{project.name}
-											{inviteProjectId === project._id ? <MySelectItemIndicator /> : null}
+									{workspaces.map((workspace) => (
+										<MySelectItem key={workspace._id} value={workspace._id}>
+											{workspace.name}
+											{inviteWorkspaceId === workspace._id ? <MySelectItemIndicator /> : null}
 										</MySelectItem>
 									))}
 								</MySelectPopoverContent>
@@ -425,7 +425,7 @@ const RouteUsersTransferModal = memo(function RouteUsersTransferModal(props: Rou
 				<MyModalHeader>
 					<MyModalHeading>Transfer ownership</MyModalHeading>
 					<MyModalDescription>
-						Transfer workspace ownership to {transferTargetDisplayName ?? "this user"}.
+						Transfer organization ownership to {transferTargetDisplayName ?? "this user"}.
 					</MyModalDescription>
 				</MyModalHeader>
 
@@ -496,30 +496,30 @@ const RouteUsersHeader = memo(function RouteUsersHeader(props: RouteUsersHeader_
 type RouteUsers_ClassNames = "RouteUsers" | "RouteUsers-loading" | "RouteUsers-empty" | "RouteUsers-list";
 
 function RouteUsers() {
-	const { workspaceId, projectId } = AppTenantProvider.useContext();
+	const { organizationId, workspaceId } = AppTenantProvider.useContext();
 
 	const auth = AppAuthProvider.useAuth();
 
-	const workspaceList = useQuery(app_convex_api.workspaces.list);
-	const workspace = workspaceList?.workspaces.find((workspace) => workspace._id === workspaceId);
-	const projects = workspaceList?.workspaceIdsProjectsDict[workspaceId] ?? [];
-	const defaultProject = workspace?.defaultProjectId
-		? projects.find((project) => project._id === workspace.defaultProjectId)
-		: projects.find((project) => project.default);
-	const currentProject = projects.find((project) => project._id === projectId);
-	const projectUserIds = useQuery(app_convex_api.workspaces.list_workspace_project_users, { workspaceId, projectId });
-	const currentWorkspaceRole = useQuery(
+	const organizationList = useQuery(app_convex_api.organizations.list);
+	const organization = organizationList?.organizations.find((organization) => organization._id === organizationId);
+	const workspaces = organizationList?.organizationIdsWorkspacesDict[organizationId] ?? [];
+	const defaultWorkspace = organization?.defaultWorkspaceId
+		? workspaces.find((workspace) => workspace._id === organization.defaultWorkspaceId)
+		: workspaces.find((workspace) => workspace.default);
+	const currentWorkspace = workspaces.find((workspace) => workspace._id === workspaceId);
+	const workspaceUserIds = useQuery(app_convex_api.organizations.list_organization_workspace_users, { organizationId, workspaceId });
+	const currentOrganizationRole = useQuery(
 		app_convex_api.access_control.get_current_user_role,
-		defaultProject ? { workspaceId, projectId: defaultProject._id } : "skip",
+		defaultWorkspace ? { organizationId, workspaceId: defaultWorkspace._id } : "skip",
 	);
 
-	const canInviteWorkspaceMembers = useQuery(
-		app_convex_api.access_control.get_current_user_workspace_permission,
+	const canInviteOrganizationMembers = useQuery(
+		app_convex_api.access_control.get_current_user_organization_permission,
 		auth.userId === null
 			? "skip"
 			: {
-					workspaceId,
-					permission: "workspace.members.manage",
+					organizationId,
+					permission: "organization.members.manage",
 				},
 	);
 
@@ -527,7 +527,7 @@ function RouteUsers() {
 	const userAnagraphicQueryProps = useMemo(
 		() =>
 			Object.fromEntries(
-				(projectUserIds ?? []).map(
+				(workspaceUserIds ?? []).map(
 					(userId) =>
 						[
 							userId,
@@ -538,7 +538,7 @@ function RouteUsers() {
 						] as const,
 				),
 			),
-		[projectUserIds],
+		[workspaceUserIds],
 	);
 
 	const userAnagraphicQueryResults = useQueries(userAnagraphicQueryProps) as Record<
@@ -550,30 +550,30 @@ function RouteUsers() {
 	const userRoleQueryProps = useMemo(
 		() =>
 			Object.fromEntries(
-				(projectUserIds ?? []).map(
+				(workspaceUserIds ?? []).map(
 					(userId) =>
 						[
 							userId,
 							{
-								query: app_convex_api.access_control.get_workspace_project_user_role,
-								args: { workspaceId, projectId, userId },
+								query: app_convex_api.access_control.get_organization_workspace_user_role,
+								args: { organizationId, workspaceId, userId },
 							},
 						] as const,
 				),
 			),
-		[projectUserIds, workspaceId, projectId],
+		[workspaceUserIds, organizationId, workspaceId],
 	);
 
 	const userRoleQueryResults = useQueries(userRoleQueryProps) as Record<
 		app_convex_Id<"users">,
-		| app_convex_FunctionReturnType<typeof app_convex_api.access_control.get_workspace_project_user_role>
+		| app_convex_FunctionReturnType<typeof app_convex_api.access_control.get_organization_workspace_user_role>
 		| undefined
 		| Error
 	>;
 
 	const [inviteModalOpen, setInviteModalOpen] = useState(false);
 	const [inviteEmail, setInviteEmail] = useState("");
-	const [inviteProjectId, setInviteProjectId] = useState<app_convex_Id<"workspaces_projects">>(projectId);
+	const [inviteWorkspaceId, setInviteWorkspaceId] = useState<app_convex_Id<"organizations_workspaces">>(workspaceId);
 	const [inviting, setInviting] = useState(false);
 	const [transferTarget, setTransferTarget] = useState<{
 		userId: app_convex_Id<"users">;
@@ -582,38 +582,38 @@ function RouteUsers() {
 	const [transferConfirmation, setTransferConfirmation] = useState("");
 	const [transferring, setTransferring] = useState(false);
 
-	const workspaceIsPersonal = workspace?.default === true;
+	const organizationIsPersonal = organization?.default === true;
 	const canManageMembers =
-		!workspaceIsPersonal && (currentWorkspaceRole === "owner" || currentWorkspaceRole === "admin");
-	const inviteButtonDisabled = workspaceIsPersonal || canInviteWorkspaceMembers !== true;
+		!organizationIsPersonal && (currentOrganizationRole === "owner" || currentOrganizationRole === "admin");
+	const inviteButtonDisabled = organizationIsPersonal || canInviteOrganizationMembers !== true;
 	const inviteButtonDisabledTooltip =
-		!workspaceIsPersonal && canInviteWorkspaceMembers === false
-			? "You don't have permission to invite people to this workspace."
+		!organizationIsPersonal && canInviteOrganizationMembers === false
+			? "You don't have permission to invite people to this organization."
 			: null;
-	const canLeaveWorkspace =
-		!workspaceIsPersonal && (currentWorkspaceRole === "admin" || currentWorkspaceRole === "member");
+	const canLeaveOrganization =
+		!organizationIsPersonal && (currentOrganizationRole === "admin" || currentOrganizationRole === "member");
 	const canTransferOwnership =
-		defaultProject?._id === projectId && currentWorkspaceRole === "owner" && !workspaceIsPersonal;
-	const invitedProject = projects.find((project) => project._id === inviteProjectId);
+		defaultWorkspace?._id === workspaceId && currentOrganizationRole === "owner" && !organizationIsPersonal;
+	const invitedWorkspace = workspaces.find((workspace) => workspace._id === inviteWorkspaceId);
 
 	const handleInvite = useFn(() => {
-		if (!workspace || !invitedProject || !inviteEmail.trim()) {
+		if (!organization || !invitedWorkspace || !inviteEmail.trim()) {
 			return;
 		}
 
 		setInviting(true);
 		app_convex
-			.mutation(app_convex_api.workspaces.invite_user_to_workspace_project, {
-				workspaceId,
-				projectId: inviteProjectId,
+			.mutation(app_convex_api.organizations.invite_user_to_organization_workspace, {
+				organizationId,
+				workspaceId: inviteWorkspaceId,
 				email: inviteEmail,
 			})
 			.then((result) => {
 				if (result._nay) {
 					console.error("[RouteUsers.handleInvite] Failed to invite user:", {
 						error: result._nay,
-						workspaceId,
-						inviteProjectId,
+						organizationId,
+						inviteWorkspaceId,
 						email: inviteEmail,
 					});
 					toast.error("Failed to invite user");
@@ -627,8 +627,8 @@ function RouteUsers() {
 			.catch((error) => {
 				console.error("[RouteUsers.handleInvite] Failed to invite user:", {
 					error,
-					workspaceId,
-					inviteProjectId,
+					organizationId,
+					inviteWorkspaceId,
 				});
 				toast.error("Failed to invite user");
 			})
@@ -639,30 +639,30 @@ function RouteUsers() {
 
 	const handleRemove = useFn((userIdToRemove: app_convex_Id<"users">) => {
 		const isLeaving = userIdToRemove === auth.userId;
-		const failureMessage = isLeaving ? "Failed to leave workspace" : "Failed to remove user";
+		const failureMessage = isLeaving ? "Failed to leave organization" : "Failed to remove user";
 
 		app_convex
-			.mutation(app_convex_api.workspaces.remove_user_from_workspace, {
-				workspaceId,
+			.mutation(app_convex_api.organizations.remove_user_from_organization, {
+				organizationId,
 				userIdToRemove,
 			})
 			.then((result) => {
 				if (result._nay) {
-					console.error("[RouteUsers.handleRemove] Failed to update workspace membership:", {
+					console.error("[RouteUsers.handleRemove] Failed to update organization membership:", {
 						error: result._nay,
-						workspaceId,
+						organizationId,
 						userIdToRemove,
 					});
 					toast.error(failureMessage);
 					return;
 				}
 
-				toast.success(isLeaving ? "Left workspace" : "User removed");
+				toast.success(isLeaving ? "Left organization" : "User removed");
 			})
 			.catch((error) => {
-				console.error("[RouteUsers.handleRemove] Failed to update workspace membership:", {
+				console.error("[RouteUsers.handleRemove] Failed to update organization membership:", {
 					error,
-					workspaceId,
+					organizationId,
 					userIdToRemove,
 				});
 				toast.error(failureMessage);
@@ -686,15 +686,15 @@ function RouteUsers() {
 
 		setTransferring(true);
 		app_convex
-			.mutation(app_convex_api.access_control.transfer_workspace_ownership, {
-				workspaceId,
+			.mutation(app_convex_api.access_control.transfer_organization_ownership, {
+				organizationId,
 				newOwnerUserId,
 			})
 			.then((result) => {
 				if (result._nay) {
 					console.error("[RouteUsers.handleTransfer] Failed to transfer ownership:", {
 						error: result._nay,
-						workspaceId,
+						organizationId,
 						newOwnerUserId,
 					});
 					toast.error("Failed to transfer ownership");
@@ -707,7 +707,7 @@ function RouteUsers() {
 			.catch((error) => {
 				console.error("[RouteUsers.handleTransfer] Failed to transfer ownership:", {
 					error,
-					workspaceId,
+					organizationId,
 					newOwnerUserId,
 				});
 				toast.error("Failed to transfer ownership");
@@ -719,9 +719,9 @@ function RouteUsers() {
 
 	useEffect(() => {
 		if (inviteModalOpen) {
-			setInviteProjectId(projectId);
+			setInviteWorkspaceId(workspaceId);
 		}
-	}, [inviteModalOpen, projectId]);
+	}, [inviteModalOpen, workspaceId]);
 
 	useEffect(() => {
 		if (!transferTarget) {
@@ -729,14 +729,14 @@ function RouteUsers() {
 		}
 	}, [transferTarget]);
 
-	return workspaceList === undefined || auth.userId === null ? (
+	return organizationList === undefined || auth.userId === null ? (
 		<div className={"RouteUsers-loading" satisfies RouteUsers_ClassNames}>
 			<UsersIcon aria-hidden />
 			Loading users...
 		</div>
-	) : !workspace || !defaultProject || !currentProject || projectUserIds === null ? (
-		<div className={"RouteUsers-empty" satisfies RouteUsers_ClassNames}>Workspace users unavailable.</div>
-	) : projectUserIds === undefined ? (
+	) : !organization || !defaultWorkspace || !currentWorkspace || workspaceUserIds === null ? (
+		<div className={"RouteUsers-empty" satisfies RouteUsers_ClassNames}>Organization users unavailable.</div>
+	) : workspaceUserIds === undefined ? (
 		<div className={"RouteUsers-loading" satisfies RouteUsers_ClassNames}>
 			<UsersIcon aria-hidden />
 			Loading users...
@@ -745,37 +745,37 @@ function RouteUsers() {
 		<div className={"RouteUsers" satisfies RouteUsers_ClassNames}>
 			<RouteUsersHeader
 				description={
-					defaultProject._id === projectId
-						? workspace.default
-							? "Personal workspace membership"
-							: `${workspace.name} workspace membership`
-						: `${currentProject.name} project membership`
+					defaultWorkspace._id === workspaceId
+						? organization.default
+							? "Personal organization membership"
+							: `${organization.name} organization membership`
+						: `${currentWorkspace.name} workspace membership`
 				}
 				toolbar={
 					<RouteUsersInviteModal
-						projects={projects}
+						workspaces={workspaces}
 						inviteButtonDisabled={inviteButtonDisabled}
 						inviteButtonDisabledTooltip={inviteButtonDisabledTooltip}
 						inviteModalOpen={inviteModalOpen}
 						inviteEmail={inviteEmail}
-						inviteProjectId={inviteProjectId}
-						invitedProject={invitedProject}
+						inviteWorkspaceId={inviteWorkspaceId}
+						invitedWorkspace={invitedWorkspace}
 						inviting={inviting}
 						onInviteModalOpenChange={setInviteModalOpen}
 						onInviteEmailChange={setInviteEmail}
-						onInviteProjectIdChange={setInviteProjectId}
+						onInviteWorkspaceIdChange={setInviteWorkspaceId}
 						onInvite={handleInvite}
 					/>
 				}
 			/>
 
 			<RouteUsersList
-				projectUserIds={projectUserIds}
+				workspaceUserIds={workspaceUserIds}
 				userAnagraphicDict={userAnagraphicQueryResults}
 				userRoleDict={userRoleQueryResults}
 				authUserId={auth.userId}
 				canManageMembers={canManageMembers}
-				canLeaveWorkspace={canLeaveWorkspace}
+				canLeaveOrganization={canLeaveOrganization}
 				canTransferOwnership={canTransferOwnership}
 				onRemove={handleRemove}
 				onTransfer={handleTransferTarget}
@@ -793,7 +793,7 @@ function RouteUsers() {
 	);
 }
 
-const Route = createFileRoute("/w/$workspaceName/$projectName/users/")({
+const Route = createFileRoute("/w/$organizationName/$workspaceName/users/")({
 	component: RouteUsers,
 });
 

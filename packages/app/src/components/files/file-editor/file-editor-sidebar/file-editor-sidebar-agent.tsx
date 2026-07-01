@@ -417,7 +417,7 @@ const FileEditorSidebarAgentHeaderActions = memo(function FileEditorSidebarAgent
 	props: FileEditorSidebarAgentHeaderActions_Props,
 ) {
 	const { controller, openTabs, membershipId, currentThreads, onOptimisticThreadCreated } = props;
-	const { workspaceName, projectName } = AppTenantProvider.useContext();
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 	const selectedTabStorageKey: `app_state::file_editor_sidebar_agent_selected_tab::scope::${string}` = `app_state::file_editor_sidebar_agent_selected_tab::scope::${membershipId}`;
 	const openTabsStorageKey: `app_state::file_editor_sidebar_open_tabs::scope::${string}` = `app_state::file_editor_sidebar_open_tabs::scope::${membershipId}`;
 
@@ -498,7 +498,7 @@ const FileEditorSidebarAgentHeaderActions = memo(function FileEditorSidebarAgent
 						<MyMenuItem
 							disabled={!persistedThreadId}
 							onClick={handleOpenChatPage}
-							render={<Link to="/w/$workspaceName/$projectName/chat" params={{ workspaceName, projectName }} />}
+							render={<Link to="/w/$organizationName/$workspaceName/chat" params={{ organizationName, workspaceName }} />}
 						>
 							<MyMenuItemContent>
 								<MyMenuItemContentIcon>

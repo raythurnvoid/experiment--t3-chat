@@ -72,11 +72,11 @@ import { Result, Result_all } from "../shared/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import {
-	workspaces_is_global_workspace_id,
-	workspaces_is_global_github_project_id,
-	workspaces_GLOBAL_WORKSPACE_ID,
-	workspaces_GLOBAL_GITHUB_PROJECT_ID,
-} from "../shared/workspaces.ts";
+	organizations_is_global_organization_id,
+	organizations_is_global_github_workspace_id,
+	organizations_GLOBAL_ORGANIZATION_ID,
+	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+} from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import app_convex_schema from "./schema.ts";
 import { api, components, internal } from "./_generated/api.js";
@@ -85,7 +85,7 @@ import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
 import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { workspaces_db_get_membership } from "./workspaces.ts";
+import { organizations_db_get_membership } from "./organizations.ts";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -132,8 +132,8 @@ async function files_ingest_inline_ai_usage_event(
 	args: {
 		actorUserId: Id<"users">;
 		billedUser: Doc<"users">;
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		requestId: string;
 		inputTokens: number;
 		outputTokens: number;
@@ -156,8 +156,8 @@ async function files_ingest_inline_ai_usage_event(
 						"ai_usage",
 						args.billedUser._id,
 						args.actorUserId,
+						args.organizationId,
 						args.workspaceId,
-						args.projectId,
 						"inline_ai",
 						args.requestId,
 					),
@@ -169,8 +169,8 @@ async function files_ingest_inline_ai_usage_event(
 						}),
 						actorUserId: args.actorUserId,
 						billedUserId: args.billedUser._id,
+						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						projectId: args.projectId,
 						modelId: "gpt-5-mini" satisfies files_InlineAiModelId,
 						inputTokens: args.inputTokens,
 						outputTokens: args.outputTokens,
@@ -259,14 +259,14 @@ function is_home_file(fileNode: Partial<Pick<Doc<"files_nodes">, "path" | "paren
 
 async function db_get_home_file(
 	ctx: QueryCtx | MutationCtx,
-	args: { workspaceId: Doc<"files_nodes">["workspaceId"]; projectId: Doc<"files_nodes">["projectId"] },
+	args: { organizationId: Doc<"files_nodes">["organizationId"]; workspaceId: Doc<"files_nodes">["workspaceId"] },
 ) {
 	const homeFileNode = await ctx.db
 		.query("files_nodes")
-		.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
+		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 			q
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("parentId", files_ROOT_ID)
 				.eq("name", "README.md" satisfies files_SpecialFileName)
 				.eq("archiveOperationId", undefined),
@@ -288,8 +288,8 @@ const files_STATS_UNPROCESSABLE = -1;
 async function db_upsert_file_stats(
 	ctx: MutationCtx,
 	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		nodeId: Id<"files_nodes">;
 		lineCount: number;
 		wordCount: number;
@@ -298,8 +298,8 @@ async function db_upsert_file_stats(
 ) {
 	const existing = await ctx.db
 		.query("file_stats")
-		.withIndex("by_workspace_project_fileNode", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
+		.withIndex("by_organization_workspace_fileNode", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
 		)
 		.first();
 	if (existing) {
@@ -311,8 +311,8 @@ async function db_upsert_file_stats(
 		return existing._id;
 	}
 	const statsId = await ctx.db.insert("file_stats", {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		fileNodeId: args.nodeId,
 		lineCount: args.lineCount,
 		wordCount: args.wordCount,
@@ -325,8 +325,8 @@ async function db_upsert_file_stats(
 async function db_patch_plain_text_chunks_scope(
 	ctx: MutationCtx,
 	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		nodeId: Id<"files_nodes">;
 		path?: string;
 		archiveOperationId?: string;
@@ -341,8 +341,8 @@ async function db_patch_plain_text_chunks_scope(
 	}
 	const chunks = await ctx.db
 		.query("files_plain_text_chunks")
-		.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
+		.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
 		)
 		.collect();
 	await Promise.all(chunks.map((chunk) => ctx.db.patch("files_plain_text_chunks", chunk._id, patch)));
@@ -351,8 +351,8 @@ async function db_patch_plain_text_chunks_scope(
 export async function db_patch_file_chunks_scope(
 	ctx: MutationCtx,
 	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		nodeId: Id<"files_nodes">;
 		path?: string;
 		archiveOperationId?: string;
@@ -376,8 +376,8 @@ export async function db_patch_file_chunks_scope(
 async function db_insert_committed_text_chunks(
 	ctx: MutationCtx,
 	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		nodeId: Id<"files_nodes">;
 		path: string;
 		archiveOperationId?: string;
@@ -398,8 +398,8 @@ async function db_insert_committed_text_chunks(
 	const markdownChunkIds = await Promise.all(
 		args.chunks.map((chunk) =>
 			ctx.db.insert("files_markdown_chunks", {
+				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				projectId: args.projectId,
 				fileNodeId: args.nodeId,
 				sourceKind: "committed",
 				...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
@@ -417,8 +417,8 @@ async function db_insert_committed_text_chunks(
 	await Promise.all(
 		args.chunks.map((chunk, index) =>
 			ctx.db.insert("files_plain_text_chunks", {
+				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				projectId: args.projectId,
 				fileNodeId: args.nodeId,
 				sourceKind: "committed",
 				...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
@@ -443,8 +443,8 @@ async function db_insert_committed_text_chunks(
 export async function db_insert_file_text_content(
 	ctx: MutationCtx,
 	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		nodeId: Id<"files_nodes">;
 		path: string;
 		archiveOperationId?: string;
@@ -473,8 +473,8 @@ export async function db_insert_file_text_content(
 	}
 
 	await db_insert_committed_text_chunks(ctx, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		nodeId: args.nodeId,
 		path: args.path,
 		archiveOperationId: args.archiveOperationId,
@@ -484,8 +484,8 @@ export async function db_insert_file_text_content(
 
 	if (isMarkdown) {
 		await files_metadata_db_insert_committed(ctx, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 			yjsSequence: args.yjsSequence,
 			markdownContent: args.textContent,
@@ -494,8 +494,8 @@ export async function db_insert_file_text_content(
 
 	const counts = files_compute_wc_counts(args.textContent);
 	await db_upsert_file_stats(ctx, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		nodeId: args.nodeId,
 		lineCount: counts.lineCount,
 		wordCount: counts.wordCount,
@@ -508,8 +508,8 @@ export async function db_insert_file_text_content(
 export async function db_replace_file_chunks(
 	ctx: MutationCtx,
 	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		nodeId: Id<"files_nodes">;
 		yjsSequence: number;
 		markdownContent: string;
@@ -518,14 +518,14 @@ export async function db_replace_file_chunks(
 	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
 	if (
 		!fileNode ||
+		fileNode.organizationId !== args.organizationId ||
 		fileNode.workspaceId !== args.workspaceId ||
-		fileNode.projectId !== args.projectId ||
 		fileNode.kind !== "file"
 	) {
-		const errorMessage = "db_replace_file_chunks expected a file node in the same workspace/project";
+		const errorMessage = "db_replace_file_chunks expected a file node in the same organization/workspace";
 		console.error(errorMessage, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 			fileNode,
 		});
@@ -536,20 +536,20 @@ export async function db_replace_file_chunks(
 	await Promise.all([
 		ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
+			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 				q
+					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
 					.eq("sourceKind", "committed")
 					.eq("fileNodeId", args.nodeId),
 			)
 			.collect(),
 		ctx.db
 			.query("files_markdown_chunks")
-			.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 				q
+					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
 					.eq("sourceKind", "committed")
 					.eq("fileNodeId", args.nodeId),
 			)
@@ -563,8 +563,8 @@ export async function db_replace_file_chunks(
 	);
 
 	return db_insert_file_text_content(ctx, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		nodeId: args.nodeId,
 		path: fileNode.path,
 		archiveOperationId: fileNode.archiveOperationId,
@@ -604,8 +604,8 @@ export function files_nodes_create_yjs_snapshot_update_from_markdown(markdownCon
 async function enqueue_file_content_materialization(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
 		userId: Id<"users">;
 		targetSequence: number;
@@ -621,8 +621,8 @@ async function enqueue_file_content_materialization(
 		ctx,
 		internal.files_nodes.materialize_file_content,
 		{
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 			userId: args.userId,
 			targetSequence: args.targetSequence,
@@ -634,8 +634,8 @@ async function enqueue_file_content_materialization(
 
 	await Promise.all([
 		ctx.db.insert("files_content_materialization_jobs", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			fileNodeId: args.nodeId,
 			jobId,
 			targetSequence: args.targetSequence,
@@ -647,8 +647,8 @@ async function enqueue_file_content_materialization(
 
 export const get_by_path = internalQuery({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		path: v.string(),
 	},
 	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
@@ -659,10 +659,10 @@ export const get_by_path = internalQuery({
 
 		return await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q
+					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
 					.eq("path", args.path)
 					.eq("archiveOperationId", undefined),
 			)
@@ -677,16 +677,16 @@ export type files_nodes_get_by_path_Result =
 
 async function db_resolve_tree_node_id_from_path(
 	ctx: QueryCtx,
-	args: { workspaceId: Doc<"files_nodes">["workspaceId"]; projectId: Doc<"files_nodes">["projectId"]; path: string },
+	args: { organizationId: Doc<"files_nodes">["organizationId"]; workspaceId: Doc<"files_nodes">["workspaceId"]; path: string },
 ) {
 	if (args.path === "/") return files_ROOT_ID;
 
 	const fileNodeByMaterializedPath = await ctx.db
 		.query("files_nodes")
-		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 			q
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("path", args.path)
 				.eq("archiveOperationId", undefined),
 		)
@@ -701,8 +701,8 @@ async function db_resolve_tree_node_id_from_path(
 async function resolve_parent_path_from_parent_id(
 	ctx: QueryCtx,
 	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		parentId: Doc<"files_nodes">["parentId"];
 	},
 ) {
@@ -713,8 +713,8 @@ async function resolve_parent_path_from_parent_id(
 	const parentNode = await ctx.db.get("files_nodes", args.parentId);
 	if (
 		!parentNode ||
+		parentNode.organizationId !== args.organizationId ||
 		parentNode.workspaceId !== args.workspaceId ||
-		parentNode.projectId !== args.projectId ||
 		parentNode.kind !== "folder"
 	) {
 		return null;
@@ -732,8 +732,8 @@ async function resolve_parent_path_from_parent_id(
 async function cascade_file_descendants_path(
 	ctx: MutationCtx,
 	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		parentId: Id<"files_nodes">;
 		parentPath: string;
 	},
@@ -750,8 +750,8 @@ async function cascade_file_descendants_path(
 
 		const children = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("parentId", frame.parentId),
+			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", frame.parentId),
 			)
 			.collect();
 
@@ -766,8 +766,8 @@ async function cascade_file_descendants_path(
 				});
 				if (child.kind === "file") {
 					await db_patch_file_chunks_scope(ctx, {
+						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						projectId: args.projectId,
 						nodeId: child._id,
 						path: childPath,
 					});
@@ -785,8 +785,8 @@ async function db_insert_node(
 	ctx: MutationCtx,
 	args: {
 		userId: Doc<"files_nodes">["createdBy"];
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		parentId: Doc<"files_nodes">["parentId"];
 		name: Doc<"files_nodes">["name"];
 		path: Doc<"files_nodes">["path"];
@@ -801,8 +801,8 @@ async function db_insert_node(
 	},
 ) {
 	const nodeId = await ctx.db.insert("files_nodes", {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		parentId: args.parentId,
 		path: args.path,
 		treePath: derive_tree_path_for_file_node(args.path, args.kind),
@@ -826,8 +826,8 @@ async function db_insert_node(
 	// unprocessable with -1. A later materialization overwrites it with real counts if text appears.
 	if (args.textContent === undefined) {
 		await db_upsert_file_stats(ctx, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId,
 			lineCount: files_STATS_UNPROCESSABLE,
 			wordCount: files_STATS_UNPROCESSABLE,
@@ -841,8 +841,8 @@ async function db_insert_node(
 	if (!args.assetId) {
 		const errorMessage = "fileNode.assetId is not set";
 		const errorData = {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId,
 		};
 		console.error(errorMessage, errorData);
@@ -851,8 +851,8 @@ async function db_insert_node(
 
 	if (args.readOnly === true) {
 		await db_insert_file_text_content(ctx, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId,
 			path: args.path,
 			archiveOperationId: args.archiveOperationId,
@@ -871,24 +871,24 @@ async function db_insert_node(
 		return Result({ _yay: nodeId });
 	}
 
-	// Writable files need editable Yjs docs, so they cannot live in the reserved global workspace.
-	// Reserved external resources are identified by workspaceId; SYSTEM and the reserved project id are
-	// valid only inside that global workspace.
-	if (workspaces_is_global_workspace_id(args.workspaceId)) {
-		const errorMessage = "Editable text content requires a real workspaceId";
-		const errorData = { workspaceId: args.workspaceId, projectId: args.projectId, nodeId };
+	// Writable files need editable Yjs docs, so they cannot live in the reserved global organization.
+	// Reserved external resources are identified by organizationId; SYSTEM and the reserved workspace id are
+	// valid only inside that global organization.
+	if (organizations_is_global_organization_id(args.organizationId)) {
+		const errorMessage = "Editable text content requires a real organizationId";
+		const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId, nodeId };
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
 	}
-	if (workspaces_is_global_github_project_id(args.projectId)) {
-		const errorMessage = "Editable text content requires a real projectId";
-		const errorData = { workspaceId: args.workspaceId, projectId: args.projectId, nodeId };
+	if (organizations_is_global_github_workspace_id(args.workspaceId)) {
+		const errorMessage = "Editable text content requires a real workspaceId";
+		const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId, nodeId };
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
 	}
 	if (args.userId === users_SYSTEM_AUTHOR) {
 		const errorMessage = "Editable text content requires a real user id";
-		const errorData = { workspaceId: args.workspaceId, projectId: args.projectId, nodeId };
+		const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId, nodeId };
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
 	}
@@ -896,8 +896,8 @@ async function db_insert_node(
 	if (!args.yjsSnapshotAssetId) {
 		const errorMessage = "fileNode.yjsSnapshotId asset is not set";
 		const errorData = {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId,
 		};
 		console.error(errorMessage, errorData);
@@ -906,8 +906,8 @@ async function db_insert_node(
 
 	const [yjs_snapshot_id, yjs_last_sequence_id] = await Promise.all([
 		ctx.db.insert("files_yjs_snapshots", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			fileNodeId: nodeId,
 			sequence: 0,
 			assetId: args.yjsSnapshotAssetId,
@@ -916,14 +916,14 @@ async function db_insert_node(
 			updatedAt: args.now,
 		}),
 		ctx.db.insert("files_yjs_docs_last_sequences", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			fileNodeId: nodeId,
 			lastSequence: initialYjsSequence,
 		}),
 		db_insert_file_text_content(ctx, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId,
 			path: args.path,
 			archiveOperationId: args.archiveOperationId,
@@ -943,8 +943,8 @@ async function db_insert_node(
 		const errorMessage = "Failed to create file content docs";
 		console.error(errorMessage, {
 			error,
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			parentId: args.parentId,
 			nodeId,
 			yjsSequence: initialYjsSequence,
@@ -974,8 +974,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 	ctx: MutationCtx,
 	args: {
 		userId: Doc<"files_nodes">["createdBy"];
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		parentId: Doc<"files_nodes">["parentId"];
 		path: string;
 		kind: Doc<"files_nodes">["kind"];
@@ -1002,18 +1002,18 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		const parentPathPromise =
 			currentParentPath == null
 				? resolve_parent_path_from_parent_id(ctx, {
+						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						projectId: args.projectId,
 						parentId: currentParent,
 					})
 				: null;
 
 		const existing = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
+			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 				q
+					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
 					.eq("parentId", currentParent)
 					.eq("name", name)
 					.eq("archiveOperationId", undefined),
@@ -1068,8 +1068,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 
 		const nodeIdResult = await db_insert_node(ctx, {
 			userId: args.userId,
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			parentId: currentParent,
 			name,
 			path,
@@ -1104,14 +1104,14 @@ export async function files_nodes_db_create_node_recursively_at_path(
 
 export const create_folder_node = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
 		path: v.string(),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
 		const userAuthPromise = server_convex_get_user_fallback_to_anonymous(ctx);
-		const membershipPromise = ctx.db.get("workspaces_projects_users", args.membershipId);
+		const membershipPromise = ctx.db.get("organizations_workspaces_users", args.membershipId);
 
 		const userAuth = await userAuthPromise;
 		if (!userAuth) {
@@ -1134,8 +1134,8 @@ export const create_folder_node = mutation({
 		// We trust that the front-end is validating the input correctly.
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: userAuth.id,
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			parentId: args.parentId,
 			path: args.path,
 			kind: "folder",
@@ -1157,8 +1157,8 @@ export const create_folder_node = mutation({
  */
 export const create_folder_node_by_path = internalMutation({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		path: v.string(),
 	},
@@ -1166,10 +1166,10 @@ export const create_folder_node_by_path = internalMutation({
 	handler: async (ctx, args) => {
 		const activeNode = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q
+					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
 					.eq("path", args.path)
 					.eq("archiveOperationId", undefined),
 			)
@@ -1183,8 +1183,8 @@ export const create_folder_node_by_path = internalMutation({
 
 		const nodeId = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: args.userId,
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			parentId: files_ROOT_ID,
 			path: args.path,
 			kind: "folder",
@@ -1207,8 +1207,8 @@ export type files_nodes_create_folder_node_by_path_Result =
 export const create_file_node = internalMutation({
 	args: {
 		userId: doc(app_convex_schema, "files_nodes").fields.createdBy,
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
 		path: v.string(),
 		contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
@@ -1222,8 +1222,8 @@ export const create_file_node = internalMutation({
 	handler: async (ctx, args) => {
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: args.userId,
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			parentId: args.parentId,
 			path: args.path,
 			kind: "file",
@@ -1246,8 +1246,8 @@ export const create_file_node = internalMutation({
 export async function files_nodes_db_finalize_file_node_creation(
 	ctx: MutationCtx,
 	args: {
+		organizationId: Doc<"files_r2_assets">["organizationId"];
 		workspaceId: Doc<"files_r2_assets">["workspaceId"];
-		projectId: Doc<"files_r2_assets">["projectId"];
 		nodeId: Id<"files_nodes">;
 		userId?: Id<"users">;
 		contentAssetId: Id<"files_r2_assets">;
@@ -1277,8 +1277,8 @@ export async function files_nodes_db_finalize_file_node_creation(
 	await Promise.all([
 		ctx.db.patch("files_r2_assets", args.contentAssetId, {
 			r2Key: r2_create_asset_key({
+				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				projectId: args.projectId,
 				assetId: args.contentAssetId,
 			}),
 			size: args.contentSize,
@@ -1291,8 +1291,8 @@ export async function files_nodes_db_finalize_file_node_creation(
 			return [
 				ctx.db.patch("files_r2_assets", args.yjsSnapshotAssetId, {
 					r2Key: r2_create_asset_key({
+						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						projectId: args.projectId,
 						assetId: args.yjsSnapshotAssetId,
 					}),
 					size: args.yjsSnapshotSize,
@@ -1310,31 +1310,31 @@ export async function files_nodes_db_finalize_file_node_creation(
 				console.error(errorMessage, errorData);
 				throw should_never_happen(errorMessage, errorData);
 			}
-			if (workspaces_is_global_workspace_id(args.workspaceId)) {
-				const errorMessage = "Version snapshot requires a real workspaceId";
-				const errorData = { nodeId: args.nodeId, workspaceId: args.workspaceId };
+			if (organizations_is_global_organization_id(args.organizationId)) {
+				const errorMessage = "Version snapshot requires a real organizationId";
+				const errorData = { nodeId: args.nodeId, organizationId: args.organizationId };
 				console.error(errorMessage, errorData);
 				throw should_never_happen(errorMessage, errorData);
 			}
-			if (workspaces_is_global_github_project_id(args.projectId)) {
-				const errorMessage = "Version snapshot requires a real projectId";
-				const errorData = { nodeId: args.nodeId, projectId: args.projectId };
+			if (organizations_is_global_github_workspace_id(args.workspaceId)) {
+				const errorMessage = "Version snapshot requires a real workspaceId";
+				const errorData = { nodeId: args.nodeId, workspaceId: args.workspaceId };
 				console.error(errorMessage, errorData);
 				throw should_never_happen(errorMessage, errorData);
 			}
 			return [
 				ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
 					r2Key: r2_create_asset_key({
+						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						projectId: args.projectId,
 						assetId: args.versionSnapshotAssetId,
 					}),
 					size: args.versionSnapshotSize,
 					updatedAt: now,
 				}),
 				ctx.db.insert("files_snapshots", {
+					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					projectId: args.projectId,
 					fileNodeId: args.nodeId,
 					assetId: args.versionSnapshotAssetId,
 					createdBy: args.userId,
@@ -1349,8 +1349,8 @@ export async function files_nodes_db_finalize_file_node_creation(
 
 export const finalize_file_node_creation = internalMutation({
 	args: {
+		organizationId: doc(app_convex_schema, "files_r2_assets").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_r2_assets").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_r2_assets").fields.projectId,
 		nodeId: v.id("files_nodes"),
 		userId: v.optional(v.id("users")),
 		contentAssetId: v.id("files_r2_assets"),
@@ -1427,16 +1427,16 @@ export const create_file_node_internal = internalAction({
 		}
 
 		const assetId = await ctx.runMutation(internal.r2.insert_asset, {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			kind: "content",
 			size: byteSize,
 			createdBy: users_SYSTEM_AUTHOR,
 		});
 
 		const r2Key = r2_create_asset_key({
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			assetId,
 		});
 
@@ -1465,8 +1465,8 @@ export const create_file_node_internal = internalAction({
 			try {
 				created = (await ctx.runMutation(internal.files_nodes.create_file_node, {
 					userId: users_SYSTEM_AUTHOR,
-					workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-					projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+					organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+					workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 					parentId: files_ROOT_ID,
 					path: args.path,
 					assetId,
@@ -1507,8 +1507,8 @@ export const create_file_node_internal = internalAction({
 		}
 
 		const finalized = (await ctx.runMutation(internal.files_nodes.finalize_file_node_creation, {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			nodeId: createdNodeId,
 			contentAssetId: assetId,
 			contentSize: byteSize,
@@ -1543,8 +1543,8 @@ async function action_create_markdown_node(
 	ctx: ActionCtx,
 	args: {
 		userId: Id<"users">;
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		parentId: Doc<"files_nodes">["parentId"];
 		path: string;
 		markdownContent: string;
@@ -1558,22 +1558,22 @@ async function action_create_markdown_node(
 
 	const [markdownAssetId, yjsSnapshotAssetId, versionSnapshotAssetId] = (await Promise.all([
 		ctx.runMutation(internal.r2.insert_asset, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			kind: "content",
 			size: files_get_utf8_byte_size(args.markdownContent),
 			createdBy: args.userId,
 		}),
 		ctx.runMutation(internal.r2.insert_asset, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			kind: "yjs_snapshot",
 			size: snapshotUpdate._yay.byteLength,
 			createdBy: args.userId,
 		}),
 		ctx.runMutation(internal.r2.insert_asset, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			kind: "content_snapshot",
 			size: files_get_utf8_byte_size(args.markdownContent),
 			createdBy: args.userId,
@@ -1581,18 +1581,18 @@ async function action_create_markdown_node(
 	])) as [Id<"files_r2_assets">, Id<"files_r2_assets">, Id<"files_r2_assets">];
 
 	const markdownR2Key = r2_create_asset_key({
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		assetId: markdownAssetId,
 	});
 	const yjsSnapshotR2Key = r2_create_asset_key({
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		assetId: yjsSnapshotAssetId,
 	});
 	const versionSnapshotR2Key = r2_create_asset_key({
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		assetId: versionSnapshotAssetId,
 	});
 
@@ -1633,8 +1633,8 @@ async function action_create_markdown_node(
 
 	const created = (await ctx.runMutation(internal.files_nodes.create_file_node, {
 		userId: args.userId,
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		parentId: args.parentId,
 		path: args.path,
 		contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
@@ -1650,8 +1650,8 @@ async function action_create_markdown_node(
 	}
 
 	const finalized = (await ctx.runMutation(internal.files_nodes.finalize_file_node_creation, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		nodeId: created._yay.nodeId,
 		userId: args.userId,
 		contentAssetId: markdownAssetId,
@@ -1670,7 +1670,7 @@ async function action_create_markdown_node(
 
 export const create_markdown_node = action({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
 		path: v.string(),
 	},
@@ -1686,17 +1686,17 @@ export const create_markdown_node = action({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const membership = (await ctx.runQuery(api.workspaces.get_membership, {
+		const membership = (await ctx.runQuery(api.organizations.get_membership, {
 			membershipId: args.membershipId,
-		})) as Doc<"workspaces_projects_users"> | null;
+		})) as Doc<"organizations_workspaces_users"> | null;
 		if (!membership || membership.userId !== userAuth.id) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
 		return await action_create_markdown_node(ctx, {
 			userId: userAuth.id,
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			parentId: args.parentId,
 			markdownContent: files_INITIAL_CONTENT,
 			path: args.path,
@@ -1706,7 +1706,7 @@ export const create_markdown_node = action({
 
 export const create_upload_node = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		parentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
 		filename: v.string(),
 		contentType: v.optional(v.string()),
@@ -1726,7 +1726,7 @@ export const create_upload_node = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -1751,8 +1751,8 @@ export const create_upload_node = mutation({
 			const parent = await ctx.db.get("files_nodes", args.parentId);
 			if (
 				!parent ||
+				parent.organizationId !== membership.organizationId ||
 				parent.workspaceId !== membership.workspaceId ||
-				parent.projectId !== membership.projectId ||
 				parent.kind !== "folder" ||
 				parent.archiveOperationId !== undefined
 			) {
@@ -1764,10 +1764,10 @@ export const create_upload_node = mutation({
 		const path = path_join(parentPath, args.filename);
 		const existingNode = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q
+					.eq("organizationId", membership.organizationId)
 					.eq("workspaceId", membership.workspaceId)
-					.eq("projectId", membership.projectId)
 					.eq("path", path)
 					.eq("archiveOperationId", undefined),
 			)
@@ -1790,8 +1790,8 @@ export const create_upload_node = mutation({
 		}
 
 		const sourceAssetId = await ctx.db.insert("files_r2_assets", {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			kind: "upload",
 			r2Bucket: r2_get_bucket(),
 			size: args.size,
@@ -1799,14 +1799,14 @@ export const create_upload_node = mutation({
 			updatedAt: now,
 		});
 		const sourceAssetR2Key = r2_create_asset_key({
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			assetId: sourceAssetId,
 		});
 
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			userId: membership.userId,
 			parentId: args.parentId,
 			path: args.filename,
@@ -1835,7 +1835,7 @@ export const create_upload_node = mutation({
 
 export const rename_node = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		path: v.string(),
 	},
@@ -1851,7 +1851,7 @@ export const rename_node = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -1860,7 +1860,7 @@ export const rename_node = mutation({
 		}
 
 		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-		if (!fileNode || fileNode.workspaceId !== membership.workspaceId || fileNode.projectId !== membership.projectId) {
+		if (!fileNode || fileNode.organizationId !== membership.organizationId || fileNode.workspaceId !== membership.workspaceId) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 		if (is_home_file(fileNode)) {
@@ -1880,10 +1880,10 @@ export const rename_node = mutation({
 			for (const name of pathSegments.slice(0, -1)) {
 				const existing = await ctx.db
 					.query("files_nodes")
-					.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
+					.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 						q
+							.eq("organizationId", membership.organizationId)
 							.eq("workspaceId", membership.workspaceId)
-							.eq("projectId", membership.projectId)
 							.eq("parentId", targetParentId)
 							.eq("name", name)
 							.eq("archiveOperationId", undefined),
@@ -1916,8 +1916,8 @@ export const rename_node = mutation({
 
 				if (targetParentPath == null) {
 					targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
+						organizationId: membership.organizationId,
 						workspaceId: membership.workspaceId,
-						projectId: membership.projectId,
 						parentId: targetParentId,
 					});
 					if (targetParentPath == null) {
@@ -1928,8 +1928,8 @@ export const rename_node = mutation({
 				const folderPath = path_join(targetParentPath, name);
 				const folderNodeIdResult = await db_insert_node(ctx, {
 					userId: userAuth.id,
+					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
 					parentId: targetParentId,
 					name,
 					path: folderPath,
@@ -1954,8 +1954,8 @@ export const rename_node = mutation({
 			leafName = resolvedLeafName;
 		} else {
 			const parentPath = await resolve_parent_path_from_parent_id(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				parentId: fileNode.parentId,
 			});
 			if (parentPath == null) {
@@ -1968,8 +1968,8 @@ export const rename_node = mutation({
 
 		if (targetParentPath == null) {
 			const parentPath = await resolve_parent_path_from_parent_id(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				parentId: targetParentId,
 			});
 			if (parentPath == null) {
@@ -1983,10 +1983,10 @@ export const rename_node = mutation({
 			// Check whether an active sibling already owns the target name.
 			const activeSiblingConflict = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 					q
+						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
-						.eq("projectId", membership.projectId)
 						.eq("parentId", targetParentId)
 						.eq("name", leafName)
 						.eq("archiveOperationId", undefined),
@@ -2017,15 +2017,15 @@ export const rename_node = mutation({
 		});
 		if (fileNode.kind === "file") {
 			await db_patch_file_chunks_scope(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				path: renamedPath,
 			});
 		}
 		await cascade_file_descendants_path(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			parentId: args.nodeId,
 			parentPath: renamedPath,
 		});
@@ -2035,7 +2035,7 @@ export const rename_node = mutation({
 
 export const move_nodes = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		itemIds: v.array(v.id("files_nodes")),
 		targetParentId: v.union(v.id("files_nodes"), v.literal(files_ROOT_ID)),
 	},
@@ -2051,7 +2051,7 @@ export const move_nodes = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -2060,8 +2060,8 @@ export const move_nodes = mutation({
 		}
 
 		const targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			parentId: args.targetParentId,
 		});
 		if (targetParentPath == null) {
@@ -2072,7 +2072,7 @@ export const move_nodes = mutation({
 
 		for (const itemId of args.itemIds) {
 			const fileNode = await ctx.db.get("files_nodes", itemId);
-			if (!fileNode || fileNode.workspaceId !== membership.workspaceId || fileNode.projectId !== membership.projectId) {
+			if (!fileNode || fileNode.organizationId !== membership.organizationId || fileNode.workspaceId !== membership.workspaceId) {
 				continue;
 			}
 			if (is_home_file(fileNode)) {
@@ -2105,10 +2105,10 @@ export const move_nodes = mutation({
 			// Check whether an active file node already exists for the same path.
 			const activePathConflict = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
+						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
-						.eq("projectId", membership.projectId)
 						.eq("path", fileNodeToMove.movedPath)
 						.eq("archiveOperationId", undefined),
 				)
@@ -2126,8 +2126,8 @@ export const move_nodes = mutation({
 		const now = Date.now();
 		for (const fileNodeToMove of fileNodesToMove) {
 			await ctx.db.patch("files_nodes", fileNodeToMove.itemId, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				parentId: args.targetParentId,
 				path: fileNodeToMove.movedPath,
 				treePath: derive_tree_path_for_file_node(fileNodeToMove.movedPath, fileNodeToMove.fileNode.kind),
@@ -2137,15 +2137,15 @@ export const move_nodes = mutation({
 			});
 			if (fileNodeToMove.fileNode.kind === "file") {
 				await db_patch_file_chunks_scope(ctx, {
+					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
 					nodeId: fileNodeToMove.itemId,
 					path: fileNodeToMove.movedPath,
 				});
 			}
 			await cascade_file_descendants_path(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				parentId: fileNodeToMove.itemId,
 				parentPath: fileNodeToMove.movedPath,
 			});
@@ -2178,8 +2178,8 @@ async function db_archive_nodes(
 			});
 			if (fileNode.kind === "file") {
 				await db_patch_file_chunks_scope(ctx, {
+					organizationId: fileNode.organizationId,
 					workspaceId: fileNode.workspaceId,
-					projectId: fileNode.projectId,
 					nodeId,
 					archiveOperationId,
 				});
@@ -2190,7 +2190,7 @@ async function db_archive_nodes(
 
 export const archive_nodes = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeIds: v.array(v.string()),
 	},
 	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
@@ -2205,7 +2205,7 @@ export const archive_nodes = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -2228,8 +2228,8 @@ export const archive_nodes = mutation({
 					ctx.db.get("files_nodes", nodeId).then((fileNode) => {
 						if (
 							!fileNode ||
-							fileNode.workspaceId !== membership.workspaceId ||
-							fileNode.projectId !== membership.projectId
+							fileNode.organizationId !== membership.organizationId ||
+							fileNode.workspaceId !== membership.workspaceId
 						) {
 							return Result({ _nay: { name: "nay", message: "Not found", data: { nodeId } } });
 						}
@@ -2262,10 +2262,10 @@ export const archive_nodes = mutation({
 			const descendantsPathPrefix = `${fileNode.path}/`;
 			const descendantFileNodes = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
+						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
-						.eq("projectId", membership.projectId)
 						.gte("path", descendantsPathPrefix)
 						.lt("path", `${descendantsPathPrefix}\uffff`),
 				)
@@ -2291,7 +2291,7 @@ export const archive_nodes = mutation({
 
 export const unarchive_nodes = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeIds: v.array(v.string()),
 	},
 	returns: v_result({ _yay: v.null(), _nay: { data: v.any() } }),
@@ -2306,7 +2306,7 @@ export const unarchive_nodes = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -2333,8 +2333,8 @@ export const unarchive_nodes = mutation({
 					ctx.db.get("files_nodes", nodeId).then((fileNode) => {
 						if (
 							!fileNode ||
-							fileNode.workspaceId !== membership.workspaceId ||
-							fileNode.projectId !== membership.projectId
+							fileNode.organizationId !== membership.organizationId ||
+							fileNode.workspaceId !== membership.workspaceId
 						) {
 							return Result({ _nay: { name: "nay", message: "Not found", data: { nodeId } } });
 						}
@@ -2456,8 +2456,8 @@ export const unarchive_nodes = mutation({
 							// If parent is still archived or invalid, move this subtree to root when unarchiving.
 							shouldMoveToRoot =
 								!parentFileNode ||
+								parentFileNode.organizationId !== membership.organizationId ||
 								parentFileNode.workspaceId !== membership.workspaceId ||
-								parentFileNode.projectId !== membership.projectId ||
 								parentFileNode.archiveOperationId !== undefined;
 						}
 
@@ -2505,10 +2505,10 @@ export const unarchive_nodes = mutation({
 
 							return ctx.db
 								.query("files_nodes")
-								.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+								.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 									q
+										.eq("organizationId", membership.organizationId)
 										.eq("workspaceId", membership.workspaceId)
-										.eq("projectId", membership.projectId)
 										.gte("path", `${ancestorFileNode.path}/`)
 										.lt("path", `${ancestorFileNode.path}/\uffff`),
 								)
@@ -2562,10 +2562,10 @@ export const unarchive_nodes = mutation({
 			// Check whether an active file node already exists for the same path.
 			const conflictFileNode = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
+						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
-						.eq("projectId", membership.projectId)
 						.eq("path", ancestorTargetPath)
 						.eq("archiveOperationId", undefined),
 				)
@@ -2607,8 +2607,8 @@ export const unarchive_nodes = mutation({
 				});
 				if (plan.fileNode.kind === "file") {
 					await db_patch_file_chunks_scope(ctx, {
+						organizationId: membership.organizationId,
 						workspaceId: membership.workspaceId,
-						projectId: membership.projectId,
 						nodeId: plan.fileNode._id,
 						path: plan.targetPath,
 						archiveOperationId: undefined,
@@ -2624,7 +2624,7 @@ export const unarchive_nodes = mutation({
 
 export const get_file_node_for_membership = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		fileNodeId: v.string(),
 	},
 	returns: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
@@ -2633,7 +2633,7 @@ export const get_file_node_for_membership = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -2641,18 +2641,18 @@ export const get_file_node_for_membership = query({
 			return null;
 		}
 
-		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
-		if (!workspace?.defaultProjectId) {
+		const organization = await ctx.db.get("organizations", membership.organizationId);
+		if (!organization?.defaultWorkspaceId) {
 			return null;
 		}
 
 		const hasAssetRead = await access_control_db_has_permission(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
-			defaultProjectId: workspace.defaultProjectId,
-			workspaceOwnerUserId: workspace.ownerUserId,
-			resourceKind: "project",
-			resourceId: String(membership.projectId),
+			defaultWorkspaceId: organization.defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			resourceKind: "workspace",
+			resourceId: String(membership.workspaceId),
 			permission: "asset.read",
 			userId: userAuth.id,
 		});
@@ -2666,7 +2666,7 @@ export const get_file_node_for_membership = query({
 		}
 
 		const fileNode = await ctx.db.get("files_nodes", fileNodeId).then((fileNode) => {
-			if (!fileNode || fileNode.workspaceId !== membership.workspaceId || fileNode.projectId !== membership.projectId) {
+			if (!fileNode || fileNode.organizationId !== membership.organizationId || fileNode.workspaceId !== membership.workspaceId) {
 				return null;
 			}
 
@@ -2677,7 +2677,7 @@ export const get_file_node_for_membership = query({
 });
 
 export const get_authorized_by_path = query({
-	args: { membershipId: v.id("workspaces_projects_users"), path: v.string() },
+	args: { membershipId: v.id("organizations_workspaces_users"), path: v.string() },
 	returns: v.union(
 		v.object({
 			nodeId: v.id("files_nodes"),
@@ -2692,7 +2692,7 @@ export const get_authorized_by_path = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -2705,10 +2705,10 @@ export const get_authorized_by_path = query({
 				? null
 				: await ctx.db
 						.query("files_nodes")
-						.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+						.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 							q
+								.eq("organizationId", membership.organizationId)
 								.eq("workspaceId", membership.workspaceId)
-								.eq("projectId", membership.projectId)
 								.eq("path", args.path)
 								.eq("archiveOperationId", undefined),
 						)
@@ -2733,14 +2733,14 @@ const SUBTREE_FILTER_MAX_ROWS_READ = 1000;
 
 export const list_tree = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 	},
 	returns: v.array(
 		v.object({
 			_id: v.id("files_nodes"),
 			_creationTime: v.number(),
-			workspaceId: v.id("workspaces"),
-			projectId: v.id("workspaces_projects"),
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
 			path: v.string(),
 			treePath: v.string(),
 			pathDepth: v.number(),
@@ -2762,7 +2762,7 @@ export const list_tree = query({
 	handler: async (ctx, args) => {
 		const [userAuth, membership] = await Promise.all([
 			server_convex_get_user_fallback_to_anonymous(ctx),
-			ctx.db.get("workspaces_projects_users", args.membershipId),
+			ctx.db.get("organizations_workspaces_users", args.membershipId),
 		]);
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
@@ -2773,8 +2773,8 @@ export const list_tree = query({
 
 		const fileNodes = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_treePath", (q) =>
-				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId),
+			.withIndex("by_organization_workspace_treePath", (q) =>
+				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
 			)
 			.order("asc")
 			.collect();
@@ -2793,8 +2793,8 @@ export const list_tree = query({
 
 			return {
 				...fileNode,
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				createdBy: fileNode.createdBy,
 				updatedBy: fileNode.updatedBy,
 			};
@@ -2805,8 +2805,8 @@ export const list_tree = query({
 async function db_list_children(
 	ctx: QueryCtx,
 	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		numItems: number;
 		cursor: string | null;
 		parentId?: Id<"files_nodes"> | typeof files_ROOT_ID;
@@ -2821,8 +2821,8 @@ async function db_list_children(
 
 		const result = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_archiveOperation_updatedAt", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("archiveOperationId", undefined),
+			.withIndex("by_organization_workspace_archiveOperation_updatedAt", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("archiveOperationId", undefined),
 			)
 			.order(args.order ?? "desc")
 			.paginate({
@@ -2849,8 +2849,8 @@ async function db_list_children(
 		const parent = await ctx.db.get("files_nodes", parentId);
 		if (
 			!parent ||
+			parent.organizationId !== args.organizationId ||
 			parent.workspaceId !== args.workspaceId ||
-			parent.projectId !== args.projectId ||
 			parent.kind !== "folder"
 		) {
 			return { items: [], continueCursor: args.cursor ?? "", isDone: true };
@@ -2861,10 +2861,10 @@ async function db_list_children(
 		args.orderBy === "name"
 			? await ctx.db
 					.query("files_nodes")
-					.withIndex("by_workspace_project_parent_archiveOperation_name", (q) =>
+					.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 						q
+							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
 							.eq("parentId", parentId)
 							.eq("archiveOperationId", undefined),
 					)
@@ -2875,10 +2875,10 @@ async function db_list_children(
 					})
 			: await ctx.db
 					.query("files_nodes")
-					.withIndex("by_workspace_project_parent_archiveOperation_updatedAt", (q) =>
+					.withIndex("by_organization_workspace_parent_archiveOperation_updatedAt", (q) =>
 						q
+							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
 							.eq("parentId", parentId)
 							.eq("archiveOperationId", undefined),
 					)
@@ -2904,8 +2904,8 @@ async function db_list_children(
 
 export const list_children = internalQuery({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
 		parentId: v.optional(v.union(v.id("files_nodes"), v.literal(files_ROOT_ID))),
@@ -2938,8 +2938,8 @@ export type files_nodes_list_children_Result =
 
 export const list_subtree = internalQuery({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		folderPath: v.string(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
@@ -2968,10 +2968,10 @@ export const list_subtree = internalQuery({
 			lowercaseExtension != null
 				? ctx.db
 						.query("files_nodes")
-						.withIndex("by_workspace_project_archive_kind_lowercaseExtension_tree", (q) =>
+						.withIndex("by_organization_workspace_archive_kind_lowercaseExtension_tree", (q) =>
 							q
+								.eq("organizationId", args.organizationId)
 								.eq("workspaceId", args.workspaceId)
-								.eq("projectId", args.projectId)
 								.eq("archiveOperationId", undefined)
 								.eq("kind", "file")
 								.eq("lowercaseExtension", lowercaseExtension)
@@ -2982,10 +2982,10 @@ export const list_subtree = internalQuery({
 				: kind == null
 					? ctx.db
 							.query("files_nodes")
-							.withIndex("by_workspace_project_archiveOperation_treePath", (q) =>
+							.withIndex("by_organization_workspace_archiveOperation_treePath", (q) =>
 								q
+									.eq("organizationId", args.organizationId)
 									.eq("workspaceId", args.workspaceId)
-									.eq("projectId", args.projectId)
 									.eq("archiveOperationId", undefined)
 									.gte("treePath", lowerBound)
 									.lt("treePath", upperBound),
@@ -2993,10 +2993,10 @@ export const list_subtree = internalQuery({
 							.order(args.order ?? "asc")
 					: ctx.db
 							.query("files_nodes")
-							.withIndex("by_workspace_project_archiveOperation_kind_treePath", (q) =>
+							.withIndex("by_organization_workspace_archiveOperation_kind_treePath", (q) =>
 								q
+									.eq("organizationId", args.organizationId)
 									.eq("workspaceId", args.workspaceId)
-									.eq("projectId", args.projectId)
 									.eq("archiveOperationId", undefined)
 									.eq("kind", kind)
 									.gte("treePath", lowerBound)
@@ -3032,8 +3032,8 @@ export type files_nodes_list_subtree_Result =
 
 export const search_paths = internalQuery({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		pathQuery: v.string(),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
@@ -3058,8 +3058,8 @@ export const search_paths = internalQuery({
 			const parent = await ctx.db.get("files_nodes", args.parentId);
 			if (
 				!parent ||
+				parent.organizationId !== args.organizationId ||
 				parent.workspaceId !== args.workspaceId ||
-				parent.projectId !== args.projectId ||
 				parent.kind !== "folder"
 			) {
 				return { items: [], continueCursor: args.cursor ?? "", isDone: true };
@@ -3074,8 +3074,8 @@ export const search_paths = internalQuery({
 		let searchQuery = ctx.db.query("files_nodes").withSearchIndex("search_path", (q) => {
 			const base = q
 				.search("path", args.pathQuery)
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("archiveOperationId", undefined);
 
 			if (args.kind != null && args.parentId != null) {
@@ -3134,8 +3134,8 @@ function matches_path(absPath: string, include: string | undefined) {
 
 export const list_files = internalQuery({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		path: v.string(),
 		maxDepth: v.number(),
 		limit: v.number(),
@@ -3155,8 +3155,8 @@ export const list_files = internalQuery({
 	handler: async (ctx, args) => {
 		// TODO: when truncating, we truncate the total docs but we don't tell the LLM if we truncated in depth
 		const startNodeId = await db_resolve_tree_node_id_from_path(ctx, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			path: args.path,
 		});
 		if (!startNodeId) return { items: [], truncated: false };
@@ -3215,10 +3215,10 @@ export const list_files = internalQuery({
 					frame.iterator ??
 					ctx.db
 						.query("files_nodes")
-						.withIndex("by_workspace_project_parent_archiveOperation_name", (q) =>
+						.withIndex("by_organization_workspace_parent_archiveOperation_name", (q) =>
 							q
+								.eq("organizationId", args.organizationId)
 								.eq("workspaceId", args.workspaceId)
-								.eq("projectId", args.projectId)
 								.eq("parentId", frame.parentId)
 								.eq("archiveOperationId", undefined),
 						)
@@ -3298,10 +3298,10 @@ export const file_content_materialization_state_validator = v.object({
 
 export async function db_get_file_content_materialization_db_state(
 	ctx: QueryCtx,
-	args: { workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects">; nodeId: Id<"files_nodes"> },
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; nodeId: Id<"files_nodes"> },
 ) {
 	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-	if (!fileNode || fileNode.workspaceId !== args.workspaceId || fileNode.projectId !== args.projectId) {
+	if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
 		return null;
 	}
 
@@ -3315,8 +3315,8 @@ export async function db_get_file_content_materialization_db_state(
 		ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
 		ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
 			)
 			.order("asc")
 			.collect(),
@@ -3324,14 +3324,14 @@ export async function db_get_file_content_materialization_db_state(
 
 	if (
 		!asset ||
+		asset.organizationId !== args.organizationId ||
 		asset.workspaceId !== args.workspaceId ||
-		asset.projectId !== args.projectId ||
 		asset.kind !== "content"
 	) {
 		const errorMessage = "fileNode.assetId points to a missing or mismatched files_r2_assets doc";
 		const errorData = {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 			assetId: fileNode.assetId,
 			asset,
@@ -3342,14 +3342,14 @@ export async function db_get_file_content_materialization_db_state(
 
 	if (
 		!yjsSnapshotDoc ||
+		yjsSnapshotDoc.organizationId !== args.organizationId ||
 		yjsSnapshotDoc.workspaceId !== args.workspaceId ||
-		yjsSnapshotDoc.projectId !== args.projectId ||
 		yjsSnapshotDoc.fileNodeId !== args.nodeId
 	) {
 		const errorMessage = "fileNode.yjsSnapshotId points to a missing or mismatched files_yjs_snapshots doc";
 		const errorData = {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 			yjsSnapshotId: fileNode.yjsSnapshotId,
 			yjsSnapshotDoc,
@@ -3360,15 +3360,15 @@ export async function db_get_file_content_materialization_db_state(
 
 	if (
 		!yjsLastSequenceDoc ||
+		yjsLastSequenceDoc.organizationId !== args.organizationId ||
 		yjsLastSequenceDoc.workspaceId !== args.workspaceId ||
-		yjsLastSequenceDoc.projectId !== args.projectId ||
 		yjsLastSequenceDoc.fileNodeId !== args.nodeId
 	) {
 		const errorMessage =
 			"fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
 		const errorData = {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 			yjsLastSequenceId: fileNode.yjsLastSequenceId,
 			yjsLastSequenceDoc,
@@ -3380,14 +3380,14 @@ export async function db_get_file_content_materialization_db_state(
 	const yjsSnapshotAsset = await ctx.db.get("files_r2_assets", yjsSnapshotDoc.assetId);
 	if (
 		!yjsSnapshotAsset ||
+		yjsSnapshotAsset.organizationId !== args.organizationId ||
 		yjsSnapshotAsset.workspaceId !== args.workspaceId ||
-		yjsSnapshotAsset.projectId !== args.projectId ||
 		yjsSnapshotAsset.kind !== "yjs_snapshot"
 	) {
 		const errorMessage = "yjsSnapshotDoc.assetId points to a missing or mismatched files_r2_assets doc";
 		const errorData = {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 			assetId: yjsSnapshotDoc.assetId,
 		};
@@ -3407,8 +3407,8 @@ export async function db_get_file_content_materialization_db_state(
 
 export const get_file_content_materialization_state = internalQuery({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
 	},
 	returns: v.union(file_content_materialization_state_validator, v.null()),
@@ -3428,8 +3428,8 @@ export type get_file_content_materialization_state_Result =
 
 export const get_file_markdown_content_db_state_by_path = internalQuery({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -3452,10 +3452,10 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 				? null
 				: await ctx.db
 						.query("files_nodes")
-						.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+						.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 							q
+								.eq("organizationId", args.organizationId)
 								.eq("workspaceId", args.workspaceId)
-								.eq("projectId", args.projectId)
 								.eq("path", args.path)
 								.eq("archiveOperationId", undefined),
 						)
@@ -3467,12 +3467,12 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 		// External (reserved) scope: no Yjs/pending/materialization. Read the linked R2 content asset
 		// directly and leave `content` undefined so `get_file_last_available_markdown_content_by_path`
 		// falls into its raw-R2 `.text()` branch.
-		if (workspaces_is_global_workspace_id(args.workspaceId) || workspaces_is_global_github_project_id(args.projectId)) {
+		if (organizations_is_global_organization_id(args.organizationId) || organizations_is_global_github_workspace_id(args.workspaceId)) {
 			const asset = fileNode.assetId
 				? await ctx.db
 						.get("files_r2_assets", fileNode.assetId)
 						.then((asset) =>
-							asset && asset.workspaceId === args.workspaceId && asset.projectId === args.projectId ? asset : null,
+							asset && asset.organizationId === args.organizationId && asset.workspaceId === args.workspaceId ? asset : null,
 						)
 				: null;
 			return {
@@ -3488,8 +3488,8 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 
 		// Tenant scope (the guards above narrowed both ids to real ids): bind them so the narrowing
 		// also reaches the `withIndex` callbacks — TS drops property narrowing at closure boundaries.
+		const organizationId = args.organizationId;
 		const workspaceId = args.workspaceId;
-		const projectId = args.projectId;
 
 		const pendingUpdateById =
 			args.includePending === false
@@ -3501,17 +3501,17 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 			args.includePending === false
 				? null
 				: pendingUpdateById &&
+					  pendingUpdateById.organizationId === organizationId &&
 					  pendingUpdateById.workspaceId === workspaceId &&
-					  pendingUpdateById.projectId === projectId &&
 					  pendingUpdateById.userId === args.userId &&
 					  pendingUpdateById.fileNodeId === fileNode._id
 					? pendingUpdateById
 					: await ctx.db
 							.query("files_pending_updates")
-							.withIndex("by_workspace_project_user_fileNode", (q) =>
+							.withIndex("by_organization_workspace_user_fileNode", (q) =>
 								q
+									.eq("organizationId", organizationId)
 									.eq("workspaceId", workspaceId)
-									.eq("projectId", projectId)
 									.eq("userId", args.userId)
 									.eq("fileNodeId", fileNode._id),
 							)
@@ -3544,14 +3544,14 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 		const asset = fileNode.assetId
 			? await ctx.db
 					.get("files_r2_assets", fileNode.assetId)
-					.then((asset) => (asset && asset.workspaceId === workspaceId && asset.projectId === projectId ? asset : null))
+					.then((asset) => (asset && asset.organizationId === organizationId && asset.workspaceId === workspaceId ? asset : null))
 			: null;
 
 		const materializationState = pendingUpdate
 			? null
 			: await db_get_file_content_materialization_db_state(ctx, {
+					organizationId,
 					workspaceId,
-					projectId,
 					nodeId: fileNode._id,
 				});
 
@@ -3583,8 +3583,8 @@ type get_file_last_available_markdown_content_by_path_Result = {
 
 export const get_file_last_available_markdown_content_by_path = internalAction({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -3602,8 +3602,8 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 	),
 	handler: async (ctx, args): Promise<get_file_last_available_markdown_content_by_path_Result> => {
 		const contentState = (await ctx.runQuery(internal.files_nodes.get_file_markdown_content_db_state_by_path, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			userId: args.userId,
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
@@ -3760,16 +3760,16 @@ export function files_tail_lines_from_text(content: string, maxLines: number) {
 async function files_resolve_readable_content_or_window(
 	ctx: ActionCtx,
 	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		userId: Id<"users">;
 		path: string;
 		pendingUpdateId?: Id<"files_pending_updates">;
 	},
 ): Promise<{ nodeId: Id<"files_nodes">; text: string; fetchedAllBytes: boolean; totalBytes: number } | null> {
 	const state = (await ctx.runQuery(internal.files_nodes.get_file_markdown_content_db_state_by_path, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		userId: args.userId,
 		path: args.path,
 		pendingUpdateId: args.pendingUpdateId,
@@ -3826,8 +3826,8 @@ async function files_resolve_readable_content_or_window(
 async function db_resolve_committed_chunk_source(
 	ctx: QueryCtx,
 	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
 		userId: Id<"users">;
 		path: string;
 		pendingUpdateId?: Id<"files_pending_updates">;
@@ -3842,10 +3842,10 @@ async function db_resolve_committed_chunk_source(
 
 	const fileNode = await ctx.db
 		.query("files_nodes")
-		.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+		.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 			q
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("path", args.path)
 				.eq("archiveOperationId", undefined),
 		)
@@ -3865,10 +3865,10 @@ async function db_resolve_committed_chunk_source(
 
 	// External (reserved) scope: no Yjs/pending/materialization. Committed chunks are addressed by
 	// node id alone; byte size comes from the linked R2 content asset.
-	if (workspaces_is_global_workspace_id(args.workspaceId) || workspaces_is_global_github_project_id(args.projectId)) {
+	if (organizations_is_global_organization_id(args.organizationId) || organizations_is_global_github_workspace_id(args.workspaceId)) {
 		const asset = fileNode.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 		const byteSize =
-			asset && asset.workspaceId === args.workspaceId && asset.projectId === args.projectId && asset.kind === "content"
+			asset && asset.organizationId === args.organizationId && asset.workspaceId === args.workspaceId && asset.kind === "content"
 				? asset.size
 				: 0;
 		return { nodeId: fileNode._id, byteSize, counts: await resolve_counts() };
@@ -3878,16 +3878,16 @@ async function db_resolve_committed_chunk_source(
 
 	// Tenant scope (the guards above narrowed both ids): bind them so the narrowing reaches the
 	// `withIndex` callback — TS drops property narrowing at closure boundaries.
+	const organizationId = args.organizationId;
 	const workspaceId = args.workspaceId;
-	const projectId = args.projectId;
 
 	// The user's unstaged branch is not materialized into chunks; read it via the in-memory path.
 	const pendingUpdate = await ctx.db
 		.query("files_pending_updates")
-		.withIndex("by_workspace_project_user_fileNode", (q) =>
+		.withIndex("by_organization_workspace_user_fileNode", (q) =>
 			q
+				.eq("organizationId", organizationId)
 				.eq("workspaceId", workspaceId)
-				.eq("projectId", projectId)
 				.eq("userId", args.userId)
 				.eq("fileNodeId", fileNode._id),
 		)
@@ -3895,8 +3895,8 @@ async function db_resolve_committed_chunk_source(
 	if (pendingUpdate) return null;
 
 	const materializationState = await db_get_file_content_materialization_db_state(ctx, {
+		organizationId,
 		workspaceId,
-		projectId,
 		nodeId: fileNode._id,
 	});
 	if (!materializationState) return null;
@@ -4000,8 +4000,8 @@ async function files_read_forward_line_range_from_ordered_chunks(
  */
 export const read_committed_file_chunks_line_range = internalQuery({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		startLine: v.number(),
@@ -4031,10 +4031,10 @@ export const read_committed_file_chunks_line_range = internalQuery({
 			let lastLineEnd: number | null = null;
 			for await (const chunk of ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 					q
+						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
 						.eq("sourceKind", "committed")
 						.eq("fileNodeId", source.nodeId),
 				)
@@ -4070,10 +4070,10 @@ export const read_committed_file_chunks_line_range = internalQuery({
 		const range = await files_read_forward_line_range_from_ordered_chunks(
 			ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_source_fileNode_lineEnd_chunk", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
 					q
+						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
 						.eq("sourceKind", "committed")
 						.eq("fileNodeId", source.nodeId)
 						.gte("lineEnd", Math.max(1, Math.trunc(args.startLine))),
@@ -4087,10 +4087,10 @@ export const read_committed_file_chunks_line_range = internalQuery({
 			// materialized file) or the file is not materialized (fall back).
 			const anyChunk = await ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 					q
+						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
 						.eq("sourceKind", "committed")
 						.eq("fileNodeId", source.nodeId),
 				)
@@ -4123,8 +4123,8 @@ export type files_nodes_read_committed_file_chunks_line_range_Result =
  */
 export const read_file_content_from_chunks = internalQuery({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -4153,10 +4153,10 @@ export const read_file_content_from_chunks = internalQuery({
 		if (args.path === "/") return null;
 		const fileNode = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q
+					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
 					.eq("path", args.path)
 					.eq("archiveOperationId", undefined),
 			)
@@ -4164,14 +4164,14 @@ export const read_file_content_from_chunks = internalQuery({
 		if (fileNode == null) return null;
 		if (fileNode.kind !== "file") return null;
 		if (
-			!workspaces_is_global_workspace_id(args.workspaceId) &&
-			!workspaces_is_global_github_project_id(args.projectId)
+			!organizations_is_global_organization_id(args.organizationId) &&
+			!organizations_is_global_github_workspace_id(args.workspaceId)
 		) {
 			if (!files_node_has_editable_yjs_state(fileNode)) return null;
 
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
+			const organizationId = args.organizationId;
 			const workspaceId = args.workspaceId;
-			const projectId = args.projectId;
 
 			// Prefer the explicit pending update when the caller is continuing a known
 			// read. Otherwise use the current pending edit for this user and file.
@@ -4180,8 +4180,8 @@ export const read_file_content_from_chunks = internalQuery({
 				pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId).then((pendingUpdate) => {
 					if (
 						!pendingUpdate ||
+						pendingUpdate.organizationId !== organizationId ||
 						pendingUpdate.workspaceId !== workspaceId ||
-						pendingUpdate.projectId !== projectId ||
 						pendingUpdate.userId !== args.userId ||
 						pendingUpdate.fileNodeId !== fileNode._id
 					) {
@@ -4193,10 +4193,10 @@ export const read_file_content_from_chunks = internalQuery({
 			} else {
 				pendingUpdate = await ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_workspace_project_user_fileNode", (q) =>
+					.withIndex("by_organization_workspace_user_fileNode", (q) =>
 						q
+							.eq("organizationId", organizationId)
 							.eq("workspaceId", workspaceId)
-							.eq("projectId", projectId)
 							.eq("userId", args.userId)
 							.eq("fileNodeId", fileNode._id),
 					)
@@ -4259,12 +4259,12 @@ export const read_file_content_from_chunks = internalQuery({
 		// content asset's size.
 		let byteSize: number;
 		if (
-			!workspaces_is_global_workspace_id(args.workspaceId) &&
-			!workspaces_is_global_github_project_id(args.projectId)
+			!organizations_is_global_organization_id(args.organizationId) &&
+			!organizations_is_global_github_workspace_id(args.workspaceId)
 		) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
+				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				projectId: args.projectId,
 				nodeId: fileNode._id,
 			});
 			if (
@@ -4278,8 +4278,8 @@ export const read_file_content_from_chunks = internalQuery({
 			const asset = fileNode.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 			byteSize =
 				asset &&
+				asset.organizationId === args.organizationId &&
 				asset.workspaceId === args.workspaceId &&
-				asset.projectId === args.projectId &&
 				asset.kind === "content"
 					? asset.size
 					: 0;
@@ -4292,10 +4292,10 @@ export const read_file_content_from_chunks = internalQuery({
 
 			const chunks = await ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 					q
+						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
 						.eq("sourceKind", "committed")
 						.eq("fileNodeId", fileNode._id),
 				)
@@ -4315,10 +4315,10 @@ export const read_file_content_from_chunks = internalQuery({
 		const range = await files_read_forward_line_range_from_ordered_chunks(
 			ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_source_fileNode_lineEnd_chunk", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
 					q
+						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
 						.eq("sourceKind", "committed")
 						.eq("fileNodeId", fileNode._id)
 						.gte("lineEnd", startLine),
@@ -4330,10 +4330,10 @@ export const read_file_content_from_chunks = internalQuery({
 		if (!range.hasChunks) {
 			const anyChunk = await ctx.db
 				.query("files_markdown_chunks")
-				.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 					q
+						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
 						.eq("sourceKind", "committed")
 						.eq("fileNodeId", fileNode._id),
 				)
@@ -4358,8 +4358,8 @@ export type files_nodes_read_file_content_from_chunks_Result =
  */
 export const read_committed_file_chunk_stats = internalQuery({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -4865,8 +4865,8 @@ async function* db_plain_text_chunks_with_lines(chunks: AsyncIterable<Doc<"files
  */
 export const match_markdown_file_lines = internalQuery({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		fileNodeId: v.id("files_nodes"),
 		pattern: v.string(),
@@ -4922,33 +4922,33 @@ export const match_markdown_file_lines = internalQuery({
 		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
 		if (
 			fileNode == null ||
+			fileNode.organizationId !== args.organizationId ||
 			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.projectId !== args.projectId ||
 			fileNode.archiveOperationId !== undefined
 		) {
 			return null;
 		}
 		if (
-			!workspaces_is_global_workspace_id(args.workspaceId) &&
-			!workspaces_is_global_github_project_id(args.projectId) &&
+			!organizations_is_global_organization_id(args.organizationId) &&
+			!organizations_is_global_github_workspace_id(args.workspaceId) &&
 			!files_node_has_editable_yjs_state(fileNode)
 		)
 			return null;
 
 		let pendingUpdateId: Id<"files_pending_updates"> | null = null;
 		if (
-			!workspaces_is_global_workspace_id(args.workspaceId) &&
-			!workspaces_is_global_github_project_id(args.projectId)
+			!organizations_is_global_organization_id(args.organizationId) &&
+			!organizations_is_global_github_workspace_id(args.workspaceId)
 		) {
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
+			const organizationId = args.organizationId;
 			const workspaceId = args.workspaceId;
-			const projectId = args.projectId;
 			if (args.pendingUpdateId != null) {
 				const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
 				if (
 					!pendingUpdate ||
+					pendingUpdate.organizationId !== organizationId ||
 					pendingUpdate.workspaceId !== workspaceId ||
-					pendingUpdate.projectId !== projectId ||
 					pendingUpdate.userId !== args.userId ||
 					pendingUpdate.fileNodeId !== fileNode._id
 				) {
@@ -4958,10 +4958,10 @@ export const match_markdown_file_lines = internalQuery({
 			} else {
 				const pendingUpdate = await ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_workspace_project_user_fileNode", (q) =>
+					.withIndex("by_organization_workspace_user_fileNode", (q) =>
 						q
+							.eq("organizationId", organizationId)
 							.eq("workspaceId", workspaceId)
-							.eq("projectId", projectId)
 							.eq("userId", args.userId)
 							.eq("fileNodeId", fileNode._id),
 					)
@@ -5024,12 +5024,12 @@ export const match_markdown_file_lines = internalQuery({
 		// Tenant committed chunks are valid only when the latest Yjs sequence is materialized; external
 		// (reserved) rows have no Yjs/materialization state and read committed chunks by node id.
 		if (
-			!workspaces_is_global_workspace_id(args.workspaceId) &&
-			!workspaces_is_global_github_project_id(args.projectId)
+			!organizations_is_global_organization_id(args.organizationId) &&
+			!organizations_is_global_github_workspace_id(args.workspaceId)
 		) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
+				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				projectId: args.projectId,
 				nodeId: fileNode._id,
 			});
 			if (
@@ -5042,10 +5042,10 @@ export const match_markdown_file_lines = internalQuery({
 
 		const chunks =
 			window?.kind === "lines"
-				? ctx.db.query("files_markdown_chunks").withIndex("by_workspace_project_source_fileNode_lineEnd_chunk", (q) =>
+				? ctx.db.query("files_markdown_chunks").withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
 						q
+							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
-							.eq("projectId", args.projectId)
 							.eq("sourceKind", "committed")
 							.eq("fileNodeId", fileNode._id)
 							.gte("lineEnd", Math.max(1, Math.trunc(window.startLine))),
@@ -5053,20 +5053,20 @@ export const match_markdown_file_lines = internalQuery({
 				: window?.kind === "slice"
 					? ctx.db
 							.query("files_markdown_chunks")
-							.withIndex("by_workspace_project_source_fileNode_endIndex_chunk", (q) =>
+							.withIndex("by_organization_workspace_source_fileNode_endIndex_chunk", (q) =>
 								q
+									.eq("organizationId", args.organizationId)
 									.eq("workspaceId", args.workspaceId)
-									.eq("projectId", args.projectId)
 									.eq("sourceKind", "committed")
 									.eq("fileNodeId", fileNode._id)
 									.gte("endIndex", Math.max(0, Math.trunc(window.startIndex)) + 1),
 							)
 					: ctx.db
 							.query("files_markdown_chunks")
-							.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+							.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 								q
+									.eq("organizationId", args.organizationId)
 									.eq("workspaceId", args.workspaceId)
-									.eq("projectId", args.projectId)
 									.eq("sourceKind", "committed")
 									.eq("fileNodeId", fileNode._id),
 							);
@@ -5094,8 +5094,8 @@ export type files_nodes_match_markdown_file_lines_Result =
  */
 export const match_plain_text_file_lines = internalQuery({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		fileNodeId: v.id("files_nodes"),
 		pattern: v.string(),
@@ -5135,33 +5135,33 @@ export const match_plain_text_file_lines = internalQuery({
 		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
 		if (
 			fileNode == null ||
+			fileNode.organizationId !== args.organizationId ||
 			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.projectId !== args.projectId ||
 			fileNode.archiveOperationId !== undefined
 		) {
 			return null;
 		}
 		if (
-			!workspaces_is_global_workspace_id(args.workspaceId) &&
-			!workspaces_is_global_github_project_id(args.projectId) &&
+			!organizations_is_global_organization_id(args.organizationId) &&
+			!organizations_is_global_github_workspace_id(args.workspaceId) &&
 			!files_node_has_editable_yjs_state(fileNode)
 		)
 			return null;
 
 		let pendingUpdateId: Id<"files_pending_updates"> | null = null;
 		if (
-			!workspaces_is_global_workspace_id(args.workspaceId) &&
-			!workspaces_is_global_github_project_id(args.projectId)
+			!organizations_is_global_organization_id(args.organizationId) &&
+			!organizations_is_global_github_workspace_id(args.workspaceId)
 		) {
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
+			const organizationId = args.organizationId;
 			const workspaceId = args.workspaceId;
-			const projectId = args.projectId;
 			if (args.pendingUpdateId != null) {
 				const pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId);
 				if (
 					!pendingUpdate ||
+					pendingUpdate.organizationId !== organizationId ||
 					pendingUpdate.workspaceId !== workspaceId ||
-					pendingUpdate.projectId !== projectId ||
 					pendingUpdate.userId !== args.userId ||
 					pendingUpdate.fileNodeId !== fileNode._id
 				) {
@@ -5171,10 +5171,10 @@ export const match_plain_text_file_lines = internalQuery({
 			} else {
 				const pendingUpdate = await ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_workspace_project_user_fileNode", (q) =>
+					.withIndex("by_organization_workspace_user_fileNode", (q) =>
 						q
+							.eq("organizationId", organizationId)
 							.eq("workspaceId", workspaceId)
-							.eq("projectId", projectId)
 							.eq("userId", args.userId)
 							.eq("fileNodeId", fileNode._id),
 					)
@@ -5203,12 +5203,12 @@ export const match_plain_text_file_lines = internalQuery({
 		// Tenant committed chunks are valid only when the latest Yjs sequence is materialized; external
 		// (reserved) rows have no Yjs/materialization state and read committed chunks by node id.
 		if (
-			!workspaces_is_global_workspace_id(args.workspaceId) &&
-			!workspaces_is_global_github_project_id(args.projectId)
+			!organizations_is_global_organization_id(args.organizationId) &&
+			!organizations_is_global_github_workspace_id(args.workspaceId)
 		) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
+				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				projectId: args.projectId,
 				nodeId: fileNode._id,
 			});
 			if (
@@ -5221,10 +5221,10 @@ export const match_plain_text_file_lines = internalQuery({
 
 		const chunks = ctx.db
 			.query("files_plain_text_chunks")
-			.withIndex("by_workspace_project_source_fileNode_yjsSequence_chunkIndex", (q) =>
+			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
 				q
+					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("projectId", args.projectId)
 					.eq("sourceKind", "committed")
 					.eq("fileNodeId", fileNode._id),
 			);
@@ -5257,8 +5257,8 @@ export type files_nodes_match_plain_text_file_lines_Result =
  */
 export const read_file_line_range = internalAction({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		startLine: v.number(),
@@ -5278,8 +5278,8 @@ export const read_file_line_range = internalAction({
 		const startLine = Math.max(1, Math.trunc(args.startLine));
 		const maxLines = Math.max(1, Math.min(files_READ_RANGE_MAX_LINES, Math.trunc(args.maxLines)));
 		const chunked = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			userId: args.userId,
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
@@ -5326,8 +5326,8 @@ export type files_nodes_read_file_line_range_Result =
  */
 export const read_file_tail_lines = internalAction({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		maxLines: v.number(),
@@ -5347,8 +5347,8 @@ export const read_file_tail_lines = internalAction({
 		const maxLines = Math.max(1, Math.min(files_READ_RANGE_MAX_LINES, Math.trunc(args.maxLines)));
 		// Committed-current content: read the trailing lines from the last materialized chunks.
 		const chunked = (await ctx.runQuery(internal.files_nodes.read_committed_file_chunks_line_range, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			userId: args.userId,
 			path: args.path,
 			startLine: 1,
@@ -5361,8 +5361,8 @@ export const read_file_tail_lines = internalAction({
 		}
 		// Fallback: in-memory reconstruction (pending/stale) or a bounded trailing R2 window.
 		const state = (await ctx.runQuery(internal.files_nodes.get_file_markdown_content_db_state_by_path, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			userId: args.userId,
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
@@ -5422,8 +5422,8 @@ export type files_nodes_read_file_tail_lines_Result =
  */
 export const read_file_content_stats = internalAction({
 	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-		projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 		userId: v.id("users"),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
@@ -5442,8 +5442,8 @@ export const read_file_content_stats = internalAction({
 	handler: async (ctx, args) => {
 		// Committed-current content: count exactly from the materialized chunks (the verbatim document).
 		const chunked = (await ctx.runQuery(internal.files_nodes.read_committed_file_chunk_stats, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			userId: args.userId,
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
@@ -5485,14 +5485,14 @@ export type files_nodes_read_file_content_stats_Result =
 // #endregion read file
 
 export const get_file_last_yjs_sequence = query({
-	args: { membershipId: v.id("workspaces_projects_users"), nodeId: v.id("files_nodes") },
+	args: { membershipId: v.id("organizations_workspaces_users"), nodeId: v.id("files_nodes") },
 	returns: v.union(v.object({ lastSequence: v.number() }), v.null()),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -5503,8 +5503,8 @@ export const get_file_last_yjs_sequence = query({
 		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
 		if (
 			!files_node_has_editable_yjs_state(fileNode) ||
-			fileNode.workspaceId !== membership.workspaceId ||
-			fileNode.projectId !== membership.projectId
+			fileNode.organizationId !== membership.organizationId ||
+			fileNode.workspaceId !== membership.workspaceId
 		) {
 			return null;
 		}
@@ -5512,7 +5512,7 @@ export const get_file_last_yjs_sequence = query({
 		const lastYjsSequenceDoc = await ctx.db
 			.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId)
 			.then((doc) => {
-				if (!doc || doc.workspaceId !== fileNode.workspaceId || doc.projectId !== fileNode.projectId) return null;
+				if (!doc || doc.organizationId !== fileNode.organizationId || doc.workspaceId !== fileNode.workspaceId) return null;
 				return doc;
 			});
 
@@ -5520,8 +5520,8 @@ export const get_file_last_yjs_sequence = query({
 			const errorMessage =
 				"fileNode.yjsLastSequenceId points to a missing or mismatched files_yjs_docs_last_sequences doc";
 			const errorData = {
+				organizationId: fileNode.organizationId,
 				workspaceId: fileNode.workspaceId,
-				projectId: fileNode.projectId,
 				nodeId: args.nodeId,
 				yjsLastSequenceId: fileNode.yjsLastSequenceId,
 			};
@@ -5536,8 +5536,8 @@ export const get_file_last_yjs_sequence = query({
 function db_text_search_filtered_query(
 	ctx: QueryCtx,
 	args: {
+		organizationId: Doc<"files_plain_text_chunks">["organizationId"];
 		workspaceId: Doc<"files_plain_text_chunks">["workspaceId"];
-		projectId: Doc<"files_plain_text_chunks">["projectId"];
 		userId: Id<"users">;
 		query: string;
 		pathPrefix?: string;
@@ -5554,8 +5554,8 @@ function db_text_search_filtered_query(
 		.withSearchIndex("search_by_plainTextChunk", (q) =>
 			q
 				.search("plainTextChunk", args.query)
+				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("projectId", args.projectId)
 				.eq("archiveOperationId", undefined),
 		);
 	// Convex applies `.filter` before returned page contents, so each rendered page is already
@@ -5583,8 +5583,8 @@ function db_text_search_filtered_query(
 }
 
 const text_search_args = {
+	organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 	workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
-	projectId: doc(app_convex_schema, "files_nodes").fields.projectId,
 	userId: v.id("users"),
 	query: v.string(),
 	/** Optional subtree scope: keep only matches whose file path is under this folder prefix. */
@@ -5639,16 +5639,16 @@ export const text_search_files = internalQuery({
 		// chunks for files the acting user is currently editing.
 		let pendingNodeIds: Array<Id<"files_nodes">> = [];
 		if (
-			!workspaces_is_global_workspace_id(args.workspaceId) &&
-			!workspaces_is_global_github_project_id(args.projectId)
+			!organizations_is_global_organization_id(args.organizationId) &&
+			!organizations_is_global_github_workspace_id(args.workspaceId)
 		) {
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closure below.
+			const organizationId = args.organizationId;
 			const workspaceId = args.workspaceId;
-			const projectId = args.projectId;
 			const pendingUpdates = await ctx.db
 				.query("files_pending_updates")
-				.withIndex("by_workspace_project_user_fileNode", (q) =>
-					q.eq("workspaceId", workspaceId).eq("projectId", projectId).eq("userId", args.userId),
+				.withIndex("by_organization_workspace_user_fileNode", (q) =>
+					q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("userId", args.userId),
 				)
 				.order("asc")
 				.collect();
@@ -5725,8 +5725,8 @@ export const profile_text_search_files = internalAction({
  */
 export const create_file_by_path = internalAction({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		path: v.string(),
 		markdownContent: v.optional(v.string()),
@@ -5734,8 +5734,8 @@ export const create_file_by_path = internalAction({
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args): Promise<action_create_markdown_node_Result> => {
 		const activeFileNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			path: args.path,
 		})) as Doc<"files_nodes"> | null;
 		if (activeFileNode?.kind === "file") {
@@ -5744,8 +5744,8 @@ export const create_file_by_path = internalAction({
 
 		return await action_create_markdown_node(ctx, {
 			userId: args.userId,
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			parentId: files_ROOT_ID,
 			path: args.path,
 			markdownContent: args.markdownContent ?? "",
@@ -5757,7 +5757,7 @@ export const create_file_by_path = internalAction({
 
 export const get_home_file = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 	},
 	returns: v.union(
 		v.object({
@@ -5770,7 +5770,7 @@ export const get_home_file = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -5779,8 +5779,8 @@ export const get_home_file = query({
 		}
 
 		const homeFileNode = await db_get_home_file(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 		});
 
 		if (!homeFileNode) {
@@ -5796,17 +5796,17 @@ export const get_home_file = query({
 export const get_data_for_create_home_file = internalQuery({
 	args: {
 		userId: v.id("users"),
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 	},
 	returns: v.union(
 		v.object({
-			membership: doc(app_convex_schema, "workspaces_projects_users"),
+			membership: doc(app_convex_schema, "organizations_workspaces_users"),
 			homeFile: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
 		}),
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: args.userId,
 			membershipId: args.membershipId,
 		});
@@ -5817,8 +5817,8 @@ export const get_data_for_create_home_file = internalQuery({
 		return {
 			membership,
 			homeFile: await db_get_home_file(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 			}),
 		};
 	},
@@ -5831,7 +5831,7 @@ type get_data_for_create_home_file_Result =
 
 export const create_home_file = action({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
@@ -5860,8 +5860,8 @@ export const create_home_file = action({
 
 		return await action_create_markdown_node(ctx, {
 			userId: userAuth.id,
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			parentId: files_ROOT_ID,
 			path: "README.md" satisfies files_SpecialFileName,
 			// Keep the auto-created home file consistent with user-created Markdown files.
@@ -5874,7 +5874,7 @@ export const create_home_file = action({
 
 export const get_file_snapshots_list = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		showArchived: v.boolean(),
 	},
@@ -5886,7 +5886,7 @@ export const get_file_snapshots_list = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -5898,10 +5898,10 @@ export const get_file_snapshots_list = query({
 
 		const snapshots = await ctx.db
 			.query("files_snapshots")
-			.withIndex("by_workspace_project_fileNode_archivedAt", (q) => {
+			.withIndex("by_organization_workspace_fileNode_archivedAt", (q) => {
 				const qBase = q
+					.eq("organizationId", membership.organizationId)
 					.eq("workspaceId", membership.workspaceId)
-					.eq("projectId", membership.projectId)
 					.eq("fileNodeId", args.nodeId);
 
 				const qFinal = args.showArchived ? qBase.gt("archivedAt", 0) : qBase.lte("archivedAt", 0);
@@ -5919,7 +5919,7 @@ export const get_file_snapshots_list = query({
 
 export const get_file_snapshot = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		snapshotId: v.id("files_snapshots"),
 	},
@@ -5929,7 +5929,7 @@ export const get_file_snapshot = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -5943,8 +5943,8 @@ export const get_file_snapshot = query({
 		}
 
 		if (
+			snapshot.organizationId !== membership.organizationId ||
 			snapshot.workspaceId !== membership.workspaceId ||
-			snapshot.projectId !== membership.projectId ||
 			snapshot.fileNodeId !== args.nodeId
 		) {
 			return null;
@@ -5957,8 +5957,8 @@ export const get_file_snapshot = query({
 async function db_get_file_snapshot_content(
 	ctx: QueryCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
 		snapshotId: Id<"files_snapshots">;
 	},
@@ -5966,8 +5966,8 @@ async function db_get_file_snapshot_content(
 	const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
 	if (
 		!snapshot ||
+		snapshot.organizationId !== args.organizationId ||
 		snapshot.workspaceId !== args.workspaceId ||
-		snapshot.projectId !== args.projectId ||
 		snapshot.fileNodeId !== args.nodeId
 	) {
 		return null;
@@ -5976,7 +5976,7 @@ async function db_get_file_snapshot_content(
 	const asset = await ctx.db
 		.get("files_r2_assets", snapshot.assetId)
 		.then((asset) =>
-			asset && asset.workspaceId === args.workspaceId && asset.projectId === args.projectId ? asset : null,
+			asset && asset.organizationId === args.organizationId && asset.workspaceId === args.workspaceId ? asset : null,
 		);
 	if (!asset) {
 		return null;
@@ -5992,7 +5992,7 @@ async function db_get_file_snapshot_content(
 export const get_data_for_create_file_snapshot_content_url = internalQuery({
 	args: {
 		userId: v.id("users"),
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		snapshotId: v.id("files_snapshots"),
 	},
@@ -6005,7 +6005,7 @@ export const get_data_for_create_file_snapshot_content_url = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: args.userId,
 			membershipId: args.membershipId,
 		});
@@ -6014,8 +6014,8 @@ export const get_data_for_create_file_snapshot_content_url = internalQuery({
 		}
 
 		return await db_get_file_snapshot_content(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			nodeId: args.nodeId,
 			snapshotId: args.snapshotId,
 		});
@@ -6033,7 +6033,7 @@ type get_data_for_create_file_snapshot_content_url_Result =
 
 export const create_file_snapshot_content_url = action({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		snapshotId: v.id("files_snapshots"),
 	},
@@ -6086,7 +6086,7 @@ export const create_file_snapshot_content_url = action({
 
 export const archive_snapshot = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		snapshotId: v.id("files_snapshots"),
 	},
 	returns: v_result({ _yay: v.null() }),
@@ -6101,7 +6101,7 @@ export const archive_snapshot = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -6110,7 +6110,7 @@ export const archive_snapshot = mutation({
 		}
 
 		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
-		if (!snapshot || snapshot.workspaceId !== membership.workspaceId || snapshot.projectId !== membership.projectId) {
+		if (!snapshot || snapshot.organizationId !== membership.organizationId || snapshot.workspaceId !== membership.workspaceId) {
 			return Result({ _yay: null });
 		}
 
@@ -6124,7 +6124,7 @@ export const archive_snapshot = mutation({
 
 export const unarchive_snapshot = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		snapshotId: v.id("files_snapshots"),
 	},
 	returns: v_result({ _yay: v.null() }),
@@ -6139,7 +6139,7 @@ export const unarchive_snapshot = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -6148,7 +6148,7 @@ export const unarchive_snapshot = mutation({
 		}
 
 		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
-		if (!snapshot || snapshot.workspaceId !== membership.workspaceId || snapshot.projectId !== membership.projectId) {
+		if (!snapshot || snapshot.organizationId !== membership.organizationId || snapshot.workspaceId !== membership.workspaceId) {
 			return Result({ _yay: null });
 		}
 
@@ -6169,12 +6169,12 @@ function yjs_create_state_update_from_tiptap_editor(args: { tiptapEditor: Editor
 export const get_data_for_yjs_prepare_doc_last_snapshot = internalQuery({
 	args: {
 		userId: v.id("users"),
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 	},
 	returns: v.union(file_content_materialization_state_validator, v.null()),
 	handler: async (ctx, args) => {
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: args.userId,
 			membershipId: args.membershipId,
 		});
@@ -6183,8 +6183,8 @@ export const get_data_for_yjs_prepare_doc_last_snapshot = internalQuery({
 		}
 
 		return await db_get_file_content_materialization_db_state(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			nodeId: args.nodeId,
 		});
 	},
@@ -6201,7 +6201,7 @@ type get_data_for_yjs_prepare_doc_last_snapshot_Result =
 
 export const yjs_prepare_doc_last_snapshot = action({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 	},
 	returns: v.union(
@@ -6250,12 +6250,12 @@ export const yjs_prepare_doc_last_snapshot = action({
 
 async function yjs_increment_or_create_last_sequence(
 	ctx: MutationCtx,
-	args: { workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects">; nodeId: Id<"files_nodes"> },
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; nodeId: Id<"files_nodes"> },
 ) {
 	let lastSequenceData = await ctx.db
 		.query("files_yjs_docs_last_sequences")
-		.withIndex("by_workspace_project_fileNode", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("fileNodeId", args.nodeId),
+		.withIndex("by_organization_workspace_fileNode", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
 		)
 		.order("desc")
 		.first();
@@ -6268,8 +6268,8 @@ async function yjs_increment_or_create_last_sequence(
 		lastSequenceData.lastSequence = newSequence;
 	} else {
 		const lastSequenceDataId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			fileNodeId: args.nodeId,
 			lastSequence: 0,
 		});
@@ -6282,8 +6282,8 @@ async function yjs_increment_or_create_last_sequence(
 export async function files_db_yjs_push_update(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
 		update: ArrayBuffer;
 		sessionId: string;
@@ -6293,14 +6293,14 @@ export async function files_db_yjs_push_update(
 	const now = Date.now();
 
 	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		nodeId: args.nodeId,
 	});
 
 	await ctx.db.insert("files_yjs_updates", {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		fileNodeId: args.nodeId,
 		sequence: newSequenceData.lastSequence,
 		update: args.update,
@@ -6317,8 +6317,8 @@ export async function files_db_yjs_push_update(
 
 	await enqueue_file_content_materialization(ctx, {
 		userId: args.userId,
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		nodeId: args.nodeId,
 		targetSequence: newSequenceData.lastSequence,
 		delayMs: snapshotScheduleDelayMs,
@@ -6329,7 +6329,7 @@ export async function files_db_yjs_push_update(
 
 export const yjs_push_update = mutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		update: v.bytes(),
 		sessionId: v.string(),
@@ -6354,7 +6354,7 @@ export const yjs_push_update = mutation({
 		if (!user) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: user._id,
 			membershipId: args.membershipId,
 		});
@@ -6366,20 +6366,20 @@ export const yjs_push_update = mutation({
 		if (!fileNode) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (fileNode.workspaceId !== membership.workspaceId || fileNode.projectId !== membership.projectId) {
+		if (fileNode.organizationId !== membership.organizationId || fileNode.workspaceId !== membership.workspaceId) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 		if (!files_node_has_editable_yjs_state(fileNode)) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
-		if (!workspace) {
-			const errorMessage = "membership.workspaceId points to a missing workspaces doc";
+		const organization = await ctx.db.get("organizations", membership.organizationId);
+		if (!organization) {
+			const errorMessage = "membership.organizationId points to a missing organizations doc";
 			const errorData = {
 				membershipId: membership._id,
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				nodeId: args.nodeId,
 			};
 			console.error(errorMessage, errorData);
@@ -6387,14 +6387,14 @@ export const yjs_push_update = mutation({
 		}
 		const billedUserId = billing_pick_billed_user_id({
 			userId: user._id,
-			workspace,
+			organization,
 		});
 		const billedUser = await ctx.db.get("users", billedUserId);
 		if (!billedUser) {
 			const errorMessage = "billedUserId points to a missing users doc";
 			const errorData = {
 				userId: user._id,
-				workspaceId: workspace._id,
+				organizationId: organization._id,
 				billedUserId,
 			};
 			console.error(errorMessage, errorData);
@@ -6414,8 +6414,8 @@ export const yjs_push_update = mutation({
 		}
 
 		const pushResult = await files_db_yjs_push_update(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			nodeId: args.nodeId,
 			update: args.update,
 			sessionId: args.sessionId,
@@ -6438,8 +6438,8 @@ export const yjs_push_update = mutation({
 							"file_save",
 							billedUser._id,
 							user._id,
+							membership.organizationId,
 							membership.workspaceId,
-							membership.projectId,
 							args.nodeId,
 							pushResult._yay.newSequence,
 						),
@@ -6447,8 +6447,8 @@ export const yjs_push_update = mutation({
 							amount: 1,
 							actorUserId: user._id,
 							billedUserId: billedUser._id,
+							organizationId: fileNode.organizationId,
 							workspaceId: fileNode.workspaceId,
-							projectId: fileNode.projectId,
 							nodeId: args.nodeId,
 							yjsSequence: String(pushResult._yay.newSequence),
 						},
@@ -6463,7 +6463,7 @@ export const yjs_push_update = mutation({
 
 export const yjs_get_incremental_updates = query({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 	},
 	returns: v.union(
@@ -6477,7 +6477,7 @@ export const yjs_get_incremental_updates = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -6488,8 +6488,8 @@ export const yjs_get_incremental_updates = query({
 		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
 		if (
 			!fileNode ||
+			fileNode.organizationId !== membership.organizationId ||
 			fileNode.workspaceId !== membership.workspaceId ||
-			fileNode.projectId !== membership.projectId ||
 			fileNode.kind !== "file"
 		) {
 			return null;
@@ -6497,8 +6497,8 @@ export const yjs_get_incremental_updates = query({
 
 		const updates = await ctx.db
 			.query("files_yjs_updates")
-			.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-				q.eq("workspaceId", membership.workspaceId).eq("projectId", membership.projectId).eq("fileNodeId", args.nodeId),
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId).eq("fileNodeId", args.nodeId),
 			)
 			.order("desc")
 			.collect();
@@ -6514,8 +6514,8 @@ export const yjs_get_incremental_updates = query({
 // #region snapshots
 
 const store_version_snapshot_args_schema = v.object({
-	workspaceId: v.id("workspaces"),
-	projectId: v.id("workspaces_projects"),
+	organizationId: v.id("organizations"),
+	workspaceId: v.id("organizations_workspaces"),
 	nodeId: v.id("files_nodes"),
 	assetId: v.id("files_r2_assets"),
 	userId: v.id("users"),
@@ -6528,8 +6528,8 @@ function yjs_merge_updates_to_array_buffer(updates: Uint8Array[]) {
 async function db_insert_snapshot_restore_update(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		nodeId: Id<"files_nodes">;
 		snapshotId: Id<"files_snapshots">;
@@ -6537,14 +6537,14 @@ async function db_insert_snapshot_restore_update(
 	},
 ) {
 	const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		nodeId: args.nodeId,
 	});
 
 	await ctx.db.insert("files_yjs_updates", {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		fileNodeId: args.nodeId,
 		sequence: newSequenceData.lastSequence,
 		update: args.restoreUpdate,
@@ -6557,8 +6557,8 @@ async function db_insert_snapshot_restore_update(
 	});
 
 	await enqueue_file_content_materialization(ctx, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		nodeId: args.nodeId,
 		userId: args.userId,
 		targetSequence: newSequenceData.lastSequence,
@@ -6570,8 +6570,8 @@ async function db_insert_snapshot_restore_update(
 
 async function store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store_version_snapshot_args_schema>) {
 	const snapshotId = await ctx.db.insert("files_snapshots", {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		fileNodeId: args.nodeId,
 		assetId: args.assetId,
 		createdBy: args.userId,
@@ -6624,8 +6624,8 @@ async function reconstruct_latest_file_content_from_materialization_state(args: 
 
 export const finalize_file_content_materialization = internalMutation({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
 		userId: v.id("users"),
 		sequence: v.number(),
@@ -6643,8 +6643,8 @@ export const finalize_file_content_materialization = internalMutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const state = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 		})) as get_file_content_materialization_state_Result;
 		if (!state) {
@@ -6661,8 +6661,8 @@ export const finalize_file_content_materialization = internalMutation({
 			await Promise.all([
 				ctx.db.patch("files_r2_assets", state.asset._id, {
 					r2Key: r2_create_asset_key({
+						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						projectId: args.projectId,
 						assetId: state.asset._id,
 					}),
 					size: args.markdownSize,
@@ -6670,8 +6670,8 @@ export const finalize_file_content_materialization = internalMutation({
 				}),
 				ctx.db.patch("files_r2_assets", state.yjsSnapshotAsset._id, {
 					r2Key: r2_create_asset_key({
+						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						projectId: args.projectId,
 						assetId: state.yjsSnapshotAsset._id,
 					}),
 					size: args.yjsSnapshotSize,
@@ -6679,8 +6679,8 @@ export const finalize_file_content_materialization = internalMutation({
 				}),
 				ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
 					r2Key: r2_create_asset_key({
+						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						projectId: args.projectId,
 						assetId: args.versionSnapshotAssetId,
 					}),
 					size: args.markdownSize,
@@ -6695,15 +6695,15 @@ export const finalize_file_content_materialization = internalMutation({
 					.filter((updateData) => updateData.sequence <= args.sequence)
 					.map((updateData) => ctx.db.delete("files_yjs_updates", updateData._id)),
 				db_replace_file_chunks(ctx, {
+					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					projectId: args.projectId,
 					nodeId: args.nodeId,
 					yjsSequence: args.sequence,
 					markdownContent: args.markdown,
 				}),
 				store_version_snapshot(ctx, {
+					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					projectId: args.projectId,
 					nodeId: args.nodeId,
 					assetId: args.versionSnapshotAssetId,
 					userId: args.userId,
@@ -6752,8 +6752,8 @@ type finalize_file_content_materialization_Result =
 
 export const materialize_file_content = internalAction({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
 		userId: v.id("users"),
 		targetSequence: v.number(),
@@ -6761,8 +6761,8 @@ export const materialize_file_content = internalAction({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const state = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 		})) as get_file_content_materialization_state_Result;
 		if (!state) {
@@ -6776,8 +6776,8 @@ export const materialize_file_content = internalAction({
 
 		const sequence = reconstructed._yay.sequence;
 		const versionSnapshotAssetId = (await ctx.runMutation(internal.r2.insert_asset, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			kind: "content_snapshot",
 			size: files_get_utf8_byte_size(reconstructed._yay.markdown),
 			createdBy: args.userId,
@@ -6795,8 +6795,8 @@ export const materialize_file_content = internalAction({
 			throw should_never_happen(errorMessage, errorData);
 		}
 		const versionSnapshotR2Key = r2_create_asset_key({
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			assetId: versionSnapshotAssetId,
 		});
 
@@ -6819,8 +6819,8 @@ export const materialize_file_content = internalAction({
 		]);
 
 		const finalizationResult = (await ctx.runMutation(internal.files_nodes.finalize_file_content_materialization, {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			nodeId: args.nodeId,
 			userId: args.userId,
 			sequence,
@@ -6840,7 +6840,7 @@ export const materialize_file_content = internalAction({
 
 export const restore_snapshot = internalMutation({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		snapshotId: v.id("files_snapshots"),
 		sessionId: v.string(),
@@ -6871,7 +6871,7 @@ export const restore_snapshot = internalMutation({
 			}
 		}
 
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
@@ -6881,16 +6881,16 @@ export const restore_snapshot = internalMutation({
 
 		const [snapshotContent, fileNode] = await Promise.all([
 			db_get_file_snapshot_content(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				snapshotId: args.snapshotId,
 			}),
 			ctx.db.get("files_nodes", args.nodeId).then((fileNode) => {
 				if (
 					!fileNode ||
-					fileNode.workspaceId !== membership.workspaceId ||
-					fileNode.projectId !== membership.projectId
+					fileNode.organizationId !== membership.organizationId ||
+					fileNode.workspaceId !== membership.workspaceId
 				) {
 					return null;
 				}
@@ -6913,13 +6913,13 @@ export const restore_snapshot = internalMutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
-		if (!workspace) {
-			const errorMessage = "membership.workspaceId points to a missing workspaces doc";
+		const organization = await ctx.db.get("organizations", membership.organizationId);
+		if (!organization) {
+			const errorMessage = "membership.organizationId points to a missing organizations doc";
 			const errorData = {
 				membershipId: membership._id,
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				snapshotId: args.snapshotId,
 			};
@@ -6928,14 +6928,14 @@ export const restore_snapshot = internalMutation({
 		}
 		const billedUserId = billing_pick_billed_user_id({
 			userId: userAuth.id,
-			workspace,
+			organization,
 		});
 		const billedUser = await ctx.db.get("users", billedUserId);
 		if (!billedUser) {
 			const errorMessage = "billedUserId points to a missing users doc";
 			const errorData = {
 				userId: userAuth.id,
-				workspaceId: workspace._id,
+				organizationId: organization._id,
 				billedUserId,
 			};
 			console.error(errorMessage, errorData);
@@ -6963,8 +6963,8 @@ export const restore_snapshot = internalMutation({
 		if (!fileNode.assetId) {
 			const errorMessage = "fileNode.assetId is not set";
 			const errorData = {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				assetId: fileNode.assetId,
 			};
@@ -6975,8 +6975,8 @@ export const restore_snapshot = internalMutation({
 		const [, , , , , , restoredYjsSequence] = await Promise.all([
 			ctx.db.patch("files_r2_assets", fileNode.assetId, {
 				r2Key: r2_create_asset_key({
+					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
 					assetId: fileNode.assetId,
 				}),
 				size: files_get_utf8_byte_size(args.snapshotMarkdownContent),
@@ -6984,8 +6984,8 @@ export const restore_snapshot = internalMutation({
 			}),
 			ctx.db.patch("files_r2_assets", args.currentSnapshotAssetId, {
 				r2Key: r2_create_asset_key({
+					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
 					assetId: args.currentSnapshotAssetId,
 				}),
 				size: args.currentSnapshotSize,
@@ -6993,8 +6993,8 @@ export const restore_snapshot = internalMutation({
 			}),
 			ctx.db.patch("files_r2_assets", args.restoredSnapshotAssetId, {
 				r2Key: r2_create_asset_key({
+					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
 					assetId: args.restoredSnapshotAssetId,
 				}),
 				size: args.restoredSnapshotSize,
@@ -7002,8 +7002,8 @@ export const restore_snapshot = internalMutation({
 			}),
 			// Store current state as a backup snapshot
 			store_version_snapshot(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				assetId: args.currentSnapshotAssetId,
 				userId,
@@ -7011,8 +7011,8 @@ export const restore_snapshot = internalMutation({
 
 			// Store the restored content as a new snapshot
 			store_version_snapshot(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				assetId: args.restoredSnapshotAssetId,
 				userId,
@@ -7025,8 +7025,8 @@ export const restore_snapshot = internalMutation({
 
 			args.restoreUpdate
 				? db_insert_snapshot_restore_update(ctx, {
+						organizationId: membership.organizationId,
 						workspaceId: membership.workspaceId,
-						projectId: membership.projectId,
 						userId,
 						nodeId: args.nodeId,
 						snapshotId: args.snapshotId,
@@ -7039,8 +7039,8 @@ export const restore_snapshot = internalMutation({
 		if (!yjsLastSequenceDoc) {
 			const errorMessage = "fileNode.yjsLastSequenceId points to a missing files_yjs_docs_last_sequences doc";
 			const errorData = {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				yjsLastSequenceId: fileNode.yjsLastSequenceId,
 				yjsLastSequenceDoc,
@@ -7052,8 +7052,8 @@ export const restore_snapshot = internalMutation({
 		const restoreFileResult = Result_all(
 			await Promise.all([
 				db_replace_file_chunks(ctx, {
+					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
-					projectId: membership.projectId,
 					nodeId: args.nodeId,
 					yjsSequence: yjsLastSequenceDoc.lastSequence,
 					markdownContent: args.snapshotMarkdownContent,
@@ -7088,8 +7088,8 @@ export const restore_snapshot = internalMutation({
 								"file_save",
 								billedUser._id,
 								userAuth.id,
+								membership.organizationId,
 								membership.workspaceId,
-								membership.projectId,
 								args.nodeId,
 								restoredYjsSequence,
 							),
@@ -7097,8 +7097,8 @@ export const restore_snapshot = internalMutation({
 								amount: 1,
 								actorUserId: userAuth.id,
 								billedUserId: billedUser._id,
+								organizationId: membership.organizationId,
 								workspaceId: membership.workspaceId,
-								projectId: membership.projectId,
 								nodeId: args.nodeId,
 								yjsSequence: String(restoredYjsSequence),
 							},
@@ -7122,13 +7122,13 @@ type restore_snapshot_Result =
 export const get_data_for_restore_snapshot = internalQuery({
 	args: {
 		userId: v.id("users"),
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		snapshotId: v.id("files_snapshots"),
 	},
 	returns: v.union(
 		v.object({
-			membership: doc(app_convex_schema, "workspaces_projects_users"),
+			membership: doc(app_convex_schema, "organizations_workspaces_users"),
 			snapshotContent: v.union(
 				v.object({
 					asset: doc(app_convex_schema, "files_r2_assets"),
@@ -7142,7 +7142,7 @@ export const get_data_for_restore_snapshot = internalQuery({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const membership = await workspaces_db_get_membership(ctx, {
+		const membership = await organizations_db_get_membership(ctx, {
 			userId: args.userId,
 			membershipId: args.membershipId,
 		});
@@ -7152,14 +7152,14 @@ export const get_data_for_restore_snapshot = internalQuery({
 
 		const [snapshotContent, materializationState] = await Promise.all([
 			db_get_file_snapshot_content(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				nodeId: args.nodeId,
 				snapshotId: args.snapshotId,
 			}),
 			db_get_file_content_materialization_db_state(ctx, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				nodeId: args.nodeId,
 			}),
 		]);
@@ -7179,7 +7179,7 @@ type get_data_for_restore_snapshot_Result =
 
 export const restore_snapshot_r2 = action({
 	args: {
-		membershipId: v.id("workspaces_projects_users"),
+		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		snapshotId: v.id("files_snapshots"),
 		sessionId: v.string(),
@@ -7216,7 +7216,7 @@ export const restore_snapshot_r2 = action({
 
 		const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
 			userId: userAuth.id,
-			workspaceId: membership.workspaceId,
+			organizationId: membership.organizationId,
 			minimumRequiredCents: 1,
 		});
 		if (!creditCheck.hasCredits) {
@@ -7258,7 +7258,7 @@ export const restore_snapshot_r2 = action({
 			markdown: snapshotMarkdownContent,
 		});
 		if (restoredYjsDocProjection._nay) {
-			console.error("Failed to project restored snapshot Markdown", {
+			console.error("Failed to workspace restored snapshot Markdown", {
 				nay: restoredYjsDocProjection._nay,
 				nodeId: args.nodeId,
 				snapshotId: args.snapshotId,
@@ -7272,15 +7272,15 @@ export const restore_snapshot_r2 = action({
 
 		const [currentSnapshotAssetId, restoredSnapshotAssetId] = (await Promise.all([
 			ctx.runMutation(internal.r2.insert_asset, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				kind: "content_snapshot",
 				size: files_get_utf8_byte_size(currentContent._yay.markdown),
 				createdBy: userAuth.id,
 			}),
 			ctx.runMutation(internal.r2.insert_asset, {
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				kind: "content_snapshot",
 				size: files_get_utf8_byte_size(snapshotMarkdownContent),
 				createdBy: userAuth.id,
@@ -7299,13 +7299,13 @@ export const restore_snapshot_r2 = action({
 			throw should_never_happen(errorMessage, errorData);
 		}
 		const currentSnapshotR2Key = r2_create_asset_key({
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			assetId: currentSnapshotAssetId,
 		});
 		const restoredSnapshotR2Key = r2_create_asset_key({
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			assetId: restoredSnapshotAssetId,
 		});
 
@@ -7408,8 +7408,8 @@ export const cleanup_old_snapshots = internalMutation({
 			const asset = await ctx.db.get("files_r2_assets", snapshot.assetId);
 			if (
 				!asset ||
+				asset.organizationId !== snapshot.organizationId ||
 				asset.workspaceId !== snapshot.workspaceId ||
-				asset.projectId !== snapshot.projectId ||
 				asset.kind !== "content_snapshot"
 			) {
 				const errorMessage = "snapshot.assetId points to a missing or mismatched files_r2_assets doc";
@@ -7537,7 +7537,7 @@ export function files_http_routes(router: RouterForConvexModules) {
 									} as const;
 								}
 
-								const membership = await ctx.runQuery(api.workspaces.get_membership, { membershipId });
+								const membership = await ctx.runQuery(api.organizations.get_membership, { membershipId });
 								if (!membership || membership.userId !== user._id) {
 									return {
 										status: 403,
@@ -7549,7 +7549,7 @@ export function files_http_routes(router: RouterForConvexModules) {
 
 								const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
 									userId: user._id,
-									workspaceId: membership.workspaceId,
+									organizationId: membership.organizationId,
 									minimumRequiredCents: 1,
 								});
 								if (!creditCheck.hasCredits) {
@@ -7562,10 +7562,10 @@ export function files_http_routes(router: RouterForConvexModules) {
 								}
 								const billedUser = creditCheck.billedUser;
 								if (!billedUser) {
-									const errorMessage = "Workspace credit check did not return billed user";
+									const errorMessage = "Organization credit check did not return billed user";
 									const errorData = {
 										userId: user._id,
-										workspaceId: membership.workspaceId,
+										organizationId: membership.organizationId,
 									};
 									console.error(errorMessage, errorData);
 									throw should_never_happen(errorMessage, errorData);
@@ -7660,8 +7660,8 @@ export function files_http_routes(router: RouterForConvexModules) {
 									await files_ingest_inline_ai_usage_event(ctx, {
 										actorUserId: user._id,
 										billedUser,
+										organizationId: membership.organizationId,
 										workspaceId: membership.workspaceId,
-										projectId: membership.projectId,
 										requestId,
 										inputTokens: result.totalUsage.inputTokens ?? 0,
 										outputTokens: result.totalUsage.outputTokens ?? 0,
@@ -7696,8 +7696,8 @@ export function files_http_routes(router: RouterForConvexModules) {
 										await files_ingest_inline_ai_usage_event(ctx, {
 											actorUserId: user._id,
 											billedUser,
+											organizationId: membership.organizationId,
 											workspaceId: membership.workspaceId,
-											projectId: membership.projectId,
 											requestId,
 											inputTokens: totalUsage.inputTokens ?? 0,
 											outputTokens: totalUsage.outputTokens ?? 0,

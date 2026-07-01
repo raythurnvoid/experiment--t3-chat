@@ -304,20 +304,20 @@ export function files_yjs_reconcile_branch_with_local_markdown(args: {
 	nextRemoteYjsDoc: YDoc;
 	localMarkdown: string;
 }) {
-	const projectedLocalYjsDoc = files_yjs_doc_clone({ yjsDoc: args.previousRemoteYjsDoc });
-	const projectedLocalBranchResult = files_yjs_doc_update_from_markdown({
-		mut_yjsDoc: projectedLocalYjsDoc,
+	const workspaceedLocalYjsDoc = files_yjs_doc_clone({ yjsDoc: args.previousRemoteYjsDoc });
+	const workspaceedLocalBranchResult = files_yjs_doc_update_from_markdown({
+		mut_yjsDoc: workspaceedLocalYjsDoc,
 		markdown: args.localMarkdown,
 	});
-	if (projectedLocalBranchResult._nay) {
-		return projectedLocalBranchResult;
+	if (workspaceedLocalBranchResult._nay) {
+		return workspaceedLocalBranchResult;
 	}
 
-	const projectedLocalMarkdown = files_yjs_doc_get_markdown({
-		yjsDoc: projectedLocalYjsDoc,
+	const workspaceedLocalMarkdown = files_yjs_doc_get_markdown({
+		yjsDoc: workspaceedLocalYjsDoc,
 	});
-	if (projectedLocalMarkdown._nay) {
-		return projectedLocalMarkdown;
+	if (workspaceedLocalMarkdown._nay) {
+		return workspaceedLocalMarkdown;
 	}
 
 	const nextRemoteMarkdown = files_yjs_doc_get_markdown({
@@ -327,7 +327,7 @@ export function files_yjs_reconcile_branch_with_local_markdown(args: {
 		return nextRemoteMarkdown;
 	}
 
-	if (projectedLocalMarkdown._yay === nextRemoteMarkdown._yay) {
+	if (workspaceedLocalMarkdown._yay === nextRemoteMarkdown._yay) {
 		return Result({
 			_yay: {
 				mergedYjsDoc: files_yjs_doc_clone({ yjsDoc: args.nextRemoteYjsDoc }),
@@ -337,7 +337,7 @@ export function files_yjs_reconcile_branch_with_local_markdown(args: {
 	}
 
 	const localDiffUpdate = files_yjs_compute_diff_update_from_yjs_doc({
-		yjsDoc: projectedLocalYjsDoc,
+		yjsDoc: workspaceedLocalYjsDoc,
 		yjsBeforeDoc: args.previousRemoteYjsDoc,
 	});
 	if (!localDiffUpdate) {
@@ -368,7 +368,7 @@ export function files_yjs_reconcile_branch_with_local_markdown(args: {
 }
 
 export async function files_fetch_file_yjs_state_and_markdown(args: {
-	membershipId: app_convex_Id<"workspaces_projects_users">;
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	nodeId: app_convex_Id<"files_nodes">;
 }) {
 	const [yjsSnapshotTarget, yjsUpdatesDocs, yjsLastSequenceDoc] = await Promise.all([

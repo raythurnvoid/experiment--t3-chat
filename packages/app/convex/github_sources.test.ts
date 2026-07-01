@@ -10,7 +10,7 @@ import {
 	github_source_codeload_url,
 } from "./github_sources.ts";
 import { files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
-import { workspaces_GLOBAL_WORKSPACE_ID, workspaces_GLOBAL_GITHUB_PROJECT_ID } from "../shared/workspaces.ts";
+import { organizations_GLOBAL_ORGANIZATION_ID, organizations_GLOBAL_GITHUB_WORKSPACE_ID } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import type { Id } from "./_generated/dataModel.js";
 
@@ -147,10 +147,10 @@ async function list_mount_file_paths(t: ReturnType<typeof test_convex>, mount: s
 	return await t.run(async (ctx) => {
 		const nodes = await ctx.db
 			.query("files_nodes")
-			.withIndex("by_workspace_project_treePath", (q) =>
+			.withIndex("by_organization_workspace_treePath", (q) =>
 				q
-					.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-					.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 					.gte("treePath", `/${mount}/`)
 					.lt("treePath", `/${mount}/￿`),
 			)
@@ -358,8 +358,8 @@ describe("delete_mount_content_batch", () => {
 		const remainingAssets = await t.run(async (ctx) => {
 			const assets = await ctx.db
 				.query("files_r2_assets")
-				.withIndex("by_workspace_project", (q) =>
-					q.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID).eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID),
+				.withIndex("by_organization_workspace", (q) =>
+					q.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID).eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 				)
 				.collect();
 			return assets.length;
@@ -433,8 +433,8 @@ describe("delete_mount_content_batch", () => {
 		const assetCount = await t.run(async (ctx) => {
 			const assets = await ctx.db
 				.query("files_r2_assets")
-				.withIndex("by_workspace_project", (q) =>
-					q.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID).eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID),
+				.withIndex("by_organization_workspace", (q) =>
+					q.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID).eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 				)
 				.collect();
 			return assets.length;
@@ -491,8 +491,8 @@ describe("sync_github_source", () => {
 		// Content is byte-identical and SYSTEM-authored.
 		const readerUserId = await make_reader_user(t);
 		const readme = await t.query(internal.files_nodes.read_file_content_from_chunks, {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: readerUserId,
 			path: `/${MOUNT}/README.md`,
 			mode: { kind: "full", maxBytes: 1_000_000 },
@@ -503,10 +503,10 @@ describe("sync_github_source", () => {
 		const readmeNode = await t.run((ctx) =>
 			ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
-						.eq("workspaceId", workspaces_GLOBAL_WORKSPACE_ID)
-						.eq("projectId", workspaces_GLOBAL_GITHUB_PROJECT_ID)
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.eq("path", `/${MOUNT}/README.md`)
 						.eq("archiveOperationId", undefined),
 				)
@@ -589,8 +589,8 @@ describe("sync_github_source", () => {
 
 		const readerUserId = await make_reader_user(t);
 		const readme = await t.query(internal.files_nodes.read_file_content_from_chunks, {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: readerUserId,
 			path: `/${MOUNT}/README.md`,
 			mode: { kind: "full", maxBytes: 1_000_000 },

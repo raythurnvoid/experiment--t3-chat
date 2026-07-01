@@ -7,8 +7,8 @@ import { test_convex } from "./setup.test.ts";
 type NotificationsTestTarget = {
 	userId: Id<"users">;
 	otherUserId: Id<"users">;
-	workspaceId: Id<"workspaces">;
-	projectId: Id<"workspaces_projects">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
 };
 
 async function notifications_test_seed_target(ctx: MutationCtx) {
@@ -17,31 +17,31 @@ async function notifications_test_seed_target(ctx: MutationCtx) {
 		ctx.db.insert("users", { clerkUserId: "clerk-user-notifications-other" }),
 	]);
 	const now = Date.now();
-	const workspaceId = await ctx.db.insert("workspaces", {
-		name: "notifications-workspace",
+	const organizationId = await ctx.db.insert("organizations", {
+		name: "notifications-organization",
 		description: "",
 		default: false,
 		billingMode: "user",
 		ownerUserId: userId,
 		updatedAt: now,
 	});
-	const projectId = await ctx.db.insert("workspaces_projects", {
-		workspaceId,
+	const workspaceId = await ctx.db.insert("organizations_workspaces", {
+		organizationId,
 		name: "home",
 		description: "",
 		default: true,
 		updatedAt: now,
 	});
-	await ctx.db.patch("workspaces", workspaceId, { defaultProjectId: projectId });
-	await ctx.db.insert("workspaces_projects_users", {
+	await ctx.db.patch("organizations", organizationId, { defaultWorkspaceId: workspaceId });
+	await ctx.db.insert("organizations_workspaces_users", {
+		organizationId,
 		workspaceId,
-		projectId,
 		userId,
 		active: true,
 		updatedAt: now,
 	});
 
-	return { userId, otherUserId, workspaceId, projectId };
+	return { userId, otherUserId, organizationId, workspaceId };
 }
 
 async function notifications_test_insert(
@@ -54,11 +54,11 @@ async function notifications_test_insert(
 ) {
 	return await ctx.db.insert("notifications", {
 		userId: args.userId,
-		kind: "workspace_project_invite",
+		kind: "organization_workspace_invite",
 		read: args.read ?? false,
 		actorUserId: args.otherUserId,
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		updatedAt: args.updatedAt ?? Date.now(),
 	});
 }
@@ -113,16 +113,16 @@ describe("list_current_notifications", () => {
 		);
 		await t.run(async (ctx) => {
 			const now = Date.now();
-			const workspaceWithoutMembershipId = await ctx.db.insert("workspaces", {
-				name: "notifications-workspace-without-membership",
+			const organizationWithoutMembershipId = await ctx.db.insert("organizations", {
+				name: "notifications-organization-without-membership",
 				description: "",
 				default: false,
 				billingMode: "user",
 				ownerUserId: target.otherUserId,
 				updatedAt: now,
 			});
-			const projectWithoutMembershipId = await ctx.db.insert("workspaces_projects", {
-				workspaceId: workspaceWithoutMembershipId,
+			const workspaceWithoutMembershipId = await ctx.db.insert("organizations_workspaces", {
+				organizationId: organizationWithoutMembershipId,
 				name: "home",
 				description: "",
 				default: true,
@@ -132,8 +132,8 @@ describe("list_current_notifications", () => {
 			for (let index = 0; index < 502; index++) {
 				await notifications_test_insert(ctx, {
 					...target,
+					organizationId: organizationWithoutMembershipId,
 					workspaceId: workspaceWithoutMembershipId,
-					projectId: projectWithoutMembershipId,
 					userId: target.userId,
 				});
 			}
@@ -146,12 +146,12 @@ describe("list_current_notifications", () => {
 		expect(notifications.some((notification) => notification._id === oldestNotificationId)).toBe(false);
 	});
 
-	test("keeps notifications visible when the invited project is gone but the workspace remains accessible", async () => {
+	test("keeps notifications visible when the invited workspace is gone but the organization remains accessible", async () => {
 		const t = test_convex();
 		const target = await t.run(notifications_test_seed_target);
 		const notificationId = await t.run(async (ctx) => {
-			const extraProjectId = await ctx.db.insert("workspaces_projects", {
-				workspaceId: target.workspaceId,
+			const extraWorkspaceId = await ctx.db.insert("organizations_workspaces", {
+				organizationId: target.organizationId,
 				name: "roadmap",
 				description: "",
 				default: false,
@@ -159,10 +159,10 @@ describe("list_current_notifications", () => {
 			});
 			const notificationId = await notifications_test_insert(ctx, {
 				...target,
-				projectId: extraProjectId,
+				workspaceId: extraWorkspaceId,
 				userId: target.userId,
 			});
-			await ctx.db.delete("workspaces_projects", extraProjectId);
+			await ctx.db.delete("organizations_workspaces", extraWorkspaceId);
 
 			return notificationId;
 		});
@@ -173,18 +173,18 @@ describe("list_current_notifications", () => {
 		expect(notifications.map((notification) => notification._id)).toEqual([notificationId]);
 	});
 
-	test("lists notification rows even when the user no longer has workspace membership", async () => {
+	test("lists notification rows even when the user no longer has organization membership", async () => {
 		const t = test_convex();
 		const target = await t.run(notifications_test_seed_target);
 		const notificationId = await t.run(async (ctx) => {
 			const notificationId = await notifications_test_insert(ctx, { ...target, userId: target.userId });
 			const memberships = await ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) =>
-					q.eq("active", true).eq("userId", target.userId).eq("workspaceId", target.workspaceId),
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q.eq("active", true).eq("userId", target.userId).eq("organizationId", target.organizationId),
 				)
 				.collect();
-			await Promise.all(memberships.map((membership) => ctx.db.delete("workspaces_projects_users", membership._id)));
+			await Promise.all(memberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)));
 
 			return notificationId;
 		});

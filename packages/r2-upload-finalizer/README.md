@@ -21,7 +21,7 @@ The Worker posts this body to Convex:
 		"action": "object-create",
 		"bucket": "bucket-name",
 		"object": {
-			"key": "workspaces/<workspaceId>/projects/<projectId>/assets/<assetId>",
+			"key": "organizations/<organizationId>/workspaces/<workspaceId>/assets/<assetId>",
 			"size": 123,
 			"eTag": "etag"
 		},
@@ -45,7 +45,7 @@ The Worker retries only network errors and retryable HTTP statuses: `408`, `409`
 
 Convex owns asset lookup, upload-kind filtering, idempotency, conversion queueing, and finalization. The Worker should stay a narrow event forwarder.
 
-All first-party file assets use the `workspaces/.../assets/<assetId>` key shape and can flow through this Worker. Convex uses `files_r2_assets.kind` to process only upload assets; generated Markdown, Yjs snapshots, and content snapshots are acknowledged without upload finalization work.
+All first-party file assets use the `organizations/.../assets/<assetId>` key shape and can flow through this Worker. Convex uses `files_r2_assets.kind` to process only upload assets; generated Markdown, Yjs snapshots, and content snapshots are acknowledged without upload finalization work.
 
 ## Configuration
 
@@ -63,7 +63,7 @@ Convex R2 upload/conversion environment:
 Worker vars in `wrangler.jsonc`:
 
 - `R2_FILES_BUCKET`: `bonobo-senate-press-files`
-- `R2_UPLOAD_PREFIX`: `workspaces/`
+- `R2_UPLOAD_PREFIX`: `organizations/`
 
 Worker secrets:
 
@@ -117,7 +117,7 @@ pnpx wrangler deploy --config packages/r2-upload-finalizer/wrangler.jsonc
 Create the R2 notification after Convex and the Worker are deployed:
 
 ```powershell
-pnpx wrangler r2 bucket notification create bonobo-senate-press-files --event-type object-create --queue bonobo-senate-press-r2-upload-events --prefix "workspaces/"
+pnpx wrangler r2 bucket notification create bonobo-senate-press-files --event-type object-create --queue bonobo-senate-press-r2-upload-events --prefix "organizations/"
 ```
 
 List notifications:
@@ -187,5 +187,5 @@ pnpx wrangler queues purge bonobo-senate-press-r2-upload-events-dlq
 - `400` from Convex means the forwarded event body did not match the expected schema.
 - `404` from Convex means the R2 object key did not match any upload asset; the Worker treats this as non-retryable.
 - `503` from Convex or network failures are retried and eventually sent to the DLQ after `max_retries`.
-- Events with a wrong bucket or a key outside `workspaces/` are acknowledged without calling Convex.
+- Events with a wrong bucket or a key outside `organizations/` are acknowledged without calling Convex.
 - R2 notifications must be created after the queue exists.

@@ -15,8 +15,8 @@ async function sha256_hex(input: string) {
 
 async function seed_public_api_grant(args: {
 	t: ReturnType<typeof test_convex>;
-	workspaceId: Id<"workspaces">;
-	projectId: Id<"workspaces_projects">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
 	userId: Id<"users">;
 	token: string;
 	scopes?: Array<"files:list" | "files:read">;
@@ -24,8 +24,8 @@ async function seed_public_api_grant(args: {
 	now?: number;
 }) {
 	await args.t.mutation(internal.public_api.create_grant, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		userId: args.userId,
 		threadId: null,
 		principalKey: "grant_test",
@@ -38,8 +38,8 @@ async function seed_public_api_grant(args: {
 
 async function seed_markdown_file(args: {
 	t: ReturnType<typeof test_convex>;
-	workspaceId: Id<"workspaces">;
-	projectId: Id<"workspaces_projects">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
 	userId: Id<"users">;
 	path: string;
 	markdown: string;
@@ -55,10 +55,10 @@ async function seed_markdown_file(args: {
 		if (parentPath !== "/") {
 			const existingParent = await ctx.db
 				.query("files_nodes")
-				.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
+						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
-						.eq("projectId", args.projectId)
 						.eq("path", parentPath)
 						.eq("archiveOperationId", undefined),
 				)
@@ -71,8 +71,8 @@ async function seed_markdown_file(args: {
 					throw new Error("Expected a parent folder path");
 				}
 				parentId = await ctx.db.insert("files_nodes", {
+					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
-					projectId: args.projectId,
 					path: parentPath,
 					treePath: `${parentPath}/`,
 					pathDepth: parentPath.split("/").filter(Boolean).length,
@@ -88,8 +88,8 @@ async function seed_markdown_file(args: {
 		}
 
 		const markdownAssetId = await ctx.db.insert("files_r2_assets", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			kind: "content",
 			r2Bucket: "test-bucket",
 			size: 0,
@@ -97,8 +97,8 @@ async function seed_markdown_file(args: {
 			updatedAt: now,
 		});
 		const yjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			kind: "yjs_snapshot",
 			r2Bucket: "test-bucket",
 			size: 0,
@@ -106,8 +106,8 @@ async function seed_markdown_file(args: {
 			updatedAt: now,
 		});
 		const fileNodeId = await ctx.db.insert("files_nodes", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			path: args.path,
 			treePath: args.path,
 			pathDepth: args.path.split("/").filter(Boolean).length,
@@ -122,8 +122,8 @@ async function seed_markdown_file(args: {
 			updatedAt: now,
 		});
 		const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			fileNodeId,
 			sequence: 0,
 			assetId: yjsSnapshotAssetId,
@@ -132,8 +132,8 @@ async function seed_markdown_file(args: {
 			updatedAt: now,
 		});
 		const yjsLastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
 			fileNodeId,
 			lastSequence: 0,
 		});
@@ -146,8 +146,8 @@ async function seed_markdown_file(args: {
 
 	const baseYjsUpdate = files_u8_to_array_buffer(files_yjs_create_empty_state_update());
 	const pending = await args.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		userId: args.userId,
 		nodeId,
 		baseYjsSequence: 0,
@@ -178,16 +178,16 @@ describe("public API grants", () => {
 
 		await seed_public_api_grant({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			token: validToken,
 			now,
 		});
 		await seed_public_api_grant({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			token: expiredToken,
 			now: now - 20 * 60 * 1000,
@@ -218,8 +218,8 @@ describe("public API grants", () => {
 				await Promise.all([
 					...Array.from({ length: 3 }, (_, index) =>
 						ctx.db.insert("public_api_grants", {
+							organizationId: db.organizationId,
 							workspaceId: db.workspaceId,
-							projectId: db.projectId,
 							userId: db.userId,
 							threadId: null,
 							principalKey: `expired_${index}`,
@@ -231,8 +231,8 @@ describe("public API grants", () => {
 						}),
 					),
 					ctx.db.insert("public_api_grants", {
+						organizationId: db.organizationId,
 						workspaceId: db.workspaceId,
-						projectId: db.projectId,
 						userId: db.userId,
 						threadId: null,
 						principalKey: "expires_after_test_now",
@@ -243,8 +243,8 @@ describe("public API grants", () => {
 						expiresAt: now + 500,
 					}),
 					ctx.db.insert("public_api_grants", {
+						organizationId: db.organizationId,
 						workspaceId: db.workspaceId,
-						projectId: db.projectId,
 						userId: db.userId,
 						threadId: null,
 						principalKey: "valid",
@@ -282,8 +282,8 @@ describe("public API grants", () => {
 		const token = "0".repeat(64);
 		await seed_public_api_grant({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			token,
 			now: Date.now() - 20 * 60 * 1000,
@@ -310,24 +310,24 @@ describe("public API grants", () => {
 		const token = "1".repeat(64);
 		await seed_markdown_file({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			path: "/payments/payment-001.md",
 			markdown: "---\namount: 12.50\n---\nPayment one\n",
 		});
 		await seed_markdown_file({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			path: "/payments/payment-002.md",
 			markdown: "---\namount: 7.25\n---\nPayment two\n",
 		});
 		await seed_public_api_grant({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			token,
 		});
@@ -387,24 +387,24 @@ describe("public API grants", () => {
 		const token = "2".repeat(64);
 		await seed_markdown_file({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			path: "/payments/payment-001.md",
 			markdown: "Payment one\n",
 		});
 		await seed_markdown_file({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			path: "/payments-archive/payment-001.md",
 			markdown: "Archived payment\n",
 		});
 		await seed_public_api_grant({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			token,
 			pathPrefix: "/payments",
@@ -439,16 +439,16 @@ describe("public API grants", () => {
 		const readOnlyToken = "5".repeat(64);
 		await seed_public_api_grant({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			token: listOnlyToken,
 			scopes: ["files:list"],
 		});
 		await seed_public_api_grant({
 			t,
+			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			projectId: db.projectId,
 			userId: db.userId,
 			token: readOnlyToken,
 			scopes: ["files:read"],

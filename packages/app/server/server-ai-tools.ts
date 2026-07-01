@@ -534,8 +534,8 @@ export function replace_once_or_all(
 export function ai_chat_tool_create_read_file(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 	},
 ) {
@@ -571,8 +571,8 @@ export function ai_chat_tool_create_read_file(
 			const pendingUpdateId = args.pendingUpdateId as Id<"files_pending_updates"> | undefined;
 
 			const fileContent = await ctx.runAction(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				userId: ctxData.userId,
 				path: normalizedPath,
 				pendingUpdateId,
@@ -586,8 +586,8 @@ export function ai_chat_tool_create_read_file(
 						parentPath === "/"
 							? null
 							: await ctx.runQuery(internal.files_nodes.get_by_path, {
+									organizationId: ctxData.organizationId,
 									workspaceId: ctxData.workspaceId,
-									projectId: ctxData.projectId,
 									path: parentPath,
 								});
 					const parentId = parentPath === "/" ? files_ROOT_ID : parentNode?.kind === "folder" ? parentNode._id : null;
@@ -596,8 +596,8 @@ export function ai_chat_tool_create_read_file(
 					const suggestions: string[] = [];
 					if (parentId) {
 						const siblings = await ctx.runQuery(internal.files_nodes.list_children, {
+							organizationId: ctxData.organizationId,
 							workspaceId: ctxData.workspaceId,
-							projectId: ctxData.projectId,
 							parentId,
 							orderBy: "name",
 							order: "asc",
@@ -689,8 +689,8 @@ export type ai_chat_tool_create_read_file_ToolOutput = InferToolOutput<ai_chat_t
 export function ai_chat_tool_create_list_files(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 	},
 ) {
@@ -722,8 +722,8 @@ export function ai_chat_tool_create_list_files(
 
 			const list = await ctx.runQuery(internal.files_nodes.list_files, {
 				path: path,
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				maxDepth: args.maxDepth,
 				limit: args.limit,
 			});
@@ -759,8 +759,8 @@ export type ai_chat_tool_create_list_files_ToolOutput = InferToolOutput<ai_chat_
 export function ai_chat_tool_create_glob_files(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 	},
 ) {
@@ -790,8 +790,8 @@ export function ai_chat_tool_create_glob_files(
 			// Get all files under the search path
 			const list = await ctx.runQuery(internal.files_nodes.list_files, {
 				path: searchPath,
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				maxDepth: 10,
 				limit: args.limit,
 				include: args.pattern,
@@ -837,8 +837,8 @@ export type ai_chat_tool_create_glob_files_ToolOutput = InferToolOutput<ai_chat_
 export function ai_chat_tool_create_grep_files(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 	},
 ) {
@@ -887,8 +887,8 @@ export function ai_chat_tool_create_grep_files(
 			// Discover candidate files using the same traversal logic as list_files
 			const list = await ctx.runQuery(internal.files_nodes.list_files, {
 				path: searchPath,
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				maxDepth: args.maxDepth,
 				limit: args.limit,
 				include: args.include,
@@ -905,8 +905,8 @@ export function ai_chat_tool_create_grep_files(
 				// Read file content
 				const fileContent = await ctx.runAction(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
 					path: item.path,
+					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,
-					projectId: ctxData.projectId,
 					userId: ctxData.userId,
 				});
 
@@ -973,10 +973,10 @@ export type ai_chat_tool_create_grep_files_ToolOutput = InferToolOutput<ai_chat_
 export function ai_chat_tool_create_bash(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		organizationName: string;
 		workspaceName: string;
-		projectName: string;
 		userId: Id<"users">;
 	},
 	options: {
@@ -986,21 +986,21 @@ export function ai_chat_tool_create_bash(
 ) {
 	const HOME = "/home/cloud-usr";
 	const appMountPath = `${HOME}/w`;
-	const currentProjectPath = `${appMountPath}/${ctxData.workspaceName}/${ctxData.projectName}`;
+	const currentWorkspacePath = `${appMountPath}/${ctxData.organizationName}/${ctxData.workspaceName}`;
 	return tool({
 		description: dedent`\
 			Run a non-interactive shell command in the user's cloud file environment. Familiar Bash command names are available; /tmp has the safe Just Bash native-style scratch command surface, while app files are db-backed and do not have full POSIX/GNU filesystem semantics.
-			Bash starts in the current project path at ~/w/${ctxData.workspaceName}/${ctxData.projectName} (${currentProjectPath}). ~ is ${HOME}, the app mount is ${appMountPath}, and /tmp is durable scratch scoped to this chat thread.
+			Bash starts in the current workspace path at ~/w/${ctxData.organizationName}/${ctxData.workspaceName} (${currentWorkspacePath}). ~ is ${HOME}, the app mount is ${appMountPath}, and /tmp is durable scratch scoped to this chat thread.
 			/tmp persists across Bash calls in this chat and reloads from Convex if the warm backend runtime cache is gone. It is not shared with new chats and is not app file storage; use app file tools for durable user-visible files.
 			Do not call /tmp ephemeral or temporary in a way that implies same-chat data loss. If a fresh chat cannot read a /tmp path created in another chat, that is expected evidence of per-chat isolation, not a global Bash failure.
 			Bash cwd persists across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating cd.
-			App-mount limitations apply only to paths under ${currentProjectPath} or ${appMountPath}. Do not describe them as global Bash limitations. If a command touches only /tmp or stdin, use normal scratch commands; if it touches the app mount, use the app-aware command forms below.
+			App-mount limitations apply only to paths under ${currentWorkspacePath} or ${appMountPath}. Do not describe them as global Bash limitations. If a command touches only /tmp or stdin, use normal scratch commands; if it touches the app mount, use the app-aware command forms below.
 			Agent-only read-only external source mounts live under ${files_MOUNT_ROOT} (for example ${files_MOUNT_ROOT}/<name>). They are a backend mirror of an external repository for Bash reads, not the user's app files: they never appear in the Files sidebar, public file API, or app file tools. Browse and read them with the same app-aware commands (ls, find, tree, cat, head, tail, wc, stat, grep, textgrep, sed). Bare ls ${files_MOUNT_ROOT} lists the available mount names; pick a mount with ${files_MOUNT_ROOT}/<name> before reading files. All writes are rejected: no write_file/edit_file, touch, tee, rm, mv, or cp into ${files_MOUNT_ROOT}, and external mount content is not executable via bash <script>. The source and . builtins are rejected for app files and agent-only external mounts, but remain available for explicit /tmp scratch scripts. cp ${files_MOUNT_ROOT}/<name>/<file> /tmp/<name> is allowed to copy mount content into scratch. For search and meta search, scope to one mount with --path ${files_MOUNT_ROOT}/<name>; ${files_MOUNT_ROOT} itself is not a searchable scope.
 			Native-style /tmp commands use Just Bash's own argument parsing and include safe text/file utilities such as du, diff, rg, jq, base64, sha256sum, nl, rev, and tac; the Unix file command is intentionally unavailable.
 			If file fails or the user asks for it, do not stop after reporting that it is unavailable; run supported recovery commands such as stat, wc, head, or cat on the same /tmp path when that answers the request.
 			/tmp native commands are Just Bash browser commands, not host GNU coreutils. Prefer simple portable forms such as du file; if a /tmp option fails but the command is useful, retry once with simpler native syntax.
 			When retrying a /tmp command option, prefer doing related scratch work in one call when convenient, but previous /tmp files are available in later calls in the same chat.
-			When a user names an app-root path like /docs, run it as ${currentProjectPath}/docs or cd ${currentProjectPath} and use docs; do not treat /docs as a host-root path.
+			When a user names an app-root path like /docs, run it as ${currentWorkspacePath}/docs or cd ${currentWorkspacePath} and use docs; do not treat /docs as a host-root path.
 			Supported app-file inspection commands include pwd, cd, ls, find, search, cat, head, tail, wc, stat, single-file grep, and tree.
 			When reporting Bash results, treat app-only flags such as --limit, --cursor, --path-query, and --extension as supported app Bash syntax; do not warn that a successful app command is non-standard.
 			Printed Next page commands use short cursor ids without an @ prefix; run the exact printed command to continue. If the user asks for exactly one continuation, one continuation, or one next page, run only the first printed continuation and then stop even if that page prints another Next page command. If the user asked for continuations from multiple commands, continue each requested command before summarizing.
@@ -1011,11 +1011,11 @@ export function ai_chat_tool_create_bash(
 			ls --limit and find --limit are app-file pagination commands. Relative paths resolve against the current working directory.
 			Content-vs-path rule: use search for text inside files, and use find only for path/name discovery. Plain requests like "search for X with limit N" mean content search, so run search --limit N X. If the user says "search for the X file", "find the X file", "file named X", or "path/name contains X", use find. If the user says "search inside <folder> for X", "where does X appear", or "files mention X", run search --path <folder> X or search X; do not substitute find --path-query.
 			Use meta search --where '{"eq":["frontmatter.from","alice@example.com"]}' to search indexed Markdown YAML frontmatter. Prefer meta search/meta get over reading raw file text when answering which files have a frontmatter field or value. Fields must be qualified frontmatter.* names; one positive predicate per command is supported: exists, eq, prefix, or numeric range. range takes a bounds object, e.g. {"range":["frontmatter.estimate",{"gte":5,"lte":120}]} (any of gte/gt/lte/lt). Default output is paths; use --format json for metadata details and cursors. Combine multiple predicates outside meta with shell tools over path output. There is no not/neq: to find where a field is NOT a value, first run exists <field> to list every file that has the field, then remove the eq <field> <value> matches (e.g. comm -23 or grep -vxF) — the eq matches are only a subset, so never infer the complement from an eq result alone. Use meta get <file> to inspect one file's indexed metadata. If field names are unclear, read nearby README.md files because folders may document frontmatter conventions.
-			For search --path and meta search --path, the same app-root path rule applies: pass ${currentProjectPath}/folder or relative folder, never raw /folder.
+			For search --path and meta search --path, the same app-root path rule applies: pass ${currentWorkspacePath}/folder or relative folder, never raw /folder.
 			When a content-search request already names a folder, do not run ls first to verify that folder; run search --path <folder> <content terms> directly and let search report missing or invalid scopes.
 			For recursive grep requests over an app folder, the first Bash command should be search --path <folder> <content terms>; do not run ls, native rg, or multi-file grep first.
 			When listing the current directory, prefer ls --limit N over ls --limit N <current-cwd>. Do not restate the current cwd as a path argument just for certainty.
-			Use ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...] for app listings. Bare ls --limit N lists the current directory. --cursor continues one listing target only; when asked to continue, run the printed Next page command as the next Bash call and do not invent --next-page. Listings are paginated in small pages; raising --limit past its cap (20 for ls/find) returns no more items — page through with the printed Next page command instead. ls -t (newest first) and ls -rt (oldest first) without PATH list the whole project ordered by update time; with PATH they list that directory's immediate children by update time. For recent immediate children after cd into a folder, use ls -t --limit N .; bare ls -t is still project-wide. ls -Rt PATH is unsupported.
+			Use ls [-1aApFdlrRt] [--limit N] [--cursor CURSOR] [PATH ...] for app listings. Bare ls --limit N lists the current directory. --cursor continues one listing target only; when asked to continue, run the printed Next page command as the next Bash call and do not invent --next-page. Listings are paginated in small pages; raising --limit past its cap (20 for ls/find) returns no more items — page through with the printed Next page command instead. ls -t (newest first) and ls -rt (oldest first) without PATH list the whole workspace ordered by update time; with PATH they list that directory's immediate children by update time. For recent immediate children after cd into a folder, use ls -t --limit N .; bare ls -t is still workspace-wide. ls -Rt PATH is unsupported.
 			ls -R lists a paginated subtree as full app shell paths; when the user asks for tree-shaped output, use tree, not ls -R. ls -d lists the target entry itself and wins over -R; ls -l uses app metadata, not POSIX permissions, owners, groups, inodes, blocks, symlinks, or real sizes; stat reports the same app metadata, so its Access/owner/group fields are placeholders, not real POSIX values. ls -l and stat sizes are committed asset sizes; readers such as cat/head/tail/wc serve the current user's pending write_file/edit_file content, so byte counts can differ from stat while edits are pending. Unsupported sort/filter flags still fail.
 			Use find -name QUERY or find --path-query QUERY only for indexed app-file path/name word search; find -name is case-insensitive like -iname. Prefer --path-query QUERY for natural "path/name contains QUERY" requests; pass a plain token such as readme, not *readme*. For regex path requests against app files, say regex is unsupported and use token search when a plain token is obvious; do not summarize successful --path-query output as native glob/regex syntax. Use find <dir> -maxdepth 1 -name QUERY for indexed immediate-child app-file path search under one directory. Use find <path> --extension md -type f for exact indexed extension search; simple find -name '*.md' and find <dir>/*.md are accepted as extension-search recovery, not general glob support. Use find <path> --limit N [--cursor CURSOR] for subtree pages, and find --prefix <prefix> --limit N [--cursor CURSOR] for a folder-boundary subtree scan that does not require the prefix to resolve to an existing folder first; sibling-prefix paths such as /docs-archive are excluded from /docs. find searches app paths/names only, not file content. When asked for app files under a folder, include -type f; when asked for folders, include -type d. find -maxdepth N and find -mindepth N filter non-search app subtree results by depth. find -type f and find -type d restrict app results to files or folders. General glob/regex patterns and GNU find extensions such as -printf, -mtime, -newer, -exec, and -ok are not supported for app paths; omit them there. Native find syntax can be used for /tmp paths.
 			Use search [--limit N] [--cursor CURSOR] <content terms...> for full-text content search across Markdown/text content. Pass one distinctive word or a few plain terms that should appear in the document body; the text index splits on whitespace/punctuation, ignores case, relevance-ranks matches, and prefix-matches the final term. It overlays the current user's pending write_file/edit_file unstaged changes before returning results. It is implemented with db full-text search, but it is not regex, glob, path/name search, or exact grep. For requests like "where does X appear" or "which files mention X", run search first; do not substitute find, which only searches paths/names. For recursive grep, grep -R, or rg wording over an app folder, do not try native rg or multi-file grep first; run search --path <folder> <content terms> directly. Scope to one folder with search --path <folder> <content terms...> when useful, but broad folder scopes with common terms can be heavier. Raising --limit past 100 has no effect; page with the printed Next page command. If cwd is inside the app tree, bare search scopes to that cwd; pass a folder via --path, not as a positional operand, and do not use search as a pipeline filter.
@@ -1024,15 +1024,15 @@ export function ai_chat_tool_create_bash(
 			To search content across files use search (or search --path <folder> for one folder); to find lines in a SINGLE file use grep [-n] [-i] [-F] PATTERN <file> over Markdown chunks. Normal single-file grep uses regex matching; -F/--fixed-strings uses literal substring matching; -n prints lineNumber:line, and without -n it prints raw matching lines; also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context. For rendered plain-text chunk scans, use textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file> for one app file (regex by default; -F/--fixed-strings uses literal substring matching; -v inverts; -c counts; -l prints the path if matched), or textgrep -R PATTERN <folder> for a recursive folder scan via indexed full-text search (not exact recursive regex/fixed-string grep). Single-file textgrep has no line numbers or context flags; use grep for -n or -A/-B/-C context. Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search, but complex or multi-file grep forms are not exact recursive grep; prefer search --path. Use tree [PATH] [--limit N] [--cursor CURSOR] for paginated app tree shape; unsupported native tree flags fail for app paths.
 			Keep commands simple: avoid strict-mode boilerplate such as set -euo pipefail because pipefail is unsupported, comments in command strings, and process substitution. For multi-command inspection or eval checks, do not use set -e or hide stderr with 2>/dev/null; later commands and visible stderr should still be observed. Only summarize actual Bash stdout/stderr; the blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents. Do not work around app read-only write, move, or delete requests by copying app files to /tmp unless the user asked for a scratch copy.
 			App file tree mkdir is available only when this tool is configured for Agent mode; /tmp scratch does not create app file tree folders.
-			File writes, redirects, moves, and deletes under ${currentProjectPath} are not supported shell operations. rm, mv, and ln are not available for app files, and cp cannot write into the app tree; cp <app-file> /tmp/<name> is allowed as a durable per-thread scratch copy. Persistent Markdown edits belong in write_file or edit_file with app paths such as /docs/readme.md. If a user asks to delete or move a file, explain that these are not available as shell operations.
-			Convert bash paths under ${currentProjectPath} to app paths for write_file/edit_file by removing the current project path prefix. Preserve the full remaining suffix: ${currentProjectPath}/folder/README.md becomes /folder/README.md, never /README.md.`,
+			File writes, redirects, moves, and deletes under ${currentWorkspacePath} are not supported shell operations. rm, mv, and ln are not available for app files, and cp cannot write into the app tree; cp <app-file> /tmp/<name> is allowed as a durable per-thread scratch copy. Persistent Markdown edits belong in write_file or edit_file with app paths such as /docs/readme.md. If a user asks to delete or move a file, explain that these are not available as shell operations.
+			Convert bash paths under ${currentWorkspacePath} to app paths for write_file/edit_file by removing the current workspace path prefix. Preserve the full remaining suffix: ${currentWorkspacePath}/folder/README.md becomes /folder/README.md, never /README.md.`,
 		inputSchema: z.object({
 			command: z
 				.string()
 				.min(1)
 				.max(20_000)
 				.describe(
-					`Shell command to run. Omit PATH to inspect the current app directory; use ${currentProjectPath} only when cwd is outside the app tree or when targeting that absolute path intentionally.`,
+					`Shell command to run. Omit PATH to inspect the current app directory; use ${currentWorkspacePath} only when cwd is outside the app tree or when targeting that absolute path intentionally.`,
 				),
 		}),
 		execute: async (args) => {
@@ -1042,13 +1042,13 @@ export function ai_chat_tool_create_bash(
 			}
 
 			return await ctx.runAction(internal.bash.run, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				threadId,
 				userId: ctxData.userId,
 				command: args.command,
+				organizationName: ctxData.organizationName,
 				workspaceName: ctxData.workspaceName,
-				projectName: ctxData.projectName,
 				allowDbFilesMkdir: options.allowDbFilesMkdir,
 			});
 		},
@@ -1074,8 +1074,8 @@ export type ai_chat_WriteToolName = (typeof ai_chat_WRITE_TOOL_NAMES)[number];
 export function ai_chat_tool_create_write_file(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 	},
 ) {
@@ -1090,7 +1090,7 @@ export function ai_chat_tool_create_write_file(
 			- NEVER proactively create documentation files unless explicitly requested by the user.
 			- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.
 			- Paths are real Markdown file paths and must end in .md, for example /readme.md or /docs/setup.md.
-			- If you copied a path from bash, remove the /home/cloud-usr/w/<workspace>/<project> current project path prefix before passing it here.
+			- If you copied a path from bash, remove the /home/cloud-usr/w/<organization>/<workspace> current workspace path prefix before passing it here.
 			- Preserve the full remaining suffix after that prefix; /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.
 			- The content must be valid GitHub Flavored Markdown.`,
 
@@ -1128,8 +1128,8 @@ export function ai_chat_tool_create_write_file(
 			const currentFileContent = await ctx.runAction(
 				internal.files_nodes.get_file_last_available_markdown_content_by_path,
 				{
+					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,
-					projectId: ctxData.projectId,
 					userId: ctxData.userId,
 					path,
 					pendingUpdateId,
@@ -1145,8 +1145,8 @@ export function ai_chat_tool_create_write_file(
 
 			if (!nodeId) {
 				const created = await ctx.runAction(internal.files_nodes.create_file_by_path, {
+					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,
-					projectId: ctxData.projectId,
 					userId: ctxData.userId,
 					path,
 				});
@@ -1160,16 +1160,16 @@ export function ai_chat_tool_create_write_file(
 			}
 
 			await ctx.runAction(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				userId: ctxData.userId,
 				nodeId,
 				pendingUpdateId: currentFileContent?.pendingUpdateId ?? undefined,
 				unstagedMarkdown: newText,
 			});
 			const nextPendingUpdate = await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				userId: ctxData.userId,
 				nodeId,
 				pendingUpdateId: currentFileContent?.pendingUpdateId ?? undefined,
@@ -1207,8 +1207,8 @@ export type ai_chat_tool_create_write_file_ToolOutput = InferToolOutput<ai_chat_
 export function ai_chat_tool_create_edit_file(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 	},
 ) {
@@ -1221,7 +1221,7 @@ export function ai_chat_tool_create_edit_file(
 			- By default, replaces a single unique occurrence of oldString; fails if not found or ambiguous.
 			- Set replaceAll=true to replace every occurrence.
 			- If copying from read_file output, do NOT include the line-number prefix (e.g., "00001| ").
-			- If copying a path from bash, remove the /home/cloud-usr/w/<workspace>/<project> current project path prefix before passing it here.
+			- If copying a path from bash, remove the /home/cloud-usr/w/<organization>/<workspace> current workspace path prefix before passing it here.
 			- Preserve the full remaining suffix after that prefix; /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.
 			- The text must be valid GitHub Flavored Markdown; ensure replacements preserve valid Markdown structure (headings, code fences, lists).
 			- This tool does not apply changes directly; it saves a pending update for human review.`,
@@ -1252,8 +1252,8 @@ export function ai_chat_tool_create_edit_file(
 			const currentFileContent = await ctx.runAction(
 				internal.files_nodes.get_file_last_available_markdown_content_by_path,
 				{
+					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,
-					projectId: ctxData.projectId,
 					userId: ctxData.userId,
 					path: normalizedPath,
 					pendingUpdateId,
@@ -1280,16 +1280,16 @@ export function ai_chat_tool_create_edit_file(
 			const nodeId = currentFileContent.nodeId;
 
 			await ctx.runAction(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				userId: ctxData.userId,
 				nodeId,
 				pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
 				unstagedMarkdown: modifiedText,
 			});
 			const nextPendingUpdate = await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				userId: ctxData.userId,
 				nodeId,
 				pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
@@ -1387,9 +1387,9 @@ function ai_chat_tool_web_search_format_output(results: ai_chat_tool_web_search_
 export function ai_chat_tool_create_web_search() {
 	return tool({
 		description: dedent`\
-			Search the public web for current facts, documentation, release notes, news, and other information outside this workspace. \
+			Search the public web for current facts, documentation, release notes, news, and other information outside this organization. \
 			Returns compact highlight snippets plus titles and URLs — summarize these in your own words instead of dumping the raw tool output. \
-			Prefer workspace file tools first when the answer should come from the user's docs.`,
+			Prefer organization file tools first when the answer should come from the user's docs.`,
 
 		inputSchema: z.object({
 			query: z.string().describe("Natural language search query"),
@@ -1567,10 +1567,10 @@ function ai_chat_tool_execute_code_format_output(result: ai_chat_tool_execute_co
 export function ai_chat_tool_create_execute_code(
 	ctx: ActionCtx,
 	ctxData: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		organizationName: string;
 		workspaceName: string;
-		projectName: string;
 		userId: Id<"users">;
 	},
 	opts: {
@@ -1631,8 +1631,8 @@ export function ai_chat_tool_create_execute_code(
 			const executionId = crypto.randomUUID();
 			const publicApiGrantToken = ai_chat_tool_execute_code_random_token();
 			await ctx.runMutation(internal.public_api.create_grant, {
+				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
-				projectId: ctxData.projectId,
 				userId: ctxData.userId,
 				threadId: opts.getThreadId?.() ?? null,
 				principalKey: executionId,

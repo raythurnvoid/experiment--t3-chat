@@ -304,7 +304,7 @@ function parse_search_args(args: string[], options: { cwd: string }) {
 	}
 
 	// Resolve the user-facing folder scope to an absolute shell path; the handler classifies it
-	// (project vs. mount) and verifies it is an existing folder.
+	// (workspace vs. mount) and verifies it is an existing folder.
 	let pathShell: string | undefined;
 	if (pathValue != null) {
 		if (pathValue === "") {
@@ -352,7 +352,7 @@ function parse_get_args(args: string[], options: { cwd: string }) {
 	if (pathValue == null || pathValue === "") {
 		return Result({ _nay: { message: "meta get: missing file path" } });
 	}
-	// Keep the file as an absolute shell path; the handler classifies it (project vs. mount).
+	// Keep the file as an absolute shell path; the handler classifies it (workspace vs. mount).
 	const pathShell = bash_resolve_path(options.cwd, pathValue);
 	return Result({ _yay: { pathShell, format } });
 }
@@ -408,7 +408,7 @@ function get_value(value: NonNullable<files_metadata_get_by_path_Result>["values
 }
 
 export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFilesRoots) {
-	const currentProjectPath = dbFilesRoots.app.currentProjectPath;
+	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	return defineCommand("meta", async (args, commandCtx) => {
 		const subcommand = args[0];
 		if (subcommand !== "search" && subcommand !== "get") {
@@ -431,7 +431,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
-			// meta get reads one file; classify its path to pick the project or mount scope.
+			// meta get reads one file; classify its path to pick the workspace or mount scope.
 			const target = bash_resolve_db_files_shell_path(parsed._yay.pathShell, dbFilesRoots);
 			if (target.kind === "external_mounts_root") {
 				return {
@@ -445,13 +445,13 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			if (target.dbFilesPath == null) {
 				return {
 					stdout: "",
-					stderr: `meta get: path must be under ${currentProjectPath} or /.mounts/<name>: ${bash_normalize_path(parsed._yay.pathShell)}\n`,
+					stderr: `meta get: path must be under ${currentWorkspacePath} or /.mounts/<name>: ${bash_normalize_path(parsed._yay.pathShell)}\n`,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
 			const result = (await ctx.runQuery(internal.files_metadata.get_by_path, {
+				organizationId: target.ctxData.organizationId,
 				workspaceId: target.ctxData.workspaceId,
-				projectId: target.ctxData.projectId,
 				userId: target.ctxData.userId,
 				path: target.dbFilesPath,
 			})) as files_metadata_get_by_path_Result;
@@ -513,7 +513,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			cursor = resolvedCursor._yay;
 		}
 
-		// meta search runs within exactly one indexed tree (the project or a single mount). The scope is the
+		// meta search runs within exactly one indexed tree (the workspace or a single mount). The scope is the
 		// explicit --path folder when given, otherwise the cwd. Classify it to pick the right scope IDs.
 		const scopeShellPath = parsed._yay.pathShell ?? commandCtx.cwd;
 		const scope = bash_resolve_db_files_shell_path(scopeShellPath, dbFilesRoots);
@@ -531,15 +531,15 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		if (parsed._yay.pathShell != null && scope.dbFilesPath == null) {
 			return {
 				stdout: "",
-				stderr: `meta search: --path must be a folder under ${currentProjectPath} or /.mounts/<name>: ${parsed._yay.pathShell}\n`,
+				stderr: `meta search: --path must be a folder under ${currentWorkspacePath} or /.mounts/<name>: ${parsed._yay.pathShell}\n`,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
 
 		if (parsed._yay.pathShell != null && scope.dbFilesPath != null && scope.dbFilesPath !== "/") {
 			const scopedFolder = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+				organizationId: scope.ctxData.organizationId,
 				workspaceId: scope.ctxData.workspaceId,
-				projectId: scope.ctxData.projectId,
 				path: scope.dbFilesPath,
 			})) as files_nodes_get_by_path_Result;
 			const scopedShellPath = scope.renderShellPath(scope.dbFilesPath);
@@ -559,11 +559,11 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			}
 		}
 
-		// Scope the metadata scan to the classified folder; the project/mount root maps to the whole tree.
+		// Scope the metadata scan to the classified folder; the workspace/mount root maps to the whole tree.
 		const path = scope.dbFilesPath != null && scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
 		const result = (await ctx.runQuery(internal.files_metadata.search, {
+			organizationId: scope.ctxData.organizationId,
 			workspaceId: scope.ctxData.workspaceId,
-			projectId: scope.ctxData.projectId,
 			userId: scope.ctxData.userId,
 			plan: parsed._yay.plan,
 			numItems: parsed._yay.limit,

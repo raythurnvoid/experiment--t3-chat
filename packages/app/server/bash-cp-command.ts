@@ -4,10 +4,10 @@ import {
 	bash_DbFilesContentUnavailableError,
 	bash_build_unreadable_file_advisory,
 	bash_create_glob_syntax_unsupported_message,
-	bash_current_project_path_to_db_files_path,
+	bash_current_workspace_path_to_db_files_path,
 	bash_delegate_builtin_command,
 	bash_GLOB_METACHARACTER_REGEX,
-	bash_is_path_under_current_project_path,
+	bash_is_path_under_current_workspace_path,
 	bash_is_path_under_mounts,
 	bash_normalize_path,
 	bash_parse_cp_mv_operands,
@@ -33,7 +33,7 @@ function is_under_tmp_mount(path: string) {
  * Everything else involving app paths is rejected before delegation so cp never
  * mutates the durable app tree or silently treats app destinations as scratch.
  */
-export function bash_cp_command_create(currentProjectPath: string) {
+export function bash_cp_command_create(currentWorkspacePath: string) {
 	return defineCommand("cp", async (args, commandCtx) => {
 		const { operands, recursive } = bash_parse_cp_mv_operands(args);
 
@@ -54,7 +54,7 @@ export function bash_cp_command_create(currentProjectPath: string) {
 		// Classify app operands up front so any app-path command is fully preflighted
 		// before delegating to native cp, which could otherwise create /tmp side effects.
 		const appOperands = operands.filter((operand) =>
-			bash_is_path_under_current_project_path(currentProjectPath, bash_resolve_path(commandCtx.cwd, operand)),
+			bash_is_path_under_current_workspace_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand)),
 		);
 
 		// Pure scratch/non-app copies keep native Just Bash behavior.
@@ -75,18 +75,18 @@ export function bash_cp_command_create(currentProjectPath: string) {
 		// straight to write_file so the model does not retry cp.
 		if (
 			operands.length === 2 &&
-			bash_is_path_under_current_project_path(currentProjectPath, bash_resolve_path(commandCtx.cwd, operands[1]))
+			bash_is_path_under_current_workspace_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operands[1]))
 		) {
 			const sourceShellPath = bash_resolve_path(commandCtx.cwd, operands[0]);
 			const destShellPath = bash_resolve_path(commandCtx.cwd, operands[1]);
 			let destDbFilesPath =
-				bash_current_project_path_to_db_files_path(currentProjectPath, destShellPath) ?? operands[1];
+				bash_current_workspace_path_to_db_files_path(currentWorkspacePath, destShellPath) ?? operands[1];
 			try {
 				const destStat = await commandCtx.fs.stat(destShellPath);
 				if (destStat.isDirectory) {
 					const nativeDirectoryDestPath = bash_normalize_path(`${destShellPath}/${path_name_of(sourceShellPath)}`);
 					destDbFilesPath =
-						bash_current_project_path_to_db_files_path(currentProjectPath, nativeDirectoryDestPath) ?? destDbFilesPath;
+						bash_current_workspace_path_to_db_files_path(currentWorkspacePath, nativeDirectoryDestPath) ?? destDbFilesPath;
 				}
 			} catch {
 				// Missing destinations are normal; the rejected write target is the operand itself.
@@ -107,7 +107,7 @@ export function bash_cp_command_create(currentProjectPath: string) {
 				stderr:
 					"cp: app files can only be copied as one exact readable file to a /tmp destination.\n" +
 					"Usage: cp <app-file> /tmp[/<name>] - copies the file content to durable per-thread /tmp scratch space.\n" +
-					"To duplicate an app file as a new durable file, use write_file with the new app file path (strip the current project path prefix).\n",
+					"To duplicate an app file as a new durable file, use write_file with the new app file path (strip the current workspace path prefix).\n",
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
@@ -115,7 +115,7 @@ export function bash_cp_command_create(currentProjectPath: string) {
 		const sourceShellPath = bash_resolve_path(commandCtx.cwd, operands[0]);
 		let destShellPath = bash_resolve_path(commandCtx.cwd, operands[1]);
 		if (!is_under_tmp_mount(destShellPath)) {
-			const destDbFilesPath = bash_current_project_path_to_db_files_path(currentProjectPath, destShellPath);
+			const destDbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, destShellPath);
 			const destHint =
 				destDbFilesPath != null
 					? `To create a durable copy at '${destDbFilesPath}', use write_file with path '${destDbFilesPath}' and the content read from the source.`
@@ -155,10 +155,10 @@ export function bash_cp_command_create(currentProjectPath: string) {
 		} catch (error) {
 			if (error instanceof bash_DbFilesContentUnavailableError) {
 				const dbFilesPath =
-					bash_current_project_path_to_db_files_path(currentProjectPath, error.shellPath) ?? error.shellPath;
+					bash_current_workspace_path_to_db_files_path(currentWorkspacePath, error.shellPath) ?? error.shellPath;
 				return {
 					stdout: "",
-					stderr: bash_build_unreadable_file_advisory(currentProjectPath, dbFilesPath, error.contentType),
+					stderr: bash_build_unreadable_file_advisory(currentWorkspacePath, dbFilesPath, error.contentType),
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}

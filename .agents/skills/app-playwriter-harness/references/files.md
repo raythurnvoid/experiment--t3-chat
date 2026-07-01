@@ -4,7 +4,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 
 ## Route Basics
 
-- Route shape: `/w/:workspaceName/:projectName/files?nodeId=<id>`.
+- Route shape: `/w/:organizationName/:workspaceName/files?nodeId=<id>`.
 - `nodeId=root` opens the root folder browser.
 - Folder node ids open the folder browser; file node ids open the editor.
 - Optional `view` values: `rich_text_editor`, `plain_text_editor`, `diff_editor`.
@@ -154,7 +154,7 @@ Use this after changing the AI bash tool, tool rendering, or agent file-access c
 - In Agent mode, ask it to create a timestamped folder with `mkdir /home/cloud-usr/w/personal/home/playwriter-ai-chat-qa-<timestamp>`; verify the new turn shows a Bash disclosure and does not show a `create_folder` tool.
 - In Ask mode, ask it to try `mkdir /home/cloud-usr/w/personal/home/playwriter-ai-chat-ask-denied-<timestamp>`; verify bash reports that durable folder creation belongs in Agent mode and no folder appears.
 - Ask it to try `echo nope > /home/cloud-usr/w/personal/home/agent-bash-qa.md`; verify the bash result reports a read-only filesystem error.
-- Ask it to make one real Markdown edit; verify the new turn uses `write_file` or `edit_file`, not a bash write under the project mount.
+- Ask it to make one real Markdown edit; verify the new turn uses `write_file` or `edit_file`, not a bash write under the workspace mount.
 - Inspect the latest assistant tool parts and verify new turns do not show legacy `Read file`, `List files`, `Glob files`, `Grep files`, or `Search files` disclosures unless they came from older transcript history.
 
 ### File Agent Corpus Generation

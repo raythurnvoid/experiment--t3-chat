@@ -5,7 +5,7 @@ const env = {
 	CONVEX_HTTP_URL: "https://example.convex.site/",
 	EVENTS_SECRET: "test-secret",
 	R2_FILES_BUCKET: "files-bucket",
-	R2_UPLOAD_PREFIX: "workspaces/",
+	R2_UPLOAD_PREFIX: "organizations/",
 } satisfies Env;
 
 function r2_event(overrides: Partial<R2EventNotification> = {}) {
@@ -13,7 +13,7 @@ function r2_event(overrides: Partial<R2EventNotification> = {}) {
 		action: "object-create",
 		bucket: "files-bucket",
 		object: {
-			key: "workspaces/workspace_1/projects/project_1/assets/asset_1",
+			key: "organizations/organization_1/workspaces/workspace_1/assets/asset_1",
 			size: 42,
 			eTag: "etag",
 		},

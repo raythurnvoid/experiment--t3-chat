@@ -169,7 +169,7 @@ Default validation order:
 - Resolve the current app user first.
 - Resolve the membership or owning scope next.
 - Normalize/load the requested resource.
-- Compare resource `workspaceId` and `projectId` against the membership doc.
+- Compare resource `organizationId` and `workspaceId` against the membership doc.
 - Run any permission checks.
 - Perform DB writes only after these fallible checks pass.
 
@@ -184,7 +184,7 @@ Validate requested docs at the supported handler boundary that loads them. If a 
 
 If a validated requested resource points to missing server-owned data, treat that as a server bug instead of a user-facing not-found branch. Log the invariant failure with `console.error(errorMessage, errorData)` and then throw `should_never_happen(errorMessage, errorData)` with structured ids for missing linked docs such as file properties, asset docs, content docs, scheduled jobs, or other relationships that supported write paths must keep valid.
 
-For missing fields that supported write paths must set, use the exact field path in the invariant message: `"fileNode.yjsLastSequenceId is not set"` or `"workspace.defaultProjectId is not set"`. Use `fileNode`, not `file`, when the doc is from `files_nodes`.
+For missing fields that supported write paths must set, use the exact field path in the invariant message: `"fileNode.yjsLastSequenceId is not set"` or `"organization.defaultWorkspaceId is not set"`. Use `fileNode`, not `file`, when the doc is from `files_nodes`.
 
 When the field is set but points to a missing or mismatched linked doc, say that the field points to the broken link, for example `"fileNode.assetId points to a missing files_r2_assets doc"`.
 
@@ -202,7 +202,7 @@ throw should_never_happen(errorMessage, errorData);
 
 Keep the `console.error` data structured instead of embedding ids in the message. Passing the same `errorData` again to `should_never_happen(...)` is acceptable; the explicit log is the standard integration point for Sentry or other logging products, while the thrown error preserves the Convex failure path.
 
-When a missing workspace/default project is discovered while setting up authorization from an existing membership doc, log structured context and return `"Unauthorized"`. This keeps the authorization boundary generic for callers while still surfacing the impossible state in Convex logs.
+When a missing organization/default workspace is discovered while setting up authorization from an existing membership doc, log structured context and return `"Unauthorized"`. This keeps the authorization boundary generic for callers while still surfacing the impossible state in Convex logs.
 
 Use domain-specific expected messages only when the caller or UI needs that exact distinction, for example rate-limit messages or user-facing business-rule messages.
 
@@ -215,18 +215,18 @@ Boundary-specific return style:
 
 ## Membership-scoped Convex handlers
 
-When a Convex handler is scoped by a membership doc (for example `membershipId: v.id("workspaces_projects_users")`), keep the validation flow and error contract consistent:
+When a Convex handler is scoped by a membership doc (for example `membershipId: v.id("organizations_workspaces_users")`), keep the validation flow and error contract consistent:
 
 - Put `membershipId` first in `args` and first in call-site object literals.
 - For mutation handlers that can fail recoverably, use `returns: v_result(...)` and return `Result(...)` instead of throwing.
 - For query handlers, prefer `null` on missing access/resource unless the API explicitly uses `Result`.
 - In membership-scoped handlers, load `user` first, then load `membership`.
 - If `membership` is missing, return `_nay.message = "Unauthorized"` (or `null` for nullable queries).
-- If the membership exists but its workspace/default project data is missing during authorization setup, log structured ids and return `_nay.message = "Unauthorized"` unless the function boundary is already using exception semantics.
+- If the membership exists but its organization/default workspace data is missing during authorization setup, log structured ids and return `_nay.message = "Unauthorized"` unless the function boundary is already using exception semantics.
 - After membership succeeds, normalize/load the requested resource.
 - If the requested thread/message/resource id is invalid or the doc does not exist, return `_nay.message = "Not found"` (or `null` for nullable queries).
-- After loading the resource, compare `workspaceId` and `projectId` directly against the membership doc. Do not use a helper for these thread-scoped checks.
-- If the resource exists but belongs to a different workspace/project scope than the membership doc, return `_nay.message = "Unauthorized"`.
+- After loading the resource, compare `organizationId` and `workspaceId` directly against the membership doc. Do not use a helper for these thread-scoped checks.
+- If the resource exists but belongs to a different organization/workspace scope than the membership doc, return `_nay.message = "Unauthorized"`.
 - After the requested resource is validated, log and throw `should_never_happen(errorMessage, errorData)` when a stored linked id points to missing data. Do not collapse broken internal relationships into `"Not found"`.
 - Keep DB writes after these fallible checks so `_nay` returns do not leave partial writes behind.
 
@@ -407,8 +407,8 @@ const entry: files_nodes_get_by_path_Result =
 	appFileNodePath === "/"
 		? null
 		: await ctx.runQuery(internal.files_nodes.get_by_path, {
+				organizationId,
 				workspaceId,
-				projectId,
 				path: appFileNodePath,
 			});
 
@@ -508,8 +508,8 @@ Treat `.collect()` as a heavy read because it materializes the full result set i
 To fetch "all docs whose string field starts with `prefix`" without JS filtering, use a range on a regular index: lower bound the prefix, upper bound the prefix plus `"\uffff"` (the max BMP code point, so every extension of the prefix sorts below it):
 
 ```ts
-.withIndex("by_workspace_project_slug", (q) =>
-	q.eq("workspaceId", wid).eq("projectId", pid)
+.withIndex("by_organization_workspace_slug", (q) =>
+	q.eq("organizationId", wid).eq("workspaceId", pid)
 		.gte("slug", prefix)
 		.lt("slug", `${prefix}\uffff`),
 )
@@ -520,7 +520,7 @@ Use this raw form for true string-prefix scans. For file-tree scans, use the mat
 This only works on regular indexes. Search indexes (`withSearchIndex`) accept exactly one `.search()` plus `.eq()` on `filterFields` — equality only, no `gte`/`lt` — so a prefix constraint on a full-text query cannot ride the search index. Express the same range as a post-index `.filter()` instead (see the next section for what `.filter()` does to pagination):
 
 ```ts
-.withSearchIndex("search_path", (q) => q.search("path", words).eq("workspaceId", wid))
+.withSearchIndex("search_path", (q) => q.search("path", words).eq("organizationId", wid))
 .filter((q) => q.and(q.gte(q.field("treePath"), treePathPrefix), q.lt(q.field("treePath"), `${treePathPrefix}\uffff`)))
 ```
 

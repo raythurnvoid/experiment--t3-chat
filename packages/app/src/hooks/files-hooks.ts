@@ -12,7 +12,7 @@ export type files_Yjs = {
 
 export type files_Yjs_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
-	membershipId: app_convex_Id<"workspaces_projects_users">;
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	presenceStore: files_PresenceStore;
 };
 

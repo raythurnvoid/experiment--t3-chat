@@ -208,15 +208,15 @@ export function path_name_of(path: string): string {
  * positional fields joined into the final ID.
  */
 export type AppCompositeIds = {
-	rooms: [kind: "files_nodes", workspaceId: string, projectId: string, nodeId: string];
+	rooms: [kind: "files_nodes", organizationId: string, workspaceId: string, nodeId: string];
 	billing:
 		| [name: "manual_credit", userId: string, timestamp: number]
 		| [
 				name: "file_save",
 				billedUserId: string,
 				actorUserId: string,
+				organizationId: string,
 				workspaceId: string,
-				projectId: string,
 				nodeId: string,
 				yjsSequence: number,
 		  ]
@@ -233,8 +233,8 @@ export type AppCompositeIds = {
 				name: "ai_usage",
 				billedUserId: string,
 				actorUserId: string,
+				organizationId: string,
 				workspaceId: string,
-				projectId: string,
 				threadId: string,
 				messageId: string,
 		  ];

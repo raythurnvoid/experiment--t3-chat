@@ -12,19 +12,19 @@
 // - Bash path: an absolute path in the Just Bash filesystem. It may point at
 //   db files, `/tmp`, or synthetic base directories.
 // - `HOME`: the bash home/user path, `/home/cloud-usr`.
-// - `APP_MOUNT_PATH`: the parent mount path for app workspaces,
+// - `APP_MOUNT_PATH`: the parent mount path for app organizations,
 //   `/home/cloud-usr/w`.
-// - `currentProjectPath`: the mounted app file tree path,
-//   `/home/cloud-usr/w/<workspaceName>/<projectName>`.
+// - `currentWorkspacePath`: the mounted app file tree path,
+//   `/home/cloud-usr/w/<organizationName>/<workspaceName>`.
 // - dbFilesPath: the Convex `files_nodes.path` inside the selected db-files
 //   file tree. It is root-relative, but still starts with `/`; examples are
 //   `/docs/readme.md`, `/<mount-name>/README.md`, and `/` for a tree root.
 // - Persisted cwd path: the thread-state representation. `~` (the creation
-//   default) means "start in currentProjectPath"; anything else is an absolute
+//   default) means "start in currentWorkspacePath"; anything else is an absolute
 //   Bash path under `HOME` or `/tmp`.
 //
 // Command operands start raw. Command handlers resolve them against `cwd` into a
-// normalized Bash path, then strip the current project path before querying
+// normalized Bash path, then strip the current workspace path before querying
 // Convex. `bash_DbFilesFs` receives already-stripped db-files paths from
 // `MountableFs`.
 
@@ -51,7 +51,7 @@ import type {
 	ai_chat_files_patch_thread_tmp_files_Args,
 } from "../convex/ai_chat_files.ts";
 import { files_MOUNT_ROOT, files_ROOT_ID, files_get_utf8_byte_size } from "../shared/files.ts";
-import { workspaces_GLOBAL_GITHUB_PROJECT_ID, workspaces_GLOBAL_WORKSPACE_ID } from "../shared/workspaces.ts";
+import { organizations_GLOBAL_GITHUB_WORKSPACE_ID, organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { bash_cat_command_create } from "./bash-cat-command.ts";
 import { bash_cp_command_create } from "./bash-cp-command.ts";
@@ -482,15 +482,15 @@ function format_bash_output(args: {
 
 // #region native just bash tmp command
 
-function native_just_bash_tmp_command_create(command: CommandName, currentProjectPath: string) {
+function native_just_bash_tmp_command_create(command: CommandName, currentWorkspacePath: string) {
 	return defineCommand(command, async (args, commandCtx) => {
-		return await bash_delegate_native_just_bash_tmp_command(command, args, commandCtx, currentProjectPath);
+		return await bash_delegate_native_just_bash_tmp_command(command, args, commandCtx, currentWorkspacePath);
 	});
 }
 
-function native_just_bash_tmp_command_create_all(currentProjectPath: string) {
+function native_just_bash_tmp_command_create_all(currentWorkspacePath: string) {
 	return NATIVE_JUST_BASH_TMP_COMMANDS.map((command) =>
-		native_just_bash_tmp_command_create(command, currentProjectPath),
+		native_just_bash_tmp_command_create(command, currentWorkspacePath),
 	);
 }
 // #endregion native just bash tmp command
@@ -661,12 +661,12 @@ class BashTmpFs implements IFileSystem {
 	}
 }
 
-function stream_utility_command_create_all(currentProjectPath: string) {
+function stream_utility_command_create_all(currentWorkspacePath: string) {
 	return [
-		native_just_bash_tmp_command_create("sort", currentProjectPath),
-		native_just_bash_tmp_command_create("uniq", currentProjectPath),
-		native_just_bash_tmp_command_create("cut", currentProjectPath),
-		native_just_bash_tmp_command_create("awk", currentProjectPath),
+		native_just_bash_tmp_command_create("sort", currentWorkspacePath),
+		native_just_bash_tmp_command_create("uniq", currentWorkspacePath),
+		native_just_bash_tmp_command_create("cut", currentWorkspacePath),
+		native_just_bash_tmp_command_create("awk", currentWorkspacePath),
 	];
 }
 
@@ -817,31 +817,31 @@ class ReadOnlyBaseFs implements IFileSystem {
  */
 async function bash_fs_create(args: {
 	ctx: ActionCtx;
-	workspaceId: Id<"workspaces">;
-	projectId: Id<"workspaces_projects">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+	organizationName: string;
 	workspaceName: string;
-	projectName: string;
 	userId: Id<"users">;
 	threadId: Id<"ai_chat_threads">;
 	persistedCwd: string;
 	allowDbFilesMkdir: boolean;
 }) {
-	// Workspace and project names are validated slugs, so they are stable shell
+	// Organization and workspace names are validated slugs, so they are stable shell
 	// path segments and do not need path-segment encoding here.
-	const currentProjectPath = `${bash_APP_MOUNT_PATH}/${args.workspaceName}/${args.projectName}`;
+	const currentWorkspacePath = `${bash_APP_MOUNT_PATH}/${args.organizationName}/${args.workspaceName}`;
 
 	const tmpFs = await BashTmpFs.create(args.ctx, args.threadId);
 
 	const appDbFilesFs = new bash_DbFilesFs({
 		ctx: args.ctx,
 		ctxData: {
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
+			organizationName: args.organizationName,
 			workspaceName: args.workspaceName,
-			projectName: args.projectName,
 			userId: args.userId,
 		},
-		currentProjectPath,
+		currentWorkspacePath,
 		allowDbFilesMkdir: args.allowDbFilesMkdir,
 	});
 
@@ -851,20 +851,20 @@ async function bash_fs_create(args: {
 	const externalMountsDbFilesFs = new bash_DbFilesFs({
 		ctx: args.ctx,
 		ctxData: {
-			workspaceId: workspaces_GLOBAL_WORKSPACE_ID,
-			projectId: workspaces_GLOBAL_GITHUB_PROJECT_ID,
-			workspaceName: "GLOBAL",
-			projectName: "GITHUB",
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+			organizationName: "GLOBAL",
+			workspaceName: "GITHUB",
 			userId: args.userId,
 		},
-		currentProjectPath: files_MOUNT_ROOT,
+		currentWorkspacePath: files_MOUNT_ROOT,
 		allowDbFilesMkdir: false,
 	});
 
 	const fs = new MountableFs({
 		base: new ReadOnlyBaseFs(),
 		mounts: [
-			{ mountPoint: currentProjectPath, filesystem: appDbFilesFs },
+			{ mountPoint: currentWorkspacePath, filesystem: appDbFilesFs },
 			{ mountPoint: files_MOUNT_ROOT, filesystem: externalMountsDbFilesFs },
 			{ mountPoint: bash_TMP_MOUNT, filesystem: tmpFs },
 		],
@@ -872,19 +872,19 @@ async function bash_fs_create(args: {
 
 	const dbFilesRoots: bash_DbFilesRoots = {
 		app: {
-			currentProjectPath,
+			currentWorkspacePath,
 			fs: appDbFilesFs,
 		},
 		externalMounts: {
-			currentProjectPath: files_MOUNT_ROOT,
+			currentWorkspacePath: files_MOUNT_ROOT,
 			fs: externalMountsDbFilesFs,
 		},
 	};
 
 	// The persisted cwd can vanish between runs (deleted folder, pruned /tmp).
 	const cwd =
-		(await nearest_existing_dir(fs, args.persistedCwd === DEFAULT_CWD ? currentProjectPath : args.persistedCwd)) ??
-		currentProjectPath;
+		(await nearest_existing_dir(fs, args.persistedCwd === DEFAULT_CWD ? currentWorkspacePath : args.persistedCwd)) ??
+		currentWorkspacePath;
 
 	const bash = new Bash({
 		fs,
@@ -908,22 +908,22 @@ async function bash_fs_create(args: {
 			bash_head_tail_wc_command_create(args.ctx, dbFilesRoots, "tail"),
 			bash_head_tail_wc_command_create(args.ctx, dbFilesRoots, "wc"),
 			bash_stat_command_create(args.ctx, dbFilesRoots),
-			...stream_utility_command_create_all(currentProjectPath),
+			...stream_utility_command_create_all(currentWorkspacePath),
 			bash_sed_command_create(args.ctx, dbFilesRoots),
 			// Guarded mutators.
-			bash_touch_command_create(currentProjectPath),
-			bash_rm_command_create(currentProjectPath),
-			bash_cp_command_create(currentProjectPath),
-			bash_mv_command_create(currentProjectPath),
-			bash_tee_command_create(currentProjectPath),
+			bash_touch_command_create(currentWorkspacePath),
+			bash_rm_command_create(currentWorkspacePath),
+			bash_cp_command_create(currentWorkspacePath),
+			bash_mv_command_create(currentWorkspacePath),
+			bash_tee_command_create(currentWorkspacePath),
 			// Nested execution.
-			bash_nested_shell_command_create("bash", currentProjectPath),
-			bash_nested_shell_command_create("sh", currentProjectPath),
+			bash_nested_shell_command_create("bash", currentWorkspacePath),
+			bash_nested_shell_command_create("sh", currentWorkspacePath),
 			// xargs/which.
 			bash_xargs_command_create(),
 			bash_which_command_create(),
 			// Native /tmp wrappers.
-			...native_just_bash_tmp_command_create_all(currentProjectPath),
+			...native_just_bash_tmp_command_create_all(currentWorkspacePath),
 		],
 		executionLimits: {
 			maxCommandCount: 200,
@@ -936,11 +936,11 @@ async function bash_fs_create(args: {
 
 	return {
 		cwd,
-		currentProjectPath,
+		currentWorkspacePath,
 		run_command: async (command: string) => {
 			// `source` and `.` execute inside the current shell, so block mounted
 			// file targets before Just Bash can load them.
-			if (bash_command_has_disallowed_source_target(command, { cwd, currentProjectPath })) {
+			if (bash_command_has_disallowed_source_target(command, { cwd, currentWorkspacePath })) {
 				return {
 					stdout: "",
 					stderr: bash_disallowed_source_target_error(),
@@ -989,10 +989,10 @@ async function bash_fs_create(args: {
 export async function bash_run_command(
 	ctx: ActionCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		organizationName: string;
 		workspaceName: string;
-		projectName: string;
 		userId: Id<"users">;
 		threadId: Id<"ai_chat_threads">;
 		command: string;
@@ -1000,17 +1000,17 @@ export async function bash_run_command(
 	},
 ) {
 	const threadState = (await ctx.runQuery(internal.ai_chat.get_thread_state, {
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 		threadId: args.threadId,
 	})) as ai_chat_get_thread_state_Result;
 
 	const bashFs = await bash_fs_create({
 		ctx,
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
+		organizationName: args.organizationName,
 		workspaceName: args.workspaceName,
-		projectName: args.projectName,
 		userId: args.userId,
 		threadId: args.threadId,
 		persistedCwd: threadState.bashCwd,
@@ -1023,7 +1023,7 @@ export async function bash_run_command(
 	// which case we assume the shell did not move.
 	const rawNextCwd = result.env.PWD || bashFs.cwd;
 	// A command can delete its own cwd; climb to the nearest surviving directory.
-	let nextCwd = (await bashFs.nearest_existing_dir(rawNextCwd)) ?? bashFs.currentProjectPath;
+	let nextCwd = (await bashFs.nearest_existing_dir(rawNextCwd)) ?? bashFs.currentWorkspacePath;
 	const redirectsStderrToStdout = REDIRECTS_STDERR_TO_STDOUT_REGEX.test(args.command);
 
 	if (
@@ -1062,7 +1062,7 @@ export async function bash_run_command(
 			threadId: args.threadId,
 			cwd: rawNextCwd,
 		});
-		nextCwd = bashFs.currentProjectPath;
+		nextCwd = bashFs.currentWorkspacePath;
 	}
 
 	// `/tmp` persists to the db, so bound its durable footprint before flushing:
@@ -1077,8 +1077,8 @@ export async function bash_run_command(
 	if (tmpPatch) {
 		pendingMutations.push(
 			ctx.runMutation(internal.ai_chat_files.patch_thread_tmp_files, {
+				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				projectId: args.projectId,
 				threadId: args.threadId,
 				fileNodes: tmpPatch.fileNodes,
 				fileNodesContentDict: tmpPatch.fileNodesContentDict,
@@ -1097,8 +1097,8 @@ export async function bash_run_command(
 	if (threadStateUpdated) {
 		pendingMutations.push(
 			ctx.runMutation(internal.ai_chat.set_thread_state, {
+				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				projectId: args.projectId,
 				threadId: args.threadId,
 				userId: args.userId,
 				patch: {
@@ -1354,8 +1354,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("action_run", () => {
-		const test_workspace_name = "personal";
-		const test_project_name = "home";
+		const test_organization_name = "personal";
+		const test_workspace_name = "home";
 
 		// Full object bytes served by the stubbed global fetch, keyed by files_r2_assets.r2Key. The
 		// R2 client's getUrl is spied to embed the key in the URL so the bounded window readers
@@ -1425,8 +1425,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			updatedAt?: number;
 		};
 
-		// Mirrors the old mock workspace tree; contents are canonical for every test that reads them.
-		const default_workspace_files: BashSeedSpec[] = [
+		// Mirrors the old mock organization tree; contents are canonical for every test that reads them.
+		const default_organization_files: BashSeedSpec[] = [
 			{ path: "/docs", kind: "folder" },
 			{ path: "/docs/readme.md", content: "# Readme\nunique-token here\nmore unique-token below\n" },
 			{ path: "/docs/tutorial.md", content: "zeta\nalpha\nALPHA\n" },
@@ -1444,9 +1444,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			content: `${Array.from({ length: 1000 }, (_, index) => `line ${index + 1}`).join("\n")}\n`,
 		};
 
-		async function seed_workspace_folder(
+		async function seed_organization_folder(
 			ctx: MutationCtx,
-			scope: { workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects">; userId: Id<"users"> },
+			scope: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
 			path: string,
 			updatedAt: number,
 		) {
@@ -1457,10 +1457,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				const ancestorPath = `/${segments.slice(0, depth).join("/")}`;
 				const existing = await ctx.db
 					.query("files_nodes")
-					.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
+							.eq("organizationId", scope.organizationId)
 							.eq("workspaceId", scope.workspaceId)
-							.eq("projectId", scope.projectId)
 							.eq("path", ancestorPath)
 							.eq("archiveOperationId", undefined),
 					)
@@ -1471,8 +1471,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				}
 				parentId = await ctx.db.insert("files_nodes", {
 					...test_mocks.files.base(),
+					organizationId: scope.organizationId,
 					workspaceId: scope.workspaceId,
-					projectId: scope.projectId,
 					createdBy: scope.userId,
 					updatedBy: scope.userId,
 					parentId,
@@ -1487,9 +1487,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			return parentId;
 		}
 
-		async function seed_workspace_node(
+		async function seed_organization_node(
 			ctx: MutationCtx,
-			scope: { workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects">; userId: Id<"users"> },
+			scope: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> },
 			spec: BashSeedSpec,
 			seedIndex: number,
 		) {
@@ -1499,12 +1499,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const updatedAt = spec.updatedAt ?? Date.now() - 1_000_000 + seedIndex * 1000;
 			const segments = spec.path.split("/").filter(Boolean);
 			if (spec.kind === "folder") {
-				await seed_workspace_folder(ctx, scope, spec.path, updatedAt);
+				await seed_organization_folder(ctx, scope, spec.path, updatedAt);
 				return;
 			}
 			const parentId =
 				segments.length > 1
-					? await seed_workspace_folder(ctx, scope, `/${segments.slice(0, -1).join("/")}`, updatedAt)
+					? await seed_organization_folder(ctx, scope, `/${segments.slice(0, -1).join("/")}`, updatedAt)
 					: files_ROOT_ID;
 			const name = segments[segments.length - 1];
 			const dotIndex = name.lastIndexOf(".");
@@ -1512,8 +1512,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const bytes = new TextEncoder().encode(content);
 			const fileId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
+				organizationId: scope.organizationId,
 				workspaceId: scope.workspaceId,
-				projectId: scope.projectId,
 				createdBy: scope.userId,
 				updatedBy: scope.userId,
 				parentId,
@@ -1529,8 +1529,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 			const r2Key = `bash-test${spec.path}`;
 			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: scope.organizationId,
 				workspaceId: scope.workspaceId,
-				projectId: scope.projectId,
 				kind: "content",
 				r2Bucket: "test",
 				r2Key,
@@ -1544,8 +1544,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				return;
 			}
 			const yjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: scope.organizationId,
 				workspaceId: scope.workspaceId,
-				projectId: scope.projectId,
 				kind: "yjs_snapshot",
 				r2Bucket: "test",
 				size: 0,
@@ -1553,8 +1553,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				updatedAt,
 			});
 			const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
+				organizationId: scope.organizationId,
 				workspaceId: scope.workspaceId,
-				projectId: scope.projectId,
 				fileNodeId: fileId,
 				sequence: 1,
 				assetId: yjsSnapshotAssetId,
@@ -1563,8 +1563,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				updatedAt,
 			});
 			const yjsLastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+				organizationId: scope.organizationId,
 				workspaceId: scope.workspaceId,
-				projectId: scope.projectId,
 				fileNodeId: fileId,
 				lastSequence: 1,
 			});
@@ -1573,8 +1573,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				return;
 			}
 			const chunked = await db_insert_file_text_content(ctx, {
+				organizationId: scope.organizationId,
 				workspaceId: scope.workspaceId,
-				projectId: scope.projectId,
 				nodeId: fileId,
 				path: spec.path,
 				yjsSequence: 1,
@@ -1589,10 +1589,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				// bail out (usable: false) and the bounded R2 window fallback runs instead.
 				const chunks = await ctx.db
 					.query("files_markdown_chunks")
-					.withIndex("by_workspace_project_source_fileNode_yjsSeq_chunk", (q) =>
+					.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
 						q
+							.eq("organizationId", scope.organizationId)
 							.eq("workspaceId", scope.workspaceId)
-							.eq("projectId", scope.projectId)
 							.eq("sourceKind", "committed")
 							.eq("fileNodeId", fileId)
 							.eq("yjsSequence", 1),
@@ -1604,8 +1604,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				} else {
 					const first = chunks[0];
 					await ctx.db.insert("files_markdown_chunks", {
+						organizationId: scope.organizationId,
 						workspaceId: scope.workspaceId,
-						projectId: scope.projectId,
 						fileNodeId: fileId,
 						sourceKind: "committed",
 						yjsSequence: 1,
@@ -1630,9 +1630,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				t: unknown;
 				seeded: {
 					userId: Id<"users">;
-					workspaceId: Id<"workspaces">;
-					projectId: Id<"workspaces_projects">;
-					membershipId: Id<"workspaces_projects_users">;
+					organizationId: Id<"organizations">;
+					workspaceId: Id<"organizations_workspaces">;
+					membershipId: Id<"organizations_workspaces_users">;
 				};
 			};
 			/** Acting user override for the action args (scoping tests). */
@@ -1651,19 +1651,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				opts?.shared?.seeded ??
 				(await t.run((ctx) =>
 					test_mocks_fill_db_with.membership(ctx, {
+						organizationName: test_organization_name,
 						workspaceName: test_workspace_name,
-						projectName: test_project_name,
 					}),
 				));
 			const actingUserId = opts?.userId ?? seeded.userId;
 
-			const seedSpecs = [...(opts?.shared ? [] : default_workspace_files), ...(opts?.extraFiles ?? [])];
+			const seedSpecs = [...(opts?.shared ? [] : default_organization_files), ...(opts?.extraFiles ?? [])];
 			if (seedSpecs.length > 0) {
 				await t.run(async (ctx) => {
 					for (const [seedIndex, spec] of seedSpecs.entries()) {
-						await seed_workspace_node(
+						await seed_organization_node(
 							ctx,
-							{ workspaceId: seeded.workspaceId, projectId: seeded.projectId, userId: seeded.userId },
+							{ organizationId: seeded.organizationId, workspaceId: seeded.workspaceId, userId: seeded.userId },
 							spec,
 							seedIndex,
 						);
@@ -1696,8 +1696,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			let cwd = "~";
 			if (opts?.initialCwd != null && opts.initialCwd !== "~") {
 				const state = await t.mutation(internal.ai_chat.set_thread_state, {
+					organizationId: seeded.organizationId,
 					workspaceId: seeded.workspaceId,
-					projectId: seeded.projectId,
 					threadId,
 					userId: seeded.userId,
 					patch: { bashCwd: opts.initialCwd },
@@ -1718,10 +1718,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const ctx = { runQuery, runMutation, runAction } as unknown as ActionCtx;
 
 			const ctxData = {
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
+				organizationName: test_organization_name,
 				workspaceName: test_workspace_name,
-				projectName: test_project_name,
 				userId: actingUserId,
 			};
 
@@ -1733,8 +1733,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					allowDbFilesMkdir: opts?.allowDbFilesMkdir ?? true,
 				});
 				const state = await t.query(internal.ai_chat.get_thread_state, {
+					organizationId: seeded.organizationId,
 					workspaceId: seeded.workspaceId,
-					projectId: seeded.projectId,
 					threadId,
 				});
 				cwd = state.bashCwd ?? cwd;
@@ -1748,10 +1748,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const dbFilesDoc = await runner.t.run((ctx) =>
 				ctx.db
 					.query("files_nodes")
-					.withIndex("by_workspace_project_path_archiveOperation", (q) =>
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 						q
+							.eq("organizationId", runner.seeded.organizationId)
 							.eq("workspaceId", runner.seeded.workspaceId)
-							.eq("projectId", runner.seeded.projectId)
 							.eq("path", path)
 							.eq("archiveOperationId", undefined),
 					)
@@ -1965,8 +1965,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(committedSize).toBeLessThan(bash_READ_INLINE_MAX_BYTES);
 
 			const upserted = await runner.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
+				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
-				projectId: runner.seeded.projectId,
 				userId: runner.seeded.userId,
 				nodeId: dbFilesDocId,
 				baseYjsSequence: 1,
@@ -1977,8 +1977,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				throw new Error(upserted._nay.message);
 			}
 			const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
+				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
-				projectId: runner.seeded.projectId,
 				userId: runner.seeded.userId,
 				fileNodeId: dbFilesDocId,
 			});
@@ -2014,8 +2014,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const pendingSize = files_get_utf8_byte_size("base");
 			await runner.t.run(async (ctx) => {
 				await ctx.db.insert("files_pending_updates", {
+					organizationId: runner.seeded.organizationId,
 					workspaceId: runner.seeded.workspaceId,
-					projectId: runner.seeded.projectId,
 					userId: runner.seeded.userId,
 					fileNodeId: dbFilesDocId,
 					baseYjsSequence: 1,
@@ -2138,7 +2138,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 		});
 
-		test("delegates bare ls to the current scratch directory outside the current project path", async () => {
+		test("delegates bare ls to the current scratch directory outside the current workspace path", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run("cd /tmp && printf hi > scratch.txt && ls");
@@ -2150,7 +2150,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(paginatedCalls).toHaveLength(0);
 		});
 
-		test("keeps /tmp relative ls output outside the current project path", async () => {
+		test("keeps /tmp relative ls output outside the current workspace path", async () => {
 			const { run, runQuery } = await create_bash_runner();
 
 			const result = await run("cd /tmp && printf hi > relative-tmp.txt && ls relative-tmp.txt");
@@ -2397,7 +2397,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 		});
 
-		test("ls -t lists the project newest-first and supports scoped immediate-child recency", async () => {
+		test("ls -t lists the workspace newest-first and supports scoped immediate-child recency", async () => {
 			const runner = await create_bash_runner({
 				extraFiles: [
 					{ path: "/docs/aaa-old.md", content: "old\n", updatedAt: Date.now() - 2_000_000 },
@@ -2413,7 +2413,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const scopedOldest = await run(`ls -rt --limit 10 ${test_db_files_mount}/docs`);
 			const scopedPaged = await run(`ls -t --limit 1 ${test_db_files_mount}/docs`);
 			const recursiveScoped = await run(`ls -Rt ${test_db_files_mount}/docs`);
-			const projectPaged = await run("ls -t --limit 1");
+			const workspacePaged = await run("ls -t --limit 1");
 
 			expect(newest.metadata.exitCode).toBe(0);
 			// Each line is "<ISO timestamp>\t<shell path>"; assert the recency formatting + a known path.
@@ -2435,7 +2435,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(recursiveScoped.metadata.exitCode).toBe(2);
 			expect(recursiveScoped.stderr).toContain("ls -t -R is not supported");
-			expect(projectPaged.stdout).toContain("Next page: ls -t --limit 1 --cursor");
+			expect(workspacePaged.stdout).toContain("Next page: ls -t --limit 1 --cursor");
 			expect(runQuery).toHaveBeenCalledWith(
 				internal.files_nodes.list_children,
 				expect.objectContaining({
@@ -2928,12 +2928,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(suggestionLine).toContain(`${test_db_files_mount}/uploaded.txt`);
 		});
 
-		test("rejects workspace writes and persists same-thread /tmp scratch files", async () => {
+		test("rejects organization writes and persists same-thread /tmp scratch files", async () => {
 			const { run, runMutation } = await create_bash_runner();
 
-			const workspaceWrite = await run(`echo nope > ${test_db_files_mount}/docs/new.md`);
-			expect(workspaceWrite.metadata.exitCode).not.toBe(0);
-			expect(workspaceWrite.stderr).toContain("read-only file system");
+			const organizationWrite = await run(`echo nope > ${test_db_files_mount}/docs/new.md`);
+			expect(organizationWrite.metadata.exitCode).not.toBe(0);
+			expect(organizationWrite.stderr).toContain("read-only file system");
 
 			const tmpWrite = await run("printf hi > /tmp/a.txt");
 			expect(tmpWrite.metadata.exitCode).toBe(0);
@@ -2942,7 +2942,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(nextInvocation.metadata.exitCode).toBe(0);
 			expect(nextInvocation.stdout).toBe("hi");
 
-			// Only the tmp write flushes; the failed workspace write and the read do not.
+			// Only the tmp write flushes; the failed organization write and the read do not.
 			const patchCalls = runMutation.mock.calls.filter(
 				([ref]) => function_name_of(ref) === "ai_chat_files:patch_thread_tmp_files",
 			);
@@ -3386,7 +3386,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(fileScope.metadata.exitCode).toBe(2);
 			expect(fileScope.stderr).toContain("--path must be a folder");
 
-			// A --path outside currentProjectPath (and outside any mount) is rejected.
+			// A --path outside currentWorkspacePath (and outside any mount) is rejected.
 			const bad = await run("search --path /etc unique-token");
 			expect(bad.metadata.exitCode).toBe(2);
 			expect(bad.stderr).toContain("--path must be a folder under");
@@ -4150,8 +4150,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			}
 			const draftNodeId = await get_seeded_node_id(runner, "/draft-stat.md");
 			const upserted = await runner.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
+				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
-				projectId: runner.seeded.projectId,
 				userId: runner.seeded.userId,
 				nodeId: draftNodeId,
 				baseYjsSequence: 1,
@@ -4162,8 +4162,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				throw new Error(upserted._nay.message);
 			}
 			const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
+				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
-				projectId: runner.seeded.projectId,
 				userId: runner.seeded.userId,
 				fileNodeId: draftNodeId,
 			});
@@ -4617,8 +4617,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			}
 			const draftNodeId = await get_seeded_node_id(runner, "/draft.md");
 			const upserted = await runner.t.mutation(internal.files_pending_updates.upsert_file_pending_update_in_db, {
+				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
-				projectId: runner.seeded.projectId,
 				userId: runner.seeded.userId,
 				nodeId: draftNodeId,
 				baseYjsSequence: 1,
@@ -4629,8 +4629,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				throw new Error(upserted._nay.message);
 			}
 			const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
+				organizationId: runner.seeded.organizationId,
 				workspaceId: runner.seeded.workspaceId,
-				projectId: runner.seeded.projectId,
 				userId: runner.seeded.userId,
 				fileNodeId: draftNodeId,
 			});
@@ -5459,15 +5459,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 				// The default app file tree has no Zorptelemetry marker, so an app-scope search misses it:
 				// the reserved mount scope is reachable only through the /.mounts prefix.
-				const projectSearch = await runner.run("search Zorptelemetry");
-				expect(projectSearch.metadata.exitCode).toBe(0);
-				expect(projectSearch.stdout).not.toContain("README.md");
+				const workspaceSearch = await runner.run("search Zorptelemetry");
+				expect(workspaceSearch.metadata.exitCode).toBe(0);
+				expect(workspaceSearch.stdout).not.toContain("README.md");
 
 				// The runner starts in the app file tree root; listing it shows app folders, never mounts.
-				const projectRoot = await runner.run("ls");
-				expect(projectRoot.metadata.exitCode).toBe(0);
-				expect(projectRoot.stdout).toContain("docs");
-				expect(projectRoot.stdout).not.toContain("t3-chat");
+				const workspaceRoot = await runner.run("ls");
+				expect(workspaceRoot.metadata.exitCode).toBe(0);
+				expect(workspaceRoot.stdout).toContain("docs");
+				expect(workspaceRoot.stdout).not.toContain("t3-chat");
 
 				// The stored reserved path (without the /.mounts prefix) is not addressable from the shell.
 				const bare = await runner.run("cat /t3-chat/README.md");

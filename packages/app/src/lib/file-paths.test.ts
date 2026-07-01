@@ -139,7 +139,7 @@ describe("files_truncate_path_for_width", () => {
 		measureCandidateMock.mockImplementation((candidate: string) => grapheme_count(candidate));
 
 		expect(
-			truncate_path_for_width("👨‍👩‍👧‍👦-workspace/inbox/e\u0301-file.md", grapheme_count(expected)),
+			truncate_path_for_width("👨‍👩‍👧‍👦-organization/inbox/e\u0301-file.md", grapheme_count(expected)),
 		).toBe(expected);
 	});
 

@@ -22,9 +22,9 @@ function restore_runtime_env() {
 
 describe("composite_id", () => {
 	test("joins files room ids with double colons", () => {
-		const id = composite_id("rooms", "files_nodes", "workspace_1", "project_1", "file_1");
+		const id = composite_id("rooms", "files_nodes", "organization_1", "workspace_1", "file_1");
 
-		expect(id).toBe("files_nodes::workspace_1::project_1::file_1");
+		expect(id).toBe("files_nodes::organization_1::workspace_1::file_1");
 	});
 
 	test("joins billing event ids with double colons", () => {
@@ -39,13 +39,13 @@ describe("composite_id", () => {
 			"file_save",
 			"billed_user_1",
 			"actor_user_1",
+			"organization_1",
 			"workspace_1",
-			"project_1",
 			"file_1",
 			42,
 		);
 
-		expect(id).toBe("file_save::billed_user_1::actor_user_1::workspace_1::project_1::file_1::42");
+		expect(id).toBe("file_save::billed_user_1::actor_user_1::organization_1::workspace_1::file_1::42");
 	});
 
 	test("joins monthly credit ids with double colons", () => {
@@ -60,13 +60,13 @@ describe("composite_id", () => {
 			"ai_usage",
 			"billed_user_1",
 			"actor_user_1",
+			"organization_1",
 			"workspace_1",
-			"project_1",
 			"thread_1",
 			"message_1",
 		);
 
-		expect(id).toBe("ai_usage::billed_user_1::actor_user_1::workspace_1::project_1::thread_1::message_1");
+		expect(id).toBe("ai_usage::billed_user_1::actor_user_1::organization_1::workspace_1::thread_1::message_1");
 	});
 });
 

@@ -1,7 +1,8 @@
 import { Migrations } from "@convex-dev/migrations";
+import { v } from "convex/values";
 import { components, internal } from "./_generated/api.js";
-import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
-import { internalMutation } from "./_generated/server.js";
+import type { DataModel, Doc, Id, TableNames } from "./_generated/dataModel.js";
+import { internalMutation, type MutationCtx } from "./_generated/server.js";
 import type { access_control_Permission, access_control_Role } from "../shared/access-control.ts";
 import { quotas } from "../shared/quotas.ts";
 import {
@@ -26,8 +27,8 @@ type NotificationWithCreatedAt = Doc<"notifications"> & {
 	createdAt?: number;
 };
 
-type LegacyWorkspaceWithOwner = Omit<Doc<"workspaces">, "_id" | "_creationTime" | "ownerUserId"> & {
-	_id: Id<"workspaces">;
+type LegacyOrganizationWithOwner = Omit<Doc<"organizations">, "_id" | "_creationTime" | "ownerUserId"> & {
+	_id: Id<"organizations">;
 	_creationTime: number;
 	owner?: Id<"users">;
 	ownerUserId?: Id<"users">;
@@ -52,6 +53,57 @@ type LegacyFileNodeReferenceDoc<TableName extends FileNodeReferenceTable> = Omit
 	fileNodeId?: Id<"files_nodes">;
 	nodeId?: Id<"files_nodes">;
 };
+
+type RebrandCleanupTableName = Exclude<TableNames, "users" | "users_anagraphics">;
+
+const rebrand_cleanup_tables = [
+	"access_control_permission_grants",
+	"access_control_role_assignments",
+	"ai_chat_files_content",
+	"ai_chat_files",
+	"ai_chat_threads_messages_aisdk_5",
+	"ai_chat_threads_state",
+	"ai_chat_threads",
+	"api_credentials",
+	"billing_cancel_polar_subscription_jobs",
+	"billing_usage_snapshots",
+	"chat_messages",
+	"clerk_webhook_receipts",
+	"data_deletion_requests",
+	"file_stats",
+	"files_content_materialization_jobs",
+	"files_markdown_chunks",
+	"files_metadata_docs",
+	"files_nodes",
+	"files_pending_updates_cleanup_tasks",
+	"files_pending_updates_last_sequence_saved",
+	"files_pending_updates",
+	"files_plain_text_chunks",
+	"files_r2_assets",
+	"files_snapshots",
+	"files_yjs_docs_last_sequences",
+	"files_yjs_snapshots",
+	"files_yjs_updates",
+	"github_sources",
+	"notifications",
+	"public_api_grants",
+	"quotas",
+	"users_anon_tokens",
+	"value_store",
+	"organizations_workspaces_users",
+	"organizations_workspaces",
+	"organizations",
+] as const satisfies readonly RebrandCleanupTableName[];
+
+async function delete_rebrand_cleanup_batch<TableName extends RebrandCleanupTableName>(
+	ctx: MutationCtx,
+	tableName: TableName,
+	batchSize: number,
+) {
+	const docs = await ctx.db.query(tableName).take(batchSize);
+	await Promise.all(docs.map((doc) => ctx.db.delete(tableName, doc._id)));
+	return docs.length;
+}
 
 function rename_legacy_node_id_to_file_node_id<TableName extends FileNodeReferenceTable>(doc: Doc<TableName>) {
 	const legacyDoc = doc as LegacyFileNodeReferenceDoc<TableName>;
@@ -81,36 +133,36 @@ function files_migrations_lowercase_extension(path: string, kind: Doc<"files_nod
 	return name.slice(dotIndex + 1).toLowerCase();
 }
 
-const access_control_workspace_role_permission_grants = [
+const access_control_organization_role_permission_grants = [
+	{ role: "admin", permission: "organization.update" },
+	{ role: "admin", permission: "organization.members.manage" },
+	{ role: "admin", permission: "workspace.create" },
 	{ role: "admin", permission: "workspace.update" },
+	{ role: "admin", permission: "workspace.delete" },
 	{ role: "admin", permission: "workspace.members.manage" },
-	{ role: "admin", permission: "project.create" },
-	{ role: "admin", permission: "project.update" },
-	{ role: "admin", permission: "project.delete" },
-	{ role: "admin", permission: "project.members.manage" },
 	{ role: "admin", permission: "asset.read" },
 	{ role: "admin", permission: "asset.write" },
-	{ role: "admin", permission: "workspace.roles.manage" },
+	{ role: "admin", permission: "organization.roles.manage" },
 	{ role: "admin", permission: "asset.permissions.manage" },
 	{ role: "admin", permission: "api.credentials.manage" },
+	{ role: "member", permission: "organization.update" },
+	{ role: "member", permission: "workspace.create" },
 	{ role: "member", permission: "workspace.update" },
-	{ role: "member", permission: "project.create" },
-	{ role: "member", permission: "project.update" },
-	{ role: "member", permission: "project.delete" },
+	{ role: "member", permission: "workspace.delete" },
 	{ role: "member", permission: "asset.read" },
 	{ role: "member", permission: "asset.write" },
 ] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
 
-const access_control_project_role_permission_grants = [
-	{ role: "admin", permission: "project.update" },
-	{ role: "admin", permission: "project.delete" },
-	{ role: "admin", permission: "project.members.manage" },
+const access_control_workspace_role_permission_grants = [
+	{ role: "admin", permission: "workspace.update" },
+	{ role: "admin", permission: "workspace.delete" },
+	{ role: "admin", permission: "workspace.members.manage" },
 	{ role: "admin", permission: "asset.read" },
 	{ role: "admin", permission: "asset.write" },
 	{ role: "admin", permission: "asset.permissions.manage" },
 	{ role: "admin", permission: "api.credentials.manage" },
-	{ role: "member", permission: "project.update" },
-	{ role: "member", permission: "project.delete" },
+	{ role: "member", permission: "workspace.update" },
+	{ role: "member", permission: "workspace.delete" },
 	{ role: "member", permission: "asset.read" },
 	{ role: "member", permission: "asset.write" },
 ] as const satisfies Array<{ role: access_control_Role; permission: access_control_Permission }>;
@@ -154,54 +206,54 @@ export const remove_billing_usage_snapshots_last_refresh_reason = app_migrations
 	},
 });
 
-export const backfill_workspaces_owner_user_id_from_owner = app_migrations.define({
-	table: "workspaces",
-	migrateOne: async (ctx, workspace) => {
-		const legacyWorkspace = workspace as LegacyWorkspaceWithOwner;
-		if (legacyWorkspace.owner === undefined && legacyWorkspace.ownerUserId !== undefined) {
+export const backfill_organizations_owner_user_id_from_owner = app_migrations.define({
+	table: "organizations",
+	migrateOne: async (ctx, organization) => {
+		const legacyOrganization = organization as LegacyOrganizationWithOwner;
+		if (legacyOrganization.owner === undefined && legacyOrganization.ownerUserId !== undefined) {
 			return;
 		}
 
-		const { _id, _creationTime, owner, ownerUserId, ...next } = legacyWorkspace;
+		const { _id, _creationTime, owner, ownerUserId, ...next } = legacyOrganization;
 		const nextOwnerUserId = ownerUserId ?? owner;
 		if (!nextOwnerUserId) {
 			return;
 		}
 
 		// Recover deployments that were temporarily migrated to `owner` before the schema settled on `ownerUserId`.
-		await ctx.db.replace("workspaces", _id, {
+		await ctx.db.replace("organizations", _id, {
 			...next,
 			ownerUserId: nextOwnerUserId,
 		});
 	},
 });
 
-export const backfill_workspace_home_memberships = app_migrations.define({
-	table: "workspaces_projects_users",
+export const backfill_organization_home_memberships = app_migrations.define({
+	table: "organizations_workspaces_users",
 	migrateOne: async (ctx, membership) => {
 		if (membership.active === false) {
 			return;
 		}
 
-		const workspace = await ctx.db.get("workspaces", membership.workspaceId);
-		if (!workspace?.defaultProjectId || membership.projectId === workspace.defaultProjectId) {
+		const organization = await ctx.db.get("organizations", membership.organizationId);
+		if (!organization?.defaultWorkspaceId || membership.workspaceId === organization.defaultWorkspaceId) {
 			return;
 		}
-		const defaultProjectId = workspace.defaultProjectId;
+		const defaultWorkspaceId = organization.defaultWorkspaceId;
 
 		const existingHomeMemberships = await ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_user_workspace_project_active", (q) =>
-				q.eq("userId", membership.userId).eq("workspaceId", membership.workspaceId).eq("projectId", defaultProjectId),
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) =>
+				q.eq("userId", membership.userId).eq("organizationId", membership.organizationId).eq("workspaceId", defaultWorkspaceId),
 			)
 			.collect();
 		if (existingHomeMemberships.some((homeMembership) => homeMembership.active === true)) {
 			return;
 		}
 
-		await ctx.db.insert("workspaces_projects_users", {
-			workspaceId: membership.workspaceId,
-			projectId: defaultProjectId,
+		await ctx.db.insert("organizations_workspaces_users", {
+			organizationId: membership.organizationId,
+			workspaceId: defaultWorkspaceId,
 			userId: membership.userId,
 			active: true,
 			updatedAt: Date.now(),
@@ -210,7 +262,7 @@ export const backfill_workspace_home_memberships = app_migrations.define({
 });
 
 export const backfill_access_control_member_assignments = app_migrations.define({
-	table: "workspaces_projects_users",
+	table: "organizations_workspaces_users",
 	migrateOne: async (ctx, membership) => {
 		if (membership.active === false) {
 			return;
@@ -218,10 +270,10 @@ export const backfill_access_control_member_assignments = app_migrations.define(
 
 		const existingAssignments = await ctx.db
 			.query("access_control_role_assignments")
-			.withIndex("by_workspace_project_user_role", (q) =>
+			.withIndex("by_organization_workspace_user_role", (q) =>
 				q
+					.eq("organizationId", membership.organizationId)
 					.eq("workspaceId", membership.workspaceId)
-					.eq("projectId", membership.projectId)
 					.eq("userId", membership.userId),
 			)
 			.collect();
@@ -230,8 +282,8 @@ export const backfill_access_control_member_assignments = app_migrations.define(
 		}
 
 		await access_control_db_ensure_role_assignment(ctx, {
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			userId: membership.userId,
 			role: "member",
 			now: Date.now(),
@@ -239,20 +291,20 @@ export const backfill_access_control_member_assignments = app_migrations.define(
 	},
 });
 
-export const seed_access_control_workspace_permission_grants = app_migrations.define({
-	table: "workspaces",
-	migrateOne: async (ctx, workspace) => {
-		if (!workspace.defaultProjectId) {
+export const seed_access_control_organization_permission_grants = app_migrations.define({
+	table: "organizations",
+	migrateOne: async (ctx, organization) => {
+		if (!organization.defaultWorkspaceId) {
 			return;
 		}
 
 		const now = Date.now();
-		for (const grant of access_control_workspace_role_permission_grants) {
+		for (const grant of access_control_organization_role_permission_grants) {
 			await access_control_db_ensure_role_permission_grant(ctx, {
-				workspaceId: workspace._id,
-				projectId: workspace.defaultProjectId,
-				resourceKind: "workspace",
-				resourceId: String(workspace._id),
+				organizationId: organization._id,
+				workspaceId: organization.defaultWorkspaceId,
+				resourceKind: "organization",
+				resourceId: String(organization._id),
 				role: grant.role,
 				permission: grant.permission,
 				now,
@@ -261,16 +313,16 @@ export const seed_access_control_workspace_permission_grants = app_migrations.de
 	},
 });
 
-export const seed_access_control_project_permission_grants = app_migrations.define({
-	table: "workspaces_projects",
-	migrateOne: async (ctx, project) => {
+export const seed_access_control_workspace_permission_grants = app_migrations.define({
+	table: "organizations_workspaces",
+	migrateOne: async (ctx, workspace) => {
 		const now = Date.now();
-		for (const grant of access_control_project_role_permission_grants) {
+		for (const grant of access_control_workspace_role_permission_grants) {
 			await access_control_db_ensure_role_permission_grant(ctx, {
-				workspaceId: project.workspaceId,
-				projectId: project._id,
-				resourceKind: "project",
-				resourceId: String(project._id),
+				organizationId: workspace.organizationId,
+				workspaceId: workspace._id,
+				resourceKind: "workspace",
+				resourceId: String(workspace._id),
 				role: grant.role,
 				permission: grant.permission,
 				now,
@@ -285,7 +337,7 @@ export const remove_access_control_member_management_grants = app_migrations.def
 		if (
 			grant.principalKind !== "role" ||
 			grant.role !== "member" ||
-			(grant.permission !== "workspace.members.manage" && grant.permission !== "project.members.manage")
+			(grant.permission !== "organization.members.manage" && grant.permission !== "workspace.members.manage")
 		) {
 			return;
 		}
@@ -295,24 +347,24 @@ export const remove_access_control_member_management_grants = app_migrations.def
 });
 
 export const cleanup_duplicate_access_control_owner_assignments = app_migrations.define({
-	table: "workspaces",
-	migrateOne: async (ctx, workspace) => {
-		if (!workspace.defaultProjectId) {
+	table: "organizations",
+	migrateOne: async (ctx, organization) => {
+		if (!organization.defaultWorkspaceId) {
 			return;
 		}
-		const defaultProjectId = workspace.defaultProjectId;
+		const defaultWorkspaceId = organization.defaultWorkspaceId;
 
 		const ownerAssignments = await ctx.db
 			.query("access_control_role_assignments")
-			.withIndex("by_workspace_project_role_user", (q) =>
-				q.eq("workspaceId", workspace._id).eq("projectId", defaultProjectId).eq("role", "owner"),
+			.withIndex("by_organization_workspace_role_user", (q) =>
+				q.eq("organizationId", organization._id).eq("workspaceId", defaultWorkspaceId).eq("role", "owner"),
 			)
 			.collect();
 
 		const sortedOwnerAssignments = ownerAssignments.sort((a, b) => a._creationTime - b._creationTime);
-		const workspaceOwnerUserId = workspace.ownerUserId;
-		const keptAssignment = workspaceOwnerUserId
-			? (sortedOwnerAssignments.find((assignment) => assignment.userId === workspaceOwnerUserId) ??
+		const organizationOwnerUserId = organization.ownerUserId;
+		const keptAssignment = organizationOwnerUserId
+			? (sortedOwnerAssignments.find((assignment) => assignment.userId === organizationOwnerUserId) ??
 				sortedOwnerAssignments[0])
 			: sortedOwnerAssignments[0];
 		if (!keptAssignment) {
@@ -326,15 +378,15 @@ export const cleanup_duplicate_access_control_owner_assignments = app_migrations
 	},
 });
 
-export const update_extra_workspaces_quota_max_count_to_2 = app_migrations.define({
+export const update_extra_organizations_quota_max_count_to_2 = app_migrations.define({
 	table: "quotas",
 	migrateOne: async (ctx, quota) => {
-		if (quota.quotaName !== "extra_workspaces" || quota.maxCount === quotas.extra_workspaces.maxCount) {
+		if (quota.quotaName !== "extra_organizations" || quota.maxCount === quotas.extra_organizations.maxCount) {
 			return;
 		}
 
 		await ctx.db.patch("quotas", quota._id, {
-			maxCount: quotas.extra_workspaces.maxCount,
+			maxCount: quotas.extra_organizations.maxCount,
 			updatedAt: Date.now(),
 		});
 	},
@@ -433,8 +485,8 @@ export const backfill_files_plain_text_chunk_scope = app_migrations.define({
 		const fileNode = await ctx.db.get("files_nodes", plainTextChunk.fileNodeId);
 		if (
 			!fileNode ||
+			fileNode.organizationId !== plainTextChunk.organizationId ||
 			fileNode.workspaceId !== plainTextChunk.workspaceId ||
-			fileNode.projectId !== plainTextChunk.projectId ||
 			fileNode.kind !== "file"
 		) {
 			return;
@@ -447,6 +499,93 @@ export const backfill_files_plain_text_chunk_scope = app_migrations.define({
 			path: fileNode.path,
 			archiveOperationId: fileNode.archiveOperationId,
 		});
+	},
+});
+
+export const dev_cleanup_rebrand_preserve_clerk_accounts = internalMutation({
+	args: {
+		batchSize: v.optional(v.number()),
+	},
+	returns: v.object({
+		done: v.boolean(),
+		deletedCount: v.number(),
+		patchedUserCount: v.number(),
+		preservedUserCount: v.number(),
+		preservedAnagraphicCount: v.number(),
+	}),
+	handler: async (ctx, args) => {
+		const batchSize = args.batchSize ?? 200;
+
+		for (const tableName of rebrand_cleanup_tables) {
+			const deletedCount = await delete_rebrand_cleanup_batch(ctx, tableName, batchSize);
+			if (deletedCount > 0) {
+				return {
+					done: false,
+					deletedCount,
+					patchedUserCount: 0,
+					preservedUserCount: 0,
+					preservedAnagraphicCount: 0,
+				};
+			}
+		}
+
+		const users = await ctx.db.query("users").take(batchSize);
+		const preservedUserIds = new Set<Id<"users">>();
+		let deletedCount = 0;
+		let patchedUserCount = 0;
+
+		for (const user of users) {
+			if (!user.clerkUserId) {
+				if (user.anagraphic) {
+					await ctx.db.delete("users_anagraphics", user.anagraphic);
+					deletedCount += 1;
+				}
+				await ctx.db.delete("users", user._id);
+				deletedCount += 1;
+				continue;
+			}
+
+			preservedUserIds.add(user._id);
+			if (user.defaultOrganizationId || user.defaultWorkspaceId || user.anonymousAuthToken || user.deletedAt) {
+				await ctx.db.patch("users", user._id, {
+					defaultOrganizationId: undefined,
+					defaultWorkspaceId: undefined,
+					anonymousAuthToken: undefined,
+					deletedAt: undefined,
+				});
+				patchedUserCount += 1;
+			}
+		}
+
+		if (deletedCount > 0 || patchedUserCount > 0) {
+			return {
+				done: false,
+				deletedCount,
+				patchedUserCount,
+				preservedUserCount: preservedUserIds.size,
+				preservedAnagraphicCount: 0,
+			};
+		}
+
+		const anagraphics = await ctx.db.query("users_anagraphics").take(batchSize);
+		let preservedAnagraphicCount = 0;
+		for (const anagraphic of anagraphics) {
+			if (preservedUserIds.has(anagraphic.userId)) {
+				preservedAnagraphicCount += 1;
+				continue;
+			}
+
+			await ctx.db.delete("users_anagraphics", anagraphic._id);
+			deletedCount += 1;
+		}
+
+		return {
+			done: deletedCount === 0,
+			deletedCount,
+			patchedUserCount: 0,
+			preservedUserCount: preservedUserIds.size,
+			preservedAnagraphicCount,
+		};
 	},
 });
 
@@ -464,20 +603,20 @@ export const run_remove_billing_usage_snapshots_last_refresh_reason = app_migrat
 export const run_remove_notifications_created_at = app_migrations.runner(
 	internal.migrations.remove_notifications_created_at,
 );
-export const run_backfill_workspaces_owner_user_id_from_owner = app_migrations.runner(
-	internal.migrations.backfill_workspaces_owner_user_id_from_owner,
+export const run_backfill_organizations_owner_user_id_from_owner = app_migrations.runner(
+	internal.migrations.backfill_organizations_owner_user_id_from_owner,
 );
-export const run_backfill_workspace_home_memberships = app_migrations.runner(
-	internal.migrations.backfill_workspace_home_memberships,
+export const run_backfill_organization_home_memberships = app_migrations.runner(
+	internal.migrations.backfill_organization_home_memberships,
 );
 export const run_backfill_access_control_member_assignments = app_migrations.runner(
 	internal.migrations.backfill_access_control_member_assignments,
 );
+export const run_seed_access_control_organization_permission_grants = app_migrations.runner(
+	internal.migrations.seed_access_control_organization_permission_grants,
+);
 export const run_seed_access_control_workspace_permission_grants = app_migrations.runner(
 	internal.migrations.seed_access_control_workspace_permission_grants,
-);
-export const run_seed_access_control_project_permission_grants = app_migrations.runner(
-	internal.migrations.seed_access_control_project_permission_grants,
 );
 export const run_remove_access_control_member_management_grants = app_migrations.runner(
 	internal.migrations.remove_access_control_member_management_grants,
@@ -485,8 +624,8 @@ export const run_remove_access_control_member_management_grants = app_migrations
 export const run_cleanup_duplicate_access_control_owner_assignments = app_migrations.runner(
 	internal.migrations.cleanup_duplicate_access_control_owner_assignments,
 );
-export const run_update_extra_workspaces_quota_max_count_to_2 = app_migrations.runner(
-	internal.migrations.update_extra_workspaces_quota_max_count_to_2,
+export const run_update_extra_organizations_quota_max_count_to_2 = app_migrations.runner(
+	internal.migrations.update_extra_organizations_quota_max_count_to_2,
 );
 export const run_rename_pending_updates_file_node_id = app_migrations.runner(
 	internal.migrations.rename_pending_updates_file_node_id,

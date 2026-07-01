@@ -1,80 +1,80 @@
 /**
- * URL helpers for workspace/project scoped routes.
+ * URL helpers for organization/workspace scoped routes.
  *
- * Canonical path shape: `/w/{workspaceName}/{projectName}/...`
+ * Canonical path shape: `/w/{organizationName}/{workspaceName}/...`
  */
-export function url_path_files(args: { workspaceName: string; projectName: string }) {
-	return `/w/${args.workspaceName}/${args.projectName}/files`;
+export function url_path_files(args: { organizationName: string; workspaceName: string }) {
+	return `/w/${args.organizationName}/${args.workspaceName}/files`;
 }
 
-export function url_path_chat(args: { workspaceName: string; projectName: string }) {
-	return `/w/${args.workspaceName}/${args.projectName}/chat`;
+export function url_path_chat(args: { organizationName: string; workspaceName: string }) {
+	return `/w/${args.organizationName}/${args.workspaceName}/chat`;
 }
 
-export function url_path_users(args: { workspaceName: string; projectName: string }) {
-	return `/w/${args.workspaceName}/${args.projectName}/users`;
+export function url_path_users(args: { organizationName: string; workspaceName: string }) {
+	return `/w/${args.organizationName}/${args.workspaceName}/users`;
 }
 
-export function app_tenantPaths_scopeKey(args: { workspaceId: string; projectId: string }) {
-	return `${args.workspaceId}::${args.projectId}`;
+export function app_tenantPaths_scopeKey(args: { organizationId: string; workspaceId: string }) {
+	return `${args.organizationId}::${args.workspaceId}`;
 }
+
+type App_tenant_organization_for_defaults = {
+	_id: string;
+	default: boolean;
+	defaultWorkspaceId?: string;
+	name: string;
+};
 
 type App_tenant_workspace_for_defaults = {
 	_id: string;
 	default: boolean;
-	defaultProjectId?: string;
-	name: string;
-};
-
-type App_tenant_project_for_defaults = {
-	_id: string;
-	default: boolean;
 	name: string;
 };
 
 /**
- * Resolve the actual workspace primary project when the client can see it.
- * If `defaultProjectId` is present but omitted from `projects`, the primary is hidden to this user.
+ * Resolve the actual organization primary workspace when the client can see it.
+ * If `defaultWorkspaceId` is present but omitted from `workspaces`, the primary is hidden to this user.
  */
-export function app_tenant_primary_project_for_workspace(args: {
-	workspace: App_tenant_workspace_for_defaults;
-	projects: App_tenant_project_for_defaults[];
-}): App_tenant_project_for_defaults | null {
-	if (args.workspace.defaultProjectId) {
-		return args.projects.find((p) => p._id === args.workspace.defaultProjectId) ?? null;
+export function app_tenant_primary_workspace_for_organization(args: {
+	organization: App_tenant_organization_for_defaults;
+	workspaces: App_tenant_workspace_for_defaults[];
+}): App_tenant_workspace_for_defaults | null {
+	if (args.organization.defaultWorkspaceId) {
+		return args.workspaces.find((p) => p._id === args.organization.defaultWorkspaceId) ?? null;
 	}
 
-	return args.projects.find((p) => p.default) ?? null;
+	return args.workspaces.find((p) => p.default) ?? null;
 }
 
 /**
- * Pick a navigable default project for one workspace using the same rules as `workspaces.list`-based routing.
+ * Pick a navigable default workspace for one organization using the same rules as `organizations.list`-based routing.
  */
-export function app_tenant_default_project_for_workspace(args: {
-	workspace: App_tenant_workspace_for_defaults;
-	projects: App_tenant_project_for_defaults[];
-}): App_tenant_project_for_defaults | null {
-	const project = app_tenant_primary_project_for_workspace(args) ?? args.projects[0];
-	return project ?? null;
-}
-
-/**
- * Resolve default workspace + project from `workspaces.list` (same flags as server-side defaults).
- */
-export function app_tenant_defaults_from_workspace_list(args: {
+export function app_tenant_default_workspace_for_organization(args: {
+	organization: App_tenant_organization_for_defaults;
 	workspaces: App_tenant_workspace_for_defaults[];
-	workspaceIdsProjectsDict: Record<string, App_tenant_project_for_defaults[]>;
-}): { workspaceName: string; projectName: string } | null {
-	const workspace = args.workspaces.find((w) => w.default) ?? args.workspaces[0];
+}): App_tenant_workspace_for_defaults | null {
+	const workspace = app_tenant_primary_workspace_for_organization(args) ?? args.workspaces[0];
+	return workspace ?? null;
+}
+
+/**
+ * Resolve default organization + workspace from `organizations.list` (same flags as server-side defaults).
+ */
+export function app_tenant_defaults_from_organization_list(args: {
+	organizations: App_tenant_organization_for_defaults[];
+	organizationIdsWorkspacesDict: Record<string, App_tenant_workspace_for_defaults[]>;
+}): { organizationName: string; workspaceName: string } | null {
+	const organization = args.organizations.find((w) => w.default) ?? args.organizations[0];
+	if (!organization) {
+		return null;
+	}
+
+	const workspaces = args.organizationIdsWorkspacesDict[organization._id] ?? [];
+	const workspace = app_tenant_default_workspace_for_organization({ organization, workspaces });
 	if (!workspace) {
 		return null;
 	}
 
-	const projects = args.workspaceIdsProjectsDict[workspace._id] ?? [];
-	const project = app_tenant_default_project_for_workspace({ workspace, projects });
-	if (!project) {
-		return null;
-	}
-
-	return { workspaceName: workspace.name, projectName: project.name };
+	return { organizationName: organization.name, workspaceName: workspace.name };
 }

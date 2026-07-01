@@ -79,8 +79,8 @@ describe("/api/chat credit gate", () => {
 		const t = test_convex();
 		const seeded = await t.run(async (ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
-				workspaceName: "personal",
-				projectName: "home",
+				organizationName: "personal",
+				workspaceName: "home",
 			}),
 		);
 		await seed_free_product(t, "prod_chat_credit_gate_zero");
@@ -133,8 +133,8 @@ describe("/api/chat credit gate", () => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-chat-rate-limit-user" });
 			return await test_mocks_fill_db_with.membership(ctx, {
 				userId,
-				workspaceName: "personal",
-				projectName: "home",
+				organizationName: "personal",
+				workspaceName: "home",
 			});
 		});
 		await seed_free_product(t, "prod_chat_rate_limit_zero");
@@ -200,8 +200,8 @@ describe("/api/chat credit gate", () => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-title-rate-limit-user" });
 			return await test_mocks_fill_db_with.membership(ctx, {
 				userId,
-				workspaceName: "personal",
-				projectName: "home",
+				organizationName: "personal",
+				workspaceName: "home",
 			});
 		});
 		await seed_free_product(t, "prod_title_rate_limit_zero");
@@ -259,8 +259,8 @@ describe("/api/chat credit gate", () => {
 		const t = test_convex();
 		const seeded = await t.run(async (ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
-				workspaceName: "personal",
-				projectName: "home",
+				organizationName: "personal",
+				workspaceName: "home",
 			}),
 		);
 		await seed_free_product(t, "prod_chat_credit_gate_anonymous");

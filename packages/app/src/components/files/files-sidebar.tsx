@@ -2022,7 +2022,7 @@ type FilesSidebarHeader_Props = {
 const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarHeader_Props) {
 	const { view, onClose } = props;
 
-	const { workspaceName, projectName } = AppTenantProvider.useContext();
+	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 
 	return (
 		<MySidebarHeader className={cn("FilesSidebarHeader" satisfies FilesSidebarHeader_ClassNames)}>
@@ -2038,8 +2038,8 @@ const FilesSidebarHeader = memo(function FilesSidebarHeader(props: FilesSidebarH
 						<MyLink
 							className={cn("FilesSidebarHeader-title" satisfies FilesSidebarHeader_ClassNames)}
 							variant="button-tertiary"
-							to="/w/$workspaceName/$projectName/files"
-							params={{ workspaceName, projectName }}
+							to="/w/$organizationName/$workspaceName/files"
+							params={{ organizationName, workspaceName }}
 							search={{ nodeId: files_ROOT_ID, view }}
 						>
 							<MySidebarTitle>Files</MySidebarTitle>
@@ -2802,7 +2802,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const navigate = useNavigate();
 	const convex = useConvex();
-	const { membershipId, workspaceName, projectName } = AppTenantProvider.useContext();
+	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 
 	const [searchQuery, setSearchQuery] = useState("");
 	const searchQueryDeferred = useDeferredValue(searchQuery);
@@ -3960,8 +3960,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				tree().getDataRef<SelectionDataRef>().current.selectUpToAnchorId = result._yay.nodeId;
 
 				return navigate({
-					to: "/w/$workspaceName/$projectName/files",
-					params: { workspaceName, projectName },
+					to: "/w/$organizationName/$workspaceName/files",
+					params: { organizationName, workspaceName },
 					search: { nodeId: result._yay.nodeId, view },
 				}).then(() => {
 					return startRename(result._yay.nodeId);
@@ -4336,8 +4336,8 @@ if (import.meta.vitest) {
 		return {
 			_id: id,
 			_creationTime: 0,
-			workspaceId: "workspace" as app_convex_Id<"workspaces">,
-			projectId: "project" as app_convex_Id<"workspaces_projects">,
+			organizationId: "organization" as app_convex_Id<"organizations">,
+			workspaceId: "workspace" as app_convex_Id<"organizations_workspaces">,
 			parentId: args.parentId === files_ROOT_ID ? files_ROOT_ID : (args.parentId as app_convex_Id<"files_nodes">),
 			path,
 			treePath: args.kind === "folder" && path !== "/" ? `${path}/` : path,

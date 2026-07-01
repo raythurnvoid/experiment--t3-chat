@@ -378,8 +378,8 @@
 
 	/* #endregion delete account */
 
-	/* #region delete account workspace resolver */
-	.MainAppAccountManagementDeleteAccountWorkspaceResolver {
+	/* #region delete account organization resolver */
+	.MainAppAccountManagementDeleteAccountOrganizationResolver {
 		display: flex;
 		flex-direction: column;
 
@@ -387,22 +387,22 @@
 		max-width: 720px;
 	}
 
-	.MainAppAccountManagementDeleteAccountWorkspaceResolver-header-content {
+	.MainAppAccountManagementDeleteAccountOrganizationResolver-header-content {
 		display: flex;
 		flex-direction: column;
 	}
 
-	.MainAppAccountManagementDeleteAccountWorkspaceResolver-body {
+	.MainAppAccountManagementDeleteAccountOrganizationResolver-body {
 		padding-top: 12px;
 		padding-bottom: 12px;
 	}
 
-	.MainAppAccountManagementDeleteAccountWorkspaceResolver-list {
+	.MainAppAccountManagementDeleteAccountOrganizationResolver-list {
 		display: flex;
 		flex-direction: column;
 	}
 
-	.MainAppAccountManagementDeleteAccountWorkspaceResolver-row {
+	.MainAppAccountManagementDeleteAccountOrganizationResolver-row {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) auto auto;
 		grid-template-rows: auto auto;
@@ -417,16 +417,16 @@
 		border-top: 1px solid var(--color-base-1-09);
 	}
 
-	.MainAppAccountManagementDeleteAccountWorkspaceResolver-row:first-child {
+	.MainAppAccountManagementDeleteAccountOrganizationResolver-row:first-child {
 		padding-top: 0;
 		border-top: 0;
 	}
 
-	.MainAppAccountManagementDeleteAccountWorkspaceResolver-row:last-child {
+	.MainAppAccountManagementDeleteAccountOrganizationResolver-row:last-child {
 		padding-bottom: 0;
 	}
 
-	.MainAppAccountManagementDeleteAccountWorkspaceResolver-row-title {
+	.MainAppAccountManagementDeleteAccountOrganizationResolver-row-title {
 		grid-column: 1;
 		grid-row: 1;
 		align-self: end;
@@ -440,7 +440,7 @@
 		line-height: 1.2;
 	}
 
-	.MainAppAccountManagementDeleteAccountWorkspaceResolver-row-description {
+	.MainAppAccountManagementDeleteAccountOrganizationResolver-row-description {
 		grid-column: 1;
 		grid-row: 2;
 		align-self: start;
@@ -456,7 +456,7 @@
 		color: var(--color-fg-09);
 	}
 
-	.MainAppAccountManagementDeleteAccountWorkspaceResolver-row-actions {
+	.MainAppAccountManagementDeleteAccountOrganizationResolver-row-actions {
 		grid-column: 2 / 4;
 		grid-row: 1 / span 2;
 
@@ -468,15 +468,15 @@
 		min-width: 0;
 	}
 
-	.MainAppAccountManagementDeleteAccountWorkspaceResolver-row-action-separator {
+	.MainAppAccountManagementDeleteAccountOrganizationResolver-row-action-separator {
 		font-size: 0.9375rem;
 		line-height: 1;
 		color: var(--color-fg-07);
 	}
 
-	.MainAppAccountManagementDeleteAccountWorkspaceResolver-submit-trigger {
+	.MainAppAccountManagementDeleteAccountOrganizationResolver-submit-trigger {
 		display: inline-flex;
 	}
 
-	/* #endregion delete account workspace resolver */
+	/* #endregion delete account organization resolver */
 }

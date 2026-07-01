@@ -144,9 +144,9 @@ export type FileEditorPresenceSupplier_Props = {
 function FileEditorPresenceSupplier_Enabled(props: FileEditorPresenceSupplier_Props) {
 	const { userId, nodeId, children } = props;
 
-	const { workspaceId, projectId } = AppTenantProvider.useContext();
+	const { organizationId, workspaceId } = AppTenantProvider.useContext();
 
-	const roomId = files_create_room_id(workspaceId, projectId, nodeId);
+	const roomId = files_create_room_id(organizationId, workspaceId, nodeId);
 
 	const presence = usePresence({
 		roomId: roomId,

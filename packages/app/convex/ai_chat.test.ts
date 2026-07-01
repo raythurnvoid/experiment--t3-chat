@@ -8,8 +8,8 @@ describe("ai_chat thread state", () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
-				workspaceName: "personal",
-				projectName: "home",
+				organizationName: "personal",
+				workspaceName: "home",
 			}),
 		);
 		const asUser = t.withIdentity({
@@ -35,8 +35,8 @@ describe("ai_chat thread state", () => {
 		});
 		expect(initial.thread?.stateId).toBe(initial.state?._id);
 		expect(initial.state).toMatchObject({
+			organizationId: seeded.organizationId,
 			workspaceId: seeded.workspaceId,
-			projectId: seeded.projectId,
 			threadId,
 			bashCwd: "~",
 			updatedBy: seeded.userId,
@@ -44,8 +44,8 @@ describe("ai_chat thread state", () => {
 
 		await t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat.set_thread_state, {
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				threadId,
 				userId: seeded.userId,
 				patch: {
@@ -56,8 +56,8 @@ describe("ai_chat thread state", () => {
 
 		const state = await t.run((ctx) =>
 			ctx.runQuery(internal.ai_chat.get_thread_state, {
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				threadId,
 			}),
 		);
@@ -68,8 +68,8 @@ describe("ai_chat thread state", () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
-				workspaceName: "personal",
-				projectName: "home",
+				organizationName: "personal",
+				workspaceName: "home",
 			}),
 		);
 		const asUser = t.withIdentity({
@@ -90,8 +90,8 @@ describe("ai_chat thread state", () => {
 
 		await t.run((ctx) =>
 			ctx.runMutation(internal.ai_chat.set_thread_state, {
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				threadId: sourceThreadId,
 				userId: seeded.userId,
 				patch: {
@@ -109,8 +109,8 @@ describe("ai_chat thread state", () => {
 
 		const branchedState = await t.run((ctx) =>
 			ctx.runQuery(internal.ai_chat.get_thread_state, {
+				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
-				projectId: seeded.projectId,
 				threadId: branchedThreadId,
 			}),
 		);
@@ -121,8 +121,8 @@ describe("ai_chat thread state", () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
-				workspaceName: "personal",
-				projectName: "home",
+				organizationName: "personal",
+				workspaceName: "home",
 			}),
 		);
 		const asUser = t.withIdentity({
@@ -173,8 +173,8 @@ describe("ai_chat thread state", () => {
 		const messages = await t.run((ctx) =>
 			ctx.db
 				.query("ai_chat_threads_messages_aisdk_5")
-				.withIndex("by_workspace_project_thread", (q) =>
-					q.eq("workspaceId", seeded.workspaceId).eq("projectId", seeded.projectId).eq("threadId", threadId),
+				.withIndex("by_organization_workspace_thread", (q) =>
+					q.eq("organizationId", seeded.organizationId).eq("workspaceId", seeded.workspaceId).eq("threadId", threadId),
 				)
 				.collect(),
 		);
@@ -185,8 +185,8 @@ describe("ai_chat thread state", () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			test_mocks_fill_db_with.membership(ctx, {
-				workspaceName: "personal",
-				projectName: "home",
+				organizationName: "personal",
+				workspaceName: "home",
 			}),
 		);
 		const asUser = t.withIdentity({

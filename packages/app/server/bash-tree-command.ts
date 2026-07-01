@@ -206,14 +206,14 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		// so `target.dbFilesPath` is `"/"` and renders descendants as `/.mounts/<name>/...`.
 		const rootDbFilesPath = target.dbFilesPath;
 
-		// The project root and the `/.mounts` root are synthetic and have no files_nodes doc.
+		// The workspace root and the `/.mounts` root are synthetic and have no files_nodes doc.
 		// Every other app target must resolve to a real files_nodes doc before tree can print it.
 		const dbFilesDoc =
 			rootDbFilesPath === "/"
 				? null
 				: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
+						organizationId: target.pathResolution.ctxData.organizationId,
 						workspaceId: target.pathResolution.ctxData.workspaceId,
-						projectId: target.pathResolution.ctxData.projectId,
 						path: rootDbFilesPath,
 					})) as files_nodes_get_by_path_Result);
 
@@ -238,8 +238,8 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		// Folder targets use the subtree index. minDepth excludes the folder itself
 		// because the first output line already prints the requested root path.
 		const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+			organizationId: target.pathResolution.ctxData.organizationId,
 			workspaceId: target.pathResolution.ctxData.workspaceId,
-			projectId: target.pathResolution.ctxData.projectId,
 			folderPath: rootDbFilesPath,
 			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
 			cursor,

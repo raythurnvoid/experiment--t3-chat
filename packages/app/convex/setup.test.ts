@@ -12,10 +12,10 @@ import workpool_test from "@convex-dev/workpool/test";
 import rate_limiter_test from "@convex-dev/rate-limiter/test";
 import r2_test from "@convex-dev/r2/test";
 import {
-	workspaces_db_create,
-	workspaces_db_create_project,
-	workspaces_db_ensure_default_workspace_and_project_for_user,
-} from "./workspaces.ts";
+	organizations_db_create,
+	organizations_db_create_workspace,
+	organizations_db_ensure_default_organization_and_workspace_for_user,
+} from "./organizations.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 
 // #region helpers
@@ -60,18 +60,18 @@ export function test_convex() {
 // #region mocks
 
 export const test_mocks_hardcoded = ((/* iife */) => {
-	const workspace_id = {
-		workspace_1: "app_workspace_test_1" as Id<"workspaces">,
-		workspace_2: "app_workspace_test_2" as Id<"workspaces">,
+	const organization_id = {
+		organization_1: "app_organization_test_1" as Id<"organizations">,
+		organization_2: "app_organization_test_2" as Id<"organizations">,
 	} as const;
 
-	const project_id = {
-		project_1: "app_project_test_1" as Id<"workspaces_projects">,
-		project_2: "app_project_test_2" as Id<"workspaces_projects">,
+	const workspace_id = {
+		workspace_1: "app_workspace_test_1" as Id<"organizations_workspaces">,
+		workspace_2: "app_workspace_test_2" as Id<"organizations_workspaces">,
 	} as const;
 
 	const membership_id = {
-		membership_1: "test_membership" as Id<"workspaces_projects_users">,
+		membership_1: "test_membership" as Id<"organizations_workspaces_users">,
 	} as const;
 
 	const user = {
@@ -110,8 +110,8 @@ export const test_mocks_hardcoded = ((/* iife */) => {
 	} as const;
 
 	return {
+		organization_id,
 		workspace_id,
-		project_id,
 		membership_id,
 		user,
 		files: {
@@ -135,8 +135,8 @@ export const test_mocks = {
 			});
 
 			return make<ConvexDocUserData<"files_nodes">>({
+				organizationId: test_mocks_hardcoded.organization_id.organization_1,
 				workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-				projectId: test_mocks_hardcoded.project_id.project_1,
 				createdBy: test_mocks_hardcoded.user.user_1.id as Id<"users">,
 				updatedAt: updatedAt,
 				updatedBy: test_mocks_hardcoded.user.user_1.id as Id<"users">,
@@ -162,13 +162,13 @@ export const test_mocks_fill_db_with = {
 		ctx: MutationCtx,
 		args?: {
 			userId?: Id<"users">;
+			organizationName?: string;
 			workspaceName?: string;
-			projectName?: string;
 		},
 	) => {
 		const now = Date.now();
+		const organizationName = args?.organizationName ?? "test-organization";
 		const workspaceName = args?.workspaceName ?? "test-workspace";
-		const projectName = args?.projectName ?? "test-project";
 		const userId =
 			args?.userId ??
 			(await ctx.db.insert("users", {
@@ -176,78 +176,78 @@ export const test_mocks_fill_db_with = {
 			}));
 
 		await quotas_db_ensure(ctx, {
-			quotaName: "extra_workspaces",
+			quotaName: "extra_organizations",
 			userId,
 			now,
 		});
 
-		await workspaces_db_ensure_default_workspace_and_project_for_user(ctx, {
+		await organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
 			userId,
 			now,
 		});
 
 		const user = await ctx.db.get("users", userId);
-		if (!user?.defaultWorkspaceId || !user.defaultProjectId) {
-			throw new Error("Expected default workspace bootstrap to set user defaults");
+		if (!user?.defaultOrganizationId || !user.defaultWorkspaceId) {
+			throw new Error("Expected default organization bootstrap to set user defaults");
 		}
 
-		if (workspaceName === "personal" && projectName === "home") {
+		if (organizationName === "personal" && workspaceName === "home") {
 			const membershipId = await ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_project_user_active", (q) => q.eq("projectId", user.defaultProjectId!).eq("userId", userId))
+				.query("organizations_workspaces_users")
+				.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", user.defaultWorkspaceId!).eq("userId", userId))
 				.first()
 				.then((membership) => membership?._id);
 			if (!membershipId) {
-				throw new Error("Expected default workspace membership after bootstrap");
+				throw new Error("Expected default organization membership after bootstrap");
 			}
 
 			return {
 				userId,
+				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
-				projectId: user.defaultProjectId,
 				membershipId,
 			} as const;
 		}
 
-		const workspaceResult = await workspaces_db_create(ctx, {
+		const organizationResult = await organizations_db_create(ctx, {
 			userId,
-			name: workspaceName,
+			name: organizationName,
 			description: "",
 			now,
 		});
-		if (workspaceResult._nay) {
-			throw new Error(`Failed to seed workspace membership: ${workspaceResult._nay.message}`);
+		if (organizationResult._nay) {
+			throw new Error(`Failed to seed organization membership: ${organizationResult._nay.message}`);
 		}
 
-		let projectId = workspaceResult._yay.defaultProjectId;
-		if (projectName !== "home") {
-			const projectResult = await workspaces_db_create_project(ctx, {
+		let workspaceId = organizationResult._yay.defaultWorkspaceId;
+		if (workspaceName !== "home") {
+			const workspaceResult = await organizations_db_create_workspace(ctx, {
 				userId,
-				workspaceId: workspaceResult._yay.workspaceId,
-				name: projectName,
+				organizationId: organizationResult._yay.organizationId,
+				name: workspaceName,
 				description: "",
 				now,
 			});
-			if (projectResult._nay) {
-				throw new Error(`Failed to seed project membership: ${projectResult._nay.message}`);
+			if (workspaceResult._nay) {
+				throw new Error(`Failed to seed workspace membership: ${workspaceResult._nay.message}`);
 			}
 
-			projectId = projectResult._yay.projectId;
+			workspaceId = workspaceResult._yay.workspaceId;
 		}
 
 		const membershipId = await ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_project_user_active", (q) => q.eq("projectId", projectId).eq("userId", userId))
+			.query("organizations_workspaces_users")
+			.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", workspaceId).eq("userId", userId))
 			.first()
 			.then((membership) => membership?._id);
 		if (!membershipId) {
-			throw new Error("Expected workspace membership after seed setup");
+			throw new Error("Expected organization membership after seed setup");
 		}
 
 		return {
 			userId,
-			workspaceId: workspaceResult._yay.workspaceId,
-			projectId,
+			organizationId: organizationResult._yay.organizationId,
+			workspaceId,
 			membershipId,
 		} as const;
 	},
@@ -261,8 +261,8 @@ export const test_mocks_fill_db_with = {
 			"files_nodes",
 			await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.files.file_root_1.name,
@@ -279,8 +279,8 @@ export const test_mocks_fill_db_with = {
 			"files_nodes",
 			await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.files.file_root_1_child_1.name,
@@ -297,8 +297,8 @@ export const test_mocks_fill_db_with = {
 			"files_nodes",
 			await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.files.file_root_1_child_1_deep_1.name,
@@ -315,8 +315,8 @@ export const test_mocks_fill_db_with = {
 			"files_nodes",
 			await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.files.file_root_1_child_2.name,
@@ -333,8 +333,8 @@ export const test_mocks_fill_db_with = {
 			"files_nodes",
 			await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
+				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				projectId: membership.projectId,
 				createdBy: createdByUserId,
 				updatedBy: createdByUserId,
 				name: test_mocks_hardcoded.files.file_root_2.name,
@@ -348,8 +348,8 @@ export const test_mocks_fill_db_with = {
 
 		return {
 			userId: createdByUserId,
+			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			projectId: membership.projectId,
 			membershipId: membership.membershipId,
 			files: {
 				file_root_1,

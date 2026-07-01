@@ -158,7 +158,7 @@ When ideating pressed buttons, icon buttons, cards, tabs, or list items:
 - Compare the full state recipe, not only the shadow: fill gradient, text/icon color, real border, shadow, radius, padding, and dimensions all affect the result.
 - Call out whether the design uses a real border or an inset/fake border. Real borders reserve space and can prevent inset shadows from visually reaching the outer edge.
 - For small icon buttons, verify the target remains the intended size after border or padding changes.
-- Use the closest accepted component state as the visual reference, such as the workspace/project active list item when aligning other pressed controls.
+- Use the closest accepted component state as the visual reference, such as the organization/workspace active list item when aligning other pressed controls.
 
 ## Output Contract
 

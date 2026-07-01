@@ -5,9 +5,9 @@ description: Auth and account-management system (Clerk + Convex + anonymous JWT)
 
 # Overview
 
-Auth and account-management design + implementation notes (Clerk + Convex + anonymous JWT), including current delete-account authority, profile data sourcing, and planned projects/workspaces/assets privacy model and upgrade migration behavior.
+Auth and account-management design + implementation notes (Clerk + Convex + anonymous JWT), including current delete-account authority, profile data sourcing, and planned workspaces/organizations/assets privacy model and upgrade migration behavior.
 
-# Auth system (Clerk + Convex + anonymous JWT), and planned permissions model for projects/workspaces/assets.
+# Auth system (Clerk + Convex + anonymous JWT), and planned permissions model for workspaces/organizations/assets.
 
 # High-level goals (product + security)
 
@@ -42,8 +42,8 @@ Anonymous identities are not to be treated as safe. Even though the app uses a J
 
 When an anonymous user signs up (upgrades to a Clerk account), the default behavior must secure their resources:
 
-- All workspaces/projects/assets become private.
-- Only signed-in workspace/project members can access/edit.
+- All organizations/workspaces/assets become private.
+- Only signed-in organization/workspace members can access/edit.
 - Any anonymous/public access must be re-enabled explicitly by the owner after upgrade.
 
 # Current implementation (how auth works today)
@@ -143,7 +143,7 @@ Internal mutation behavior:
   - validates token and finds the anonymous user
   - links that same user record to the Clerk user (canonicalize anonymous into signed-in in place)
   - preserves the same Convex `users` id across upgrade
-  - preserves the same default workspace/project in the normal upgrade path, so existing workspace/project memberships and data stay attached to the upgraded user
+  - preserves the same default organization/workspace in the normal upgrade path, so existing organization/workspace memberships and data stay attached to the upgraded user
   - may delete other existing users for the same Clerk id so the anonymous record becomes canonical
 - If no `anonymousUserToken`:
   - finds or creates a Convex user record for the Clerk user id
@@ -183,36 +183,36 @@ Relevant files:
 - then attempt Clerk cleanup as best-effort follow-up
 - do not fail the app-local deletion just because Clerk deletion failed
 - rate-limit the user-facing action by current user id before starting local deletion, Clerk cleanup, or billing cancellation work. Result callers receive `_nay.message === "Rate limit exceeded"` when throttled.
-- before tombstoning, the frontend and backend user-facing action must block while the current user still owns non-personal workspaces that are not already queued for workspace deletion. Account management lets users either follow a `Transfer ownership` link to the workspace Users page or explicitly confirm deleting the workspace through the normal delete-workspace mutation, then retries account deletion.
+- before tombstoning, the frontend and backend user-facing action must block while the current user still owns non-personal organizations that are not already queued for organization deletion. Account management lets users either follow a `Transfer ownership` link to the organization Users page or explicitly confirm deleting the organization through the normal delete-organization mutation, then retries account deletion.
 
 Related files:
 
 - [users.ts](../../../packages/app/convex/users.ts)
 - [data_deletion.ts](../../../packages/app/convex/data_deletion.ts)
 
-### Account deletion and workspace/project data cleanup
+### Account deletion and organization/workspace data cleanup
 
 User-account deletion is implemented across [users.ts](../../../packages/app/convex/users.ts) and [data_deletion.ts](../../../packages/app/convex/data_deletion.ts):
 
 - `users.delete_current_user_account` is the UI-facing entrypoint.
-- `users.list_current_user_account_deletion_blocking_workspaces` is the current-user preflight query for account management. It returns owned non-personal workspaces where `workspaces.ownerUserId` is the current user and no `scope: "workspace"` deletion request is already queued, with the default project doc so the UI can link to the workspace Users page.
-- `users.delete_current_user_account` repeats that blocker check and returns `_nay.message === "Resolve owned workspaces before deleting account"` when blockers remain. Do this before local tombstoning, Clerk cleanup, or billing cancellation work.
-- `access_control.transfer_workspace_ownership` remains the ownership-transfer endpoint on the regular workspace Users page. Account management links there for transfers instead of duplicating the transfer flow inline. `workspaces.delete_workspace` remains the workspace deletion endpoint and account management may call it inline after explicit per-workspace confirmation.
-- Transferring ownership preserves the shared workspace for active members because the owner row and quota usage change before the user tombstone starts.
-- `internal.data_deletion.init_user_deletion` remains owned-workspace-aware for internal/admin lifecycle paths. If it is called directly for a user that still owns non-personal workspaces, it queues those workspaces for deletion, immediately removes that workspace’s memberships and access-control rows, then leaves the heavy tenant content purge to the existing delayed workspace deletion worker.
+- `users.list_current_user_account_deletion_blocking_organizations` is the current-user preflight query for account management. It returns owned non-personal organizations where `organizations.ownerUserId` is the current user and no `scope: "organization"` deletion request is already queued, with the default workspace doc so the UI can link to the organization Users page.
+- `users.delete_current_user_account` repeats that blocker check and returns `_nay.message === "Resolve owned organizations before deleting account"` when blockers remain. Do this before local tombstoning, Clerk cleanup, or billing cancellation work.
+- `access_control.transfer_organization_ownership` remains the ownership-transfer endpoint on the regular organization Users page. Account management links there for transfers instead of duplicating the transfer flow inline. `organizations.delete_organization` remains the organization deletion endpoint and account management may call it inline after explicit per-organization confirmation.
+- Transferring ownership preserves the shared organization for active members because the owner field and quota usage change before the user tombstone starts.
+- `internal.data_deletion.init_user_deletion` remains owned-organization-aware for internal/admin lifecycle paths. If it is called directly for a user that still owns non-personal organizations, it queues those organizations for deletion, immediately removes that organization’s memberships and access-control docs, then leaves the heavy tenant content purge to the existing delayed organization deletion worker.
 - The reversible user phase creates or reuses the `scope: "user"` row in `data_deletion_requests`, sets `users.deletedAt`, marks remaining memberships inactive, and removes the user from every room tracked by the `@convex-dev/presence` component (via `components.presence.public.listUser` + `removeRoomUser`).
-- Phase 1 does not delete projects, workspaces, files, or billing usage snapshots.
+- Phase 1 does not delete workspaces, organizations, files, or billing usage snapshots.
 - `billing_usage_snapshots` must be preserved whenever the Convex `users` row is retained, including retained tombstones. Delete the snapshot only when the user record is purged or when Polar customer deletion is part of that full purge.
 - Phase 1 also does not backfill or repair missing anagraphic email; deleted-account recovery only works for users whose normalized email was already stored before deletion.
 - `users.delete_current_user_account` also enqueues retryable cleanup work that truly cancels any paid Polar subscription at the close of the current billing period. This is deletion cleanup, not normal billing-panel cancellation; normal user subscription cancellation downgrades to `Free`. Keep subscription mirror rows Polar-owned until Polar reports the subscription/customer lifecycle change.
-- `data_deletion.process_user_deletion_request` is the destructive phase 2 step that runs after the fixed retention period (or explicit `eligibleAt`) and advances hard deletion through the same retryable, Workpool-orchestrated batched worker used by project/workspace purge.
+- `data_deletion.process_user_deletion_request` is the destructive phase 2 step that runs after the fixed retention period (or explicit `eligibleAt`) and advances hard deletion through the same retryable, Workpool-orchestrated batched worker used by organization/workspace purge.
 - `users.hard_delete_user_now` is the direct admin path for immediate local hard deletion or reset. Its `purgeUserMod` defaults to `"data"`:
-- `"data"` is an account data reset for local/admin cleanup. It keeps the user doc usable, preserves Clerk and anonymous auth state, preserves profile and billing/customer state, cancels the user-scope deletion request, keeps resource-scope queue docs until the reset consumes or clears them, ensures a usable `personal` / `home` default tenant, and then loops the limited project/workspace purge worker until the reset-owned data is gone. The default workspace/project docs remain, content inside the default project is purged, extra personal projects are deleted, and non-default workspaces/projects are deleted only when the reset user is the only active participant in that tenant scope.
+- `"data"` is an account data reset for local/admin cleanup. It keeps the user doc usable, preserves Clerk and anonymous auth state, preserves profile and billing/customer state, cancels the user-scope deletion request, keeps resource-scope queue docs until the reset consumes or clears them, ensures a usable `personal` / `home` default tenant, and then loops the limited organization/workspace purge worker until the reset-owned data is gone. The default organization/workspace docs remain, content inside the default workspace is purged, extra personal workspaces are deleted, and non-default organizations/workspaces are deleted only when the reset user is the only active participant in that tenant scope.
 - `"data_and_auth"` deletes tenant/user data and auth state, attempts Clerk deletion, removes anonymous auth tokens, keeps the final tombstoned user row, preserves `billing_usage_snapshots`, enqueues the same retryable period-end cancellation used by the normal delete flow, and drains or schedules any queued tenant purge requests through the Workpool-backed worker.
 - `"data_auth_and_user_record"` deletes tenant/user data and auth state, revokes the Polar subscription immediately, deletes the Polar customer immediately, deletes the local `billing_usage_snapshots` row, drains or schedules any queued tenant purge requests through the Workpool-backed worker, and then purges the final local tombstone. Local Polar customer mapping and local subscription rows are cleared through Polar deletion webhooks (`customer.updated`/`customer.state_changed` with `deleted_at`, or `customer.deleted`).
 - Restoring a deleted account during retention reclaims the same Convex user row, removes the user deletion request, reactivates memberships, and marks the auth response so billing bootstrap can undo a deletion-triggered Polar period-end cancellation while Polar still allows it. If the prior subscription has fully ended, billing bootstrap creates a new `Free` subscription rather than recreating a paid plan.
 
-For the full workspace/project deletion and purge lifecycle, use the canonical tenancy skill: [workspaces-tenancy: Workspace and project deletion and data purge](../workspaces-tenancy/SKILL.md#workspace-and-project-deletion-and-data-purge).
+For the full organization/workspace deletion and purge lifecycle, use the canonical tenancy skill: [organizations-tenancy: Organization and workspace deletion and data purge](../organizations-tenancy/SKILL.md#organization-and-workspace-deletion-and-data-purge).
 
 ### Clerk cleanup role
 
@@ -222,29 +222,29 @@ There is no Clerk deletion webhook safety-net in the current architecture. Accou
 - attempt Clerk user deletion as best-effort follow-up
 - do not recreate an app-local delete request from external Clerk events
 
-## Current workspace/project system
+## Current organization/workspace system
 
-**Canonical detail:** see [workspaces-tenancy skill](../workspaces-tenancy/SKILL.md) (schema vs API guards, `personal`/`home`, rename/delete, invitations, [deletion and purge](../workspaces-tenancy/SKILL.md#workspace-and-project-deletion-and-data-purge), anonymous-upgrade tenancy continuity, and `ensure` semantics).
+**Canonical detail:** see [organizations-tenancy skill](../organizations-tenancy/SKILL.md) (schema vs API guards, `personal`/`home`, rename/delete, invitations, [deletion and purge](../organizations-tenancy/SKILL.md#organization-and-workspace-deletion-and-data-purge), anonymous-upgrade tenancy continuity, and `ensure` semantics).
 
 Summary:
 
-- Tables: `workspaces`, `workspaces_projects`, `workspaces_projects_users`, `access_control_role_assignments`, `access_control_permission_grants`, `notifications`, `data_deletion_requests`; `users.defaultWorkspaceId` / `defaultProjectId`.
-- Bootstrap: `create_anonymous_user` and `resolve_user` call `workspaces_db_ensure_default_workspace_and_project_for_user`.
-- The default `personal` workspace is private. Invites/member-management writes reject it.
-- Non-personal workspace ownership lives in `workspaces.ownerUserId`; a mirrored default-project owner role assignment remains for role display and access-control compatibility.
-- **Implementation note:** Many app surfaces may still use older hardcoded workspace/project ids outside this tenancy module—verify callsites.
+- Tables: `organizations`, `organizations_workspaces`, `organizations_workspaces_users`, `access_control_role_assignments`, `access_control_permission_grants`, `notifications`, `data_deletion_requests`; `users.defaultOrganizationId` / `defaultWorkspaceId`.
+- Bootstrap: `create_anonymous_user` and `resolve_user` call `organizations_db_ensure_default_organization_and_workspace_for_user`.
+- The default `personal` organization is private. Invites/member-management writes reject it.
+- Non-personal organization ownership lives in `organizations.ownerUserId`; a mirrored default-workspace owner role assignment remains for role display and access-control compatibility.
+- **Implementation note:** Many app surfaces may still use older hardcoded organization/workspace ids outside this tenancy module—verify callsites.
 
-Authorization helpers in `workspaces.ts` call the backend access-control permission checker. Frontend guards and full permission-management UI are intentionally incremental follow-up work.
+Authorization helpers in `organizations.ts` call the backend access-control permission checker. Frontend guards and full permission-management UI are intentionally incremental follow-up work.
 
 # Planned functionality (not fully implemented yet)
 
-## Projects and workspaces
+## Workspaces and organizations
 
-The app is organized into projects and workspaces so users can organize assets flexibly.
+The app is organized into workspaces and organizations so users can organize assets flexibly.
 
 When an anonymous user is created:
 
-- A personal workspace and home project must be created as well.
+- A personal organization and home workspace must be created as well.
 - V1 invitations are immediate in-app access for existing signed-in users by exact email. No outbound email is sent.
 
 ## Public vs private semantics
@@ -253,9 +253,9 @@ When an anonymous user is created:
 
 Public access is implemented by possessing the asset id in a URL (not indexable content, no separate share token).
 
-### Public workspace/project
+### Public organization/workspace
 
-If the workspace/project is public:
+If the organization/workspace is public:
 
 - anonymous collaborators can be invited
 - anonymous collaborators can have permissions like any other user id (subject to the permission system)
@@ -273,9 +273,9 @@ Important: “public write” means anyone who knows the asset id can write (sha
 
 Canonical access-control details live in `../access-control/SKILL.md`.
 
-Permissions are represented by allow-only rows in `access_control_permission_grants`. Grants can target roles, specific users, or public access for `workspace`, `project`, `page`, and `thread` resources.
+Permissions are represented by allow-only docs in `access_control_permission_grants`. Grants can target roles, specific users, or public access for `organization`, `workspace`, `page`, and `thread` resources.
 
-Current roles are `owner`, `admin`, and `member`. The owner is a system role on the workspace default project with full workspace authority; admin/member authority is represented by seeded grant rows. Direct user and public grants allow asset-level access without changing a user’s role.
+Current roles are `owner`, `admin`, and `member`. The owner is a system role on the organization default workspace with full organization authority; admin/member authority is represented by seeded grant docs. Direct user and public grants allow asset-level access without changing a user’s role.
 
 The owner may:
 
@@ -289,11 +289,11 @@ When the user upgrades by signing up (Clerk-authenticated, linked to Convex user
 
 - The anonymous user record is linked to the Clerk identity in place.
 - The same Convex `users` id remains canonical after upgrade.
-- The user keeps the same default workspace/project and therefore keeps the same associated workspace/project-scoped data in the normal upgrade path.
+- The user keeps the same default organization/workspace and therefore keeps the same associated organization/workspace-scoped data in the normal upgrade path.
 - The user must not be able to access the same private resources while logged out.
 - Default security migration:
+  - all organizations become private
   - all workspaces become private
-  - all projects become private
   - all assets become private
   - all anonymous write access is removed
   - all anonymous/public access is removed by default
@@ -319,7 +319,7 @@ When a public Convex handler needs the current live app user, resolve auth with 
 
 Reserve `Unauthorized` for a resolved app user who lacks permission for a resource. Use `Not found`, `User not found`, or a more specific message for target resources or target users, not for the current caller principal.
 
-`server_convex_get_user_fallback_to_anonymous` intentionally does not load the `users` table; see [server-utils.ts](../../../packages/app/server/server-utils.ts). Handlers that require the current app account own the row-existence check. Current examples include [users.delete_current_user_account](../../../packages/app/convex/users.ts) and [workspaces.get_membership_by_workspace_project_name](../../../packages/app/convex/workspaces.ts).
+`server_convex_get_user_fallback_to_anonymous` intentionally does not load the `users` table; see [server-utils.ts](../../../packages/app/server/server-utils.ts). Handlers that require the current app account own the doc-existence check. Current examples include [users.delete_current_user_account](../../../packages/app/convex/users.ts) and [organizations.get_membership_by_organization_workspace_name](../../../packages/app/convex/organizations.ts).
 
 For `Result`-returning handlers:
 

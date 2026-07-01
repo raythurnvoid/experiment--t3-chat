@@ -34,7 +34,7 @@ import {
 	files_node_has_editable_yjs_state,
 } from "../shared/files.ts";
 import { LruCache, math_clamp, path_name_of, should_never_happen } from "../shared/shared-utils.ts";
-import { workspaces_is_global_github_project_id, workspaces_is_global_workspace_id } from "../shared/workspaces.ts";
+import { organizations_is_global_github_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
 
 // #region bash constants and path helpers
 
@@ -150,33 +150,33 @@ export function bash_resolve_path(base: string, path: string) {
 }
 
 /**
- * Convert a db-files path to its Bash path inside currentProjectPath.
+ * Convert a db-files path to its Bash path inside currentWorkspacePath.
  */
-export function bash_db_files_path_to_current_project_path(currentProjectPath: string, path: string) {
+export function bash_db_files_path_to_current_workspace_path(currentWorkspacePath: string, path: string) {
 	const normalizedPath = bash_normalize_path(path);
-	return normalizedPath === "/" ? currentProjectPath : `${currentProjectPath}${normalizedPath}`;
+	return normalizedPath === "/" ? currentWorkspacePath : `${currentWorkspacePath}${normalizedPath}`;
 }
 
 /**
- * Convert a normalized Bash path under currentProjectPath back to a db-files path.
+ * Convert a normalized Bash path under currentWorkspacePath back to a db-files path.
  *
- * Returns `null` for Bash paths outside currentProjectPath, like `/tmp/foo`.
+ * Returns `null` for Bash paths outside currentWorkspacePath, like `/tmp/foo`.
  */
-export function bash_current_project_path_to_db_files_path(currentProjectPath: string, path: string) {
-	if (path === currentProjectPath) {
+export function bash_current_workspace_path_to_db_files_path(currentWorkspacePath: string, path: string) {
+	if (path === currentWorkspacePath) {
 		return "/";
 	}
-	if (path.startsWith(`${currentProjectPath}/`)) {
-		return path.slice(currentProjectPath.length);
+	if (path.startsWith(`${currentWorkspacePath}/`)) {
+		return path.slice(currentWorkspacePath.length);
 	}
 	return null;
 }
 
 /**
- * Check whether a normalized path is inside currentProjectPath.
+ * Check whether a normalized path is inside currentWorkspacePath.
  */
-export function bash_is_path_under_current_project_path(currentProjectPath: string, path: string) {
-	return path === currentProjectPath || path.startsWith(`${currentProjectPath}/`);
+export function bash_is_path_under_current_workspace_path(currentWorkspacePath: string, path: string) {
+	return path === currentWorkspacePath || path.startsWith(`${currentWorkspacePath}/`);
 }
 
 /**
@@ -226,13 +226,13 @@ type DbFilesCacheEntry = {
 export type bash_DbFilesFsOptions = {
 	ctx: ActionCtx;
 	ctxData: {
+		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
-		projectId: Doc<"files_nodes">["projectId"];
+		organizationName: string;
 		workspaceName: string;
-		projectName: string;
 		userId: Id<"users">;
 	};
-	currentProjectPath: string;
+	currentWorkspacePath: string;
 	allowDbFilesMkdir: boolean;
 };
 
@@ -285,14 +285,14 @@ class ReadOnlyFileSystemError extends Error {
 /**
  * Mount a db files tree into Just Bash as a mostly read-only filesystem.
  *
- * `MountableFs` strips `currentProjectPath` before calls reach this class, so
+ * `MountableFs` strips `currentWorkspacePath` before calls reach this class, so
  * methods here receive db-files paths like `/docs/readme.md`, not
  * shell paths like `/home/cloud-usr/w/.../docs/readme.md`.
  */
 export class bash_DbFilesFs implements IFileSystem {
 	readonly ctx: ActionCtx;
 	readonly ctxData: bash_DbFilesFsOptions["ctxData"];
-	readonly currentProjectPath: string;
+	readonly currentWorkspacePath: string;
 	readonly allowDbFilesMkdir: boolean;
 	pathIndexTruncated = false;
 	private entryCache = new Map<string, DbFilesCacheEntry>();
@@ -301,7 +301,7 @@ export class bash_DbFilesFs implements IFileSystem {
 	constructor(options: bash_DbFilesFsOptions) {
 		this.ctx = options.ctx;
 		this.ctxData = options.ctxData;
-		this.currentProjectPath = options.currentProjectPath;
+		this.currentWorkspacePath = options.currentWorkspacePath;
 		this.allowDbFilesMkdir = options.allowDbFilesMkdir;
 		this.rememberEntry(files_SYNTHETIC_ROOT_FOLDER);
 	}
@@ -313,7 +313,7 @@ export class bash_DbFilesFs implements IFileSystem {
 	 * choosing the tenant file or external mount read-only message.
 	 */
 	private readOnlyFileSystemError(path: string) {
-		const shellPath = bash_db_files_path_to_current_project_path(this.currentProjectPath, path);
+		const shellPath = bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, path);
 		return new ReadOnlyFileSystemError(shellPath, { externalMount: bash_is_path_under_mounts(shellPath) });
 	}
 
@@ -328,7 +328,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		const normalizedPath = bash_normalize_path(path);
 		if (bash_GLOB_METACHARACTER_REGEX.test(normalizedPath)) {
 			throw new Error(
-				`app file glob patterns are not supported: '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`app file glob patterns are not supported: '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
 			);
 		}
 		const cached = this.contentCache.get(normalizedPath);
@@ -340,8 +340,8 @@ export class bash_DbFilesFs implements IFileSystem {
 		// cheap query path first and keep the older action fallback for callers
 		// that still need last-available reconstruction behavior.
 		const chunkRead = (await this.ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: this.ctxData.organizationId,
 			workspaceId: this.ctxData.workspaceId,
-			projectId: this.ctxData.projectId,
 			userId: this.ctxData.userId,
 			path: normalizedPath,
 			mode: {
@@ -359,8 +359,8 @@ export class bash_DbFilesFs implements IFileSystem {
 		const fileContentPromise = this.ctx.runAction(
 			internal.files_nodes.get_file_last_available_markdown_content_by_path,
 			{
+				organizationId: this.ctxData.organizationId,
 				workspaceId: this.ctxData.workspaceId,
-				projectId: this.ctxData.projectId,
 				userId: this.ctxData.userId,
 				path: normalizedPath,
 			},
@@ -369,8 +369,8 @@ export class bash_DbFilesFs implements IFileSystem {
 			normalizedPath === "/"
 				? Promise.resolve(null)
 				: (this.ctx.runQuery(internal.files_nodes.get_by_path, {
+						organizationId: this.ctxData.organizationId,
 						workspaceId: this.ctxData.workspaceId,
-						projectId: this.ctxData.projectId,
 						path: normalizedPath,
 					}) as Promise<files_nodes_get_by_path_Result>);
 		const [fileContent, dbFilesDoc] = await Promise.all([fileContentPromise, dbFilePromise]);
@@ -380,18 +380,18 @@ export class bash_DbFilesFs implements IFileSystem {
 			if (cacheEntry?.kind === "file") {
 				this.rememberEntry(cacheEntry);
 				throw new bash_DbFilesContentUnavailableError({
-					shellPath: bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath),
+					shellPath: bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath),
 					contentType: cacheEntry.contentType,
 				});
 			}
 			if (cacheEntry?.kind === "folder") {
 				this.rememberEntry(cacheEntry);
 				throw new Error(
-					`EISDIR: illegal operation on a directory, read '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+					`EISDIR: illegal operation on a directory, read '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
 				);
 			}
 			throw new Error(
-				`ENOENT: no such file or directory, open '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`ENOENT: no such file or directory, open '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
 			);
 		}
 
@@ -430,13 +430,13 @@ export class bash_DbFilesFs implements IFileSystem {
 		const normalizedPath = bash_normalize_path(path);
 		if (bash_GLOB_METACHARACTER_REGEX.test(normalizedPath)) {
 			throw new Error(
-				`app file glob patterns are not supported: '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`app file glob patterns are not supported: '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
 			);
 		}
 		const cacheEntry = await this.getEntry(normalizedPath);
 		if (!cacheEntry) {
 			throw new Error(
-				`ENOENT: no such file or directory, stat '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`ENOENT: no such file or directory, stat '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
 			);
 		}
 
@@ -455,7 +455,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		const normalizedPath = bash_normalize_path(path);
 		if (bash_GLOB_METACHARACTER_REGEX.test(normalizedPath)) {
 			throw new Error(
-				`app file glob patterns are not supported: '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`app file glob patterns are not supported: '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
 			);
 		}
 		const existing = await this.getEntry(normalizedPath);
@@ -464,11 +464,11 @@ export class bash_DbFilesFs implements IFileSystem {
 				return;
 			}
 			throw new Error(
-				`EEXIST: file already exists, mkdir '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`EEXIST: file already exists, mkdir '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
 			);
 		}
 		if (!this.allowDbFilesMkdir) {
-			if (bash_is_path_under_mounts(this.currentProjectPath)) {
+			if (bash_is_path_under_mounts(this.currentWorkspacePath)) {
 				throw this.readOnlyFileSystemError(normalizedPath);
 			}
 			throw new Error(
@@ -480,21 +480,21 @@ export class bash_DbFilesFs implements IFileSystem {
 			const parent = await this.getEntry(parentPath);
 			if (!parent || parent.kind !== "folder") {
 				throw new Error(
-					`ENOENT: no such file or directory, mkdir '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+					`ENOENT: no such file or directory, mkdir '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
 				);
 			}
 		}
 
 		// mkdir only runs for the tenant app db-files root: the external mount root
 		// passes allowDbFilesMkdir=false and threw above, so the scope here is never
-		// reserved. Narrow the union before the project-only mutation, which declares strict ids.
-		const { workspaceId, projectId, userId } = this.ctxData;
-		if (workspaces_is_global_workspace_id(workspaceId) || workspaces_is_global_github_project_id(projectId)) {
-			throw should_never_happen("mkdir reached the reserved mount scope", { workspaceId, projectId });
+		// reserved. Narrow the union before the workspace-only mutation, which declares strict ids.
+		const { organizationId, workspaceId, userId } = this.ctxData;
+		if (organizations_is_global_organization_id(organizationId) || organizations_is_global_github_workspace_id(workspaceId)) {
+			throw should_never_happen("mkdir reached the reserved mount scope", { organizationId, workspaceId });
 		}
 		const created = (await this.ctx.runMutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId,
 			workspaceId,
-			projectId,
 			userId,
 			path: normalizedPath,
 		})) as files_nodes_create_folder_node_by_path_Result;
@@ -517,7 +517,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		const stat = await this.stat(normalizedPath);
 		if (!stat.isDirectory) {
 			throw new Error(
-				`ENOTDIR: not a directory, scandir '${bash_db_files_path_to_current_project_path(this.currentProjectPath, normalizedPath)}'`,
+				`ENOTDIR: not a directory, scandir '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
 			);
 		}
 		throw new Error("db files directory enumeration is not supported; use ls --limit N or find --limit N");
@@ -567,7 +567,7 @@ export class bash_DbFilesFs implements IFileSystem {
 
 	async readlink(path: string): Promise<string> {
 		throw new Error(
-			`EINVAL: invalid argument, readlink '${bash_db_files_path_to_current_project_path(this.currentProjectPath, path)}'`,
+			`EINVAL: invalid argument, readlink '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, path)}'`,
 		);
 	}
 
@@ -616,8 +616,8 @@ export class bash_DbFilesFs implements IFileSystem {
 		}
 
 		const dbFilesDoc = (await this.ctx.runQuery(internal.files_nodes.get_by_path, {
+			organizationId: this.ctxData.organizationId,
 			workspaceId: this.ctxData.workspaceId,
-			projectId: this.ctxData.projectId,
 			path: normalizedPath,
 		})) as files_nodes_get_by_path_Result;
 
@@ -647,7 +647,7 @@ export class bash_DbFilesFs implements IFileSystem {
  * One db-files root that Bash can route paths into.
  */
 export type bash_DbFilesRoot = {
-	currentProjectPath: string;
+	currentWorkspacePath: string;
 	fs: bash_DbFilesFs;
 };
 
@@ -687,18 +687,18 @@ export function bash_resolve_db_files_shell_path(
 
 	if (bash_is_path_under_mounts(normalized)) {
 		const renderShellPath = (dbFilesPath: string) =>
-			bash_db_files_path_to_current_project_path(dbFilesRoots.externalMounts.currentProjectPath, dbFilesPath);
+			bash_db_files_path_to_current_workspace_path(dbFilesRoots.externalMounts.currentWorkspacePath, dbFilesPath);
 		const base = {
 			fs: dbFilesRoots.externalMounts.fs,
 			ctxData: dbFilesRoots.externalMounts.fs.ctxData,
-			basePath: dbFilesRoots.externalMounts.currentProjectPath,
+			basePath: dbFilesRoots.externalMounts.currentWorkspacePath,
 			renderShellPath,
 		} as const;
 
 		// External mount content is stored as `/<mount-name>/<relative-path>`;
 		// `/.mounts` itself maps to the synthetic reserved-scope root.
-		const dbFilesPath = bash_current_project_path_to_db_files_path(
-			dbFilesRoots.externalMounts.currentProjectPath,
+		const dbFilesPath = bash_current_workspace_path_to_db_files_path(
+			dbFilesRoots.externalMounts.currentWorkspacePath,
 			normalized,
 		);
 		if (dbFilesPath == null || dbFilesPath === "/") {
@@ -709,14 +709,14 @@ export function bash_resolve_db_files_shell_path(
 	}
 
 	const renderShellPath = (dbFilesPath: string) =>
-		bash_db_files_path_to_current_project_path(dbFilesRoots.app.currentProjectPath, dbFilesPath);
-	const dbFilesPath = bash_current_project_path_to_db_files_path(dbFilesRoots.app.currentProjectPath, normalized);
+		bash_db_files_path_to_current_workspace_path(dbFilesRoots.app.currentWorkspacePath, dbFilesPath);
+	const dbFilesPath = bash_current_workspace_path_to_db_files_path(dbFilesRoots.app.currentWorkspacePath, normalized);
 	return {
 		kind: dbFilesPath == null ? "outside_db_files" : "app",
 		fs: dbFilesRoots.app.fs,
 		ctxData: dbFilesRoots.app.fs.ctxData,
 		dbFilesPath,
-		basePath: dbFilesRoots.app.currentProjectPath,
+		basePath: dbFilesRoots.app.currentWorkspacePath,
 		renderShellPath,
 	};
 }
@@ -841,13 +841,13 @@ function source_target_from_words(words: string[], startIndex: number) {
  * resolved against cwd so `/tmp/script.sh` stays allowed. Dynamic targets are
  * blocked because their final path cannot be classified without shell expansion.
  */
-function source_target_is_disallowed(target: string, options: { cwd: string; currentProjectPath: string }): boolean {
+function source_target_is_disallowed(target: string, options: { cwd: string; currentWorkspacePath: string }): boolean {
 	if (SHELL_DYNAMIC_WORD_REGEX.test(target)) {
 		return true;
 	}
 	const resolvedPath = bash_resolve_path(options.cwd, target);
 	return (
-		bash_is_path_under_current_project_path(options.currentProjectPath, resolvedPath) ||
+		bash_is_path_under_current_workspace_path(options.currentWorkspacePath, resolvedPath) ||
 		bash_is_path_under_mounts(resolvedPath)
 	);
 }
@@ -860,7 +860,7 @@ function source_target_is_disallowed(target: string, options: { cwd: string; cur
  */
 function simple_command_has_disallowed_source_target(
 	words: string[],
-	options: { cwd: string; currentProjectPath: string },
+	options: { cwd: string; currentWorkspacePath: string },
 ): boolean {
 	let skipRedirectionTarget = false;
 
@@ -920,7 +920,7 @@ function simple_command_has_disallowed_source_target(
  */
 export function bash_command_has_disallowed_source_target(
 	command: string,
-	options: { cwd: string; currentProjectPath: string },
+	options: { cwd: string; currentWorkspacePath: string },
 ): boolean {
 	const tokens = parse_shell_word_tokens(command.replace(bash_SHELL_COMMENT_LINE_REGEX, ""));
 	let words: string[] = [];
@@ -999,7 +999,7 @@ export function bash_shell_arg_quote(arg: string) {
  * text-search cursor, so continuation output always points back to `search`.
  */
 export function bash_search_command_build_continuation(args: {
-	currentProjectPath: string;
+	currentWorkspacePath: string;
 	path: string | undefined;
 	limit: number;
 	cursor: string;
@@ -1009,7 +1009,7 @@ export function bash_search_command_build_continuation(args: {
 	if (args.path != null) {
 		continuationParts.push(
 			"--path",
-			bash_shell_arg_quote(bash_db_files_path_to_current_project_path(args.currentProjectPath, args.path)),
+			bash_shell_arg_quote(bash_db_files_path_to_current_workspace_path(args.currentWorkspacePath, args.path)),
 		);
 	}
 	continuationParts.push(
@@ -1382,7 +1382,7 @@ function native_just_bash_command_lookup_name(path: string) {
 function native_just_bash_tmp_command_path_app_operand(
 	args: string[],
 	ctx: CommandContext,
-	currentProjectPath: string,
+	currentWorkspacePath: string,
 ) {
 	for (const arg of args) {
 		if (arg.startsWith("-")) {
@@ -1396,14 +1396,14 @@ function native_just_bash_tmp_command_path_app_operand(
 			arg.startsWith("./") ||
 			arg.startsWith("../") ||
 			arg.includes("/");
-		if (isPathLike && bash_is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
+		if (isPathLike && bash_is_path_under_current_workspace_path(currentWorkspacePath, resolvedPath)) {
 			return resolvedPath;
 		}
 	}
 	return null;
 }
 
-function native_just_bash_tmp_command_rg_app_operand(args: string[], ctx: CommandContext, currentProjectPath: string) {
+function native_just_bash_tmp_command_rg_app_operand(args: string[], ctx: CommandContext, currentWorkspacePath: string) {
 	let pattern: string | null = null;
 	for (const arg of args) {
 		if (arg.startsWith("-")) {
@@ -1421,7 +1421,7 @@ function native_just_bash_tmp_command_rg_app_operand(args: string[], ctx: Comman
 			arg.startsWith("./") ||
 			arg.startsWith("../") ||
 			arg.includes("/");
-		if (isPathLike && bash_is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
+		if (isPathLike && bash_is_path_under_current_workspace_path(currentWorkspacePath, resolvedPath)) {
 			return { pattern, path: resolvedPath };
 		}
 	}
@@ -1431,7 +1431,7 @@ function native_just_bash_tmp_command_rg_app_operand(args: string[], ctx: Comman
 function native_just_bash_tmp_command_app_hint_path(
 	args: string[],
 	ctx: CommandContext,
-	currentProjectPath: string,
+	currentWorkspacePath: string,
 	stderr: string,
 ) {
 	let hasExplicitScratchOperand = false;
@@ -1451,15 +1451,15 @@ function native_just_bash_tmp_command_app_hint_path(
 			arg.startsWith("./") ||
 			arg.startsWith("../") ||
 			arg.includes("/");
-		if (isPathLike && bash_is_path_under_current_project_path(currentProjectPath, resolvedPath)) {
+		if (isPathLike && bash_is_path_under_current_workspace_path(currentWorkspacePath, resolvedPath)) {
 			return resolvedPath;
 		}
 	}
-	if (stderr.includes(currentProjectPath)) {
-		return currentProjectPath;
+	if (stderr.includes(currentWorkspacePath)) {
+		return currentWorkspacePath;
 	}
 	const hasStdin = ctx.stdin != null && String(ctx.stdin).length > 0;
-	if (!hasStdin && !hasExplicitScratchOperand && bash_is_path_under_current_project_path(currentProjectPath, ctx.cwd)) {
+	if (!hasStdin && !hasExplicitScratchOperand && bash_is_path_under_current_workspace_path(currentWorkspacePath, ctx.cwd)) {
 		return ctx.cwd;
 	}
 	return null;
@@ -1470,7 +1470,7 @@ function native_just_bash_tmp_command_app_hint_path(
  *
  * This is used for Just Bash built-ins that have not been made app-file-aware:
  * they can process `/tmp` paths and stdin, but cannot directly operate on
- * db-backed paths under `currentProjectPath`. It keeps direct operands away
+ * db-backed paths under `currentWorkspacePath`. It keeps direct operands away
  * from the app tree, permits `/tmp`, `/dev/null`, `/dev/zero`, and synthetic command lookup
  * paths, and adds app-file guidance when the command likely failed because it
  * tried to touch the mounted app file tree directly.
@@ -1482,25 +1482,25 @@ export async function bash_delegate_native_just_bash_tmp_command(
 	command: CommandName,
 	args: string[],
 	ctx: CommandContext,
-	currentProjectPath: string,
+	currentWorkspacePath: string,
 ) {
 	const env = Object.fromEntries(ctx.env);
 	const cwd = is_native_just_bash_tmp_path(ctx.cwd) ? ctx.cwd : bash_TMP_MOUNT;
 	const directRgOperand =
-		command === "rg" ? native_just_bash_tmp_command_rg_app_operand(args, ctx, currentProjectPath) : null;
+		command === "rg" ? native_just_bash_tmp_command_rg_app_operand(args, ctx, currentWorkspacePath) : null;
 
 	// ln is pre-checked too: just-bash's catch-all sanitizer rewrites /home…|/tmp… substrings
 	// to <path>, so a thrown NativeJustBashTmpCommandAccessError loses every concrete path by the time
 	// the model sees it. Rejecting before the inner shell keeps the message intact.
 	const directPathOperand =
 		command === "du" || command === "diff" || command === "ln"
-			? native_just_bash_tmp_command_path_app_operand(args, ctx, currentProjectPath)
+			? native_just_bash_tmp_command_path_app_operand(args, ctx, currentWorkspacePath)
 			: null;
 	const directAppOperand = directRgOperand?.path ?? directPathOperand;
 
 	if (directAppOperand != null) {
 		const appOperandError =
-			new NativeJustBashTmpCommandAccessError(currentProjectPath, directAppOperand).message +
+			new NativeJustBashTmpCommandAccessError(currentWorkspacePath, directAppOperand).message +
 			(command === "du"
 				? `du: app-mount paths do not expose POSIX disk usage. Try: stat ${bash_shell_arg_quote(directAppOperand)} && find ${bash_shell_arg_quote(directAppOperand)} -type f --limit 20\n`
 				: "") +
@@ -1519,7 +1519,7 @@ export async function bash_delegate_native_just_bash_tmp_command(
 	}
 
 	const inner = new Bash({
-		fs: new RestrictedNativeJustBashTmpCommandFs(ctx.fs, currentProjectPath, ctx.cwd),
+		fs: new RestrictedNativeJustBashTmpCommandFs(ctx.fs, currentWorkspacePath, ctx.cwd),
 		cwd,
 		env,
 		commands: [...bash_ALLOWED_COMMANDS],
@@ -1536,11 +1536,11 @@ export async function bash_delegate_native_just_bash_tmp_command(
 		},
 	});
 
-	const guidancePath = native_just_bash_tmp_command_app_hint_path(args, ctx, currentProjectPath, result.stderr);
+	const guidancePath = native_just_bash_tmp_command_app_hint_path(args, ctx, currentWorkspacePath, result.stderr);
 	if (result.exitCode !== 0 && guidancePath != null && !result.stderr.includes("db-backed")) {
 		return {
 			...result,
-			stderr: `${result.stderr}${new NativeJustBashTmpCommandAccessError(currentProjectPath, guidancePath).message}`,
+			stderr: `${result.stderr}${new NativeJustBashTmpCommandAccessError(currentWorkspacePath, guidancePath).message}`,
 		};
 	}
 	return result;
@@ -1550,13 +1550,13 @@ export async function bash_delegate_native_just_bash_tmp_command(
  * Means a Native Just Bash /tmp command tried to access the db-backed app file tree.
  */
 class NativeJustBashTmpCommandAccessError extends Error {
-	constructor(currentProjectPath: string, path: string) {
+	constructor(currentWorkspacePath: string, path: string) {
 		const normalizedPath = bash_normalize_path(path);
 		const dbFilesPath =
-			bash_current_project_path_to_db_files_path(currentProjectPath, normalizedPath) ?? normalizedPath;
+			bash_current_workspace_path_to_db_files_path(currentWorkspacePath, normalizedPath) ?? normalizedPath;
 		super(
 			`Native Just Bash /tmp commands cannot access app files directly: '${normalizedPath}'.\n` +
-				`The app file tree at '${currentProjectPath}' is db-backed, so Native Just Bash /tmp commands can use /tmp paths or stdin but not direct app-file operands.\n` +
+				`The app file tree at '${currentWorkspacePath}' is db-backed, so Native Just Bash /tmp commands can use /tmp paths or stdin but not direct app-file operands.\n` +
 				`For app path '${dbFilesPath}', use app-aware commands such as search, find, grep, cat, head, tail, wc, stat, or tree. To process one readable app file with Native Just Bash /tmp tools, pipe it through cat or copy it first: cp ${bash_shell_arg_quote(normalizedPath)} /tmp/<name>\n`,
 		);
 		this.name = "NativeJustBashTmpCommandAccessError";
@@ -1579,14 +1579,14 @@ class NativeJustBashTmpCommandAccessError extends Error {
 class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	constructor(
 		private readonly fs: IFileSystem,
-		private readonly currentProjectPath: string,
+		private readonly currentWorkspacePath: string,
 		private readonly commandCwd: string,
 	) {}
 
 	async readFile(path: string, options?: Parameters<IFileSystem["readFile"]>[1]) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		return await this.fs.readFile(normalizedPath, options);
 	}
@@ -1594,7 +1594,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async readFileBuffer(path: string) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		return await this.fs.readFileBuffer(normalizedPath);
 	}
@@ -1602,7 +1602,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async writeFile(path: string, content: FileContent, options?: Parameters<IFileSystem["writeFile"]>[2]) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		await this.fs.writeFile(normalizedPath, content, options);
 	}
@@ -1610,7 +1610,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async appendFile(path: string, content: FileContent, options?: Parameters<IFileSystem["appendFile"]>[2]) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		await this.fs.appendFile(normalizedPath, content, options);
 	}
@@ -1661,7 +1661,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 		}
 
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 
 		// /dev is synthetic; the mounted filesystem only owns device files and /tmp contents.
@@ -1691,7 +1691,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async mkdir(path: string, options?: MkdirOptions) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		await this.fs.mkdir(normalizedPath, options);
 	}
@@ -1708,7 +1708,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 			return bash_ALLOWED_COMMANDS.toSorted();
 		}
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		if (normalizedPath === "/") {
 			return ["dev", "tmp"];
@@ -1722,7 +1722,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async rm(path: string, options?: RmOptions) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		await this.fs.rm(normalizedPath, options);
 	}
@@ -1730,12 +1730,12 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async cp(src: string, dest: string, options?: CpOptions) {
 		const normalizedSrc = bash_normalize_path(src);
 		if (!is_native_just_bash_tmp_path(normalizedSrc)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedSrc);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedSrc);
 		}
 
 		const normalizedDest = bash_normalize_path(dest);
 		if (!is_native_just_bash_tmp_path(normalizedDest)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedDest);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedDest);
 		}
 
 		await this.fs.cp(normalizedSrc, normalizedDest, options);
@@ -1744,12 +1744,12 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async mv(src: string, dest: string) {
 		const normalizedSrc = bash_normalize_path(src);
 		if (!is_native_just_bash_tmp_path(normalizedSrc)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedSrc);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedSrc);
 		}
 
 		const normalizedDest = bash_normalize_path(dest);
 		if (!is_native_just_bash_tmp_path(normalizedDest)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedDest);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedDest);
 		}
 
 		await this.fs.mv(normalizedSrc, normalizedDest);
@@ -1780,7 +1780,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async chmod(path: string, mode: number) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		await this.fs.chmod(normalizedPath, mode);
 	}
@@ -1788,14 +1788,14 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async symlink(target: string, linkPath: string) {
 		const normalizedLinkPath = bash_normalize_path(linkPath);
 		if (!is_native_just_bash_tmp_path(normalizedLinkPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedLinkPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedLinkPath);
 		}
 
 		const resolvedTarget = target.startsWith("/")
 			? bash_normalize_path(target)
 			: bash_resolve_path(bash_normalize_path(`${normalizedLinkPath}/..`), target);
 		if (!is_native_just_bash_tmp_path(resolvedTarget)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, resolvedTarget);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, resolvedTarget);
 		}
 
 		await this.fs.symlink(target, normalizedLinkPath);
@@ -1804,12 +1804,12 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async link(existingPath: string, newPath: string) {
 		const normalizedExistingPath = bash_normalize_path(existingPath);
 		if (!is_native_just_bash_tmp_path(normalizedExistingPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedExistingPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedExistingPath);
 		}
 
 		const normalizedNewPath = bash_normalize_path(newPath);
 		if (!is_native_just_bash_tmp_path(normalizedNewPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedNewPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedNewPath);
 		}
 
 		await this.fs.link(normalizedExistingPath, normalizedNewPath);
@@ -1818,7 +1818,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async readlink(path: string) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		return await this.fs.readlink(normalizedPath);
 	}
@@ -1833,7 +1833,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 		}
 
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 
 		if (normalizedPath === "/dev" || normalizedPath === bash_DEV_ZERO_PATH) {
@@ -1856,13 +1856,13 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 		}
 
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 
 		const realPath = await this.fs.realpath(normalizedPath);
 		const normalizedRealPath = bash_normalize_path(realPath);
 		if (!is_native_just_bash_tmp_path(normalizedRealPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedRealPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedRealPath);
 		}
 
 		return normalizedRealPath;
@@ -1871,7 +1871,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 	async utimes(path: string, atime: Date, mtime: Date) {
 		const normalizedPath = bash_normalize_path(path);
 		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentProjectPath, normalizedPath);
+			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
 		}
 		await this.fs.utimes(normalizedPath, atime, mtime);
 	}
@@ -1890,7 +1890,7 @@ class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
 export function bash_enforce_reader_operand_cap(
 	command: string,
 	commandCtx: CommandContext,
-	currentProjectPath: string,
+	currentWorkspacePath: string,
 	files: string[],
 ) {
 	let fileOperandCount = 0;
@@ -1899,7 +1899,7 @@ export function bash_enforce_reader_operand_cap(
 		const resolvedPath = bash_resolve_path(commandCtx.cwd, file);
 		// Mount reads pull whole file bodies from the db too, so count them against the same batch cap.
 		if (
-			bash_is_path_under_current_project_path(currentProjectPath, resolvedPath) ||
+			bash_is_path_under_current_workspace_path(currentWorkspacePath, resolvedPath) ||
 			bash_is_path_under_mounts(resolvedPath)
 		) {
 			fileOperandCount++;
@@ -1936,16 +1936,16 @@ export async function bash_get_db_file_byte_size(args: {
 		return null;
 	}
 
+	const organizationId = args.ctxData.organizationId;
 	const workspaceId = args.ctxData.workspaceId;
-	const projectId = args.ctxData.projectId;
 	if (
 		files_node_has_editable_yjs_state(args.dbFilesDoc) &&
-		!workspaces_is_global_workspace_id(workspaceId) &&
-		!workspaces_is_global_github_project_id(projectId)
+		!organizations_is_global_organization_id(organizationId) &&
+		!organizations_is_global_github_workspace_id(workspaceId)
 	) {
 		const pendingUpdate = (await args.ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
+			organizationId,
 			workspaceId,
-			projectId,
 			userId: args.ctxData.userId,
 			fileNodeId: args.dbFilesDoc._id,
 		})) as files_pending_updates_get_by_file_node_Result;
@@ -1955,8 +1955,8 @@ export async function bash_get_db_file_byte_size(args: {
 	}
 
 	const asset = (await args.ctx.runQuery(internal.r2.get_asset_by_id, {
+		organizationId: args.ctxData.organizationId,
 		workspaceId: args.ctxData.workspaceId,
-		projectId: args.ctxData.projectId,
 		assetId: args.dbFilesDoc.assetId,
 	})) as get_asset_by_id_Result;
 	return asset?.size ?? null;
@@ -1969,20 +1969,20 @@ export async function bash_get_db_file_byte_size(args: {
  * Callers keep this advisory on stderr so it cannot be piped as file content.
  */
 export function bash_build_unreadable_file_advisory(
-	currentProjectPath: string,
+	currentWorkspacePath: string,
 	normalizedPath: string,
 	contentType: string | undefined,
 ) {
-	const shellPath = bash_db_files_path_to_current_project_path(currentProjectPath, normalizedPath);
+	const shellPath = bash_db_files_path_to_current_workspace_path(currentWorkspacePath, normalizedPath);
 	const lastSlashIndex = normalizedPath.lastIndexOf("/");
 	const lastDotIndex = normalizedPath.lastIndexOf(".");
 	const dbFilesPathWithoutExtension =
 		lastDotIndex > lastSlashIndex ? normalizedPath.slice(0, lastDotIndex) : normalizedPath;
 	const relatedReadablePaths = Array.from(
 		new Set([
-			bash_db_files_path_to_current_project_path(currentProjectPath, `${normalizedPath}.md`),
-			bash_db_files_path_to_current_project_path(currentProjectPath, `${dbFilesPathWithoutExtension}.md`),
-			bash_db_files_path_to_current_project_path(currentProjectPath, `${dbFilesPathWithoutExtension}.txt`),
+			bash_db_files_path_to_current_workspace_path(currentWorkspacePath, `${normalizedPath}.md`),
+			bash_db_files_path_to_current_workspace_path(currentWorkspacePath, `${dbFilesPathWithoutExtension}.md`),
+			bash_db_files_path_to_current_workspace_path(currentWorkspacePath, `${dbFilesPathWithoutExtension}.txt`),
 		]),
 	).filter((path) => path !== shellPath);
 	return [

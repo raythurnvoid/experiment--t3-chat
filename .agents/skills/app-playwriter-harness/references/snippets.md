@@ -59,7 +59,7 @@ pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.observe({ l
 Use this after installing the harness and binding the localhost tab. The console capture is filtered so noisy extension/browser logs do not hide app startup failures.
 
 ```powershell
-pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: 'localhost:5173' }); await state.appPlaywriterHarness.startConsoleCapture({ search: /IndexRedirect|Missing default|Unauthenticated|workspace|error/i }); await state.page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded' }); await state.appPlaywriterHarness.waitForUrlIncludes({ urlIncludes: '/w/personal/home/files', timeout: 15000 }); await state.appPlaywriterHarness.observeRoute({ label: 'post-reset startup', search: /Files|Open workspace|Preparing workspace|Redirecting/i }); await state.appPlaywriterHarness.authSummary();"
+pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: 'localhost:5173' }); await state.appPlaywriterHarness.startConsoleCapture({ search: /IndexRedirect|Missing default|Unauthenticated|organization|error/i }); await state.page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded' }); await state.appPlaywriterHarness.waitForUrlIncludes({ urlIncludes: '/w/personal/home/files', timeout: 15000 }); await state.appPlaywriterHarness.observeRoute({ label: 'post-reset startup', search: /Files|Open organization|Preparing organization|Redirecting/i }); await state.appPlaywriterHarness.authSummary();"
 ```
 
 ## Read Captured Console
@@ -74,20 +74,20 @@ pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.readConsole
 pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.inspectElement({ selector: '[aria-label]', attribute: { name: 'aria-label', value: 'Main navigation' }, actionSelector: 'a, button, [role=link], [role=button]', localStorageKeys: ['app_state::sidebar::main_app_open', 'app_state::sidebar::main_app_collapsed'] });"
 ```
 
-## Inspect Workspace Switcher Lists
+## Inspect Organization Switcher Lists
 
-Open the header switcher by its accessible name, then inspect the project list scroll metrics.
+Open the header switcher by its accessible name, then inspect the workspace list scroll metrics.
 
 ```powershell
-pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/' }); await state.page.getByRole('button', { name: /Open workspace and project switcher/i }).click(); await state.appPlaywriterHarness.observe({ label: 'workspace switcher', search: /Workspaces and projects|Create workspace|Create project/i }); await state.appPlaywriterHarness.inspectElement({ selector: '.MainAppHeaderWorkspaceSwitcherModalSelectPane[aria-label=\"Projects\"]', actionSelector: 'button, [role=button]', computedStyles: [{ name: 'project list', selector: '.MainAppHeaderWorkspaceSwitcherModalSelectList', properties: ['maxHeight', 'overflowY', 'scrollbarGutter'] }] });"
+pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/' }); await state.page.getByRole('button', { name: /Open organization and workspace switcher/i }).click(); await state.appPlaywriterHarness.observe({ label: 'organization switcher', search: /Organizations and workspaces|Create organization|Create workspace/i }); await state.appPlaywriterHarness.inspectElement({ selector: '.MainAppHeaderOrganizationSwitcherModalSelectPane[aria-label=\"Workspaces\"]', actionSelector: 'button, [role=button]', computedStyles: [{ name: 'workspace list', selector: '.MainAppHeaderOrganizationSwitcherModalSelectList', properties: ['maxHeight', 'overflowY', 'scrollbarGutter'] }] });"
 ```
 
-## Close Workspace Switcher
+## Close Organization Switcher
 
 Use the specific close label so the file sidebar and nested modal close buttons do not make the locator ambiguous.
 
 ```powershell
-pnpx playwriter -s $session --% -e "await state.page.getByRole('button', { name: 'Close workspace switcher' }).click(); await state.appPlaywriterHarness.observe({ label: 'after closing workspace switcher', search: /Open workspace and project switcher/i });"
+pnpx playwriter -s $session --% -e "await state.page.getByRole('button', { name: 'Close organization switcher' }).click(); await state.appPlaywriterHarness.observe({ label: 'after closing organization switcher', search: /Open organization and workspace switcher/i });"
 ```
 
 ## Files Folder Create QA

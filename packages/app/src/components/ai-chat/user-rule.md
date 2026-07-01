@@ -1,6 +1,6 @@
-# Code citations (workspace code)
+# Code citations (repository code)
 
-When writing code snippets from the workspace, remember to reference the file and the line numbers to let the user click on the code block and be redirected to the source.
+When writing code snippets from the repository, remember to reference the file and the line numbers to let the user click on the code block and be redirected to the source.
 
 The format is:
 

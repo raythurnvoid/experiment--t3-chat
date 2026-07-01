@@ -113,7 +113,7 @@ pnpx convex codegen
 ```bash
 pnpx convex data
 pnpx convex data users --limit 20 --order desc
-pnpx convex data workspaces_projects_users --limit 50 --order desc
+pnpx convex data organizations_workspaces_users --limit 50 --order desc
 ```
 
 - `pnpx convex data <table>` is useful for quick table scans and system tables too. The CLI supports `--limit` and `--order`; for real filtering, add a small internal query/mutation and run it with `pnpx convex run`.
@@ -187,8 +187,8 @@ pnpx convex run migrations:run_<migration_name>
   - Move query callsites to new indexes.
   - Remove old indexes only in tighten phase.
 - Keep API contract renames explicit and separate from DB renames:
-  - DB row fields: e.g. `workspace_id` -> `workspaceId`.
-  - Convex args/returns: e.g. `workspace_id` -> `workspaceId`, `file_id` -> `fileId`.
+  - DB doc fields: e.g. `organization_id` -> `organizationId`.
+  - Convex args/returns: e.g. `organization_id` -> `organizationId`, `file_id` -> `fileId`.
   - Preserve semantic distinction between client-generated id and Convex doc id.
 - Write migrations to be idempotent and "prefer existing new value":
   - Use `newField ?? old_field` patterns.

@@ -64,7 +64,7 @@ const rate_limiter_CONFIG = {
 	},
 	presence_write: STRICT_WRITE,
 	save_file_pending_update: STRICT_WRITE,
-	workspaces_write: STRICT_WRITE,
+	organizations_write: STRICT_WRITE,
 } as const;
 
 const rate_limiter = new RateLimiter(components.rate_limiter, rate_limiter_CONFIG);

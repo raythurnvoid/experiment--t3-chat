@@ -9,10 +9,10 @@ import { bash_run_command } from "../server/bash.ts";
 
 export const run = internalAction({
 	args: {
-		workspaceId: v.id("workspaces"),
-		projectId: v.id("workspaces_projects"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		organizationName: v.string(),
 		workspaceName: v.string(),
-		projectName: v.string(),
 		userId: v.id("users"),
 		threadId: v.id("ai_chat_threads"),
 		command: v.string(),

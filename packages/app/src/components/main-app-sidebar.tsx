@@ -374,14 +374,14 @@ type MainAppSidebar_Props = {
 export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar_Props) {
 	const { ref, id, className } = props;
 
-	const { workspaceId, workspaceName, projectName } = AppTenantProvider.useContext();
-	const workspaceList = useQuery(app_convex_api.workspaces.list);
-	const workspace = workspaceList?.workspaces.find((workspace) => workspace._id === workspaceId);
-	const showUsersNavigation = workspace?.default === false;
+	const { organizationId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const organizationList = useQuery(app_convex_api.organizations.list);
+	const organization = organizationList?.organizations.find((organization) => organization._id === organizationId);
+	const showUsersNavigation = organization?.default === false;
 
-	const chatPath = url_path_chat({ workspaceName, projectName });
-	const filesPath = url_path_files({ workspaceName, projectName });
-	const usersPath = url_path_users({ workspaceName, projectName });
+	const chatPath = url_path_chat({ organizationName, workspaceName });
+	const filesPath = url_path_files({ organizationName, workspaceName });
+	const usersPath = url_path_users({ organizationName, workspaceName });
 
 	const [isOpen, setIsOpen] = useAppLocalStorageStateValue("app_state::sidebar::main_app_open");
 	const [mainAppSidebarCollapsed, setMainAppSidebarCollapsed] = useAppLocalStorageStateValue(
@@ -450,7 +450,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						icon={FileText}
 						tooltip={mainAppSidebarCollapsed ? "Files" : undefined}
 					/>
-					{/* Personal workspaces keep member management out of main nav; direct URLs stay guarded/read-only. */}
+					{/* Personal organizations keep member management out of main nav; direct URLs stay guarded/read-only. */}
 					{showUsersNavigation ? (
 						<MainAppSidebarItem
 							to={usersPath}

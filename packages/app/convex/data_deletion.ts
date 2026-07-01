@@ -14,17 +14,17 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
 import { presence } from "./presence.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
-import { workspaces_DEFAULT_PROJECT_NAME, workspaces_DEFAULT_WORKSPACE_NAME } from "../shared/workspaces.ts";
+import { organizations_DEFAULT_WORKSPACE_NAME, organizations_DEFAULT_ORGANIZATION_NAME } from "../shared/organizations.ts";
 import {
-	access_control_project_role_permission_grants,
+	access_control_workspace_role_permission_grants,
 	access_control_db_ensure_role_assignment,
 	access_control_db_ensure_role_permission_grant,
-	access_control_workspace_role_permission_grants,
+	access_control_organization_role_permission_grants,
 } from "./access_control.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const PROJECT_CONTENT_PURGE_BATCH_SIZE = 100;
+const WORKSPACE_CONTENT_PURGE_BATCH_SIZE = 100;
 
 const R2_BUCKET_FILES = process.env.R2_BUCKET_FILES;
 if (!R2_BUCKET_FILES) {
@@ -56,7 +56,7 @@ const r2 = new R2(components.r2, {
 /**
  * Workpool handle for file content-materialization jobs.
  *
- * Project purges use it to cancel outstanding jobs before deleting their
+ * Workspace purges use it to cancel outstanding jobs before deleting their
  * tracking docs.
  */
 const files_content_materialization_workpool = new Workpool(components.files_content_materialization_workpool, {
@@ -72,7 +72,7 @@ const files_content_materialization_workpool = new Workpool(components.files_con
 /**
  * Workpool handle for upload-conversion jobs attached to R2 asset docs.
  *
- * Project purges cancel those jobs before deleting the asset docs and R2
+ * Workspace purges cancel those jobs before deleting the asset docs and R2
  * objects.
  */
 const files_upload_conversion_workpool = new Workpool(components.files_upload_conversion_workpool, {
@@ -88,7 +88,7 @@ const files_upload_conversion_workpool = new Workpool(components.files_upload_co
 /**
  * Workpool that runs the deletion request processor.
  *
- * It serializes user, workspace, and project queue processing so large purges
+ * It serializes user, organization, and workspace queue processing so large purges
  * advance through bounded retryable worker passes.
  */
 const data_deletion_workpool = new Workpool(components.data_deletion_workpool, {
@@ -98,22 +98,22 @@ const data_deletion_workpool = new Workpool(components.data_deletion_workpool, {
 function batch_size(args: { _test_batchSize?: number }) {
 	return Math.max(
 		1,
-		Math.min(args._test_batchSize ?? PROJECT_CONTENT_PURGE_BATCH_SIZE, PROJECT_CONTENT_PURGE_BATCH_SIZE),
+		Math.min(args._test_batchSize ?? WORKSPACE_CONTENT_PURGE_BATCH_SIZE, WORKSPACE_CONTENT_PURGE_BATCH_SIZE),
 	);
 }
 
 /**
  * Creates a deletion request, or updates the existing request for the same target.
  *
- * The same user, workspace, or project should only have one queued request.
+ * The same user, organization, or workspace should only have one queued request.
  * If the request already exists, keep the earlier processing time.
  */
 export async function data_deletion_db_request(
 	ctx: MutationCtx,
 	args: {
 		userId: Id<"users">;
-		workspaceId?: Id<"workspaces">;
-		projectId?: Id<"workspaces_projects">;
+		organizationId?: Id<"organizations">;
+		workspaceId?: Id<"organizations_workspaces">;
 		scope: Doc<"data_deletion_requests">["scope"];
 		eligibleAt?: number;
 	},
@@ -145,81 +145,81 @@ export async function data_deletion_db_request(
 		});
 	}
 
-	// Workspace and project deletion requests must name the workspace they belong to.
-	if (!args.workspaceId) {
-		throw new Error("Workspace id is required for workspace/project deletion requests");
+	// Organization and workspace deletion requests must name the organization they belong to.
+	if (!args.organizationId) {
+		throw new Error("Organization id is required for organization/workspace deletion requests");
 	}
 
-	// Project deletion has one queue doc per workspace/project pair.
-	if (args.scope === "project") {
-		if (!args.projectId) {
-			throw new Error("Project id is required for project deletion requests");
+	// Workspace deletion has one queue doc per organization/workspace pair.
+	if (args.scope === "workspace") {
+		if (!args.workspaceId) {
+			throw new Error("Workspace id is required for workspace deletion requests");
 		}
 
-		const existingProjectRequests = await ctx.db
+		const existingWorkspaceRequests = await ctx.db
 			.query("data_deletion_requests")
-			.withIndex("by_workspace_project_scope", (q) =>
-				q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId).eq("scope", "project"),
+			.withIndex("by_organization_workspace_scope", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("scope", "workspace"),
 			)
 			.first();
 
-		if (existingProjectRequests) {
-			// Do not move an existing project deletion later.
+		if (existingWorkspaceRequests) {
+			// Do not move an existing workspace deletion later.
 			// Keep whichever request becomes eligible first.
-			await ctx.db.patch("data_deletion_requests", existingProjectRequests._id, {
-				eligibleAt: Math.min(existingProjectRequests.eligibleAt, eligibleAt),
+			await ctx.db.patch("data_deletion_requests", existingWorkspaceRequests._id, {
+				eligibleAt: Math.min(existingWorkspaceRequests.eligibleAt, eligibleAt),
 			});
-			return existingProjectRequests._id;
+			return existingWorkspaceRequests._id;
 		}
 
 		return await ctx.db.insert("data_deletion_requests", {
 			userId: args.userId,
+			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			projectId: args.projectId,
-			scope: "project",
+			scope: "workspace",
 			eligibleAt,
 		});
 	}
 
-	// Workspace deletion has one queue doc per workspace. It is separate from
-	// project requests in the same workspace.
-	const existingWorkspaceRequest = await ctx.db
+	// Organization deletion has one queue doc per organization. It is separate from
+	// workspace requests in the same organization.
+	const existingOrganizationRequest = await ctx.db
 		.query("data_deletion_requests")
-		.withIndex("by_workspace_scope", (q) => q.eq("workspaceId", args.workspaceId).eq("scope", "workspace"))
+		.withIndex("by_organization_scope", (q) => q.eq("organizationId", args.organizationId).eq("scope", "organization"))
 		.first();
 
-	if (existingWorkspaceRequest) {
-		// Do not move an existing workspace deletion later.
+	if (existingOrganizationRequest) {
+		// Do not move an existing organization deletion later.
 		// Keep whichever request becomes eligible first.
-		await ctx.db.patch("data_deletion_requests", existingWorkspaceRequest._id, {
-			eligibleAt: Math.min(existingWorkspaceRequest.eligibleAt, eligibleAt),
+		await ctx.db.patch("data_deletion_requests", existingOrganizationRequest._id, {
+			eligibleAt: Math.min(existingOrganizationRequest.eligibleAt, eligibleAt),
 		});
-		return existingWorkspaceRequest._id;
+		return existingOrganizationRequest._id;
 	}
 
 	return await ctx.db.insert("data_deletion_requests", {
 		userId: args.userId,
-		scope: "workspace",
-		workspaceId: args.workspaceId,
+		scope: "organization",
+		organizationId: args.organizationId,
 		eligibleAt,
 	});
 }
 
 /**
- * Creates a new personal/default workspace and home project for a user.
+ * Creates a new personal/default organization and home workspace for a user.
  *
  * This is used after membership cleanup leaves an existing user without their
- * default workspace. Data reset paths do not silently repair a broken preserved
+ * default organization. Data reset paths do not silently repair a broken preserved
  * default tenant.
  */
-async function db_create_default_workspace_and_project_for_user(
+async function db_create_default_organization_and_workspace_for_user(
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; now: number },
 ) {
-	// Create the parent workspace before the default project so all child docs
+	// Create the parent organization before the default workspace so all child docs
 	// can reference stable ids.
-	const workspaceId = await ctx.db.insert("workspaces", {
-		name: workspaces_DEFAULT_WORKSPACE_NAME,
+	const organizationId = await ctx.db.insert("organizations", {
+		name: organizations_DEFAULT_ORGANIZATION_NAME,
 		description: "",
 		default: true,
 		billingMode: "user",
@@ -227,78 +227,78 @@ async function db_create_default_workspace_and_project_for_user(
 		updatedAt: args.now,
 	});
 
-	const defaultProjectId = await ctx.db.insert("workspaces_projects", {
-		workspaceId,
-		name: workspaces_DEFAULT_PROJECT_NAME,
+	const defaultWorkspaceId = await ctx.db.insert("organizations_workspaces", {
+		organizationId,
+		name: organizations_DEFAULT_WORKSPACE_NAME,
 		description: "",
 		default: true,
 		updatedAt: args.now,
 	});
 
-	// Wire the new tenant together: default-project pointer, project quota,
+	// Wire the new tenant together: default-workspace pointer, workspace quota,
 	// active membership, owner role, and user default pointers.
 	await Promise.all([
-		ctx.db.patch("workspaces", workspaceId, {
-			defaultProjectId,
+		ctx.db.patch("organizations", organizationId, {
+			defaultWorkspaceId,
 		}),
 		quotas_db_ensure(ctx, {
-			quotaName: "extra_projects",
-			workspaceId,
+			quotaName: "extra_workspaces",
+			organizationId,
 			now: args.now,
 		}),
-		ctx.db.insert("workspaces_projects_users", {
-			workspaceId,
-			projectId: defaultProjectId,
+		ctx.db.insert("organizations_workspaces_users", {
+			organizationId,
+			workspaceId: defaultWorkspaceId,
 			userId: args.userId,
 			active: true,
 			updatedAt: args.now,
 		}),
 		access_control_db_ensure_role_assignment(ctx, {
-			workspaceId,
-			projectId: defaultProjectId,
+			organizationId,
+			workspaceId: defaultWorkspaceId,
 			userId: args.userId,
 			role: "owner",
 			now: args.now,
 		}),
 		ctx.db.patch("users", args.userId, {
-			defaultWorkspaceId: workspaceId,
-			defaultProjectId,
+			defaultOrganizationId: organizationId,
+			defaultWorkspaceId,
 		}),
 	]);
 
-	// Seed workspace-level grants from the canonical role permission list.
+	// Seed organization-level grants from the canonical role permission list.
+	for (const grant of access_control_organization_role_permission_grants) {
+		await access_control_db_ensure_role_permission_grant(ctx, {
+			organizationId,
+			workspaceId: defaultWorkspaceId,
+			resourceKind: "organization",
+			resourceId: String(organizationId),
+			role: grant.role,
+			permission: grant.permission,
+			now: args.now,
+		});
+	}
+
+	// Seed workspace-level grants for the default home workspace.
 	for (const grant of access_control_workspace_role_permission_grants) {
 		await access_control_db_ensure_role_permission_grant(ctx, {
-			workspaceId,
-			projectId: defaultProjectId,
+			organizationId,
+			workspaceId: defaultWorkspaceId,
 			resourceKind: "workspace",
-			resourceId: String(workspaceId),
+			resourceId: String(defaultWorkspaceId),
 			role: grant.role,
 			permission: grant.permission,
 			now: args.now,
 		});
 	}
 
-	// Seed project-level grants for the default home project.
-	for (const grant of access_control_project_role_permission_grants) {
-		await access_control_db_ensure_role_permission_grant(ctx, {
-			workspaceId,
-			projectId: defaultProjectId,
-			resourceKind: "project",
-			resourceId: String(defaultProjectId),
-			role: grant.role,
-			permission: grant.permission,
-			now: args.now,
-		});
-	}
-
-	return { workspaceId, defaultProjectId };
+	return { organizationId, defaultWorkspaceId };
 }
 
 /**
- * Ensures membership cleanup does not leave an existing user without a default workspace.
+ * Ensures membership cleanup does not leave an existing user without a default organization.
  */
-async function db_ensure_default_workspace_and_project_for_user(
+async function db_ensure_default_organization_and_workspace_for_user(
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; now: number },
 ) {
@@ -308,31 +308,31 @@ async function db_ensure_default_workspace_and_project_for_user(
 		return;
 	}
 
-	// Existing users with a missing default workspace get a fresh
+	// Existing users with a missing default organization get a fresh
 	// personal/default tenant.
-	const defaultWorkspace = user.defaultWorkspaceId ? await ctx.db.get("workspaces", user.defaultWorkspaceId) : null;
-	if (!defaultWorkspace) {
-		await db_create_default_workspace_and_project_for_user(ctx, args);
+	const defaultOrganization = user.defaultOrganizationId ? await ctx.db.get("organizations", user.defaultOrganizationId) : null;
+	if (!defaultOrganization) {
+		await db_create_default_organization_and_workspace_for_user(ctx, args);
 	}
 }
 
 /**
- * Deletes one limited set of project-owned content docs.
+ * Deletes one limited set of workspace-owned content docs.
  *
  * Queue processors call this repeatedly. Each branch deletes one class of docs
- * and returns immediately so large projects stay within mutation limits.
+ * and returns immediately so large workspaces stay within mutation limits.
  */
-async function db_purge_workspace_project_content_batch(
+async function db_purge_organization_workspace_content_batch(
 	ctx: MutationCtx,
-	args: { workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects">; batchSize: number },
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; batchSize: number },
 ) {
-	const { workspaceId, projectId, batchSize } = args;
+	const { organizationId, workspaceId, batchSize } = args;
 
 	// Pending-update parent docs have cleanup-task, chunk, and metadata
 	// children. Delete those children first, then delete the parent pending-update doc.
 	const pendingUpdate = await ctx.db
 		.query("files_pending_updates")
-		.withIndex("by_workspace_project_user_fileNode", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace_user_fileNode", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.first();
 	if (pendingUpdate) {
 		const cleanupTasks = await ctx.db
@@ -376,10 +376,10 @@ async function db_purge_workspace_project_content_batch(
 	}
 
 	// Last-sequence docs are independent of pending-update parents but still
-	// scoped to the project being purged.
+	// scoped to the workspace being purged.
 	const lastSequenceSaved = await ctx.db
 		.query("files_pending_updates_last_sequence_saved")
-		.withIndex("by_workspace_project_fileNode_user", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace_fileNode_user", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.take(batchSize);
 	if (lastSequenceSaved.length > 0) {
 		await Promise.all(
@@ -391,7 +391,7 @@ async function db_purge_workspace_project_content_batch(
 	// AI file content docs are deleted before the AI file metadata docs.
 	const aiFileContents = await ctx.db
 		.query("ai_chat_files_content")
-		.withIndex("by_workspace_project_fileNode", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace_fileNode", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.take(batchSize);
 	if (aiFileContents.length > 0) {
 		await Promise.all(aiFileContents.map((doc) => ctx.db.delete("ai_chat_files_content", doc._id)));
@@ -400,7 +400,7 @@ async function db_purge_workspace_project_content_batch(
 
 	const aiFiles = await ctx.db
 		.query("ai_chat_files")
-		.withIndex("by_workspace_project_thread_path", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace_thread_path", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.take(batchSize);
 	if (aiFiles.length > 0) {
 		await Promise.all(aiFiles.map((doc) => ctx.db.delete("ai_chat_files", doc._id)));
@@ -411,7 +411,7 @@ async function db_purge_workspace_project_content_batch(
 	// removed before deleting the thread docs themselves.
 	const aiChatMessages = await ctx.db
 		.query("ai_chat_threads_messages_aisdk_5")
-		.withIndex("by_workspace_project_thread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace_thread", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.take(batchSize);
 	if (aiChatMessages.length > 0) {
 		await Promise.all(aiChatMessages.map((doc) => ctx.db.delete("ai_chat_threads_messages_aisdk_5", doc._id)));
@@ -420,7 +420,7 @@ async function db_purge_workspace_project_content_batch(
 
 	const aiChatThreadStates = await ctx.db
 		.query("ai_chat_threads_state")
-		.withIndex("by_workspace_project_thread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace_thread", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.take(batchSize);
 	if (aiChatThreadStates.length > 0) {
 		await Promise.all(aiChatThreadStates.map((doc) => ctx.db.delete("ai_chat_threads_state", doc._id)));
@@ -429,8 +429,8 @@ async function db_purge_workspace_project_content_batch(
 
 	const aiChatThreads = await ctx.db
 		.query("ai_chat_threads")
-		.withIndex("by_workspace_project_archived_lastMessageAt", (q) =>
-			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		.withIndex("by_organization_workspace_archived_lastMessageAt", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
 	if (aiChatThreads.length > 0) {
@@ -440,7 +440,7 @@ async function db_purge_workspace_project_content_batch(
 
 	const apiCredentials = await ctx.db
 		.query("api_credentials")
-		.withIndex("by_workspace_project", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.take(batchSize);
 	if (apiCredentials.length > 0) {
 		await Promise.all(apiCredentials.map((doc) => ctx.db.delete("api_credentials", doc._id)));
@@ -449,18 +449,18 @@ async function db_purge_workspace_project_content_batch(
 
 	const publicApiGrants = await ctx.db
 		.query("public_api_grants")
-		.withIndex("by_workspace_project", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.take(batchSize);
 	if (publicApiGrants.length > 0) {
 		await Promise.all(publicApiGrants.map((doc) => ctx.db.delete("public_api_grants", doc._id)));
 		return { done: false, deletedCount: publicApiGrants.length };
 	}
 
-	// Legacy chat messages are still project-scoped content and are purged with
+	// Legacy chat messages are still workspace-scoped content and are purged with
 	// the same per-call deletion limit.
 	const chatMessages = await ctx.db
 		.query("chat_messages")
-		.withIndex("by_workspace_project_thread", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace_thread", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.take(batchSize);
 	if (chatMessages.length > 0) {
 		await Promise.all(chatMessages.map((doc) => ctx.db.delete("chat_messages", doc._id)));
@@ -471,8 +471,8 @@ async function db_purge_workspace_project_content_batch(
 	// and file nodes, which are cleaned up at the end of this helper.
 	const metadataDocs = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_workspace_project_fileNode_qualifiedField", (q) =>
-			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
 	if (metadataDocs.length > 0) {
@@ -482,8 +482,8 @@ async function db_purge_workspace_project_content_batch(
 
 	const plainTextChunks = await ctx.db
 		.query("files_plain_text_chunks")
-		.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
-			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
 	if (plainTextChunks.length > 0) {
@@ -493,8 +493,8 @@ async function db_purge_workspace_project_content_batch(
 
 	const markdownChunks = await ctx.db
 		.query("files_markdown_chunks")
-		.withIndex("by_workspace_project_fileNode_chunkIndex", (q) =>
-			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
 	if (markdownChunks.length > 0) {
@@ -504,8 +504,8 @@ async function db_purge_workspace_project_content_batch(
 
 	const yjsSnapshots = await ctx.db
 		.query("files_yjs_snapshots")
-		.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
 	if (yjsSnapshots.length > 0) {
@@ -515,8 +515,8 @@ async function db_purge_workspace_project_content_batch(
 
 	const yjsUpdates = await ctx.db
 		.query("files_yjs_updates")
-		.withIndex("by_workspace_project_fileNode_sequence", (q) =>
-			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
 	if (yjsUpdates.length > 0) {
@@ -526,7 +526,7 @@ async function db_purge_workspace_project_content_batch(
 
 	const yjsLastSequences = await ctx.db
 		.query("files_yjs_docs_last_sequences")
-		.withIndex("by_workspace_project_fileNode", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace_fileNode", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.take(batchSize);
 	if (yjsLastSequences.length > 0) {
 		await Promise.all(yjsLastSequences.map((doc) => ctx.db.delete("files_yjs_docs_last_sequences", doc._id)));
@@ -535,8 +535,8 @@ async function db_purge_workspace_project_content_batch(
 
 	const fileSnapshots = await ctx.db
 		.query("files_snapshots")
-		.withIndex("by_workspace_project_fileNode_archivedAt", (q) =>
-			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
 	if (fileSnapshots.length > 0) {
@@ -546,7 +546,7 @@ async function db_purge_workspace_project_content_batch(
 
 	const fileStats = await ctx.db
 		.query("file_stats")
-		.withIndex("by_workspace_project_fileNode", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace_fileNode", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.take(batchSize);
 	if (fileStats.length > 0) {
 		await Promise.all(fileStats.map((doc) => ctx.db.delete("file_stats", doc._id)));
@@ -556,7 +556,7 @@ async function db_purge_workspace_project_content_batch(
 	// Cancel materialization jobs before deleting their tracking docs.
 	const materializationJobs = await ctx.db
 		.query("files_content_materialization_jobs")
-		.withIndex("by_workspace_project_fileNode", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace_fileNode", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.take(batchSize);
 	if (materializationJobs.length > 0) {
 		await Promise.all(materializationJobs.map((job) => files_content_materialization_workpool.cancel(ctx, job.jobId)));
@@ -568,7 +568,7 @@ async function db_purge_workspace_project_content_batch(
 	// removing the asset docs that track them.
 	const assets = await ctx.db
 		.query("files_r2_assets")
-		.withIndex("by_workspace_project", (q) => q.eq("workspaceId", workspaceId).eq("projectId", projectId))
+		.withIndex("by_organization_workspace", (q) => q.eq("organizationId", organizationId).eq("workspaceId", workspaceId))
 		.take(batchSize);
 	if (assets.length > 0) {
 		await Promise.all(
@@ -585,8 +585,8 @@ async function db_purge_workspace_project_content_batch(
 	// can reference them.
 	const fileNodes = await ctx.db
 		.query("files_nodes")
-		.withIndex("by_workspace_project_parent_name_archiveOperation", (q) =>
-			q.eq("workspaceId", workspaceId).eq("projectId", projectId),
+		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
 	if (fileNodes.length > 0) {
@@ -600,18 +600,18 @@ async function db_purge_workspace_project_content_batch(
 /**
  * Clears completed queue docs for exactly one deletion scope.
  *
- * Workspace and project deletion requests share resource indexes, so the final
+ * Organization and workspace deletion requests share resource indexes, so the final
  * filter below keeps one scope from consuming another scope's queue doc.
  */
 async function db_delete_data_deletion_requests(
 	ctx: MutationCtx,
 	args:
 		| { scope: "user"; userId: Id<"users"> }
-		| { scope: "workspace"; workspaceId: Id<"workspaces"> }
-		| { scope: "project"; workspaceId: Id<"workspaces">; projectId: Id<"workspaces_projects"> },
+		| { scope: "organization"; organizationId: Id<"organizations"> }
+		| { scope: "workspace"; organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
 ) {
 	// User deletion finalization only clears the user-scope queue doc.
-	// Workspace/project queue docs may still own tenant purge work.
+	// Organization/workspace queue docs may still own tenant purge work.
 	if (args.scope === "user") {
 		const docs = await ctx.db
 			.query("data_deletion_requests")
@@ -625,48 +625,48 @@ async function db_delete_data_deletion_requests(
 		return;
 	}
 
-	// Resource deletion cleanup is scoped by workspace/project ids and then
-	// filtered by explicit request scope so workspace cleanup does not delete a
-	// queued project purge.
+	// Resource deletion cleanup is scoped by organization/workspace ids and then
+	// filtered by explicit request scope so organization cleanup does not delete a
+	// queued workspace purge.
 	const docs = await ctx.db
 		.query("data_deletion_requests")
 		.withIndex(
-			"by_workspace_project",
-			args.scope === "project"
-				? (q) => q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId)
-				: (q) => q.eq("workspaceId", args.workspaceId),
+			"by_organization_workspace",
+			args.scope === "workspace"
+				? (q) => q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId)
+				: (q) => q.eq("organizationId", args.organizationId),
 		)
 		.collect();
 
 	await Promise.all(
 		docs
 			.filter((doc) =>
-				args.scope === "project" ? doc.scope === "project" : doc.scope === "workspace" && doc.projectId === undefined,
+				args.scope === "workspace" ? doc.scope === "workspace" : doc.scope === "organization" && doc.workspaceId === undefined,
 			)
 			.map((doc) => ctx.db.delete("data_deletion_requests", doc._id)),
 	);
 }
 
 /**
- * Deletes project structure after project content is gone.
+ * Deletes workspace structure after workspace content is gone.
  *
- * Each call removes one bounded class of docs so large project deletion remains
+ * Each call removes one bounded class of docs so large workspace deletion remains
  * retryable across scheduled deletion worker runs.
  */
-async function db_delete_project_structure_batch(
+async function db_delete_workspace_structure_batch(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		batchSize: number;
 	},
 ) {
-	// Remove user-facing project notifications before removing access docs and
-	// the project doc itself.
+	// Remove user-facing workspace notifications before removing access docs and
+	// the workspace doc itself.
 	const notifications = await ctx.db
 		.query("notifications")
-		.withIndex("by_workspace_project_user", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
+		.withIndex("by_organization_workspace_user", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
 		)
 		.take(args.batchSize);
 	if (notifications.length > 0) {
@@ -674,21 +674,21 @@ async function db_delete_project_structure_batch(
 		return { done: false, deletedCount: notifications.length };
 	}
 
-	// Project memberships and direct access-control docs are structural state.
-	// Heavy project content has already been purged before this helper runs.
+	// Workspace memberships and direct access-control docs are structural state.
+	// Heavy workspace content has already been purged before this helper runs.
 	const memberships = await ctx.db
-		.query("workspaces_projects_users")
-		.withIndex("by_project_user_active", (q) => q.eq("projectId", args.projectId))
+		.query("organizations_workspaces_users")
+		.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", args.workspaceId))
 		.take(args.batchSize);
 	if (memberships.length > 0) {
-		await Promise.all(memberships.map((doc) => ctx.db.delete("workspaces_projects_users", doc._id)));
+		await Promise.all(memberships.map((doc) => ctx.db.delete("organizations_workspaces_users", doc._id)));
 		return { done: false, deletedCount: memberships.length };
 	}
 
 	const roleAssignments = await ctx.db
 		.query("access_control_role_assignments")
-		.withIndex("by_workspace_project_user_role", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
+		.withIndex("by_organization_workspace_user_role", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
 		)
 		.take(args.batchSize);
 	if (roleAssignments.length > 0) {
@@ -698,8 +698,8 @@ async function db_delete_project_structure_batch(
 
 	const permissionGrants = await ctx.db
 		.query("access_control_permission_grants")
-		.withIndex("by_workspace_project_resource_user_permission", (q) =>
-			q.eq("workspaceId", args.workspaceId).eq("projectId", args.projectId),
+		.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
 		)
 		.take(args.batchSize);
 	if (permissionGrants.length > 0) {
@@ -707,11 +707,11 @@ async function db_delete_project_structure_batch(
 		return { done: false, deletedCount: permissionGrants.length };
 	}
 
-	// Delete the project doc last so retries can continue to target the same
-	// project id until all child structure is gone.
-	const project = await ctx.db.get("workspaces_projects", args.projectId);
-	if (project) {
-		await ctx.db.delete("workspaces_projects", project._id);
+	// Delete the workspace doc last so retries can continue to target the same
+	// workspace id until all child structure is gone.
+	const workspace = await ctx.db.get("organizations_workspaces", args.workspaceId);
+	if (workspace) {
+		await ctx.db.delete("organizations_workspaces", workspace._id);
 		return { done: true, deletedCount: 1 };
 	}
 
@@ -719,90 +719,90 @@ async function db_delete_project_structure_batch(
 }
 
 /**
- * Runs project deletion in two phases: content first, then structure.
+ * Runs workspace deletion in two phases: content first, then structure.
  */
-async function db_delete_project_batch(
+async function db_delete_workspace_batch(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
-		projectId: Id<"workspaces_projects">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		batchSize: number;
 	},
 ) {
-	const content = await db_purge_workspace_project_content_batch(ctx, args);
+	const content = await db_purge_organization_workspace_content_batch(ctx, args);
 	if (!content.done) {
 		return content;
 	}
 
-	const structural = await db_delete_project_structure_batch(ctx, args);
+	const structural = await db_delete_workspace_structure_batch(ctx, args);
 	if (!structural.done) {
 		return structural;
 	}
 
-	// The project queue doc is complete only after both content and structure
+	// The workspace queue doc is complete only after both content and structure
 	// have been deleted.
 	await db_delete_data_deletion_requests(ctx, {
-		scope: "project",
+		scope: "workspace",
+		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
-		projectId: args.projectId,
 	});
 
 	return { done: true, deletedCount: content.deletedCount + structural.deletedCount };
 }
 
 /**
- * Deletes one bounded workspace batch.
+ * Deletes one bounded organization batch.
  *
- * Workspace cleanup drains queued project-content purges first, then deletes
- * remaining project docs, workspace-level structure, and finally the workspace doc.
+ * Organization cleanup drains queued workspace-content purges first, then deletes
+ * remaining workspace docs, organization-level structure, and finally the organization doc.
  */
-async function db_delete_workspace_batch(
+async function db_delete_organization_batch(
 	ctx: MutationCtx,
 	args: {
-		workspaceId: Id<"workspaces">;
+		organizationId: Id<"organizations">;
 		batchSize: number;
 	},
 ) {
-	// A workspace request may include project purge docs that outlive their
-	// project docs. Drain those queued content purges before scanning projects.
-	const queuedProjectRequest = await ctx.db
+	// An organization request may include workspace purge docs that outlive their
+	// workspace docs. Drain those queued content purges before scanning workspaces.
+	const queuedWorkspaceRequest = await ctx.db
 		.query("data_deletion_requests")
-		.withIndex("by_workspace_scope", (q) => q.eq("workspaceId", args.workspaceId).eq("scope", "project"))
+		.withIndex("by_organization_scope", (q) => q.eq("organizationId", args.organizationId).eq("scope", "workspace"))
 		.first();
-	if (queuedProjectRequest?.projectId) {
-		const content = await db_purge_workspace_project_content_batch(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: queuedProjectRequest.projectId,
+	if (queuedWorkspaceRequest?.workspaceId) {
+		const content = await db_purge_organization_workspace_content_batch(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: queuedWorkspaceRequest.workspaceId,
 			batchSize: args.batchSize,
 		});
 		if (!content.done) {
 			return content;
 		}
 
-		await ctx.db.delete("data_deletion_requests", queuedProjectRequest._id);
+		await ctx.db.delete("data_deletion_requests", queuedWorkspaceRequest._id);
 		return { done: false, deletedCount: 1 };
 	}
 
-	// Existing project docs still need full project deletion before workspace
+	// Existing workspace docs still need full workspace deletion before organization
 	// structure can be removed.
-	const project = await ctx.db
-		.query("workspaces_projects")
-		.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspaceId))
+	const workspace = await ctx.db
+		.query("organizations_workspaces")
+		.withIndex("by_organization_default", (q) => q.eq("organizationId", args.organizationId))
 		.first();
-	if (project) {
-		const result = await db_delete_project_batch(ctx, {
-			workspaceId: args.workspaceId,
-			projectId: project._id,
+	if (workspace) {
+		const result = await db_delete_workspace_batch(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: workspace._id,
 			batchSize: args.batchSize,
 		});
 		return result.done ? { done: false, deletedCount: result.deletedCount } : result;
 	}
 
-	// Once projects are gone, remove workspace-level structure in bounded
-	// chunks before deleting the workspace doc.
+	// Once workspaces are gone, remove organization-level structure in bounded
+	// chunks before deleting the organization doc.
 	const notifications = await ctx.db
 		.query("notifications")
-		.withIndex("by_workspace_user_read", (q) => q.eq("workspaceId", args.workspaceId))
+		.withIndex("by_organization_user_read", (q) => q.eq("organizationId", args.organizationId))
 		.take(args.batchSize);
 	if (notifications.length > 0) {
 		await Promise.all(notifications.map((doc) => ctx.db.delete("notifications", doc._id)));
@@ -811,7 +811,7 @@ async function db_delete_workspace_batch(
 
 	const roleAssignments = await ctx.db
 		.query("access_control_role_assignments")
-		.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", args.workspaceId))
+		.withIndex("by_organization_workspace_user_role", (q) => q.eq("organizationId", args.organizationId))
 		.take(args.batchSize);
 	if (roleAssignments.length > 0) {
 		await Promise.all(roleAssignments.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)));
@@ -820,7 +820,7 @@ async function db_delete_workspace_batch(
 
 	const permissionGrants = await ctx.db
 		.query("access_control_permission_grants")
-		.withIndex("by_workspace_project_resource_user_permission", (q) => q.eq("workspaceId", args.workspaceId))
+		.withIndex("by_organization_workspace_resource_user_permission", (q) => q.eq("organizationId", args.organizationId))
 		.take(args.batchSize);
 	if (permissionGrants.length > 0) {
 		await Promise.all(permissionGrants.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)));
@@ -829,18 +829,18 @@ async function db_delete_workspace_batch(
 
 	const quotaDocs = await ctx.db
 		.query("quotas")
-		.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", args.workspaceId))
+		.withIndex("by_organization_quotaName", (q) => q.eq("organizationId", args.organizationId))
 		.take(args.batchSize);
 	if (quotaDocs.length > 0) {
 		await Promise.all(quotaDocs.map((doc) => ctx.db.delete("quotas", doc._id)));
 		return { done: false, deletedCount: quotaDocs.length };
 	}
 
-	// Delete the workspace doc last so retries can continue to target the same
-	// workspace id until all scoped docs are gone.
-	const workspace = await ctx.db.get("workspaces", args.workspaceId);
-	if (workspace) {
-		await ctx.db.delete("workspaces", args.workspaceId);
+	// Delete the organization doc last so retries can continue to target the same
+	// organization id until all scoped docs are gone.
+	const organization = await ctx.db.get("organizations", args.organizationId);
+	if (organization) {
+		await ctx.db.delete("organizations", args.organizationId);
 		return { done: true, deletedCount: 1 };
 	}
 
@@ -848,72 +848,72 @@ async function db_delete_workspace_batch(
 }
 
 /**
- * Phase 1 for an owned non-default workspace during account deletion.
+ * Phase 1 for an owned non-default organization during account deletion.
  *
  * The user-facing account deletion flow asks the owner to transfer or delete
- * owned workspaces first. Internal/admin deletion paths can still reach this
- * helper with an owned workspace. In that case, queue the workspace for the
+ * owned organizations first. Internal/admin deletion paths can still reach this
+ * helper with an owned organization. In that case, queue the organization for the
  * phase-2 purge worker, remove access docs and memberships immediately, and
- * release the owner's workspace quota slot. The workspace/project docs and
- * heavy content are left for the queued workspace purge.
+ * release the owner's organization quota slot. The organization/workspace docs and
+ * heavy content are left for the queued organization purge.
  */
-async function db_queue_workspace_deletion_for_owner_account_deletion(
+async function db_queue_organization_deletion_for_owner_account_deletion(
 	ctx: MutationCtx,
 	args: {
-		workspaceOwnerUserId: Id<"users">;
-		workspace: Doc<"workspaces">;
+		organizationOwnerUserId: Id<"users">;
+		organization: Doc<"organizations">;
 		now: number;
 	},
 ) {
-	// Do the immediate workspace cleanup in parallel:
-	// - create or reuse the workspace-scope queue doc;
-	// - remove role and permission docs so the workspace is no longer usable;
-	// - remove project memberships and keep the affected user ids for default
+	// Do the immediate organization cleanup in parallel:
+	// - create or reuse the organization-scope queue doc;
+	// - remove role and permission docs so the organization is no longer usable;
+	// - remove workspace memberships and keep the affected user ids for default
 	//   tenant checks below.
-	const [, , , userIdsPerProject] = await Promise.all([
+	const [, , , userIdsPerWorkspace] = await Promise.all([
 		data_deletion_db_request(ctx, {
-			userId: args.workspaceOwnerUserId,
-			workspaceId: args.workspace._id,
-			scope: "workspace",
+			userId: args.organizationOwnerUserId,
+			organizationId: args.organization._id,
+			scope: "organization",
 		}),
 		ctx.db
 			.query("access_control_role_assignments")
-			.withIndex("by_workspace_project_user_role", (q) => q.eq("workspaceId", args.workspace._id))
+			.withIndex("by_organization_workspace_user_role", (q) => q.eq("organizationId", args.organization._id))
 			.collect()
 			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
 		ctx.db
 			.query("access_control_permission_grants")
-			.withIndex("by_workspace_project_resource_user_permission", (q) => q.eq("workspaceId", args.workspace._id))
+			.withIndex("by_organization_workspace_resource_user_permission", (q) => q.eq("organizationId", args.organization._id))
 			.collect()
 			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
 		ctx.db
-			.query("workspaces_projects")
-			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", args.workspace._id))
+			.query("organizations_workspaces")
+			.withIndex("by_organization_default", (q) => q.eq("organizationId", args.organization._id))
 			.collect()
-			.then((workspaceProjects) =>
+			.then((organizationWorkspaces) =>
 				Promise.all(
-					workspaceProjects.map(async (project) => {
-						const projectUsers = await ctx.db
-							.query("workspaces_projects_users")
-							.withIndex("by_project_user_active", (q) => q.eq("projectId", project._id))
+					organizationWorkspaces.map(async (workspace) => {
+						const workspaceUsers = await ctx.db
+							.query("organizations_workspaces_users")
+							.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", workspace._id))
 							.collect();
 
 						await Promise.all(
-							projectUsers.map((projectUser) => ctx.db.delete("workspaces_projects_users", projectUser._id)),
+							workspaceUsers.map((workspaceUser) => ctx.db.delete("organizations_workspaces_users", workspaceUser._id)),
 						);
 
-						return projectUsers.map((projectUser) => projectUser.userId);
+						return workspaceUsers.map((workspaceUser) => workspaceUser.userId);
 					}),
 				),
 			),
 	]);
 
-	// The owner consumed one `extra_workspaces` quota slot for this workspace.
-	// Release it now because the workspace is already queued for deletion and no
+	// The owner consumed one `extra_organizations` quota slot for this organization.
+	// Release it now because the organization is already queued for deletion and no
 	// longer usable by members.
 	const quota = await quotas_db_get(ctx, {
-		quotaName: "extra_workspaces",
-		userId: args.workspaceOwnerUserId,
+		quotaName: "extra_organizations",
+		userId: args.organizationOwnerUserId,
 	});
 	if (quota.usedCount > 0) {
 		await ctx.db.patch("quotas", quota._id, {
@@ -923,10 +923,10 @@ async function db_queue_workspace_deletion_for_owner_account_deletion(
 	}
 
 	// Removing memberships can leave affected users without a usable default
-	// tenant if this workspace was their only remaining workspace. Re-check each
+	// tenant if this organization was their only remaining organization. Re-check each
 	// affected user after membership removal.
-	for (const userId of new Set<Id<"users">>(userIdsPerProject.flat())) {
-		await db_ensure_default_workspace_and_project_for_user(ctx, {
+	for (const userId of new Set<Id<"users">>(userIdsPerWorkspace.flat())) {
+		await db_ensure_default_organization_and_workspace_for_user(ctx, {
 			userId,
 			now: args.now,
 		});
@@ -950,8 +950,8 @@ async function db_prepare_user_for_deletion(
 	// Load memberships before tombstoning so the same set can be deactivated
 	// together with the user doc.
 	const memberships = await ctx.db
-		.query("workspaces_projects_users")
-		.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", args.user._id))
+		.query("organizations_workspaces_users")
+		.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", args.user._id))
 		.collect();
 
 	// A repeated phase-1 call is idempotent. Once `deletedAt` is set, do not
@@ -961,7 +961,7 @@ async function db_prepare_user_for_deletion(
 		// reversible while phase 2 still has the affected tenants available.
 		await Promise.all(
 			memberships.map((membership) =>
-				ctx.db.patch("workspaces_projects_users", membership._id, {
+				ctx.db.patch("organizations_workspaces_users", membership._id, {
 					active: false,
 					updatedAt: args.now,
 				}),
@@ -986,8 +986,8 @@ async function db_prepare_user_for_deletion(
  *
  * This removes user-scoped docs that can be deleted after retention. It can also
  * remove auth docs and billing snapshots when the caller is doing a full purge.
- * Workspace/project content is not deleted here. Instead, this returns the
- * workspace ids that became empty so the caller can queue or run workspace purge
+ * Organization/workspace content is not deleted here. Instead, this returns the
+ * organization ids that became empty so the caller can queue or run organization purge
  * with its own request bookkeeping.
  */
 async function db_finalize_deleted_user(
@@ -1031,12 +1031,12 @@ async function db_finalize_deleted_user(
 		billingUsageSnapshots,
 	] = await Promise.all([
 		ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", user._id))
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", user._id))
 			.collect(),
 		ctx.db
 			.query("access_control_role_assignments")
-			.withIndex("by_user_role_workspace_project", (q) => q.eq("userId", user._id))
+			.withIndex("by_user_role_organization_workspace", (q) => q.eq("userId", user._id))
 			.collect(),
 		args.deleteUserAuth
 			? ctx.db
@@ -1116,25 +1116,25 @@ async function db_finalize_deleted_user(
 	]);
 
 	/**
-	 * Workspace ids captured before deleting memberships and roles, used after cleanup
-	 * to detect workspaces that no longer have any active members.
+	 * Organization ids captured before deleting memberships and roles, used after cleanup
+	 * to detect organizations that no longer have any active members.
 	 */
-	const affectedWorkspaceIds = new Set<Id<"workspaces">>();
-	if (user.defaultWorkspaceId) {
-		affectedWorkspaceIds.add(user.defaultWorkspaceId);
+	const affectedOrganizationIds = new Set<Id<"organizations">>();
+	if (user.defaultOrganizationId) {
+		affectedOrganizationIds.add(user.defaultOrganizationId);
 	}
 	for (const membership of membershipsAll) {
-		affectedWorkspaceIds.add(membership.workspaceId);
+		affectedOrganizationIds.add(membership.organizationId);
 	}
 	for (const assignment of accessRoleAssignments) {
-		affectedWorkspaceIds.add(assignment.workspaceId);
+		affectedOrganizationIds.add(assignment.organizationId);
 	}
 
 	// Delete pending-update children before parent pending-update docs.
 	const [directPermissionGrants, userQuotaDocs] = await Promise.all([
 		ctx.db
 			.query("access_control_permission_grants")
-			.withIndex("by_user_workspace_project_resource_permission", (q) => q.eq("userId", user._id))
+			.withIndex("by_user_organization_workspace_resource_permission", (q) => q.eq("userId", user._id))
 			.collect(),
 		ctx.db
 			.query("quotas")
@@ -1152,11 +1152,11 @@ async function db_finalize_deleted_user(
 		...lastSequenceSaved.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
 		...pendingUpdates.map((doc) => ctx.db.delete("files_pending_updates", doc._id)),
 		// Remove membership and role docs so the finalized user no longer has access
-		// to any project or workspace.
-		...membershipsAll.map((doc) => ctx.db.delete("workspaces_projects_users", doc._id)),
+		// to any workspace or organization.
+		...membershipsAll.map((doc) => ctx.db.delete("organizations_workspaces_users", doc._id)),
 		...accessRoleAssignments.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)),
 		// Remove direct permission grants for this user. Role grants are handled by
-		// workspace/project cleanup; this query targets user-principal grants.
+		// organization/workspace cleanup; this query targets user-principal grants.
 		...directPermissionGrants.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)),
 		...apiCredentials.map((doc) => ctx.db.delete("api_credentials", doc._id)),
 		...publicApiGrants.map((doc) => ctx.db.delete("public_api_grants", doc._id)),
@@ -1177,42 +1177,42 @@ async function db_finalize_deleted_user(
 		// finalization. Clear auth pointers only for auth-removing paths.
 		ctx.db.patch("users", user._id, {
 			...(args.deleteUserAuth ? { clerkUserId: null, anonymousAuthToken: undefined } : {}),
+			defaultOrganizationId: undefined,
 			defaultWorkspaceId: undefined,
-			defaultProjectId: undefined,
 			deletedAt: user.deletedAt ?? args.now,
 		}),
 	]);
 
-	const workspacesToDelete = [];
+	const organizationsToDelete = [];
 
-	// Return only fully empty workspaces here. The caller owns the actual
-	// workspace purge so it can keep the surrounding request bookkeeping local.
-	for (const workspaceId of affectedWorkspaceIds) {
-		const workspace = await ctx.db.get("workspaces", workspaceId);
-		if (!workspace) {
+	// Return only fully empty organizations here. The caller owns the actual
+	// organization purge so it can keep the surrounding request bookkeeping local.
+	for (const organizationId of affectedOrganizationIds) {
+		const organization = await ctx.db.get("organizations", organizationId);
+		if (!organization) {
 			continue;
 		}
 
 		const remainingMemberships = await ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_active_workspace_project_user", (q) => q.eq("active", true).eq("workspaceId", workspaceId))
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_organization_workspace_user", (q) => q.eq("active", true).eq("organizationId", organizationId))
 			.first();
 		if (remainingMemberships) {
 			continue;
 		}
 
-		workspacesToDelete.push({
-			workspaceId: workspace._id,
+		organizationsToDelete.push({
+			organizationId: organization._id,
 		});
 	}
-	return { workspacesToDelete };
+	return { organizationsToDelete };
 }
 
 /**
  * Starts account deletion phase 1 and creates the user-scope queue doc.
  *
- * Still-owned non-default workspaces are queued before the user tombstone, so
- * restoring the user during retention does not restore those workspace deletions.
+ * Still-owned non-default organizations are queued before the user tombstone, so
+ * restoring the user during retention does not restore those organization deletions.
  */
 export const init_user_deletion = internalMutation({
 	args: {
@@ -1229,25 +1229,25 @@ export const init_user_deletion = internalMutation({
 
 		const now = args.nowTs ?? Date.now();
 		// Internal/admin callers can still start account deletion for a user who
-		// owns non-default workspaces. Queue those workspaces for phase 2 first.
-		const ownedWorkspaces = await ctx.db
-			.query("workspaces")
+		// owns non-default organizations. Queue those organizations for phase 2 first.
+		const ownedOrganizations = await ctx.db
+			.query("organizations")
 			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", args.userId))
 			.collect();
 
-		for (const workspace of ownedWorkspaces.filter((workspace) => !workspace.default)) {
-			// This removes access immediately and leaves workspace content for the
-			// workspace-scope purge worker.
-			await db_queue_workspace_deletion_for_owner_account_deletion(ctx, {
-				workspaceOwnerUserId: user._id,
-				workspace,
+		for (const organization of ownedOrganizations.filter((organization) => !organization.default)) {
+			// This removes access immediately and leaves organization content for the
+			// organization-scope purge worker.
+			await db_queue_organization_deletion_for_owner_account_deletion(ctx, {
+				organizationOwnerUserId: user._id,
+				organization,
 				now,
 			});
 		}
 
-		// Keep phase 1 reversible for the account itself. Owned workspaces that
+		// Keep phase 1 reversible for the account itself. Owned organizations that
 		// remain after any frontend transfer calls are queued for deletion here,
-		// so restoring the account does not recover those workspace deletions.
+		// so restoring the account does not recover those organization deletions.
 		await db_prepare_user_for_deletion(ctx, {
 			user,
 			now,
@@ -1266,7 +1266,7 @@ export const init_user_deletion = internalMutation({
 /**
  * Lists eligible queue docs for one deletion scope.
  *
- * The worker calls this separately for users, workspaces, and projects so the
+ * The worker calls this separately for users, organizations, and workspaces so the
  * action can enforce its processing order. `eligibleAt` is the retention gate:
  * docs with a future value stay queued until a later run.
  */
@@ -1325,7 +1325,7 @@ export const process_user_deletion_request = internalMutation({
 		requestId: v.id("data_deletion_requests"),
 		/**
 		 * Internal simulated wall time (ms) used by tests for finalization timestamps
-		 * and now-eligible workspace requests created while processing the user.
+		 * and now-eligible organization requests created while processing the user.
 		 *
 		 * Omit in normal production flows (`Date.now()` is used).
 		 */
@@ -1376,26 +1376,26 @@ export const process_user_deletion_request = internalMutation({
 		}
 
 		// Finalize the user first to delete the remaining user-owned docs and to
-		// compute which workspaces became fully empty at the retention boundary.
+		// compute which organizations became fully empty at the retention boundary.
 		const deleteUserRes = await db_finalize_deleted_user(ctx, {
 			userId: user._id,
 			now: now,
 		});
 
-		// Queue immediate workspace deletions for workspaces that became empty while
+		// Queue immediate organization deletions for organizations that became empty while
 		// finalizing this user.
-		if (deleteUserRes?.workspacesToDelete) {
-			for (const workspace of deleteUserRes.workspacesToDelete) {
+		if (deleteUserRes?.organizationsToDelete) {
+			for (const organization of deleteUserRes.organizationsToDelete) {
 				await data_deletion_db_request(ctx, {
 					userId: request.userId,
-					workspaceId: workspace.workspaceId,
-					scope: "workspace",
+					organizationId: organization.organizationId,
+					scope: "organization",
 					eligibleAt: now,
 				});
 			}
 		}
 
-		// User finalization and follow-up workspace queueing are complete.
+		// User finalization and follow-up organization queueing are complete.
 		await ctx.db.delete("data_deletion_requests", request._id);
 
 		return { done: true, deletedCount: 1 };
@@ -1404,6 +1404,77 @@ export const process_user_deletion_request = internalMutation({
 
 type process_user_deletion_request_Result =
 	typeof process_user_deletion_request extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Process one queued organization-scope deletion.
+ *
+ * The caller must only pass request docs whose `eligibleAt` has passed.
+ */
+export const process_organization_deletion_request = internalMutation({
+	args: {
+		requestId: v.id("data_deletion_requests"),
+		_test_batchSize: v.optional(v.number()),
+	},
+	returns: v.object({
+		done: v.boolean(),
+		deletedCount: v.number(),
+	}),
+	handler: async (ctx, args) => {
+		const request = await ctx.db.get("data_deletion_requests", args.requestId);
+
+		// A retry can reach here after an earlier run already removed the queue doc.
+		if (!request) {
+			return { done: true, deletedCount: 0 };
+		}
+
+		// This mutation only owns organization-scope requests.
+		if (request.scope !== "organization") {
+			return { done: true, deletedCount: 0 };
+		}
+
+		const organizationId = request.organizationId;
+
+		// An organization request without an organization id cannot target organization docs.
+		// Remove the invalid queue doc instead of retrying forever.
+		if (!organizationId) {
+			await ctx.db.delete("data_deletion_requests", request._id);
+			return { done: true, deletedCount: 1 };
+		}
+
+		// Delete only a limited number of docs for this organization. If content or
+		// structure remains, keep the request doc so the next worker run continues.
+		const result = await db_delete_organization_batch(ctx, {
+			organizationId,
+			batchSize: batch_size(args),
+		});
+
+		// No-progress incomplete results should be rare. Log them so the queue does
+		// not silently loop without deleting docs.
+		if (!result.done) {
+			if (result.deletedCount === 0) {
+				console.error("Deletion request made no progress", {
+					scope: "organization",
+					requestId: request._id,
+				});
+			}
+			return result;
+		}
+
+		// All covered organization content and structure is gone, so the queue doc is complete.
+		await ctx.db.delete("data_deletion_requests", request._id);
+
+		return { done: true, deletedCount: 1 };
+	},
+});
+
+type process_organization_deletion_request_Result =
+	typeof process_organization_deletion_request extends RegisteredMutation<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -1423,7 +1494,6 @@ export const process_workspace_deletion_request = internalMutation({
 	}),
 	handler: async (ctx, args) => {
 		const request = await ctx.db.get("data_deletion_requests", args.requestId);
-
 		// A retry can reach here after an earlier run already removed the queue doc.
 		if (!request) {
 			return { done: true, deletedCount: 0 };
@@ -1434,24 +1504,20 @@ export const process_workspace_deletion_request = internalMutation({
 			return { done: true, deletedCount: 0 };
 		}
 
-		const workspaceId = request.workspaceId;
-
-		// A workspace request without a workspace id cannot target workspace docs.
+		// A workspace request without both ids cannot target workspace content.
 		// Remove the invalid queue doc instead of retrying forever.
-		if (!workspaceId) {
+		if (!request.organizationId || !request.workspaceId) {
 			await ctx.db.delete("data_deletion_requests", request._id);
 			return { done: true, deletedCount: 1 };
 		}
 
-		// Delete only a limited number of docs for this workspace. If content or
-		// structure remains, keep the request doc so the next worker run continues.
-		const result = await db_delete_workspace_batch(ctx, {
-			workspaceId,
+		// Delete only a limited number of docs for this workspace. If content remains,
+		// keep the request doc so the next worker run continues from the same scope.
+		const result = await db_purge_organization_workspace_content_batch(ctx, {
+			organizationId: request.organizationId,
+			workspaceId: request.workspaceId,
 			batchSize: batch_size(args),
 		});
-
-		// No-progress incomplete results should be rare. Log them so the queue does
-		// not silently loop without deleting docs.
 		if (!result.done) {
 			if (result.deletedCount === 0) {
 				console.error("Deletion request made no progress", {
@@ -1462,7 +1528,7 @@ export const process_workspace_deletion_request = internalMutation({
 			return result;
 		}
 
-		// All covered workspace content and structure is gone, so the queue doc is complete.
+		// All covered workspace content is gone, so this queue doc is complete.
 		await ctx.db.delete("data_deletion_requests", request._id);
 
 		return { done: true, deletedCount: 1 };
@@ -1470,73 +1536,7 @@ export const process_workspace_deletion_request = internalMutation({
 });
 
 type process_workspace_deletion_request_Result =
-	typeof process_workspace_deletion_request extends RegisteredMutation<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
-		? Awaited<ReturnValue>
-		: never;
-
-/**
- * Process one queued project-scope deletion.
- *
- * The caller must only pass request docs whose `eligibleAt` has passed.
- */
-export const process_project_deletion_request = internalMutation({
-	args: {
-		requestId: v.id("data_deletion_requests"),
-		_test_batchSize: v.optional(v.number()),
-	},
-	returns: v.object({
-		done: v.boolean(),
-		deletedCount: v.number(),
-	}),
-	handler: async (ctx, args) => {
-		const request = await ctx.db.get("data_deletion_requests", args.requestId);
-		// A retry can reach here after an earlier run already removed the queue doc.
-		if (!request) {
-			return { done: true, deletedCount: 0 };
-		}
-
-		// This mutation only owns project-scope requests.
-		if (request.scope !== "project") {
-			return { done: true, deletedCount: 0 };
-		}
-
-		// A project request without both ids cannot target project content.
-		// Remove the invalid queue doc instead of retrying forever.
-		if (!request.workspaceId || !request.projectId) {
-			await ctx.db.delete("data_deletion_requests", request._id);
-			return { done: true, deletedCount: 1 };
-		}
-
-		// Delete only a limited number of docs for this project. If content remains,
-		// keep the request doc so the next worker run continues from the same scope.
-		const result = await db_purge_workspace_project_content_batch(ctx, {
-			workspaceId: request.workspaceId,
-			projectId: request.projectId,
-			batchSize: batch_size(args),
-		});
-		if (!result.done) {
-			if (result.deletedCount === 0) {
-				console.error("Deletion request made no progress", {
-					scope: "project",
-					requestId: request._id,
-				});
-			}
-			return result;
-		}
-
-		// All covered project content is gone, so this queue doc is complete.
-		await ctx.db.delete("data_deletion_requests", request._id);
-
-		return { done: true, deletedCount: 1 };
-	},
-});
-
-type process_project_deletion_request_Result =
-	typeof process_project_deletion_request extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+	typeof process_workspace_deletion_request extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -1547,8 +1547,8 @@ type process_project_deletion_request_Result =
  *
  * Used by `users.hard_delete_user_now` for `purgeUserMod: "data"`. It removes
  * reset-owned data without deleting the account. It keeps the `users` doc, auth
- * ids, profile, billing state, and default tenant: the `personal` workspace
- * plus the `home` project.
+ * ids, profile, billing state, and default tenant: the `personal` organization
+ * plus the `home` workspace.
  *
  * Each call deletes only a limited number of docs, so callers should invoke it
  * again when it returns `done: false`.
@@ -1571,93 +1571,93 @@ export const hard_delete_user_data = internalMutation({
 
 		const now = Date.now();
 
-		// The app expects every usable account to have a workspace quota doc.
-		// Ensure it before we reuse the user's default workspace.
+		// The app expects every usable account to have an organization quota doc.
+		// Ensure it before we reuse the user's default organization.
 		await quotas_db_ensure(ctx, {
-			quotaName: "extra_workspaces",
+			quotaName: "extra_organizations",
 			userId: user._id,
 			now,
 		});
 
 		// Try to load the user's current default tenant from the pointers cached on
-		// the user doc. This should normally be the personal workspace and home project.
-		const [workspace, project] =
-			user.defaultWorkspaceId && user.defaultProjectId
+		// the user doc. This should normally be the personal organization and home workspace.
+		const [organization, workspace] =
+			user.defaultOrganizationId && user.defaultWorkspaceId
 				? await Promise.all([
-						ctx.db.get("workspaces", user.defaultWorkspaceId),
-						ctx.db.get("workspaces_projects", user.defaultProjectId),
+						ctx.db.get("organizations", user.defaultOrganizationId),
+						ctx.db.get("organizations_workspaces", user.defaultWorkspaceId),
 					])
 				: [null, null];
-		// We also need a membership doc for the default project. Without it, the UI
+		// We also need a membership doc for the default workspace. Without it, the UI
 		// cannot resolve the user's personal/home route after the reset.
 		const membership =
-			workspace && project
+			organization && workspace
 				? await ctx.db
-						.query("workspaces_projects_users")
-						.withIndex("by_user_workspace_project_active", (q) =>
-							q.eq("userId", user._id).eq("workspaceId", workspace._id).eq("projectId", project._id),
+						.query("organizations_workspaces_users")
+						.withIndex("by_user_organization_workspace_active", (q) =>
+							q.eq("userId", user._id).eq("organizationId", organization._id).eq("workspaceId", workspace._id),
 						)
 						.first()
 				: null;
-		let defaultTenant: { workspaceId: Id<"workspaces">; defaultProjectId: Id<"workspaces_projects"> };
+		let defaultTenant: { organizationId: Id<"organizations">; defaultWorkspaceId: Id<"organizations_workspaces"> };
 
-		// Reuse the existing default tenant. First ensure its project quota doc;
+		// Reuse the existing default tenant. First ensure its workspace quota doc;
 		// then below ensure the membership, owner role, and grant docs that make
-		// the default workspace/project usable after reset.
+		// the default organization/workspace usable after reset.
 		if (
-			workspace?.default &&
-			project &&
-			project.workspaceId === workspace._id &&
-			workspace.defaultProjectId === project._id &&
-			project.default &&
+			organization?.default &&
+			workspace &&
+			workspace.organizationId === organization._id &&
+			organization.defaultWorkspaceId === workspace._id &&
+			workspace.default &&
 			membership
 		) {
 			await quotas_db_ensure(ctx, {
-				quotaName: "extra_projects",
-				workspaceId: workspace._id,
+				quotaName: "extra_workspaces",
+				organizationId: organization._id,
 				now,
 			});
 
-			// Check for an active default-project membership doc directly. A broad
+			// Check for an active default-workspace membership doc directly. A broad
 			// `first()` could return an inactive doc even when an active one exists.
 			const activeMembership = await ctx.db
-				.query("workspaces_projects_users")
-				.withIndex("by_active_user_workspace_project", (q) =>
-					q.eq("active", true).eq("userId", user._id).eq("workspaceId", workspace._id).eq("projectId", project._id),
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q.eq("active", true).eq("userId", user._id).eq("organizationId", organization._id).eq("workspaceId", workspace._id),
 				)
 				.first();
 
-			// If no active default-project membership exists, reactivate one
-			// inactive doc for this same user/workspace/project instead of
+			// If no active default-workspace membership exists, reactivate one
+			// inactive doc for this same user/organization/workspace instead of
 			// creating a duplicate.
 			if (!activeMembership) {
 				const inactiveMembership = await ctx.db
-					.query("workspaces_projects_users")
-					.withIndex("by_user_workspace_project_active", (q) =>
-						q.eq("userId", user._id).eq("workspaceId", workspace._id).eq("projectId", project._id).eq("active", false),
+					.query("organizations_workspaces_users")
+					.withIndex("by_user_organization_workspace_active", (q) =>
+						q.eq("userId", user._id).eq("organizationId", organization._id).eq("workspaceId", workspace._id).eq("active", false),
 					)
 					.first();
 
-				// The user had this default-project membership, but it was
+				// The user had this default-workspace membership, but it was
 				// deactivated during deletion setup. Mark it active again so the
-				// user can open the personal/home project after the reset.
+				// user can open the personal/home workspace after the reset.
 				if (inactiveMembership) {
-					await ctx.db.patch("workspaces_projects_users", inactiveMembership._id, {
+					await ctx.db.patch("organizations_workspaces_users", inactiveMembership._id, {
 						active: true,
 						updatedAt: now,
 					});
 				} else {
-					const errorMessage = "Default tenant exists without a default-project membership doc during data reset";
+					const errorMessage = "Default tenant exists without a default-workspace membership doc during data reset";
 					const errorData = {
 						userId: user._id,
+						organizationId: organization._id,
 						workspaceId: workspace._id,
-						projectId: project._id,
 					};
 					console.error(errorMessage, errorData);
 					throw should_never_happen(errorMessage, errorData);
-					// await ctx.db.insert("workspaces_projects_users", {
+					// await ctx.db.insert("organizations_workspaces_users", {
+					// 	organizationId: organization._id,
 					// 	workspaceId: workspace._id,
-					// 	projectId: project._id,
 					// 	userId: user._id,
 					// 	active: true,
 					// 	updatedAt: now,
@@ -1665,21 +1665,34 @@ export const hard_delete_user_data = internalMutation({
 				}
 			}
 
-			// The user must remain owner of their personal/home project after reset.
+			// The user must remain owner of their personal/home workspace after reset.
 			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: organization._id,
 				workspaceId: workspace._id,
-				projectId: project._id,
 				userId: user._id,
 				role: "owner",
 				now,
 			});
 
-			// Re-seed workspace-level grants. The helper is idempotent, so existing
+			// Re-seed organization-level grants. The helper is idempotent, so existing
 			// grants are reused and missing grants are recreated.
+			for (const grant of access_control_organization_role_permission_grants) {
+				await access_control_db_ensure_role_permission_grant(ctx, {
+					organizationId: organization._id,
+					workspaceId: workspace._id,
+					resourceKind: "organization",
+					resourceId: String(organization._id),
+					role: grant.role,
+					permission: grant.permission,
+					now,
+				});
+			}
+
+			// Re-seed workspace-level grants for the home workspace.
 			for (const grant of access_control_workspace_role_permission_grants) {
 				await access_control_db_ensure_role_permission_grant(ctx, {
+					organizationId: organization._id,
 					workspaceId: workspace._id,
-					projectId: project._id,
 					resourceKind: "workspace",
 					resourceId: String(workspace._id),
 					role: grant.role,
@@ -1687,36 +1700,23 @@ export const hard_delete_user_data = internalMutation({
 					now,
 				});
 			}
-
-			// Re-seed project-level grants for the home project.
-			for (const grant of access_control_project_role_permission_grants) {
-				await access_control_db_ensure_role_permission_grant(ctx, {
-					workspaceId: workspace._id,
-					projectId: project._id,
-					resourceKind: "project",
-					resourceId: String(project._id),
-					role: grant.role,
-					permission: grant.permission,
-					now,
-				});
-			}
-			// Everything below must preserve these default workspace/project docs.
+			// Everything below must preserve these default organization/workspace docs.
 			defaultTenant = {
-				workspaceId: workspace._id,
-				defaultProjectId: project._id,
+				organizationId: organization._id,
+				defaultWorkspaceId: workspace._id,
 			};
 		} else {
 			const errorMessage = "Default tenant is missing or inconsistent during data reset";
 			const errorData = {
 				userId: user._id,
+				defaultOrganizationId: user.defaultOrganizationId,
 				defaultWorkspaceId: user.defaultWorkspaceId,
-				defaultProjectId: user.defaultProjectId,
+				organizationFound: Boolean(organization),
+				organizationDefault: organization?.default,
+				organizationDefaultWorkspaceId: organization?.defaultWorkspaceId,
 				workspaceFound: Boolean(workspace),
 				workspaceDefault: workspace?.default,
-				workspaceDefaultProjectId: workspace?.defaultProjectId,
-				projectFound: Boolean(project),
-				projectDefault: project?.default,
-				projectWorkspaceId: project?.workspaceId,
+				workspaceOrganizationId: workspace?.organizationId,
 				membershipFound: Boolean(membership),
 			};
 			console.error(errorMessage, errorData);
@@ -1724,195 +1724,195 @@ export const hard_delete_user_data = internalMutation({
 			// Previous repair fallback, intentionally kept commented while we verify
 			// this invariant in tests/logs. Do not re-enable without deciding that
 			// missing default tenant docs should be repaired during data reset.
-			// const created = await db_create_default_workspace_and_project_for_user(ctx, {
+			// const created = await db_create_default_organization_and_workspace_for_user(ctx, {
 			// 	userId: user._id,
 			// 	now,
 			// });
 			// defaultTenant = {
-			// 	workspaceId: created.workspaceId,
-			// 	defaultProjectId: created.defaultProjectId,
+			// 	organizationId: created.organizationId,
+			// 	defaultWorkspaceId: created.defaultWorkspaceId,
 			// };
 		}
 
 		// Commit the usable account state before deleting data. This keeps auth,
 		// profile, and billing state intact while making sure the user points to
-		// the default workspace/project selected above.
+		// the default organization/workspace selected above.
 		await Promise.all([
 			// Clear `deletedAt` because a data reset should leave the account usable,
 			// even if it started from a tombstoned state.
 			ctx.db.patch("users", user._id, {
-				defaultWorkspaceId: defaultTenant.workspaceId,
-				defaultProjectId: defaultTenant.defaultProjectId,
+				defaultOrganizationId: defaultTenant.organizationId,
+				defaultWorkspaceId: defaultTenant.defaultWorkspaceId,
 				deletedAt: undefined,
 			}),
 			// Cancel the user-scope deletion request. Resource-scope requests must stay
 			// queued until this reset either consumes them or proves they target the
-			// preserved default workspace/project.
+			// preserved default organization/workspace.
 			db_delete_data_deletion_requests(ctx, {
 				scope: "user",
 				userId: user._id,
 			}),
 		]);
 
-		// The personal/home project is the one project we keep. Purge only its
-		// content docs so the user opens a clean home project after reset.
-		const defaultProjectPurge = await db_purge_workspace_project_content_batch(ctx, {
-			workspaceId: defaultTenant.workspaceId,
-			projectId: defaultTenant.defaultProjectId,
+		// The personal/home workspace is the one workspace we keep. Purge only its
+		// content docs so the user opens a clean home workspace after reset.
+		const defaultWorkspacePurge = await db_purge_organization_workspace_content_batch(ctx, {
+			organizationId: defaultTenant.organizationId,
+			workspaceId: defaultTenant.defaultWorkspaceId,
 			batchSize: batch_size(args),
 		});
-		if (!defaultProjectPurge.done) {
-			// The home project still has more content than fits in this batch.
-			return defaultProjectPurge;
+		if (!defaultWorkspacePurge.done) {
+			// The home workspace still has more content than fits in this batch.
+			return defaultWorkspacePurge;
 		}
 		await Promise.all([
 			// The default tenant must not be deleted later by an old queued request.
 			db_delete_data_deletion_requests(ctx, {
-				scope: "workspace",
-				workspaceId: defaultTenant.workspaceId,
+				scope: "organization",
+				organizationId: defaultTenant.organizationId,
 			}),
 			db_delete_data_deletion_requests(ctx, {
-				scope: "project",
-				workspaceId: defaultTenant.workspaceId,
-				projectId: defaultTenant.defaultProjectId,
+				scope: "workspace",
+				organizationId: defaultTenant.organizationId,
+				workspaceId: defaultTenant.defaultWorkspaceId,
 			}),
 		]);
 
-		// Admin data reset can run after project deletion phase 1 but before the
+		// Admin data reset can run after workspace deletion phase 1 but before the
 		// queued background purge finishes phase 2:
 		//
-		// 1. `delete_project` has already queued a project-scope request.
-		// 2. `delete_project` has already deleted the `workspaces_projects` doc,
-		//    so scanning project docs below will not find this project anymore.
-		// 3. The queued purge has not yet deleted that project's files, threads,
-		//    assets, and other project content docs.
+		// 1. `delete_workspace` has already queued a workspace-scope request.
+		// 2. `delete_workspace` has already deleted the `organizations_workspaces` doc,
+		//    so scanning workspace docs below will not find this workspace anymore.
+		// 3. The queued purge has not yet deleted that workspace's files, threads,
+		//    assets, and other workspace content docs.
 		//
-		// At that point the queue doc is the only remaining pointer to the project
+		// At that point the queue doc is the only remaining pointer to the workspace
 		// id whose content still exists. Use it here so the admin reset can force
 		// that purge immediately instead of leaving the content for a later worker.
-		// Then continue with the project docs that still exist.
-		const queuedDefaultWorkspaceProjectRequest = await ctx.db
+		// Then continue with the workspace docs that still exist.
+		const queuedDefaultOrganizationWorkspaceRequest = await ctx.db
 			.query("data_deletion_requests")
-			.withIndex("by_workspace_scope", (q) => q.eq("workspaceId", defaultTenant.workspaceId).eq("scope", "project"))
+			.withIndex("by_organization_scope", (q) => q.eq("organizationId", defaultTenant.organizationId).eq("scope", "workspace"))
 			.first();
 		if (
-			queuedDefaultWorkspaceProjectRequest?.projectId &&
-			queuedDefaultWorkspaceProjectRequest.projectId !== defaultTenant.defaultProjectId
+			queuedDefaultOrganizationWorkspaceRequest?.workspaceId &&
+			queuedDefaultOrganizationWorkspaceRequest.workspaceId !== defaultTenant.defaultWorkspaceId
 		) {
-			const queuedProjectPurge = await db_purge_workspace_project_content_batch(ctx, {
-				workspaceId: defaultTenant.workspaceId,
-				projectId: queuedDefaultWorkspaceProjectRequest.projectId,
+			const queuedWorkspacePurge = await db_purge_organization_workspace_content_batch(ctx, {
+				organizationId: defaultTenant.organizationId,
+				workspaceId: queuedDefaultOrganizationWorkspaceRequest.workspaceId,
 				batchSize: batch_size(args),
 			});
-			if (!queuedProjectPurge.done) {
-				return queuedProjectPurge;
+			if (!queuedWorkspacePurge.done) {
+				return queuedWorkspacePurge;
 			}
 
-			await ctx.db.delete("data_deletion_requests", queuedDefaultWorkspaceProjectRequest._id);
+			await ctx.db.delete("data_deletion_requests", queuedDefaultOrganizationWorkspaceRequest._id);
 			return { done: false, deletedCount: 1 };
 		}
 
-		const defaultWorkspaceProjects = await ctx.db
-			.query("workspaces_projects")
-			.withIndex("by_workspace_default", (q) => q.eq("workspaceId", defaultTenant.workspaceId))
+		const defaultOrganizationWorkspaces = await ctx.db
+			.query("organizations_workspaces")
+			.withIndex("by_organization_default", (q) => q.eq("organizationId", defaultTenant.organizationId))
 			.collect();
-		// Extra projects under the personal workspace are user-owned data for this
-		// reset flow. Leave only the primary home project behind.
-		for (const project of defaultWorkspaceProjects) {
-			if (project._id === defaultTenant.defaultProjectId || project.default) {
-				// This is the home project doc we intentionally kept.
+		// Extra workspaces under the personal organization are user-owned data for this
+		// reset flow. Leave only the primary home workspace behind.
+		for (const workspace of defaultOrganizationWorkspaces) {
+			if (workspace._id === defaultTenant.defaultWorkspaceId || workspace.default) {
+				// This is the home workspace doc we intentionally kept.
 				continue;
 			}
 
-			const projectDelete = await db_delete_project_batch(ctx, {
-				workspaceId: defaultTenant.workspaceId,
-				projectId: project._id,
+			const workspaceDelete = await db_delete_workspace_batch(ctx, {
+				organizationId: defaultTenant.organizationId,
+				workspaceId: workspace._id,
 				batchSize: batch_size(args),
 			});
-			if (!projectDelete.done) {
-				// The extra project still has content or structure left. Stop so the
+			if (!workspaceDelete.done) {
+				// The extra workspace still has content or structure left. Stop so the
 				// caller can run another limited deletion step.
-				return projectDelete;
+				return workspaceDelete;
 			}
 
-			// The extra personal project is gone, so release one project quota slot
-			// from the personal workspace.
+			// The extra personal workspace is gone, so release one workspace quota slot
+			// from the personal organization.
 			await quotas_db_ensure(ctx, {
-				quotaName: "extra_projects",
-				workspaceId: defaultTenant.workspaceId,
+				quotaName: "extra_workspaces",
+				organizationId: defaultTenant.organizationId,
 				now,
 			});
 			const quota = await quotas_db_get(ctx, {
-				quotaName: "extra_projects",
-				workspaceId: defaultTenant.workspaceId,
+				quotaName: "extra_workspaces",
+				organizationId: defaultTenant.organizationId,
 			});
 			await ctx.db.patch("quotas", quota._id, {
 				usedCount: Math.max(0, quota.usedCount - 1),
 				updatedAt: now,
 			});
-			// Delete at most one extra project doc and its related structure per call.
+			// Delete at most one extra workspace doc and its related structure per call.
 			return { done: false, deletedCount: 1 };
 		}
 
-		// Now review every non-default workspace connected to the user. Memberships
-		// catch shared workspaces; ownership catches owned workspaces whose
+		// Now review every non-default organization connected to the user. Memberships
+		// catch shared organizations; ownership catches owned organizations whose
 		// membership docs may already have been removed by a prior deletion attempt.
 		const memberships = await ctx.db
-			.query("workspaces_projects_users")
-			.withIndex("by_user_workspace_project_active", (q) => q.eq("userId", user._id))
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", user._id))
 			.collect();
-		const workspaceIdsToReview = new Set<Id<"workspaces">>();
+		const organizationIdsToReview = new Set<Id<"organizations">>();
 		for (const membership of memberships) {
-			if (membership.active === true && membership.workspaceId !== defaultTenant.workspaceId) {
+			if (membership.active === true && membership.organizationId !== defaultTenant.organizationId) {
 				// Active membership means the user still has data or access in this
-				// workspace, so the reset needs to inspect it.
-				workspaceIdsToReview.add(membership.workspaceId);
+				// organization, so the reset needs to inspect it.
+				organizationIdsToReview.add(membership.organizationId);
 			}
 		}
 
-		const ownedWorkspaces = await ctx.db
-			.query("workspaces")
+		const ownedOrganizations = await ctx.db
+			.query("organizations")
 			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", user._id))
 			.collect();
-		for (const workspace of ownedWorkspaces) {
-			if (!workspace.default && workspace._id !== defaultTenant.workspaceId) {
-				// Include extra workspaces still owned by this user. Account-deletion
+		for (const organization of ownedOrganizations) {
+			if (!organization.default && organization._id !== defaultTenant.organizationId) {
+				// Include extra organizations still owned by this user. Account-deletion
 				// setup can remove membership docs before this reset runs, but the
-				// owner field still shows the workspace belongs to this user.
-				workspaceIdsToReview.add(workspace._id);
+				// owner field still shows the organization belongs to this user.
+				organizationIdsToReview.add(organization._id);
 			}
 		}
 
-		for (const workspaceId of workspaceIdsToReview) {
-			const workspace = await ctx.db.get("workspaces", workspaceId);
-			if (!workspace || workspace.default) {
-				// Missing workspaces are already gone. Default workspaces are not part
-				// of this non-default workspace cleanup.
+		for (const organizationId of organizationIdsToReview) {
+			const organization = await ctx.db.get("organizations", organizationId);
+			if (!organization || organization.default) {
+				// Missing organizations are already gone. Default organizations are not part
+				// of this non-default organization cleanup.
 				continue;
 			}
 
-			// Load projects so we can check whether anyone other than the reset user
-			// still actively uses this workspace.
-			const projects = await ctx.db
-				.query("workspaces_projects")
-				.withIndex("by_workspace_default", (q) => q.eq("workspaceId", workspace._id))
+			// Load workspaces so we can check whether anyone other than the reset user
+			// still actively uses this organization.
+			const workspaces = await ctx.db
+				.query("organizations_workspaces")
+				.withIndex("by_organization_default", (q) => q.eq("organizationId", organization._id))
 				.collect();
 			let hasOtherActiveUser = false;
-			for (const project of projects) {
+			for (const workspace of workspaces) {
 				// The index is ordered by user id, so checking one doc before and one
 				// doc after the reset user is enough to know whether another active
-				// user exists for this project.
+				// user exists for this workspace.
 				const [activeUserBefore, activeUserAfter] = await Promise.all([
 					ctx.db
-						.query("workspaces_projects_users")
-						.withIndex("by_active_workspace_project_user", (q) =>
-							q.eq("active", true).eq("workspaceId", workspace._id).eq("projectId", project._id).lt("userId", user._id),
+						.query("organizations_workspaces_users")
+						.withIndex("by_active_organization_workspace_user", (q) =>
+							q.eq("active", true).eq("organizationId", organization._id).eq("workspaceId", workspace._id).lt("userId", user._id),
 						)
 						.first(),
 					ctx.db
-						.query("workspaces_projects_users")
-						.withIndex("by_active_workspace_project_user", (q) =>
-							q.eq("active", true).eq("workspaceId", workspace._id).eq("projectId", project._id).gt("userId", user._id),
+						.query("organizations_workspaces_users")
+						.withIndex("by_active_organization_workspace_user", (q) =>
+							q.eq("active", true).eq("organizationId", organization._id).eq("workspaceId", workspace._id).gt("userId", user._id),
 						)
 						.first(),
 				]);
@@ -1922,10 +1922,83 @@ export const hard_delete_user_data = internalMutation({
 				}
 			}
 
-			// Delete an owned non-default workspace only when no other active user
-			// appears in any of its projects.
-			if (workspace.ownerUserId === user._id && !hasOtherActiveUser) {
+			// Delete an owned non-default organization only when no other active user
+			// appears in any of its workspaces.
+			if (organization.ownerUserId === user._id && !hasOtherActiveUser) {
+				const organizationDelete = await db_delete_organization_batch(ctx, {
+					organizationId: organization._id,
+					batchSize: batch_size(args),
+				});
+				if (!organizationDelete.done) {
+					// The organization still has more docs than this call is allowed to delete.
+					return organizationDelete;
+				}
+
+				// The owned organization with no other active users is gone. Clear stale
+				// queue docs and release one organization quota slot from the reset user.
+				await db_delete_data_deletion_requests(ctx, {
+					scope: "organization",
+					organizationId: organization._id,
+				});
+				await quotas_db_ensure(ctx, {
+					quotaName: "extra_organizations",
+					userId: user._id,
+					now,
+				});
+				const quota = await quotas_db_get(ctx, {
+					quotaName: "extra_organizations",
+					userId: user._id,
+				});
+				await ctx.db.patch("quotas", quota._id, {
+					usedCount: Math.max(0, quota.usedCount - 1),
+					updatedAt: now,
+				});
+				// Delete at most one organization doc and its related structure per call.
+				return { done: false, deletedCount: 1 };
+			}
+
+			// In shared organizations, preserve the organization default `home` workspace and
+			// only delete extra workspaces that have no active member other than the
+			// reset user.
+			for (const workspace of workspaces) {
+				if (workspace.default || workspace._id === organization.defaultWorkspaceId) {
+					// The organization default workspace carries the organization membership
+					// roster. Keep it.
+					continue;
+				}
+
+				// For non-default workspaces, delete only data that belongs solely to
+				// the reset user. The workspace qualifies when the reset user is an
+				// active workspace member or owns the organization, and nobody else is an
+				// active workspace member.
+				const [resetUserMembership, activeUserBefore, activeUserAfter] = await Promise.all([
+					ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_active_user_organization_workspace", (q) =>
+							q.eq("active", true).eq("userId", user._id).eq("organizationId", organization._id).eq("workspaceId", workspace._id),
+						)
+						.first(),
+					ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_active_organization_workspace_user", (q) =>
+							q.eq("active", true).eq("organizationId", organization._id).eq("workspaceId", workspace._id).lt("userId", user._id),
+						)
+						.first(),
+					ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_active_organization_workspace_user", (q) =>
+							q.eq("active", true).eq("organizationId", organization._id).eq("workspaceId", workspace._id).gt("userId", user._id),
+						)
+						.first(),
+				]);
+				// Skip when the reset user is neither an active member nor the
+				// organization owner, or when another active member still uses it.
+				if ((!resetUserMembership && organization.ownerUserId !== user._id) || activeUserBefore || activeUserAfter) {
+					continue;
+				}
+
 				const workspaceDelete = await db_delete_workspace_batch(ctx, {
+					organizationId: organization._id,
 					workspaceId: workspace._id,
 					batchSize: batch_size(args),
 				});
@@ -1934,95 +2007,22 @@ export const hard_delete_user_data = internalMutation({
 					return workspaceDelete;
 				}
 
-				// The owned workspace with no other active users is gone. Clear stale
-				// queue docs and release one workspace quota slot from the reset user.
-				await db_delete_data_deletion_requests(ctx, {
-					scope: "workspace",
-					workspaceId: workspace._id,
-				});
+				// The extra workspace is gone, so release one workspace quota slot from
+				// its organization.
 				await quotas_db_ensure(ctx, {
 					quotaName: "extra_workspaces",
-					userId: user._id,
+					organizationId: organization._id,
 					now,
 				});
 				const quota = await quotas_db_get(ctx, {
 					quotaName: "extra_workspaces",
-					userId: user._id,
+					organizationId: organization._id,
 				});
 				await ctx.db.patch("quotas", quota._id, {
 					usedCount: Math.max(0, quota.usedCount - 1),
 					updatedAt: now,
 				});
-				// Delete at most one workspace doc and its related structure per call.
-				return { done: false, deletedCount: 1 };
-			}
-
-			// In shared workspaces, preserve the workspace default `home` project and
-			// only delete extra projects that have no active member other than the
-			// reset user.
-			for (const project of projects) {
-				if (project.default || project._id === workspace.defaultProjectId) {
-					// The workspace default project carries the workspace membership
-					// roster. Keep it.
-					continue;
-				}
-
-				// For non-default projects, delete only data that belongs solely to
-				// the reset user. The project qualifies when the reset user is an
-				// active project member or owns the workspace, and nobody else is an
-				// active project member.
-				const [resetUserMembership, activeUserBefore, activeUserAfter] = await Promise.all([
-					ctx.db
-						.query("workspaces_projects_users")
-						.withIndex("by_active_user_workspace_project", (q) =>
-							q.eq("active", true).eq("userId", user._id).eq("workspaceId", workspace._id).eq("projectId", project._id),
-						)
-						.first(),
-					ctx.db
-						.query("workspaces_projects_users")
-						.withIndex("by_active_workspace_project_user", (q) =>
-							q.eq("active", true).eq("workspaceId", workspace._id).eq("projectId", project._id).lt("userId", user._id),
-						)
-						.first(),
-					ctx.db
-						.query("workspaces_projects_users")
-						.withIndex("by_active_workspace_project_user", (q) =>
-							q.eq("active", true).eq("workspaceId", workspace._id).eq("projectId", project._id).gt("userId", user._id),
-						)
-						.first(),
-				]);
-				// Skip when the reset user is neither an active member nor the
-				// workspace owner, or when another active member still uses it.
-				if ((!resetUserMembership && workspace.ownerUserId !== user._id) || activeUserBefore || activeUserAfter) {
-					continue;
-				}
-
-				const projectDelete = await db_delete_project_batch(ctx, {
-					workspaceId: workspace._id,
-					projectId: project._id,
-					batchSize: batch_size(args),
-				});
-				if (!projectDelete.done) {
-					// The project still has more docs than this call is allowed to delete.
-					return projectDelete;
-				}
-
-				// The extra project is gone, so release one project quota slot from
-				// its workspace.
-				await quotas_db_ensure(ctx, {
-					quotaName: "extra_projects",
-					workspaceId: workspace._id,
-					now,
-				});
-				const quota = await quotas_db_get(ctx, {
-					quotaName: "extra_projects",
-					workspaceId: workspace._id,
-				});
-				await ctx.db.patch("quotas", quota._id, {
-					usedCount: Math.max(0, quota.usedCount - 1),
-					updatedAt: now,
-				});
-				// Delete at most one shared extra project doc and its related structure per call.
+				// Delete at most one shared extra workspace doc and its related structure per call.
 				return { done: false, deletedCount: 1 };
 			}
 		}
@@ -2038,7 +2038,7 @@ export const hard_delete_user_data = internalMutation({
  * This runs the user tombstone and finalization immediately instead of waiting
  * for the retained user-scope queue doc. It may preserve or remove auth and
  * billing state depending on the caller's mode, then queues any newly empty
- * workspaces for immediate phase-2 purge.
+ * organizations for immediate phase-2 purge.
  */
 export const finalize_user_deletion_data = internalMutation({
 	args: {
@@ -2068,14 +2068,14 @@ export const finalize_user_deletion_data = internalMutation({
 			deleteBillingState: args.deleteBillingState,
 		});
 
-		// Queue immediate workspace deletions for workspaces that became empty
+		// Queue immediate organization deletions for organizations that became empty
 		// while finalizing this user.
-		if (deleteUserRes?.workspacesToDelete) {
-			for (const workspace of deleteUserRes.workspacesToDelete) {
+		if (deleteUserRes?.organizationsToDelete) {
+			for (const organization of deleteUserRes.organizationsToDelete) {
 				await data_deletion_db_request(ctx, {
 					userId: user._id,
-					workspaceId: workspace.workspaceId,
-					scope: "workspace",
+					organizationId: organization.organizationId,
+					scope: "organization",
 					eligibleAt: now,
 				});
 			}
@@ -2096,13 +2096,13 @@ export const finalize_user_deletion_data = internalMutation({
 
 const DELETION_MUTATION_STEPS_PER_ACTION = 25;
 const USER_DELETION_REQUEST_BATCH_SIZE = 20;
-const WORKSPACE_DELETION_REQUEST_BATCH_SIZE = 50;
-const PROJECT_DELETION_REQUEST_BATCH_SIZE = 200;
+const ORGANIZATION_DELETION_REQUEST_BATCH_SIZE = 50;
+const WORKSPACE_DELETION_REQUEST_BATCH_SIZE = 200;
 
 /**
  * Processes a limited number of eligible deletion requests.
  *
- * Requests run in order: users, workspaces, then projects. Each request deletes
+ * Requests run in order: users, organizations, then workspaces. Each request deletes
  * one limited deletion step, so large deletes stay retryable and continue in later
  * Workpool jobs when `shouldReschedule` is true.
  */
@@ -2162,19 +2162,58 @@ async function run_deletion_request_batches(
 		}
 
 		// If user requests used the whole step budget, continue later before moving
-		// on to lower-priority workspace/project requests.
+		// on to lower-priority organization/workspace requests.
 		if (steps >= DELETION_MUTATION_STEPS_PER_ACTION) {
 			shouldReschedule ||= userRequestIds.length > 0;
 			break;
 		}
 
-		const workspaceRequestIds: Id<"data_deletion_requests">[] = await ctx.runQuery(
+		const organizationRequestIds: Id<"data_deletion_requests">[] = await ctx.runQuery(
 			internal.data_deletion.list_deletion_request_ids_by_scope,
 			{
-				scope: "workspace",
-				limit: WORKSPACE_DELETION_REQUEST_BATCH_SIZE,
+				scope: "organization",
+				limit: ORGANIZATION_DELETION_REQUEST_BATCH_SIZE,
 				_test_now: test_now,
 			},
+		);
+		shouldReschedule ||= organizationRequestIds.length >= ORGANIZATION_DELETION_REQUEST_BATCH_SIZE;
+
+		// Process each request independently so one failed request does not stop the batch.
+		// Count attempts, not only successful deletes, toward the per-run step budget.
+		for (const requestId of organizationRequestIds) {
+			try {
+				const result = (await ctx.runMutation(internal.data_deletion.process_organization_deletion_request, {
+					requestId,
+					_test_batchSize: args._test_batchSize,
+				})) as process_organization_deletion_request_Result;
+				madeProgress ||= result.deletedCount > 0 || result.done;
+				shouldReschedule ||= !result.done;
+			} catch (error) {
+				hadFailure = true;
+				shouldReschedule = true;
+				console.error("Failed to process organization deletion request", {
+					error,
+					requestId,
+				});
+			}
+
+			// This request attempted one mutation, so it counts against this worker run.
+			steps += 1;
+			if (steps >= DELETION_MUTATION_STEPS_PER_ACTION) {
+				break;
+			}
+		}
+
+		// If organization requests used the whole step budget, continue later before
+		// moving on to lower-priority workspace requests.
+		if (steps >= DELETION_MUTATION_STEPS_PER_ACTION) {
+			shouldReschedule ||= organizationRequestIds.length > 0;
+			break;
+		}
+
+		const workspaceRequestIds: Id<"data_deletion_requests">[] = await ctx.runQuery(
+			internal.data_deletion.list_deletion_request_ids_by_scope,
+			{ scope: "workspace", limit: WORKSPACE_DELETION_REQUEST_BATCH_SIZE, _test_now: test_now },
 		);
 		shouldReschedule ||= workspaceRequestIds.length >= WORKSPACE_DELETION_REQUEST_BATCH_SIZE;
 
@@ -2204,49 +2243,10 @@ async function run_deletion_request_batches(
 			}
 		}
 
-		// If workspace requests used the whole step budget, continue later before
-		// moving on to lower-priority project requests.
+		// If workspace requests used the whole step budget, continue later. There
+		// may be more workspace requests than this worker run was allowed to attempt.
 		if (steps >= DELETION_MUTATION_STEPS_PER_ACTION) {
 			shouldReschedule ||= workspaceRequestIds.length > 0;
-			break;
-		}
-
-		const projectRequestIds: Id<"data_deletion_requests">[] = await ctx.runQuery(
-			internal.data_deletion.list_deletion_request_ids_by_scope,
-			{ scope: "project", limit: PROJECT_DELETION_REQUEST_BATCH_SIZE, _test_now: test_now },
-		);
-		shouldReschedule ||= projectRequestIds.length >= PROJECT_DELETION_REQUEST_BATCH_SIZE;
-
-		// Process each request independently so one failed request does not stop the batch.
-		// Count attempts, not only successful deletes, toward the per-run step budget.
-		for (const requestId of projectRequestIds) {
-			try {
-				const result = (await ctx.runMutation(internal.data_deletion.process_project_deletion_request, {
-					requestId,
-					_test_batchSize: args._test_batchSize,
-				})) as process_project_deletion_request_Result;
-				madeProgress ||= result.deletedCount > 0 || result.done;
-				shouldReschedule ||= !result.done;
-			} catch (error) {
-				hadFailure = true;
-				shouldReschedule = true;
-				console.error("Failed to process project deletion request", {
-					error,
-					requestId,
-				});
-			}
-
-			// This request attempted one mutation, so it counts against this worker run.
-			steps += 1;
-			if (steps >= DELETION_MUTATION_STEPS_PER_ACTION) {
-				break;
-			}
-		}
-
-		// If project requests used the whole step budget, continue later. There
-		// may be more project requests than this worker run was allowed to attempt.
-		if (steps >= DELETION_MUTATION_STEPS_PER_ACTION) {
-			shouldReschedule ||= projectRequestIds.length > 0;
 			break;
 		}
 

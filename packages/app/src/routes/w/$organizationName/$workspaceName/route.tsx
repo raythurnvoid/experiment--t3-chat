@@ -11,13 +11,13 @@ import { cn, should_never_happen } from "@/lib/utils.ts";
 
 import type { RootLayout_ClassNames } from "@/routes/__root.tsx";
 
-function RouteTenantWorkspaceProjectLayout() {
+function RouteTenantOrganizationWorkspaceLayout() {
 	const params = Route.useParams();
-	const { workspaceName, projectName } = params;
+	const { organizationName, workspaceName } = params;
 
-	const membership = useQuery(app_convex_api.workspaces.get_membership_by_workspace_project_name, {
+	const membership = useQuery(app_convex_api.organizations.get_membership_by_organization_workspace_name, {
+		organizationName,
 		workspaceName,
-		projectName,
 	});
 	const membershipId = membership?._id ?? "";
 	const convex = useConvex();
@@ -54,7 +54,7 @@ function RouteTenantWorkspaceProjectLayout() {
 			.action(app_convex_api.files_nodes.create_home_file, { membershipId: membership._id })
 			.then((result) => {
 				if (result._nay) {
-					console.error("[TenantWorkspaceProjectLayout.create_home_file] Failed to create home file", {
+					console.error("[TenantOrganizationWorkspaceLayout.create_home_file] Failed to create home file", {
 						result,
 					});
 					return;
@@ -68,38 +68,38 @@ function RouteTenantWorkspaceProjectLayout() {
 
 	if (membership === undefined) {
 		return (
-			<main role="status" aria-live="polite" aria-label="Workspace loading">
-				Loading workspace
+			<main role="status" aria-live="polite" aria-label="Organization loading">
+				Loading organization
 			</main>
 		);
 	}
 
 	if (membership === null) {
 		return (
-			<main role="alert" aria-label="Workspace access denied">
-				You do not have access to this workspace/project.
+			<main role="alert" aria-label="Organization access denied">
+				You do not have access to this organization/workspace.
 			</main>
 		);
 	}
 
 	if (!homeFileIdForMembership) {
 		return (
-			<main role="status" aria-live="polite" aria-label="Workspace preparing">
-				Preparing workspace
+			<main role="status" aria-live="polite" aria-label="Organization preparing">
+				Preparing organization
 			</main>
 		);
 	}
 
+	const organizationId = membership.organizationId;
 	const workspaceId = membership.workspaceId;
-	const projectId = membership.projectId;
 
 	return (
 		<AppTenantProvider
 			membershipId={membership._id}
+			organizationId={organizationId}
+			organizationName={organizationName}
 			workspaceId={workspaceId}
 			workspaceName={workspaceName}
-			projectId={projectId}
-			projectName={projectName}
 		>
 			<div className={cn("RootLayout" satisfies RootLayout_ClassNames)}>
 				<MainAppHeader />
@@ -112,8 +112,8 @@ function RouteTenantWorkspaceProjectLayout() {
 	);
 }
 
-const Route = createFileRoute("/w/$workspaceName/$projectName")({
-	component: RouteTenantWorkspaceProjectLayout,
+const Route = createFileRoute("/w/$organizationName/$workspaceName")({
+	component: RouteTenantOrganizationWorkspaceLayout,
 });
 
 export { Route };

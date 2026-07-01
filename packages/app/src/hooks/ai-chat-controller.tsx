@@ -267,16 +267,16 @@ function ui_messages_have_equal_render_content(
 }
 
 function create_optimistic_thread(tenant: {
+	organizationId: string;
 	workspaceId: string;
-	projectId: string;
 	threadId: AiChatOptimisticThreadId;
 }): ai_chat_Thread {
 	const now = Date.now();
 	return {
 		_id: tenant.threadId as app_convex_Id<"ai_chat_threads">,
 		_creationTime: now,
+		organizationId: tenant.organizationId,
 		workspaceId: tenant.workspaceId,
-		projectId: tenant.projectId,
 		clientGeneratedId: tenant.threadId,
 		title: null,
 		archived: false,
@@ -292,11 +292,11 @@ function create_optimistic_thread(tenant: {
 
 const optimisticThreadListItemByKey = new Map<string, ai_chat_Thread>();
 function get_optimistic_thread_list_item(tenant: {
+	organizationId: string;
 	workspaceId: string;
-	projectId: string;
 	threadId: AiChatOptimisticThreadId;
 }) {
-	const key = `${tenant.workspaceId}:${tenant.projectId}:${tenant.threadId}`;
+	const key = `${tenant.organizationId}:${tenant.workspaceId}:${tenant.threadId}`;
 	let optimisticThread = optimisticThreadListItemByKey.get(key);
 	if (!optimisticThread) {
 		// Build fake list items once per client id so restored blank tabs do not flicker on every render.
@@ -599,7 +599,7 @@ type useThreadList_Props = {
 const useThreadList = (props?: useThreadList_Props) => {
 	const includeArchived = props?.includeArchived ?? true;
 
-	const { membershipId, workspaceId, projectId } = AppTenantProvider.useContext();
+	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
 	const { selectedThreadId, setSelectedThreadId } = useControllerSelection();
 
 	const draftSelectedModelId = useStore((state) => state.draftSelectedModelId);
@@ -645,11 +645,11 @@ const useThreadList = (props?: useThreadList_Props) => {
 				continue;
 			}
 
-			result.push(get_optimistic_thread_list_item({ workspaceId, projectId, threadId }));
+			result.push(get_optimistic_thread_list_item({ organizationId, workspaceId, threadId }));
 		}
 
 		return result;
-	}, [projectId, threadById, persistedThreadIdByClientGeneratedId, workspaceId]);
+	}, [workspaceId, threadById, persistedThreadIdByClientGeneratedId, organizationId]);
 
 	const persistedSelectedThreadId = selectedThreadId
 		? persistedThreadIdByClientGeneratedId.get(selectedThreadId)
