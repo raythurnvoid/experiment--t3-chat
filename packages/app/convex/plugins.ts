@@ -1006,6 +1006,8 @@ export const review_version_artifact = internalAction({
 		distSource: v.union(v.string(), v.null()),
 		capabilities: v.array(v.string()),
 		outboundOrigins: v.array(v.string()),
+		/** Publisher owner requesting the review; fresh system-billed AI reviews are rate limited per this user. */
+		requestedBy: v.id("users"),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -1039,6 +1041,18 @@ export const review_version_artifact = internalAction({
 			if (mechanicalFindings.length > 0) {
 				review = { status: "rejected", mechanicalFindings, aiFindings: [], model: "none" };
 			} else {
+				// Only fresh verdicts cost a system-billed model call; cached hashes returned above stay free.
+				const rateLimit = await rate_limiter_limit_by_key(ctx, {
+					name: "plugins_publish_review",
+					key: args.requestedBy,
+				});
+				if (rateLimit) {
+					return Result({
+						_nay: {
+							message: `Plugin AI review rate limit exceeded; try again in ${Math.ceil(rateLimit.retryAfterMs / 1000)}s`,
+						},
+					});
+				}
 				const context = (await ctx.runQuery(internal.plugins.get_version_review_context, {
 					publisherId: args.publisherId,
 					pluginName: args.pluginName,
@@ -1248,6 +1262,7 @@ export const publish_version = action({
 			distSource: backendDistSource,
 			capabilities: artifact._yay.capabilities,
 			outboundOrigins: artifact._yay.outboundOrigins,
+			requestedBy: source.userId,
 		})) as PluginVersionReviewResult;
 		if (review._nay || !review._yay) {
 			return Result({ _nay: { message: review._nay?.message ?? "Plugin review failed" } });

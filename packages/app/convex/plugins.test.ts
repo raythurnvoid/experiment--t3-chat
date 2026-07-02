@@ -6,7 +6,10 @@ import type { Id } from "./_generated/dataModel.js";
 import { plugins_ai_review } from "./plugins.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { plugins_LOCKFILE_PATH, plugins_validate_artifact, type plugins_Capability } from "../shared/plugins.ts";
-import { organizations_GLOBAL_GITHUB_WORKSPACE_ID, organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
+import {
+	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+	organizations_GLOBAL_ORGANIZATION_ID,
+} from "../shared/organizations.ts";
 
 beforeEach(() => {
 	vi.spyOn(R2.prototype, "generateUploadUrl").mockImplementation(async (customKey?: string) => ({
@@ -1732,7 +1735,9 @@ describe("plugins publisher secrets", () => {
 		expect(secret.keyVersion).toBe(1);
 		expect(secret.ciphertext).not.toContain("sk-publisher-secret");
 
-		expect(await t.withIdentity(user_identity(otherUserId)).query(api.plugins.list_publisher_secrets, { publisherId })).toEqual([]);
+		expect(
+			await t.withIdentity(user_identity(otherUserId)).query(api.plugins.list_publisher_secrets, { publisherId }),
+		).toEqual([]);
 	});
 
 	test("rejects publisher secret writes from non-owners", async () => {
@@ -2117,7 +2122,9 @@ describe("plugins outbound origins consent", () => {
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
 		}
-		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installed._yay.installationId));
+		const installation = await t.run((ctx) =>
+			ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
+		);
 		expect(installation?.acceptedOutboundOrigins).toEqual(["https://api.openai.com"]);
 		expect(typeof installation?.outboundOriginsAcceptedAt).toBe("number");
 	});
@@ -2175,7 +2182,9 @@ describe("plugins outbound origins consent", () => {
 		if (sameConsent._nay) {
 			throw new Error(sameConsent._nay.message);
 		}
-		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installed._yay.installationId));
+		const installation = await t.run((ctx) =>
+			ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
+		);
 		expect(installation?.pluginVersionId).toBe(unchanged.pluginVersionId);
 		expect(installation?.acceptedOutboundOrigins).toEqual(["https://api.openai.com"]);
 	});
@@ -2365,7 +2374,26 @@ describe("plugins publish_version", () => {
 	}
 
 	function mock_ai_review(result?: { verdict: "passed" | "rejected" | "flagged"; findings: string[] }) {
-		return vi.spyOn(plugins_ai_review, "generate_verdict").mockResolvedValue(result ?? { verdict: "passed", findings: [] });
+		return vi
+			.spyOn(plugins_ai_review, "generate_verdict")
+			.mockResolvedValue(result ?? { verdict: "passed", findings: [] });
+	}
+
+	/** Reviews a never-seen artifact hash, which consumes fresh AI review budget when allowed. */
+	async function request_fresh_review(
+		t: ReturnType<typeof test_convex>,
+		args: { publisherId: Id<"plugins_publishers">; requestedBy: Id<"users">; hashChar: string },
+	) {
+		return await t.action(internal.plugins.review_version_artifact, {
+			publisherId: args.publisherId,
+			pluginName: "media-drain",
+			version: "0.1.0",
+			artifactHash: `sha256:${args.hashChar.repeat(64)}`,
+			distSource: "export default { fetch: () => new Response('published') };",
+			capabilities: ["uploads.source.read"],
+			outboundOrigins: [],
+			requestedBy: args.requestedBy,
+		});
 	}
 
 	async function mock_publish_github_fetch(
@@ -2648,9 +2676,7 @@ describe("plugins publish_version", () => {
 		const version = await t.run((ctx) => ctx.db.get("plugins_versions", published._yay.pluginVersionId));
 		expect(version).toMatchObject({ reviewStatus: "flagged" });
 		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
-		expect(reviews).toMatchObject([
-			{ status: "flagged", aiFindings: ["Module-level mutable state outlives a run"] },
-		]);
+		expect(reviews).toMatchObject([{ status: "flagged", aiFindings: ["Module-level mutable state outlives a run"] }]);
 
 		const installed = await asOwner.action(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -2680,6 +2706,86 @@ describe("plugins publish_version", () => {
 		expect(versions).toEqual([]);
 		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
 		expect(reviews).toEqual([]);
+	});
+
+	test("rate limits fresh AI reviews per publisher owner without calling the model once exhausted", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const publisherId = await insert_publisher(t, { userId: membership.userId });
+		const aiReview = mock_ai_review();
+
+		for (const hashChar of ["0", "1", "2", "3", "4"]) {
+			const review = await request_fresh_review(t, { publisherId, requestedBy: membership.userId, hashChar });
+			if (review._nay) {
+				throw new Error(review._nay.message);
+			}
+			expect(review._yay.status).toBe("passed");
+		}
+		expect(aiReview).toHaveBeenCalledTimes(5);
+
+		const exceeded = await request_fresh_review(t, { publisherId, requestedBy: membership.userId, hashChar: "5" });
+
+		expect(exceeded._nay?.message).toMatch(/^Plugin AI review rate limit exceeded; try again in \d+s$/);
+		expect(aiReview).toHaveBeenCalledTimes(5);
+		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
+		expect(reviews).toHaveLength(5);
+	});
+
+	test("blocks a publish that needs a fresh AI review once the review budget is exhausted", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const publisherId = await insert_publisher(t, { userId: membership.userId });
+		const repositoryId = await insert_claimed_repository(t, { publisherId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const github = await mock_publish_github_fetch();
+		const aiReview = mock_ai_review();
+		for (const hashChar of ["0", "1", "2", "3", "4"]) {
+			const review = await request_fresh_review(t, { publisherId, requestedBy: membership.userId, hashChar });
+			if (review._nay) {
+				throw new Error(review._nay.message);
+			}
+		}
+
+		const published = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+
+		expect(published._nay?.message).toMatch(/^Plugin AI review rate limit exceeded; try again in \d+s$/);
+		expect(aiReview).toHaveBeenCalledTimes(5);
+		expect(github.uploadUrls).toEqual([]);
+		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
+		expect(versions).toEqual([]);
+	});
+
+	test("republishes a cached artifact even when the fresh AI review budget is exhausted", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const publisherId = await insert_publisher(t, { userId: membership.userId });
+		const repositoryId = await insert_claimed_repository(t, { publisherId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		await mock_publish_github_fetch();
+		const aiReview = mock_ai_review();
+
+		const first = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		if (first._nay) {
+			throw new Error(first._nay.message);
+		}
+		expect(aiReview).toHaveBeenCalledTimes(1);
+
+		// The first publish consumed one token; drain the rest, then confirm the budget is empty.
+		for (const hashChar of ["1", "2", "3", "4"]) {
+			const review = await request_fresh_review(t, { publisherId, requestedBy: membership.userId, hashChar });
+			if (review._nay) {
+				throw new Error(review._nay.message);
+			}
+		}
+		const drained = await request_fresh_review(t, { publisherId, requestedBy: membership.userId, hashChar: "5" });
+		expect(drained._nay?.message).toContain("Plugin AI review rate limit exceeded");
+
+		const second = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		if (second._nay) {
+			throw new Error(second._nay.message);
+		}
+		expect(second._yay.pluginVersionId).toBe(first._yay.pluginVersionId);
+		expect(aiReview).toHaveBeenCalledTimes(5);
 	});
 
 	test("rejects installs of plugin versions that failed review", async () => {

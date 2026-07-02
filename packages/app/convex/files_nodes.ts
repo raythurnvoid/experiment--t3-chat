@@ -2069,6 +2069,9 @@ export const rename_node = mutation({
 			// Ignore rename requests for home file
 			return Result({ _yay: null });
 		}
+		if (files_is_path_under_system_root(fileNode.path)) {
+			return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
+		}
 
 		const pathSegments = path_extract_segments_from(args.path);
 		// Resolve the target first so simple and nested renames share one conflict/write path.
@@ -2128,6 +2131,9 @@ export const rename_node = mutation({
 				}
 
 				const folderPath = path_join(targetParentPath, name);
+				if (files_is_path_under_system_root(folderPath)) {
+					return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
+				}
 				const folderNodeIdResult = await db_insert_node(ctx, {
 					userId: userAuth.id,
 					organizationId: membership.organizationId,
@@ -2181,6 +2187,9 @@ export const rename_node = mutation({
 		}
 
 		const renamedPath = path_join(targetParentPath, leafName);
+		if (files_is_path_under_system_root(renamedPath)) {
+			return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
+		}
 		if (fileNode.archiveOperationId === undefined) {
 			// Check whether an active sibling already owns the target name.
 			const activeSiblingConflict = await ctx.db
@@ -2269,6 +2278,9 @@ export const move_nodes = mutation({
 		if (targetParentPath == null) {
 			return Result({ _yay: null });
 		}
+		if (files_is_path_under_system_root(targetParentPath)) {
+			return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
+		}
 
 		const fileNodesToMove: Array<{ itemId: Id<"files_nodes">; fileNode: Doc<"files_nodes">; movedPath: string }> = [];
 
@@ -2284,6 +2296,9 @@ export const move_nodes = mutation({
 			if (is_home_file(fileNode)) {
 				// Skip move requests for home file
 				continue;
+			}
+			if (files_is_path_under_system_root(fileNode.path)) {
+				return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
 			}
 
 			const movedPath = path_join(targetParentPath, fileNode.name);
@@ -2457,6 +2472,9 @@ export const archive_nodes = mutation({
 				// Ignore archive requests for home file
 				continue;
 			}
+			if (files_is_path_under_system_root(fileNode.path)) {
+				return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
+			}
 
 			if (fileNode.archiveOperationId !== undefined) {
 				continue;
@@ -2566,6 +2584,9 @@ export const unarchive_nodes = mutation({
 			// Ignore unarchive requests for home file.
 			if (is_home_file(fileNode)) {
 				continue;
+			}
+			if (files_is_path_under_system_root(fileNode.path)) {
+				return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
 			}
 
 			if (fileNode.archiveOperationId === undefined) {

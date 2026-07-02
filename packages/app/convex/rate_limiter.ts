@@ -1,4 +1,4 @@
-import { MINUTE, RateLimiter } from "@convex-dev/rate-limiter";
+import { HOUR, MINUTE, RateLimiter } from "@convex-dev/rate-limiter";
 import { components } from "./_generated/api.js";
 import type { ActionCtx, MutationCtx } from "./_generated/server.js";
 
@@ -57,6 +57,13 @@ const rate_limiter_CONFIG = {
 	files_tree_write: STRICT_WRITE,
 	files_yjs_push_update: STRICT_WRITE,
 	plugins_manage: STRICT_AUTH_OR_BILLING,
+	// Each fresh plugin artifact review is a system-billed model call; cached artifact hashes bypass this.
+	plugins_publish_review: {
+		kind: "token bucket",
+		rate: 20,
+		period: HOUR,
+		capacity: 5,
+	},
 	presence_heartbeat: {
 		kind: "token bucket",
 		rate: 30,

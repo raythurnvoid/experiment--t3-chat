@@ -3,8 +3,10 @@ import { Workpool, vWorkId } from "@convex-dev/workpool";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
 import { customersDelete } from "@polar-sh/sdk/funcs/customersDelete.js";
 import { customerSessionsCreate } from "@polar-sh/sdk/funcs/customerSessionsCreate.js";
+import { customersList } from "@polar-sh/sdk/funcs/customersList.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { subscriptionsCreate } from "@polar-sh/sdk/funcs/subscriptionsCreate.js";
+import { subscriptionsList } from "@polar-sh/sdk/funcs/subscriptionsList.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
 import { subscriptionsUpdate } from "@polar-sh/sdk/funcs/subscriptionsUpdate.js";
 import type { CustomerState } from "@polar-sh/sdk/models/components/customerstate.js";
@@ -1331,25 +1333,95 @@ export const bootstrap_free_subscription = internalAction({
 			let customer = await billing_polar.getCustomerByUserId(ctx, args.userId);
 
 			if (!customer) {
-				const createCustomerResult = await customersCreate(billing_polar.polar, {
-					externalId: args.userId,
+				// Polar emails are unique per organization and a Polar customer can outlive
+				// this database (dev DB erase, or a workpool retry after `insertCustomer`
+				// failed), so blind creation can 422 on a duplicate email forever. Reuse the
+				// surviving customer when its immutable `externalId` still points at this
+				// user; otherwise it references a purged users id — unusable, because
+				// customer-state refresh resolves the user through `externalId` — so delete
+				// it and create a fresh one.
+				const existingCustomersResult = await customersList(billing_polar.polar, {
 					email: args.email,
-					name: args.name,
+					limit: 1,
 				});
-				if (!createCustomerResult.ok) {
+				if (!existingCustomersResult.ok) {
 					throw convex_error({
-						message: "Failed to create Polar customer",
-						cause: createCustomerResult.error,
+						message: "Failed to list Polar customers by email",
+						cause: existingCustomersResult.error,
 						data: {
 							email: args.email,
-							name: args.name,
 							userId: args.userId,
 						},
 					});
 				}
+				const existingCustomer = existingCustomersResult.value.result.items[0] ?? null;
+
+				let polarCustomerId: string;
+				if (existingCustomer && existingCustomer.externalId === args.userId) {
+					polarCustomerId = existingCustomer.id;
+
+					// Replay the surviving customer's active subscriptions into the component
+					// store so the create-vs-repair decision below sees them; webhooks only
+					// deliver changes, never pre-existing state. Replay before the mapping
+					// insert so a retry that finds the mapping never skips it.
+					const activeSubscriptionsResult = await subscriptionsList(billing_polar.polar, {
+						customerId: polarCustomerId,
+						active: true,
+					});
+					if (!activeSubscriptionsResult.ok) {
+						throw convex_error({
+							message: "Failed to list Polar subscriptions for reused customer",
+							cause: activeSubscriptionsResult.error,
+							data: {
+								polarCustomerId,
+								userId: args.userId,
+							},
+						});
+					}
+					for (const subscription of activeSubscriptionsResult.value.result.items) {
+						await ctx.runMutation(components.polar.lib.createSubscription, {
+							subscription: convertToDatabaseSubscription(subscription),
+						});
+					}
+				} else {
+					if (existingCustomer) {
+						const deleteCustomerResult = await customersDelete(billing_polar.polar, {
+							id: existingCustomer.id,
+							anonymize: false,
+						});
+						if (!deleteCustomerResult.ok && !(deleteCustomerResult.error instanceof ResourceNotFound)) {
+							throw convex_error({
+								message: "Failed to delete stale Polar customer",
+								cause: deleteCustomerResult.error,
+								data: {
+									polarCustomerId: existingCustomer.id,
+									userId: args.userId,
+								},
+							});
+						}
+					}
+
+					const createCustomerResult = await customersCreate(billing_polar.polar, {
+						externalId: args.userId,
+						email: args.email,
+						name: args.name,
+					});
+					if (!createCustomerResult.ok) {
+						throw convex_error({
+							message: "Failed to create Polar customer",
+							cause: createCustomerResult.error,
+							data: {
+								email: args.email,
+								name: args.name,
+								userId: args.userId,
+							},
+						});
+					}
+					polarCustomerId = createCustomerResult.value.id;
+				}
 
 				await ctx.runMutation(components.polar.lib.insertCustomer, {
-					id: createCustomerResult.value.id,
+					id: polarCustomerId,
 					userId: args.userId,
 				});
 

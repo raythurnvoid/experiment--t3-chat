@@ -2396,6 +2396,322 @@ test("rename_node returns conflict and keeps original path", async () => {
 	});
 });
 
+async function seed_system_root_fixture(ctx: MutationCtx) {
+	const membership = await test_mocks_fill_db_with.membership(ctx);
+	const systemFolderId = await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: files_ROOT_ID,
+		name: ".system",
+		kind: "folder",
+		path: "/.system",
+		treePath: "/.system/",
+		pathDepth: 1,
+		updatedAt: 1,
+	});
+	const systemFileId = await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: systemFolderId,
+		name: "plugins.lock.json",
+		kind: "file",
+		path: "/.system/plugins.lock.json",
+		treePath: "/.system/plugins.lock.json",
+		pathDepth: 2,
+		lowercaseExtension: "json",
+		updatedAt: 2,
+		contentType: "text/plain;charset=utf-8",
+	});
+	const normalFileId = await ctx.db.insert("files_nodes", {
+		...test_mocks.files.base(),
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		createdBy: membership.userId,
+		updatedBy: membership.userId,
+		parentId: files_ROOT_ID,
+		name: "notes.md",
+		kind: "file",
+		path: "/notes.md",
+		treePath: "/notes.md",
+		pathDepth: 1,
+		lowercaseExtension: "md",
+		updatedAt: 3,
+	});
+	return { ...membership, systemFolderId, systemFileId, normalFileId };
+}
+
+describe("files_nodes system-root guard", () => {
+	test("rename_node rejects system-root nodes", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_system_root_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: db.systemFileId,
+			path: "escaped.json",
+		});
+		expect(renameResult._nay).toMatchObject({
+			message: "The /.system tree is reserved for system-generated files.",
+		});
+
+		const normalRenameResult = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: db.normalFileId,
+			path: "notes-renamed.md",
+		});
+		if (normalRenameResult._nay) {
+			throw new Error("Expected rename_node to keep working for normal nodes", {
+				cause: normalRenameResult._nay,
+			});
+		}
+
+		await t.run(async (ctx) => {
+			const systemFile = await ctx.db.get("files_nodes", db.systemFileId);
+			expect(systemFile?.path).toBe("/.system/plugins.lock.json");
+			const normalFile = await ctx.db.get("files_nodes", db.normalFileId);
+			expect(normalFile?.path).toBe("/notes-renamed.md");
+		});
+	});
+
+	test("rename_node rejects renaming into the system root", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_system_root_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: db.normalFileId,
+			path: ".system/notes.md",
+		});
+		expect(renameResult._nay).toMatchObject({
+			message: "The /.system tree is reserved for system-generated files.",
+		});
+
+		await t.run(async (ctx) => {
+			const normalFile = await ctx.db.get("files_nodes", db.normalFileId);
+			expect(normalFile?.path).toBe("/notes.md");
+		});
+	});
+
+	test("rename_node does not create system-root folders for nested rename targets", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const membership = await test_mocks_fill_db_with.membership(ctx);
+			const normalFileId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				createdBy: membership.userId,
+				updatedBy: membership.userId,
+				parentId: files_ROOT_ID,
+				name: "notes.md",
+				kind: "file",
+				path: "/notes.md",
+				treePath: "/notes.md",
+				pathDepth: 1,
+				lowercaseExtension: "md",
+				updatedAt: 1,
+			});
+			return { ...membership, normalFileId };
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
+			membershipId: db.membershipId,
+			nodeId: db.normalFileId,
+			path: ".system/notes.md",
+		});
+		expect(renameResult._nay).toMatchObject({
+			message: "The /.system tree is reserved for system-generated files.",
+		});
+
+		await t.run(async (ctx) => {
+			const systemFolder = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", "/.system"),
+				)
+				.first();
+			expect(systemFolder).toBeNull();
+			const normalFile = await ctx.db.get("files_nodes", db.normalFileId);
+			expect(normalFile?.path).toBe("/notes.md");
+		});
+	});
+
+	test("move_nodes rejects system-root nodes", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const seeded = await seed_system_root_fixture(ctx);
+			const moveTargetFolderId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				createdBy: seeded.userId,
+				updatedBy: seeded.userId,
+				parentId: files_ROOT_ID,
+				name: "move-target",
+				kind: "folder",
+				path: "/move-target",
+				treePath: "/move-target/",
+				pathDepth: 1,
+				updatedAt: 4,
+			});
+			return { ...seeded, moveTargetFolderId };
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const moveResult = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [db.systemFileId],
+			targetParentId: files_ROOT_ID,
+		});
+		expect(moveResult._nay).toMatchObject({
+			message: "The /.system tree is reserved for system-generated files.",
+		});
+
+		const normalMoveResult = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [db.normalFileId],
+			targetParentId: db.moveTargetFolderId,
+		});
+		if (normalMoveResult._nay) {
+			throw new Error("Expected move_nodes to keep working for normal nodes", {
+				cause: normalMoveResult._nay,
+			});
+		}
+
+		await t.run(async (ctx) => {
+			const systemFile = await ctx.db.get("files_nodes", db.systemFileId);
+			expect(systemFile?.path).toBe("/.system/plugins.lock.json");
+			const normalFile = await ctx.db.get("files_nodes", db.normalFileId);
+			expect(normalFile?.path).toBe("/move-target/notes.md");
+		});
+	});
+
+	test("move_nodes rejects moving into the system root", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_system_root_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const moveResult = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [db.normalFileId],
+			targetParentId: db.systemFolderId,
+		});
+		expect(moveResult._nay).toMatchObject({
+			message: "The /.system tree is reserved for system-generated files.",
+		});
+
+		await t.run(async (ctx) => {
+			const normalFile = await ctx.db.get("files_nodes", db.normalFileId);
+			expect(normalFile?.path).toBe("/notes.md");
+			expect(normalFile?.parentId).toBe(files_ROOT_ID);
+		});
+	});
+
+	test("archive_nodes rejects system-root nodes", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_system_root_fixture(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const archiveResult = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [db.systemFileId],
+		});
+		expect(archiveResult._nay).toMatchObject({
+			message: "The /.system tree is reserved for system-generated files.",
+		});
+
+		const normalArchiveResult = await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [db.normalFileId],
+		});
+		if (normalArchiveResult._nay) {
+			throw new Error("Expected archive_nodes to keep working for normal nodes", {
+				cause: normalArchiveResult._nay,
+			});
+		}
+
+		await t.run(async (ctx) => {
+			const systemFile = await ctx.db.get("files_nodes", db.systemFileId);
+			expect(systemFile?.archiveOperationId).toBeUndefined();
+			const normalFile = await ctx.db.get("files_nodes", db.normalFileId);
+			expect(normalFile?.archiveOperationId).toBeDefined();
+		});
+	});
+
+	test("unarchive_nodes rejects system-root nodes", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const seeded = await seed_system_root_fixture(ctx);
+			await ctx.db.patch("files_nodes", seeded.systemFileId, { archiveOperationId: "archive-operation-system" });
+			await ctx.db.patch("files_nodes", seeded.normalFileId, { archiveOperationId: "archive-operation-normal" });
+			return seeded;
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Test User",
+		});
+
+		const unarchiveResult = await asUser.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [db.systemFileId],
+		});
+		expect(unarchiveResult._nay).toMatchObject({
+			message: "The /.system tree is reserved for system-generated files.",
+		});
+
+		const normalUnarchiveResult = await asUser.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [db.normalFileId],
+		});
+		if (normalUnarchiveResult._nay) {
+			throw new Error("Expected unarchive_nodes to keep working for normal nodes", {
+				cause: normalUnarchiveResult._nay,
+			});
+		}
+
+		await t.run(async (ctx) => {
+			const systemFile = await ctx.db.get("files_nodes", db.systemFileId);
+			expect(systemFile?.archiveOperationId).toBe("archive-operation-system");
+			const normalFile = await ctx.db.get("files_nodes", db.normalFileId);
+			expect(normalFile?.archiveOperationId).toBeUndefined();
+		});
+	});
+});
+
 test("rename_node preserves caller-provided file names", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
