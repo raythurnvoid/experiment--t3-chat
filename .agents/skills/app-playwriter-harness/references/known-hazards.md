@@ -34,6 +34,7 @@ Use this file for reusable problems that affect app browser QA.
 - Do not use `{ force: true }`, `dispatchEvent`, or DOM `element.click()` to bypass blockers.
 - For clickability bugs, use `hitTest(...)` or `inspectElement(...)` to identify the topmost element instead of retrying alternate selectors.
 - If a visible button is blocked by a text-only tooltip portal, inspect `document.elementFromPoint(...)` at the button center. Tooltip content and its portal wrapper should have `pointer-events: none`; check `packages/app/src/components/my-tooltip.css` before working around it in Playwriter.
+- On the Plugins page, installs go through the catalog consent flow (there is no GitHub import form). Each installed plugin card has its own secrets form, so scope secret controls to the card, e.g. `page.locator("section.RoutePluginsInstalled").filter({ hasText: "Media" }).getByRole("button", { name: "Import .env" })`.
 
 ## Backgrounded Tabs
 

@@ -785,7 +785,9 @@ describe("data_deletion_db_request", () => {
 		expect(requests.rows).toHaveLength(3);
 		expect(requests.rows.filter((row) => row.scope === "user")).toHaveLength(1);
 		expect(
-			requests.rows.filter((row) => row.scope === "organization" && row.organizationId === organization._yay.organizationId),
+			requests.rows.filter(
+				(row) => row.scope === "organization" && row.organizationId === organization._yay.organizationId,
+			),
 		).toHaveLength(1);
 		expect(
 			requests.rows.filter(
@@ -1172,7 +1174,10 @@ describe("init_user_deletion", () => {
 				ctx.db
 					.query("access_control_role_assignments")
 					.withIndex("by_organization_workspace_role_user", (q) =>
-						q.eq("organizationId", organization.organizationId).eq("workspaceId", organization.defaultWorkspaceId).eq("role", "owner"),
+						q
+							.eq("organizationId", organization.organizationId)
+							.eq("workspaceId", organization.defaultWorkspaceId)
+							.eq("role", "owner"),
 					)
 					.first(),
 				ctx.db.get("organizations", organization.organizationId),
@@ -1184,7 +1189,9 @@ describe("init_user_deletion", () => {
 					.first(),
 				ctx.db
 					.query("data_deletion_requests")
-					.withIndex("by_organization_scope", (q) => q.eq("organizationId", organization.organizationId).eq("scope", "organization"))
+					.withIndex("by_organization_scope", (q) =>
+						q.eq("organizationId", organization.organizationId).eq("scope", "organization"),
+					)
 					.collect(),
 			]);
 
@@ -1244,34 +1251,42 @@ describe("init_user_deletion", () => {
 
 		expect(requestId).toBeTruthy();
 		const after = await t.run(async (ctx) => {
-			const [user, organizationDoc, ownerRoles, permissionGrants, memberships, requests, ownerQuota] = await Promise.all([
-				ctx.db.get("users", owner.userId),
-				ctx.db.get("organizations", organization.organizationId),
-				ctx.db
-					.query("access_control_role_assignments")
-					.withIndex("by_organization_workspace_role_user", (q) =>
-						q.eq("organizationId", organization.organizationId).eq("workspaceId", organization.defaultWorkspaceId).eq("role", "owner"),
-					)
-					.collect(),
-				ctx.db
-					.query("access_control_permission_grants")
-					.withIndex("by_organization_workspace_resource_user_permission", (q) => q.eq("organizationId", organization.organizationId))
-					.collect(),
-				ctx.db
-					.query("organizations_workspaces_users")
-					.withIndex("by_active_organization_workspace_user", (q) =>
-						q.eq("active", true).eq("organizationId", organization.organizationId),
-					)
-					.collect(),
-				ctx.db
-					.query("data_deletion_requests")
-					.withIndex("by_organization_scope", (q) => q.eq("organizationId", organization.organizationId).eq("scope", "organization"))
-					.collect(),
-				ctx.db
-					.query("quotas")
-					.withIndex("by_user_quotaName", (q) => q.eq("userId", owner.userId).eq("quotaName", "extra_organizations"))
-					.first(),
-			]);
+			const [user, organizationDoc, ownerRoles, permissionGrants, memberships, requests, ownerQuota] =
+				await Promise.all([
+					ctx.db.get("users", owner.userId),
+					ctx.db.get("organizations", organization.organizationId),
+					ctx.db
+						.query("access_control_role_assignments")
+						.withIndex("by_organization_workspace_role_user", (q) =>
+							q
+								.eq("organizationId", organization.organizationId)
+								.eq("workspaceId", organization.defaultWorkspaceId)
+								.eq("role", "owner"),
+						)
+						.collect(),
+					ctx.db
+						.query("access_control_permission_grants")
+						.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+							q.eq("organizationId", organization.organizationId),
+						)
+						.collect(),
+					ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_active_organization_workspace_user", (q) =>
+							q.eq("active", true).eq("organizationId", organization.organizationId),
+						)
+						.collect(),
+					ctx.db
+						.query("data_deletion_requests")
+						.withIndex("by_organization_scope", (q) =>
+							q.eq("organizationId", organization.organizationId).eq("scope", "organization"),
+						)
+						.collect(),
+					ctx.db
+						.query("quotas")
+						.withIndex("by_user_quotaName", (q) => q.eq("userId", owner.userId).eq("quotaName", "extra_organizations"))
+						.first(),
+				]);
 
 			return { user, organizationDoc, ownerRoles, permissionGrants, memberships, requests, ownerQuota };
 		});
@@ -1829,6 +1844,197 @@ describe("process_workspace_deletion_request", () => {
 		}
 	});
 
+	test("purges plugin installations, secrets, upload event routes, runs, and call docs", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-ws-plugin-purge",
+				displayName: "Workspace Plugin Purge",
+			}),
+		);
+
+		const { requestId } = await t.run(async (ctx) => {
+			const now = Date.now();
+			const sourceAssetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				kind: "content",
+				r2Bucket: "test-bucket",
+				r2Key: "content/plugin-source",
+				size: 12,
+				createdBy: user.userId,
+				updatedAt: now,
+			});
+			const sourceFileNodeId = await ctx.db.insert("files_nodes", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				path: "/plugin-source.png",
+				treePath: "/plugin-source.png",
+				pathDepth: 1,
+				name: "plugin-source.png",
+				kind: "file",
+				lowercaseExtension: "png",
+				parentId: "root",
+				createdBy: user.userId,
+				updatedBy: user.userId,
+				updatedAt: now,
+				contentType: "image/png",
+				assetId: sourceAssetId,
+			});
+			const publisherId = await ctx.db.insert("plugins_publishers", {
+				slug: "sybill-ai-engineering",
+				displayName: "Sybill AI Engineering",
+				ownerUserId: user.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			const pluginVersionId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				displayName: "Media",
+				version: "0.1.0",
+				description: "Media plugin",
+				publisherId,
+				reviewStatus: "pending",
+				runtimeVersion: "1",
+				artifactHash: `sha256:${"a".repeat(64)}`,
+				sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
+				sourceOwner: "sybill-ai-engineering",
+				sourceRepo: "media-plugin",
+				sourceDefaultBranch: "main",
+				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+				manifestR2Key: "plugins/media/manifest.json",
+				artifactR2Key: "plugins/media/artifact.json",
+				backend: {
+					entry: "dist/backend/worker.js",
+					moduleName: "plugin.js",
+					r2Key: "plugins/media/backend/worker.js",
+					compatibilityDate: "2026-07-01",
+					compatibilityFlags: ["nodejs_compat"],
+				},
+				events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
+				pages: [],
+				capabilities: ["uploads.source.read", "files.markdown.write", "plugin.secrets.read"],
+				outboundOrigins: [],
+				files: [],
+				sourceMountName: null,
+				createdBy: user.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				pluginVersionId,
+				pluginName: "media",
+				status: "enabled",
+				acceptedCapabilities: ["uploads.source.read", "files.markdown.write", "plugin.secrets.read"],
+				capabilitiesAcceptedAt: now,
+				acceptedOutboundOrigins: [],
+				outboundOriginsAcceptedAt: now,
+				installedBy: user.userId,
+				updatedBy: user.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_workspace_installation_secrets", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				installationId,
+				pluginName: "media",
+				name: "OPENAI_API_KEY",
+				ciphertext: "ciphertext",
+				nonce: "nonce",
+				keyVersion: 1,
+				valuePreview: "sk-...cret",
+				createdBy: user.userId,
+				updatedBy: user.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_workspace_event_handlers", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				installationId,
+				pluginVersionId,
+				pluginName: "media",
+				event: "files.upload.completed",
+				contentType: "image/png",
+				status: "enabled",
+				installationCreatedAt: now,
+				createdAt: now,
+				updatedAt: now,
+			});
+			const runId = await ctx.db.insert("plugins_event_runs", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				sourceAssetId,
+				sourceFileNodeId,
+				actorUserId: user.userId,
+				installationId,
+				pluginVersionId,
+				event: "files.upload.completed",
+				eventId: "plugin:purge-test",
+				status: "succeeded",
+				acceptedCapabilities: ["uploads.source.read", "files.markdown.write", "plugin.secrets.read"],
+				expiresAt: now + 30 * 60 * 1000,
+				hostCallCount: 1,
+				hostWriteCount: 1,
+				errorMessage: null,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_event_run_calls", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				runId,
+				installationId,
+				pluginVersionId,
+				sequence: 1,
+				operation: "writeMarkdown",
+				status: "succeeded",
+				outputPath: "plugin-source.png.description.md",
+				outputOverwrite: "replace",
+				markdownBytes: 12,
+				errorMessage: null,
+				startedAt: now,
+				finishedAt: now,
+				elapsedMs: 0,
+				createdAt: now,
+				updatedAt: now,
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				scope: "workspace",
+			});
+			return { requestId };
+		});
+
+		await data_deletion_test_process_workspace_request_until_done(t, {
+			requestId,
+			batchSize: 2,
+		});
+
+		const remaining = await t.run(async (ctx) => {
+			const [calls, runs, eventHandlers, secrets, installations] = await Promise.all([
+				ctx.db.query("plugins_event_run_calls").collect(),
+				ctx.db.query("plugins_event_runs").collect(),
+				ctx.db.query("plugins_workspace_event_handlers").collect(),
+				ctx.db.query("plugins_workspace_installation_secrets").collect(),
+				ctx.db.query("plugins_workspace_installations").collect(),
+			]);
+			const inWorkspace = (doc: { organizationId: string; workspaceId: string }) =>
+				doc.organizationId === user.defaultOrganizationId && doc.workspaceId === user.defaultWorkspaceId;
+			return [calls, runs, eventHandlers, secrets, installations].reduce(
+				(total, docs) => total + docs.filter(inWorkspace).length,
+				0,
+			);
+		});
+
+		expect(remaining).toBe(0);
+	});
+
 	test("leaves R2 asset rows retryable when object deletion fails", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
@@ -2120,8 +2326,8 @@ describe("process_organization_deletion_request", () => {
 			}),
 		);
 
-		const { organizationId, defaultWorkspaceId, removedWorkspaceId, organizationRequestId, workspaceRequestId } = await t.run(
-			async (ctx) => {
+		const { organizationId, defaultWorkspaceId, removedWorkspaceId, organizationRequestId, workspaceRequestId } =
+			await t.run(async (ctx) => {
 				const organization = await organizations_db_create(ctx, {
 					userId: user.userId,
 					name: "ws-missing-ws",
@@ -2179,8 +2385,7 @@ describe("process_organization_deletion_request", () => {
 					organizationRequestId,
 					workspaceRequestId,
 				};
-			},
-		);
+			});
 
 		await data_deletion_test_process_organization_request_until_done(t, {
 			requestId: organizationRequestId,
@@ -2188,25 +2393,32 @@ describe("process_organization_deletion_request", () => {
 		});
 
 		const after = await t.run(async (ctx) => {
-			const [organization, defaultWorkspace, organizationRequest, workspaceRequest, defaultContent, removedContent, quotaDocs] =
-				await Promise.all([
-					ctx.db.get("organizations", organizationId),
-					ctx.db.get("organizations_workspaces", defaultWorkspaceId),
-					ctx.db.get("data_deletion_requests", organizationRequestId),
-					ctx.db.get("data_deletion_requests", workspaceRequestId),
-					data_deletion_test_count_workspace_content(ctx, {
-						organizationId: organizationId,
-						workspaceId: defaultWorkspaceId,
-					}),
-					data_deletion_test_count_workspace_content(ctx, {
-						organizationId: organizationId,
-						workspaceId: removedWorkspaceId,
-					}),
-					ctx.db
-						.query("quotas")
-						.withIndex("by_organization_quotaName", (q) => q.eq("organizationId", organizationId))
-						.collect(),
-				]);
+			const [
+				organization,
+				defaultWorkspace,
+				organizationRequest,
+				workspaceRequest,
+				defaultContent,
+				removedContent,
+				quotaDocs,
+			] = await Promise.all([
+				ctx.db.get("organizations", organizationId),
+				ctx.db.get("organizations_workspaces", defaultWorkspaceId),
+				ctx.db.get("data_deletion_requests", organizationRequestId),
+				ctx.db.get("data_deletion_requests", workspaceRequestId),
+				data_deletion_test_count_workspace_content(ctx, {
+					organizationId: organizationId,
+					workspaceId: defaultWorkspaceId,
+				}),
+				data_deletion_test_count_workspace_content(ctx, {
+					organizationId: organizationId,
+					workspaceId: removedWorkspaceId,
+				}),
+				ctx.db
+					.query("quotas")
+					.withIndex("by_organization_quotaName", (q) => q.eq("organizationId", organizationId))
+					.collect(),
+			]);
 
 			return {
 				organization,
@@ -2383,8 +2595,7 @@ describe("hard_delete_user_data", () => {
 					.collect()
 					.then((rows) =>
 						rows.filter(
-							(row) =>
-								row.organizationId === user.defaultOrganizationId && row.workspaceId === user.defaultWorkspaceId,
+							(row) => row.organizationId === user.defaultOrganizationId && row.workspaceId === user.defaultWorkspaceId,
 						),
 					),
 				ctx.db.get("organizations_workspaces", seeded.extraWorkspaceId),
@@ -3022,9 +3233,7 @@ describe("finalize_user_deletion_data", () => {
 				ctx.db
 					.query("files_r2_assets")
 					.withIndex("by_organization_workspace", (q) =>
-						q
-							.eq("organizationId", deletedUser.defaultOrganizationId)
-							.eq("workspaceId", deletedUser.defaultWorkspaceId),
+						q.eq("organizationId", deletedUser.defaultOrganizationId).eq("workspaceId", deletedUser.defaultWorkspaceId),
 					)
 					.collect(),
 				ctx.db.get("data_deletion_requests", requestIds.userRequestId),
@@ -3943,7 +4152,9 @@ describe("resolve_user after tombstone", () => {
 				}),
 				ctx.db
 					.query("quotas")
-					.withIndex("by_user_quotaName", (q) => q.eq("userId", deletedUser.userId).eq("quotaName", "extra_organizations"))
+					.withIndex("by_user_quotaName", (q) =>
+						q.eq("userId", deletedUser.userId).eq("quotaName", "extra_organizations"),
+					)
 					.first(),
 				ctx.db.get("users_anagraphics", deletedUser.anagraphicId),
 			]);
@@ -4238,5 +4449,172 @@ describe("resolve_user after tombstone", () => {
 		expect(result._yay.userId).not.toBe(deletedUser.userId);
 		expect(after.newUser?.clerkUserId).toBe("clerk-user-delete-return-purge-again");
 		expect(after.oldAnagraphic).toBeNull();
+	});
+});
+
+describe("finalize_user_deletion_data plugins publisher", () => {
+	test("purges the deleted user's publisher, repository claim, publisher secret, and version review docs", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-publisher",
+				displayName: "Hard Delete Publisher",
+			}),
+		);
+		const unrelatedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-publisher-unrelated",
+				displayName: "Unrelated Publisher",
+			}),
+		);
+
+		const seeded = await t.run(async (ctx) => {
+			const now = Date.now();
+			const deletedPublisherId = await ctx.db.insert("plugins_publishers", {
+				slug: "bonobo",
+				displayName: "Bonobo",
+				ownerUserId: deletedUser.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			const deletedRepositoryId = await ctx.db.insert("plugins_publisher_repositories", {
+				publisherId: deletedPublisherId,
+				repositoryUrl: "https://github.com/bonobo/media-plugin",
+				owner: "bonobo",
+				repo: "media-plugin",
+				createdAt: now,
+			});
+			const deletedSecretId = await ctx.db.insert("plugins_publisher_secrets", {
+				publisherId: deletedPublisherId,
+				name: "OPENAI_API_KEY",
+				ciphertext: "ciphertext",
+				nonce: "nonce",
+				keyVersion: 1,
+				valuePreview: "configured",
+				allowedOrigins: ["https://api.openai.com"],
+				createdAt: now,
+				updatedAt: now,
+			});
+			const deletedReviewId = await ctx.db.insert("plugins_version_reviews", {
+				publisherId: deletedPublisherId,
+				artifactHash: `sha256:${"d".repeat(64)}`,
+				pluginName: "media",
+				version: "0.1.0",
+				status: "passed",
+				mechanicalFindings: [],
+				aiFindings: [],
+				model: "none",
+				createdAt: now,
+			});
+			const unrelatedPublisherId = await ctx.db.insert("plugins_publishers", {
+				slug: "gorilla",
+				displayName: "Gorilla",
+				ownerUserId: unrelatedUser.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			const unrelatedRepositoryId = await ctx.db.insert("plugins_publisher_repositories", {
+				publisherId: unrelatedPublisherId,
+				repositoryUrl: "https://github.com/gorilla/pdf-plugin",
+				owner: "gorilla",
+				repo: "pdf-plugin",
+				createdAt: now,
+			});
+			const unrelatedSecretId = await ctx.db.insert("plugins_publisher_secrets", {
+				publisherId: unrelatedPublisherId,
+				name: "MODAL_TOKEN",
+				ciphertext: "ciphertext",
+				nonce: "nonce",
+				keyVersion: 1,
+				valuePreview: "configured",
+				allowedOrigins: [],
+				createdAt: now,
+				updatedAt: now,
+			});
+			const unrelatedReviewId = await ctx.db.insert("plugins_version_reviews", {
+				publisherId: unrelatedPublisherId,
+				artifactHash: `sha256:${"e".repeat(64)}`,
+				pluginName: "pdf",
+				version: "0.1.0",
+				status: "passed",
+				mechanicalFindings: [],
+				aiFindings: [],
+				model: "none",
+				createdAt: now,
+			});
+
+			return {
+				deletedPublisherId,
+				deletedRepositoryId,
+				deletedSecretId,
+				deletedReviewId,
+				unrelatedPublisherId,
+				unrelatedRepositoryId,
+				unrelatedSecretId,
+				unrelatedReviewId,
+			};
+		});
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
+				userId: deletedUser.userId,
+			}),
+		);
+
+		const after = await t.run(async (ctx) => {
+			const [
+				deletedPublisher,
+				deletedRepository,
+				deletedSecret,
+				deletedReview,
+				deletedUserPublishers,
+				deletedPublisherRepositories,
+				unrelatedPublisher,
+				unrelatedRepository,
+				unrelatedSecret,
+				unrelatedReview,
+			] = await Promise.all([
+				ctx.db.get("plugins_publishers", seeded.deletedPublisherId),
+				ctx.db.get("plugins_publisher_repositories", seeded.deletedRepositoryId),
+				ctx.db.get("plugins_publisher_secrets", seeded.deletedSecretId),
+				ctx.db.get("plugins_version_reviews", seeded.deletedReviewId),
+				ctx.db
+					.query("plugins_publishers")
+					.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", deletedUser.userId))
+					.collect(),
+				ctx.db
+					.query("plugins_publisher_repositories")
+					.withIndex("by_publisher", (q) => q.eq("publisherId", seeded.deletedPublisherId))
+					.collect(),
+				ctx.db.get("plugins_publishers", seeded.unrelatedPublisherId),
+				ctx.db.get("plugins_publisher_repositories", seeded.unrelatedRepositoryId),
+				ctx.db.get("plugins_publisher_secrets", seeded.unrelatedSecretId),
+				ctx.db.get("plugins_version_reviews", seeded.unrelatedReviewId),
+			]);
+
+			return {
+				deletedPublisher,
+				deletedRepository,
+				deletedSecret,
+				deletedReview,
+				deletedUserPublishers,
+				deletedPublisherRepositories,
+				unrelatedPublisher,
+				unrelatedRepository,
+				unrelatedSecret,
+				unrelatedReview,
+			};
+		});
+
+		expect(after.deletedPublisher).toBeNull();
+		expect(after.deletedRepository).toBeNull();
+		expect(after.deletedSecret).toBeNull();
+		expect(after.deletedReview).toBeNull();
+		expect(after.deletedUserPublishers).toHaveLength(0);
+		expect(after.deletedPublisherRepositories).toHaveLength(0);
+		expect(after.unrelatedPublisher?._id).toBe(seeded.unrelatedPublisherId);
+		expect(after.unrelatedRepository?._id).toBe(seeded.unrelatedRepositoryId);
+		expect(after.unrelatedSecret?._id).toBe(seeded.unrelatedSecretId);
+		expect(after.unrelatedReview?._id).toBe(seeded.unrelatedReviewId);
 	});
 });

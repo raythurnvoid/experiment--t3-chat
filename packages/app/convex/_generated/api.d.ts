@@ -24,6 +24,8 @@ import type * as http from "../http.js";
 import type * as migrations from "../migrations.js";
 import type * as notifications from "../notifications.js";
 import type * as organizations from "../organizations.js";
+import type * as plugins from "../plugins.js";
+import type * as plugins_runtime from "../plugins_runtime.js";
 import type * as presence from "../presence.js";
 import type * as public_api from "../public_api.js";
 import type * as quotas from "../quotas.js";
@@ -55,6 +57,8 @@ declare const fullApi: ApiFromModules<{
   migrations: typeof migrations;
   notifications: typeof notifications;
   organizations: typeof organizations;
+  plugins: typeof plugins;
+  plugins_runtime: typeof plugins_runtime;
   presence: typeof presence;
   public_api: typeof public_api;
   quotas: typeof quotas;

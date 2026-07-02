@@ -26,11 +26,14 @@ import {
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
-import { organizations_GLOBAL_ORGANIZATION_ID, organizations_GLOBAL_GITHUB_WORKSPACE_ID } from "../shared/organizations.ts";
+import {
+	organizations_GLOBAL_ORGANIZATION_ID,
+	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+} from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { billing_event } from "../server/billing.ts";
-import { billing_db_check_credits, billing_ingest_events, billing_pick_billed_user_id } from "./billing.ts";
+import { billing_ingest_events } from "./billing.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_MAX_UPLOADS_BYTES,
@@ -110,7 +113,7 @@ if (!process.env.OPENAI_API_KEY) {
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-const MEDIA_DESCRIPTION_MODEL_ID = "gpt-5.4-mini";
+export const MEDIA_DESCRIPTION_MODEL_ID = "gpt-5.4-mini";
 const MEDIA_TRANSCRIPTION_MODEL_ID = "gpt-4o-transcribe";
 const MEDIA_FRAME_SAMPLE_TIMES_SECONDS = [0, 5, 15, 30, 60, 120] as const;
 const MEDIA_AUDIO_SEGMENT_START_SECONDS = [0, 60, 120, 180, 240, 300, 360, 420, 480, 540] as const;
@@ -173,7 +176,10 @@ function r2_require_real_scope(
 	organizationId: Id<"organizations"> | typeof organizations_GLOBAL_ORGANIZATION_ID,
 	workspaceId: Id<"organizations_workspaces"> | typeof organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 ): { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> } {
-	if (organizationId === organizations_GLOBAL_ORGANIZATION_ID || workspaceId === organizations_GLOBAL_GITHUB_WORKSPACE_ID) {
+	if (
+		organizationId === organizations_GLOBAL_ORGANIZATION_ID ||
+		workspaceId === organizations_GLOBAL_GITHUB_WORKSPACE_ID
+	) {
 		const errorMessage = "Reserved external-mount scope reached a sink that requires a real organization/workspace id";
 		const errorData = { organizationId, workspaceId };
 		console.error(errorMessage, errorData);
@@ -195,7 +201,7 @@ function r2_require_real_author(createdBy: Id<"users"> | typeof users_SYSTEM_AUT
 	return createdBy;
 }
 
-async function ingest_media_ai_usage_event(
+export async function ingest_media_ai_usage_event(
 	ctx: ActionCtx | MutationCtx,
 	args: {
 		sourceFileNode: Doc<"files_nodes">;
@@ -275,7 +281,11 @@ export async function r2_generate_upload_url(key: Parameters<typeof r2.generateU
 	return await r2.generateUploadUrl(key);
 }
 
-export function r2_create_asset_key(args: { organizationId: string; workspaceId: string; assetId: Id<"files_r2_assets"> }) {
+export function r2_create_asset_key(args: {
+	organizationId: string;
+	workspaceId: string;
+	assetId: Id<"files_r2_assets">;
+}) {
 	return `organizations/${args.organizationId}/workspaces/${args.workspaceId}/assets/${args.assetId}`;
 }
 
@@ -1576,7 +1586,7 @@ type finalize_uploaded_media_markdown_outputs_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-async function write_uploaded_media_markdown_output_objects(
+export async function write_uploaded_media_markdown_output_objects(
 	ctx: ActionCtx,
 	args: {
 		sourceFileNode: Doc<"files_nodes">;
@@ -1680,7 +1690,7 @@ async function clear_upload_processing_assets(ctx: ActionCtx, assetIds: Array<Id
 	);
 }
 
-async function get_billed_user_for_media_processing(ctx: ActionCtx, sourceFileNode: Doc<"files_nodes">) {
+export async function get_billed_user_for_media_processing(ctx: ActionCtx, sourceFileNode: Doc<"files_nodes">) {
 	const scope = r2_require_real_scope(sourceFileNode.organizationId, sourceFileNode.workspaceId);
 	const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
 		userId: r2_require_real_author(sourceFileNode.createdBy),
@@ -1692,28 +1702,6 @@ async function get_billed_user_for_media_processing(ctx: ActionCtx, sourceFileNo
 	}
 
 	return creditCheck.billedUser;
-}
-
-async function db_has_media_processing_credits(ctx: MutationCtx, sourceFileNode: Doc<"files_nodes">) {
-	const scope = r2_require_real_scope(sourceFileNode.organizationId, sourceFileNode.workspaceId);
-	const createdBy = r2_require_real_author(sourceFileNode.createdBy);
-	const organization = await ctx.db.get("organizations", scope.organizationId);
-	if (!organization) {
-		throw should_never_happen("Organization not found while checking media upload credits", {
-			userId: createdBy,
-			organizationId: scope.organizationId,
-		});
-	}
-
-	const billedUserId = billing_pick_billed_user_id({
-		userId: createdBy,
-		organization,
-	});
-	const creditCheck = await billing_db_check_credits(ctx, {
-		userId: billedUserId,
-		minimumRequiredCents: 1,
-	});
-	return creditCheck.hasCredits;
 }
 
 async function archive_active_node_and_descendants(
@@ -1781,7 +1769,7 @@ async function archive_active_node_and_descendants(
 	]);
 }
 
-async function create_generated_markdown_output_node(
+export async function create_generated_markdown_output_node(
 	ctx: MutationCtx,
 	args: {
 		sourceFileNode: {
@@ -1791,6 +1779,7 @@ async function create_generated_markdown_output_node(
 			createdBy: Doc<"files_nodes">["createdBy"];
 		};
 		name: string;
+		overwrite?: "replace" | "fail";
 		now: number;
 	},
 ) {
@@ -1810,6 +1799,9 @@ async function create_generated_markdown_output_node(
 		)
 		.first();
 	if (activeNameConflict) {
+		if (args.overwrite === "fail") {
+			return Result({ _nay: { message: "Output path already exists" } });
+		}
 		await archive_active_node_and_descendants(ctx, {
 			node: activeNameConflict,
 			updatedBy: authorUserId,
@@ -2352,6 +2344,7 @@ export const process_uploaded_asset_event = internalMutation({
 		r2Key: v.string(),
 		size: v.number(),
 		etag: v.optional(v.string()),
+		eventId: v.string(),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
@@ -2402,9 +2395,29 @@ export const process_uploaded_asset_event = internalMutation({
 
 		const sourceFileNodeIsMarkdown =
 			sourceFileNode.contentType?.startsWith("text/markdown" satisfies files_ContentType) ?? false;
-		const sourceFileNodeIsPdf = sourceFileNode.contentType?.startsWith("application/pdf") ?? false;
-		const sourceFileNodeMediaKind = upload_content_type_media_kind(sourceFileNode.contentType);
-		if (!sourceFileNodeIsMarkdown && !sourceFileNodeIsPdf && !sourceFileNodeMediaKind) {
+		// Plugin dispatch is content-type generic: enqueue whenever an enabled
+		// handler subscribes to this upload's content type, not just for pdf/media.
+		const uploadContentType = sourceFileNode.contentType?.split(";")[0]?.trim().toLowerCase() ?? null;
+		const uploadScope =
+			sourceFileNode.organizationId !== organizations_GLOBAL_ORGANIZATION_ID &&
+			sourceFileNode.workspaceId !== organizations_GLOBAL_GITHUB_WORKSPACE_ID
+				? { organizationId: sourceFileNode.organizationId, workspaceId: sourceFileNode.workspaceId }
+				: null;
+		const uploadEventHandler =
+			!sourceFileNodeIsMarkdown && uploadContentType && uploadScope
+				? await ctx.db
+						.query("plugins_workspace_event_handlers")
+						.withIndex("by_scope_event_status_contentType_createdAt_name", (q) =>
+							q
+								.eq("organizationId", uploadScope.organizationId)
+								.eq("workspaceId", uploadScope.workspaceId)
+								.eq("event", "files.upload.completed")
+								.eq("status", "enabled")
+								.eq("contentType", uploadContentType),
+						)
+						.first()
+				: null;
+		if (!sourceFileNodeIsMarkdown && !uploadEventHandler) {
 			await ctx.db.patch("files_r2_assets", asset._id, {
 				conversionWorkId: null,
 				updatedAt: now,
@@ -2431,138 +2444,18 @@ export const process_uploaded_asset_event = internalMutation({
 				return Result({ _yay: null });
 			}
 
-			if (sourceFileNodeMediaKind) {
-				// Gate before creating AI-generated siblings so users without credits
-				// do not see placeholder files for work that will never start.
-				const hasCredits = await db_has_media_processing_credits(ctx, sourceFileNode);
-				if (!hasCredits) {
-					await ctx.db.patch("files_r2_assets", asset._id, {
-						conversionWorkId: null,
-						updatedAt: now,
-					});
-					return Result({ _yay: null });
-				}
-
-				if (sourceFileNodeMediaKind === "image") {
-					// Create the visible sibling first; the action later replaces its
-					// status-only asset with finalized Markdown/Yjs content.
-					const descriptionOutput = await create_generated_markdown_output_node(ctx, {
-						sourceFileNode,
-						name: generated_image_description_file_node_name(sourceFileNode.name),
-						now,
-					});
-					if (descriptionOutput._nay) {
-						throw convex_error({
-							message: "Failed to create generated image description output",
-							cause: descriptionOutput._nay,
-						});
-					}
-
-					const workId = await upload_conversion_workpool.enqueueAction(
-						ctx,
-						internal.r2.describe_image_upload_to_markdown,
-						{
-							organizationId: asset.organizationId,
-							workspaceId: asset.workspaceId,
-							sourceAssetId: asset._id,
-							outputAssetId: descriptionOutput._yay.assetId,
-						},
-					);
-
-					await Promise.all([
-						ctx.db.patch("files_r2_assets", asset._id, {
-							conversionWorkId: workId,
-							updatedAt: now,
-						}),
-						ctx.db.patch("files_r2_assets", descriptionOutput._yay.assetId, {
-							conversionWorkId: workId,
-							updatedAt: now,
-						}),
-					]);
-					return Result({ _yay: null });
-				}
-
-				// Summary and transcript are independent editable outputs, so create
-				// both visible siblings before the shared video processing job starts.
-				const [summaryOutput, transcriptOutput] = await Promise.all([
-					create_generated_markdown_output_node(ctx, {
-						sourceFileNode,
-						name: generated_video_summary_file_node_name(sourceFileNode.name),
-						now,
-					}),
-					create_generated_markdown_output_node(ctx, {
-						sourceFileNode,
-						name: generated_video_transcript_file_node_name(sourceFileNode.name),
-						now,
-					}),
-				]);
-				if (summaryOutput._nay || transcriptOutput._nay) {
-					throw convex_error({
-						message: "Failed to create generated video Markdown outputs",
-						cause: summaryOutput._nay ?? transcriptOutput._nay,
-					});
-				}
-
-				const workId = await upload_conversion_workpool.enqueueAction(
-					ctx,
-					internal.r2.summarize_video_upload_to_markdown,
-					{
-						organizationId: asset.organizationId,
-						workspaceId: asset.workspaceId,
-						sourceAssetId: asset._id,
-						summaryOutputAssetId: summaryOutput._yay.assetId,
-						transcriptOutputAssetId: transcriptOutput._yay.assetId,
-					},
-				);
-
-				await Promise.all([
-					ctx.db.patch("files_r2_assets", asset._id, {
-						conversionWorkId: workId,
-						updatedAt: now,
-					}),
-					ctx.db.patch("files_r2_assets", summaryOutput._yay.assetId, {
-						conversionWorkId: workId,
-						updatedAt: now,
-					}),
-					ctx.db.patch("files_r2_assets", transcriptOutput._yay.assetId, {
-						conversionWorkId: workId,
-						updatedAt: now,
-					}),
-				]);
-				return Result({ _yay: null });
-			}
-
-			const convertedMarkdownOutput = await create_generated_markdown_output_node(ctx, {
-				sourceFileNode,
-				name: generated_markdown_file_node_name(sourceFileNode.name),
-				now,
+			const enqueued = await ctx.runMutation(internal.plugins_runtime.enqueue_upload_completed_runs, {
+				sourceAssetId: asset._id,
+				sourceFileNodeId: sourceFileNode._id,
+				eventId: args.eventId,
+				contentType: sourceFileNode.contentType ?? "",
 			});
-			if (convertedMarkdownOutput._nay) {
+			if (enqueued._nay) {
 				throw convex_error({
-					message: "Failed to create generated Markdown output",
-					cause: convertedMarkdownOutput._nay,
+					message: "Failed to enqueue upload plugin processing",
+					cause: enqueued._nay,
 				});
 			}
-
-			// Mark both the source upload and generated placeholder with the same
-			// job id so either screen can show processing.
-			const workId = await upload_conversion_workpool.enqueueAction(ctx, internal.r2.convert_upload_to_markdown, {
-				organizationId: asset.organizationId,
-				workspaceId: asset.workspaceId,
-				sourceAssetId: asset._id,
-				outputAssetId: convertedMarkdownOutput._yay.assetId,
-			});
-
-			await Promise.all([
-				ctx.db.patch("files_r2_assets", asset._id, {
-					conversionWorkId: workId,
-					updatedAt: now,
-				}),
-				ctx.db.patch("files_r2_assets", convertedMarkdownOutput._yay.assetId, {
-					conversionWorkId: workId,
-					updatedAt: now,
-				}),
-			]);
 			return Result({ _yay: null });
 		} catch (error) {
 			console.error("Failed to enqueue R2 upload processing", {
@@ -2708,6 +2601,7 @@ export function r2_http_routes(router: RouterForConvexModules) {
 									r2Key: body._yay.event.object.key,
 									size: body._yay.event.object.size,
 									etag: body._yay.event.object.eTag,
+									eventId: body._yay.cloudflareMessageId,
 								});
 
 								// The mutation owns idempotency and enqueues any needed upload work.

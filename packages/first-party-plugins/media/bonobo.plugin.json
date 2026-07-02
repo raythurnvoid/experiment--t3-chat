@@ -1,0 +1,9 @@
+{
+	"schemaVersion": 1,
+	"name": "media",
+	"displayName": "Media",
+	"version": "0.1.17",
+	"description": "Generates Markdown descriptions, transcripts, and summaries for uploaded images and videos.",
+	"publisher": "sybill-ai-engineering",
+	"artifact": "dist/bonobo.artifact.json"
+}

@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
 	handle_audio_segment_request,
 	handle_frame_request,
@@ -53,6 +53,10 @@ function authed_request(path: string, body: unknown, secret = "secret") {
 	});
 }
 
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
+
 describe("handle_frame_request", () => {
 	test("extracts a scaled JPEG frame from an R2 object", async () => {
 		const { env, outputCalls, transformCalls } = make_env();
@@ -68,11 +72,82 @@ describe("handle_frame_request", () => {
 		expect(outputCalls).toEqual([{ mode: "frame", time: "5s", format: "jpg" }]);
 	});
 
+	test("extracts a scaled JPEG frame from a sourceUrl", async () => {
+		const { env, outputCalls, transformCalls } = make_env();
+		const sourceResponse = new Response(new Uint8Array([9, 10, 11]));
+		const sourceStream = sourceResponse.body!;
+		const fetchMock = vi.fn(async () => sourceResponse);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const response = await handle_frame_request(
+			authed_request("/api/media/frame", {
+				sourceUrl: "https://signed.example.test/video.mp4?token=abc",
+				timeSeconds: 5,
+			}),
+			env,
+		);
+
+		expect(response.status).toBe(200);
+		expect(fetchMock).toHaveBeenCalledWith("https://signed.example.test/video.mp4?token=abc");
+		expect(env.FILES_BUCKET.get).not.toHaveBeenCalled();
+		expect(env.MEDIA.input).toHaveBeenCalledWith(sourceStream);
+		expect(transformCalls).toEqual([{ width: 720, fit: "scale-down" }]);
+		expect(outputCalls).toEqual([{ mode: "frame", time: "5s", format: "jpg" }]);
+	});
+
 	test("rejects requests outside the R2 upload prefix", async () => {
 		const { env } = make_env();
 
 		const response = await handle_frame_request(
 			authed_request("/api/media/frame", { key: "other/key.mp4", timeSeconds: 5 }),
+			env,
+		);
+
+		expect(response.status).toBe(400);
+	});
+
+	test("rejects invalid sourceUrl values", async () => {
+		const { env } = make_env();
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		for (const sourceUrl of ["", "not a url", "ftp://signed.example.test/video.mp4"]) {
+			const response = await handle_frame_request(
+				authed_request("/api/media/frame", { sourceUrl, timeSeconds: 5 }),
+				env,
+			);
+
+			expect(response.status).toBe(400);
+		}
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	test("rejects sourceUrl fetch failures", async () => {
+		const { env } = make_env();
+		const fetchMock = vi.fn(async () => new Response("expired", { status: 403 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const response = await handle_frame_request(
+			authed_request("/api/media/frame", {
+				sourceUrl: "https://signed.example.test/video.mp4?token=expired",
+				timeSeconds: 5,
+			}),
+			env,
+		);
+
+		expect(response.status).toBe(400);
+	});
+
+	test("rejects sourceUrl responses without a body", async () => {
+		const { env } = make_env();
+		const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const response = await handle_frame_request(
+			authed_request("/api/media/frame", {
+				sourceUrl: "https://signed.example.test/video.mp4?token=empty",
+				timeSeconds: 5,
+			}),
 			env,
 		);
 
@@ -105,6 +180,29 @@ describe("handle_audio_segment_request", () => {
 		);
 
 		expect(response.status).toBe(200);
+		expect(outputCalls).toEqual([{ mode: "audio", time: "10s", duration: "30s", format: "m4a" }]);
+	});
+
+	test("extracts an M4A audio segment from a sourceUrl", async () => {
+		const { env, outputCalls } = make_env();
+		const sourceResponse = new Response(new Uint8Array([9, 10, 11]));
+		const sourceStream = sourceResponse.body!;
+		const fetchMock = vi.fn(async () => sourceResponse);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const response = await handle_audio_segment_request(
+			authed_request("/api/media/audio-segment", {
+				sourceUrl: "https://signed.example.test/video.mp4?token=abc",
+				startSeconds: 10,
+				durationSeconds: 30,
+			}),
+			env,
+		);
+
+		expect(response.status).toBe(200);
+		expect(fetchMock).toHaveBeenCalledWith("https://signed.example.test/video.mp4?token=abc");
+		expect(env.FILES_BUCKET.get).not.toHaveBeenCalled();
+		expect(env.MEDIA.input).toHaveBeenCalledWith(sourceStream);
 		expect(outputCalls).toEqual([{ mode: "audio", time: "10s", duration: "30s", format: "m4a" }]);
 	});
 

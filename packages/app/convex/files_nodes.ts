@@ -61,6 +61,8 @@ import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
+	files_is_path_under_system_root,
+	files_SYSTEM_ROOT,
 	type files_ContentType,
 	type files_SpecialFileName,
 	type files_InlineAiModelId,
@@ -677,7 +679,11 @@ export type files_nodes_get_by_path_Result =
 
 async function db_resolve_tree_node_id_from_path(
 	ctx: QueryCtx,
-	args: { organizationId: Doc<"files_nodes">["organizationId"]; workspaceId: Doc<"files_nodes">["workspaceId"]; path: string },
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		path: string;
+	},
 ) {
 	if (args.path === "/") return files_ROOT_ID;
 
@@ -1126,6 +1132,9 @@ export const create_folder_node = mutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
+		if (files_is_path_under_system_root(args.path)) {
+			return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
+		}
 
 		if (!membership || membership.userId !== userAuth.id || membership.active === false) {
 			return Result({ _nay: { message: "Unauthorized" } });
@@ -1521,6 +1530,189 @@ export const create_file_node_internal = internalAction({
 	},
 });
 
+export const upsert_readonly_text_file_node_by_path = internalMutation({
+	args: {
+		userId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		path: v.string(),
+		assetId: v.id("files_r2_assets"),
+		contentType: v.string(),
+		textContent: v.string(),
+		contentSize: v.number(),
+	},
+	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		const activeFileNode = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("path", args.path)
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+
+		let nodeId: Id<"files_nodes">;
+		if (!activeFileNode) {
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				userId: args.userId,
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				parentId: files_ROOT_ID,
+				path: args.path,
+				kind: "file",
+				contentType: args.contentType,
+				assetId: args.assetId,
+				textContent: args.textContent,
+				readOnly: true,
+				now,
+			});
+			if (created._nay) {
+				return created;
+			}
+			nodeId = created._yay;
+		} else {
+			if (activeFileNode.kind !== "file") {
+				return Result({ _nay: { message: "A folder already exists at this path." } });
+			}
+			if (files_node_has_editable_yjs_state(activeFileNode)) {
+				return Result({ _nay: { message: "Can only replace a read-only text file." } });
+			}
+
+			const [plainTextChunkDocs, markdownChunkDocs] = await Promise.all([
+				ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("fileNodeId", activeFileNode._id),
+					)
+					.collect(),
+				ctx.db
+					.query("files_markdown_chunks")
+					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("fileNodeId", activeFileNode._id),
+					)
+					.collect(),
+				files_metadata_db_delete_committed(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					nodeId: activeFileNode._id,
+				}),
+			]);
+			await Promise.all([
+				...plainTextChunkDocs.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
+				...markdownChunkDocs.map((chunk) => ctx.db.delete("files_markdown_chunks", chunk._id)),
+			]);
+
+			const inserted = await db_insert_file_text_content(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: activeFileNode._id,
+				path: args.path,
+				contentType: args.contentType,
+				textContent: args.textContent,
+			});
+			if (inserted._nay) {
+				return inserted;
+			}
+			await ctx.db.patch("files_nodes", activeFileNode._id, {
+				contentType: args.contentType,
+				assetId: args.assetId,
+				updatedBy: args.userId,
+				updatedAt: now,
+			});
+			nodeId = activeFileNode._id;
+		}
+
+		const finalized = await files_nodes_db_finalize_file_node_creation(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId,
+			contentAssetId: args.assetId,
+			contentSize: args.contentSize,
+		});
+		if (finalized._nay) {
+			return finalized;
+		}
+
+		return Result({ _yay: { nodeId } });
+	},
+});
+
+export const upsert_readonly_text_file_by_path = internalAction({
+	args: {
+		userId: v.id("users"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		path: v.string(),
+		rawText: v.string(),
+	},
+	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
+	handler: async (ctx, args) => {
+		const byteSize = files_get_utf8_byte_size(args.rawText);
+		if (byteSize > files_MAX_TEXT_CONTENT_BYTES) {
+			return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
+		}
+
+		const assetId = await ctx.runMutation(internal.r2.insert_asset, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			kind: "content",
+			size: byteSize,
+			createdBy: args.userId,
+		});
+		const r2Key = r2_create_asset_key({
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			assetId,
+		});
+
+		try {
+			await r2_put_object(ctx, {
+				key: r2Key,
+				body: args.rawText,
+				contentType: "text/plain;charset=utf-8" satisfies files_ContentType,
+			});
+		} catch (error) {
+			await ctx.runMutation(internal.files_nodes.cleanup_file_node_creation_assets, {
+				assetIds: [assetId],
+				r2Keys: [r2Key],
+			});
+			console.error("Failed to write read-only text file asset", { error, assetId, path: args.path });
+			return Result({ _nay: { message: "Failed to create file" } });
+		}
+
+		const upserted = (await ctx.runMutation(internal.files_nodes.upsert_readonly_text_file_node_by_path, {
+			userId: args.userId,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			path: args.path,
+			assetId,
+			contentType: "text/plain;charset=utf-8" satisfies files_ContentType,
+			textContent: args.rawText,
+			contentSize: byteSize,
+		})) as { _yay?: { nodeId: Id<"files_nodes"> }; _nay?: { message: string } };
+		const upsertedNodeId = upserted._yay?.nodeId;
+		if (upserted._nay || !upsertedNodeId) {
+			await ctx.runMutation(internal.files_nodes.cleanup_file_node_creation_assets, {
+				assetIds: [assetId],
+				r2Keys: [r2Key],
+			});
+			return Result({ _nay: { message: upserted._nay?.message ?? "Failed to upsert system file node" } });
+		}
+
+		return Result({ _yay: { nodeId: upsertedNodeId } });
+	},
+});
+
 type create_file_node_Result =
 	typeof create_file_node extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
@@ -1685,6 +1877,9 @@ export const create_markdown_node = action({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
+		if (files_is_path_under_system_root(args.path)) {
+			return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
+		}
 
 		const membership = (await ctx.runQuery(api.organizations.get_membership, {
 			membershipId: args.membershipId,
@@ -1762,6 +1957,9 @@ export const create_upload_node = mutation({
 		}
 
 		const path = path_join(parentPath, args.filename);
+		if (files_is_path_under_system_root(path)) {
+			return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
+		}
 		const existingNode = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
@@ -1860,7 +2058,11 @@ export const rename_node = mutation({
 		}
 
 		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-		if (!fileNode || fileNode.organizationId !== membership.organizationId || fileNode.workspaceId !== membership.workspaceId) {
+		if (
+			!fileNode ||
+			fileNode.organizationId !== membership.organizationId ||
+			fileNode.workspaceId !== membership.workspaceId
+		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 		if (is_home_file(fileNode)) {
@@ -2072,7 +2274,11 @@ export const move_nodes = mutation({
 
 		for (const itemId of args.itemIds) {
 			const fileNode = await ctx.db.get("files_nodes", itemId);
-			if (!fileNode || fileNode.organizationId !== membership.organizationId || fileNode.workspaceId !== membership.workspaceId) {
+			if (
+				!fileNode ||
+				fileNode.organizationId !== membership.organizationId ||
+				fileNode.workspaceId !== membership.workspaceId
+			) {
 				continue;
 			}
 			if (is_home_file(fileNode)) {
@@ -2666,7 +2872,11 @@ export const get_file_node_for_membership = query({
 		}
 
 		const fileNode = await ctx.db.get("files_nodes", fileNodeId).then((fileNode) => {
-			if (!fileNode || fileNode.organizationId !== membership.organizationId || fileNode.workspaceId !== membership.workspaceId) {
+			if (
+				!fileNode ||
+				fileNode.organizationId !== membership.organizationId ||
+				fileNode.workspaceId !== membership.workspaceId
+			) {
 				return null;
 			}
 
@@ -2822,7 +3032,10 @@ async function db_list_children(
 		const result = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_archiveOperation_updatedAt", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("archiveOperationId", undefined),
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("archiveOperationId", undefined),
 			)
 			.order(args.order ?? "desc")
 			.paginate({
@@ -3467,12 +3680,17 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 		// External (reserved) scope: no Yjs/pending/materialization. Read the linked R2 content asset
 		// directly and leave `content` undefined so `get_file_last_available_markdown_content_by_path`
 		// falls into its raw-R2 `.text()` branch.
-		if (organizations_is_global_organization_id(args.organizationId) || organizations_is_global_github_workspace_id(args.workspaceId)) {
+		if (
+			organizations_is_global_organization_id(args.organizationId) ||
+			organizations_is_global_github_workspace_id(args.workspaceId)
+		) {
 			const asset = fileNode.assetId
 				? await ctx.db
 						.get("files_r2_assets", fileNode.assetId)
 						.then((asset) =>
-							asset && asset.organizationId === args.organizationId && asset.workspaceId === args.workspaceId ? asset : null,
+							asset && asset.organizationId === args.organizationId && asset.workspaceId === args.workspaceId
+								? asset
+								: null,
 						)
 				: null;
 			return {
@@ -3544,7 +3762,9 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 		const asset = fileNode.assetId
 			? await ctx.db
 					.get("files_r2_assets", fileNode.assetId)
-					.then((asset) => (asset && asset.organizationId === organizationId && asset.workspaceId === workspaceId ? asset : null))
+					.then((asset) =>
+						asset && asset.organizationId === organizationId && asset.workspaceId === workspaceId ? asset : null,
+					)
 			: null;
 
 		const materializationState = pendingUpdate
@@ -3865,10 +4085,16 @@ async function db_resolve_committed_chunk_source(
 
 	// External (reserved) scope: no Yjs/pending/materialization. Committed chunks are addressed by
 	// node id alone; byte size comes from the linked R2 content asset.
-	if (organizations_is_global_organization_id(args.organizationId) || organizations_is_global_github_workspace_id(args.workspaceId)) {
+	if (
+		organizations_is_global_organization_id(args.organizationId) ||
+		organizations_is_global_github_workspace_id(args.workspaceId)
+	) {
 		const asset = fileNode.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 		const byteSize =
-			asset && asset.organizationId === args.organizationId && asset.workspaceId === args.workspaceId && asset.kind === "content"
+			asset &&
+			asset.organizationId === args.organizationId &&
+			asset.workspaceId === args.workspaceId &&
+			asset.kind === "content"
 				? asset.size
 				: 0;
 		return { nodeId: fileNode._id, byteSize, counts: await resolve_counts() };
@@ -4163,91 +4389,103 @@ export const read_file_content_from_chunks = internalQuery({
 			.first();
 		if (fileNode == null) return null;
 		if (fileNode.kind !== "file") return null;
-		if (
-			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_global_github_workspace_id(args.workspaceId)
-		) {
-			if (!files_node_has_editable_yjs_state(fileNode)) return null;
+		const requestedOrganizationId = args.organizationId;
+		const requestedWorkspaceId = args.workspaceId;
+		const realTenantScope =
+			organizations_is_global_organization_id(requestedOrganizationId) ||
+			organizations_is_global_github_workspace_id(requestedWorkspaceId)
+				? null
+				: {
+						organizationId: requestedOrganizationId,
+						workspaceId: requestedWorkspaceId,
+					};
+		const isEditableTextFile = files_node_has_editable_yjs_state(fileNode);
+		const isReadOnlyPlainTextFile = !isEditableTextFile && (fileNode.contentType?.startsWith("text/plain") ?? false);
+		if (realTenantScope) {
+			if (!isEditableTextFile && !isReadOnlyPlainTextFile) return null;
 
-			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
-			const organizationId = args.organizationId;
-			const workspaceId = args.workspaceId;
+			if (isEditableTextFile) {
+				// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
+				const { organizationId, workspaceId } = realTenantScope;
 
-			// Prefer the explicit pending update when the caller is continuing a known
-			// read. Otherwise use the current pending edit for this user and file.
-			let pendingUpdate: Doc<"files_pending_updates"> | null = null;
-			if (args.pendingUpdateId != null) {
-				pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId).then((pendingUpdate) => {
-					if (
-						!pendingUpdate ||
-						pendingUpdate.organizationId !== organizationId ||
-						pendingUpdate.workspaceId !== workspaceId ||
-						pendingUpdate.userId !== args.userId ||
-						pendingUpdate.fileNodeId !== fileNode._id
-					) {
-						return null;
-					}
-					return pendingUpdate;
-				});
-				if (pendingUpdate == null) return null;
-			} else {
-				pendingUpdate = await ctx.db
-					.query("files_pending_updates")
-					.withIndex("by_organization_workspace_user_fileNode", (q) =>
-						q
-							.eq("organizationId", organizationId)
-							.eq("workspaceId", workspaceId)
-							.eq("userId", args.userId)
-							.eq("fileNodeId", fileNode._id),
-					)
-					.first();
-			}
-
-			if (pendingUpdate != null) {
-				// Pending chunks are already the markdown text the user sees. Full reads
-				// still honor maxBytes; line reads stream only the overlapping chunks.
-				const chunks = ctx.db
-					.query("files_markdown_chunks")
-					.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id));
-
-				if (args.mode.kind === "full") {
-					if (pendingUpdate.size > args.mode.maxBytes) return null;
-					const collectedChunks = await chunks.collect();
-					if (collectedChunks.length === 0) {
-						return pendingUpdate.size > 0
-							? null
-							: {
-									nodeId: fileNode._id,
-									content: "",
-									moreLines: false,
-									pendingUpdateId: pendingUpdate._id,
-								};
-					}
-
-					const content = files_merge_contiguous_chunks(collectedChunks);
-					if (content == null || files_get_utf8_byte_size(content) > args.mode.maxBytes) return null;
-					return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: pendingUpdate._id };
+				// Prefer the explicit pending update when the caller is continuing a known
+				// read. Otherwise use the current pending edit for this user and file.
+				let pendingUpdate: Doc<"files_pending_updates"> | null = null;
+				if (args.pendingUpdateId != null) {
+					pendingUpdate = await ctx.db.get("files_pending_updates", args.pendingUpdateId).then((pendingUpdate) => {
+						if (
+							!pendingUpdate ||
+							pendingUpdate.organizationId !== organizationId ||
+							pendingUpdate.workspaceId !== workspaceId ||
+							pendingUpdate.userId !== args.userId ||
+							pendingUpdate.fileNodeId !== fileNode._id
+						) {
+							return null;
+						}
+						return pendingUpdate;
+					});
+					if (pendingUpdate == null) return null;
+				} else {
+					pendingUpdate = await ctx.db
+						.query("files_pending_updates")
+						.withIndex("by_organization_workspace_user_fileNode", (q) =>
+							q
+								.eq("organizationId", organizationId)
+								.eq("workspaceId", workspaceId)
+								.eq("userId", args.userId)
+								.eq("fileNodeId", fileNode._id),
+						)
+						.first();
 				}
 
-				const startLine = Math.max(1, Math.trunc(args.mode.startLine));
-				const range = await files_read_forward_line_range_from_ordered_chunks(
-					ctx.db
+				if (pendingUpdate != null) {
+					// Pending chunks are already the markdown text the user sees. Full reads
+					// still honor maxBytes; line reads stream only the overlapping chunks.
+					const chunks = ctx.db
 						.query("files_markdown_chunks")
-						.withIndex("by_pendingUpdate_lineEnd_chunkIndex", (q) =>
-							q.eq("pendingUpdateId", pendingUpdate._id).gte("lineEnd", startLine),
-						),
-					{
-						startLine,
-						maxLines: args.mode.maxLines,
-					},
-				);
-				if (range == null || (!range.hasChunks && pendingUpdate.size > 0)) return null;
-				return {
-					nodeId: fileNode._id,
-					content: range.content,
-					moreLines: range.moreLines,
-					pendingUpdateId: pendingUpdate._id,
-				};
+						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id));
+
+					if (args.mode.kind === "full") {
+						if (pendingUpdate.size > args.mode.maxBytes) return null;
+						const collectedChunks = await chunks.collect();
+						if (collectedChunks.length === 0) {
+							return pendingUpdate.size > 0
+								? null
+								: {
+										nodeId: fileNode._id,
+										content: "",
+										moreLines: false,
+										pendingUpdateId: pendingUpdate._id,
+									};
+						}
+
+						const content = files_merge_contiguous_chunks(collectedChunks);
+						if (content == null || files_get_utf8_byte_size(content) > args.mode.maxBytes) return null;
+						return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: pendingUpdate._id };
+					}
+
+					const startLine = Math.max(1, Math.trunc(args.mode.startLine));
+					const range = await files_read_forward_line_range_from_ordered_chunks(
+						ctx.db
+							.query("files_markdown_chunks")
+							.withIndex("by_pendingUpdate_lineEnd_chunkIndex", (q) =>
+								q.eq("pendingUpdateId", pendingUpdate._id).gte("lineEnd", startLine),
+							),
+						{
+							startLine,
+							maxLines: args.mode.maxLines,
+						},
+					);
+					if (range == null || (!range.hasChunks && pendingUpdate.size > 0)) return null;
+					return {
+						nodeId: fileNode._id,
+						content: range.content,
+						moreLines: range.moreLines,
+						pendingUpdateId: pendingUpdate._id,
+					};
+				}
+			} else if (args.pendingUpdateId != null) {
+				return null;
 			}
 		} else if (args.pendingUpdateId != null) {
 			// External (reserved) rows never have pending docs; an explicit pending view cannot resolve.
@@ -4258,13 +4496,10 @@ export const read_file_content_from_chunks = internalQuery({
 		// snapshot must be current (stale → null so the action fallback runs). External: the linked R2
 		// content asset's size.
 		let byteSize: number;
-		if (
-			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_global_github_workspace_id(args.workspaceId)
-		) {
+		if (realTenantScope && isEditableTextFile) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
+				organizationId: realTenantScope.organizationId,
+				workspaceId: realTenantScope.workspaceId,
 				nodeId: fileNode._id,
 			});
 			if (
@@ -5042,14 +5277,16 @@ export const match_markdown_file_lines = internalQuery({
 
 		const chunks =
 			window?.kind === "lines"
-				? ctx.db.query("files_markdown_chunks").withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("sourceKind", "committed")
-							.eq("fileNodeId", fileNode._id)
-							.gte("lineEnd", Math.max(1, Math.trunc(window.startLine))),
-					)
+				? ctx.db
+						.query("files_markdown_chunks")
+						.withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("sourceKind", "committed")
+								.eq("fileNodeId", fileNode._id)
+								.gte("lineEnd", Math.max(1, Math.trunc(window.startLine))),
+						)
 				: window?.kind === "slice"
 					? ctx.db
 							.query("files_markdown_chunks")
@@ -5512,7 +5749,8 @@ export const get_file_last_yjs_sequence = query({
 		const lastYjsSequenceDoc = await ctx.db
 			.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId)
 			.then((doc) => {
-				if (!doc || doc.organizationId !== fileNode.organizationId || doc.workspaceId !== fileNode.workspaceId) return null;
+				if (!doc || doc.organizationId !== fileNode.organizationId || doc.workspaceId !== fileNode.workspaceId)
+					return null;
 				return doc;
 			});
 
@@ -6110,7 +6348,11 @@ export const archive_snapshot = mutation({
 		}
 
 		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
-		if (!snapshot || snapshot.organizationId !== membership.organizationId || snapshot.workspaceId !== membership.workspaceId) {
+		if (
+			!snapshot ||
+			snapshot.organizationId !== membership.organizationId ||
+			snapshot.workspaceId !== membership.workspaceId
+		) {
 			return Result({ _yay: null });
 		}
 
@@ -6148,7 +6390,11 @@ export const unarchive_snapshot = mutation({
 		}
 
 		const snapshot = await ctx.db.get("files_snapshots", args.snapshotId);
-		if (!snapshot || snapshot.organizationId !== membership.organizationId || snapshot.workspaceId !== membership.workspaceId) {
+		if (
+			!snapshot ||
+			snapshot.organizationId !== membership.organizationId ||
+			snapshot.workspaceId !== membership.workspaceId
+		) {
 			return Result({ _yay: null });
 		}
 
@@ -6498,7 +6744,10 @@ export const yjs_get_incremental_updates = query({
 		const updates = await ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId).eq("fileNodeId", args.nodeId),
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("fileNodeId", args.nodeId),
 			)
 			.order("desc")
 			.collect();

@@ -1,8 +1,9 @@
 import { R2 } from "@convex-dev/r2";
-import { Workpool } from "@convex-dev/workpool";
+import { Workpool, type WorkId } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
+import { create_generated_markdown_output_node } from "./r2.ts";
 import {
 	files_INITIAL_CONTENT,
 	files_MAX_TEXT_CONTENT_BYTES,
@@ -93,6 +94,7 @@ function stub_r2_and_modal_fetch(
 		mediaTransformerAlwaysFails?: boolean;
 		transcriptionText?: string;
 		onModalRequest?: (body: Record<string, unknown>) => void;
+		onPluginRunnerRequest?: (body: Record<string, unknown>) => Response | Promise<Response>;
 	} = {},
 ) {
 	const {
@@ -101,6 +103,7 @@ function stub_r2_and_modal_fetch(
 		mediaTransformerAlwaysFails = false,
 		transcriptionText = "Transcript segment body",
 		onModalRequest,
+		onPluginRunnerRequest,
 	} = args;
 
 	vi.stubGlobal(
@@ -185,6 +188,17 @@ function stub_r2_and_modal_fetch(
 				);
 			}
 
+			if (url === `${process.env.PLUGIN_RUNNER_URL}/internal/plugin-runner/run`) {
+				const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+				return (
+					(await onPluginRunnerRequest?.(body)) ??
+					new Response(JSON.stringify({ status: "succeeded" }), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					})
+				);
+			}
+
 			return new Response(null, { status: 404 });
 		}),
 	);
@@ -251,6 +265,105 @@ async function seed_billing_snapshot_for_user(ctx: MutationCtx, userId: Id<"user
 	});
 }
 
+async function install_upload_plugin(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		userId: Id<"users">;
+		membershipId: Id<"organizations_workspaces_users">;
+		name: "media" | "pdf";
+		displayName: string;
+		description: string;
+		contentTypes: string[];
+	},
+) {
+	const publisherId = await t.run(async (ctx) => {
+		const existing = await ctx.db
+			.query("plugins_publishers")
+			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", args.userId))
+			.first();
+		if (existing) {
+			return existing._id;
+		}
+		const now = Date.now();
+		return await ctx.db.insert("plugins_publishers", {
+			slug: "bonobo",
+			displayName: "Bonobo",
+			ownerUserId: args.userId,
+			createdAt: now,
+			updatedAt: now,
+		});
+	});
+	const registered = await t.action(internal.plugins.register_verified_version, {
+		name: args.name,
+		displayName: args.displayName,
+		version: "0.1.0",
+		description: args.description,
+		publisherId,
+		reviewStatus: "passed",
+		artifactHash: `sha256:${"a".repeat(64)}`,
+		sourceRepositoryUrl: `https://github.com/bonobo/${args.name}-plugin`,
+		sourceOwner: "bonobo",
+		sourceRepo: `${args.name}-plugin`,
+		sourceDefaultBranch: "main",
+		sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+		manifestR2Key: `plugins/${args.name}/manifest.json`,
+		artifactR2Key: `plugins/${args.name}/artifact.json`,
+		backend: {
+			entry: "dist/backend/worker.js",
+			moduleName: "plugin.js",
+			r2Key: `plugins/${args.name}/backend/worker.js`,
+			compatibilityDate: "2026-07-01",
+			compatibilityFlags: ["nodejs_compat"],
+		},
+		events: [{ type: "files.upload.completed", contentTypes: args.contentTypes }],
+		pages: [],
+		capabilities: [
+			"uploads.source.read",
+			"files.source.temporaryUrl",
+			"files.markdown.write",
+			"plugin.secrets.read",
+			"outbound.fetch",
+		],
+		outboundOrigins: [],
+		files: [
+			{
+				path: "dist/backend/worker.js",
+				sha256: `sha256:${"b".repeat(64)}`,
+				bytes: 128,
+				contentType: "application/javascript",
+				r2Key: `plugins/${args.name}/backend/worker.js`,
+			},
+		],
+		createdBy: args.userId,
+		sourceFiles: [{ path: "src/plugin.ts", rawText: "export default { fetch: () => new Response('ok') };" }],
+	});
+	if (registered._nay) {
+		throw new Error(registered._nay.message);
+	}
+
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: args.userId,
+		name: "Test User",
+	});
+	const installed = await asUser.action(api.plugins.install_version, {
+		membershipId: args.membershipId,
+		pluginVersionId: registered._yay.pluginVersionId,
+		acceptedCapabilities: [
+			"uploads.source.read",
+			"files.source.temporaryUrl",
+			"files.markdown.write",
+			"plugin.secrets.read",
+			"outbound.fetch",
+		],
+		acceptedOutboundOrigins: [],
+	});
+	if (installed._nay) {
+		throw new Error(installed._nay.message);
+	}
+	return installed._yay.installationId;
+}
+
 async function get_active_file_node_by_path(
 	ctx: MutationCtx,
 	args: {
@@ -279,11 +392,42 @@ async function get_pdf_output_node(
 		sourceName: string;
 	},
 ) {
-	const convertedMarkdown = await get_active_file_node_by_path(ctx, {
+	let convertedMarkdown = await get_active_file_node_by_path(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		path: `/${args.sourceName}.md`,
 	});
+	if (!convertedMarkdown?.assetId) {
+		const sourceFileNode = await get_active_file_node_by_path(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			path: `/${args.sourceName}`,
+		});
+		if (!sourceFileNode) {
+			throw new Error("Expected PDF source node");
+		}
+		const output = await create_generated_markdown_output_node(ctx, {
+			sourceFileNode,
+			name: `${args.sourceName}.md`,
+			now: Date.now(),
+		});
+		if (output._nay) {
+			throw new Error(output._nay.message);
+		}
+		convertedMarkdown = await ctx.db.get("files_nodes", output._yay.nodeId);
+		await Promise.all([
+			sourceFileNode.assetId
+				? ctx.db.patch("files_r2_assets", sourceFileNode.assetId, {
+						conversionWorkId: "work_asset_refactor" as WorkId,
+						updatedAt: Date.now(),
+					})
+				: Promise.resolve(),
+			ctx.db.patch("files_r2_assets", output._yay.assetId, {
+				conversionWorkId: "work_asset_refactor" as WorkId,
+				updatedAt: Date.now(),
+			}),
+		]);
+	}
 	if (!convertedMarkdown) {
 		throw new Error("Expected PDF generated output node");
 	}
@@ -590,12 +734,17 @@ describe("r2 asset content", () => {
 		expect(signedDownload._nay).toMatchObject({ message: "Not found" });
 	});
 
-	test("R2 events create a visible generated PDF output and conversion finalizes it by node id", async () => {
-		const modalRequests: Record<string, unknown>[] = [];
-		stub_r2_and_modal_fetch({ onModalRequest: (body) => modalRequests.push(body) });
-
+	test("R2 events run the PDF plugin and write a generated Markdown sibling", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await install_upload_plugin(t, {
+			userId: db.userId,
+			membershipId: db.membershipId,
+			name: "pdf",
+			displayName: "PDF",
+			description: "PDF markdown generation",
+			contentTypes: ["application/pdf"],
+		});
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: db.userId,
@@ -620,6 +769,44 @@ describe("r2 asset content", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			assetId: sourceAsset._id,
+		});
+		const pluginRunnerRequests: Record<string, unknown>[] = [];
+		stub_r2_and_modal_fetch({
+			onPluginRunnerRequest: async (body) => {
+				pluginRunnerRequests.push(body);
+				const host = body.host as { token: string };
+				const sourceUrlResponse = await t.fetch("/api/internal/plugins/host/source-temporary-url", {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${host.token}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({
+						pluginRunId: body.pluginRunId,
+						expiresInSeconds: 60,
+					}),
+				});
+				expect(sourceUrlResponse.status).toBe(200);
+				expect(((await sourceUrlResponse.json()) as { url: string }).url).toContain(encodeURIComponent(sourceAssetR2Key));
+
+				const writeResponse = await t.fetch("/api/internal/plugins/host/write-markdown", {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${host.token}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({
+						pluginRunId: body.pluginRunId,
+						path: "event.pdf.md",
+						markdown: "# Plugin PDF extraction\n\nPLUGIN_PDF_E2E_2026",
+					}),
+				});
+				expect(writeResponse.status).toBe(200);
+				return new Response(JSON.stringify({ status: "succeeded" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			},
 		});
 
 		const response = await t.fetch("/api/r2/event", {
@@ -648,30 +835,15 @@ describe("r2 asset content", () => {
 		const uploadedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		expect(uploadedAsset?.r2Key).toBe(sourceAssetR2Key);
 		expect(uploadedAsset?.etag).toBe("etag_1");
-		expect(uploadedAsset?.conversionWorkId).toBe("work_asset_refactor");
-		const pendingDocs = await t.run(async (ctx) => {
-			const outputs = await get_pdf_output_node(ctx, {
+		expect(uploadedAsset?.conversionWorkId).toBeNull();
+		const pendingOutput = await t.run(async (ctx) =>
+			get_active_file_node_by_path(ctx, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				sourceName: "event.pdf",
-			});
-			const convertedAsset = outputs.convertedMarkdown.assetId
-				? await ctx.db.get("files_r2_assets", outputs.convertedMarkdown.assetId)
-				: null;
-			const testOutput = await get_active_file_node_by_path(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				path: "/event.pdf.test.md",
-			});
-
-			return { outputs, convertedAsset, testOutput };
-		});
-		expect(pendingDocs.outputs.convertedMarkdown.name).toBe("event.pdf.md");
-		expect(pendingDocs.outputs.convertedMarkdown.contentType).toBe("text/markdown;charset=utf-8");
-		expect(pendingDocs.outputs.convertedMarkdown.yjsSnapshotId).toBeUndefined();
-		expect(pendingDocs.convertedAsset?.kind).toBe("content");
-		expect(pendingDocs.convertedAsset?.conversionWorkId).toBe("work_asset_refactor");
-		expect(pendingDocs.testOutput).toBeNull();
+				path: "/event.pdf.md",
+			}),
+		);
+		expect(pendingOutput).toBeNull();
 
 		const signedDownload = await asUser.action(api.r2.create_signed_download_url, {
 			membershipId: db.membershipId,
@@ -679,25 +851,32 @@ describe("r2 asset content", () => {
 		});
 		expect(signedDownload._yay?.url).toContain(encodeURIComponent(sourceAssetR2Key));
 
-		await asUser.action(internal.r2.convert_upload_to_markdown, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			sourceAssetId: upload._yay.assetId,
-			outputAssetId: pendingDocs.outputs.convertedMarkdown.assetId,
+		const pluginRun = await t.run(async (ctx) =>
+			ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_sourceAsset_event_installation", (q) =>
+					q.eq("sourceAssetId", upload._yay.assetId).eq("event", "files.upload.completed"),
+				)
+				.unique(),
+		);
+		if (!pluginRun) {
+			throw new Error("Expected plugin event run");
+		}
+		expect(pluginRun.outputAssetId).toBeUndefined();
+		expect(pluginRun.status).toBe("queued");
+
+		await asUser.action(internal.plugins_runtime.execute_upload_completed_event_run, {
+			runId: pluginRun._id,
 		});
-		expect(modalRequests).toHaveLength(1);
-		expect(modalRequests[0]).toMatchObject({ maxMarkdownBytes: files_MAX_TEXT_CONTENT_BYTES });
-		expect(modalRequests[0]).not.toHaveProperty("maxMarkdownCharacters");
 
 		const docs = await t.run(async (ctx) => {
 			const sourceNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
-			const outputs = await get_pdf_output_node(ctx, {
+			const outputNode = await get_active_file_node_by_path(ctx, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
-				sourceName: "event.pdf",
+				path: "/event.pdf.md",
 			});
-			const outputNode = outputs.convertedMarkdown;
-			const outputAsset = outputNode.assetId ? await ctx.db.get("files_r2_assets", outputNode.assetId) : null;
+			const outputAsset = outputNode?.assetId ? await ctx.db.get("files_r2_assets", outputNode.assetId) : null;
 			const nextSourceAsset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
 
 			return { sourceNode, outputNode, outputAsset, nextSourceAsset };
@@ -710,8 +889,24 @@ describe("r2 asset content", () => {
 			yjsSnapshotId: expect.any(String),
 		});
 		expect(docs.outputAsset?.kind).toBe("content");
-		expect(docs.outputAsset?.r2Key ? r2_text(docs.outputAsset.r2Key) : null).toBe("# Converted\n\nPDF body");
+		expect(docs.outputAsset?.r2Key ? r2_text(docs.outputAsset.r2Key) : null).toContain("PLUGIN_PDF_E2E_2026");
 		expect(docs.nextSourceAsset?.conversionWorkId).toBeNull();
+		expect(pluginRunnerRequests).toHaveLength(1);
+		expect(pluginRunnerRequests[0]).toMatchObject({
+			pluginName: "pdf",
+			pluginVersion: "0.1.0",
+			artifactKey: "plugins/pdf/backend/worker.js",
+			artifactHash: `sha256:${"b".repeat(64)}`,
+			input: {
+				event: "files.upload.completed",
+				source: {
+					name: "event.pdf",
+					contentType: "application/pdf",
+				},
+			},
+		});
+		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
+		expect(completedRun).toMatchObject({ status: "succeeded", hostWriteCount: 1 });
 
 		enqueueActionSpy.mockClear();
 
@@ -750,6 +945,38 @@ describe("r2 asset content", () => {
 			const db = await test_mocks_fill_db_with.membership(ctx);
 			await seed_billing_snapshot_for_user(ctx, db.userId);
 			return db;
+		});
+		await install_upload_plugin(t, {
+			userId: db.userId,
+			membershipId: db.membershipId,
+			name: "media",
+			displayName: "Media",
+			description: "Image markdown generation",
+			contentTypes: ["image/png"],
+		});
+		const pluginRunnerRequests: Record<string, unknown>[] = [];
+		stub_r2_and_modal_fetch({
+			onPluginRunnerRequest: async (body) => {
+				pluginRunnerRequests.push(body);
+				const host = body.host as { token: string };
+				const writeResponse = await t.fetch("/api/internal/plugins/host/write-markdown", {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${host.token}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({
+						pluginRunId: body.pluginRunId,
+						path: "photo.png.description.md",
+						markdown: "# Plugin image description\n\nPLUGIN_IMAGE_E2E_2026",
+					}),
+				});
+				expect(writeResponse.status).toBe(200);
+				return new Response(JSON.stringify({ status: "succeeded" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			},
 		});
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -800,29 +1027,31 @@ describe("r2 asset content", () => {
 		});
 		expect(response.status).toBe(204);
 
-		const pendingOutput = await t.run(async (ctx) => {
-			const output = await get_active_file_node_by_path(ctx, {
+		const pendingOutput = await t.run(async (ctx) =>
+			get_active_file_node_by_path(ctx, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				path: "/photo.png.description.md",
-			});
-			if (!output?.assetId) {
-				throw new Error("Expected generated image description node");
-			}
+			}),
+		);
+		expect(pendingOutput).toBeNull();
 
-			return {
-				output: { ...output, assetId: output.assetId },
-				asset: await ctx.db.get("files_r2_assets", output.assetId),
-			};
-		});
-		expect(pendingOutput.output.yjsSnapshotId).toBeUndefined();
-		expect(pendingOutput.asset?.conversionWorkId).toBe("work_asset_refactor");
+		const pluginRun = await t.run(async (ctx) =>
+			ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_sourceAsset_event_installation", (q) =>
+					q.eq("sourceAssetId", upload._yay.assetId).eq("event", "files.upload.completed"),
+				)
+				.unique(),
+		);
+		if (!pluginRun) {
+			throw new Error("Expected plugin event run");
+		}
+		expect(pluginRun.outputAssetId).toBeUndefined();
+		expect(pluginRun.status).toBe("queued");
 
-		await asUser.action(internal.r2.describe_image_upload_to_markdown, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			sourceAssetId: upload._yay.assetId,
-			outputAssetId: pendingOutput.output.assetId,
+		await asUser.action(internal.plugins_runtime.execute_upload_completed_event_run, {
+			runId: pluginRun._id,
 		});
 
 		const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
@@ -831,9 +1060,25 @@ describe("r2 asset content", () => {
 			userId: db.userId,
 			path: "/photo.png.description.md",
 		});
-		expect(readResult?.content).toContain("Image description body");
+		expect(readResult?.content).toContain("PLUGIN_IMAGE_E2E_2026");
+		expect(pluginRunnerRequests).toHaveLength(1);
+		expect(pluginRunnerRequests[0]).toMatchObject({
+			pluginName: "media",
+			pluginVersion: "0.1.0",
+			artifactKey: "plugins/media/backend/worker.js",
+			artifactHash: `sha256:${"b".repeat(64)}`,
+			input: {
+				event: "files.upload.completed",
+				source: {
+					name: "photo.png",
+					contentType: "image/png",
+				},
+			},
+		});
 		const processedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		expect(processedAsset?.conversionWorkId).toBeNull();
+		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
+		expect(completedRun).toMatchObject({ status: "succeeded", hostWriteCount: 1 });
 	});
 
 	test("R2 events create and finalize video summary and transcript Markdown siblings", async () => {
@@ -842,6 +1087,14 @@ describe("r2 asset content", () => {
 			const db = await test_mocks_fill_db_with.membership(ctx);
 			await seed_billing_snapshot_for_user(ctx, db.userId);
 			return db;
+		});
+		await install_upload_plugin(t, {
+			userId: db.userId,
+			membershipId: db.membershipId,
+			name: "media",
+			displayName: "Media",
+			description: "Video markdown generation",
+			contentTypes: ["video/mp4"],
 		});
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -867,6 +1120,35 @@ describe("r2 asset content", () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			assetId: sourceAsset._id,
+		});
+		const pluginRunnerRequests: Record<string, unknown>[] = [];
+		stub_r2_and_modal_fetch({
+			onPluginRunnerRequest: async (body) => {
+				pluginRunnerRequests.push(body);
+				const host = body.host as { token: string };
+				for (const [path, markdown] of [
+					["clip.mp4.transcript.md", "# Plugin transcript\n\nPLUGIN_VIDEO_TRANSCRIPT_E2E_2026"],
+					["clip.mp4.summary.md", "# Plugin summary\n\nPLUGIN_VIDEO_SUMMARY_E2E_2026"],
+				] as const) {
+					const writeResponse = await t.fetch("/api/internal/plugins/host/write-markdown", {
+						method: "POST",
+						headers: {
+							Authorization: `Bearer ${host.token}`,
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({
+							pluginRunId: body.pluginRunId,
+							path,
+							markdown,
+						}),
+					});
+					expect(writeResponse.status).toBe(200);
+				}
+				return new Response(JSON.stringify({ status: "succeeded" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			},
 		});
 
 		const response = await t.fetch("/api/r2/event", {
@@ -905,22 +1187,27 @@ describe("r2 asset content", () => {
 					path: "/clip.mp4.transcript.md",
 				}),
 			]);
-			if (!summary?.assetId || !transcript?.assetId) {
-				throw new Error("Expected generated video output nodes");
-			}
-
-			return {
-				summary: { ...summary, assetId: summary.assetId },
-				transcript: { ...transcript, assetId: transcript.assetId },
-			};
+			return { summary, transcript };
 		});
+		expect(pendingOutputs.summary).toBeNull();
+		expect(pendingOutputs.transcript).toBeNull();
 
-		await asUser.action(internal.r2.summarize_video_upload_to_markdown, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			sourceAssetId: upload._yay.assetId,
-			summaryOutputAssetId: pendingOutputs.summary.assetId,
-			transcriptOutputAssetId: pendingOutputs.transcript.assetId,
+		const pluginRun = await t.run(async (ctx) =>
+			ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_sourceAsset_event_installation", (q) =>
+					q.eq("sourceAssetId", upload._yay.assetId).eq("event", "files.upload.completed"),
+				)
+				.unique(),
+		);
+		if (!pluginRun) {
+			throw new Error("Expected plugin event run");
+		}
+		expect(pluginRun.outputAssetId).toBeUndefined();
+		expect(pluginRun.status).toBe("queued");
+
+		await asUser.action(internal.plugins_runtime.execute_upload_completed_event_run, {
+			runId: pluginRun._id,
 		});
 
 		const [summaryReadResult, transcriptReadResult] = await Promise.all([
@@ -937,10 +1224,26 @@ describe("r2 asset content", () => {
 				path: "/clip.mp4.transcript.md",
 			}),
 		]);
-		expect(summaryReadResult?.content).toContain("Video summary body");
-		expect(transcriptReadResult?.content).toContain("Transcript segment body");
+		expect(summaryReadResult?.content).toContain("PLUGIN_VIDEO_SUMMARY_E2E_2026");
+		expect(transcriptReadResult?.content).toContain("PLUGIN_VIDEO_TRANSCRIPT_E2E_2026");
+		expect(pluginRunnerRequests).toHaveLength(1);
+		expect(pluginRunnerRequests[0]).toMatchObject({
+			pluginName: "media",
+			pluginVersion: "0.1.0",
+			artifactKey: "plugins/media/backend/worker.js",
+			artifactHash: `sha256:${"b".repeat(64)}`,
+			input: {
+				event: "files.upload.completed",
+				source: {
+					name: "clip.mp4",
+					contentType: "video/mp4",
+				},
+			},
+		});
 		const processedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		expect(processedAsset?.conversionWorkId).toBeNull();
+		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
+		expect(completedRun).toMatchObject({ status: "succeeded", hostWriteCount: 2 });
 	});
 
 	test("falls back to original video transcription when media transformation rejects the upload", async () => {
@@ -1006,25 +1309,48 @@ describe("r2 asset content", () => {
 		expect(response.status).toBe(204);
 
 		const pendingOutputs = await t.run(async (ctx) => {
-			const [summary, transcript] = await Promise.all([
-				get_active_file_node_by_path(ctx, {
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					path: "/long-clip.mp4.summary.md",
+			const sourceFileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			if (!sourceFileNode) {
+				throw new Error("Expected source file node");
+			}
+			const now = Date.now();
+			const [summaryOutput, transcriptOutput] = await Promise.all([
+				create_generated_markdown_output_node(ctx, {
+					sourceFileNode,
+					name: "long-clip.mp4.summary.md",
+					now,
 				}),
-				get_active_file_node_by_path(ctx, {
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					path: "/long-clip.mp4.transcript.md",
+				create_generated_markdown_output_node(ctx, {
+					sourceFileNode,
+					name: "long-clip.mp4.transcript.md",
+					now,
 				}),
 			]);
-			if (!summary?.assetId || !transcript?.assetId) {
+			if (summaryOutput._nay) {
+				throw new Error(summaryOutput._nay.message);
+			}
+			if (transcriptOutput._nay) {
+				throw new Error(transcriptOutput._nay.message);
+			}
+			await Promise.all([
+				ctx.db.patch("files_r2_assets", upload._yay.assetId, { conversionWorkId: "work_asset_refactor" as WorkId, updatedAt: now }),
+				ctx.db.patch("files_r2_assets", summaryOutput._yay.assetId, { conversionWorkId: "work_asset_refactor" as WorkId, updatedAt: now }),
+				ctx.db.patch("files_r2_assets", transcriptOutput._yay.assetId, {
+					conversionWorkId: "work_asset_refactor" as WorkId,
+					updatedAt: now,
+				}),
+			]);
+			const [summary, transcript] = await Promise.all([
+				ctx.db.get("files_nodes", summaryOutput._yay.nodeId),
+				ctx.db.get("files_nodes", transcriptOutput._yay.nodeId),
+			]);
+			if (!summary || !transcript) {
 				throw new Error("Expected generated video output nodes");
 			}
 
 			return {
-				summary: { ...summary, assetId: summary.assetId },
-				transcript: { ...transcript, assetId: transcript.assetId },
+				summary: { ...summary, assetId: summaryOutput._yay.assetId },
+				transcript: { ...transcript, assetId: transcriptOutput._yay.assetId },
 			};
 		});
 
@@ -1369,9 +1695,17 @@ describe("r2 asset content", () => {
 		expect(docs.convertedAsset?.r2Key).toBeUndefined();
 	});
 
-	test("archives active generated output name conflicts before creating placeholders", async () => {
+	test("archives active generated output name conflicts before plugin writes", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await install_upload_plugin(t, {
+			userId: db.userId,
+			membershipId: db.membershipId,
+			name: "pdf",
+			displayName: "PDF",
+			description: "PDF markdown generation",
+			contentTypes: ["application/pdf"],
+		});
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: db.userId,
@@ -1411,6 +1745,28 @@ describe("r2 asset content", () => {
 			workspaceId: db.workspaceId,
 			assetId: sourceAsset._id,
 		});
+		stub_r2_and_modal_fetch({
+			onPluginRunnerRequest: async (body) => {
+				const host = body.host as { token: string };
+				const writeResponse = await t.fetch("/api/internal/plugins/host/write-markdown", {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${host.token}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({
+						pluginRunId: body.pluginRunId,
+						path: "collision.pdf.md",
+						markdown: "# Collision replacement\n\nPLUGIN_COLLISION_E2E_2026",
+					}),
+				});
+				expect(writeResponse.status).toBe(200);
+				return new Response(JSON.stringify({ status: "succeeded" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			},
+		});
 		const response = await t.fetch("/api/r2/event", {
 			method: "POST",
 			headers: {
@@ -1434,32 +1790,48 @@ describe("r2 asset content", () => {
 		});
 		expect(response.status).toBe(204);
 
+		const pluginRun = await t.run(async (ctx) =>
+			ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_sourceAsset_event_installation", (q) =>
+					q.eq("sourceAssetId", upload._yay.assetId).eq("event", "files.upload.completed"),
+				)
+				.unique(),
+		);
+		if (!pluginRun) {
+			throw new Error("Expected plugin event run");
+		}
+		await asUser.action(internal.plugins_runtime.execute_upload_completed_event_run, {
+			runId: pluginRun._id,
+		});
+
 		const docs = await t.run(async (ctx) => {
 			const source = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			const oldGenerated = await ctx.db.get("files_nodes", existingGeneratedId);
-			const outputs = await get_pdf_output_node(ctx, {
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				sourceName: "collision.pdf",
-			});
 			const activeGeneratedAtPath = await get_active_file_node_by_path(ctx, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				path: "/collision.pdf.md",
 			});
-			return { source, oldGenerated, outputs, activeGeneratedAtPath };
+			const activeGeneratedAsset = activeGeneratedAtPath?.assetId
+				? await ctx.db.get("files_r2_assets", activeGeneratedAtPath.assetId)
+				: null;
+			return { source, oldGenerated, activeGeneratedAtPath, activeGeneratedAsset };
 		});
 
 		expect(docs.oldGenerated?.archiveOperationId).toEqual(expect.any(String));
 		expect(docs.source?.assetId).toBe(upload._yay.assetId);
-		expect(docs.outputs.convertedMarkdown.name).toBe("collision.pdf.md");
-		expect(docs.outputs.convertedMarkdown._id).not.toBe(existingGeneratedId);
-		expect(docs.outputs.convertedMarkdown).toMatchObject({
+		expect(docs.activeGeneratedAtPath?.name).toBe("collision.pdf.md");
+		expect(docs.activeGeneratedAtPath?._id).not.toBe(existingGeneratedId);
+		expect(docs.activeGeneratedAtPath).toMatchObject({
 			name: "collision.pdf.md",
 			contentType: "text/markdown;charset=utf-8",
+			yjsSnapshotId: expect.any(String),
 		});
-		expect(docs.outputs.convertedMarkdown.archiveOperationId).toBeUndefined();
-		expect(docs.activeGeneratedAtPath?._id).toBe(docs.outputs.convertedMarkdown._id);
+		expect(docs.activeGeneratedAtPath?.archiveOperationId).toBeUndefined();
+		expect(docs.activeGeneratedAsset?.r2Key ? r2_text(docs.activeGeneratedAsset.r2Key) : null).toContain(
+			"PLUGIN_COLLISION_E2E_2026",
+		);
 	});
 
 	test("keeps conversion work reserved when Modal conversion fails", async () => {

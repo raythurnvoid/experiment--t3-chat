@@ -5,6 +5,7 @@ import { httpAction } from "./_generated/server.js";
 import { files_http_routes } from "./files_nodes.ts";
 import { public_api_http_routes } from "./public_api.ts";
 import { r2_http_routes } from "./r2.ts";
+import { plugins_runtime_http_routes } from "./plugins_runtime.ts";
 import { billing_polar } from "./billing.ts";
 import { users_http_routes } from "./users.ts";
 import { corsRouter } from "convex-helpers/server/cors";
@@ -48,6 +49,7 @@ ai_chat_http_routes(appCors);
 public_api_http_routes(appCors);
 files_http_routes(appCors);
 r2_http_routes(appCors);
+plugins_runtime_http_routes(appCors);
 
 appCors.route({
 	path: "/getMessagesByAuthor",

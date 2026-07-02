@@ -67,6 +67,18 @@ if (!process.env.CLOUDFLARE_EVENTS_SECRET) {
 	process.env.CLOUDFLARE_EVENTS_SECRET = "CLOUDFLARE_EVENTS_SECRET_TEST";
 }
 
+if (!process.env.PLUGIN_RUNNER_URL) {
+	process.env.PLUGIN_RUNNER_URL = "https://plugin-runner.test";
+}
+
+if (!process.env.PLUGIN_RUNNER_SECRET) {
+	process.env.PLUGIN_RUNNER_SECRET = "PLUGIN_RUNNER_SECRET_TEST";
+}
+
+if (!process.env.PLUGIN_SECRETS_ENCRYPTION_KEY) {
+	process.env.PLUGIN_SECRETS_ENCRYPTION_KEY = "PLUGIN_SECRETS_ENCRYPTION_KEY_TEST";
+}
+
 if (!process.env.R2_BUCKET_FILES) {
 	process.env.R2_BUCKET_FILES = "test-files-bucket";
 }

@@ -181,7 +181,7 @@ export function organizations_name_autofix_and_validate(raw: string) {
  * where the schema accepts it via `v.literal(...)`. This constant is the single source of truth — the
  * schema literal type and `typeof organizations_GLOBAL_ORGANIZATION_ID` track it, so changing the value propagates.
  */
-export const organizations_GLOBAL_ORGANIZATION_ID = "GLOBAL";
+export const organizations_GLOBAL_ORGANIZATION_ID = "GLOBAL" as const;
 
 /**
  * Special non-`Id` workspace sentinel for the GitHub read-only mount. NOT a real `Id<"organizations_workspaces">`
@@ -190,7 +190,7 @@ export const organizations_GLOBAL_ORGANIZATION_ID = "GLOBAL";
  * truth — the schema literal type and `typeof organizations_GLOBAL_GITHUB_WORKSPACE_ID` track it, so changing
  * the value propagates.
  */
-export const organizations_GLOBAL_GITHUB_WORKSPACE_ID = "GITHUB";
+export const organizations_GLOBAL_GITHUB_WORKSPACE_ID = "GITHUB" as const;
 
 /**
  * Type guard that narrows a `realId | sentinel` organization field to its real-id arm in the false branch

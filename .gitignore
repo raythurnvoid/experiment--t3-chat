@@ -28,3 +28,6 @@ t3-chat.code-workspace
 .eslintcache
 
 .cursor/plans
+
+# Local Playwriter session auth (contains a live session JWT)
+.playwriter-session-token.json

@@ -91,7 +91,7 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - It only owns user-scope request docs.
 - If the user doc is already gone, clear user quota docs and remove the stale request.
 - A non-tombstoned user request should make no destructive progress and should log.
-- `db_finalize_deleted_user` deletes user-scoped memberships, role assignments, direct user grants, pending-update docs, last-sequence docs, and user quota docs.
+- `db_finalize_deleted_user` deletes user-scoped memberships, role assignments, direct user grants, pending-update docs, last-sequence docs, user quota docs, and plugin publisher docs (`plugins_publishers`, repository claims, publisher secrets, version reviews).
 - Keep `billing_usage_snapshots` whenever the `users` doc is retained. Delete them only when the full user-record purge path passes `deleteBillingState`.
 - Auth pointers and anonymous tokens are removed only when the caller passes `deleteUserAuth`.
 - After finalization, queue now-empty organizations with immediate organization requests.
@@ -147,6 +147,7 @@ Current purge coverage includes:
 - `ai_chat_files_content`, `ai_chat_files`
 - `ai_chat_threads_messages_aisdk_5`, `ai_chat_threads_state`, `ai_chat_threads`
 - `api_credentials`, `public_api_grants`
+- `plugins_event_run_calls`, `plugins_event_runs`, `plugins_workspace_event_handlers`, `plugins_workspace_installation_secrets`, `plugins_workspace_installations`
 - `chat_messages`
 - `files_metadata_docs`
 - `files_plain_text_chunks`, `files_markdown_chunks`

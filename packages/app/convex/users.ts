@@ -1096,12 +1096,15 @@ export function users_http_routes(router: RouterForConvexModules) {
 							const clerkUserId = identity.subject;
 
 							// Let already-linked Clerk tokens take the read-only fast path so repeated signed-in
-							// bootstraps do not consume the auth write limiter.
+							// bootstraps do not consume the auth write limiter. Only usable accounts can
+							// short-circuit: a tombstoned user or one missing its default tenant pointers
+							// (first sign-in after a data wipe) must fall through to `resolve_user` so
+							// default-tenant and billing-bootstrap repair runs.
 							if (identity.external_id) {
 								const user = await ctx.runQuery(internal.users.get, {
 									userId: identity.external_id,
 								});
-								if (user) {
+								if (user && user.deletedAt == null && user.defaultOrganizationId && user.defaultWorkspaceId) {
 									return {
 										status: 200,
 										body: Result({ _yay: { userId: user._id, restoredDeletedAccount: false } }),

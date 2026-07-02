@@ -238,6 +238,9 @@ export type AppCompositeIds = {
 				threadId: string,
 				messageId: string,
 		  ];
+	plugin:
+		| [name: "upload_completed", eventId: string, installationId: string]
+		| [name: "generate_text", runId: string, hostCallCount: string];
 };
 
 /**

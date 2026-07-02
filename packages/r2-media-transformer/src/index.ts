@@ -24,6 +24,8 @@ type MediaBinding = {
 	input: (stream: ReadableStream<Uint8Array>) => MediaInput;
 };
 
+type MediaSource = { key: string } | { sourceUrl: string };
+
 export type Env = {
 	FILES_BUCKET: R2BucketBinding;
 	MEDIA: MediaBinding;
@@ -62,14 +64,43 @@ function finite_non_negative_number(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function parse_base_request_body(body: Record<string, unknown>, env: Env) {
-	// Keep the Worker scoped to upload-owned R2 objects; Convex passes the exact
-	// private key after it has already authorized the source file.
-	if (typeof body.key !== "string" || !body.key.startsWith(env.R2_UPLOAD_PREFIX)) {
+function parse_source_url(value: unknown) {
+	if (typeof value !== "string") {
 		return null;
 	}
 
-	return { key: body.key };
+	const sourceUrl = value.trim();
+	if (!sourceUrl) {
+		return null;
+	}
+
+	let url: URL;
+	try {
+		url = new URL(sourceUrl);
+	} catch {
+		return null;
+	}
+
+	if (url.protocol !== "https:") {
+		return null;
+	}
+
+	return sourceUrl;
+}
+
+function parse_base_request_body(body: Record<string, unknown>, env: Env) {
+	// The endpoint is secret-gated: Convex authorizes the source file first, then
+	// sends either an upload-owned R2 key or a presigned https URL for it.
+	if (typeof body.key === "string" && body.key.startsWith(env.R2_UPLOAD_PREFIX)) {
+		return { key: body.key } satisfies MediaSource;
+	}
+
+	const sourceUrl = parse_source_url(body.sourceUrl);
+	if (!sourceUrl) {
+		return null;
+	}
+
+	return { sourceUrl } satisfies MediaSource;
 }
 
 function parse_frame_request_body(body: Record<string, unknown> | null, env: Env) {
@@ -83,7 +114,7 @@ function parse_frame_request_body(body: Record<string, unknown> | null, env: Env
 	}
 
 	return {
-		key: base.key,
+		source: base,
 		timeSeconds: body.timeSeconds,
 	};
 }
@@ -94,11 +125,7 @@ function parse_audio_segment_request_body(body: Record<string, unknown> | null, 
 	}
 
 	const base = parse_base_request_body(body, env);
-	if (
-		!base ||
-		!finite_non_negative_number(body?.startSeconds) ||
-		!finite_non_negative_number(body?.durationSeconds)
-	) {
+	if (!base || !finite_non_negative_number(body?.startSeconds) || !finite_non_negative_number(body?.durationSeconds)) {
 		return null;
 	}
 
@@ -109,7 +136,7 @@ function parse_audio_segment_request_body(body: Record<string, unknown> | null, 
 	}
 
 	return {
-		key: base.key,
+		source: base,
 		startSeconds,
 		durationSeconds,
 	};
@@ -147,6 +174,40 @@ async function load_r2_video(key: string, env: Env) {
 	return object.body;
 }
 
+async function load_source_url_video(sourceUrl: string) {
+	let response: Response;
+	try {
+		response = await fetch(sourceUrl);
+	} catch (error) {
+		console.error("Source URL fetch failed", { error });
+		return null;
+	}
+
+	if (!response.ok || !response.body) {
+		return null;
+	}
+
+	return response.body;
+}
+
+async function load_video_source(source: MediaSource, env: Env) {
+	if ("key" in source) {
+		const stream = await load_r2_video(source.key, env);
+		if (!stream) {
+			return { response: json_response({ error: "R2 object not found" }, 404) };
+		}
+
+		return { stream };
+	}
+
+	const stream = await load_source_url_video(source.sourceUrl);
+	if (!stream) {
+		return { response: json_response({ error: "Source URL fetch failed" }, 400) };
+	}
+
+	return { stream };
+}
+
 export async function handle_frame_request(request: Request, env: Env) {
 	if (!is_authorized(request, env)) {
 		return json_response({ error: "Unauthorized" }, 401);
@@ -158,13 +219,13 @@ export async function handle_frame_request(request: Request, env: Env) {
 		return json_response({ error: "Invalid frame request" }, 400);
 	}
 
-	const stream = await load_r2_video(parsed.key, env);
-	if (!stream) {
-		return json_response({ error: "R2 object not found" }, 404);
+	const loaded = await load_video_source(parsed.source, env);
+	if ("response" in loaded) {
+		return loaded.response;
 	}
 
 	const result = await media_response_or_error(async () => {
-		return await env.MEDIA.input(stream)
+		return await env.MEDIA.input(loaded.stream)
 			// Keep sampled frames small; they are prompt context, not downloadable
 			// preview assets, and OpenAI only needs enough pixels to understand them.
 			.transform({ width: 720, fit: "scale-down" })
@@ -189,13 +250,13 @@ export async function handle_audio_segment_request(request: Request, env: Env) {
 		return json_response({ error: "Invalid audio segment request" }, 400);
 	}
 
-	const stream = await load_r2_video(parsed.key, env);
-	if (!stream) {
-		return json_response({ error: "R2 object not found" }, 404);
+	const loaded = await load_video_source(parsed.source, env);
+	if ("response" in loaded) {
+		return loaded.response;
 	}
 
 	const result = await media_response_or_error(async () => {
-		return await env.MEDIA.input(stream)
+		return await env.MEDIA.input(loaded.stream)
 			.output({
 				mode: "audio",
 				time: `${parsed.startSeconds}s`,

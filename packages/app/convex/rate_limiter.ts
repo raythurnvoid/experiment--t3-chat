@@ -56,6 +56,7 @@ const rate_limiter_CONFIG = {
 	files_snapshot_write: STRICT_WRITE,
 	files_tree_write: STRICT_WRITE,
 	files_yjs_push_update: STRICT_WRITE,
+	plugins_manage: STRICT_AUTH_OR_BILLING,
 	presence_heartbeat: {
 		kind: "token bucket",
 		rate: 30,

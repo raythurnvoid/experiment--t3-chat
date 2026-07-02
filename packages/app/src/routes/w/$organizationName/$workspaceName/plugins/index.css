@@ -1,0 +1,439 @@
+@layer components {
+	/* #region root */
+	.RoutePlugins {
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+
+		width: min(100%, 960px);
+		min-height: 0;
+		height: 100%;
+		margin-inline: auto;
+		padding: 24px;
+		overflow: auto;
+	}
+
+	.RoutePlugins-loading,
+	.RoutePlugins-empty {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		min-height: 180px;
+
+		color: var(--color-fg-08);
+	}
+	/* #endregion root */
+
+	/* #region header */
+	.RoutePluginsHeader {
+		display: flex;
+		align-items: start;
+		justify-content: space-between;
+		gap: 16px;
+	}
+
+	.RoutePluginsHeader-title {
+		margin: 0;
+
+		font-size: 24px;
+		font-weight: 650;
+		line-height: 1.2;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsHeader-description {
+		margin: 6px 0 0;
+
+		font-size: 14px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+	/* #endregion header */
+
+	/* #region catalog */
+	.RoutePluginsCatalog {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		padding: 14px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+
+		background: var(--color-base-1-03);
+	}
+
+	.RoutePluginsCatalog-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin: 0;
+
+		font-size: 16px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsCatalog-description {
+		margin: 0;
+
+		font-size: 14px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsCatalog-empty {
+		font-size: 14px;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsCatalog-list {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.RoutePluginsCatalogItem {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 12px;
+
+		padding: 8px 12px;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 6px;
+
+		background: var(--color-base-1-02);
+	}
+
+	.RoutePluginsCatalogItem-info {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.RoutePluginsCatalogItem-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.RoutePluginsCatalogItem-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsCatalogItem-meta {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 12px;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsCatalogConsent {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		grid-column: 1 / -1;
+
+		padding-block-start: 10px;
+		border-block-start: 1px solid var(--color-base-1-06);
+	}
+
+	.RoutePluginsCatalogConsent-title {
+		font-size: 12px;
+		font-weight: 600;
+		line-height: 1.25;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsCatalogConsent-list {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+
+		margin: 0;
+		padding-inline-start: 18px;
+	}
+
+	.RoutePluginsCatalogConsent-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		font-family: monospace;
+		font-size: 13px;
+		line-height: 1.35;
+		color: var(--color-fg-11);
+	}
+
+	.RoutePluginsCatalogConsent-empty {
+		font-size: 13px;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsCatalogConsent-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	/* #endregion catalog */
+
+	/* #region installed */
+	.RoutePluginsInstalled {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		padding: 14px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 8px;
+
+		background: var(--color-base-1-03);
+	}
+
+	.RoutePluginsInstalled-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+		margin: 0;
+
+		font-size: 16px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsInstalled-name {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.RoutePluginsInstalled-meta,
+	.RoutePluginsInstalled-events {
+		font-size: 13px;
+		line-height: 1.35;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsInstalled-mount {
+		width: fit-content;
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 12px;
+		line-height: 1.35;
+		color: var(--color-fg-10);
+	}
+	/* #endregion installed */
+
+	/* #region installed secrets */
+	.RoutePluginsInstalledSecrets {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		margin-block-start: 4px;
+		padding-block-start: 12px;
+		border-block-start: 1px solid var(--color-base-1-06);
+	}
+
+	.RoutePluginsInstalledSecrets-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin: 0;
+
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsInstalledSecrets-description {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsInstalledSecrets-form {
+		display: grid;
+		grid-template-columns: minmax(0, 200px) minmax(0, 1fr) auto;
+		align-items: end;
+		gap: 8px;
+	}
+
+	.RoutePluginsInstalledSecrets-env {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: end;
+		gap: 8px;
+	}
+
+	.RoutePluginsInstalledSecrets-empty {
+		font-size: 14px;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsInstalledSecrets-list {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.RoutePluginsInstalledSecretItem {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 12px;
+
+		padding: 8px 12px;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 6px;
+
+		background: var(--color-base-1-02);
+	}
+
+	.RoutePluginsInstalledSecretItem-identity {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.RoutePluginsInstalledSecretItem-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-family: monospace;
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsInstalledSecretItem-meta {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 12px;
+		color: var(--color-fg-08);
+	}
+	/* #endregion installed secrets */
+
+	/* #region installed runs */
+	.RoutePluginsInstalledRuns {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		margin-block-start: 4px;
+		padding-block-start: 12px;
+		border-block-start: 1px solid var(--color-base-1-06);
+	}
+
+	.RoutePluginsInstalledRuns-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin: 0;
+
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsInstalledRuns-empty {
+		font-size: 14px;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsInstalledRuns-list {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.RoutePluginsInstalledRunItem {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		min-width: 0;
+
+		padding: 8px 12px;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 6px;
+
+		background: var(--color-base-1-02);
+	}
+
+	.RoutePluginsInstalledRunItem-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.RoutePluginsInstalledRunItem-path {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-family: monospace;
+		font-size: 13px;
+		color: var(--color-fg-11);
+	}
+
+	.RoutePluginsInstalledRunItem-meta {
+		font-size: 12px;
+		line-height: 1.35;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsInstalledRunItem-error {
+		font-size: 13px;
+		color: var(--color-destructive);
+	}
+	/* #endregion installed runs */
+
+	@media (max-width: 640px) {
+		.RoutePlugins {
+			padding: 16px;
+		}
+
+		.RoutePluginsHeader {
+			flex-direction: column;
+			align-items: stretch;
+		}
+
+		.RoutePluginsCatalogItem,
+		.RoutePluginsInstalledSecrets-form,
+		.RoutePluginsInstalledSecrets-env,
+		.RoutePluginsInstalledSecretItem {
+			grid-template-columns: minmax(0, 1fr);
+			align-items: stretch;
+		}
+	}
+}

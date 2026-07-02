@@ -3,12 +3,12 @@ import "./main-app-sidebar.css";
 import { memo } from "react";
 import type { Ref } from "react";
 import type { LucideIcon } from "lucide-react";
-import { FileText, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, UserRoundCog, Users } from "lucide-react";
+import { FileText, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Puzzle, Sun, UserRoundCog, Users } from "lucide-react";
 import { Link, useRouterState, type RegisteredRouter } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { url_path_chat, url_path_files, url_path_users } from "@/lib/urls.ts";
+import { url_path_chat, url_path_files, url_path_plugins, url_path_users } from "@/lib/urls.ts";
 
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -382,6 +382,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 	const chatPath = url_path_chat({ organizationName, workspaceName });
 	const filesPath = url_path_files({ organizationName, workspaceName });
 	const usersPath = url_path_users({ organizationName, workspaceName });
+	const pluginsPath = url_path_plugins({ organizationName, workspaceName });
 
 	const [isOpen, setIsOpen] = useAppLocalStorageStateValue("app_state::sidebar::main_app_open");
 	const [mainAppSidebarCollapsed, setMainAppSidebarCollapsed] = useAppLocalStorageStateValue(
@@ -449,6 +450,12 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						label="Files"
 						icon={FileText}
 						tooltip={mainAppSidebarCollapsed ? "Files" : undefined}
+					/>
+					<MainAppSidebarItem
+						to={pluginsPath}
+						label="Plugins"
+						icon={Puzzle}
+						tooltip={mainAppSidebarCollapsed ? "Plugins" : undefined}
 					/>
 					{/* Personal organizations keep member management out of main nav; direct URLs stay guarded/read-only. */}
 					{showUsersNavigation ? (

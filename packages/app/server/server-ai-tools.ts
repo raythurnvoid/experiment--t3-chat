@@ -12,9 +12,11 @@ import { path_name_of, server_path_normalize, server_path_parent_of } from "./se
 import { minimatch } from "minimatch";
 import {
 	files_MOUNT_ROOT,
+	files_SYSTEM_ROOT,
 	files_ROOT_ID,
 	files_get_normalized_node_path_segments,
 	files_is_path_under_mount_root,
+	files_is_path_under_system_root,
 } from "./files.ts";
 
 /**
@@ -1113,6 +1115,11 @@ export function ai_chat_tool_create_write_file(
 					`Invalid path: ${normalizedPath}. The ${files_MOUNT_ROOT} tree is a read-only mount of an external source and cannot be written.`,
 				);
 			}
+			if (files_is_path_under_system_root(normalizedPath)) {
+				throw new Error(
+					`Invalid path: ${normalizedPath}. The ${files_SYSTEM_ROOT} tree is reserved for system-generated files and cannot be written.`,
+				);
+			}
 			const normalizedPathSegments = files_get_normalized_node_path_segments({
 				kind: "file",
 				nameOrPath: normalizedPath,
@@ -1246,6 +1253,11 @@ export function ai_chat_tool_create_edit_file(
 			if (files_is_path_under_mount_root(normalizedPath)) {
 				throw new Error(
 					`Invalid path: ${normalizedPath}. The ${files_MOUNT_ROOT} tree is a read-only mount of an external source and cannot be edited.`,
+				);
+			}
+			if (files_is_path_under_system_root(normalizedPath)) {
+				throw new Error(
+					`Invalid path: ${normalizedPath}. The ${files_SYSTEM_ROOT} tree is reserved for system-generated files and cannot be edited.`,
 				);
 			}
 

@@ -15,6 +15,10 @@ export function url_path_users(args: { organizationName: string; workspaceName: 
 	return `/w/${args.organizationName}/${args.workspaceName}/users`;
 }
 
+export function url_path_plugins(args: { organizationName: string; workspaceName: string }) {
+	return `/w/${args.organizationName}/${args.workspaceName}/plugins`;
+}
+
 export function app_tenantPaths_scopeKey(args: { organizationId: string; workspaceId: string }) {
 	return `${args.organizationId}::${args.workspaceId}`;
 }

@@ -1,0 +1,14 @@
+{
+	"name": "bonobo-senate-plugin-runner",
+	"private": true,
+	"version": "0.0.0",
+	"license": "Apache-2.0",
+	"type": "module",
+	"scripts": {
+		"deploy": "pnpx wrangler deploy",
+		"dev": "pnpx wrangler dev --remote",
+		"tail": "pnpx wrangler tail",
+		"typecheck": "pnpm --dir ../app exec tsc --project ../plugin-runner/tsconfig.json --noEmit",
+		"test": "pnpm --dir ../app exec vitest run --config ../plugin-runner/vitest.config.mjs"
+	}
+}

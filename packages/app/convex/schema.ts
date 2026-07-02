@@ -2,8 +2,27 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { vWorkId } from "@convex-dev/workpool";
 import type { ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
-import { organizations_GLOBAL_ORGANIZATION_ID, organizations_GLOBAL_GITHUB_WORKSPACE_ID } from "../shared/organizations.ts";
+import {
+	organizations_GLOBAL_ORGANIZATION_ID,
+	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+} from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
+
+const plugins_capability_validator = v.union(
+	v.literal("uploads.source.read"),
+	v.literal("files.source.temporaryUrl"),
+	v.literal("files.markdown.write"),
+	v.literal("plugin.secrets.read"),
+	v.literal("outbound.fetch"),
+	v.literal("ai.generateText"),
+	v.literal("ai.transcribeAudio"),
+	v.literal("ai.transcribeSourceAudio"),
+	v.literal("media.video.frame"),
+	v.literal("media.video.audioSegment"),
+	v.literal("pdf.toMarkdown"),
+	v.literal("gallery.media.read"),
+	v.literal("gallery.documents.read"),
+);
 
 const app_convex_schema = defineSchema({
 	// #region ai
@@ -32,7 +51,12 @@ const app_convex_schema = defineSchema({
 		 * timestamp in milliseconds
 		 **/
 		lastMessageAt: v.optional(v.number()),
-	}).index("by_organization_workspace_archived_lastMessageAt", ["organizationId", "workspaceId", "archived", "lastMessageAt"]),
+	}).index("by_organization_workspace_archived_lastMessageAt", [
+		"organizationId",
+		"workspaceId",
+		"archived",
+		"lastMessageAt",
+	]),
 
 	ai_chat_threads_state: defineTable({
 		organizationId: v.string(),
@@ -236,7 +260,12 @@ const app_convex_schema = defineSchema({
 			"fileNodeId",
 			"qualifiedField",
 		])
-		.index("by_organization_workspace_fileNode_qualifiedField", ["organizationId", "workspaceId", "fileNodeId", "qualifiedField"])
+		.index("by_organization_workspace_fileNode_qualifiedField", [
+			"organizationId",
+			"workspaceId",
+			"fileNodeId",
+			"qualifiedField",
+		])
 		.index("by_pendingUpdate_qualifiedField", ["pendingUpdateId", "qualifiedField"])
 		.index("by_org_workspace_archive_docKind_qualifiedField_tree", [
 			"organizationId",
@@ -348,7 +377,12 @@ const app_convex_schema = defineSchema({
 			"archiveOperationId",
 			"updatedAt",
 		])
-		.index("by_organization_workspace_path_archiveOperation", ["organizationId", "workspaceId", "path", "archiveOperationId"])
+		.index("by_organization_workspace_path_archiveOperation", [
+			"organizationId",
+			"workspaceId",
+			"path",
+			"archiveOperationId",
+		])
 		.index("by_organization_workspace_treePath", ["organizationId", "workspaceId", "treePath"])
 		.index("by_organization_workspace_archiveOperation_treePath", [
 			"organizationId",
@@ -451,7 +485,12 @@ const app_convex_schema = defineSchema({
 			"endIndex",
 			"chunkIndex",
 		])
-		.index("by_organization_workspace_fileNode_chunkIndex", ["organizationId", "workspaceId", "fileNodeId", "chunkIndex"])
+		.index("by_organization_workspace_fileNode_chunkIndex", [
+			"organizationId",
+			"workspaceId",
+			"fileNodeId",
+			"chunkIndex",
+		])
 		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"])
 		.index("by_pendingUpdate_lineEnd_chunkIndex", ["pendingUpdateId", "lineEnd", "chunkIndex"])
 		.index("by_pendingUpdate_endIndex_chunkIndex", ["pendingUpdateId", "endIndex", "chunkIndex"]),
@@ -502,7 +541,12 @@ const app_convex_schema = defineSchema({
 			"yjsSequence",
 			"chunkIndex",
 		])
-		.index("by_organization_workspace_fileNode_chunkIndex", ["organizationId", "workspaceId", "fileNodeId", "chunkIndex"])
+		.index("by_organization_workspace_fileNode_chunkIndex", [
+			"organizationId",
+			"workspaceId",
+			"fileNodeId",
+			"chunkIndex",
+		])
 		.index("by_pendingUpdate_chunkIndex", ["pendingUpdateId", "chunkIndex"]),
 
 	files_yjs_snapshots: defineTable({
@@ -572,7 +616,12 @@ const app_convex_schema = defineSchema({
 		 * unarchived, and > 0 for the archive timestamp in milliseconds.
 		 */
 		archivedAt: v.number(),
-	}).index("by_organization_workspace_fileNode_archivedAt", ["organizationId", "workspaceId", "fileNodeId", "archivedAt"]),
+	}).index("by_organization_workspace_fileNode_archivedAt", [
+		"organizationId",
+		"workspaceId",
+		"fileNodeId",
+		"archivedAt",
+	]),
 
 	files_r2_assets: defineTable({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
@@ -633,6 +682,295 @@ const app_convex_schema = defineSchema({
 		pendingTreeSha: v.optional(v.string()),
 	}).index("by_name", ["name"]),
 	// #endregion files
+
+	// #region plugins
+	plugins_publishers: defineTable({
+		slug: v.string(),
+		displayName: v.string(),
+		ownerUserId: v.id("users"),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_slug", ["slug"])
+		.index("by_ownerUser", ["ownerUserId"]),
+
+	plugins_publisher_repositories: defineTable({
+		publisherId: v.id("plugins_publishers"),
+		repositoryUrl: v.string(),
+		owner: v.string(),
+		repo: v.string(),
+		createdAt: v.number(),
+	})
+		.index("by_publisher", ["publisherId"])
+		.index("by_repositoryUrl", ["repositoryUrl"]),
+
+	plugins_publisher_secrets: defineTable({
+		publisherId: v.id("plugins_publishers"),
+		name: v.string(),
+		ciphertext: v.string(),
+		nonce: v.string(),
+		keyVersion: v.number(),
+		valuePreview: v.string(),
+		/** Exact https origins this secret may travel to; unioned into the per-run outbound allowlist. */
+		allowedOrigins: v.array(v.string()),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+		lastUsedAt: v.optional(v.number()),
+	})
+		.index("by_publisher_name", ["publisherId", "name"])
+		.index("by_publisher", ["publisherId"]),
+
+	plugins_versions: defineTable({
+		name: v.string(),
+		displayName: v.string(),
+		version: v.string(),
+		description: v.string(),
+		publisherId: v.id("plugins_publishers"),
+		reviewStatus: v.union(v.literal("pending"), v.literal("passed"), v.literal("rejected"), v.literal("flagged")),
+		runtimeVersion: v.literal("1"),
+		artifactHash: v.string(),
+		sourceRepositoryUrl: v.string(),
+		sourceOwner: v.string(),
+		sourceRepo: v.string(),
+		sourceDefaultBranch: v.string(),
+		sourceCommitSha: v.string(),
+		manifestR2Key: v.string(),
+		artifactR2Key: v.string(),
+		backend: v.union(
+			v.object({
+				entry: v.string(),
+				moduleName: v.string(),
+				r2Key: v.string(),
+				compatibilityDate: v.string(),
+				compatibilityFlags: v.array(v.string()),
+			}),
+			v.null(),
+		),
+		events: v.array(
+			v.object({
+				type: v.literal("files.upload.completed"),
+				contentTypes: v.array(v.string()),
+			}),
+		),
+		pages: v.array(
+			v.object({
+				name: v.string(),
+				displayName: v.string(),
+				html: v.string(),
+				assets: v.array(v.string()),
+			}),
+		),
+		capabilities: v.array(plugins_capability_validator),
+		/** Exact https origins the plugin's code declares it calls; consented at install. */
+		outboundOrigins: v.array(v.string()),
+		files: v.array(
+			v.object({
+				path: v.string(),
+				sha256: v.string(),
+				bytes: v.number(),
+				contentType: v.string(),
+				r2Key: v.optional(v.string()),
+			}),
+		),
+		sourceMountName: v.union(v.string(), v.null()),
+		createdBy: v.id("users"),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_name", ["name"])
+		.index("by_name_version", ["name", "version"])
+		.index("by_name_version_artifactHash", ["name", "version", "artifactHash"])
+		.index("by_sourceRepositoryUrl_sourceCommitSha", ["sourceRepositoryUrl", "sourceCommitSha"]),
+
+	plugins_version_reviews: defineTable({
+		publisherId: v.id("plugins_publishers"),
+		artifactHash: v.string(),
+		pluginName: v.string(),
+		version: v.string(),
+		status: v.union(v.literal("passed"), v.literal("rejected"), v.literal("flagged")),
+		mechanicalFindings: v.array(v.string()),
+		aiFindings: v.array(v.string()),
+		model: v.string(),
+		/** Artifact hash of the previous passed version when the AI review was diff-based. */
+		diffBaseArtifactHash: v.optional(v.string()),
+		createdAt: v.number(),
+	})
+		.index("by_artifactHash", ["artifactHash"])
+		.index("by_publisher", ["publisherId"]),
+
+	plugins_source_mounts: defineTable({
+		pluginVersionId: v.id("plugins_versions"),
+		sourceRepositoryUrl: v.string(),
+		sourceCommitSha: v.string(),
+		artifactHash: v.string(),
+		mountKind: v.literal("global-github-temporary"),
+		mountName: v.string(),
+		mountPath: v.string(),
+		storageOrganizationId: v.literal(organizations_GLOBAL_ORGANIZATION_ID),
+		storageWorkspaceId: v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+		status: v.union(v.literal("ready"), v.literal("error")),
+		fileCount: v.number(),
+		totalBytes: v.number(),
+		lastError: v.union(v.string(), v.null()),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_pluginVersion", ["pluginVersionId"])
+		.index("by_mountName", ["mountName"]),
+
+	plugins_workspace_installations: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		pluginVersionId: v.id("plugins_versions"),
+		pluginName: v.string(),
+		status: v.union(v.literal("enabled"), v.literal("disabled")),
+		acceptedCapabilities: v.array(plugins_capability_validator),
+		capabilitiesAcceptedAt: v.number(),
+		acceptedOutboundOrigins: v.array(v.string()),
+		outboundOriginsAcceptedAt: v.number(),
+		installedBy: v.id("users"),
+		updatedBy: v.id("users"),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_organization_workspace_updatedAt", ["organizationId", "workspaceId", "updatedAt"])
+		.index("by_organization_workspace_status_updatedAt", ["organizationId", "workspaceId", "status", "updatedAt"])
+		.index("by_organization_workspace_pluginName", ["organizationId", "workspaceId", "pluginName"])
+		.index("by_organization_workspace_pluginVersion", ["organizationId", "workspaceId", "pluginVersionId"])
+		.index("by_pluginVersion", ["pluginVersionId"]),
+
+	plugins_workspace_installation_secrets: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginName: v.string(),
+		name: v.string(),
+		ciphertext: v.string(),
+		nonce: v.string(),
+		keyVersion: v.number(),
+		valuePreview: v.string(),
+		createdBy: v.id("users"),
+		updatedBy: v.id("users"),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_installation_name", ["installationId", "name"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	plugins_workspace_event_handlers: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginVersionId: v.id("plugins_versions"),
+		pluginName: v.string(),
+		event: v.literal("files.upload.completed"),
+		contentType: v.string(),
+		status: v.union(v.literal("enabled"), v.literal("disabled")),
+		installationCreatedAt: v.number(),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_scope_event_status_contentType_createdAt_name", [
+			"organizationId",
+			"workspaceId",
+			"event",
+			"status",
+			"contentType",
+			"installationCreatedAt",
+			"pluginName",
+		])
+		.index("by_installation", ["installationId"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	plugins_event_runs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		sourceAssetId: v.id("files_r2_assets"),
+		sourceFileNodeId: v.id("files_nodes"),
+		actorUserId: v.id("users"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginVersionId: v.id("plugins_versions"),
+		event: v.literal("files.upload.completed"),
+		eventId: v.string(),
+		status: v.union(v.literal("queued"), v.literal("running"), v.literal("succeeded"), v.literal("failed")),
+		workId: v.optional(vWorkId),
+		outputFileNodeId: v.optional(v.id("files_nodes")),
+		outputAssetId: v.optional(v.id("files_r2_assets")),
+		hostTokenHash: v.optional(v.string()),
+		hostTokenExpiresAt: v.optional(v.number()),
+		acceptedCapabilities: v.array(plugins_capability_validator),
+		expiresAt: v.number(),
+		hostCallCount: v.number(),
+		hostWriteCount: v.number(),
+		errorMessage: v.union(v.string(), v.null()),
+		runnerHttpStatus: v.optional(v.number()),
+		runnerElapsedMs: v.optional(v.number()),
+		pluginStatus: v.optional(v.number()),
+		runnerOutputBytes: v.optional(v.number()),
+		runnerOutputTruncated: v.optional(v.boolean()),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+		startedAt: v.optional(v.number()),
+		finishedAt: v.optional(v.number()),
+	})
+		.index("by_sourceAsset_event_installation", ["sourceAssetId", "event", "installationId"])
+		.index("by_organization_workspace_event_status_updatedAt", [
+			"organizationId",
+			"workspaceId",
+			"event",
+			"status",
+			"updatedAt",
+		])
+		.index("by_organization_workspace_updatedAt", ["organizationId", "workspaceId", "updatedAt"])
+		.index("by_work", ["workId"])
+		.index("by_hostTokenHash", ["hostTokenHash"])
+		.index("by_installation_updatedAt", ["installationId", "updatedAt"]),
+
+	plugins_event_run_calls: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		runId: v.id("plugins_event_runs"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginVersionId: v.id("plugins_versions"),
+		sequence: v.number(),
+		operation: v.union(
+			v.literal("writeMarkdown"),
+			v.literal("generateText"),
+			v.literal("sourceTemporaryUrl"),
+			v.literal("secretGet"),
+			v.literal("transcribeAudio"),
+			v.literal("outboundFetch"),
+		),
+		status: v.union(v.literal("started"), v.literal("succeeded"), v.literal("failed")),
+		outputPath: v.optional(v.string()),
+		outputOverwrite: v.optional(v.union(v.literal("replace"), v.literal("fail"))),
+		markdownBytes: v.optional(v.number()),
+		expiresInSeconds: v.optional(v.number()),
+		temporaryUrlExpiresAt: v.optional(v.number()),
+		secretName: v.optional(v.string()),
+		secretFound: v.optional(v.boolean()),
+		secretTier: v.optional(v.union(v.literal("installation"), v.literal("publisher"))),
+		systemBytes: v.optional(v.number()),
+		promptBytes: v.optional(v.number()),
+		includeSourceImage: v.optional(v.boolean()),
+		maxOutputTokens: v.optional(v.number()),
+		modelId: v.optional(v.string()),
+		sourceBytes: v.optional(v.number()),
+		requestBytes: v.optional(v.number()),
+		responseBytes: v.optional(v.number()),
+		responseStatus: v.optional(v.number()),
+		outputTextBytes: v.optional(v.number()),
+		errorMessage: v.union(v.string(), v.null()),
+		startedAt: v.number(),
+		finishedAt: v.optional(v.number()),
+		elapsedMs: v.optional(v.number()),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_run_sequence", ["runId", "sequence"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_installation_createdAt", ["installationId", "createdAt"]),
+	// #endregion plugins
 
 	// #region chat messages
 	/**
@@ -718,6 +1056,7 @@ const app_convex_schema = defineSchema({
 			v.literal("asset.write"),
 			v.literal("asset.permissions.manage"),
 			v.literal("api.credentials.manage"),
+			v.literal("workspace.plugins.manage"),
 		),
 		createdAt: v.number(),
 		updatedAt: v.number(),
