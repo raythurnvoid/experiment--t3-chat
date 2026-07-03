@@ -1,11 +1,13 @@
 import "./publisher.css";
 
+import { useClerk } from "@clerk/clerk-react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { GitBranch, KeyRound, Plus, Save, ShieldCheck, Store, Trash2, UploadCloud } from "lucide-react";
+import { GitBranch, KeyRound, LogIn, Plus, Save, ShieldCheck, Store, Trash2, UploadCloud } from "lucide-react";
 import { memo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
+import { AppAuthProvider } from "@/components/app-auth.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import {
@@ -114,6 +116,36 @@ const RoutePluginsPublisherCreate = memo(function RoutePluginsPublisherCreate() 
 	);
 });
 // #endregion create form
+
+// #region sign in
+type RoutePluginsPublisherSignIn_ClassNames =
+	| "RoutePluginsPublisherSignIn"
+	| "RoutePluginsPublisherSignIn-description"
+	| "RoutePluginsPublisherSignIn-actions";
+
+const RoutePluginsPublisherSignIn = memo(function RoutePluginsPublisherSignIn() {
+	const clerk = useClerk();
+
+	const handleOpenSignIn = useFn(() => {
+		void clerk.openSignIn();
+	});
+
+	return (
+		<section className={"RoutePluginsPublisherSignIn" satisfies RoutePluginsPublisherSignIn_ClassNames}>
+			<p className={"RoutePluginsPublisherSignIn-description" satisfies RoutePluginsPublisherSignIn_ClassNames}>
+				Publishing plugins requires a signed-in account. Log in to create your publisher identity, claim repositories,
+				and publish plugin versions.
+			</p>
+			<div className={"RoutePluginsPublisherSignIn-actions" satisfies RoutePluginsPublisherSignIn_ClassNames}>
+				<MyButton onClick={handleOpenSignIn}>
+					<LogIn aria-hidden />
+					Log in
+				</MyButton>
+			</div>
+		</section>
+	);
+});
+// #endregion sign in
 
 // #region repositories
 type RoutePluginsPublisherRepositories_ClassNames =
@@ -798,9 +830,10 @@ type RoutePluginsPublisher_ClassNames =
 	| "RoutePluginsPublisherHeader-identity";
 
 function RoutePluginsPublisher() {
-	const myPublisher = useQuery(app_convex_api.plugins.get_my_publisher, {});
+	const auth = AppAuthProvider.useAuth();
+	const myPublisher = useQuery(app_convex_api.plugins.get_my_publisher, auth.isAnonymous === false ? {} : "skip");
 
-	if (myPublisher === undefined) {
+	if (!auth.isAnonymous && myPublisher === undefined) {
 		return (
 			<main
 				className={"RoutePluginsPublisher" satisfies RoutePluginsPublisher_ClassNames}
@@ -821,9 +854,11 @@ function RoutePluginsPublisher() {
 				<div>
 					<h1 className={"RoutePluginsPublisherHeader-title" satisfies RoutePluginsPublisher_ClassNames}>Publisher</h1>
 					<p className={"RoutePluginsPublisherHeader-description" satisfies RoutePluginsPublisher_ClassNames}>
-						{myPublisher
-							? "Manage your publisher identity and the repositories you publish plugins from."
-							: "Create a publisher identity to publish plugins."}
+						{auth.isAnonymous
+							? "Sign in to publish plugins."
+							: myPublisher
+								? "Manage your publisher identity and the repositories you publish plugins from."
+								: "Create a publisher identity to publish plugins."}
 					</p>
 				</div>
 				{myPublisher ? (
@@ -843,6 +878,8 @@ function RoutePluginsPublisher() {
 					<RoutePluginsPublisherReviews publisher={myPublisher.publisher} />
 					<RoutePluginsPublisherSecrets publisher={myPublisher.publisher} />
 				</>
+			) : auth.isAnonymous ? (
+				<RoutePluginsPublisherSignIn />
 			) : (
 				<RoutePluginsPublisherCreate />
 			)}

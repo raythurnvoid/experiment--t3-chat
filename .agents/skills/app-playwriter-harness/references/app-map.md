@@ -32,6 +32,13 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 - List item primary actions use `Select organization: <name>` / `Select workspace: <name>`.
 - List item overflow menus use `More actions for organization: <name>` / `More actions for workspace: <name>`.
 
+## Plugins Publisher Route
+
+- Route shape: `/w/:organizationName/:workspaceName/plugins/publisher`.
+- Signed-in with a publisher: sections `.RoutePluginsPublisherRepositories`, `.RoutePluginsPublisherReviews`, `.RoutePluginsPublisherSecrets`; header identity `.RoutePluginsPublisherHeader-identity`.
+- Signed-in without a publisher: create form `.RoutePluginsPublisherCreate`.
+- Anonymous: sign-in gate `.RoutePluginsPublisherSignIn` with a `Log in` button that opens the Clerk sign-in modal; the create form and management sections must not render.
+
 ## Stable App Element IDs
 
 - `root`

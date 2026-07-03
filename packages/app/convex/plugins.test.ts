@@ -1653,6 +1653,56 @@ describe("plugins publisher", () => {
 		const missing = await asOwner.mutation(api.plugins.remove_repository, { repositoryId });
 		expect(missing).toEqual({ _nay: { message: "Not found" } });
 	});
+
+	test("rejects anonymous users for publisher management and publish authorization", async () => {
+		const t = test_convex();
+		const ownerUserId = await create_publisher_user(t);
+		const publisherId = await create_publisher_doc(t, ownerUserId, "bonobo");
+		const repositoryId = await t.run((ctx) =>
+			ctx.db.insert("plugins_publisher_repositories", {
+				publisherId,
+				repositoryUrl: "https://github.com/bonobo/media-plugin",
+				owner: "bonobo",
+				repo: "media-plugin",
+				createdAt: Date.now(),
+			}),
+		);
+		// Same user id as the publisher owner: even the owner is rejected while authenticated anonymously.
+		const asAnonymous = t.withIdentity({
+			issuer: process.env.VITE_CONVEX_HTTP_URL!,
+			subject: ownerUserId,
+			name: "Anonymous Publisher",
+		});
+
+		const created = await asAnonymous.mutation(api.plugins.create_publisher, {
+			slug: "anon-publisher",
+			displayName: "Anon Publisher",
+		});
+		expect(created).toEqual({ _nay: { message: "Sign in to publish plugins" } });
+
+		const claimed = await asAnonymous.mutation(api.plugins.claim_repository, {
+			publisherId,
+			repositoryUrl: "https://github.com/bonobo/other-plugin",
+		});
+		expect(claimed).toEqual({ _nay: { message: "Sign in to publish plugins" } });
+
+		const removed = await asAnonymous.mutation(api.plugins.remove_repository, { repositoryId });
+		expect(removed).toEqual({ _nay: { message: "Sign in to publish plugins" } });
+
+		const authorized = await asAnonymous.mutation(internal.plugins.authorize_publish_scope, {
+			publisherId,
+			repositoryId,
+		});
+		expect(authorized).toEqual({ _nay: { message: "Sign in to publish plugins" } });
+
+		const authorizedSignedIn = await t
+			.withIdentity(user_identity(ownerUserId))
+			.mutation(internal.plugins.authorize_publish_scope, { publisherId, repositoryId });
+		if (authorizedSignedIn._nay) {
+			throw new Error(authorizedSignedIn._nay.message);
+		}
+		expect(authorizedSignedIn._yay).toMatchObject({ userId: ownerUserId, publisherSlug: "bonobo" });
+	});
 });
 
 describe("plugins publisher secrets", () => {
@@ -1772,6 +1822,50 @@ describe("plugins publisher secrets", () => {
 		expect(
 			await asOther.mutation(api.plugins.delete_publisher_secret, { publisherId, name: "OPENAI_API_KEY" }),
 		).toEqual({ _nay: { message: "Unauthorized" } });
+	});
+
+	test("rejects publisher secret mutations from anonymous users", async () => {
+		const t = test_convex();
+		const ownerUserId = await create_publisher_user(t);
+		const publisherId = await create_publisher_doc(t, ownerUserId, "bonobo");
+		const asAnonymous = t.withIdentity({
+			issuer: process.env.VITE_CONVEX_HTTP_URL!,
+			subject: ownerUserId,
+			name: "Anonymous Publisher",
+		});
+
+		expect(
+			await asAnonymous.mutation(api.plugins.upsert_publisher_secret, {
+				publisherId,
+				name: "OPENAI_API_KEY",
+				value: "sk-publisher-secret",
+				allowedOrigins: [],
+			}),
+		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
+		expect(
+			await asAnonymous.mutation(api.plugins.upsert_publisher_secrets, {
+				publisherId,
+				secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
+			}),
+		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
+		expect(
+			await asAnonymous.mutation(api.plugins.update_publisher_secret_origins, {
+				publisherId,
+				name: "OPENAI_API_KEY",
+				allowedOrigins: ["https://api.openai.com"],
+			}),
+		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
+		expect(
+			await asAnonymous.mutation(api.plugins.delete_publisher_secret, { publisherId, name: "OPENAI_API_KEY" }),
+		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
+
+		const secrets = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_publisher_secrets")
+				.withIndex("by_publisher", (q) => q.eq("publisherId", publisherId))
+				.take(10),
+		);
+		expect(secrets).toEqual([]);
 	});
 
 	test("rejects allowed origins that are not bare https origins", async () => {

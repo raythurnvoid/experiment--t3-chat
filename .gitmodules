@@ -145,3 +145,9 @@
 [submodule "references-submodules/cloudflare-agents"]
 	path = references-submodules/cloudflare-agents
 	url = ../../cloudflare/agents.git
+[submodule "plugins/bonobo-plugin-pdf"]
+	path = plugins/bonobo-plugin-pdf
+	url = https://github.com/raythurnvoid/bonobo-plugin-pdf.git
+[submodule "plugins/bonobo-plugin-media"]
+	path = plugins/bonobo-plugin-media
+	url = https://github.com/raythurnvoid/bonobo-plugin-media.git

@@ -183,7 +183,7 @@ describe("plugins_consent_diff", () => {
 describe("plugins_dist_review_mechanical_findings", () => {
 	function read_first_party_dist(plugin: "media" | "pdf") {
 		// vitest runs with cwd at packages/app; import.meta.url is a vite /@fs URL here.
-		return readFileSync(`${process.cwd()}/../first-party-plugins/${plugin}/dist/backend/worker.js`, "utf8");
+		return readFileSync(`${process.cwd()}/../../plugins/bonobo-plugin-${plugin}/dist/backend/worker.js`, "utf8");
 	}
 
 	test("the real readable first-party dists pass", () => {

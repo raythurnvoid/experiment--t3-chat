@@ -204,7 +204,7 @@ export function plugins_parse_github_repository_url(raw: string) {
 	});
 }
 
-// Thresholds calibrated against the first-party readable dists (max line 278,
+// Thresholds calibrated against the first-party plugin readable dists (max line 278,
 // avg line 33, single-char identifier share 0.072) vs the same worker minified
 // with esbuild (max line 3228, avg 316, share 0.482).
 const plugins_dist_max_line_length = 1000;

@@ -815,8 +815,8 @@ export const authorize_publish_scope = internalMutation({
 	}),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return Result({ _nay: { message: "Sign in to publish plugins" } });
 		}
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
 		if (rateLimit) {
@@ -1379,8 +1379,8 @@ export const create_publisher = mutation({
 	returns: v_result({ _yay: v.object({ publisherId: v.id("plugins_publishers"), slug: v.string() }) }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return Result({ _nay: { message: "Sign in to publish plugins" } });
 		}
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
 		if (rateLimit) {
@@ -1464,8 +1464,8 @@ export const claim_repository = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return Result({ _nay: { message: "Sign in to publish plugins" } });
 		}
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
 		if (rateLimit) {
@@ -1512,8 +1512,8 @@ export const remove_repository = mutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return Result({ _nay: { message: "Sign in to publish plugins" } });
 		}
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
 		if (rateLimit) {
@@ -1636,8 +1636,8 @@ export const upsert_publisher_secret = mutation({
 	returns: v_result({ _yay: v.object({ secretId: v.id("plugins_publisher_secrets") }) }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return Result({ _nay: { message: "Sign in to publish plugins" } });
 		}
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
 		if (rateLimit) {
@@ -1684,8 +1684,8 @@ export const upsert_publisher_secrets = mutation({
 	returns: v_result({ _yay: v.object({ count: v.number() }) }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return Result({ _nay: { message: "Sign in to publish plugins" } });
 		}
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
 		if (rateLimit) {
@@ -1738,8 +1738,8 @@ export const update_publisher_secret_origins = mutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return Result({ _nay: { message: "Sign in to publish plugins" } });
 		}
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
 		if (rateLimit) {
@@ -1785,8 +1785,8 @@ export const delete_publisher_secret = mutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return Result({ _nay: { message: "Sign in to publish plugins" } });
 		}
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
 		if (rateLimit) {
