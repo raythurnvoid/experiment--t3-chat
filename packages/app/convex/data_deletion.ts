@@ -1108,12 +1108,6 @@ async function db_finalize_deleted_user(
 		.query("files_pending_updates")
 		.withIndex("by_user_fileNode", (q) => q.eq("userId", userIdString))
 		.collect();
-	// Publisher docs have repo-claim children. Gather those children before deletion
-	// so they can be deleted before their parent publisher docs.
-	const publishersPromise = ctx.db
-		.query("plugins_publishers")
-		.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", user._id))
-		.collect();
 	// Load all user-scoped docs needed for finalization before deleting them.
 	// Auth and billing docs are conditional because data-only and auth-preserving
 	// deletion paths must keep those docs.
@@ -1130,7 +1124,6 @@ async function db_finalize_deleted_user(
 		apiCredentials,
 		publicApiGrants,
 		billingUsageSnapshots,
-		publishers,
 		publisherRepositories,
 		publisherSecrets,
 		publisherVersionReviews,
@@ -1218,43 +1211,18 @@ async function db_finalize_deleted_user(
 					.withIndex("by_user", (q) => q.eq("userId", user._id))
 					.collect()
 			: Promise.resolve([] as Array<Doc<"billing_usage_snapshots">>),
-		publishersPromise,
-		publishersPromise.then(async (docs) =>
-			(
-				await Promise.all(
-					docs.map((doc) =>
-						ctx.db
-							.query("plugins_publisher_repositories")
-							.withIndex("by_publisher", (q) => q.eq("publisherId", doc._id))
-							.collect(),
-					),
-				)
-			).flat(),
-		),
-		publishersPromise.then(async (docs) =>
-			(
-				await Promise.all(
-					docs.map((doc) =>
-						ctx.db
-							.query("plugins_publisher_secrets")
-							.withIndex("by_publisher", (q) => q.eq("publisherId", doc._id))
-							.collect(),
-					),
-				)
-			).flat(),
-		),
-		publishersPromise.then(async (docs) =>
-			(
-				await Promise.all(
-					docs.map((doc) =>
-						ctx.db
-							.query("plugins_version_reviews")
-							.withIndex("by_publisher", (q) => q.eq("publisherId", doc._id))
-							.collect(),
-					),
-				)
-			).flat(),
-		),
+		ctx.db
+			.query("plugins_publisher_repositories")
+			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", user._id))
+			.collect(),
+		ctx.db
+			.query("plugins_publisher_secrets")
+			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", user._id))
+			.collect(),
+		ctx.db
+			.query("plugins_version_reviews")
+			.withIndex("by_createdBy", (q) => q.eq("createdBy", user._id))
+			.collect(),
 	]);
 
 	/**
@@ -1305,9 +1273,6 @@ async function db_finalize_deleted_user(
 		...directPermissionGrants.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)),
 		...apiCredentials.map((doc) => ctx.db.delete("api_credentials", doc._id)),
 		...publicApiGrants.map((doc) => ctx.db.delete("public_api_grants", doc._id)),
-		// Publisher records are user-owned identity docs; published plugins_versions
-		// keep their publisherId reference and stay installable after the publisher is gone.
-		...publishers.map((doc) => ctx.db.delete("plugins_publishers", doc._id)),
 		// Keep auth identifiers for auth-preserving deletion finalization; auth purges
 		// remove both the external Clerk pointer and the anonymous token that can mint sessions.
 		...(args.deleteUserAuth ? anonymousAuthTokens.map((doc) => ctx.db.delete("users_anon_tokens", doc._id)) : []),

@@ -32,12 +32,14 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 - List item primary actions use `Select organization: <name>` / `Select workspace: <name>`.
 - List item overflow menus use `More actions for organization: <name>` / `More actions for workspace: <name>`.
 
-## Plugins Publisher Route
+## Plugins Routes
 
-- Route shape: `/w/:organizationName/:workspaceName/plugins/publisher`.
-- Signed-in with a publisher: sections `.RoutePluginsPublisherRepositories`, `.RoutePluginsPublisherReviews`, `.RoutePluginsPublisherSecrets`; header identity `.RoutePluginsPublisherHeader-identity`.
-- Signed-in without a publisher: create form `.RoutePluginsPublisherCreate`.
-- Anonymous: sign-in gate `.RoutePluginsPublisherSignIn` with a `Log in` button that opens the Clerk sign-in modal; the create form and management sections must not render.
+- Workspace plugins page: `/w/:organizationName/:workspaceName/plugins`. Marketplace gallery section `.RoutePluginsGallery` with search input `.RoutePluginsGallery-search`, card grid `.RoutePluginsGallery-grid`, cards `.RoutePluginsGalleryCard` (footer holds the Install/Update/Reinstall button and a green `Installed` indicator). Installing opens the consent dialog `.RoutePluginsGalleryConsentModal` (Ariakit modal: stays in the DOM as `hidden` when closed — wait for state `hidden`, not `detached`). Installed plugin panels: `.RoutePluginsInstalled`.
+- Publisher home: `/w/:organizationName/:workspaceName/plugins/publisher`.
+  - Signed-in with a publisher: sections `.RoutePluginsPublisherPlugins` (claim form + per-repo card links `.RoutePluginsPublisherPluginCard`) and `.RoutePluginsPublisherSecrets`; header identity `.RoutePluginsPublisherIdentity`.
+  - Signed-in without a publisher: create form `.RoutePluginsPublisherCreate`.
+  - Anonymous: sign-in gate `.RoutePluginsPublisherSignIn` with a `Log in` button that opens the Clerk sign-in modal; the create form and management sections must not render.
+- Publisher plugin detail: `/w/:organizationName/:workspaceName/plugins/publisher/:repositoryId` (navigate by clicking a `.RoutePluginsPublisherPluginCard`). Root `.RoutePluginsPublisherRepository`; hero `.RoutePluginsPublisherRepositoryHero` (Publish + remove-claim actions); sections `.RoutePluginsPublisherRepositoryVersions` and `.RoutePluginsPublisherRepositoryReviews`.
 
 ## Stable App Element IDs
 

@@ -15,7 +15,8 @@ import { Route as WOrganizationNameWorkspaceNameUsersIndexRouteImport } from './
 import { Route as WOrganizationNameWorkspaceNamePluginsIndexRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/index'
 import { Route as WOrganizationNameWorkspaceNameFilesIndexRouteImport } from './routes/w/$organizationName/$workspaceName/files/index'
 import { Route as WOrganizationNameWorkspaceNameChatIndexRouteImport } from './routes/w/$organizationName/$workspaceName/chat/index'
-import { Route as WOrganizationNameWorkspaceNamePluginsPublisherRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/publisher'
+import { Route as WOrganizationNameWorkspaceNamePluginsPublisherIndexRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/publisher/index'
+import { Route as WOrganizationNameWorkspaceNamePluginsPublisherRepositoryIdRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/publisher/$repositoryId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -52,69 +53,81 @@ const WOrganizationNameWorkspaceNameChatIndexRoute =
     path: '/chat/',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
-const WOrganizationNameWorkspaceNamePluginsPublisherRoute =
-  WOrganizationNameWorkspaceNamePluginsPublisherRouteImport.update({
-    id: '/plugins/publisher',
-    path: '/plugins/publisher',
+const WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute =
+  WOrganizationNameWorkspaceNamePluginsPublisherIndexRouteImport.update({
+    id: '/plugins/publisher/',
+    path: '/plugins/publisher/',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
+const WOrganizationNameWorkspaceNamePluginsPublisherRepositoryIdRoute =
+  WOrganizationNameWorkspaceNamePluginsPublisherRepositoryIdRouteImport.update({
+    id: '/plugins/publisher/$repositoryId',
+    path: '/plugins/publisher/$repositoryId',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/w/$organizationName/$workspaceName': typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
-  '/w/$organizationName/$workspaceName/plugins/publisher': typeof WOrganizationNameWorkspaceNamePluginsPublisherRoute
   '/w/$organizationName/$workspaceName/chat/': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/users/': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
+  '/w/$organizationName/$workspaceName/plugins/publisher/$repositoryId': typeof WOrganizationNameWorkspaceNamePluginsPublisherRepositoryIdRoute
+  '/w/$organizationName/$workspaceName/plugins/publisher/': typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/w/$organizationName/$workspaceName': typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
-  '/w/$organizationName/$workspaceName/plugins/publisher': typeof WOrganizationNameWorkspaceNamePluginsPublisherRoute
   '/w/$organizationName/$workspaceName/chat': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/plugins': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/users': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
+  '/w/$organizationName/$workspaceName/plugins/publisher/$repositoryId': typeof WOrganizationNameWorkspaceNamePluginsPublisherRepositoryIdRoute
+  '/w/$organizationName/$workspaceName/plugins/publisher': typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/w/$organizationName/$workspaceName': typeof WOrganizationNameWorkspaceNameRouteRouteWithChildren
-  '/w/$organizationName/$workspaceName/plugins/publisher': typeof WOrganizationNameWorkspaceNamePluginsPublisherRoute
   '/w/$organizationName/$workspaceName/chat/': typeof WOrganizationNameWorkspaceNameChatIndexRoute
   '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/users/': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
+  '/w/$organizationName/$workspaceName/plugins/publisher/$repositoryId': typeof WOrganizationNameWorkspaceNamePluginsPublisherRepositoryIdRoute
+  '/w/$organizationName/$workspaceName/plugins/publisher/': typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
     | '/w/$organizationName/$workspaceName'
-    | '/w/$organizationName/$workspaceName/plugins/publisher'
     | '/w/$organizationName/$workspaceName/chat/'
     | '/w/$organizationName/$workspaceName/files/'
     | '/w/$organizationName/$workspaceName/plugins/'
     | '/w/$organizationName/$workspaceName/users/'
+    | '/w/$organizationName/$workspaceName/plugins/publisher/$repositoryId'
+    | '/w/$organizationName/$workspaceName/plugins/publisher/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/w/$organizationName/$workspaceName'
-    | '/w/$organizationName/$workspaceName/plugins/publisher'
     | '/w/$organizationName/$workspaceName/chat'
     | '/w/$organizationName/$workspaceName/files'
     | '/w/$organizationName/$workspaceName/plugins'
     | '/w/$organizationName/$workspaceName/users'
+    | '/w/$organizationName/$workspaceName/plugins/publisher/$repositoryId'
+    | '/w/$organizationName/$workspaceName/plugins/publisher'
   id:
     | '__root__'
     | '/'
     | '/w/$organizationName/$workspaceName'
-    | '/w/$organizationName/$workspaceName/plugins/publisher'
     | '/w/$organizationName/$workspaceName/chat/'
     | '/w/$organizationName/$workspaceName/files/'
     | '/w/$organizationName/$workspaceName/plugins/'
     | '/w/$organizationName/$workspaceName/users/'
+    | '/w/$organizationName/$workspaceName/plugins/publisher/$repositoryId'
+    | '/w/$organizationName/$workspaceName/plugins/publisher/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -166,28 +179,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WOrganizationNameWorkspaceNameChatIndexRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
-    '/w/$organizationName/$workspaceName/plugins/publisher': {
-      id: '/w/$organizationName/$workspaceName/plugins/publisher'
+    '/w/$organizationName/$workspaceName/plugins/publisher/': {
+      id: '/w/$organizationName/$workspaceName/plugins/publisher/'
       path: '/plugins/publisher'
-      fullPath: '/w/$organizationName/$workspaceName/plugins/publisher'
-      preLoaderRoute: typeof WOrganizationNameWorkspaceNamePluginsPublisherRouteImport
+      fullPath: '/w/$organizationName/$workspaceName/plugins/publisher/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
+    '/w/$organizationName/$workspaceName/plugins/publisher/$repositoryId': {
+      id: '/w/$organizationName/$workspaceName/plugins/publisher/$repositoryId'
+      path: '/plugins/publisher/$repositoryId'
+      fullPath: '/w/$organizationName/$workspaceName/plugins/publisher/$repositoryId'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNamePluginsPublisherRepositoryIdRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
   }
 }
 
 interface WOrganizationNameWorkspaceNameRouteRouteChildren {
-  WOrganizationNameWorkspaceNamePluginsPublisherRoute: typeof WOrganizationNameWorkspaceNamePluginsPublisherRoute
   WOrganizationNameWorkspaceNameChatIndexRoute: typeof WOrganizationNameWorkspaceNameChatIndexRoute
   WOrganizationNameWorkspaceNameFilesIndexRoute: typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   WOrganizationNameWorkspaceNamePluginsIndexRoute: typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   WOrganizationNameWorkspaceNameUsersIndexRoute: typeof WOrganizationNameWorkspaceNameUsersIndexRoute
+  WOrganizationNameWorkspaceNamePluginsPublisherRepositoryIdRoute: typeof WOrganizationNameWorkspaceNamePluginsPublisherRepositoryIdRoute
+  WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute: typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
 }
 
 const WOrganizationNameWorkspaceNameRouteRouteChildren: WOrganizationNameWorkspaceNameRouteRouteChildren =
   {
-    WOrganizationNameWorkspaceNamePluginsPublisherRoute:
-      WOrganizationNameWorkspaceNamePluginsPublisherRoute,
     WOrganizationNameWorkspaceNameChatIndexRoute:
       WOrganizationNameWorkspaceNameChatIndexRoute,
     WOrganizationNameWorkspaceNameFilesIndexRoute:
@@ -196,6 +215,10 @@ const WOrganizationNameWorkspaceNameRouteRouteChildren: WOrganizationNameWorkspa
       WOrganizationNameWorkspaceNamePluginsIndexRoute,
     WOrganizationNameWorkspaceNameUsersIndexRoute:
       WOrganizationNameWorkspaceNameUsersIndexRoute,
+    WOrganizationNameWorkspaceNamePluginsPublisherRepositoryIdRoute:
+      WOrganizationNameWorkspaceNamePluginsPublisherRepositoryIdRoute,
+    WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute:
+      WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute,
   }
 
 const WOrganizationNameWorkspaceNameRouteRouteWithChildren =

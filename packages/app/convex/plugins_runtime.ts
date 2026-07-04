@@ -398,10 +398,10 @@ export const start_event_run = internalMutation({
 			return Result({ _nay: { message: "Plugin backend artifact hash is missing" } });
 		}
 
-		// Per-run egress allowlist: consented artifact origins plus the publisher's secret origins.
+		// Per-run egress allowlist: consented artifact origins plus the publishing user's secret origins.
 		const publisherSecrets = await ctx.db
 			.query("plugins_publisher_secrets")
-			.withIndex("by_publisher", (q) => q.eq("publisherId", version.publisherId))
+			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", version.createdBy))
 			.take(100);
 		const outboundOrigins = [
 			...new Set([

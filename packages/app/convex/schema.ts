@@ -684,28 +684,18 @@ const app_convex_schema = defineSchema({
 	// #endregion files
 
 	// #region plugins
-	plugins_publishers: defineTable({
-		slug: v.string(),
-		displayName: v.string(),
-		ownerUserId: v.id("users"),
-		createdAt: v.number(),
-		updatedAt: v.number(),
-	})
-		.index("by_slug", ["slug"])
-		.index("by_ownerUser", ["ownerUserId"]),
-
 	plugins_publisher_repositories: defineTable({
-		publisherId: v.id("plugins_publishers"),
+		ownerUserId: v.id("users"),
 		repositoryUrl: v.string(),
 		owner: v.string(),
 		repo: v.string(),
 		createdAt: v.number(),
 	})
-		.index("by_publisher", ["publisherId"])
+		.index("by_ownerUser", ["ownerUserId"])
 		.index("by_repositoryUrl", ["repositoryUrl"]),
 
 	plugins_publisher_secrets: defineTable({
-		publisherId: v.id("plugins_publishers"),
+		ownerUserId: v.id("users"),
 		name: v.string(),
 		ciphertext: v.string(),
 		nonce: v.string(),
@@ -717,15 +707,14 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 		lastUsedAt: v.optional(v.number()),
 	})
-		.index("by_publisher_name", ["publisherId", "name"])
-		.index("by_publisher", ["publisherId"]),
+		.index("by_ownerUser_name", ["ownerUserId", "name"])
+		.index("by_ownerUser", ["ownerUserId"]),
 
 	plugins_versions: defineTable({
 		name: v.string(),
 		displayName: v.string(),
 		version: v.string(),
 		description: v.string(),
-		publisherId: v.id("plugins_publishers"),
 		reviewStatus: v.union(v.literal("pending"), v.literal("passed"), v.literal("rejected"), v.literal("flagged")),
 		runtimeVersion: v.literal("1"),
 		artifactHash: v.string(),
@@ -783,7 +772,7 @@ const app_convex_schema = defineSchema({
 		.index("by_sourceRepositoryUrl_sourceCommitSha", ["sourceRepositoryUrl", "sourceCommitSha"]),
 
 	plugins_version_reviews: defineTable({
-		publisherId: v.id("plugins_publishers"),
+		createdBy: v.id("users"),
 		artifactHash: v.string(),
 		pluginName: v.string(),
 		version: v.string(),
@@ -796,7 +785,7 @@ const app_convex_schema = defineSchema({
 		createdAt: v.number(),
 	})
 		.index("by_artifactHash", ["artifactHash"])
-		.index("by_publisher", ["publisherId"]),
+		.index("by_createdBy", ["createdBy"]),
 
 	plugins_source_mounts: defineTable({
 		pluginVersionId: v.id("plugins_versions"),

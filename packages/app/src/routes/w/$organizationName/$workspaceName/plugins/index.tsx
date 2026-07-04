@@ -2,7 +2,7 @@ import "./index.css";
 
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { Clock3, Download, KeyRound, Puzzle, Save, Store, Trash2 } from "lucide-react";
+import { Blocks, Check, Clock3, Download, KeyRound, Puzzle, Save, Search, Store, Trash2 } from "lucide-react";
 import { memo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
@@ -14,10 +14,19 @@ import {
 	MyInputBackground,
 	MyInputBox,
 	MyInputControl,
+	MyInputIcon,
 	MyInputLabel,
 	MyInputTextAreaControl,
 } from "@/components/my-input.tsx";
 import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
+import {
+	MyModal,
+	MyModalCloseTrigger,
+	MyModalDescription,
+	MyModalHeader,
+	MyModalHeading,
+	MyModalPopover,
+} from "@/components/my-modal.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
 	app_convex,
@@ -36,38 +45,46 @@ type RoutePlugins_RegisteredPlugin = app_convex_FunctionReturnType<
 	typeof app_convex_api.plugins.list_registered_plugins
 >[number];
 
-// #region catalog
-type RoutePluginsCatalog_ClassNames =
-	| "RoutePluginsCatalog"
-	| "RoutePluginsCatalog-title"
-	| "RoutePluginsCatalog-description"
-	| "RoutePluginsCatalog-empty"
-	| "RoutePluginsCatalog-list"
-	| "RoutePluginsCatalogItem"
-	| "RoutePluginsCatalogItem-info"
-	| "RoutePluginsCatalogItem-header"
-	| "RoutePluginsCatalogItem-name"
-	| "RoutePluginsCatalogItem-meta"
-	| "RoutePluginsCatalogConsent"
-	| "RoutePluginsCatalogConsent-title"
-	| "RoutePluginsCatalogConsent-list"
-	| "RoutePluginsCatalogConsent-item"
-	| "RoutePluginsCatalogConsent-empty"
-	| "RoutePluginsCatalogConsent-actions";
+// #region gallery
+type RoutePluginsGallery_ClassNames =
+	| "RoutePluginsGallery"
+	| "RoutePluginsGallery-header"
+	| "RoutePluginsGallery-title"
+	| "RoutePluginsGallery-description"
+	| "RoutePluginsGallery-search"
+	| "RoutePluginsGallery-empty"
+	| "RoutePluginsGallery-grid"
+	| "RoutePluginsGalleryCard"
+	| "RoutePluginsGalleryCard-header"
+	| "RoutePluginsGalleryCard-icon"
+	| "RoutePluginsGalleryCard-identity"
+	| "RoutePluginsGalleryCard-name"
+	| "RoutePluginsGalleryCard-publisher"
+	| "RoutePluginsGalleryCard-description"
+	| "RoutePluginsGalleryCard-footer"
+	| "RoutePluginsGalleryCard-version"
+	| "RoutePluginsGalleryCard-installed"
+	| "RoutePluginsGalleryConsentModal"
+	| "RoutePluginsGalleryConsentModal-sectionTitle"
+	| "RoutePluginsGalleryConsentModal-list"
+	| "RoutePluginsGalleryConsentModal-item"
+	| "RoutePluginsGalleryConsentModal-empty"
+	| "RoutePluginsGalleryConsentModal-actions";
 
-type RoutePluginsCatalog_Props = {
+type RoutePluginsGallery_Props = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	installations: Array<RoutePlugins_Installation>;
 };
 
-const RoutePluginsCatalog = memo(function RoutePluginsCatalog(props: RoutePluginsCatalog_Props) {
+const RoutePluginsGallery = memo(function RoutePluginsGallery(props: RoutePluginsGallery_Props) {
 	const { membershipId, installations } = props;
 	const plugins = useQuery(app_convex_api.plugins.list_registered_plugins, { membershipId });
+	const [search, setSearch] = useState("");
 	const [consentingId, setConsentingId] = useState<RoutePlugins_RegisteredPlugin["pluginVersionId"] | null>(null);
-	const [installingId, setInstallingId] = useState<RoutePlugins_RegisteredPlugin["pluginVersionId"] | null>(null);
+	const [installing, setInstalling] = useState(false);
 
 	const handleAcceptAndInstall = useFn((plugin: RoutePlugins_RegisteredPlugin) => {
-		setInstallingId(plugin.pluginVersionId);
+		setInstalling(true);
 		app_convex
 			.action(app_convex_api.plugins.install_version, {
 				membershipId,
@@ -92,146 +109,201 @@ const RoutePluginsCatalog = memo(function RoutePluginsCatalog(props: RoutePlugin
 				toast.error("Failed to install plugin");
 			})
 			.finally(() => {
-				setInstallingId(null);
+				setInstalling(false);
 			});
 	});
 
-	return (
-		<section className={"RoutePluginsCatalog" satisfies RoutePluginsCatalog_ClassNames}>
-			<h2 className={"RoutePluginsCatalog-title" satisfies RoutePluginsCatalog_ClassNames}>
-				<Download aria-hidden />
-				Published plugins
-			</h2>
-			<p className={"RoutePluginsCatalog-description" satisfies RoutePluginsCatalog_ClassNames}>
-				The latest published version of each plugin. Installing asks you to accept the capabilities and outbound origins
-				the plugin requests.
-			</p>
+	const query = search.trim().toLowerCase();
+	const filtered = plugins?.filter(
+		(plugin) =>
+			query.length === 0 ||
+			[plugin.name, plugin.displayName, plugin.description, plugin.publisherDisplayName ?? ""].some((value) =>
+				value.toLowerCase().includes(query),
+			),
+	);
 
-			{plugins === undefined ? (
-				<div className={"RoutePluginsCatalog-empty" satisfies RoutePluginsCatalog_ClassNames} role="status">
+	const consentingPlugin = plugins?.find((plugin) => plugin.pluginVersionId === consentingId) ?? null;
+	const consentingInstalledVersion = consentingPlugin
+		? installations.find((item) => item.installation.pluginName === consentingPlugin.name)?.version
+		: undefined;
+	const consentingDiff = consentingPlugin
+		? plugins_consent_diff({
+				current: consentingInstalledVersion
+					? {
+							capabilities: consentingInstalledVersion.capabilities,
+							outboundOrigins: consentingInstalledVersion.outboundOrigins,
+						}
+					: null,
+				target: { capabilities: consentingPlugin.capabilities, outboundOrigins: consentingPlugin.outboundOrigins },
+			})
+		: null;
+
+	return (
+		<section className={"RoutePluginsGallery" satisfies RoutePluginsGallery_ClassNames}>
+			<div className={"RoutePluginsGallery-header" satisfies RoutePluginsGallery_ClassNames}>
+				<h2 className={"RoutePluginsGallery-title" satisfies RoutePluginsGallery_ClassNames}>
+					<Blocks aria-hidden />
+					Marketplace
+					{plugins !== undefined ? <MyBadge variant="secondary">{plugins.length}</MyBadge> : null}
+				</h2>
+				<p className={"RoutePluginsGallery-description" satisfies RoutePluginsGallery_ClassNames}>
+					The latest published version of each plugin. Installing asks you to accept the capabilities and outbound
+					origins the plugin requests.
+				</p>
+			</div>
+
+			<MyInput className={"RoutePluginsGallery-search" satisfies RoutePluginsGallery_ClassNames} role="search">
+				<MyInputBackground />
+				<MyInputArea>
+					<MyInputIcon>
+						<Search />
+					</MyInputIcon>
+					<MyInputControl
+						type="search"
+						placeholder="Search plugins"
+						value={search}
+						onChange={(event) => setSearch(event.currentTarget.value)}
+					/>
+				</MyInputArea>
+				<MyInputBox />
+			</MyInput>
+
+			{filtered === undefined ? (
+				<div className={"RoutePluginsGallery-empty" satisfies RoutePluginsGallery_ClassNames} role="status">
 					Loading published plugins...
 				</div>
-			) : plugins.length === 0 ? (
-				<div className={"RoutePluginsCatalog-empty" satisfies RoutePluginsCatalog_ClassNames}>
-					No plugins published yet.
+			) : filtered.length === 0 ? (
+				<div className={"RoutePluginsGallery-empty" satisfies RoutePluginsGallery_ClassNames}>
+					{query.length === 0 ? "No plugins published yet." : `No plugins match "${search.trim()}".`}
 				</div>
 			) : (
-				<div className={"RoutePluginsCatalog-list" satisfies RoutePluginsCatalog_ClassNames}>
-					{plugins.map((plugin) => {
+				<div className={"RoutePluginsGallery-grid" satisfies RoutePluginsGallery_ClassNames}>
+					{filtered.map((plugin) => {
 						const installedVersion = installations.find(
 							(item) => item.installation.pluginName === plugin.name,
 						)?.version;
-						const diff = plugins_consent_diff({
-							current: installedVersion
-								? { capabilities: installedVersion.capabilities, outboundOrigins: installedVersion.outboundOrigins }
-								: null,
-							target: { capabilities: plugin.capabilities, outboundOrigins: plugin.outboundOrigins },
-						});
-						const isConsenting = consentingId === plugin.pluginVersionId;
 						return (
-							<div
+							<article
 								key={plugin.pluginVersionId}
-								className={"RoutePluginsCatalogItem" satisfies RoutePluginsCatalog_ClassNames}
+								className={"RoutePluginsGalleryCard" satisfies RoutePluginsGallery_ClassNames}
 							>
-								<div className={"RoutePluginsCatalogItem-info" satisfies RoutePluginsCatalog_ClassNames}>
-									<div className={"RoutePluginsCatalogItem-header" satisfies RoutePluginsCatalog_ClassNames}>
-										<span className={"RoutePluginsCatalogItem-name" satisfies RoutePluginsCatalog_ClassNames}>
+								<div className={"RoutePluginsGalleryCard-header" satisfies RoutePluginsGallery_ClassNames}>
+									<Puzzle className={"RoutePluginsGalleryCard-icon" satisfies RoutePluginsGallery_ClassNames} aria-hidden />
+									<div className={"RoutePluginsGalleryCard-identity" satisfies RoutePluginsGallery_ClassNames}>
+										<span className={"RoutePluginsGalleryCard-name" satisfies RoutePluginsGallery_ClassNames}>
 											{plugin.displayName}
 										</span>
-										<MyBadge
-											variant={
-												plugin.reviewStatus === "rejected"
-													? "destructive"
-													: plugin.reviewStatus === "passed"
-														? "secondary"
-														: "outline"
-											}
-										>
+										<span className={"RoutePluginsGalleryCard-publisher" satisfies RoutePluginsGallery_ClassNames}>
+											{plugin.publisherDisplayName ?? "unknown publisher"}
+										</span>
+									</div>
+									{plugin.reviewStatus !== "passed" ? (
+										<MyBadge variant={plugin.reviewStatus === "rejected" ? "destructive" : "outline"}>
 											{plugin.reviewStatus}
 										</MyBadge>
-									</div>
-									<div className={"RoutePluginsCatalogItem-meta" satisfies RoutePluginsCatalog_ClassNames}>
-										{plugin.name}@{plugin.version} · {plugin.publisherSlug ?? "unknown publisher"}
-									</div>
+									) : null}
 								</div>
-								<MyButton
-									disabled={
-										installingId !== null || plugin.reviewStatus === "rejected" || plugin.reviewStatus === "flagged"
-									}
-									aria-expanded={isConsenting}
-									onClick={() => setConsentingId(isConsenting ? null : plugin.pluginVersionId)}
-								>
-									<Download aria-hidden />
-									{installedVersion?.version === plugin.version ? "Reinstall" : installedVersion ? "Update" : "Install"}
-								</MyButton>
-								{isConsenting ? (
-									<div
-										className={"RoutePluginsCatalogConsent" satisfies RoutePluginsCatalog_ClassNames}
-										role="group"
-										aria-label={`Consent to install ${plugin.displayName} ${plugin.version}`}
+								<p className={"RoutePluginsGalleryCard-description" satisfies RoutePluginsGallery_ClassNames}>
+									{plugin.description.trim().length > 0 ? plugin.description : "No description provided."}
+								</p>
+								<div className={"RoutePluginsGalleryCard-footer" satisfies RoutePluginsGallery_ClassNames}>
+									<span className={"RoutePluginsGalleryCard-version" satisfies RoutePluginsGallery_ClassNames}>
+										v{plugin.version}
+									</span>
+									{installedVersion ? (
+										<span className={"RoutePluginsGalleryCard-installed" satisfies RoutePluginsGallery_ClassNames}>
+											<Check aria-hidden />
+											Installed
+										</span>
+									) : null}
+									<MyButton
+										variant={installedVersion?.version === plugin.version ? "outline" : "default"}
+										disabled={installing || plugin.reviewStatus === "rejected" || plugin.reviewStatus === "flagged"}
+										onClick={() => setConsentingId(plugin.pluginVersionId)}
 									>
-										<div className={"RoutePluginsCatalogConsent-title" satisfies RoutePluginsCatalog_ClassNames}>
-											This plugin can use these capabilities
-										</div>
-										<ul className={"RoutePluginsCatalogConsent-list" satisfies RoutePluginsCatalog_ClassNames}>
-											{plugin.capabilities.map((capability) => (
-												<li
-													key={capability}
-													className={"RoutePluginsCatalogConsent-item" satisfies RoutePluginsCatalog_ClassNames}
-												>
-													{capability}
-													{installedVersion && diff.newCapabilities.includes(capability) ? (
-														<MyBadge variant="secondary">new</MyBadge>
-													) : null}
-												</li>
-											))}
-										</ul>
-										<div className={"RoutePluginsCatalogConsent-title" satisfies RoutePluginsCatalog_ClassNames}>
-											And send requests to these origins
-										</div>
-										{plugin.outboundOrigins.length === 0 ? (
-											<div className={"RoutePluginsCatalogConsent-empty" satisfies RoutePluginsCatalog_ClassNames}>
-												No outbound origins requested.
-											</div>
-										) : (
-											<ul className={"RoutePluginsCatalogConsent-list" satisfies RoutePluginsCatalog_ClassNames}>
-												{plugin.outboundOrigins.map((origin) => (
-													<li
-														key={origin}
-														className={"RoutePluginsCatalogConsent-item" satisfies RoutePluginsCatalog_ClassNames}
-													>
-														{origin}
-														{installedVersion && diff.newOutboundOrigins.includes(origin) ? (
-															<MyBadge variant="secondary">new</MyBadge>
-														) : null}
-													</li>
-												))}
-											</ul>
-										)}
-										<div className={"RoutePluginsCatalogConsent-actions" satisfies RoutePluginsCatalog_ClassNames}>
-											<MyButton disabled={installingId !== null} onClick={() => handleAcceptAndInstall(plugin)}>
-												<Download aria-hidden />
-												{installingId === plugin.pluginVersionId ? "Installing..." : "Accept and install"}
-											</MyButton>
-											<MyButton
-												variant="outline"
-												disabled={installingId !== null}
-												onClick={() => setConsentingId(null)}
-											>
-												Cancel
-											</MyButton>
-										</div>
-									</div>
-								) : null}
-							</div>
+										<Download aria-hidden />
+										{installedVersion?.version === plugin.version ? "Reinstall" : installedVersion ? "Update" : "Install"}
+									</MyButton>
+								</div>
+							</article>
 						);
 					})}
 				</div>
 			)}
+
+			<MyModal open={consentingPlugin !== null} setOpen={(open) => !open && setConsentingId(null)}>
+				<MyModalPopover className={"RoutePluginsGalleryConsentModal" satisfies RoutePluginsGallery_ClassNames}>
+					<MyModalHeader>
+						<MyModalHeading>Install {consentingPlugin?.displayName ?? "plugin"}</MyModalHeading>
+						<MyModalDescription>
+							{consentingPlugin
+								? `${consentingPlugin.name}@${consentingPlugin.version} · ${consentingPlugin.publisherDisplayName ?? "unknown publisher"}`
+								: ""}
+						</MyModalDescription>
+					</MyModalHeader>
+
+					{consentingPlugin && consentingDiff ? (
+						<>
+							<div className={"RoutePluginsGalleryConsentModal-sectionTitle" satisfies RoutePluginsGallery_ClassNames}>
+								This plugin can use these capabilities
+							</div>
+							<ul className={"RoutePluginsGalleryConsentModal-list" satisfies RoutePluginsGallery_ClassNames}>
+								{consentingPlugin.capabilities.map((capability) => (
+									<li
+										key={capability}
+										className={"RoutePluginsGalleryConsentModal-item" satisfies RoutePluginsGallery_ClassNames}
+									>
+										{capability}
+										{consentingInstalledVersion && consentingDiff.newCapabilities.includes(capability) ? (
+											<MyBadge variant="secondary">new</MyBadge>
+										) : null}
+									</li>
+								))}
+							</ul>
+							<div className={"RoutePluginsGalleryConsentModal-sectionTitle" satisfies RoutePluginsGallery_ClassNames}>
+								And send requests to these origins
+							</div>
+							{consentingPlugin.outboundOrigins.length === 0 ? (
+								<div className={"RoutePluginsGalleryConsentModal-empty" satisfies RoutePluginsGallery_ClassNames}>
+									No outbound origins requested.
+								</div>
+							) : (
+								<ul className={"RoutePluginsGalleryConsentModal-list" satisfies RoutePluginsGallery_ClassNames}>
+									{consentingPlugin.outboundOrigins.map((origin) => (
+										<li
+											key={origin}
+											className={"RoutePluginsGalleryConsentModal-item" satisfies RoutePluginsGallery_ClassNames}
+										>
+											{origin}
+											{consentingInstalledVersion && consentingDiff.newOutboundOrigins.includes(origin) ? (
+												<MyBadge variant="secondary">new</MyBadge>
+											) : null}
+										</li>
+									))}
+								</ul>
+							)}
+						</>
+					) : null}
+
+					<div className={"RoutePluginsGalleryConsentModal-actions" satisfies RoutePluginsGallery_ClassNames}>
+						<MyButton variant="ghost" disabled={installing} onClick={() => setConsentingId(null)}>
+							Cancel
+						</MyButton>
+						<MyButton
+							disabled={installing || consentingPlugin === null}
+							onClick={() => consentingPlugin && handleAcceptAndInstall(consentingPlugin)}
+						>
+							<Download aria-hidden />
+							{installing ? "Installing..." : "Accept and install"}
+						</MyButton>
+					</div>
+					<MyModalCloseTrigger />
+				</MyModalPopover>
+			</MyModal>
 		</section>
 	);
 });
-// #endregion catalog
+// #endregion gallery
 
 // #region installed secrets
 type RoutePluginsInstalledSecrets_ClassNames =
@@ -644,7 +716,7 @@ function RoutePlugins() {
 				</MyLink>
 			</header>
 
-			<RoutePluginsCatalog membershipId={membershipId} installations={installations} />
+			<RoutePluginsGallery membershipId={membershipId} installations={installations} />
 
 			{installations.length === 0 ? (
 				<div className={"RoutePlugins-empty" satisfies RoutePlugins_ClassNames}>

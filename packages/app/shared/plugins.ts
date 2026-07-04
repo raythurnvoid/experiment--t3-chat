@@ -372,7 +372,6 @@ export const plugins_manifest_schema = z
 		displayName: z.string().min(1),
 		version: z.string().regex(plugins_semver_regex),
 		description: z.string(),
-		publisher: z.string().optional(),
 		artifact: plugins_module_path_schema,
 	})
 	.strict();

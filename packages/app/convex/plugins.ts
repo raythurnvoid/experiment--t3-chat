@@ -36,7 +36,6 @@ import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
 } from "../shared/organizations.ts";
-import { should_never_happen } from "../shared/shared-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
@@ -294,7 +293,7 @@ async function upsert_installation_secret_doc(
 async function upsert_publisher_secret_doc(
 	ctx: MutationCtx,
 	args: {
-		publisher: Doc<"plugins_publishers">;
+		ownerUserId: Id<"users">;
 		name: string;
 		value: string;
 		/** Omitted means keep the existing origins (or none for a new secret). */
@@ -302,10 +301,10 @@ async function upsert_publisher_secret_doc(
 		now: number;
 	},
 ) {
-	const encrypted = await encrypt_secret_value(args.value, `${args.publisher._id}:${args.name}`);
+	const encrypted = await encrypt_secret_value(args.value, `${args.ownerUserId}:${args.name}`);
 	const existing = await ctx.db
 		.query("plugins_publisher_secrets")
-		.withIndex("by_publisher_name", (q) => q.eq("publisherId", args.publisher._id).eq("name", args.name))
+		.withIndex("by_ownerUser_name", (q) => q.eq("ownerUserId", args.ownerUserId).eq("name", args.name))
 		.first();
 
 	if (existing) {
@@ -321,7 +320,7 @@ async function upsert_publisher_secret_doc(
 	}
 
 	return await ctx.db.insert("plugins_publisher_secrets", {
-		publisherId: args.publisher._id,
+		ownerUserId: args.ownerUserId,
 		name: args.name,
 		ciphertext: encrypted.ciphertext,
 		nonce: encrypted.nonce,
@@ -535,7 +534,6 @@ export const register_verified_version = internalAction({
 		displayName: v.string(),
 		version: v.string(),
 		description: v.string(),
-		publisherId: v.id("plugins_publishers"),
 		reviewStatus: doc(app_convex_schema, "plugins_versions").fields.reviewStatus,
 		artifactHash: v.string(),
 		sourceRepositoryUrl: v.string(),
@@ -650,7 +648,6 @@ export const register_verified_version_in_db = internalMutation({
 		displayName: v.string(),
 		version: v.string(),
 		description: v.string(),
-		publisherId: v.id("plugins_publishers"),
 		reviewStatus: doc(app_convex_schema, "plugins_versions").fields.reviewStatus,
 		artifactHash: v.string(),
 		sourceRepositoryUrl: v.string(),
@@ -671,12 +668,12 @@ export const register_verified_version_in_db = internalMutation({
 	},
 	returns: v_result({ _yay: v.object({ pluginVersionId: v.id("plugins_versions") }) }),
 	handler: async (ctx, args) => {
-		// A plugin name is bound to the publisher that first published it.
+		// A plugin name is bound to the user that first published it.
 		const existingNamed = await ctx.db
 			.query("plugins_versions")
 			.withIndex("by_name", (q) => q.eq("name", args.name))
 			.first();
-		if (existingNamed && existingNamed.publisherId !== args.publisherId) {
+		if (existingNamed && existingNamed.createdBy !== args.createdBy) {
 			return Result({ _nay: { message: "Plugin name is already owned by another publisher" } });
 		}
 
@@ -724,7 +721,6 @@ export const register_verified_version_in_db = internalMutation({
 			displayName: args.displayName,
 			version: args.version,
 			description: args.description,
-			publisherId: args.publisherId,
 			reviewStatus: args.reviewStatus,
 			runtimeVersion: plugins_RUNTIME_VERSION,
 			artifactHash: args.artifactHash,
@@ -801,13 +797,11 @@ export const upsert_source_mount = internalMutation({
 
 export const authorize_publish_scope = internalMutation({
 	args: {
-		publisherId: v.id("plugins_publishers"),
 		repositoryId: v.id("plugins_publisher_repositories"),
 	},
 	returns: v_result({
 		_yay: v.object({
 			userId: v.id("users"),
-			publisherSlug: v.string(),
 			owner: v.string(),
 			repo: v.string(),
 			repositoryUrl: v.string(),
@@ -822,25 +816,17 @@ export const authorize_publish_scope = internalMutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
-		const publisher = await ctx.db.get("plugins_publishers", args.publisherId);
-		if (!publisher) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (publisher.ownerUserId !== userAuth.id) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
 		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
 		if (!repository) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (repository.publisherId !== publisher._id) {
+		if (repository.ownerUserId !== userAuth.id) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
 		return Result({
 			_yay: {
 				userId: userAuth.id,
-				publisherSlug: publisher.slug,
 				owner: repository.owner,
 				repo: repository.repo,
 				repositoryUrl: repository.repositoryUrl,
@@ -939,7 +925,7 @@ export const get_version_review_by_artifact_hash = internalQuery({
 
 export const get_version_review_context = internalQuery({
 	args: {
-		publisherId: v.id("plugins_publishers"),
+		ownerUserId: v.id("users"),
 		pluginName: v.string(),
 	},
 	returns: v.object({
@@ -952,7 +938,7 @@ export const get_version_review_context = internalQuery({
 	handler: async (ctx, args) => {
 		const secrets = await ctx.db
 			.query("plugins_publisher_secrets")
-			.withIndex("by_publisher", (q) => q.eq("publisherId", args.publisherId))
+			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", args.ownerUserId))
 			.take(100);
 		const versions = await ctx.db
 			.query("plugins_versions")
@@ -971,7 +957,7 @@ export const get_version_review_context = internalQuery({
 
 export const store_version_review = internalMutation({
 	args: {
-		publisherId: v.id("plugins_publishers"),
+		createdBy: v.id("users"),
 		artifactHash: v.string(),
 		pluginName: v.string(),
 		version: v.string(),
@@ -998,7 +984,6 @@ export const store_version_review = internalMutation({
 
 export const review_version_artifact = internalAction({
 	args: {
-		publisherId: v.id("plugins_publishers"),
 		pluginName: v.string(),
 		version: v.string(),
 		artifactHash: v.string(),
@@ -1006,7 +991,7 @@ export const review_version_artifact = internalAction({
 		distSource: v.union(v.string(), v.null()),
 		capabilities: v.array(v.string()),
 		outboundOrigins: v.array(v.string()),
-		/** Publisher owner requesting the review; fresh system-billed AI reviews are rate limited per this user. */
+		/** Publishing user requesting the review; owns the secrets and reviews, and fresh system-billed AI reviews are rate limited per this user. */
 		requestedBy: v.id("users"),
 	},
 	returns: v_result({
@@ -1054,7 +1039,7 @@ export const review_version_artifact = internalAction({
 					});
 				}
 				const context = (await ctx.runQuery(internal.plugins.get_version_review_context, {
-					publisherId: args.publisherId,
+					ownerUserId: args.requestedBy,
 					pluginName: args.pluginName,
 				})) as {
 					secretNames: string[];
@@ -1094,7 +1079,7 @@ export const review_version_artifact = internalAction({
 		}
 
 		await ctx.runMutation(internal.plugins.store_version_review, {
-			publisherId: args.publisherId,
+			createdBy: args.requestedBy,
 			artifactHash: args.artifactHash,
 			pluginName: args.pluginName,
 			version: args.version,
@@ -1108,7 +1093,6 @@ export const review_version_artifact = internalAction({
 
 export const publish_version = action({
 	args: {
-		publisherId: v.id("plugins_publishers"),
 		repositoryId: v.id("plugins_publisher_repositories"),
 		commitSha: v.optional(v.string()),
 	},
@@ -1121,12 +1105,10 @@ export const publish_version = action({
 	}),
 	handler: async (ctx, args) => {
 		const authorized = (await ctx.runMutation(internal.plugins.authorize_publish_scope, {
-			publisherId: args.publisherId,
 			repositoryId: args.repositoryId,
 		})) as {
 			_yay?: {
 				userId: Id<"users">;
-				publisherSlug: string;
 				owner: string;
 				repo: string;
 				repositoryUrl: string;
@@ -1169,9 +1151,6 @@ export const publish_version = action({
 		const manifest = parse_json_text(manifestText._yay, plugins_manifest_schema, "Plugin manifest is invalid");
 		if (manifest._nay) {
 			return Result({ _nay: { message: manifest._nay.message } });
-		}
-		if (manifest._yay.publisher !== source.publisherSlug) {
-			return Result({ _nay: { message: 'Plugin manifest "publisher" must match your publisher slug' } });
 		}
 
 		const artifactText = await fetch_github_text({
@@ -1255,7 +1234,6 @@ export const publish_version = action({
 
 		// Review the dist before anything is uploaded or registered; "rejected" blocks the publish.
 		const review = (await ctx.runAction(internal.plugins.review_version_artifact, {
-			publisherId: args.publisherId,
 			pluginName: artifact._yay.plugin.name,
 			version: artifact._yay.plugin.version,
 			artifactHash,
@@ -1338,7 +1316,6 @@ export const publish_version = action({
 			displayName: artifact._yay.plugin.displayName,
 			version: artifact._yay.plugin.version,
 			description: manifest._yay.description,
-			publisherId: args.publisherId,
 			reviewStatus: review._yay.status,
 			artifactHash,
 			sourceRepositoryUrl: source.repositoryUrl,
@@ -1371,92 +1348,67 @@ export const publish_version = action({
 	},
 });
 
-export const create_publisher = mutation({
-	args: {
-		slug: v.string(),
-		displayName: v.string(),
-	},
-	returns: v_result({ _yay: v.object({ publisherId: v.id("plugins_publishers"), slug: v.string() }) }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth || userAuth.kind !== "signed_in") {
-			return Result({ _nay: { message: "Sign in to publish plugins" } });
-		}
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-		const slug = plugins_name_autofix_and_validate(args.slug);
-		if (slug._nay) {
-			return Result({ _nay: { message: slug._nay.message } });
-		}
-		const displayName = args.displayName.trim();
-		if (!displayName) {
-			return Result({ _nay: { message: "Publisher display name is required" } });
-		}
-
-		const ownedPublisher = await ctx.db
-			.query("plugins_publishers")
-			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", userAuth.id))
-			.first();
-		if (ownedPublisher) {
-			return Result({ _nay: { message: "You already have a publisher" } });
-		}
-		const slugPublisher = await ctx.db
-			.query("plugins_publishers")
-			.withIndex("by_slug", (q) => q.eq("slug", slug._yay))
-			.first();
-		if (slugPublisher) {
-			return Result({ _nay: { message: "Publisher slug is already taken" } });
-		}
-
-		const now = Date.now();
-		const publisherId = await ctx.db.insert("plugins_publishers", {
-			slug: slug._yay,
-			displayName,
-			ownerUserId: userAuth.id,
-			createdAt: now,
-			updatedAt: now,
-		});
-		return Result({ _yay: { publisherId, slug: slug._yay } });
-	},
-});
-
-export const get_my_publisher = query({
+export const list_my_publisher_repositories = query({
 	args: {},
-	returns: v.union(
+	returns: v.array(
 		v.object({
-			publisher: doc(app_convex_schema, "plugins_publishers"),
-			repositories: v.array(doc(app_convex_schema, "plugins_publisher_repositories")),
+			repository: doc(app_convex_schema, "plugins_publisher_repositories"),
+			latestVersion: v.union(
+				v.object({
+					name: v.string(),
+					displayName: v.string(),
+					description: v.string(),
+					version: v.string(),
+					reviewStatus: doc(app_convex_schema, "plugins_versions").fields.reviewStatus,
+					createdAt: v.number(),
+				}),
+				v.null(),
+			),
 		}),
-		v.null(),
 	),
 	handler: async (ctx) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return null;
-		}
-		const publisher = await ctx.db
-			.query("plugins_publishers")
-			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", userAuth.id))
-			.first();
-		if (!publisher) {
-			return null;
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return [];
 		}
 		const repositories = await ctx.db
 			.query("plugins_publisher_repositories")
-			.withIndex("by_publisher", (q) => q.eq("publisherId", publisher._id))
+			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", userAuth.id))
 			.take(100);
-		return {
-			publisher,
-			repositories: repositories.toSorted((a, b) => a.repositoryUrl.localeCompare(b.repositoryUrl)),
-		};
+		const docs = [];
+		for (const repository of repositories) {
+			const versions = await ctx.db
+				.query("plugins_versions")
+				.withIndex("by_sourceRepositoryUrl_sourceCommitSha", (q) =>
+					q.eq("sourceRepositoryUrl", repository.repositoryUrl),
+				)
+				.take(100);
+			let latest: Doc<"plugins_versions"> | null = null;
+			for (const version of versions) {
+				if (!latest || version.createdAt > latest.createdAt) {
+					latest = version;
+				}
+			}
+			docs.push({
+				repository,
+				latestVersion: latest
+					? {
+							name: latest.name,
+							displayName: latest.displayName,
+							description: latest.description,
+							version: latest.version,
+							reviewStatus: latest.reviewStatus,
+							createdAt: latest.createdAt,
+						}
+					: null,
+			});
+		}
+		return docs.toSorted((a, b) => a.repository.repositoryUrl.localeCompare(b.repository.repositoryUrl));
 	},
 });
 
 export const claim_repository = mutation({
 	args: {
-		publisherId: v.id("plugins_publishers"),
 		repositoryUrl: v.string(),
 	},
 	returns: v_result({
@@ -1471,13 +1423,6 @@ export const claim_repository = mutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
-		const publisher = await ctx.db.get("plugins_publishers", args.publisherId);
-		if (!publisher) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (publisher.ownerUserId !== userAuth.id) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
 		const repository = plugins_parse_github_repository_url(args.repositoryUrl);
 		if (repository._nay) {
 			return Result({ _nay: { message: repository._nay.message } });
@@ -1488,14 +1433,14 @@ export const claim_repository = mutation({
 			.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", repository._yay.repositoryUrl))
 			.first();
 		if (claimed) {
-			if (claimed.publisherId === publisher._id) {
+			if (claimed.ownerUserId === userAuth.id) {
 				return Result({ _yay: { repositoryId: claimed._id, repositoryUrl: claimed.repositoryUrl } });
 			}
 			return Result({ _nay: { message: "Repository is already claimed by another publisher" } });
 		}
 
 		const repositoryId = await ctx.db.insert("plugins_publisher_repositories", {
-			publisherId: publisher._id,
+			ownerUserId: userAuth.id,
 			repositoryUrl: repository._yay.repositoryUrl,
 			owner: repository._yay.owner,
 			repo: repository._yay.repo,
@@ -1523,14 +1468,7 @@ export const remove_repository = mutation({
 		if (!repository) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		const publisher = await ctx.db.get("plugins_publishers", repository.publisherId);
-		if (!publisher) {
-			const errorMessage = "repository.publisherId points to a missing plugins_publishers doc";
-			const errorData = { repositoryId: repository._id, publisherId: repository.publisherId };
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-		if (publisher.ownerUserId !== userAuth.id) {
+		if (repository.ownerUserId !== userAuth.id) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
@@ -1539,10 +1477,101 @@ export const remove_repository = mutation({
 	},
 });
 
-export const list_publisher_secrets = query({
+export const get_publisher_repository = query({
 	args: {
-		publisherId: v.id("plugins_publishers"),
+		repositoryId: v.id("plugins_publisher_repositories"),
 	},
+	returns: v.union(
+		v.object({
+			repository: doc(app_convex_schema, "plugins_publisher_repositories"),
+			versions: v.array(
+				v.object({
+					_id: v.id("plugins_versions"),
+					name: v.string(),
+					displayName: v.string(),
+					description: v.string(),
+					version: v.string(),
+					reviewStatus: doc(app_convex_schema, "plugins_versions").fields.reviewStatus,
+					capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
+					outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
+					sourceCommitSha: v.string(),
+					createdAt: v.number(),
+				}),
+			),
+			reviews: v.array(
+				v.object({
+					_id: v.id("plugins_version_reviews"),
+					pluginName: v.string(),
+					version: v.string(),
+					status: doc(app_convex_schema, "plugins_version_reviews").fields.status,
+					mechanicalFindings: v.array(v.string()),
+					aiFindings: v.array(v.string()),
+					model: v.string(),
+					createdAt: v.number(),
+				}),
+			),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return null;
+		}
+		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
+		if (!repository) {
+			return null;
+		}
+		if (repository.ownerUserId !== userAuth.id) {
+			return null;
+		}
+
+		const versions = await ctx.db
+			.query("plugins_versions")
+			.withIndex("by_sourceRepositoryUrl_sourceCommitSha", (q) =>
+				q.eq("sourceRepositoryUrl", repository.repositoryUrl),
+			)
+			.take(100);
+		const sortedVersions = versions.toSorted((a, b) => b.createdAt - a.createdAt);
+		const pluginNames = new Set(sortedVersions.map((version) => version.name));
+
+		const publisherReviews = await ctx.db
+			.query("plugins_version_reviews")
+			.withIndex("by_createdBy", (q) => q.eq("createdBy", userAuth.id))
+			.order("desc")
+			.take(100);
+		const reviews = publisherReviews.filter((review) => pluginNames.has(review.pluginName));
+
+		return {
+			repository,
+			versions: sortedVersions.map((version) => ({
+				_id: version._id,
+				name: version.name,
+				displayName: version.displayName,
+				description: version.description,
+				version: version.version,
+				reviewStatus: version.reviewStatus,
+				capabilities: version.capabilities,
+				outboundOrigins: version.outboundOrigins,
+				sourceCommitSha: version.sourceCommitSha,
+				createdAt: version.createdAt,
+			})),
+			reviews: reviews.map((review) => ({
+				_id: review._id,
+				pluginName: review.pluginName,
+				version: review.version,
+				status: review.status,
+				mechanicalFindings: review.mechanicalFindings,
+				aiFindings: review.aiFindings,
+				model: review.model,
+				createdAt: review.createdAt,
+			})),
+		};
+	},
+});
+
+export const list_publisher_secrets = query({
+	args: {},
 	returns: v.array(
 		v.object({
 			_id: v.id("plugins_publisher_secrets"),
@@ -1553,19 +1582,15 @@ export const list_publisher_secrets = query({
 			lastUsedAt: v.union(v.number(), v.null()),
 		}),
 	),
-	handler: async (ctx, args) => {
+	handler: async (ctx) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return [];
-		}
-		const publisher = await ctx.db.get("plugins_publishers", args.publisherId);
-		if (!publisher || publisher.ownerUserId !== userAuth.id) {
+		if (!userAuth || userAuth.kind !== "signed_in") {
 			return [];
 		}
 
 		const secrets = await ctx.db
 			.query("plugins_publisher_secrets")
-			.withIndex("by_publisher", (q) => q.eq("publisherId", publisher._id))
+			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", userAuth.id))
 			.take(100);
 
 		return secrets
@@ -1581,54 +1606,8 @@ export const list_publisher_secrets = query({
 	},
 });
 
-export const list_publisher_reviews = query({
-	args: {
-		publisherId: v.id("plugins_publishers"),
-	},
-	returns: v.array(
-		v.object({
-			_id: v.id("plugins_version_reviews"),
-			pluginName: v.string(),
-			version: v.string(),
-			status: doc(app_convex_schema, "plugins_version_reviews").fields.status,
-			mechanicalFindings: v.array(v.string()),
-			aiFindings: v.array(v.string()),
-			model: v.string(),
-			createdAt: v.number(),
-		}),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return [];
-		}
-		const publisher = await ctx.db.get("plugins_publishers", args.publisherId);
-		if (!publisher || publisher.ownerUserId !== userAuth.id) {
-			return [];
-		}
-
-		const reviews = await ctx.db
-			.query("plugins_version_reviews")
-			.withIndex("by_publisher", (q) => q.eq("publisherId", publisher._id))
-			.order("desc")
-			.take(50);
-
-		return reviews.map((review) => ({
-			_id: review._id,
-			pluginName: review.pluginName,
-			version: review.version,
-			status: review.status,
-			mechanicalFindings: review.mechanicalFindings,
-			aiFindings: review.aiFindings,
-			model: review.model,
-			createdAt: review.createdAt,
-		}));
-	},
-});
-
 export const upsert_publisher_secret = mutation({
 	args: {
-		publisherId: v.id("plugins_publishers"),
 		name: v.string(),
 		value: v.string(),
 		allowedOrigins: v.array(v.string()),
@@ -1643,13 +1622,6 @@ export const upsert_publisher_secret = mutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
-		const publisher = await ctx.db.get("plugins_publishers", args.publisherId);
-		if (!publisher) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (publisher.ownerUserId !== userAuth.id) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
 		const secret = validate_secret_input(args);
 		if (secret._nay) {
 			return secret;
@@ -1662,7 +1634,7 @@ export const upsert_publisher_secret = mutation({
 		let secretId: Id<"plugins_publisher_secrets">;
 		try {
 			secretId = await upsert_publisher_secret_doc(ctx, {
-				publisher,
+				ownerUserId: userAuth.id,
 				name: secret._yay.name,
 				value: secret._yay.value,
 				allowedOrigins: allowedOrigins._yay,
@@ -1678,7 +1650,6 @@ export const upsert_publisher_secret = mutation({
 
 export const upsert_publisher_secrets = mutation({
 	args: {
-		publisherId: v.id("plugins_publishers"),
 		secrets: v.array(v.object({ name: v.string(), value: v.string() })),
 	},
 	returns: v_result({ _yay: v.object({ count: v.number() }) }),
@@ -1694,13 +1665,6 @@ export const upsert_publisher_secrets = mutation({
 		if (args.secrets.length === 0 || args.secrets.length > 50) {
 			return Result({ _nay: { message: "Secret batch size is invalid" } });
 		}
-		const publisher = await ctx.db.get("plugins_publishers", args.publisherId);
-		if (!publisher) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (publisher.ownerUserId !== userAuth.id) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
 
 		const secrets = new Map<string, string>();
 		for (const input of args.secrets) {
@@ -1715,7 +1679,7 @@ export const upsert_publisher_secrets = mutation({
 		try {
 			for (const [name, value] of secrets) {
 				await upsert_publisher_secret_doc(ctx, {
-					publisher,
+					ownerUserId: userAuth.id,
 					name,
 					value,
 					now,
@@ -1731,7 +1695,6 @@ export const upsert_publisher_secrets = mutation({
 
 export const update_publisher_secret_origins = mutation({
 	args: {
-		publisherId: v.id("plugins_publishers"),
 		name: v.string(),
 		allowedOrigins: v.array(v.string()),
 	},
@@ -1745,13 +1708,6 @@ export const update_publisher_secret_origins = mutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
-		const publisher = await ctx.db.get("plugins_publishers", args.publisherId);
-		if (!publisher) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (publisher.ownerUserId !== userAuth.id) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
 		const name = plugins_secret_name_validate(args.name);
 		if (name._nay) {
 			return Result({ _nay: { message: name._nay.message } });
@@ -1763,7 +1719,7 @@ export const update_publisher_secret_origins = mutation({
 
 		const existing = await ctx.db
 			.query("plugins_publisher_secrets")
-			.withIndex("by_publisher_name", (q) => q.eq("publisherId", publisher._id).eq("name", name._yay))
+			.withIndex("by_ownerUser_name", (q) => q.eq("ownerUserId", userAuth.id).eq("name", name._yay))
 			.first();
 		if (!existing) {
 			return Result({ _nay: { message: "Not found" } });
@@ -1779,7 +1735,6 @@ export const update_publisher_secret_origins = mutation({
 
 export const delete_publisher_secret = mutation({
 	args: {
-		publisherId: v.id("plugins_publishers"),
 		name: v.string(),
 	},
 	returns: v_result({ _yay: v.null() }),
@@ -1792,13 +1747,6 @@ export const delete_publisher_secret = mutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
-		const publisher = await ctx.db.get("plugins_publishers", args.publisherId);
-		if (!publisher) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (publisher.ownerUserId !== userAuth.id) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
 		const name = plugins_secret_name_validate(args.name);
 		if (name._nay) {
 			return Result({ _nay: { message: name._nay.message } });
@@ -1806,7 +1754,7 @@ export const delete_publisher_secret = mutation({
 
 		const existing = await ctx.db
 			.query("plugins_publisher_secrets")
-			.withIndex("by_publisher_name", (q) => q.eq("publisherId", publisher._id).eq("name", name._yay))
+			.withIndex("by_ownerUser_name", (q) => q.eq("ownerUserId", userAuth.id).eq("name", name._yay))
 			.first();
 		if (existing) {
 			await ctx.db.delete("plugins_publisher_secrets", existing._id);
@@ -2130,7 +2078,7 @@ export const list_registered_plugins = query({
 			displayName: v.string(),
 			description: v.string(),
 			version: v.string(),
-			publisherSlug: v.union(v.string(), v.null()),
+			publisherDisplayName: v.union(v.string(), v.null()),
 			reviewStatus: doc(app_convex_schema, "plugins_versions").fields.reviewStatus,
 			capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 			outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
@@ -2158,14 +2106,15 @@ export const list_registered_plugins = query({
 
 		const docs = [];
 		for (const version of latestByName.values()) {
-			const publisher = await ctx.db.get("plugins_publishers", version.publisherId);
+			const creator = await ctx.db.get("users", version.createdBy);
+			const anagraphic = creator?.anagraphic ? await ctx.db.get("users_anagraphics", creator.anagraphic) : null;
 			docs.push({
 				pluginVersionId: version._id,
 				name: version.name,
 				displayName: version.displayName,
 				description: version.description,
 				version: version.version,
-				publisherSlug: publisher?.slug ?? null,
+				publisherDisplayName: anagraphic?.displayName ?? null,
 				reviewStatus: version.reviewStatus,
 				capabilities: version.capabilities,
 				outboundOrigins: version.outboundOrigins,
@@ -2440,7 +2389,7 @@ export const get_secret_for_runtime = internalMutation({
 		}
 		const publisherSecret = await ctx.db
 			.query("plugins_publisher_secrets")
-			.withIndex("by_publisher_name", (q) => q.eq("publisherId", version.publisherId).eq("name", args.name))
+			.withIndex("by_ownerUser_name", (q) => q.eq("ownerUserId", version.createdBy).eq("name", args.name))
 			.first();
 		if (!publisherSecret) {
 			return null;
@@ -2469,7 +2418,7 @@ export const decrypt_secret_for_runtime = internalAction({
 			const additionalData =
 				args.resolved.tier === "installation"
 					? `${args.resolved.secret.installationId}:${args.resolved.secret.name}`
-					: `${args.resolved.secret.publisherId}:${args.resolved.secret.name}`;
+					: `${args.resolved.secret.ownerUserId}:${args.resolved.secret.name}`;
 			return Result({ _yay: await decrypt_secret_value(args.resolved.secret, additionalData) });
 		} catch (error) {
 			return Result({ _nay: { message: error instanceof Error ? error.message : String(error) } });
