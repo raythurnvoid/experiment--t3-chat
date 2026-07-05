@@ -2,7 +2,7 @@
 	const fs = require("node:fs");
 	const path = require("node:path");
 
-	const VERSION = "0.3.1";
+	const VERSION = "0.4.0";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	const MEMORY_FILES = new Set([
 		"agent-panel.md",
@@ -538,6 +538,117 @@
 		return result;
 	}
 
+	async function auditAccessibility({ selector = "body", minTargetSize = 24 } = {}) {
+		const targetPage = getHarnessPage();
+		await targetPage.waitForSelector(selector, { state: "attached", timeout: 15000 });
+
+		const result = await targetPage.evaluate(
+			({ selector, minTargetSize }) => {
+				const root = document.querySelector(selector);
+				if (!root) {
+					throw new Error(`Could not find element: ${selector}`);
+				}
+
+				function accessibleName(element) {
+					const ariaLabel = element.getAttribute("aria-label");
+					if (ariaLabel?.trim()) return ariaLabel.trim();
+					const labelledBy = element.getAttribute("aria-labelledby");
+					if (labelledBy) {
+						const text = labelledBy
+							.split(/\s+/)
+							.map((id) => document.getElementById(id)?.textContent?.trim() || "")
+							.join(" ")
+							.trim();
+						if (text) return text;
+					}
+					if (element.labels?.length) {
+						const text = Array.from(element.labels)
+							.map((label) => label.textContent?.trim() || "")
+							.join(" ")
+							.trim();
+						if (text) return text;
+					}
+					const title = element.getAttribute("title");
+					if (title?.trim()) return title.trim();
+					if (element.tagName === "INPUT" || element.tagName === "TEXTAREA") {
+						const placeholder = element.getAttribute("placeholder");
+						if (placeholder?.trim()) return placeholder.trim();
+					}
+					return element.textContent?.trim().replace(/\s+/g, " ") || "";
+				}
+
+				function describeControl(element) {
+					return {
+						tag: element.tagName.toLowerCase(),
+						id: element.id || null,
+						className: typeof element.className === "string" ? element.className.slice(0, 120) : "",
+						role: element.getAttribute("role"),
+						name: accessibleName(element).slice(0, 80),
+					};
+				}
+
+				function isVisible(element) {
+					const style = getComputedStyle(element);
+					if (style.display === "none" || style.visibility === "hidden") return false;
+					const rect = element.getBoundingClientRect();
+					return rect.width > 0 && rect.height > 0;
+				}
+
+				const controls = Array.from(
+					root.querySelectorAll(
+						"button, a[href], input:not([type=hidden]), select, textarea, [role=button], [role=link], [role=menuitem], [role=tab], [role=checkbox], [role=radio], [tabindex]",
+					),
+				).filter((element) => isVisible(element) && !element.closest("[aria-hidden=true], [inert]"));
+
+				const unlabeled = [];
+				const blockedHitTargets = [];
+				const smallTargets = [];
+				const notFocusable = [];
+
+				for (const element of controls) {
+					const described = describeControl(element);
+					const rect = element.getBoundingClientRect();
+
+					if (!accessibleName(element)) {
+						unlabeled.push(described);
+					}
+
+					if (rect.width < minTargetSize || rect.height < minTargetSize) {
+						smallTargets.push({ ...described, width: Math.round(rect.width), height: Math.round(rect.height) });
+					}
+
+					const inViewport =
+						rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
+					if (inViewport) {
+						const center = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+						const top = document.elementFromPoint(center.x, center.y);
+						if (top && top !== element && !element.contains(top) && !top.contains(element)) {
+							blockedHitTargets.push({ ...described, topAtCenter: describeControl(top) });
+						}
+					}
+
+					if (element.tabIndex < 0 && !element.disabled && element.getAttribute("aria-hidden") !== "true") {
+						notFocusable.push(described);
+					}
+				}
+
+				return {
+					url: location.href,
+					selector,
+					controlCount: controls.length,
+					unlabeled,
+					blockedHitTargets,
+					smallTargets,
+					notFocusable,
+				};
+			},
+			{ selector, minTargetSize },
+		);
+
+		console.log(JSON.stringify(result, null, 2));
+		return result;
+	}
+
 	function appendMemory({ file = "known-hazards.md", title, body }) {
 		const normalizedFile = String(file).replace(/^references[\\/]/, "");
 		if (!MEMORY_FILES.has(normalizedFile)) {
@@ -578,6 +689,7 @@
 		observeRoute,
 		hitTest,
 		inspectElement,
+		auditAccessibility,
 		appendMemory,
 	};
 

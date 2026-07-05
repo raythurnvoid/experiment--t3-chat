@@ -44,6 +44,7 @@ pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab
 - Use `state.appPlaywriterHarness.inspectElement(...)` or `hitTest(...)` for layout and clickability bugs before trying alternate clicks.
 - Use `state.appPlaywriterHarness.latestLogs()` when a UI action fails or the app looks blank.
 - Use `state.appPlaywriterHarness.hitTest({ x, y })` only for layout or clickability bugs where a visible element may be covered.
+- Use `state.appPlaywriterHarness.auditAccessibility({ selector, minTargetSize })` for accessibility sweeps of a route or region: it reports unlabeled controls, hit targets blocked by overlapping elements, targets smaller than `minTargetSize` (default 24px), and interactive controls with negative `tabIndex`.
 - For route-specific checks, read the relevant reference recipe and run it with generic helpers instead of adding a new helper function.
 - Keep each execute call focused on one observation or one action, then observe again.
 - Prefer small observe-act-observe scripts over bundled multi-step runners during interactive debugging and eval inspection. Batch only when the user explicitly asks for a runner or the flow is already stable and repeatable.

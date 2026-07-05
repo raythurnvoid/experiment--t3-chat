@@ -959,7 +959,7 @@ describe("list_current_user_account_deletion_blocking_organizations", () => {
 			const workspaceScopedWorkspace = await organizations_db_create_workspace(ctx, {
 				userId: workspaceOwner.userId,
 				organizationId: workspaceScopedOrganization._yay.organizationId,
-				name: "workspace-local-owner",
+				name: "ws-local-owner",
 				description: "",
 				now,
 			});

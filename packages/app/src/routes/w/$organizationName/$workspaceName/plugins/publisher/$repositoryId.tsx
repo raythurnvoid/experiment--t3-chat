@@ -2,13 +2,13 @@ import "./repository.css";
 
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { ArrowLeft, GitBranch, History, Puzzle, ShieldCheck, Trash2, UploadCloud } from "lucide-react";
+import { GitBranch, History, Puzzle, ShieldCheck, Trash2, UploadCloud } from "lucide-react";
 import { memo, useState } from "react";
 import { toast } from "sonner";
 
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
-import { MyLink } from "@/components/my-link.tsx";
+import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 
@@ -253,7 +253,6 @@ type RoutePluginsPublisherRepository_ClassNames =
 	| "RoutePluginsPublisherRepository"
 	| "RoutePluginsPublisherRepository-loading"
 	| "RoutePluginsPublisherRepository-missing"
-	| "RoutePluginsPublisherRepository-back"
 	| "RoutePluginsPublisherRepositoryHero"
 	| "RoutePluginsPublisherRepositoryHero-icon"
 	| "RoutePluginsPublisherRepositoryHero-info"
@@ -333,18 +332,11 @@ function RoutePluginsPublisherRepository() {
 			});
 	});
 
-	const backLink = (
-		<div className={"RoutePluginsPublisherRepository-back" satisfies RoutePluginsPublisherRepository_ClassNames}>
-			<MyLink
-				variant="button-ghost"
-				to="/w/$organizationName/$workspaceName/plugins/publisher"
-				params={{ organizationName, workspaceName }}
-			>
-				<ArrowLeft aria-hidden />
-				Publisher
-			</MyLink>
-		</div>
-	);
+	const currentCrumb = details
+		? (details.versions[0]?.displayName ?? `${details.repository.owner}/${details.repository.repo}`)
+		: null;
+
+	const breadcrumb = <PluginsHeaderBreadcrumb trail={["plugins", "publisher"]} current={currentCrumb} />;
 
 	if (details === undefined) {
 		return (
@@ -353,7 +345,7 @@ function RoutePluginsPublisherRepository() {
 				role="status"
 				aria-live="polite"
 			>
-				{backLink}
+				{breadcrumb}
 				<div
 					className={"RoutePluginsPublisherRepository-loading" satisfies RoutePluginsPublisherRepository_ClassNames}
 				>
@@ -367,7 +359,7 @@ function RoutePluginsPublisherRepository() {
 	if (details === null) {
 		return (
 			<main className={"RoutePluginsPublisherRepository" satisfies RoutePluginsPublisherRepository_ClassNames}>
-				{backLink}
+				{breadcrumb}
 				<div
 					className={"RoutePluginsPublisherRepository-missing" satisfies RoutePluginsPublisherRepository_ClassNames}
 				>
@@ -381,7 +373,7 @@ function RoutePluginsPublisherRepository() {
 
 	return (
 		<main className={"RoutePluginsPublisherRepository" satisfies RoutePluginsPublisherRepository_ClassNames}>
-			{backLink}
+			{breadcrumb}
 
 			<header className={"RoutePluginsPublisherRepositoryHero" satisfies RoutePluginsPublisherRepository_ClassNames}>
 				<Puzzle

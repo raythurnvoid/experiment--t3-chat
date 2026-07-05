@@ -1881,19 +1881,11 @@ describe("process_workspace_deletion_request", () => {
 				contentType: "image/png",
 				assetId: sourceAssetId,
 			});
-			const publisherId = await ctx.db.insert("plugins_publishers", {
-				slug: "sybill-ai-engineering",
-				displayName: "Sybill AI Engineering",
-				ownerUserId: user.userId,
-				createdAt: now,
-				updatedAt: now,
-			});
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
 				name: "media",
 				displayName: "Media",
 				version: "0.1.0",
 				description: "Media plugin",
-				publisherId,
 				reviewStatus: "pending",
 				runtimeVersion: "1",
 				artifactHash: `sha256:${"a".repeat(64)}`,
@@ -4453,7 +4445,7 @@ describe("resolve_user after tombstone", () => {
 });
 
 describe("finalize_user_deletion_data plugins publisher", () => {
-	test("purges the deleted user's publisher, repository claim, publisher secret, and version review docs", async () => {
+	test("purges the deleted user's repository claims, publisher secrets, and version review docs", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -4470,22 +4462,15 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 
 		const seeded = await t.run(async (ctx) => {
 			const now = Date.now();
-			const deletedPublisherId = await ctx.db.insert("plugins_publishers", {
-				slug: "bonobo",
-				displayName: "Bonobo",
-				ownerUserId: deletedUser.userId,
-				createdAt: now,
-				updatedAt: now,
-			});
 			const deletedRepositoryId = await ctx.db.insert("plugins_publisher_repositories", {
-				publisherId: deletedPublisherId,
+				ownerUserId: deletedUser.userId,
 				repositoryUrl: "https://github.com/bonobo/media-plugin",
 				owner: "bonobo",
 				repo: "media-plugin",
 				createdAt: now,
 			});
 			const deletedSecretId = await ctx.db.insert("plugins_publisher_secrets", {
-				publisherId: deletedPublisherId,
+				ownerUserId: deletedUser.userId,
 				name: "OPENAI_API_KEY",
 				ciphertext: "ciphertext",
 				nonce: "nonce",
@@ -4496,7 +4481,7 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				updatedAt: now,
 			});
 			const deletedReviewId = await ctx.db.insert("plugins_version_reviews", {
-				publisherId: deletedPublisherId,
+				createdBy: deletedUser.userId,
 				artifactHash: `sha256:${"d".repeat(64)}`,
 				pluginName: "media",
 				version: "0.1.0",
@@ -4506,22 +4491,15 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				model: "none",
 				createdAt: now,
 			});
-			const unrelatedPublisherId = await ctx.db.insert("plugins_publishers", {
-				slug: "gorilla",
-				displayName: "Gorilla",
-				ownerUserId: unrelatedUser.userId,
-				createdAt: now,
-				updatedAt: now,
-			});
 			const unrelatedRepositoryId = await ctx.db.insert("plugins_publisher_repositories", {
-				publisherId: unrelatedPublisherId,
+				ownerUserId: unrelatedUser.userId,
 				repositoryUrl: "https://github.com/gorilla/pdf-plugin",
 				owner: "gorilla",
 				repo: "pdf-plugin",
 				createdAt: now,
 			});
 			const unrelatedSecretId = await ctx.db.insert("plugins_publisher_secrets", {
-				publisherId: unrelatedPublisherId,
+				ownerUserId: unrelatedUser.userId,
 				name: "MODAL_TOKEN",
 				ciphertext: "ciphertext",
 				nonce: "nonce",
@@ -4532,7 +4510,7 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				updatedAt: now,
 			});
 			const unrelatedReviewId = await ctx.db.insert("plugins_version_reviews", {
-				publisherId: unrelatedPublisherId,
+				createdBy: unrelatedUser.userId,
 				artifactHash: `sha256:${"e".repeat(64)}`,
 				pluginName: "pdf",
 				version: "0.1.0",
@@ -4544,11 +4522,9 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 			});
 
 			return {
-				deletedPublisherId,
 				deletedRepositoryId,
 				deletedSecretId,
 				deletedReviewId,
-				unrelatedPublisherId,
 				unrelatedRepositoryId,
 				unrelatedSecretId,
 				unrelatedReviewId,
@@ -4563,56 +4539,41 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 
 		const after = await t.run(async (ctx) => {
 			const [
-				deletedPublisher,
 				deletedRepository,
 				deletedSecret,
 				deletedReview,
-				deletedUserPublishers,
-				deletedPublisherRepositories,
-				unrelatedPublisher,
+				deletedUserRepositories,
 				unrelatedRepository,
 				unrelatedSecret,
 				unrelatedReview,
 			] = await Promise.all([
-				ctx.db.get("plugins_publishers", seeded.deletedPublisherId),
 				ctx.db.get("plugins_publisher_repositories", seeded.deletedRepositoryId),
 				ctx.db.get("plugins_publisher_secrets", seeded.deletedSecretId),
 				ctx.db.get("plugins_version_reviews", seeded.deletedReviewId),
 				ctx.db
-					.query("plugins_publishers")
+					.query("plugins_publisher_repositories")
 					.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", deletedUser.userId))
 					.collect(),
-				ctx.db
-					.query("plugins_publisher_repositories")
-					.withIndex("by_publisher", (q) => q.eq("publisherId", seeded.deletedPublisherId))
-					.collect(),
-				ctx.db.get("plugins_publishers", seeded.unrelatedPublisherId),
 				ctx.db.get("plugins_publisher_repositories", seeded.unrelatedRepositoryId),
 				ctx.db.get("plugins_publisher_secrets", seeded.unrelatedSecretId),
 				ctx.db.get("plugins_version_reviews", seeded.unrelatedReviewId),
 			]);
 
 			return {
-				deletedPublisher,
 				deletedRepository,
 				deletedSecret,
 				deletedReview,
-				deletedUserPublishers,
-				deletedPublisherRepositories,
-				unrelatedPublisher,
+				deletedUserRepositories,
 				unrelatedRepository,
 				unrelatedSecret,
 				unrelatedReview,
 			};
 		});
 
-		expect(after.deletedPublisher).toBeNull();
 		expect(after.deletedRepository).toBeNull();
 		expect(after.deletedSecret).toBeNull();
 		expect(after.deletedReview).toBeNull();
-		expect(after.deletedUserPublishers).toHaveLength(0);
-		expect(after.deletedPublisherRepositories).toHaveLength(0);
-		expect(after.unrelatedPublisher?._id).toBe(seeded.unrelatedPublisherId);
+		expect(after.deletedUserRepositories).toHaveLength(0);
 		expect(after.unrelatedRepository?._id).toBe(seeded.unrelatedRepositoryId);
 		expect(after.unrelatedSecret?._id).toBe(seeded.unrelatedSecretId);
 		expect(after.unrelatedReview?._id).toBe(seeded.unrelatedReviewId);

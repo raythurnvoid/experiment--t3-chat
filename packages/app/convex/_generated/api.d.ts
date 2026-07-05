@@ -9,7 +9,6 @@
  */
 
 import type * as access_control from "../access_control.js";
-import type * as admin_wipe from "../admin_wipe.js";
 import type * as ai_chat from "../ai_chat.js";
 import type * as ai_chat_files from "../ai_chat_files.js";
 import type * as bash from "../bash.js";
@@ -43,7 +42,6 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   access_control: typeof access_control;
-  admin_wipe: typeof admin_wipe;
   ai_chat: typeof ai_chat;
   ai_chat_files: typeof ai_chat_files;
   bash: typeof bash;

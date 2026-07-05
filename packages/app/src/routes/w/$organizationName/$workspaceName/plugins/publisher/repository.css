@@ -34,16 +34,6 @@
 		color: var(--color-fg-07);
 	}
 
-	.RoutePluginsPublisherRepository-back {
-		display: flex;
-		align-items: center;
-
-		margin-bottom: -8px;
-
-		& a {
-			text-decoration: none;
-		}
-	}
 	/* #endregion root */
 
 	/* #region hero */

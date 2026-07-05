@@ -20,6 +20,7 @@ import {
 	MyInputTextAreaControl,
 } from "@/components/my-input.tsx";
 import { MyLink } from "@/components/my-link.tsx";
+import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -639,6 +640,8 @@ function RoutePluginsPublisher() {
 		auth.isAnonymous === false && auth.userId ? { userId: auth.userId } : "skip",
 	);
 
+	const breadcrumb = <PluginsHeaderBreadcrumb trail={["plugins"]} current="Publisher" />;
+
 	if (!auth.isAnonymous && repositories === undefined) {
 		return (
 			<main
@@ -646,6 +649,7 @@ function RoutePluginsPublisher() {
 				role="status"
 				aria-live="polite"
 			>
+				{breadcrumb}
 				<div className={"RoutePluginsPublisher-loading" satisfies RoutePluginsPublisher_ClassNames}>
 					<Store aria-hidden />
 					Loading publisher...
@@ -656,6 +660,8 @@ function RoutePluginsPublisher() {
 
 	return (
 		<main className={"RoutePluginsPublisher" satisfies RoutePluginsPublisher_ClassNames}>
+			{breadcrumb}
+
 			<header className={"RoutePluginsPublisherHeader" satisfies RoutePluginsPublisher_ClassNames}>
 				<div>
 					<h1 className={"RoutePluginsPublisherHeader-title" satisfies RoutePluginsPublisher_ClassNames}>Publisher</h1>

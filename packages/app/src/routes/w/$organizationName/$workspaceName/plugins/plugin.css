@@ -1,0 +1,519 @@
+@layer components {
+	/* #region root */
+	.RoutePluginsPlugin {
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+
+		width: min(100%, 960px);
+		min-height: 0;
+		height: 100%;
+		margin-inline: auto;
+		padding: 24px;
+		overflow: auto;
+	}
+
+	.RoutePluginsPlugin-loading {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		min-height: 180px;
+
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsPlugin-missing {
+		padding: 18px;
+		border: 1px dashed var(--color-base-1-07);
+		border-radius: 8px;
+
+		text-align: center;
+		font-size: 13px;
+		color: var(--color-fg-07);
+	}
+
+	/*
+	MyInput lays the label out in a row next to the control while MyInputBackground/MyInputBox
+	overlay the whole root, so the label is painted over and pushes the control sideways.
+	Stack the label above the box here and start the painted box below it.
+	*/
+	.RoutePluginsPlugin .MyInput {
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.RoutePluginsPlugin .MyInputLabel {
+		line-height: 20px;
+		margin-bottom: 6px;
+	}
+
+	.RoutePluginsPlugin .MyInput:has(.MyInputLabel) > :is(.MyInputBackground, .MyInputBox) {
+		top: 26px;
+		height: auto;
+	}
+	/* #endregion root */
+
+	/* #region hero */
+	.RoutePluginsPluginHero {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: start;
+		gap: 16px;
+	}
+
+	.RoutePluginsPluginHero-icon {
+		box-sizing: content-box;
+		width: 26px;
+		height: 26px;
+		padding: 11px;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 10px;
+
+		background: var(--color-base-1-04);
+		color: var(--color-fg-09);
+	}
+
+	.RoutePluginsPluginHero-info {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	.RoutePluginsPluginHero-titleRow {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		min-width: 0;
+	}
+
+	.RoutePluginsPluginHero-title {
+		margin: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 20px;
+		font-weight: 650;
+		line-height: 1.25;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsPluginHero-meta {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		min-width: 0;
+
+		font-family: monospace;
+		font-size: 12px;
+		color: var(--color-fg-07);
+	}
+
+	.RoutePluginsPluginHero-description {
+		margin: 2px 0 0;
+
+		font-size: 13px;
+		line-height: 1.5;
+		max-width: 72ch;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsPluginHero-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	/* #endregion hero */
+
+	/* #region consent modal */
+	.RoutePluginsPluginConsentModal {
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+
+		width: min(92vw, 480px);
+		padding: 18px;
+	}
+
+	.RoutePluginsPluginConsentModal-sectionTitle {
+		font-size: 12px;
+		font-weight: 600;
+		line-height: 1.25;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsPluginConsentModal-list {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+
+		margin: 0;
+		padding-inline-start: 18px;
+	}
+
+	.RoutePluginsPluginConsentModal-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		font-family: monospace;
+		font-size: 13px;
+		line-height: 1.35;
+		color: var(--color-fg-11);
+	}
+
+	.RoutePluginsPluginConsentModal-empty {
+		font-size: 13px;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsPluginConsentModal-actions {
+		display: flex;
+		align-items: center;
+		justify-content: end;
+		gap: 8px;
+	}
+	/* #endregion consent modal */
+
+	/* #region installed */
+	.RoutePluginsInstalled {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		padding-block-start: 16px;
+		border-block-start: 1px solid var(--color-base-1-06);
+	}
+
+	.RoutePluginsInstalled-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+		margin: 0;
+
+		font-size: 16px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsInstalled-name {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.RoutePluginsInstalled-meta {
+		font-size: 13px;
+		line-height: 1.35;
+		color: var(--color-fg-08);
+	}
+	/* #endregion installed */
+
+	/* #region installed events */
+	.RoutePluginsInstalledEvents {
+		margin-block-start: 4px;
+		padding-block-start: 12px;
+		border-block-start: 1px solid var(--color-base-1-06);
+	}
+
+	.RoutePluginsInstalledEvents-summary {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		cursor: pointer;
+		list-style: none;
+	}
+	.RoutePluginsInstalledEvents-summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.RoutePluginsInstalledEvents-chevron {
+		flex: none;
+		width: 16px;
+		height: 16px;
+
+		color: var(--color-fg-08);
+		transition: rotate 120ms ease;
+	}
+
+	.RoutePluginsInstalledEvents[open] > .RoutePluginsInstalledEvents-summary .RoutePluginsInstalledEvents-chevron {
+		rotate: 90deg;
+	}
+
+	.RoutePluginsInstalledEvents-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin: 0;
+
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsInstalledEvents-count {
+		font-size: 12px;
+		color: var(--color-fg-07);
+	}
+
+	.RoutePluginsInstalledEvents-description {
+		margin: 12px 0 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsInstalledEvents-empty {
+		margin-block-start: 12px;
+
+		font-size: 14px;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsInstalledEvents-list {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+
+		margin: 8px 0 0;
+		padding-inline-start: 18px;
+	}
+
+	.RoutePluginsInstalledEvents-item {
+		font-family: monospace;
+		font-size: 13px;
+		line-height: 1.35;
+		color: var(--color-fg-11);
+	}
+	/* #endregion installed events */
+
+	/* #region installed secrets */
+	.RoutePluginsInstalledSecrets {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		margin-block-start: 4px;
+		padding-block-start: 12px;
+		border-block-start: 1px solid var(--color-base-1-06);
+	}
+
+	.RoutePluginsInstalledSecrets-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin: 0;
+
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsInstalledSecrets-description {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsInstalledSecrets-form {
+		display: grid;
+		grid-template-columns: minmax(0, 200px) minmax(0, 1fr) auto;
+		align-items: end;
+		gap: 8px;
+	}
+
+	.RoutePluginsInstalledSecrets-env {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: end;
+		gap: 8px;
+	}
+
+	.RoutePluginsInstalledSecrets-empty {
+		font-size: 14px;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsInstalledSecrets-list {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.RoutePluginsInstalledSecretItem {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 12px;
+
+		padding: 8px 12px;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 6px;
+
+		background: var(--color-base-1-02);
+	}
+
+	.RoutePluginsInstalledSecretItem-identity {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.RoutePluginsInstalledSecretItem-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-family: monospace;
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsInstalledSecretItem-meta {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 12px;
+		color: var(--color-fg-08);
+	}
+	/* #endregion installed secrets */
+
+	/* #region installed runs */
+	.RoutePluginsInstalledRuns {
+		margin-block-start: 4px;
+		padding-block-start: 12px;
+		border-block-start: 1px solid var(--color-base-1-06);
+	}
+
+	.RoutePluginsInstalledRuns-summary {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		cursor: pointer;
+		list-style: none;
+	}
+	.RoutePluginsInstalledRuns-summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.RoutePluginsInstalledRuns-chevron {
+		flex: none;
+		width: 16px;
+		height: 16px;
+
+		color: var(--color-fg-08);
+		transition: rotate 120ms ease;
+	}
+
+	.RoutePluginsInstalledRuns[open] > .RoutePluginsInstalledRuns-summary .RoutePluginsInstalledRuns-chevron {
+		rotate: 90deg;
+	}
+
+	.RoutePluginsInstalledRuns-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin: 0;
+
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		color: var(--color-fg-12);
+	}
+
+	.RoutePluginsInstalledRuns-empty {
+		margin-block-start: 12px;
+
+		font-size: 14px;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsInstalledRuns-list {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+
+		margin-block-start: 12px;
+	}
+
+	.RoutePluginsInstalledRunItem {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		min-width: 0;
+
+		padding: 8px 12px;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 6px;
+
+		background: var(--color-base-1-02);
+	}
+
+	.RoutePluginsInstalledRunItem-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.RoutePluginsInstalledRunItem-path {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-family: monospace;
+		font-size: 13px;
+		color: var(--color-fg-11);
+	}
+
+	.RoutePluginsInstalledRunItem-meta {
+		font-size: 12px;
+		line-height: 1.35;
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsInstalledRunItem-error {
+		font-size: 13px;
+		color: var(--color-destructive);
+	}
+	/* #endregion installed runs */
+
+	@media (max-width: 640px) {
+		.RoutePluginsPlugin {
+			padding: 16px;
+		}
+
+		.RoutePluginsPluginHero {
+			grid-template-columns: auto minmax(0, 1fr);
+		}
+
+		.RoutePluginsPluginHero-actions {
+			grid-column: 1 / -1;
+			justify-content: end;
+		}
+
+		.RoutePluginsInstalledSecrets-form,
+		.RoutePluginsInstalledSecrets-env,
+		.RoutePluginsInstalledSecretItem {
+			grid-template-columns: minmax(0, 1fr);
+			align-items: stretch;
+		}
+	}
+}

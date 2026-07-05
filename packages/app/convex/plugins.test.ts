@@ -1413,10 +1413,11 @@ describe("plugins publisher", () => {
 		});
 
 		const mine = await asUser.query(api.plugins.list_my_publisher_repositories, {});
-		expect(mine.map((repository: { repositoryUrl: string }) => repository.repositoryUrl)).toEqual([
+		expect(mine.map((item) => item.repository.repositoryUrl)).toEqual([
 			"https://github.com/bonobo/alpha-plugin",
 			"https://github.com/bonobo/zeta-plugin",
 		]);
+		expect(mine.map((item) => item.latestVersion)).toEqual([null, null]);
 	});
 
 	test("claims a repository with a normalized URL and is idempotent for the same user", async () => {
@@ -2135,29 +2136,15 @@ describe("plugins outbound origins consent", () => {
 });
 
 describe("plugins publish_version", () => {
-	async function insert_publisher(t: ReturnType<typeof test_convex>, args: { userId: Id<"users">; slug?: string }) {
-		const slug = args.slug ?? "bonobo";
-		return await t.run(async (ctx) => {
-			const now = Date.now();
-			return await ctx.db.insert("plugins_publishers", {
-				slug,
-				displayName: slug,
-				ownerUserId: args.userId,
-				createdAt: now,
-				updatedAt: now,
-			});
-		});
-	}
-
 	async function insert_claimed_repository(
 		t: ReturnType<typeof test_convex>,
-		args: { publisherId: Id<"plugins_publishers">; owner?: string; repo?: string },
+		args: { ownerUserId: Id<"users">; owner?: string; repo?: string },
 	) {
 		const owner = args.owner ?? "bonobo";
 		const repo = args.repo ?? "media-plugin";
 		return await t.run((ctx) =>
 			ctx.db.insert("plugins_publisher_repositories", {
-				publisherId: args.publisherId,
+				ownerUserId: args.ownerUserId,
 				repositoryUrl: `https://github.com/${owner}/${repo}`,
 				owner,
 				repo,
@@ -2170,7 +2157,6 @@ describe("plugins publish_version", () => {
 		t: ReturnType<typeof test_convex>,
 		args: {
 			name: string;
-			publisherId: Id<"plugins_publishers">;
 			createdBy: Id<"users">;
 			version?: string;
 			reviewStatus?: "pending" | "passed" | "rejected" | "flagged";
@@ -2184,7 +2170,6 @@ describe("plugins publish_version", () => {
 				displayName: args.name,
 				version: args.version ?? "0.1.0",
 				description: `${args.name} plugin`,
-				publisherId: args.publisherId,
 				reviewStatus: args.reviewStatus ?? "pending",
 				runtimeVersion: "1",
 				artifactHash: `sha256:${"c".repeat(64)}`,
@@ -2218,10 +2203,9 @@ describe("plugins publish_version", () => {
 	/** Reviews a never-seen artifact hash, which consumes fresh AI review budget when allowed. */
 	async function request_fresh_review(
 		t: ReturnType<typeof test_convex>,
-		args: { publisherId: Id<"plugins_publishers">; requestedBy: Id<"users">; hashChar: string },
+		args: { requestedBy: Id<"users">; hashChar: string },
 	) {
 		return await t.action(internal.plugins.review_version_artifact, {
-			publisherId: args.publisherId,
 			pluginName: "media-drain",
 			version: "0.1.0",
 			artifactHash: `sha256:${args.hashChar.repeat(64)}`,
@@ -2267,7 +2251,7 @@ describe("plugins publish_version", () => {
 			displayName: "Media",
 			version: "0.2.0",
 			description: "Published media plugin",
-			publisher: args.manifestPublisher ?? "bonobo",
+			...(args.manifestPublisher ? { publisher: args.manifestPublisher } : {}),
 			artifact: "dist/bonobo.artifact.json",
 		});
 		const artifactText = JSON.stringify(artifact);
@@ -2332,14 +2316,13 @@ describe("plugins publish_version", () => {
 	test("publishes a bundled plugin from GitHub, writes R2 artifacts, and registers with the review verdict", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
-		const repositoryId = await insert_claimed_repository(t, { publisherId });
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		vi.stubEnv("GITHUB_TOKEN", "github-token");
 		const github = await mock_publish_github_fetch();
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
 		if (published._nay) {
 			throw new Error(published._nay.message);
 		}
@@ -2349,7 +2332,7 @@ describe("plugins publish_version", () => {
 		expect(version).toMatchObject({
 			name: "media",
 			version: "0.2.0",
-			publisherId,
+			createdBy: membership.userId,
 			reviewStatus: "passed",
 			artifactHash: await sha256_text(github.artifactText),
 			artifactR2Key: `plugins/media/0.2.0/${github.commitSha}/dist/bonobo.artifact.json`,
@@ -2358,7 +2341,7 @@ describe("plugins publish_version", () => {
 		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
 		expect(reviews).toMatchObject([
 			{
-				publisherId,
+				createdBy: membership.userId,
 				artifactHash: await sha256_text(github.artifactText),
 				pluginName: "media",
 				version: "0.2.0",
@@ -2387,28 +2370,26 @@ describe("plugins publish_version", () => {
 	test("rejects publish before R2 upload when an artifact file byte size does not match", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
-		const repositoryId = await insert_claimed_repository(t, { publisherId });
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const github = await mock_publish_github_fetch({ artifactBytesDelta: 1 });
 
-		const published = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
 
 		expect(published).toEqual({ _nay: { message: 'Artifact file byte size mismatch for "dist/backend/worker.js"' } });
 		expect(github.uploadUrls).toEqual([]);
 	});
 
-	test("rejects manifests whose publisher does not match the publisher slug", async () => {
+	test("rejects manifests that still declare the removed publisher field", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
-		const repositoryId = await insert_claimed_repository(t, { publisherId });
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const github = await mock_publish_github_fetch({ manifestPublisher: "gorilla" });
 
-		const published = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
 
-		expect(published).toEqual({ _nay: { message: 'Plugin manifest "publisher" must match your publisher slug' } });
+		expect(published._nay?.message).toContain("publisher");
 		expect(github.uploadUrls).toEqual([]);
 		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
 		expect(versions).toEqual([]);
@@ -2418,19 +2399,16 @@ describe("plugins publish_version", () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const otherUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
-		const otherPublisherId = await insert_publisher(t, { userId: otherUserId, slug: "gorilla" });
 		const existingVersionId = await insert_plugin_version_doc(t, {
 			name: "media",
-			publisherId: otherPublisherId,
 			createdBy: otherUserId,
 		});
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
-		const repositoryId = await insert_claimed_repository(t, { publisherId });
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		await mock_publish_github_fetch();
 		mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
 
 		expect(published).toEqual({ _nay: { message: "Plugin name is already owned by another publisher" } });
 		const versions = await t.run((ctx) =>
@@ -2446,18 +2424,17 @@ describe("plugins publish_version", () => {
 	test("republishes the same commit idempotently and reuses the cached verdict without calling the model", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
-		const repositoryId = await insert_claimed_repository(t, { publisherId });
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		await mock_publish_github_fetch();
 		const aiReview = mock_ai_review();
 
-		const first = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		const first = await asOwner.action(api.plugins.publish_version, { repositoryId });
 		if (first._nay) {
 			throw new Error(first._nay.message);
 		}
 
-		const second = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		const second = await asOwner.action(api.plugins.publish_version, { repositoryId });
 		if (second._nay) {
 			throw new Error(second._nay.message);
 		}
@@ -2465,7 +2442,7 @@ describe("plugins publish_version", () => {
 		expect(aiReview).toHaveBeenCalledTimes(1);
 
 		const version = await t.run((ctx) => ctx.db.get("plugins_versions", first._yay.pluginVersionId));
-		expect(version).toMatchObject({ publisherId, reviewStatus: "passed" });
+		expect(version).toMatchObject({ createdBy: membership.userId, reviewStatus: "passed" });
 		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
 		expect(reviews).toHaveLength(1);
 	});
@@ -2473,14 +2450,13 @@ describe("plugins publish_version", () => {
 	test("mechanically rejects a minified dist before any upload and stores the rejection", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
-		const repositoryId = await insert_claimed_repository(t, { publisherId });
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const minifiedWorker = `export default{fetch:()=>new Response(${JSON.stringify("x".repeat(1200))})};`;
 		const github = await mock_publish_github_fetch({ workerSource: minifiedWorker });
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
 
 		expect(published._nay?.message).toContain("Plugin review rejected this version");
 		expect(published._nay?.message).toContain("Longest line");
@@ -2490,7 +2466,7 @@ describe("plugins publish_version", () => {
 		expect(versions).toEqual([]);
 		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
 		expect(reviews).toMatchObject([
-			{ publisherId, pluginName: "media", status: "rejected", aiFindings: [], model: "none" },
+			{ createdBy: membership.userId, pluginName: "media", status: "rejected", aiFindings: [], model: "none" },
 		]);
 		expect(reviews[0]?.mechanicalFindings.join(" ")).toContain("Longest line");
 	});
@@ -2498,13 +2474,12 @@ describe("plugins publish_version", () => {
 	test("flagged verdicts register the version but block installs", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
-		const repositoryId = await insert_claimed_repository(t, { publisherId });
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		await mock_publish_github_fetch();
 		mock_ai_review({ verdict: "flagged", findings: ["Module-level mutable state outlives a run"] });
 
-		const published = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
 		if (published._nay) {
 			throw new Error(published._nay.message);
 		}
@@ -2526,13 +2501,12 @@ describe("plugins publish_version", () => {
 	test("an AI review failure blocks the publish with a typed error instead of passing silently", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
-		const repositoryId = await insert_claimed_repository(t, { publisherId });
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const github = await mock_publish_github_fetch();
 		vi.spyOn(plugins_ai_review, "generate_verdict").mockRejectedValue(new Error("model unreachable"));
 
-		const published = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
 
 		expect(published).toEqual({
 			_nay: { message: "Plugin AI review is unavailable; the version was not registered" },
@@ -2544,14 +2518,13 @@ describe("plugins publish_version", () => {
 		expect(reviews).toEqual([]);
 	});
 
-	test("rate limits fresh AI reviews per publisher owner without calling the model once exhausted", async () => {
+	test("rate limits fresh AI reviews per publishing user without calling the model once exhausted", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
 		const aiReview = mock_ai_review();
 
 		for (const hashChar of ["0", "1", "2", "3", "4"]) {
-			const review = await request_fresh_review(t, { publisherId, requestedBy: membership.userId, hashChar });
+			const review = await request_fresh_review(t, { requestedBy: membership.userId, hashChar });
 			if (review._nay) {
 				throw new Error(review._nay.message);
 			}
@@ -2559,7 +2532,7 @@ describe("plugins publish_version", () => {
 		}
 		expect(aiReview).toHaveBeenCalledTimes(5);
 
-		const exceeded = await request_fresh_review(t, { publisherId, requestedBy: membership.userId, hashChar: "5" });
+		const exceeded = await request_fresh_review(t, { requestedBy: membership.userId, hashChar: "5" });
 
 		expect(exceeded._nay?.message).toMatch(/^Plugin AI review rate limit exceeded; try again in \d+s$/);
 		expect(aiReview).toHaveBeenCalledTimes(5);
@@ -2570,19 +2543,18 @@ describe("plugins publish_version", () => {
 	test("blocks a publish that needs a fresh AI review once the review budget is exhausted", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
-		const repositoryId = await insert_claimed_repository(t, { publisherId });
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const github = await mock_publish_github_fetch();
 		const aiReview = mock_ai_review();
 		for (const hashChar of ["0", "1", "2", "3", "4"]) {
-			const review = await request_fresh_review(t, { publisherId, requestedBy: membership.userId, hashChar });
+			const review = await request_fresh_review(t, { requestedBy: membership.userId, hashChar });
 			if (review._nay) {
 				throw new Error(review._nay.message);
 			}
 		}
 
-		const published = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
 
 		expect(published._nay?.message).toMatch(/^Plugin AI review rate limit exceeded; try again in \d+s$/);
 		expect(aiReview).toHaveBeenCalledTimes(5);
@@ -2594,13 +2566,12 @@ describe("plugins publish_version", () => {
 	test("republishes a cached artifact even when the fresh AI review budget is exhausted", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
-		const repositoryId = await insert_claimed_repository(t, { publisherId });
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		await mock_publish_github_fetch();
 		const aiReview = mock_ai_review();
 
-		const first = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		const first = await asOwner.action(api.plugins.publish_version, { repositoryId });
 		if (first._nay) {
 			throw new Error(first._nay.message);
 		}
@@ -2608,15 +2579,15 @@ describe("plugins publish_version", () => {
 
 		// The first publish consumed one token; drain the rest, then confirm the budget is empty.
 		for (const hashChar of ["1", "2", "3", "4"]) {
-			const review = await request_fresh_review(t, { publisherId, requestedBy: membership.userId, hashChar });
+			const review = await request_fresh_review(t, { requestedBy: membership.userId, hashChar });
 			if (review._nay) {
 				throw new Error(review._nay.message);
 			}
 		}
-		const drained = await request_fresh_review(t, { publisherId, requestedBy: membership.userId, hashChar: "5" });
+		const drained = await request_fresh_review(t, { requestedBy: membership.userId, hashChar: "5" });
 		expect(drained._nay?.message).toContain("Plugin AI review rate limit exceeded");
 
-		const second = await asOwner.action(api.plugins.publish_version, { publisherId, repositoryId });
+		const second = await asOwner.action(api.plugins.publish_version, { repositoryId });
 		if (second._nay) {
 			throw new Error(second._nay.message);
 		}
@@ -2627,16 +2598,13 @@ describe("plugins publish_version", () => {
 	test("rejects installs of plugin versions that failed review", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
 		const rejectedVersionId = await insert_plugin_version_doc(t, {
 			name: "rejected-media",
-			publisherId,
 			createdBy: membership.userId,
 			reviewStatus: "rejected",
 		});
 		const flaggedVersionId = await insert_plugin_version_doc(t, {
 			name: "flagged-media",
-			publisherId,
 			createdBy: membership.userId,
 			reviewStatus: "flagged",
 		});
@@ -2659,45 +2627,47 @@ describe("plugins publish_version", () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const otherUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
-		const otherPublisherId = await insert_publisher(t, { userId: otherUserId, slug: "gorilla" });
 		const foreignRepositoryId = await insert_claimed_repository(t, {
-			publisherId: otherPublisherId,
+			ownerUserId: otherUserId,
 			owner: "gorilla",
 			repo: "media-plugin",
 		});
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 
 		const foreign = await asOwner.action(api.plugins.publish_version, {
-			publisherId,
 			repositoryId: foreignRepositoryId,
 		});
 		expect(foreign).toEqual({ _nay: { message: "Unauthorized" } });
 
-		const removedRepositoryId = await insert_claimed_repository(t, { publisherId });
+		const removedRepositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		await t.run((ctx) => ctx.db.delete("plugins_publisher_repositories", removedRepositoryId));
 		const missing = await asOwner.action(api.plugins.publish_version, {
-			publisherId,
 			repositoryId: removedRepositoryId,
 		});
 		expect(missing).toEqual({ _nay: { message: "Not found" } });
 	});
 
-	test("lists the latest registered version per plugin name with publisher slugs", async () => {
+	test("lists the latest registered version per plugin name with publisher display names", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const publisherId = await insert_publisher(t, { userId: membership.userId });
+		await t.run(async (ctx) => {
+			const anagraphicId = await ctx.db.insert("users_anagraphics", {
+				userId: membership.userId,
+				displayName: "Ray Publisher",
+				email: "ray@example.com",
+				updatedAt: Date.now(),
+			});
+			await ctx.db.patch("users", membership.userId, { anagraphic: anagraphicId });
+		});
 		const now = Date.now();
 		await insert_plugin_version_doc(t, {
 			name: "media",
-			publisherId,
 			createdBy: membership.userId,
 			version: "0.1.0",
 			createdAt: now - 1000,
 		});
 		const latestMediaVersionId = await insert_plugin_version_doc(t, {
 			name: "media",
-			publisherId,
 			createdBy: membership.userId,
 			version: "0.2.0",
 			reviewStatus: "passed",
@@ -2705,7 +2675,6 @@ describe("plugins publish_version", () => {
 		});
 		const alphaVersionId = await insert_plugin_version_doc(t, {
 			name: "alpha",
-			publisherId,
 			createdBy: membership.userId,
 			version: "1.0.0",
 			createdAt: now,
@@ -2718,14 +2687,14 @@ describe("plugins publish_version", () => {
 				pluginVersionId: alphaVersionId,
 				name: "alpha",
 				version: "1.0.0",
-				publisherSlug: "bonobo",
+				publisherDisplayName: "Ray Publisher",
 				reviewStatus: "pending",
 			},
 			{
 				pluginVersionId: latestMediaVersionId,
 				name: "media",
 				version: "0.2.0",
-				publisherSlug: "bonobo",
+				publisherDisplayName: "Ray Publisher",
 				reviewStatus: "passed",
 			},
 		]);

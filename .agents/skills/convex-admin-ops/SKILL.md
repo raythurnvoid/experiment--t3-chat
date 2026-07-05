@@ -103,6 +103,16 @@ For a dev-environment reset where signed-in accounts should keep auth and Polar 
 
 Do not use `"data_auth_and_user_record"` for Clerk-backed users unless the user explicitly wants to destroy the local account and billing identity.
 
+Reset gotchas observed on this deployment:
+
+- Organization deletion is queued through `data_deletion_requests` and drained by `data_deletion:run_process_deletion_requests_once`. If a readback shows orphan organizations lingering after user purges and the table still has rows, run that function manually (repeat until it returns `shouldReschedule: false` and the table is empty) instead of re-deleting users.
+- Plugin publishes materialize source files under the virtual global tenant (`organizations_GLOBAL_ORGANIZATION_ID` "GLOBAL" / `organizations_GLOBAL_GITHUB_WORKSPACE_ID` "GITHUB"). User/tenant purges do not touch them, so wiping the plugin registry leaves orphan `files_nodes` (plus chunks, `files_file_stats`, metadata docs, and R2 asset/node pairs) in that workspace. Sweep them with a temporary batch internalMutation modeled on `github_sources.delete_mount_content_batch` (children before parents: chunks → file_stats → metadata → R2 asset + node), run it until `done: true`, and verify with a count over `files_nodes.by_organization_workspace_treePath` for GLOBAL/GITHUB.
+- For staged wipes, deploy a temporary `admin_wipe.ts` module with a read-only preview (counts per table + per-user summary) and bounded batch deletes; run preview → writes → preview readback, then delete the module and redeploy so the admin surface does not linger.
+
+## Data Readback Via `convex data`
+
+`convex data <table> --limit N` truncates columns to the terminal width, which silently hides ids and long fields. Pipe through `Out-String -Width 500` (PowerShell) or read a small `--limit` before drawing conclusions. `--help` cannot be reached through `vp env exec` (vp swallows the flag); consult the Convex docs instead.
+
 ## Verification
 
 Use the smallest readback that proves the requested state:

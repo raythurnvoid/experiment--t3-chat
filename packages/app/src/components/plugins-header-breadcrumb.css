@@ -1,0 +1,46 @@
+@layer components {
+	.PluginsHeaderBreadcrumb {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+
+		min-width: 0;
+		margin: 0;
+		padding: 0 16px;
+
+		list-style: none;
+
+		font-size: 0.875rem;
+		color: var(--gray-800);
+	}
+
+	.PluginsHeaderBreadcrumb-segment,
+	.PluginsHeaderBreadcrumb-segment-current {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 4px;
+
+		padding: 6px;
+
+		white-space: nowrap;
+	}
+
+	.PluginsHeaderBreadcrumb-segment {
+		color: var(--gray-600);
+		cursor: pointer;
+
+		&:hover {
+			color: var(--gray-800);
+			text-decoration: underline;
+		}
+	}
+
+	.PluginsHeaderBreadcrumb-segment-current {
+		overflow: hidden;
+		text-overflow: ellipsis;
+
+		padding: 8px;
+		color: var(--gray-700);
+	}
+}

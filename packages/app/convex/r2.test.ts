@@ -278,29 +278,11 @@ async function install_upload_plugin(
 		contentTypes: string[];
 	},
 ) {
-	const publisherId = await t.run(async (ctx) => {
-		const existing = await ctx.db
-			.query("plugins_publishers")
-			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", args.userId))
-			.first();
-		if (existing) {
-			return existing._id;
-		}
-		const now = Date.now();
-		return await ctx.db.insert("plugins_publishers", {
-			slug: "bonobo",
-			displayName: "Bonobo",
-			ownerUserId: args.userId,
-			createdAt: now,
-			updatedAt: now,
-		});
-	});
 	const registered = await t.action(internal.plugins.register_verified_version, {
 		name: args.name,
 		displayName: args.displayName,
 		version: "0.1.0",
 		description: args.description,
-		publisherId,
 		reviewStatus: "passed",
 		artifactHash: `sha256:${"a".repeat(64)}`,
 		sourceRepositoryUrl: `https://github.com/bonobo/${args.name}-plugin`,
