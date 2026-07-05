@@ -1570,11 +1570,32 @@ describe("plugins publisher secrets", () => {
 		return await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
 	}
 
-	async function get_publisher_secret_doc(t: ReturnType<typeof test_convex>, ownerUserId: Id<"users">, name: string) {
+	async function insert_claimed_repository(
+		t: ReturnType<typeof test_convex>,
+		args: { ownerUserId: Id<"users">; owner?: string; repo?: string },
+	) {
+		const owner = args.owner ?? "bonobo";
+		const repo = args.repo ?? "media-plugin";
+		return await t.run((ctx) =>
+			ctx.db.insert("plugins_publisher_repositories", {
+				ownerUserId: args.ownerUserId,
+				repositoryUrl: `https://github.com/${owner}/${repo}`,
+				owner,
+				repo,
+				createdAt: Date.now(),
+			}),
+		);
+	}
+
+	async function get_publisher_secret_doc(
+		t: ReturnType<typeof test_convex>,
+		repositoryId: Id<"plugins_publisher_repositories">,
+		name: string,
+	) {
 		return await t.run(async (ctx) => {
 			const secret = await ctx.db
 				.query("plugins_publisher_secrets")
-				.withIndex("by_ownerUser_name", (q) => q.eq("ownerUserId", ownerUserId).eq("name", name))
+				.withIndex("by_repository_name", (q) => q.eq("repositoryId", repositoryId).eq("name", name))
 				.first();
 			if (!secret) {
 				throw new Error("Expected publisher secret doc");
@@ -1587,9 +1608,11 @@ describe("plugins publisher secrets", () => {
 		const t = test_convex();
 		const ownerUserId = await create_publisher_user(t);
 		const otherUserId = await create_publisher_user(t);
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
 		const saved = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
 			allowedOrigins: ["https://api.openai.com/", "https://API.OPENAI.COM"],
@@ -1598,7 +1621,7 @@ describe("plugins publisher secrets", () => {
 			throw new Error(saved._nay.message);
 		}
 
-		const listed = await asOwner.query(api.plugins.list_publisher_secrets, {});
+		const listed = await asOwner.query(api.plugins.list_publisher_secrets, { repositoryId });
 		expect(listed).toEqual([
 			expect.objectContaining({
 				name: "OPENAI_API_KEY",
@@ -1609,19 +1632,71 @@ describe("plugins publisher secrets", () => {
 		]);
 		expect(JSON.stringify(listed)).not.toContain("sk-publisher-secret");
 
-		const secret = await get_publisher_secret_doc(t, ownerUserId, "OPENAI_API_KEY");
+		const secret = await get_publisher_secret_doc(t, repositoryId, "OPENAI_API_KEY");
 		expect(secret.keyVersion).toBe(1);
 		expect(secret.ciphertext).not.toContain("sk-publisher-secret");
 
-		// Secrets are scoped to the caller; another user sees only their own (none).
-		expect(await t.withIdentity(user_identity(otherUserId)).query(api.plugins.list_publisher_secrets, {})).toEqual(
-			[],
-		);
+		// Secrets are scoped to the claim owner; another user asking for this repository sees nothing.
+		expect(
+			await t.withIdentity(user_identity(otherUserId)).query(api.plugins.list_publisher_secrets, { repositoryId }),
+		).toEqual([]);
+	});
+
+	test("rejects secret mutations for repositories that are missing or claimed by another publisher", async () => {
+		const t = test_convex();
+		const ownerUserId = await create_publisher_user(t);
+		const otherUserId = await create_publisher_user(t);
+		const foreignRepositoryId = await insert_claimed_repository(t, { ownerUserId: otherUserId, owner: "gorilla" });
+		const asOwner = t.withIdentity(user_identity(ownerUserId));
+
+		expect(
+			await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+				repositoryId: foreignRepositoryId,
+				name: "OPENAI_API_KEY",
+				value: "sk-publisher-secret",
+				allowedOrigins: [],
+			}),
+		).toEqual({ _nay: { message: "Unauthorized" } });
+		expect(
+			await asOwner.mutation(api.plugins.upsert_publisher_secrets, {
+				repositoryId: foreignRepositoryId,
+				secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
+			}),
+		).toEqual({ _nay: { message: "Unauthorized" } });
+		refill_manage_rate_limit();
+		expect(
+			await asOwner.mutation(api.plugins.update_publisher_secret_origins, {
+				repositoryId: foreignRepositoryId,
+				name: "OPENAI_API_KEY",
+				allowedOrigins: [],
+			}),
+		).toEqual({ _nay: { message: "Unauthorized" } });
+		expect(
+			await asOwner.mutation(api.plugins.delete_publisher_secret, {
+				repositoryId: foreignRepositoryId,
+				name: "OPENAI_API_KEY",
+			}),
+		).toEqual({ _nay: { message: "Unauthorized" } });
+		expect(await asOwner.query(api.plugins.list_publisher_secrets, { repositoryId: foreignRepositoryId })).toEqual([]);
+
+		const removedRepositoryId = await insert_claimed_repository(t, { ownerUserId });
+		await t.run((ctx) => ctx.db.delete("plugins_publisher_repositories", removedRepositoryId));
+		refill_manage_rate_limit();
+		expect(
+			await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+				repositoryId: removedRepositoryId,
+				name: "OPENAI_API_KEY",
+				value: "sk-publisher-secret",
+				allowedOrigins: [],
+			}),
+		).toEqual({ _nay: { message: "Not found" } });
+		expect(await asOwner.query(api.plugins.list_publisher_secrets, { repositoryId: removedRepositoryId })).toEqual([]);
 	});
 
 	test("rejects publisher secret mutations from anonymous users", async () => {
 		const t = test_convex();
 		const ownerUserId = await create_publisher_user(t);
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asAnonymous = t.withIdentity({
 			issuer: process.env.VITE_CONVEX_HTTP_URL!,
 			subject: ownerUserId,
@@ -1630,6 +1705,7 @@ describe("plugins publisher secrets", () => {
 
 		expect(
 			await asAnonymous.mutation(api.plugins.upsert_publisher_secret, {
+				repositoryId,
 				name: "OPENAI_API_KEY",
 				value: "sk-publisher-secret",
 				allowedOrigins: [],
@@ -1637,16 +1713,20 @@ describe("plugins publisher secrets", () => {
 		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
 		expect(
 			await asAnonymous.mutation(api.plugins.upsert_publisher_secrets, {
+				repositoryId,
 				secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
 			}),
 		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
 		expect(
 			await asAnonymous.mutation(api.plugins.update_publisher_secret_origins, {
+				repositoryId,
 				name: "OPENAI_API_KEY",
 				allowedOrigins: ["https://api.openai.com"],
 			}),
 		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
-		expect(await asAnonymous.mutation(api.plugins.delete_publisher_secret, { name: "OPENAI_API_KEY" })).toEqual({
+		expect(
+			await asAnonymous.mutation(api.plugins.delete_publisher_secret, { repositoryId, name: "OPENAI_API_KEY" }),
+		).toEqual({
 			_nay: { message: "Sign in to publish plugins" },
 		});
 
@@ -1662,10 +1742,12 @@ describe("plugins publisher secrets", () => {
 	test("rejects allowed origins that are not bare https origins", async () => {
 		const t = test_convex();
 		const ownerUserId = await create_publisher_user(t);
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
 		expect(
 			await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+				repositoryId,
 				name: "OPENAI_API_KEY",
 				value: "sk-publisher-secret",
 				allowedOrigins: ["http://api.openai.com"],
@@ -1673,6 +1755,7 @@ describe("plugins publisher secrets", () => {
 		).toEqual({ _nay: { message: "Origin must use https" } });
 		expect(
 			await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+				repositoryId,
 				name: "OPENAI_API_KEY",
 				value: "sk-publisher-secret",
 				allowedOrigins: ["https://api.openai.com/v1"],
@@ -1683,9 +1766,11 @@ describe("plugins publisher secrets", () => {
 	test(".env batch upsert preserves existing allowed origins and updates values", async () => {
 		const t = test_convex();
 		const ownerUserId = await create_publisher_user(t);
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
 		const saved = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-old-secret",
 			allowedOrigins: ["https://api.openai.com"],
@@ -1695,6 +1780,7 @@ describe("plugins publisher secrets", () => {
 		}
 
 		const batch = await asOwner.mutation(api.plugins.upsert_publisher_secrets, {
+			repositoryId,
 			secrets: [
 				{ name: "OPENAI_API_KEY", value: "sk-new-secret" },
 				{ name: "MODAL_TOKEN", value: "modal-secret" },
@@ -1705,13 +1791,13 @@ describe("plugins publisher secrets", () => {
 		}
 		expect(batch._yay.count).toBe(2);
 
-		const listed = await asOwner.query(api.plugins.list_publisher_secrets, {});
+		const listed = await asOwner.query(api.plugins.list_publisher_secrets, { repositoryId });
 		expect(listed.map((secret) => ({ name: secret.name, allowedOrigins: secret.allowedOrigins }))).toEqual([
 			{ name: "MODAL_TOKEN", allowedOrigins: [] },
 			{ name: "OPENAI_API_KEY", allowedOrigins: ["https://api.openai.com"] },
 		]);
 
-		const secret = await get_publisher_secret_doc(t, ownerUserId, "OPENAI_API_KEY");
+		const secret = await get_publisher_secret_doc(t, repositoryId, "OPENAI_API_KEY");
 		const decrypted = await t.action(internal.plugins.decrypt_secret_for_runtime, {
 			resolved: { tier: "publisher", secret },
 		});
@@ -1722,9 +1808,11 @@ describe("plugins publisher secrets", () => {
 		const t = test_convex();
 		const ownerUserId = await create_publisher_user(t);
 		const otherUserId = await create_publisher_user(t);
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
 		const saved = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
 			allowedOrigins: [],
@@ -1732,7 +1820,7 @@ describe("plugins publisher secrets", () => {
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
 		}
-		const secret = await get_publisher_secret_doc(t, ownerUserId, "OPENAI_API_KEY");
+		const secret = await get_publisher_secret_doc(t, repositoryId, "OPENAI_API_KEY");
 
 		const decrypted = await t.action(internal.plugins.decrypt_secret_for_runtime, {
 			resolved: { tier: "publisher", secret },
@@ -1754,6 +1842,8 @@ describe("plugins publisher secrets", () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
+		// The claim URL matches the registered version's sourceRepositoryUrl.
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.action(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -1775,6 +1865,7 @@ describe("plugins publisher secrets", () => {
 		}
 		refill_manage_rate_limit();
 		const savedPublisher = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
 			allowedOrigins: [],
@@ -1802,6 +1893,8 @@ describe("plugins publisher secrets", () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
+		// The claim URL matches the registered version's sourceRepositoryUrl.
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.action(api.plugins.install_version, {
 			membershipId: membership.membershipId,
@@ -1812,6 +1905,7 @@ describe("plugins publisher secrets", () => {
 			throw new Error(installed._nay.message);
 		}
 		const savedPublisher = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
 			allowedOrigins: ["https://api.openai.com"],
@@ -1834,11 +1928,11 @@ describe("plugins publisher secrets", () => {
 		const decrypted = await t.action(internal.plugins.decrypt_secret_for_runtime, { resolved });
 		expect(decrypted).toEqual({ _yay: "sk-publisher-secret" });
 
-		const secret = await get_publisher_secret_doc(t, membership.userId, "OPENAI_API_KEY");
+		const secret = await get_publisher_secret_doc(t, repositoryId, "OPENAI_API_KEY");
 		expect(typeof secret.lastUsedAt).toBe("number");
 	});
 
-	test("does not serve secrets from unrelated publishers", async () => {
+	test("does not serve secrets from unrelated repositories", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
@@ -1852,8 +1946,15 @@ describe("plugins publisher secrets", () => {
 			throw new Error(installed._nay.message);
 		}
 
+		// Another publisher's claim on a different repository holds the same secret name.
 		const otherUserId = await create_publisher_user(t);
+		const otherRepositoryId = await insert_claimed_repository(t, {
+			ownerUserId: otherUserId,
+			owner: "gorilla",
+			repo: "other-plugin",
+		});
 		const savedOther = await t.withIdentity(user_identity(otherUserId)).mutation(api.plugins.upsert_publisher_secret, {
+			repositoryId: otherRepositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-unrelated-secret",
 			allowedOrigins: [],
@@ -1874,9 +1975,11 @@ describe("plugins publisher secrets", () => {
 	test("updates and deletes publisher secrets for the owner", async () => {
 		const t = test_convex();
 		const ownerUserId = await create_publisher_user(t);
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
 		const saved = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
 			allowedOrigins: [],
@@ -1886,25 +1989,69 @@ describe("plugins publisher secrets", () => {
 		}
 
 		const updated = await asOwner.mutation(api.plugins.update_publisher_secret_origins, {
+			repositoryId,
 			name: "OPENAI_API_KEY",
 			allowedOrigins: ["https://api.openai.com"],
 		});
 		expect(updated).toEqual({ _yay: null });
-		const secret = await get_publisher_secret_doc(t, ownerUserId, "OPENAI_API_KEY");
+		const secret = await get_publisher_secret_doc(t, repositoryId, "OPENAI_API_KEY");
 		expect(secret.allowedOrigins).toEqual(["https://api.openai.com"]);
 
 		refill_manage_rate_limit();
 		const missingUpdate = await asOwner.mutation(api.plugins.update_publisher_secret_origins, {
+			repositoryId,
 			name: "MODAL_TOKEN",
 			allowedOrigins: [],
 		});
 		expect(missingUpdate).toEqual({ _nay: { message: "Not found" } });
 
 		const deleted = await asOwner.mutation(api.plugins.delete_publisher_secret, {
+			repositoryId,
 			name: "OPENAI_API_KEY",
 		});
 		expect(deleted).toEqual({ _yay: null });
-		expect(await asOwner.query(api.plugins.list_publisher_secrets, {})).toEqual([]);
+		expect(await asOwner.query(api.plugins.list_publisher_secrets, { repositoryId })).toEqual([]);
+	});
+
+	test("removing a repository claim deletes its secrets", async () => {
+		const t = test_convex();
+		const ownerUserId = await create_publisher_user(t);
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
+		const otherRepositoryId = await insert_claimed_repository(t, { ownerUserId, repo: "other-plugin" });
+		const asOwner = t.withIdentity(user_identity(ownerUserId));
+
+		const saved = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+			repositoryId,
+			name: "OPENAI_API_KEY",
+			value: "sk-publisher-secret",
+			allowedOrigins: [],
+		});
+		if (saved._nay) {
+			throw new Error(saved._nay.message);
+		}
+		const savedOther = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+			repositoryId: otherRepositoryId,
+			name: "MODAL_TOKEN",
+			value: "modal-secret",
+			allowedOrigins: [],
+		});
+		if (savedOther._nay) {
+			throw new Error(savedOther._nay.message);
+		}
+
+		refill_manage_rate_limit();
+		const removed = await asOwner.mutation(api.plugins.remove_repository, { repositoryId });
+		expect(removed).toEqual({ _yay: null });
+
+		const secrets = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_publisher_secrets")
+				.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", ownerUserId))
+				.take(10),
+		);
+		expect(secrets.map((secret) => ({ name: secret.name, repositoryId: secret.repositoryId }))).toEqual([
+			{ name: "MODAL_TOKEN", repositoryId: otherRepositoryId },
+		]);
 	});
 });
 
@@ -2037,11 +2184,31 @@ describe("plugins outbound origins consent", () => {
 		expect(installation?.acceptedOutboundOrigins).toEqual(["https://api.openai.com"]);
 	});
 
-	test("sends the runner exactly the consented origins plus publisher secret origins", async () => {
+	test("sends the runner exactly the consented origins plus the source repository's secret origins", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId, {
 			outboundOrigins: ["https://api.openai.com"],
+		});
+		// Claims by the same owner: one on the version's source repository, one on an unrelated repository.
+		const [repositoryId, unrelatedRepositoryId] = await t.run(async (ctx) => {
+			const now = Date.now();
+			return [
+				await ctx.db.insert("plugins_publisher_repositories", {
+					ownerUserId: membership.userId,
+					repositoryUrl: "https://github.com/bonobo/media-plugin",
+					owner: "bonobo",
+					repo: "media-plugin",
+					createdAt: now,
+				}),
+				await ctx.db.insert("plugins_publisher_repositories", {
+					ownerUserId: membership.userId,
+					repositoryUrl: "https://github.com/bonobo/other-plugin",
+					owner: "bonobo",
+					repo: "other-plugin",
+					createdAt: now,
+				}),
+			];
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.action(api.plugins.install_version, {
@@ -2055,12 +2222,24 @@ describe("plugins outbound origins consent", () => {
 		}
 		// Overlapping publisher origin proves the payload allowlist is deduplicated.
 		const savedPublisher = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+			repositoryId,
 			name: "TRANSFORMER_SECRET",
 			value: "sk-transformer-secret",
 			allowedOrigins: ["https://api.openai.com", "https://transformer.example.com"],
 		});
 		if (savedPublisher._nay) {
 			throw new Error(savedPublisher._nay.message);
+		}
+		refill_manage_rate_limit();
+		// The same owner's secrets on other repositories must contribute no origins.
+		const savedUnrelated = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+			repositoryId: unrelatedRepositoryId,
+			name: "UNRELATED_SECRET",
+			value: "sk-unrelated-secret",
+			allowedOrigins: ["https://unrelated.example.com"],
+		});
+		if (savedUnrelated._nay) {
+			throw new Error(savedUnrelated._nay.message);
 		}
 		refill_manage_rate_limit();
 		// Installation secrets must contribute no origins to the allowlist.
@@ -2203,7 +2382,7 @@ describe("plugins publish_version", () => {
 	/** Reviews a never-seen artifact hash, which consumes fresh AI review budget when allowed. */
 	async function request_fresh_review(
 		t: ReturnType<typeof test_convex>,
-		args: { requestedBy: Id<"users">; hashChar: string },
+		args: { requestedBy: Id<"users">; repositoryId: Id<"plugins_publisher_repositories">; hashChar: string },
 	) {
 		return await t.action(internal.plugins.review_version_artifact, {
 			pluginName: "media-drain",
@@ -2212,6 +2391,7 @@ describe("plugins publish_version", () => {
 			distSource: "export default { fetch: () => new Response('published') };",
 			capabilities: ["uploads.source.read"],
 			outboundOrigins: [],
+			repositoryId: args.repositoryId,
 			requestedBy: args.requestedBy,
 		});
 	}
@@ -2521,10 +2701,11 @@ describe("plugins publish_version", () => {
 	test("rate limits fresh AI reviews per publishing user without calling the model once exhausted", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const aiReview = mock_ai_review();
 
 		for (const hashChar of ["0", "1", "2", "3", "4"]) {
-			const review = await request_fresh_review(t, { requestedBy: membership.userId, hashChar });
+			const review = await request_fresh_review(t, { requestedBy: membership.userId, repositoryId, hashChar });
 			if (review._nay) {
 				throw new Error(review._nay.message);
 			}
@@ -2532,7 +2713,7 @@ describe("plugins publish_version", () => {
 		}
 		expect(aiReview).toHaveBeenCalledTimes(5);
 
-		const exceeded = await request_fresh_review(t, { requestedBy: membership.userId, hashChar: "5" });
+		const exceeded = await request_fresh_review(t, { requestedBy: membership.userId, repositoryId, hashChar: "5" });
 
 		expect(exceeded._nay?.message).toMatch(/^Plugin AI review rate limit exceeded; try again in \d+s$/);
 		expect(aiReview).toHaveBeenCalledTimes(5);
@@ -2548,7 +2729,7 @@ describe("plugins publish_version", () => {
 		const github = await mock_publish_github_fetch();
 		const aiReview = mock_ai_review();
 		for (const hashChar of ["0", "1", "2", "3", "4"]) {
-			const review = await request_fresh_review(t, { requestedBy: membership.userId, hashChar });
+			const review = await request_fresh_review(t, { requestedBy: membership.userId, repositoryId, hashChar });
 			if (review._nay) {
 				throw new Error(review._nay.message);
 			}
@@ -2579,12 +2760,12 @@ describe("plugins publish_version", () => {
 
 		// The first publish consumed one token; drain the rest, then confirm the budget is empty.
 		for (const hashChar of ["1", "2", "3", "4"]) {
-			const review = await request_fresh_review(t, { requestedBy: membership.userId, hashChar });
+			const review = await request_fresh_review(t, { requestedBy: membership.userId, repositoryId, hashChar });
 			if (review._nay) {
 				throw new Error(review._nay.message);
 			}
 		}
-		const drained = await request_fresh_review(t, { requestedBy: membership.userId, hashChar: "5" });
+		const drained = await request_fresh_review(t, { requestedBy: membership.userId, repositoryId, hashChar: "5" });
 		expect(drained._nay?.message).toContain("Plugin AI review rate limit exceeded");
 
 		const second = await asOwner.action(api.plugins.publish_version, { repositoryId });
@@ -2679,6 +2860,19 @@ describe("plugins publish_version", () => {
 			version: "1.0.0",
 			createdAt: now,
 		});
+		// Latest is by semver, not createdAt: 0.1.10 outranks 0.1.9 despite being published earlier.
+		const latestBetaVersionId = await insert_plugin_version_doc(t, {
+			name: "beta",
+			createdBy: membership.userId,
+			version: "0.1.10",
+			createdAt: now - 5000,
+		});
+		await insert_plugin_version_doc(t, {
+			name: "beta",
+			createdBy: membership.userId,
+			version: "0.1.9",
+			createdAt: now,
+		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 
 		const listed = await asOwner.query(api.plugins.list_registered_plugins, { membershipId: membership.membershipId });
@@ -2687,6 +2881,13 @@ describe("plugins publish_version", () => {
 				pluginVersionId: alphaVersionId,
 				name: "alpha",
 				version: "1.0.0",
+				publisherDisplayName: "Ray Publisher",
+				reviewStatus: "pending",
+			},
+			{
+				pluginVersionId: latestBetaVersionId,
+				name: "beta",
+				version: "0.1.10",
 				publisherDisplayName: "Ray Publisher",
 				reviewStatus: "pending",
 			},
@@ -2706,10 +2907,71 @@ describe("plugins publish_version", () => {
 		});
 		expect(unauthorized).toEqual([]);
 	});
+
+	test("get_publisher_plugin returns semver-sorted panel data only to the claim owner", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const now = Date.now();
+		// Semver order beats createdAt order: 0.1.10 is latest despite being published earlier.
+		const latestVersionId = await insert_plugin_version_doc(t, {
+			name: "media",
+			createdBy: membership.userId,
+			version: "0.1.10",
+			createdAt: now - 5000,
+		});
+		const olderVersionId = await insert_plugin_version_doc(t, {
+			name: "media",
+			createdBy: membership.userId,
+			version: "0.1.9",
+			createdAt: now,
+		});
+		await t.run(async (ctx) => {
+			for (const pluginName of ["media", "other"]) {
+				await ctx.db.insert("plugins_version_reviews", {
+					createdBy: membership.userId,
+					artifactHash: `sha256:${(pluginName === "media" ? "e" : "f").repeat(64)}`,
+					pluginName,
+					version: "0.1.10",
+					status: "passed",
+					mechanicalFindings: [],
+					aiFindings: [],
+					model: "none",
+					createdAt: now,
+				});
+			}
+		});
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+
+		const details = await asOwner.query(api.plugins.get_publisher_plugin, { pluginName: "media" });
+		if (!details) {
+			throw new Error("Expected publisher plugin details");
+		}
+		expect(details.repository._id).toBe(repositoryId);
+		expect(details.versions.map((version) => ({ _id: version._id, version: version.version }))).toEqual([
+			{ _id: latestVersionId, version: "0.1.10" },
+			{ _id: olderVersionId, version: "0.1.9" },
+		]);
+		expect(details.reviews.map((review) => review.pluginName)).toEqual(["media"]);
+
+		// Anyone who does not own the claim behind the latest version gets null.
+		const strangerUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
+		expect(
+			await t.withIdentity(user_identity(strangerUserId)).query(api.plugins.get_publisher_plugin, {
+				pluginName: "media",
+			}),
+		).toBeNull();
+		expect(await t.query(api.plugins.get_publisher_plugin, { pluginName: "media" })).toBeNull();
+		expect(await asOwner.query(api.plugins.get_publisher_plugin, { pluginName: "missing" })).toBeNull();
+
+		// Removing the claim hides the panel data reactively.
+		await t.run((ctx) => ctx.db.delete("plugins_publisher_repositories", repositoryId));
+		expect(await asOwner.query(api.plugins.get_publisher_plugin, { pluginName: "media" })).toBeNull();
+	});
 });
 
 describe("plugins admin hard delete", () => {
-	test("hard-deletes one plugin's rows, R2 artifacts, and lockfile entry while other plugins and publisher secrets stay intact", async () => {
+	test("hard-deletes one plugin's rows, R2 artifacts, repository secrets, and lockfile entry while other plugins stay intact", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const media = await register_media_plugin(t, membership.userId, { name: "media" });
@@ -2748,12 +3010,25 @@ describe("plugins admin hard delete", () => {
 		await t.run(async (ctx) => {
 			const now = Date.now();
 			for (const name of ["media", "media-alt"]) {
-				await ctx.db.insert("plugins_publisher_repositories", {
+				const repositoryId = await ctx.db.insert("plugins_publisher_repositories", {
 					ownerUserId: membership.userId,
 					repositoryUrl: `https://github.com/bonobo/${name}-plugin`,
 					owner: "bonobo",
 					repo: `${name}-plugin`,
 					createdAt: now,
+				});
+				// Each repository claim owns one secret; deleting "media" must cascade only its own.
+				await ctx.db.insert("plugins_publisher_secrets", {
+					ownerUserId: membership.userId,
+					repositoryId,
+					name: "OPENAI_API_KEY",
+					ciphertext: `${name}-publisher-cipher`,
+					nonce: "nonce",
+					keyVersion: 1,
+					valuePreview: "configured",
+					allowedOrigins: [],
+					createdAt: now,
+					updatedAt: now,
 				});
 				await ctx.db.insert("plugins_version_reviews", {
 					createdBy: membership.userId,
@@ -2779,17 +3054,6 @@ describe("plugins admin hard delete", () => {
 				valuePreview: "configured",
 				createdBy: membership.userId,
 				updatedBy: membership.userId,
-				createdAt: now,
-				updatedAt: now,
-			});
-			await ctx.db.insert("plugins_publisher_secrets", {
-				ownerUserId: membership.userId,
-				name: "OPENAI_API_KEY",
-				ciphertext: "publisher-cipher",
-				nonce: "nonce",
-				keyVersion: 1,
-				valuePreview: "configured",
-				allowedOrigins: [],
 				createdAt: now,
 				updatedAt: now,
 			});
@@ -2843,6 +3107,7 @@ describe("plugins admin hard delete", () => {
 			eventRuns: 1,
 			eventRunCalls: 2,
 			publisherRepositoryClaims: 1,
+			publisherSecrets: 1,
 			r2ObjectKeys: 3,
 		});
 
@@ -2866,6 +3131,7 @@ describe("plugins admin hard delete", () => {
 			eventRuns: 0,
 			eventRunCalls: 0,
 			publisherRepositoryClaims: 0,
+			publisherSecrets: 0,
 			r2ObjectKeys: 0,
 		});
 
@@ -2885,13 +3151,13 @@ describe("plugins admin hard delete", () => {
 		const claims = await t.run((ctx) => ctx.db.query("plugins_publisher_repositories").collect());
 		expect(claims.map((claim) => claim.repositoryUrl)).toEqual(["https://github.com/bonobo/media-alt-plugin"]);
 
-		// Publisher secrets are shared across a publisher's plugins and stay untouched.
+		// The deleted claim's secret cascades with it; the other repository's secret stays.
 		const publisherSecrets = await t.run((ctx) => ctx.db.query("plugins_publisher_secrets").collect());
 		expect(publisherSecrets).toHaveLength(1);
 		expect(publisherSecrets[0]).toMatchObject({
 			ownerUserId: membership.userId,
 			name: "OPENAI_API_KEY",
-			ciphertext: "publisher-cipher",
+			ciphertext: "media-alt-publisher-cipher",
 		});
 
 		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/manifest.json");
@@ -2909,8 +3175,6 @@ describe("plugins admin hard delete", () => {
 		if (!lockfile) {
 			throw new Error("Expected refreshed lockfile");
 		}
-		expect(JSON.parse(lockfile.content).plugins.map((plugin: { name: string }) => plugin.name)).toEqual([
-			"media-alt",
-		]);
+		expect(JSON.parse(lockfile.content).plugins.map((plugin: { name: string }) => plugin.name)).toEqual(["media-alt"]);
 	});
 });

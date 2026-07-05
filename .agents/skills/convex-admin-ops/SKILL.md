@@ -92,7 +92,7 @@ Use `"data"` when the user wants to wipe app data while keeping the account usab
 
 ## Remove A Registered Plugin
 
-There is no public uninstall/unregister surface for plugins; removal is the internal-only admin flow in `packages/app/convex/plugins.ts`. It targets one plugin name and hard-deletes its versions, version reviews, source mounts, workspace installations (all workspaces and all versions), event handlers, installation secrets, event runs, run calls, the publisher repository claim(s) backing the plugin, and the R2 artifact objects (manifest, artifact, bundled files). Affected workspace lockfiles are refreshed afterwards. Publisher secrets (`plugins_publisher_secrets`) are never touched: they are shared across all of a publisher's plugins.
+There is no public uninstall/unregister surface for plugins; removal is the internal-only admin flow in `packages/app/convex/plugins.ts`. It targets one plugin name and hard-deletes its versions, version reviews, source mounts, workspace installations (all workspaces and all versions), event handlers, installation secrets, event runs, run calls, the publisher repository claim(s) backing the plugin, and the R2 artifact objects (manifest, artifact, bundled files). Affected workspace lockfiles are refreshed afterwards. Publisher secrets (`plugins_publisher_secrets`) are scoped to one repository claim and cascade with it: deleting a claim deletes its secrets, and the preview counts them as `publisherSecrets`.
 
 Run preview → delete → preview readback from `packages/app`:
 

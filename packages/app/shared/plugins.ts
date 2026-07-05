@@ -44,6 +44,38 @@ export function plugins_name_autofix_and_validate(raw: string) {
 	return organizations_name_autofix_and_validate(raw);
 }
 
+/**
+ * Compare two `plugins_semver_regex` versions; positive when `a` is newer. Major/minor/patch
+ * compare numerically (so 0.1.10 > 0.1.9); on a tie a bare version outranks one with a
+ * `-`/`+` suffix, and two suffixes compare as plain strings. Call sites may tie-break by
+ * `createdAt` when the compare returns 0.
+ */
+export function plugins_compare_semver(a: string, b: string) {
+	const parse = (version: string) => {
+		// Major/minor/patch are digits and dots only, so the first `-`/`+` starts the suffix.
+		const suffixIndex = version.search(/[-+]/u);
+		const core = suffixIndex === -1 ? version : version.slice(0, suffixIndex);
+		const suffix = suffixIndex === -1 ? null : version.slice(suffixIndex);
+		const [major = 0, minor = 0, patch = 0] = core.split(".").map(Number);
+		return { major, minor, patch, suffix };
+	};
+	const left = parse(a);
+	const right = parse(b);
+	if (left.major !== right.major) {
+		return left.major - right.major;
+	}
+	if (left.minor !== right.minor) {
+		return left.minor - right.minor;
+	}
+	if (left.patch !== right.patch) {
+		return left.patch - right.patch;
+	}
+	if (left.suffix === null || right.suffix === null) {
+		return (left.suffix === null ? 1 : 0) - (right.suffix === null ? 1 : 0);
+	}
+	return left.suffix < right.suffix ? -1 : left.suffix > right.suffix ? 1 : 0;
+}
+
 export function plugins_source_mount_name(args: { name: string; version: string; artifactHash: string }) {
 	const hash = args.artifactHash.startsWith("sha256:")
 		? args.artifactHash.slice("sha256:".length, "sha256:".length + 12)

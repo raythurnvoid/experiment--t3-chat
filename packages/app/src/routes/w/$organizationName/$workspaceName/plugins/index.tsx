@@ -2,10 +2,9 @@ import "./index.css";
 
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { Check, Puzzle, Search, Store } from "lucide-react";
+import { Puzzle, Search, Store } from "lucide-react";
 import { memo, useState } from "react";
 
-import { MyBadge } from "@/components/my-badge.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -15,6 +14,7 @@ import {
 	MyInputIcon,
 } from "@/components/my-input.tsx";
 import { MyLink, MyLinkIcon } from "@/components/my-link.tsx";
+import { PluginsGalleryCard } from "@/components/plugins-gallery-card.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
 import { app_convex_api, type app_convex_FunctionReturnType, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -28,17 +28,7 @@ type RoutePluginsGallery_ClassNames =
 	| "RoutePluginsGallery"
 	| "RoutePluginsGallery-search"
 	| "RoutePluginsGallery-empty"
-	| "RoutePluginsGallery-grid"
-	| "RoutePluginsGalleryCard"
-	| "RoutePluginsGalleryCard-header"
-	| "RoutePluginsGalleryCard-icon"
-	| "RoutePluginsGalleryCard-identity"
-	| "RoutePluginsGalleryCard-name"
-	| "RoutePluginsGalleryCard-publisher"
-	| "RoutePluginsGalleryCard-description"
-	| "RoutePluginsGalleryCard-footer"
-	| "RoutePluginsGalleryCard-version"
-	| "RoutePluginsGalleryCard-installed";
+	| "RoutePluginsGallery-grid";
 
 type RoutePluginsGallery_Props = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
@@ -47,7 +37,6 @@ type RoutePluginsGallery_Props = {
 
 const RoutePluginsGallery = memo(function RoutePluginsGallery(props: RoutePluginsGallery_Props) {
 	const { membershipId, installations } = props;
-	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 	const plugins = useQuery(app_convex_api.plugins.list_registered_plugins, { membershipId });
 	const [search, setSearch] = useState("");
 
@@ -93,44 +82,16 @@ const RoutePluginsGallery = memo(function RoutePluginsGallery(props: RoutePlugin
 							(item) => item.installation.pluginName === plugin.name,
 						)?.version;
 						return (
-							<MyLink
+							<PluginsGalleryCard
 								key={plugin.pluginVersionId}
-								to="/w/$organizationName/$workspaceName/plugins/$pluginName"
-								params={{ organizationName, workspaceName, pluginName: plugin.name }}
-								aria-label={`Open plugin page for ${plugin.displayName}`}
-								className={"RoutePluginsGalleryCard" satisfies RoutePluginsGallery_ClassNames}
-							>
-								<span className={"RoutePluginsGalleryCard-header" satisfies RoutePluginsGallery_ClassNames}>
-									<Puzzle className={"RoutePluginsGalleryCard-icon" satisfies RoutePluginsGallery_ClassNames} aria-hidden />
-									<span className={"RoutePluginsGalleryCard-identity" satisfies RoutePluginsGallery_ClassNames}>
-										<span className={"RoutePluginsGalleryCard-name" satisfies RoutePluginsGallery_ClassNames}>
-											{plugin.displayName}
-										</span>
-										<span className={"RoutePluginsGalleryCard-publisher" satisfies RoutePluginsGallery_ClassNames}>
-											{plugin.publisherDisplayName ?? "unknown publisher"}
-										</span>
-									</span>
-									{plugin.reviewStatus !== "passed" ? (
-										<MyBadge variant={plugin.reviewStatus === "rejected" ? "destructive" : "outline"}>
-											{plugin.reviewStatus}
-										</MyBadge>
-									) : null}
-								</span>
-								<span className={"RoutePluginsGalleryCard-description" satisfies RoutePluginsGallery_ClassNames}>
-									{plugin.description.trim().length > 0 ? plugin.description : "No description provided."}
-								</span>
-								<span className={"RoutePluginsGalleryCard-footer" satisfies RoutePluginsGallery_ClassNames}>
-									<span className={"RoutePluginsGalleryCard-version" satisfies RoutePluginsGallery_ClassNames}>
-										v{plugin.version}
-									</span>
-									{installedVersion ? (
-										<span className={"RoutePluginsGalleryCard-installed" satisfies RoutePluginsGallery_ClassNames}>
-											<Check aria-hidden />
-											Installed
-										</span>
-									) : null}
-								</span>
-							</MyLink>
+								pluginName={plugin.name}
+								displayName={plugin.displayName}
+								subtitle={plugin.publisherDisplayName ?? "unknown publisher"}
+								description={plugin.description}
+								version={plugin.version}
+								reviewStatus={plugin.reviewStatus}
+								installed={installedVersion !== undefined}
+							/>
 						);
 					})}
 				</div>

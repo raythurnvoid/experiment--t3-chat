@@ -4471,6 +4471,7 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 			});
 			const deletedSecretId = await ctx.db.insert("plugins_publisher_secrets", {
 				ownerUserId: deletedUser.userId,
+				repositoryId: deletedRepositoryId,
 				name: "OPENAI_API_KEY",
 				ciphertext: "ciphertext",
 				nonce: "nonce",
@@ -4500,6 +4501,7 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 			});
 			const unrelatedSecretId = await ctx.db.insert("plugins_publisher_secrets", {
 				ownerUserId: unrelatedUser.userId,
+				repositoryId: unrelatedRepositoryId,
 				name: "MODAL_TOKEN",
 				ciphertext: "ciphertext",
 				nonce: "nonce",

@@ -398,11 +398,18 @@ export const start_event_run = internalMutation({
 			return Result({ _nay: { message: "Plugin backend artifact hash is missing" } });
 		}
 
-		// Per-run egress allowlist: consented artifact origins plus the publishing user's secret origins.
-		const publisherSecrets = await ctx.db
-			.query("plugins_publisher_secrets")
-			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", version.createdBy))
-			.take(100);
+		// Per-run egress allowlist: consented artifact origins plus the secret origins of the
+		// version's source repository claim (no claim contributes no extra origins).
+		const repository = await ctx.db
+			.query("plugins_publisher_repositories")
+			.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", version.sourceRepositoryUrl))
+			.first();
+		const publisherSecrets = repository
+			? await ctx.db
+					.query("plugins_publisher_secrets")
+					.withIndex("by_repository_name", (q) => q.eq("repositoryId", repository._id))
+					.take(100)
+			: [];
 		const outboundOrigins = [
 			...new Set([
 				...installation.acceptedOutboundOrigins,
@@ -1341,10 +1348,7 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 						const bodyValidator = z
 							.object({
 								pluginRunId: z.string(),
-								operation: z.union([
-									z.literal("generateText"),
-									z.literal("outboundFetch"),
-								]),
+								operation: z.union([z.literal("generateText"), z.literal("outboundFetch")]),
 								systemBytes: z.number().int().min(0).optional(),
 								promptBytes: z.number().int().min(0).optional(),
 								includeSourceImage: z.boolean().optional(),

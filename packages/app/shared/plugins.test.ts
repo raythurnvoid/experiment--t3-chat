@@ -140,7 +140,9 @@ describe("plugins_validate_artifact", () => {
 			_nay: { message: "Outbound origins must already be normalized" },
 		});
 		expect(
-			plugins_validate_artifact(artifact_json({ outboundOrigins: ["https://api.openai.com", "https://api.openai.com"] })),
+			plugins_validate_artifact(
+				artifact_json({ outboundOrigins: ["https://api.openai.com", "https://api.openai.com"] }),
+			),
 		).toEqual({ _nay: { message: 'Plugin artifact has duplicate outbound origin "https://api.openai.com"' } });
 	});
 });
@@ -181,18 +183,18 @@ describe("plugins_consent_diff", () => {
 });
 
 describe("plugins_dist_review_mechanical_findings", () => {
-	function read_first_party_dist(plugin: "media" | "pdf") {
+	function read_first_party_dist(plugin: "image" | "pdf") {
 		// vitest runs with cwd at packages/app; import.meta.url is a vite /@fs URL here.
 		return readFileSync(`${process.cwd()}/../../plugins/bonobo-plugin-${plugin}/dist/backend/worker.js`, "utf8");
 	}
 
 	test("the real readable first-party dists pass", () => {
-		expect(plugins_dist_review_mechanical_findings(read_first_party_dist("media"))).toEqual([]);
+		expect(plugins_dist_review_mechanical_findings(read_first_party_dist("image"))).toEqual([]);
 		expect(plugins_dist_review_mechanical_findings(read_first_party_dist("pdf"))).toEqual([]);
 	});
 
 	test("rejects the same dist with its whitespace minified away", () => {
-		const minified = read_first_party_dist("media")
+		const minified = read_first_party_dist("image")
 			.split(/\r?\n/u)
 			.map((line) => line.trim())
 			.filter(Boolean)
@@ -211,7 +213,10 @@ describe("plugins_dist_review_mechanical_findings", () => {
 	});
 
 	test("rejects a dist with a giant base64 string literal", () => {
-		const readableLines = Array.from({ length: 20 }, (_, i) => `export function handler${i}(request) { return request; }`);
+		const readableLines = Array.from(
+			{ length: 20 },
+			(_, i) => `export function handler${i}(request) { return request; }`,
+		);
 		const source = [...readableLines, `const payload = decodePayload("${"A".repeat(300)}");`].join("\n");
 		expect(plugins_dist_review_mechanical_findings(source)).toEqual([expect.stringContaining("base64")]);
 	});
@@ -226,8 +231,20 @@ describe("plugins_dist_review_mechanical_findings", () => {
 });
 
 describe("plugins_manifest_schema", () => {
-	test("parses a manifest with a publisher and round-trips the field", () => {
+	test("parses a plain manifest", () => {
 		const parsed = plugins_manifest_schema.parse({
+			schemaVersion: 1,
+			name: "media",
+			displayName: "Media",
+			version: "0.1.0",
+			description: "Image and video markdown generation",
+			artifact: "dist/artifact.json",
+		});
+		expect(parsed.name).toBe("media");
+	});
+
+	test("rejects a manifest that still declares the removed publisher field", () => {
+		const result = plugins_manifest_schema.safeParse({
 			schemaVersion: 1,
 			name: "media",
 			displayName: "Media",
@@ -236,18 +253,6 @@ describe("plugins_manifest_schema", () => {
 			publisher: "bonobo",
 			artifact: "dist/artifact.json",
 		});
-		expect(parsed.publisher).toBe("bonobo");
-	});
-
-	test("parses a manifest without a publisher", () => {
-		const parsed = plugins_manifest_schema.parse({
-			schemaVersion: 1,
-			name: "media",
-			displayName: "Media",
-			version: "0.1.0",
-			description: "Image and video markdown generation",
-			artifact: "dist/artifact.json",
-		});
-		expect(parsed.publisher).toBeUndefined();
+		expect(result.success).toBe(false);
 	});
 });

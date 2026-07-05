@@ -11,7 +11,7 @@ Covers the flows that regress when the image plugin worker, publisher secrets, c
 ## Preflight
 
 1. Confirm the dev app is running and the `image` plugin is installed and enabled (gallery shows `Reinstall`, or check `plugins_workspace_installations` via the Convex CLI).
-2. Confirm the `OPENAI_API_KEY` publisher secret exists (publisher page secrets panel).
+2. Confirm the `OPENAI_API_KEY` publisher secret exists for the image plugin's repository (Secrets section of the publisher panel on the plugin's detail page, `/w/:organizationName/:workspaceName/plugins/image`).
 3. Create a Playwriter session and install the app harness (see `r2-file-content-regression.md` Preflight; same commands).
 4. Warm the Convex dev deployment first — cold starts can exceed 60s and look like a hung upload.
 5. Use one unique folder per run, for example `aaa-pw-image-<timestamp>`; archive it during cleanup.
@@ -48,15 +48,15 @@ Expected result:
 
 ## Negative Test (Missing Secret)
 
-1. On the publisher page, delete the `OPENAI_API_KEY` publisher secret. Mind the `plugins_manage` rate limiter (token bucket, capacity 2, 6/min) — space mutations ~15s apart.
+1. On the image plugin's detail page, delete the `OPENAI_API_KEY` secret from the publisher panel's Secrets section. Mind the `plugins_manage` rate limiter (token bucket, capacity 2, 6/min) — space mutations ~15s apart.
 2. Upload `shapes.png` again (renamed via the duplicate-upload dialog, or into a second folder).
 3. Wait for the run to settle, then verify: the run `status` is `failed` with `errorMessage: "Plugin execution failed"` (the runner deliberately sanitizes every worker throw — the specific `OPENAI_API_KEY secret is not configured` message is never persisted), the run's calls show only a single `secretGet` for the missing name with no `writeMarkdown`, and no `.description.md` sibling was created for this upload.
-4. Re-create the `OPENAI_API_KEY` secret exactly as before (origins `https://api.openai.com`) and wait ~15s before any further plugin mutations.
+4. Re-create the `OPENAI_API_KEY` secret exactly as before (origins `https://api.openai.com`) in the same publisher panel and wait ~15s before any further plugin mutations.
 
 ## Cleanup
 
 1. Archive `aaa-pw-image-<timestamp>` and any negative-test folders.
-2. Confirm the `OPENAI_API_KEY` publisher secret was restored (the video plugin's summary stage also depends on it).
+2. Confirm the `OPENAI_API_KEY` secret was restored in the image plugin's publisher panel (secrets are per repository, so the video plugin's own `OPENAI_API_KEY` is unaffected).
 3. Record skipped steps with the real blocker, not as pass.
 
 ## Failure Triage

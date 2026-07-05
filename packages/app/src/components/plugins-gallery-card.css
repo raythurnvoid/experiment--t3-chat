@@ -1,0 +1,119 @@
+@layer components {
+	.PluginsGalleryCard {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+
+		padding: 16px;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 8px;
+
+		background: var(--color-base-1-02);
+		color: inherit;
+
+		&:hover {
+			border-color: var(--color-base-1-08);
+			background: var(--color-base-1-03);
+			text-decoration: none;
+		}
+	}
+
+	.PluginsGalleryCard-header {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		min-width: 0;
+	}
+
+	.PluginsGalleryCard-icon {
+		box-sizing: content-box;
+		flex: none;
+		width: 18px;
+		height: 18px;
+		padding: 8px;
+		border: 1px solid var(--color-base-1-06);
+		border-radius: 8px;
+
+		background: var(--color-base-1-04);
+		color: var(--color-fg-09);
+	}
+
+	.PluginsGalleryCard-identity {
+		display: flex;
+		flex-direction: column;
+		flex: 1;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.PluginsGalleryCard-name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-size: 15px;
+		font-weight: 600;
+		color: var(--color-fg-12);
+	}
+
+	.PluginsGalleryCard-subtitle {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-family: monospace;
+		font-size: 12px;
+		color: var(--color-fg-07);
+	}
+
+	.PluginsGalleryCard-description {
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		overflow: hidden;
+
+		/* two clamped lines, so footers align across cards */
+		min-height: 38px;
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
+	.PluginsGalleryCard-footer {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		margin-block-start: auto;
+	}
+
+	.PluginsGalleryCard-version {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+
+		font-family: monospace;
+		font-size: 12px;
+		color: var(--color-fg-07);
+	}
+
+	.PluginsGalleryCard-installed {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+
+		font-size: 12px;
+		color: var(--color-green-09);
+
+		& > svg {
+			width: 13px;
+			height: 13px;
+			flex: none;
+		}
+	}
+}

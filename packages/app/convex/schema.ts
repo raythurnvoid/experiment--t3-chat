@@ -692,20 +692,26 @@ const app_convex_schema = defineSchema({
 		.index("by_ownerUser", ["ownerUserId"])
 		.index("by_repositoryUrl", ["repositoryUrl"]),
 
+	/**
+	 * Publisher secrets scoped to one claimed repository; runtime resolution follows the
+	 * running version's sourceRepositoryUrl to its claim. `ownerUserId` stays for auth
+	 * checks and user data deletion.
+	 */
 	plugins_publisher_secrets: defineTable({
 		ownerUserId: v.id("users"),
+		repositoryId: v.id("plugins_publisher_repositories"),
 		name: v.string(),
 		ciphertext: v.string(),
 		nonce: v.string(),
 		keyVersion: v.number(),
 		valuePreview: v.string(),
-		/** Exact https origins this secret may travel to; unioned into the per-run outbound allowlist. */
+		/** Exact https origins this secret may travel to; unioned into the per-run outbound allowlist of this repository's plugins. */
 		allowedOrigins: v.array(v.string()),
 		createdAt: v.number(),
 		updatedAt: v.number(),
 		lastUsedAt: v.optional(v.number()),
 	})
-		.index("by_ownerUser_name", ["ownerUserId", "name"])
+		.index("by_repository_name", ["repositoryId", "name"])
 		.index("by_ownerUser", ["ownerUserId"]),
 
 	plugins_versions: defineTable({

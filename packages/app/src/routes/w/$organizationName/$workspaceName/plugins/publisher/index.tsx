@@ -1,9 +1,9 @@
 import "./index.css";
 
 import { useClerk } from "@clerk/clerk-react";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { ChevronRight, GitBranch, KeyRound, LogIn, Plus, Puzzle, Save, Store, Trash2 } from "lucide-react";
+import { GitBranch, LogIn, Plus, Puzzle, Store, Trash2, UploadCloud } from "lucide-react";
 import { memo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
@@ -17,14 +17,11 @@ import {
 	MyInputBox,
 	MyInputControl,
 	MyInputLabel,
-	MyInputTextAreaControl,
 } from "@/components/my-input.tsx";
-import { MyLink } from "@/components/my-link.tsx";
+import { PluginsGalleryCard } from "@/components/plugins-gallery-card.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
-import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { plugins_origin_validate, plugins_parse_env_text } from "../../../../../../../shared/plugins.ts";
 
 type RoutePluginsPublisher_Repositories = app_convex_FunctionReturnType<
 	typeof app_convex_api.plugins.list_my_publisher_repositories
@@ -76,13 +73,122 @@ type RoutePluginsPublisherPlugins_ClassNames =
 	| "RoutePluginsPublisherPlugins-description"
 	| "RoutePluginsPublisherPlugins-form"
 	| "RoutePluginsPublisherPlugins-empty"
-	| "RoutePluginsPublisherPlugins-list"
-	| "RoutePluginsPublisherPluginCard"
-	| "RoutePluginsPublisherPluginCard-icon"
-	| "RoutePluginsPublisherPluginCard-info"
-	| "RoutePluginsPublisherPluginCard-name"
-	| "RoutePluginsPublisherPluginCard-meta"
-	| "RoutePluginsPublisherPluginCard-chevron";
+	| "RoutePluginsPublisherPlugins-grid"
+	| "RoutePluginsPublisherUnpublishedCard"
+	| "RoutePluginsPublisherUnpublishedCard-header"
+	| "RoutePluginsPublisherUnpublishedCard-icon"
+	| "RoutePluginsPublisherUnpublishedCard-identity"
+	| "RoutePluginsPublisherUnpublishedCard-name"
+	| "RoutePluginsPublisherUnpublishedCard-subtitle"
+	| "RoutePluginsPublisherUnpublishedCard-description"
+	| "RoutePluginsPublisherUnpublishedCard-footer";
+
+type RoutePluginsPublisherUnpublishedCard_Props = {
+	repository: RoutePluginsPublisher_Repositories[number]["repository"];
+};
+
+const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisherUnpublishedCard(
+	props: RoutePluginsPublisherUnpublishedCard_Props,
+) {
+	const { repository } = props;
+	const [publishing, setPublishing] = useState(false);
+	const [removing, setRemoving] = useState(false);
+
+	const handlePublish = useFn(() => {
+		setPublishing(true);
+		app_convex
+			.action(app_convex_api.plugins.publish_version, { repositoryId: repository._id })
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+
+				toast.success(`Published commit ${result._yay.sourceCommitSha.slice(0, 8)}`);
+			})
+			.catch((error) => {
+				console.error("[RoutePluginsPublisher.handlePublish] Failed to publish plugin:", {
+					error,
+					repositoryId: repository._id,
+				});
+				toast.error("Failed to publish plugin");
+			})
+			.finally(() => {
+				setPublishing(false);
+			});
+	});
+
+	const handleRemove = useFn(() => {
+		setRemoving(true);
+		app_convex
+			.mutation(app_convex_api.plugins.remove_repository, { repositoryId: repository._id })
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+
+				toast.success("Repository claim removed");
+			})
+			.catch((error) => {
+				console.error("[RoutePluginsPublisher.handleRemove] Failed to remove repository claim:", {
+					error,
+					repositoryId: repository._id,
+				});
+				toast.error("Failed to remove repository claim");
+			})
+			.finally(() => {
+				setRemoving(false);
+			});
+	});
+
+	return (
+		<div className={"RoutePluginsPublisherUnpublishedCard" satisfies RoutePluginsPublisherPlugins_ClassNames}>
+			<span className={"RoutePluginsPublisherUnpublishedCard-header" satisfies RoutePluginsPublisherPlugins_ClassNames}>
+				<GitBranch
+					className={"RoutePluginsPublisherUnpublishedCard-icon" satisfies RoutePluginsPublisherPlugins_ClassNames}
+					aria-hidden
+				/>
+				<span
+					className={"RoutePluginsPublisherUnpublishedCard-identity" satisfies RoutePluginsPublisherPlugins_ClassNames}
+				>
+					<span
+						className={"RoutePluginsPublisherUnpublishedCard-name" satisfies RoutePluginsPublisherPlugins_ClassNames}
+					>
+						{repository.owner}/{repository.repo}
+					</span>
+					<span
+						className={
+							"RoutePluginsPublisherUnpublishedCard-subtitle" satisfies RoutePluginsPublisherPlugins_ClassNames
+						}
+					>
+						{repository.repositoryUrl}
+					</span>
+				</span>
+			</span>
+			<span
+				className={"RoutePluginsPublisherUnpublishedCard-description" satisfies RoutePluginsPublisherPlugins_ClassNames}
+			>
+				Never published. Publish builds and registers the first version from the default branch.
+			</span>
+			<span className={"RoutePluginsPublisherUnpublishedCard-footer" satisfies RoutePluginsPublisherPlugins_ClassNames}>
+				<MyButton disabled={publishing || removing} onClick={handlePublish}>
+					<UploadCloud aria-hidden />
+					{publishing ? "Publishing..." : "Publish"}
+				</MyButton>
+				<MyButton
+					variant="ghost_destructive"
+					aria-label={`Remove claim on ${repository.owner}/${repository.repo}`}
+					tooltip="Remove claim"
+					disabled={publishing || removing}
+					onClick={handleRemove}
+				>
+					<Trash2 aria-hidden />
+				</MyButton>
+			</span>
+		</div>
+	);
+});
 
 type RoutePluginsPublisherPlugins_Props = {
 	repositories: RoutePluginsPublisher_Repositories;
@@ -92,8 +198,6 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 	props: RoutePluginsPublisherPlugins_Props,
 ) {
 	const { repositories } = props;
-	const { organizationName, workspaceName } = AppTenantProvider.useContext();
-	const navigate = useNavigate();
 	const [repositoryUrl, setRepositoryUrl] = useState("");
 	const [claiming, setClaiming] = useState(false);
 
@@ -114,10 +218,6 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 
 				toast.success(`Claimed ${result._yay.repositoryUrl}`);
 				setRepositoryUrl("");
-				void navigate({
-					to: "/w/$organizationName/$workspaceName/plugins/publisher/$repositoryId",
-					params: { organizationName, workspaceName, repositoryId: result._yay.repositoryId },
-				});
 			})
 			.catch((error) => {
 				console.error("[RoutePluginsPublisher.handleClaim] Failed to claim repository:", {
@@ -140,8 +240,8 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 					{repositories.length === 0 ? null : <MyBadge variant="default">{repositories.length}</MyBadge>}
 				</h2>
 				<p className={"RoutePluginsPublisherPlugins-description" satisfies RoutePluginsPublisherPlugins_ClassNames}>
-					Claim a GitHub repository to publish it as a plugin. Each claimed repository gets its own page where you
-					publish versions and track review verdicts.
+					Claim a GitHub repository to publish it as a plugin. Published plugins open their plugin page, where you
+					manage versions, review verdicts, and secrets.
 				</p>
 			</div>
 
@@ -175,447 +275,28 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 					No repositories claimed yet. Claim one to start publishing.
 				</div>
 			) : (
-				<div className={"RoutePluginsPublisherPlugins-list" satisfies RoutePluginsPublisherPlugins_ClassNames}>
-					{repositories.map(({ repository, latestVersion }) => (
-						<MyLink
-							key={repository._id}
-							to="/w/$organizationName/$workspaceName/plugins/publisher/$repositoryId"
-							params={{ organizationName, workspaceName, repositoryId: repository._id }}
-							aria-label={`Open plugin page for ${repository.owner}/${repository.repo}`}
-							className={"RoutePluginsPublisherPluginCard" satisfies RoutePluginsPublisherPlugins_ClassNames}
-						>
-							{latestVersion ? (
-								<Puzzle
-									aria-hidden
-									className={"RoutePluginsPublisherPluginCard-icon" satisfies RoutePluginsPublisherPlugins_ClassNames}
-								/>
-							) : (
-								<GitBranch
-									aria-hidden
-									className={"RoutePluginsPublisherPluginCard-icon" satisfies RoutePluginsPublisherPlugins_ClassNames}
-								/>
-							)}
-							<span
-								className={"RoutePluginsPublisherPluginCard-info" satisfies RoutePluginsPublisherPlugins_ClassNames}
-							>
-								<span
-									className={"RoutePluginsPublisherPluginCard-name" satisfies RoutePluginsPublisherPlugins_ClassNames}
-								>
-									{latestVersion?.displayName ?? `${repository.owner}/${repository.repo}`}
-								</span>
-								<span
-									className={"RoutePluginsPublisherPluginCard-meta" satisfies RoutePluginsPublisherPlugins_ClassNames}
-								>
-									{latestVersion
-										? `${latestVersion.name}@${latestVersion.version} · ${repository.owner}/${repository.repo}`
-										: `${repository.repositoryUrl} · never published`}
-								</span>
-							</span>
-							{latestVersion ? (
-								<MyBadge
-									variant={
-										latestVersion.reviewStatus === "rejected"
-											? "destructive"
-											: latestVersion.reviewStatus === "flagged"
-												? "outline"
-												: "secondary"
-									}
-								>
-									{latestVersion.reviewStatus}
-								</MyBadge>
-							) : null}
-							<ChevronRight
-								aria-hidden
-								className={"RoutePluginsPublisherPluginCard-chevron" satisfies RoutePluginsPublisherPlugins_ClassNames}
+				<div className={"RoutePluginsPublisherPlugins-grid" satisfies RoutePluginsPublisherPlugins_ClassNames}>
+					{repositories.map(({ repository, latestVersion }) =>
+						latestVersion ? (
+							<PluginsGalleryCard
+								key={repository._id}
+								pluginName={latestVersion.name}
+								displayName={latestVersion.displayName}
+								subtitle={`${repository.owner}/${repository.repo}`}
+								description={latestVersion.description}
+								version={latestVersion.version}
+								reviewStatus={latestVersion.reviewStatus}
 							/>
-						</MyLink>
-					))}
+						) : (
+							<RoutePluginsPublisherUnpublishedCard key={repository._id} repository={repository} />
+						),
+					)}
 				</div>
 			)}
 		</section>
 	);
 });
 // #endregion plugins
-
-// #region secrets
-type RoutePluginsPublisherSecrets_ClassNames =
-	| "RoutePluginsPublisherSecrets"
-	| "RoutePluginsPublisherSecrets-header"
-	| "RoutePluginsPublisherSecrets-title"
-	| "RoutePluginsPublisherSecrets-description"
-	| "RoutePluginsPublisherSecrets-form"
-	| "RoutePluginsPublisherSecrets-error"
-	| "RoutePluginsPublisherSecrets-env"
-	| "RoutePluginsPublisherSecrets-empty"
-	| "RoutePluginsPublisherSecrets-list"
-	| "RoutePluginsPublisherSecretItem"
-	| "RoutePluginsPublisherSecretItem-identity"
-	| "RoutePluginsPublisherSecretItem-name"
-	| "RoutePluginsPublisherSecretItem-meta"
-	| "RoutePluginsPublisherSecretItem-origins";
-
-function format_date(value: number) {
-	return new Date(value).toLocaleString(undefined, {
-		month: "short",
-		day: "numeric",
-		hour: "2-digit",
-		minute: "2-digit",
-	});
-}
-
-type RoutePluginsPublisher_Secret = app_convex_FunctionReturnType<
-	typeof app_convex_api.plugins.list_publisher_secrets
->[number];
-
-function origins_from_text(text: string) {
-	return text
-		.split(/[\n,]/)
-		.map((part) => part.trim())
-		.filter(Boolean);
-}
-
-function origins_validation_error(rawOrigins: string[]) {
-	for (const raw of rawOrigins) {
-		const origin = plugins_origin_validate(raw);
-		if (origin._nay) {
-			return `${raw}: ${origin._nay.message}`;
-		}
-	}
-	return "";
-}
-
-type RoutePluginsPublisherSecretRow_Props = {
-	secret: RoutePluginsPublisher_Secret;
-};
-
-const RoutePluginsPublisherSecretRow = memo(function RoutePluginsPublisherSecretRow(
-	props: RoutePluginsPublisherSecretRow_Props,
-) {
-	const { secret } = props;
-	const [originsText, setOriginsText] = useState(secret.allowedOrigins.join(", "));
-	const [originsError, setOriginsError] = useState("");
-	const [saving, setSaving] = useState(false);
-
-	const handleSaveOrigins = useFn(() => {
-		const rawOrigins = origins_from_text(originsText);
-		const validationError = origins_validation_error(rawOrigins);
-		if (validationError) {
-			setOriginsError(validationError);
-			return;
-		}
-		setOriginsError("");
-
-		setSaving(true);
-		app_convex
-			.mutation(app_convex_api.plugins.update_publisher_secret_origins, {
-				name: secret.name,
-				allowedOrigins: rawOrigins,
-			})
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`Allowed origins for ${secret.name} updated`);
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPublisher.handleSaveOrigins] Failed to update allowed origins:", {
-					error,
-					name: secret.name,
-				});
-				toast.error("Failed to update allowed origins");
-			})
-			.finally(() => {
-				setSaving(false);
-			});
-	});
-
-	const handleDelete = useFn(() => {
-		setSaving(true);
-		app_convex
-			.mutation(app_convex_api.plugins.delete_publisher_secret, { name: secret.name })
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`Secret ${secret.name} deleted`);
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPublisher.handleDelete] Failed to delete secret:", {
-					error,
-					name: secret.name,
-				});
-				toast.error("Failed to delete secret");
-			})
-			.finally(() => {
-				setSaving(false);
-			});
-	});
-
-	return (
-		<div className={"RoutePluginsPublisherSecretItem" satisfies RoutePluginsPublisherSecrets_ClassNames}>
-			<div className={"RoutePluginsPublisherSecretItem-identity" satisfies RoutePluginsPublisherSecrets_ClassNames}>
-				<span className={"RoutePluginsPublisherSecretItem-name" satisfies RoutePluginsPublisherSecrets_ClassNames}>
-					{secret.name}
-				</span>
-				<span className={"RoutePluginsPublisherSecretItem-meta" satisfies RoutePluginsPublisherSecrets_ClassNames}>
-					{secret.valuePreview} · updated {format_date(secret.updatedAt)}
-					{secret.lastUsedAt === null ? "" : ` · used ${format_date(secret.lastUsedAt)}`}
-				</span>
-			</div>
-			<div className={"RoutePluginsPublisherSecretItem-origins" satisfies RoutePluginsPublisherSecrets_ClassNames}>
-				<MyInput>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputControl
-							value={originsText}
-							placeholder="https://api.example.com"
-							aria-label={`Allowed origins for ${secret.name}`}
-							aria-describedby={originsError ? `RoutePluginsPublisherSecretItem-error-${secret._id}` : undefined}
-							disabled={saving}
-							onChange={(event) => setOriginsText(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-				{originsError ? (
-					<div
-						className={"RoutePluginsPublisherSecrets-error" satisfies RoutePluginsPublisherSecrets_ClassNames}
-						id={`RoutePluginsPublisherSecretItem-error-${secret._id}`}
-						role="alert"
-					>
-						{originsError}
-					</div>
-				) : null}
-			</div>
-			<MyButton
-				variant="secondary"
-				disabled={saving}
-				aria-label={`Save allowed origins for ${secret.name}`}
-				onClick={handleSaveOrigins}
-			>
-				<Save aria-hidden />
-				Save origins
-			</MyButton>
-			<MyButton
-				variant="ghost_destructive"
-				aria-label={`Delete secret ${secret.name}`}
-				disabled={saving}
-				onClick={handleDelete}
-			>
-				<Trash2 aria-hidden />
-			</MyButton>
-		</div>
-	);
-});
-
-const RoutePluginsPublisherSecrets = memo(function RoutePluginsPublisherSecrets() {
-	const secrets = useQuery(app_convex_api.plugins.list_publisher_secrets, {});
-	const [name, setName] = useState("");
-	const [value, setValue] = useState("");
-	const [originsText, setOriginsText] = useState("");
-	const [originsError, setOriginsError] = useState("");
-	const [envText, setEnvText] = useState("");
-	const [saving, setSaving] = useState(false);
-
-	const handleSaveSecret = useFn((event: FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		if (!name.trim() || !value) {
-			return;
-		}
-		const rawOrigins = origins_from_text(originsText);
-		const validationError = origins_validation_error(rawOrigins);
-		if (validationError) {
-			setOriginsError(validationError);
-			return;
-		}
-		setOriginsError("");
-
-		setSaving(true);
-		app_convex
-			.mutation(app_convex_api.plugins.upsert_publisher_secret, {
-				name,
-				value,
-				allowedOrigins: rawOrigins,
-			})
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`Secret ${name.trim()} saved`);
-				setName("");
-				setValue("");
-				setOriginsText("");
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPublisher.handleSaveSecret] Failed to save secret:", {
-					error,
-					name,
-				});
-				toast.error("Failed to save secret");
-			})
-			.finally(() => {
-				setSaving(false);
-			});
-	});
-
-	const handleImportEnv = useFn(() => {
-		const parsed = plugins_parse_env_text(envText);
-		if (parsed._nay) {
-			toast.error(parsed._nay.message);
-			return;
-		}
-
-		setSaving(true);
-		app_convex
-			.mutation(app_convex_api.plugins.upsert_publisher_secrets, {
-				secrets: parsed._yay,
-			})
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`Saved ${result._yay.count} secrets`);
-				setEnvText("");
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPublisher.handleImportEnv] Failed to import secrets:", {
-					error,
-				});
-				toast.error("Failed to import secrets");
-			})
-			.finally(() => {
-				setSaving(false);
-			});
-	});
-
-	return (
-		<section className={"RoutePluginsPublisherSecrets" satisfies RoutePluginsPublisherSecrets_ClassNames}>
-			<div className={"RoutePluginsPublisherSecrets-header" satisfies RoutePluginsPublisherSecrets_ClassNames}>
-				<h2 className={"RoutePluginsPublisherSecrets-title" satisfies RoutePluginsPublisherSecrets_ClassNames}>
-					<KeyRound aria-hidden />
-					Secrets
-					{secrets === undefined || secrets.length === 0 ? null : (
-						<MyBadge variant="default">{secrets.length}</MyBadge>
-					)}
-				</h2>
-				<p className={"RoutePluginsPublisherSecrets-description" satisfies RoutePluginsPublisherSecrets_ClassNames}>
-					Publisher secrets are available to all your plugins in every workspace that installs them. A secret can only
-					travel to the exact https origins you allow here.
-				</p>
-			</div>
-
-			<form
-				className={"RoutePluginsPublisherSecrets-form" satisfies RoutePluginsPublisherSecrets_ClassNames}
-				onSubmit={handleSaveSecret}
-			>
-				<MyInput>
-					<MyInputLabel>Name</MyInputLabel>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputControl
-							value={name}
-							placeholder="OPENAI_API_KEY"
-							disabled={saving}
-							required
-							onChange={(event) => setName(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-				<MyInput>
-					<MyInputLabel>Value</MyInputLabel>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputControl
-							value={value}
-							type="password"
-							autoComplete="off"
-							disabled={saving}
-							required
-							onChange={(event) => setValue(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-				<MyInput>
-					<MyInputLabel>Allowed origins</MyInputLabel>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputControl
-							value={originsText}
-							placeholder="https://api.example.com, https://files.example.com"
-							aria-describedby={originsError ? "RoutePluginsPublisherSecrets-error" : undefined}
-							disabled={saving}
-							onChange={(event) => setOriginsText(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-				<MyButton type="submit" disabled={saving || !name.trim() || !value}>
-					<Save aria-hidden />
-					{saving ? "Saving..." : "Save"}
-				</MyButton>
-			</form>
-			{originsError ? (
-				<div
-					className={"RoutePluginsPublisherSecrets-error" satisfies RoutePluginsPublisherSecrets_ClassNames}
-					id="RoutePluginsPublisherSecrets-error"
-					role="alert"
-				>
-					{originsError}
-				</div>
-			) : null}
-
-			<div className={"RoutePluginsPublisherSecrets-env" satisfies RoutePluginsPublisherSecrets_ClassNames}>
-				<MyInput>
-					<MyInputLabel>Paste .env</MyInputLabel>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputTextAreaControl
-							value={envText}
-							placeholder={"MODAL_TOKEN=...\nOPENAI_API_KEY=..."}
-							rows={3}
-							disabled={saving}
-							onChange={(event) => setEnvText(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-				<MyButton disabled={saving || envText.trim().length === 0} onClick={handleImportEnv}>
-					{saving ? "Importing..." : "Import .env"}
-				</MyButton>
-			</div>
-
-			{secrets === undefined ? (
-				<div
-					className={"RoutePluginsPublisherSecrets-empty" satisfies RoutePluginsPublisherSecrets_ClassNames}
-					role="status"
-				>
-					Loading secrets...
-				</div>
-			) : secrets.length === 0 ? (
-				<div className={"RoutePluginsPublisherSecrets-empty" satisfies RoutePluginsPublisherSecrets_ClassNames}>
-					No secrets configured.
-				</div>
-			) : (
-				<div className={"RoutePluginsPublisherSecrets-list" satisfies RoutePluginsPublisherSecrets_ClassNames}>
-					{secrets.map((secret) => (
-						<RoutePluginsPublisherSecretRow key={secret._id} secret={secret} />
-					))}
-				</div>
-			)}
-		</section>
-	);
-});
-// #endregion secrets
 
 // #region root
 type RoutePluginsPublisher_ClassNames =
@@ -668,7 +349,7 @@ function RoutePluginsPublisher() {
 					<p className={"RoutePluginsPublisherHeader-description" satisfies RoutePluginsPublisher_ClassNames}>
 						{auth.isAnonymous
 							? "Sign in to publish plugins."
-							: "Manage your plugins and the secrets they can use. Plugins you publish are shown under your account name."}
+							: "Manage the plugins you publish. Plugins you publish are shown under your account name."}
 					</p>
 				</div>
 				{auth.isAnonymous === false && anagraphic ? (
@@ -691,10 +372,7 @@ function RoutePluginsPublisher() {
 			{auth.isAnonymous ? (
 				<RoutePluginsPublisherSignIn />
 			) : (
-				<>
-					<RoutePluginsPublisherPlugins repositories={repositories ?? []} />
-					<RoutePluginsPublisherSecrets />
-				</>
+				<RoutePluginsPublisherPlugins repositories={repositories ?? []} />
 			)}
 		</main>
 	);

@@ -11,7 +11,7 @@ Covers the flows that regress when the video plugin worker, Modal extractor, pub
 ## Preflight
 
 1. Confirm the dev app is running and the `video` plugin is installed and enabled.
-2. Confirm all four publisher secrets exist: `MISTRAL_API_KEY`, `OPENAI_API_KEY`, `MODAL_MEDIA_AUDIO_URL`, `MODAL_TOKEN`.
+2. Confirm all four repository secrets exist for the video plugin — `MISTRAL_API_KEY`, `OPENAI_API_KEY`, `MODAL_MEDIA_AUDIO_URL`, `MODAL_TOKEN` — in the Secrets section of the publisher panel on the plugin's detail page (`/w/:organizationName/:workspaceName/plugins/video`).
 3. Check Modal extractor health: `GET <modal origin>/health` should return 200.
 4. Create a Playwriter session and install the app harness (see `r2-file-content-regression.md` Preflight).
 5. Warm the Convex dev deployment; use one unique folder per run, `aaa-pw-video-<timestamp>`.
@@ -54,15 +54,15 @@ Expected result:
 
 ## Negative Test (Missing Secret)
 
-1. Delete the `MISTRAL_API_KEY` publisher secret (respect the `plugins_manage` rate limiter — ~15s between mutations).
+1. Delete the `MISTRAL_API_KEY` secret from the video plugin's publisher panel (respect the `plugins_manage` rate limiter — ~15s between mutations).
 2. Upload `speakers.wav` again (renamed or into a second folder).
 3. Verify: run `failed` with `errorMessage: "Plugin execution failed"` (the runner sanitizes every worker throw — the specific `MISTRAL_API_KEY secret is not configured` message is never persisted); the run's calls show only a single `secretGet` for `MISTRAL_API_KEY` with no writes; **no** `.transcript.md` and no `.summary.md` siblings for this upload (secrets are read before any write).
-4. Re-create `MISTRAL_API_KEY` (origins `https://api.mistral.ai`).
+4. Re-create `MISTRAL_API_KEY` (origins `https://api.mistral.ai`) in the same publisher panel.
 
 ## Cleanup
 
 1. Archive the run folders.
-2. Confirm all four publisher secrets are present again.
+2. Confirm all four repository secrets are present again on the video plugin's publisher panel.
 3. Record skipped steps with the real blocker, not as pass.
 
 ## Failure Triage

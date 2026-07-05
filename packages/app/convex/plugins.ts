@@ -21,6 +21,7 @@ import {
 	plugins_LOCKFILE_PATH,
 	plugins_RUNTIME_VERSION,
 	plugins_SECRET_VALUE_MAX_BYTES,
+	plugins_compare_semver,
 	plugins_dist_review_mechanical_findings,
 	plugins_name_autofix_and_validate,
 	plugins_normalize_relative_path,
@@ -293,7 +294,7 @@ async function upsert_installation_secret_doc(
 async function upsert_publisher_secret_doc(
 	ctx: MutationCtx,
 	args: {
-		ownerUserId: Id<"users">;
+		repository: Doc<"plugins_publisher_repositories">;
 		name: string;
 		value: string;
 		/** Omitted means keep the existing origins (or none for a new secret). */
@@ -301,10 +302,10 @@ async function upsert_publisher_secret_doc(
 		now: number;
 	},
 ) {
-	const encrypted = await encrypt_secret_value(args.value, `${args.ownerUserId}:${args.name}`);
+	const encrypted = await encrypt_secret_value(args.value, `${args.repository.ownerUserId}:${args.name}`);
 	const existing = await ctx.db
 		.query("plugins_publisher_secrets")
-		.withIndex("by_ownerUser_name", (q) => q.eq("ownerUserId", args.ownerUserId).eq("name", args.name))
+		.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repository._id).eq("name", args.name))
 		.first();
 
 	if (existing) {
@@ -320,7 +321,8 @@ async function upsert_publisher_secret_doc(
 	}
 
 	return await ctx.db.insert("plugins_publisher_secrets", {
-		ownerUserId: args.ownerUserId,
+		ownerUserId: args.repository.ownerUserId,
+		repositoryId: args.repository._id,
 		name: args.name,
 		ciphertext: encrypted.ciphertext,
 		nonce: encrypted.nonce,
@@ -890,9 +892,10 @@ function plugin_review_prompt(args: {
 		"Verdict rules:",
 		'- "rejected": the code sends secret values to origins other than the declared outbound origins, writes secret values into file outputs, is obfuscated or dynamically assembled, or clearly does something outside its declared capabilities.',
 		'- "flagged": suspicious but not clearly malicious — especially module-level mutable state that outlives one run (a module-level cache can be legitimate, but state shared across runs deserves a manual look).',
-		'- "passed": none of the above.',
+		'- "passed": none of the above. Apply these rules strictly: when no rejected or flagged condition holds, the verdict is "passed" even if findings note secret usage.',
 		'"Secret values" means the raw injected values of the secrets listed below — not content derived from user files or model responses. Writing derived content to file outputs is normal when a file-write capability is declared.',
 		"Secrets that hold a host-configured URL or base URL count as declared outbound origins: the host enforces a runtime egress allowlist, so requests built from such secrets are not exfiltration by themselves.",
+		"The secret-names list below may be empty or incomplete: publishers can configure secrets after publishing, and reading a name that is not configured simply yields nothing at runtime, so secret reads beyond the list are not violations by themselves.",
 		"List one finding per concern; findings are shown to the plugin publisher.",
 		"",
 		`Declared capabilities: ${JSON.stringify(args.capabilities)}`,
@@ -925,7 +928,7 @@ export const get_version_review_by_artifact_hash = internalQuery({
 
 export const get_version_review_context = internalQuery({
 	args: {
-		ownerUserId: v.id("users"),
+		repositoryId: v.id("plugins_publisher_repositories"),
 		pluginName: v.string(),
 	},
 	returns: v.object({
@@ -938,7 +941,7 @@ export const get_version_review_context = internalQuery({
 	handler: async (ctx, args) => {
 		const secrets = await ctx.db
 			.query("plugins_publisher_secrets")
-			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", args.ownerUserId))
+			.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repositoryId))
 			.take(100);
 		const versions = await ctx.db
 			.query("plugins_versions")
@@ -991,7 +994,9 @@ export const review_version_artifact = internalAction({
 		distSource: v.union(v.string(), v.null()),
 		capabilities: v.array(v.string()),
 		outboundOrigins: v.array(v.string()),
-		/** Publishing user requesting the review; owns the secrets and reviews, and fresh system-billed AI reviews are rate limited per this user. */
+		/** Publishing repository claim; its secrets are the names the reviewed code can read at runtime. */
+		repositoryId: v.id("plugins_publisher_repositories"),
+		/** Publishing user requesting the review; owns the reviews, and fresh system-billed AI reviews are rate limited per this user. */
 		requestedBy: v.id("users"),
 	},
 	returns: v_result({
@@ -1039,7 +1044,7 @@ export const review_version_artifact = internalAction({
 					});
 				}
 				const context = (await ctx.runQuery(internal.plugins.get_version_review_context, {
-					ownerUserId: args.requestedBy,
+					repositoryId: args.repositoryId,
 					pluginName: args.pluginName,
 				})) as {
 					secretNames: string[];
@@ -1094,7 +1099,6 @@ export const review_version_artifact = internalAction({
 export const publish_version = action({
 	args: {
 		repositoryId: v.id("plugins_publisher_repositories"),
-		commitSha: v.optional(v.string()),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -1128,10 +1132,10 @@ export const publish_version = action({
 			return Result({ _nay: { message: repo._nay.message } });
 		}
 
+		// Publishing always builds from the default-branch HEAD.
 		const sourceDefaultBranch = repo._yay.default_branch;
-		const ref = args.commitSha?.trim() || sourceDefaultBranch;
 		const commit = await fetch_github_json(
-			`https://api.github.com/repos/${source.owner}/${source.repo}/commits/${encodeURIComponent(ref)}`,
+			`https://api.github.com/repos/${source.owner}/${source.repo}/commits/${encodeURIComponent(sourceDefaultBranch)}`,
 			github_commit_schema,
 		);
 		if (commit._nay) {
@@ -1240,6 +1244,7 @@ export const publish_version = action({
 			distSource: backendDistSource,
 			capabilities: artifact._yay.capabilities,
 			outboundOrigins: artifact._yay.outboundOrigins,
+			repositoryId: args.repositoryId,
 			requestedBy: source.userId,
 		})) as PluginVersionReviewResult;
 		if (review._nay || !review._yay) {
@@ -1383,11 +1388,16 @@ export const list_my_publisher_repositories = query({
 					q.eq("sourceRepositoryUrl", repository.repositoryUrl),
 				)
 				.take(100);
+			// Latest by semver, not createdAt; a re-published identical version tie-breaks by createdAt.
 			let latest: Doc<"plugins_versions"> | null = null;
 			for (const version of versions) {
-				if (!latest || version.createdAt > latest.createdAt) {
-					latest = version;
+				if (latest) {
+					const comparison = plugins_compare_semver(version.version, latest.version);
+					if (comparison < 0 || (comparison === 0 && version.createdAt <= latest.createdAt)) {
+						continue;
+					}
 				}
+				latest = version;
 			}
 			docs.push({
 				repository,
@@ -1472,14 +1482,22 @@ export const remove_repository = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
+		// Secrets belong to the claim; removing the claim removes them.
+		const secrets = await ctx.db
+			.query("plugins_publisher_secrets")
+			.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repositoryId))
+			.collect();
+		for (const secret of secrets) {
+			await ctx.db.delete("plugins_publisher_secrets", secret._id);
+		}
 		await ctx.db.delete("plugins_publisher_repositories", args.repositoryId);
 		return Result({ _yay: null });
 	},
 });
 
-export const get_publisher_repository = query({
+export const get_publisher_plugin = query({
 	args: {
-		repositoryId: v.id("plugins_publisher_repositories"),
+		pluginName: v.string(),
 	},
 	returns: v.union(
 		v.object({
@@ -1515,32 +1533,35 @@ export const get_publisher_repository = query({
 	),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
+		if (!userAuth || userAuth.kind !== "signed_in") {
 			return null;
 		}
-		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
-		if (!repository) {
-			return null;
-		}
-		if (repository.ownerUserId !== userAuth.id) {
-			return null;
-		}
-
 		const versions = await ctx.db
 			.query("plugins_versions")
-			.withIndex("by_sourceRepositoryUrl_sourceCommitSha", (q) =>
-				q.eq("sourceRepositoryUrl", repository.repositoryUrl),
-			)
+			.withIndex("by_name", (q) => q.eq("name", args.pluginName))
 			.take(100);
-		const sortedVersions = versions.toSorted((a, b) => b.createdAt - a.createdAt);
-		const pluginNames = new Set(sortedVersions.map((version) => version.name));
+		const sortedVersions = versions.toSorted(
+			(a, b) => plugins_compare_semver(b.version, a.version) || b.createdAt - a.createdAt,
+		);
+		const latest = sortedVersions.at(0);
+		if (!latest) {
+			return null;
+		}
+		// The publisher panel is gated on owning the claim behind the latest version's repository.
+		const repository = await ctx.db
+			.query("plugins_publisher_repositories")
+			.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", latest.sourceRepositoryUrl))
+			.first();
+		if (!repository || repository.ownerUserId !== userAuth.id) {
+			return null;
+		}
 
 		const publisherReviews = await ctx.db
 			.query("plugins_version_reviews")
 			.withIndex("by_createdBy", (q) => q.eq("createdBy", userAuth.id))
 			.order("desc")
 			.take(100);
-		const reviews = publisherReviews.filter((review) => pluginNames.has(review.pluginName));
+		const reviews = publisherReviews.filter((review) => review.pluginName === args.pluginName);
 
 		return {
 			repository,
@@ -1571,7 +1592,9 @@ export const get_publisher_repository = query({
 });
 
 export const list_publisher_secrets = query({
-	args: {},
+	args: {
+		repositoryId: v.id("plugins_publisher_repositories"),
+	},
 	returns: v.array(
 		v.object({
 			_id: v.id("plugins_publisher_secrets"),
@@ -1582,15 +1605,19 @@ export const list_publisher_secrets = query({
 			lastUsedAt: v.union(v.number(), v.null()),
 		}),
 	),
-	handler: async (ctx) => {
+	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth || userAuth.kind !== "signed_in") {
+			return [];
+		}
+		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
+		if (!repository || repository.ownerUserId !== userAuth.id) {
 			return [];
 		}
 
 		const secrets = await ctx.db
 			.query("plugins_publisher_secrets")
-			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", userAuth.id))
+			.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repositoryId))
 			.take(100);
 
 		return secrets
@@ -1608,6 +1635,7 @@ export const list_publisher_secrets = query({
 
 export const upsert_publisher_secret = mutation({
 	args: {
+		repositoryId: v.id("plugins_publisher_repositories"),
 		name: v.string(),
 		value: v.string(),
 		allowedOrigins: v.array(v.string()),
@@ -1622,6 +1650,13 @@ export const upsert_publisher_secret = mutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
+		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
+		if (!repository) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (repository.ownerUserId !== userAuth.id) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 		const secret = validate_secret_input(args);
 		if (secret._nay) {
 			return secret;
@@ -1634,7 +1669,7 @@ export const upsert_publisher_secret = mutation({
 		let secretId: Id<"plugins_publisher_secrets">;
 		try {
 			secretId = await upsert_publisher_secret_doc(ctx, {
-				ownerUserId: userAuth.id,
+				repository,
 				name: secret._yay.name,
 				value: secret._yay.value,
 				allowedOrigins: allowedOrigins._yay,
@@ -1650,6 +1685,7 @@ export const upsert_publisher_secret = mutation({
 
 export const upsert_publisher_secrets = mutation({
 	args: {
+		repositoryId: v.id("plugins_publisher_repositories"),
 		secrets: v.array(v.object({ name: v.string(), value: v.string() })),
 	},
 	returns: v_result({ _yay: v.object({ count: v.number() }) }),
@@ -1665,6 +1701,13 @@ export const upsert_publisher_secrets = mutation({
 		if (args.secrets.length === 0 || args.secrets.length > 50) {
 			return Result({ _nay: { message: "Secret batch size is invalid" } });
 		}
+		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
+		if (!repository) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (repository.ownerUserId !== userAuth.id) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 
 		const secrets = new Map<string, string>();
 		for (const input of args.secrets) {
@@ -1679,7 +1722,7 @@ export const upsert_publisher_secrets = mutation({
 		try {
 			for (const [name, value] of secrets) {
 				await upsert_publisher_secret_doc(ctx, {
-					ownerUserId: userAuth.id,
+					repository,
 					name,
 					value,
 					now,
@@ -1695,6 +1738,7 @@ export const upsert_publisher_secrets = mutation({
 
 export const update_publisher_secret_origins = mutation({
 	args: {
+		repositoryId: v.id("plugins_publisher_repositories"),
 		name: v.string(),
 		allowedOrigins: v.array(v.string()),
 	},
@@ -1708,6 +1752,13 @@ export const update_publisher_secret_origins = mutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
+		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
+		if (!repository) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (repository.ownerUserId !== userAuth.id) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 		const name = plugins_secret_name_validate(args.name);
 		if (name._nay) {
 			return Result({ _nay: { message: name._nay.message } });
@@ -1719,7 +1770,7 @@ export const update_publisher_secret_origins = mutation({
 
 		const existing = await ctx.db
 			.query("plugins_publisher_secrets")
-			.withIndex("by_ownerUser_name", (q) => q.eq("ownerUserId", userAuth.id).eq("name", name._yay))
+			.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repositoryId).eq("name", name._yay))
 			.first();
 		if (!existing) {
 			return Result({ _nay: { message: "Not found" } });
@@ -1735,6 +1786,7 @@ export const update_publisher_secret_origins = mutation({
 
 export const delete_publisher_secret = mutation({
 	args: {
+		repositoryId: v.id("plugins_publisher_repositories"),
 		name: v.string(),
 	},
 	returns: v_result({ _yay: v.null() }),
@@ -1747,6 +1799,13 @@ export const delete_publisher_secret = mutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
+		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
+		if (!repository) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (repository.ownerUserId !== userAuth.id) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 		const name = plugins_secret_name_validate(args.name);
 		if (name._nay) {
 			return Result({ _nay: { message: name._nay.message } });
@@ -1754,7 +1813,7 @@ export const delete_publisher_secret = mutation({
 
 		const existing = await ctx.db
 			.query("plugins_publisher_secrets")
-			.withIndex("by_ownerUser_name", (q) => q.eq("ownerUserId", userAuth.id).eq("name", name._yay))
+			.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repositoryId).eq("name", name._yay))
 			.first();
 		if (existing) {
 			await ctx.db.delete("plugins_publisher_secrets", existing._id);
@@ -2096,12 +2155,17 @@ export const list_registered_plugins = query({
 		}
 
 		const versions = await ctx.db.query("plugins_versions").withIndex("by_name").take(200);
+		// Latest per name by semver, not createdAt; a re-published identical version tie-breaks by createdAt.
 		const latestByName = new Map<string, Doc<"plugins_versions">>();
 		for (const version of versions) {
 			const current = latestByName.get(version.name);
-			if (!current || version.createdAt > current.createdAt) {
-				latestByName.set(version.name, version);
+			if (current) {
+				const comparison = plugins_compare_semver(version.version, current.version);
+				if (comparison < 0 || (comparison === 0 && version.createdAt <= current.createdAt)) {
+					continue;
+				}
 			}
+			latestByName.set(version.name, version);
 		}
 
 		const docs = [];
@@ -2387,9 +2451,17 @@ export const get_secret_for_runtime = internalMutation({
 		if (!version) {
 			return null;
 		}
+		// Publisher secrets belong to the claim of the version's source repository; no claim means no secret.
+		const repository = await ctx.db
+			.query("plugins_publisher_repositories")
+			.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", version.sourceRepositoryUrl))
+			.first();
+		if (!repository) {
+			return null;
+		}
 		const publisherSecret = await ctx.db
 			.query("plugins_publisher_secrets")
-			.withIndex("by_ownerUser_name", (q) => q.eq("ownerUserId", version.createdBy).eq("name", args.name))
+			.withIndex("by_repository_name", (q) => q.eq("repositoryId", repository._id).eq("name", args.name))
 			.first();
 		if (!publisherSecret) {
 			return null;
@@ -2647,6 +2719,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		eventRuns: v.number(),
 		eventRunCalls: v.number(),
 		publisherRepositoryClaims: v.number(),
+		publisherSecrets: v.number(),
 		r2ObjectKeys: v.number(),
 	}),
 	handler: async (ctx, args) => {
@@ -2715,12 +2788,20 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		}
 
 		let publisherRepositoryClaims = 0;
+		let publisherSecrets = 0;
 		for (const repositoryUrl of repositoryUrls) {
 			const claims = await ctx.db
 				.query("plugins_publisher_repositories")
 				.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", repositoryUrl))
 				.collect();
 			publisherRepositoryClaims += claims.length;
+			for (const claim of claims) {
+				const secrets = await ctx.db
+					.query("plugins_publisher_secrets")
+					.withIndex("by_repository_name", (q) => q.eq("repositoryId", claim._id))
+					.collect();
+				publisherSecrets += secrets.length;
+			}
 		}
 
 		return {
@@ -2733,6 +2814,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 			eventRuns,
 			eventRunCalls,
 			publisherRepositoryClaims,
+			publisherSecrets,
 			r2ObjectKeys: r2ObjectKeys.size,
 		};
 	},
@@ -2773,9 +2855,8 @@ export const hard_delete_registered_plugin_batch = internalMutation({
 		}
 
 		// Child docs before parents: run calls -> runs -> handlers -> installation
-		// secrets -> installations -> reviews -> mounts -> versions -> repo claims.
-		// plugins_publisher_secrets is shared across a publisher's plugins and is
-		// never touched here.
+		// secrets -> installations -> reviews -> mounts -> versions -> repo claims
+		// (each claim's publisher secrets cascade right before the claim itself).
 		for (const version of versions) {
 			const installations = await ctx.db
 				.query("plugins_workspace_installations")
@@ -2903,6 +2984,14 @@ export const hard_delete_registered_plugin_batch = internalMutation({
 					.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", version.sourceRepositoryUrl))
 					.collect();
 				for (const claim of claims) {
+					const secrets = await ctx.db
+						.query("plugins_publisher_secrets")
+						.withIndex("by_repository_name", (q) => q.eq("repositoryId", claim._id))
+						.collect();
+					for (const secret of secrets) {
+						await ctx.db.delete("plugins_publisher_secrets", secret._id);
+						deleted += 1;
+					}
 					await ctx.db.delete("plugins_publisher_repositories", claim._id);
 					deleted += 1;
 				}
