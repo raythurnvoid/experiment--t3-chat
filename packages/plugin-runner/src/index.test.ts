@@ -18,7 +18,6 @@ async function sha256_artifact(source: string) {
 function make_ctx(opts?: {
 	hostBinding?: {
 		generateText: (input: unknown) => Promise<unknown>;
-		transcribeAudio: (input: unknown) => Promise<unknown>;
 		sourceTemporaryUrl: (input: unknown) => Promise<unknown>;
 		sourceBase64: (input: unknown) => Promise<unknown>;
 		writeMarkdown: (input: unknown) => Promise<unknown>;
@@ -29,7 +28,6 @@ function make_ctx(opts?: {
 }) {
 	const hostBinding = opts?.hostBinding ?? {
 		generateText: async () => ({ text: "generated" }),
-		transcribeAudio: async () => ({ text: "transcribed" }),
 		sourceTemporaryUrl: async () => ({ url: "https://source.test/file", expiresAt: 1 }),
 		sourceBase64: async () => ({ bodyBase64: "AQID", contentType: "video/mp4", bytes: 3 }),
 		writeMarkdown: async () => ({ ok: true }),
@@ -275,7 +273,6 @@ describe("dynamic worker loading", () => {
 		const artifactHash = await sha256_artifact(artifactSource);
 		const hostBinding = {
 			generateText: async () => ({ text: "generated" }),
-			transcribeAudio: async () => ({ text: "transcribed" }),
 			sourceTemporaryUrl: async () => ({ url: "https://source.test/file", expiresAt: 1 }),
 			sourceBase64: async () => ({ bodyBase64: "AQID", contentType: "video/mp4", bytes: 3 }),
 			writeMarkdown: async () => ({ ok: true }),
@@ -603,103 +600,6 @@ describe("BONOBO_HOST", () => {
 				),
 			).rejects.toThrow("size limit");
 			expect(fetchSpy).not.toHaveBeenCalled();
-		} finally {
-			fetchSpy.mockRestore();
-		}
-	});
-
-	it("transcribes audio through Workers AI when the plugin has the capability", async () => {
-		const aiRun = vi.fn(async () => ({ text: "This is the transcript." }));
-		const { fetchSpy, hostRequests } = mock_host_fetch();
-		try {
-			const result = await BonoboHost.prototype.transcribeAudio.call(
-				Object.assign(Object.create(BonoboHost.prototype), {
-					env: { AI: { run: aiRun } },
-					ctx: {
-						props: {
-							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-							acceptedCapabilities: ["ai.transcribeAudio"],
-						},
-					},
-				}) as BonoboHost,
-				{
-					host: DEFAULT_HOST,
-					pluginRunId: "run_123",
-					audioBase64: "AQID",
-					contentType: "audio/mp4",
-					language: "en",
-				},
-			);
-
-			expect(result).toEqual({ text: "This is the transcript." });
-			expect(fetchSpy).toHaveBeenCalledTimes(2);
-			expect(await hostRequests[0]!.clone().json()).toEqual({
-				pluginRunId: "run_123",
-				operation: "transcribeAudio",
-				requestBytes: 3,
-			});
-			expect(await hostRequests[1]!.clone().json()).toMatchObject({
-				pluginRunId: "run_123",
-				callId: "call_1",
-				status: "succeeded",
-				errorMessage: null,
-				modelId: "@cf/openai/whisper-large-v3-turbo",
-				requestBytes: 3,
-				outputTextBytes: TEXT_ENCODER.encode("This is the transcript.").length,
-			});
-			expect(aiRun).toHaveBeenCalledWith("@cf/openai/whisper-large-v3-turbo", {
-				audio: "AQID",
-				language: "en",
-			});
-
-			await expect(
-				BonoboHost.prototype.transcribeAudio.call(
-					Object.assign(Object.create(BonoboHost.prototype), {
-						env: { AI: { run: aiRun } },
-						ctx: {
-							props: {
-								pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-								acceptedCapabilities: [],
-							},
-						},
-					}) as BonoboHost,
-					{
-						host: DEFAULT_HOST,
-						pluginRunId: "run_123",
-						audioBase64: "AQID",
-					},
-				),
-			).rejects.toThrow("Missing capability");
-		} finally {
-			fetchSpy.mockRestore();
-		}
-	});
-
-	it("extracts Workers AI transcription text from nested response shapes", async () => {
-		const aiRun = vi.fn(async () => ({
-			transcription_info: { duration: 10 },
-			segments: [{ text: "First sentence." }, { text: "Second sentence." }],
-		}));
-		const { fetchSpy } = mock_host_fetch();
-		try {
-			const result = await BonoboHost.prototype.transcribeAudio.call(
-				Object.assign(Object.create(BonoboHost.prototype), {
-					env: { AI: { run: aiRun } },
-					ctx: {
-						props: {
-							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-							acceptedCapabilities: ["ai.transcribeAudio"],
-						},
-					},
-				}) as BonoboHost,
-				{
-					host: DEFAULT_HOST,
-					pluginRunId: "run_123",
-					audioBase64: "AQID",
-				},
-			);
-
-			expect(result).toEqual({ text: "First sentence.\nSecond sentence." });
 		} finally {
 			fetchSpy.mockRestore();
 		}

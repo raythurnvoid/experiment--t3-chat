@@ -29,7 +29,6 @@ type Fetcher = {
 
 type BonoboHostBinding = {
 	generateText: (input: unknown) => Promise<unknown>;
-	transcribeAudio: (input: unknown) => Promise<unknown>;
 	sourceTemporaryUrl: (input: unknown) => Promise<unknown>;
 	sourceBase64: (input: unknown) => Promise<unknown>;
 	writeMarkdown: (input: unknown) => Promise<unknown>;
@@ -119,8 +118,6 @@ const PLUGIN_MODULE = "plugin.js";
 const PLUGIN_WRAPPER_VERSION = "bonobo-host-v1";
 const WORKERS_AI_VISION_MODEL = "@cf/moonshotai/kimi-k2.6";
 const WORKERS_AI_SOURCE_IMAGE_BYTES = 5 * 1024 * 1024;
-const WORKERS_AI_TRANSCRIPTION_MODEL = "@cf/openai/whisper-large-v3-turbo";
-const WORKERS_AI_AUDIO_BYTES = 5 * 1024 * 1024;
 const REQUEST_FIELDS = new Set([
 	"pluginId",
 	"pluginName",
@@ -196,7 +193,6 @@ export default class BonoboPluginEntrypoint extends WorkerEntrypoint {
       }),
       ai: Object.freeze({
         generateText: (input) => host.generateText({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
-        transcribeAudio: (input) => host.transcribeAudio({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
       }),
       outbound: Object.freeze({
         fetch: (input) => host.outboundFetch({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
@@ -206,7 +202,6 @@ export default class BonoboPluginEntrypoint extends WorkerEntrypoint {
       BONOBO: bonobo,
       BONOBO_HOST: Object.freeze({
         generateText: (input) => host.generateText({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
-        transcribeAudio: (input) => host.transcribeAudio({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
         sourceTemporaryUrl: (input) => host.sourceTemporaryUrl({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
         sourceBase64: (input) => host.sourceBase64({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
         writeMarkdown: (input) => host.writeMarkdown({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
@@ -678,7 +673,7 @@ async function post_host_json(input: {
 	return responseBody;
 }
 
-type RunnerClaimedOperation = "generateText" | "transcribeAudio" | "outboundFetch";
+type RunnerClaimedOperation = "generateText" | "outboundFetch";
 
 async function claim_runner_call(input: {
 	host: HostRuntime;
@@ -977,80 +972,6 @@ export class BonoboHost extends WorkerEntrypoint<Env, BonoboHostProps> {
 			contentType: response.headers.get("Content-Type") ?? null,
 			bytes: bytes.byteLength,
 		};
-	}
-
-	async transcribeAudio(input: unknown): Promise<unknown> {
-		const { pluginRunId, host } = parse_host_call_context(input);
-		require_capability(this.ctx.props.acceptedCapabilities, "ai.transcribeAudio");
-		if (!this.env.AI) {
-			throw new Error("Workers AI binding is unavailable");
-		}
-		if (!is_record(input)) throw new Error("Host call input must be an object");
-		const audioBase64 = input.audioBase64;
-		const language = input.language;
-		if (typeof audioBase64 !== "string" || audioBase64.length === 0) {
-			throw new Error("transcribeAudio.audioBase64 is invalid");
-		}
-		const audioBytes = base64_to_bytes(audioBase64);
-		if (audioBytes.byteLength === 0 || audioBytes.byteLength > WORKERS_AI_AUDIO_BYTES) {
-			throw new Error("transcribeAudio.audioBase64 exceeds the size limit");
-		}
-		if (
-			language !== undefined &&
-			(typeof language !== "string" || !/^[A-Za-z]{2}(?:-[A-Za-z0-9]+)?$/u.test(language))
-		) {
-			throw new Error("transcribeAudio.language is invalid");
-		}
-
-		const callId = await claim_runner_call({
-			host,
-			pluginRunId,
-			pluginStableId: this.ctx.props.pluginStableId,
-			operation: "transcribeAudio",
-			requestBytes: audioBytes.byteLength,
-		});
-		try {
-			const response = await this.env.AI.run(WORKERS_AI_TRANSCRIPTION_MODEL, {
-				audio: audioBase64,
-				...(language !== undefined ? { language } : {}),
-			});
-			const text = ai_text_response(response);
-			const responseRecord = is_record(response) ? response : null;
-			console.log(
-				JSON.stringify({
-					tag: "plugin_runner_transcribe",
-					pluginStableIdHash: (await sha256_hex(this.ctx.props.pluginStableId)).slice(0, 16),
-					responseKeys: responseRecord ? Object.keys(responseRecord).sort().join(",") : typeof response,
-					textLength: text?.trim().length ?? 0,
-					segmentCount: Array.isArray(responseRecord?.segments) ? responseRecord.segments.length : 0,
-					vttBytes: typeof responseRecord?.vtt === "string" ? byte_length(responseRecord.vtt) : 0,
-				}),
-			);
-			await finish_runner_call({
-				host,
-				pluginRunId,
-				pluginStableId: this.ctx.props.pluginStableId,
-				callId,
-				status: "succeeded",
-				errorMessage: null,
-				modelId: WORKERS_AI_TRANSCRIPTION_MODEL,
-				requestBytes: audioBytes.byteLength,
-				outputTextBytes: byte_length(text?.trim() ?? ""),
-			});
-			return { text: text?.trim() ?? "" };
-		} catch (error) {
-			await finish_runner_call({
-				host,
-				pluginRunId,
-				pluginStableId: this.ctx.props.pluginStableId,
-				callId,
-				status: "failed",
-				errorMessage: "Workers AI transcription failed",
-				modelId: WORKERS_AI_TRANSCRIPTION_MODEL,
-				requestBytes: audioBytes.byteLength,
-			});
-			throw error;
-		}
 	}
 
 	async writeMarkdown(input: unknown): Promise<unknown> {

@@ -46,6 +46,15 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Folder table drop target state: `.FileNodeViewFolderExplorer-row-drop-target`.
 - Folder table dragging state: `.FileNodeViewFolderExplorer-row-dragging`.
 
+## Upload Fixtures
+
+Deterministic assets in `.agents/skills/app-playwriter-harness/assets/files/`:
+
+- `r2-upload-sample.pdf` — PDF source-to-shadow conversion checks.
+- `shapes.png` — image-plugin QA: a red circle, a blue square, a green triangle, and the text `BONOBO QA IMAGE` on a white background.
+- `speakers.wav` — video-plugin QA (audio path, ~39s): two distinct TTS voices alternating scripted lines about the quarterly budget, a penguin research station, the marketing plan, and a solar bicycle.
+- `speakers.mp4` — video-plugin QA (video path, exercises the Modal audio extractor): the same `speakers.wav` audio muxed over a solid-color video track.
+
 ## Common Gotchas
 
 - Editor mode radios are small native inputs. If a radio locator times out, click the matching `#app_main_header_content label`.
@@ -120,10 +129,10 @@ Use this when changing tree focus, context menus, selection, or route sync.
 ### R2 Upload And PDF Siblings
 
 - Fixture: `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf`.
-- Select the target folder before clicking sidebar `Upload file`; file-selected uploads may target root.
+- Select the target folder before uploading; file-selected uploads may target root. `Upload file` is a menu item under the sidebar `More options` button, not a standalone toolbar button.
 - After upload prep, the source PDF should appear as a normal tree node.
 - During processing, the source file panel should show pending/processing metadata, not converted Markdown.
-- Same-folder duplicate upload should show `File already exists` with `Replace` and `Upload renamed file`.
+- Same-folder duplicate upload should show the `File already exists` modal (`.FilesSidebarUploadConflictModal`) with a `Filename` input plus `Cancel` and `Replace`/`Upload`; to upload renamed, edit the filename and submit `Upload`.
 - After conversion, folder explorer should show visible regular siblings in order: `<name>.pdf`, `<name>.pdf.md`.
 - Opening `<name>.pdf.md` should mount the normal rich editor with converted content.
 

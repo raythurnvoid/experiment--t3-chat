@@ -41,7 +41,7 @@ import { server_convex_get_user_fallback_to_anonymous } from "../server/server-u
 import { organizations_db_get_membership } from "./organizations.ts";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { r2_fetch_object_from_bucket, r2_put_object } from "./r2.ts";
+import { r2_delete_object, r2_fetch_object_from_bucket, r2_put_object } from "./r2.ts";
 
 const install_permission = "workspace.plugins.manage" as const;
 const plugin_import_user_agent = "t3-chat-plugin-import";
@@ -2618,3 +2618,354 @@ export const list_recent_runs = query({
 		return docs;
 	},
 });
+
+// #region admin
+function plugin_version_r2_keys(version: Doc<"plugins_versions">) {
+	const r2Keys = new Set<string>([version.manifestR2Key, version.artifactR2Key]);
+	if (version.backend) {
+		r2Keys.add(version.backend.r2Key);
+	}
+	for (const file of version.files) {
+		if (file.r2Key) {
+			r2Keys.add(file.r2Key);
+		}
+	}
+	return r2Keys;
+}
+
+export const preview_hard_delete_registered_plugin = internalQuery({
+	args: {
+		pluginName: v.string(),
+	},
+	returns: v.object({
+		versions: v.number(),
+		versionReviews: v.number(),
+		sourceMounts: v.number(),
+		installations: v.number(),
+		eventHandlers: v.number(),
+		installationSecrets: v.number(),
+		eventRuns: v.number(),
+		eventRunCalls: v.number(),
+		publisherRepositoryClaims: v.number(),
+		r2ObjectKeys: v.number(),
+	}),
+	handler: async (ctx, args) => {
+		const versions = await ctx.db
+			.query("plugins_versions")
+			.withIndex("by_name", (q) => q.eq("name", args.pluginName))
+			.collect();
+
+		const r2ObjectKeys = new Set<string>();
+		const repositoryUrls = new Set<string>();
+		let sourceMounts = 0;
+		let installations = 0;
+		let eventHandlers = 0;
+		let installationSecrets = 0;
+		let eventRuns = 0;
+		let eventRunCalls = 0;
+		for (const version of versions) {
+			repositoryUrls.add(version.sourceRepositoryUrl);
+			for (const r2Key of plugin_version_r2_keys(version)) {
+				r2ObjectKeys.add(r2Key);
+			}
+			const mounts = await ctx.db
+				.query("plugins_source_mounts")
+				.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
+				.collect();
+			sourceMounts += mounts.length;
+			const versionInstallations = await ctx.db
+				.query("plugins_workspace_installations")
+				.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
+				.collect();
+			installations += versionInstallations.length;
+			for (const installation of versionInstallations) {
+				const handlers = await ctx.db
+					.query("plugins_workspace_event_handlers")
+					.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
+					.collect();
+				eventHandlers += handlers.length;
+				const secrets = await ctx.db
+					.query("plugins_workspace_installation_secrets")
+					.withIndex("by_installation_name", (q) => q.eq("installationId", installation._id))
+					.collect();
+				installationSecrets += secrets.length;
+				const runs = await ctx.db
+					.query("plugins_event_runs")
+					.withIndex("by_installation_updatedAt", (q) => q.eq("installationId", installation._id))
+					.collect();
+				eventRuns += runs.length;
+				const calls = await ctx.db
+					.query("plugins_event_run_calls")
+					.withIndex("by_installation_createdAt", (q) => q.eq("installationId", installation._id))
+					.collect();
+				eventRunCalls += calls.length;
+			}
+		}
+
+		// plugins_version_reviews has no pluginName index; a plugin name is bound to
+		// the publisher that first registered it, so scan that publisher's reviews.
+		let versionReviews = 0;
+		const firstVersion = versions.at(0);
+		if (firstVersion) {
+			const reviews = await ctx.db
+				.query("plugins_version_reviews")
+				.withIndex("by_createdBy", (q) => q.eq("createdBy", firstVersion.createdBy))
+				.collect();
+			versionReviews = reviews.filter((review) => review.pluginName === args.pluginName).length;
+		}
+
+		let publisherRepositoryClaims = 0;
+		for (const repositoryUrl of repositoryUrls) {
+			const claims = await ctx.db
+				.query("plugins_publisher_repositories")
+				.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", repositoryUrl))
+				.collect();
+			publisherRepositoryClaims += claims.length;
+		}
+
+		return {
+			versions: versions.length,
+			versionReviews,
+			sourceMounts,
+			installations,
+			eventHandlers,
+			installationSecrets,
+			eventRuns,
+			eventRunCalls,
+			publisherRepositoryClaims,
+			r2ObjectKeys: r2ObjectKeys.size,
+		};
+	},
+});
+
+export const hard_delete_registered_plugin_batch = internalMutation({
+	args: {
+		pluginName: v.string(),
+		_test_batchSize: v.optional(v.number()),
+	},
+	returns: v.object({
+		done: v.boolean(),
+		deleted: v.number(),
+		workspaces: v.array(
+			v.object({
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				userId: v.id("users"),
+			}),
+		),
+	}),
+	handler: async (ctx, args) => {
+		let budget = args._test_batchSize ?? 100;
+		let deleted = 0;
+		const workspaces: Array<{
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			userId: Id<"users">;
+		}> = [];
+
+		const versions = await ctx.db
+			.query("plugins_versions")
+			.withIndex("by_name", (q) => q.eq("name", args.pluginName))
+			.collect();
+		const firstVersion = versions.at(0);
+		if (!firstVersion) {
+			return { done: true, deleted, workspaces };
+		}
+
+		// Child docs before parents: run calls -> runs -> handlers -> installation
+		// secrets -> installations -> reviews -> mounts -> versions -> repo claims.
+		// plugins_publisher_secrets is shared across a publisher's plugins and is
+		// never touched here.
+		for (const version of versions) {
+			const installations = await ctx.db
+				.query("plugins_workspace_installations")
+				.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
+				.collect();
+			for (const installation of installations) {
+				const calls = await ctx.db
+					.query("plugins_event_run_calls")
+					.withIndex("by_installation_createdAt", (q) => q.eq("installationId", installation._id))
+					.take(budget);
+				for (const call of calls) {
+					await ctx.db.delete("plugins_event_run_calls", call._id);
+				}
+				deleted += calls.length;
+				budget -= calls.length;
+				if (budget <= 0) {
+					return { done: false, deleted, workspaces };
+				}
+				const runs = await ctx.db
+					.query("plugins_event_runs")
+					.withIndex("by_installation_updatedAt", (q) => q.eq("installationId", installation._id))
+					.take(budget);
+				for (const run of runs) {
+					await ctx.db.delete("plugins_event_runs", run._id);
+				}
+				deleted += runs.length;
+				budget -= runs.length;
+				if (budget <= 0) {
+					return { done: false, deleted, workspaces };
+				}
+				const handlers = await ctx.db
+					.query("plugins_workspace_event_handlers")
+					.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
+					.take(budget);
+				for (const handler of handlers) {
+					await ctx.db.delete("plugins_workspace_event_handlers", handler._id);
+				}
+				deleted += handlers.length;
+				budget -= handlers.length;
+				if (budget <= 0) {
+					return { done: false, deleted, workspaces };
+				}
+				const secrets = await ctx.db
+					.query("plugins_workspace_installation_secrets")
+					.withIndex("by_installation_name", (q) => q.eq("installationId", installation._id))
+					.take(budget);
+				for (const secret of secrets) {
+					await ctx.db.delete("plugins_workspace_installation_secrets", secret._id);
+				}
+				deleted += secrets.length;
+				budget -= secrets.length;
+				if (budget <= 0) {
+					return { done: false, deleted, workspaces };
+				}
+				await ctx.db.delete("plugins_workspace_installations", installation._id);
+				workspaces.push({
+					organizationId: installation.organizationId,
+					workspaceId: installation.workspaceId,
+					userId: installation.updatedBy,
+				});
+				deleted += 1;
+				budget -= 1;
+				if (budget <= 0) {
+					return { done: false, deleted, workspaces };
+				}
+			}
+		}
+
+		// plugins_version_reviews has no pluginName index; a plugin name is bound to
+		// the publisher that first registered it, so scan that publisher's reviews.
+		const reviews = await ctx.db
+			.query("plugins_version_reviews")
+			.withIndex("by_createdBy", (q) => q.eq("createdBy", firstVersion.createdBy))
+			.collect();
+		for (const review of reviews) {
+			if (review.pluginName !== args.pluginName) {
+				continue;
+			}
+			await ctx.db.delete("plugins_version_reviews", review._id);
+			deleted += 1;
+			budget -= 1;
+			if (budget <= 0) {
+				return { done: false, deleted, workspaces };
+			}
+		}
+
+		for (const version of versions) {
+			const mounts = await ctx.db
+				.query("plugins_source_mounts")
+				.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
+				.collect();
+			for (const mount of mounts) {
+				await ctx.db.delete("plugins_source_mounts", mount._id);
+				deleted += 1;
+				budget -= 1;
+			}
+			if (budget <= 0) {
+				return { done: false, deleted, workspaces };
+			}
+
+			// R2 deletion is best effort: a failing artifact object must not block the
+			// registry delete.
+			for (const r2Key of plugin_version_r2_keys(version)) {
+				try {
+					await r2_delete_object(ctx, r2Key);
+				} catch (error) {
+					console.error("Failed to delete plugin R2 object", { r2Key, error });
+				}
+			}
+			await ctx.db.delete("plugins_versions", version._id);
+			deleted += 1;
+			budget -= 1;
+
+			// Drop the repository claim once no registered version references its repo
+			// anymore (a manifest rename can leave another plugin name on the same repo).
+			const remainingVersion = await ctx.db
+				.query("plugins_versions")
+				.withIndex("by_sourceRepositoryUrl_sourceCommitSha", (q) =>
+					q.eq("sourceRepositoryUrl", version.sourceRepositoryUrl),
+				)
+				.first();
+			if (!remainingVersion) {
+				const claims = await ctx.db
+					.query("plugins_publisher_repositories")
+					.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", version.sourceRepositoryUrl))
+					.collect();
+				for (const claim of claims) {
+					await ctx.db.delete("plugins_publisher_repositories", claim._id);
+					deleted += 1;
+				}
+			}
+			if (budget <= 0) {
+				return { done: false, deleted, workspaces };
+			}
+		}
+
+		return { done: true, deleted, workspaces };
+	},
+});
+
+export const hard_delete_registered_plugin_now = internalAction({
+	args: {
+		pluginName: v.string(),
+		_test_batchSize: v.optional(v.number()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args): Promise<null> => {
+		const workspaces = new Map<
+			string,
+			{ organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; userId: Id<"users"> }
+		>();
+		let done = false;
+		for (let step = 0; step < 50 && !done; step += 1) {
+			const result = (await ctx.runMutation(internal.plugins.hard_delete_registered_plugin_batch, {
+				pluginName: args.pluginName,
+				_test_batchSize: args._test_batchSize,
+			})) as {
+				done: boolean;
+				deleted: number;
+				workspaces: Array<{
+					organizationId: Id<"organizations">;
+					workspaceId: Id<"organizations_workspaces">;
+					userId: Id<"users">;
+				}>;
+			};
+			for (const workspace of result.workspaces) {
+				workspaces.set(`${workspace.organizationId}:${workspace.workspaceId}`, workspace);
+			}
+			done = result.done;
+		}
+		if (!done) {
+			throw new Error(`Hard delete of plugin "${args.pluginName}" did not finish in 50 batches; run it again`);
+		}
+
+		for (const workspace of workspaces.values()) {
+			const refreshed = (await ctx.runAction(internal.plugins.refresh_workspace_lockfile_internal, {
+				organizationId: workspace.organizationId,
+				workspaceId: workspace.workspaceId,
+				userId: workspace.userId,
+			})) as PluginLockfileRefreshResult;
+			if (refreshed._nay) {
+				console.error("Failed to refresh plugin lockfile after hard delete", {
+					message: refreshed._nay.message,
+					organizationId: workspace.organizationId,
+					workspaceId: workspace.workspaceId,
+				});
+			}
+		}
+
+		return null;
+	},
+});
+// #endregion

@@ -10,7 +10,7 @@ $modalTestImage = "t3-chat-modal-test:1.4.2"
 $modalTestDockerfile = Join-Path $PSScriptRoot "..\modal\Dockerfile.test"
 
 if ($PytestArgs.Count -eq 0) {
-	$PytestArgs = @("packages/app/modal/test_files_markitdown.py")
+	$PytestArgs = @("packages/app/modal")
 }
 
 $imageExists = $false

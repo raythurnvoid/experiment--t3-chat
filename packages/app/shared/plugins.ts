@@ -18,8 +18,6 @@ export const plugins_CAPABILITIES = [
 	"plugin.secrets.read",
 	"outbound.fetch",
 	"ai.generateText",
-	"ai.transcribeAudio",
-	"ai.transcribeSourceAudio",
 	"media.video.frame",
 	"media.video.audioSegment",
 	"pdf.toMarkdown",

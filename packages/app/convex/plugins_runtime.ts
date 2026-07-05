@@ -638,7 +638,6 @@ export const claim_host_call = internalMutation({
 			v.literal("generateText"),
 			v.literal("sourceTemporaryUrl"),
 			v.literal("secretGet"),
-			v.literal("transcribeAudio"),
 			v.literal("outboundFetch"),
 		),
 		outputPath: v.optional(v.string()),
@@ -1344,7 +1343,6 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 								pluginRunId: z.string(),
 								operation: z.union([
 									z.literal("generateText"),
-									z.literal("transcribeAudio"),
 									z.literal("outboundFetch"),
 								]),
 								systemBytes: z.number().int().min(0).optional(),
@@ -1369,9 +1367,7 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 									? body._yay.includeSourceImage
 										? (["uploads.source.read", "ai.generateText"] as const)
 										: (["ai.generateText"] as const)
-									: body._yay.operation === "transcribeAudio"
-										? (["ai.transcribeAudio"] as const)
-										: (["outbound.fetch"] as const);
+									: (["outbound.fetch"] as const);
 							const result = (await ctx.runMutation(internal.plugins_runtime.claim_host_call, {
 								hostTokenHash: await sha256_hex(token),
 								pluginRunId: body._yay.pluginRunId,

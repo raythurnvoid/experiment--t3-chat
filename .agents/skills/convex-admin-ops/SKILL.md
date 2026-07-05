@@ -12,7 +12,7 @@ Use this skill for live Convex control-plane or data-plane operations. Also load
 1. Identify the target deployment before running a write.
    - In this repo, deployment env lives under `packages/app`.
    - Read `packages/app/.env.local` for `CONVEX_DEPLOYMENT`, `VITE_CONVEX_URL`, and `VITE_CONVEX_HTTP_URL`.
-   - Default to the configured dev deployment. Use `--prod`, `--preview-name`, or `--deployment-name` only when the user explicitly requests that target.
+   - All admin commands in this skill target the dev deployment configured in `packages/app/.env.local` only — never pass `--prod`. Use `--preview-name` or `--deployment-name` only when the user explicitly requests that target.
 2. Confirm the function signature from source before constructing args.
    - Prefer `rg` first, then read the function registration and nearby tests.
    - For destructive account operations, read the relevant auth/data-deletion skill sections.
@@ -89,6 +89,22 @@ Arguments:
 - `"data_auth_and_user_record"`: delete tenant/user data and auth state, revoke/delete billing state immediately, and purge the final local `users` doc. This is the only routine admin path that should immediately revoke/delete billing instead of preserving or downgrading the account.
 
 Use `"data"` when the user wants to wipe app data while keeping the account usable. Use `"data_and_auth"` for account deletion that keeps the final tombstone. Use `"data_auth_and_user_record"` only when the user explicitly wants the final user record purged too.
+
+## Remove A Registered Plugin
+
+There is no public uninstall/unregister surface for plugins; removal is the internal-only admin flow in `packages/app/convex/plugins.ts`. It targets one plugin name and hard-deletes its versions, version reviews, source mounts, workspace installations (all workspaces and all versions), event handlers, installation secrets, event runs, run calls, the publisher repository claim(s) backing the plugin, and the R2 artifact objects (manifest, artifact, bundled files). Affected workspace lockfiles are refreshed afterwards. Publisher secrets (`plugins_publisher_secrets`) are never touched: they are shared across all of a publisher's plugins.
+
+Run preview → delete → preview readback from `packages/app`:
+
+```powershell
+Push-Location C:\Users\rt0\Documents\workspace\rt0\t3-chat\packages\app
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:preview_hard_delete_registered_plugin '{"pluginName":"<name>"}'
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:hard_delete_registered_plugin_now '{"pluginName":"<name>"}'
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:preview_hard_delete_registered_plugin '{"pluginName":"<name>"}'
+Pop-Location
+```
+
+The preview returns per-table counts plus the number of R2 artifact keys; expect nonzero counts before the delete and all-zero after. `hard_delete_registered_plugin_now` throws if an unusually large plugin exhausts its batch budget; rerun it until the preview readback is all-zero. R2 object deletion is best effort: individual failures are logged and do not block the registry delete. Source files materialized under the global GitHub workspace are not swept by this flow; use the orphan sweep described under Dev Reset Preserving Clerk Users if needed.
 
 ## Dev Reset Preserving Clerk Users
 

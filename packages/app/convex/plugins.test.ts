@@ -494,7 +494,7 @@ describe("plugins Phase 0", () => {
 				event: "files.upload.completed",
 				eventId: "plugin:runner-call-test",
 				status: "queued",
-				acceptedCapabilities: ["ai.transcribeAudio"],
+				acceptedCapabilities: ["outbound.fetch"],
 				expiresAt: Date.now() + 30 * 60 * 1000,
 				hostCallCount: 0,
 				hostWriteCount: 0,
@@ -518,7 +518,7 @@ describe("plugins Phase 0", () => {
 			},
 			body: JSON.stringify({
 				pluginRunId: runId,
-				operation: "transcribeAudio",
+				operation: "outboundFetch",
 				requestBytes: 3,
 			}),
 		});
@@ -535,9 +535,9 @@ describe("plugins Phase 0", () => {
 				callId: claimedBody.callId,
 				status: "succeeded",
 				errorMessage: null,
-				modelId: "@cf/openai/whisper-large-v3-turbo",
 				requestBytes: 3,
-				outputTextBytes: 23,
+				responseBytes: 23,
+				responseStatus: 200,
 			}),
 		});
 		expect(finished.status).toBe(200);
@@ -553,11 +553,11 @@ describe("plugins Phase 0", () => {
 		expect(calls).toHaveLength(1);
 		expect(calls[0]).toMatchObject({
 			sequence: 1,
-			operation: "transcribeAudio",
+			operation: "outboundFetch",
 			status: "succeeded",
-			modelId: "@cf/openai/whisper-large-v3-turbo",
 			requestBytes: 3,
-			outputTextBytes: 23,
+			responseBytes: 23,
+			responseStatus: 200,
 			errorMessage: null,
 		});
 		expect(JSON.stringify(calls)).not.toContain("AQID");
@@ -569,11 +569,11 @@ describe("plugins Phase 0", () => {
 		expect(visibleCalls).toHaveLength(1);
 		expect(visibleCalls[0]).toMatchObject({
 			sequence: 1,
-			operation: "transcribeAudio",
+			operation: "outboundFetch",
 			status: "succeeded",
-			modelId: "@cf/openai/whisper-large-v3-turbo",
 			requestBytes: 3,
-			outputTextBytes: 23,
+			responseBytes: 23,
+			responseStatus: 200,
 		});
 		expect(JSON.stringify(visibleCalls)).not.toContain("AQID");
 	});
@@ -2705,5 +2705,212 @@ describe("plugins publish_version", () => {
 			membershipId: membership.membershipId,
 		});
 		expect(unauthorized).toEqual([]);
+	});
+});
+
+describe("plugins admin hard delete", () => {
+	test("hard-deletes one plugin's rows, R2 artifacts, and lockfile entry while other plugins and publisher secrets stay intact", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const media = await register_media_plugin(t, membership.userId, { name: "media" });
+		const alternate = await register_media_plugin(t, membership.userId, {
+			name: "media-alt",
+			displayName: "Media Alt",
+			contentTypes: ["image/png"],
+		});
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installedMedia = await asOwner.action(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: media.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installedMedia._nay) {
+			throw new Error(installedMedia._nay.message);
+		}
+		const installedAlternate = await asOwner.action(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: alternate.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installedAlternate._nay) {
+			throw new Error(installedAlternate._nay.message);
+		}
+		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: membership.membershipId,
+			parentId: "root",
+			filename: "hard-delete.png",
+			contentType: "image/png",
+			size: 1024,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const name of ["media", "media-alt"]) {
+				await ctx.db.insert("plugins_publisher_repositories", {
+					ownerUserId: membership.userId,
+					repositoryUrl: `https://github.com/bonobo/${name}-plugin`,
+					owner: "bonobo",
+					repo: `${name}-plugin`,
+					createdAt: now,
+				});
+				await ctx.db.insert("plugins_version_reviews", {
+					createdBy: membership.userId,
+					artifactHash: `sha256:${(name === "media" ? "a" : "d").repeat(64)}`,
+					pluginName: name,
+					version: "0.1.0",
+					status: "passed",
+					mechanicalFindings: [],
+					aiFindings: [],
+					model: "none",
+					createdAt: now,
+				});
+			}
+			await ctx.db.insert("plugins_workspace_installation_secrets", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installedMedia._yay.installationId,
+				pluginName: "media",
+				name: "OPENAI_API_KEY",
+				ciphertext: "cipher",
+				nonce: "nonce",
+				keyVersion: 1,
+				valuePreview: "configured",
+				createdBy: membership.userId,
+				updatedBy: membership.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_publisher_secrets", {
+				ownerUserId: membership.userId,
+				name: "OPENAI_API_KEY",
+				ciphertext: "publisher-cipher",
+				nonce: "nonce",
+				keyVersion: 1,
+				valuePreview: "configured",
+				allowedOrigins: [],
+				createdAt: now,
+				updatedAt: now,
+			});
+			const runId = await ctx.db.insert("plugins_event_runs", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				sourceAssetId: upload._yay.assetId,
+				sourceFileNodeId: upload._yay.nodeId,
+				actorUserId: membership.userId,
+				installationId: installedMedia._yay.installationId,
+				pluginVersionId: media.pluginVersionId,
+				event: "files.upload.completed",
+				eventId: "plugin:hard-delete-test",
+				status: "succeeded",
+				acceptedCapabilities: media_plugin_consent.acceptedCapabilities,
+				expiresAt: now + 30 * 60 * 1000,
+				hostCallCount: 2,
+				hostWriteCount: 1,
+				errorMessage: null,
+				createdAt: now,
+				updatedAt: now,
+			});
+			for (const sequence of [1, 2]) {
+				await ctx.db.insert("plugins_event_run_calls", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					runId,
+					installationId: installedMedia._yay.installationId,
+					pluginVersionId: media.pluginVersionId,
+					sequence,
+					operation: "writeMarkdown",
+					status: "succeeded",
+					errorMessage: null,
+					startedAt: now,
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+		});
+
+		const previewBefore = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
+			pluginName: "media",
+		});
+		expect(previewBefore).toEqual({
+			versions: 1,
+			versionReviews: 1,
+			sourceMounts: 1,
+			installations: 1,
+			eventHandlers: 2,
+			installationSecrets: 1,
+			eventRuns: 1,
+			eventRunCalls: 2,
+			publisherRepositoryClaims: 1,
+			r2ObjectKeys: 3,
+		});
+
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		// A tiny batch size forces multiple mutation batches through the action loop.
+		await t.action(internal.plugins.hard_delete_registered_plugin_now, {
+			pluginName: "media",
+			_test_batchSize: 3,
+		});
+
+		const previewAfter = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
+			pluginName: "media",
+		});
+		expect(previewAfter).toEqual({
+			versions: 0,
+			versionReviews: 0,
+			sourceMounts: 0,
+			installations: 0,
+			eventHandlers: 0,
+			installationSecrets: 0,
+			eventRuns: 0,
+			eventRunCalls: 0,
+			publisherRepositoryClaims: 0,
+			r2ObjectKeys: 0,
+		});
+
+		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
+		expect(versions.map((version) => version.name)).toEqual(["media-alt"]);
+		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
+		expect(reviews.map((review) => review.pluginName)).toEqual(["media-alt"]);
+		const mounts = await t.run((ctx) => ctx.db.query("plugins_source_mounts").collect());
+		expect(mounts.map((mount) => mount.pluginVersionId)).toEqual([alternate.pluginVersionId]);
+		const installations = await t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect());
+		expect(installations.map((installation) => installation.pluginName)).toEqual(["media-alt"]);
+		const handlers = await t.run((ctx) => ctx.db.query("plugins_workspace_event_handlers").collect());
+		expect(handlers.map((handler) => handler.pluginName)).toEqual(["media-alt"]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_workspace_installation_secrets").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_event_run_calls").collect())).toEqual([]);
+		const claims = await t.run((ctx) => ctx.db.query("plugins_publisher_repositories").collect());
+		expect(claims.map((claim) => claim.repositoryUrl)).toEqual(["https://github.com/bonobo/media-alt-plugin"]);
+
+		// Publisher secrets are shared across a publisher's plugins and stay untouched.
+		const publisherSecrets = await t.run((ctx) => ctx.db.query("plugins_publisher_secrets").collect());
+		expect(publisherSecrets).toHaveLength(1);
+		expect(publisherSecrets[0]).toMatchObject({
+			ownerUserId: membership.userId,
+			name: "OPENAI_API_KEY",
+			ciphertext: "publisher-cipher",
+		});
+
+		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/manifest.json");
+		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/artifact.json");
+		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/backend/worker.js");
+		expect(deleteObjectSpy).not.toHaveBeenCalledWith(expect.anything(), "plugins/media-alt/manifest.json");
+
+		const lockfile = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: membership.userId,
+			path: plugins_LOCKFILE_PATH,
+			mode: { kind: "full", maxBytes: 100_000 },
+		});
+		if (!lockfile) {
+			throw new Error("Expected refreshed lockfile");
+		}
+		expect(JSON.parse(lockfile.content).plugins.map((plugin: { name: string }) => plugin.name)).toEqual([
+			"media-alt",
+		]);
 	});
 });

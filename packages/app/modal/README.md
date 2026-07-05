@@ -74,3 +74,7 @@ Run Modal converter unit tests through Docker:
 ```powershell
 .\packages\app\scripts\modal-test.ps1
 ```
+
+## Related Modal apps
+
+The media audio extractor used by the video plugin lives in its own repository (plugins are self-contained): `plugins/bonobo-plugin-video/modal/media_audio_extractor.py`, with its own Docker-wrapped `scripts/modal-test.ps1` and `scripts/modal-cli.ps1`. It shares the `BONOBO_SENATE_PRESS` Modal secret and the `~/.modal-cli` auth config with this converter.

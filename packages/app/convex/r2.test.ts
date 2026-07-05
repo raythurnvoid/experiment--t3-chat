@@ -94,7 +94,6 @@ function stub_r2_and_modal_fetch(
 		markdown?: string;
 		modalStatus?: number;
 		mediaTransformerAlwaysFails?: boolean;
-		transcriptionText?: string;
 		onModalRequest?: (body: Record<string, unknown>) => void;
 		onPluginRunnerRequest?: (body: Record<string, unknown>) => Response | Promise<Response>;
 	} = {},
@@ -103,7 +102,6 @@ function stub_r2_and_modal_fetch(
 		markdown = "# Converted\n\nPDF body",
 		modalStatus = 200,
 		mediaTransformerAlwaysFails = false,
-		transcriptionText = "Transcript segment body",
 		onModalRequest,
 		onPluginRunnerRequest,
 	} = args;
@@ -172,22 +170,6 @@ function stub_r2_and_modal_fetch(
 					status: 200,
 					headers: { "Content-Type": "audio/mp4" },
 				});
-			}
-
-			if (url === "https://api.openai.com/v1/audio/transcriptions") {
-				return new Response(
-					JSON.stringify({
-						text: transcriptionText,
-						usage: {
-							input_tokens: 10,
-							output_tokens: 5,
-						},
-					}),
-					{
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
 			}
 
 			if (url === `${process.env.PLUGIN_RUNNER_URL}/internal/plugin-runner/run`) {
@@ -272,7 +254,7 @@ async function install_upload_plugin(
 	args: {
 		userId: Id<"users">;
 		membershipId: Id<"organizations_workspaces_users">;
-		name: "media" | "pdf";
+		name: "image" | "video" | "pdf";
 		displayName: string;
 		description: string;
 		contentTypes: string[];
@@ -876,8 +858,8 @@ describe("r2 asset content", () => {
 		await install_upload_plugin(t, {
 			userId: db.userId,
 			membershipId: db.membershipId,
-			name: "media",
-			displayName: "Media",
+			name: "image",
+			displayName: "Image",
 			description: "Image markdown generation",
 			contentTypes: ["image/png"],
 		});
@@ -990,9 +972,9 @@ describe("r2 asset content", () => {
 		expect(readResult?.content).toContain("PLUGIN_IMAGE_E2E_2026");
 		expect(pluginRunnerRequests).toHaveLength(1);
 		expect(pluginRunnerRequests[0]).toMatchObject({
-			pluginName: "media",
+			pluginName: "image",
 			pluginVersion: "0.1.0",
-			artifactKey: "plugins/media/backend/worker.js",
+			artifactKey: "plugins/image/backend/worker.js",
 			artifactHash: `sha256:${"b".repeat(64)}`,
 			input: {
 				event: "files.upload.completed",
@@ -1018,10 +1000,10 @@ describe("r2 asset content", () => {
 		await install_upload_plugin(t, {
 			userId: db.userId,
 			membershipId: db.membershipId,
-			name: "media",
-			displayName: "Media",
+			name: "video",
+			displayName: "Video",
 			description: "Video markdown generation",
-			contentTypes: ["video/mp4"],
+			contentTypes: ["video/mp4", "audio/wav"],
 		});
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -1053,9 +1035,10 @@ describe("r2 asset content", () => {
 			onPluginRunnerRequest: async (body) => {
 				pluginRunnerRequests.push(body);
 				const host = body.host as { token: string };
+				const source = (body.input as { source: { name: string } }).source;
 				for (const [path, markdown] of [
-					["clip.mp4.transcript.md", "# Plugin transcript\n\nPLUGIN_VIDEO_TRANSCRIPT_E2E_2026"],
-					["clip.mp4.summary.md", "# Plugin summary\n\nPLUGIN_VIDEO_SUMMARY_E2E_2026"],
+					[`${source.name}.transcript.md`, "# Plugin transcript\n\nPLUGIN_VIDEO_TRANSCRIPT_E2E_2026"],
+					[`${source.name}.summary.md`, "# Plugin summary\n\nPLUGIN_VIDEO_SUMMARY_E2E_2026"],
 				] as const) {
 					const writeResponse = await t.fetch("/api/internal/plugins/host/write-markdown", {
 						method: "POST",
@@ -1155,9 +1138,9 @@ describe("r2 asset content", () => {
 		expect(transcriptReadResult?.content).toContain("PLUGIN_VIDEO_TRANSCRIPT_E2E_2026");
 		expect(pluginRunnerRequests).toHaveLength(1);
 		expect(pluginRunnerRequests[0]).toMatchObject({
-			pluginName: "media",
+			pluginName: "video",
 			pluginVersion: "0.1.0",
-			artifactKey: "plugins/media/backend/worker.js",
+			artifactKey: "plugins/video/backend/worker.js",
 			artifactHash: `sha256:${"b".repeat(64)}`,
 			input: {
 				event: "files.upload.completed",
@@ -1171,6 +1154,89 @@ describe("r2 asset content", () => {
 		expect(processedAsset?.conversionWorkId).toBeNull();
 		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
 		expect(completedRun).toMatchObject({ status: "succeeded", hostWriteCount: 2 });
+
+		const audioUpload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "voice.wav",
+			contentType: "audio/wav",
+			size: 4096,
+		});
+		if (audioUpload._nay) {
+			throw new Error(audioUpload._nay.message);
+		}
+		const audioSourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", audioUpload._yay.assetId));
+		if (!audioSourceAsset) {
+			throw new Error("Expected upload asset");
+		}
+		const audioSourceAssetR2Key = expected_asset_key({
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: audioSourceAsset._id,
+		});
+
+		const audioResponse = await t.fetch("/api/r2/event", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				cloudflareMessageId: "message_audio",
+				attempts: 1,
+				event: {
+					action: "PutObject",
+					bucket: audioSourceAsset.r2Bucket,
+					object: {
+						key: audioSourceAssetR2Key,
+						size: 4096,
+						eTag: "etag_audio",
+					},
+					eventTime: "2026-05-11T00:02:00.000Z",
+				},
+			}),
+		});
+		expect(audioResponse.status).toBe(204);
+
+		const audioPluginRun = await t.run(async (ctx) =>
+			ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_sourceAsset_event_installation", (q) =>
+					q.eq("sourceAssetId", audioUpload._yay.assetId).eq("event", "files.upload.completed"),
+				)
+				.unique(),
+		);
+		if (!audioPluginRun) {
+			throw new Error("Expected plugin event run");
+		}
+
+		await asUser.action(internal.plugins_runtime.execute_upload_completed_event_run, {
+			runId: audioPluginRun._id,
+		});
+
+		const audioTranscriptReadResult = await asUser.action(
+			internal.files_nodes.get_file_last_available_markdown_content_by_path,
+			{
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				path: "/voice.wav.transcript.md",
+			},
+		);
+		expect(audioTranscriptReadResult?.content).toContain("PLUGIN_VIDEO_TRANSCRIPT_E2E_2026");
+		expect(pluginRunnerRequests).toHaveLength(2);
+		expect(pluginRunnerRequests[1]).toMatchObject({
+			pluginName: "video",
+			input: {
+				event: "files.upload.completed",
+				source: {
+					name: "voice.wav",
+					contentType: "audio/wav",
+				},
+			},
+		});
+		const completedAudioRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", audioPluginRun._id));
+		expect(completedAudioRun).toMatchObject({ status: "succeeded", hostWriteCount: 2 });
 	});
 
 	test("finalizes uploaded Markdown into editable content and marks the upload terminal", async () => {
