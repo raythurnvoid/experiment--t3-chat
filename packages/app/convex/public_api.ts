@@ -18,6 +18,7 @@ import { access_control_db_has_permission } from "./access_control.ts";
 import { rate_limiter_limit_by_key, rate_limiter_http_client_key } from "./rate_limiter.ts";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_path_normalize,
@@ -65,13 +66,6 @@ function get_bearer_token(request: Request) {
 	return token.length > 0 ? token : null;
 }
 
-async function sha256_hex(input: string) {
-	const digest = await crypto.subtle.digest("SHA-256", TEXT_ENCODER.encode(input));
-	return Array.from(new Uint8Array(digest))
-		.map((byte) => byte.toString(16).padStart(2, "0"))
-		.join("");
-}
-
 function random_hex(byteCount: number) {
 	const bytes = new Uint8Array(byteCount);
 	crypto.getRandomValues(bytes);
@@ -110,7 +104,7 @@ async function create_credential_secret(ctx: MutationCtx) {
 				secret,
 				credential: `${keyId}.${secret}`,
 				obfuscatedValue: `${keyId}.****${secret.slice(-4)}`,
-				secretHash: await sha256_hex(secret),
+				secretHash: await crypto_sha256_hex(secret),
 			};
 		}
 	}
@@ -596,7 +590,7 @@ export const resolve_principal = internalQuery({
 				});
 			}
 
-			const secretHash = await sha256_hex(secret);
+			const secretHash = await crypto_sha256_hex(secret);
 			if (!timing_safe_equal(secretHash, credential.secretHash)) {
 				return Result({
 					_nay: {
@@ -663,7 +657,7 @@ export const resolve_principal = internalQuery({
 			});
 		}
 
-		const tokenHash = await sha256_hex(args.presented);
+		const tokenHash = await crypto_sha256_hex(args.presented);
 		const grant = await ctx.db
 			.query("public_api_grants")
 			.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))

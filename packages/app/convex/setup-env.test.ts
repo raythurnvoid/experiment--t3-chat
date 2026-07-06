@@ -79,6 +79,10 @@ if (!process.env.PLUGIN_SECRETS_ENCRYPTION_KEY) {
 	process.env.PLUGIN_SECRETS_ENCRYPTION_KEY = "PLUGIN_SECRETS_ENCRYPTION_KEY_TEST";
 }
 
+if (!process.env.PLUGIN_IMPORT_GITHUB_TOKEN) {
+	process.env.PLUGIN_IMPORT_GITHUB_TOKEN = "PLUGIN_IMPORT_GITHUB_TOKEN_TEST";
+}
+
 if (!process.env.R2_BUCKET_FILES) {
 	process.env.R2_BUCKET_FILES = "test-files-bucket";
 }

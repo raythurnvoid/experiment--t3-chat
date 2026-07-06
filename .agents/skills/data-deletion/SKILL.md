@@ -91,7 +91,7 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - It only owns user-scope request docs.
 - If the user doc is already gone, clear user quota docs and remove the stale request.
 - A non-tombstoned user request should make no destructive progress and should log.
-- `db_finalize_deleted_user` deletes user-scoped memberships, role assignments, direct user grants, pending-update docs, last-sequence docs, user quota docs, and the user's plugin publishing docs (`plugins_publisher_repositories` by `ownerUserId`, `plugins_publisher_secrets` by `ownerUserId`, `plugins_version_reviews` by `createdBy`). Publishing is user-owned — there is no publisher account table. `plugins_versions` are intentionally kept with a dangling `createdBy`; the marketplace shows a null publisher display name for them.
+- `db_finalize_deleted_user` deletes user-scoped memberships, role assignments, direct user grants, pending-update docs, last-sequence docs, user quota docs, and the user's plugin publishing docs (`plugins_publisher_repositories` by `ownerUserId`, `plugins_publisher_repository_secrets` by `ownerUserId`, `plugins_version_reviews` by `createdBy`). Publishing is user-owned — there is no publisher account table. `plugins_versions` are intentionally kept with a dangling `createdBy`; the marketplace shows a null publisher display name for them.
 - Keep `billing_usage_snapshots` whenever the `users` doc is retained. Delete them only when the full user-record purge path passes `deleteBillingState`.
 - Auth pointers and anonymous tokens are removed only when the caller passes `deleteUserAuth`.
 - After finalization, queue now-empty organizations with immediate organization requests.

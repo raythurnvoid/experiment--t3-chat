@@ -3,7 +3,7 @@ import "./index.css";
 import { useClerk } from "@clerk/clerk-react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { GitBranch, LogIn, Plus, Puzzle, Store, Trash2, UploadCloud } from "lucide-react";
+import { GitBranch, LogIn, Plus, Store, Trash2, UploadCloud } from "lucide-react";
 import { memo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
@@ -22,10 +22,9 @@ import { PluginsGalleryCard } from "@/components/plugins-gallery-card.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
+import { format_datetime } from "@/lib/date.ts";
 
-type RoutePluginsPublisher_Repositories = app_convex_FunctionReturnType<
-	typeof app_convex_api.plugins.list_my_publisher_repositories
->;
+type Repositories = app_convex_FunctionReturnType<typeof app_convex_api.plugins.list_my_publisher_repositories>;
 
 // #region sign in
 type RoutePluginsPublisherSignIn_ClassNames =
@@ -68,9 +67,6 @@ const RoutePluginsPublisherSignIn = memo(function RoutePluginsPublisherSignIn() 
 // #region plugins
 type RoutePluginsPublisherPlugins_ClassNames =
 	| "RoutePluginsPublisherPlugins"
-	| "RoutePluginsPublisherPlugins-header"
-	| "RoutePluginsPublisherPlugins-title"
-	| "RoutePluginsPublisherPlugins-description"
 	| "RoutePluginsPublisherPlugins-form"
 	| "RoutePluginsPublisherPlugins-empty"
 	| "RoutePluginsPublisherPlugins-grid"
@@ -81,10 +77,12 @@ type RoutePluginsPublisherPlugins_ClassNames =
 	| "RoutePluginsPublisherUnpublishedCard-name"
 	| "RoutePluginsPublisherUnpublishedCard-subtitle"
 	| "RoutePluginsPublisherUnpublishedCard-description"
+	| "RoutePluginsPublisherUnpublishedCard-lastAttempt"
+	| "RoutePluginsPublisherUnpublishedCard-lastAttemptMessage"
 	| "RoutePluginsPublisherUnpublishedCard-footer";
 
 type RoutePluginsPublisherUnpublishedCard_Props = {
-	repository: RoutePluginsPublisher_Repositories[number]["repository"];
+	repository: Repositories[number]["repository"];
 };
 
 const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisherUnpublishedCard(
@@ -171,6 +169,24 @@ const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisher
 			>
 				Never published. Publish builds and registers the first version from the default branch.
 			</span>
+			{repository.lastPublishAttempt ? (
+				<span
+					className={
+						"RoutePluginsPublisherUnpublishedCard-lastAttempt" satisfies RoutePluginsPublisherPlugins_ClassNames
+					}
+				>
+					<MyBadge variant={repository.lastPublishAttempt.status === "succeeded" ? "secondary" : "destructive"}>
+						{repository.lastPublishAttempt.status}
+					</MyBadge>
+					<span
+						className={
+							"RoutePluginsPublisherUnpublishedCard-lastAttemptMessage" satisfies RoutePluginsPublisherPlugins_ClassNames
+						}
+					>
+						Last publish {format_datetime(repository.lastPublishAttempt.at)} · {repository.lastPublishAttempt.message}
+					</span>
+				</span>
+			) : null}
 			<span className={"RoutePluginsPublisherUnpublishedCard-footer" satisfies RoutePluginsPublisherPlugins_ClassNames}>
 				<MyButton disabled={publishing || removing} onClick={handlePublish}>
 					<UploadCloud aria-hidden />
@@ -191,7 +207,7 @@ const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisher
 });
 
 type RoutePluginsPublisherPlugins_Props = {
-	repositories: RoutePluginsPublisher_Repositories;
+	repositories: Repositories;
 };
 
 const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
@@ -233,18 +249,6 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 
 	return (
 		<section className={"RoutePluginsPublisherPlugins" satisfies RoutePluginsPublisherPlugins_ClassNames}>
-			<div className={"RoutePluginsPublisherPlugins-header" satisfies RoutePluginsPublisherPlugins_ClassNames}>
-				<h2 className={"RoutePluginsPublisherPlugins-title" satisfies RoutePluginsPublisherPlugins_ClassNames}>
-					<Puzzle aria-hidden />
-					Your plugins
-					{repositories.length === 0 ? null : <MyBadge variant="default">{repositories.length}</MyBadge>}
-				</h2>
-				<p className={"RoutePluginsPublisherPlugins-description" satisfies RoutePluginsPublisherPlugins_ClassNames}>
-					Claim a GitHub repository to publish it as a plugin. Published plugins open their plugin page, where you
-					manage versions, review verdicts, and secrets.
-				</p>
-			</div>
-
 			<form
 				className={"RoutePluginsPublisherPlugins-form" satisfies RoutePluginsPublisherPlugins_ClassNames}
 				onSubmit={handleClaim}
@@ -349,7 +353,7 @@ function RoutePluginsPublisher() {
 					<p className={"RoutePluginsPublisherHeader-description" satisfies RoutePluginsPublisher_ClassNames}>
 						{auth.isAnonymous
 							? "Sign in to publish plugins."
-							: "Manage the plugins you publish. Plugins you publish are shown under your account name."}
+							: "Claim a GitHub repository to publish it as a plugin. Published plugins open their plugin page, where you manage versions, review verdicts, and secrets."}
 					</p>
 				</div>
 				{auth.isAnonymous === false && anagraphic ? (

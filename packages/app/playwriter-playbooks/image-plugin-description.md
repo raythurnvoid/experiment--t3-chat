@@ -46,6 +46,16 @@ Expected result:
 - Its run calls contain only `secretGet`, `sourceTemporaryUrl`, `outboundFetch`, and `writeMarkdown` operations — never `transcribeAudio` or `generateText`.
 - Outbound calls target `https://api.openai.com` only.
 
+## On-Demand Run
+
+Manual re-run of the plugin on an already-uploaded file, without a new upload.
+
+1. In the files sidebar, open the uploaded image's per-node menu: `getByRole("button", { name: "More actions for shapes.png" })`.
+2. Click the `Run image` item (aria-label `Run Image on shapes.png`; the item only appears for uploaded binary files whose content type has an enabled `image` handler). Mind the `plugins_run` rate limiter (token bucket, capacity 2, 12/min).
+3. Verify a success toast `Started image on shapes.png` appears. Clicking again while the run is pending must instead toast `A run for this plugin is already pending for this file`.
+4. On the plugin detail page (`/w/:organizationName/:workspaceName/plugins/image`), verify the newest run row shows event `files.run.requested` (upload-triggered rows keep `files.upload.completed`) and reaches `status: "succeeded"`.
+5. Verify the `shapes.png.description.md` sibling was replaced (the plugin writes with `overwrite: "replace"`): its content still describes the fixture subjects per the expectations above.
+
 ## Negative Test (Missing Secret)
 
 1. On the image plugin's detail page, delete the `OPENAI_API_KEY` secret from the publisher panel's Secrets section. Mind the `plugins_manage` rate limiter (token bucket, capacity 2, 6/min) — space mutations ~15s apart.

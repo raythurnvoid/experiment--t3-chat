@@ -1216,7 +1216,7 @@ async function db_finalize_deleted_user(
 			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", user._id))
 			.collect(),
 		ctx.db
-			.query("plugins_publisher_secrets")
+			.query("plugins_publisher_repository_secrets")
 			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", user._id))
 			.collect(),
 		ctx.db
@@ -1256,7 +1256,7 @@ async function db_finalize_deleted_user(
 			...pendingMarkdownChunks.map((doc) => ctx.db.delete("files_markdown_chunks", doc._id)),
 			...pendingMetadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)),
 			...publisherRepositories.map((doc) => ctx.db.delete("plugins_publisher_repositories", doc._id)),
-			...publisherSecrets.map((doc) => ctx.db.delete("plugins_publisher_secrets", doc._id)),
+			...publisherSecrets.map((doc) => ctx.db.delete("plugins_publisher_repository_secrets", doc._id)),
 			...publisherVersionReviews.map((doc) => ctx.db.delete("plugins_version_reviews", doc._id)),
 		]),
 	]);

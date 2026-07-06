@@ -240,6 +240,7 @@ export type AppCompositeIds = {
 		  ];
 	plugin:
 		| [name: "upload_completed", eventId: string, installationId: string]
+		| [name: "run_requested", requestId: string, installationId: string]
 		| [name: "generate_text", runId: string, hostCallCount: string];
 };
 

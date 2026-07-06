@@ -188,6 +188,13 @@
 		border-block-start: 1px solid var(--color-base-1-06);
 	}
 
+	.RoutePluginsInstalled-titleRow {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
 	.RoutePluginsInstalled-title {
 		display: flex;
 		align-items: center;
@@ -575,6 +582,20 @@
 			text-decoration: underline;
 			text-underline-offset: 3px;
 		}
+	}
+
+	.RoutePluginsPluginPublisher-lastAttempt {
+		display: flex;
+		align-items: start;
+		gap: 8px;
+	}
+
+	.RoutePluginsPluginPublisher-lastAttemptMessage {
+		overflow-wrap: anywhere;
+
+		font-size: 12px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
 	}
 	/* #endregion publisher */
 

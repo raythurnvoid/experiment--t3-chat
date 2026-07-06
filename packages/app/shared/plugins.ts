@@ -40,7 +40,7 @@ const plugins_module_path_schema = z
 		"Path must be a normalized relative path",
 	);
 
-export function plugins_name_autofix_and_validate(raw: string) {
+export function plugins_autofix_and_validate_name(raw: string) {
 	return organizations_name_autofix_and_validate(raw);
 }
 
@@ -98,15 +98,17 @@ export function plugins_normalize_relative_path(raw: string) {
 	return Result({ _yay: path });
 }
 
-export function plugins_secret_name_validate(raw: string) {
+export function plugins_validate_secret_name(raw: string) {
 	const name = raw.trim();
+
 	if (!plugins_secret_name_regex.test(name)) {
 		return Result({ _nay: { message: "Secret names must use env key syntax" } });
 	}
+
 	return Result({ _yay: name });
 }
 
-export function plugins_origin_validate(raw: string) {
+export function plugins_validate_origin(raw: string) {
 	const trimmed = raw.trim();
 	let url: URL;
 	try {
@@ -158,7 +160,7 @@ export function plugins_parse_env_text(raw: string) {
 			return Result({ _nay: { message: `Line ${index + 1} must be KEY=value` } });
 		}
 
-		const name = plugins_secret_name_validate(withoutExport.slice(0, equalsIndex));
+		const name = plugins_validate_secret_name(withoutExport.slice(0, equalsIndex));
 		if (name._nay) {
 			return Result({ _nay: { message: `Line ${index + 1}: ${name._nay.message}` } });
 		}
@@ -411,7 +413,7 @@ export function plugins_validate_artifact(input: unknown) {
 	if (!parsed.success) {
 		return Result({ _nay: { message: parsed.error.issues[0]?.message ?? "Invalid plugin artifact" } });
 	}
-	const name = plugins_name_autofix_and_validate(parsed.data.plugin.name);
+	const name = plugins_autofix_and_validate_name(parsed.data.plugin.name);
 	if (name._nay) {
 		return Result({ _nay: { message: name._nay.message } });
 	}
@@ -420,7 +422,7 @@ export function plugins_validate_artifact(input: unknown) {
 	}
 	const outboundOrigins = new Set<string>();
 	for (const origin of parsed.data.outboundOrigins) {
-		const validated = plugins_origin_validate(origin);
+		const validated = plugins_validate_origin(origin);
 		if (validated._nay) {
 			return Result({ _nay: { message: validated._nay.message } });
 		}

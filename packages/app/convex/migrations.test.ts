@@ -81,6 +81,21 @@ const migrations_test_schema = defineSchema({
 		plainTextChunk: v.string(),
 		markdownChunkId: v.id("files_markdown_chunks"),
 	}),
+	plugins_workspace_installation_secrets: defineTable({
+		organizationId: v.string(),
+		workspaceId: v.string(),
+		installationId: v.string(),
+		pluginName: v.string(),
+		name: v.string(),
+		ciphertext: v.bytes(),
+		nonce: v.bytes(),
+		keyVersion: v.optional(v.number()),
+		valuePreview: v.string(),
+		createdBy: v.id("users"),
+		updatedBy: v.id("users"),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	}),
 });
 
 describe("rename_plain_text_chunks_file_node_id", () => {
@@ -194,6 +209,46 @@ describe("remove_notifications_created_at", () => {
 			updatedAt: 100,
 		});
 		expect(notification).not.toHaveProperty("createdAt");
+	});
+});
+
+describe("remove_plugins_workspace_installation_secrets_key_version", () => {
+	test("removes legacy keyVersion from installation secret rows", async () => {
+		const t = convexTest(migrations_test_schema, migrations_test_modules);
+		component.register(t);
+		const legacy = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-user-legacy-installation-secret-key-version" });
+			const secretId = await ctx.db.insert("plugins_workspace_installation_secrets", {
+				organizationId: "organization-legacy-installation-secret-key-version",
+				workspaceId: "workspace-legacy-installation-secret-key-version",
+				installationId: "installation-legacy-installation-secret-key-version",
+				pluginName: "media",
+				name: "OPENAI_API_KEY",
+				ciphertext: new TextEncoder().encode("ciphertext").buffer,
+				nonce: new TextEncoder().encode("nonce").buffer,
+				keyVersion: 1,
+				valuePreview: "configured",
+				createdBy: userId,
+				updatedBy: userId,
+				createdAt: 100,
+				updatedAt: 100,
+			});
+
+			return { secretId };
+		});
+
+		const secret = await t.run(async (ctx) => {
+			await runToCompletion(
+				ctx,
+				components.migrations,
+				internal.migrations.remove_plugins_workspace_installation_secrets_key_version,
+			);
+
+			return await ctx.db.get("plugins_workspace_installation_secrets", legacy.secretId);
+		});
+
+		expect(secret).toMatchObject({ pluginName: "media", valuePreview: "configured", updatedAt: 100 });
+		expect(secret).not.toHaveProperty("keyVersion");
 	});
 });
 

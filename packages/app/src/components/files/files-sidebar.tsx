@@ -28,6 +28,7 @@ import {
 	X,
 	CopyMinus,
 	CopyPlus,
+	Play,
 } from "lucide-react";
 import { useConvex, useQueries, useQuery } from "convex/react";
 import {
@@ -111,6 +112,7 @@ import {
 	files_get_default_node_name,
 	files_get_node_path_validation,
 	files_is_node,
+	files_node_has_editable_yjs_state,
 	files_normalize_name_input,
 	files_normalize_name,
 	files_normalize_markdown_name,
@@ -200,7 +202,10 @@ async function prepare_image_upload_file(file: File) {
 		// Use browser-native decoding/resampling so uploads get smaller before the
 		// signed R2 PUT without adding a client-side encoder dependency.
 		imageBitmap = await createImageBitmap(file);
-		const scale = Math.min(1, IMAGE_UPLOAD_COMPRESSION_MAX_DIMENSION_PX / Math.max(imageBitmap.width, imageBitmap.height));
+		const scale = Math.min(
+			1,
+			IMAGE_UPLOAD_COMPRESSION_MAX_DIMENSION_PX / Math.max(imageBitmap.width, imageBitmap.height),
+		);
 		if (scale === 1 && outputType === "image/png") {
 			// Keep small PNGs original; re-encoding them usually increases size or
 			// degrades sharp UI screenshots without reducing transfer cost.
@@ -327,6 +332,91 @@ const FilesSidebarTreeItemSecondaryActionCreateFile = memo(function FilesSidebar
 });
 // #endregion tree item secondary action create file
 
+// #region tree item run plugin
+type FilesSidebarTreeItemRunPlugin_Props = {
+	nodeId: string;
+	nodeName: string;
+	contentType: string | undefined;
+};
+
+const FilesSidebarTreeItemRunPlugin = memo(function FilesSidebarTreeItemRunPlugin(
+	props: FilesSidebarTreeItemRunPlugin_Props,
+) {
+	const { nodeId, nodeName, contentType } = props;
+
+	const convex = useConvex();
+	const { membershipId } = AppTenantProvider.useContext();
+	// Mounted only while the More-actions popover is open (unmountOnHide), so this
+	// subscription is transient and shares the plugins screens' cache entry.
+	const installations = useQuery(app_convex_api.plugins.list_installations, { membershipId });
+
+	const normalizedContentType = contentType?.split(";")[0]?.trim().toLowerCase() ?? null;
+	const eligibleInstallations = (installations ?? []).filter(
+		(item) =>
+			item.installation.status === "enabled" &&
+			item.version.backend !== null &&
+			item.installation.acceptedCapabilities.includes("files.markdown.write") &&
+			item.handlers.some(
+				(handler) =>
+					handler.event === "files.upload.completed" &&
+					handler.status === "enabled" &&
+					handler.contentType === normalizedContentType,
+			),
+	);
+
+	const handleRunClick = useFn(
+		(installationId: app_convex_Id<"plugins_workspace_installations">, pluginName: string) => {
+			convex
+				.mutation(app_convex_api.plugins.run_installation_on_file, {
+					membershipId,
+					installationId,
+					nodeId,
+				})
+				.then((result) => {
+					if (result._nay) {
+						toast.error(result._nay.message);
+						return;
+					}
+
+					toast.success(`Started ${pluginName} on ${nodeName}`);
+				})
+				.catch((error) => {
+					console.error("[FilesSidebarTreeItemRunPlugin.handleRunClick] Failed to run plugin", {
+						error,
+						installationId,
+						nodeId,
+					});
+					toast.error("Failed to run plugin");
+				});
+		},
+	);
+
+	if (eligibleInstallations.length === 0) {
+		return null;
+	}
+
+	return (
+		<MyMenuItemsGroup separator>
+			{eligibleInstallations.map((item) => (
+				<MyMenuItem
+					key={item.installation._id}
+					aria-label={`Run ${item.version.displayName} on ${nodeName}`}
+					hideOnClick
+					onClick={() => handleRunClick(item.installation._id, item.installation.pluginName)}
+				>
+					<MyMenuItemContent>
+						<MyMenuItemContentIcon>
+							<Play />
+						</MyMenuItemContentIcon>
+						<MyMenuItemContentPrimary>Run {item.version.displayName}</MyMenuItemContentPrimary>
+					</MyMenuItemContent>
+				</MyMenuItem>
+			))}
+		</MyMenuItemsGroup>
+	);
+});
+// #endregion tree item run plugin
+
 // #region tree item more action
 type FilesSidebarTreeItemMoreAction_ClassNames =
 	| "FilesSidebarTreeItemMoreAction"
@@ -336,10 +426,15 @@ type FilesSidebarTreeItemMoreAction_ClassNames =
 type FilesSidebarTreeItemMoreAction_Props = {
 	kind: files_TreeItem["kind"];
 	label: string;
+	// nodeName is the raw node name; label carries an " archived" suffix for archived rows.
+	nodeId: string;
+	nodeName: string;
+	contentType: string | undefined;
 	archiveOperationId: string | undefined;
 	isPending: boolean;
 	isFocused: boolean;
 	canRename: boolean;
+	canRunPlugin: boolean;
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
 	expandedFolderActionsVisible: boolean;
@@ -359,10 +454,14 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 	const {
 		kind,
 		label,
+		nodeId,
+		nodeName,
+		contentType,
 		archiveOperationId,
 		isPending,
 		isFocused,
 		canRename,
+		canRunPlugin,
 		canExpandSubtree,
 		canCollapseSubtree,
 		expandedFolderActionsVisible,
@@ -470,6 +569,9 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 							</MyMenuItemContent>
 						</MyMenuItem>
 					</MyMenuItemsGroup>
+					{canRunPlugin ? (
+						<FilesSidebarTreeItemRunPlugin nodeId={nodeId} nodeName={nodeName} contentType={contentType} />
+					) : null}
 					{kind === "folder" ? (
 						<MyMenuItemsGroup separator>
 							<MyMenuItem disabled={!canExpandSubtree} hideOnClick onClick={onExpandSubtree}>
@@ -962,11 +1064,15 @@ type FilesSidebarTreeItemActions_ClassNames = "FilesSidebarTreeItemActions";
 type FilesSidebarTreeItemActions_Props = {
 	kind: FilesSidebarTreeItemMoreAction_Props["kind"];
 	label: string;
+	nodeId: FilesSidebarTreeItemMoreAction_Props["nodeId"];
+	nodeName: FilesSidebarTreeItemMoreAction_Props["nodeName"];
+	contentType: FilesSidebarTreeItemMoreAction_Props["contentType"];
 	archiveOperationId: FilesSidebarTreeItemMoreAction_Props["archiveOperationId"];
 	isPending: boolean;
 	isFocused: boolean;
 	canCreateChildren: boolean;
 	canRename: FilesSidebarTreeItemMoreAction_Props["canRename"];
+	canRunPlugin: FilesSidebarTreeItemMoreAction_Props["canRunPlugin"];
 	canExpandSubtree: FilesSidebarTreeItemMoreAction_Props["canExpandSubtree"];
 	canCollapseSubtree: FilesSidebarTreeItemMoreAction_Props["canCollapseSubtree"];
 	expandedFolderActionsVisible: FilesSidebarTreeItemMoreAction_Props["expandedFolderActionsVisible"];
@@ -986,11 +1092,15 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 	const {
 		kind,
 		label,
+		nodeId,
+		nodeName,
+		contentType,
 		archiveOperationId,
 		isPending,
 		isFocused,
 		canCreateChildren,
 		canRename,
+		canRunPlugin,
 		canExpandSubtree,
 		canCollapseSubtree,
 		expandedFolderActionsVisible,
@@ -1031,10 +1141,14 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 			<FilesSidebarTreeItemMoreAction
 				kind={kind}
 				label={label}
+				nodeId={nodeId}
+				nodeName={nodeName}
+				contentType={contentType}
 				archiveOperationId={archiveOperationId}
 				isPending={isPending}
 				isFocused={isFocused}
 				canRename={canRename}
+				canRunPlugin={canRunPlugin}
 				canExpandSubtree={canExpandSubtree}
 				canCollapseSubtree={canCollapseSubtree}
 				expandedFolderActionsVisible={expandedFolderActionsVisible}
@@ -1451,11 +1565,20 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 				<FilesSidebarTreeItemActions
 					kind={itemData.kind}
 					label={label}
+					nodeId={itemId}
+					nodeName={itemData.name}
+					contentType={itemData.contentType}
 					archiveOperationId={itemData.archiveOperationId}
 					isPending={isPending}
 					isFocused={isFocused}
 					canCreateChildren={itemData.kind === "folder"}
 					canRename={canRename}
+					canRunPlugin={
+						itemData.kind === "file" &&
+						itemData.assetId !== undefined &&
+						!files_node_has_editable_yjs_state(itemData) &&
+						!isArchived
+					}
 					canExpandSubtree={canExpandSubtree}
 					canCollapseSubtree={canCollapseSubtree}
 					expandedFolderActionsVisible={expandedFolderActionsVisible}
@@ -3518,8 +3641,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							now: Date.now(),
 						});
 						const renamedItem = nextTreeItemsList.find(
-							(treeItem): treeItem is files_VisibleTreeNode =>
-								files_is_node(treeItem) && treeItem._id === itemId,
+							(treeItem): treeItem is files_VisibleTreeNode => files_is_node(treeItem) && treeItem._id === itemId,
 						);
 						if (!renamedItem) {
 							return;

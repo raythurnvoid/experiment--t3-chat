@@ -12,6 +12,7 @@ import {
 	internalQuery,
 	mutation,
 	query,
+	type ActionCtx,
 	type MutationCtx,
 } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
@@ -20,36 +21,49 @@ import { Result } from "../shared/errors-as-values-utils.ts";
 import {
 	plugins_LOCKFILE_PATH,
 	plugins_RUNTIME_VERSION,
-	plugins_SECRET_VALUE_MAX_BYTES,
 	plugins_compare_semver,
 	plugins_dist_review_mechanical_findings,
-	plugins_name_autofix_and_validate,
+	plugins_autofix_and_validate_name,
 	plugins_normalize_relative_path,
-	plugins_origin_validate,
+	plugins_validate_origin,
 	plugins_parse_github_repository_url,
 	plugins_manifest_schema,
-	plugins_secret_name_validate,
+	plugins_validate_secret_name,
 	plugins_source_mount_name,
 	plugins_validate_artifact,
 } from "../shared/plugins.ts";
-import { files_MAX_TEXT_CONTENT_BYTES, files_MOUNT_ROOT, files_get_utf8_byte_size } from "../shared/files.ts";
+import {
+	files_MAX_TEXT_CONTENT_BYTES,
+	files_MOUNT_ROOT,
+	files_get_utf8_byte_size,
+	files_node_has_editable_yjs_state,
+} from "../shared/files.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
 } from "../shared/organizations.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import {
+	crypto_decrypt_secret_value,
+	crypto_encrypt_secret_value,
+	crypto_sha256_hex,
+	crypto_validate_secret_input,
+} from "../server/crypto-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2_delete_object, r2_fetch_object_from_bucket, r2_put_object } from "./r2.ts";
+import { plugins_runtime_enqueue_manual_run } from "./plugins_runtime.ts";
 
-const install_permission = "workspace.plugins.manage" as const;
-const plugin_import_user_agent = "t3-chat-plugin-import";
-const plugin_import_max_source_files = 500;
-const plugin_import_max_source_bytes = 5 * 1024 * 1024;
-const plugin_import_excluded_dir_segments = new Set(["node_modules", ".git", ".next", ".turbo", "coverage"]);
-const plugin_import_binary_extensions = new Set([
+const PLUGIN_IMPORT_GITHUB_TOKEN = process.env.PLUGIN_IMPORT_GITHUB_TOKEN;
+
+const PLUGIN_IMPORT_USER_AGENT = "t3-chat-plugin-import";
+const PLUGIN_IMPORT_MAX_SOURCE_FILES = 500;
+const PLUGIN_IMPORT_MAX_SOURCE_BYTES = 5 * 1024 * 1024;
+const PLUGIN_IMPORT_EXCLUDED_DIR_SEGMENTS = new Set(["node_modules", ".git", ".next", ".turbo", "coverage"]);
+const PLUGIN_IMPORT_BINARY_EXTENSIONS = new Set([
 	"png",
 	"jpg",
 	"jpeg",
@@ -103,38 +117,19 @@ const plugin_import_binary_extensions = new Set([
 	"dat",
 	"pyc",
 ]);
-const text_encoder = new TextEncoder();
-const text_decoder = new TextDecoder();
 
-const github_repo_schema = z.object({ default_branch: z.string().min(1) });
-const github_commit_schema = z.object({ sha: z.string().min(1) });
-const github_tree_schema = z.object({
-	truncated: z.boolean().optional(),
-	tree: z.array(
-		z.object({
-			path: z.string(),
-			type: z.string(),
-			size: z.number().optional(),
-		}),
-	),
-});
+const text_decoder = new TextDecoder();
 
 type PluginResult<T> = { _yay: T; _nay?: undefined } | { _nay: { message: string }; _yay?: undefined };
 type PluginFileNodeResult = PluginResult<{ nodeId: Id<"files_nodes"> }>;
-type PluginRegisterVerifiedVersionResult = PluginResult<{
-	pluginVersionId: Id<"plugins_versions">;
-	sourceMountName: string;
-}>;
 type PluginLockfileRefreshResult = PluginFileNodeResult;
 type PluginVersionReviewResult = PluginResult<{
 	status: "passed" | "rejected" | "flagged";
 	mechanicalFindings: string[];
 	aiFindings: string[];
 }>;
-type PluginArtifactFile = { path: string; sha256: string; bytes: number; contentType: string };
-type PluginSourceFile = { path: string; rawText: string };
 
-async function authorize_manage(
+async function authorize_plugin_management(
 	ctx: Parameters<typeof organizations_db_get_membership>[0],
 	args: { userId: Id<"users">; membershipId: Id<"organizations_workspaces_users"> },
 ) {
@@ -145,8 +140,12 @@ async function authorize_manage(
 
 	const organization = await ctx.db.get("organizations", membership.organizationId);
 	if (!organization?.defaultWorkspaceId) {
-		console.error("organization.defaultWorkspaceId is not set", { organizationId: membership.organizationId });
-		return Result({ _nay: { message: "Unauthorized" } });
+		const errorMessage = "organization.defaultWorkspaceId is not set";
+		const errorData = {
+			organizationId: membership.organizationId,
+		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
 	}
 
 	const hasPermission = await access_control_db_has_permission(ctx, {
@@ -156,7 +155,7 @@ async function authorize_manage(
 		organizationOwnerUserId: organization.ownerUserId,
 		resourceKind: "workspace",
 		resourceId: String(membership.workspaceId),
-		permission: install_permission,
+		permission: "workspace.plugins.manage",
 		userId: args.userId,
 	});
 	if (!hasPermission) {
@@ -166,87 +165,7 @@ async function authorize_manage(
 	return Result({ _yay: { membership } });
 }
 
-function bytes_to_base64(bytes: Uint8Array) {
-	let binary = "";
-	for (let offset = 0; offset < bytes.byteLength; offset += 8192) {
-		const chunk = bytes.subarray(offset, offset + 8192);
-		binary += String.fromCharCode(...chunk);
-	}
-	return btoa(binary);
-}
-
-function base64_to_bytes(value: string) {
-	const binary = atob(value);
-	const bytes = new Uint8Array(binary.length);
-	for (let index = 0; index < binary.length; index++) {
-		bytes[index] = binary.charCodeAt(index);
-	}
-	return bytes;
-}
-
-async function sha256_hex_bytes(bytes: BufferSource) {
-	const digest = await crypto.subtle.digest("SHA-256", bytes);
-	return Array.from(new Uint8Array(digest))
-		.map((byte) => byte.toString(16).padStart(2, "0"))
-		.join("");
-}
-
-const plugin_secret_key_version = 1;
-
-async function secret_crypto_key(keyVersion: number) {
-	if (keyVersion !== 1) {
-		throw new Error(`Unsupported plugin secret key version ${keyVersion}`);
-	}
-	const secret = process.env.PLUGIN_SECRETS_ENCRYPTION_KEY;
-	if (!secret) {
-		throw new Error("PLUGIN_SECRETS_ENCRYPTION_KEY is not set in Convex env");
-	}
-	const digest = await crypto.subtle.digest("SHA-256", text_encoder.encode(secret));
-	return await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
-}
-
-/**
- * AES-GCM additional data binds a ciphertext to its owning scope and name, so a
- * row copied onto another installation/publisher or renamed fails to decrypt.
- */
-async function encrypt_secret_value(value: string, additionalData: string) {
-	const nonce = crypto.getRandomValues(new Uint8Array(12));
-	const ciphertext = await crypto.subtle.encrypt(
-		{ name: "AES-GCM", iv: nonce, additionalData: text_encoder.encode(additionalData) },
-		await secret_crypto_key(plugin_secret_key_version),
-		text_encoder.encode(value),
-	);
-	return {
-		ciphertext: bytes_to_base64(new Uint8Array(ciphertext)),
-		nonce: bytes_to_base64(nonce),
-		keyVersion: plugin_secret_key_version,
-	};
-}
-
-async function decrypt_secret_value(
-	secret: { ciphertext: string; nonce: string; keyVersion: number },
-	additionalData: string,
-) {
-	const plaintext = await crypto.subtle.decrypt(
-		{ name: "AES-GCM", iv: base64_to_bytes(secret.nonce), additionalData: text_encoder.encode(additionalData) },
-		await secret_crypto_key(secret.keyVersion),
-		base64_to_bytes(secret.ciphertext),
-	);
-	return text_decoder.decode(plaintext);
-}
-
-function validate_secret_input(args: { name: string; value: string }) {
-	const name = plugins_secret_name_validate(args.name);
-	if (name._nay) {
-		return Result({ _nay: { message: name._nay.message } });
-	}
-	if (text_encoder.encode(args.value).byteLength > plugins_SECRET_VALUE_MAX_BYTES) {
-		return Result({ _nay: { message: "Secret value is too large" } });
-	}
-	return Result({ _yay: { name: name._yay, value: args.value } });
-}
-
-async function upsert_installation_secret_doc(
+async function db_upsert_installation_secret(
 	ctx: MutationCtx,
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
@@ -256,7 +175,7 @@ async function upsert_installation_secret_doc(
 		now: number;
 	},
 ) {
-	const encrypted = await encrypt_secret_value(args.value, `${args.installation._id}:${args.name}`);
+	const encrypted = await crypto_encrypt_secret_value(args.value, `${args.installation._id}:${args.name}`);
 	const existing = await ctx.db
 		.query("plugins_workspace_installation_secrets")
 		.withIndex("by_installation_name", (q) => q.eq("installationId", args.installation._id).eq("name", args.name))
@@ -266,7 +185,6 @@ async function upsert_installation_secret_doc(
 		await ctx.db.patch("plugins_workspace_installation_secrets", existing._id, {
 			ciphertext: encrypted.ciphertext,
 			nonce: encrypted.nonce,
-			keyVersion: encrypted.keyVersion,
 			valuePreview: "configured",
 			updatedBy: args.userId,
 			updatedAt: args.now,
@@ -282,7 +200,6 @@ async function upsert_installation_secret_doc(
 		name: args.name,
 		ciphertext: encrypted.ciphertext,
 		nonce: encrypted.nonce,
-		keyVersion: encrypted.keyVersion,
 		valuePreview: "configured",
 		createdBy: args.userId,
 		updatedBy: args.userId,
@@ -291,7 +208,7 @@ async function upsert_installation_secret_doc(
 	});
 }
 
-async function upsert_publisher_secret_doc(
+async function db_upsert_publisher_secret(
 	ctx: MutationCtx,
 	args: {
 		repository: Doc<"plugins_publisher_repositories">;
@@ -302,17 +219,16 @@ async function upsert_publisher_secret_doc(
 		now: number;
 	},
 ) {
-	const encrypted = await encrypt_secret_value(args.value, `${args.repository.ownerUserId}:${args.name}`);
+	const encrypted = await crypto_encrypt_secret_value(args.value, `${args.repository.ownerUserId}:${args.name}`);
 	const existing = await ctx.db
-		.query("plugins_publisher_secrets")
+		.query("plugins_publisher_repository_secrets")
 		.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repository._id).eq("name", args.name))
 		.first();
 
 	if (existing) {
-		await ctx.db.patch("plugins_publisher_secrets", existing._id, {
+		await ctx.db.patch("plugins_publisher_repository_secrets", existing._id, {
 			ciphertext: encrypted.ciphertext,
 			nonce: encrypted.nonce,
-			keyVersion: encrypted.keyVersion,
 			valuePreview: "configured",
 			...(args.allowedOrigins === undefined ? {} : { allowedOrigins: args.allowedOrigins }),
 			updatedAt: args.now,
@@ -320,13 +236,12 @@ async function upsert_publisher_secret_doc(
 		return existing._id;
 	}
 
-	return await ctx.db.insert("plugins_publisher_secrets", {
+	return await ctx.db.insert("plugins_publisher_repository_secrets", {
 		ownerUserId: args.repository.ownerUserId,
 		repositoryId: args.repository._id,
 		name: args.name,
 		ciphertext: encrypted.ciphertext,
 		nonce: encrypted.nonce,
-		keyVersion: encrypted.keyVersion,
 		valuePreview: "configured",
 		allowedOrigins: args.allowedOrigins ?? [],
 		createdAt: args.now,
@@ -340,7 +255,7 @@ function validate_allowed_origins_input(rawOrigins: string[]) {
 	}
 	const allowedOrigins: string[] = [];
 	for (const raw of rawOrigins) {
-		const origin = plugins_origin_validate(raw);
+		const origin = plugins_validate_origin(raw);
 		if (origin._nay) {
 			return Result({ _nay: { message: origin._nay.message } });
 		}
@@ -351,22 +266,31 @@ function validate_allowed_origins_input(rawOrigins: string[]) {
 	return Result({ _yay: allowedOrigins });
 }
 
-function source_file_keep_reason(path: string) {
+/**
+ * Decides whether a file from the imported GitHub repo tree belongs in the
+ * plugin's stored source-code snapshot. Returns the normalized relative path,
+ * or a rejection for invalid paths, excluded directories (node_modules, .git,
+ * ...), and binary extensions.
+ */
+function check_if_plugin_github_source_file_should_be_kept(path: string) {
 	const normalized = plugins_normalize_relative_path(path);
 	if (normalized._nay) {
 		return normalized;
 	}
+
 	const segments = normalized._yay.split("/");
 	for (const segment of segments) {
-		if (plugin_import_excluded_dir_segments.has(segment)) {
+		if (PLUGIN_IMPORT_EXCLUDED_DIR_SEGMENTS.has(segment)) {
 			return Result({ _nay: { message: `Source path is under excluded directory "${segment}"` } });
 		}
 	}
+
 	const basename = segments.at(-1) ?? "";
 	const extension = basename.includes(".") ? basename.slice(basename.lastIndexOf(".") + 1).toLowerCase() : "";
-	if (extension && plugin_import_binary_extensions.has(extension)) {
+	if (extension && PLUGIN_IMPORT_BINARY_EXTENSIONS.has(extension)) {
 		return Result({ _nay: { message: `Source path has binary extension ".${extension}"` } });
 	}
+
 	return Result({ _yay: normalized._yay });
 }
 
@@ -375,6 +299,7 @@ function github_raw_url(args: { owner: string; repo: string; commitSha: string; 
 		.split("/")
 		.map((part) => encodeURIComponent(part))
 		.join("/");
+
 	return `https://raw.githubusercontent.com/${args.owner}/${args.repo}/${args.commitSha}/${path}`;
 }
 
@@ -383,14 +308,15 @@ function github_error_message(error: unknown) {
 }
 
 function github_headers(accept?: string) {
-	const headers: Record<string, string> = { "User-Agent": plugin_import_user_agent };
+	const headers: Record<string, string> = { "User-Agent": PLUGIN_IMPORT_USER_AGENT };
 	if (accept) {
 		headers.Accept = accept;
 	}
-	const token = process.env.PLUGIN_IMPORT_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
-	if (token) {
-		headers.Authorization = `Bearer ${token}`;
+
+	if (PLUGIN_IMPORT_GITHUB_TOKEN) {
+		headers.Authorization = `Bearer ${PLUGIN_IMPORT_GITHUB_TOKEN}`;
 	}
+
 	return headers;
 }
 
@@ -403,19 +329,23 @@ async function fetch_github_json<T>(url: string, schema: z.ZodSchema<T>) {
 	} catch (error) {
 		return Result({ _nay: { message: `GitHub request failed: ${github_error_message(error)}` } });
 	}
+
 	if (!response.ok) {
 		return Result({ _nay: { message: `GitHub request failed with status ${response.status}` } });
 	}
+
 	let json: unknown;
 	try {
 		json = await response.json();
 	} catch (error) {
 		return Result({ _nay: { message: `GitHub response was invalid JSON: ${github_error_message(error)}` } });
 	}
+
 	const parsed = schema.safeParse(json);
 	if (!parsed.success) {
 		return Result({ _nay: { message: parsed.error.issues[0]?.message ?? "GitHub response was invalid" } });
 	}
+
 	return Result({ _yay: parsed.data });
 }
 
@@ -431,13 +361,16 @@ async function fetch_github_text(args: {
 	} catch (error) {
 		return Result({ _nay: { message: `GitHub file "${args.path}" request failed: ${github_error_message(error)}` } });
 	}
+
 	if (!response.ok) {
 		return Result({ _nay: { message: `GitHub file "${args.path}" failed with status ${response.status}` } });
 	}
+
 	const text = await response.text();
 	if (files_get_utf8_byte_size(text) > files_MAX_TEXT_CONTENT_BYTES) {
 		return Result({ _nay: { message: `GitHub file "${args.path}" is too large` } });
 	}
+
 	return { _yay: text };
 }
 
@@ -453,43 +386,24 @@ async function fetch_github_bytes(args: {
 	} catch (error) {
 		return Result({ _nay: { message: `GitHub file "${args.path}" request failed: ${github_error_message(error)}` } });
 	}
+
 	if (!response.ok) {
 		return Result({ _nay: { message: `GitHub file "${args.path}" failed with status ${response.status}` } });
 	}
+
 	const buffer = await response.arrayBuffer();
 	if (buffer.byteLength > files_MAX_TEXT_CONTENT_BYTES) {
 		return Result({ _nay: { message: `GitHub file "${args.path}" is too large` } });
 	}
-	return Result({ _yay: buffer });
-}
 
-function parse_json_text<T>(text: string, schema: z.ZodSchema<T>, errorMessage: string): PluginResult<T> {
-	let json: unknown;
-	try {
-		json = JSON.parse(text);
-	} catch {
-		return Result({ _nay: { message: errorMessage } });
-	}
-	const parsed = schema.safeParse(json);
-	if (!parsed.success) {
-		return Result({ _nay: { message: parsed.error.issues[0]?.message ?? errorMessage } });
-	}
-	return { _yay: parsed.data };
+	return Result({ _yay: buffer });
 }
 
 function plugin_r2_key(args: { name: string; version: string; commitSha: string; path: string }) {
 	return `plugins/${args.name}/${args.version}/${args.commitSha}/${args.path}`;
 }
 
-function source_file_path(args: { mountName: string; sourceFilePath: string }) {
-	const relativePath = plugins_normalize_relative_path(args.sourceFilePath);
-	if (relativePath._nay) {
-		return relativePath;
-	}
-	return Result({ _yay: `/${args.mountName}/${relativePath._yay}` });
-}
-
-function lockfile_json(args: {
+function build_workspace_lockfile_text(args: {
 	organizationId: Id<"organizations">;
 	workspaceId: Id<"organizations_workspaces">;
 	updatedAt: number;
@@ -499,35 +413,37 @@ function lockfile_json(args: {
 		sourceMount: Doc<"plugins_source_mounts"> | null;
 	}>;
 }) {
-	const plugins = args.installations
-		.toSorted((a, b) => a.installation.pluginName.localeCompare(b.installation.pluginName))
-		.map(({ installation, version, sourceMount }) => ({
+	const sortedInstallations = args.installations.toSorted((a, b) =>
+		a.installation.pluginName.localeCompare(b.installation.pluginName),
+	);
+
+	const pluginEntries = sortedInstallations.map(({ installation, version, sourceMount }) => {
+		const fallbackSourceMountPath = version.sourceMountName ? `${files_MOUNT_ROOT}/${version.sourceMountName}` : null;
+		return {
 			name: installation.pluginName,
 			displayName: version.displayName,
 			version: version.version,
 			artifactHash: version.artifactHash,
 			sourceRepositoryUrl: version.sourceRepositoryUrl,
 			sourceCommitSha: version.sourceCommitSha,
-			sourceMountPath:
-				sourceMount?.mountPath ?? (version.sourceMountName ? `${files_MOUNT_ROOT}/${version.sourceMountName}` : null),
+			sourceMountPath: sourceMount?.mountPath ?? fallbackSourceMountPath,
 			status: installation.status,
 			acceptedCapabilities: installation.acceptedCapabilities,
 			events: version.events,
 			installationId: String(installation._id),
 			pluginVersionId: String(version._id),
-		}));
+		};
+	});
 
-	return `${JSON.stringify(
-		{
-			schemaVersion: 1,
-			organizationId: String(args.organizationId),
-			workspaceId: String(args.workspaceId),
-			updatedAt: args.updatedAt,
-			plugins,
-		},
-		null,
-		2,
-	)}\n`;
+	const lockfile = {
+		schemaVersion: 1,
+		organizationId: String(args.organizationId),
+		workspaceId: String(args.workspaceId),
+		updatedAt: args.updatedAt,
+		plugins: pluginEntries,
+	};
+
+	return `${JSON.stringify(lockfile, null, 2)}\n`;
 }
 
 export const register_verified_version = internalAction({
@@ -555,8 +471,11 @@ export const register_verified_version = internalAction({
 		sourceFiles: v.array(v.object({ path: v.string(), rawText: v.string() })),
 	},
 	returns: v_result({ _yay: v.object({ pluginVersionId: v.id("plugins_versions"), sourceMountName: v.string() }) }),
-	handler: async (ctx, args): Promise<PluginRegisterVerifiedVersionResult> => {
-		const name = plugins_name_autofix_and_validate(args.name);
+	handler: async (
+		ctx,
+		args,
+	): Promise<PluginResult<{ pluginVersionId: Id<"plugins_versions">; sourceMountName: string }>> => {
+		const name = plugins_autofix_and_validate_name(args.name);
 		if (name._nay) {
 			return Result({ _nay: { message: name._nay.message } });
 		}
@@ -589,7 +508,7 @@ export const register_verified_version = internalAction({
 
 		let totalBytes = 0;
 		for (const sourceFile of sourceFiles) {
-			const sourcePath = source_file_path({ mountName: sourceMountName, sourceFilePath: sourceFile.path });
+			const sourcePath = plugins_normalize_relative_path(sourceFile.path);
 			if (sourcePath._nay) {
 				await ctx.runMutation(internal.plugins.upsert_source_mount, {
 					pluginVersionId: registered._yay.pluginVersionId,
@@ -606,7 +525,7 @@ export const register_verified_version = internalAction({
 			}
 			totalBytes += sourceFile.rawText.length;
 			const created = (await ctx.runAction(internal.files_nodes.create_file_node_internal, {
-				path: sourcePath._yay,
+				path: `/${sourceMountName}/${sourcePath._yay}`,
 				rawText: sourceFile.rawText,
 			})) as PluginFileNodeResult;
 			if (created._nay) {
@@ -940,7 +859,7 @@ export const get_version_review_context = internalQuery({
 	}),
 	handler: async (ctx, args) => {
 		const secrets = await ctx.db
-			.query("plugins_publisher_secrets")
+			.query("plugins_publisher_repository_secrets")
 			.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repositoryId))
 			.take(100);
 		const versions = await ctx.db
@@ -1010,7 +929,10 @@ export const review_version_artifact = internalAction({
 		const cached = (await ctx.runQuery(internal.plugins.get_version_review_by_artifact_hash, {
 			artifactHash: args.artifactHash,
 		})) as Doc<"plugins_version_reviews"> | null;
-		if (cached) {
+		// Reuse only passed/flagged verdicts: a cached rejection can be model flakiness and must not
+		// permanently block this artifact, so re-review it (the per-user fresh-review rate limit bounds
+		// the cost) and let store_version_review upsert the new verdict over the old row.
+		if (cached && cached.status !== "rejected") {
 			return Result({
 				_yay: { status: cached.status, mechanicalFindings: cached.mechanicalFindings, aiFindings: cached.aiFindings },
 			});
@@ -1058,25 +980,38 @@ export const review_version_artifact = internalAction({
 						...plugin_review_line_diff(await previousDist.text(), args.distSource),
 					};
 				}
-				let verdict: z.infer<typeof plugin_review_verdict_schema>;
+				const prompt = plugin_review_prompt({
+					distSource: args.distSource,
+					capabilities: args.capabilities,
+					outboundOrigins: args.outboundOrigins,
+					secretNames: context.secretNames,
+					diff,
+				});
+				const votes: Array<z.infer<typeof plugin_review_verdict_schema>> = [];
 				try {
-					verdict = await plugins_ai_review.generate_verdict({
-						prompt: plugin_review_prompt({
-							distSource: args.distSource,
-							capabilities: args.capabilities,
-							outboundOrigins: args.outboundOrigins,
-							secretNames: context.secretNames,
-							diff,
-						}),
-					});
+					// The model occasionally rejects code it later assesses as fine, so rejection needs a
+					// >=2/3 vote majority: confirm a first rejection with a second vote and tiebreak a
+					// disagreement with a third. Non-rejected first votes stay single-vote so the happy
+					// path costs one model call.
+					const firstVote = await plugins_ai_review.generate_verdict({ prompt });
+					votes.push(firstVote);
+					if (firstVote.verdict === "rejected") {
+						const secondVote = await plugins_ai_review.generate_verdict({ prompt });
+						votes.push(secondVote);
+						if (secondVote.verdict !== "rejected") {
+							votes.push(await plugins_ai_review.generate_verdict({ prompt }));
+						}
+					}
 				} catch (error) {
 					console.error("Plugin AI review failed", { artifactHash: args.artifactHash, error });
 					return Result({ _nay: { message: "Plugin AI review is unavailable; the version was not registered" } });
 				}
+				const rejectedVotes = votes.filter((vote) => vote.verdict === "rejected").length;
 				review = {
-					status: verdict.verdict,
+					status:
+						rejectedVotes >= 2 ? "rejected" : votes.some((vote) => vote.verdict === "flagged") ? "flagged" : "passed",
 					mechanicalFindings: [],
-					aiFindings: verdict.findings,
+					aiFindings: [...new Set(votes.flatMap((vote) => vote.findings))],
 					model: plugin_review_model_id,
 					diffBaseArtifactHash: diff?.baseArtifactHash,
 				};
@@ -1095,6 +1030,288 @@ export const review_version_artifact = internalAction({
 		});
 	},
 });
+
+export const record_publish_attempt = internalMutation({
+	args: {
+		repositoryId: v.id("plugins_publisher_repositories"),
+		status: v.union(v.literal("succeeded"), v.literal("rejected"), v.literal("failed")),
+		message: v.string(),
+		commitSha: v.union(v.string(), v.null()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
+		// remove_repository can delete the claim while a publish is still in flight; nothing to record then.
+		if (!repository) {
+			return null;
+		}
+		await ctx.db.patch("plugins_publisher_repositories", args.repositoryId, {
+			lastPublishAttempt: {
+				at: Date.now(),
+				status: args.status,
+				message: args.message,
+				commitSha: args.commitSha,
+			},
+		});
+		return null;
+	},
+});
+
+async function publish_version_from_github(
+	ctx: ActionCtx,
+	args: {
+		repositoryId: Id<"plugins_publisher_repositories">;
+		source: { userId: Id<"users">; owner: string; repo: string; repositoryUrl: string };
+	},
+) {
+	const source = args.source;
+
+	const repo = await fetch_github_json(
+		`https://api.github.com/repos/${source.owner}/${source.repo}`,
+		z.object({ default_branch: z.string().min(1) }),
+	);
+	if (repo._nay) {
+		return Result({ _nay: { message: repo._nay.message } });
+	}
+
+	// Publishing always builds from the default-branch HEAD.
+	const sourceDefaultBranch = repo._yay.default_branch;
+	const commit = await fetch_github_json(
+		`https://api.github.com/repos/${source.owner}/${source.repo}/commits/${encodeURIComponent(sourceDefaultBranch)}`,
+		z.object({ sha: z.string().min(1) }),
+	);
+	if (commit._nay) {
+		return Result({ _nay: { message: commit._nay.message } });
+	}
+	const sourceCommitSha = commit._yay.sha;
+
+	const manifestText = await fetch_github_text({
+		owner: source.owner,
+		repo: source.repo,
+		commitSha: sourceCommitSha,
+		path: "bonobo.plugin.json",
+	});
+	if (manifestText._nay) {
+		return Result({ _nay: { message: manifestText._nay.message } });
+	}
+	let manifestJson: unknown;
+	try {
+		manifestJson = JSON.parse(manifestText._yay);
+	} catch {
+		return Result({ _nay: { message: "Plugin manifest is invalid" } });
+	}
+	const manifestParsed = plugins_manifest_schema.safeParse(manifestJson);
+	if (!manifestParsed.success) {
+		return Result({ _nay: { message: manifestParsed.error.issues[0]?.message ?? "Plugin manifest is invalid" } });
+	}
+	const manifest = manifestParsed.data;
+
+	const artifactText = await fetch_github_text({
+		owner: source.owner,
+		repo: source.repo,
+		commitSha: sourceCommitSha,
+		path: manifest.artifact,
+	});
+	if (artifactText._nay) {
+		return Result({ _nay: { message: artifactText._nay.message } });
+	}
+	let artifactJson: unknown;
+	try {
+		artifactJson = JSON.parse(artifactText._yay);
+	} catch {
+		return Result({ _nay: { message: "Plugin artifact is invalid JSON" } });
+	}
+	const artifact = plugins_validate_artifact(artifactJson);
+	if (artifact._nay) {
+		return Result({ _nay: { message: artifact._nay.message } });
+	}
+	if (manifest.name !== artifact._yay.plugin.name || manifest.version !== artifact._yay.plugin.version) {
+		return Result({ _nay: { message: "Plugin manifest and artifact identify different versions" } });
+	}
+
+	const artifactHash = `sha256:${await crypto_sha256_hex(artifactText._yay)}`;
+	const manifestR2Key = plugin_r2_key({
+		name: artifact._yay.plugin.name,
+		version: artifact._yay.plugin.version,
+		commitSha: sourceCommitSha,
+		path: "bonobo.plugin.json",
+	});
+	const artifactR2Key = plugin_r2_key({
+		name: artifact._yay.plugin.name,
+		version: artifact._yay.plugin.version,
+		commitSha: sourceCommitSha,
+		path: manifest.artifact,
+	});
+
+	const files: Array<{ path: string; sha256: string; bytes: number; contentType: string; r2Key: string }> = [];
+	const fileUploads: Array<{ key: string; body: ArrayBuffer; contentType: string }> = [];
+	for (const file of artifact._yay.files) {
+		const fileBytes = await fetch_github_bytes({
+			owner: source.owner,
+			repo: source.repo,
+			commitSha: sourceCommitSha,
+			path: file.path,
+		});
+		if (fileBytes._nay) {
+			return Result({ _nay: { message: fileBytes._nay.message } });
+		}
+		const fileHash = `sha256:${await crypto_sha256_hex(fileBytes._yay)}`;
+		if (fileHash !== file.sha256) {
+			return Result({ _nay: { message: `Artifact file hash mismatch for "${file.path}"` } });
+		}
+		if (fileBytes._yay.byteLength !== file.bytes) {
+			return Result({ _nay: { message: `Artifact file byte size mismatch for "${file.path}"` } });
+		}
+		const r2Key = plugin_r2_key({
+			name: artifact._yay.plugin.name,
+			version: artifact._yay.plugin.version,
+			commitSha: sourceCommitSha,
+			path: file.path,
+		});
+		fileUploads.push({ key: r2Key, body: fileBytes._yay, contentType: file.contentType });
+		files.push({ ...file, r2Key });
+	}
+
+	const backendEntry = artifact._yay.backend;
+	let backend: (NonNullable<typeof artifact._yay.backend> & { r2Key: string }) | null = null;
+	let backendDistSource: string | null = null;
+	if (backendEntry) {
+		const backendFile = files.find((file) => file.path === backendEntry.entry);
+		const backendUpload = fileUploads.find((upload) => upload.key === backendFile?.r2Key);
+		if (!backendFile || !backendUpload) {
+			return Result({ _nay: { message: "Plugin backend entry is missing from artifact files" } });
+		}
+		backend = { ...backendEntry, r2Key: backendFile.r2Key };
+		backendDistSource = text_decoder.decode(backendUpload.body);
+	}
+
+	// Review the dist before anything is uploaded or registered; "rejected" blocks the publish.
+	const review = (await ctx.runAction(internal.plugins.review_version_artifact, {
+		pluginName: artifact._yay.plugin.name,
+		version: artifact._yay.plugin.version,
+		artifactHash,
+		distSource: backendDistSource,
+		capabilities: artifact._yay.capabilities,
+		outboundOrigins: artifact._yay.outboundOrigins,
+		repositoryId: args.repositoryId,
+		requestedBy: source.userId,
+	})) as PluginVersionReviewResult;
+	if (review._nay || !review._yay) {
+		return Result({ _nay: { message: review._nay?.message ?? "Plugin review failed" } });
+	}
+	if (review._yay.status === "rejected") {
+		const reasons = [...review._yay.mechanicalFindings, ...review._yay.aiFindings];
+		// The name tags this exit so publish_version records the attempt as "rejected", not "failed".
+		return Result({
+			_nay: { name: "review_rejected", message: `Plugin review rejected this version: ${reasons.join(" | ")}` },
+		});
+	}
+
+	const tree = await fetch_github_json(
+		`https://api.github.com/repos/${source.owner}/${source.repo}/git/trees/${sourceCommitSha}?recursive=1`,
+		z.object({
+			truncated: z.boolean().optional(),
+			tree: z.array(
+				z.object({
+					path: z.string(),
+					type: z.string(),
+					size: z.number().optional(),
+				}),
+			),
+		}),
+	);
+	if (tree._nay) {
+		return Result({ _nay: { message: tree._nay.message } });
+	}
+	if (tree._yay.truncated) {
+		return Result({ _nay: { message: "GitHub source tree is too large for plugin import" } });
+	}
+
+	const sourceFiles: Array<{ path: string; rawText: string }> = [];
+	let sourceBytes = 0;
+	for (const entry of tree._yay.tree) {
+		if (entry.type !== "blob") {
+			continue;
+		}
+		if (entry.size !== undefined && entry.size > files_MAX_TEXT_CONTENT_BYTES) {
+			continue;
+		}
+		const keep = check_if_plugin_github_source_file_should_be_kept(entry.path);
+		if (keep._nay) {
+			continue;
+		}
+		if (sourceFiles.length >= PLUGIN_IMPORT_MAX_SOURCE_FILES) {
+			return Result({ _nay: { message: `Plugin source tree exceeds ${PLUGIN_IMPORT_MAX_SOURCE_FILES} files` } });
+		}
+		const sourceText = await fetch_github_text({
+			owner: source.owner,
+			repo: source.repo,
+			commitSha: sourceCommitSha,
+			path: keep._yay,
+		});
+		if (sourceText._nay) {
+			return Result({ _nay: { message: sourceText._nay.message } });
+		}
+		sourceBytes += files_get_utf8_byte_size(sourceText._yay);
+		if (sourceBytes > PLUGIN_IMPORT_MAX_SOURCE_BYTES) {
+			return Result({ _nay: { message: `Plugin source tree exceeds ${PLUGIN_IMPORT_MAX_SOURCE_BYTES} bytes` } });
+		}
+		sourceFiles.push({ path: keep._yay, rawText: sourceText._yay });
+	}
+
+	await r2_put_object(ctx, {
+		key: manifestR2Key,
+		body: manifestText._yay,
+		contentType: "application/json",
+	});
+	await r2_put_object(ctx, {
+		key: artifactR2Key,
+		body: artifactText._yay,
+		contentType: "application/json",
+	});
+	for (const fileUpload of fileUploads) {
+		await r2_put_object(ctx, {
+			key: fileUpload.key,
+			body: fileUpload.body,
+			contentType: fileUpload.contentType,
+		});
+	}
+
+	const registered = (await ctx.runAction(internal.plugins.register_verified_version, {
+		name: artifact._yay.plugin.name,
+		displayName: artifact._yay.plugin.displayName,
+		version: artifact._yay.plugin.version,
+		description: manifest.description,
+		reviewStatus: review._yay.status,
+		artifactHash,
+		sourceRepositoryUrl: source.repositoryUrl,
+		sourceOwner: source.owner,
+		sourceRepo: source.repo,
+		sourceDefaultBranch,
+		sourceCommitSha,
+		manifestR2Key,
+		artifactR2Key,
+		backend,
+		events: artifact._yay.events,
+		pages: artifact._yay.pages,
+		capabilities: artifact._yay.capabilities,
+		outboundOrigins: artifact._yay.outboundOrigins,
+		files,
+		createdBy: source.userId,
+		sourceFiles,
+	})) as { _yay?: { pluginVersionId: Id<"plugins_versions">; sourceMountName: string }; _nay?: { message: string } };
+	if (registered._nay || !registered._yay) {
+		return Result({ _nay: { message: registered._nay?.message ?? "Failed to register plugin version" } });
+	}
+
+	return Result({
+		_yay: {
+			pluginVersionId: registered._yay.pluginVersionId,
+			sourceMountName: registered._yay.sourceMountName,
+			sourceCommitSha,
+		},
+	});
+}
 
 export const publish_version = action({
 	args: {
@@ -1122,234 +1339,28 @@ export const publish_version = action({
 		if (authorized._nay || !authorized._yay) {
 			return Result({ _nay: { message: authorized._nay?.message ?? "Unauthorized" } });
 		}
-		const source = authorized._yay;
 
-		const repo = await fetch_github_json(
-			`https://api.github.com/repos/${source.owner}/${source.repo}`,
-			github_repo_schema,
-		);
-		if (repo._nay) {
-			return Result({ _nay: { message: repo._nay.message } });
-		}
-
-		// Publishing always builds from the default-branch HEAD.
-		const sourceDefaultBranch = repo._yay.default_branch;
-		const commit = await fetch_github_json(
-			`https://api.github.com/repos/${source.owner}/${source.repo}/commits/${encodeURIComponent(sourceDefaultBranch)}`,
-			github_commit_schema,
-		);
-		if (commit._nay) {
-			return Result({ _nay: { message: commit._nay.message } });
-		}
-		const sourceCommitSha = commit._yay.sha;
-
-		const manifestText = await fetch_github_text({
-			owner: source.owner,
-			repo: source.repo,
-			commitSha: sourceCommitSha,
-			path: "bonobo.plugin.json",
-		});
-		if (manifestText._nay) {
-			return Result({ _nay: { message: manifestText._nay.message } });
-		}
-		const manifest = parse_json_text(manifestText._yay, plugins_manifest_schema, "Plugin manifest is invalid");
-		if (manifest._nay) {
-			return Result({ _nay: { message: manifest._nay.message } });
-		}
-
-		const artifactText = await fetch_github_text({
-			owner: source.owner,
-			repo: source.repo,
-			commitSha: sourceCommitSha,
-			path: manifest._yay.artifact,
-		});
-		if (artifactText._nay) {
-			return Result({ _nay: { message: artifactText._nay.message } });
-		}
-		let artifactJson: unknown;
-		try {
-			artifactJson = JSON.parse(artifactText._yay);
-		} catch {
-			return Result({ _nay: { message: "Plugin artifact is invalid JSON" } });
-		}
-		const artifact = plugins_validate_artifact(artifactJson);
-		if (artifact._nay) {
-			return Result({ _nay: { message: artifact._nay.message } });
-		}
-		if (manifest._yay.name !== artifact._yay.plugin.name || manifest._yay.version !== artifact._yay.plugin.version) {
-			return Result({ _nay: { message: "Plugin manifest and artifact identify different versions" } });
-		}
-
-		const artifactHash = `sha256:${await sha256_hex_bytes(text_encoder.encode(artifactText._yay))}`;
-		const manifestR2Key = plugin_r2_key({
-			name: artifact._yay.plugin.name,
-			version: artifact._yay.plugin.version,
-			commitSha: sourceCommitSha,
-			path: "bonobo.plugin.json",
-		});
-		const artifactR2Key = plugin_r2_key({
-			name: artifact._yay.plugin.name,
-			version: artifact._yay.plugin.version,
-			commitSha: sourceCommitSha,
-			path: manifest._yay.artifact,
-		});
-
-		const files: Array<PluginArtifactFile & { r2Key: string }> = [];
-		const fileUploads: Array<{ key: string; body: ArrayBuffer; contentType: string }> = [];
-		for (const file of artifact._yay.files) {
-			const fileBytes = await fetch_github_bytes({
-				owner: source.owner,
-				repo: source.repo,
-				commitSha: sourceCommitSha,
-				path: file.path,
-			});
-			if (fileBytes._nay) {
-				return Result({ _nay: { message: fileBytes._nay.message } });
-			}
-			const fileHash = `sha256:${await sha256_hex_bytes(fileBytes._yay)}`;
-			if (fileHash !== file.sha256) {
-				return Result({ _nay: { message: `Artifact file hash mismatch for "${file.path}"` } });
-			}
-			if (fileBytes._yay.byteLength !== file.bytes) {
-				return Result({ _nay: { message: `Artifact file byte size mismatch for "${file.path}"` } });
-			}
-			const r2Key = plugin_r2_key({
-				name: artifact._yay.plugin.name,
-				version: artifact._yay.plugin.version,
-				commitSha: sourceCommitSha,
-				path: file.path,
-			});
-			fileUploads.push({ key: r2Key, body: fileBytes._yay, contentType: file.contentType });
-			files.push({ ...file, r2Key });
-		}
-
-		const backendEntry = artifact._yay.backend;
-		let backend: (NonNullable<typeof artifact._yay.backend> & { r2Key: string }) | null = null;
-		let backendDistSource: string | null = null;
-		if (backendEntry) {
-			const backendFile = files.find((file) => file.path === backendEntry.entry);
-			const backendUpload = fileUploads.find((upload) => upload.key === backendFile?.r2Key);
-			if (!backendFile || !backendUpload) {
-				return Result({ _nay: { message: "Plugin backend entry is missing from artifact files" } });
-			}
-			backend = { ...backendEntry, r2Key: backendFile.r2Key };
-			backendDistSource = text_decoder.decode(backendUpload.body);
-		}
-
-		// Review the dist before anything is uploaded or registered; "rejected" blocks the publish.
-		const review = (await ctx.runAction(internal.plugins.review_version_artifact, {
-			pluginName: artifact._yay.plugin.name,
-			version: artifact._yay.plugin.version,
-			artifactHash,
-			distSource: backendDistSource,
-			capabilities: artifact._yay.capabilities,
-			outboundOrigins: artifact._yay.outboundOrigins,
+		const published = await publish_version_from_github(ctx, {
 			repositoryId: args.repositoryId,
-			requestedBy: source.userId,
-		})) as PluginVersionReviewResult;
-		if (review._nay || !review._yay) {
-			return Result({ _nay: { message: review._nay?.message ?? "Plugin review failed" } });
-		}
-		if (review._yay.status === "rejected") {
-			const reasons = [...review._yay.mechanicalFindings, ...review._yay.aiFindings];
-			return Result({ _nay: { message: `Plugin review rejected this version: ${reasons.join(" | ")}` } });
-		}
-
-		const tree = await fetch_github_json(
-			`https://api.github.com/repos/${source.owner}/${source.repo}/git/trees/${sourceCommitSha}?recursive=1`,
-			github_tree_schema,
-		);
-		if (tree._nay) {
-			return Result({ _nay: { message: tree._nay.message } });
-		}
-		if (tree._yay.truncated) {
-			return Result({ _nay: { message: "GitHub source tree is too large for plugin import" } });
-		}
-
-		const sourceFiles: PluginSourceFile[] = [];
-		let sourceBytes = 0;
-		for (const entry of tree._yay.tree) {
-			if (entry.type !== "blob") {
-				continue;
-			}
-			if (entry.size !== undefined && entry.size > files_MAX_TEXT_CONTENT_BYTES) {
-				continue;
-			}
-			const keep = source_file_keep_reason(entry.path);
-			if (keep._nay) {
-				continue;
-			}
-			if (sourceFiles.length >= plugin_import_max_source_files) {
-				return Result({ _nay: { message: `Plugin source tree exceeds ${plugin_import_max_source_files} files` } });
-			}
-			const sourceText = await fetch_github_text({
-				owner: source.owner,
-				repo: source.repo,
-				commitSha: sourceCommitSha,
-				path: keep._yay,
-			});
-			if (sourceText._nay) {
-				return Result({ _nay: { message: sourceText._nay.message } });
-			}
-			sourceBytes += files_get_utf8_byte_size(sourceText._yay);
-			if (sourceBytes > plugin_import_max_source_bytes) {
-				return Result({ _nay: { message: `Plugin source tree exceeds ${plugin_import_max_source_bytes} bytes` } });
-			}
-			sourceFiles.push({ path: keep._yay, rawText: sourceText._yay });
-		}
-
-		await r2_put_object(ctx, {
-			key: manifestR2Key,
-			body: manifestText._yay,
-			contentType: "application/json",
+			source: authorized._yay,
 		});
-		await r2_put_object(ctx, {
-			key: artifactR2Key,
-			body: artifactText._yay,
-			contentType: "application/json",
+		// Publish feedback must outlive the ~4s toast (a first-publish rejection has no plugin page
+		// yet), so record every post-authorization outcome on the claim.
+		await ctx.runMutation(internal.plugins.record_publish_attempt, {
+			repositoryId: args.repositoryId,
+			...(published._nay
+				? {
+						status: published._nay.name === "review_rejected" ? ("rejected" as const) : ("failed" as const),
+						message: published._nay.message,
+						commitSha: null,
+					}
+				: {
+						status: "succeeded" as const,
+						message: `Published commit ${published._yay.sourceCommitSha.slice(0, 8)}`,
+						commitSha: published._yay.sourceCommitSha,
+					}),
 		});
-		for (const fileUpload of fileUploads) {
-			await r2_put_object(ctx, {
-				key: fileUpload.key,
-				body: fileUpload.body,
-				contentType: fileUpload.contentType,
-			});
-		}
-
-		const registered = (await ctx.runAction(internal.plugins.register_verified_version, {
-			name: artifact._yay.plugin.name,
-			displayName: artifact._yay.plugin.displayName,
-			version: artifact._yay.plugin.version,
-			description: manifest._yay.description,
-			reviewStatus: review._yay.status,
-			artifactHash,
-			sourceRepositoryUrl: source.repositoryUrl,
-			sourceOwner: source.owner,
-			sourceRepo: source.repo,
-			sourceDefaultBranch,
-			sourceCommitSha,
-			manifestR2Key,
-			artifactR2Key,
-			backend,
-			events: artifact._yay.events,
-			pages: artifact._yay.pages,
-			capabilities: artifact._yay.capabilities,
-			outboundOrigins: artifact._yay.outboundOrigins,
-			files,
-			createdBy: source.userId,
-			sourceFiles,
-		})) as { _yay?: { pluginVersionId: Id<"plugins_versions">; sourceMountName: string }; _nay?: { message: string } };
-		if (registered._nay || !registered._yay) {
-			return Result({ _nay: { message: registered._nay?.message ?? "Failed to register plugin version" } });
-		}
-
-		return Result({
-			_yay: {
-				pluginVersionId: registered._yay.pluginVersionId,
-				sourceMountName: registered._yay.sourceMountName,
-				sourceCommitSha,
-			},
-		});
+		return published;
 	},
 });
 
@@ -1484,11 +1495,11 @@ export const remove_repository = mutation({
 
 		// Secrets belong to the claim; removing the claim removes them.
 		const secrets = await ctx.db
-			.query("plugins_publisher_secrets")
+			.query("plugins_publisher_repository_secrets")
 			.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repositoryId))
 			.collect();
 		for (const secret of secrets) {
-			await ctx.db.delete("plugins_publisher_secrets", secret._id);
+			await ctx.db.delete("plugins_publisher_repository_secrets", secret._id);
 		}
 		await ctx.db.delete("plugins_publisher_repositories", args.repositoryId);
 		return Result({ _yay: null });
@@ -1597,7 +1608,7 @@ export const list_publisher_secrets = query({
 	},
 	returns: v.array(
 		v.object({
-			_id: v.id("plugins_publisher_secrets"),
+			_id: v.id("plugins_publisher_repository_secrets"),
 			name: v.string(),
 			valuePreview: v.string(),
 			allowedOrigins: v.array(v.string()),
@@ -1616,7 +1627,7 @@ export const list_publisher_secrets = query({
 		}
 
 		const secrets = await ctx.db
-			.query("plugins_publisher_secrets")
+			.query("plugins_publisher_repository_secrets")
 			.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repositoryId))
 			.take(100);
 
@@ -1640,7 +1651,7 @@ export const upsert_publisher_secret = mutation({
 		value: v.string(),
 		allowedOrigins: v.array(v.string()),
 	},
-	returns: v_result({ _yay: v.object({ secretId: v.id("plugins_publisher_secrets") }) }),
+	returns: v_result({ _yay: v.object({ secretId: v.id("plugins_publisher_repository_secrets") }) }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth || userAuth.kind !== "signed_in") {
@@ -1657,7 +1668,7 @@ export const upsert_publisher_secret = mutation({
 		if (repository.ownerUserId !== userAuth.id) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
-		const secret = validate_secret_input(args);
+		const secret = crypto_validate_secret_input(args);
 		if (secret._nay) {
 			return secret;
 		}
@@ -1666,9 +1677,9 @@ export const upsert_publisher_secret = mutation({
 			return allowedOrigins;
 		}
 
-		let secretId: Id<"plugins_publisher_secrets">;
+		let secretId: Id<"plugins_publisher_repository_secrets">;
 		try {
-			secretId = await upsert_publisher_secret_doc(ctx, {
+			secretId = await db_upsert_publisher_secret(ctx, {
 				repository,
 				name: secret._yay.name,
 				value: secret._yay.value,
@@ -1711,7 +1722,7 @@ export const upsert_publisher_secrets = mutation({
 
 		const secrets = new Map<string, string>();
 		for (const input of args.secrets) {
-			const secret = validate_secret_input(input);
+			const secret = crypto_validate_secret_input(input);
 			if (secret._nay) {
 				return secret;
 			}
@@ -1721,7 +1732,7 @@ export const upsert_publisher_secrets = mutation({
 		const now = Date.now();
 		try {
 			for (const [name, value] of secrets) {
-				await upsert_publisher_secret_doc(ctx, {
+				await db_upsert_publisher_secret(ctx, {
 					repository,
 					name,
 					value,
@@ -1759,7 +1770,7 @@ export const update_publisher_secret_origins = mutation({
 		if (repository.ownerUserId !== userAuth.id) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
-		const name = plugins_secret_name_validate(args.name);
+		const name = plugins_validate_secret_name(args.name);
 		if (name._nay) {
 			return Result({ _nay: { message: name._nay.message } });
 		}
@@ -1769,14 +1780,14 @@ export const update_publisher_secret_origins = mutation({
 		}
 
 		const existing = await ctx.db
-			.query("plugins_publisher_secrets")
+			.query("plugins_publisher_repository_secrets")
 			.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repositoryId).eq("name", name._yay))
 			.first();
 		if (!existing) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		await ctx.db.patch("plugins_publisher_secrets", existing._id, {
+		await ctx.db.patch("plugins_publisher_repository_secrets", existing._id, {
 			allowedOrigins: allowedOrigins._yay,
 			updatedAt: Date.now(),
 		});
@@ -1806,17 +1817,17 @@ export const delete_publisher_secret = mutation({
 		if (repository.ownerUserId !== userAuth.id) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
-		const name = plugins_secret_name_validate(args.name);
+		const name = plugins_validate_secret_name(args.name);
 		if (name._nay) {
 			return Result({ _nay: { message: name._nay.message } });
 		}
 
 		const existing = await ctx.db
-			.query("plugins_publisher_secrets")
+			.query("plugins_publisher_repository_secrets")
 			.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repositoryId).eq("name", name._yay))
 			.first();
 		if (existing) {
-			await ctx.db.delete("plugins_publisher_secrets", existing._id);
+			await ctx.db.delete("plugins_publisher_repository_secrets", existing._id);
 		}
 		return Result({ _yay: null });
 	},
@@ -1890,7 +1901,10 @@ export const install_version_in_db = internalMutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const authorization = await authorize_manage(ctx, { userId: userAuth.id, membershipId: args.membershipId });
+		const authorization = await authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
 		if (authorization._nay) {
 			return authorization;
 		}
@@ -2009,6 +2023,111 @@ export const install_version_in_db = internalMutation({
 	},
 });
 
+export const uninstall_version = action({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		installationId: v.id("plugins_workspace_installations"),
+	},
+	returns: v_result({ _yay: v.object({ lockfileNodeId: v.id("files_nodes") }) }),
+	handler: async (ctx, args) => {
+		const uninstalled = (await ctx.runMutation(internal.plugins.uninstall_version_in_db, args)) as {
+			_yay?: {
+				organizationId: Id<"organizations">;
+				workspaceId: Id<"organizations_workspaces">;
+				userId: Id<"users">;
+			};
+			_nay?: { message: string };
+		};
+		if (uninstalled._nay) {
+			return Result({ _nay: { message: uninstalled._nay.message } });
+		}
+		if (!uninstalled._yay) {
+			return Result({ _nay: { message: "Failed to uninstall plugin" } });
+		}
+
+		const refreshed = (await ctx.runAction(internal.plugins.refresh_workspace_lockfile_internal, {
+			organizationId: uninstalled._yay.organizationId,
+			workspaceId: uninstalled._yay.workspaceId,
+			userId: uninstalled._yay.userId,
+		})) as { _yay?: { nodeId: Id<"files_nodes"> }; _nay?: { message: string } };
+		if (refreshed._nay) {
+			return Result({ _nay: { message: refreshed._nay.message } });
+		}
+		if (!refreshed._yay) {
+			return Result({ _nay: { message: "Failed to refresh plugin lockfile" } });
+		}
+
+		return Result({ _yay: { lockfileNodeId: refreshed._yay.nodeId } });
+	},
+});
+
+export const uninstall_version_in_db = internalMutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		installationId: v.id("plugins_workspace_installations"),
+	},
+	returns: v_result({
+		_yay: v.object({
+			organizationId: v.id("organizations"),
+			workspaceId: v.id("organizations_workspaces"),
+			userId: v.id("users"),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorization = await authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (authorization._nay) {
+			return authorization;
+		}
+		const membership = authorization._yay.membership;
+
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		if (
+			!installation ||
+			installation.organizationId !== membership.organizationId ||
+			installation.workspaceId !== membership.workspaceId
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		// Event runs and run calls stay as history; the admin hard-delete flow sweeps them.
+		const handlers = await ctx.db
+			.query("plugins_workspace_event_handlers")
+			.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
+			.collect();
+		for (const handler of handlers) {
+			await ctx.db.delete("plugins_workspace_event_handlers", handler._id);
+		}
+		const secrets = await ctx.db
+			.query("plugins_workspace_installation_secrets")
+			.withIndex("by_installation_name", (q) => q.eq("installationId", installation._id))
+			.collect();
+		for (const secret of secrets) {
+			await ctx.db.delete("plugins_workspace_installation_secrets", secret._id);
+		}
+		await ctx.db.delete("plugins_workspace_installations", installation._id);
+
+		return Result({
+			_yay: {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId: userAuth.id,
+			},
+		});
+	},
+});
+
 export const list_installations_for_lockfile = internalQuery({
 	args: {
 		organizationId: v.id("organizations"),
@@ -2058,7 +2177,7 @@ export const refresh_workspace_lockfile_internal = internalAction({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 		});
-		const rawText = lockfile_json({
+		const rawText = build_workspace_lockfile_text({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			updatedAt: Date.now(),
@@ -2091,7 +2210,10 @@ export const list_installations = query({
 		if (!userAuth) {
 			return [];
 		}
-		const authorization = await authorize_manage(ctx, { userId: userAuth.id, membershipId: args.membershipId });
+		const authorization = await authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
 		if (authorization._nay) {
 			return [];
 		}
@@ -2149,7 +2271,10 @@ export const list_registered_plugins = query({
 		if (!userAuth) {
 			return [];
 		}
-		const authorization = await authorize_manage(ctx, { userId: userAuth.id, membershipId: args.membershipId });
+		const authorization = await authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
 		if (authorization._nay) {
 			return [];
 		}
@@ -2209,7 +2334,10 @@ export const list_installation_secrets = query({
 		if (!userAuth) {
 			return [];
 		}
-		const authorization = await authorize_manage(ctx, { userId: userAuth.id, membershipId: args.membershipId });
+		const authorization = await authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
 		if (authorization._nay) {
 			return [];
 		}
@@ -2261,7 +2389,10 @@ export const upsert_installation_secret = mutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
-		const authorization = await authorize_manage(ctx, { userId: userAuth.id, membershipId: args.membershipId });
+		const authorization = await authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
 		if (authorization._nay) {
 			return authorization;
 		}
@@ -2277,14 +2408,14 @@ export const upsert_installation_secret = mutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		const secret = validate_secret_input(args);
+		const secret = crypto_validate_secret_input(args);
 		if (secret._nay) {
 			return secret;
 		}
 
 		let secretId: Id<"plugins_workspace_installation_secrets">;
 		try {
-			secretId = await upsert_installation_secret_doc(ctx, {
+			secretId = await db_upsert_installation_secret(ctx, {
 				installation,
 				name: secret._yay.name,
 				value: secret._yay.value,
@@ -2318,7 +2449,10 @@ export const upsert_installation_secrets = mutation({
 		if (args.secrets.length === 0 || args.secrets.length > 50) {
 			return Result({ _nay: { message: "Secret batch size is invalid" } });
 		}
-		const authorization = await authorize_manage(ctx, { userId: userAuth.id, membershipId: args.membershipId });
+		const authorization = await authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
 		if (authorization._nay) {
 			return authorization;
 		}
@@ -2336,7 +2470,7 @@ export const upsert_installation_secrets = mutation({
 
 		const secrets = new Map<string, string>();
 		for (const input of args.secrets) {
-			const secret = validate_secret_input(input);
+			const secret = crypto_validate_secret_input(input);
 			if (secret._nay) {
 				return secret;
 			}
@@ -2346,7 +2480,7 @@ export const upsert_installation_secrets = mutation({
 		const now = Date.now();
 		try {
 			for (const [name, value] of secrets) {
-				await upsert_installation_secret_doc(ctx, {
+				await db_upsert_installation_secret(ctx, {
 					installation,
 					name,
 					value,
@@ -2378,7 +2512,10 @@ export const delete_installation_secret = mutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
-		const authorization = await authorize_manage(ctx, { userId: userAuth.id, membershipId: args.membershipId });
+		const authorization = await authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
 		if (authorization._nay) {
 			return authorization;
 		}
@@ -2390,7 +2527,7 @@ export const delete_installation_secret = mutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		const name = plugins_secret_name_validate(args.name);
+		const name = plugins_validate_secret_name(args.name);
 		if (name._nay) {
 			return Result({ _nay: { message: name._nay.message } });
 		}
@@ -2420,7 +2557,7 @@ export const get_secret_for_runtime = internalMutation({
 		}),
 		v.object({
 			tier: v.literal("publisher"),
-			secret: doc(app_convex_schema, "plugins_publisher_secrets"),
+			secret: doc(app_convex_schema, "plugins_publisher_repository_secrets"),
 		}),
 		v.null(),
 	),
@@ -2460,13 +2597,13 @@ export const get_secret_for_runtime = internalMutation({
 			return null;
 		}
 		const publisherSecret = await ctx.db
-			.query("plugins_publisher_secrets")
+			.query("plugins_publisher_repository_secrets")
 			.withIndex("by_repository_name", (q) => q.eq("repositoryId", repository._id).eq("name", args.name))
 			.first();
 		if (!publisherSecret) {
 			return null;
 		}
-		await ctx.db.patch("plugins_publisher_secrets", publisherSecret._id, { lastUsedAt: Date.now() });
+		await ctx.db.patch("plugins_publisher_repository_secrets", publisherSecret._id, { lastUsedAt: Date.now() });
 		return { tier: "publisher" as const, secret: publisherSecret };
 	},
 });
@@ -2480,7 +2617,7 @@ export const decrypt_secret_for_runtime = internalAction({
 			}),
 			v.object({
 				tier: v.literal("publisher"),
-				secret: doc(app_convex_schema, "plugins_publisher_secrets"),
+				secret: doc(app_convex_schema, "plugins_publisher_repository_secrets"),
 			}),
 		),
 	},
@@ -2491,7 +2628,7 @@ export const decrypt_secret_for_runtime = internalAction({
 				args.resolved.tier === "installation"
 					? `${args.resolved.secret.installationId}:${args.resolved.secret.name}`
 					: `${args.resolved.secret.ownerUserId}:${args.resolved.secret.name}`;
-			return Result({ _yay: await decrypt_secret_value(args.resolved.secret, additionalData) });
+			return Result({ _yay: await crypto_decrypt_secret_value(args.resolved.secret, additionalData) });
 		} catch (error) {
 			return Result({ _nay: { message: error instanceof Error ? error.message : String(error) } });
 		}
@@ -2539,7 +2676,10 @@ export const list_run_calls = query({
 		if (!userAuth) {
 			return [];
 		}
-		const authorization = await authorize_manage(ctx, { userId: userAuth.id, membershipId: args.membershipId });
+		const authorization = await authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
 		if (authorization._nay) {
 			return [];
 		}
@@ -2602,7 +2742,7 @@ export const list_recent_runs = query({
 	returns: v.array(
 		v.object({
 			_id: v.id("plugins_event_runs"),
-			event: v.literal("files.upload.completed"),
+			event: doc(app_convex_schema, "plugins_event_runs").fields.event,
 			eventId: v.string(),
 			status: doc(app_convex_schema, "plugins_event_runs").fields.status,
 			hostCallCount: v.number(),
@@ -2633,7 +2773,10 @@ export const list_recent_runs = query({
 		if (!userAuth) {
 			return [];
 		}
-		const authorization = await authorize_manage(ctx, { userId: userAuth.id, membershipId: args.membershipId });
+		const authorization = await authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
 		if (authorization._nay) {
 			return [];
 		}
@@ -2688,6 +2831,110 @@ export const list_recent_runs = query({
 		}
 
 		return docs;
+	},
+});
+
+export const run_installation_on_file = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		installationId: v.id("plugins_workspace_installations"),
+		nodeId: v.string(),
+	},
+	returns: v_result({ _yay: v.object({ runId: v.id("plugins_event_runs") }) }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_run", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+		const authorization = await authorize_plugin_management(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (authorization._nay) {
+			return authorization;
+		}
+		const membership = authorization._yay.membership;
+
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		if (!installation) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (
+			installation.organizationId !== membership.organizationId ||
+			installation.workspaceId !== membership.workspaceId
+		) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+		if (installation.status !== "enabled") {
+			return Result({ _nay: { message: "Plugin is disabled" } });
+		}
+
+		const nodeId = ctx.db.normalizeId("files_nodes", args.nodeId);
+		if (!nodeId) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		const sourceFileNode = await ctx.db.get("files_nodes", nodeId);
+		if (!sourceFileNode || sourceFileNode.archiveOperationId !== undefined) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (
+			sourceFileNode.organizationId !== membership.organizationId ||
+			sourceFileNode.workspaceId !== membership.workspaceId
+		) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+		// Plugins process finished binary uploads only, matching the upload fan-out gate.
+		if (
+			sourceFileNode.kind !== "file" ||
+			sourceFileNode.assetId === undefined ||
+			files_node_has_editable_yjs_state(sourceFileNode)
+		) {
+			return Result({ _nay: { message: "Plugin runs are only supported for uploaded files" } });
+		}
+		const sourceAsset = await ctx.db.get("files_r2_assets", sourceFileNode.assetId);
+		if (!sourceAsset) {
+			const errorMessage = "fileNode.assetId points to a missing files_r2_assets doc";
+			const errorData = { fileNodeId: sourceFileNode._id, assetId: sourceFileNode.assetId };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		// r2Key is only set once the upload finalizer confirmed the object, so a missing key is a
+		// reachable user state (upload still in flight), not a broken link.
+		if (sourceAsset.kind !== "upload" || !sourceAsset.r2Key) {
+			return Result({ _nay: { message: "File upload is not ready" } });
+		}
+
+		const contentType = sourceFileNode.contentType?.split(";")[0]?.trim().toLowerCase() ?? null;
+		const handlers = await ctx.db
+			.query("plugins_workspace_event_handlers")
+			.withIndex("by_organization_workspace_installation", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("installationId", installation._id),
+			)
+			.collect();
+		// Manual runs reuse the upload handlers' contentType subscriptions for eligibility.
+		const handler = handlers.find(
+			(candidate) =>
+				candidate.event === "files.upload.completed" &&
+				candidate.status === "enabled" &&
+				candidate.contentType === contentType,
+		);
+		if (!contentType || !handler) {
+			return Result({ _nay: { message: "Plugin does not handle this file type" } });
+		}
+
+		return await plugins_runtime_enqueue_manual_run(ctx, {
+			sourceAsset,
+			sourceFileNode,
+			actorUserId: userAuth.id,
+			installation,
+		});
 	},
 });
 
@@ -2797,7 +3044,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 			publisherRepositoryClaims += claims.length;
 			for (const claim of claims) {
 				const secrets = await ctx.db
-					.query("plugins_publisher_secrets")
+					.query("plugins_publisher_repository_secrets")
 					.withIndex("by_repository_name", (q) => q.eq("repositoryId", claim._id))
 					.collect();
 				publisherSecrets += secrets.length;
@@ -2985,11 +3232,11 @@ export const hard_delete_registered_plugin_batch = internalMutation({
 					.collect();
 				for (const claim of claims) {
 					const secrets = await ctx.db
-						.query("plugins_publisher_secrets")
+						.query("plugins_publisher_repository_secrets")
 						.withIndex("by_repository_name", (q) => q.eq("repositoryId", claim._id))
 						.collect();
 					for (const secret of secrets) {
-						await ctx.db.delete("plugins_publisher_secrets", secret._id);
+						await ctx.db.delete("plugins_publisher_repository_secrets", secret._id);
 						deleted += 1;
 					}
 					await ctx.db.delete("plugins_publisher_repositories", claim._id);

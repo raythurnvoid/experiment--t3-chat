@@ -27,6 +27,10 @@ type NotificationWithCreatedAt = Doc<"notifications"> & {
 	createdAt?: number;
 };
 
+type SecretWithKeyVersion = Doc<"plugins_workspace_installation_secrets"> & {
+	keyVersion?: number;
+};
+
 type LegacyOrganizationWithOwner = Omit<Doc<"organizations">, "_id" | "_creationTime" | "ownerUserId"> & {
 	_id: Id<"organizations">;
 	_creationTime: number;
@@ -405,6 +409,19 @@ export const remove_notifications_created_at = app_migrations.define({
 	},
 });
 
+export const remove_plugins_workspace_installation_secrets_key_version = app_migrations.define({
+	table: "plugins_workspace_installation_secrets",
+	migrateOne: async (ctx, secret) => {
+		const legacySecret = secret as SecretWithKeyVersion;
+		if (legacySecret.keyVersion === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, keyVersion: _keyVersion, ...next } = legacySecret;
+		await ctx.db.replace("plugins_workspace_installation_secrets", _id, next);
+	},
+});
+
 export const rename_pending_updates_file_node_id = app_migrations.define({
 	table: "files_pending_updates",
 	migrateOne: (_ctx, pendingUpdate) => rename_legacy_node_id_to_file_node_id(pendingUpdate),
@@ -626,6 +643,9 @@ export const run_cleanup_duplicate_access_control_owner_assignments = app_migrat
 );
 export const run_update_extra_organizations_quota_max_count_to_2 = app_migrations.runner(
 	internal.migrations.update_extra_organizations_quota_max_count_to_2,
+);
+export const run_remove_plugins_workspace_installation_secrets_key_version = app_migrations.runner(
+	internal.migrations.remove_plugins_workspace_installation_secrets_key_version,
 );
 export const run_rename_pending_updates_file_node_id = app_migrations.runner(
 	internal.migrations.rename_pending_updates_file_node_id,

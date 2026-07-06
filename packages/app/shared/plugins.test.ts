@@ -6,7 +6,7 @@ import {
 	plugins_consent_diff,
 	plugins_dist_review_mechanical_findings,
 	plugins_manifest_schema,
-	plugins_origin_validate,
+	plugins_validate_origin,
 	plugins_parse_env_text,
 	plugins_parse_github_repository_url,
 	plugins_validate_artifact,
@@ -55,30 +55,30 @@ describe("plugins_parse_github_repository_url", () => {
 	});
 });
 
-describe("plugins_origin_validate", () => {
+describe("plugins_validate_origin", () => {
 	test("accepts bare https origins and normalizes host case and trailing slash", () => {
-		expect(plugins_origin_validate("https://api.openai.com")).toEqual({ _yay: "https://api.openai.com" });
-		expect(plugins_origin_validate("https://API.OpenAI.com/")).toEqual({ _yay: "https://api.openai.com" });
-		expect(plugins_origin_validate("https://example.com:8443")).toEqual({ _yay: "https://example.com:8443" });
+		expect(plugins_validate_origin("https://api.openai.com")).toEqual({ _yay: "https://api.openai.com" });
+		expect(plugins_validate_origin("https://API.OpenAI.com/")).toEqual({ _yay: "https://api.openai.com" });
+		expect(plugins_validate_origin("https://example.com:8443")).toEqual({ _yay: "https://example.com:8443" });
 	});
 
 	test("rejects non-https, credentials, and non-bare origins", () => {
-		expect(plugins_origin_validate("http://api.openai.com")).toMatchObject({
+		expect(plugins_validate_origin("http://api.openai.com")).toMatchObject({
 			_nay: { message: "Origin must use https" },
 		});
-		expect(plugins_origin_validate("https://user:pass@api.openai.com")).toMatchObject({
+		expect(plugins_validate_origin("https://user:pass@api.openai.com")).toMatchObject({
 			_nay: { message: "Origin must not include credentials" },
 		});
-		expect(plugins_origin_validate("https://api.openai.com/v1")).toMatchObject({
+		expect(plugins_validate_origin("https://api.openai.com/v1")).toMatchObject({
 			_nay: { message: "Origin must be a bare https origin without path, query, or hash" },
 		});
-		expect(plugins_origin_validate("https://api.openai.com?x=1")).toMatchObject({
+		expect(plugins_validate_origin("https://api.openai.com?x=1")).toMatchObject({
 			_nay: { message: "Origin must be a bare https origin without path, query, or hash" },
 		});
-		expect(plugins_origin_validate("https://api.openai.com#frag")).toMatchObject({
+		expect(plugins_validate_origin("https://api.openai.com#frag")).toMatchObject({
 			_nay: { message: "Origin must be a bare https origin without path, query, or hash" },
 		});
-		expect(plugins_origin_validate("not a url")).toMatchObject({
+		expect(plugins_validate_origin("not a url")).toMatchObject({
 			_nay: { message: "Origin must be a valid URL" },
 		});
 	});

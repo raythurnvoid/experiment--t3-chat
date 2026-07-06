@@ -3,15 +3,7 @@ import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer, files_yjs_create_empty_state_update } from "../server/files.ts";
-
-const textEncoder = new TextEncoder();
-
-async function sha256_hex(input: string) {
-	const digest = await crypto.subtle.digest("SHA-256", textEncoder.encode(input));
-	return Array.from(new Uint8Array(digest))
-		.map((byte) => byte.toString(16).padStart(2, "0"))
-		.join("");
-}
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 
 async function seed_public_api_grant(args: {
 	t: ReturnType<typeof test_convex>;
@@ -29,7 +21,7 @@ async function seed_public_api_grant(args: {
 		userId: args.userId,
 		threadId: null,
 		principalKey: "grant_test",
-		tokenHash: await sha256_hex(args.token),
+		tokenHash: await crypto_sha256_hex(args.token),
 		scopes: args.scopes ?? ["files:list", "files:read"],
 		pathPrefix: args.pathPrefix ?? null,
 		now: args.now ?? Date.now(),
@@ -204,7 +196,7 @@ describe("public API grants", () => {
 
 		const grants = await t.run(async (ctx) => ctx.db.query("public_api_grants").collect());
 		expect(grants).toHaveLength(1);
-		expect(grants[0]?.tokenHash).toBe(await sha256_hex(validToken));
+		expect(grants[0]?.tokenHash).toBe(await crypto_sha256_hex(validToken));
 	});
 
 	test("drains expired grant backlogs through scheduled continuation", async () => {

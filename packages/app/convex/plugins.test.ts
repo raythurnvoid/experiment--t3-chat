@@ -6,6 +6,7 @@ import type { Id } from "./_generated/dataModel.js";
 import { plugins_ai_review } from "./plugins.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { plugins_LOCKFILE_PATH, plugins_validate_artifact, type plugins_Capability } from "../shared/plugins.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -104,17 +105,7 @@ const media_plugin_consent: { acceptedCapabilities: plugins_Capability[]; accept
 };
 
 async function sha256_text(value: string) {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-	return `sha256:${Array.from(new Uint8Array(digest))
-		.map((byte) => byte.toString(16).padStart(2, "0"))
-		.join("")}`;
-}
-
-async function sha256_hex(value: string) {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-	return Array.from(new Uint8Array(digest))
-		.map((byte) => byte.toString(16).padStart(2, "0"))
-		.join("");
+	return `sha256:${await crypto_sha256_hex(value)}`;
 }
 
 describe("plugins Phase 0", () => {
@@ -310,7 +301,7 @@ describe("plugins Phase 0", () => {
 			throw new Error("Expected secret doc");
 		}
 		expect(resolved.tier).toBe("installation");
-		expect(resolved.secret.ciphertext).not.toContain("sk-plugin-secret");
+		expect(new TextDecoder().decode(resolved.secret.ciphertext)).not.toContain("sk-plugin-secret");
 
 		const decrypted = await t.action(internal.plugins.decrypt_secret_for_runtime, { resolved });
 		expect(decrypted).toEqual({ _yay: "sk-plugin-secret" });
@@ -417,7 +408,7 @@ describe("plugins Phase 0", () => {
 		const hostToken = "host-token-secret-test";
 		await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await sha256_hex(hostToken),
+			hostTokenHash: await crypto_sha256_hex(hostToken),
 			hostTokenExpiresAt: Date.now() + 15 * 60 * 1000,
 		});
 
@@ -506,7 +497,7 @@ describe("plugins Phase 0", () => {
 		const hostToken = "host-token-runner-call-test";
 		await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await sha256_hex(hostToken),
+			hostTokenHash: await crypto_sha256_hex(hostToken),
 			hostTokenExpiresAt: Date.now() + 15 * 60 * 1000,
 		});
 
@@ -755,7 +746,7 @@ describe("plugins Phase 0", () => {
 		const hostToken = "host-token-overwrite-test";
 		await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await sha256_hex(hostToken),
+			hostTokenHash: await crypto_sha256_hex(hostToken),
 			hostTokenExpiresAt: Date.now() + 15 * 60 * 1000,
 		});
 
@@ -849,7 +840,7 @@ describe("plugins Phase 0", () => {
 		const hostToken = "host-token-unsafe-output-test";
 		await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await sha256_hex(hostToken),
+			hostTokenHash: await crypto_sha256_hex(hostToken),
 			hostTokenExpiresAt: Date.now() + 15 * 60 * 1000,
 		});
 
@@ -938,7 +929,7 @@ describe("plugins Phase 0", () => {
 		const hostToken = "host-token-normalized-output-test";
 		await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await sha256_hex(hostToken),
+			hostTokenHash: await crypto_sha256_hex(hostToken),
 			hostTokenExpiresAt: Date.now() + 15 * 60 * 1000,
 		});
 
@@ -1039,7 +1030,7 @@ describe("plugins Phase 0", () => {
 		const hostToken = "host-token-multiple-output-test";
 		await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await sha256_hex(hostToken),
+			hostTokenHash: await crypto_sha256_hex(hostToken),
 			hostTokenExpiresAt: Date.now() + 15 * 60 * 1000,
 		});
 
@@ -1594,7 +1585,7 @@ describe("plugins publisher secrets", () => {
 	) {
 		return await t.run(async (ctx) => {
 			const secret = await ctx.db
-				.query("plugins_publisher_secrets")
+				.query("plugins_publisher_repository_secrets")
 				.withIndex("by_repository_name", (q) => q.eq("repositoryId", repositoryId).eq("name", name))
 				.first();
 			if (!secret) {
@@ -1633,8 +1624,7 @@ describe("plugins publisher secrets", () => {
 		expect(JSON.stringify(listed)).not.toContain("sk-publisher-secret");
 
 		const secret = await get_publisher_secret_doc(t, repositoryId, "OPENAI_API_KEY");
-		expect(secret.keyVersion).toBe(1);
-		expect(secret.ciphertext).not.toContain("sk-publisher-secret");
+		expect(new TextDecoder().decode(secret.ciphertext)).not.toContain("sk-publisher-secret");
 
 		// Secrets are scoped to the claim owner; another user asking for this repository sees nothing.
 		expect(
@@ -1732,7 +1722,7 @@ describe("plugins publisher secrets", () => {
 
 		const secrets = await t.run((ctx) =>
 			ctx.db
-				.query("plugins_publisher_secrets")
+				.query("plugins_publisher_repository_secrets")
 				.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", ownerUserId))
 				.take(10),
 		);
@@ -2045,7 +2035,7 @@ describe("plugins publisher secrets", () => {
 
 		const secrets = await t.run((ctx) =>
 			ctx.db
-				.query("plugins_publisher_secrets")
+				.query("plugins_publisher_repository_secrets")
 				.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", ownerUserId))
 				.take(10),
 		);
@@ -2379,6 +2369,14 @@ describe("plugins publish_version", () => {
 			.mockResolvedValue(result ?? { verdict: "passed", findings: [] });
 	}
 
+	function mock_ai_review_votes(votes: Array<{ verdict: "passed" | "rejected" | "flagged"; findings: string[] }>) {
+		const spy = vi.spyOn(plugins_ai_review, "generate_verdict");
+		for (const vote of votes) {
+			spy.mockResolvedValueOnce(vote);
+		}
+		return spy;
+	}
+
 	/** Reviews a never-seen artifact hash, which consumes fresh AI review budget when allowed. */
 	async function request_fresh_review(
 		t: ReturnType<typeof test_convex>,
@@ -2498,7 +2496,6 @@ describe("plugins publish_version", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		vi.stubEnv("GITHUB_TOKEN", "github-token");
 		const github = await mock_publish_github_fetch();
 		const aiReview = mock_ai_review();
 
@@ -2532,7 +2529,7 @@ describe("plugins publish_version", () => {
 			},
 		]);
 		expect(version?.backend?.r2Key).toBe(`plugins/media/0.2.0/${github.commitSha}/dist/backend/worker.js`);
-		expect(new Set(github.githubAuthorizations)).toEqual(new Set(["Bearer github-token"]));
+		expect(new Set(github.githubAuthorizations)).toEqual(new Set(["Bearer PLUGIN_IMPORT_GITHUB_TOKEN_TEST"]));
 
 		const installations = await t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect());
 		expect(installations).toEqual([]);
@@ -2678,6 +2675,167 @@ describe("plugins publish_version", () => {
 		expect(installed).toEqual({ _nay: { message: "Plugin version failed review and cannot be installed" } });
 	});
 
+	test("rejects only when a second vote confirms the first rejected verdict", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		await mock_publish_github_fetch();
+		const aiReview = mock_ai_review_votes([
+			{ verdict: "rejected", findings: ["Sends secret values to attacker.example"] },
+			{ verdict: "rejected", findings: ["Sends secret values to attacker.example", "Obfuscated eval chain"] },
+		]);
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+
+		expect(published._nay?.message).toBe(
+			"Plugin review rejected this version: Sends secret values to attacker.example | Obfuscated eval chain",
+		);
+		expect(aiReview).toHaveBeenCalledTimes(2);
+		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
+		expect(versions).toEqual([]);
+		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
+		expect(reviews).toMatchObject([
+			{
+				status: "rejected",
+				aiFindings: ["Sends secret values to attacker.example", "Obfuscated eval chain"],
+			},
+		]);
+	});
+
+	test("overturns a flaky rejection when the confirm and tiebreak votes both pass", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		await mock_publish_github_fetch();
+		const aiReview = mock_ai_review_votes([
+			{ verdict: "rejected", findings: ["Sends secret values to attacker.example"] },
+			{ verdict: "passed", findings: [] },
+			{ verdict: "passed", findings: ["Reads OPENAI_API_KEY at runtime"] },
+		]);
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		if (published._nay) {
+			throw new Error(published._nay.message);
+		}
+
+		expect(aiReview).toHaveBeenCalledTimes(3);
+		const version = await t.run((ctx) => ctx.db.get("plugins_versions", published._yay.pluginVersionId));
+		expect(version).toMatchObject({ reviewStatus: "passed" });
+		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
+		expect(reviews).toMatchObject([
+			{
+				status: "passed",
+				aiFindings: ["Sends secret values to attacker.example", "Reads OPENAI_API_KEY at runtime"],
+			},
+		]);
+	});
+
+	test("registers as flagged when the rejection tiebreak includes a flagged vote", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		await mock_publish_github_fetch();
+		const aiReview = mock_ai_review_votes([
+			{ verdict: "rejected", findings: ["Sends secret values to attacker.example"] },
+			{ verdict: "passed", findings: [] },
+			{ verdict: "flagged", findings: ["Module-level mutable state outlives a run"] },
+		]);
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		if (published._nay) {
+			throw new Error(published._nay.message);
+		}
+
+		expect(aiReview).toHaveBeenCalledTimes(3);
+		const version = await t.run((ctx) => ctx.db.get("plugins_versions", published._yay.pluginVersionId));
+		expect(version).toMatchObject({ reviewStatus: "flagged" });
+		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
+		expect(reviews).toMatchObject([
+			{
+				status: "flagged",
+				aiFindings: ["Sends secret values to attacker.example", "Module-level mutable state outlives a run"],
+			},
+		]);
+	});
+
+	test("a cached rejected review does not block a republish and the fresh verdict replaces it", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		await mock_publish_github_fetch();
+		const aiReview = mock_ai_review_votes([
+			{ verdict: "rejected", findings: ["Sends secret values to attacker.example"] },
+			{ verdict: "rejected", findings: ["Sends secret values to attacker.example"] },
+			{ verdict: "passed", findings: [] },
+		]);
+
+		const first = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		expect(first._nay?.message).toContain("Plugin review rejected this version");
+		expect(aiReview).toHaveBeenCalledTimes(2);
+
+		const second = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		if (second._nay) {
+			throw new Error(second._nay.message);
+		}
+		expect(aiReview).toHaveBeenCalledTimes(3);
+
+		const version = await t.run((ctx) => ctx.db.get("plugins_versions", second._yay.pluginVersionId));
+		expect(version).toMatchObject({ reviewStatus: "passed" });
+		// One upserted row per artifact hash: the fresh passed verdict replaced the rejected one.
+		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
+		expect(reviews).toMatchObject([{ status: "passed", aiFindings: [] }]);
+	});
+
+	test("records a succeeded publish attempt with the published commit on the claim", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const github = await mock_publish_github_fetch();
+		mock_ai_review();
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		if (published._nay) {
+			throw new Error(published._nay.message);
+		}
+
+		const repository = await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", repositoryId));
+		expect(repository?.lastPublishAttempt).toMatchObject({
+			status: "succeeded",
+			message: `Published commit ${github.commitSha.slice(0, 8)}`,
+			commitSha: github.commitSha,
+		});
+	});
+
+	test("records failed and rejected publish attempts with the user-facing message", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		await mock_publish_github_fetch({ artifactBytesDelta: 1 });
+
+		const failed = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		expect(failed._nay?.message).toBe('Artifact file byte size mismatch for "dist/backend/worker.js"');
+		const afterFailed = await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", repositoryId));
+		expect(afterFailed?.lastPublishAttempt).toMatchObject({
+			status: "failed",
+			message: 'Artifact file byte size mismatch for "dist/backend/worker.js"',
+			commitSha: null,
+		});
+
+		const minifiedWorker = `export default{fetch:()=>new Response(${JSON.stringify("x".repeat(1200))})};`;
+		await mock_publish_github_fetch({ workerSource: minifiedWorker });
+		const rejected = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		expect(rejected._nay?.message).toContain("Plugin review rejected this version");
+		const afterRejected = await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", repositoryId));
+		expect(afterRejected?.lastPublishAttempt).toMatchObject({ status: "rejected", commitSha: null });
+		expect(afterRejected?.lastPublishAttempt?.message).toContain("Longest line");
+	});
+
 	test("an AI review failure blocks the publish with a typed error instead of passing silently", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -2819,6 +2977,9 @@ describe("plugins publish_version", () => {
 			repositoryId: foreignRepositoryId,
 		});
 		expect(foreign).toEqual({ _nay: { message: "Unauthorized" } });
+		// Pre-authorization failures never touch the claim's publish feedback.
+		const foreignRepository = await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", foreignRepositoryId));
+		expect(foreignRepository?.lastPublishAttempt).toBeUndefined();
 
 		const removedRepositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		await t.run((ctx) => ctx.db.delete("plugins_publisher_repositories", removedRepositoryId));
@@ -2970,6 +3131,489 @@ describe("plugins publish_version", () => {
 	});
 });
 
+describe("plugins uninstall_version", () => {
+	// plugins_manage is a token bucket with capacity 2; refill a token before each extra write.
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	function refill_manage_rate_limit() {
+		vi.advanceTimersByTime(60_000);
+	}
+
+	test("uninstalls the installation, deletes handlers and secrets, keeps runs, and refreshes the lockfile", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId);
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.action(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		const saved = await asOwner.mutation(api.plugins.upsert_installation_secret, {
+			membershipId: membership.membershipId,
+			installationId: installed._yay.installationId,
+			name: "OPENAI_API_KEY",
+			value: "sk-uninstall-secret",
+		});
+		if (saved._nay) {
+			throw new Error(saved._nay.message);
+		}
+		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: membership.membershipId,
+			parentId: "root",
+			filename: "history.png",
+			contentType: "image/png",
+			size: 1024,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const runId = await t.run(async (ctx) => {
+			const installation = await ctx.db.get("plugins_workspace_installations", installed._yay.installationId);
+			if (!installation) {
+				throw new Error("Expected installation");
+			}
+			return await ctx.db.insert("plugins_event_runs", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				sourceAssetId: upload._yay.assetId,
+				sourceFileNodeId: upload._yay.nodeId,
+				actorUserId: membership.userId,
+				installationId: installed._yay.installationId,
+				pluginVersionId: installation.pluginVersionId,
+				event: "files.upload.completed",
+				eventId: "plugin:uninstall-history-test",
+				status: "succeeded",
+				acceptedCapabilities: installation.acceptedCapabilities,
+				expiresAt: Date.now() + 30 * 60 * 1000,
+				hostCallCount: 1,
+				hostWriteCount: 1,
+				errorMessage: null,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			});
+		});
+
+		refill_manage_rate_limit();
+		const uninstalled = await asOwner.action(api.plugins.uninstall_version, {
+			membershipId: membership.membershipId,
+			installationId: installed._yay.installationId,
+		});
+		if (uninstalled._nay) {
+			throw new Error(uninstalled._nay.message);
+		}
+
+		const installation = await t.run((ctx) =>
+			ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
+		);
+		expect(installation).toBeNull();
+		const handlers = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_workspace_event_handlers")
+				.withIndex("by_installation", (q) => q.eq("installationId", installed._yay.installationId))
+				.collect(),
+		);
+		expect(handlers).toEqual([]);
+		const secrets = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_workspace_installation_secrets")
+				.withIndex("by_installation_name", (q) => q.eq("installationId", installed._yay.installationId))
+				.collect(),
+		);
+		expect(secrets).toEqual([]);
+		// Event runs stay as history; the admin hard-delete flow sweeps them.
+		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+		expect(run).not.toBeNull();
+
+		const lockfile = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: membership.userId,
+			path: plugins_LOCKFILE_PATH,
+			mode: { kind: "full", maxBytes: 100_000 },
+		});
+		if (!lockfile) {
+			throw new Error("Expected lockfile");
+		}
+		expect(JSON.parse(lockfile.content).plugins).toEqual([]);
+	});
+
+	test("rejects uninstalls from users without workspace plugin permissions", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId);
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.action(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+
+		const strangerUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
+		const rejected = await t.withIdentity(user_identity(strangerUserId)).action(api.plugins.uninstall_version, {
+			membershipId: membership.membershipId,
+			installationId: installed._yay.installationId,
+		});
+		expect(rejected).toEqual({ _nay: { message: "Unauthorized" } });
+
+		const installation = await t.run((ctx) =>
+			ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
+		);
+		expect(installation).not.toBeNull();
+	});
+
+	test("reinstalls a plugin after uninstalling it", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId);
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.action(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+
+		refill_manage_rate_limit();
+		const uninstalled = await asOwner.action(api.plugins.uninstall_version, {
+			membershipId: membership.membershipId,
+			installationId: installed._yay.installationId,
+		});
+		if (uninstalled._nay) {
+			throw new Error(uninstalled._nay.message);
+		}
+		expect(await asOwner.query(api.plugins.list_installations, { membershipId: membership.membershipId })).toEqual([]);
+
+		refill_manage_rate_limit();
+		const reinstalled = await asOwner.action(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (reinstalled._nay) {
+			throw new Error(reinstalled._nay.message);
+		}
+		expect(reinstalled._yay.installationId).not.toBe(installed._yay.installationId);
+
+		const listed = await asOwner.query(api.plugins.list_installations, { membershipId: membership.membershipId });
+		expect(listed).toHaveLength(1);
+		expect(listed[0]?.handlers.map((handler: { contentType: string }) => handler.contentType).sort()).toEqual([
+			"image/png",
+			"video/mp4",
+		]);
+		const lockfile = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: membership.userId,
+			path: plugins_LOCKFILE_PATH,
+			mode: { kind: "full", maxBytes: 100_000 },
+		});
+		if (!lockfile) {
+			throw new Error("Expected lockfile");
+		}
+		expect(JSON.parse(lockfile.content).plugins[0]).toMatchObject({ name: "media", status: "enabled" });
+	});
+});
+
+describe("plugins run_installation_on_file", () => {
+	async function install_media_plugin_with_upload(
+		t: ReturnType<typeof test_convex>,
+		args?: { contentTypes?: string[]; filename?: string; uploadContentType?: string; confirmUpload?: boolean },
+	) {
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId, {
+			contentTypes: args?.contentTypes ?? ["image/png"],
+		});
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.action(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		const filename = args?.filename ?? "photo.png";
+		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: membership.membershipId,
+			parentId: "root",
+			filename,
+			contentType: args?.uploadContentType ?? "image/png",
+			size: 1024,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		if (args?.confirmUpload !== false) {
+			await t.run((ctx) => ctx.db.patch("files_r2_assets", upload._yay.assetId, { r2Key: `uploads/${filename}` }));
+		}
+		return { membership, asOwner, installationId: installed._yay.installationId, upload: upload._yay };
+	}
+
+	test("rejects unauthenticated callers and writes no run docs", async () => {
+		const t = test_convex();
+		const { membership, installationId, upload } = await install_media_plugin_with_upload(t);
+
+		const rejected = await t.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: upload.nodeId,
+		});
+
+		expect(rejected).toEqual({ _nay: { message: "Unauthenticated" } });
+		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
+		expect(runs).toEqual([]);
+	});
+
+	test("rejects callers without the owning workspace membership", async () => {
+		const t = test_convex();
+		const { membership, installationId, upload } = await install_media_plugin_with_upload(t);
+
+		const strangerUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
+		const rejected = await t
+			.withIdentity(user_identity(strangerUserId))
+			.mutation(api.plugins.run_installation_on_file, {
+				membershipId: membership.membershipId,
+				installationId,
+				nodeId: upload.nodeId,
+			});
+
+		expect(rejected).toEqual({ _nay: { message: "Unauthorized" } });
+		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
+		expect(runs).toEqual([]);
+	});
+
+	test("rejects files whose content type has no enabled handler", async () => {
+		const t = test_convex();
+		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t, {
+			contentTypes: ["image/png"],
+			filename: "clip.mp4",
+			uploadContentType: "video/mp4",
+		});
+
+		const rejected = await asOwner.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: upload.nodeId,
+		});
+
+		expect(rejected).toEqual({ _nay: { message: "Plugin does not handle this file type" } });
+		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
+		expect(runs).toEqual([]);
+	});
+
+	test("rejects editable markdown nodes and uploads without a confirmed r2 object", async () => {
+		const t = test_convex();
+		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t, {
+			confirmUpload: false,
+		});
+
+		const markdown = await asOwner.action(api.files_nodes.create_markdown_node, {
+			membershipId: membership.membershipId,
+			parentId: "root",
+			path: "/notes.md",
+		});
+		if (markdown._nay) {
+			throw new Error(markdown._nay.message);
+		}
+		const rejectedMarkdown = await asOwner.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: markdown._yay.nodeId,
+		});
+		expect(rejectedMarkdown).toEqual({ _nay: { message: "Plugin runs are only supported for uploaded files" } });
+
+		const rejectedUnconfirmed = await asOwner.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: upload.nodeId,
+		});
+		expect(rejectedUnconfirmed).toEqual({ _nay: { message: "File upload is not ready" } });
+
+		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
+		expect(runs).toEqual([]);
+	});
+
+	test("rejects disabled installations", async () => {
+		const t = test_convex();
+		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t);
+		await t.run((ctx) => ctx.db.patch("plugins_workspace_installations", installationId, { status: "disabled" }));
+
+		const rejected = await asOwner.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: upload.nodeId,
+		});
+
+		expect(rejected).toEqual({ _nay: { message: "Plugin is disabled" } });
+		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
+		expect(runs).toEqual([]);
+	});
+
+	test("blocks a second manual run while one is pending for the same installation and file", async () => {
+		const t = test_convex();
+		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t);
+
+		const first = await asOwner.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: upload.nodeId,
+		});
+		if (first._nay) {
+			throw new Error(first._nay.message);
+		}
+		const second = await asOwner.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: upload.nodeId,
+		});
+
+		expect(second).toEqual({ _nay: { message: "A run for this plugin is already pending for this file" } });
+		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
+		expect(runs).toHaveLength(1);
+	});
+
+	test("blocks manual runs while a queued upload run exists for the same file", async () => {
+		const t = test_convex();
+		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t);
+
+		const enqueued = await t.mutation(internal.plugins_runtime.enqueue_upload_completed_runs, {
+			sourceAssetId: upload.assetId,
+			sourceFileNodeId: upload.nodeId,
+			eventId: "r2:photo",
+			contentType: "image/png",
+		});
+		expect(enqueued).toEqual({ _yay: { enqueued: 1 } });
+
+		const rejected = await asOwner.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: upload.nodeId,
+		});
+
+		expect(rejected).toEqual({ _nay: { message: "A run for this plugin is already pending for this file" } });
+		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
+		expect(runs).toHaveLength(1);
+	});
+
+	test("allows a re-run with a fresh eventId after the pending run succeeds", async () => {
+		const t = test_convex();
+		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t);
+
+		const first = await asOwner.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: upload.nodeId,
+		});
+		if (first._nay) {
+			throw new Error(first._nay.message);
+		}
+		await t.run((ctx) => ctx.db.patch("plugins_event_runs", first._yay.runId, { status: "succeeded" }));
+
+		const second = await asOwner.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: upload.nodeId,
+		});
+		if (second._nay) {
+			throw new Error(second._nay.message);
+		}
+
+		expect(second._yay.runId).not.toBe(first._yay.runId);
+		const [firstRun, secondRun] = await t.run(async (ctx) => [
+			await ctx.db.get("plugins_event_runs", first._yay.runId),
+			await ctx.db.get("plugins_event_runs", second._yay.runId),
+		]);
+		expect(firstRun?.eventId).not.toBe(secondRun?.eventId);
+	});
+
+	test("ignores expired queued runs when guarding new manual runs", async () => {
+		const t = test_convex();
+		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t);
+
+		const first = await asOwner.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: upload.nodeId,
+		});
+		if (first._nay) {
+			throw new Error(first._nay.message);
+		}
+		// start_event_run refuses expired queued docs, so the guard must not count them either.
+		await t.run((ctx) => ctx.db.patch("plugins_event_runs", first._yay.runId, { expiresAt: Date.now() - 1000 }));
+
+		const second = await asOwner.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: upload.nodeId,
+		});
+		if (second._nay) {
+			throw new Error(second._nay.message);
+		}
+		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
+		expect(runs).toHaveLength(2);
+	});
+
+	test("creates a queued manual run mirroring the upload run shape", async () => {
+		const t = test_convex();
+		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t);
+
+		const result = await asOwner.mutation(api.plugins.run_installation_on_file, {
+			membershipId: membership.membershipId,
+			installationId,
+			nodeId: upload.nodeId,
+		});
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
+
+		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installationId));
+		if (!installation) {
+			throw new Error("Expected installation");
+		}
+		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", result._yay.runId));
+		if (!run) {
+			throw new Error("Expected run doc");
+		}
+		expect(run).toMatchObject({
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			sourceAssetId: upload.assetId,
+			sourceFileNodeId: upload.nodeId,
+			actorUserId: membership.userId,
+			installationId,
+			pluginVersionId: installation.pluginVersionId,
+			event: "files.run.requested",
+			status: "queued",
+			acceptedCapabilities: installation.acceptedCapabilities,
+			hostCallCount: 0,
+			hostWriteCount: 0,
+			errorMessage: null,
+		});
+		expect(run.eventId.startsWith("run_requested::")).toBe(true);
+		expect(run.eventId.endsWith(`::${installationId}`)).toBe(true);
+		expect(run.workId).toBeDefined();
+		expect(run.expiresAt).toBeGreaterThan(run.createdAt);
+		// Manual runs never take over the asset's upload-conversion bookkeeping.
+		const asset = await t.run((ctx) => ctx.db.get("files_r2_assets", upload.assetId));
+		expect(asset?.conversionWorkId).toBeUndefined();
+	});
+});
+
 describe("plugins admin hard delete", () => {
 	test("hard-deletes one plugin's rows, R2 artifacts, repository secrets, and lockfile entry while other plugins stay intact", async () => {
 		const t = test_convex();
@@ -3018,13 +3662,12 @@ describe("plugins admin hard delete", () => {
 					createdAt: now,
 				});
 				// Each repository claim owns one secret; deleting "media" must cascade only its own.
-				await ctx.db.insert("plugins_publisher_secrets", {
+				await ctx.db.insert("plugins_publisher_repository_secrets", {
 					ownerUserId: membership.userId,
 					repositoryId,
 					name: "OPENAI_API_KEY",
-					ciphertext: `${name}-publisher-cipher`,
-					nonce: "nonce",
-					keyVersion: 1,
+					ciphertext: new TextEncoder().encode(`${name}-publisher-cipher`).buffer,
+					nonce: new TextEncoder().encode("nonce").buffer,
 					valuePreview: "configured",
 					allowedOrigins: [],
 					createdAt: now,
@@ -3048,9 +3691,8 @@ describe("plugins admin hard delete", () => {
 				installationId: installedMedia._yay.installationId,
 				pluginName: "media",
 				name: "OPENAI_API_KEY",
-				ciphertext: "cipher",
-				nonce: "nonce",
-				keyVersion: 1,
+				ciphertext: new TextEncoder().encode("cipher").buffer,
+				nonce: new TextEncoder().encode("nonce").buffer,
 				valuePreview: "configured",
 				createdBy: membership.userId,
 				updatedBy: membership.userId,
@@ -3152,13 +3794,13 @@ describe("plugins admin hard delete", () => {
 		expect(claims.map((claim) => claim.repositoryUrl)).toEqual(["https://github.com/bonobo/media-alt-plugin"]);
 
 		// The deleted claim's secret cascades with it; the other repository's secret stays.
-		const publisherSecrets = await t.run((ctx) => ctx.db.query("plugins_publisher_secrets").collect());
+		const publisherSecrets = await t.run((ctx) => ctx.db.query("plugins_publisher_repository_secrets").collect());
 		expect(publisherSecrets).toHaveLength(1);
 		expect(publisherSecrets[0]).toMatchObject({
 			ownerUserId: membership.userId,
 			name: "OPENAI_API_KEY",
-			ciphertext: "media-alt-publisher-cipher",
 		});
+		expect(new TextDecoder().decode(publisherSecrets[0].ciphertext)).toBe("media-alt-publisher-cipher");
 
 		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/manifest.json");
 		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/artifact.json");

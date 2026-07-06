@@ -1934,9 +1934,8 @@ describe("process_workspace_deletion_request", () => {
 				installationId,
 				pluginName: "media",
 				name: "OPENAI_API_KEY",
-				ciphertext: "ciphertext",
-				nonce: "nonce",
-				keyVersion: 1,
+				ciphertext: new TextEncoder().encode("ciphertext").buffer,
+				nonce: new TextEncoder().encode("nonce").buffer,
 				valuePreview: "sk-...cret",
 				createdBy: user.userId,
 				updatedBy: user.userId,
@@ -4469,13 +4468,12 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				repo: "media-plugin",
 				createdAt: now,
 			});
-			const deletedSecretId = await ctx.db.insert("plugins_publisher_secrets", {
+			const deletedSecretId = await ctx.db.insert("plugins_publisher_repository_secrets", {
 				ownerUserId: deletedUser.userId,
 				repositoryId: deletedRepositoryId,
 				name: "OPENAI_API_KEY",
-				ciphertext: "ciphertext",
-				nonce: "nonce",
-				keyVersion: 1,
+				ciphertext: new TextEncoder().encode("ciphertext").buffer,
+				nonce: new TextEncoder().encode("nonce").buffer,
 				valuePreview: "configured",
 				allowedOrigins: ["https://api.openai.com"],
 				createdAt: now,
@@ -4499,13 +4497,12 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				repo: "pdf-plugin",
 				createdAt: now,
 			});
-			const unrelatedSecretId = await ctx.db.insert("plugins_publisher_secrets", {
+			const unrelatedSecretId = await ctx.db.insert("plugins_publisher_repository_secrets", {
 				ownerUserId: unrelatedUser.userId,
 				repositoryId: unrelatedRepositoryId,
 				name: "MODAL_TOKEN",
-				ciphertext: "ciphertext",
-				nonce: "nonce",
-				keyVersion: 1,
+				ciphertext: new TextEncoder().encode("ciphertext").buffer,
+				nonce: new TextEncoder().encode("nonce").buffer,
 				valuePreview: "configured",
 				allowedOrigins: [],
 				createdAt: now,
@@ -4550,14 +4547,14 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				unrelatedReview,
 			] = await Promise.all([
 				ctx.db.get("plugins_publisher_repositories", seeded.deletedRepositoryId),
-				ctx.db.get("plugins_publisher_secrets", seeded.deletedSecretId),
+				ctx.db.get("plugins_publisher_repository_secrets", seeded.deletedSecretId),
 				ctx.db.get("plugins_version_reviews", seeded.deletedReviewId),
 				ctx.db
 					.query("plugins_publisher_repositories")
 					.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", deletedUser.userId))
 					.collect(),
 				ctx.db.get("plugins_publisher_repositories", seeded.unrelatedRepositoryId),
-				ctx.db.get("plugins_publisher_secrets", seeded.unrelatedSecretId),
+				ctx.db.get("plugins_publisher_repository_secrets", seeded.unrelatedSecretId),
 				ctx.db.get("plugins_version_reviews", seeded.unrelatedReviewId),
 			]);
 

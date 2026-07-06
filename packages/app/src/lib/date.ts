@@ -20,6 +20,21 @@ export function format_time(timestamp: number) {
 	return FORMAT_TIME_FORMATTER.format(timestamp);
 }
 
+const FORMAT_DATETIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
+	month: "short",
+	day: "numeric",
+	hour: "2-digit",
+	minute: "2-digit",
+});
+
+export function format_datetime(timestamp: number) {
+	if (!Number.isFinite(timestamp)) {
+		return "Unknown";
+	}
+
+	return FORMAT_DATETIME_FORMATTER.format(timestamp);
+}
+
 /**
  * Format a timestamp as a relative time string
  * @param updatedAt - Timestamp in milliseconds

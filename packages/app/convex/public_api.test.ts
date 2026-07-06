@@ -10,11 +10,11 @@ import {
 	files_yjs_doc_update_from_markdown,
 } from "../server/files.ts";
 import { r2_create_asset_key } from "./r2.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
 import { organizations_GLOBAL_GITHUB_WORKSPACE_ID, organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
-const textEncoder = new TextEncoder();
 const r2Objects = new Map<string, string | ArrayBuffer>();
 
 function install_r2_object_reads() {
@@ -47,13 +47,6 @@ function install_r2_object_reads() {
 	);
 }
 
-async function sha256_hex(input: string) {
-	const digest = await crypto.subtle.digest("SHA-256", textEncoder.encode(input));
-	return Array.from(new Uint8Array(digest))
-		.map((byte) => byte.toString(16).padStart(2, "0"))
-		.join("");
-}
-
 function auth_headers(token: string) {
 	return {
 		Authorization: `Bearer ${token}`,
@@ -83,7 +76,7 @@ async function seed_public_api_grant(args: {
 		userId: args.userId,
 		threadId: null,
 		principalKey: "grant_public_test",
-		tokenHash: await sha256_hex(args.token),
+		tokenHash: await crypto_sha256_hex(args.token),
 		scopes: ["files:list", "files:read"],
 		pathPrefix: null,
 		now: Date.now(),
@@ -649,7 +642,7 @@ describe("public files API", () => {
 				name: "No read permission",
 				keyId,
 				obfuscatedValue: `${keyId}.****${secret.slice(-4)}`,
-				secretHash: await sha256_hex(secret),
+				secretHash: await crypto_sha256_hex(secret),
 				scopes: ["files:list"],
 				createdAt: Date.now(),
 				revokedAt: null,

@@ -48,9 +48,10 @@ import {
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { format_datetime } from "@/lib/date.ts";
 import {
 	plugins_consent_diff,
-	plugins_origin_validate,
+	plugins_validate_origin,
 	plugins_parse_env_text,
 } from "../../../../../../shared/plugins.ts";
 
@@ -65,15 +66,6 @@ type RoutePlugins_RegisteredPlugin = app_convex_FunctionReturnType<
 type RoutePlugins_PublisherPlugin = NonNullable<
 	app_convex_FunctionReturnType<typeof app_convex_api.plugins.get_publisher_plugin>
 >;
-
-function format_date(value: number) {
-	return new Date(value).toLocaleString(undefined, {
-		month: "short",
-		day: "numeric",
-		hour: "2-digit",
-		minute: "2-digit",
-	});
-}
 
 // #region installed secrets
 type RoutePluginsInstalledSecrets_ClassNames =
@@ -283,7 +275,7 @@ const RoutePluginsInstalledSecrets = memo(function RoutePluginsInstalledSecrets(
 								<span
 									className={"RoutePluginsInstalledSecretItem-meta" satisfies RoutePluginsInstalledSecrets_ClassNames}
 								>
-									{secret.valuePreview} · updated {format_date(secret.updatedAt)}
+									{secret.valuePreview} · updated {format_datetime(secret.updatedAt)}
 								</span>
 							</div>
 							<MyButton
@@ -372,7 +364,7 @@ const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props:
 								</span>
 							</div>
 							<div className={"RoutePluginsInstalledRunItem-meta" satisfies RoutePluginsInstalledRuns_ClassNames}>
-								{format_date(run.updatedAt)} · runner {run.runnerHttpStatus ?? "n/a"} · plugin{" "}
+								{format_datetime(run.updatedAt)} · runner {run.runnerHttpStatus ?? "n/a"} · plugin{" "}
 								{run.pluginStatus ?? "n/a"} · {format_run_duration(run.runnerElapsedMs)} · calls {run.hostCallCount},
 								writes {run.hostWriteCount}
 							</div>
@@ -393,6 +385,7 @@ const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props:
 // #region installed
 type RoutePluginsInstalled_ClassNames =
 	| "RoutePluginsInstalled"
+	| "RoutePluginsInstalled-titleRow"
 	| "RoutePluginsInstalled-title"
 	| "RoutePluginsInstalled-name"
 	| "RoutePluginsInstalled-meta"
@@ -414,17 +407,54 @@ type RoutePluginsInstalled_Props = {
 const RoutePluginsInstalled = memo(function RoutePluginsInstalled(props: RoutePluginsInstalled_Props) {
 	const { membershipId, item } = props;
 	const { installation, version, handlers } = item;
+	const [uninstalling, setUninstalling] = useState(false);
+
+	const handleUninstall = useFn(() => {
+		setUninstalling(true);
+		app_convex
+			.action(app_convex_api.plugins.uninstall_version, { membershipId, installationId: installation._id })
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+
+				// No navigation: list_installations updates reactively, unmounting this section.
+				toast.success(`Uninstalled ${installation.pluginName}`);
+			})
+			.catch((error) => {
+				console.error("[RoutePluginsInstalled.handleUninstall] Failed to uninstall plugin:", {
+					error,
+					installationId: installation._id,
+				});
+				toast.error("Failed to uninstall plugin");
+			})
+			.finally(() => {
+				setUninstalling(false);
+			});
+	});
 
 	return (
 		<section className={"RoutePluginsInstalled" satisfies RoutePluginsInstalled_ClassNames}>
-			<h2 className={"RoutePluginsInstalled-title" satisfies RoutePluginsInstalled_ClassNames}>
-				<span className={"RoutePluginsInstalled-name" satisfies RoutePluginsInstalled_ClassNames}>
-					Installed in this workspace
-				</span>
-				<MyBadge variant={installation.status === "enabled" ? "secondary" : "outline"}>
-					{installation.status === "enabled" ? "Enabled" : "Disabled"}
-				</MyBadge>
-			</h2>
+			<div className={"RoutePluginsInstalled-titleRow" satisfies RoutePluginsInstalled_ClassNames}>
+				<h2 className={"RoutePluginsInstalled-title" satisfies RoutePluginsInstalled_ClassNames}>
+					<span className={"RoutePluginsInstalled-name" satisfies RoutePluginsInstalled_ClassNames}>
+						Installed in this workspace
+					</span>
+					<MyBadge variant={installation.status === "enabled" ? "secondary" : "outline"}>
+						{installation.status === "enabled" ? "Enabled" : "Disabled"}
+					</MyBadge>
+				</h2>
+				<MyButton
+					variant="ghost_destructive"
+					aria-label={`Uninstall ${installation.pluginName}`}
+					tooltip="Uninstall"
+					disabled={uninstalling}
+					onClick={handleUninstall}
+				>
+					<Trash2 aria-hidden />
+				</MyButton>
+			</div>
 			<div className={"RoutePluginsInstalled-meta" satisfies RoutePluginsInstalled_ClassNames}>
 				{installation.pluginName}@{version.version} · {version.sourceOwner}/{version.sourceRepo}@
 				{version.sourceCommitSha.slice(0, 8)}
@@ -548,7 +578,7 @@ const RoutePluginsPluginPublisherVersions = memo(function RoutePluginsPluginPubl
 									"RoutePluginsPluginPublisherVersionItem-meta" satisfies RoutePluginsPluginPublisherVersions_ClassNames
 								}
 							>
-								{version.sourceCommitSha.slice(0, 8)} · {format_date(version.createdAt)}
+								{version.sourceCommitSha.slice(0, 8)} · {format_datetime(version.createdAt)}
 							</span>
 							<MyBadge variant={review_badge_variant(version.reviewStatus)}>{version.reviewStatus}</MyBadge>
 						</div>
@@ -637,7 +667,7 @@ const RoutePluginsPluginPublisherReviews = memo(function RoutePluginsPluginPubli
 											"RoutePluginsPluginPublisherReviewItem-meta" satisfies RoutePluginsPluginPublisherReviews_ClassNames
 										}
 									>
-										{review.model === "none" ? "mechanical checks" : review.model} · {format_date(review.createdAt)}
+										{review.model === "none" ? "mechanical checks" : review.model} · {format_datetime(review.createdAt)}
 									</span>
 									<MyBadge variant={review_badge_variant(review.status)}>{review.status}</MyBadge>
 								</div>
@@ -700,7 +730,7 @@ function origins_from_text(text: string) {
 
 function origins_validation_error(rawOrigins: string[]) {
 	for (const raw of rawOrigins) {
-		const origin = plugins_origin_validate(raw);
+		const origin = plugins_validate_origin(raw);
 		if (origin._nay) {
 			return `${raw}: ${origin._nay.message}`;
 		}
@@ -800,8 +830,8 @@ const RoutePluginsPluginPublisherSecretRow = memo(function RoutePluginsPluginPub
 						"RoutePluginsPluginPublisherSecretItem-meta" satisfies RoutePluginsPluginPublisherSecrets_ClassNames
 					}
 				>
-					{secret.valuePreview} · updated {format_date(secret.updatedAt)}
-					{secret.lastUsedAt === null ? "" : ` · used ${format_date(secret.lastUsedAt)}`}
+					{secret.valuePreview} · updated {format_datetime(secret.updatedAt)}
+					{secret.lastUsedAt === null ? "" : ` · used ${format_datetime(secret.lastUsedAt)}`}
 				</span>
 			</div>
 			<div
@@ -1083,7 +1113,9 @@ type RoutePluginsPluginPublisher_ClassNames =
 	| "RoutePluginsPluginPublisher-title"
 	| "RoutePluginsPluginPublisher-actions"
 	| "RoutePluginsPluginPublisher-meta"
-	| "RoutePluginsPluginPublisher-repoLink";
+	| "RoutePluginsPluginPublisher-repoLink"
+	| "RoutePluginsPluginPublisher-lastAttempt"
+	| "RoutePluginsPluginPublisher-lastAttemptMessage";
 
 type RoutePluginsPluginPublisher_Props = {
 	details: RoutePlugins_PublisherPlugin;
@@ -1180,6 +1212,21 @@ const RoutePluginsPluginPublisher = memo(function RoutePluginsPluginPublisher(
 				</a>
 				<span>Publish builds and registers the default-branch HEAD.</span>
 			</div>
+			{details.repository.lastPublishAttempt ? (
+				<div className={"RoutePluginsPluginPublisher-lastAttempt" satisfies RoutePluginsPluginPublisher_ClassNames}>
+					<MyBadge variant={details.repository.lastPublishAttempt.status === "succeeded" ? "secondary" : "destructive"}>
+						{details.repository.lastPublishAttempt.status}
+					</MyBadge>
+					<span
+						className={
+							"RoutePluginsPluginPublisher-lastAttemptMessage" satisfies RoutePluginsPluginPublisher_ClassNames
+						}
+					>
+						Last publish {format_datetime(details.repository.lastPublishAttempt.at)} ·{" "}
+						{details.repository.lastPublishAttempt.message}
+					</span>
+				</div>
+			) : null}
 
 			<RoutePluginsPluginPublisherVersions versions={details.versions} />
 			<RoutePluginsPluginPublisherReviews reviews={details.reviews} />

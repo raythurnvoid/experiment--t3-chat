@@ -9,6 +9,7 @@ import { internal } from "../convex/_generated/api.js";
 import { public_api_SCOPE_FILES_LIST, public_api_SCOPE_FILES_READ } from "../convex/public_api.ts";
 import { files_READ_RANGE_MAX_LINES } from "../convex/files_nodes.ts";
 import { path_name_of, server_path_normalize, server_path_parent_of } from "./server-utils.ts";
+import { crypto_sha256_hex } from "./crypto-utils.ts";
 import { minimatch } from "minimatch";
 import {
 	files_MOUNT_ROOT,
@@ -1514,13 +1515,6 @@ function ai_chat_tool_execute_code_random_token() {
 		.join("");
 }
 
-async function ai_chat_tool_execute_code_sha256_hex(input: string) {
-	const digest = await crypto.subtle.digest("SHA-256", ai_chat_tool_execute_code_TEXT_ENCODER.encode(input));
-	return Array.from(new Uint8Array(digest))
-		.map((byte) => byte.toString(16).padStart(2, "0"))
-		.join("");
-}
-
 function ai_chat_tool_execute_code_app_origin() {
 	const origin = process.env.VITE_CONVEX_HTTP_URL?.trim() || process.env.CONVEX_SITE_URL?.trim();
 	if (!origin) {
@@ -1648,7 +1642,7 @@ export function ai_chat_tool_create_execute_code(
 				userId: ctxData.userId,
 				threadId: opts.getThreadId?.() ?? null,
 				principalKey: executionId,
-				tokenHash: await ai_chat_tool_execute_code_sha256_hex(publicApiGrantToken),
+				tokenHash: await crypto_sha256_hex(publicApiGrantToken),
 				scopes: [public_api_SCOPE_FILES_LIST, public_api_SCOPE_FILES_READ],
 				pathPrefix: null,
 				now: Date.now(),

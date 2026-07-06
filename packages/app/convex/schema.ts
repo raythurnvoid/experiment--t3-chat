@@ -687,6 +687,15 @@ const app_convex_schema = defineSchema({
 		repositoryUrl: v.string(),
 		owner: v.string(),
 		repo: v.string(),
+		/** Last publish_version outcome after authorization; outlives the toast so first-publish rejections stay visible. */
+		lastPublishAttempt: v.optional(
+			v.object({
+				at: v.number(),
+				status: v.union(v.literal("succeeded"), v.literal("rejected"), v.literal("failed")),
+				message: v.string(),
+				commitSha: v.union(v.string(), v.null()),
+			}),
+		),
 		createdAt: v.number(),
 	})
 		.index("by_ownerUser", ["ownerUserId"])
@@ -697,13 +706,12 @@ const app_convex_schema = defineSchema({
 	 * running version's sourceRepositoryUrl to its claim. `ownerUserId` stays for auth
 	 * checks and user data deletion.
 	 */
-	plugins_publisher_secrets: defineTable({
+	plugins_publisher_repository_secrets: defineTable({
 		ownerUserId: v.id("users"),
 		repositoryId: v.id("plugins_publisher_repositories"),
 		name: v.string(),
-		ciphertext: v.string(),
-		nonce: v.string(),
-		keyVersion: v.number(),
+		ciphertext: v.bytes(),
+		nonce: v.bytes(),
 		valuePreview: v.string(),
 		/** Exact https origins this secret may travel to; unioned into the per-run outbound allowlist of this repository's plugins. */
 		allowedOrigins: v.array(v.string()),
@@ -838,9 +846,8 @@ const app_convex_schema = defineSchema({
 		installationId: v.id("plugins_workspace_installations"),
 		pluginName: v.string(),
 		name: v.string(),
-		ciphertext: v.string(),
-		nonce: v.string(),
-		keyVersion: v.number(),
+		ciphertext: v.bytes(),
+		nonce: v.bytes(),
 		valuePreview: v.string(),
 		createdBy: v.id("users"),
 		updatedBy: v.id("users"),
@@ -883,7 +890,7 @@ const app_convex_schema = defineSchema({
 		actorUserId: v.id("users"),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
-		event: v.literal("files.upload.completed"),
+		event: v.union(v.literal("files.upload.completed"), v.literal("files.run.requested")),
 		eventId: v.string(),
 		status: v.union(v.literal("queued"), v.literal("running"), v.literal("succeeded"), v.literal("failed")),
 		workId: v.optional(vWorkId),

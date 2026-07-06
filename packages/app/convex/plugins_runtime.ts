@@ -29,6 +29,7 @@ import {
 	files_node_has_editable_yjs_state,
 } from "../server/files.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	MEDIA_DESCRIPTION_MODEL_ID,
 	create_generated_markdown_output_node,
@@ -38,7 +39,7 @@ import {
 	r2_get_download_url,
 	write_uploaded_media_markdown_output_objects,
 } from "./r2.ts";
-import { plugins_secret_name_validate } from "../shared/plugins.ts";
+import { plugins_validate_secret_name } from "../shared/plugins.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -52,6 +53,7 @@ const plugin_runtime_upload_event_settle_delay_ms = 15 * 1000;
 const plugin_runtime_multimodal_generate_text_model_id = "gpt-4.1-mini" as const;
 
 const upload_completed_event_type = "files.upload.completed" as const;
+const run_requested_event_type = "files.run.requested" as const;
 
 function real_upload_source_scope(sourceAsset: Doc<"files_r2_assets">) {
 	const { organizationId, workspaceId, createdBy } = sourceAsset;
@@ -114,13 +116,6 @@ function backend_artifact_hash(version: Doc<"plugins_versions">) {
 		version.files.find((file) => file.path === version.backend?.entry)?.sha256 ??
 		version.artifactHash
 	);
-}
-
-async function sha256_hex(input: string) {
-	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-	return Array.from(new Uint8Array(digest))
-		.map((byte) => byte.toString(16).padStart(2, "0"))
-		.join("");
 }
 
 function create_host_token() {
@@ -361,6 +356,81 @@ export const enqueue_upload_completed_runs = internalMutation({
 	},
 });
 
+export async function plugins_runtime_enqueue_manual_run(
+	ctx: MutationCtx,
+	args: {
+		sourceAsset: Doc<"files_r2_assets">;
+		sourceFileNode: Doc<"files_nodes">;
+		actorUserId: Id<"users">;
+		installation: Doc<"plugins_workspace_installations">;
+	},
+) {
+	const version = await ctx.db.get("plugins_versions", args.installation.pluginVersionId);
+	if (!version) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	if (!version.backend || !args.installation.acceptedCapabilities.includes("files.markdown.write")) {
+		return Result({ _nay: { message: "Plugin cannot process files" } });
+	}
+	const artifactHash = backend_artifact_hash(version);
+	if (!artifactHash) {
+		return Result({ _nay: { message: "Plugin backend artifact hash is missing" } });
+	}
+
+	// Manual runs never dedupe by eventId, but at most one live run may exist per
+	// installation+file across both trigger sources. Expired queued/running docs
+	// (start_event_run refuses them) must not block a re-run forever.
+	const now = Date.now();
+	for (const event of [upload_completed_event_type, run_requested_event_type] as const) {
+		const recentRuns = await ctx.db
+			.query("plugins_event_runs")
+			.withIndex("by_sourceAsset_event_installation", (q) =>
+				q.eq("sourceAssetId", args.sourceAsset._id).eq("event", event).eq("installationId", args.installation._id),
+			)
+			.order("desc")
+			.take(5);
+		if (recentRuns.some((run) => (run.status === "queued" || run.status === "running") && run.expiresAt > now)) {
+			return Result({ _nay: { message: "A run for this plugin is already pending for this file" } });
+		}
+	}
+
+	const runId = await ctx.db.insert("plugins_event_runs", {
+		organizationId: args.installation.organizationId,
+		workspaceId: args.installation.workspaceId,
+		sourceAssetId: args.sourceAsset._id,
+		sourceFileNodeId: args.sourceFileNode._id,
+		// Unlike the upload path (asset creator), manual runs attribute output writes to the clicking user.
+		actorUserId: args.actorUserId,
+		installationId: args.installation._id,
+		pluginVersionId: version._id,
+		event: run_requested_event_type,
+		eventId: composite_id("plugin", "run_requested", crypto.randomUUID(), String(args.installation._id)),
+		status: "queued",
+		acceptedCapabilities: args.installation.acceptedCapabilities,
+		expiresAt: now + plugin_runtime_run_ttl_ms,
+		hostCallCount: 0,
+		hostWriteCount: 0,
+		errorMessage: null,
+		createdAt: now,
+		updatedAt: now,
+	});
+
+	// No R2 settle delay for manual runs: the asset's r2Key was confirmed long ago.
+	const workId = await plugin_event_execution_workpool.enqueueAction(
+		ctx,
+		internal.plugins_runtime.execute_upload_completed_event_run,
+		{
+			runId,
+		},
+	);
+	await ctx.db.patch("plugins_event_runs", runId, {
+		workId,
+		updatedAt: now,
+	});
+
+	return Result({ _yay: { runId } });
+}
+
 export const start_event_run = internalMutation({
 	args: {
 		runId: v.id("plugins_event_runs"),
@@ -406,7 +476,7 @@ export const start_event_run = internalMutation({
 			.first();
 		const publisherSecrets = repository
 			? await ctx.db
-					.query("plugins_publisher_secrets")
+					.query("plugins_publisher_repository_secrets")
 					.withIndex("by_repository_name", (q) => q.eq("repositoryId", repository._id))
 					.take(100)
 			: [];
@@ -831,7 +901,7 @@ export const host_write_markdown = internalAction({
 		}
 
 		const claimed = (await ctx.runMutation(internal.plugins_runtime.claim_host_call, {
-			hostTokenHash: await sha256_hex(args.hostToken),
+			hostTokenHash: await crypto_sha256_hex(args.hostToken),
 			pluginRunId: args.pluginRunId,
 			requiredCapabilities: ["files.markdown.write"],
 			operation: "writeMarkdown",
@@ -907,7 +977,7 @@ export const host_source_temporary_url = internalAction({
 	handler: async (ctx, args) => {
 		const expiresIn = Math.min(Math.max(args.expiresInSeconds ?? 15 * 60, 1), 15 * 60);
 		const claimed = (await ctx.runMutation(internal.plugins_runtime.claim_host_call, {
-			hostTokenHash: await sha256_hex(args.hostToken),
+			hostTokenHash: await crypto_sha256_hex(args.hostToken),
 			pluginRunId: args.pluginRunId,
 			requiredCapabilities: ["files.source.temporaryUrl"],
 			operation: "sourceTemporaryUrl",
@@ -966,13 +1036,13 @@ export const host_secret_get = internalAction({
 	},
 	returns: v_result({ _yay: v.union(v.string(), v.null()) }),
 	handler: async (ctx, args) => {
-		const name = plugins_secret_name_validate(args.name);
+		const name = plugins_validate_secret_name(args.name);
 		if (name._nay) {
 			return Result({ _nay: { message: name._nay.message } });
 		}
 
 		const claimed = (await ctx.runMutation(internal.plugins_runtime.claim_host_call, {
-			hostTokenHash: await sha256_hex(args.hostToken),
+			hostTokenHash: await crypto_sha256_hex(args.hostToken),
 			pluginRunId: args.pluginRunId,
 			requiredCapabilities: ["plugin.secrets.read"],
 			operation: "secretGet",
@@ -1044,7 +1114,7 @@ export const host_generate_text = internalAction({
 		const systemBytes = files_get_utf8_byte_size(args.system);
 		const promptBytes = files_get_utf8_byte_size(args.prompt);
 		const claimed = (await ctx.runMutation(internal.plugins_runtime.claim_host_call, {
-			hostTokenHash: await sha256_hex(args.hostToken),
+			hostTokenHash: await crypto_sha256_hex(args.hostToken),
 			pluginRunId: args.pluginRunId,
 			requiredCapabilities,
 			operation: "generateText",
@@ -1157,6 +1227,8 @@ export const host_generate_text = internalAction({
 	},
 });
 
+// Executes both upload-triggered and manually requested runs; keep the historical name because
+// pending workpool items persist the function reference by name across deploys.
 export const execute_upload_completed_event_run = internalAction({
 	args: {
 		runId: v.id("plugins_event_runs"),
@@ -1166,7 +1238,7 @@ export const execute_upload_completed_event_run = internalAction({
 		const hostToken = create_host_token();
 		const started = (await ctx.runMutation(internal.plugins_runtime.start_event_run, {
 			runId: args.runId,
-			hostTokenHash: await sha256_hex(hostToken),
+			hostTokenHash: await crypto_sha256_hex(hostToken),
 			hostTokenExpiresAt: Date.now() + plugin_runtime_host_token_ttl_ms,
 		})) as {
 			_yay?: {
@@ -1221,7 +1293,7 @@ export const execute_upload_completed_event_run = internalAction({
 					acceptedCapabilities: started._yay.run.acceptedCapabilities,
 					outboundOrigins: started._yay.outboundOrigins,
 					input: {
-						event: upload_completed_event_type,
+						event: started._yay.run.event,
 						eventId: started._yay.run.eventId,
 						organizationId: String(started._yay.run.organizationId),
 						workspaceId: String(started._yay.run.workspaceId),
@@ -1373,7 +1445,7 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 										: (["ai.generateText"] as const)
 									: (["outbound.fetch"] as const);
 							const result = (await ctx.runMutation(internal.plugins_runtime.claim_host_call, {
-								hostTokenHash: await sha256_hex(token),
+								hostTokenHash: await crypto_sha256_hex(token),
 								pluginRunId: body._yay.pluginRunId,
 								requiredCapabilities: [...requiredCapabilities],
 								operation: body._yay.operation,
@@ -1439,7 +1511,7 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 								return { status: 400, body: { message: body._nay.message } } as const;
 							}
 							const result = (await ctx.runMutation(internal.plugins_runtime.finish_runner_host_call, {
-								hostTokenHash: await sha256_hex(token),
+								hostTokenHash: await crypto_sha256_hex(token),
 								pluginRunId: body._yay.pluginRunId,
 								callId: body._yay.callId,
 								status: body._yay.status,
