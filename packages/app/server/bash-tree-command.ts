@@ -15,6 +15,8 @@ import {
 	bash_LISTING_DEFAULT_LIMIT,
 	bash_LISTING_MAX_LIMIT,
 	bash_parse_limit,
+	bash_plugins_fan_out_db_files_path,
+	bash_plugins_fan_out_paginate,
 	bash_read_option_value,
 	bash_resolve_path,
 	bash_shell_arg_quote,
@@ -151,6 +153,103 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			dbFilesPath: pathResolution.dbFilesPath,
 			builtinOperand: parsed._yay.path ?? ".",
 		};
+
+		// The `/.plugins` root spans one indexed tree per installed plugin. Fan out one
+		// subtree listing per plugin, in name order, under a composite cursor.
+		if (pathResolution.kind === "plugins_root") {
+			if (dbFilesRoots.plugins.mounts.size === 0) {
+				return {
+					stdout: "",
+					stderr: `tree: ${target.absoluteShellPath}: No such file or directory\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
+			if (parsed._yay.unsupportedDbFilesOption != null) {
+				return {
+					stdout: "",
+					stderr:
+						`tree: unsupported option ${parsed._yay.unsupportedDbFilesOption} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
+						"Usage: tree [PATH] [--limit N] [--cursor CURSOR]\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+			}
+
+			let pluginsCursor: string | null = null;
+			if (parsed._yay.cursor != null) {
+				const resolvedCursor = await bash_cursor_id_resolve(ctx, parsed._yay.cursor);
+				if (resolvedCursor._nay) {
+					return {
+						stdout: "",
+						stderr: `${resolvedCursor._nay.message}\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				}
+				pluginsCursor = resolvedCursor._yay;
+			}
+
+			// Each plugin page includes its version-root folder doc, which renders as the
+			// `/.plugins/<pluginName>/` branch line, so no synthetic entries are needed.
+			const fanOut = await bash_plugins_fan_out_paginate({
+				command: "tree",
+				plugins: dbFilesRoots.plugins,
+				cursor: pluginsCursor,
+				limit: bash_clamp_listing_page_limit(parsed._yay.limit),
+				runPage: async (pageArgs) => {
+					const pageResult = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+						organizationId: pageArgs.mount.fs.ctxData.organizationId,
+						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
+						folderPath: `/${pageArgs.mount.pluginVersionId}`,
+						numItems: pageArgs.numItems,
+						cursor: pageArgs.innerCursor,
+					})) as files_nodes_list_subtree_Result;
+					return {
+						items: pageResult.page.map((item) => ({
+							path: bash_plugins_fan_out_db_files_path(pageArgs.mount, item.path),
+							kind: item.kind,
+						})),
+						continueCursor: pageResult.continueCursor,
+						isDone: pageResult.isDone,
+					};
+				},
+			});
+			if (fanOut._nay) {
+				return {
+					stdout: "",
+					stderr: `${fanOut._nay.message}\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
+
+			const lines = [target.absoluteShellPath];
+			for (const item of fanOut._yay.items) {
+				const segments = item.path.split("/").filter(Boolean);
+				if (segments.length === 0) {
+					continue;
+				}
+				const prefix = segments.length === 1 ? "|-- " : `${"|   ".repeat(segments.length - 1)}|-- `;
+				lines.push(`${prefix}${segments.at(-1)}${item.kind === "folder" ? "/" : ""}`);
+			}
+			if (!fanOut._yay.isDone && fanOut._yay.continueCursor != null) {
+				lines.push(
+					"",
+					build_continuation({
+						target: target.absoluteShellPath,
+						limit: parsed._yay.limit,
+						cursor: await bash_cursor_id_create(ctx, fanOut._yay.continueCursor),
+					}),
+				);
+				if (parsed._yay.cursor != null) {
+					lines.push(
+						"Note: this output is already a continuation page; if the user asked for exactly one continuation, stop here. Run another Next page only if the user asks for more.",
+					);
+				}
+			}
+			return {
+				stdout: `${lines.join("\n")}\n`,
+				stderr: "",
+				exitCode: 0,
+			};
+		}
 
 		// Non-db-files paths are normal Just Bash filesystem paths. Delegate them so native
 		// `tree` behavior is preserved outside the app file tree and external mounts.

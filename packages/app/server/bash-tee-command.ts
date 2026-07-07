@@ -2,7 +2,7 @@ import { defineCommand } from "just-bash/browser";
 import {
 	bash_current_workspace_path_to_db_files_path,
 	bash_delegate_builtin_command,
-	bash_is_path_under_mounts,
+	bash_is_path_under_read_only_mounts,
 	bash_resolve_path,
 	bash_read_only_mount_error,
 	bash_COMMAND_EXIT_FAILURE,
@@ -47,7 +47,7 @@ export function bash_tee_command_create(currentWorkspacePath: string) {
 		for (const file of path_operands(args)) {
 			const resolvedPath = bash_resolve_path(commandCtx.cwd, file);
 
-			if (bash_is_path_under_mounts(resolvedPath)) {
+			if (bash_is_path_under_read_only_mounts(resolvedPath)) {
 				return {
 					stdout: "",
 					stderr: bash_read_only_mount_error("tee", resolvedPath),

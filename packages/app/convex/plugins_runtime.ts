@@ -37,8 +37,8 @@ import {
 import type { plugins_decrypt_secret_for_runtime_Result } from "./plugins.ts";
 import { plugins_validate_secret_name } from "../shared/plugins.ts";
 import {
-	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
+	organizations_is_reserved_workspace_id,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
@@ -54,7 +54,7 @@ function real_upload_source_scope(sourceAsset: Doc<"files_r2_assets">) {
 	const { organizationId, workspaceId, createdBy } = sourceAsset;
 	if (
 		organizationId === organizations_GLOBAL_ORGANIZATION_ID ||
-		workspaceId === organizations_GLOBAL_GITHUB_WORKSPACE_ID ||
+		organizations_is_reserved_workspace_id(workspaceId) ||
 		createdBy === users_SYSTEM_AUTHOR
 	) {
 		return null;

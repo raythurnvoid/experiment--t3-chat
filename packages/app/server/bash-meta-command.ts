@@ -442,6 +442,15 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
+			if (target.kind === "plugins_root") {
+				return {
+					stdout: "",
+					stderr:
+						`meta get: ${bash_normalize_path(parsed._yay.pathShell)} is the plugins root, not a file; pick a file under /.plugins/<pluginName>.\n` +
+						"Run 'ls /.plugins' to list the installed plugins.\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+			}
 			if (target.dbFilesPath == null) {
 				return {
 					stdout: "",
@@ -524,6 +533,15 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				stderr:
 					"meta search: choose a single mount to search; cd into a mount or pass --path /.mounts/<name> --where '<json>'.\n" +
 					"Run 'ls /.mounts' to list the available mounts.\n",
+				exitCode: bash_COMMAND_EXIT_USAGE,
+			};
+		}
+		if (scope.kind === "plugins_root") {
+			return {
+				stdout: "",
+				stderr:
+					"meta search: choose a single plugin to search; cd into a plugin or pass --path /.plugins/<pluginName> --where '<json>'.\n" +
+					"Run 'ls /.plugins' to list the installed plugins.\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}

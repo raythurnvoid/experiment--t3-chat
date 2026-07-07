@@ -27,20 +27,30 @@ import type {
 import type { files_pending_updates_get_by_file_node_Result } from "../convex/files_pending_updates.ts";
 import type { get_asset_by_id_Result } from "../convex/r2.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import {
-	files_MOUNT_ROOT,
-	files_ROOT_ID,
-	files_SYNTHETIC_ROOT_FOLDER,
-	files_node_has_editable_yjs_state,
-} from "../shared/files.ts";
+import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, files_node_has_editable_yjs_state } from "../shared/files.ts";
 import { LruCache, math_clamp, path_name_of, should_never_happen } from "../shared/shared-utils.ts";
-import { organizations_is_global_github_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
+import { organizations_is_reserved_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
+import { pagination_fan_out_paginate } from "../shared/pagination.ts";
 
 // #region bash constants and path helpers
 
 export const bash_HOME = "/home/cloud-usr";
 export const bash_APP_MOUNT_PATH = `${bash_HOME}/w`;
 export const bash_TMP_MOUNT = "/tmp";
+
+/**
+ * Shell mount point for read-only reserved-scope external mounts (e.g. the GitHub mirror of the
+ * app's own codebase). Single source of truth for the shell-visible prefix; stored `files_nodes`
+ * paths never contain it.
+ */
+export const bash_EXTERNAL_MOUNTS_ROOT = "/.mounts";
+
+/**
+ * Shell mount point for read-only plugin source mounts. Each enabled plugin installation in the
+ * current workspace appears as `/.plugins/<pluginName>`, backed by the version-keyed source tree
+ * in the reserved `GLOBAL`/`PLUGINS` scope.
+ */
+export const bash_PLUGINS_MOUNT_ROOT = "/.plugins";
 export const bash_DEV_NULL_PATH = "/dev/null";
 export const bash_DEV_ZERO_PATH = "/dev/zero";
 export const bash_DEV_ZERO_BYTE_COUNT = 8192;
@@ -176,14 +186,22 @@ export function bash_current_workspace_path_to_db_files_path(currentWorkspacePat
  * Check whether a normalized path is inside currentWorkspacePath.
  */
 export function bash_is_path_under_current_workspace_path(currentWorkspacePath: string, path: string) {
-	return path === currentWorkspacePath || path.startsWith(`${currentWorkspacePath}/`);
+	return bash_is_path_under(currentWorkspacePath, path);
 }
 
 /**
- * Check whether a normalized path is the mounts root or inside it (`/.mounts`, `/.mounts/<name>/...`).
+ * Check whether a normalized path is `basePath` itself or inside it.
  */
-export function bash_is_path_under_mounts(path: string) {
-	return path === files_MOUNT_ROOT || path.startsWith(`${files_MOUNT_ROOT}/`);
+export function bash_is_path_under(basePath: string, path: string) {
+	return path === basePath || path.startsWith(`${basePath}/`);
+}
+
+/**
+ * Check whether a normalized path is inside any read-only db-files mount tree
+ * (`/.mounts` external sources or `/.plugins` plugin sources).
+ */
+export function bash_is_path_under_read_only_mounts(path: string) {
+	return bash_is_path_under(bash_EXTERNAL_MOUNTS_ROOT, path) || bash_is_path_under(bash_PLUGINS_MOUNT_ROOT, path);
 }
 
 export function bash_clamp_listing_page_limit(limit: number) {
@@ -234,6 +252,24 @@ export type bash_DbFilesFsOptions = {
 	};
 	currentWorkspacePath: string;
 	allowDbFilesMkdir: boolean;
+	/**
+	 * Stored-path prefix prepended to every mount-relative path before it reaches Convex.
+	 *
+	 * Plugin source mounts store their tree under `/<pluginVersionId>/...` in the reserved
+	 * `GLOBAL`/`PLUGINS` scope while the shell sees `/.plugins/<pluginName>/...`, so the fs maps
+	 * `"/dist"` to `"/<pluginVersionId>/dist"` at the query boundary and strips the prefix again
+	 * when rendering shell paths. Empty (the default) keeps stored and mount-relative paths equal.
+	 */
+	dbFilesPathPrefix?: string;
+	/**
+	 * Which read-only mounted source family this fs backs; omit for the tenant app tree.
+	 *
+	 * `codebase` is the GitHub mirror of the app's own repository (`/.mounts`), kept so the
+	 * agent can read its own source when helping users use the app or build plugins.
+	 * Every path a mounted fs sees is inside its own mount by construction, so the mount
+	 * identity (not shell-path sniffing) decides the EROFS message for rejected writes.
+	 */
+	readOnlySource?: "codebase" | "plugins";
 };
 
 /**
@@ -268,14 +304,17 @@ export class bash_DbFilesContentUnavailableError extends Error {
 class ReadOnlyFileSystemError extends Error {
 	readonly path: string;
 
-	constructor(path: string, args?: { externalMount: boolean }) {
+	constructor(path: string, readOnlySource: bash_DbFilesFsOptions["readOnlySource"]) {
 		const normalizedPath = bash_normalize_path(path);
-		// The same filesystem class backs tenant app files and external mounts.
-		// External mount writes need a separate message because write_file/edit_file
-		// cannot edit read-only external sources.
-		const message = args?.externalMount
-			? `EROFS: read-only file system, '${normalizedPath}'. '${files_MOUNT_ROOT}' is a read-only mount of an external source.`
-			: `EROFS: read-only file system, '${normalizedPath}'. Persistent app-file writes must use write_file/edit_file; shell redirects into app files are unsupported.`;
+		// The same filesystem class backs tenant app files, external mounts, and plugin
+		// source mounts. Read-only mount writes need separate messages because
+		// write_file/edit_file cannot edit read-only mounted sources.
+		const message =
+			readOnlySource === "codebase"
+				? `EROFS: read-only file system, '${normalizedPath}'. '${bash_EXTERNAL_MOUNTS_ROOT}' is a read-only mount of an external source.`
+				: readOnlySource === "plugins"
+					? `EROFS: read-only file system, '${normalizedPath}'. '${bash_PLUGINS_MOUNT_ROOT}' is a read-only mount of installed plugin sources.`
+					: `EROFS: read-only file system, '${normalizedPath}'. Persistent app-file writes must use write_file/edit_file; shell redirects into app files are unsupported.`;
 		super(message);
 		this.name = "ReadOnlyFileSystemError";
 		this.path = normalizedPath;
@@ -286,14 +325,20 @@ class ReadOnlyFileSystemError extends Error {
  * Mount a db files tree into Just Bash as a mostly read-only filesystem.
  *
  * `MountableFs` strips `currentWorkspacePath` before calls reach this class, so
- * methods here receive db-files paths like `/docs/readme.md`, not
- * shell paths like `/home/cloud-usr/w/.../docs/readme.md`.
+ * IFileSystem methods receive mount-relative paths like `/docs/readme.md`, not
+ * shell paths like `/home/cloud-usr/w/.../docs/readme.md`. They translate through
+ * `dbFilesPathPrefix` exactly once; `getEntry`/`rememberEntry` and the caches
+ * always operate on stored `files_nodes.path` values.
  */
 export class bash_DbFilesFs implements IFileSystem {
 	readonly ctx: ActionCtx;
 	readonly ctxData: bash_DbFilesFsOptions["ctxData"];
 	readonly currentWorkspacePath: string;
 	readonly allowDbFilesMkdir: boolean;
+	readonly dbFilesPathPrefix: string;
+	readonly readOnlySource: bash_DbFilesFsOptions["readOnlySource"];
+	/** Stored path of this mount's root (`"/"`, or the prefix itself for prefixed mounts). */
+	readonly dbFilesRootPath: string;
 	pathIndexTruncated = false;
 	private entryCache = new Map<string, DbFilesCacheEntry>();
 	private contentCache = new Map<string, string>();
@@ -303,18 +348,59 @@ export class bash_DbFilesFs implements IFileSystem {
 		this.ctxData = options.ctxData;
 		this.currentWorkspacePath = options.currentWorkspacePath;
 		this.allowDbFilesMkdir = options.allowDbFilesMkdir;
-		this.rememberEntry(files_SYNTHETIC_ROOT_FOLDER);
+		this.readOnlySource = options.readOnlySource;
+		this.dbFilesPathPrefix = options.dbFilesPathPrefix == null ? "" : bash_normalize_path(options.dbFilesPathPrefix);
+		this.dbFilesRootPath = this.dbFilesPathPrefix === "" || this.dbFilesPathPrefix === "/" ? "/" : this.dbFilesPathPrefix;
+		// A prefixed mount root (`/<prefix>`) is a real files_nodes folder, not the scope's
+		// synthetic "/" root: keep the seeded entry id-less so callers resolve the real node id
+		// instead of inheriting files_ROOT_ID and listing the reserved scope root's children.
+		this.rememberEntry(
+			this.dbFilesRootPath === "/"
+				? files_SYNTHETIC_ROOT_FOLDER
+				: { ...files_SYNTHETIC_ROOT_FOLDER, _id: undefined, path: this.dbFilesRootPath },
+		);
 	}
 
 	/**
-	 * Build the read-only error from a db-files path.
+	 * Map a mount-relative path from `MountableFs` to the stored `files_nodes.path`.
 	 *
-	 * Methods receive db-files paths. Convert back to the shell path before
-	 * choosing the tenant file or external mount read-only message.
+	 * `getEntry`/`rememberEntry` and the caches always operate on stored paths, so IFileSystem
+	 * entrypoints translate exactly once before any cache or Convex access.
+	 */
+	private toDbFilesPath(path: string) {
+		const normalizedPath = bash_normalize_path(path);
+		if (this.dbFilesRootPath === "/") {
+			return normalizedPath;
+		}
+		return normalizedPath === "/" ? this.dbFilesRootPath : `${this.dbFilesRootPath}${normalizedPath}`;
+	}
+
+	/**
+	 * Render a stored db-files path back to the shell path the user sees,
+	 * stripping the stored-path prefix for prefixed mounts.
+	 */
+	private shellPathOf(dbFilesPath: string) {
+		const normalizedPath = bash_normalize_path(dbFilesPath);
+		const mountRelativePath =
+			this.dbFilesRootPath === "/"
+				? normalizedPath
+				: normalizedPath === this.dbFilesRootPath
+					? "/"
+					: normalizedPath.startsWith(`${this.dbFilesRootPath}/`)
+						? normalizedPath.slice(this.dbFilesRootPath.length)
+						: normalizedPath;
+		return bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, mountRelativePath);
+	}
+
+	/**
+	 * Build the read-only error from a mount-relative db-files path.
+	 *
+	 * Convert back to the shell path before choosing the tenant file or
+	 * read-only mount message.
 	 */
 	private readOnlyFileSystemError(path: string) {
-		const shellPath = bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, path);
-		return new ReadOnlyFileSystemError(shellPath, { externalMount: bash_is_path_under_mounts(shellPath) });
+		const shellPath = bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, bash_normalize_path(path));
+		return new ReadOnlyFileSystemError(shellPath, this.readOnlySource);
 	}
 
 	/**
@@ -325,13 +411,11 @@ export class bash_DbFilesFs implements IFileSystem {
 	 * metacharacters before querying the db.
 	 */
 	async readFile(path: string, _options?: Parameters<IFileSystem["readFile"]>[1]) {
-		const normalizedPath = bash_normalize_path(path);
-		if (bash_GLOB_METACHARACTER_REGEX.test(normalizedPath)) {
-			throw new Error(
-				`app file glob patterns are not supported: '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
-			);
+		const dbFilesPath = this.toDbFilesPath(path);
+		if (bash_GLOB_METACHARACTER_REGEX.test(dbFilesPath)) {
+			throw new Error(`app file glob patterns are not supported: '${this.shellPathOf(dbFilesPath)}'`);
 		}
-		const cached = this.contentCache.get(normalizedPath);
+		const cached = this.contentCache.get(dbFilesPath);
 		if (cached != null) {
 			return cached;
 		}
@@ -343,14 +427,14 @@ export class bash_DbFilesFs implements IFileSystem {
 			organizationId: this.ctxData.organizationId,
 			workspaceId: this.ctxData.workspaceId,
 			userId: this.ctxData.userId,
-			path: normalizedPath,
+			path: dbFilesPath,
 			mode: {
 				kind: "full",
 				maxBytes: bash_READ_INLINE_MAX_BYTES,
 			},
 		})) as files_nodes_read_file_content_from_chunks_Result;
 		if (chunkRead) {
-			this.contentCache.set(normalizedPath, chunkRead.content);
+			this.contentCache.set(dbFilesPath, chunkRead.content);
 			return chunkRead.content;
 		}
 
@@ -362,47 +446,43 @@ export class bash_DbFilesFs implements IFileSystem {
 				organizationId: this.ctxData.organizationId,
 				workspaceId: this.ctxData.workspaceId,
 				userId: this.ctxData.userId,
-				path: normalizedPath,
+				path: dbFilesPath,
 			},
 		) as Promise<files_nodes_get_file_last_available_markdown_content_by_path_Result>;
 		const dbFilePromise: Promise<files_nodes_get_by_path_Result> =
-			normalizedPath === "/"
+			dbFilesPath === "/"
 				? Promise.resolve(null)
 				: (this.ctx.runQuery(internal.files_nodes.get_by_path, {
 						organizationId: this.ctxData.organizationId,
 						workspaceId: this.ctxData.workspaceId,
-						path: normalizedPath,
+						path: dbFilesPath,
 					}) as Promise<files_nodes_get_by_path_Result>);
 		const [fileContent, dbFilesDoc] = await Promise.all([fileContentPromise, dbFilePromise]);
 
 		if (!fileContent) {
-			const cacheEntry = normalizedPath === "/" ? files_SYNTHETIC_ROOT_FOLDER : dbFilesDoc;
+			const cacheEntry = dbFilesPath === "/" ? files_SYNTHETIC_ROOT_FOLDER : dbFilesDoc;
 			if (cacheEntry?.kind === "file") {
 				this.rememberEntry(cacheEntry);
 				throw new bash_DbFilesContentUnavailableError({
-					shellPath: bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath),
+					shellPath: this.shellPathOf(dbFilesPath),
 					contentType: cacheEntry.contentType,
 				});
 			}
 			if (cacheEntry?.kind === "folder") {
 				this.rememberEntry(cacheEntry);
-				throw new Error(
-					`EISDIR: illegal operation on a directory, read '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
-				);
+				throw new Error(`EISDIR: illegal operation on a directory, read '${this.shellPathOf(dbFilesPath)}'`);
 			}
-			throw new Error(
-				`ENOENT: no such file or directory, open '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
-			);
+			throw new Error(`ENOENT: no such file or directory, open '${this.shellPathOf(dbFilesPath)}'`);
 		}
 
-		this.contentCache.set(normalizedPath, fileContent.content);
+		this.contentCache.set(dbFilesPath, fileContent.content);
 		if (dbFilesDoc?.kind === "file") {
 			this.rememberEntry(dbFilesDoc);
 		} else {
 			this.rememberEntry({
 				_id: fileContent.nodeId,
-				path: normalizedPath,
-				name: path_name_of(normalizedPath),
+				path: dbFilesPath,
+				name: path_name_of(dbFilesPath),
 				kind: "file",
 				updatedAt: Date.now(),
 			});
@@ -423,24 +503,20 @@ export class bash_DbFilesFs implements IFileSystem {
 	}
 
 	async exists(path: string) {
-		return (await this.getEntry(path)) != null;
+		return (await this.getEntry(this.toDbFilesPath(path))) != null;
 	}
 
 	async stat(path: string): Promise<FsStat> {
-		const normalizedPath = bash_normalize_path(path);
-		if (bash_GLOB_METACHARACTER_REGEX.test(normalizedPath)) {
-			throw new Error(
-				`app file glob patterns are not supported: '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
-			);
+		const dbFilesPath = this.toDbFilesPath(path);
+		if (bash_GLOB_METACHARACTER_REGEX.test(dbFilesPath)) {
+			throw new Error(`app file glob patterns are not supported: '${this.shellPathOf(dbFilesPath)}'`);
 		}
-		const cacheEntry = await this.getEntry(normalizedPath);
+		const cacheEntry = await this.getEntry(dbFilesPath);
 		if (!cacheEntry) {
-			throw new Error(
-				`ENOENT: no such file or directory, stat '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
-			);
+			throw new Error(`ENOENT: no such file or directory, stat '${this.shellPathOf(dbFilesPath)}'`);
 		}
 
-		const content = this.contentCache.get(normalizedPath);
+		const content = this.contentCache.get(dbFilesPath);
 		return {
 			isFile: cacheEntry.kind === "file",
 			isDirectory: cacheEntry.kind === "folder",
@@ -453,22 +529,19 @@ export class bash_DbFilesFs implements IFileSystem {
 
 	async mkdir(path: string, options?: MkdirOptions) {
 		const normalizedPath = bash_normalize_path(path);
-		if (bash_GLOB_METACHARACTER_REGEX.test(normalizedPath)) {
-			throw new Error(
-				`app file glob patterns are not supported: '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
-			);
+		const dbFilesPath = this.toDbFilesPath(normalizedPath);
+		if (bash_GLOB_METACHARACTER_REGEX.test(dbFilesPath)) {
+			throw new Error(`app file glob patterns are not supported: '${this.shellPathOf(dbFilesPath)}'`);
 		}
-		const existing = await this.getEntry(normalizedPath);
+		const existing = await this.getEntry(dbFilesPath);
 		if (existing) {
 			if (options?.recursive && existing.kind === "folder") {
 				return;
 			}
-			throw new Error(
-				`EEXIST: file already exists, mkdir '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
-			);
+			throw new Error(`EEXIST: file already exists, mkdir '${this.shellPathOf(dbFilesPath)}'`);
 		}
 		if (!this.allowDbFilesMkdir) {
-			if (bash_is_path_under_mounts(this.currentWorkspacePath)) {
+			if (this.readOnlySource != null) {
 				throw this.readOnlyFileSystemError(normalizedPath);
 			}
 			throw new Error(
@@ -476,35 +549,33 @@ export class bash_DbFilesFs implements IFileSystem {
 			);
 		}
 		if (!options?.recursive) {
-			const parentPath = bash_normalize_path(`${normalizedPath}/..`);
+			const parentPath = bash_normalize_path(`${dbFilesPath}/..`);
 			const parent = await this.getEntry(parentPath);
 			if (!parent || parent.kind !== "folder") {
-				throw new Error(
-					`ENOENT: no such file or directory, mkdir '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
-				);
+				throw new Error(`ENOENT: no such file or directory, mkdir '${this.shellPathOf(dbFilesPath)}'`);
 			}
 		}
 
-		// mkdir only runs for the tenant app db-files root: the external mount root
-		// passes allowDbFilesMkdir=false and threw above, so the scope here is never
+		// mkdir only runs for the tenant app db-files root: the external mount and plugin
+		// source roots pass allowDbFilesMkdir=false and threw above, so the scope here is never
 		// reserved. Narrow the union before the workspace-only mutation, which declares strict ids.
 		const { organizationId, workspaceId, userId } = this.ctxData;
-		if (organizations_is_global_organization_id(organizationId) || organizations_is_global_github_workspace_id(workspaceId)) {
+		if (organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId)) {
 			throw should_never_happen("mkdir reached the reserved mount scope", { organizationId, workspaceId });
 		}
 		const created = (await this.ctx.runMutation(internal.files_nodes.create_folder_node_by_path, {
 			organizationId,
 			workspaceId,
 			userId,
-			path: normalizedPath,
+			path: dbFilesPath,
 		})) as files_nodes_create_folder_node_by_path_Result;
 		if (created._nay) {
 			throw new Error(created._nay.message);
 		}
 		this.rememberEntry({
 			_id: created._yay.nodeId,
-			path: normalizedPath,
-			name: path_name_of(normalizedPath),
+			path: dbFilesPath,
+			name: path_name_of(dbFilesPath),
 			kind: "folder",
 			updatedAt: Date.now(),
 			contentType: undefined,
@@ -513,12 +584,10 @@ export class bash_DbFilesFs implements IFileSystem {
 	}
 
 	async readdir(path: string): Promise<string[]> {
-		const normalizedPath = bash_normalize_path(path);
-		const stat = await this.stat(normalizedPath);
+		const dbFilesPath = this.toDbFilesPath(path);
+		const stat = await this.stat(path);
 		if (!stat.isDirectory) {
-			throw new Error(
-				`ENOTDIR: not a directory, scandir '${bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, normalizedPath)}'`,
-			);
+			throw new Error(`ENOTDIR: not a directory, scandir '${this.shellPathOf(dbFilesPath)}'`);
 		}
 		throw new Error("db files directory enumeration is not supported; use ls --limit N or find --limit N");
 	}
@@ -611,7 +680,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		const cached = this.entryCache.get(normalizedPath);
 		// Synthetic parent folders make descendant paths navigable. Except for the
 		// synthetic root, only entries with `_id` prove that an app path exists in `files_nodes`.
-		if (cached && (normalizedPath === "/" || cached._id != null)) {
+		if (cached && (normalizedPath === this.dbFilesRootPath || cached._id != null)) {
 			return cached;
 		}
 
@@ -652,17 +721,39 @@ export type bash_DbFilesRoot = {
 };
 
 /**
- * The app file tree and agent-only external mount db-files roots available to Bash commands.
+ * One enabled plugin installation exposed as a read-only source mount at
+ * `/.plugins/<pluginName>`, backed by the version-keyed tree `/<pluginVersionId>/...`
+ * in the reserved `GLOBAL`/`PLUGINS` scope.
+ */
+export type bash_PluginSourceMount = {
+	pluginName: string;
+	pluginVersionId: Id<"plugins_versions">;
+	fs: bash_DbFilesFs;
+};
+
+/**
+ * The app file tree, agent-only external mount, and per-plugin source mount
+ * db-files roots available to Bash commands.
  */
 export type bash_DbFilesRoots = {
 	app: bash_DbFilesRoot;
 	externalMounts: bash_DbFilesRoot;
+	plugins: {
+		currentWorkspacePath: string;
+		/** Enabled installations keyed by plugin name; empty when nothing is installed. */
+		mounts: Map<string, bash_PluginSourceMount>;
+	};
 };
 
 /**
  * The storage scope a normalized Bash path resolved to.
  */
-export type bash_DbFilesShellPathKind = "app" | "outside_db_files" | "external_mount" | "external_mounts_root";
+export type bash_DbFilesShellPathKind =
+	| "app"
+	| "outside_db_files"
+	| "external_mount"
+	| "external_mounts_root"
+	| "plugins_root";
 
 export type bash_DbFilesShellPathResolution = {
 	kind: bash_DbFilesShellPathKind;
@@ -685,7 +776,7 @@ export function bash_resolve_db_files_shell_path(
 ): bash_DbFilesShellPathResolution {
 	const normalized = bash_normalize_path(shellPath);
 
-	if (bash_is_path_under_mounts(normalized)) {
+	if (bash_is_path_under(bash_EXTERNAL_MOUNTS_ROOT, normalized)) {
 		const renderShellPath = (dbFilesPath: string) =>
 			bash_db_files_path_to_current_workspace_path(dbFilesRoots.externalMounts.currentWorkspacePath, dbFilesPath);
 		const base = {
@@ -708,6 +799,68 @@ export function bash_resolve_db_files_shell_path(
 		return { ...base, kind: "external_mount", dbFilesPath };
 	}
 
+	if (bash_is_path_under(bash_PLUGINS_MOUNT_ROOT, normalized)) {
+		const pluginsRootPath = dbFilesRoots.plugins.currentWorkspacePath;
+		const pluginsRelativePath = bash_current_workspace_path_to_db_files_path(pluginsRootPath, normalized);
+		const pluginName = pluginsRelativePath?.split("/").filter(Boolean)[0];
+		const mount = pluginName == null ? undefined : dbFilesRoots.plugins.mounts.get(pluginName);
+
+		// `/.plugins` itself has no single stored tree: each installed plugin is its own
+		// mount. Commands that need a listing fall through to `MountableFs` (dbFilesPath
+		// stays null); indexed commands guard this kind and print scoping guidance.
+		if (pluginsRelativePath === "/" || pluginsRelativePath == null) {
+			return {
+				kind: "plugins_root",
+				fs: dbFilesRoots.app.fs,
+				ctxData: dbFilesRoots.app.fs.ctxData,
+				dbFilesPath: null,
+				basePath: pluginsRootPath,
+				renderShellPath: (dbFilesPath: string) =>
+					bash_db_files_path_to_current_workspace_path(pluginsRootPath, dbFilesPath),
+			};
+		}
+
+		// Unknown or not-installed plugin names resolve as plain non-db paths so commands
+		// fall through to `MountableFs` and report ordinary ENOENT without leaking whether
+		// the plugin exists in the registry.
+		if (mount == null || pluginName == null) {
+			return {
+				kind: "outside_db_files",
+				fs: dbFilesRoots.app.fs,
+				ctxData: dbFilesRoots.app.fs.ctxData,
+				dbFilesPath: null,
+				basePath: dbFilesRoots.app.currentWorkspacePath,
+				renderShellPath: (dbFilesPath: string) =>
+					bash_db_files_path_to_current_workspace_path(dbFilesRoots.app.currentWorkspacePath, dbFilesPath),
+			};
+		}
+
+		// `/.plugins/<name>/rest` maps to the version-keyed stored tree `/<pluginVersionId>/rest`
+		// in the reserved `GLOBAL`/`PLUGINS` scope; the renderer strips the version prefix back off.
+		const basePath = `${pluginsRootPath}/${pluginName}`;
+		const versionRootPath = `/${mount.pluginVersionId}`;
+		const mountRelativePath = bash_current_workspace_path_to_db_files_path(basePath, normalized) ?? "/";
+		const dbFilesPath = mountRelativePath === "/" ? versionRootPath : `${versionRootPath}${mountRelativePath}`;
+		const renderShellPath = (renderDbFilesPath: string) => {
+			const normalizedDbFilesPath = bash_normalize_path(renderDbFilesPath);
+			const relativePath =
+				normalizedDbFilesPath === versionRootPath
+					? "/"
+					: normalizedDbFilesPath.startsWith(`${versionRootPath}/`)
+						? normalizedDbFilesPath.slice(versionRootPath.length)
+						: normalizedDbFilesPath;
+			return bash_db_files_path_to_current_workspace_path(basePath, relativePath);
+		};
+		return {
+			kind: "external_mount",
+			fs: mount.fs,
+			ctxData: mount.fs.ctxData,
+			dbFilesPath,
+			basePath,
+			renderShellPath,
+		};
+	}
+
 	const renderShellPath = (dbFilesPath: string) =>
 		bash_db_files_path_to_current_workspace_path(dbFilesRoots.app.currentWorkspacePath, dbFilesPath);
 	const dbFilesPath = bash_current_workspace_path_to_db_files_path(dbFilesRoots.app.currentWorkspacePath, normalized);
@@ -722,10 +875,15 @@ export function bash_resolve_db_files_shell_path(
 }
 
 /**
- * Build the consistent stderr for a write attempt under a read-only external mount.
+ * Build the consistent stderr for a write attempt under a read-only mount
+ * (`/.mounts` external sources or `/.plugins` plugin sources).
  */
 export function bash_read_only_mount_error(command: string, shellPath: string) {
-	return `${command}: cannot modify '${bash_normalize_path(shellPath)}': '${files_MOUNT_ROOT}' is a read-only mount of an external source.\n`;
+	const normalizedPath = bash_normalize_path(shellPath);
+	const reason = bash_is_path_under(bash_PLUGINS_MOUNT_ROOT, normalizedPath)
+		? `'${bash_PLUGINS_MOUNT_ROOT}' is a read-only mount of installed plugin sources.`
+		: `'${bash_EXTERNAL_MOUNTS_ROOT}' is a read-only mount of an external source.`;
+	return `${command}: cannot modify '${normalizedPath}': ${reason}\n`;
 }
 
 // #endregion db files path resolution
@@ -848,7 +1006,7 @@ function source_target_is_disallowed(target: string, options: { cwd: string; cur
 	const resolvedPath = bash_resolve_path(options.cwd, target);
 	return (
 		bash_is_path_under_current_workspace_path(options.currentWorkspacePath, resolvedPath) ||
-		bash_is_path_under_mounts(resolvedPath)
+		bash_is_path_under_read_only_mounts(resolvedPath)
 	);
 }
 
@@ -1219,6 +1377,74 @@ export async function bash_cursor_id_resolve(ctx: ActionCtx, cursor: string) {
 	// Refill the local LRU after durable lookup for subsequent page requests.
 	pagination_cursors_cache.set(id, stored.value);
 	return Result({ _yay: stored.value });
+}
+
+/**
+ * Paginate one indexed query per installed plugin, in plugin-name order, as a
+ * single continuous page stream rooted at `/.plugins`.
+ *
+ * Thin adapter over `pagination_fan_out_paginate`: plugin mounts become the
+ * fan-out sources (name key + version-id fingerprint, so installs, uninstalls,
+ * and version upgrades invalidate in-flight cursors) and the generic failure
+ * names become the command's stderr messages.
+ *
+ * `runPage` runs the per-plugin indexed query (search, subtree listing, ...)
+ * and returns items already mapped to their fan-out shape. The returned
+ * `continueCursor` is the raw composite cursor payload; callers store it with
+ * `bash_cursor_id_create` like any other cursor.
+ */
+export async function bash_plugins_fan_out_paginate<TItem>(args: {
+	command: string;
+	plugins: bash_DbFilesRoots["plugins"];
+	/** Resolved raw cursor payload from `bash_cursor_id_resolve`, or null for the first page. */
+	cursor: string | null;
+	limit: number;
+	runPage: (pageArgs: {
+		mount: bash_PluginSourceMount;
+		innerCursor: string | null;
+		numItems: number;
+	}) => Promise<{ items: TItem[]; continueCursor: string; isDone: boolean }>;
+}) {
+	const fanOut = await pagination_fan_out_paginate({
+		// Scoping by command rejects cursors created by a different fan-out command.
+		scope: `plugins:${args.command}`,
+		sources: [...args.plugins.mounts.values()]
+			.sort((a, b) => (a.pluginName < b.pluginName ? -1 : 1))
+			.map((mount) => ({ key: mount.pluginName, fingerprint: mount.pluginVersionId, source: mount })),
+		cursor: args.cursor,
+		limit: args.limit,
+		runPage: (pageArgs) =>
+			args.runPage({ mount: pageArgs.source, innerCursor: pageArgs.innerCursor, numItems: pageArgs.numItems }),
+	});
+	if (fanOut._nay) {
+		return Result({
+			_nay: {
+				message:
+					fanOut._nay.message === "listing changed"
+						? `${args.command}: the installed plugin listing changed since this cursor was created; ` +
+							"rerun the command without --cursor to restart from a consistent listing."
+						: `${args.command}: --cursor does not belong to a ${bash_PLUGINS_MOUNT_ROOT} listing.\n` +
+							"Copy the exact Next page command from the previous output, or rerun without --cursor.",
+			},
+		});
+	}
+	return fanOut;
+}
+
+/**
+ * Map a stored plugin-tree path `/<pluginVersionId>/rest` to the fan-out
+ * db-files shape `/<pluginName>/rest`, which the `plugins_root` resolution's
+ * `renderShellPath` turns into `/.plugins/<pluginName>/rest`.
+ */
+export function bash_plugins_fan_out_db_files_path(mount: bash_PluginSourceMount, storedPath: string) {
+	const versionRootPath = `/${mount.pluginVersionId}`;
+	const relativePath =
+		storedPath === versionRootPath
+			? ""
+			: storedPath.startsWith(`${versionRootPath}/`)
+				? storedPath.slice(versionRootPath.length)
+				: storedPath;
+	return `/${mount.pluginName}${relativePath}`;
 }
 
 // #endregion shared command helpers
@@ -1900,7 +2126,7 @@ export function bash_enforce_reader_operand_cap(
 		// Mount reads pull whole file bodies from the db too, so count them against the same batch cap.
 		if (
 			bash_is_path_under_current_workspace_path(currentWorkspacePath, resolvedPath) ||
-			bash_is_path_under_mounts(resolvedPath)
+			bash_is_path_under_read_only_mounts(resolvedPath)
 		) {
 			fileOperandCount++;
 		}
@@ -1941,7 +2167,7 @@ export async function bash_get_db_file_byte_size(args: {
 	if (
 		files_node_has_editable_yjs_state(args.dbFilesDoc) &&
 		!organizations_is_global_organization_id(organizationId) &&
-		!organizations_is_global_github_workspace_id(workspaceId)
+		!organizations_is_reserved_workspace_id(workspaceId)
 	) {
 		const pendingUpdate = (await args.ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
 			organizationId,

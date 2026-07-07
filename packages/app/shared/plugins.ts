@@ -3,61 +3,39 @@ import { z } from "zod";
 import { Result } from "./errors-as-values-utils.ts";
 import { organizations_name_autofix_and_validate } from "./organizations.ts";
 
-export const plugins_MANIFEST_SCHEMA_VERSION = 1;
 export const plugins_RUNTIME_VERSION = "1";
-export const plugins_SECRET_VALUE_MAX_BYTES = 16_000;
 
-export const plugins_EVENT_TYPES = ["files.upload.completed"] as const;
+const MANIFEST_SCHEMA_VERSION = 1;
+const EVENT_TYPES = ["files.upload.completed"] as const;
 
-export const plugins_CAPABILITIES = ["plugin.secrets.read", "outbound.fetch"] as const;
-export type plugins_Capability = (typeof plugins_CAPABILITIES)[number];
+const CAPABILITIES = ["plugin.secrets.read", "outbound.fetch"] as const;
+export type plugins_Capability = (typeof CAPABILITIES)[number];
 
-const plugins_sha256_regex = /^sha256:[a-f0-9]{64}$/u;
-const plugins_semver_regex = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u;
-const plugins_module_path_regex = /^[A-Za-z0-9._/-]+$/u;
-const plugins_secret_name_regex = /^[A-Za-z_][A-Za-z0-9_]*$/u;
-const plugins_github_owner_regex = /^[A-Za-z0-9-]{1,39}$/u;
-const plugins_github_repo_regex = /^[A-Za-z0-9._-]{1,100}$/u;
-const plugins_module_path_schema = z
+const sha256_regex = /^sha256:[a-f0-9]{64}$/u;
+const semver_regex = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u;
+const module_path_regex = /^[A-Za-z0-9._/-]+$/u;
+const secret_name_regex = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+const github_owner_regex = /^[A-Za-z0-9-]{1,39}$/u;
+const github_repo_regex = /^[A-Za-z0-9._-]{1,100}$/u;
+// Manifest paths are stored and joined verbatim, so require an already-normalized
+// relative path: no leading/trailing/duplicate slashes and no "." / ".." segments.
+const module_path_schema = z
 	.string()
-	.regex(plugins_module_path_regex)
+	.regex(module_path_regex)
 	.refine(
-		(path) => plugins_normalize_relative_path(path)._yay !== undefined,
+		(path) => path.split("/").every((segment) => segment && segment !== "." && segment !== ".."),
 		"Path must be a normalized relative path",
 	);
 
-export function plugins_autofix_and_validate_name(raw: string) {
+// Plugin names share the organization/workspace slug rules.
+function autofix_and_validate_name(raw: string) {
 	return organizations_name_autofix_and_validate(raw);
-}
-
-/**
- * The mount holds the version's dist snapshot, whose identity is the commit — keying by commit
- * (not artifact hash) guarantees a mount's files never mix content from two commits: a
- * same-artifact publish from a new commit gets a fresh mount folder.
- */
-export function plugins_source_mount_name(args: { name: string; version: string; sourceCommitSha: string }) {
-	const versionSlug = args.version.replace(/[^a-z0-9]+/giu, "-").replace(/^-+|-+$/gu, "");
-	return `plugin-${args.name}-${versionSlug}-${args.sourceCommitSha.slice(0, 12)}`.slice(0, 63);
-}
-
-function plugins_normalize_relative_path(raw: string) {
-	if (raw.includes("\\")) {
-		return Result({ _nay: { message: "Path must use / separators" } });
-	}
-
-	const path = raw.replace(/^\/+/u, "");
-	const segments = path.split("/");
-	if (!path || segments.some((segment) => !segment || segment === "." || segment === "..")) {
-		return Result({ _nay: { message: "Path must be a normalized relative path" } });
-	}
-
-	return Result({ _yay: path });
 }
 
 export function plugins_validate_secret_name(raw: string) {
 	const name = raw.trim();
 
-	if (!plugins_secret_name_regex.test(name)) {
+	if (!secret_name_regex.test(name)) {
 		return Result({ _nay: { message: "Secret names must use env key syntax" } });
 	}
 
@@ -174,12 +152,7 @@ export function plugins_parse_github_repository_url(raw: string) {
 	}
 
 	repo = repo.replace(/\.git$/u, "");
-	if (
-		!plugins_github_owner_regex.test(owner) ||
-		!plugins_github_repo_regex.test(repo) ||
-		repo === "." ||
-		repo === ".."
-	) {
+	if (!github_owner_regex.test(owner) || !github_repo_regex.test(repo) || repo === "." || repo === "..") {
 		return Result({ _nay: { message: "Repository URL has an invalid owner or repo" } });
 	}
 
@@ -195,14 +168,14 @@ export function plugins_parse_github_repository_url(raw: string) {
 // Thresholds calibrated against the first-party plugin readable dists (max line 278,
 // avg line 33, single-char identifier share 0.072) vs the same worker minified
 // with esbuild (max line 3228, avg 316, share 0.482).
-const plugins_dist_max_line_length = 1000;
-const plugins_dist_max_avg_line_length = 200;
-const plugins_dist_max_single_char_identifier_share = 0.3;
-const plugins_dist_max_hex_unicode_escape_density = 0.01;
-const plugins_dist_base64_literal_min_length = 256;
+const dist_max_line_length = 1000;
+const dist_max_avg_line_length = 200;
+const dist_max_single_char_identifier_share = 0.3;
+const dist_max_hex_unicode_escape_density = 0.01;
+const dist_base64_literal_min_length = 256;
 // Words that match the identifier regex but are language syntax, not names the
 // author chose; excluding them keeps the single-char share meaningful.
-const plugins_dist_js_keywords = new Set([
+const dist_js_keywords = new Set([
 	"const",
 	"let",
 	"var",
@@ -253,37 +226,37 @@ export function plugins_dist_review_mechanical_findings(source: string) {
 
 	const lines = source.split(/\r?\n/u).filter((line) => line.trim().length > 0);
 	const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
-	if (longestLine > plugins_dist_max_line_length) {
+	if (longestLine > dist_max_line_length) {
 		findings.push(
-			`Longest line is ${longestLine} characters (limit ${plugins_dist_max_line_length}); the dist must be plain readable JavaScript, not minified`,
+			`Longest line is ${longestLine} characters (limit ${dist_max_line_length}); the dist must be plain readable JavaScript, not minified`,
 		);
 	}
 	const avgLineLength = lines.length > 0 ? lines.reduce((sum, line) => sum + line.length, 0) / lines.length : 0;
-	if (avgLineLength > plugins_dist_max_avg_line_length) {
+	if (avgLineLength > dist_max_avg_line_length) {
 		findings.push(
-			`Average line length is ${Math.round(avgLineLength)} characters (limit ${plugins_dist_max_avg_line_length}); the dist must be plain readable JavaScript, not minified`,
+			`Average line length is ${Math.round(avgLineLength)} characters (limit ${dist_max_avg_line_length}); the dist must be plain readable JavaScript, not minified`,
 		);
 	}
 
-	const identifiers = (source.match(/[$A-Za-z_][$\w]*/gu) ?? []).filter((word) => !plugins_dist_js_keywords.has(word));
+	const identifiers = (source.match(/[$A-Za-z_][$\w]*/gu) ?? []).filter((word) => !dist_js_keywords.has(word));
 	const singleCharShare =
 		identifiers.length > 0 ? identifiers.filter((word) => word.length === 1).length / identifiers.length : 0;
-	if (singleCharShare > plugins_dist_max_single_char_identifier_share) {
+	if (singleCharShare > dist_max_single_char_identifier_share) {
 		findings.push(
-			`${Math.round(singleCharShare * 100)}% of identifiers are a single character (limit ${plugins_dist_max_single_char_identifier_share * 100}%); the dist must keep readable identifier names`,
+			`${Math.round(singleCharShare * 100)}% of identifiers are a single character (limit ${dist_max_single_char_identifier_share * 100}%); the dist must keep readable identifier names`,
 		);
 	}
 
 	const escapeCount = (source.match(/\\[xu]/gu) ?? []).length;
-	if (source.length > 0 && escapeCount / source.length > plugins_dist_max_hex_unicode_escape_density) {
+	if (source.length > 0 && escapeCount / source.length > dist_max_hex_unicode_escape_density) {
 		findings.push(
 			`Dist is dense with \\x/\\u escape sequences (${escapeCount} escapes); encoded strings look obfuscated`,
 		);
 	}
 
-	if (new RegExp(`["'\`][A-Za-z0-9+/]{${plugins_dist_base64_literal_min_length},}={0,2}["'\`]`, "u").test(source)) {
+	if (new RegExp(`["'\`][A-Za-z0-9+/]{${dist_base64_literal_min_length},}={0,2}["'\`]`, "u").test(source)) {
 		findings.push(
-			`Dist contains a base64-looking string literal of ${plugins_dist_base64_literal_min_length}+ characters; ship code and assets as plain files instead`,
+			`Dist contains a base64-looking string literal of ${dist_base64_literal_min_length}+ characters; ship code and assets as plain files instead`,
 		);
 	}
 
@@ -294,38 +267,38 @@ export function plugins_dist_review_mechanical_findings(source: string) {
 	return findings;
 }
 
-const plugins_event_schema = z
+const event_schema = z
 	.object({
-		type: z.enum(plugins_EVENT_TYPES),
+		type: z.enum(EVENT_TYPES),
 		contentTypes: z.array(z.string().min(1)).min(1),
 	})
 	.strict();
 
-const plugins_page_schema = z
+const page_schema = z
 	.object({
 		name: z.string().min(1),
 		displayName: z.string().min(1),
-		html: plugins_module_path_schema,
-		assets: z.array(plugins_module_path_schema),
+		html: module_path_schema,
+		assets: z.array(module_path_schema),
 	})
 	.strict();
 
-const plugins_manifest_file_schema = z
+const manifest_file_schema = z
 	.object({
-		path: plugins_module_path_schema,
-		sha256: z.string().regex(plugins_sha256_regex),
+		path: module_path_schema,
+		sha256: z.string().regex(sha256_regex),
 		bytes: z.number().int().nonnegative(),
 		contentType: z.string().min(1),
 		r2Key: z.string().optional(),
 	})
 	.strict();
 
-const plugins_manifest_schema = z
+const manifest_schema = z
 	.object({
-		schemaVersion: z.literal(plugins_MANIFEST_SCHEMA_VERSION),
+		schemaVersion: z.literal(MANIFEST_SCHEMA_VERSION),
 		name: z.string(),
 		displayName: z.string().min(1),
-		version: z.string().regex(plugins_semver_regex),
+		version: z.string().regex(semver_regex),
 		description: z.string(),
 		compatibility: z
 			.object({
@@ -334,27 +307,27 @@ const plugins_manifest_schema = z
 			.strict(),
 		backend: z
 			.object({
-				entry: plugins_module_path_schema,
-				moduleName: plugins_module_path_schema,
+				entry: module_path_schema,
+				moduleName: module_path_schema,
 				compatibilityDate: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u),
 				compatibilityFlags: z.array(z.string().min(1)),
 			})
 			.strict()
 			.optional(),
-		events: z.array(plugins_event_schema),
-		pages: z.array(plugins_page_schema),
-		capabilities: z.array(z.enum(plugins_CAPABILITIES)),
+		events: z.array(event_schema),
+		pages: z.array(page_schema),
+		capabilities: z.array(z.enum(CAPABILITIES)),
 		outboundOrigins: z.array(z.string()),
-		files: z.array(plugins_manifest_file_schema),
+		files: z.array(manifest_file_schema),
 	})
 	.strict();
 
 export function plugins_validate_manifest(input: unknown) {
-	const parsed = plugins_manifest_schema.safeParse(input);
+	const parsed = manifest_schema.safeParse(input);
 	if (!parsed.success) {
 		return Result({ _nay: { message: parsed.error.issues[0]?.message ?? "Invalid plugin manifest" } });
 	}
-	const name = plugins_autofix_and_validate_name(parsed.data.name);
+	const name = autofix_and_validate_name(parsed.data.name);
 	if (name._nay) {
 		return Result({ _nay: { message: name._nay.message } });
 	}

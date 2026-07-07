@@ -8,7 +8,7 @@ import {
 	bash_delegate_builtin_command,
 	bash_GLOB_METACHARACTER_REGEX,
 	bash_is_path_under_current_workspace_path,
-	bash_is_path_under_mounts,
+	bash_is_path_under_read_only_mounts,
 	bash_normalize_path,
 	bash_parse_cp_mv_operands,
 	bash_resolve_path,
@@ -37,12 +37,12 @@ export function bash_cp_command_create(currentWorkspacePath: string) {
 	return defineCommand("cp", async (args, commandCtx) => {
 		const { operands, recursive } = bash_parse_cp_mv_operands(args);
 
-		// Mounts are read-only: reject any cp whose destination (the last operand) is under /.mounts,
-		// before native delegation could write into the reserved mount tree. Copying a mount file OUT
-		// to /tmp scratch stays allowed (the source may be a mount path).
+		// Mounts are read-only: reject any cp whose destination (the last operand) is under /.mounts
+		// or /.plugins, before native delegation could write into the reserved mount tree. Copying a
+		// mount file OUT to /tmp scratch stays allowed (the source may be a mount path).
 		if (operands.length >= 2) {
 			const destResolved = bash_resolve_path(commandCtx.cwd, operands[operands.length - 1]);
-			if (bash_is_path_under_mounts(destResolved)) {
+			if (bash_is_path_under_read_only_mounts(destResolved)) {
 				return {
 					stdout: "",
 					stderr: bash_read_only_mount_error("cp", destResolved),

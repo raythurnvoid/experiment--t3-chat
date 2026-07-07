@@ -10,7 +10,7 @@ import type { files_pending_updates_get_by_file_node_Result } from "../convex/fi
 import type { get_asset_by_id_Result } from "../convex/r2.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import { files_node_has_editable_yjs_state } from "../shared/files.ts";
-import { organizations_is_global_github_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
+import { organizations_is_reserved_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
 import {
 	bash_build_unreadable_file_advisory,
 	bash_create_glob_syntax_unsupported_message,
@@ -139,7 +139,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					if (
 						files_node_has_editable_yjs_state(dbFilesDoc) &&
 						!organizations_is_global_organization_id(organizationId) &&
-						!organizations_is_global_github_workspace_id(workspaceId)
+						!organizations_is_reserved_workspace_id(workspaceId)
 					) {
 						const pendingUpdate = (await ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
 							organizationId,
@@ -230,7 +230,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					if (
 						files_node_has_editable_yjs_state(dbFilesDoc) &&
 						!organizations_is_global_organization_id(organizationId) &&
-						!organizations_is_global_github_workspace_id(workspaceId)
+						!organizations_is_reserved_workspace_id(workspaceId)
 					) {
 						const pendingUpdate = (await ctx.runQuery(internal.files_pending_updates.get_by_file_node, {
 							organizationId,

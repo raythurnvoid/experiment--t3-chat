@@ -6,7 +6,7 @@ import {
 	bash_delegate_builtin_command,
 	bash_GLOB_METACHARACTER_REGEX,
 	bash_is_path_under_current_workspace_path,
-	bash_is_path_under_mounts,
+	bash_is_path_under_read_only_mounts,
 	bash_parse_cp_mv_operands,
 	bash_resolve_path,
 	bash_shell_arg_quote,
@@ -27,9 +27,10 @@ export function bash_mv_command_create(currentWorkspacePath: string) {
 		const { operands } = bash_parse_cp_mv_operands(args);
 
 		// Mounts are read-only: mv would delete a mount source or write a mount destination, so reject
-		// any operand under /.mounts before native delegation. (cp <mount> /tmp covers read-out copies.)
+		// any operand under /.mounts or /.plugins before native delegation. (cp <mount> /tmp covers
+		// read-out copies.)
 		const mountOperand = operands.find((operand) =>
-			bash_is_path_under_mounts(bash_resolve_path(commandCtx.cwd, operand)),
+			bash_is_path_under_read_only_mounts(bash_resolve_path(commandCtx.cwd, operand)),
 		);
 		if (mountOperand != null) {
 			return {

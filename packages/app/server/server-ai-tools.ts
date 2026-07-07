@@ -11,12 +11,8 @@ import { files_READ_RANGE_MAX_LINES } from "../convex/files_nodes.ts";
 import { path_name_of, server_path_normalize, server_path_parent_of } from "./server-utils.ts";
 import { crypto_sha256_hex } from "./crypto-utils.ts";
 import { minimatch } from "minimatch";
-import {
-	files_MOUNT_ROOT,
-	files_ROOT_ID,
-	files_get_normalized_node_path_segments,
-	files_is_path_under_mount_root,
-} from "./files.ts";
+import { files_ROOT_ID, files_get_normalized_node_path_segments } from "./files.ts";
+import { bash_EXTERNAL_MOUNTS_ROOT, bash_PLUGINS_MOUNT_ROOT, bash_is_path_under } from "./bash-utils.ts";
 
 /**
  * Advanced replace utility mirroring OpenCode's edit replacer pipeline.
@@ -996,7 +992,8 @@ export function ai_chat_tool_create_bash(
 			Do not call /tmp ephemeral or temporary in a way that implies same-chat data loss. If a fresh chat cannot read a /tmp path created in another chat, that is expected evidence of per-chat isolation, not a global Bash failure.
 			Bash cwd persists across tool calls in the same chat. If the previous Bash output already shows the desired cwd, use bare or relative commands instead of repeating cd.
 			App-mount limitations apply only to paths under ${currentWorkspacePath} or ${appMountPath}. Do not describe them as global Bash limitations. If a command touches only /tmp or stdin, use normal scratch commands; if it touches the app mount, use the app-aware command forms below.
-			Agent-only read-only external source mounts live under ${files_MOUNT_ROOT} (for example ${files_MOUNT_ROOT}/<name>). They are a backend mirror of an external repository for Bash reads, not the user's app files: they never appear in the Files sidebar, public file API, or app file tools. Browse and read them with the same app-aware commands (ls, find, tree, cat, head, tail, wc, stat, grep, textgrep, sed). Bare ls ${files_MOUNT_ROOT} lists the available mount names; pick a mount with ${files_MOUNT_ROOT}/<name> before reading files. All writes are rejected: no write_file/edit_file, touch, tee, rm, mv, or cp into ${files_MOUNT_ROOT}, and external mount content is not executable via bash <script>. The source and . builtins are rejected for app files and agent-only external mounts, but remain available for explicit /tmp scratch scripts. cp ${files_MOUNT_ROOT}/<name>/<file> /tmp/<name> is allowed to copy mount content into scratch. For search and meta search, scope to one mount with --path ${files_MOUNT_ROOT}/<name>; ${files_MOUNT_ROOT} itself is not a searchable scope.
+			Agent-only read-only external source mounts live under ${bash_EXTERNAL_MOUNTS_ROOT} (for example ${bash_EXTERNAL_MOUNTS_ROOT}/<name>). They are a backend mirror of an external repository for Bash reads, not the user's app files: they never appear in the Files sidebar, public file API, or app file tools. Browse and read them with the same app-aware commands (ls, find, tree, cat, head, tail, wc, stat, grep, textgrep, sed). Bare ls ${bash_EXTERNAL_MOUNTS_ROOT} lists the available mount names; pick a mount with ${bash_EXTERNAL_MOUNTS_ROOT}/<name> before reading files. All writes are rejected: no write_file/edit_file, touch, tee, rm, mv, or cp into ${bash_EXTERNAL_MOUNTS_ROOT}, and external mount content is not executable via bash <script>. The source and . builtins are rejected for app files and agent-only external mounts, but remain available for explicit /tmp scratch scripts. cp ${bash_EXTERNAL_MOUNTS_ROOT}/<name>/<file> /tmp/<name> is allowed to copy mount content into scratch. For search and meta search, scope to one mount with --path ${bash_EXTERNAL_MOUNTS_ROOT}/<name>; ${bash_EXTERNAL_MOUNTS_ROOT} itself is not a searchable scope.
+			Read-only sources of plugins installed in the current workspace live under ${bash_PLUGINS_MOUNT_ROOT}/<pluginName>. A plugin's source appears there only while that plugin is installed in this workspace; ${bash_PLUGINS_MOUNT_ROOT} does not exist when no plugin is installed, and a missing ${bash_PLUGINS_MOUNT_ROOT}/<pluginName> means that plugin is not installed here. Browse and read them with the same app-aware commands as ${bash_EXTERNAL_MOUNTS_ROOT}; bare ls ${bash_PLUGINS_MOUNT_ROOT} lists installed plugin names. All writes are rejected, plugin source is not executable via bash <script>, and cp ${bash_PLUGINS_MOUNT_ROOT}/<pluginName>/<file> /tmp/<name> is allowed for scratch copies. search, tree, and find at ${bash_PLUGINS_MOUNT_ROOT} fan out across every installed plugin in plugin-name order (search results are per-plugin relevance, concatenated); scope to one plugin with ${bash_PLUGINS_MOUNT_ROOT}/<pluginName> when you already know the plugin. meta search still requires a single plugin scope via --path ${bash_PLUGINS_MOUNT_ROOT}/<pluginName>. If the installed plugin listing changes between pages, the continuation reports "listing changed"; rerun without --cursor.
 			Native-style /tmp commands use Just Bash's own argument parsing and include safe text/file utilities such as du, diff, rg, jq, base64, sha256sum, nl, rev, and tac; the Unix file command is intentionally unavailable.
 			If file fails or the user asks for it, do not stop after reporting that it is unavailable; run supported recovery commands such as stat, wc, head, or cat on the same /tmp path when that answers the request.
 			/tmp native commands are Just Bash browser commands, not host GNU coreutils. Prefer simple portable forms such as du file; if a /tmp option fails but the command is useful, retry once with simpler native syntax.
@@ -1109,9 +1106,14 @@ export function ai_chat_tool_create_write_file(
 			if (!normalizedPath.startsWith("/") || normalizedPath === "/") {
 				throw new Error(`Invalid path: ${normalizedPath}. Path must be absolute and not root.`);
 			}
-			if (files_is_path_under_mount_root(normalizedPath)) {
+			if (bash_is_path_under(bash_EXTERNAL_MOUNTS_ROOT, normalizedPath)) {
 				throw new Error(
-					`Invalid path: ${normalizedPath}. The ${files_MOUNT_ROOT} tree is a read-only mount of an external source and cannot be written.`,
+					`Invalid path: ${normalizedPath}. The ${bash_EXTERNAL_MOUNTS_ROOT} tree is a read-only mount of an external source and cannot be written.`,
+				);
+			}
+			if (bash_is_path_under(bash_PLUGINS_MOUNT_ROOT, normalizedPath)) {
+				throw new Error(
+					`Invalid path: ${normalizedPath}. The ${bash_PLUGINS_MOUNT_ROOT} tree is a read-only mount of installed plugin sources and cannot be written.`,
 				);
 			}
 			const normalizedPathSegments = files_get_normalized_node_path_segments({
@@ -1244,9 +1246,14 @@ export function ai_chat_tool_create_edit_file(
 			if (!normalizedPath.startsWith("/") || normalizedPath === "/") {
 				throw new Error(`Invalid path: ${normalizedPath}. Path must be absolute and not root.`);
 			}
-			if (files_is_path_under_mount_root(normalizedPath)) {
+			if (bash_is_path_under(bash_EXTERNAL_MOUNTS_ROOT, normalizedPath)) {
 				throw new Error(
-					`Invalid path: ${normalizedPath}. The ${files_MOUNT_ROOT} tree is a read-only mount of an external source and cannot be edited.`,
+					`Invalid path: ${normalizedPath}. The ${bash_EXTERNAL_MOUNTS_ROOT} tree is a read-only mount of an external source and cannot be edited.`,
+				);
+			}
+			if (bash_is_path_under(bash_PLUGINS_MOUNT_ROOT, normalizedPath)) {
+				throw new Error(
+					`Invalid path: ${normalizedPath}. The ${bash_PLUGINS_MOUNT_ROOT} tree is a read-only mount of installed plugin sources and cannot be edited.`,
 				);
 			}
 

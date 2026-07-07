@@ -21,12 +21,14 @@ import {
 	bash_GLOB_METACHARACTER_REGEX,
 	bash_HOME,
 	bash_is_path_under_current_workspace_path,
-	bash_is_path_under_mounts,
+	bash_is_path_under_read_only_mounts,
 	bash_LISTING_DEFAULT_LIMIT,
 	bash_LISTING_MAX_LIMIT,
 	bash_normalize_path,
 	bash_parse_limit,
 	bash_parse_simple_extension_glob,
+	bash_plugins_fan_out_db_files_path,
+	bash_plugins_fan_out_paginate,
 	bash_read_option_value,
 	bash_resolve_path,
 	bash_shell_arg_quote,
@@ -473,7 +475,7 @@ function prefix_to_shell_path(commandCtx: CommandContext, currentWorkspacePath: 
 	}
 
 	const cwd = bash_normalize_path(commandCtx.cwd);
-	if (bash_is_path_under_current_workspace_path(currentWorkspacePath, cwd) || bash_is_path_under_mounts(cwd)) {
+	if (bash_is_path_under_current_workspace_path(currentWorkspacePath, cwd) || bash_is_path_under_read_only_mounts(cwd)) {
 		return Result({ _yay: { shellPath: bash_resolve_path(commandCtx.cwd, prefix) } });
 	}
 	return Result({ _yay: { shellPath: bash_normalize_path(prefix) } });
@@ -569,6 +571,158 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			dbFilesPath: pathResolution.dbFilesPath,
 			builtinOperand: parsed._yay.path ?? ".",
 		};
+		// The `/.plugins` root spans one indexed tree per installed plugin. Fan out one
+		// indexed query per plugin, in name order, under a composite cursor.
+		if (parsed._yay.prefix == null && pathResolution.kind === "plugins_root") {
+			if (dbFilesRoots.plugins.mounts.size === 0) {
+				return {
+					stdout: "",
+					stderr: `find: ${target.absoluteShellPath}: No such file or directory\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
+			if (parsed._yay.unsupportedDbFilesPredicate != null) {
+				return {
+					stdout: "",
+					stderr:
+						`find: unsupported predicate ${parsed._yay.unsupportedDbFilesPredicate} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
+						"GNU find extensions like -printf, -mtime, -newer, -exec, -ok, and -delete are not available there; omit them and use -name QUERY, --path-query QUERY, -type f|d, -maxdepth N, or -mindepth N instead.\n" +
+						"Usage: find [PATH] [--prefix PREFIX] [-maxdepth N] [-mindepth N] [-type f|d] [-name QUERY|-iname QUERY|--path-query QUERY|--extension EXT] [--limit N] [--cursor CURSOR]\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+			}
+			// Path word search at the root supports the full fan-out subtree only; depth
+			// filters need a single plugin's folder anchor.
+			if (pathQuery != null && (parsed._yay.maxDepth != null || parsed._yay.minDepth != null)) {
+				return {
+					stdout: "",
+					stderr:
+						"find: path word search at /.plugins does not support -maxdepth/-mindepth; scope to one plugin: find /.plugins/<pluginName> --path-query QUERY\n" +
+						"Run 'ls /.plugins' to list the installed plugins.\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+			}
+			if (pathQuery != null && parsed._yay.extension != null) {
+				return {
+					stdout: "",
+					stderr: "find: path word search cannot be combined with --extension for app files.\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+			}
+			// --extension only matches files; -maxdepth 0 keeps only the synthetic root itself.
+			if ((parsed._yay.extension != null && parsed._yay.type === "d") || parsed._yay.maxDepth === 0) {
+				return {
+					stdout: "0 matches.\n",
+					stderr: "",
+					exitCode: 0,
+				};
+			}
+
+			let pluginsCursor: string | null = null;
+			if (parsed._yay.cursor != null) {
+				const resolvedCursor = await bash_cursor_id_resolve(ctx, parsed._yay.cursor);
+				if (resolvedCursor._nay) {
+					return {
+						stdout: "",
+						stderr: `${resolvedCursor._nay.message}\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				}
+				pluginsCursor = resolvedCursor._yay;
+			}
+
+			// Depth predicates are relative to `/.plugins`; each plugin's version root renders
+			// as the depth-1 entry `/.plugins/<pluginName>/`, so per-plugin depths shift by 1.
+			const perPluginMinDepth = parsed._yay.minDepth == null || parsed._yay.minDepth <= 1 ? null : parsed._yay.minDepth - 1;
+			const perPluginMaxDepth = parsed._yay.maxDepth == null ? null : parsed._yay.maxDepth - 1;
+
+			const fanOut = await bash_plugins_fan_out_paginate({
+				command: "find",
+				plugins: dbFilesRoots.plugins,
+				cursor: pluginsCursor,
+				limit: bash_clamp_listing_page_limit(parsed._yay.limit),
+				runPage: async (pageArgs) => {
+					if (pathQuery != null) {
+						const pageResult = (await ctx.runQuery(internal.files_nodes.search_paths, {
+							organizationId: pageArgs.mount.fs.ctxData.organizationId,
+							workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
+							pathQuery,
+							numItems: pageArgs.numItems,
+							cursor: pageArgs.innerCursor,
+							...(parsed._yay.type === "f"
+								? { kind: "file" as const }
+								: parsed._yay.type === "d"
+									? { kind: "folder" as const }
+									: {}),
+							pathPrefix: `/${pageArgs.mount.pluginVersionId}`,
+						})) as files_nodes_search_paths_Result;
+						return {
+							items: pageResult.items.map((item) => ({
+								path: bash_plugins_fan_out_db_files_path(pageArgs.mount, item.path),
+								kind: item.kind,
+							})),
+							continueCursor: pageResult.continueCursor,
+							isDone: pageResult.isDone,
+						};
+					}
+					const pageResult = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+						organizationId: pageArgs.mount.fs.ctxData.organizationId,
+						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
+						folderPath: `/${pageArgs.mount.pluginVersionId}`,
+						numItems: pageArgs.numItems,
+						cursor: pageArgs.innerCursor,
+						...(parsed._yay.extension != null
+							? { kind: "file" as const, lowercaseExtension: parsed._yay.extension }
+							: parsed._yay.type === "f"
+								? { kind: "file" as const }
+								: parsed._yay.type === "d"
+									? { kind: "folder" as const }
+									: {}),
+						...(perPluginMinDepth == null ? {} : { minDepth: perPluginMinDepth }),
+						...(perPluginMaxDepth == null ? {} : { maxDepth: perPluginMaxDepth }),
+					})) as files_nodes_list_subtree_Result;
+					return {
+						items: pageResult.page.map((item) => ({
+							path: bash_plugins_fan_out_db_files_path(pageArgs.mount, item.path),
+							kind: item.kind,
+						})),
+						continueCursor: pageResult.continueCursor,
+						isDone: pageResult.isDone,
+					};
+				},
+			});
+			if (fanOut._nay) {
+				return {
+					stdout: "",
+					stderr: `${fanOut._nay.message}\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
+
+			const lines = fanOut._yay.items.map(
+				(item) => `${pathResolution.renderShellPath(item.path)}${item.kind === "folder" ? "/" : ""}`,
+			);
+			if (!fanOut._yay.isDone && fanOut._yay.continueCursor != null) {
+				lines.push(
+					"",
+					build_continuation({
+						parsed: parsed._yay,
+						target: target.absoluteShellPath,
+						prefix: null,
+						cursor: await bash_cursor_id_create(ctx, fanOut._yay.continueCursor),
+					}),
+				);
+			} else if (lines.length === 0) {
+				lines.push("0 matches.");
+			}
+
+			return {
+				stdout: `${lines.join("\n")}\n`,
+				stderr: "",
+				exitCode: 0,
+			};
+		}
+
 		// Non-app targets belong to Just Bash's built-in find unless the caller requested app-file prefix search.
 		if (parsed._yay.prefix == null && pathResolution.kind === "outside_db_files") {
 			return await bash_delegate_builtin_command({
@@ -663,6 +817,16 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			// The reserved `/.mounts` root scans from reserved-root `"/"`; other targets scan from their
 			// db-files path. External prefixes keep the prior raw-path behavior on the workspace FS.
 			const prefixResolution = bash_resolve_db_files_shell_path(prefixResult._yay.shellPath, dbFilesRoots);
+			// The `/.plugins` root has no single stored tree to prefix-scan; scope to one plugin.
+			if (prefixResolution.kind === "plugins_root") {
+				return {
+					stdout: "",
+					stderr:
+						"find: --prefix cannot scan the /.plugins root; scope to one plugin: find --prefix /.plugins/<pluginName>/<path>\n" +
+						"Run 'ls /.plugins' to list the installed plugins.\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+			}
 			const prefixFolderPath = prefixResolution.dbFilesPath ?? prefixResult._yay.shellPath;
 
 			const result = (await ctx.runQuery(internal.files_nodes.list_subtree, {

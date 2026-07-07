@@ -73,9 +73,10 @@ import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import {
 	organizations_is_global_organization_id,
-	organizations_is_global_github_workspace_id,
+	organizations_is_reserved_workspace_id,
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import app_convex_schema from "./schema.ts";
@@ -884,7 +885,7 @@ async function db_insert_node(
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
 	}
-	if (organizations_is_global_github_workspace_id(args.workspaceId)) {
+	if (organizations_is_reserved_workspace_id(args.workspaceId)) {
 		const errorMessage = "Editable text content requires a real workspaceId";
 		const errorData = { organizationId: args.organizationId, workspaceId: args.workspaceId, nodeId };
 		console.error(errorMessage, errorData);
@@ -1320,7 +1321,7 @@ export async function files_nodes_db_finalize_file_node_creation(
 				console.error(errorMessage, errorData);
 				throw should_never_happen(errorMessage, errorData);
 			}
-			if (organizations_is_global_github_workspace_id(args.workspaceId)) {
+			if (organizations_is_reserved_workspace_id(args.workspaceId)) {
 				const errorMessage = "Version snapshot requires a real workspaceId";
 				const errorData = { nodeId: args.nodeId, workspaceId: args.workspaceId };
 				console.error(errorMessage, errorData);
@@ -1393,13 +1394,18 @@ export const cleanup_file_node_creation_assets = internalMutation({
 });
 
 /**
- * Internal file-node creation for GitHub source content.
+ * Internal file-node creation for reserved read-only source content (GitHub mirrors and plugin
+ * source snapshots).
  *
- * Creates a read-only text file at `path` in GLOBAL/GITHUB scope, using the SYSTEM user id,
- * one content asset, and no Yjs or version snapshot docs.
+ * Creates a read-only text file at `path` in the GLOBAL organization under the requested reserved
+ * workspace scope, using the SYSTEM user id, one content asset, and no Yjs or version snapshot docs.
  */
 export const create_file_node_internal = internalAction({
 	args: {
+		workspaceId: v.union(
+			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+		),
 		path: v.string(),
 		rawText: v.string(),
 		sourceId: v.optional(v.id("github_sources")),
@@ -1411,6 +1417,10 @@ export const create_file_node_internal = internalAction({
 			return Result({ _nay: { message: "External source sync run requires sourceId and syncRunId" } });
 		}
 		if (args.sourceId != null && args.syncRunId != null) {
+			// Sync-run validation is a GitHub-mirror concept; plugin source publishes never pass it.
+			if (args.workspaceId !== organizations_GLOBAL_GITHUB_WORKSPACE_ID) {
+				return Result({ _nay: { message: "External source sync run requires the GITHUB workspace scope" } });
+			}
 			const source = await ctx.runQuery(internal.github_sources.get_source, { sourceId: args.sourceId });
 			if (!source || source.syncRunId !== args.syncRunId || source.status !== "running") {
 				return Result({ _nay: { message: "External source sync was superseded" } });
@@ -1432,7 +1442,7 @@ export const create_file_node_internal = internalAction({
 
 		const assetId = await ctx.runMutation(internal.r2.insert_asset, {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
-			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+			workspaceId: args.workspaceId,
 			kind: "content",
 			size: byteSize,
 			createdBy: users_SYSTEM_AUTHOR,
@@ -1440,7 +1450,7 @@ export const create_file_node_internal = internalAction({
 
 		const r2Key = r2_create_asset_key({
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
-			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+			workspaceId: args.workspaceId,
 			assetId,
 		});
 
@@ -1470,7 +1480,7 @@ export const create_file_node_internal = internalAction({
 				created = (await ctx.runMutation(internal.files_nodes.create_file_node, {
 					userId: users_SYSTEM_AUTHOR,
 					organizationId: organizations_GLOBAL_ORGANIZATION_ID,
-					workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+					workspaceId: args.workspaceId,
 					parentId: files_ROOT_ID,
 					path: args.path,
 					assetId,
@@ -1512,7 +1522,7 @@ export const create_file_node_internal = internalAction({
 
 		await ctx.runMutation(internal.files_nodes.finalize_file_node_creation, {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
-			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+			workspaceId: args.workspaceId,
 			nodeId: createdNodeId,
 			contentAssetId: assetId,
 			contentSize: byteSize,
@@ -3487,7 +3497,7 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 		// falls into its raw-R2 `.text()` branch.
 		if (
 			organizations_is_global_organization_id(args.organizationId) ||
-			organizations_is_global_github_workspace_id(args.workspaceId)
+			organizations_is_reserved_workspace_id(args.workspaceId)
 		) {
 			const asset = fileNode.assetId
 				? await ctx.db
@@ -3892,7 +3902,7 @@ async function db_resolve_committed_chunk_source(
 	// node id alone; byte size comes from the linked R2 content asset.
 	if (
 		organizations_is_global_organization_id(args.organizationId) ||
-		organizations_is_global_github_workspace_id(args.workspaceId)
+		organizations_is_reserved_workspace_id(args.workspaceId)
 	) {
 		const asset = fileNode.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 		const byteSize =
@@ -4198,7 +4208,7 @@ export const read_file_content_from_chunks = internalQuery({
 		const requestedWorkspaceId = args.workspaceId;
 		const realTenantScope =
 			organizations_is_global_organization_id(requestedOrganizationId) ||
-			organizations_is_global_github_workspace_id(requestedWorkspaceId)
+			organizations_is_reserved_workspace_id(requestedWorkspaceId)
 				? null
 				: {
 						organizationId: requestedOrganizationId,
@@ -4969,7 +4979,7 @@ export const match_markdown_file_lines = internalQuery({
 		}
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_global_github_workspace_id(args.workspaceId) &&
+			!organizations_is_reserved_workspace_id(args.workspaceId) &&
 			!files_node_has_editable_yjs_state(fileNode)
 		)
 			return null;
@@ -4977,7 +4987,7 @@ export const match_markdown_file_lines = internalQuery({
 		let pendingUpdateId: Id<"files_pending_updates"> | null = null;
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_global_github_workspace_id(args.workspaceId)
+			!organizations_is_reserved_workspace_id(args.workspaceId)
 		) {
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
 			const organizationId = args.organizationId;
@@ -5064,7 +5074,7 @@ export const match_markdown_file_lines = internalQuery({
 		// (reserved) rows have no Yjs/materialization state and read committed chunks by node id.
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_global_github_workspace_id(args.workspaceId)
+			!organizations_is_reserved_workspace_id(args.workspaceId)
 		) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
 				organizationId: args.organizationId,
@@ -5184,7 +5194,7 @@ export const match_plain_text_file_lines = internalQuery({
 		}
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_global_github_workspace_id(args.workspaceId) &&
+			!organizations_is_reserved_workspace_id(args.workspaceId) &&
 			!files_node_has_editable_yjs_state(fileNode)
 		)
 			return null;
@@ -5192,7 +5202,7 @@ export const match_plain_text_file_lines = internalQuery({
 		let pendingUpdateId: Id<"files_pending_updates"> | null = null;
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_global_github_workspace_id(args.workspaceId)
+			!organizations_is_reserved_workspace_id(args.workspaceId)
 		) {
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
 			const organizationId = args.organizationId;
@@ -5245,7 +5255,7 @@ export const match_plain_text_file_lines = internalQuery({
 		// (reserved) rows have no Yjs/materialization state and read committed chunks by node id.
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_global_github_workspace_id(args.workspaceId)
+			!organizations_is_reserved_workspace_id(args.workspaceId)
 		) {
 			const materializationState = await db_get_file_content_materialization_db_state(ctx, {
 				organizationId: args.organizationId,
@@ -5682,7 +5692,7 @@ export const text_search_files = internalQuery({
 		let pendingNodeIds: Array<Id<"files_nodes">> = [];
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_global_github_workspace_id(args.workspaceId)
+			!organizations_is_reserved_workspace_id(args.workspaceId)
 		) {
 			// Bind the guard-narrowed ids; TS drops property narrowing inside the closure below.
 			const organizationId = args.organizationId;

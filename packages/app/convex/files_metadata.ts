@@ -11,7 +11,7 @@ import {
 	type files_metadata_SearchPlan,
 	type files_metadata_Value,
 } from "../shared/files-metadata.ts";
-import { organizations_is_global_github_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
+import { organizations_is_reserved_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
 
 // #region indexed doc writes
 
@@ -553,7 +553,7 @@ export const search = internalQuery({
 		let pendingNodeIds: Array<Id<"files_nodes">> = [];
 		const organizationId = args.organizationId;
 		const workspaceId = args.workspaceId;
-		if (!organizations_is_global_organization_id(organizationId) && !organizations_is_global_github_workspace_id(workspaceId)) {
+		if (!organizations_is_global_organization_id(organizationId) && !organizations_is_reserved_workspace_id(workspaceId)) {
 			pendingNodeIds = await db_list_pending_file_node_ids(ctx, {
 				organizationId,
 				workspaceId,
@@ -665,7 +665,7 @@ export const get_by_path = internalQuery({
 		let pendingUpdate: Doc<"files_pending_updates"> | null = null;
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
-			!organizations_is_global_github_workspace_id(args.workspaceId)
+			!organizations_is_reserved_workspace_id(args.workspaceId)
 		) {
 			const organizationId: Id<"organizations"> = args.organizationId;
 			const workspaceId: Id<"organizations_workspaces"> = args.workspaceId;

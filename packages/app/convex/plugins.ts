@@ -26,19 +26,17 @@ import {
 	plugins_RUNTIME_VERSION,
 	plugins_dist_review_mechanical_findings,
 	plugins_parse_github_repository_url,
-	plugins_source_mount_name,
 	plugins_validate_manifest,
 } from "../shared/plugins.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
-	files_MOUNT_ROOT,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
 } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import {
-	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
+	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
@@ -50,24 +48,9 @@ import { r2_delete_object, r2_fetch_object_from_bucket, r2_put_object } from "./
 import type { files_nodes_create_file_node_internal_Result } from "./files_nodes.ts";
 import { plugins_runtime_enqueue_manual_run } from "./plugins_runtime.ts";
 
-const PLUGIN_IMPORT_GITHUB_TOKEN = process.env.PLUGIN_IMPORT_GITHUB_TOKEN;
-
-const PLUGIN_IMPORT_USER_AGENT = "t3-chat-plugin-import";
-
 const PLUGIN_SECRETS_MAX_BATCH_SIZE = 50;
 
-const PLUGIN_RECENT_RUNS_LIMIT = 10;
-
-const REVIEW_MODEL_ID = "gpt-5.4-mini" as const satisfies ai_chat_ModelId;
-
-const text_decoder = new TextDecoder();
-
 type PluginResult<T> = { _yay: T; _nay?: undefined } | { _nay: { message: string }; _yay?: undefined };
-type PluginVersionReviewResult = PluginResult<{
-	status: "passed" | "rejected" | "flagged";
-	mechanicalFindings: string[];
-	aiFindings: string[];
-}>;
 
 async function db_authorize_plugin_management(
 	ctx: Parameters<typeof organizations_db_get_membership>[0],
@@ -105,88 +88,11 @@ async function db_authorize_plugin_management(
 	return Result({ _yay: { membership } });
 }
 
-async function db_upsert_installation_secret(
-	ctx: MutationCtx,
-	args: {
-		installation: Doc<"plugins_workspace_installations">;
-		name: string;
-		value: string;
-		userId: Id<"users">;
-		now: number;
-	},
-) {
-	const encrypted = await crypto_encrypt_secret_value(args.value, `${args.installation._id}:${args.name}`);
-	const existing = await ctx.db
-		.query("plugins_workspace_installation_secrets")
-		.withIndex("by_installation_name", (q) => q.eq("installationId", args.installation._id).eq("name", args.name))
-		.first();
+// #region github import
 
-	if (existing) {
-		await ctx.db.patch("plugins_workspace_installation_secrets", existing._id, {
-			ciphertext: encrypted.ciphertext,
-			nonce: encrypted.nonce,
-			valuePreview: "configured",
-			updatedBy: args.userId,
-			updatedAt: args.now,
-		});
-		return existing._id;
-	}
+const PLUGIN_IMPORT_GITHUB_TOKEN = process.env.PLUGIN_IMPORT_GITHUB_TOKEN;
 
-	return await ctx.db.insert("plugins_workspace_installation_secrets", {
-		organizationId: args.installation.organizationId,
-		workspaceId: args.installation.workspaceId,
-		installationId: args.installation._id,
-		pluginName: args.installation.pluginName,
-		name: args.name,
-		ciphertext: encrypted.ciphertext,
-		nonce: encrypted.nonce,
-		valuePreview: "configured",
-		createdBy: args.userId,
-		updatedBy: args.userId,
-		updatedAt: args.now,
-	});
-}
-
-async function db_upsert_publisher_repository_secret(
-	ctx: MutationCtx,
-	args: {
-		repository: Doc<"plugins_publisher_repositories">;
-		name: string;
-		value: string;
-		/** Omitted means keep the existing origins (or none for a new secret). */
-		allowedOrigins?: string[];
-		now: number;
-	},
-) {
-	const encrypted = await crypto_encrypt_secret_value(args.value, `${args.repository.ownerUserId}:${args.name}`);
-	const existing = await ctx.db
-		.query("plugins_publisher_repository_secrets")
-		.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repository._id).eq("name", args.name))
-		.first();
-
-	if (existing) {
-		await ctx.db.patch("plugins_publisher_repository_secrets", existing._id, {
-			ciphertext: encrypted.ciphertext,
-			nonce: encrypted.nonce,
-			valuePreview: "configured",
-			...(args.allowedOrigins === undefined ? {} : { allowedOrigins: args.allowedOrigins }),
-			updatedAt: args.now,
-		});
-
-		return existing._id;
-	}
-
-	return await ctx.db.insert("plugins_publisher_repository_secrets", {
-		ownerUserId: args.repository.ownerUserId,
-		repositoryId: args.repository._id,
-		name: args.name,
-		ciphertext: encrypted.ciphertext,
-		nonce: encrypted.nonce,
-		valuePreview: "configured",
-		allowedOrigins: args.allowedOrigins ?? [],
-		updatedAt: args.now,
-	});
-}
+const PLUGIN_IMPORT_USER_AGENT = "t3-chat-plugin-import";
 
 function github_raw_url(args: { owner: string; repo: string; commitSha: string; path: string }) {
 	const path = args.path
@@ -293,9 +199,9 @@ async function fetch_github_bytes(args: {
 	return Result({ _yay: buffer });
 }
 
-function r2_key(args: { name: string; version: string; commitSha: string; path: string }) {
-	return `plugins/${args.name}/${args.version}/${args.commitSha}/${args.path}`;
-}
+// #endregion github import
+
+// #region version registration
 
 export const register_plugin_version = internalAction({
 	args: {
@@ -320,63 +226,51 @@ export const register_plugin_version = internalAction({
 		createdBy: doc(app_convex_schema, "plugins_versions").fields.createdBy,
 		sourceFiles: v.array(v.object({ path: v.string(), rawText: v.string() })),
 	},
-	returns: v_result({ _yay: v.object({ pluginVersionId: v.id("plugins_versions"), sourceMountName: v.string() }) }),
-	handler: async (
-		ctx,
-		args,
-	): Promise<PluginResult<{ pluginVersionId: Id<"plugins_versions">; sourceMountName: string }>> => {
+	returns: v_result({ _yay: v.object({ pluginVersionId: v.id("plugins_versions") }) }),
+	handler: async (ctx, args): Promise<PluginResult<{ pluginVersionId: Id<"plugins_versions"> }>> => {
 		const { sourceFiles, ...versionArgs } = args;
 
-		const sourceMountName = plugins_source_mount_name({
-			name: args.name,
-			version: args.version,
-			sourceCommitSha: args.sourceCommitSha,
-		});
-		const registered = (await ctx.runMutation(internal.plugins.upsert_plugin, {
-			...versionArgs,
-			sourceMountName,
-		})) as upsert_plugin_Result;
+		// Upsert the version doc first: its id is the opaque root of the source tree in GLOBAL/PLUGINS.
+		const registered = (await ctx.runMutation(internal.plugins.upsert_plugin, versionArgs)) as upsert_plugin_Result;
 		if (registered._nay) {
 			return Result({ _nay: { message: registered._nay.message } });
 		}
-		const mount = {
-			pluginVersionId: registered._yay.pluginVersionId,
-			sourceRepositoryUrl: args.sourceRepositoryUrl,
-			sourceCommitSha: args.sourceCommitSha,
-			artifactHash: args.artifactHash,
-			mountName: sourceMountName,
-			fileCount: sourceFiles.length,
-		};
+		const pluginVersionId = registered._yay.pluginVersionId;
 
 		let totalBytes = 0;
 		for (const sourceFile of sourceFiles) {
 			totalBytes += files_get_utf8_byte_size(sourceFile.rawText);
+			// Re-publish of the same (name, version, artifactHash) reuses the version doc, so existing
+			// file rows hit the "This file already exists." continue branch and stay shared.
 			const created = (await ctx.runAction(internal.files_nodes.create_file_node_internal, {
-				path: `/${sourceMountName}/${sourceFile.path}`,
+				workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+				path: `/${pluginVersionId}/${sourceFile.path}`,
 				rawText: sourceFile.rawText,
 			})) as files_nodes_create_file_node_internal_Result;
 			if (created._nay) {
 				if (created._nay.message === "This file already exists.") {
 					continue;
 				}
-				await ctx.runMutation(internal.plugins.upsert_source_mount, {
-					...mount,
-					status: "error",
-					totalBytes,
-					lastError: created._nay.message,
+				await ctx.runMutation(internal.plugins.patch_version_source_status, {
+					pluginVersionId,
+					sourceStatus: "error",
+					sourceFileCount: sourceFiles.length,
+					sourceTotalBytes: totalBytes,
+					sourceLastError: created._nay.message,
 				});
 				return Result({ _nay: { message: created._nay.message } });
 			}
 		}
 
-		await ctx.runMutation(internal.plugins.upsert_source_mount, {
-			...mount,
-			status: "ready",
-			totalBytes,
-			lastError: null,
+		await ctx.runMutation(internal.plugins.patch_version_source_status, {
+			pluginVersionId,
+			sourceStatus: "ready",
+			sourceFileCount: sourceFiles.length,
+			sourceTotalBytes: totalBytes,
+			sourceLastError: null,
 		});
 
-		return Result({ _yay: { pluginVersionId: registered._yay.pluginVersionId, sourceMountName } });
+		return Result({ _yay: { pluginVersionId } });
 	},
 });
 
@@ -405,7 +299,6 @@ export const upsert_plugin = internalMutation({
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 		files: doc(app_convex_schema, "plugins_versions").fields.files,
-		sourceMountName: doc(app_convex_schema, "plugins_versions").fields.sourceMountName,
 		createdBy: doc(app_convex_schema, "plugins_versions").fields.createdBy,
 	},
 	returns: v_result({ _yay: v.object({ pluginVersionId: v.id("plugins_versions") }) }),
@@ -459,6 +352,12 @@ export const upsert_plugin = internalMutation({
 			...args,
 			runtimeVersion: plugins_RUNTIME_VERSION,
 			isLatest: true,
+			// Source files are written after this insert; register_plugin_version patches the
+			// final status, so a crash mid-publish leaves an honest incomplete-snapshot error.
+			sourceStatus: "error",
+			sourceFileCount: 0,
+			sourceTotalBytes: 0,
+			sourceLastError: "Source snapshot incomplete",
 			updatedAt: Date.now(),
 		});
 
@@ -471,39 +370,21 @@ type upsert_plugin_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-export const upsert_source_mount = internalMutation({
+export const patch_version_source_status = internalMutation({
 	args: {
-		pluginVersionId: doc(app_convex_schema, "plugins_source_mounts").fields.pluginVersionId,
-		sourceRepositoryUrl: doc(app_convex_schema, "plugins_source_mounts").fields.sourceRepositoryUrl,
-		sourceCommitSha: doc(app_convex_schema, "plugins_source_mounts").fields.sourceCommitSha,
-		artifactHash: doc(app_convex_schema, "plugins_source_mounts").fields.artifactHash,
-		mountName: doc(app_convex_schema, "plugins_source_mounts").fields.mountName,
-		status: doc(app_convex_schema, "plugins_source_mounts").fields.status,
-		fileCount: doc(app_convex_schema, "plugins_source_mounts").fields.fileCount,
-		totalBytes: doc(app_convex_schema, "plugins_source_mounts").fields.totalBytes,
-		lastError: doc(app_convex_schema, "plugins_source_mounts").fields.lastError,
+		pluginVersionId: v.id("plugins_versions"),
+		sourceStatus: v.union(v.literal("ready"), v.literal("error")),
+		sourceFileCount: v.number(),
+		sourceTotalBytes: v.number(),
+		sourceLastError: v.union(v.string(), v.null()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const now = Date.now();
-		const existing = await ctx.db
-			.query("plugins_source_mounts")
-			.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", args.pluginVersionId))
-			.first();
-		const patch = {
-			...args,
-			mountKind: "global-github-temporary" as const,
-			mountPath: `${files_MOUNT_ROOT}/${args.mountName}`,
-			storageOrganizationId: organizations_GLOBAL_ORGANIZATION_ID,
-			storageWorkspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
-			updatedAt: now,
-		};
-		if (existing) {
-			await ctx.db.patch("plugins_source_mounts", existing._id, patch);
-			return null;
-		}
-
-		await ctx.db.insert("plugins_source_mounts", patch);
+		const { pluginVersionId, ...sourceFields } = args;
+		await ctx.db.patch("plugins_versions", pluginVersionId, {
+			...sourceFields,
+			updatedAt: Date.now(),
+		});
 		return null;
 	},
 });
@@ -545,6 +426,18 @@ type get_owned_publisher_repository_Result =
 	typeof get_owned_publisher_repository extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+// #endregion version registration
+
+// #region ai review
+
+const REVIEW_MODEL_ID = "gpt-5.4-mini" as const satisfies ai_chat_ModelId;
+
+type PluginVersionReviewResult = PluginResult<{
+	status: "passed" | "rejected" | "flagged";
+	mechanicalFindings: string[];
+	aiFindings: string[];
+}>;
 
 // Kept as a spy-able object so tests can stub the verdict without mocking OpenAI HTTP responses.
 export const plugins_ai_review = {
@@ -858,6 +751,16 @@ type run_version_review_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+// #endregion ai review
+
+// #region publishing
+
+const text_decoder = new TextDecoder();
+
+function r2_key(args: { name: string; version: string; commitSha: string; path: string }) {
+	return `plugins/${args.name}/${args.version}/${args.commitSha}/${args.path}`;
+}
+
 /**
  * Records the outcome of a publish attempt on the repository claim so publishers get durable
  * feedback that outlives the publish toast. Stamps `at` with the current time; no-ops when the
@@ -1044,7 +947,7 @@ async function publish_version_from_github(
 		...files.map((file) => r2_put_object(ctx, { key: file.r2Key, body: file.body, contentType: file.contentType })),
 	]);
 
-	// Registration writes the version docs and mounts the dist snapshot, making the version visible.
+	// Registration writes the version docs and the source snapshot tree, making the version visible.
 	const registered = (await ctx.runAction(internal.plugins.register_plugin_version, {
 		name: manifest._yay.name,
 		displayName: manifest._yay.displayName,
@@ -1074,7 +977,6 @@ async function publish_version_from_github(
 	return Result({
 		_yay: {
 			pluginVersionId: registered._yay.pluginVersionId,
-			sourceMountName: registered._yay.sourceMountName,
 			sourceCommitSha,
 		},
 	});
@@ -1087,7 +989,6 @@ export const publish_version = action({
 	returns: v_result({
 		_yay: v.object({
 			pluginVersionId: v.id("plugins_versions"),
-			sourceMountName: v.string(),
 			sourceCommitSha: v.string(),
 		}),
 	}),
@@ -1139,6 +1040,10 @@ export const publish_version = action({
 		return published;
 	},
 });
+
+// #endregion publishing
+
+// #region publisher repositories and secrets
 
 export const list_user_published_repositories = query({
 	args: {},
@@ -1368,6 +1273,47 @@ export const list_publisher_repository_secrets = query({
 	},
 });
 
+async function db_upsert_publisher_repository_secret(
+	ctx: MutationCtx,
+	args: {
+		repository: Doc<"plugins_publisher_repositories">;
+		name: string;
+		value: string;
+		/** Omitted means keep the existing origins (or none for a new secret). */
+		allowedOrigins?: string[];
+		now: number;
+	},
+) {
+	const encrypted = await crypto_encrypt_secret_value(args.value, `${args.repository.ownerUserId}:${args.name}`);
+	const existing = await ctx.db
+		.query("plugins_publisher_repository_secrets")
+		.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repository._id).eq("name", args.name))
+		.first();
+
+	if (existing) {
+		await ctx.db.patch("plugins_publisher_repository_secrets", existing._id, {
+			ciphertext: encrypted.ciphertext,
+			nonce: encrypted.nonce,
+			valuePreview: "configured",
+			...(args.allowedOrigins === undefined ? {} : { allowedOrigins: args.allowedOrigins }),
+			updatedAt: args.now,
+		});
+
+		return existing._id;
+	}
+
+	return await ctx.db.insert("plugins_publisher_repository_secrets", {
+		ownerUserId: args.repository.ownerUserId,
+		repositoryId: args.repository._id,
+		name: args.name,
+		ciphertext: encrypted.ciphertext,
+		nonce: encrypted.nonce,
+		valuePreview: "configured",
+		allowedOrigins: args.allowedOrigins ?? [],
+		updatedAt: args.now,
+	});
+}
+
 export const upsert_publisher_repository_secret = mutation({
 	args: {
 		repositoryId: v.id("plugins_publisher_repositories"),
@@ -1540,6 +1486,10 @@ export const delete_publisher_repository_secret = mutation({
 		return Result({ _yay: null });
 	},
 });
+
+// #endregion publisher repositories and secrets
+
+// #region installations and marketplace
 
 export const install_version = mutation({
 	args: {
@@ -1742,6 +1692,42 @@ export const uninstall_version = mutation({
 	},
 });
 
+/**
+ * The single gate for agent access to plugin sources: bash mounts `/.plugins/<pluginName>` only for
+ * plugins with an enabled installation in the current workspace, targeting that installation's
+ * version-keyed source tree in GLOBAL/PLUGINS.
+ */
+export const list_bash_source_mounts = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+	},
+	returns: v.array(
+		v.object({
+			pluginName: v.string(),
+			pluginVersionId: v.id("plugins_versions"),
+		}),
+	),
+	handler: async (ctx, args) => {
+		// The status+pluginName index yields enabled installations already in plugin-name order.
+		const installations = await ctx.db
+			.query("plugins_workspace_installations")
+			.withIndex("by_organization_workspace_status_pluginName", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("status", "enabled"),
+			)
+			.collect();
+		return installations.map((installation) => ({
+			pluginName: installation.pluginName,
+			pluginVersionId: installation.pluginVersionId,
+		}));
+	},
+});
+
+export type plugins_list_bash_source_mounts_Result =
+	typeof list_bash_source_mounts extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const list_installations = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -1751,7 +1737,6 @@ export const list_installations = query({
 			installation: doc(app_convex_schema, "plugins_workspace_installations"),
 			version: doc(app_convex_schema, "plugins_versions"),
 			handlers: v.array(doc(app_convex_schema, "plugins_workspace_event_handlers")),
-			sourceMount: v.union(doc(app_convex_schema, "plugins_source_mounts"), v.null()),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -1783,17 +1768,11 @@ export const list_installations = query({
 				if (!version) {
 					return null;
 				}
-				const [handlers, sourceMount] = await Promise.all([
-					ctx.db
-						.query("plugins_workspace_event_handlers")
-						.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
-						.collect(),
-					ctx.db
-						.query("plugins_source_mounts")
-						.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
-						.first(),
-				]);
-				return { installation, version, handlers, sourceMount };
+				const handlers = await ctx.db
+					.query("plugins_workspace_event_handlers")
+					.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
+					.collect();
+				return { installation, version, handlers };
 			}),
 		);
 
@@ -1858,6 +1837,52 @@ export const list_published_plugins = query({
 		);
 	},
 });
+
+// #endregion installations and marketplace
+
+// #region installation secrets
+
+async function db_upsert_installation_secret(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		name: string;
+		value: string;
+		userId: Id<"users">;
+		now: number;
+	},
+) {
+	const encrypted = await crypto_encrypt_secret_value(args.value, `${args.installation._id}:${args.name}`);
+	const existing = await ctx.db
+		.query("plugins_workspace_installation_secrets")
+		.withIndex("by_installation_name", (q) => q.eq("installationId", args.installation._id).eq("name", args.name))
+		.first();
+
+	if (existing) {
+		await ctx.db.patch("plugins_workspace_installation_secrets", existing._id, {
+			ciphertext: encrypted.ciphertext,
+			nonce: encrypted.nonce,
+			valuePreview: "configured",
+			updatedBy: args.userId,
+			updatedAt: args.now,
+		});
+		return existing._id;
+	}
+
+	return await ctx.db.insert("plugins_workspace_installation_secrets", {
+		organizationId: args.installation.organizationId,
+		workspaceId: args.installation.workspaceId,
+		installationId: args.installation._id,
+		pluginName: args.installation.pluginName,
+		name: args.name,
+		ciphertext: encrypted.ciphertext,
+		nonce: encrypted.nonce,
+		valuePreview: "configured",
+		createdBy: args.userId,
+		updatedBy: args.userId,
+		updatedAt: args.now,
+	});
+}
 
 export const list_installation_secrets = query({
 	args: {
@@ -2173,6 +2198,12 @@ export type plugins_decrypt_secret_for_runtime_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+// #endregion installation secrets
+
+// #region runs
+
+const PLUGIN_RECENT_RUNS_LIMIT = 10;
+
 export const list_run_calls = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -2372,6 +2403,8 @@ export const list_recent_runs = query({
 	},
 });
 
+// #endregion runs
+
 // #region admin
 /**
  * Programmatic manual runs: enqueues an installed plugin on already-uploaded files without new
@@ -2496,6 +2529,168 @@ function version_r2_keys(version: Doc<"plugins_versions">) {
 	return r2Keys;
 }
 
+/**
+ * Delete one bounded batch of a GLOBAL/PLUGINS files tree: range-scan `files_nodes` by `treePath`
+ * over `[treePathPrefix, treePathPrefix + "\uffff")`, and for each node delete its committed chunks,
+ * `file_stats`, metadata docs (defensive), and R2 asset (object + doc, gated on `r2Key`) BEFORE the
+ * node doc itself, so a crash never orphans children. Asset and node deletion are one budget unit
+ * pair so a node never commits with a missing asset reference. Mirrors
+ * `github_sources.delete_mount_content_batch`, minus the sync-run supersede gate.
+ */
+async function db_delete_plugin_source_tree_batch(
+	ctx: MutationCtx,
+	args: {
+		treePathPrefix: string;
+		batchSize: number;
+	},
+) {
+	const lower = args.treePathPrefix;
+	const upper = `${args.treePathPrefix}\uffff`;
+
+	let deletedCount = 0;
+	while (deletedCount < args.batchSize) {
+		const node = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_treePath", (q) =>
+				q
+					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+					.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+					.gte("treePath", lower)
+					.lt("treePath", upper),
+			)
+			.order("desc")
+			.first();
+		if (!node) {
+			break;
+		}
+
+		const remainingPlainTextChunks = args.batchSize - deletedCount;
+		const plainTextChunks = await ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q
+					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+					.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+					.eq("fileNodeId", node._id),
+			)
+			.take(remainingPlainTextChunks);
+		for (const chunk of plainTextChunks) {
+			await ctx.db.delete("files_plain_text_chunks", chunk._id);
+			deletedCount++;
+		}
+		if (plainTextChunks.length > 0) {
+			continue;
+		}
+
+		const remainingMarkdownChunks = args.batchSize - deletedCount;
+		const markdownChunks = await ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q
+					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+					.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+					.eq("fileNodeId", node._id),
+			)
+			.take(remainingMarkdownChunks);
+		for (const chunk of markdownChunks) {
+			await ctx.db.delete("files_markdown_chunks", chunk._id);
+			deletedCount++;
+		}
+		if (markdownChunks.length > 0) {
+			continue;
+		}
+
+		const remainingFileStats = args.batchSize - deletedCount;
+		const fileStats = await ctx.db
+			.query("file_stats")
+			.withIndex("by_organization_workspace_fileNode", (q) =>
+				q
+					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+					.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+					.eq("fileNodeId", node._id),
+			)
+			.take(remainingFileStats);
+		for (const stats of fileStats) {
+			await ctx.db.delete("file_stats", stats._id);
+			deletedCount++;
+		}
+		if (fileStats.length > 0) {
+			continue;
+		}
+
+		const remainingMetadataDocs = args.batchSize - deletedCount;
+		const metadataDocs = await ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+				q
+					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+					.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+					.eq("fileNodeId", node._id),
+			)
+			.take(remainingMetadataDocs);
+		for (const metadataDoc of metadataDocs) {
+			await ctx.db.delete("files_metadata_docs", metadataDoc._id);
+			deletedCount++;
+		}
+		if (metadataDocs.length > 0) {
+			continue;
+		}
+
+		if (node.assetId) {
+			const asset = await ctx.db.get("files_r2_assets", node.assetId);
+			if (asset) {
+				if (deletedCount + 2 > args.batchSize) {
+					break;
+				}
+				if (asset.r2Key) {
+					await r2_delete_object(ctx, asset.r2Key);
+				}
+				await ctx.db.delete("files_r2_assets", asset._id);
+				await ctx.db.delete("files_nodes", node._id);
+				deletedCount += 2;
+				continue;
+			}
+		}
+
+		if (deletedCount >= args.batchSize) {
+			break;
+		}
+		await ctx.db.delete("files_nodes", node._id);
+		deletedCount++;
+	}
+
+	const remaining = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_treePath", (q) =>
+			q
+				.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+				.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+				.gte("treePath", lower)
+				.lt("treePath", upper),
+		)
+		.first();
+
+	return { done: remaining === null, deletedCount };
+}
+
+/**
+ * Delete one bounded batch of a plugin version's source tree (`/<pluginVersionId>/...` in the
+ * reserved `GLOBAL`/`PLUGINS` scope). Drive to `done:true` by calling repeatedly.
+ */
+export const delete_plugin_source_tree_batch = internalMutation({
+	args: {
+		pluginVersionId: v.id("plugins_versions"),
+		_test_batchSize: v.optional(v.number()),
+	},
+	returns: v.object({ done: v.boolean(), deletedCount: v.number() }),
+	handler: async (ctx, args) => {
+		return await db_delete_plugin_source_tree_batch(ctx, {
+			treePathPrefix: `/${args.pluginVersionId}/`,
+			batchSize: args._test_batchSize ?? 100,
+		});
+	},
+});
+
 export const preview_hard_delete_registered_plugin = internalQuery({
 	args: {
 		pluginName: v.string(),
@@ -2503,7 +2698,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 	returns: v.object({
 		versions: v.number(),
 		versionReviews: v.number(),
-		sourceMounts: v.number(),
+		sourceFileNodes: v.number(),
 		installations: v.number(),
 		eventHandlers: v.number(),
 		installationSecrets: v.number(),
@@ -2521,7 +2716,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 
 		const r2ObjectKeys = new Set<string>();
 		const repositoryUrls = new Set<string>();
-		let sourceMounts = 0;
+		let sourceFileNodes = 0;
 		let installations = 0;
 		let eventHandlers = 0;
 		let installationSecrets = 0;
@@ -2532,11 +2727,17 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 			for (const r2Key of version_r2_keys(version)) {
 				r2ObjectKeys.add(r2Key);
 			}
-			const mounts = await ctx.db
-				.query("plugins_source_mounts")
-				.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
+			const sourceNodes = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_treePath", (q) =>
+					q
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.gte("treePath", `/${version._id}/`)
+						.lt("treePath", `/${version._id}/\uffff`),
+				)
 				.collect();
-			sourceMounts += mounts.length;
+			sourceFileNodes += sourceNodes.length;
 			const versionInstallations = await ctx.db
 				.query("plugins_workspace_installations")
 				.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
@@ -2600,7 +2801,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		return {
 			versions: versions.length,
 			versionReviews,
-			sourceMounts,
+			sourceFileNodes,
 			installations,
 			eventHandlers,
 			installationSecrets,
@@ -2719,16 +2920,15 @@ export const hard_delete_registered_plugin_batch = internalMutation({
 		}
 
 		for (const version of versions) {
-			const mounts = await ctx.db
-				.query("plugins_source_mounts")
-				.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
-				.collect();
-			for (const mount of mounts) {
-				await ctx.db.delete("plugins_source_mounts", mount._id);
-				deleted += 1;
-				budget -= 1;
-			}
-			if (budget <= 0) {
+			// Drain the version's source tree in GLOBAL/PLUGINS before the version doc so a
+			// registry hard delete never orphans reserved-scope file rows.
+			const sourceTree = await db_delete_plugin_source_tree_batch(ctx, {
+				treePathPrefix: `/${version._id}/`,
+				batchSize: budget,
+			});
+			deleted += sourceTree.deletedCount;
+			budget -= sourceTree.deletedCount;
+			if (!sourceTree.done || budget <= 0) {
 				return { done: false, deleted };
 			}
 
@@ -2809,4 +3009,5 @@ export const hard_delete_registered_plugin_now = internalAction({
 		return null;
 	},
 });
+
 // #endregion admin

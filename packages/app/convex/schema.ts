@@ -5,6 +5,7 @@ import type { ai_chat_AiSdk5UiMessage } from "../src/lib/ai-chat.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
@@ -223,7 +224,11 @@ const app_convex_schema = defineSchema({
 	 */
 	files_metadata_docs: defineTable({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
-		workspaceId: v.union(v.id("organizations_workspaces"), v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID)),
+		workspaceId: v.union(
+			v.id("organizations_workspaces"),
+			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+		),
 		fileNodeId: v.id("files_nodes"),
 		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
 		userId: v.optional(v.string()),
@@ -296,7 +301,11 @@ const app_convex_schema = defineSchema({
 		/** Organization ID extracted from roomId */
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
 		/** Workspace ID extracted from roomId */
-		workspaceId: v.union(v.id("organizations_workspaces"), v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID)),
+		workspaceId: v.union(
+			v.id("organizations_workspaces"),
+			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+		),
 		/** Materialized absolute path used for path resolution */
 		path: v.string(),
 		/**
@@ -411,7 +420,11 @@ const app_convex_schema = defineSchema({
 	 */
 	file_stats: defineTable({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
-		workspaceId: v.union(v.id("organizations_workspaces"), v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID)),
+		workspaceId: v.union(
+			v.id("organizations_workspaces"),
+			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+		),
 		fileNodeId: v.id("files_nodes"),
 		/** Newline count (`wc -l`). -1 means the content cannot be processed (non-markdown/binary). */
 		lineCount: v.number(),
@@ -427,7 +440,11 @@ const app_convex_schema = defineSchema({
 	 */
 	files_markdown_chunks: defineTable({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
-		workspaceId: v.union(v.id("organizations_workspaces"), v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID)),
+		workspaceId: v.union(
+			v.id("organizations_workspaces"),
+			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+		),
 		fileNodeId: v.id("files_nodes"),
 		/** `committed` docs use `yjsSequence`; `pending` docs use `userId` and `pendingUpdateId`. */
 		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
@@ -488,7 +505,11 @@ const app_convex_schema = defineSchema({
 	 */
 	files_plain_text_chunks: defineTable({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
-		workspaceId: v.union(v.id("organizations_workspaces"), v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID)),
+		workspaceId: v.union(
+			v.id("organizations_workspaces"),
+			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+		),
 		fileNodeId: v.id("files_nodes"),
 		/** `committed` docs use `yjsSequence`; `pending` docs use `userId` and `pendingUpdateId`. */
 		sourceKind: v.union(v.literal("committed"), v.literal("pending")),
@@ -611,7 +632,11 @@ const app_convex_schema = defineSchema({
 
 	files_r2_assets: defineTable({
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
-		workspaceId: v.union(v.id("organizations_workspaces"), v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID)),
+		workspaceId: v.union(
+			v.id("organizations_workspaces"),
+			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+		),
 		kind: v.union(v.literal("upload"), v.literal("content"), v.literal("yjs_snapshot"), v.literal("content_snapshot")),
 		r2Bucket: v.string(),
 		/**
@@ -760,7 +785,11 @@ const app_convex_schema = defineSchema({
 				r2Key: v.optional(v.string()),
 			}),
 		),
-		sourceMountName: v.union(v.string(), v.null()),
+		/** Source snapshot bookkeeping for the `/<pluginVersionId>/...` tree in GLOBAL/PLUGINS. */
+		sourceStatus: v.union(v.literal("ready"), v.literal("error")),
+		sourceFileCount: v.number(),
+		sourceTotalBytes: v.number(),
+		sourceLastError: v.union(v.string(), v.null()),
 		createdBy: v.id("users"),
 		updatedAt: v.number(),
 	})
@@ -787,25 +816,6 @@ const app_convex_schema = defineSchema({
 		.index("by_artifactHash", ["artifactHash"])
 		.index("by_createdBy_pluginName", ["createdBy", "pluginName"]),
 
-	plugins_source_mounts: defineTable({
-		pluginVersionId: v.id("plugins_versions"),
-		sourceRepositoryUrl: v.string(),
-		sourceCommitSha: v.string(),
-		artifactHash: v.string(),
-		mountKind: v.literal("global-github-temporary"),
-		mountName: v.string(),
-		mountPath: v.string(),
-		storageOrganizationId: v.literal(organizations_GLOBAL_ORGANIZATION_ID),
-		storageWorkspaceId: v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
-		status: v.union(v.literal("ready"), v.literal("error")),
-		fileCount: v.number(),
-		totalBytes: v.number(),
-		lastError: v.union(v.string(), v.null()),
-		updatedAt: v.number(),
-	})
-		.index("by_pluginVersion", ["pluginVersionId"])
-		.index("by_mountName", ["mountName"]),
-
 	plugins_workspace_installations: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -821,6 +831,7 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	})
 		.index("by_organization_workspace_status_updatedAt", ["organizationId", "workspaceId", "status", "updatedAt"])
+		.index("by_organization_workspace_status_pluginName", ["organizationId", "workspaceId", "status", "pluginName"])
 		.index("by_organization_workspace_pluginName", ["organizationId", "workspaceId", "pluginName"])
 		.index("by_organization_workspace_pluginVersion", ["organizationId", "workspaceId", "pluginVersionId"])
 		.index("by_pluginVersion", ["pluginVersionId"]),

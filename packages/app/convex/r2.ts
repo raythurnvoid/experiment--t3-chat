@@ -26,6 +26,8 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+	organizations_is_reserved_workspace_id,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
@@ -84,12 +86,12 @@ const CLOUDFLARE_EVENTS_SECRET = process.env.CLOUDFLARE_EVENTS_SECRET;
  */
 function r2_require_real_scope(
 	organizationId: Id<"organizations"> | typeof organizations_GLOBAL_ORGANIZATION_ID,
-	workspaceId: Id<"organizations_workspaces"> | typeof organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+	workspaceId:
+		| Id<"organizations_workspaces">
+		| typeof organizations_GLOBAL_GITHUB_WORKSPACE_ID
+		| typeof organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 ): { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> } {
-	if (
-		organizationId === organizations_GLOBAL_ORGANIZATION_ID ||
-		workspaceId === organizations_GLOBAL_GITHUB_WORKSPACE_ID
-	) {
+	if (organizationId === organizations_GLOBAL_ORGANIZATION_ID || organizations_is_reserved_workspace_id(workspaceId)) {
 		const errorMessage = "Reserved external-mount scope reached a sink that requires a real organization/workspace id";
 		const errorData = { organizationId, workspaceId };
 		console.error(errorMessage, errorData);
@@ -1272,7 +1274,7 @@ export const process_uploaded_asset_event = internalMutation({
 		const uploadContentType = sourceFileNode.contentType?.split(";")[0]?.trim().toLowerCase() ?? null;
 		const uploadScope =
 			sourceFileNode.organizationId !== organizations_GLOBAL_ORGANIZATION_ID &&
-			sourceFileNode.workspaceId !== organizations_GLOBAL_GITHUB_WORKSPACE_ID
+			!organizations_is_reserved_workspace_id(sourceFileNode.workspaceId)
 				? { organizationId: sourceFileNode.organizationId, workspaceId: sourceFileNode.workspaceId }
 				: null;
 		const uploadEventHandler =

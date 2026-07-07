@@ -157,7 +157,7 @@ Current purge coverage includes:
 - `files_r2_assets` with upload-conversion job cancellation and R2 object deletion
 - `files_nodes` last
 
-Plugin publish source mounts live in the virtual global tenant (GLOBAL organization / GITHUB workspace), not in any user tenant, so no user or tenant purge reaches them. Deleting plugin registry rows without also sweeping that workspace leaves orphan `files_nodes` trees (plus chunks, file stats, metadata docs, and R2 assets). `github_sources.delete_mount_content_batch` is the reference child-before-parent deletion order for that content.
+Plugin publish source trees live in the virtual global tenant (GLOBAL organization / PLUGINS workspace) under version-keyed roots `/<pluginVersionId>/...`, not in any user tenant, so no user or tenant purge reaches them. `plugins.hard_delete_registered_plugin_batch` sweeps each version's tree (via `db_delete_plugin_source_tree_batch`) before deleting the version doc, so registry hard deletes leave no orphans; `plugins.delete_plugin_source_tree_batch` drains a single version's tree if one was ever orphaned. `github_sources.delete_mount_content_batch` is the reference child-before-parent deletion order both flows follow.
 
 Use limited `.take(batchSize)` reads for growing tables. Do not reintroduce tenant-sized `.collect()` reads in content purge paths.
 

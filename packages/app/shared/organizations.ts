@@ -193,6 +193,16 @@ export const organizations_GLOBAL_ORGANIZATION_ID = "GLOBAL" as const;
 export const organizations_GLOBAL_GITHUB_WORKSPACE_ID = "GITHUB" as const;
 
 /**
+ * Special non-`Id` workspace sentinel for read-only plugin source snapshots. NOT a real
+ * `Id<"organizations_workspaces">` and has no backing doc; only legal in the file content-storage tables,
+ * where the schema accepts it via `v.literal(...)`. Each published plugin version stores its source tree
+ * once under `/<pluginVersionId>/...` in this scope; workspaces see it only through enabled installations.
+ * This constant is the single source of truth — the schema literal type and
+ * `typeof organizations_GLOBAL_PLUGINS_WORKSPACE_ID` track it, so changing the value propagates.
+ */
+export const organizations_GLOBAL_PLUGINS_WORKSPACE_ID = "PLUGINS" as const;
+
+/**
  * Type guard that narrows a `realId | sentinel` organization field to its real-id arm in the false branch
  * (e.g. `Id<"organizations"> | "GLOBAL"` → `Id<"organizations">`). Generic so `shared/` stays free of the
  * Convex `Id<...>` types; the predicate subtracts the sentinel literal from the caller's union.
@@ -212,6 +222,28 @@ export function organizations_is_global_github_workspace_id<T>(
 	workspaceId: T | typeof organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 ): workspaceId is typeof organizations_GLOBAL_GITHUB_WORKSPACE_ID {
 	return workspaceId === organizations_GLOBAL_GITHUB_WORKSPACE_ID;
+}
+
+/**
+ * Type guard for the PLUGINS workspace sentinel, mirroring
+ * {@link organizations_is_global_github_workspace_id}.
+ */
+export function organizations_is_global_plugins_workspace_id<T>(
+	workspaceId: T | typeof organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+): workspaceId is typeof organizations_GLOBAL_PLUGINS_WORKSPACE_ID {
+	return workspaceId === organizations_GLOBAL_PLUGINS_WORKSPACE_ID;
+}
+
+/**
+ * Type guard for "any reserved file-scope workspace sentinel" (GITHUB or PLUGINS). Use this where the
+ * semantic is "this scope stores read-only system-managed content", instead of checking GITHUB alone.
+ */
+export function organizations_is_reserved_workspace_id<T>(
+	workspaceId: T | typeof organizations_GLOBAL_GITHUB_WORKSPACE_ID | typeof organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+): workspaceId is typeof organizations_GLOBAL_GITHUB_WORKSPACE_ID | typeof organizations_GLOBAL_PLUGINS_WORKSPACE_ID {
+	return (
+		workspaceId === organizations_GLOBAL_GITHUB_WORKSPACE_ID || workspaceId === organizations_GLOBAL_PLUGINS_WORKSPACE_ID
+	);
 }
 
 // #endregion special ids

@@ -8,8 +8,8 @@ import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { plugins_validate_manifest, type plugins_Capability } from "../shared/plugins.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
-	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
+	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 
 beforeEach(() => {
@@ -132,16 +132,16 @@ describe("plugins Phase 0", () => {
 		expect(plugins_validate_manifest(manifest)).toMatchObject({ _nay: { message: expect.any(String) } });
 	});
 
-	test("reuses existing source mount files for the same immutable plugin version", async () => {
+	test("reuses existing source tree files for the same immutable plugin version", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 
 		const first = await register_media_plugin(t, membership.userId);
 		const rerun = await register_media_plugin(t, membership.userId);
 		expect(rerun.pluginVersionId).toBe(first.pluginVersionId);
-		expect(rerun.sourceMountName).toBe(first.sourceMountName);
 
-		// A same-artifact publish from a new commit gets a fresh mount so stale files never mix in.
+		// A same-artifact publish from a new commit reuses the version doc and its
+		// version-keyed source tree: identical artifact hash means identical dist files.
 		const second = await register_media_plugin(t, membership.userId, {
 			sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
 			sourceOwner: "sybill-ai-engineering",
@@ -149,14 +149,33 @@ describe("plugins Phase 0", () => {
 			sourceCommitSha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
 		});
 		expect(second.pluginVersionId).toBe(first.pluginVersionId);
-		expect(second.sourceMountName).not.toBe(first.sourceMountName);
 		const version = await t.run((ctx) => ctx.db.get("plugins_versions", first.pluginVersionId));
 		expect(version?.sourceRepositoryUrl).toBe("https://github.com/sybill-ai-engineering/media-plugin");
 		expect(version?.sourceOwner).toBe("sybill-ai-engineering");
 		expect(version?.sourceCommitSha).toBe("abcdefabcdefabcdefabcdefabcdefabcdefabcd");
+		expect(version).toMatchObject({
+			sourceStatus: "ready",
+			sourceFileCount: 1,
+			sourceLastError: null,
+		});
+
+		// One shared tree: exactly one source file node exists under the version root.
+		const sourceNodes = await t.run((ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_treePath", (q) =>
+					q
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+						.gte("treePath", `/${first.pluginVersionId}/`)
+						.lt("treePath", `/${first.pluginVersionId}/\uffff`),
+				)
+				.collect(),
+		);
+		expect(sourceNodes.filter((node) => node.kind === "file")).toHaveLength(1);
 	});
 
-	test("registers, installs, and materializes handlers and source mount", async () => {
+	test("registers, installs, and materializes handlers and source tree", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
@@ -178,14 +197,11 @@ describe("plugins Phase 0", () => {
 			"image/png",
 			"video/mp4",
 		]);
-		expect(listed[0]!.sourceMount?.mountKind).toBe("global-github-temporary");
-		expect(listed[0]!.sourceMount?.mountPath).toBe(`/.mounts/${registered.sourceMountName}`);
-
 		const source = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
-			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 			userId: membership.userId,
-			path: `/${registered.sourceMountName}/dist/backend/worker.js`,
+			path: `/${registered.pluginVersionId}/dist/backend/worker.js`,
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
 		expect(source?.content).toBe("export const plugin = 'media';");
@@ -2298,7 +2314,10 @@ describe("plugins publish_version", () => {
 				capabilities: ["plugin.secrets.read"],
 				outboundOrigins: [],
 				files: [],
-				sourceMountName: null,
+				sourceStatus: "ready",
+				sourceFileCount: 0,
+				sourceTotalBytes: 0,
+				sourceLastError: null,
 				createdBy: args.createdBy,
 				updatedAt: Date.now(),
 			});
@@ -2450,17 +2469,17 @@ describe("plugins publish_version", () => {
 
 		const mountedWorker = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
-			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 			userId: membership.userId,
-			path: `/${published._yay.sourceMountName}/dist/backend/worker.js`,
+			path: `/${published._yay.pluginVersionId}/dist/backend/worker.js`,
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
 		expect(mountedWorker?.content).toBe(github.workerSource);
 		const mountedManifest = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
-			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 			userId: membership.userId,
-			path: `/${published._yay.sourceMountName}/dist/bonobo.plugin.json`,
+			path: `/${published._yay.pluginVersionId}/dist/bonobo.plugin.json`,
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
 		expect(mountedManifest?.content).toBe(github.manifestText);
@@ -3185,6 +3204,134 @@ describe("plugins uninstall_version", () => {
 	});
 });
 
+describe("plugins list_bash_source_mounts", () => {
+	test("gates mounts on enabled installations per workspace and shares one source tree", async () => {
+		const t = test_convex();
+		const membershipA = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const membershipB = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "test-organization-b",
+				workspaceName: "test-workspace-b",
+			}),
+		);
+		const registered = await register_media_plugin(t, membershipA.userId);
+
+		const count_source_tree_nodes = async () => {
+			const nodes = await t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_treePath", (q) =>
+						q
+							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+							.gte("treePath", `/${registered.pluginVersionId}/`)
+							.lt("treePath", `/${registered.pluginVersionId}/\uffff`),
+					)
+					.collect(),
+			);
+			return nodes.length;
+		};
+
+		// Publishing alone grants no workspace visibility.
+		expect(
+			await t.query(internal.plugins.list_bash_source_mounts, {
+				organizationId: membershipA.organizationId,
+				workspaceId: membershipA.workspaceId,
+			}),
+		).toEqual([]);
+		const seededTreeNodes = await count_source_tree_nodes();
+		expect(seededTreeNodes).toBeGreaterThan(0);
+
+		const asOwnerA = t.withIdentity(user_identity(membershipA.userId));
+		const installedA = await asOwnerA.mutation(api.plugins.install_version, {
+			membershipId: membershipA.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installedA._nay) {
+			throw new Error(installedA._nay.message);
+		}
+
+		expect(
+			await t.query(internal.plugins.list_bash_source_mounts, {
+				organizationId: membershipA.organizationId,
+				workspaceId: membershipA.workspaceId,
+			}),
+		).toEqual([{ pluginName: "media", pluginVersionId: registered.pluginVersionId }]);
+		// A workspace without an installation sees nothing.
+		expect(
+			await t.query(internal.plugins.list_bash_source_mounts, {
+				organizationId: membershipB.organizationId,
+				workspaceId: membershipB.workspaceId,
+			}),
+		).toEqual([]);
+
+		// A second workspace installing the same version reuses the same tree: zero copies.
+		const asOwnerB = t.withIdentity(user_identity(membershipB.userId));
+		const installedB = await asOwnerB.mutation(api.plugins.install_version, {
+			membershipId: membershipB.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installedB._nay) {
+			throw new Error(installedB._nay.message);
+		}
+		expect(
+			await t.query(internal.plugins.list_bash_source_mounts, {
+				organizationId: membershipB.organizationId,
+				workspaceId: membershipB.workspaceId,
+			}),
+		).toEqual([{ pluginName: "media", pluginVersionId: registered.pluginVersionId }]);
+		expect(await count_source_tree_nodes()).toBe(seededTreeNodes);
+
+		// Uninstalling in one workspace removes only that workspace's visibility.
+		const uninstalled = await asOwnerA.mutation(api.plugins.uninstall_version, {
+			membershipId: membershipA.membershipId,
+			installationId: installedA._yay.installationId,
+		});
+		if (uninstalled._nay) {
+			throw new Error(uninstalled._nay.message);
+		}
+		expect(
+			await t.query(internal.plugins.list_bash_source_mounts, {
+				organizationId: membershipA.organizationId,
+				workspaceId: membershipA.workspaceId,
+			}),
+		).toEqual([]);
+		expect(
+			await t.query(internal.plugins.list_bash_source_mounts, {
+				organizationId: membershipB.organizationId,
+				workspaceId: membershipB.workspaceId,
+			}),
+		).toEqual([{ pluginName: "media", pluginVersionId: registered.pluginVersionId }]);
+		expect(await count_source_tree_nodes()).toBe(seededTreeNodes);
+	});
+
+	test("lists enabled installations in plugin-name order", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const zebra = await register_media_plugin(t, membership.userId, { name: "zebra", displayName: "Zebra" });
+		const alpha = await register_media_plugin(t, membership.userId, { name: "alpha", displayName: "Alpha" });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		for (const pluginVersionId of [zebra.pluginVersionId, alpha.pluginVersionId]) {
+			const installed = await asOwner.mutation(api.plugins.install_version, {
+				membershipId: membership.membershipId,
+				pluginVersionId,
+				...media_plugin_consent,
+			});
+			if (installed._nay) {
+				throw new Error(installed._nay.message);
+			}
+		}
+
+		const mounts = await t.query(internal.plugins.list_bash_source_mounts, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+		});
+		expect(mounts.map((mount) => mount.pluginName)).toEqual(["alpha", "zebra"]);
+	});
+});
+
 describe("plugins run_installation_on_files", () => {
 	async function install_media_plugin_with_upload(
 		t: ReturnType<typeof test_convex>,
@@ -3609,7 +3756,8 @@ describe("plugins admin hard delete", () => {
 		expect(previewBefore).toEqual({
 			versions: 1,
 			versionReviews: 1,
-			sourceMounts: 1,
+			// Version root folder + dist + dist/backend + worker.js in GLOBAL/PLUGINS.
+			sourceFileNodes: 4,
 			installations: 1,
 			eventHandlers: 2,
 			installationSecrets: 1,
@@ -3633,7 +3781,7 @@ describe("plugins admin hard delete", () => {
 		expect(previewAfter).toEqual({
 			versions: 0,
 			versionReviews: 0,
-			sourceMounts: 0,
+			sourceFileNodes: 0,
 			installations: 0,
 			eventHandlers: 0,
 			installationSecrets: 0,
@@ -3648,8 +3796,21 @@ describe("plugins admin hard delete", () => {
 		expect(versions.map((version) => version.name)).toEqual(["media-alt"]);
 		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
 		expect(reviews.map((review) => review.pluginName)).toEqual(["media-alt"]);
-		const mounts = await t.run((ctx) => ctx.db.query("plugins_source_mounts").collect());
-		expect(mounts.map((mount) => mount.pluginVersionId)).toEqual([alternate.pluginVersionId]);
+		// The deleted plugin's source tree is swept; the other plugin's tree stays whole.
+		const remainingSourceNodes = await t.run((ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_treePath", (q) =>
+					q
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
+				)
+				.collect(),
+		);
+		expect(remainingSourceNodes.length).toBeGreaterThan(0);
+		expect(remainingSourceNodes.every((node) => node.treePath.startsWith(`/${alternate.pluginVersionId}/`))).toBe(
+			true,
+		);
 		const installations = await t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect());
 		expect(installations.map((installation) => installation.pluginName)).toEqual(["media-alt"]);
 		const handlers = await t.run((ctx) => ctx.db.query("plugins_workspace_event_handlers").collect());

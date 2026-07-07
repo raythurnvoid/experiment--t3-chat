@@ -2,7 +2,7 @@ import { defineCommand, type FsStat } from "just-bash/browser";
 import {
 	bash_command_has_disallowed_source_target,
 	bash_is_path_under_current_workspace_path,
-	bash_is_path_under_mounts,
+	bash_is_path_under_read_only_mounts,
 	bash_resolve_path,
 	bash_disallowed_source_target_error,
 	bash_COMMAND_EXIT_FAILURE,
@@ -56,8 +56,8 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", currentWor
 					exitCode: bash_COMMAND_EXIT_CANNOT_EXECUTE,
 				};
 			}
-			// Mounted external-source files are read-only document content, not shell entrypoints.
-			if (bash_is_path_under_mounts(scriptPath)) {
+			// Mounted external-source and plugin-source files are read-only document content, not shell entrypoints.
+			if (bash_is_path_under_read_only_mounts(scriptPath)) {
 				return {
 					stdout: "",
 					stderr: `${name}: mounted external-source files are not executable through bash: ${scriptPath}\n`,

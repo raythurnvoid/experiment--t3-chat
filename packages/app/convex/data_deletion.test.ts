@@ -1908,7 +1908,10 @@ describe("process_workspace_deletion_request", () => {
 				capabilities: ["plugin.secrets.read", "outbound.fetch"],
 				outboundOrigins: [],
 				files: [],
-				sourceMountName: null,
+				sourceStatus: "ready",
+				sourceFileCount: 0,
+				sourceTotalBytes: 0,
+				sourceLastError: null,
 				createdBy: user.userId,
 				updatedAt: now,
 			});

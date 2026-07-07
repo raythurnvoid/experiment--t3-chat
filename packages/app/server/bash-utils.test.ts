@@ -1,9 +1,14 @@
 import { describe, expect, test, vi } from "vitest";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server";
-import { files_MOUNT_ROOT } from "../shared/files.ts";
-import { organizations_GLOBAL_GITHUB_WORKSPACE_ID, organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import {
+	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+	organizations_GLOBAL_ORGANIZATION_ID,
+	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+} from "../shared/organizations.ts";
+import {
+	bash_EXTERNAL_MOUNTS_ROOT,
+	bash_PLUGINS_MOUNT_ROOT,
 	bash_resolve_db_files_shell_path,
 	bash_read_only_mount_error,
 	bash_DbFilesFs,
@@ -12,6 +17,8 @@ import {
 
 const currentWorkspacePath = "/home/cloud-usr/w/personal/home";
 const MOUNT_NAME = "t3-chat";
+const PLUGIN_NAME = "media";
+const PLUGIN_VERSION_ID = "plugins_versions_1" as Id<"plugins_versions">;
 
 // The resolver is pure w.r.t. Convex, so these filesystem objects only need to
 // exist; their query methods are never invoked here.
@@ -38,8 +45,23 @@ function create_db_files_roots(): bash_DbFilesRoots {
 			workspaceName: "GITHUB",
 			userId: ctxData.userId,
 		},
-		currentWorkspacePath: files_MOUNT_ROOT,
+		currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
 		allowDbFilesMkdir: false,
+		readOnlySource: "codebase",
+	});
+	const pluginFs = new bash_DbFilesFs({
+		ctx,
+		ctxData: {
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+			organizationName: "GLOBAL",
+			workspaceName: "PLUGINS",
+			userId: ctxData.userId,
+		},
+		currentWorkspacePath: `${bash_PLUGINS_MOUNT_ROOT}/${PLUGIN_NAME}`,
+		allowDbFilesMkdir: false,
+		dbFilesPathPrefix: `/${PLUGIN_VERSION_ID}`,
+		readOnlySource: "plugins",
 	});
 	return {
 		app: {
@@ -47,8 +69,14 @@ function create_db_files_roots(): bash_DbFilesRoots {
 			fs: appFs,
 		},
 		externalMounts: {
-			currentWorkspacePath: files_MOUNT_ROOT,
+			currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
 			fs: externalMountsDbFilesFs,
+		},
+		plugins: {
+			currentWorkspacePath: bash_PLUGINS_MOUNT_ROOT,
+			mounts: new Map([
+				[PLUGIN_NAME, { pluginName: PLUGIN_NAME, pluginVersionId: PLUGIN_VERSION_ID, fs: pluginFs }],
+			]),
 		},
 	};
 }
@@ -56,11 +84,11 @@ function create_db_files_roots(): bash_DbFilesRoots {
 describe("bash_resolve_db_files_shell_path", () => {
 	test("classifies the synthetic mounts root", () => {
 		const dbFilesRoots = create_db_files_roots();
-		for (const path of [files_MOUNT_ROOT, "/.mounts/", "/.mounts/."]) {
+		for (const path of [bash_EXTERNAL_MOUNTS_ROOT, "/.mounts/", "/.mounts/."]) {
 			const target = bash_resolve_db_files_shell_path(path, dbFilesRoots);
 			expect(target.kind).toBe("external_mounts_root");
 			expect(target.dbFilesPath).toBe("/");
-			expect(target.basePath).toBe(files_MOUNT_ROOT);
+			expect(target.basePath).toBe(bash_EXTERNAL_MOUNTS_ROOT);
 			expect(target.fs).toBe(dbFilesRoots.externalMounts.fs);
 		}
 	});
@@ -134,6 +162,59 @@ describe("bash_resolve_db_files_shell_path", () => {
 		const app = bash_resolve_db_files_shell_path(`${currentWorkspacePath}/notes.md`, dbFilesRoots);
 		expect(app.renderShellPath("/notes.md")).toBe(`${currentWorkspacePath}/notes.md`);
 	});
+
+	test("classifies the synthetic plugins root without a stored tree", () => {
+		const dbFilesRoots = create_db_files_roots();
+		for (const path of [bash_PLUGINS_MOUNT_ROOT, "/.plugins/", "/.plugins/."]) {
+			const target = bash_resolve_db_files_shell_path(path, dbFilesRoots);
+			expect(target.kind).toBe("plugins_root");
+			expect(target.dbFilesPath).toBeNull();
+			expect(target.basePath).toBe(bash_PLUGINS_MOUNT_ROOT);
+		}
+	});
+
+	test("classifies an installed plugin path to its version-keyed stored tree", () => {
+		const dbFilesRoots = create_db_files_roots();
+		const pluginFs = dbFilesRoots.plugins.mounts.get(PLUGIN_NAME)?.fs;
+
+		const dir = bash_resolve_db_files_shell_path(`/.plugins/${PLUGIN_NAME}`, dbFilesRoots);
+		expect(dir.kind).toBe("external_mount");
+		expect(dir.dbFilesPath).toBe(`/${PLUGIN_VERSION_ID}`);
+		expect(dir.fs).toBe(pluginFs);
+		expect(dir.basePath).toBe(`${bash_PLUGINS_MOUNT_ROOT}/${PLUGIN_NAME}`);
+
+		const file = bash_resolve_db_files_shell_path(`/.plugins/${PLUGIN_NAME}/dist/index.js`, dbFilesRoots);
+		expect(file.kind).toBe("external_mount");
+		expect(file.dbFilesPath).toBe(`/${PLUGIN_VERSION_ID}/dist/index.js`);
+		expect(file.renderShellPath(`/${PLUGIN_VERSION_ID}/dist/index.js`)).toBe(
+			`/.plugins/${PLUGIN_NAME}/dist/index.js`,
+		);
+	});
+
+	test("resolves not-installed plugin names as plain non-db paths (no existence leak)", () => {
+		const dbFilesRoots = create_db_files_roots();
+		for (const path of ["/.plugins/nope", "/.plugins/nope/dist/index.js"]) {
+			const target = bash_resolve_db_files_shell_path(path, dbFilesRoots);
+			expect(target.kind).toBe("outside_db_files");
+			expect(target.dbFilesPath).toBeNull();
+			expect(target.fs).toBe(dbFilesRoots.app.fs);
+		}
+	});
+
+	test("normalizes `..` inside a plugin mount before classifying", () => {
+		const dbFilesRoots = create_db_files_roots();
+
+		const stillPlugin = bash_resolve_db_files_shell_path(
+			`/.plugins/${PLUGIN_NAME}/dist/../README.md`,
+			dbFilesRoots,
+		);
+		expect(stillPlugin.kind).toBe("external_mount");
+		expect(stillPlugin.dbFilesPath).toBe(`/${PLUGIN_VERSION_ID}/README.md`);
+
+		// `/.plugins/../tmp` normalizes to `/tmp`, which is outside db files trees.
+		const escaped = bash_resolve_db_files_shell_path("/.plugins/../tmp/x", dbFilesRoots);
+		expect(escaped.kind).toBe("outside_db_files");
+	});
 });
 
 describe("bash_read_only_mount_error", () => {
@@ -142,5 +223,12 @@ describe("bash_read_only_mount_error", () => {
 		expect(message).toContain("touch:");
 		expect(message).toContain("/.mounts/t3-chat/new.txt");
 		expect(message).toContain("read-only mount");
+	});
+
+	test("names plugin sources for /.plugins paths", () => {
+		const message = bash_read_only_mount_error("rm", "/.plugins/media/dist/index.js");
+		expect(message).toContain("rm:");
+		expect(message).toContain("/.plugins/media/dist/index.js");
+		expect(message).toContain("read-only mount of installed plugin sources");
 	});
 });

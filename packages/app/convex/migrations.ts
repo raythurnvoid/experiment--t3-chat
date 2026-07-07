@@ -36,7 +36,6 @@ type PluginsLegacyCreatedAtTable =
 	| "plugins_publisher_repositories"
 	| "plugins_publisher_repository_secrets"
 	| "plugins_versions"
-	| "plugins_source_mounts"
 	| "plugins_workspace_installations"
 	| "plugins_workspace_event_handlers"
 	| "plugins_event_runs"
@@ -578,19 +577,6 @@ export const remove_plugins_versions_created_at = app_migrations.define({
 	},
 });
 
-export const remove_plugins_source_mounts_created_at = app_migrations.define({
-	table: "plugins_source_mounts",
-	migrateOne: async (ctx, mount) => {
-		const legacyMount = mount as PluginsDocWithLegacyCreatedAt<"plugins_source_mounts">;
-		if (legacyMount.createdAt === undefined) {
-			return;
-		}
-
-		const { _id, _creationTime, createdAt: _createdAt, ...next } = legacyMount;
-		await ctx.db.replace("plugins_source_mounts", _id, next);
-	},
-});
-
 export const remove_plugins_workspace_installations_created_at = app_migrations.define({
 	table: "plugins_workspace_installations",
 	migrateOne: async (ctx, installation) => {
@@ -853,9 +839,6 @@ export const run_remove_plugins_publisher_repository_secrets_created_at = app_mi
 );
 export const run_remove_plugins_versions_created_at = app_migrations.runner(
 	internal.migrations.remove_plugins_versions_created_at,
-);
-export const run_remove_plugins_source_mounts_created_at = app_migrations.runner(
-	internal.migrations.remove_plugins_source_mounts_created_at,
 );
 export const run_remove_plugins_workspace_installations_created_at = app_migrations.runner(
 	internal.migrations.remove_plugins_workspace_installations_created_at,

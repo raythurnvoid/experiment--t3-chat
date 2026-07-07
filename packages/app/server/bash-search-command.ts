@@ -9,9 +9,11 @@ import {
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
 	bash_is_path_under_current_workspace_path,
-	bash_is_path_under_mounts,
+	bash_is_path_under_read_only_mounts,
 	bash_normalize_path,
 	bash_parse_limit,
+	bash_plugins_fan_out_db_files_path,
+	bash_plugins_fan_out_paginate,
 	bash_read_option_value,
 	bash_resolve_path,
 	bash_search_command_build_continuation,
@@ -110,7 +112,7 @@ function parse_args(args: string[], options: { currentWorkspacePath: string; cwd
 			arg === "." ||
 			arg === ".." ||
 			bash_is_path_under_current_workspace_path(options.currentWorkspacePath, bash_normalize_path(arg)) ||
-			bash_is_path_under_mounts(bash_normalize_path(arg)),
+			bash_is_path_under_read_only_mounts(bash_normalize_path(arg)),
 	);
 	if (pathOperand != null) {
 		return Result({
@@ -181,11 +183,27 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
-		// An explicit --path outside any indexed tree (e.g. /tmp) has nothing to search.
-		if (parsed._yay.pathShell != null && scope.dbFilesPath == null) {
+		// The `/.plugins` root fans out one indexed search per installed plugin under a
+		// composite cursor; with zero installations the root itself does not exist.
+		if (scope.kind === "plugins_root" && dbFilesRoots.plugins.mounts.size === 0) {
 			return {
 				stdout: "",
-				stderr: `search: --path must be a folder under ${currentWorkspacePath} or ${bash_normalize_path(scopeShellPath).startsWith("/.mounts") ? "/.mounts/<name>" : "a mount"}: ${parsed._yay.pathShell}\n`,
+				stderr: `search: ${scope.basePath}: No such file or directory\n`,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
+			};
+		}
+		// An explicit --path outside any indexed tree (e.g. /tmp or a not-installed plugin)
+		// has nothing to search.
+		if (parsed._yay.pathShell != null && scope.dbFilesPath == null && scope.kind !== "plugins_root") {
+			const normalizedScopeShellPath = bash_normalize_path(scopeShellPath);
+			const mountHint = normalizedScopeShellPath.startsWith("/.mounts")
+				? "/.mounts/<name>"
+				: normalizedScopeShellPath.startsWith("/.plugins")
+					? "/.plugins/<pluginName> (installed plugins only; run 'ls /.plugins')"
+					: "a mount";
+			return {
+				stdout: "",
+				stderr: `search: --path must be a folder under ${currentWorkspacePath} or ${mountHint}: ${parsed._yay.pathShell}\n`,
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -216,16 +234,61 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 
 		// Scope the chunk scan to the classified folder; the workspace/mount root maps to the whole tree.
 		const path = scope.dbFilesPath != null && scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
+		// The `/.plugins` root scope prints and continues as `--path /.plugins` even though the
+		// fan-out has no single stored tree path.
+		const scopePath = scope.kind === "plugins_root" ? "/" : path;
 
-		const res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
-			organizationId: scope.ctxData.organizationId,
-			workspaceId: scope.ctxData.workspaceId,
-			userId: scope.ctxData.userId,
-			query: parsed._yay.query,
-			numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
-			cursor,
-			pathPrefix: path,
-		})) as files_nodes_text_search_files_Result;
+		let res: files_nodes_text_search_files_Result;
+		if (scope.kind === "plugins_root") {
+			// One text search per installed plugin, each scoped to its version-keyed tree.
+			const fanOut = await bash_plugins_fan_out_paginate({
+				command: "search",
+				plugins: dbFilesRoots.plugins,
+				cursor,
+				limit: bash_clamp_listing_page_limit(parsed._yay.limit),
+				runPage: async (pageArgs) => {
+					const pageResult = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+						organizationId: pageArgs.mount.fs.ctxData.organizationId,
+						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
+						userId: pageArgs.mount.fs.ctxData.userId,
+						query: parsed._yay.query,
+						numItems: pageArgs.numItems,
+						cursor: pageArgs.innerCursor,
+						pathPrefix: `/${pageArgs.mount.pluginVersionId}`,
+					})) as files_nodes_text_search_files_Result;
+					return {
+						items: pageResult.items.map((item) => ({
+							...item,
+							path: bash_plugins_fan_out_db_files_path(pageArgs.mount, item.path),
+						})),
+						continueCursor: pageResult.continueCursor,
+						isDone: pageResult.isDone,
+					};
+				},
+			});
+			if (fanOut._nay) {
+				return {
+					stdout: "",
+					stderr: `${fanOut._nay.message}\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
+			res = {
+				items: fanOut._yay.items,
+				continueCursor: fanOut._yay.continueCursor ?? "",
+				isDone: fanOut._yay.isDone,
+			};
+		} else {
+			res = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+				organizationId: scope.ctxData.organizationId,
+				workspaceId: scope.ctxData.workspaceId,
+				userId: scope.ctxData.userId,
+				query: parsed._yay.query,
+				numItems: bash_clamp_listing_page_limit(parsed._yay.limit),
+				cursor,
+				pathPrefix: path,
+			})) as files_nodes_text_search_files_Result;
+		}
 
 		const exactQueryFilter = bash_search_command_exact_query_filter(parsed._yay.query);
 		const searchResult = {
@@ -235,7 +298,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 			})),
 		};
 
-		const scopeNote = path != null ? ` under ${scope.renderShellPath(path)}` : "";
+		const scopeNote = scopePath != null ? ` under ${scope.renderShellPath(scopePath)}` : "";
 
 		// The miss text is actionable because full-text search accepts plain
 		// content terms, not path/name/glob syntax.
@@ -309,7 +372,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 					"",
 					bash_search_command_build_continuation({
 						currentWorkspacePath: scope.basePath,
-						path,
+						path: scopePath,
 						limit: parsed._yay.limit,
 						cursor: cursorId,
 						query: parsed._yay.query,

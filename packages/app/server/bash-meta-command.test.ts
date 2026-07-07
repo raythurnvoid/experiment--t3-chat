@@ -2,10 +2,14 @@ import { InMemoryFs, type CommandContext } from "just-bash/browser";
 import { describe, expect, test, vi } from "vitest";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server";
-import { files_MOUNT_ROOT } from "../shared/files.ts";
 import { organizations_GLOBAL_GITHUB_WORKSPACE_ID, organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import { bash_meta_command_create } from "./bash-meta-command.ts";
-import { bash_DbFilesFs, type bash_DbFilesRoots } from "./bash-utils.ts";
+import {
+	bash_EXTERNAL_MOUNTS_ROOT,
+	bash_PLUGINS_MOUNT_ROOT,
+	bash_DbFilesFs,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 
 const currentWorkspacePath = "/home/cloud-usr/w/personal/home";
 const ctxData = {
@@ -44,8 +48,9 @@ function create_command_runner() {
 			workspaceName: "GITHUB",
 			userId: ctxData.userId,
 		},
-		currentWorkspacePath: files_MOUNT_ROOT,
+		currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
 		allowDbFilesMkdir: false,
+		readOnlySource: "codebase",
 	});
 	const dbFilesRoots: bash_DbFilesRoots = {
 		app: {
@@ -53,8 +58,12 @@ function create_command_runner() {
 			fs: appDbFilesFs,
 		},
 		externalMounts: {
-			currentWorkspacePath: files_MOUNT_ROOT,
+			currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
 			fs: externalMountsDbFilesFs,
+		},
+		plugins: {
+			currentWorkspacePath: bash_PLUGINS_MOUNT_ROOT,
+			mounts: new Map(),
 		},
 	};
 	const commandCtx = {

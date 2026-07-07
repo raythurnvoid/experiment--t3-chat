@@ -50,8 +50,13 @@ import type {
 	ai_chat_files_load_thread_tmp_files_Result,
 	ai_chat_files_patch_thread_tmp_files_Args,
 } from "../convex/ai_chat_files.ts";
-import { files_MOUNT_ROOT, files_ROOT_ID, files_get_utf8_byte_size } from "../shared/files.ts";
-import { organizations_GLOBAL_GITHUB_WORKSPACE_ID, organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
+import { files_ROOT_ID, files_get_utf8_byte_size } from "../shared/files.ts";
+import type { plugins_list_bash_source_mounts_Result } from "../convex/plugins.ts";
+import {
+	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+	organizations_GLOBAL_ORGANIZATION_ID,
+	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+} from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { bash_cat_command_create } from "./bash-cat-command.ts";
 import { bash_cp_command_create } from "./bash-cp-command.ts";
@@ -73,6 +78,8 @@ import { bash_touch_command_create } from "./bash-touch-command.ts";
 import {
 	bash_ALLOWED_COMMANDS,
 	bash_APP_MOUNT_PATH,
+	bash_EXTERNAL_MOUNTS_ROOT,
+	bash_PLUGINS_MOUNT_ROOT,
 	bash_command_has_disallowed_source_target,
 	bash_delegate_native_just_bash_tmp_command,
 	bash_DEV_NULL_PATH,
@@ -825,6 +832,7 @@ async function bash_fs_create(args: {
 	threadId: Id<"ai_chat_threads">;
 	persistedCwd: string;
 	allowDbFilesMkdir: boolean;
+	pluginSourceMounts: plugins_list_bash_source_mounts_Result;
 }) {
 	// Organization and workspace names are validated slugs, so they are stable shell
 	// path segments and do not need path-segment encoding here.
@@ -857,15 +865,52 @@ async function bash_fs_create(args: {
 			workspaceName: "GITHUB",
 			userId: args.userId,
 		},
-		currentWorkspacePath: files_MOUNT_ROOT,
+		currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
 		allowDbFilesMkdir: false,
+		readOnlySource: "codebase",
 	});
+
+	// Each enabled plugin installation gets its own read-only mount at `/.plugins/<pluginName>`,
+	// backed by the version-keyed tree `/<pluginVersionId>/...` in the reserved `GLOBAL`/`PLUGINS`
+	// scope. `MountableFs` synthesizes the `/.plugins` parent listing from these mount points, so
+	// with zero installations `/.plugins` does not exist at all.
+	const pluginMounts = new Map(
+		args.pluginSourceMounts.map((installation) => {
+			const pluginWorkspacePath = `${bash_PLUGINS_MOUNT_ROOT}/${installation.pluginName}`;
+			const pluginFs = new bash_DbFilesFs({
+				ctx: args.ctx,
+				ctxData: {
+					organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+					workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+					organizationName: "GLOBAL",
+					workspaceName: "PLUGINS",
+					userId: args.userId,
+				},
+				currentWorkspacePath: pluginWorkspacePath,
+				allowDbFilesMkdir: false,
+				dbFilesPathPrefix: `/${installation.pluginVersionId}`,
+				readOnlySource: "plugins",
+			});
+			return [
+				installation.pluginName,
+				{
+					pluginName: installation.pluginName,
+					pluginVersionId: installation.pluginVersionId,
+					fs: pluginFs,
+				},
+			] as const;
+		}),
+	);
 
 	const fs = new MountableFs({
 		base: new ReadOnlyBaseFs(),
 		mounts: [
 			{ mountPoint: currentWorkspacePath, filesystem: appDbFilesFs },
-			{ mountPoint: files_MOUNT_ROOT, filesystem: externalMountsDbFilesFs },
+			{ mountPoint: bash_EXTERNAL_MOUNTS_ROOT, filesystem: externalMountsDbFilesFs },
+			...Array.from(pluginMounts.values(), (mount) => ({
+				mountPoint: mount.fs.currentWorkspacePath,
+				filesystem: mount.fs,
+			})),
 			{ mountPoint: bash_TMP_MOUNT, filesystem: tmpFs },
 		],
 	});
@@ -876,8 +921,12 @@ async function bash_fs_create(args: {
 			fs: appDbFilesFs,
 		},
 		externalMounts: {
-			currentWorkspacePath: files_MOUNT_ROOT,
+			currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
 			fs: externalMountsDbFilesFs,
+		},
+		plugins: {
+			currentWorkspacePath: bash_PLUGINS_MOUNT_ROOT,
+			mounts: pluginMounts,
 		},
 	};
 
@@ -999,11 +1048,19 @@ export async function bash_run_command(
 		allowDbFilesMkdir: boolean;
 	},
 ) {
-	const threadState = (await ctx.runQuery(internal.ai_chat.get_thread_state, {
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		threadId: args.threadId,
-	})) as ai_chat_get_thread_state_Result;
+	// Plugin source visibility is decided per run: only plugins with an enabled
+	// installation in this workspace appear under `/.plugins`.
+	const [threadState, pluginSourceMounts] = await Promise.all([
+		ctx.runQuery(internal.ai_chat.get_thread_state, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			threadId: args.threadId,
+		}) as Promise<ai_chat_get_thread_state_Result>,
+		ctx.runQuery(internal.plugins.list_bash_source_mounts, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+		}) as Promise<plugins_list_bash_source_mounts_Result>,
+	]);
 
 	const bashFs = await bash_fs_create({
 		ctx,
@@ -1015,6 +1072,7 @@ export async function bash_run_command(
 		threadId: args.threadId,
 		persistedCwd: threadState.bashCwd,
 		allowDbFilesMkdir: args.allowDbFilesMkdir,
+		pluginSourceMounts,
 	});
 
 	const result = await bashFs.run_command(args.command);
@@ -1047,16 +1105,19 @@ export async function bash_run_command(
 		result.stderr += "bash: `set -euo pipefail` is unsupported; retry without strict-mode boilerplate.\n";
 	}
 
-	// Only paths under HOME, `/tmp`, and the read-only `/.mounts` tree survive between runs (`/tmp` is
-	// restored from the db; mounts are reconstructed from the reserved scope; everything else is synthetic
-	// mount scaffolding).
+	// Only paths under HOME, `/tmp`, and the read-only `/.mounts` and `/.plugins` trees survive between
+	// runs (`/tmp` is restored from the db; mounts are reconstructed from the reserved scopes; everything
+	// else is synthetic mount scaffolding). A `/.plugins` cwd can still vanish when the plugin is
+	// uninstalled; the nearest-existing-dir climb above already handles that.
 	if (
 		nextCwd !== bash_HOME &&
 		!nextCwd.startsWith(`${bash_HOME}/`) &&
 		nextCwd !== bash_TMP_MOUNT &&
 		!nextCwd.startsWith(`${bash_TMP_MOUNT}/`) &&
-		nextCwd !== files_MOUNT_ROOT &&
-		!nextCwd.startsWith(`${files_MOUNT_ROOT}/`)
+		nextCwd !== bash_EXTERNAL_MOUNTS_ROOT &&
+		!nextCwd.startsWith(`${bash_EXTERNAL_MOUNTS_ROOT}/`) &&
+		nextCwd !== bash_PLUGINS_MOUNT_ROOT &&
+		!nextCwd.startsWith(`${bash_PLUGINS_MOUNT_ROOT}/`)
 	) {
 		console.warn("Bash cwd is not persistable, resetting to the app root", {
 			threadId: args.threadId,
@@ -5324,6 +5385,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			) {
 				for (const file of files) {
 					const created = (await runner.t.action(internal.files_nodes.create_file_node_internal, {
+						workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 						path: `/${name}${file.path}`,
 						rawText: file.rawText,
 					})) as { _yay?: unknown; _nay?: { message: string } };
@@ -5547,6 +5609,370 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				const catMissing = await runner.run("cat /.mounts/nope/x.md");
 				expect(catMissing.metadata.exitCode).not.toBe(0);
 				expect(catMissing.stderr).toContain("No such file");
+			});
+		});
+
+		describe("plugin source mounts", () => {
+			const WORKER_TEXT = "export const plugin = 'media';\nGlomtelemetry marker line.\n";
+			const PLUGIN_README_TEXT = "# media plugin\n\nPlugin source readme.\n";
+
+			// Seed a registered plugin version with a version-keyed source tree in the reserved
+			// GLOBAL/PLUGINS scope, plus an enabled installation in the runner's workspace — the
+			// same rows the publish + install flows produce, without the full publish pipeline.
+			async function seed_plugin_mount(
+				runner: Awaited<ReturnType<typeof create_bash_runner>>,
+				pluginName: string,
+				files: { path: string; rawText: string }[],
+				opts?: { installed?: boolean },
+			) {
+				const now = Date.now();
+				const pluginVersionId = await runner.t.run((ctx) =>
+					ctx.db.insert("plugins_versions", {
+						name: pluginName,
+						displayName: pluginName,
+						version: "0.1.0",
+						description: `${pluginName} plugin`,
+						reviewStatus: "passed",
+						isLatest: true,
+						runtimeVersion: "1",
+						artifactHash: `sha256:${"a".repeat(64)}`,
+						sourceRepositoryUrl: `https://github.com/bonobo/${pluginName}-plugin`,
+						sourceOwner: "bonobo",
+						sourceRepo: `${pluginName}-plugin`,
+						sourceDefaultBranch: "main",
+						sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+						manifestR2Key: `plugins/${pluginName}/manifest.json`,
+						backend: {
+							entry: "dist/backend/worker.js",
+							moduleName: "plugin.js",
+							r2Key: `plugins/${pluginName}/backend/worker.js`,
+							compatibilityDate: "2026-07-01",
+							compatibilityFlags: ["nodejs_compat"],
+						},
+						events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
+						pages: [],
+						capabilities: [],
+						outboundOrigins: [],
+						files: [],
+						sourceStatus: "ready",
+						sourceFileCount: files.length,
+						sourceTotalBytes: files.reduce((total, file) => total + file.rawText.length, 0),
+						sourceLastError: null,
+						createdBy: runner.seeded.userId,
+						updatedAt: now,
+					}),
+				);
+				for (const file of files) {
+					const created = (await runner.t.action(internal.files_nodes.create_file_node_internal, {
+						workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+						path: `/${pluginVersionId}${file.path}`,
+						rawText: file.rawText,
+					})) as { _yay?: unknown; _nay?: { message: string } };
+					if (!created._yay) {
+						throw new Error(`Failed to seed plugin source file ${file.path}: ${created._nay?.message}`);
+					}
+				}
+				let installationId: Id<"plugins_workspace_installations"> | null = null;
+				if (opts?.installed !== false) {
+					installationId = await runner.t.run((ctx) =>
+						ctx.db.insert("plugins_workspace_installations", {
+							organizationId: runner.seeded.organizationId,
+							workspaceId: runner.seeded.workspaceId,
+							pluginVersionId,
+							pluginName,
+							status: "enabled",
+							acceptedCapabilities: [],
+							capabilitiesAcceptedAt: now,
+							acceptedOutboundOrigins: [],
+							outboundOriginsAcceptedAt: now,
+							installedBy: runner.seeded.userId,
+							updatedBy: runner.seeded.userId,
+							updatedAt: now,
+						}),
+					);
+				}
+				return { pluginVersionId, installationId };
+			}
+
+			test("hides /.plugins entirely when no plugin is installed", async () => {
+				const runner = await create_bash_runner();
+				// Published but not installed in this workspace: no existence leak.
+				await seed_plugin_mount(runner, "media", [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }], {
+					installed: false,
+				});
+
+				const listing = await runner.run("ls /.plugins");
+				expect(listing.metadata.exitCode).not.toBe(0);
+				expect(listing.stderr).toContain("No such file");
+
+				const read = await runner.run("cat /.plugins/media/dist/backend/worker.js");
+				expect(read.metadata.exitCode).not.toBe(0);
+				expect(read.stderr).toContain("No such file");
+
+				// The fan-out commands also treat the root as nonexistent with zero installations.
+				const tree = await runner.run("tree /.plugins");
+				expect(tree.metadata.exitCode).not.toBe(0);
+				expect(tree.stderr).toContain("No such file");
+
+				const found = await runner.run("find /.plugins");
+				expect(found.metadata.exitCode).not.toBe(0);
+				expect(found.stderr).toContain("No such file");
+
+				const searched = await runner.run("search --path /.plugins Glomtelemetry");
+				expect(searched.metadata.exitCode).not.toBe(0);
+				expect(searched.stderr).toContain("No such file");
+			});
+
+			test("lists installed plugin names at the synthetic /.plugins root", async () => {
+				const runner = await create_bash_runner();
+				await seed_plugin_mount(runner, "media", [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }]);
+				await seed_plugin_mount(runner, "alpha-notes", [{ path: "/README.md", rawText: PLUGIN_README_TEXT }]);
+
+				const result = await runner.run("ls /.plugins");
+
+				expect(result.metadata.exitCode).toBe(0);
+				expect(result.stdout).toContain("media");
+				expect(result.stdout).toContain("alpha-notes");
+			});
+
+			test("lists and reads files inside an installed plugin byte-identically", async () => {
+				const runner = await create_bash_runner();
+				await seed_plugin_mount(runner, "media", [
+					{ path: "/README.md", rawText: PLUGIN_README_TEXT },
+					{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT },
+				]);
+
+				const listing = await runner.run("ls /.plugins/media");
+				expect(listing.metadata.exitCode).toBe(0);
+				expect(listing.stdout).toContain("README.md");
+				expect(listing.stdout).toContain("dist");
+
+				const readme = await runner.run("cat /.plugins/media/README.md");
+				expect(readme.metadata.exitCode).toBe(0);
+				expect(readme.stdout).toBe(PLUGIN_README_TEXT);
+
+				const worker = await runner.run("cat /.plugins/media/dist/backend/worker.js");
+				expect(worker.metadata.exitCode).toBe(0);
+				expect(worker.stdout).toBe(WORKER_TEXT);
+			});
+
+			test("grep and search find content scoped to one plugin", async () => {
+				const runner = await create_bash_runner();
+				await seed_plugin_mount(runner, "media", [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }]);
+
+				const grepped = await runner.run("grep Glomtelemetry /.plugins/media/dist/backend/worker.js");
+				expect(grepped.metadata.exitCode).toBe(0);
+				expect(grepped.stdout).toContain("Glomtelemetry marker line.");
+
+				const searched = await runner.run("search --path /.plugins/media Glomtelemetry");
+				expect(searched.metadata.exitCode).toBe(0);
+				expect(searched.stdout).toContain("worker.js");
+			});
+
+			test("fans out root-scope tree, find, and search across installed plugins in name order", async () => {
+				const runner = await create_bash_runner();
+				await seed_plugin_mount(runner, "media", [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }]);
+				await seed_plugin_mount(runner, "alpha-notes", [{ path: "/README.md", rawText: PLUGIN_README_TEXT }]);
+
+				const tree = await runner.run("tree /.plugins");
+				expect(tree.metadata.exitCode).toBe(0);
+				expect(tree.stdout).toContain("/.plugins");
+				expect(tree.stdout).toContain("|-- alpha-notes/");
+				expect(tree.stdout).toContain("|-- media/");
+				expect(tree.stdout).toContain("README.md");
+				expect(tree.stdout).toContain("worker.js");
+				expect(tree.stdout.indexOf("alpha-notes")).toBeLessThan(tree.stdout.indexOf("media"));
+
+				const found = await runner.run("find /.plugins -type f --limit 20");
+				expect(found.metadata.exitCode).toBe(0);
+				expect(found.stdout).toContain("/.plugins/alpha-notes/README.md");
+				expect(found.stdout).toContain("/.plugins/media/dist/backend/worker.js");
+
+				// Depth predicates are relative to /.plugins: -maxdepth 1 keeps only plugin folders.
+				const top = await runner.run("find /.plugins -maxdepth 1 --limit 20");
+				expect(top.metadata.exitCode).toBe(0);
+				expect(top.stdout).toContain("/.plugins/alpha-notes/");
+				expect(top.stdout).toContain("/.plugins/media/");
+				expect(top.stdout).not.toContain("README.md");
+
+				const searched = await runner.run("search --path /.plugins Glomtelemetry");
+				expect(searched.metadata.exitCode).toBe(0);
+				expect(searched.stdout).toContain("under /.plugins");
+				expect(searched.stdout).toContain("/.plugins/media/dist/backend/worker.js");
+			});
+
+			test("pages the /.plugins fan-out with a composite cursor and detects listing changes", async () => {
+				const runner = await create_bash_runner();
+				await seed_plugin_mount(runner, "alpha-notes", [{ path: "/README.md", rawText: PLUGIN_README_TEXT }]);
+				const { installationId } = await seed_plugin_mount(runner, "media", [
+					{ path: "/README.md", rawText: PLUGIN_README_TEXT },
+				]);
+
+				const firstPage = await runner.run("find /.plugins -type f --limit 1");
+				expect(firstPage.metadata.exitCode).toBe(0);
+				expect(firstPage.stdout).toContain("/.plugins/alpha-notes/README.md");
+				expect(firstPage.stdout).not.toContain("/.plugins/media/README.md");
+				const continuation = firstPage.stdout.match(/Next page: (find .+)/)?.[1];
+				expect(continuation).toBeTruthy();
+
+				// The composite cursor resumes into the next plugin in name order.
+				const secondPage = await runner.run(String(continuation));
+				expect(secondPage.metadata.exitCode).toBe(0);
+				expect(secondPage.stdout).toContain("/.plugins/media/README.md");
+
+				// Uninstalling between pages invalidates the pinned listing snapshot.
+				const restartPage = await runner.run("find /.plugins -type f --limit 1");
+				const staleContinuation = restartPage.stdout.match(/Next page: (find .+)/)?.[1];
+				expect(staleContinuation).toBeTruthy();
+				await runner.t.run(async (ctx) => {
+					if (installationId == null) {
+						throw new Error("Expected seeded installation");
+					}
+					await ctx.db.delete("plugins_workspace_installations", installationId);
+				});
+				const changed = await runner.run(String(staleContinuation));
+				expect(changed.metadata.exitCode).not.toBe(0);
+				expect(changed.stderr).toContain("listing changed");
+			});
+
+			test("keeps guidance for root-scope --prefix and meta search", async () => {
+				const runner = await create_bash_runner();
+				await seed_plugin_mount(runner, "media", [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }]);
+
+				const prefixed = await runner.run("find --prefix /.plugins --limit 5");
+				expect(prefixed.metadata.exitCode).not.toBe(0);
+				expect(prefixed.stderr).toContain("--prefix cannot scan the /.plugins root");
+
+				const metaSearched = await runner.run(`meta search --path /.plugins --where '{"exists":"frontmatter.cc"}'`);
+				expect(metaSearched.metadata.exitCode).not.toBe(0);
+				expect(metaSearched.stderr).toContain("choose a single plugin to search");
+			});
+
+			test("scoped tree and find work inside one plugin", async () => {
+				const runner = await create_bash_runner();
+				await seed_plugin_mount(runner, "media", [
+					{ path: "/README.md", rawText: PLUGIN_README_TEXT },
+					{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT },
+				]);
+
+				const tree = await runner.run("tree /.plugins/media");
+				expect(tree.metadata.exitCode).toBe(0);
+				expect(tree.stdout).toContain("README.md");
+				expect(tree.stdout).toContain("worker.js");
+
+				const found = await runner.run("find /.plugins/media -type f --limit 20");
+				expect(found.metadata.exitCode).toBe(0);
+				expect(found.stdout).toContain("/.plugins/media/README.md");
+				expect(found.stdout).toContain("/.plugins/media/dist/backend/worker.js");
+			});
+
+			test("cd into a plugin mount persists across invocations", async () => {
+				const runner = await create_bash_runner();
+				await seed_plugin_mount(runner, "media", [{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT }]);
+
+				const moved = await runner.run("cd /.plugins/media/dist");
+				expect(moved.metadata.exitCode).toBe(0);
+
+				const here = await runner.run("pwd");
+				expect(here.metadata.exitCode).toBe(0);
+				expect(here.stdout).toBe("/.plugins/media/dist\n");
+			});
+
+			test("rejects every write into a plugin mount and leaves it intact", async () => {
+				const runner = await create_bash_runner();
+				await seed_plugin_mount(runner, "media", [{ path: "/README.md", rawText: PLUGIN_README_TEXT }]);
+
+				const writes = [
+					"touch /.plugins/media/new.txt",
+					"rm /.plugins/media/README.md",
+					"mv /.plugins/media/README.md /.plugins/media/renamed.md",
+					"echo hi | tee /.plugins/media/new.txt",
+					"cp /.plugins/media/README.md /.plugins/media/copy.md",
+				];
+				for (const command of writes) {
+					const result = await runner.run(command);
+					expect(result.metadata.exitCode).not.toBe(0);
+					expect(result.stderr).toContain("read-only mount of installed plugin sources");
+				}
+
+				const readme = await runner.run("cat /.plugins/media/README.md");
+				expect(readme.metadata.exitCode).toBe(0);
+				expect(readme.stdout).toBe(PLUGIN_README_TEXT);
+			});
+
+			test("allows copying a plugin file out to /tmp scratch", async () => {
+				const runner = await create_bash_runner();
+				await seed_plugin_mount(runner, "media", [{ path: "/README.md", rawText: PLUGIN_README_TEXT }]);
+
+				const copied = await runner.run("cp /.plugins/media/README.md /tmp/readme.md && cat /tmp/readme.md");
+				expect(copied.metadata.exitCode).toBe(0);
+				expect(copied.stdout).toBe(PLUGIN_README_TEXT);
+			});
+
+			test("refuses to execute plugin source through bash and source", async () => {
+				const runner = await create_bash_runner();
+				await seed_plugin_mount(runner, "media", [{ path: "/script.sh", rawText: "echo pwned\n" }]);
+
+				const executed = await runner.run("bash /.plugins/media/script.sh");
+				expect(executed.metadata.exitCode).not.toBe(0);
+				expect(executed.stdout).not.toContain("pwned");
+				expect(executed.stderr).toContain("not executable through bash");
+
+				const sourced = await runner.run("source /.plugins/media/script.sh");
+				expect(sourced.metadata.exitCode).not.toBe(0);
+				expect(sourced.stdout).not.toContain("pwned");
+				expect(sourced.stderr).toContain("cannot load app files or agent-only external mounts");
+			});
+
+			test("reports not-installed plugin names as plain missing paths", async () => {
+				const runner = await create_bash_runner();
+				await seed_plugin_mount(runner, "media", [{ path: "/README.md", rawText: PLUGIN_README_TEXT }]);
+
+				const listMissing = await runner.run("ls /.plugins/nope");
+				expect(listMissing.metadata.exitCode).not.toBe(0);
+				expect(listMissing.stderr).toContain("No such file");
+
+				const catMissing = await runner.run("cat /.plugins/nope/x.md");
+				expect(catMissing.metadata.exitCode).not.toBe(0);
+				expect(catMissing.stderr).toContain("No such file");
+			});
+
+			test("keeps plugin source isolated from the tenant app tree", async () => {
+				const runner = await create_bash_runner();
+				const { pluginVersionId } = await seed_plugin_mount(runner, "media", [
+					{ path: "/dist/backend/worker.js", rawText: WORKER_TEXT },
+				]);
+
+				// App-scope search never reaches the reserved plugin scope.
+				const workspaceSearch = await runner.run("search Glomtelemetry");
+				expect(workspaceSearch.metadata.exitCode).toBe(0);
+				expect(workspaceSearch.stdout).not.toContain("worker.js");
+
+				// The stored version-keyed path is not addressable outside the /.plugins prefix.
+				const bare = await runner.run(`cat /${pluginVersionId}/dist/backend/worker.js`);
+				expect(bare.metadata.exitCode).not.toBe(0);
+			});
+
+			test("drops the mount when the installation is removed", async () => {
+				const runner = await create_bash_runner();
+				const { installationId } = await seed_plugin_mount(runner, "media", [
+					{ path: "/README.md", rawText: PLUGIN_README_TEXT },
+				]);
+
+				const visible = await runner.run("cat /.plugins/media/README.md");
+				expect(visible.metadata.exitCode).toBe(0);
+
+				await runner.t.run(async (ctx) => {
+					if (installationId == null) {
+						throw new Error("Expected seeded installation");
+					}
+					await ctx.db.delete("plugins_workspace_installations", installationId);
+				});
+
+				// Mounts are derived per command run, so the next call already reflects the uninstall.
+				const gone = await runner.run("cat /.plugins/media/README.md");
+				expect(gone.metadata.exitCode).not.toBe(0);
+				expect(gone.stderr).toContain("No such file");
 			});
 		});
 	});
