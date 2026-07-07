@@ -30,7 +30,6 @@ export const files_ROOT_ID = "root" as const;
  * constant is the shared single source of truth for the shell-visible mount prefix.
  */
 export const files_MOUNT_ROOT = "/.mounts";
-export const files_SYSTEM_ROOT = "/.system";
 
 /**
  * Whether a normalized absolute path is the mount root or inside it (`/.mounts`, `/.mounts/<name>/...`).
@@ -39,10 +38,6 @@ export const files_SYSTEM_ROOT = "/.system";
  */
 export function files_is_path_under_mount_root(path: string) {
 	return path === files_MOUNT_ROOT || path.startsWith(`${files_MOUNT_ROOT}/`);
-}
-
-export function files_is_path_under_system_root(path: string) {
-	return path === files_SYSTEM_ROOT || path.startsWith(`${files_SYSTEM_ROOT}/`);
 }
 
 export type files_VisibleTreeNode = Omit<

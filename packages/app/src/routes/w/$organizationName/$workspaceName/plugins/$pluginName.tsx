@@ -59,8 +59,8 @@ type RoutePlugins_Installation = app_convex_FunctionReturnType<
 	typeof app_convex_api.plugins.list_installations
 >[number];
 
-type RoutePlugins_RegisteredPlugin = app_convex_FunctionReturnType<
-	typeof app_convex_api.plugins.list_registered_plugins
+type RoutePlugins_PublishedPlugin = app_convex_FunctionReturnType<
+	typeof app_convex_api.plugins.list_published_plugins
 >[number];
 
 type RoutePlugins_PublisherPlugin = NonNullable<
@@ -412,7 +412,7 @@ const RoutePluginsInstalled = memo(function RoutePluginsInstalled(props: RoutePl
 	const handleUninstall = useFn(() => {
 		setUninstalling(true);
 		app_convex
-			.action(app_convex_api.plugins.uninstall_version, { membershipId, installationId: installation._id })
+			.mutation(app_convex_api.plugins.uninstall_version, { membershipId, installationId: installation._id })
 			.then((result) => {
 				if (result._nay) {
 					toast.error(result._nay.message);
@@ -578,7 +578,7 @@ const RoutePluginsPluginPublisherVersions = memo(function RoutePluginsPluginPubl
 									"RoutePluginsPluginPublisherVersionItem-meta" satisfies RoutePluginsPluginPublisherVersions_ClassNames
 								}
 							>
-								{version.sourceCommitSha.slice(0, 8)} · {format_datetime(version.createdAt)}
+								{version.sourceCommitSha.slice(0, 8)} · {format_datetime(version._creationTime)}
 							</span>
 							<MyBadge variant={review_badge_variant(version.reviewStatus)}>{version.reviewStatus}</MyBadge>
 						</div>
@@ -667,7 +667,7 @@ const RoutePluginsPluginPublisherReviews = memo(function RoutePluginsPluginPubli
 											"RoutePluginsPluginPublisherReviewItem-meta" satisfies RoutePluginsPluginPublisherReviews_ClassNames
 										}
 									>
-										{review.model === "none" ? "mechanical checks" : review.model} · {format_datetime(review.createdAt)}
+										{review.model === "none" ? "mechanical checks" : review.model} · {format_datetime(review.updatedAt)}
 									</span>
 									<MyBadge variant={review_badge_variant(review.status)}>{review.status}</MyBadge>
 								</div>
@@ -718,7 +718,7 @@ type RoutePluginsPluginPublisherSecrets_ClassNames =
 	| "RoutePluginsPluginPublisherSecretItem-origins";
 
 type RoutePluginsPluginPublisher_Secret = app_convex_FunctionReturnType<
-	typeof app_convex_api.plugins.list_publisher_secrets
+	typeof app_convex_api.plugins.list_publisher_repository_secrets
 >[number];
 
 function origins_from_text(text: string) {
@@ -762,7 +762,7 @@ const RoutePluginsPluginPublisherSecretRow = memo(function RoutePluginsPluginPub
 
 		setSaving(true);
 		app_convex
-			.mutation(app_convex_api.plugins.update_publisher_secret_origins, {
+			.mutation(app_convex_api.plugins.update_publisher_repository_secret_origins, {
 				repositoryId,
 				name: secret.name,
 				allowedOrigins: rawOrigins,
@@ -790,7 +790,7 @@ const RoutePluginsPluginPublisherSecretRow = memo(function RoutePluginsPluginPub
 	const handleDelete = useFn(() => {
 		setSaving(true);
 		app_convex
-			.mutation(app_convex_api.plugins.delete_publisher_secret, { repositoryId, name: secret.name })
+			.mutation(app_convex_api.plugins.delete_publisher_repository_secret, { repositoryId, name: secret.name })
 			.then((result) => {
 				if (result._nay) {
 					toast.error(result._nay.message);
@@ -894,7 +894,7 @@ const RoutePluginsPluginPublisherSecrets = memo(function RoutePluginsPluginPubli
 	props: RoutePluginsPluginPublisherSecrets_Props,
 ) {
 	const { repositoryId } = props;
-	const secrets = useQuery(app_convex_api.plugins.list_publisher_secrets, { repositoryId });
+	const secrets = useQuery(app_convex_api.plugins.list_publisher_repository_secrets, { repositoryId });
 	const [name, setName] = useState("");
 	const [value, setValue] = useState("");
 	const [originsText, setOriginsText] = useState("");
@@ -917,7 +917,7 @@ const RoutePluginsPluginPublisherSecrets = memo(function RoutePluginsPluginPubli
 
 		setSaving(true);
 		app_convex
-			.mutation(app_convex_api.plugins.upsert_publisher_secret, {
+			.mutation(app_convex_api.plugins.upsert_publisher_repository_secret, {
 				repositoryId,
 				name,
 				value,
@@ -955,7 +955,7 @@ const RoutePluginsPluginPublisherSecrets = memo(function RoutePluginsPluginPubli
 
 		setSaving(true);
 		app_convex
-			.mutation(app_convex_api.plugins.upsert_publisher_secrets, {
+			.mutation(app_convex_api.plugins.upsert_publisher_repository_secrets, {
 				repositoryId,
 				secrets: parsed._yay,
 			})
@@ -1259,17 +1259,17 @@ type RoutePluginsPlugin_ClassNames =
 function RoutePluginsPlugin() {
 	const { pluginName } = Route.useParams();
 	const { membershipId } = AppTenantProvider.useContext();
-	const plugins = useQuery(app_convex_api.plugins.list_registered_plugins, { membershipId });
+	const plugins = useQuery(app_convex_api.plugins.list_published_plugins, { membershipId });
 	const installations = useQuery(app_convex_api.plugins.list_installations, { membershipId });
 	// Non-null only when the signed-in user owns this plugin's repository claim.
 	const publisherPlugin = useQuery(app_convex_api.plugins.get_publisher_plugin, { pluginName });
 	const [consenting, setConsenting] = useState(false);
 	const [installing, setInstalling] = useState(false);
 
-	const handleAcceptAndInstall = useFn((plugin: RoutePlugins_RegisteredPlugin) => {
+	const handleAcceptAndInstall = useFn((plugin: RoutePlugins_PublishedPlugin) => {
 		setInstalling(true);
 		app_convex
-			.action(app_convex_api.plugins.install_version, {
+			.mutation(app_convex_api.plugins.install_version, {
 				membershipId,
 				pluginVersionId: plugin.pluginVersionId,
 				acceptedCapabilities: plugin.capabilities,

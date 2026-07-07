@@ -64,8 +64,6 @@ const rate_limiter_CONFIG = {
 		period: HOUR,
 		capacity: 5,
 	},
-	// Manual per-file plugin runs; each run drives a runner + billed model calls, so keep bursts small.
-	plugins_run: STRICT_WRITE,
 	presence_heartbeat: {
 		kind: "token bucket",
 		rate: 30,

@@ -25,10 +25,7 @@ type RoutePlugins_Installation = app_convex_FunctionReturnType<
 
 // #region gallery
 type RoutePluginsGallery_ClassNames =
-	| "RoutePluginsGallery"
-	| "RoutePluginsGallery-search"
-	| "RoutePluginsGallery-empty"
-	| "RoutePluginsGallery-grid";
+	"RoutePluginsGallery" | "RoutePluginsGallery-search" | "RoutePluginsGallery-empty" | "RoutePluginsGallery-grid";
 
 type RoutePluginsGallery_Props = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
@@ -37,7 +34,7 @@ type RoutePluginsGallery_Props = {
 
 const RoutePluginsGallery = memo(function RoutePluginsGallery(props: RoutePluginsGallery_Props) {
 	const { membershipId, installations } = props;
-	const plugins = useQuery(app_convex_api.plugins.list_registered_plugins, { membershipId });
+	const plugins = useQuery(app_convex_api.plugins.list_published_plugins, { membershipId });
 	const [search, setSearch] = useState("");
 
 	const query = search.trim().toLowerCase();

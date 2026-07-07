@@ -31,6 +31,26 @@ type SecretWithKeyVersion = Doc<"plugins_workspace_installation_secrets"> & {
 	keyVersion?: number;
 };
 
+/** Tables that stamped their own createdAt before `_creationTime` took over. */
+type PluginsLegacyCreatedAtTable =
+	| "plugins_publisher_repositories"
+	| "plugins_publisher_repository_secrets"
+	| "plugins_versions"
+	| "plugins_source_mounts"
+	| "plugins_workspace_installations"
+	| "plugins_workspace_event_handlers"
+	| "plugins_event_runs"
+	| "plugins_event_run_calls";
+
+type PluginsDocWithLegacyCreatedAt<TableName extends PluginsLegacyCreatedAtTable> = Doc<TableName> & {
+	createdAt?: number;
+};
+
+type LegacyVersionReview = Omit<Doc<"plugins_version_reviews">, "updatedAt"> & {
+	createdAt?: number;
+	updatedAt?: number;
+};
+
 type LegacyOrganizationWithOwner = Omit<Doc<"organizations">, "_id" | "_creationTime" | "ownerUserId"> & {
 	_id: Id<"organizations">;
 	_creationTime: number;
@@ -50,10 +70,7 @@ type FileNodeReferenceTable =
 	| "files_content_materialization_jobs"
 	| "files_snapshots";
 
-type LegacyFileNodeReferenceDoc<TableName extends FileNodeReferenceTable> = Omit<
-	Doc<TableName>,
-	"fileNodeId"
-> & {
+type LegacyFileNodeReferenceDoc<TableName extends FileNodeReferenceTable> = Omit<Doc<TableName>, "fileNodeId"> & {
 	fileNodeId?: Id<"files_nodes">;
 	nodeId?: Id<"files_nodes">;
 };
@@ -248,7 +265,10 @@ export const backfill_organization_home_memberships = app_migrations.define({
 		const existingHomeMemberships = await ctx.db
 			.query("organizations_workspaces_users")
 			.withIndex("by_user_organization_workspace_active", (q) =>
-				q.eq("userId", membership.userId).eq("organizationId", membership.organizationId).eq("workspaceId", defaultWorkspaceId),
+				q
+					.eq("userId", membership.userId)
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", defaultWorkspaceId),
 			)
 			.collect();
 		if (existingHomeMemberships.some((homeMembership) => homeMembership.active === true)) {
@@ -519,6 +539,145 @@ export const backfill_files_plain_text_chunk_scope = app_migrations.define({
 	},
 });
 
+export const remove_plugins_publisher_repositories_created_at = app_migrations.define({
+	table: "plugins_publisher_repositories",
+	migrateOne: async (ctx, repository) => {
+		const legacyRepository = repository as PluginsDocWithLegacyCreatedAt<"plugins_publisher_repositories">;
+		if (legacyRepository.createdAt === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, createdAt: _createdAt, ...next } = legacyRepository;
+		await ctx.db.replace("plugins_publisher_repositories", _id, next);
+	},
+});
+
+export const remove_plugins_publisher_repository_secrets_created_at = app_migrations.define({
+	table: "plugins_publisher_repository_secrets",
+	migrateOne: async (ctx, secret) => {
+		const legacySecret = secret as PluginsDocWithLegacyCreatedAt<"plugins_publisher_repository_secrets">;
+		if (legacySecret.createdAt === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, createdAt: _createdAt, ...next } = legacySecret;
+		await ctx.db.replace("plugins_publisher_repository_secrets", _id, next);
+	},
+});
+
+export const remove_plugins_versions_created_at = app_migrations.define({
+	table: "plugins_versions",
+	migrateOne: async (ctx, version) => {
+		const legacyVersion = version as PluginsDocWithLegacyCreatedAt<"plugins_versions">;
+		if (legacyVersion.createdAt === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, createdAt: _createdAt, ...next } = legacyVersion;
+		await ctx.db.replace("plugins_versions", _id, next);
+	},
+});
+
+export const remove_plugins_source_mounts_created_at = app_migrations.define({
+	table: "plugins_source_mounts",
+	migrateOne: async (ctx, mount) => {
+		const legacyMount = mount as PluginsDocWithLegacyCreatedAt<"plugins_source_mounts">;
+		if (legacyMount.createdAt === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, createdAt: _createdAt, ...next } = legacyMount;
+		await ctx.db.replace("plugins_source_mounts", _id, next);
+	},
+});
+
+export const remove_plugins_workspace_installations_created_at = app_migrations.define({
+	table: "plugins_workspace_installations",
+	migrateOne: async (ctx, installation) => {
+		const legacyInstallation = installation as PluginsDocWithLegacyCreatedAt<"plugins_workspace_installations">;
+		if (legacyInstallation.createdAt === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, createdAt: _createdAt, ...next } = legacyInstallation;
+		await ctx.db.replace("plugins_workspace_installations", _id, next);
+	},
+});
+
+export const remove_plugins_workspace_event_handlers_created_at = app_migrations.define({
+	table: "plugins_workspace_event_handlers",
+	migrateOne: async (ctx, handler) => {
+		const legacyHandler = handler as PluginsDocWithLegacyCreatedAt<"plugins_workspace_event_handlers">;
+		if (legacyHandler.createdAt === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, createdAt: _createdAt, ...next } = legacyHandler;
+		await ctx.db.replace("plugins_workspace_event_handlers", _id, next);
+	},
+});
+
+export const remove_plugins_event_runs_created_at = app_migrations.define({
+	table: "plugins_event_runs",
+	migrateOne: async (ctx, run) => {
+		const legacyRun = run as PluginsDocWithLegacyCreatedAt<"plugins_event_runs">;
+		if (legacyRun.createdAt === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, createdAt: _createdAt, ...next } = legacyRun;
+		await ctx.db.replace("plugins_event_runs", _id, next);
+	},
+});
+
+export const remove_plugins_event_run_calls_created_at = app_migrations.define({
+	table: "plugins_event_run_calls",
+	migrateOne: async (ctx, call) => {
+		const legacyCall = call as PluginsDocWithLegacyCreatedAt<"plugins_event_run_calls">;
+		if (legacyCall.createdAt === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, createdAt: _createdAt, ...next } = legacyCall;
+		await ctx.db.replace("plugins_event_run_calls", _id, next);
+	},
+});
+
+export const backfill_plugins_version_reviews_updated_at = app_migrations.define({
+	table: "plugins_version_reviews",
+	migrateOne: async (ctx, review) => {
+		const legacyReview = review as LegacyVersionReview;
+		if (legacyReview.createdAt === undefined && legacyReview.updatedAt !== undefined) {
+			return;
+		}
+
+		// Legacy docs stamped the verdict time as createdAt before the field was renamed updatedAt.
+		const { _id, _creationTime, createdAt: _createdAt, ...next } = legacyReview;
+		await ctx.db.replace("plugins_version_reviews", _id, {
+			...next,
+			updatedAt: legacyReview.updatedAt ?? legacyReview.createdAt ?? legacyReview._creationTime,
+		});
+	},
+});
+
+export const backfill_plugins_versions_is_latest = app_migrations.define({
+	table: "plugins_versions",
+	migrateOne: async (ctx, version) => {
+		// Publish order stands in for version order: the newest-created doc per name is the latest.
+		const latest = await ctx.db
+			.query("plugins_versions")
+			.withIndex("by_name", (q) => q.eq("name", version.name))
+			.order("desc")
+			.first();
+		const isLatest = latest?._id === version._id;
+		if (version.isLatest === isLatest) {
+			return;
+		}
+
+		await ctx.db.patch("plugins_versions", version._id, { isLatest });
+	},
+});
+
 export const dev_cleanup_rebrand_preserve_clerk_accounts = internalMutation({
 	args: {
 		batchSize: v.optional(v.number()),
@@ -685,4 +844,34 @@ export const run_backfill_files_nodes_lowercase_extension = app_migrations.runne
 );
 export const run_backfill_files_plain_text_chunk_scope = app_migrations.runner(
 	internal.migrations.backfill_files_plain_text_chunk_scope,
+);
+export const run_remove_plugins_publisher_repositories_created_at = app_migrations.runner(
+	internal.migrations.remove_plugins_publisher_repositories_created_at,
+);
+export const run_remove_plugins_publisher_repository_secrets_created_at = app_migrations.runner(
+	internal.migrations.remove_plugins_publisher_repository_secrets_created_at,
+);
+export const run_remove_plugins_versions_created_at = app_migrations.runner(
+	internal.migrations.remove_plugins_versions_created_at,
+);
+export const run_remove_plugins_source_mounts_created_at = app_migrations.runner(
+	internal.migrations.remove_plugins_source_mounts_created_at,
+);
+export const run_remove_plugins_workspace_installations_created_at = app_migrations.runner(
+	internal.migrations.remove_plugins_workspace_installations_created_at,
+);
+export const run_remove_plugins_workspace_event_handlers_created_at = app_migrations.runner(
+	internal.migrations.remove_plugins_workspace_event_handlers_created_at,
+);
+export const run_remove_plugins_event_runs_created_at = app_migrations.runner(
+	internal.migrations.remove_plugins_event_runs_created_at,
+);
+export const run_remove_plugins_event_run_calls_created_at = app_migrations.runner(
+	internal.migrations.remove_plugins_event_run_calls_created_at,
+);
+export const run_backfill_plugins_version_reviews_updated_at = app_migrations.runner(
+	internal.migrations.backfill_plugins_version_reviews_updated_at,
+);
+export const run_backfill_plugins_versions_is_latest = app_migrations.runner(
+	internal.migrations.backfill_plugins_versions_is_latest,
 );

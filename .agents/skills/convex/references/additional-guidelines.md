@@ -182,6 +182,8 @@ Standard `_nay.message` values for Result-returning handlers:
 
 Validate requested docs at the supported handler boundary that loads them. If a private helper only runs after that handler has already checked existence, scope, and kind, do not repeat those defensive checks inside the helper. Pass the already-validated fields the helper needs, such as `path` or `archiveOperationId`, and trust the caller contract.
 
+The same applies to app-owned client input: APIs serving this app's frontend trust the FE to send well-formed values beyond what the `args` validators enforce. Do not re-validate names, paths, or formats the FE already produced. Keep content validation at genuine trust boundaries: user-typed free text, plugin-supplied values, and vendor webhooks.
+
 If a validated requested resource points to missing server-owned data, treat that as a server bug instead of a user-facing not-found branch. Log the invariant failure with `console.error(errorMessage, errorData)` and then throw `should_never_happen(errorMessage, errorData)` with structured ids for missing linked docs such as file properties, asset docs, content docs, scheduled jobs, or other relationships that supported write paths must keep valid.
 
 For missing fields that supported write paths must set, use the exact field path in the invariant message: `"fileNode.yjsLastSequenceId is not set"` or `"organization.defaultWorkspaceId is not set"`. Use `fileNode`, not `file`, when the doc is from `files_nodes`.
@@ -234,6 +236,16 @@ Small style rule for these handlers:
 
 - Prefer inlining small repeated `Result({ _nay: ... })` returns and small `ctx.runMutation(..., { messages: [...] })` payloads instead of adding tiny local helper functions/variables only to avoid repetition.
 
+## Public actions own auth and rate limiting
+
+Public actions resolve the current user and apply rate limits themselves instead of delegating that to an internal mutation:
+
+- Resolve the user in the action with `server_convex_get_user_fallback_to_anonymous(ctx)` and check `kind !== "signed_in"`; it accepts an `ActionCtx`.
+- Call `rate_limiter_limit_by_key(ctx, { name, key: userAuth.id })` directly from the action — it accepts `MutationCtx | ActionCtx`.
+- Pass the resolved `userId` into internal queries/mutations as an explicit arg and keep those internal functions pure lookups/writes. Live examples: `billing.generate_checkout_link`, and `plugins.publish_version` calling `plugins.get_owned_publisher_repository`.
+
+Do not bundle auth + rate limiting + a db read into one internal mutation just so the action makes a single call; that turns a read-only lookup into a mutation and buries the auth boundary.
+
 ## Module-private naming
 
 Do not namespace module-private helpers, types, or constants with the module/file prefix.
@@ -241,6 +253,9 @@ Do not namespace module-private helpers, types, or constants with the module/fil
 - Use prefixes for exported symbols so import sites can see where a symbol comes from.
 - Keep non-exported functions like `authorize_file_download`, not `r2_authorize_file_download`.
 - Keep non-exported types and constants unprefixed too, unless a very local ambiguity makes the shorter name misleading.
+- Non-exported module-level constants are UPPER_SNAKE (`REVIEW_MODEL_ID`, `HOST_TOKEN_TTL_MS`, `UPLOAD_COMPLETED_EVENT_TYPE`) and live in the top-of-file constants block, not next to their first user.
+- Guard model-id constants with the existing union type: `const REVIEW_MODEL_ID = "gpt-5.4-mini" as const satisfies ai_chat_ModelId;`. The constant's type becomes the literal, so a variable reassigned across different model ids needs a wider annotation (`let modelId: string = ...`).
+- Do not export a symbol that has no consumer outside its module. Documented exception: mutable spy-seam objects that tests must stub in place (for example `plugins_ai_review`) — module-internal calls dereference the same object, so the seam cannot work unexported.
 - This rule is about module/file prefixes, not meaningful boundary prefixes. If the surrounding file already uses a boundary prefix for a specific kind of helper, follow it. For example, in `files_nodes.ts`, private helpers that fetch or query Convex docs use `db_`, while pure helpers stay unprefixed.
 
 ## Inline Convex validators by default
@@ -422,6 +437,49 @@ const lines: string[] = condition ? [path] : ["0 matches."];
    boundary is needed. Prefer local annotations over annotating command factory returns or callback
    parameters.
 
+## Derived `_Result` types for `internal.*` call casts
+
+When a Convex function calls another function in the same module (or across a module import cycle) via `ctx.runQuery` / `ctx.runMutation` / `ctx.runAction`, the generated types collapse and the result needs a cast. Never write the result shape inline (`as { _yay?: ...; _nay?: { message: string } }`) — inline shapes silently go stale when the callee's return changes. Derive the type from the callee instead, placed right below the callee's definition:
+
+```ts
+type upsert_plugin_Result =
+	typeof upsert_plugin extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+```
+
+- Use `RegisteredQuery` / `RegisteredAction` for queries and actions; import them as types from `"convex/server"`.
+- Keep the type non-exported when the cast site is in the same module. For cross-module casts, export it with the module prefix (`files_nodes_create_file_node_internal_Result`, `r2_finalize_uploaded_media_markdown_outputs_Result`) and import it type-only — type imports do not create runtime cycles.
+- Derive related payload types by indexing instead of redefining them, for example `NonNullable<get_owned_publisher_repository_Result["_yay"]>` for a validated-scope parameter.
+- The derived union preserves `_yay`/`_nay` narrowing. After converting a cast, delete the dead code the inline shape was hiding: `|| !x._yay` halves, `?? "fallback message"` branches, and `x._yay ?? null` when `_yay` already includes `null`.
+- If the compiler then reports `_nay` as `never`, the callee cannot fail — delete the error handling, and if nothing reads the result, drop the cast and the result variable entirely.
+
+## Derive whole-doc mutation `args` from the schema
+
+When an internal mutation writes or upserts essentially a whole table doc, do not re-define the field validators inline — inline shapes drift from the schema. Reference each field from the schema with `doc(app_convex_schema, "table_name").fields.<field>`, listing exactly the fields the caller provides. Do not use `omit(...)`/`pick(...)` on validator fields — the explicit per-field list is preferred:
+
+```ts
+import { doc } from "convex-helpers/validators";
+
+export const upsert_version_review = internalMutation({
+	args: {
+		createdBy: doc(app_convex_schema, "plugins_version_reviews").fields.createdBy,
+		artifactHash: doc(app_convex_schema, "plugins_version_reviews").fields.artifactHash,
+		// ... every field except the ones the handler derives itself
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const review = { ...args, createdAt: Date.now() };
+		// index lookup, then patch-or-insert `review`
+	},
+});
+```
+
+- Leave out only what the handler derives itself: timestamps, constants (`runtimeVersion`, literal storage ids), and computed fields (`mountPath`).
+- Nested object fields work the same way: `doc(app_convex_schema, "plugins_publisher_repositories").fields.lastPublishAttempt.fields.status`.
+- Spread `{ ...args }` into the insert/patch so a new schema field surfaces as a validation error instead of being silently dropped.
+- Name patch-or-insert mutations `upsert_*` (`upsert_plugin`, `upsert_source_mount`, `upsert_version_review`).
+
 ## Prefer `doc(app_convex_schema, "...")` for DB document shapes
 
 When a Convex function returns documents fetched from `ctx.db` (or objects that embed full documents), **avoid re-defining the whole schema with `v.object({...})`**.
@@ -442,13 +500,15 @@ When a Convex function returns documents fetched from `ctx.db` (or objects that 
 - **Records keyed by ids**:
   - Prefer `v.record(v.id("users"), doc(app_convex_schema, "users_anagraphics"))` (and the matching TS type `Record<Id<"users">, Doc<"users_anagraphics">>`).
 
-Use `v.object({...})` only when you intentionally return a **subset** or a **derived shape** that is not the full document.
+Use `v.object({...})` only when you intentionally return a **subset** or a **derived shape** that is not the full document. For subset fields, reference the schema per field with `doc(app_convex_schema, "table_name").fields.<field>` — do not use `pick(...)` for validators or handler payloads.
 
 ## Performance: fetching many related documents
 
 When the user requests code that needs to fetch _many_ related documents (e.g. per item in a list), you must **avoid `await ctx.db...` inside a `for` loop**. Sequential awaits can be much slower.
 
 This guidance is for server-side code that is already processing a server-owned list inside one query, mutation, or action. Do not use it as a reason to create public batch/list APIs when the client already has stable document ids; in that case, prefer reusable single-id queries so the Convex client cache can share and invalidate each document-shaped result independently.
+
+When weighing a big aggregate query against granular queries, only split when a granular query would have more than one consumer with the same args — and count consumers across the whole system, not just FE components: Convex caches query results server-side too, so `ctx.runQuery` call sites in actions share the same cache. A granular query with a single subscriber buys no sharing and costs an extra auth-gate derivation and loading state.
 
 ✅ Prefer concurrent fetches with `Promise.all`:
 
@@ -502,6 +562,8 @@ Treat `.collect()` as a heavy read because it materializes the full result set i
 - Prefer adding or using a more specific index, then finish with `first()`.
 - Avoid `unique()` on normal read paths because it throws when duplicate docs exist. Use it only when throwing on duplicates is the behavior you explicitly want.
 - Keep `collect` + JS filtering only for predicates Convex cannot express cleanly, especially missing optional-field logic.
+- Do not use `.take(N)` + JS `.find(...)` for "newest doc matching a predicate": queries stream lazily, so `.order("desc").filter(...).first()` reads only until the first match and has no silent N cap. Reserve `.take(N)` for genuinely bounded top-N reads.
+- When the function needs every doc of a naturally small set (for example a repository's secret names), use `.collect()` and say so; do not add an arbitrary `.take(100)` as a stand-in cap for "all of them".
 
 ## Performance: prefix scans via index range (`\uffff` upper bound)
 

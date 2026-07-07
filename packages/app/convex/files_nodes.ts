@@ -61,8 +61,6 @@ import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
-	files_is_path_under_system_root,
-	files_SYSTEM_ROOT,
 	type files_ContentType,
 	type files_SpecialFileName,
 	type files_InlineAiModelId,
@@ -1132,9 +1130,6 @@ export const create_folder_node = mutation({
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
-		if (files_is_path_under_system_root(args.path)) {
-			return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
-		}
 
 		if (!membership || membership.userId !== userAuth.id || membership.active === false) {
 			return Result({ _nay: { message: "Unauthorized" } });
@@ -1515,206 +1510,25 @@ export const create_file_node_internal = internalAction({
 			return Result({ _nay: { message: "Failed to create external source file node" } });
 		}
 
-		const finalized = (await ctx.runMutation(internal.files_nodes.finalize_file_node_creation, {
+		await ctx.runMutation(internal.files_nodes.finalize_file_node_creation, {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			nodeId: createdNodeId,
 			contentAssetId: assetId,
 			contentSize: byteSize,
-		})) as { _yay?: null; _nay?: { message: string } };
-		if (finalized._nay) {
-			return Result({ _nay: { message: finalized._nay.message } });
-		}
+		});
 
 		return Result({ _yay: { nodeId: createdNodeId } });
 	},
 });
 
-export const upsert_readonly_text_file_node_by_path = internalMutation({
-	args: {
-		userId: v.id("users"),
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		path: v.string(),
-		assetId: v.id("files_r2_assets"),
-		contentType: v.string(),
-		textContent: v.string(),
-		contentSize: v.number(),
-	},
-	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
-	handler: async (ctx, args) => {
-		const now = Date.now();
-		const activeFileNode = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("path", args.path)
-					.eq("archiveOperationId", undefined),
-			)
-			.first();
-
-		let nodeId: Id<"files_nodes">;
-		if (!activeFileNode) {
-			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
-				userId: args.userId,
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				parentId: files_ROOT_ID,
-				path: args.path,
-				kind: "file",
-				contentType: args.contentType,
-				assetId: args.assetId,
-				textContent: args.textContent,
-				readOnly: true,
-				now,
-			});
-			if (created._nay) {
-				return created;
-			}
-			nodeId = created._yay;
-		} else {
-			if (activeFileNode.kind !== "file") {
-				return Result({ _nay: { message: "A folder already exists at this path." } });
-			}
-			if (files_node_has_editable_yjs_state(activeFileNode)) {
-				return Result({ _nay: { message: "Can only replace a read-only text file." } });
-			}
-
-			const [plainTextChunkDocs, markdownChunkDocs] = await Promise.all([
-				ctx.db
-					.query("files_plain_text_chunks")
-					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("fileNodeId", activeFileNode._id),
-					)
-					.collect(),
-				ctx.db
-					.query("files_markdown_chunks")
-					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-						q
-							.eq("organizationId", args.organizationId)
-							.eq("workspaceId", args.workspaceId)
-							.eq("fileNodeId", activeFileNode._id),
-					)
-					.collect(),
-				files_metadata_db_delete_committed(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					nodeId: activeFileNode._id,
-				}),
-			]);
-			await Promise.all([
-				...plainTextChunkDocs.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
-				...markdownChunkDocs.map((chunk) => ctx.db.delete("files_markdown_chunks", chunk._id)),
-			]);
-
-			const inserted = await db_insert_file_text_content(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				nodeId: activeFileNode._id,
-				path: args.path,
-				contentType: args.contentType,
-				textContent: args.textContent,
-			});
-			if (inserted._nay) {
-				return inserted;
-			}
-			await ctx.db.patch("files_nodes", activeFileNode._id, {
-				contentType: args.contentType,
-				assetId: args.assetId,
-				updatedBy: args.userId,
-				updatedAt: now,
-			});
-			nodeId = activeFileNode._id;
-		}
-
-		const finalized = await files_nodes_db_finalize_file_node_creation(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId,
-			contentAssetId: args.assetId,
-			contentSize: args.contentSize,
-		});
-		if (finalized._nay) {
-			return finalized;
-		}
-
-		return Result({ _yay: { nodeId } });
-	},
-});
-
-export const upsert_readonly_text_file_by_path = internalAction({
-	args: {
-		userId: v.id("users"),
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		path: v.string(),
-		rawText: v.string(),
-	},
-	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
-	handler: async (ctx, args) => {
-		const byteSize = files_get_utf8_byte_size(args.rawText);
-		if (byteSize > files_MAX_TEXT_CONTENT_BYTES) {
-			return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
-		}
-
-		const assetId = await ctx.runMutation(internal.r2.insert_asset, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			kind: "content",
-			size: byteSize,
-			createdBy: args.userId,
-		});
-		const r2Key = r2_create_asset_key({
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			assetId,
-		});
-
-		try {
-			await r2_put_object(ctx, {
-				key: r2Key,
-				body: args.rawText,
-				contentType: "text/plain;charset=utf-8" satisfies files_ContentType,
-			});
-		} catch (error) {
-			await ctx.runMutation(internal.files_nodes.cleanup_file_node_creation_assets, {
-				assetIds: [assetId],
-				r2Keys: [r2Key],
-			});
-			console.error("Failed to write read-only text file asset", { error, assetId, path: args.path });
-			return Result({ _nay: { message: "Failed to create file" } });
-		}
-
-		const upserted = (await ctx.runMutation(internal.files_nodes.upsert_readonly_text_file_node_by_path, {
-			userId: args.userId,
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			path: args.path,
-			assetId,
-			contentType: "text/plain;charset=utf-8" satisfies files_ContentType,
-			textContent: args.rawText,
-			contentSize: byteSize,
-		})) as { _yay?: { nodeId: Id<"files_nodes"> }; _nay?: { message: string } };
-		const upsertedNodeId = upserted._yay?.nodeId;
-		if (upserted._nay || !upsertedNodeId) {
-			await ctx.runMutation(internal.files_nodes.cleanup_file_node_creation_assets, {
-				assetIds: [assetId],
-				r2Keys: [r2Key],
-			});
-			return Result({ _nay: { message: upserted._nay?.message ?? "Failed to upsert system file node" } });
-		}
-
-		return Result({ _yay: { nodeId: upsertedNodeId } });
-	},
-});
-
 type create_file_node_Result =
 	typeof create_file_node extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export type files_nodes_create_file_node_internal_Result =
+	typeof create_file_node_internal extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -1841,7 +1655,7 @@ async function action_create_markdown_node(
 		return created;
 	}
 
-	const finalized = (await ctx.runMutation(internal.files_nodes.finalize_file_node_creation, {
+	await ctx.runMutation(internal.files_nodes.finalize_file_node_creation, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		nodeId: created._yay.nodeId,
@@ -1852,10 +1666,7 @@ async function action_create_markdown_node(
 		yjsSnapshotSize: snapshotUpdate._yay.byteLength,
 		versionSnapshotAssetId,
 		versionSnapshotSize: files_get_utf8_byte_size(args.markdownContent),
-	})) as { _yay?: null; _nay?: { message: string } };
-	if (finalized._nay) {
-		return Result({ _nay: { message: finalized._nay.message } });
-	}
+	});
 
 	return Result({ _yay: { nodeId: created._yay.nodeId } });
 }
@@ -1876,9 +1687,6 @@ export const create_markdown_node = action({
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
-		}
-		if (files_is_path_under_system_root(args.path)) {
-			return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
 		}
 
 		const membership = (await ctx.runQuery(api.organizations.get_membership, {
@@ -1957,9 +1765,6 @@ export const create_upload_node = mutation({
 		}
 
 		const path = path_join(parentPath, args.filename);
-		if (files_is_path_under_system_root(path)) {
-			return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
-		}
 		const existingNode = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
@@ -2069,9 +1874,6 @@ export const rename_node = mutation({
 			// Ignore rename requests for home file
 			return Result({ _yay: null });
 		}
-		if (files_is_path_under_system_root(fileNode.path)) {
-			return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
-		}
 
 		const pathSegments = path_extract_segments_from(args.path);
 		// Resolve the target first so simple and nested renames share one conflict/write path.
@@ -2131,9 +1933,6 @@ export const rename_node = mutation({
 				}
 
 				const folderPath = path_join(targetParentPath, name);
-				if (files_is_path_under_system_root(folderPath)) {
-					return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
-				}
 				const folderNodeIdResult = await db_insert_node(ctx, {
 					userId: userAuth.id,
 					organizationId: membership.organizationId,
@@ -2187,9 +1986,6 @@ export const rename_node = mutation({
 		}
 
 		const renamedPath = path_join(targetParentPath, leafName);
-		if (files_is_path_under_system_root(renamedPath)) {
-			return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
-		}
 		if (fileNode.archiveOperationId === undefined) {
 			// Check whether an active sibling already owns the target name.
 			const activeSiblingConflict = await ctx.db
@@ -2278,9 +2074,6 @@ export const move_nodes = mutation({
 		if (targetParentPath == null) {
 			return Result({ _yay: null });
 		}
-		if (files_is_path_under_system_root(targetParentPath)) {
-			return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
-		}
 
 		const fileNodesToMove: Array<{ itemId: Id<"files_nodes">; fileNode: Doc<"files_nodes">; movedPath: string }> = [];
 
@@ -2296,9 +2089,6 @@ export const move_nodes = mutation({
 			if (is_home_file(fileNode)) {
 				// Skip move requests for home file
 				continue;
-			}
-			if (files_is_path_under_system_root(fileNode.path)) {
-				return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
 			}
 
 			const movedPath = path_join(targetParentPath, fileNode.name);
@@ -2472,9 +2262,6 @@ export const archive_nodes = mutation({
 				// Ignore archive requests for home file
 				continue;
 			}
-			if (files_is_path_under_system_root(fileNode.path)) {
-				return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
-			}
 
 			if (fileNode.archiveOperationId !== undefined) {
 				continue;
@@ -2584,9 +2371,6 @@ export const unarchive_nodes = mutation({
 			// Ignore unarchive requests for home file.
 			if (is_home_file(fileNode)) {
 				continue;
-			}
-			if (files_is_path_under_system_root(fileNode.path)) {
-				return Result({ _nay: { message: `The ${files_SYSTEM_ROOT} tree is reserved for system-generated files.` } });
 			}
 
 			if (fileNode.archiveOperationId === undefined) {
@@ -4693,8 +4477,7 @@ async function match_markdown_chunks_list(
 		after: number;
 		match: { kind: "substring"; needle: string; ignoreCase: boolean } | { kind: "regex"; regex: RegExp };
 		window?:
-			| { kind: "lines"; startLine: number; maxLines: number }
-			| { kind: "slice"; startIndex: number; maxChars: number };
+			{ kind: "lines"; startLine: number; maxLines: number } | { kind: "slice"; startIndex: number; maxChars: number };
 	},
 ) {
 	const linesByNumber = new Map<number, { lineNumber: number; line: string; matched: boolean }>();

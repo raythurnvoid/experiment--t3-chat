@@ -1887,6 +1887,7 @@ describe("process_workspace_deletion_request", () => {
 				version: "0.1.0",
 				description: "Media plugin",
 				reviewStatus: "pending",
+				isLatest: true,
 				runtimeVersion: "1",
 				artifactHash: `sha256:${"a".repeat(64)}`,
 				sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
@@ -1910,7 +1911,6 @@ describe("process_workspace_deletion_request", () => {
 				files: [],
 				sourceMountName: null,
 				createdBy: user.userId,
-				createdAt: now,
 				updatedAt: now,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
@@ -1925,7 +1925,6 @@ describe("process_workspace_deletion_request", () => {
 				outboundOriginsAcceptedAt: now,
 				installedBy: user.userId,
 				updatedBy: user.userId,
-				createdAt: now,
 				updatedAt: now,
 			});
 			await ctx.db.insert("plugins_workspace_installation_secrets", {
@@ -1939,7 +1938,6 @@ describe("process_workspace_deletion_request", () => {
 				valuePreview: "sk-...cret",
 				createdBy: user.userId,
 				updatedBy: user.userId,
-				createdAt: now,
 				updatedAt: now,
 			});
 			await ctx.db.insert("plugins_workspace_event_handlers", {
@@ -1952,7 +1950,6 @@ describe("process_workspace_deletion_request", () => {
 				contentType: "image/png",
 				status: "enabled",
 				installationCreatedAt: now,
-				createdAt: now,
 				updatedAt: now,
 			});
 			const runId = await ctx.db.insert("plugins_event_runs", {
@@ -1971,7 +1968,6 @@ describe("process_workspace_deletion_request", () => {
 				hostCallCount: 1,
 				hostWriteCount: 1,
 				errorMessage: null,
-				createdAt: now,
 				updatedAt: now,
 			});
 			await ctx.db.insert("plugins_event_run_calls", {
@@ -1990,7 +1986,6 @@ describe("process_workspace_deletion_request", () => {
 				startedAt: now,
 				finishedAt: now,
 				elapsedMs: 0,
-				createdAt: now,
 				updatedAt: now,
 			});
 			const requestId = await data_deletion_db_request(ctx, {
@@ -4466,7 +4461,6 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				repositoryUrl: "https://github.com/bonobo/media-plugin",
 				owner: "bonobo",
 				repo: "media-plugin",
-				createdAt: now,
 			});
 			const deletedSecretId = await ctx.db.insert("plugins_publisher_repository_secrets", {
 				ownerUserId: deletedUser.userId,
@@ -4476,7 +4470,6 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				nonce: new TextEncoder().encode("nonce").buffer,
 				valuePreview: "configured",
 				allowedOrigins: ["https://api.openai.com"],
-				createdAt: now,
 				updatedAt: now,
 			});
 			const deletedReviewId = await ctx.db.insert("plugins_version_reviews", {
@@ -4488,14 +4481,13 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				mechanicalFindings: [],
 				aiFindings: [],
 				model: "none",
-				createdAt: now,
+				updatedAt: now,
 			});
 			const unrelatedRepositoryId = await ctx.db.insert("plugins_publisher_repositories", {
 				ownerUserId: unrelatedUser.userId,
 				repositoryUrl: "https://github.com/gorilla/pdf-plugin",
 				owner: "gorilla",
 				repo: "pdf-plugin",
-				createdAt: now,
 			});
 			const unrelatedSecretId = await ctx.db.insert("plugins_publisher_repository_secrets", {
 				ownerUserId: unrelatedUser.userId,
@@ -4505,7 +4497,6 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				nonce: new TextEncoder().encode("nonce").buffer,
 				valuePreview: "configured",
 				allowedOrigins: [],
-				createdAt: now,
 				updatedAt: now,
 			});
 			const unrelatedReviewId = await ctx.db.insert("plugins_version_reviews", {
@@ -4517,7 +4508,7 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				mechanicalFindings: [],
 				aiFindings: [],
 				model: "none",
-				createdAt: now,
+				updatedAt: now,
 			});
 
 			return {
@@ -4551,7 +4542,7 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				ctx.db.get("plugins_version_reviews", seeded.deletedReviewId),
 				ctx.db
 					.query("plugins_publisher_repositories")
-					.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", deletedUser.userId))
+					.withIndex("by_ownerUser_repositoryUrl", (q) => q.eq("ownerUserId", deletedUser.userId))
 					.collect(),
 				ctx.db.get("plugins_publisher_repositories", seeded.unrelatedRepositoryId),
 				ctx.db.get("plugins_publisher_repository_secrets", seeded.unrelatedSecretId),

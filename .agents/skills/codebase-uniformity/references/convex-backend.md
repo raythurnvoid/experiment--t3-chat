@@ -11,6 +11,9 @@ Use this reference when touching `packages/app/convex/**`.
 - Use structured invariant failures: `const errorMessage`, `const errorData`, `console.error(errorMessage, errorData)`, then `should_never_happen(errorMessage, errorData)` when the surrounding module uses that pattern.
 - Use `doc/docs` for Convex table entries in comments and docs, not `row/rows`.
 - Keep module-private helpers unprefixed unless the surrounding module already uses a boundary prefix. In `files_nodes.ts`, private helpers that fetch or query Convex docs use `db_`; pure helpers remain unprefixed. File prefixes such as `files_nodes_` are for exported symbols and exported result types.
+- Keep non-exported module-level constants UPPER_SNAKE and unprefixed (`REVIEW_MODEL_ID`, `HOST_TOKEN_TTL_MS`), grouped in the top-of-file constants block. Do not export symbols with no consumer outside the module.
+- Never cast a `ctx.runQuery`/`ctx.runMutation`/`ctx.runAction` result to an inline `{ _yay?: ...; _nay?: ... }` shape; use a derived `<fn>_Result` type next to the callee (see the Convex additional guidelines).
+- Derive whole-doc mutation `args` from the schema by listing each field as `doc(app_convex_schema, "<table>").fields.<field>` (never `omit(...)`/`pick(...)` on validator fields) and spread `{ ...args }` into the write; name patch-or-insert mutations `upsert_*`.
 - Keep a private helper only when it removes real duplication or hides a necessary boundary such as pending-vs-committed indexed lookup, linked-doc validation, or external cursor parsing. Inline one-use predicates and pass-through wrappers.
 
 ## Schema Comments

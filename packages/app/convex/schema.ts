@@ -696,9 +696,8 @@ const app_convex_schema = defineSchema({
 				commitSha: v.union(v.string(), v.null()),
 			}),
 		),
-		createdAt: v.number(),
 	})
-		.index("by_ownerUser", ["ownerUserId"])
+		.index("by_ownerUser_repositoryUrl", ["ownerUserId", "repositoryUrl"])
 		.index("by_repositoryUrl", ["repositoryUrl"]),
 
 	/**
@@ -715,7 +714,6 @@ const app_convex_schema = defineSchema({
 		valuePreview: v.string(),
 		/** Exact https origins this secret may travel to; unioned into the per-run outbound allowlist of this repository's plugins. */
 		allowedOrigins: v.array(v.string()),
-		createdAt: v.number(),
 		updatedAt: v.number(),
 		lastUsedAt: v.optional(v.number()),
 	})
@@ -728,6 +726,8 @@ const app_convex_schema = defineSchema({
 		version: v.string(),
 		description: v.string(),
 		reviewStatus: v.union(v.literal("pending"), v.literal("passed"), v.literal("rejected"), v.literal("flagged")),
+		/** True only on the newest-created doc for this name: publish order stands in for version order. */
+		isLatest: v.boolean(),
 		runtimeVersion: v.literal("1"),
 		artifactHash: v.string(),
 		sourceRepositoryUrl: v.string(),
@@ -775,13 +775,13 @@ const app_convex_schema = defineSchema({
 		),
 		sourceMountName: v.union(v.string(), v.null()),
 		createdBy: v.id("users"),
-		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
+		.index("by_isLatest_name", ["isLatest", "name"])
 		.index("by_name", ["name"])
 		.index("by_name_version", ["name", "version"])
 		.index("by_name_version_artifactHash", ["name", "version", "artifactHash"])
-		.index("by_sourceRepositoryUrl_sourceCommitSha", ["sourceRepositoryUrl", "sourceCommitSha"]),
+		.index("by_sourceRepositoryUrl", ["sourceRepositoryUrl"]),
 
 	plugins_version_reviews: defineTable({
 		createdBy: v.id("users"),
@@ -794,10 +794,11 @@ const app_convex_schema = defineSchema({
 		model: v.string(),
 		/** Artifact hash of the previous passed version when the AI review was diff-based. */
 		diffBaseArtifactHash: v.optional(v.string()),
-		createdAt: v.number(),
+		/** Verdict time: a fresh verdict overwrites the doc and refreshes this. */
+		updatedAt: v.number(),
 	})
 		.index("by_artifactHash", ["artifactHash"])
-		.index("by_createdBy", ["createdBy"]),
+		.index("by_createdBy_pluginName", ["createdBy", "pluginName"]),
 
 	plugins_source_mounts: defineTable({
 		pluginVersionId: v.id("plugins_versions"),
@@ -813,7 +814,6 @@ const app_convex_schema = defineSchema({
 		fileCount: v.number(),
 		totalBytes: v.number(),
 		lastError: v.union(v.string(), v.null()),
-		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
 		.index("by_pluginVersion", ["pluginVersionId"])
@@ -831,10 +831,8 @@ const app_convex_schema = defineSchema({
 		outboundOriginsAcceptedAt: v.number(),
 		installedBy: v.id("users"),
 		updatedBy: v.id("users"),
-		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_organization_workspace_updatedAt", ["organizationId", "workspaceId", "updatedAt"])
 		.index("by_organization_workspace_status_updatedAt", ["organizationId", "workspaceId", "status", "updatedAt"])
 		.index("by_organization_workspace_pluginName", ["organizationId", "workspaceId", "pluginName"])
 		.index("by_organization_workspace_pluginVersion", ["organizationId", "workspaceId", "pluginVersionId"])
@@ -851,7 +849,6 @@ const app_convex_schema = defineSchema({
 		valuePreview: v.string(),
 		createdBy: v.id("users"),
 		updatedBy: v.id("users"),
-		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
 		.index("by_installation_name", ["installationId", "name"])
@@ -866,8 +863,8 @@ const app_convex_schema = defineSchema({
 		event: v.literal("files.upload.completed"),
 		contentType: v.string(),
 		status: v.union(v.literal("enabled"), v.literal("disabled")),
+		/** The owning installation's `_creationTime`, denormalized for dispatch order in the scope index. */
 		installationCreatedAt: v.number(),
-		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
 		.index("by_scope_event_status_contentType_createdAt_name", [
@@ -908,7 +905,6 @@ const app_convex_schema = defineSchema({
 		pluginStatus: v.optional(v.number()),
 		runnerOutputBytes: v.optional(v.number()),
 		runnerOutputTruncated: v.optional(v.boolean()),
-		createdAt: v.number(),
 		updatedAt: v.number(),
 		startedAt: v.optional(v.number()),
 		finishedAt: v.optional(v.number()),
@@ -963,12 +959,11 @@ const app_convex_schema = defineSchema({
 		startedAt: v.number(),
 		finishedAt: v.optional(v.number()),
 		elapsedMs: v.optional(v.number()),
-		createdAt: v.number(),
 		updatedAt: v.number(),
 	})
 		.index("by_run_sequence", ["runId", "sequence"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
-		.index("by_installation_createdAt", ["installationId", "createdAt"]),
+		.index("by_installation", ["installationId"]),
 	// #endregion plugins
 
 	// #region chat messages

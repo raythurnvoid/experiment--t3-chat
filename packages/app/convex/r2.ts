@@ -22,6 +22,7 @@ import {
 } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
+import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -79,7 +80,7 @@ if (!process.env.CLOUDFLARE_EVENTS_SECRET) {
 
 const CLOUDFLARE_EVENTS_SECRET = process.env.CLOUDFLARE_EVENTS_SECRET;
 
-export const MEDIA_DESCRIPTION_MODEL_ID = "gpt-5.4-mini";
+export const MEDIA_DESCRIPTION_MODEL_ID = "gpt-5.4-mini" as const satisfies ai_chat_ModelId;
 const MEDIA_TRANSCRIPTION_MODEL_ID = "gpt-4o-transcribe";
 
 function media_compute_token_usage_cost_cents(args: { modelId: string; inputTokens: number; outputTokens: number }) {
@@ -862,6 +863,15 @@ export const finalize_uploaded_media_markdown_outputs = internalMutation({
 		return Result({ _yay: null });
 	},
 });
+
+export type r2_finalize_uploaded_media_markdown_outputs_Result =
+	typeof finalize_uploaded_media_markdown_outputs extends RegisteredMutation<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
 
 export async function write_uploaded_media_markdown_output_objects(
 	ctx: ActionCtx,

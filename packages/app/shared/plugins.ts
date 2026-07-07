@@ -1,12 +1,10 @@
 import { z } from "zod";
 
 import { Result } from "./errors-as-values-utils.ts";
-import { files_SYSTEM_ROOT } from "./files.ts";
 import { organizations_name_autofix_and_validate } from "./organizations.ts";
 
 export const plugins_MANIFEST_SCHEMA_VERSION = 1;
 export const plugins_RUNTIME_VERSION = "1";
-export const plugins_LOCKFILE_PATH = `${files_SYSTEM_ROOT}/plugins.lock.json`;
 export const plugins_SECRET_VALUE_MAX_BYTES = 16_000;
 
 export const plugins_EVENT_TYPES = ["files.upload.completed"] as const;
@@ -45,43 +43,13 @@ export function plugins_autofix_and_validate_name(raw: string) {
 }
 
 /**
- * Compare two `plugins_semver_regex` versions; positive when `a` is newer. Major/minor/patch
- * compare numerically (so 0.1.10 > 0.1.9); on a tie a bare version outranks one with a
- * `-`/`+` suffix, and two suffixes compare as plain strings. Call sites may tie-break by
- * `createdAt` when the compare returns 0.
+ * The mount holds the source tree, whose identity is the commit — keying by commit (not artifact
+ * hash) guarantees a mount's files never mix content from two commits: a same-artifact publish
+ * from a new commit gets a fresh mount folder.
  */
-export function plugins_compare_semver(a: string, b: string) {
-	const parse = (version: string) => {
-		// Major/minor/patch are digits and dots only, so the first `-`/`+` starts the suffix.
-		const suffixIndex = version.search(/[-+]/u);
-		const core = suffixIndex === -1 ? version : version.slice(0, suffixIndex);
-		const suffix = suffixIndex === -1 ? null : version.slice(suffixIndex);
-		const [major = 0, minor = 0, patch = 0] = core.split(".").map(Number);
-		return { major, minor, patch, suffix };
-	};
-	const left = parse(a);
-	const right = parse(b);
-	if (left.major !== right.major) {
-		return left.major - right.major;
-	}
-	if (left.minor !== right.minor) {
-		return left.minor - right.minor;
-	}
-	if (left.patch !== right.patch) {
-		return left.patch - right.patch;
-	}
-	if (left.suffix === null || right.suffix === null) {
-		return (left.suffix === null ? 1 : 0) - (right.suffix === null ? 1 : 0);
-	}
-	return left.suffix < right.suffix ? -1 : left.suffix > right.suffix ? 1 : 0;
-}
-
-export function plugins_source_mount_name(args: { name: string; version: string; artifactHash: string }) {
-	const hash = args.artifactHash.startsWith("sha256:")
-		? args.artifactHash.slice("sha256:".length, "sha256:".length + 12)
-		: "unknown";
+export function plugins_source_mount_name(args: { name: string; version: string; sourceCommitSha: string }) {
 	const versionSlug = args.version.replace(/[^a-z0-9]+/giu, "-").replace(/^-+|-+$/gu, "");
-	return `plugin-${args.name}-${versionSlug}-${hash}`.slice(0, 63);
+	return `plugin-${args.name}-${versionSlug}-${args.sourceCommitSha.slice(0, 12)}`.slice(0, 63);
 }
 
 export function plugins_normalize_relative_path(raw: string) {

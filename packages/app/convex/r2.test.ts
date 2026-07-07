@@ -260,7 +260,7 @@ async function install_upload_plugin(
 		contentTypes: string[];
 	},
 ) {
-	const registered = await t.action(internal.plugins.register_verified_version, {
+	const registered = await t.action(internal.plugins.register_plugin_version, {
 		name: args.name,
 		displayName: args.displayName,
 		version: "0.1.0",
@@ -312,7 +312,7 @@ async function install_upload_plugin(
 		external_id: args.userId,
 		name: "Test User",
 	});
-	const installed = await asUser.action(api.plugins.install_version, {
+	const installed = await asUser.mutation(api.plugins.install_version, {
 		membershipId: args.membershipId,
 		pluginVersionId: registered._yay.pluginVersionId,
 		acceptedCapabilities: [

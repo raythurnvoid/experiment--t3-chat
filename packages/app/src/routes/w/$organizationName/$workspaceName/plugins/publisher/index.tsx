@@ -24,7 +24,7 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 import { format_datetime } from "@/lib/date.ts";
 
-type Repositories = app_convex_FunctionReturnType<typeof app_convex_api.plugins.list_my_publisher_repositories>;
+type Repositories = app_convex_FunctionReturnType<typeof app_convex_api.plugins.list_user_published_repositories>;
 
 // #region sign in
 type RoutePluginsPublisherSignIn_ClassNames =
@@ -317,7 +317,7 @@ type RoutePluginsPublisher_ClassNames =
 function RoutePluginsPublisher() {
 	const auth = AppAuthProvider.useAuth();
 	const repositories = useQuery(
-		app_convex_api.plugins.list_my_publisher_repositories,
+		app_convex_api.plugins.list_user_published_repositories,
 		auth.isAnonymous === false ? {} : "skip",
 	);
 	const anagraphic = useQuery(

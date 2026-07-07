@@ -1,5 +1,3 @@
-import { Result } from "../shared/errors-as-values-utils.ts";
-import { plugins_SECRET_VALUE_MAX_BYTES, plugins_validate_secret_name } from "../shared/plugins.ts";
 import { convex_error } from "./convex-utils.ts";
 
 const text_encoder = new TextEncoder();
@@ -30,17 +28,6 @@ const secret_crypto_key = ((/* iife */) => {
 		return keyPromise;
 	};
 })();
-
-export function crypto_validate_secret_input(args: { name: string; value: string }) {
-	const name = plugins_validate_secret_name(args.name);
-	if (name._nay) {
-		return Result({ _nay: { message: name._nay.message } });
-	}
-	if (text_encoder.encode(args.value).byteLength > plugins_SECRET_VALUE_MAX_BYTES) {
-		return Result({ _nay: { message: "Secret value is too large" } });
-	}
-	return Result({ _yay: { name: name._yay, value: args.value } });
-}
 
 /**
  * AES-GCM additional data binds a ciphertext to its owning scope and name, so a

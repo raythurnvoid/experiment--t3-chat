@@ -5,7 +5,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { plugins_ai_review } from "./plugins.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
-import { plugins_LOCKFILE_PATH, plugins_validate_artifact, type plugins_Capability } from "../shared/plugins.ts";
+import { plugins_validate_artifact, type plugins_Capability } from "../shared/plugins.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -46,7 +46,6 @@ async function register_media_plugin(
 		displayName?: string;
 		version?: string;
 		contentTypes?: string[];
-		sourceFiles?: Array<{ path: string; rawText: string }>;
 		sourceRepositoryUrl?: string;
 		sourceOwner?: string;
 		sourceRepo?: string;
@@ -56,7 +55,7 @@ async function register_media_plugin(
 ) {
 	const name = args.name ?? "media";
 	const version = args.version ?? "0.1.0";
-	const registered = await t.action(internal.plugins.register_verified_version, {
+	const registered = await t.action(internal.plugins.register_plugin_version, {
 		name,
 		displayName: args.displayName ?? "Media",
 		version,
@@ -91,7 +90,7 @@ async function register_media_plugin(
 			},
 		],
 		createdBy: userId,
-		sourceFiles: args.sourceFiles ?? [{ path: "src/plugin.ts", rawText: `export const plugin = '${name}';` }],
+		sourceFiles: [{ path: "src/plugin.ts", rawText: `export const plugin = '${name}';` }],
 	});
 	if (registered._nay) {
 		throw new Error(registered._nay.message);
@@ -132,52 +131,37 @@ describe("plugins Phase 0", () => {
 		expect(plugins_validate_artifact(artifact)).toMatchObject({ _nay: { message: expect.any(String) } });
 	});
 
-	test("rejects source paths that can escape a plugin mount", async () => {
-		const t = test_convex();
-		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-
-		await expect(
-			register_media_plugin(t, membership.userId, {
-				sourceFiles: [{ path: "../other-plugin/file.ts", rawText: "export const escaped = true;" }],
-			}),
-		).rejects.toThrow("Path must be a normalized relative path");
-
-		const versions = await t.run((ctx) =>
-			ctx.db
-				.query("plugins_versions")
-				.withIndex("by_name", (q) => q.eq("name", "media"))
-				.collect(),
-		);
-		expect(versions).toHaveLength(0);
-	});
-
 	test("reuses existing source mount files for the same immutable plugin version", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 
 		const first = await register_media_plugin(t, membership.userId);
+		const rerun = await register_media_plugin(t, membership.userId);
+		expect(rerun.pluginVersionId).toBe(first.pluginVersionId);
+		expect(rerun.sourceMountName).toBe(first.sourceMountName);
+
+		// A same-artifact publish from a new commit gets a fresh mount so stale files never mix in.
 		const second = await register_media_plugin(t, membership.userId, {
 			sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
 			sourceOwner: "sybill-ai-engineering",
 			sourceRepo: "media-plugin",
 			sourceCommitSha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
 		});
-
 		expect(second.pluginVersionId).toBe(first.pluginVersionId);
-		expect(second.sourceMountName).toBe(first.sourceMountName);
+		expect(second.sourceMountName).not.toBe(first.sourceMountName);
 		const version = await t.run((ctx) => ctx.db.get("plugins_versions", first.pluginVersionId));
 		expect(version?.sourceRepositoryUrl).toBe("https://github.com/sybill-ai-engineering/media-plugin");
 		expect(version?.sourceOwner).toBe("sybill-ai-engineering");
 		expect(version?.sourceCommitSha).toBe("abcdefabcdefabcdefabcdefabcdefabcdefabcd");
 	});
 
-	test("registers, installs, materializes handlers, source mount, and lockfile", async () => {
+	test("registers, installs, and materializes handlers and source mount", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -195,21 +179,6 @@ describe("plugins Phase 0", () => {
 		]);
 		expect(listed[0]!.sourceMount?.mountKind).toBe("global-github-temporary");
 		expect(listed[0]!.sourceMount?.mountPath).toBe(`/.mounts/${registered.sourceMountName}`);
-
-		const lockfile = await t.query(internal.files_nodes.read_file_content_from_chunks, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: membership.userId,
-			path: plugins_LOCKFILE_PATH,
-			mode: { kind: "full", maxBytes: 100_000 },
-		});
-		expect(lockfile?.content).toContain('"name": "media"');
-		expect(JSON.parse(lockfile!.content).plugins[0]).toMatchObject({
-			name: "media",
-			version: "0.1.0",
-			sourceMountPath: `/.mounts/${registered.sourceMountName}`,
-			status: "enabled",
-		});
 
 		const source = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
@@ -237,7 +206,7 @@ describe("plugins Phase 0", () => {
 			sourceCommitSha: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: first.pluginVersionId,
 			...media_plugin_consent,
@@ -246,7 +215,7 @@ describe("plugins Phase 0", () => {
 			throw new Error(installed._nay.message);
 		}
 
-		const rejected = await asOwner.action(api.plugins.install_version, {
+		const rejected = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: replacement.pluginVersionId,
 			...media_plugin_consent,
@@ -260,7 +229,7 @@ describe("plugins Phase 0", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -312,7 +281,7 @@ describe("plugins Phase 0", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -352,7 +321,7 @@ describe("plugins Phase 0", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -401,7 +370,6 @@ describe("plugins Phase 0", () => {
 				hostCallCount: 0,
 				hostWriteCount: 0,
 				errorMessage: null,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 		});
@@ -451,7 +419,7 @@ describe("plugins Phase 0", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -490,7 +458,6 @@ describe("plugins Phase 0", () => {
 				hostCallCount: 0,
 				hostWriteCount: 0,
 				errorMessage: null,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 		});
@@ -580,7 +547,7 @@ describe("plugins Phase 0", () => {
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		for (const plugin of [media, alternate]) {
-			const installed = await asOwner.action(api.plugins.install_version, {
+			const installed = await asOwner.mutation(api.plugins.install_version, {
 				membershipId: membership.membershipId,
 				pluginVersionId: plugin.pluginVersionId,
 				...media_plugin_consent,
@@ -626,7 +593,7 @@ describe("plugins Phase 0", () => {
 			contentTypes: ["text/plain"],
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -690,7 +657,7 @@ describe("plugins Phase 0", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -739,7 +706,6 @@ describe("plugins Phase 0", () => {
 				hostCallCount: 0,
 				hostWriteCount: 0,
 				errorMessage: null,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 		});
@@ -794,7 +760,7 @@ describe("plugins Phase 0", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -833,7 +799,6 @@ describe("plugins Phase 0", () => {
 				hostCallCount: 0,
 				hostWriteCount: 0,
 				errorMessage: null,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 		});
@@ -852,7 +817,7 @@ describe("plugins Phase 0", () => {
 			},
 			body: JSON.stringify({
 				pluginRunId: runId,
-				path: "../.system/unsafe.md",
+				path: "../escaped/unsafe.md",
 				markdown: "# New",
 				overwrite: "replace",
 			}),
@@ -883,7 +848,7 @@ describe("plugins Phase 0", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -922,7 +887,6 @@ describe("plugins Phase 0", () => {
 				hostCallCount: 0,
 				hostWriteCount: 0,
 				errorMessage: null,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 		});
@@ -984,7 +948,7 @@ describe("plugins Phase 0", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -1023,7 +987,6 @@ describe("plugins Phase 0", () => {
 				hostCallCount: 0,
 				hostWriteCount: 0,
 				errorMessage: null,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 		});
@@ -1100,7 +1063,7 @@ describe("plugins Phase 0", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -1140,7 +1103,6 @@ describe("plugins Phase 0", () => {
 				hostCallCount: 1,
 				hostWriteCount: 1,
 				errorMessage: null,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 		});
@@ -1176,7 +1138,7 @@ describe("plugins Phase 0", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -1215,7 +1177,6 @@ describe("plugins Phase 0", () => {
 				hostCallCount: 1,
 				hostWriteCount: 1,
 				errorMessage: null,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 		});
@@ -1248,7 +1209,7 @@ describe("plugins Phase 0", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -1287,7 +1248,6 @@ describe("plugins Phase 0", () => {
 				hostCallCount: 0,
 				hostWriteCount: 0,
 				errorMessage: null,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 		});
@@ -1350,7 +1310,7 @@ describe("plugins Phase 0", () => {
 		});
 
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const ownerInstalled = await asOwner.action(api.plugins.install_version, {
+		const ownerInstalled = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -1363,7 +1323,7 @@ describe("plugins Phase 0", () => {
 		const listed = await asMember.query(api.plugins.list_installations, { membershipId: memberMembershipId });
 		expect(listed).toEqual([]);
 
-		const installed = await asMember.action(api.plugins.install_version, {
+		const installed = await asMember.mutation(api.plugins.install_version, {
 			membershipId: memberMembershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -1377,33 +1337,30 @@ describe("plugins publisher", () => {
 		return await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
 	}
 
-	test("list_my_publisher_repositories is empty when signed out and sorts repositories by URL", async () => {
+	test("list_user_published_repositories is empty when signed out and sorts repositories by URL", async () => {
 		const t = test_convex();
 		const userId = await create_publisher_user(t);
 		const asUser = t.withIdentity(user_identity(userId));
 
-		expect(await t.query(api.plugins.list_my_publisher_repositories, {})).toEqual([]);
-		expect(await asUser.query(api.plugins.list_my_publisher_repositories, {})).toEqual([]);
+		expect(await t.query(api.plugins.list_user_published_repositories, {})).toEqual([]);
+		expect(await asUser.query(api.plugins.list_user_published_repositories, {})).toEqual([]);
 
 		await t.run(async (ctx) => {
-			const now = Date.now();
 			await ctx.db.insert("plugins_publisher_repositories", {
 				ownerUserId: userId,
 				repositoryUrl: "https://github.com/bonobo/zeta-plugin",
 				owner: "bonobo",
 				repo: "zeta-plugin",
-				createdAt: now,
 			});
 			await ctx.db.insert("plugins_publisher_repositories", {
 				ownerUserId: userId,
 				repositoryUrl: "https://github.com/bonobo/alpha-plugin",
 				owner: "bonobo",
 				repo: "alpha-plugin",
-				createdAt: now,
 			});
 		});
 
-		const mine = await asUser.query(api.plugins.list_my_publisher_repositories, {});
+		const mine = await asUser.query(api.plugins.list_user_published_repositories, {});
 		expect(mine.map((item) => item.repository.repositoryUrl)).toEqual([
 			"https://github.com/bonobo/alpha-plugin",
 			"https://github.com/bonobo/zeta-plugin",
@@ -1442,7 +1399,7 @@ describe("plugins publisher", () => {
 		const repositories = await t.run((ctx) =>
 			ctx.db
 				.query("plugins_publisher_repositories")
-				.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", userId))
+				.withIndex("by_ownerUser_repositoryUrl", (q) => q.eq("ownerUserId", userId))
 				.collect(),
 		);
 		expect(repositories).toHaveLength(1);
@@ -1464,7 +1421,7 @@ describe("plugins publisher", () => {
 		const alreadyClaimed = await asSecondUser.mutation(api.plugins.claim_repository, {
 			repositoryUrl: "git@github.com:bonobo/media-plugin.git",
 		});
-		expect(alreadyClaimed).toEqual({ _nay: { message: "Repository is already claimed by another publisher" } });
+		expect(alreadyClaimed).toEqual({ _nay: { message: "Repository is already claimed by another user" } });
 
 		const invalidUrl = await asSecondUser.mutation(api.plugins.claim_repository, {
 			repositoryUrl: "not-a-url",
@@ -1482,7 +1439,6 @@ describe("plugins publisher", () => {
 				repositoryUrl: "https://github.com/bonobo/media-plugin",
 				owner: "bonobo",
 				repo: "media-plugin",
-				createdAt: Date.now(),
 			}),
 		);
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
@@ -1510,7 +1466,6 @@ describe("plugins publisher", () => {
 				repositoryUrl: "https://github.com/bonobo/media-plugin",
 				owner: "bonobo",
 				repo: "media-plugin",
-				createdAt: Date.now(),
 			}),
 		);
 		// Same user id as the repository owner: even the owner is rejected while authenticated anonymously.
@@ -1528,14 +1483,13 @@ describe("plugins publisher", () => {
 		const removed = await asAnonymous.mutation(api.plugins.remove_repository, { repositoryId });
 		expect(removed).toEqual({ _nay: { message: "Sign in to publish plugins" } });
 
-		const authorized = await asAnonymous.mutation(internal.plugins.authorize_publish_scope, {
+		const published = await asAnonymous.action(api.plugins.publish_version, { repositoryId });
+		expect(published).toEqual({ _nay: { message: "Sign in to publish plugins" } });
+
+		const authorizedSignedIn = await t.query(internal.plugins.get_owned_publisher_repository, {
+			userId: ownerUserId,
 			repositoryId,
 		});
-		expect(authorized).toEqual({ _nay: { message: "Sign in to publish plugins" } });
-
-		const authorizedSignedIn = await t
-			.withIdentity(user_identity(ownerUserId))
-			.mutation(internal.plugins.authorize_publish_scope, { repositoryId });
 		if (authorizedSignedIn._nay) {
 			throw new Error(authorizedSignedIn._nay.message);
 		}
@@ -1573,12 +1527,11 @@ describe("plugins publisher secrets", () => {
 				repositoryUrl: `https://github.com/${owner}/${repo}`,
 				owner,
 				repo,
-				createdAt: Date.now(),
 			}),
 		);
 	}
 
-	async function get_publisher_secret_doc(
+	async function get_publisher_repository_secret_doc(
 		t: ReturnType<typeof test_convex>,
 		repositoryId: Id<"plugins_publisher_repositories">,
 		name: string,
@@ -1602,17 +1555,17 @@ describe("plugins publisher secrets", () => {
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
-		const saved = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+		const saved = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
-			allowedOrigins: ["https://api.openai.com/", "https://API.OPENAI.COM"],
+			allowedOrigins: ["https://api.openai.com"],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
 		}
 
-		const listed = await asOwner.query(api.plugins.list_publisher_secrets, { repositoryId });
+		const listed = await asOwner.query(api.plugins.list_publisher_repository_secrets, { repositoryId });
 		expect(listed).toEqual([
 			expect.objectContaining({
 				name: "OPENAI_API_KEY",
@@ -1623,12 +1576,14 @@ describe("plugins publisher secrets", () => {
 		]);
 		expect(JSON.stringify(listed)).not.toContain("sk-publisher-secret");
 
-		const secret = await get_publisher_secret_doc(t, repositoryId, "OPENAI_API_KEY");
+		const secret = await get_publisher_repository_secret_doc(t, repositoryId, "OPENAI_API_KEY");
 		expect(new TextDecoder().decode(secret.ciphertext)).not.toContain("sk-publisher-secret");
 
 		// Secrets are scoped to the claim owner; another user asking for this repository sees nothing.
 		expect(
-			await t.withIdentity(user_identity(otherUserId)).query(api.plugins.list_publisher_secrets, { repositoryId }),
+			await t
+				.withIdentity(user_identity(otherUserId))
+				.query(api.plugins.list_publisher_repository_secrets, { repositoryId }),
 		).toEqual([]);
 	});
 
@@ -1640,7 +1595,7 @@ describe("plugins publisher secrets", () => {
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
 		expect(
-			await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+			await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
 				repositoryId: foreignRepositoryId,
 				name: "OPENAI_API_KEY",
 				value: "sk-publisher-secret",
@@ -1648,39 +1603,43 @@ describe("plugins publisher secrets", () => {
 			}),
 		).toEqual({ _nay: { message: "Unauthorized" } });
 		expect(
-			await asOwner.mutation(api.plugins.upsert_publisher_secrets, {
+			await asOwner.mutation(api.plugins.upsert_publisher_repository_secrets, {
 				repositoryId: foreignRepositoryId,
 				secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
 			}),
 		).toEqual({ _nay: { message: "Unauthorized" } });
 		refill_manage_rate_limit();
 		expect(
-			await asOwner.mutation(api.plugins.update_publisher_secret_origins, {
+			await asOwner.mutation(api.plugins.update_publisher_repository_secret_origins, {
 				repositoryId: foreignRepositoryId,
 				name: "OPENAI_API_KEY",
 				allowedOrigins: [],
 			}),
 		).toEqual({ _nay: { message: "Unauthorized" } });
 		expect(
-			await asOwner.mutation(api.plugins.delete_publisher_secret, {
+			await asOwner.mutation(api.plugins.delete_publisher_repository_secret, {
 				repositoryId: foreignRepositoryId,
 				name: "OPENAI_API_KEY",
 			}),
 		).toEqual({ _nay: { message: "Unauthorized" } });
-		expect(await asOwner.query(api.plugins.list_publisher_secrets, { repositoryId: foreignRepositoryId })).toEqual([]);
+		expect(
+			await asOwner.query(api.plugins.list_publisher_repository_secrets, { repositoryId: foreignRepositoryId }),
+		).toEqual([]);
 
 		const removedRepositoryId = await insert_claimed_repository(t, { ownerUserId });
 		await t.run((ctx) => ctx.db.delete("plugins_publisher_repositories", removedRepositoryId));
 		refill_manage_rate_limit();
 		expect(
-			await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+			await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
 				repositoryId: removedRepositoryId,
 				name: "OPENAI_API_KEY",
 				value: "sk-publisher-secret",
 				allowedOrigins: [],
 			}),
 		).toEqual({ _nay: { message: "Not found" } });
-		expect(await asOwner.query(api.plugins.list_publisher_secrets, { repositoryId: removedRepositoryId })).toEqual([]);
+		expect(
+			await asOwner.query(api.plugins.list_publisher_repository_secrets, { repositoryId: removedRepositoryId }),
+		).toEqual([]);
 	});
 
 	test("rejects publisher secret mutations from anonymous users", async () => {
@@ -1694,7 +1653,7 @@ describe("plugins publisher secrets", () => {
 		});
 
 		expect(
-			await asAnonymous.mutation(api.plugins.upsert_publisher_secret, {
+			await asAnonymous.mutation(api.plugins.upsert_publisher_repository_secret, {
 				repositoryId,
 				name: "OPENAI_API_KEY",
 				value: "sk-publisher-secret",
@@ -1702,20 +1661,23 @@ describe("plugins publisher secrets", () => {
 			}),
 		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
 		expect(
-			await asAnonymous.mutation(api.plugins.upsert_publisher_secrets, {
+			await asAnonymous.mutation(api.plugins.upsert_publisher_repository_secrets, {
 				repositoryId,
 				secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
 			}),
 		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
 		expect(
-			await asAnonymous.mutation(api.plugins.update_publisher_secret_origins, {
+			await asAnonymous.mutation(api.plugins.update_publisher_repository_secret_origins, {
 				repositoryId,
 				name: "OPENAI_API_KEY",
 				allowedOrigins: ["https://api.openai.com"],
 			}),
 		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
 		expect(
-			await asAnonymous.mutation(api.plugins.delete_publisher_secret, { repositoryId, name: "OPENAI_API_KEY" }),
+			await asAnonymous.mutation(api.plugins.delete_publisher_repository_secret, {
+				repositoryId,
+				name: "OPENAI_API_KEY",
+			}),
 		).toEqual({
 			_nay: { message: "Sign in to publish plugins" },
 		});
@@ -1729,37 +1691,13 @@ describe("plugins publisher secrets", () => {
 		expect(secrets).toEqual([]);
 	});
 
-	test("rejects allowed origins that are not bare https origins", async () => {
-		const t = test_convex();
-		const ownerUserId = await create_publisher_user(t);
-		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
-		const asOwner = t.withIdentity(user_identity(ownerUserId));
-
-		expect(
-			await asOwner.mutation(api.plugins.upsert_publisher_secret, {
-				repositoryId,
-				name: "OPENAI_API_KEY",
-				value: "sk-publisher-secret",
-				allowedOrigins: ["http://api.openai.com"],
-			}),
-		).toEqual({ _nay: { message: "Origin must use https" } });
-		expect(
-			await asOwner.mutation(api.plugins.upsert_publisher_secret, {
-				repositoryId,
-				name: "OPENAI_API_KEY",
-				value: "sk-publisher-secret",
-				allowedOrigins: ["https://api.openai.com/v1"],
-			}),
-		).toEqual({ _nay: { message: "Origin must be a bare https origin without path, query, or hash" } });
-	});
-
 	test(".env batch upsert preserves existing allowed origins and updates values", async () => {
 		const t = test_convex();
 		const ownerUserId = await create_publisher_user(t);
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
-		const saved = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+		const saved = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-old-secret",
@@ -1769,7 +1707,7 @@ describe("plugins publisher secrets", () => {
 			throw new Error(saved._nay.message);
 		}
 
-		const batch = await asOwner.mutation(api.plugins.upsert_publisher_secrets, {
+		const batch = await asOwner.mutation(api.plugins.upsert_publisher_repository_secrets, {
 			repositoryId,
 			secrets: [
 				{ name: "OPENAI_API_KEY", value: "sk-new-secret" },
@@ -1781,13 +1719,13 @@ describe("plugins publisher secrets", () => {
 		}
 		expect(batch._yay.count).toBe(2);
 
-		const listed = await asOwner.query(api.plugins.list_publisher_secrets, { repositoryId });
+		const listed = await asOwner.query(api.plugins.list_publisher_repository_secrets, { repositoryId });
 		expect(listed.map((secret) => ({ name: secret.name, allowedOrigins: secret.allowedOrigins }))).toEqual([
 			{ name: "MODAL_TOKEN", allowedOrigins: [] },
 			{ name: "OPENAI_API_KEY", allowedOrigins: ["https://api.openai.com"] },
 		]);
 
-		const secret = await get_publisher_secret_doc(t, repositoryId, "OPENAI_API_KEY");
+		const secret = await get_publisher_repository_secret_doc(t, repositoryId, "OPENAI_API_KEY");
 		const decrypted = await t.action(internal.plugins.decrypt_secret_for_runtime, {
 			resolved: { tier: "publisher", secret },
 		});
@@ -1801,7 +1739,7 @@ describe("plugins publisher secrets", () => {
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
-		const saved = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+		const saved = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
@@ -1810,7 +1748,7 @@ describe("plugins publisher secrets", () => {
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
 		}
-		const secret = await get_publisher_secret_doc(t, repositoryId, "OPENAI_API_KEY");
+		const secret = await get_publisher_repository_secret_doc(t, repositoryId, "OPENAI_API_KEY");
 
 		const decrypted = await t.action(internal.plugins.decrypt_secret_for_runtime, {
 			resolved: { tier: "publisher", secret },
@@ -1835,7 +1773,7 @@ describe("plugins publisher secrets", () => {
 		// The claim URL matches the registered version's sourceRepositoryUrl.
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -1854,7 +1792,7 @@ describe("plugins publisher secrets", () => {
 			throw new Error(savedInstallation._nay.message);
 		}
 		refill_manage_rate_limit();
-		const savedPublisher = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+		const savedPublisher = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
@@ -1886,7 +1824,7 @@ describe("plugins publisher secrets", () => {
 		// The claim URL matches the registered version's sourceRepositoryUrl.
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -1894,7 +1832,7 @@ describe("plugins publisher secrets", () => {
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
 		}
-		const savedPublisher = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+		const savedPublisher = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
@@ -1918,7 +1856,7 @@ describe("plugins publisher secrets", () => {
 		const decrypted = await t.action(internal.plugins.decrypt_secret_for_runtime, { resolved });
 		expect(decrypted).toEqual({ _yay: "sk-publisher-secret" });
 
-		const secret = await get_publisher_secret_doc(t, repositoryId, "OPENAI_API_KEY");
+		const secret = await get_publisher_repository_secret_doc(t, repositoryId, "OPENAI_API_KEY");
 		expect(typeof secret.lastUsedAt).toBe("number");
 	});
 
@@ -1927,7 +1865,7 @@ describe("plugins publisher secrets", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -1943,12 +1881,14 @@ describe("plugins publisher secrets", () => {
 			owner: "gorilla",
 			repo: "other-plugin",
 		});
-		const savedOther = await t.withIdentity(user_identity(otherUserId)).mutation(api.plugins.upsert_publisher_secret, {
-			repositoryId: otherRepositoryId,
-			name: "OPENAI_API_KEY",
-			value: "sk-unrelated-secret",
-			allowedOrigins: [],
-		});
+		const savedOther = await t
+			.withIdentity(user_identity(otherUserId))
+			.mutation(api.plugins.upsert_publisher_repository_secret, {
+				repositoryId: otherRepositoryId,
+				name: "OPENAI_API_KEY",
+				value: "sk-unrelated-secret",
+				allowedOrigins: [],
+			});
 		if (savedOther._nay) {
 			throw new Error(savedOther._nay.message);
 		}
@@ -1968,7 +1908,7 @@ describe("plugins publisher secrets", () => {
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
-		const saved = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+		const saved = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
@@ -1978,29 +1918,29 @@ describe("plugins publisher secrets", () => {
 			throw new Error(saved._nay.message);
 		}
 
-		const updated = await asOwner.mutation(api.plugins.update_publisher_secret_origins, {
+		const updated = await asOwner.mutation(api.plugins.update_publisher_repository_secret_origins, {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			allowedOrigins: ["https://api.openai.com"],
 		});
 		expect(updated).toEqual({ _yay: null });
-		const secret = await get_publisher_secret_doc(t, repositoryId, "OPENAI_API_KEY");
+		const secret = await get_publisher_repository_secret_doc(t, repositoryId, "OPENAI_API_KEY");
 		expect(secret.allowedOrigins).toEqual(["https://api.openai.com"]);
 
 		refill_manage_rate_limit();
-		const missingUpdate = await asOwner.mutation(api.plugins.update_publisher_secret_origins, {
+		const missingUpdate = await asOwner.mutation(api.plugins.update_publisher_repository_secret_origins, {
 			repositoryId,
 			name: "MODAL_TOKEN",
 			allowedOrigins: [],
 		});
 		expect(missingUpdate).toEqual({ _nay: { message: "Not found" } });
 
-		const deleted = await asOwner.mutation(api.plugins.delete_publisher_secret, {
+		const deleted = await asOwner.mutation(api.plugins.delete_publisher_repository_secret, {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 		});
 		expect(deleted).toEqual({ _yay: null });
-		expect(await asOwner.query(api.plugins.list_publisher_secrets, { repositoryId })).toEqual([]);
+		expect(await asOwner.query(api.plugins.list_publisher_repository_secrets, { repositoryId })).toEqual([]);
 	});
 
 	test("removing a repository claim deletes its secrets", async () => {
@@ -2010,7 +1950,7 @@ describe("plugins publisher secrets", () => {
 		const otherRepositoryId = await insert_claimed_repository(t, { ownerUserId, repo: "other-plugin" });
 		const asOwner = t.withIdentity(user_identity(ownerUserId));
 
-		const saved = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+		const saved = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
@@ -2019,7 +1959,7 @@ describe("plugins publisher secrets", () => {
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
 		}
-		const savedOther = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+		const savedOther = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
 			repositoryId: otherRepositoryId,
 			name: "MODAL_TOKEN",
 			value: "modal-secret",
@@ -2067,7 +2007,7 @@ describe("plugins outbound origins consent", () => {
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 
-		const partialCapabilities = await asOwner.action(api.plugins.install_version, {
+		const partialCapabilities = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			acceptedCapabilities: ["uploads.source.read", "files.markdown.write"],
@@ -2077,7 +2017,7 @@ describe("plugins outbound origins consent", () => {
 			_nay: { message: "Install must accept exactly the capabilities the plugin declares" },
 		});
 
-		const missingOrigin = await asOwner.action(api.plugins.install_version, {
+		const missingOrigin = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -2088,7 +2028,7 @@ describe("plugins outbound origins consent", () => {
 		});
 
 		refill_manage_rate_limit();
-		const excessOrigin = await asOwner.action(api.plugins.install_version, {
+		const excessOrigin = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -2098,7 +2038,7 @@ describe("plugins outbound origins consent", () => {
 			_nay: { message: "Install must accept exactly the outbound origins the plugin declares" },
 		});
 
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -2119,7 +2059,7 @@ describe("plugins outbound origins consent", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const first = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: first.pluginVersionId,
 			...media_plugin_consent,
@@ -2132,7 +2072,7 @@ describe("plugins outbound origins consent", () => {
 			version: "0.2.0",
 			outboundOrigins: ["https://api.openai.com"],
 		});
-		const staleConsent = await asOwner.action(api.plugins.install_version, {
+		const staleConsent = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: upgraded.pluginVersionId,
 			...media_plugin_consent,
@@ -2142,7 +2082,7 @@ describe("plugins outbound origins consent", () => {
 		});
 
 		refill_manage_rate_limit();
-		const freshConsent = await asOwner.action(api.plugins.install_version, {
+		const freshConsent = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: upgraded.pluginVersionId,
 			...media_plugin_consent,
@@ -2158,7 +2098,7 @@ describe("plugins outbound origins consent", () => {
 			version: "0.3.0",
 			outboundOrigins: ["https://api.openai.com"],
 		});
-		const sameConsent = await asOwner.action(api.plugins.install_version, {
+		const sameConsent = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: unchanged.pluginVersionId,
 			...media_plugin_consent,
@@ -2182,26 +2122,23 @@ describe("plugins outbound origins consent", () => {
 		});
 		// Claims by the same owner: one on the version's source repository, one on an unrelated repository.
 		const [repositoryId, unrelatedRepositoryId] = await t.run(async (ctx) => {
-			const now = Date.now();
 			return [
 				await ctx.db.insert("plugins_publisher_repositories", {
 					ownerUserId: membership.userId,
 					repositoryUrl: "https://github.com/bonobo/media-plugin",
 					owner: "bonobo",
 					repo: "media-plugin",
-					createdAt: now,
 				}),
 				await ctx.db.insert("plugins_publisher_repositories", {
 					ownerUserId: membership.userId,
 					repositoryUrl: "https://github.com/bonobo/other-plugin",
 					owner: "bonobo",
 					repo: "other-plugin",
-					createdAt: now,
 				}),
 			];
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -2211,7 +2148,7 @@ describe("plugins outbound origins consent", () => {
 			throw new Error(installed._nay.message);
 		}
 		// Overlapping publisher origin proves the payload allowlist is deduplicated.
-		const savedPublisher = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+		const savedPublisher = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
 			repositoryId,
 			name: "TRANSFORMER_SECRET",
 			value: "sk-transformer-secret",
@@ -2222,7 +2159,7 @@ describe("plugins outbound origins consent", () => {
 		}
 		refill_manage_rate_limit();
 		// The same owner's secrets on other repositories must contribute no origins.
-		const savedUnrelated = await asOwner.mutation(api.plugins.upsert_publisher_secret, {
+		const savedUnrelated = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
 			repositoryId: unrelatedRepositoryId,
 			name: "UNRELATED_SECRET",
 			value: "sk-unrelated-secret",
@@ -2274,7 +2211,6 @@ describe("plugins outbound origins consent", () => {
 				hostCallCount: 0,
 				hostWriteCount: 0,
 				errorMessage: null,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 		});
@@ -2317,7 +2253,6 @@ describe("plugins publish_version", () => {
 				repositoryUrl: `https://github.com/${owner}/${repo}`,
 				owner,
 				repo,
-				createdAt: Date.now(),
 			}),
 		);
 	}
@@ -2329,17 +2264,25 @@ describe("plugins publish_version", () => {
 			createdBy: Id<"users">;
 			version?: string;
 			reviewStatus?: "pending" | "passed" | "rejected" | "flagged";
-			createdAt?: number;
 		},
 	) {
 		return await t.run(async (ctx) => {
-			const createdAt = args.createdAt ?? Date.now();
+			// Mirror upsert_plugin: the isLatest marker moves to the newest-created doc per name.
+			const previousLatest = await ctx.db
+				.query("plugins_versions")
+				.withIndex("by_isLatest_name", (q) => q.eq("isLatest", true).eq("name", args.name))
+				.first();
+			if (previousLatest) {
+				await ctx.db.patch("plugins_versions", previousLatest._id, { isLatest: false });
+			}
+
 			return await ctx.db.insert("plugins_versions", {
 				name: args.name,
 				displayName: args.name,
 				version: args.version ?? "0.1.0",
 				description: `${args.name} plugin`,
 				reviewStatus: args.reviewStatus ?? "pending",
+				isLatest: true,
 				runtimeVersion: "1",
 				artifactHash: `sha256:${"c".repeat(64)}`,
 				sourceRepositoryUrl: `https://github.com/bonobo/${args.name}-plugin`,
@@ -2357,8 +2300,7 @@ describe("plugins publish_version", () => {
 				files: [],
 				sourceMountName: null,
 				createdBy: args.createdBy,
-				createdAt,
-				updatedAt: createdAt,
+				updatedAt: Date.now(),
 			});
 		});
 	}
@@ -2382,7 +2324,7 @@ describe("plugins publish_version", () => {
 		t: ReturnType<typeof test_convex>,
 		args: { requestedBy: Id<"users">; repositoryId: Id<"plugins_publisher_repositories">; hashChar: string },
 	) {
-		return await t.action(internal.plugins.review_version_artifact, {
+		return await t.action(internal.plugins.run_version_review, {
 			pluginName: "media-drain",
 			version: "0.1.0",
 			artifactHash: `sha256:${args.hashChar.repeat(64)}`,
@@ -2666,7 +2608,7 @@ describe("plugins publish_version", () => {
 		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
 		expect(reviews).toMatchObject([{ status: "flagged", aiFindings: ["Module-level mutable state outlives a run"] }]);
 
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: published._yay.pluginVersionId,
 			acceptedCapabilities: ["uploads.source.read", "files.markdown.write", "plugin.secrets.read"],
@@ -2675,23 +2617,23 @@ describe("plugins publish_version", () => {
 		expect(installed).toEqual({ _nay: { message: "Plugin version failed review and cannot be installed" } });
 	});
 
-	test("rejects only when a second vote confirms the first rejected verdict", async () => {
+	test("rejects the version when the review verdict is rejected", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		await mock_publish_github_fetch();
-		const aiReview = mock_ai_review_votes([
-			{ verdict: "rejected", findings: ["Sends secret values to attacker.example"] },
-			{ verdict: "rejected", findings: ["Sends secret values to attacker.example", "Obfuscated eval chain"] },
-		]);
+		const aiReview = mock_ai_review({
+			verdict: "rejected",
+			findings: ["Sends secret values to attacker.example", "Obfuscated eval chain"],
+		});
 
 		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
 
 		expect(published._nay?.message).toBe(
 			"Plugin review rejected this version: Sends secret values to attacker.example | Obfuscated eval chain",
 		);
-		expect(aiReview).toHaveBeenCalledTimes(2);
+		expect(aiReview).toHaveBeenCalledTimes(1);
 		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
 		expect(versions).toEqual([]);
 		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
@@ -2703,60 +2645,27 @@ describe("plugins publish_version", () => {
 		]);
 	});
 
-	test("overturns a flaky rejection when the confirm and tiebreak votes both pass", async () => {
+	test("registers as flagged when the review verdict is flagged", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		await mock_publish_github_fetch();
-		const aiReview = mock_ai_review_votes([
-			{ verdict: "rejected", findings: ["Sends secret values to attacker.example"] },
-			{ verdict: "passed", findings: [] },
-			{ verdict: "passed", findings: ["Reads OPENAI_API_KEY at runtime"] },
-		]);
+		const aiReview = mock_ai_review({ verdict: "flagged", findings: ["Module-level mutable state outlives a run"] });
 
 		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
 		if (published._nay) {
 			throw new Error(published._nay.message);
 		}
 
-		expect(aiReview).toHaveBeenCalledTimes(3);
-		const version = await t.run((ctx) => ctx.db.get("plugins_versions", published._yay.pluginVersionId));
-		expect(version).toMatchObject({ reviewStatus: "passed" });
-		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
-		expect(reviews).toMatchObject([
-			{
-				status: "passed",
-				aiFindings: ["Sends secret values to attacker.example", "Reads OPENAI_API_KEY at runtime"],
-			},
-		]);
-	});
-
-	test("registers as flagged when the rejection tiebreak includes a flagged vote", async () => {
-		const t = test_convex();
-		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
-		const asOwner = t.withIdentity(user_identity(membership.userId));
-		await mock_publish_github_fetch();
-		const aiReview = mock_ai_review_votes([
-			{ verdict: "rejected", findings: ["Sends secret values to attacker.example"] },
-			{ verdict: "passed", findings: [] },
-			{ verdict: "flagged", findings: ["Module-level mutable state outlives a run"] },
-		]);
-
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
-		if (published._nay) {
-			throw new Error(published._nay.message);
-		}
-
-		expect(aiReview).toHaveBeenCalledTimes(3);
+		expect(aiReview).toHaveBeenCalledTimes(1);
 		const version = await t.run((ctx) => ctx.db.get("plugins_versions", published._yay.pluginVersionId));
 		expect(version).toMatchObject({ reviewStatus: "flagged" });
 		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
 		expect(reviews).toMatchObject([
 			{
 				status: "flagged",
-				aiFindings: ["Sends secret values to attacker.example", "Module-level mutable state outlives a run"],
+				aiFindings: ["Module-level mutable state outlives a run"],
 			},
 		]);
 	});
@@ -2769,19 +2678,18 @@ describe("plugins publish_version", () => {
 		await mock_publish_github_fetch();
 		const aiReview = mock_ai_review_votes([
 			{ verdict: "rejected", findings: ["Sends secret values to attacker.example"] },
-			{ verdict: "rejected", findings: ["Sends secret values to attacker.example"] },
 			{ verdict: "passed", findings: [] },
 		]);
 
 		const first = await asOwner.action(api.plugins.publish_version, { repositoryId });
 		expect(first._nay?.message).toContain("Plugin review rejected this version");
-		expect(aiReview).toHaveBeenCalledTimes(2);
+		expect(aiReview).toHaveBeenCalledTimes(1);
 
 		const second = await asOwner.action(api.plugins.publish_version, { repositoryId });
 		if (second._nay) {
 			throw new Error(second._nay.message);
 		}
-		expect(aiReview).toHaveBeenCalledTimes(3);
+		expect(aiReview).toHaveBeenCalledTimes(2);
 
 		const version = await t.run((ctx) => ctx.db.get("plugins_versions", second._yay.pluginVersionId));
 		expect(version).toMatchObject({ reviewStatus: "passed" });
@@ -2950,7 +2858,7 @@ describe("plugins publish_version", () => {
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 
 		for (const pluginVersionId of [rejectedVersionId, flaggedVersionId]) {
-			const installed = await asOwner.action(api.plugins.install_version, {
+			const installed = await asOwner.mutation(api.plugins.install_version, {
 				membershipId: membership.membershipId,
 				pluginVersionId,
 				...media_plugin_consent,
@@ -3001,42 +2909,36 @@ describe("plugins publish_version", () => {
 			});
 			await ctx.db.patch("users", membership.userId, { anagraphic: anagraphicId });
 		});
-		const now = Date.now();
 		await insert_plugin_version_doc(t, {
 			name: "media",
 			createdBy: membership.userId,
 			version: "0.1.0",
-			createdAt: now - 1000,
 		});
 		const latestMediaVersionId = await insert_plugin_version_doc(t, {
 			name: "media",
 			createdBy: membership.userId,
 			version: "0.2.0",
 			reviewStatus: "passed",
-			createdAt: now,
 		});
 		const alphaVersionId = await insert_plugin_version_doc(t, {
 			name: "alpha",
 			createdBy: membership.userId,
 			version: "1.0.0",
-			createdAt: now,
 		});
-		// Latest is by semver, not createdAt: 0.1.10 outranks 0.1.9 despite being published earlier.
-		const latestBetaVersionId = await insert_plugin_version_doc(t, {
-			name: "beta",
-			createdBy: membership.userId,
-			version: "0.1.10",
-			createdAt: now - 5000,
-		});
+		// Latest is by publish order, not semver: 0.1.9 wins because it was published after 0.1.10.
 		await insert_plugin_version_doc(t, {
 			name: "beta",
 			createdBy: membership.userId,
+			version: "0.1.10",
+		});
+		const latestBetaVersionId = await insert_plugin_version_doc(t, {
+			name: "beta",
+			createdBy: membership.userId,
 			version: "0.1.9",
-			createdAt: now,
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 
-		const listed = await asOwner.query(api.plugins.list_registered_plugins, { membershipId: membership.membershipId });
+		const listed = await asOwner.query(api.plugins.list_published_plugins, { membershipId: membership.membershipId });
 		expect(listed).toMatchObject([
 			{
 				pluginVersionId: alphaVersionId,
@@ -3048,7 +2950,7 @@ describe("plugins publish_version", () => {
 			{
 				pluginVersionId: latestBetaVersionId,
 				name: "beta",
-				version: "0.1.10",
+				version: "0.1.9",
 				publisherDisplayName: "Ray Publisher",
 				reviewStatus: "pending",
 			},
@@ -3063,29 +2965,27 @@ describe("plugins publish_version", () => {
 
 		const strangerUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
 		const asStranger = t.withIdentity(user_identity(strangerUserId));
-		const unauthorized = await asStranger.query(api.plugins.list_registered_plugins, {
+		const unauthorized = await asStranger.query(api.plugins.list_published_plugins, {
 			membershipId: membership.membershipId,
 		});
 		expect(unauthorized).toEqual([]);
 	});
 
-	test("get_publisher_plugin returns semver-sorted panel data only to the claim owner", async () => {
+	test("get_publisher_plugin returns publish-ordered panel data only to the claim owner", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		const now = Date.now();
-		// Semver order beats createdAt order: 0.1.10 is latest despite being published earlier.
-		const latestVersionId = await insert_plugin_version_doc(t, {
+		// Publish order beats semver order: 0.1.9 is latest because it was published after 0.1.10.
+		const earlierVersionId = await insert_plugin_version_doc(t, {
 			name: "media",
 			createdBy: membership.userId,
 			version: "0.1.10",
-			createdAt: now - 5000,
 		});
-		const olderVersionId = await insert_plugin_version_doc(t, {
+		const latestVersionId = await insert_plugin_version_doc(t, {
 			name: "media",
 			createdBy: membership.userId,
 			version: "0.1.9",
-			createdAt: now,
 		});
 		await t.run(async (ctx) => {
 			for (const pluginName of ["media", "other"]) {
@@ -3098,7 +2998,7 @@ describe("plugins publish_version", () => {
 					mechanicalFindings: [],
 					aiFindings: [],
 					model: "none",
-					createdAt: now,
+					updatedAt: now,
 				});
 			}
 		});
@@ -3110,8 +3010,8 @@ describe("plugins publish_version", () => {
 		}
 		expect(details.repository._id).toBe(repositoryId);
 		expect(details.versions.map((version) => ({ _id: version._id, version: version.version }))).toEqual([
-			{ _id: latestVersionId, version: "0.1.10" },
-			{ _id: olderVersionId, version: "0.1.9" },
+			{ _id: latestVersionId, version: "0.1.9" },
+			{ _id: earlierVersionId, version: "0.1.10" },
 		]);
 		expect(details.reviews.map((review) => review.pluginName)).toEqual(["media"]);
 
@@ -3145,12 +3045,12 @@ describe("plugins uninstall_version", () => {
 		vi.advanceTimersByTime(60_000);
 	}
 
-	test("uninstalls the installation, deletes handlers and secrets, keeps runs, and refreshes the lockfile", async () => {
+	test("uninstalls the installation, deletes handlers and secrets, and keeps runs", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -3198,13 +3098,12 @@ describe("plugins uninstall_version", () => {
 				hostCallCount: 1,
 				hostWriteCount: 1,
 				errorMessage: null,
-				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			});
 		});
 
 		refill_manage_rate_limit();
-		const uninstalled = await asOwner.action(api.plugins.uninstall_version, {
+		const uninstalled = await asOwner.mutation(api.plugins.uninstall_version, {
 			membershipId: membership.membershipId,
 			installationId: installed._yay.installationId,
 		});
@@ -3233,18 +3132,6 @@ describe("plugins uninstall_version", () => {
 		// Event runs stay as history; the admin hard-delete flow sweeps them.
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		expect(run).not.toBeNull();
-
-		const lockfile = await t.query(internal.files_nodes.read_file_content_from_chunks, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: membership.userId,
-			path: plugins_LOCKFILE_PATH,
-			mode: { kind: "full", maxBytes: 100_000 },
-		});
-		if (!lockfile) {
-			throw new Error("Expected lockfile");
-		}
-		expect(JSON.parse(lockfile.content).plugins).toEqual([]);
 	});
 
 	test("rejects uninstalls from users without workspace plugin permissions", async () => {
@@ -3252,7 +3139,7 @@ describe("plugins uninstall_version", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -3262,7 +3149,7 @@ describe("plugins uninstall_version", () => {
 		}
 
 		const strangerUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
-		const rejected = await t.withIdentity(user_identity(strangerUserId)).action(api.plugins.uninstall_version, {
+		const rejected = await t.withIdentity(user_identity(strangerUserId)).mutation(api.plugins.uninstall_version, {
 			membershipId: membership.membershipId,
 			installationId: installed._yay.installationId,
 		});
@@ -3279,7 +3166,7 @@ describe("plugins uninstall_version", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -3289,7 +3176,7 @@ describe("plugins uninstall_version", () => {
 		}
 
 		refill_manage_rate_limit();
-		const uninstalled = await asOwner.action(api.plugins.uninstall_version, {
+		const uninstalled = await asOwner.mutation(api.plugins.uninstall_version, {
 			membershipId: membership.membershipId,
 			installationId: installed._yay.installationId,
 		});
@@ -3299,7 +3186,7 @@ describe("plugins uninstall_version", () => {
 		expect(await asOwner.query(api.plugins.list_installations, { membershipId: membership.membershipId })).toEqual([]);
 
 		refill_manage_rate_limit();
-		const reinstalled = await asOwner.action(api.plugins.install_version, {
+		const reinstalled = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -3315,21 +3202,10 @@ describe("plugins uninstall_version", () => {
 			"image/png",
 			"video/mp4",
 		]);
-		const lockfile = await t.query(internal.files_nodes.read_file_content_from_chunks, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: membership.userId,
-			path: plugins_LOCKFILE_PATH,
-			mode: { kind: "full", maxBytes: 100_000 },
-		});
-		if (!lockfile) {
-			throw new Error("Expected lockfile");
-		}
-		expect(JSON.parse(lockfile.content).plugins[0]).toMatchObject({ name: "media", status: "enabled" });
 	});
 });
 
-describe("plugins run_installation_on_file", () => {
+describe("plugins run_installation_on_files", () => {
 	async function install_media_plugin_with_upload(
 		t: ReturnType<typeof test_convex>,
 		args?: { contentTypes?: string[]; filename?: string; uploadContentType?: string; confirmUpload?: boolean },
@@ -3339,7 +3215,7 @@ describe("plugins run_installation_on_file", () => {
 			contentTypes: args?.contentTypes ?? ["image/png"],
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.action(api.plugins.install_version, {
+		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
@@ -3364,59 +3240,30 @@ describe("plugins run_installation_on_file", () => {
 		return { membership, asOwner, installationId: installed._yay.installationId, upload: upload._yay };
 	}
 
-	test("rejects unauthenticated callers and writes no run docs", async () => {
+	test("skips files whose content type has no enabled handler", async () => {
 		const t = test_convex();
-		const { membership, installationId, upload } = await install_media_plugin_with_upload(t);
-
-		const rejected = await t.mutation(api.plugins.run_installation_on_file, {
-			membershipId: membership.membershipId,
-			installationId,
-			nodeId: upload.nodeId,
-		});
-
-		expect(rejected).toEqual({ _nay: { message: "Unauthenticated" } });
-		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
-		expect(runs).toEqual([]);
-	});
-
-	test("rejects callers without the owning workspace membership", async () => {
-		const t = test_convex();
-		const { membership, installationId, upload } = await install_media_plugin_with_upload(t);
-
-		const strangerUserId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
-		const rejected = await t
-			.withIdentity(user_identity(strangerUserId))
-			.mutation(api.plugins.run_installation_on_file, {
-				membershipId: membership.membershipId,
-				installationId,
-				nodeId: upload.nodeId,
-			});
-
-		expect(rejected).toEqual({ _nay: { message: "Unauthorized" } });
-		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
-		expect(runs).toEqual([]);
-	});
-
-	test("rejects files whose content type has no enabled handler", async () => {
-		const t = test_convex();
-		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t, {
+		const { installationId, upload } = await install_media_plugin_with_upload(t, {
 			contentTypes: ["image/png"],
 			filename: "clip.mp4",
 			uploadContentType: "video/mp4",
 		});
 
-		const rejected = await asOwner.mutation(api.plugins.run_installation_on_file, {
-			membershipId: membership.membershipId,
+		const result = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
-			nodeId: upload.nodeId,
+			nodeIds: [upload.nodeId],
 		});
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
 
-		expect(rejected).toEqual({ _nay: { message: "Plugin does not handle this file type" } });
+		expect(result._yay.runs).toEqual([
+			{ nodeId: upload.nodeId, runId: null, message: "Plugin does not handle this file type" },
+		]);
 		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs).toEqual([]);
 	});
 
-	test("rejects editable markdown nodes and uploads without a confirmed r2 object", async () => {
+	test("skips editable markdown nodes and uploads without a confirmed r2 object", async () => {
 		const t = test_convex();
 		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t, {
 			confirmUpload: false,
@@ -3430,33 +3277,30 @@ describe("plugins run_installation_on_file", () => {
 		if (markdown._nay) {
 			throw new Error(markdown._nay.message);
 		}
-		const rejectedMarkdown = await asOwner.mutation(api.plugins.run_installation_on_file, {
-			membershipId: membership.membershipId,
+		const result = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
-			nodeId: markdown._yay.nodeId,
+			nodeIds: [markdown._yay.nodeId, upload.nodeId],
 		});
-		expect(rejectedMarkdown).toEqual({ _nay: { message: "Plugin runs are only supported for uploaded files" } });
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
 
-		const rejectedUnconfirmed = await asOwner.mutation(api.plugins.run_installation_on_file, {
-			membershipId: membership.membershipId,
-			installationId,
-			nodeId: upload.nodeId,
-		});
-		expect(rejectedUnconfirmed).toEqual({ _nay: { message: "File upload is not ready" } });
-
+		expect(result._yay.runs).toEqual([
+			{ nodeId: markdown._yay.nodeId, runId: null, message: "Plugin runs are only supported for uploaded files" },
+			{ nodeId: upload.nodeId, runId: null, message: "File upload is not ready" },
+		]);
 		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs).toEqual([]);
 	});
 
 	test("rejects disabled installations", async () => {
 		const t = test_convex();
-		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t);
+		const { installationId, upload } = await install_media_plugin_with_upload(t);
 		await t.run((ctx) => ctx.db.patch("plugins_workspace_installations", installationId, { status: "disabled" }));
 
-		const rejected = await asOwner.mutation(api.plugins.run_installation_on_file, {
-			membershipId: membership.membershipId,
+		const rejected = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
-			nodeId: upload.nodeId,
+			nodeIds: [upload.nodeId],
 		});
 
 		expect(rejected).toEqual({ _nay: { message: "Plugin is disabled" } });
@@ -3464,32 +3308,64 @@ describe("plugins run_installation_on_file", () => {
 		expect(runs).toEqual([]);
 	});
 
-	test("blocks a second manual run while one is pending for the same installation and file", async () => {
+	test("enqueues one run per file in a single call", async () => {
 		const t = test_convex();
 		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t);
-
-		const first = await asOwner.mutation(api.plugins.run_installation_on_file, {
+		const secondUpload = await asOwner.mutation(api.files_nodes.create_upload_node, {
 			membershipId: membership.membershipId,
+			parentId: "root",
+			filename: "photo-2.png",
+			contentType: "image/png",
+			size: 1024,
+		});
+		if (secondUpload._nay) {
+			throw new Error(secondUpload._nay.message);
+		}
+		await t.run((ctx) => ctx.db.patch("files_r2_assets", secondUpload._yay.assetId, { r2Key: "uploads/photo-2.png" }));
+
+		const result = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
-			nodeId: upload.nodeId,
+			nodeIds: [upload.nodeId, secondUpload._yay.nodeId],
+		});
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
+
+		expect(result._yay.runs.map((run) => run.nodeId)).toEqual([upload.nodeId, secondUpload._yay.nodeId]);
+		expect(result._yay.runs.map((run) => run.message)).toEqual([null, null]);
+		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
+		expect(runs.map((run) => run.sourceFileNodeId).sort()).toEqual([upload.nodeId, secondUpload._yay.nodeId].sort());
+	});
+
+	test("blocks a second manual run while one is pending for the same installation and file", async () => {
+		const t = test_convex();
+		const { installationId, upload } = await install_media_plugin_with_upload(t);
+
+		const first = await t.mutation(internal.plugins.run_installation_on_files, {
+			installationId,
+			nodeIds: [upload.nodeId],
 		});
 		if (first._nay) {
 			throw new Error(first._nay.message);
 		}
-		const second = await asOwner.mutation(api.plugins.run_installation_on_file, {
-			membershipId: membership.membershipId,
+		const second = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
-			nodeId: upload.nodeId,
+			nodeIds: [upload.nodeId],
 		});
+		if (second._nay) {
+			throw new Error(second._nay.message);
+		}
 
-		expect(second).toEqual({ _nay: { message: "A run for this plugin is already pending for this file" } });
+		expect(second._yay.runs).toEqual([
+			{ nodeId: upload.nodeId, runId: null, message: "A run for this plugin is already pending for this file" },
+		]);
 		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs).toHaveLength(1);
 	});
 
 	test("blocks manual runs while a queued upload run exists for the same file", async () => {
 		const t = test_convex();
-		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t);
+		const { installationId, upload } = await install_media_plugin_with_upload(t);
 
 		const enqueued = await t.mutation(internal.plugins_runtime.enqueue_upload_completed_runs, {
 			sourceAssetId: upload.assetId,
@@ -3499,93 +3375,109 @@ describe("plugins run_installation_on_file", () => {
 		});
 		expect(enqueued).toEqual({ _yay: { enqueued: 1 } });
 
-		const rejected = await asOwner.mutation(api.plugins.run_installation_on_file, {
-			membershipId: membership.membershipId,
+		const result = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
-			nodeId: upload.nodeId,
+			nodeIds: [upload.nodeId],
 		});
+		if (result._nay) {
+			throw new Error(result._nay.message);
+		}
 
-		expect(rejected).toEqual({ _nay: { message: "A run for this plugin is already pending for this file" } });
+		expect(result._yay.runs).toEqual([
+			{ nodeId: upload.nodeId, runId: null, message: "A run for this plugin is already pending for this file" },
+		]);
 		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs).toHaveLength(1);
 	});
 
 	test("allows a re-run with a fresh eventId after the pending run succeeds", async () => {
 		const t = test_convex();
-		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t);
+		const { installationId, upload } = await install_media_plugin_with_upload(t);
 
-		const first = await asOwner.mutation(api.plugins.run_installation_on_file, {
-			membershipId: membership.membershipId,
+		const first = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
-			nodeId: upload.nodeId,
+			nodeIds: [upload.nodeId],
 		});
 		if (first._nay) {
 			throw new Error(first._nay.message);
 		}
-		await t.run((ctx) => ctx.db.patch("plugins_event_runs", first._yay.runId, { status: "succeeded" }));
+		const firstRunId = first._yay.runs[0]?.runId;
+		if (!firstRunId) {
+			throw new Error("Expected first queued run");
+		}
+		await t.run((ctx) => ctx.db.patch("plugins_event_runs", firstRunId, { status: "succeeded" }));
 
-		const second = await asOwner.mutation(api.plugins.run_installation_on_file, {
-			membershipId: membership.membershipId,
+		const second = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
-			nodeId: upload.nodeId,
+			nodeIds: [upload.nodeId],
 		});
 		if (second._nay) {
 			throw new Error(second._nay.message);
 		}
+		const secondRunId = second._yay.runs[0]?.runId;
+		if (!secondRunId) {
+			throw new Error("Expected second queued run");
+		}
 
-		expect(second._yay.runId).not.toBe(first._yay.runId);
+		expect(secondRunId).not.toBe(firstRunId);
 		const [firstRun, secondRun] = await t.run(async (ctx) => [
-			await ctx.db.get("plugins_event_runs", first._yay.runId),
-			await ctx.db.get("plugins_event_runs", second._yay.runId),
+			await ctx.db.get("plugins_event_runs", firstRunId),
+			await ctx.db.get("plugins_event_runs", secondRunId),
 		]);
 		expect(firstRun?.eventId).not.toBe(secondRun?.eventId);
 	});
 
 	test("ignores expired queued runs when guarding new manual runs", async () => {
 		const t = test_convex();
-		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t);
+		const { installationId, upload } = await install_media_plugin_with_upload(t);
 
-		const first = await asOwner.mutation(api.plugins.run_installation_on_file, {
-			membershipId: membership.membershipId,
+		const first = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
-			nodeId: upload.nodeId,
+			nodeIds: [upload.nodeId],
 		});
 		if (first._nay) {
 			throw new Error(first._nay.message);
 		}
+		const firstRunId = first._yay.runs[0]?.runId;
+		if (!firstRunId) {
+			throw new Error("Expected first queued run");
+		}
 		// start_event_run refuses expired queued docs, so the guard must not count them either.
-		await t.run((ctx) => ctx.db.patch("plugins_event_runs", first._yay.runId, { expiresAt: Date.now() - 1000 }));
+		await t.run((ctx) => ctx.db.patch("plugins_event_runs", firstRunId, { expiresAt: Date.now() - 1000 }));
 
-		const second = await asOwner.mutation(api.plugins.run_installation_on_file, {
-			membershipId: membership.membershipId,
+		const second = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
-			nodeId: upload.nodeId,
+			nodeIds: [upload.nodeId],
 		});
 		if (second._nay) {
 			throw new Error(second._nay.message);
 		}
+		expect(second._yay.runs[0]?.message).toBeNull();
 		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runs).toHaveLength(2);
 	});
 
 	test("creates a queued manual run mirroring the upload run shape", async () => {
 		const t = test_convex();
-		const { membership, asOwner, installationId, upload } = await install_media_plugin_with_upload(t);
+		const { membership, installationId, upload } = await install_media_plugin_with_upload(t);
 
-		const result = await asOwner.mutation(api.plugins.run_installation_on_file, {
-			membershipId: membership.membershipId,
+		const result = await t.mutation(internal.plugins.run_installation_on_files, {
 			installationId,
-			nodeId: upload.nodeId,
+			nodeIds: [upload.nodeId],
 		});
 		if (result._nay) {
 			throw new Error(result._nay.message);
+		}
+		const runId = result._yay.runs[0]?.runId;
+		if (!runId) {
+			throw new Error("Expected queued run");
 		}
 
 		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installationId));
 		if (!installation) {
 			throw new Error("Expected installation");
 		}
-		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", result._yay.runId));
+		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		if (!run) {
 			throw new Error("Expected run doc");
 		}
@@ -3607,7 +3499,7 @@ describe("plugins run_installation_on_file", () => {
 		expect(run.eventId.startsWith("run_requested::")).toBe(true);
 		expect(run.eventId.endsWith(`::${installationId}`)).toBe(true);
 		expect(run.workId).toBeDefined();
-		expect(run.expiresAt).toBeGreaterThan(run.createdAt);
+		expect(run.expiresAt).toBeGreaterThan(run._creationTime);
 		// Manual runs never take over the asset's upload-conversion bookkeeping.
 		const asset = await t.run((ctx) => ctx.db.get("files_r2_assets", upload.assetId));
 		expect(asset?.conversionWorkId).toBeUndefined();
@@ -3615,7 +3507,7 @@ describe("plugins run_installation_on_file", () => {
 });
 
 describe("plugins admin hard delete", () => {
-	test("hard-deletes one plugin's rows, R2 artifacts, repository secrets, and lockfile entry while other plugins stay intact", async () => {
+	test("hard-deletes one plugin's rows, R2 artifacts, and repository secrets while other plugins stay intact", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const media = await register_media_plugin(t, membership.userId, { name: "media" });
@@ -3625,7 +3517,7 @@ describe("plugins admin hard delete", () => {
 			contentTypes: ["image/png"],
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installedMedia = await asOwner.action(api.plugins.install_version, {
+		const installedMedia = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: media.pluginVersionId,
 			...media_plugin_consent,
@@ -3633,7 +3525,7 @@ describe("plugins admin hard delete", () => {
 		if (installedMedia._nay) {
 			throw new Error(installedMedia._nay.message);
 		}
-		const installedAlternate = await asOwner.action(api.plugins.install_version, {
+		const installedAlternate = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: alternate.pluginVersionId,
 			...media_plugin_consent,
@@ -3659,7 +3551,6 @@ describe("plugins admin hard delete", () => {
 					repositoryUrl: `https://github.com/bonobo/${name}-plugin`,
 					owner: "bonobo",
 					repo: `${name}-plugin`,
-					createdAt: now,
 				});
 				// Each repository claim owns one secret; deleting "media" must cascade only its own.
 				await ctx.db.insert("plugins_publisher_repository_secrets", {
@@ -3670,7 +3561,6 @@ describe("plugins admin hard delete", () => {
 					nonce: new TextEncoder().encode("nonce").buffer,
 					valuePreview: "configured",
 					allowedOrigins: [],
-					createdAt: now,
 					updatedAt: now,
 				});
 				await ctx.db.insert("plugins_version_reviews", {
@@ -3682,7 +3572,7 @@ describe("plugins admin hard delete", () => {
 					mechanicalFindings: [],
 					aiFindings: [],
 					model: "none",
-					createdAt: now,
+					updatedAt: now,
 				});
 			}
 			await ctx.db.insert("plugins_workspace_installation_secrets", {
@@ -3696,7 +3586,6 @@ describe("plugins admin hard delete", () => {
 				valuePreview: "configured",
 				createdBy: membership.userId,
 				updatedBy: membership.userId,
-				createdAt: now,
 				updatedAt: now,
 			});
 			const runId = await ctx.db.insert("plugins_event_runs", {
@@ -3715,7 +3604,6 @@ describe("plugins admin hard delete", () => {
 				hostCallCount: 2,
 				hostWriteCount: 1,
 				errorMessage: null,
-				createdAt: now,
 				updatedAt: now,
 			});
 			for (const sequence of [1, 2]) {
@@ -3730,7 +3618,6 @@ describe("plugins admin hard delete", () => {
 					status: "succeeded",
 					errorMessage: null,
 					startedAt: now,
-					createdAt: now,
 					updatedAt: now,
 				});
 			}
@@ -3806,17 +3693,5 @@ describe("plugins admin hard delete", () => {
 		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/artifact.json");
 		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/backend/worker.js");
 		expect(deleteObjectSpy).not.toHaveBeenCalledWith(expect.anything(), "plugins/media-alt/manifest.json");
-
-		const lockfile = await t.query(internal.files_nodes.read_file_content_from_chunks, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: membership.userId,
-			path: plugins_LOCKFILE_PATH,
-			mode: { kind: "full", maxBytes: 100_000 },
-		});
-		if (!lockfile) {
-			throw new Error("Expected refreshed lockfile");
-		}
-		expect(JSON.parse(lockfile.content).plugins.map((plugin: { name: string }) => plugin.name)).toEqual(["media-alt"]);
 	});
 });

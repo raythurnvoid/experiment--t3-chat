@@ -528,7 +528,7 @@ async function db_purge_organization_workspace_content_batch(
 
 	const pluginInstallations = await ctx.db
 		.query("plugins_workspace_installations")
-		.withIndex("by_organization_workspace_updatedAt", (q) =>
+		.withIndex("by_organization_workspace_pluginName", (q) =>
 			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
@@ -1213,7 +1213,7 @@ async function db_finalize_deleted_user(
 			: Promise.resolve([] as Array<Doc<"billing_usage_snapshots">>),
 		ctx.db
 			.query("plugins_publisher_repositories")
-			.withIndex("by_ownerUser", (q) => q.eq("ownerUserId", user._id))
+			.withIndex("by_ownerUser_repositoryUrl", (q) => q.eq("ownerUserId", user._id))
 			.collect(),
 		ctx.db
 			.query("plugins_publisher_repository_secrets")
@@ -1221,7 +1221,7 @@ async function db_finalize_deleted_user(
 			.collect(),
 		ctx.db
 			.query("plugins_version_reviews")
-			.withIndex("by_createdBy", (q) => q.eq("createdBy", user._id))
+			.withIndex("by_createdBy_pluginName", (q) => q.eq("createdBy", user._id))
 			.collect(),
 	]);
 

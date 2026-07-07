@@ -1,6 +1,6 @@
 import { Workpool } from "@convex-dev/workpool";
 import { doc } from "convex-helpers/validators";
-import type { RouteSpec } from "convex/server";
+import type { RegisteredAction, RegisteredMutation, RouteSpec } from "convex/server";
 import { v } from "convex/values";
 import { z } from "zod";
 import { generateText } from "ai";
@@ -20,7 +20,7 @@ import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import { files_is_path_under_system_root, files_normalize_name } from "../shared/files.ts";
+import { files_normalize_name } from "../shared/files.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import {
@@ -36,9 +36,11 @@ import {
 	get_billed_user_for_media_processing,
 	ingest_media_ai_usage_event,
 	r2_fetch_object_from_bucket,
+	type r2_finalize_uploaded_media_markdown_outputs_Result,
 	r2_get_download_url,
 	write_uploaded_media_markdown_output_objects,
 } from "./r2.ts";
+import type { plugins_decrypt_secret_for_runtime_Result } from "./plugins.ts";
 import { plugins_validate_secret_name } from "../shared/plugins.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -46,14 +48,14 @@ import {
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
-const plugin_runtime_host_token_ttl_ms = 15 * 60 * 1000;
-const plugin_runtime_run_ttl_ms = 30 * 60 * 1000;
-const plugin_runtime_max_host_calls = 20;
-const plugin_runtime_upload_event_settle_delay_ms = 15 * 1000;
-const plugin_runtime_multimodal_generate_text_model_id = "gpt-4.1-mini" as const;
+const HOST_TOKEN_TTL_MS = 15 * 60 * 1000;
+const RUN_TTL_MS = 30 * 60 * 1000;
+const MAX_HOST_CALLS = 20;
+const UPLOAD_EVENT_SETTLE_DELAY_MS = 15 * 1000;
+const MULTIMODAL_GENERATE_TEXT_MODEL_ID = "gpt-4.1-mini" as const;
 
-const upload_completed_event_type = "files.upload.completed" as const;
-const run_requested_event_type = "files.run.requested" as const;
+const UPLOAD_COMPLETED_EVENT_TYPE = "files.upload.completed" as const;
+const RUN_REQUESTED_EVENT_TYPE = "files.run.requested" as const;
 
 function real_upload_source_scope(sourceAsset: Doc<"files_r2_assets">) {
 	const { organizationId, workspaceId, createdBy } = sourceAsset;
@@ -81,21 +83,21 @@ function normalize_external_base_url(value: string) {
 	return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
-function plugin_runner_url() {
+function runner_url() {
 	if (!process.env.PLUGIN_RUNNER_URL) {
 		throw new Error("PLUGIN_RUNNER_URL is not set in Convex env");
 	}
 	return normalize_external_base_url(process.env.PLUGIN_RUNNER_URL);
 }
 
-function plugin_runner_secret() {
+function runner_secret() {
 	if (!process.env.PLUGIN_RUNNER_SECRET) {
 		throw new Error("PLUGIN_RUNNER_SECRET is not set in Convex env");
 	}
 	return process.env.PLUGIN_RUNNER_SECRET;
 }
 
-function plugin_runtime_host_origin() {
+function host_origin() {
 	if (!process.env.VITE_CONVEX_HTTP_URL) {
 		throw new Error("VITE_CONVEX_HTTP_URL is not set in Convex env");
 	}
@@ -131,7 +133,7 @@ function bearer_token(request: Request) {
 	return header.slice(prefix.length);
 }
 
-function plugin_markdown_output_name(path: string | undefined) {
+function markdown_output_name(path: string | undefined) {
 	if (!path) {
 		return Result({ _nay: { message: "Output is not available" } });
 	}
@@ -140,8 +142,7 @@ function plugin_markdown_output_name(path: string | undefined) {
 		path.includes("/") ||
 		path.includes("\\") ||
 		path.startsWith(".") ||
-		!path.toLowerCase().endsWith(".md") ||
-		files_is_path_under_system_root(`/${path}`)
+		!path.toLowerCase().endsWith(".md")
 	) {
 		return Result({ _nay: { message: "Output path is invalid" } });
 	}
@@ -205,7 +206,6 @@ async function insert_host_call(
 		errorMessage: args.errorMessage,
 		startedAt: args.now,
 		...(args.status === "started" ? {} : { finishedAt: args.now, elapsedMs: 0 }),
-		createdAt: args.now,
 		updatedAt: args.now,
 	});
 }
@@ -254,23 +254,29 @@ export const enqueue_upload_completed_runs = internalMutation({
 				q
 					.eq("organizationId", sourceScope.organizationId)
 					.eq("workspaceId", sourceScope.workspaceId)
-					.eq("event", upload_completed_event_type)
+					.eq("event", UPLOAD_COMPLETED_EVENT_TYPE)
 					.eq("status", "enabled")
 					.eq("contentType", contentType),
 			)
 			.collect();
 
+		// Hydrate every handler's installation and version in one batch; eligibility is checked after.
+		const candidateReads = await Promise.all(
+			handlers.map(async (handler) => {
+				const [installation, version] = await Promise.all([
+					ctx.db.get("plugins_workspace_installations", handler.installationId),
+					ctx.db.get("plugins_versions", handler.pluginVersionId),
+				]);
+				return { handler, installation, version };
+			}),
+		);
 		const candidates: Array<{
 			handler: Doc<"plugins_workspace_event_handlers">;
 			installation: Doc<"plugins_workspace_installations">;
 			version: Doc<"plugins_versions">;
 			artifactHash: string;
 		}> = [];
-		for (const handler of handlers) {
-			const [installation, version] = await Promise.all([
-				ctx.db.get("plugins_workspace_installations", handler.installationId),
-				ctx.db.get("plugins_versions", handler.pluginVersionId),
-			]);
+		for (const { handler, installation, version } of candidateReads) {
 			if (
 				!installation ||
 				!version ||
@@ -307,7 +313,7 @@ export const enqueue_upload_completed_runs = internalMutation({
 				.withIndex("by_sourceAsset_event_installation", (q) =>
 					q
 						.eq("sourceAssetId", sourceAsset._id)
-						.eq("event", upload_completed_event_type)
+						.eq("event", UPLOAD_COMPLETED_EVENT_TYPE)
 						.eq("installationId", candidate.installation._id),
 				)
 				.first();
@@ -323,15 +329,14 @@ export const enqueue_upload_completed_runs = internalMutation({
 				actorUserId: sourceScope.createdBy,
 				installationId: candidate.installation._id,
 				pluginVersionId: candidate.version._id,
-				event: upload_completed_event_type,
+				event: UPLOAD_COMPLETED_EVENT_TYPE,
 				eventId: composite_id("plugin", "upload_completed", args.eventId, String(candidate.installation._id)),
 				status: "queued",
 				acceptedCapabilities: candidate.installation.acceptedCapabilities,
-				expiresAt: now + plugin_runtime_run_ttl_ms,
+				expiresAt: now + RUN_TTL_MS,
 				hostCallCount: 0,
 				hostWriteCount: 0,
 				errorMessage: null,
-				createdAt: now,
 				updatedAt: now,
 			});
 
@@ -341,7 +346,7 @@ export const enqueue_upload_completed_runs = internalMutation({
 				{
 					runId,
 				},
-				{ runAfter: plugin_runtime_upload_event_settle_delay_ms },
+				{ runAfter: UPLOAD_EVENT_SETTLE_DELAY_MS },
 			);
 			await ctx.db.patch("plugins_event_runs", runId, {
 				workId,
@@ -361,7 +366,6 @@ export async function plugins_runtime_enqueue_manual_run(
 	args: {
 		sourceAsset: Doc<"files_r2_assets">;
 		sourceFileNode: Doc<"files_nodes">;
-		actorUserId: Id<"users">;
 		installation: Doc<"plugins_workspace_installations">;
 	},
 ) {
@@ -381,7 +385,7 @@ export async function plugins_runtime_enqueue_manual_run(
 	// installation+file across both trigger sources. Expired queued/running docs
 	// (start_event_run refuses them) must not block a re-run forever.
 	const now = Date.now();
-	for (const event of [upload_completed_event_type, run_requested_event_type] as const) {
+	for (const event of [UPLOAD_COMPLETED_EVENT_TYPE, RUN_REQUESTED_EVENT_TYPE] as const) {
 		const recentRuns = await ctx.db
 			.query("plugins_event_runs")
 			.withIndex("by_sourceAsset_event_installation", (q) =>
@@ -399,19 +403,19 @@ export async function plugins_runtime_enqueue_manual_run(
 		workspaceId: args.installation.workspaceId,
 		sourceAssetId: args.sourceAsset._id,
 		sourceFileNodeId: args.sourceFileNode._id,
-		// Unlike the upload path (asset creator), manual runs attribute output writes to the clicking user.
-		actorUserId: args.actorUserId,
+		// Unlike the upload path (asset creator), admin-triggered manual runs attribute output writes
+		// to the plugin's installer.
+		actorUserId: args.installation.installedBy,
 		installationId: args.installation._id,
 		pluginVersionId: version._id,
-		event: run_requested_event_type,
+		event: RUN_REQUESTED_EVENT_TYPE,
 		eventId: composite_id("plugin", "run_requested", crypto.randomUUID(), String(args.installation._id)),
 		status: "queued",
 		acceptedCapabilities: args.installation.acceptedCapabilities,
-		expiresAt: now + plugin_runtime_run_ttl_ms,
+		expiresAt: now + RUN_TTL_MS,
 		hostCallCount: 0,
 		hostWriteCount: 0,
 		errorMessage: null,
-		createdAt: now,
 		updatedAt: now,
 	});
 
@@ -507,6 +511,11 @@ export const start_event_run = internalMutation({
 	},
 });
 
+type start_event_run_Result =
+	typeof start_event_run extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const finish_event_run = internalMutation({
 	args: {
 		runId: v.id("plugins_event_runs"),
@@ -566,7 +575,7 @@ export const get_run_completion_state = internalQuery({
 		const calls = await ctx.db
 			.query("plugins_event_run_calls")
 			.withIndex("by_run_sequence", (q) => q.eq("runId", run._id))
-			.take(plugin_runtime_max_host_calls);
+			.take(MAX_HOST_CALLS);
 		return {
 			status: run.status,
 			hostWriteCount: run.hostWriteCount,
@@ -705,6 +714,11 @@ export const finish_runner_host_call = internalMutation({
 	},
 });
 
+type finish_runner_host_call_Result =
+	typeof finish_runner_host_call extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const claim_host_call = internalMutation({
 	args: {
 		hostTokenHash: v.string(),
@@ -750,7 +764,7 @@ export const claim_host_call = internalMutation({
 		if (String(run._id) !== args.pluginRunId) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
-		if (run.hostCallCount >= plugin_runtime_max_host_calls) {
+		if (run.hostCallCount >= MAX_HOST_CALLS) {
 			return Result({ _nay: { message: "Plugin host call limit exceeded" } });
 		}
 		const sequence = run.hostCallCount + 1;
@@ -784,7 +798,7 @@ export const claim_host_call = internalMutation({
 				return await fail_claim("Permission denied");
 			}
 		}
-		const outputName = args.operation === "writeMarkdown" ? plugin_markdown_output_name(args.outputPath) : null;
+		const outputName = args.operation === "writeMarkdown" ? markdown_output_name(args.outputPath) : null;
 		if (outputName?._nay) {
 			return await fail_claim(outputName._nay.message);
 		}
@@ -885,6 +899,11 @@ export const claim_host_call = internalMutation({
 	},
 });
 
+type claim_host_call_Result =
+	typeof claim_host_call extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const host_write_markdown = internalAction({
 	args: {
 		hostToken: v.string(),
@@ -908,21 +927,11 @@ export const host_write_markdown = internalAction({
 			outputPath: args.path,
 			outputOverwrite: args.overwrite,
 			markdownBytes,
-		})) as {
-			_yay?: {
-				run: Doc<"plugins_event_runs">;
-				sourceAsset: Doc<"files_r2_assets">;
-				sourceFileNode: Doc<"files_nodes">;
-				outputFileNode: Doc<"files_nodes"> | null;
-				outputAssetId: Id<"files_r2_assets"> | null;
-				callId: Id<"plugins_event_run_calls">;
-			};
-			_nay?: { message: string };
-		};
+		})) as claim_host_call_Result;
 		if (claimed._nay) {
 			return Result({ _nay: { message: claimed._nay.message } });
 		}
-		if (!claimed._yay?.outputFileNode || !claimed._yay.outputAssetId) {
+		if (!claimed._yay.outputFileNode || !claimed._yay.outputAssetId) {
 			return Result({ _nay: { message: "Output is not available" } });
 		}
 
@@ -939,7 +948,7 @@ export const host_write_markdown = internalAction({
 				userId: claimed._yay.run.actorUserId,
 				sourceAssetId: claimed._yay.run.sourceAssetId,
 				outputs: [output],
-			})) as { _yay?: null; _nay?: { message: string } };
+			})) as r2_finalize_uploaded_media_markdown_outputs_Result;
 			if (finalized._nay) {
 				await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
 					callId: claimed._yay.callId,
@@ -967,6 +976,11 @@ export const host_write_markdown = internalAction({
 	},
 });
 
+type host_write_markdown_Result =
+	typeof host_write_markdown extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const host_source_temporary_url = internalAction({
 	args: {
 		hostToken: v.string(),
@@ -982,24 +996,16 @@ export const host_source_temporary_url = internalAction({
 			requiredCapabilities: ["files.source.temporaryUrl"],
 			operation: "sourceTemporaryUrl",
 			expiresInSeconds: expiresIn,
-		})) as {
-			_yay?: {
-				sourceAsset: Doc<"files_r2_assets">;
-				callId: Id<"plugins_event_run_calls">;
-			};
-			_nay?: { message: string };
-		};
+		})) as claim_host_call_Result;
 		if (claimed._nay) {
 			return Result({ _nay: { message: claimed._nay.message } });
 		}
-		if (!claimed._yay?.sourceAsset.r2Key) {
-			if (claimed._yay) {
-				await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-					callId: claimed._yay.callId,
-					status: "failed",
-					errorMessage: "Source upload is not available",
-				});
-			}
+		if (!claimed._yay.sourceAsset.r2Key) {
+			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
+				callId: claimed._yay.callId,
+				status: "failed",
+				errorMessage: "Source upload is not available",
+			});
 			return Result({ _nay: { message: "Source upload is not available" } });
 		}
 
@@ -1028,6 +1034,11 @@ export const host_source_temporary_url = internalAction({
 	},
 });
 
+type host_source_temporary_url_Result =
+	typeof host_source_temporary_url extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 export const host_secret_get = internalAction({
 	args: {
 		hostToken: v.string(),
@@ -1047,15 +1058,9 @@ export const host_secret_get = internalAction({
 			requiredCapabilities: ["plugin.secrets.read"],
 			operation: "secretGet",
 			secretName: name._yay,
-		})) as {
-			_yay?: {
-				run: Doc<"plugins_event_runs">;
-				callId: Id<"plugins_event_run_calls">;
-			};
-			_nay?: { message: string };
-		};
-		if (claimed._nay || !claimed._yay) {
-			return Result({ _nay: { message: claimed._nay?.message ?? "Unauthorized" } });
+		})) as claim_host_call_Result;
+		if (claimed._nay) {
+			return Result({ _nay: { message: claimed._nay.message } });
 		}
 
 		const resolved = await ctx.runMutation(internal.plugins.get_secret_for_runtime, {
@@ -1076,7 +1081,7 @@ export const host_secret_get = internalAction({
 
 		const decrypted = (await ctx.runAction(internal.plugins.decrypt_secret_for_runtime, {
 			resolved,
-		})) as { _yay?: string | null; _nay?: { message: string } };
+		})) as plugins_decrypt_secret_for_runtime_Result;
 		if (decrypted._nay) {
 			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
 				callId: claimed._yay.callId,
@@ -1094,9 +1099,14 @@ export const host_secret_get = internalAction({
 			secretFound: true,
 			secretTier: resolved.tier,
 		});
-		return Result({ _yay: decrypted._yay ?? null });
+		return Result({ _yay: decrypted._yay });
 	},
 });
+
+type host_secret_get_Result =
+	typeof host_secret_get extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export const host_generate_text = internalAction({
 	args: {
@@ -1122,20 +1132,9 @@ export const host_generate_text = internalAction({
 			promptBytes,
 			includeSourceImage: args.includeSourceImage,
 			maxOutputTokens: args.maxOutputTokens,
-		})) as {
-			_yay?: {
-				run: Doc<"plugins_event_runs">;
-				sourceAsset: Doc<"files_r2_assets">;
-				sourceFileNode: Doc<"files_nodes">;
-				callId: Id<"plugins_event_run_calls">;
-			};
-			_nay?: { message: string };
-		};
+		})) as claim_host_call_Result;
 		if (claimed._nay) {
 			return Result({ _nay: { message: claimed._nay.message } });
-		}
-		if (!claimed._yay) {
-			return Result({ _nay: { message: "Unauthorized" } });
 		}
 		const sourceImageR2Key = args.includeSourceImage === false ? null : claimed._yay.sourceAsset.r2Key;
 		if (args.includeSourceImage !== false && !sourceImageR2Key) {
@@ -1159,12 +1158,12 @@ export const host_generate_text = internalAction({
 
 		let result: Awaited<ReturnType<typeof generateText>>;
 		let sourceImageBytes: Uint8Array | null = null;
-		let modelId = MEDIA_DESCRIPTION_MODEL_ID;
+		let modelId: string = MEDIA_DESCRIPTION_MODEL_ID;
 		try {
 			sourceImageBytes = sourceImageR2Key
 				? new Uint8Array(await (await r2_fetch_object_from_bucket({ key: sourceImageR2Key })).arrayBuffer())
 				: null;
-			modelId = sourceImageBytes ? plugin_runtime_multimodal_generate_text_model_id : MEDIA_DESCRIPTION_MODEL_ID;
+			modelId = sourceImageBytes ? MULTIMODAL_GENERATE_TEXT_MODEL_ID : MEDIA_DESCRIPTION_MODEL_ID;
 			result = await generateText({
 				model: openai(modelId),
 				system: args.system,
@@ -1227,6 +1226,11 @@ export const host_generate_text = internalAction({
 	},
 });
 
+type host_generate_text_Result =
+	typeof host_generate_text extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 // Executes both upload-triggered and manually requested runs; keep the historical name because
 // pending workpool items persist the function reference by name across deploys.
 export const execute_upload_completed_event_run = internalAction({
@@ -1239,25 +1243,14 @@ export const execute_upload_completed_event_run = internalAction({
 		const started = (await ctx.runMutation(internal.plugins_runtime.start_event_run, {
 			runId: args.runId,
 			hostTokenHash: await crypto_sha256_hex(hostToken),
-			hostTokenExpiresAt: Date.now() + plugin_runtime_host_token_ttl_ms,
-		})) as {
-			_yay?: {
-				run: Doc<"plugins_event_runs">;
-				sourceAsset: Doc<"files_r2_assets">;
-				sourceFileNode: Doc<"files_nodes">;
-				installation: Doc<"plugins_workspace_installations">;
-				version: Doc<"plugins_versions">;
-				artifactHash: string;
-				outboundOrigins: string[];
-			};
-			_nay?: { message: string };
-		};
-		if (started._nay || !started._yay) {
-			console.error("Failed to start plugin event run", { runId: args.runId, message: started._nay?.message });
+			hostTokenExpiresAt: Date.now() + HOST_TOKEN_TTL_MS,
+		})) as start_event_run_Result;
+		if (started._nay) {
+			console.error("Failed to start plugin event run", { runId: args.runId, message: started._nay.message });
 			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
 				runId: args.runId,
 				status: "failed",
-				errorMessage: started._nay?.message ?? "Failed to start plugin event run",
+				errorMessage: started._nay.message,
 			});
 			return null;
 		}
@@ -1273,10 +1266,10 @@ export const execute_upload_completed_event_run = internalAction({
 		}
 
 		try {
-			const runnerResponse = await fetch(`${plugin_runner_url()}/internal/plugin-runner/run`, {
+			const runnerResponse = await fetch(`${runner_url()}/internal/plugin-runner/run`, {
 				method: "POST",
 				headers: {
-					Authorization: `Bearer ${plugin_runner_secret()}`,
+					Authorization: `Bearer ${runner_secret()}`,
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
@@ -1287,7 +1280,7 @@ export const execute_upload_completed_event_run = internalAction({
 					artifactKey: backend.r2Key,
 					artifactHash: started._yay.artifactHash,
 					host: {
-						origin: plugin_runtime_host_origin(),
+						origin: host_origin(),
 						token: hostToken,
 					},
 					acceptedCapabilities: started._yay.run.acceptedCapabilities,
@@ -1454,9 +1447,9 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 								includeSourceImage: body._yay.includeSourceImage,
 								maxOutputTokens: body._yay.maxOutputTokens,
 								requestBytes: body._yay.requestBytes,
-							})) as { _yay?: { callId: Id<"plugins_event_run_calls"> }; _nay?: { message: string } };
-							if (result._nay || !result._yay) {
-								return { status: 400, body: { message: result._nay?.message ?? "Failed to claim host call" } } as const;
+							})) as claim_host_call_Result;
+							if (result._nay) {
+								return { status: 400, body: { message: result._nay.message } } as const;
 							}
 
 							return { status: 200, body: { callId: String(result._yay.callId) } } as const;
@@ -1522,7 +1515,7 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 								responseBytes: body._yay.responseBytes,
 								responseStatus: body._yay.responseStatus,
 								outputTextBytes: body._yay.outputTextBytes,
-							})) as { _yay?: null; _nay?: { message: string } };
+							})) as finish_runner_host_call_Result;
 							if (result._nay) {
 								return { status: 400, body: { message: result._nay.message } } as const;
 							}
@@ -1578,7 +1571,7 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 								markdown: body._yay.markdown,
 								path: body._yay.path,
 								overwrite: body._yay.overwrite,
-							})) as { _yay?: null; _nay?: { message: string } };
+							})) as host_write_markdown_Result;
 							if (result._nay) {
 								return { status: 400, body: { message: result._nay.message } } as const;
 							}
@@ -1635,12 +1628,9 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 								hostToken: token,
 								pluginRunId: body._yay.pluginRunId,
 								expiresInSeconds: body._yay.expiresInSeconds,
-							})) as { _yay?: { url: string; expiresAt: number }; _nay?: { message: string } };
-							if (result._nay || !result._yay) {
-								return {
-									status: 400,
-									body: { message: result._nay?.message ?? "Failed to create source URL" },
-								} as const;
+							})) as host_source_temporary_url_Result;
+							if (result._nay) {
+								return { status: 400, body: { message: result._nay.message } } as const;
 							}
 
 							return { status: 200, body: result._yay } as const;
@@ -1690,12 +1680,12 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 								hostToken: token,
 								pluginRunId: body._yay.pluginRunId,
 								name: body._yay.name,
-							})) as { _yay?: string | null; _nay?: { message: string } };
+							})) as host_secret_get_Result;
 							if (result._nay) {
 								return { status: 400, body: { message: result._nay.message } } as const;
 							}
 
-							return { status: 200, body: { value: result._yay ?? null } } as const;
+							return { status: 200, body: { value: result._yay } } as const;
 						};
 
 						router.route({
@@ -1748,9 +1738,9 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 								prompt: body._yay.prompt,
 								includeSourceImage: body._yay.includeSourceImage,
 								maxOutputTokens: body._yay.maxOutputTokens,
-							})) as { _yay?: { text: string }; _nay?: { message: string } };
-							if (result._nay || !result._yay) {
-								return { status: 400, body: { message: result._nay?.message ?? "Failed to generate text" } } as const;
+							})) as host_generate_text_Result;
+							if (result._nay) {
+								return { status: 400, body: { message: result._nay.message } } as const;
 							}
 
 							return { status: 200, body: { text: result._yay.text } } as const;
