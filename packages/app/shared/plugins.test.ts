@@ -5,11 +5,10 @@ import { describe, expect, test } from "vitest";
 import {
 	plugins_consent_diff,
 	plugins_dist_review_mechanical_findings,
-	plugins_manifest_schema,
 	plugins_validate_origin,
 	plugins_parse_env_text,
 	plugins_parse_github_repository_url,
-	plugins_validate_artifact,
+	plugins_validate_manifest,
 } from "./plugins.ts";
 
 describe("plugins_parse_env_text", () => {
@@ -84,11 +83,16 @@ describe("plugins_validate_origin", () => {
 	});
 });
 
-describe("plugins_validate_artifact", () => {
-	function artifact_json(args: { outboundOrigins?: string[]; duplicateFilePath?: boolean } = {}) {
+describe("plugins_validate_manifest", () => {
+	function manifest_json(
+		args: { outboundOrigins?: string[]; duplicateFilePath?: boolean; nonDistFilePath?: boolean } = {},
+	) {
 		return {
 			schemaVersion: 1,
-			plugin: { name: "media", displayName: "Media", version: "0.1.0" },
+			name: "media",
+			displayName: "Media",
+			version: "0.1.0",
+			description: "Image and video markdown generation",
 			compatibility: { bonoboPluginRuntime: "1" },
 			events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 			pages: [],
@@ -96,7 +100,7 @@ describe("plugins_validate_artifact", () => {
 			outboundOrigins: args.outboundOrigins ?? [],
 			files: [
 				{
-					path: "dist/backend/worker.js",
+					path: args.nonDistFilePath ? "src/backend/worker.js" : "dist/backend/worker.js",
 					sha256: `sha256:${"a".repeat(64)}`,
 					bytes: 1,
 					contentType: "application/javascript",
@@ -108,42 +112,53 @@ describe("plugins_validate_artifact", () => {
 					contentType: args.duplicateFilePath ? "application/javascript" : "text/html",
 				},
 			],
-			provenance: null,
 		};
 	}
 
-	test("rejects duplicate artifact file paths", () => {
-		expect(plugins_validate_artifact(artifact_json({ duplicateFilePath: true }))).toEqual({
-			_nay: { message: 'Plugin artifact has duplicate file path "dist/backend/worker.js"' },
+	test("rejects duplicate manifest file paths", () => {
+		expect(plugins_validate_manifest(manifest_json({ duplicateFilePath: true }))).toEqual({
+			_nay: { message: 'Plugin manifest has duplicate file path "dist/backend/worker.js"' },
+		});
+	});
+
+	test("rejects manifest file paths outside dist/", () => {
+		expect(plugins_validate_manifest(manifest_json({ nonDistFilePath: true }))).toEqual({
+			_nay: { message: 'Plugin file "src/backend/worker.js" must be under dist/' },
+		});
+	});
+
+	test("rejects a manifest that still declares the removed artifact pointer", () => {
+		expect(plugins_validate_manifest({ ...manifest_json(), artifact: "dist/artifact.json" })).toMatchObject({
+			_nay: { message: expect.any(String) },
 		});
 	});
 
 	test("accepts declared outbound origins that are already normalized", () => {
-		const validated = plugins_validate_artifact(artifact_json({ outboundOrigins: ["https://api.openai.com"] }));
+		const validated = plugins_validate_manifest(manifest_json({ outboundOrigins: ["https://api.openai.com"] }));
 		if (validated._nay) {
 			throw new Error(validated._nay.message);
 		}
 		expect(validated._yay.outboundOrigins).toEqual(["https://api.openai.com"]);
 	});
 
-	test("rejects artifacts without the outboundOrigins field", () => {
-		const artifact: Record<string, unknown> = artifact_json();
-		delete artifact.outboundOrigins;
-		expect(plugins_validate_artifact(artifact)).toMatchObject({ _nay: { message: expect.any(String) } });
+	test("rejects manifests without the outboundOrigins field", () => {
+		const manifest: Record<string, unknown> = manifest_json();
+		delete manifest.outboundOrigins;
+		expect(plugins_validate_manifest(manifest)).toMatchObject({ _nay: { message: expect.any(String) } });
 	});
 
 	test("rejects invalid, non-normalized, and duplicate outbound origins", () => {
-		expect(plugins_validate_artifact(artifact_json({ outboundOrigins: ["http://api.openai.com"] }))).toEqual({
+		expect(plugins_validate_manifest(manifest_json({ outboundOrigins: ["http://api.openai.com"] }))).toEqual({
 			_nay: { message: "Origin must use https" },
 		});
-		expect(plugins_validate_artifact(artifact_json({ outboundOrigins: ["https://API.OpenAI.com/"] }))).toEqual({
+		expect(plugins_validate_manifest(manifest_json({ outboundOrigins: ["https://API.OpenAI.com/"] }))).toEqual({
 			_nay: { message: "Outbound origins must already be normalized" },
 		});
 		expect(
-			plugins_validate_artifact(
-				artifact_json({ outboundOrigins: ["https://api.openai.com", "https://api.openai.com"] }),
+			plugins_validate_manifest(
+				manifest_json({ outboundOrigins: ["https://api.openai.com", "https://api.openai.com"] }),
 			),
-		).toEqual({ _nay: { message: 'Plugin artifact has duplicate outbound origin "https://api.openai.com"' } });
+		).toEqual({ _nay: { message: 'Plugin manifest has duplicate outbound origin "https://api.openai.com"' } });
 	});
 });
 
@@ -230,29 +245,3 @@ describe("plugins_dist_review_mechanical_findings", () => {
 	});
 });
 
-describe("plugins_manifest_schema", () => {
-	test("parses a plain manifest", () => {
-		const parsed = plugins_manifest_schema.parse({
-			schemaVersion: 1,
-			name: "media",
-			displayName: "Media",
-			version: "0.1.0",
-			description: "Image and video markdown generation",
-			artifact: "dist/artifact.json",
-		});
-		expect(parsed.name).toBe("media");
-	});
-
-	test("rejects a manifest that still declares the removed publisher field", () => {
-		const result = plugins_manifest_schema.safeParse({
-			schemaVersion: 1,
-			name: "media",
-			displayName: "Media",
-			version: "0.1.0",
-			description: "Image and video markdown generation",
-			publisher: "bonobo",
-			artifact: "dist/artifact.json",
-		});
-		expect(result.success).toBe(false);
-	});
-});

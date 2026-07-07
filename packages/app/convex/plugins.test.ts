@@ -5,7 +5,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { plugins_ai_review } from "./plugins.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
-import { plugins_validate_artifact, type plugins_Capability } from "../shared/plugins.ts";
+import { plugins_validate_manifest, type plugins_Capability } from "../shared/plugins.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -68,7 +68,6 @@ async function register_media_plugin(
 		sourceDefaultBranch: "main",
 		sourceCommitSha: args.sourceCommitSha ?? "1234567890abcdef1234567890abcdef12345678",
 		manifestR2Key: `plugins/${name}/manifest.json`,
-		artifactR2Key: `plugins/${name}/artifact.json`,
 		backend: {
 			entry: "dist/backend/worker.js",
 			moduleName: "plugin.js",
@@ -90,7 +89,7 @@ async function register_media_plugin(
 			},
 		],
 		createdBy: userId,
-		sourceFiles: [{ path: "src/plugin.ts", rawText: `export const plugin = '${name}';` }],
+		sourceFiles: [{ path: "dist/backend/worker.js", rawText: `export const plugin = '${name}';` }],
 	});
 	if (registered._nay) {
 		throw new Error(registered._nay.message);
@@ -108,10 +107,13 @@ async function sha256_text(value: string) {
 }
 
 describe("plugins Phase 0", () => {
-	test("rejects unsupported backend limit fields in artifact manifests", () => {
-		const artifact = {
+	test("rejects unsupported backend limit fields in manifests", () => {
+		const manifest = {
 			schemaVersion: 1,
-			plugin: { name: "media", displayName: "Media", version: "0.1.0" },
+			name: "media",
+			displayName: "Media",
+			version: "0.1.0",
+			description: "Image and video markdown generation",
 			compatibility: { bonoboPluginRuntime: "1" },
 			backend: {
 				entry: "dist/backend/worker.js",
@@ -125,10 +127,9 @@ describe("plugins Phase 0", () => {
 			capabilities: ["uploads.source.read"],
 			outboundOrigins: [],
 			files: [],
-			provenance: null,
 		};
 
-		expect(plugins_validate_artifact(artifact)).toMatchObject({ _nay: { message: expect.any(String) } });
+		expect(plugins_validate_manifest(manifest)).toMatchObject({ _nay: { message: expect.any(String) } });
 	});
 
 	test("reuses existing source mount files for the same immutable plugin version", async () => {
@@ -184,7 +185,7 @@ describe("plugins Phase 0", () => {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: membership.userId,
-			path: `/${registered.sourceMountName}/src/plugin.ts`,
+			path: `/${registered.sourceMountName}/dist/backend/worker.js`,
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
 		expect(source?.content).toBe("export const plugin = 'media';");
@@ -2291,7 +2292,6 @@ describe("plugins publish_version", () => {
 				sourceDefaultBranch: "main",
 				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
 				manifestR2Key: `plugins/${args.name}/manifest.json`,
-				artifactR2Key: `plugins/${args.name}/artifact.json`,
 				backend: null,
 				events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 				pages: [],
@@ -2341,9 +2341,13 @@ describe("plugins publish_version", () => {
 	) {
 		const commitSha = "fedcba9876543210fedcba9876543210fedcba98";
 		const workerSource = args.workerSource ?? "export default { fetch: () => new Response('published') };";
-		const artifact = {
+		const manifestText = JSON.stringify({
 			schemaVersion: 1,
-			plugin: { name: "media", displayName: "Media", version: "0.2.0" },
+			name: "media",
+			displayName: "Media",
+			version: "0.2.0",
+			description: "Published media plugin",
+			...(args.manifestPublisher ? { publisher: args.manifestPublisher } : {}),
 			compatibility: { bonoboPluginRuntime: "1" },
 			backend: {
 				entry: "dist/backend/worker.js",
@@ -2363,19 +2367,7 @@ describe("plugins publish_version", () => {
 					contentType: "application/javascript",
 				},
 			],
-			provenance: null,
-		};
-		const manifestText = JSON.stringify({
-			schemaVersion: 1,
-			name: "media",
-			displayName: "Media",
-			version: "0.2.0",
-			description: "Published media plugin",
-			...(args.manifestPublisher ? { publisher: args.manifestPublisher } : {}),
-			artifact: "dist/bonobo.artifact.json",
 		});
-		const artifactText = JSON.stringify(artifact);
-		const sourceText = "export const source = true;";
 		const uploadUrls: string[] = [];
 		const githubAuthorizations: Array<string | null> = [];
 
@@ -2401,36 +2393,16 @@ describe("plugins publish_version", () => {
 					headers: { "Content-Type": "application/json" },
 				});
 			}
-			if (url === `https://api.github.com/repos/bonobo/media-plugin/git/trees/${commitSha}?recursive=1`) {
-				return new Response(
-					JSON.stringify({
-						truncated: false,
-						tree: [
-							{ path: "bonobo.plugin.json", type: "blob", size: manifestText.length },
-							{ path: "dist/bonobo.artifact.json", type: "blob", size: artifactText.length },
-							{ path: "dist/backend/worker.js", type: "blob", size: workerSource.length },
-							{ path: "src/plugin.ts", type: "blob", size: sourceText.length },
-						],
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				);
-			}
-			if (url === `https://raw.githubusercontent.com/bonobo/media-plugin/${commitSha}/bonobo.plugin.json`) {
+			if (url === `https://raw.githubusercontent.com/bonobo/media-plugin/${commitSha}/dist/bonobo.plugin.json`) {
 				return new Response(manifestText, { status: 200 });
-			}
-			if (url === `https://raw.githubusercontent.com/bonobo/media-plugin/${commitSha}/dist/bonobo.artifact.json`) {
-				return new Response(artifactText, { status: 200 });
 			}
 			if (url === `https://raw.githubusercontent.com/bonobo/media-plugin/${commitSha}/dist/backend/worker.js`) {
 				return new Response(workerSource, { status: 200 });
 			}
-			if (url === `https://raw.githubusercontent.com/bonobo/media-plugin/${commitSha}/src/plugin.ts`) {
-				return new Response(sourceText, { status: 200 });
-			}
 			return new Response(null, { status: 404 });
 		});
 
-		return { commitSha, artifactText, sourceText, uploadUrls, githubAuthorizations };
+		return { commitSha, manifestText, workerSource, uploadUrls, githubAuthorizations };
 	}
 
 	test("publishes a bundled plugin from GitHub, writes R2 artifacts, and registers with the review verdict", async () => {
@@ -2453,15 +2425,15 @@ describe("plugins publish_version", () => {
 			version: "0.2.0",
 			createdBy: membership.userId,
 			reviewStatus: "passed",
-			artifactHash: await sha256_text(github.artifactText),
-			artifactR2Key: `plugins/media/0.2.0/${github.commitSha}/dist/bonobo.artifact.json`,
+			artifactHash: await sha256_text(github.manifestText),
+			manifestR2Key: `plugins/media/0.2.0/${github.commitSha}/dist/bonobo.plugin.json`,
 		});
 		expect(aiReview).toHaveBeenCalledTimes(1);
 		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
 		expect(reviews).toMatchObject([
 			{
 				createdBy: membership.userId,
-				artifactHash: await sha256_text(github.artifactText),
+				artifactHash: await sha256_text(github.manifestText),
 				pluginName: "media",
 				version: "0.2.0",
 				status: "passed",
@@ -2476,14 +2448,22 @@ describe("plugins publish_version", () => {
 		const installations = await t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect());
 		expect(installations).toEqual([]);
 
-		const source = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+		const mountedWorker = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			userId: membership.userId,
-			path: `/${published._yay.sourceMountName}/src/plugin.ts`,
+			path: `/${published._yay.sourceMountName}/dist/backend/worker.js`,
 			mode: { kind: "full", maxBytes: 100_000 },
 		});
-		expect(source?.content).toBe(github.sourceText);
+		expect(mountedWorker?.content).toBe(github.workerSource);
+		const mountedManifest = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+			userId: membership.userId,
+			path: `/${published._yay.sourceMountName}/dist/bonobo.plugin.json`,
+			mode: { kind: "full", maxBytes: 100_000 },
+		});
+		expect(mountedManifest?.content).toBe(github.manifestText);
 	});
 
 	test("rejects publish before R2 upload when an artifact file byte size does not match", async () => {
@@ -3637,7 +3617,7 @@ describe("plugins admin hard delete", () => {
 			eventRunCalls: 2,
 			publisherRepositoryClaims: 1,
 			publisherSecrets: 1,
-			r2ObjectKeys: 3,
+			r2ObjectKeys: 2,
 		});
 
 		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
@@ -3690,7 +3670,6 @@ describe("plugins admin hard delete", () => {
 		expect(new TextDecoder().decode(publisherSecrets[0].ciphertext)).toBe("media-alt-publisher-cipher");
 
 		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/manifest.json");
-		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/artifact.json");
 		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/backend/worker.js");
 		expect(deleteObjectSpy).not.toHaveBeenCalledWith(expect.anything(), "plugins/media-alt/manifest.json");
 	});

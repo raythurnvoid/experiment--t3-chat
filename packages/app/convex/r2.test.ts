@@ -273,7 +273,6 @@ async function install_upload_plugin(
 		sourceDefaultBranch: "main",
 		sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
 		manifestR2Key: `plugins/${args.name}/manifest.json`,
-		artifactR2Key: `plugins/${args.name}/artifact.json`,
 		backend: {
 			entry: "dist/backend/worker.js",
 			moduleName: "plugin.js",
@@ -301,7 +300,7 @@ async function install_upload_plugin(
 			},
 		],
 		createdBy: args.userId,
-		sourceFiles: [{ path: "src/plugin.ts", rawText: "export default { fetch: () => new Response('ok') };" }],
+		sourceFiles: [{ path: "dist/backend/worker.js", rawText: "export default { fetch: () => new Response('ok') };" }],
 	});
 	if (registered._nay) {
 		throw new Error(registered._nay.message);

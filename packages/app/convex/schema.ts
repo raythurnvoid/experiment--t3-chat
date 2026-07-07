@@ -736,7 +736,6 @@ const app_convex_schema = defineSchema({
 		sourceDefaultBranch: v.string(),
 		sourceCommitSha: v.string(),
 		manifestR2Key: v.string(),
-		artifactR2Key: v.string(),
 		backend: v.union(
 			v.object({
 				entry: v.string(),

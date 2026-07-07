@@ -1896,7 +1896,6 @@ describe("process_workspace_deletion_request", () => {
 				sourceDefaultBranch: "main",
 				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
 				manifestR2Key: "plugins/media/manifest.json",
-				artifactR2Key: "plugins/media/artifact.json",
 				backend: {
 					entry: "dist/backend/worker.js",
 					moduleName: "plugin.js",

@@ -43,16 +43,16 @@ export function plugins_autofix_and_validate_name(raw: string) {
 }
 
 /**
- * The mount holds the source tree, whose identity is the commit — keying by commit (not artifact
- * hash) guarantees a mount's files never mix content from two commits: a same-artifact publish
- * from a new commit gets a fresh mount folder.
+ * The mount holds the version's dist snapshot, whose identity is the commit — keying by commit
+ * (not artifact hash) guarantees a mount's files never mix content from two commits: a
+ * same-artifact publish from a new commit gets a fresh mount folder.
  */
 export function plugins_source_mount_name(args: { name: string; version: string; sourceCommitSha: string }) {
 	const versionSlug = args.version.replace(/[^a-z0-9]+/giu, "-").replace(/^-+|-+$/gu, "");
 	return `plugin-${args.name}-${versionSlug}-${args.sourceCommitSha.slice(0, 12)}`.slice(0, 63);
 }
 
-export function plugins_normalize_relative_path(raw: string) {
+function plugins_normalize_relative_path(raw: string) {
 	if (raw.includes("\\")) {
 		return Result({ _nay: { message: "Path must use / separators" } });
 	}
@@ -306,14 +306,14 @@ export function plugins_dist_review_mechanical_findings(source: string) {
 	return findings;
 }
 
-export const plugins_event_schema = z
+const plugins_event_schema = z
 	.object({
 		type: z.enum(plugins_EVENT_TYPES),
 		contentTypes: z.array(z.string().min(1)).min(1),
 	})
 	.strict();
 
-export const plugins_page_schema = z
+const plugins_page_schema = z
 	.object({
 		name: z.string().min(1),
 		displayName: z.string().min(1),
@@ -322,7 +322,7 @@ export const plugins_page_schema = z
 	})
 	.strict();
 
-export const plugins_artifact_file_schema = z
+const plugins_manifest_file_schema = z
 	.object({
 		path: plugins_module_path_schema,
 		sha256: z.string().regex(plugins_sha256_regex),
@@ -332,16 +332,13 @@ export const plugins_artifact_file_schema = z
 	})
 	.strict();
 
-export const plugins_artifact_schema = z
+const plugins_manifest_schema = z
 	.object({
 		schemaVersion: z.literal(plugins_MANIFEST_SCHEMA_VERSION),
-		plugin: z
-			.object({
-				name: z.string(),
-				displayName: z.string().min(1),
-				version: z.string().regex(plugins_semver_regex),
-			})
-			.strict(),
+		name: z.string(),
+		displayName: z.string().min(1),
+		version: z.string().regex(plugins_semver_regex),
+		description: z.string(),
 		compatibility: z
 			.object({
 				bonoboPluginRuntime: z.literal(plugins_RUNTIME_VERSION),
@@ -360,32 +357,20 @@ export const plugins_artifact_schema = z
 		pages: z.array(plugins_page_schema),
 		capabilities: z.array(z.enum(plugins_CAPABILITIES)),
 		outboundOrigins: z.array(z.string()),
-		files: z.array(plugins_artifact_file_schema),
-		provenance: z.null(),
+		files: z.array(plugins_manifest_file_schema),
 	})
 	.strict();
 
-export const plugins_manifest_schema = z
-	.object({
-		schemaVersion: z.literal(plugins_MANIFEST_SCHEMA_VERSION),
-		name: z.string(),
-		displayName: z.string().min(1),
-		version: z.string().regex(plugins_semver_regex),
-		description: z.string(),
-		artifact: plugins_module_path_schema,
-	})
-	.strict();
-
-export function plugins_validate_artifact(input: unknown) {
-	const parsed = plugins_artifact_schema.safeParse(input);
+export function plugins_validate_manifest(input: unknown) {
+	const parsed = plugins_manifest_schema.safeParse(input);
 	if (!parsed.success) {
-		return Result({ _nay: { message: parsed.error.issues[0]?.message ?? "Invalid plugin artifact" } });
+		return Result({ _nay: { message: parsed.error.issues[0]?.message ?? "Invalid plugin manifest" } });
 	}
-	const name = plugins_autofix_and_validate_name(parsed.data.plugin.name);
+	const name = plugins_autofix_and_validate_name(parsed.data.name);
 	if (name._nay) {
 		return Result({ _nay: { message: name._nay.message } });
 	}
-	if (name._yay !== parsed.data.plugin.name) {
+	if (name._yay !== parsed.data.name) {
 		return Result({ _nay: { message: "Plugin name must already be normalized" } });
 	}
 	const outboundOrigins = new Set<string>();
@@ -398,14 +383,17 @@ export function plugins_validate_artifact(input: unknown) {
 			return Result({ _nay: { message: "Outbound origins must already be normalized" } });
 		}
 		if (outboundOrigins.has(origin)) {
-			return Result({ _nay: { message: `Plugin artifact has duplicate outbound origin "${origin}"` } });
+			return Result({ _nay: { message: `Plugin manifest has duplicate outbound origin "${origin}"` } });
 		}
 		outboundOrigins.add(origin);
 	}
 	const filePaths = new Set<string>();
 	for (const file of parsed.data.files) {
+		if (!file.path.startsWith("dist/")) {
+			return Result({ _nay: { message: `Plugin file "${file.path}" must be under dist/` } });
+		}
 		if (filePaths.has(file.path)) {
-			return Result({ _nay: { message: `Plugin artifact has duplicate file path "${file.path}"` } });
+			return Result({ _nay: { message: `Plugin manifest has duplicate file path "${file.path}"` } });
 		}
 		filePaths.add(file.path);
 	}

@@ -25,11 +25,9 @@ import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import {
 	plugins_RUNTIME_VERSION,
 	plugins_dist_review_mechanical_findings,
-	plugins_normalize_relative_path,
 	plugins_parse_github_repository_url,
-	plugins_manifest_schema,
 	plugins_source_mount_name,
-	plugins_validate_artifact,
+	plugins_validate_manifest,
 } from "../shared/plugins.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
@@ -55,63 +53,6 @@ import { plugins_runtime_enqueue_manual_run } from "./plugins_runtime.ts";
 const PLUGIN_IMPORT_GITHUB_TOKEN = process.env.PLUGIN_IMPORT_GITHUB_TOKEN;
 
 const PLUGIN_IMPORT_USER_AGENT = "t3-chat-plugin-import";
-const PLUGIN_IMPORT_MAX_SOURCE_FILES = 500;
-const PLUGIN_IMPORT_MAX_SOURCE_BYTES = 5 * 1024 * 1024;
-const PLUGIN_IMPORT_EXCLUDED_DIR_SEGMENTS = new Set(["node_modules", ".git", ".next", ".turbo", "coverage"]);
-const PLUGIN_IMPORT_BINARY_EXTENSIONS = new Set([
-	"png",
-	"jpg",
-	"jpeg",
-	"gif",
-	"webp",
-	"bmp",
-	"ico",
-	"tiff",
-	"avif",
-	"heic",
-	"woff",
-	"woff2",
-	"ttf",
-	"otf",
-	"zip",
-	"gz",
-	"tgz",
-	"7z",
-	"rar",
-	"tar",
-	"mp3",
-	"mp4",
-	"wav",
-	"ogg",
-	"webm",
-	"mov",
-	"avi",
-	"mkv",
-	"flac",
-	"m4a",
-	"pdf",
-	"doc",
-	"docx",
-	"xls",
-	"xlsx",
-	"ppt",
-	"pptx",
-	"wasm",
-	"so",
-	"dylib",
-	"dll",
-	"exe",
-	"o",
-	"a",
-	"class",
-	"jar",
-	"node",
-	"sqlite",
-	"db",
-	"bin",
-	"dat",
-	"pyc",
-]);
 
 const PLUGIN_SECRETS_MAX_BATCH_SIZE = 50;
 
@@ -247,34 +188,6 @@ async function db_upsert_publisher_repository_secret(
 	});
 }
 
-/**
- * Decides whether a file from the imported GitHub repo tree belongs in the
- * plugin's stored source-code snapshot. Returns the normalized relative path,
- * or a rejection for invalid paths, excluded directories (node_modules, .git,
- * ...), and binary extensions.
- */
-function check_if_plugin_github_source_file_should_be_kept(path: string) {
-	const normalized = plugins_normalize_relative_path(path);
-	if (normalized._nay) {
-		return normalized;
-	}
-
-	const segments = normalized._yay.split("/");
-	for (const segment of segments) {
-		if (PLUGIN_IMPORT_EXCLUDED_DIR_SEGMENTS.has(segment)) {
-			return Result({ _nay: { message: `Source path is under excluded directory "${segment}"` } });
-		}
-	}
-
-	const basename = segments.at(-1) ?? "";
-	const extension = basename.includes(".") ? basename.slice(basename.lastIndexOf(".") + 1).toLowerCase() : "";
-	if (extension && PLUGIN_IMPORT_BINARY_EXTENSIONS.has(extension)) {
-		return Result({ _nay: { message: `Source path has binary extension ".${extension}"` } });
-	}
-
-	return Result({ _yay: normalized._yay });
-}
-
 function github_raw_url(args: { owner: string; repo: string; commitSha: string; path: string }) {
 	const path = args.path
 		.split("/")
@@ -398,7 +311,6 @@ export const register_plugin_version = internalAction({
 		sourceDefaultBranch: doc(app_convex_schema, "plugins_versions").fields.sourceDefaultBranch,
 		sourceCommitSha: doc(app_convex_schema, "plugins_versions").fields.sourceCommitSha,
 		manifestR2Key: doc(app_convex_schema, "plugins_versions").fields.manifestR2Key,
-		artifactR2Key: doc(app_convex_schema, "plugins_versions").fields.artifactR2Key,
 		backend: doc(app_convex_schema, "plugins_versions").fields.backend,
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
 		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
@@ -487,7 +399,6 @@ export const upsert_plugin = internalMutation({
 		sourceDefaultBranch: doc(app_convex_schema, "plugins_versions").fields.sourceDefaultBranch,
 		sourceCommitSha: doc(app_convex_schema, "plugins_versions").fields.sourceCommitSha,
 		manifestR2Key: doc(app_convex_schema, "plugins_versions").fields.manifestR2Key,
-		artifactR2Key: doc(app_convex_schema, "plugins_versions").fields.artifactR2Key,
 		backend: doc(app_convex_schema, "plugins_versions").fields.backend,
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
 		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
@@ -699,7 +610,7 @@ function review_prompt(args: {
 }
 
 /**
- * Review-cache lookup: returns the stored AI review verdict for an exact build (the bonobo.artifact.json
+ * Review-cache lookup: returns the stored AI review verdict for an exact build (the dist/bonobo.plugin.json
  * text hash fingerprints the whole build), or null when this content was never reviewed. Lets a
  * re-publish of identical content reuse the verdict instead of paying for new model calls.
  */
@@ -812,7 +723,7 @@ export const upsert_version_review = internalMutation({
 /**
  * Runs the pre-registration security review of a version's backend dist against its declared
  * capabilities and origins, and persists the verdict. Cheap outcomes short-circuit in order:
- * cached passed/flagged verdict for the same bonobo.artifact.json hash (rejections re-review), no
+ * cached passed/flagged verdict for the same dist/bonobo.plugin.json hash (rejections re-review), no
  * backend dist (auto-pass), mechanical findings (reject). Only then does the single system-billed,
  * per-user rate-limited AI review run, diffed against the latest passed version when one exists.
  */
@@ -924,7 +835,7 @@ export const run_version_review = internalAction({
 			return Result({ _nay: { message: "Plugin AI review is unavailable; the version was not registered" } });
 		}
 
-		// Persist the fresh verdict keyed by the bonobo.artifact.json hash so identical re-publishes hit the cache.
+		// Persist the fresh verdict keyed by the dist/bonobo.plugin.json hash so identical re-publishes hit the cache.
 		await ctx.runMutation(internal.plugins.upsert_version_review, {
 			createdBy: args.requestedBy,
 			artifactHash: args.artifactHash,
@@ -1002,12 +913,13 @@ async function publish_version_from_github(
 	}
 	const sourceCommitSha = commit._yay.sha;
 
-	// The repo-root bonobo.plugin.json declares the plugin identity and points at the bonobo.artifact.json to publish.
+	// dist/bonobo.plugin.json declares the plugin identity and describes the build output (backend,
+	// pages, shipped files); it is the single file the publish reads besides what it lists.
 	const manifestText = await fetch_github_text({
 		owner: source.owner,
 		repo: source.repo,
 		commitSha: sourceCommitSha,
-		path: "bonobo.plugin.json",
+		path: "dist/bonobo.plugin.json",
 	});
 	if (manifestText._nay) {
 		return Result({ _nay: { message: manifestText._nay.message } });
@@ -1016,58 +928,26 @@ async function publish_version_from_github(
 	try {
 		manifestJson = JSON.parse(manifestText._yay);
 	} catch {
-		return Result({ _nay: { message: "Plugin manifest is invalid" } });
+		return Result({ _nay: { message: "Plugin manifest is invalid JSON" } });
 	}
-	const manifestParsed = plugins_manifest_schema.safeParse(manifestJson);
-	if (!manifestParsed.success) {
-		return Result({ _nay: { message: manifestParsed.error.issues[0]?.message ?? "Plugin manifest is invalid" } });
-	}
-	const manifest = manifestParsed.data;
-
-	// bonobo.artifact.json describes the build output (backend, pages, shipped files); it must identify the same
-	// plugin and version as bonobo.plugin.json.
-	const artifactText = await fetch_github_text({
-		owner: source.owner,
-		repo: source.repo,
-		commitSha: sourceCommitSha,
-		path: manifest.artifact,
-	});
-	if (artifactText._nay) {
-		return Result({ _nay: { message: artifactText._nay.message } });
-	}
-	let artifactJson: unknown;
-	try {
-		artifactJson = JSON.parse(artifactText._yay);
-	} catch {
-		return Result({ _nay: { message: "Plugin artifact is invalid JSON" } });
-	}
-	const artifact = plugins_validate_artifact(artifactJson);
-	if (artifact._nay) {
-		return Result({ _nay: { message: artifact._nay.message } });
-	}
-	if (manifest.name !== artifact._yay.plugin.name || manifest.version !== artifact._yay.plugin.version) {
-		return Result({ _nay: { message: "Plugin manifest and artifact identify different versions" } });
+	const manifest = plugins_validate_manifest(manifestJson);
+	if (manifest._nay) {
+		return Result({ _nay: { message: manifest._nay.message } });
 	}
 
-	// The bonobo.artifact.json text fingerprints the release: the review cache and the registered version key off this hash.
-	const artifactHash = `sha256:${await crypto_sha256_hex(artifactText._yay)}`;
+	// The dist/bonobo.plugin.json text fingerprints the release: the review cache and the registered version key off this hash.
+	const artifactHash = `sha256:${await crypto_sha256_hex(manifestText._yay)}`;
 	const manifestR2Key = r2_key({
-		name: artifact._yay.plugin.name,
-		version: artifact._yay.plugin.version,
+		name: manifest._yay.name,
+		version: manifest._yay.version,
 		commitSha: sourceCommitSha,
-		path: "bonobo.plugin.json",
-	});
-	const artifactR2Key = r2_key({
-		name: artifact._yay.plugin.name,
-		version: artifact._yay.plugin.version,
-		commitSha: sourceCommitSha,
-		path: manifest.artifact,
+		path: "dist/bonobo.plugin.json",
 	});
 
-	// Download each build file bonobo.artifact.json lists (backend dist, page HTML, assets), verify its pinned hash
+	// Download each build file dist/bonobo.plugin.json lists (backend dist, page HTML, assets), verify its pinned hash
 	// and byte size, then stage it for upload.
 	const fileResults = await Promise.all(
-		artifact._yay.files.map(async (file) => {
+		manifest._yay.files.map(async (file) => {
 			const fileBytes = await fetch_github_bytes({
 				owner: source.owner,
 				repo: source.repo,
@@ -1085,8 +965,8 @@ async function publish_version_from_github(
 				return Result({ _nay: { message: `Artifact file byte size mismatch for "${file.path}"` } });
 			}
 			const r2Key = r2_key({
-				name: artifact._yay.plugin.name,
-				version: artifact._yay.plugin.version,
+				name: manifest._yay.name,
+				version: manifest._yay.version,
 				commitSha: sourceCommitSha,
 				path: file.path,
 			});
@@ -1108,9 +988,9 @@ async function publish_version_from_github(
 		files.push(result._yay);
 	}
 
-	// A backend entry must be one of the files bonobo.artifact.json lists; its dist source is what the review reads.
-	const backendEntry = artifact._yay.backend;
-	let backend: (NonNullable<typeof artifact._yay.backend> & { r2Key: string }) | null = null;
+	// A backend entry must be one of the files dist/bonobo.plugin.json lists; its dist source is what the review reads.
+	const backendEntry = manifest._yay.backend;
+	let backend: (NonNullable<typeof manifest._yay.backend> & { r2Key: string }) | null = null;
 	let backendDistSource: string | null = null;
 	if (backendEntry) {
 		const backendFile = files.find((file) => file.path === backendEntry.entry);
@@ -1123,12 +1003,12 @@ async function publish_version_from_github(
 
 	// Review the dist before anything is uploaded or registered; "rejected" blocks the publish.
 	const review = (await ctx.runAction(internal.plugins.run_version_review, {
-		pluginName: artifact._yay.plugin.name,
-		version: artifact._yay.plugin.version,
+		pluginName: manifest._yay.name,
+		version: manifest._yay.version,
 		artifactHash,
 		distSource: backendDistSource,
-		capabilities: artifact._yay.capabilities,
-		outboundOrigins: artifact._yay.outboundOrigins,
+		capabilities: manifest._yay.capabilities,
+		outboundOrigins: manifest._yay.outboundOrigins,
 		repositoryId: args.repositoryId,
 		requestedBy: source.userId,
 	})) as run_version_review_Result;
@@ -1143,84 +1023,33 @@ async function publish_version_from_github(
 		});
 	}
 
-	// Snapshot the commit's source tree for the plugin's browsable source mount, within the import caps.
-	const tree = await fetch_github_json(
-		`https://api.github.com/repos/${source.owner}/${source.repo}/git/trees/${sourceCommitSha}?recursive=1`,
-		z.object({
-			truncated: z.boolean().optional(),
-			tree: z.array(
-				z.object({
-					path: z.string(),
-					type: z.string(),
-					size: z.number().optional(),
-				}),
-			),
-		}),
-	);
-	if (tree._nay) {
-		return Result({ _nay: { message: tree._nay.message } });
-	}
-	if (tree._yay.truncated) {
-		return Result({ _nay: { message: "GitHub source tree is too large for plugin import" } });
+	// The browsable source mount is the dist snapshot itself: the manifest plus every text build
+	// file already downloaded above. Binary dist assets are uploaded and served but not mounted.
+	const sourceFiles: Array<{ path: string; rawText: string }> = [
+		{ path: "dist/bonobo.plugin.json", rawText: manifestText._yay },
+	];
+	for (const file of files) {
+		if (
+			file.contentType.startsWith("text/") ||
+			file.contentType === "application/javascript" ||
+			file.contentType === "application/json"
+		) {
+			sourceFiles.push({ path: file.path, rawText: text_decoder.decode(file.body) });
+		}
 	}
 
-	const sourcePaths: string[] = [];
-	let treeSourceBytes = 0;
-	for (const entry of tree._yay.tree) {
-		if (entry.type !== "blob") {
-			continue;
-		}
-		if (entry.size !== undefined && entry.size > files_MAX_TEXT_CONTENT_BYTES) {
-			continue;
-		}
-		const keep = check_if_plugin_github_source_file_should_be_kept(entry.path);
-		if (keep._nay) {
-			continue;
-		}
-		sourcePaths.push(keep._yay);
-		treeSourceBytes += entry.size ?? 0;
-	}
-	// Enforce the caps on the tree-reported sizes before fetching so a hostile repo cannot make the
-	// parallel fetch below download unbounded content.
-	if (sourcePaths.length > PLUGIN_IMPORT_MAX_SOURCE_FILES) {
-		return Result({ _nay: { message: `Plugin source tree exceeds ${PLUGIN_IMPORT_MAX_SOURCE_FILES} files` } });
-	}
-	if (treeSourceBytes > PLUGIN_IMPORT_MAX_SOURCE_BYTES) {
-		return Result({ _nay: { message: `Plugin source tree exceeds ${PLUGIN_IMPORT_MAX_SOURCE_BYTES} bytes` } });
-	}
-
-	const sourceTexts = await Promise.all(
-		sourcePaths.map(async (path) => ({
-			path,
-			text: await fetch_github_text({ owner: source.owner, repo: source.repo, commitSha: sourceCommitSha, path }),
-		})),
-	);
-	const sourceFiles: Array<{ path: string; rawText: string }> = [];
-	let sourceBytes = 0;
-	for (const sourceText of sourceTexts) {
-		if (sourceText.text._nay) {
-			return Result({ _nay: { message: sourceText.text._nay.message } });
-		}
-		sourceBytes += files_get_utf8_byte_size(sourceText.text._yay);
-		if (sourceBytes > PLUGIN_IMPORT_MAX_SOURCE_BYTES) {
-			return Result({ _nay: { message: `Plugin source tree exceeds ${PLUGIN_IMPORT_MAX_SOURCE_BYTES} bytes` } });
-		}
-		sourceFiles.push({ path: sourceText.path, rawText: sourceText.text._yay });
-	}
-
-	// The review allowed the publish; persist bonobo.plugin.json, bonobo.artifact.json, and the build files to R2.
+	// The review allowed the publish; persist dist/bonobo.plugin.json and the build files to R2.
 	await Promise.all([
 		r2_put_object(ctx, { key: manifestR2Key, body: manifestText._yay, contentType: "application/json" }),
-		r2_put_object(ctx, { key: artifactR2Key, body: artifactText._yay, contentType: "application/json" }),
 		...files.map((file) => r2_put_object(ctx, { key: file.r2Key, body: file.body, contentType: file.contentType })),
 	]);
 
-	// Registration writes the version docs and mounts the source snapshot, making the version visible.
+	// Registration writes the version docs and mounts the dist snapshot, making the version visible.
 	const registered = (await ctx.runAction(internal.plugins.register_plugin_version, {
-		name: artifact._yay.plugin.name,
-		displayName: artifact._yay.plugin.displayName,
-		version: artifact._yay.plugin.version,
-		description: manifest.description,
+		name: manifest._yay.name,
+		displayName: manifest._yay.displayName,
+		version: manifest._yay.version,
+		description: manifest._yay.description,
 		reviewStatus: review._yay.status,
 		artifactHash,
 		sourceRepositoryUrl: source.repositoryUrl,
@@ -1229,12 +1058,11 @@ async function publish_version_from_github(
 		sourceDefaultBranch,
 		sourceCommitSha,
 		manifestR2Key,
-		artifactR2Key,
 		backend,
-		events: artifact._yay.events,
-		pages: artifact._yay.pages,
-		capabilities: artifact._yay.capabilities,
-		outboundOrigins: artifact._yay.outboundOrigins,
+		events: manifest._yay.events,
+		pages: manifest._yay.pages,
+		capabilities: manifest._yay.capabilities,
+		outboundOrigins: manifest._yay.outboundOrigins,
 		files: files.map((file) => omit(file, ["body"])),
 		createdBy: source.userId,
 		sourceFiles,
@@ -2656,7 +2484,7 @@ export const run_installation_on_files = internalMutation({
 	},
 });
 function version_r2_keys(version: Doc<"plugins_versions">) {
-	const r2Keys = new Set<string>([version.manifestR2Key, version.artifactR2Key]);
+	const r2Keys = new Set<string>([version.manifestR2Key]);
 	if (version.backend) {
 		r2Keys.add(version.backend.r2Key);
 	}
