@@ -138,19 +138,13 @@ export interface api_schemas_Main {
 		typeof plugins_runtime_http_routes
 	>["/api/internal/plugins/host/finish-runner-call"];
 
-	"/api/internal/plugins/host/write-markdown": ReturnType<
-		typeof plugins_runtime_http_routes
-	>["/api/internal/plugins/host/write-markdown"];
+	"/api/plugins/v1/write-markdown": ReturnType<typeof plugins_runtime_http_routes>["/api/plugins/v1/write-markdown"];
 
-	"/api/internal/plugins/host/source-temporary-url": ReturnType<
+	"/api/plugins/v1/source-temporary-url": ReturnType<
 		typeof plugins_runtime_http_routes
-	>["/api/internal/plugins/host/source-temporary-url"];
+	>["/api/plugins/v1/source-temporary-url"];
 
 	"/api/internal/plugins/host/secret-get": ReturnType<typeof plugins_runtime_http_routes>["/api/internal/plugins/host/secret-get"];
-
-	"/api/internal/plugins/host/generate-text": ReturnType<
-		typeof plugins_runtime_http_routes
-	>["/api/internal/plugins/host/generate-text"];
 }
 
 export type api_schemas_Main_Path = keyof api_schemas_Main;

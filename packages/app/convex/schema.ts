@@ -8,19 +8,7 @@ import {
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
-const plugins_capability_validator = v.union(
-	v.literal("uploads.source.read"),
-	v.literal("files.source.temporaryUrl"),
-	v.literal("files.markdown.write"),
-	v.literal("plugin.secrets.read"),
-	v.literal("outbound.fetch"),
-	v.literal("ai.generateText"),
-	v.literal("media.video.frame"),
-	v.literal("media.video.audioSegment"),
-	v.literal("pdf.toMarkdown"),
-	v.literal("gallery.media.read"),
-	v.literal("gallery.documents.read"),
-);
+const plugins_capability_validator = v.union(v.literal("plugin.secrets.read"), v.literal("outbound.fetch"));
 
 const app_convex_schema = defineSchema({
 	// #region ai
@@ -930,7 +918,6 @@ const app_convex_schema = defineSchema({
 		sequence: v.number(),
 		operation: v.union(
 			v.literal("writeMarkdown"),
-			v.literal("generateText"),
 			v.literal("sourceTemporaryUrl"),
 			v.literal("secretGet"),
 			v.literal("outboundFetch"),

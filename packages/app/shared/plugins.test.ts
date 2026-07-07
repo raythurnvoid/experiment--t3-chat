@@ -96,7 +96,7 @@ describe("plugins_validate_manifest", () => {
 			compatibility: { bonoboPluginRuntime: "1" },
 			events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 			pages: [],
-			capabilities: ["files.markdown.write"],
+			capabilities: ["plugin.secrets.read", "outbound.fetch"],
 			outboundOrigins: args.outboundOrigins ?? [],
 			files: [
 				{
@@ -167,10 +167,10 @@ describe("plugins_consent_diff", () => {
 		expect(
 			plugins_consent_diff({
 				current: null,
-				target: { capabilities: ["files.markdown.write"], outboundOrigins: ["https://api.openai.com"] },
+				target: { capabilities: ["plugin.secrets.read"], outboundOrigins: ["https://api.openai.com"] },
 			}),
 		).toEqual({
-			newCapabilities: ["files.markdown.write"],
+			newCapabilities: ["plugin.secrets.read"],
 			newOutboundOrigins: ["https://api.openai.com"],
 		});
 	});
@@ -178,8 +178,8 @@ describe("plugins_consent_diff", () => {
 	test("returns an empty diff when the upgrade declares nothing new", () => {
 		expect(
 			plugins_consent_diff({
-				current: { capabilities: ["files.markdown.write"], outboundOrigins: ["https://api.openai.com"] },
-				target: { capabilities: ["files.markdown.write"], outboundOrigins: ["https://api.openai.com"] },
+				current: { capabilities: ["plugin.secrets.read"], outboundOrigins: ["https://api.openai.com"] },
+				target: { capabilities: ["plugin.secrets.read"], outboundOrigins: ["https://api.openai.com"] },
 			}),
 		).toEqual({ newCapabilities: [], newOutboundOrigins: [] });
 	});
@@ -187,9 +187,9 @@ describe("plugins_consent_diff", () => {
 	test("returns only the added capabilities and origins for an upgrade", () => {
 		expect(
 			plugins_consent_diff({
-				current: { capabilities: ["files.markdown.write"], outboundOrigins: ["https://api.openai.com"] },
+				current: { capabilities: ["plugin.secrets.read"], outboundOrigins: ["https://api.openai.com"] },
 				target: {
-					capabilities: ["files.markdown.write", "outbound.fetch"],
+					capabilities: ["plugin.secrets.read", "outbound.fetch"],
 					outboundOrigins: ["https://api.openai.com", "https://example.com"],
 				},
 			}),

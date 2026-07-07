@@ -282,13 +282,7 @@ async function install_upload_plugin(
 		},
 		events: [{ type: "files.upload.completed", contentTypes: args.contentTypes }],
 		pages: [],
-		capabilities: [
-			"uploads.source.read",
-			"files.source.temporaryUrl",
-			"files.markdown.write",
-			"plugin.secrets.read",
-			"outbound.fetch",
-		],
+		capabilities: ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: [],
 		files: [
 			{
@@ -314,13 +308,7 @@ async function install_upload_plugin(
 	const installed = await asUser.mutation(api.plugins.install_version, {
 		membershipId: args.membershipId,
 		pluginVersionId: registered._yay.pluginVersionId,
-		acceptedCapabilities: [
-			"uploads.source.read",
-			"files.source.temporaryUrl",
-			"files.markdown.write",
-			"plugin.secrets.read",
-			"outbound.fetch",
-		],
+		acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 		acceptedOutboundOrigins: [],
 	});
 	if (installed._nay) {
@@ -681,7 +669,7 @@ describe("r2 asset content", () => {
 			onPluginRunnerRequest: async (body) => {
 				pluginRunnerRequests.push(body);
 				const host = body.host as { token: string };
-				const sourceUrlResponse = await t.fetch("/api/internal/plugins/host/source-temporary-url", {
+				const sourceUrlResponse = await t.fetch("/api/plugins/v1/source-temporary-url", {
 					method: "POST",
 					headers: {
 						Authorization: `Bearer ${host.token}`,
@@ -697,7 +685,7 @@ describe("r2 asset content", () => {
 					encodeURIComponent(sourceAssetR2Key),
 				);
 
-				const writeResponse = await t.fetch("/api/internal/plugins/host/write-markdown", {
+				const writeResponse = await t.fetch("/api/plugins/v1/write-markdown", {
 					method: "POST",
 					headers: {
 						Authorization: `Bearer ${host.token}`,
@@ -867,7 +855,7 @@ describe("r2 asset content", () => {
 			onPluginRunnerRequest: async (body) => {
 				pluginRunnerRequests.push(body);
 				const host = body.host as { token: string };
-				const writeResponse = await t.fetch("/api/internal/plugins/host/write-markdown", {
+				const writeResponse = await t.fetch("/api/plugins/v1/write-markdown", {
 					method: "POST",
 					headers: {
 						Authorization: `Bearer ${host.token}`,
@@ -1039,7 +1027,7 @@ describe("r2 asset content", () => {
 					[`${source.name}.transcript.md`, "# Plugin transcript\n\nPLUGIN_VIDEO_TRANSCRIPT_E2E_2026"],
 					[`${source.name}.summary.md`, "# Plugin summary\n\nPLUGIN_VIDEO_SUMMARY_E2E_2026"],
 				] as const) {
-					const writeResponse = await t.fetch("/api/internal/plugins/host/write-markdown", {
+					const writeResponse = await t.fetch("/api/plugins/v1/write-markdown", {
 						method: "POST",
 						headers: {
 							Authorization: `Bearer ${host.token}`,
@@ -1439,7 +1427,7 @@ describe("r2 asset content", () => {
 		stub_r2_and_modal_fetch({
 			onPluginRunnerRequest: async (body) => {
 				const host = body.host as { token: string };
-				const writeResponse = await t.fetch("/api/internal/plugins/host/write-markdown", {
+				const writeResponse = await t.fetch("/api/plugins/v1/write-markdown", {
 					method: "POST",
 					headers: {
 						Authorization: `Bearer ${host.token}`,

@@ -77,7 +77,7 @@ async function register_media_plugin(
 		},
 		events: [{ type: "files.upload.completed", contentTypes: args.contentTypes ?? ["image/png", "video/mp4"] }],
 		pages: [{ name: "gallery", displayName: "Gallery", html: "dist/ui/index.html", assets: [] }],
-		capabilities: ["uploads.source.read", "files.markdown.write", "plugin.secrets.read"],
+		capabilities: ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: args.outboundOrigins ?? [],
 		files: [
 			{
@@ -98,7 +98,7 @@ async function register_media_plugin(
 }
 
 const media_plugin_consent: { acceptedCapabilities: plugins_Capability[]; acceptedOutboundOrigins: string[] } = {
-	acceptedCapabilities: ["uploads.source.read", "files.markdown.write", "plugin.secrets.read"],
+	acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 	acceptedOutboundOrigins: [],
 };
 
@@ -124,7 +124,7 @@ describe("plugins Phase 0", () => {
 			},
 			events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 			pages: [],
-			capabilities: ["uploads.source.read"],
+			capabilities: ["plugin.secrets.read"],
 			outboundOrigins: [],
 			files: [],
 		};
@@ -717,7 +717,7 @@ describe("plugins Phase 0", () => {
 			hostTokenExpiresAt: Date.now() + 15 * 60 * 1000,
 		});
 
-		const response = await t.fetch("/api/internal/plugins/host/write-markdown", {
+		const response = await t.fetch("/api/plugins/v1/write-markdown", {
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${hostToken}`,
@@ -810,7 +810,7 @@ describe("plugins Phase 0", () => {
 			hostTokenExpiresAt: Date.now() + 15 * 60 * 1000,
 		});
 
-		const response = await t.fetch("/api/internal/plugins/host/write-markdown", {
+		const response = await t.fetch("/api/plugins/v1/write-markdown", {
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${hostToken}`,
@@ -898,7 +898,7 @@ describe("plugins Phase 0", () => {
 			hostTokenExpiresAt: Date.now() + 15 * 60 * 1000,
 		});
 
-		const response = await t.fetch("/api/internal/plugins/host/write-markdown", {
+		const response = await t.fetch("/api/plugins/v1/write-markdown", {
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${hostToken}`,
@@ -1002,7 +1002,7 @@ describe("plugins Phase 0", () => {
 			{ path: "video.transcript.md", markdown: "# Transcript\n\nHello from the transcript." },
 			{ path: "video.summary.md", markdown: "# Summary\n\nThe video is summarized here." },
 		]) {
-			const response = await t.fetch("/api/internal/plugins/host/write-markdown", {
+			const response = await t.fetch("/api/plugins/v1/write-markdown", {
 				method: "POST",
 				headers: {
 					Authorization: `Bearer ${hostToken}`,
@@ -2011,7 +2011,7 @@ describe("plugins outbound origins consent", () => {
 		const partialCapabilities = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
-			acceptedCapabilities: ["uploads.source.read", "files.markdown.write"],
+			acceptedCapabilities: ["plugin.secrets.read"],
 			acceptedOutboundOrigins: ["https://api.openai.com"],
 		});
 		expect(partialCapabilities).toEqual({
@@ -2295,7 +2295,7 @@ describe("plugins publish_version", () => {
 				backend: null,
 				events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 				pages: [],
-				capabilities: ["uploads.source.read"],
+				capabilities: ["plugin.secrets.read"],
 				outboundOrigins: [],
 				files: [],
 				sourceMountName: null,
@@ -2329,7 +2329,7 @@ describe("plugins publish_version", () => {
 			version: "0.1.0",
 			artifactHash: `sha256:${args.hashChar.repeat(64)}`,
 			distSource: "export default { fetch: () => new Response('published') };",
-			capabilities: ["uploads.source.read"],
+			capabilities: ["plugin.secrets.read"],
 			outboundOrigins: [],
 			repositoryId: args.repositoryId,
 			requestedBy: args.requestedBy,
@@ -2357,7 +2357,7 @@ describe("plugins publish_version", () => {
 			},
 			events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 			pages: [],
-			capabilities: ["uploads.source.read", "files.markdown.write", "plugin.secrets.read"],
+			capabilities: ["plugin.secrets.read", "outbound.fetch"],
 			outboundOrigins: [],
 			files: [
 				{
@@ -2591,7 +2591,7 @@ describe("plugins publish_version", () => {
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: published._yay.pluginVersionId,
-			acceptedCapabilities: ["uploads.source.read", "files.markdown.write", "plugin.secrets.read"],
+			acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 			acceptedOutboundOrigins: [],
 		});
 		expect(installed).toEqual({ _nay: { message: "Plugin version failed review and cannot be installed" } });

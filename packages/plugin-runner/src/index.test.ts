@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { BonoboHost, DYNAMIC_WORKER_LIMITS, LIMITS, handle_request, type Env } from "./index";
+import { BonoboHost, BonoboOutbound, DYNAMIC_WORKER_LIMITS, LIMITS, handle_request, type Env } from "./index";
 
 const URL_BASE = "https://plugin-runner.internal";
 const DEFAULT_ARTIFACT_SOURCE = "export default { fetch: () => new Response('ok') };";
@@ -17,22 +17,17 @@ async function sha256_artifact(source: string) {
 
 function make_ctx(opts?: {
 	hostBinding?: {
-		generateText: (input: unknown) => Promise<unknown>;
-		sourceTemporaryUrl: (input: unknown) => Promise<unknown>;
-		sourceBase64: (input: unknown) => Promise<unknown>;
-		writeMarkdown: (input: unknown) => Promise<unknown>;
 		secretGet: (input: unknown) => Promise<unknown>;
-		outboundFetch: (input: unknown) => Promise<unknown>;
 	};
+	outboundBinding?: { fetch: (request: Request) => Promise<Response> };
 	onHostProps?: (props: unknown) => void;
+	onOutboundProps?: (props: unknown) => void;
 }) {
 	const hostBinding = opts?.hostBinding ?? {
-		generateText: async () => ({ text: "generated" }),
-		sourceTemporaryUrl: async () => ({ url: "https://source.test/file", expiresAt: 1 }),
-		sourceBase64: async () => ({ bodyBase64: "AQID", contentType: "video/mp4", bytes: 3 }),
-		writeMarkdown: async () => ({ ok: true }),
 		secretGet: async () => "secret-value",
-		outboundFetch: async () => ({ status: 200, ok: true, headers: {}, bodyText: "ok" }),
+	};
+	const outboundBinding = opts?.outboundBinding ?? {
+		fetch: async () => new Response("outbound-ok"),
 	};
 	return {
 		waitUntil: () => {},
@@ -40,6 +35,10 @@ function make_ctx(opts?: {
 			BonoboHost: (options: { props: unknown }) => {
 				opts?.onHostProps?.(options.props);
 				return hostBinding;
+			},
+			BonoboOutbound: (options: { props: unknown }) => {
+				opts?.onOutboundProps?.(options.props);
+				return outboundBinding;
 			},
 		},
 	};
@@ -49,7 +48,6 @@ function make_env(opts?: {
 	secret?: string;
 	disabled?: boolean;
 	artifactSource?: string | null;
-	ai?: Env["AI"];
 	onGet?: (id: string) => void;
 	onCode?: (code: Record<string, unknown>) => void;
 	onEntrypoint?: (name: string | null | undefined, options: unknown) => void;
@@ -92,7 +90,6 @@ function make_env(opts?: {
 				throw new Error("LOADER.load should not be called for plugin artifacts");
 			},
 		},
-		AI: opts?.ai,
 	};
 }
 
@@ -109,7 +106,7 @@ async function make_run_body(opts?: {
 		artifactHash: await sha256_artifact(artifactSource),
 		pluginRunId: "run_123",
 		host: DEFAULT_HOST,
-		acceptedCapabilities: ["files.source.temporaryUrl", "files.markdown.write", "plugin.secrets.read", "outbound.fetch"],
+		acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: ["https://api.openai.com"],
 		...(opts?.body ?? {}),
 	});
@@ -268,21 +265,18 @@ describe("dynamic worker loading", () => {
 		expect(onGet).not.toHaveBeenCalled();
 	});
 
-	it("loads immutable artifacts with LOADER.get, stable ids, limits, and BONOBO_HOST", async () => {
+	it("loads immutable artifacts with LOADER.get, stable ids, limits, and runner bindings", async () => {
 		const artifactSource = "SENTINEL_SOURCE";
 		const artifactHash = await sha256_artifact(artifactSource);
 		const hostBinding = {
-			generateText: async () => ({ text: "generated" }),
-			sourceTemporaryUrl: async () => ({ url: "https://source.test/file", expiresAt: 1 }),
-			sourceBase64: async () => ({ bodyBase64: "AQID", contentType: "video/mp4", bytes: 3 }),
-			writeMarkdown: async () => ({ ok: true }),
 			secretGet: async () => "secret-value",
-			outboundFetch: async () => ({ status: 200, ok: true, headers: {}, bodyText: "ok" }),
 		};
+		const outboundBinding = { fetch: async () => new Response("outbound-ok") };
 		let stableId: string | undefined;
 		let loaded: Record<string, unknown> | undefined;
 		let entrypointOptions: unknown;
 		let hostProps: unknown;
+		let outboundProps: unknown;
 		let pluginEvent: unknown;
 
 		const res = await handle_request(
@@ -310,31 +304,43 @@ describe("dynamic worker loading", () => {
 			}),
 			make_ctx({
 				hostBinding,
+				outboundBinding,
 				onHostProps: (props) => {
 					hostProps = props;
+				},
+				onOutboundProps: (props) => {
+					outboundProps = props;
 				},
 			}),
 		);
 
 		expect(res.status).toBe(200);
 		expect(stableId).toContain(`plugin:media@0.1.0:${artifactHash}`);
-		expect(stableId).toContain("bonobo-host-v1");
+		expect(stableId).toContain("bonobo-host-v2");
 		expect(hostProps).toEqual({
 			pluginStableId: stableId,
-			acceptedCapabilities: ["files.source.temporaryUrl", "files.markdown.write", "plugin.secrets.read", "outbound.fetch"],
+			acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
+		});
+		expect(outboundProps).toEqual({
+			pluginStableId: stableId,
+			pluginRunId: "run_123",
+			host: DEFAULT_HOST,
+			acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 			outboundOrigins: ["https://api.openai.com"],
 		});
-		expect(loaded?.globalOutbound).toBeNull();
+		expect(loaded?.globalOutbound).toBe(outboundBinding);
 		expect(loaded?.limits).toEqual(DYNAMIC_WORKER_LIMITS);
-		expect((loaded?.env as Record<string, unknown>)?.BONOBO_HOST).toBe(hostBinding);
-			expect((loaded?.modules as Record<string, string>)?.["plugin.js"]).toBe(artifactSource);
-			expect((loaded?.modules as Record<string, string>)?.["bonobo-plugin-wrapper.js"]).toContain("sourceBase64");
-			expect((loaded?.modules as Record<string, string>)?.["bonobo-plugin-wrapper.js"]).toContain("generateText");
-			expect(entrypointOptions).toEqual({
-				props: {
-					pluginRunId: "run_123",
+		expect((loaded?.env as Record<string, unknown>)?.BONOBO_RPC).toBe(hostBinding);
+		expect((loaded?.modules as Record<string, string>)?.["plugin.js"]).toBe(artifactSource);
+		expect((loaded?.modules as Record<string, string>)?.["bonobo-plugin-wrapper.js"]).toContain("secrets");
+		expect((loaded?.modules as Record<string, string>)?.["bonobo-plugin-wrapper.js"]).toContain("apiOrigin");
+		expect((loaded?.modules as Record<string, string>)?.["bonobo-plugin-wrapper.js"]).not.toContain("writeMarkdown");
+		expect((loaded?.modules as Record<string, string>)?.["bonobo-plugin-wrapper.js"]).not.toContain("sourceBase64");
+		expect(entrypointOptions).toEqual({
+			props: {
+				pluginRunId: "run_123",
 				host: DEFAULT_HOST,
-				acceptedCapabilities: ["files.source.temporaryUrl", "files.markdown.write", "plugin.secrets.read", "outbound.fetch"],
+				acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 			},
 			limits: DYNAMIC_WORKER_LIMITS,
 		});
@@ -403,240 +409,7 @@ describe("dynamic worker loading", () => {
 	});
 });
 
-describe("BONOBO_HOST", () => {
-	it("forwards generateText through the host API with the host token kept out of the body", async () => {
-		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response(JSON.stringify({ text: "description" }), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			}),
-		);
-		try {
-			const result = await BonoboHost.prototype.generateText.call(
-				Object.assign(Object.create(BonoboHost.prototype), {
-					env: {},
-					ctx: {
-						props: {
-							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-							acceptedCapabilities: [],
-						},
-					},
-				}) as BonoboHost,
-				{
-					host: DEFAULT_HOST,
-					pluginRunId: "run_123",
-					system: "Describe uploaded images.",
-					prompt: "Describe photo.png",
-					includeSourceImage: true,
-					maxOutputTokens: 900,
-				},
-			);
-			expect(result).toEqual({ text: "description" });
-			const request = fetchSpy.mock.calls[0]?.[0] as Request;
-			expect(request.url).toBe("https://app.example/api/internal/plugins/host/generate-text");
-			expect(request.headers.get("Authorization")).toBe("Bearer host-token");
-			expect(request.headers.get("X-Bonobo-Plugin-Stable-Id")).toBe("plugin:media@0.1.0:sha256:abc:bonobo-host-v1");
-			const body = await request.clone().json();
-			expect(body).toEqual({
-				pluginRunId: "run_123",
-				system: "Describe uploaded images.",
-				prompt: "Describe photo.png",
-				includeSourceImage: true,
-				maxOutputTokens: 900,
-			});
-			expect(JSON.stringify(body)).not.toContain("host-token");
-		} finally {
-			fetchSpy.mockRestore();
-		}
-	});
-
-	it("can satisfy source image generateText through Workers AI", async () => {
-		const aiRun = vi.fn(async () => ({ response: "workers ai description" }));
-		const { fetchSpy, hostRequests } = mock_host_fetch(async (request) => {
-			if (request.url === "https://app.example/api/internal/plugins/host/source-temporary-url") {
-				return new Response(JSON.stringify({ url: "https://source.test/photo.png", expiresAt: 123 }), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				});
-			}
-			if (request.url === "https://source.test/photo.png") {
-				return new Response(new Uint8Array([1, 2, 3]), {
-					status: 200,
-					headers: { "Content-Type": "image/png" },
-				});
-			}
-		});
-		try {
-			const result = await BonoboHost.prototype.generateText.call(
-				Object.assign(Object.create(BonoboHost.prototype), {
-					env: { AI: { run: aiRun } },
-					ctx: {
-						props: {
-							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-							acceptedCapabilities: ["ai.generateText", "uploads.source.read"],
-						},
-					},
-				}) as BonoboHost,
-				{
-					host: DEFAULT_HOST,
-					pluginRunId: "run_123",
-					system: "Describe uploaded images.",
-					prompt: "Describe photo.png",
-					includeSourceImage: true,
-					maxOutputTokens: 900,
-				},
-			);
-			expect(result).toEqual({ text: "workers ai description" });
-			expect(fetchSpy).toHaveBeenCalledTimes(4);
-			expect(await hostRequests[0]!.clone().json()).toEqual({
-				pluginRunId: "run_123",
-				operation: "generateText",
-				systemBytes: TEXT_ENCODER.encode("Describe uploaded images.").length,
-				promptBytes: TEXT_ENCODER.encode("Describe photo.png").length,
-				includeSourceImage: true,
-				maxOutputTokens: 900,
-			});
-			expect(await hostRequests[1]!.clone().json()).toEqual({ pluginRunId: "run_123", expiresInSeconds: 300 });
-			expect(await hostRequests[2]!.clone().json()).toMatchObject({
-				pluginRunId: "run_123",
-				callId: "call_1",
-				status: "succeeded",
-				errorMessage: null,
-				modelId: "@cf/moonshotai/kimi-k2.6",
-				sourceBytes: 3,
-				outputTextBytes: TEXT_ENCODER.encode("workers ai description").length,
-			});
-			expect(aiRun).toHaveBeenCalledWith("@cf/moonshotai/kimi-k2.6", {
-				messages: [
-					{ role: "system", content: "Describe uploaded images." },
-					{
-						role: "user",
-						content: [
-							{ type: "text", text: "Describe photo.png" },
-							{ type: "image_url", image_url: { url: "data:image/png;base64,AQID" } },
-						],
-					},
-				],
-				max_completion_tokens: 900,
-				temperature: 0.2,
-			});
-		} finally {
-			fetchSpy.mockRestore();
-		}
-	});
-
-	it("can satisfy text-only generateText through Workers AI", async () => {
-		const aiRun = vi.fn(async () => ({ response: "workers ai summary" }));
-		const { fetchSpy, hostRequests } = mock_host_fetch();
-		try {
-			const result = await BonoboHost.prototype.generateText.call(
-				Object.assign(Object.create(BonoboHost.prototype), {
-					env: { AI: { run: aiRun } },
-					ctx: {
-						props: {
-							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-							acceptedCapabilities: ["ai.generateText"],
-						},
-					},
-				}) as BonoboHost,
-				{
-					host: DEFAULT_HOST,
-					pluginRunId: "run_123",
-					system: "Summarize uploaded videos.",
-					prompt: "Transcript: hello world",
-					includeSourceImage: false,
-					maxOutputTokens: 400,
-				},
-			);
-			expect(result).toEqual({ text: "workers ai summary" });
-			expect(fetchSpy).toHaveBeenCalledTimes(2);
-			expect(await hostRequests[0]!.clone().json()).toEqual({
-				pluginRunId: "run_123",
-				operation: "generateText",
-				systemBytes: TEXT_ENCODER.encode("Summarize uploaded videos.").length,
-				promptBytes: TEXT_ENCODER.encode("Transcript: hello world").length,
-				includeSourceImage: false,
-				maxOutputTokens: 400,
-			});
-			expect(await hostRequests[1]!.clone().json()).toMatchObject({
-				pluginRunId: "run_123",
-				callId: "call_1",
-				status: "succeeded",
-				errorMessage: null,
-				modelId: "@cf/moonshotai/kimi-k2.6",
-				outputTextBytes: TEXT_ENCODER.encode("workers ai summary").length,
-			});
-			expect(aiRun).toHaveBeenCalledWith("@cf/moonshotai/kimi-k2.6", {
-				messages: [
-					{ role: "system", content: "Summarize uploaded videos." },
-					{ role: "user", content: "Transcript: hello world" },
-				],
-				max_completion_tokens: 400,
-				temperature: 0.2,
-			});
-		} finally {
-			fetchSpy.mockRestore();
-		}
-	});
-
-	it("rejects oversized markdown before calling the host API", async () => {
-		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
-		try {
-			await expect(
-				BonoboHost.prototype.writeMarkdown.call(
-					{
-						ctx: {
-							props: {
-								pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-								acceptedCapabilities: [],
-							},
-						},
-					} as unknown as BonoboHost,
-					{
-						host: DEFAULT_HOST,
-						pluginRunId: "run_123",
-						markdown: "x".repeat(LIMITS.outputBytes + 1),
-					},
-				),
-			).rejects.toThrow("size limit");
-			expect(fetchSpy).not.toHaveBeenCalled();
-		} finally {
-			fetchSpy.mockRestore();
-		}
-	});
-
-	it("forwards source temporary URL requests through the host API", async () => {
-		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response(JSON.stringify({ url: "https://source.test/file", expiresAt: 123 }), {
-				status: 200,
-				headers: { "Content-Type": "application/json" },
-			}),
-		);
-		try {
-			const result = await BonoboHost.prototype.sourceTemporaryUrl.call(
-				{
-					ctx: {
-						props: {
-							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-							acceptedCapabilities: [],
-						},
-					},
-				} as unknown as BonoboHost,
-				{
-					host: DEFAULT_HOST,
-					pluginRunId: "run_123",
-					expiresInSeconds: 300,
-				},
-			);
-			expect(result).toEqual({ url: "https://source.test/file", expiresAt: 123 });
-			const request = fetchSpy.mock.calls[0]?.[0] as Request;
-			expect(request.url).toBe("https://app.example/api/internal/plugins/host/source-temporary-url");
-			expect(await request.clone().json()).toEqual({ pluginRunId: "run_123", expiresInSeconds: 300 });
-		} finally {
-			fetchSpy.mockRestore();
-		}
-	});
-
+describe("BonoboHost", () => {
 	it("forwards secrets through the host API only with the secret capability", async () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
 			new Response(JSON.stringify({ value: "openai-secret" }), {
@@ -649,7 +422,7 @@ describe("BONOBO_HOST", () => {
 				{
 					ctx: {
 						props: {
-							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
+							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v2",
 							acceptedCapabilities: ["plugin.secrets.read"],
 						},
 					},
@@ -669,7 +442,7 @@ describe("BONOBO_HOST", () => {
 					{
 						ctx: {
 							props: {
-								pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
+								pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v2",
 								acceptedCapabilities: [],
 							},
 						},
@@ -682,67 +455,61 @@ describe("BONOBO_HOST", () => {
 		}
 	});
 
-	it("reads bounded source bytes through a temporary host URL", async () => {
-		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (request) => {
-			const url = request instanceof Request ? request.url : String(request);
-			if (url === "https://app.example/api/internal/plugins/host/source-temporary-url") {
-				return new Response(JSON.stringify({ url: "https://source.test/video.mp4", expiresAt: 123 }), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				});
-			}
-			if (url === "https://source.test/video.mp4") {
-				return new Response(new Uint8Array([1, 2, 3]), {
-					status: 200,
-					headers: { "Content-Type": "video/mp4" },
-				});
-			}
-			throw new Error(`unexpected fetch ${url}`);
-		});
-		try {
-			const result = await BonoboHost.prototype.sourceBase64.call(
-				Object.assign(Object.create(BonoboHost.prototype), {
-					ctx: {
-						props: {
-							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-							acceptedCapabilities: ["uploads.source.read"],
-						},
-					},
-				}) as BonoboHost,
-				{
-					host: DEFAULT_HOST,
-					pluginRunId: "run_123",
-					maxBytes: 10,
-				},
-			);
-			expect(result).toEqual({ bodyBase64: "AQID", contentType: "video/mp4", bytes: 3 });
-			const request = fetchSpy.mock.calls[0]?.[0] as Request;
-			expect(request.url).toBe("https://app.example/api/internal/plugins/host/source-temporary-url");
-			expect(await request.clone().json()).toEqual({ pluginRunId: "run_123", expiresInSeconds: 300 });
+});
 
-			await expect(
-				BonoboHost.prototype.sourceBase64.call(
-					Object.assign(Object.create(BonoboHost.prototype), {
-						ctx: {
-							props: {
-								pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-								acceptedCapabilities: [],
-							},
-						},
-					}) as BonoboHost,
-					{
-						host: DEFAULT_HOST,
-						pluginRunId: "run_123",
-						maxBytes: 10,
-					},
-				),
-			).rejects.toThrow("Missing capability");
+describe("BonoboOutbound", () => {
+	function outbound_self(overrides?: { acceptedCapabilities?: string[]; outboundOrigins?: string[] }) {
+		return {
+			ctx: {
+				props: {
+					pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v2",
+					pluginRunId: "run_123",
+					host: DEFAULT_HOST,
+					acceptedCapabilities: ["outbound.fetch"],
+					outboundOrigins: ["https://modal.example"],
+					...overrides,
+				},
+			},
+		} as unknown as BonoboOutbound;
+	}
+
+	it("passes host-origin requests through without accounting or a capability gate", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("host-ok", { status: 200 }));
+		try {
+			const request = new Request(`${DEFAULT_HOST.origin}/api/plugins/v1/write-markdown`, {
+				method: "POST",
+				headers: { Authorization: `Bearer ${DEFAULT_HOST.token}`, "Content-Type": "application/json" },
+				body: JSON.stringify({ pluginRunId: "run_123", markdown: "# Out" }),
+			});
+			const response = await BonoboOutbound.prototype.fetch.call(
+				outbound_self({ acceptedCapabilities: [], outboundOrigins: [] }),
+				request,
+			);
+			expect(response.status).toBe(200);
+			expect(await response.text()).toBe("host-ok");
+			expect(fetchSpy).toHaveBeenCalledTimes(1);
+			expect(fetch_request(fetchSpy.mock.calls[0]![0]).url).toBe(`${DEFAULT_HOST.origin}/api/plugins/v1/write-markdown`);
 		} finally {
 			fetchSpy.mockRestore();
 		}
 	});
 
-	it("brokers outbound fetch only to per-run allowlisted origins", async () => {
+	it("requires the outbound.fetch capability for non-host origins", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+		try {
+			await expect(
+				BonoboOutbound.prototype.fetch.call(
+					outbound_self({ acceptedCapabilities: [] }),
+					new Request("https://modal.example/convert"),
+				),
+			).rejects.toThrow("Missing capability: outbound.fetch");
+			expect(fetchSpy).not.toHaveBeenCalled();
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	it("brokers plugin fetch to allowlisted origins with claim/finish accounting", async () => {
 		const { fetchSpy, hostRequests } = mock_host_fetch((request) => {
 			if (request.url === "https://modal.example/convert") {
 				return new Response("service-ok", { status: 200, headers: { "Content-Type": "text/plain" } });
@@ -750,32 +517,17 @@ describe("BONOBO_HOST", () => {
 		});
 		try {
 			// The allowlist entry is an ORIGIN, so https://modal.example/convert passes because its origin matches.
-			const result = await BonoboHost.prototype.outboundFetch.call(
-				{
-					ctx: {
-						props: {
-							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-							acceptedCapabilities: ["outbound.fetch"],
-							outboundOrigins: ["https://modal.example"],
-						},
-					},
-				} as unknown as BonoboHost,
-				{
-					host: DEFAULT_HOST,
-					pluginRunId: "run_123",
-					url: "https://modal.example/convert",
+			const response = await BonoboOutbound.prototype.fetch.call(
+				outbound_self(),
+				new Request("https://modal.example/convert", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					bodyText: "{}",
-					responseType: "text",
-				},
+					body: "{}",
+				}),
 			);
-			expect(result).toEqual({
-				status: 200,
-				ok: true,
-				headers: { "Content-Type": "text/plain" },
-				bodyText: "service-ok",
-			});
+			expect(response.status).toBe(200);
+			expect(response.headers.get("Content-Type")).toBe("text/plain");
+			expect(await response.text()).toBe("service-ok");
 			expect(fetchSpy).toHaveBeenCalledTimes(3);
 			expect(await hostRequests[0]!.clone().json()).toEqual({
 				pluginRunId: "run_123",
@@ -791,55 +543,29 @@ describe("BONOBO_HOST", () => {
 				responseBytes: "service-ok".length,
 				responseStatus: 200,
 			});
-
-			await expect(
-				BonoboHost.prototype.outboundFetch.call(
-					{
-						ctx: {
-							props: {
-								pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-								acceptedCapabilities: ["outbound.fetch"],
-								outboundOrigins: ["https://modal.example"],
-							},
-						},
-					} as unknown as BonoboHost,
-					{
-						host: DEFAULT_HOST,
-						pluginRunId: "run_123",
-						url: "https://not-allowed.example/convert",
-					},
-				),
-			).rejects.toThrow("origin is not allowed");
 		} finally {
 			fetchSpy.mockRestore();
 		}
 	});
 
-	it("rejects outbound fetch URLs whose origin does not exactly match the allowlist", async () => {
+	it("rejects plugin fetch URLs whose origin does not exactly match the allowlist", async () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
 		try {
 			const cases = [
-				{ outboundOrigins: ["https://modal.example"], url: "http://modal.example/x", error: "must be HTTPS" },
-				{ outboundOrigins: ["https://modal.example"], url: "https://modal.example:8443/x", error: "origin is not allowed" },
-				{ outboundOrigins: ["https://modal.example"], url: "https://api.modal.example/x", error: "origin is not allowed" },
-				{ outboundOrigins: [], url: "https://api.openai.com/v1/models", error: "origin is not allowed" },
+				{ url: "http://modal.example/x", error: "must use HTTPS" },
+				{ url: "https://modal.example:8443/x", error: "origin is not allowed" },
+				{ url: "https://api.modal.example/x", error: "origin is not allowed" },
+				{ url: "https://api.openai.com/v1/models", error: "origin is not allowed" },
 			];
-			for (const { outboundOrigins, url, error } of cases) {
-				await expect(
-					BonoboHost.prototype.outboundFetch.call(
-						{
-							ctx: {
-								props: {
-									pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-									acceptedCapabilities: ["outbound.fetch"],
-									outboundOrigins,
-								},
-							},
-						} as unknown as BonoboHost,
-						{ host: DEFAULT_HOST, pluginRunId: "run_123", url },
-					),
-				).rejects.toThrow(error);
+			for (const { url, error } of cases) {
+				await expect(BonoboOutbound.prototype.fetch.call(outbound_self(), new Request(url))).rejects.toThrow(error);
 			}
+			await expect(
+				BonoboOutbound.prototype.fetch.call(
+					outbound_self(),
+					new Request("https://modal.example/convert", { method: "HEAD" }),
+				),
+			).rejects.toThrow("method is invalid");
 			expect(fetchSpy).not.toHaveBeenCalled();
 		} finally {
 			fetchSpy.mockRestore();
@@ -853,23 +579,12 @@ describe("BONOBO_HOST", () => {
 			}
 		});
 		try {
-			const result = await BonoboHost.prototype.outboundFetch.call(
-				{
-					ctx: {
-						props: {
-							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
-							acceptedCapabilities: ["outbound.fetch"],
-							outboundOrigins: ["https://modal.example"],
-						},
-					},
-				} as unknown as BonoboHost,
-				{
-					host: DEFAULT_HOST,
-					pluginRunId: "run_123",
-					url: "https://modal.example/old",
-				},
+			const response = await BonoboOutbound.prototype.fetch.call(
+				outbound_self(),
+				new Request("https://modal.example/old"),
 			);
-			expect(result).toMatchObject({ status: 301, ok: false });
+			expect(response.status).toBe(301);
+			expect(response.headers.get("Location")).toBe("https://evil.example/new");
 			const fetchedUrls = fetchSpy.mock.calls.map((call) => fetch_request(call[0]).url);
 			expect(fetchedUrls).toContain("https://modal.example/old");
 			expect(fetchedUrls).not.toContain("https://evil.example/new");
@@ -877,6 +592,27 @@ describe("BONOBO_HOST", () => {
 				.map((call) => fetch_request(call[0]))
 				.find((request) => request.url === "https://modal.example/old");
 			expect(outboundRequest?.redirect).toBe("manual");
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	it("caps buffered plugin fetch responses and finishes the call as failed", async () => {
+		const { fetchSpy, hostRequests } = mock_host_fetch((request) => {
+			if (request.url === "https://modal.example/huge") {
+				return new Response(new Uint8Array(LIMITS.outboundResponseBytes + 1), { status: 200 });
+			}
+		});
+		try {
+			await expect(
+				BonoboOutbound.prototype.fetch.call(outbound_self(), new Request("https://modal.example/huge")),
+			).rejects.toThrow("size limit");
+			expect(await hostRequests[1]!.clone().json()).toMatchObject({
+				pluginRunId: "run_123",
+				callId: "call_1",
+				status: "failed",
+				errorMessage: "Outbound fetch failed",
+			});
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -900,7 +636,7 @@ describe("secret masking", () => {
 			{
 				ctx: {
 					props: {
-						pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v1",
+						pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v2",
 						acceptedCapabilities: ["plugin.secrets.read"],
 						outboundOrigins: [],
 					},
@@ -935,6 +671,19 @@ describe("secret masking", () => {
 			fetchSpy.mockRestore();
 			logSpy.mockRestore();
 		}
+	});
+
+	it("masks the plugin-visible run token in plugin output", async () => {
+		const res = await handle_request(
+			run_request(await make_run_body()),
+			make_env({
+				onPluginRequest: async () => new Response(`token=${DEFAULT_HOST.token} done`),
+			}),
+			make_ctx(),
+		);
+		const body = await res.json();
+		expect(body.status).toBe("succeeded");
+		expect(body.output).toBe("token=*** done");
 	});
 
 	it("does not mask secrets shorter than the minimum length", async () => {

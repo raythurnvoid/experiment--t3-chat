@@ -2,7 +2,8 @@
 //
 // Security notes:
 // - The plugin Dynamic Worker receives no platform `env`, bindings, R2 bucket, or host secrets.
-// - `globalOutbound: null` makes plugin `fetch()` and `connect()` unavailable until explicit host APIs exist.
+// - Plugin `fetch()` goes through the `BonoboOutbound` Fetcher: host-origin requests pass through,
+//   every other origin is gated on the `outbound.fetch` capability and the per-run origin allowlist.
 // - Operational logs include only metadata, never artifact source, input, output, or secrets.
 // - Auth uses `Authorization: Bearer <PLUGIN_RUNNER_SECRET>` for the Phase 0 internal endpoint.
 
@@ -28,12 +29,7 @@ type Fetcher = {
 };
 
 type BonoboHostBinding = {
-	generateText: (input: unknown) => Promise<unknown>;
-	sourceTemporaryUrl: (input: unknown) => Promise<unknown>;
-	sourceBase64: (input: unknown) => Promise<unknown>;
-	writeMarkdown: (input: unknown) => Promise<unknown>;
 	secretGet: (input: unknown) => Promise<unknown>;
-	outboundFetch: (input: unknown) => Promise<unknown>;
 };
 
 type HostRuntime = {
@@ -71,12 +67,15 @@ type R2BucketBinding = {
 	get: (key: string) => Promise<R2ObjectBody | null>;
 };
 
-type WorkersAiBinding = {
-	run: (model: string, input: Record<string, unknown>) => Promise<unknown>;
-};
-
 type BonoboHostProps = {
 	pluginStableId: string;
+	acceptedCapabilities: string[];
+};
+
+type BonoboOutboundProps = {
+	pluginStableId: string;
+	pluginRunId: string;
+	host: HostRuntime;
 	acceptedCapabilities: string[];
 	outboundOrigins: string[];
 };
@@ -84,6 +83,7 @@ type BonoboHostProps = {
 type PluginRunnerContext = ExecutionContext & {
 	readonly exports?: {
 		readonly BonoboHost?: (options: { props: BonoboHostProps }) => BonoboHostBinding;
+		readonly BonoboOutbound?: (options: { props: BonoboOutboundProps }) => Fetcher;
 	};
 };
 
@@ -93,7 +93,6 @@ export type Env = {
 	PLUGIN_RUNNER_SECRET: string;
 	PLUGIN_RUNNER_ARTIFACT_PREFIX?: string;
 	PLUGIN_RUNNER_DISABLED?: string;
-	AI?: WorkersAiBinding;
 };
 
 export const LIMITS = {
@@ -102,7 +101,6 @@ export const LIMITS = {
 	outputBytes: 900_000,
 	hostResponseBytes: 64_000,
 	outboundResponseBytes: 25 * 1024 * 1024,
-	sourceBytes: 5 * 1024 * 1024,
 } as const;
 
 export const DYNAMIC_WORKER_LIMITS = {
@@ -115,9 +113,7 @@ const TEXT_DECODER = new TextDecoder();
 const COMPAT_DATE = "2026-07-01";
 const ENTRY_MODULE = "bonobo-plugin-wrapper.js";
 const PLUGIN_MODULE = "plugin.js";
-const PLUGIN_WRAPPER_VERSION = "bonobo-host-v1";
-const WORKERS_AI_VISION_MODEL = "@cf/moonshotai/kimi-k2.6";
-const WORKERS_AI_SOURCE_IMAGE_BYTES = 5 * 1024 * 1024;
+const PLUGIN_WRAPPER_VERSION = "bonobo-host-v2";
 const REQUEST_FIELDS = new Set([
 	"pluginId",
 	"pluginName",
@@ -163,50 +159,22 @@ function mask_secret_values(text: string, values: ReadonlySet<string> | undefine
 const HOST_API_PATHS = {
 	claimRunnerCall: "/api/internal/plugins/host/claim-runner-call",
 	finishRunnerCall: "/api/internal/plugins/host/finish-runner-call",
-	generateText: "/api/internal/plugins/host/generate-text",
-	sourceTemporaryUrl: "/api/internal/plugins/host/source-temporary-url",
 	secretGet: "/api/internal/plugins/host/secret-get",
-	writeMarkdown: "/api/internal/plugins/host/write-markdown",
 } as const;
 
 const PLUGIN_WRAPPER_SOURCE = `import plugin from "${PLUGIN_MODULE}";
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-function objectInput(input) {
-  return input && typeof input === "object" && !Array.isArray(input) ? input : {};
-}
-
 export default class BonoboPluginEntrypoint extends WorkerEntrypoint {
   async fetch(request) {
-    const host = this.env.BONOBO_HOST;
+    const host = this.env.BONOBO_RPC;
     const props = this.ctx.props;
-    const bonobo = Object.freeze({
-      files: Object.freeze({
-        source: Object.freeze({
-          temporaryUrl: (input) => host.sourceTemporaryUrl({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
-          base64: (input) => host.sourceBase64({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
-        }),
-        writeMarkdown: (input) => host.writeMarkdown({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
-      }),
-      secrets: Object.freeze({
-        get: (name) => host.secretGet({ pluginRunId: props.pluginRunId, host: props.host, name }),
-      }),
-      ai: Object.freeze({
-        generateText: (input) => host.generateText({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
-      }),
-      outbound: Object.freeze({
-        fetch: (input) => host.outboundFetch({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
-      }),
-    });
     const pluginEnv = Object.freeze({
-      BONOBO: bonobo,
-      BONOBO_HOST: Object.freeze({
-        generateText: (input) => host.generateText({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
-        sourceTemporaryUrl: (input) => host.sourceTemporaryUrl({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
-        sourceBase64: (input) => host.sourceBase64({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
-        writeMarkdown: (input) => host.writeMarkdown({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
-        secretGet: (input) => host.secretGet({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
-        outboundFetch: (input) => host.outboundFetch({ ...objectInput(input), pluginRunId: props.pluginRunId, host: props.host }),
+      BONOBO: Object.freeze({
+        secrets: Object.freeze({
+          get: (name) => host.secretGet({ pluginRunId: props.pluginRunId, host: props.host, name }),
+        }),
+        host: Object.freeze({ apiOrigin: props.host.origin, token: props.host.token }),
       }),
     });
     const pluginCtx = Object.freeze({ waitUntil: () => { throw new Error("Plugin waitUntil is not supported"); } });
@@ -559,87 +527,6 @@ function require_capability(acceptedCapabilities: string[], capability: string) 
 	}
 }
 
-function base64_to_bytes(value: string) {
-	const binary = atob(value);
-	const bytes = new Uint8Array(binary.length);
-	for (let i = 0; i < binary.length; i++) {
-		bytes[i] = binary.charCodeAt(i);
-	}
-	return bytes;
-}
-
-function bytes_to_base64(bytes: Uint8Array) {
-	let binary = "";
-	for (let offset = 0; offset < bytes.byteLength; offset += 8192) {
-		const chunk = bytes.subarray(offset, offset + 8192);
-		binary += String.fromCharCode(...chunk);
-	}
-	return btoa(binary);
-}
-
-function ai_text_response(value: unknown): string | null {
-	if (typeof value === "string") return value;
-	if (!is_record(value)) return null;
-	for (const key of ["response", "result", "text"]) {
-		const text = value[key];
-		if (typeof text === "string" && text.length > 0) return text;
-		if (is_record(text)) {
-			const nestedText: string | null = ai_text_response(text);
-			if (nestedText) return nestedText;
-		}
-	}
-	const transcriptionInfo = value.transcription_info;
-	if (is_record(transcriptionInfo)) {
-		const text = transcriptionInfo.text;
-		if (typeof text === "string" && text.length > 0) return text;
-	}
-	const segments = value.segments;
-	if (Array.isArray(segments)) {
-		const text = segments
-			.map((segment) => (is_record(segment) && typeof segment.text === "string" ? segment.text.trim() : ""))
-			.filter((segmentText) => segmentText.length > 0)
-			.join("\n");
-		if (text.length > 0) return text;
-	}
-	const vtt = value.vtt;
-	if (typeof vtt === "string" && vtt.length > 0) {
-		const text = vtt
-			.split(/\r?\n/u)
-			.map((line) => line.trim())
-			.filter(
-				(line) =>
-					line.length > 0 &&
-					line !== "WEBVTT" &&
-					!/^\d+$/u.test(line) &&
-					!/^\d{2}:\d{2}:\d{2}\.\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}\.\d{3}/u.test(line),
-			)
-			.join("\n");
-		if (text.length > 0) return text;
-	}
-	const choices = value.choices;
-	if (Array.isArray(choices)) {
-		for (const choice of choices) {
-			if (!is_record(choice) || !is_record(choice.message)) continue;
-			const content = choice.message.content;
-			if (typeof content === "string" && content.length > 0) return content;
-		}
-	}
-	return null;
-}
-
-function image_content_type(value: string | null) {
-	const contentType = value?.split(";")[0]?.trim().toLowerCase();
-	if (
-		contentType === "image/jpeg" ||
-		contentType === "image/png" ||
-		contentType === "image/webp" ||
-		contentType === "image/gif"
-	) {
-		return contentType;
-	}
-	return "image/png";
-}
-
 async function post_host_json(input: {
 	host: HostRuntime;
 	path: string;
@@ -673,18 +560,12 @@ async function post_host_json(input: {
 	return responseBody;
 }
 
-type RunnerClaimedOperation = "generateText" | "outboundFetch";
-
 async function claim_runner_call(input: {
 	host: HostRuntime;
 	pluginRunId: string;
 	pluginStableId: string;
-	operation: RunnerClaimedOperation;
-	systemBytes?: number;
-	promptBytes?: number;
-	includeSourceImage?: boolean;
-	maxOutputTokens?: number;
-	requestBytes?: number;
+	operation: "outboundFetch";
+	requestBytes: number;
 }) {
 	const result = await post_host_json({
 		host: input.host,
@@ -694,11 +575,7 @@ async function claim_runner_call(input: {
 		body: {
 			pluginRunId: input.pluginRunId,
 			operation: input.operation,
-			...(input.systemBytes === undefined ? {} : { systemBytes: input.systemBytes }),
-			...(input.promptBytes === undefined ? {} : { promptBytes: input.promptBytes }),
-			...(input.includeSourceImage === undefined ? {} : { includeSourceImage: input.includeSourceImage }),
-			...(input.maxOutputTokens === undefined ? {} : { maxOutputTokens: input.maxOutputTokens }),
-			...(input.requestBytes === undefined ? {} : { requestBytes: input.requestBytes }),
+			requestBytes: input.requestBytes,
 		},
 	});
 	if (!is_record(result) || typeof result.callId !== "string") {
@@ -714,12 +591,9 @@ async function finish_runner_call(input: {
 	callId: string;
 	status: "succeeded" | "failed";
 	errorMessage: string | null;
-	modelId?: string;
-	sourceBytes?: number;
 	requestBytes?: number;
 	responseBytes?: number;
 	responseStatus?: number;
-	outputTextBytes?: number;
 }) {
 	await post_host_json({
 		host: input.host,
@@ -731,281 +605,14 @@ async function finish_runner_call(input: {
 			callId: input.callId,
 			status: input.status,
 			errorMessage: input.errorMessage,
-			...(input.modelId === undefined ? {} : { modelId: input.modelId }),
-			...(input.sourceBytes === undefined ? {} : { sourceBytes: input.sourceBytes }),
 			...(input.requestBytes === undefined ? {} : { requestBytes: input.requestBytes }),
 			...(input.responseBytes === undefined ? {} : { responseBytes: input.responseBytes }),
 			...(input.responseStatus === undefined ? {} : { responseStatus: input.responseStatus }),
-			...(input.outputTextBytes === undefined ? {} : { outputTextBytes: input.outputTextBytes }),
 		},
 	});
 }
 
 export class BonoboHost extends WorkerEntrypoint<Env, BonoboHostProps> {
-	private async generateTextWithWorkersAiSourceImage(input: {
-		pluginRunId: string;
-		host: HostRuntime;
-		system: string;
-		prompt: string;
-		maxOutputTokens?: number;
-	}) {
-		if (!this.env.AI) {
-			return null;
-		}
-		require_capability(this.ctx.props.acceptedCapabilities, "ai.generateText");
-		require_capability(this.ctx.props.acceptedCapabilities, "uploads.source.read");
-
-		const sourceResult = await this.sourceTemporaryUrl({
-			pluginRunId: input.pluginRunId,
-			host: input.host,
-			expiresInSeconds: 5 * 60,
-		});
-		if (!is_record(sourceResult) || typeof sourceResult.url !== "string") {
-			throw new Error("Workers AI source URL is unavailable");
-		}
-		const sourceResponse = await fetch(sourceResult.url);
-		if (!sourceResponse.ok) {
-			throw new Error(`Workers AI source fetch returned HTTP ${sourceResponse.status}`);
-		}
-		const bytes = new Uint8Array(await sourceResponse.arrayBuffer());
-		if (bytes.byteLength > WORKERS_AI_SOURCE_IMAGE_BYTES) {
-			throw new Error("Workers AI source image exceeds the size limit");
-		}
-
-		const response = await this.env.AI.run(WORKERS_AI_VISION_MODEL, {
-			messages: [
-				{ role: "system", content: input.system },
-				{
-					role: "user",
-					content: [
-						{ type: "text", text: input.prompt },
-						{
-							type: "image_url",
-							image_url: {
-								url: `data:${image_content_type(sourceResponse.headers.get("Content-Type"))};base64,${bytes_to_base64(bytes)}`,
-							},
-						},
-					],
-				},
-			],
-			...(input.maxOutputTokens !== undefined ? { max_completion_tokens: input.maxOutputTokens } : {}),
-			temperature: 0.2,
-		});
-		const text = ai_text_response(response);
-		if (!text) {
-			throw new Error("Workers AI returned no text");
-		}
-		return { text, sourceBytes: bytes.byteLength };
-	}
-
-	private async generateTextWithWorkersAiText(input: { system: string; prompt: string; maxOutputTokens?: number }) {
-		if (!this.env.AI) {
-			return null;
-		}
-		require_capability(this.ctx.props.acceptedCapabilities, "ai.generateText");
-
-		const response = await this.env.AI.run(WORKERS_AI_VISION_MODEL, {
-			messages: [
-				{ role: "system", content: input.system },
-				{ role: "user", content: input.prompt },
-			],
-			...(input.maxOutputTokens !== undefined ? { max_completion_tokens: input.maxOutputTokens } : {}),
-			temperature: 0.2,
-		});
-		const text = ai_text_response(response);
-		if (!text) {
-			throw new Error("Workers AI returned no text");
-		}
-		return { text };
-	}
-
-	async generateText(input: unknown): Promise<unknown> {
-		const { pluginRunId, host } = parse_host_call_context(input);
-		if (!is_record(input)) throw new Error("Host call input must be an object");
-		const system = input.system;
-		const prompt = input.prompt;
-		const includeSourceImage = input.includeSourceImage;
-		const maxOutputTokens = input.maxOutputTokens;
-		if (typeof system !== "string" || system.length === 0 || byte_length(system) > 16_000) {
-			throw new Error("generateText.system is invalid");
-		}
-		if (typeof prompt !== "string" || prompt.length === 0 || byte_length(prompt) > 16_000) {
-			throw new Error("generateText.prompt is invalid");
-		}
-		if (includeSourceImage !== undefined && typeof includeSourceImage !== "boolean") {
-			throw new Error("generateText.includeSourceImage is invalid");
-		}
-		if (
-			maxOutputTokens !== undefined &&
-			(typeof maxOutputTokens !== "number" ||
-				!Number.isInteger(maxOutputTokens) ||
-				maxOutputTokens < 1 ||
-				maxOutputTokens > 4_000)
-		) {
-			throw new Error("generateText.maxOutputTokens is invalid");
-		}
-		if (this.env.AI) {
-			const callId = await claim_runner_call({
-				host,
-				pluginRunId,
-				pluginStableId: this.ctx.props.pluginStableId,
-				operation: "generateText",
-				systemBytes: byte_length(system),
-				promptBytes: byte_length(prompt),
-				includeSourceImage,
-				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-			});
-			try {
-				const workersAiResult: { text: string; sourceBytes?: number } | null =
-					includeSourceImage === true
-						? await this.generateTextWithWorkersAiSourceImage({
-								pluginRunId,
-								host,
-								system,
-								prompt,
-								...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-							})
-						: await this.generateTextWithWorkersAiText({
-								system,
-								prompt,
-								...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-							});
-				if (workersAiResult) {
-					await finish_runner_call({
-						host,
-						pluginRunId,
-						pluginStableId: this.ctx.props.pluginStableId,
-						callId,
-						status: "succeeded",
-						errorMessage: null,
-						modelId: WORKERS_AI_VISION_MODEL,
-						...(workersAiResult.sourceBytes !== undefined ? { sourceBytes: workersAiResult.sourceBytes } : {}),
-						outputTextBytes: byte_length(workersAiResult.text),
-					});
-					return { text: workersAiResult.text };
-				}
-				throw new Error("Workers AI binding is unavailable");
-			} catch (error) {
-				await finish_runner_call({
-					host,
-					pluginRunId,
-					pluginStableId: this.ctx.props.pluginStableId,
-					callId,
-					status: "failed",
-					errorMessage: "Workers AI generateText failed",
-					modelId: WORKERS_AI_VISION_MODEL,
-				});
-				throw error;
-			}
-		}
-		return await post_host_json({
-			host,
-			path: HOST_API_PATHS.generateText,
-			token: host.token,
-			pluginStableId: this.ctx.props.pluginStableId,
-			body: {
-				pluginRunId,
-				system,
-				prompt,
-				...(includeSourceImage !== undefined ? { includeSourceImage } : {}),
-				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-			},
-		});
-	}
-
-	async sourceTemporaryUrl(input: unknown): Promise<unknown> {
-		const { pluginRunId, host } = parse_host_call_context(input);
-		if (!is_record(input)) throw new Error("Host call input must be an object");
-		const expiresInSeconds = input.expiresInSeconds;
-		if (
-			expiresInSeconds !== undefined &&
-			(typeof expiresInSeconds !== "number" ||
-				!Number.isInteger(expiresInSeconds) ||
-				expiresInSeconds < 1 ||
-				expiresInSeconds > 15 * 60)
-		) {
-			throw new Error("sourceTemporaryUrl.expiresInSeconds is invalid");
-		}
-		return await post_host_json({
-			host,
-			path: HOST_API_PATHS.sourceTemporaryUrl,
-			token: host.token,
-			pluginStableId: this.ctx.props.pluginStableId,
-			body: {
-				pluginRunId,
-				...(expiresInSeconds !== undefined ? { expiresInSeconds } : {}),
-			},
-		});
-	}
-
-	async sourceBase64(input: unknown): Promise<unknown> {
-		require_capability(this.ctx.props.acceptedCapabilities, "uploads.source.read");
-		if (!is_record(input)) throw new Error("Host call input must be an object");
-		const maxBytesValue = input.maxBytes;
-		const maxBytes =
-			maxBytesValue === undefined
-				? LIMITS.sourceBytes
-				: typeof maxBytesValue === "number" && Number.isInteger(maxBytesValue) && maxBytesValue > 0
-					? Math.min(maxBytesValue, LIMITS.sourceBytes)
-					: null;
-		if (maxBytes === null) {
-			throw new Error("sourceBase64.maxBytes is invalid");
-		}
-
-		const urlResult = await this.sourceTemporaryUrl({
-			...input,
-			expiresInSeconds: 5 * 60,
-		});
-		if (!is_record(urlResult) || typeof urlResult.url !== "string") {
-			throw new Error("Source temporary URL is unavailable");
-		}
-		const response = await fetch(urlResult.url);
-		if (!response.ok) {
-			throw new Error(`Source fetch returned HTTP ${response.status}`);
-		}
-		const bytes = new Uint8Array(await response.arrayBuffer());
-		if (bytes.byteLength === 0 || bytes.byteLength > maxBytes) {
-			throw new Error("Source upload exceeds the size limit");
-		}
-		return {
-			bodyBase64: bytes_to_base64(bytes),
-			contentType: response.headers.get("Content-Type") ?? null,
-			bytes: bytes.byteLength,
-		};
-	}
-
-	async writeMarkdown(input: unknown): Promise<unknown> {
-		const { pluginRunId, host } = parse_host_call_context(input);
-		if (!is_record(input)) throw new Error("Host call input must be an object");
-		const markdown = input.markdown;
-		const path = input.path;
-		const overwrite = input.overwrite;
-		if (typeof markdown !== "string" || markdown.length === 0) {
-			throw new Error("writeMarkdown.markdown is invalid");
-		}
-		if (byte_length(markdown) > LIMITS.outputBytes) {
-			throw new Error("writeMarkdown.markdown exceeds the size limit");
-		}
-		if (path !== undefined && (typeof path !== "string" || path.length === 0 || path.length > 512)) {
-			throw new Error("writeMarkdown.path is invalid");
-		}
-		if (overwrite !== undefined && overwrite !== "replace" && overwrite !== "fail") {
-			throw new Error("writeMarkdown.overwrite is invalid");
-		}
-		return await post_host_json({
-			host,
-			path: HOST_API_PATHS.writeMarkdown,
-			token: host.token,
-			pluginStableId: this.ctx.props.pluginStableId,
-			body: {
-				pluginRunId,
-				markdown,
-				...(path !== undefined ? { path } : {}),
-				...(overwrite !== undefined ? { overwrite } : {}),
-			},
-		});
-	}
-
 	async secretGet(input: unknown): Promise<unknown> {
 		const { pluginRunId, host } = parse_host_call_context(input);
 		require_capability(this.ctx.props.acceptedCapabilities, "plugin.secrets.read");
@@ -1032,98 +639,57 @@ export class BonoboHost extends WorkerEntrypoint<Env, BonoboHostProps> {
 		}
 		return result.value;
 	}
+}
 
-	async outboundFetch(input: unknown): Promise<unknown> {
-		const { pluginRunId, host } = parse_host_call_context(input);
+// The plugin's `globalOutbound` Fetcher: every plugin `fetch()` lands here. Host-origin requests
+// pass through without claim/finish accounting (the host routes record their own run accounting);
+// every other origin is gated on the `outbound.fetch` capability and the per-run origin allowlist.
+export class BonoboOutbound extends WorkerEntrypoint<Env, BonoboOutboundProps> {
+	async fetch(request: Request): Promise<Response> {
+		const { pluginStableId, pluginRunId, host } = this.ctx.props;
+		const url = new URL(request.url);
+		if (url.origin === host.origin) {
+			return await fetch(request);
+		}
 		require_capability(this.ctx.props.acceptedCapabilities, "outbound.fetch");
-		if (!is_record(input)) throw new Error("Host call input must be an object");
-		const urlValue = input.url;
-		const methodValue = input.method;
-		const headersValue = input.headers;
-		const bodyText = input.bodyText;
-		const bodyBase64 = input.bodyBase64;
-		const responseType = input.responseType;
-		if (typeof urlValue !== "string" || urlValue.length === 0 || urlValue.length > 4096) {
-			throw new Error("outboundFetch.url is invalid");
-		}
-		let url: URL;
-		try {
-			url = new URL(urlValue);
-		} catch {
-			throw new Error("outboundFetch.url is invalid");
-		}
 		if (url.protocol !== "https:") {
-			throw new Error("outboundFetch.url must be HTTPS");
+			throw new Error("Plugin fetch must use HTTPS");
 		}
 		if (!this.ctx.props.outboundOrigins.includes(url.origin)) {
-			throw new Error("outboundFetch.url origin is not allowed");
+			throw new Error("Plugin fetch origin is not allowed");
 		}
-		const method = typeof methodValue === "string" && methodValue.length > 0 ? methodValue.toUpperCase() : "GET";
-		if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) {
-			throw new Error("outboundFetch.method is invalid");
-		}
-		const headers = new Headers();
-		if (headersValue !== undefined) {
-			if (!is_record(headersValue)) {
-				throw new Error("outboundFetch.headers is invalid");
-			}
-			for (const [name, value] of Object.entries(headersValue)) {
-				if (typeof value !== "string" || name.length === 0 || name.length > 128 || value.length > 16_000) {
-					throw new Error("outboundFetch.headers is invalid");
-				}
-				headers.set(name, value);
-			}
-		}
-		if (bodyText !== undefined && typeof bodyText !== "string") {
-			throw new Error("outboundFetch.bodyText is invalid");
-		}
-		if (bodyBase64 !== undefined && typeof bodyBase64 !== "string") {
-			throw new Error("outboundFetch.bodyBase64 is invalid");
-		}
-		if (bodyText !== undefined && bodyBase64 !== undefined) {
-			throw new Error("outboundFetch body is ambiguous");
-		}
-		if (responseType !== undefined && responseType !== "text" && responseType !== "base64") {
-			throw new Error("outboundFetch.responseType is invalid");
+		if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {
+			throw new Error("Plugin fetch method is invalid");
 		}
 
-		const requestBytes =
-			bodyBase64 !== undefined
-				? base64_to_bytes(bodyBase64).byteLength
-				: bodyText !== undefined
-					? byte_length(bodyText)
-					: 0;
+		const requestBody = request.body ? new Uint8Array(await request.arrayBuffer()) : null;
+		const requestBytes = requestBody ? requestBody.byteLength : 0;
 		const callId = await claim_runner_call({
 			host,
 			pluginRunId,
-			pluginStableId: this.ctx.props.pluginStableId,
+			pluginStableId,
 			operation: "outboundFetch",
 			requestBytes,
 		});
 		try {
 			const response = await fetch(
 				new Request(url, {
-					method,
-					headers,
-					body: bodyBase64 !== undefined ? base64_to_bytes(bodyBase64) : bodyText,
+					method: request.method,
+					headers: request.headers,
+					body: requestBody,
 					redirect: "manual",
 				}),
 			);
 			const bytes = new Uint8Array(await response.arrayBuffer());
 			if (bytes.byteLength > LIMITS.outboundResponseBytes) {
-				throw new Error("outboundFetch response exceeds the size limit");
+				throw new Error("Plugin fetch response exceeds the size limit");
 			}
 			console.log(
 				JSON.stringify({
 					tag: "plugin_runner_outbound",
-					pluginStableIdHash: (await sha256_hex(this.ctx.props.pluginStableId)).slice(0, 16),
+					pluginStableIdHash: (await sha256_hex(pluginStableId)).slice(0, 16),
 					urlHash: (await sha256_hex(`${url.origin}${url.pathname}`)).slice(0, 16),
-					bodyHash:
-						bodyText !== undefined
-							? (await sha256_hex(bodyText)).slice(0, 16)
-							: bodyBase64 !== undefined
-								? (await sha256_hex(bodyBase64)).slice(0, 16)
-								: null,
+					bodyHash: requestBody ? (await sha256_hex_bytes(requestBody)).slice(0, 16) : null,
 					status: response.status,
 					bytes: bytes.byteLength,
 				}),
@@ -1131,7 +697,7 @@ export class BonoboHost extends WorkerEntrypoint<Env, BonoboHostProps> {
 			await finish_runner_call({
 				host,
 				pluginRunId,
-				pluginStableId: this.ctx.props.pluginStableId,
+				pluginStableId,
 				callId,
 				status: "succeeded",
 				errorMessage: null,
@@ -1139,25 +705,17 @@ export class BonoboHost extends WorkerEntrypoint<Env, BonoboHostProps> {
 				responseBytes: bytes.byteLength,
 				responseStatus: response.status,
 			});
-			const contentType = response.headers.get("Content-Type") ?? "";
-			const responseHeaders = {
-				...(contentType ? { "Content-Type": contentType } : {}),
-			};
-			const shouldReturnText =
-				responseType === "text" ||
-				(responseType === undefined &&
-					(contentType.startsWith("text/") || contentType.includes("json") || contentType.includes("xml")));
-			return {
+			const responseBody = response.status === 204 || response.status === 205 || response.status === 304 ? null : bytes;
+			return new Response(responseBody, {
 				status: response.status,
-				ok: response.ok,
-				headers: responseHeaders,
-				...(shouldReturnText ? { bodyText: TEXT_DECODER.decode(bytes) } : { bodyBase64: bytes_to_base64(bytes) }),
-			};
+				statusText: response.statusText,
+				headers: response.headers,
+			});
 		} catch (error) {
 			await finish_runner_call({
 				host,
 				pluginRunId,
-				pluginStableId: this.ctx.props.pluginStableId,
+				pluginStableId,
 				callId,
 				status: "failed",
 				errorMessage: "Outbound fetch failed",
@@ -1193,8 +751,8 @@ async function handle_run(request: Request, env: Env, ctx?: PluginRunnerContext)
 			400,
 		);
 	}
-	if (!ctx?.exports?.BonoboHost) {
-		return json_response({ error: { code: "misconfigured", message: "BONOBO_HOST binding is unavailable" } }, 503);
+	if (!ctx?.exports?.BonoboHost || !ctx.exports.BonoboOutbound) {
+		return json_response({ error: { code: "misconfigured", message: "Runner entrypoint bindings are unavailable" } }, 503);
 	}
 
 	const startedAt = Date.now();
@@ -1202,6 +760,9 @@ async function handle_run(request: Request, env: Env, ctx?: PluginRunnerContext)
 	const pluginStableId = build_plugin_stable_id(validated.body);
 	const pluginStableIdHash = await sha256_hex(pluginStableId);
 	try {
+		// The run token is plugin-visible via env.BONOBO.host.token, so mask it in outputs
+		// exactly like secret values.
+		track_run_secret_value(validated.body.pluginRunId, validated.body.host.token);
 		const artifact = await env.PLUGIN_ARTIFACTS.get(validated.body.artifactKey);
 		if (!artifact) {
 			return json_response({ error: { code: "artifact_not_found", message: "Artifact not found" } }, 404);
@@ -1220,6 +781,14 @@ async function handle_run(request: Request, env: Env, ctx?: PluginRunnerContext)
 			props: {
 				pluginStableId,
 				acceptedCapabilities: validated.body.acceptedCapabilities,
+			},
+		});
+		const outboundBinding = ctx.exports.BonoboOutbound({
+			props: {
+				pluginStableId,
+				pluginRunId: validated.body.pluginRunId,
+				host: validated.body.host,
+				acceptedCapabilities: validated.body.acceptedCapabilities,
 				outboundOrigins: validated.body.outboundOrigins,
 			},
 		});
@@ -1232,9 +801,9 @@ async function handle_run(request: Request, env: Env, ctx?: PluginRunnerContext)
 				[PLUGIN_MODULE]: artifactRead.source,
 			},
 			env: {
-				BONOBO_HOST: hostBinding,
+				BONOBO_RPC: hostBinding,
 			},
-			globalOutbound: null,
+			globalOutbound: outboundBinding,
 			limits: DYNAMIC_WORKER_LIMITS,
 		}));
 		const pluginResponse = await worker

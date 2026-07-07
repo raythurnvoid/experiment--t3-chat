@@ -3,8 +3,6 @@ import { doc } from "convex-helpers/validators";
 import type { RegisteredAction, RegisteredMutation, RouteSpec } from "convex/server";
 import { v } from "convex/values";
 import { z } from "zod";
-import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
 
 import { components, internal } from "./_generated/api.js";
 import {
@@ -31,11 +29,7 @@ import {
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
-	MEDIA_DESCRIPTION_MODEL_ID,
 	create_generated_markdown_output_node,
-	get_billed_user_for_media_processing,
-	ingest_media_ai_usage_event,
-	r2_fetch_object_from_bucket,
 	type r2_finalize_uploaded_media_markdown_outputs_Result,
 	r2_get_download_url,
 	write_uploaded_media_markdown_output_objects,
@@ -52,7 +46,6 @@ const HOST_TOKEN_TTL_MS = 15 * 60 * 1000;
 const RUN_TTL_MS = 30 * 60 * 1000;
 const MAX_HOST_CALLS = 20;
 const UPLOAD_EVENT_SETTLE_DELAY_MS = 15 * 1000;
-const MULTIMODAL_GENERATE_TEXT_MODEL_ID = "gpt-4.1-mini" as const;
 
 const UPLOAD_COMPLETED_EVENT_TYPE = "files.upload.completed" as const;
 const RUN_REQUESTED_EVENT_TYPE = "files.run.requested" as const;
@@ -277,13 +270,7 @@ export const enqueue_upload_completed_runs = internalMutation({
 			artifactHash: string;
 		}> = [];
 		for (const { handler, installation, version } of candidateReads) {
-			if (
-				!installation ||
-				!version ||
-				installation.status !== "enabled" ||
-				!version.backend ||
-				!installation.acceptedCapabilities.includes("files.markdown.write")
-			) {
+			if (!installation || !version || installation.status !== "enabled" || !version.backend) {
 				continue;
 			}
 			const artifactHash = backend_artifact_hash(version);
@@ -373,7 +360,7 @@ export async function plugins_runtime_enqueue_manual_run(
 	if (!version) {
 		return Result({ _nay: { message: "Not found" } });
 	}
-	if (!version.backend || !args.installation.acceptedCapabilities.includes("files.markdown.write")) {
+	if (!version.backend) {
 		return Result({ _nay: { message: "Plugin cannot process files" } });
 	}
 	const artifactHash = backend_artifact_hash(version);
@@ -726,7 +713,6 @@ export const claim_host_call = internalMutation({
 		requiredCapabilities: doc(app_convex_schema, "plugins_workspace_installations").fields.acceptedCapabilities,
 		operation: v.union(
 			v.literal("writeMarkdown"),
-			v.literal("generateText"),
 			v.literal("sourceTemporaryUrl"),
 			v.literal("secretGet"),
 			v.literal("outboundFetch"),
@@ -922,7 +908,7 @@ export const host_write_markdown = internalAction({
 		const claimed = (await ctx.runMutation(internal.plugins_runtime.claim_host_call, {
 			hostTokenHash: await crypto_sha256_hex(args.hostToken),
 			pluginRunId: args.pluginRunId,
-			requiredCapabilities: ["files.markdown.write"],
+			requiredCapabilities: [],
 			operation: "writeMarkdown",
 			outputPath: args.path,
 			outputOverwrite: args.overwrite,
@@ -993,7 +979,7 @@ export const host_source_temporary_url = internalAction({
 		const claimed = (await ctx.runMutation(internal.plugins_runtime.claim_host_call, {
 			hostTokenHash: await crypto_sha256_hex(args.hostToken),
 			pluginRunId: args.pluginRunId,
-			requiredCapabilities: ["files.source.temporaryUrl"],
+			requiredCapabilities: [],
 			operation: "sourceTemporaryUrl",
 			expiresInSeconds: expiresIn,
 		})) as claim_host_call_Result;
@@ -1105,129 +1091,6 @@ export const host_secret_get = internalAction({
 
 type host_secret_get_Result =
 	typeof host_secret_get extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-export const host_generate_text = internalAction({
-	args: {
-		hostToken: v.string(),
-		pluginRunId: v.string(),
-		system: v.string(),
-		prompt: v.string(),
-		includeSourceImage: v.optional(v.boolean()),
-		maxOutputTokens: v.optional(v.number()),
-	},
-	returns: v_result({ _yay: v.object({ text: v.string() }) }),
-	handler: async (ctx, args) => {
-		const requiredCapabilities: Array<"uploads.source.read" | "ai.generateText"> =
-			args.includeSourceImage === false ? ["ai.generateText"] : ["uploads.source.read", "ai.generateText"];
-		const systemBytes = files_get_utf8_byte_size(args.system);
-		const promptBytes = files_get_utf8_byte_size(args.prompt);
-		const claimed = (await ctx.runMutation(internal.plugins_runtime.claim_host_call, {
-			hostTokenHash: await crypto_sha256_hex(args.hostToken),
-			pluginRunId: args.pluginRunId,
-			requiredCapabilities,
-			operation: "generateText",
-			systemBytes,
-			promptBytes,
-			includeSourceImage: args.includeSourceImage,
-			maxOutputTokens: args.maxOutputTokens,
-		})) as claim_host_call_Result;
-		if (claimed._nay) {
-			return Result({ _nay: { message: claimed._nay.message } });
-		}
-		const sourceImageR2Key = args.includeSourceImage === false ? null : claimed._yay.sourceAsset.r2Key;
-		if (args.includeSourceImage !== false && !sourceImageR2Key) {
-			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-				callId: claimed._yay.callId,
-				status: "failed",
-				errorMessage: "Source upload is not available",
-			});
-			return Result({ _nay: { message: "Source upload is not available" } });
-		}
-
-		const billedUser = await get_billed_user_for_media_processing(ctx, claimed._yay.sourceFileNode);
-		if (!billedUser) {
-			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-				callId: claimed._yay.callId,
-				status: "failed",
-				errorMessage: "Insufficient credits",
-			});
-			return Result({ _nay: { message: "Insufficient credits" } });
-		}
-
-		let result: Awaited<ReturnType<typeof generateText>>;
-		let sourceImageBytes: Uint8Array | null = null;
-		let modelId: string = MEDIA_DESCRIPTION_MODEL_ID;
-		try {
-			sourceImageBytes = sourceImageR2Key
-				? new Uint8Array(await (await r2_fetch_object_from_bucket({ key: sourceImageR2Key })).arrayBuffer())
-				: null;
-			modelId = sourceImageBytes ? MULTIMODAL_GENERATE_TEXT_MODEL_ID : MEDIA_DESCRIPTION_MODEL_ID;
-			result = await generateText({
-				model: openai(modelId),
-				system: args.system,
-				messages: [
-					{
-						role: "user",
-						content: sourceImageBytes
-							? [
-									{ type: "text", text: args.prompt },
-									{
-										type: "image",
-										image: sourceImageBytes,
-										mediaType: claimed._yay.sourceFileNode.contentType,
-									},
-								]
-							: args.prompt,
-					},
-				],
-				maxOutputTokens: args.maxOutputTokens ?? 900,
-			});
-			await ingest_media_ai_usage_event(ctx, {
-				sourceFileNode: claimed._yay.sourceFileNode,
-				billedUser,
-				modelId,
-				operationId: composite_id(
-					"plugin",
-					"generate_text",
-					String(claimed._yay.run._id),
-					String(claimed._yay.run.hostCallCount),
-				),
-				inputTokens: result.totalUsage.inputTokens ?? 0,
-				outputTokens: result.totalUsage.outputTokens ?? 0,
-			});
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-				callId: claimed._yay.callId,
-				status: "failed",
-				errorMessage: message,
-				modelId,
-				...(sourceImageBytes ? { sourceBytes: sourceImageBytes.byteLength } : {}),
-			});
-			return Result({
-				_nay: {
-					message,
-				},
-			});
-		}
-
-		await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-			callId: claimed._yay.callId,
-			status: "succeeded",
-			errorMessage: null,
-			modelId,
-			...(sourceImageBytes ? { sourceBytes: sourceImageBytes.byteLength } : {}),
-			outputTextBytes: files_get_utf8_byte_size(result.text),
-		});
-
-		return Result({ _yay: { text: result.text } });
-	},
-});
-
-type host_generate_text_Result =
-	typeof host_generate_text extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -1413,11 +1276,7 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 						const bodyValidator = z
 							.object({
 								pluginRunId: z.string(),
-								operation: z.union([z.literal("generateText"), z.literal("outboundFetch")]),
-								systemBytes: z.number().int().min(0).optional(),
-								promptBytes: z.number().int().min(0).optional(),
-								includeSourceImage: z.boolean().optional(),
-								maxOutputTokens: z.number().int().min(1).max(4000).optional(),
+								operation: z.literal("outboundFetch"),
 								requestBytes: z.number().int().min(0).optional(),
 							})
 							.strict();
@@ -1431,21 +1290,11 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 							if (body._nay) {
 								return { status: 400, body: { message: body._nay.message } } as const;
 							}
-							const requiredCapabilities =
-								body._yay.operation === "generateText"
-									? body._yay.includeSourceImage
-										? (["uploads.source.read", "ai.generateText"] as const)
-										: (["ai.generateText"] as const)
-									: (["outbound.fetch"] as const);
 							const result = (await ctx.runMutation(internal.plugins_runtime.claim_host_call, {
 								hostTokenHash: await crypto_sha256_hex(token),
 								pluginRunId: body._yay.pluginRunId,
-								requiredCapabilities: [...requiredCapabilities],
+								requiredCapabilities: ["outbound.fetch"],
 								operation: body._yay.operation,
-								systemBytes: body._yay.systemBytes,
-								promptBytes: body._yay.promptBytes,
-								includeSourceImage: body._yay.includeSourceImage,
-								maxOutputTokens: body._yay.maxOutputTokens,
 								requestBytes: body._yay.requestBytes,
 							})) as claim_host_call_Result;
 							if (result._nay) {
@@ -1543,7 +1392,7 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 				}))(),
 			},
 		}))(),
-		...((path = "/api/internal/plugins/host/write-markdown" as const satisfies api_schemas_Main_Path) => ({
+		...((path = "/api/plugins/v1/write-markdown" as const satisfies api_schemas_Main_Path) => ({
 			[path]: {
 				...((method = "POST" as const satisfies RouteSpec["method"]) => ({
 					[method]: (() => {
@@ -1599,7 +1448,7 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 				}))(),
 			},
 		}))(),
-		...((path = "/api/internal/plugins/host/source-temporary-url" as const satisfies api_schemas_Main_Path) => ({
+		...((path = "/api/plugins/v1/source-temporary-url" as const satisfies api_schemas_Main_Path) => ({
 			[path]: {
 				...((method = "POST" as const satisfies RouteSpec["method"]) => ({
 					[method]: (() => {
@@ -1686,64 +1535,6 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 							}
 
 							return { status: 200, body: { value: result._yay } } as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: {};
-							searchParams: {};
-							headers: { Authorization: string };
-							body: z.infer<typeof bodyValidator>;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-		...((path = "/api/internal/plugins/host/generate-text" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: (() => {
-						const bodyValidator = z
-							.object({
-								pluginRunId: z.string(),
-								system: z.string().min(1).max(16_000),
-								prompt: z.string().min(1).max(16_000),
-								includeSourceImage: z.boolean().optional(),
-								maxOutputTokens: z.number().int().min(1).max(4000).optional(),
-							})
-							.strict();
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const token = bearer_token(request);
-							if (!token) {
-								return { status: 401, body: { message: "Unauthorized" } } as const;
-							}
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return { status: 400, body: { message: body._nay.message } } as const;
-							}
-							const result = (await ctx.runAction(internal.plugins_runtime.host_generate_text, {
-								hostToken: token,
-								pluginRunId: body._yay.pluginRunId,
-								system: body._yay.system,
-								prompt: body._yay.prompt,
-								includeSourceImage: body._yay.includeSourceImage,
-								maxOutputTokens: body._yay.maxOutputTokens,
-							})) as host_generate_text_Result;
-							if (result._nay) {
-								return { status: 400, body: { message: result._nay.message } } as const;
-							}
-
-							return { status: 200, body: { text: result._yay.text } } as const;
 						};
 
 						router.route({

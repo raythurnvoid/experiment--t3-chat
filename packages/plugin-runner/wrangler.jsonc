@@ -18,9 +18,6 @@
 			"CLOUDFLARE_MEDIA_TRANSFORMER_SECRET"
 		]
 	},
-	"ai": {
-		"binding": "AI"
-	},
 	"worker_loaders": [{ "binding": "LOADER" }],
 	"r2_buckets": [
 		{

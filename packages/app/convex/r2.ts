@@ -22,16 +22,13 @@ import {
 } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
-import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
+import { should_never_happen } from "../shared/shared-utils.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
-import { billing_event } from "../server/billing.ts";
-import { billing_ingest_events } from "./billing.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_ROOT_ID,
@@ -80,19 +77,6 @@ if (!process.env.CLOUDFLARE_EVENTS_SECRET) {
 
 const CLOUDFLARE_EVENTS_SECRET = process.env.CLOUDFLARE_EVENTS_SECRET;
 
-export const MEDIA_DESCRIPTION_MODEL_ID = "gpt-5.4-mini" as const satisfies ai_chat_ModelId;
-const MEDIA_TRANSCRIPTION_MODEL_ID = "gpt-4o-transcribe";
-
-function media_compute_token_usage_cost_cents(args: { modelId: string; inputTokens: number; outputTokens: number }) {
-	switch (args.modelId) {
-		case MEDIA_TRANSCRIPTION_MODEL_ID:
-			return args.inputTokens * 0.0006 + args.outputTokens * 0.001;
-		case MEDIA_DESCRIPTION_MODEL_ID:
-		default:
-			return args.inputTokens * 0.00003 + args.outputTokens * 0.00015;
-	}
-}
-
 /**
  * Narrow file content-storage scope to a real organization/workspace at a sink that cannot accept the
  * reserved external-mount scope. Upload/media processing only ever runs on real user files, so the
@@ -125,62 +109,6 @@ function r2_require_real_author(createdBy: Id<"users"> | typeof users_SYSTEM_AUT
 		throw should_never_happen(errorMessage, errorData);
 	}
 	return createdBy;
-}
-
-export async function ingest_media_ai_usage_event(
-	ctx: ActionCtx | MutationCtx,
-	args: {
-		sourceFileNode: Doc<"files_nodes">;
-		billedUser: Doc<"users">;
-		modelId: string;
-		operationId: string;
-		inputTokens: number;
-		outputTokens: number;
-	},
-) {
-	if (args.inputTokens + args.outputTokens === 0) {
-		return;
-	}
-
-	const authorUserId = r2_require_real_author(args.sourceFileNode.createdBy);
-	await billing_ingest_events(ctx, {
-		billedUserEvents: [
-			{
-				billedUser: args.billedUser,
-				event: billing_event({
-					name: "ai_usage",
-					externalCustomerId: args.billedUser._id,
-					externalMemberId: authorUserId,
-					externalId: composite_id(
-						"billing",
-						"ai_usage",
-						args.billedUser._id,
-						args.sourceFileNode.createdBy,
-						args.sourceFileNode.organizationId,
-						args.sourceFileNode.workspaceId,
-						`media:${args.sourceFileNode._id}`,
-						args.operationId,
-					),
-					metadata: {
-						amount: media_compute_token_usage_cost_cents({
-							modelId: args.modelId,
-							inputTokens: args.inputTokens,
-							outputTokens: args.outputTokens,
-						}),
-						actorUserId: authorUserId,
-						billedUserId: args.billedUser._id,
-						organizationId: args.sourceFileNode.organizationId,
-						workspaceId: args.sourceFileNode.workspaceId,
-						modelId: args.modelId,
-						inputTokens: args.inputTokens,
-						outputTokens: args.outputTokens,
-						threadId: `media:${args.sourceFileNode._id}`,
-						messageId: args.operationId,
-					},
-				}),
-			},
-		],
-	});
 }
 
 const r2 = new R2(components.r2, {

@@ -581,8 +581,8 @@ function review_prompt(args: {
 		'- "passed": none of the above. Apply these rules strictly: when no rejected or flagged ' +
 		'condition holds, the verdict is "passed" even if findings note secret usage.\n' +
 		'"Secret values" means the raw injected values of the secrets listed below — not content derived ' +
-		"from user files or model responses. Writing derived content to file outputs is normal " +
-		"when a file-write capability is declared.\n" +
+		"from user files or model responses. Writing derived content to file outputs is normal: " +
+		"writing outputs is intrinsic to a plugin run.\n" +
 		"Secrets that hold a host-configured URL or base URL count as declared outbound origins: " +
 		"the host enforces a runtime egress allowlist, so requests built from such secrets " +
 		"are not exfiltration by themselves.\n" +

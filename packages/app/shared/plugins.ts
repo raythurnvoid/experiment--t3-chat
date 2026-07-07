@@ -9,19 +9,7 @@ export const plugins_SECRET_VALUE_MAX_BYTES = 16_000;
 
 export const plugins_EVENT_TYPES = ["files.upload.completed"] as const;
 
-export const plugins_CAPABILITIES = [
-	"uploads.source.read",
-	"files.source.temporaryUrl",
-	"files.markdown.write",
-	"plugin.secrets.read",
-	"outbound.fetch",
-	"ai.generateText",
-	"media.video.frame",
-	"media.video.audioSegment",
-	"pdf.toMarkdown",
-	"gallery.media.read",
-	"gallery.documents.read",
-] as const;
+export const plugins_CAPABILITIES = ["plugin.secrets.read", "outbound.fetch"] as const;
 export type plugins_Capability = (typeof plugins_CAPABILITIES)[number];
 
 const plugins_sha256_regex = /^sha256:[a-f0-9]{64}$/u;
