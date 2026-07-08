@@ -104,7 +104,7 @@ const rebrand_cleanup_tables = [
 	"files_yjs_docs_last_sequences",
 	"files_yjs_snapshots",
 	"files_yjs_updates",
-	"github_sources",
+	"github_mounts",
 	"notifications",
 	"public_api_grants",
 	"quotas",

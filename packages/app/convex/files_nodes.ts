@@ -1352,6 +1352,152 @@ export async function files_nodes_db_finalize_file_node_creation(
 	return Result({ _yay: null });
 }
 
+/**
+ * Delete one bounded batch of a subtree: range-scan `files_nodes` by `treePath` over
+ * `[prefix, prefix + "￿")` and, for each node, delete its committed chunks, `file_stats`,
+ * metadata docs, and R2 asset (object + doc, gated on `r2Key`) BEFORE the node doc itself, so a
+ * crash never orphans children. Asset and node deletion are one budget unit pair so a node never
+ * commits with a missing asset reference. Callers drive this to `done: true` by calling repeatedly.
+ */
+export async function files_nodes_db_delete_subtree_batch(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Doc<"files_nodes">["organizationId"];
+		workspaceId: Doc<"files_nodes">["workspaceId"];
+		/** `files_nodes.treePath` prefix of the subtree, including the trailing slash (e.g. `/<root>/`). */
+		treePathPrefix: string;
+		batchSize: number;
+	},
+) {
+	const lower = args.treePathPrefix;
+	const upper = `${args.treePathPrefix}￿`;
+
+	let deletedCount = 0;
+	while (deletedCount < args.batchSize) {
+		const node = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_treePath", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.gte("treePath", lower)
+					.lt("treePath", upper),
+			)
+			.order("desc")
+			.first();
+		if (!node) {
+			break;
+		}
+
+		const remainingPlainTextChunks = args.batchSize - deletedCount;
+		const plainTextChunks = await ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("fileNodeId", node._id),
+			)
+			.take(remainingPlainTextChunks);
+		for (const chunk of plainTextChunks) {
+			await ctx.db.delete("files_plain_text_chunks", chunk._id);
+			deletedCount++;
+		}
+		if (plainTextChunks.length > 0) {
+			continue;
+		}
+
+		const remainingMarkdownChunks = args.batchSize - deletedCount;
+		const markdownChunks = await ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("fileNodeId", node._id),
+			)
+			.take(remainingMarkdownChunks);
+		for (const chunk of markdownChunks) {
+			await ctx.db.delete("files_markdown_chunks", chunk._id);
+			deletedCount++;
+		}
+		if (markdownChunks.length > 0) {
+			continue;
+		}
+
+		const remainingFileStats = args.batchSize - deletedCount;
+		const fileStats = await ctx.db
+			.query("file_stats")
+			.withIndex("by_organization_workspace_fileNode", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("fileNodeId", node._id),
+			)
+			.take(remainingFileStats);
+		for (const stats of fileStats) {
+			await ctx.db.delete("file_stats", stats._id);
+			deletedCount++;
+		}
+		if (fileStats.length > 0) {
+			continue;
+		}
+
+		const remainingMetadataDocs = args.batchSize - deletedCount;
+		const metadataDocs = await ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("fileNodeId", node._id),
+			)
+			.take(remainingMetadataDocs);
+		for (const metadataDoc of metadataDocs) {
+			await ctx.db.delete("files_metadata_docs", metadataDoc._id);
+			deletedCount++;
+		}
+		if (metadataDocs.length > 0) {
+			continue;
+		}
+
+		if (node.assetId) {
+			const asset = await ctx.db.get("files_r2_assets", node.assetId);
+			if (asset) {
+				if (deletedCount + 2 > args.batchSize) {
+					break;
+				}
+				if (asset.r2Key) {
+					await r2_delete_object(ctx, asset.r2Key);
+				}
+				await ctx.db.delete("files_r2_assets", asset._id);
+				await ctx.db.delete("files_nodes", node._id);
+				deletedCount += 2;
+				continue;
+			}
+		}
+
+		if (deletedCount >= args.batchSize) {
+			break;
+		}
+		await ctx.db.delete("files_nodes", node._id);
+		deletedCount++;
+	}
+
+	const remaining = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_treePath", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.gte("treePath", lower)
+				.lt("treePath", upper),
+		)
+		.first();
+
+	return { done: remaining === null, deletedCount };
+}
+
 export const finalize_file_node_creation = internalMutation({
 	args: {
 		organizationId: doc(app_convex_schema, "files_r2_assets").fields.organizationId,
@@ -1408,25 +1554,26 @@ export const create_file_node_internal = internalAction({
 		),
 		path: v.string(),
 		rawText: v.string(),
-		sourceId: v.optional(v.id("github_sources")),
+		mountId: v.optional(v.id("github_mounts")),
 		syncRunId: v.optional(v.string()),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
-		if ((args.sourceId == null) !== (args.syncRunId == null)) {
-			return Result({ _nay: { message: "External source sync run requires sourceId and syncRunId" } });
+		if ((args.mountId == null) !== (args.syncRunId == null)) {
+			return Result({ _nay: { message: "External mount sync run requires mountId and syncRunId" } });
 		}
-		if (args.sourceId != null && args.syncRunId != null) {
+		if (args.mountId != null && args.syncRunId != null) {
 			// Sync-run validation is a GitHub-mirror concept; plugin source publishes never pass it.
 			if (args.workspaceId !== organizations_GLOBAL_GITHUB_WORKSPACE_ID) {
-				return Result({ _nay: { message: "External source sync run requires the GITHUB workspace scope" } });
+				return Result({ _nay: { message: "External mount sync run requires the GITHUB workspace scope" } });
 			}
-			const source = await ctx.runQuery(internal.github_sources.get_source, { sourceId: args.sourceId });
-			if (!source || source.syncRunId !== args.syncRunId || source.status !== "running") {
-				return Result({ _nay: { message: "External source sync was superseded" } });
+			const mount = await ctx.runQuery(internal.github_mounts.get_mount, { mountId: args.mountId });
+			if (!mount || mount.syncRunId !== args.syncRunId || mount.status !== "running") {
+				return Result({ _nay: { message: "External mount sync was superseded" } });
 			}
-			if (args.path !== `/${source.name}` && !args.path.startsWith(`/${source.name}/`)) {
-				return Result({ _nay: { message: "External source path does not belong to the active mount" } });
+			// Materialized paths always live inside the run's pending commit root `/<name>/<sha>/...`.
+			if (mount.pendingCommitSha == null || !args.path.startsWith(`/${mount.name}/${mount.pendingCommitSha}/`)) {
+				return Result({ _nay: { message: "External mount path does not belong to the pending sync root" } });
 			}
 		}
 

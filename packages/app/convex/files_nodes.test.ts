@@ -6167,6 +6167,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 
 		const created = await t.action(internal.files_nodes.create_file_node_internal, {
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: MOUNT_FILE_PATH,
 			rawText: MOUNT_RAW_TEXT,
 		});
@@ -6320,6 +6321,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 
 		const created = await t.action(internal.files_nodes.create_file_node_internal, {
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: MOUNT_FILE_PATH,
 			rawText: MOUNT_RAW_TEXT,
 		});
@@ -6363,6 +6365,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 
 		const created = await t.action(internal.files_nodes.create_file_node_internal, {
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: MOUNT_FILE_PATH,
 			rawText: MOUNT_RAW_TEXT,
 		});
@@ -6399,6 +6402,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 
 		const oversizePath = "/t3-chat/big.txt";
 		const result = await t.action(internal.files_nodes.create_file_node_internal, {
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: oversizePath,
 			rawText: "a".repeat(files_MAX_TEXT_CONTENT_BYTES + 1),
 		});

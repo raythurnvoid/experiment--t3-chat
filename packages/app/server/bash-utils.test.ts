@@ -9,6 +9,7 @@ import {
 import {
 	bash_EXTERNAL_MOUNTS_ROOT,
 	bash_PLUGINS_MOUNT_ROOT,
+	bash_external_mounts_fan_out_db_files_path,
 	bash_resolve_db_files_shell_path,
 	bash_read_only_mount_error,
 	bash_DbFilesFs,
@@ -17,6 +18,7 @@ import {
 
 const currentWorkspacePath = "/home/cloud-usr/w/personal/home";
 const MOUNT_NAME = "t3-chat";
+const MOUNT_COMMIT_SHA = "a".repeat(40);
 const PLUGIN_NAME = "media";
 const PLUGIN_VERSION_ID = "plugins_versions_1" as Id<"plugins_versions">;
 
@@ -36,7 +38,7 @@ function create_db_files_roots(): bash_DbFilesRoots {
 		userId: "user_1" as Id<"users">,
 	};
 	const appFs = new bash_DbFilesFs({ ctx, ctxData, currentWorkspacePath, allowDbFilesMkdir: false });
-	const externalMountsDbFilesFs = new bash_DbFilesFs({
+	const mountFs = new bash_DbFilesFs({
 		ctx,
 		ctxData: {
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
@@ -45,8 +47,9 @@ function create_db_files_roots(): bash_DbFilesRoots {
 			workspaceName: "GITHUB",
 			userId: ctxData.userId,
 		},
-		currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
+		currentWorkspacePath: `${bash_EXTERNAL_MOUNTS_ROOT}/${MOUNT_NAME}`,
 		allowDbFilesMkdir: false,
+		dbFilesPathPrefix: `/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}`,
 		readOnlySource: "codebase",
 	});
 	const pluginFs = new bash_DbFilesFs({
@@ -70,7 +73,7 @@ function create_db_files_roots(): bash_DbFilesRoots {
 		},
 		externalMounts: {
 			currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
-			fs: externalMountsDbFilesFs,
+			mounts: new Map([[MOUNT_NAME, { name: MOUNT_NAME, commitSha: MOUNT_COMMIT_SHA, fs: mountFs }]]),
 		},
 		plugins: {
 			currentWorkspacePath: bash_PLUGINS_MOUNT_ROOT,
@@ -82,37 +85,38 @@ function create_db_files_roots(): bash_DbFilesRoots {
 }
 
 describe("bash_resolve_db_files_shell_path", () => {
-	test("classifies the synthetic mounts root", () => {
+	test("classifies the synthetic mounts root without a stored tree", () => {
 		const dbFilesRoots = create_db_files_roots();
 		for (const path of [bash_EXTERNAL_MOUNTS_ROOT, "/.mounts/", "/.mounts/."]) {
 			const target = bash_resolve_db_files_shell_path(path, dbFilesRoots);
 			expect(target.kind).toBe("external_mounts_root");
-			expect(target.dbFilesPath).toBe("/");
+			expect(target.dbFilesPath).toBeNull();
 			expect(target.basePath).toBe(bash_EXTERNAL_MOUNTS_ROOT);
-			expect(target.fs).toBe(dbFilesRoots.externalMounts.fs);
 		}
 	});
 
-	test("classifies an external mount path and strips the /.mounts prefix to the stored /<name>/<rel> path", () => {
+	test("classifies a synced mount path to its commit-keyed stored tree", () => {
 		const dbFilesRoots = create_db_files_roots();
+		const mountFs = dbFilesRoots.externalMounts.mounts.get(MOUNT_NAME)?.fs;
 
 		const dir = bash_resolve_db_files_shell_path(`/.mounts/${MOUNT_NAME}`, dbFilesRoots);
 		expect(dir.kind).toBe("external_mount");
-		expect(dir.dbFilesPath).toBe(`/${MOUNT_NAME}`);
-		expect(dir.fs).toBe(dbFilesRoots.externalMounts.fs);
+		expect(dir.dbFilesPath).toBe(`/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}`);
+		expect(dir.fs).toBe(mountFs);
+		expect(dir.basePath).toBe(`${bash_EXTERNAL_MOUNTS_ROOT}/${MOUNT_NAME}`);
 
 		const file = bash_resolve_db_files_shell_path(`/.mounts/${MOUNT_NAME}/src/index.ts`, dbFilesRoots);
 		expect(file.kind).toBe("external_mount");
-		expect(file.dbFilesPath).toBe(`/${MOUNT_NAME}/src/index.ts`);
+		expect(file.dbFilesPath).toBe(`/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}/src/index.ts`);
 	});
 
-	test("classifies any external-mount-looking path by stripping the /.mounts prefix", () => {
+	test("resolves unknown mount names as plain non-db paths (no existence leak)", () => {
 		const dbFilesRoots = create_db_files_roots();
 		for (const path of ["/.mounts/nope", "/.mounts/nope/README.md"]) {
 			const target = bash_resolve_db_files_shell_path(path, dbFilesRoots);
-			expect(target.kind).toBe("external_mount");
-			expect(target.dbFilesPath).toBe(path.replace("/.mounts", ""));
-			expect(target.fs).toBe(dbFilesRoots.externalMounts.fs);
+			expect(target.kind).toBe("outside_db_files");
+			expect(target.dbFilesPath).toBeNull();
+			expect(target.fs).toBe(dbFilesRoots.app.fs);
 		}
 	});
 
@@ -145,7 +149,7 @@ describe("bash_resolve_db_files_shell_path", () => {
 
 		const stillMount = bash_resolve_db_files_shell_path(`/.mounts/${MOUNT_NAME}/src/../README.md`, dbFilesRoots);
 		expect(stillMount.kind).toBe("external_mount");
-		expect(stillMount.dbFilesPath).toBe(`/${MOUNT_NAME}/README.md`);
+		expect(stillMount.dbFilesPath).toBe(`/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}/README.md`);
 
 		// `/.mounts/../tmp` normalizes to `/tmp`, which is outside db files trees, never app.
 		const escaped = bash_resolve_db_files_shell_path("/.mounts/../tmp/x", dbFilesRoots);
@@ -156,11 +160,27 @@ describe("bash_resolve_db_files_shell_path", () => {
 	test("renderShellPath round-trips a stored path back to the shell path the user sees", () => {
 		const dbFilesRoots = create_db_files_roots();
 
+		// The commit segment never appears in shell paths.
 		const mount = bash_resolve_db_files_shell_path(`/.mounts/${MOUNT_NAME}/README.md`, dbFilesRoots);
-		expect(mount.renderShellPath(`/${MOUNT_NAME}/README.md`)).toBe(`/.mounts/${MOUNT_NAME}/README.md`);
+		expect(mount.renderShellPath(`/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}/README.md`)).toBe(
+			`/.mounts/${MOUNT_NAME}/README.md`,
+		);
 
 		const app = bash_resolve_db_files_shell_path(`${currentWorkspacePath}/notes.md`, dbFilesRoots);
 		expect(app.renderShellPath("/notes.md")).toBe(`${currentWorkspacePath}/notes.md`);
+	});
+
+	test("bash_external_mounts_fan_out_db_files_path strips the commit segment to the fan-out shape", () => {
+		const dbFilesRoots = create_db_files_roots();
+		const mount = dbFilesRoots.externalMounts.mounts.get(MOUNT_NAME);
+		if (!mount) throw new Error("fixture mount missing");
+
+		expect(bash_external_mounts_fan_out_db_files_path(mount, `/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}`)).toBe(
+			`/${MOUNT_NAME}`,
+		);
+		expect(
+			bash_external_mounts_fan_out_db_files_path(mount, `/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}/src/index.ts`),
+		).toBe(`/${MOUNT_NAME}/src/index.ts`);
 	});
 
 	test("classifies the synthetic plugins root without a stored tree", () => {

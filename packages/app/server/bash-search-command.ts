@@ -12,6 +12,8 @@ import {
 	bash_is_path_under_read_only_mounts,
 	bash_normalize_path,
 	bash_parse_limit,
+	bash_external_mounts_fan_out_db_files_path,
+	bash_external_mounts_fan_out_paginate,
 	bash_plugins_fan_out_db_files_path,
 	bash_plugins_fan_out_paginate,
 	bash_read_option_value,
@@ -169,18 +171,19 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 			cursor = resolvedCursor._yay;
 		}
 
-		// search runs within exactly one indexed tree (the workspace or a single mount). The scope is the
-		// explicit --path folder when given, otherwise the cwd. Classify it to pick the right scope IDs.
+		// search runs within one indexed tree (the workspace or a single mount) or fans out across a
+		// mount root (`/.mounts`, `/.plugins`). The scope is the explicit --path folder when given,
+		// otherwise the cwd. Classify it to pick the right scope IDs.
 		const scopeShellPath = parsed._yay.pathShell ?? commandCtx.cwd;
 		const scope = bash_resolve_db_files_shell_path(scopeShellPath, dbFilesRoots);
 
-		if (scope.kind === "external_mounts_root") {
+		// The `/.mounts` root fans out one indexed search per synced mount under a
+		// composite cursor; with zero synced mounts the root itself does not exist.
+		if (scope.kind === "external_mounts_root" && dbFilesRoots.externalMounts.mounts.size === 0) {
 			return {
 				stdout: "",
-				stderr:
-					"search: choose a single mount to search; cd into a mount or pass --path /.mounts/<name> <content terms>.\n" +
-					"Run 'ls /.mounts' to list the available mounts.\n",
-				exitCode: bash_COMMAND_EXIT_USAGE,
+				stderr: `search: ${scope.basePath}: No such file or directory\n`,
+				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
 		// The `/.plugins` root fans out one indexed search per installed plugin under a
@@ -194,7 +197,12 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 		}
 		// An explicit --path outside any indexed tree (e.g. /tmp or a not-installed plugin)
 		// has nothing to search.
-		if (parsed._yay.pathShell != null && scope.dbFilesPath == null && scope.kind !== "plugins_root") {
+		if (
+			parsed._yay.pathShell != null &&
+			scope.dbFilesPath == null &&
+			scope.kind !== "plugins_root" &&
+			scope.kind !== "external_mounts_root"
+		) {
 			const normalizedScopeShellPath = bash_normalize_path(scopeShellPath);
 			const mountHint = normalizedScopeShellPath.startsWith("/.mounts")
 				? "/.mounts/<name>"
@@ -234,12 +242,51 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 
 		// Scope the chunk scan to the classified folder; the workspace/mount root maps to the whole tree.
 		const path = scope.dbFilesPath != null && scope.dbFilesPath !== "/" ? scope.dbFilesPath : undefined;
-		// The `/.plugins` root scope prints and continues as `--path /.plugins` even though the
-		// fan-out has no single stored tree path.
-		const scopePath = scope.kind === "plugins_root" ? "/" : path;
+		// The `/.plugins` and `/.mounts` root scopes print and continue as `--path <root>` even
+		// though the fan-out has no single stored tree path.
+		const scopePath = scope.kind === "plugins_root" || scope.kind === "external_mounts_root" ? "/" : path;
 
 		let res: files_nodes_text_search_files_Result;
-		if (scope.kind === "plugins_root") {
+		if (scope.kind === "external_mounts_root") {
+			// One text search per synced mount, each scoped to its commit-keyed tree.
+			const fanOut = await bash_external_mounts_fan_out_paginate({
+				command: "search",
+				externalMounts: dbFilesRoots.externalMounts,
+				cursor,
+				limit: bash_clamp_listing_page_limit(parsed._yay.limit),
+				runPage: async (pageArgs) => {
+					const pageResult = (await ctx.runQuery(internal.files_nodes.text_search_files, {
+						organizationId: pageArgs.mount.fs.ctxData.organizationId,
+						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
+						userId: pageArgs.mount.fs.ctxData.userId,
+						query: parsed._yay.query,
+						numItems: pageArgs.numItems,
+						cursor: pageArgs.innerCursor,
+						pathPrefix: `/${pageArgs.mount.name}/${pageArgs.mount.commitSha}`,
+					})) as files_nodes_text_search_files_Result;
+					return {
+						items: pageResult.items.map((item) => ({
+							...item,
+							path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path),
+						})),
+						continueCursor: pageResult.continueCursor,
+						isDone: pageResult.isDone,
+					};
+				},
+			});
+			if (fanOut._nay) {
+				return {
+					stdout: "",
+					stderr: `${fanOut._nay.message}\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
+			res = {
+				items: fanOut._yay.items,
+				continueCursor: fanOut._yay.continueCursor ?? "",
+				isDone: fanOut._yay.isDone,
+			};
+		} else if (scope.kind === "plugins_root") {
 			// One text search per installed plugin, each scoped to its version-keyed tree.
 			const fanOut = await bash_plugins_fan_out_paginate({
 				command: "search",

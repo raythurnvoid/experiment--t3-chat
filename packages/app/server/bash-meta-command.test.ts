@@ -2,7 +2,6 @@ import { InMemoryFs, type CommandContext } from "just-bash/browser";
 import { describe, expect, test, vi } from "vitest";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx } from "../convex/_generated/server";
-import { organizations_GLOBAL_GITHUB_WORKSPACE_ID, organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
 import { bash_meta_command_create } from "./bash-meta-command.ts";
 import {
 	bash_EXTERNAL_MOUNTS_ROOT,
@@ -37,21 +36,8 @@ function create_command_runner() {
 		currentWorkspacePath,
 		allowDbFilesMkdir: false,
 	});
-	// `meta` runs against the app scope here; the external mount FS is required by the dbFilesRoots shape but is
-	// unused by these app-path cases.
-	const externalMountsDbFilesFs = new bash_DbFilesFs({
-		ctx,
-		ctxData: {
-			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
-			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
-			organizationName: "GLOBAL",
-			workspaceName: "GITHUB",
-			userId: ctxData.userId,
-		},
-		currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
-		allowDbFilesMkdir: false,
-		readOnlySource: "codebase",
-	});
+	// `meta` runs against the app scope here; the mount maps are required by the dbFilesRoots shape
+	// but stay empty for these app-path cases.
 	const dbFilesRoots: bash_DbFilesRoots = {
 		app: {
 			currentWorkspacePath,
@@ -59,7 +45,7 @@ function create_command_runner() {
 		},
 		externalMounts: {
 			currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
-			fs: externalMountsDbFilesFs,
+			mounts: new Map(),
 		},
 		plugins: {
 			currentWorkspacePath: bash_PLUGINS_MOUNT_ROOT,

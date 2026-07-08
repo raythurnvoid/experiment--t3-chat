@@ -1,19 +1,7 @@
 import { defineCommand } from "just-bash/browser";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import {
-	bash_create_glob_syntax_unsupported_message,
-	bash_current_workspace_path_to_db_files_path,
-	bash_delegate_builtin_command,
-	bash_GLOB_METACHARACTER_REGEX,
-	bash_is_path_under_current_workspace_path,
-	bash_is_path_under_read_only_mounts,
-	bash_parse_cp_mv_operands,
-	bash_resolve_path,
-	bash_shell_arg_quote,
-	bash_read_only_mount_error,
-	bash_COMMAND_EXIT_FAILURE,
-	bash_COMMAND_EXIT_USAGE,
-} from "./bash-utils.ts";
+import { bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE } from "./bash-utils.ts";
+import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
  * Keep app files read-only for shell `mv`.

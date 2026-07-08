@@ -2407,7 +2407,7 @@ describe("plugins publish_version", () => {
 				});
 			}
 			if (url === "https://api.github.com/repos/bonobo/media-plugin/commits/main") {
-				return new Response(JSON.stringify({ sha: commitSha }), {
+				return new Response(JSON.stringify({ sha: commitSha, commit: { tree: { sha: "1".repeat(40) } } }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				});
@@ -2462,7 +2462,7 @@ describe("plugins publish_version", () => {
 			},
 		]);
 		expect(version?.backend?.r2Key).toBe(`plugins/media/0.2.0/${github.commitSha}/dist/backend/worker.js`);
-		expect(new Set(github.githubAuthorizations)).toEqual(new Set(["Bearer PLUGIN_IMPORT_GITHUB_TOKEN_TEST"]));
+		expect(new Set(github.githubAuthorizations)).toEqual(new Set(["Bearer GITHUB_TOKEN_IMPORT_TEST"]));
 
 		const installations = await t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect());
 		expect(installations).toEqual([]);

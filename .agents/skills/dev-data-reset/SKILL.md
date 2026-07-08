@@ -17,7 +17,7 @@ Full reset of the dev deployment: delete all app data except `users` docs that h
 
 1. Confirm the target from `packages/app/.env.local` (`CONVEX_DEPLOYMENT`, currently `dev:grand-finch-267`). Dev only — never `--prod`.
 2. **Capture publisher secret values before wiping.** Reseed values come from the Convex deployment env via `convex env get <NAME>`. All required names are in env as of the 2026-07-06 reset: `OPENAI_API_KEY`, `MODAL_TOKEN`, `MISTRAL_API_KEY`, `MODAL_MEDIA_AUDIO_URL`, `MODAL_FILE_CONVERTER_URL`. If one ever goes missing, recover it BEFORE the wipe (decrypt the live publisher secret via `plugins:decrypt_secret_for_runtime` with a `{tier:"publisher", secret:<doc>}` payload — read the doc from a pre-wipe `convex export` snapshot — or ask Ray) and persist with `convex env set`. Take a `convex export --path <backup.zip>` snapshot first regardless; it doubles as the rollback artifact. Never paste secret values into answers.
-3. Confirm the deployment env has `PLUGIN_IMPORT_GITHUB_TOKEN` and `OPENAI_API_KEY` — publishing imports from GitHub and runs the AI review.
+3. Confirm the deployment env has `GITHUB_TOKEN_IMPORT` and `OPENAI_API_KEY` — publishing imports from GitHub and runs the AI review.
 
 ## Phase 1 — Wipe (Convex CLI)
 
@@ -28,7 +28,7 @@ Run from `packages/app` with the direct Node CLI invocation (`vp env exec node n
    - `clerkUserId` present → `{"userId":"<id>","purgeUserMod":"data"}`
    - no `clerkUserId` → `{"userId":"<id>","purgeUserMod":"data_auth_and_user_record"}`
 3. **Deletion queue.** Run `data_deletion:run_process_deletion_requests_once` with `{}` until it returns `shouldReschedule: false` and `data_deletion_requests` is empty.
-4. **Orphan sweep (conditional).** Plugin publishes materialize version-keyed source trees (`/<pluginVersionId>/...`) under the GLOBAL organization / PLUGINS workspace, and `plugins:hard_delete_registered_plugin_now` (step 1) already sweeps them per version. After step 1, count `files_nodes` for GLOBAL/PLUGINS — it should be zero; a nonzero count means a version doc was deleted outside the hard-delete flow, and the leftover trees can be drained with `plugins:delete_plugin_source_tree_batch` (`{"pluginVersionId":"<id>"}`, rerun until `done: true`). GitHub mirror mounts under GLOBAL/GITHUB are unrelated to plugins and are managed by `github_sources`.
+4. **Orphan sweep (conditional).** Plugin publishes materialize version-keyed source trees (`/<pluginVersionId>/...`) under the GLOBAL organization / PLUGINS workspace, and `plugins:hard_delete_registered_plugin_now` (step 1) already sweeps them per version. After step 1, count `files_nodes` for GLOBAL/PLUGINS — it should be zero; a nonzero count means a version doc was deleted outside the hard-delete flow, and the leftover trees can be drained with `plugins:delete_plugin_source_tree_batch` (`{"pluginVersionId":"<id>"}`, rerun until `done: true`). GitHub mirror mounts under GLOBAL/GITHUB are unrelated to plugins and are managed by `github_mounts`.
 5. **Expired grants (conditional).** If `public_api_grants` shows a backlog of expired docs, run `public_api:cleanup_expired_grants_until_done` with `{}`.
 
 Readback gate before declaring the wipe done: `plugins_versions`, `plugins_publisher_repositories`, `plugins_publisher_repository_secrets`, `plugins_workspace_installations`, `plugins_workspace_installation_secrets`, and `data_deletion_requests` all empty; `users` contains only Clerk-backed docs, each still with its `clerkUserId`.

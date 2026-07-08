@@ -1,5 +1,6 @@
 import { defineCommand } from "just-bash/browser";
-import { bash_ALLOWED_COMMANDS, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE } from "./bash-utils.ts";
+import { bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE } from "./bash-utils.ts";
+import { bash_ALLOWED_COMMANDS } from "./bash-delegate.ts";
 
 const WHICH_USAGE = "Usage: which [-a] [-s] NAME...\n";
 const WHICH_COMBINED_FLAGS_REGEX = /^-[as]{2,}$/u;

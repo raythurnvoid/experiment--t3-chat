@@ -1,19 +1,19 @@
 // Shared Bash utilities used by `bash.ts` and extracted command modules.
 // `bash.ts` owns command registration and the action lifecycle. This file owns
-// path conversion, the db-files mounts, pagination cursors, Native Just
-// Bash delegation, and common stderr text.
+// path conversion, the db-files mounts, pagination cursors, and common stderr
+// text. Delegation to the native just-bash engine lives in `bash-delegate.ts`;
+// this file's just-bash imports must stay type-only (they are erased at build
+// time) so isolate-runtime Convex code can import it - the just-bash browser
+// bundle statically imports `node:zlib`, which the isolate bundler cannot resolve.
 
-import {
-	Bash,
-	getCommandNames,
-	type CommandContext,
-	type CommandName,
-	type CpOptions,
-	type FileContent,
-	type FsStat,
-	type IFileSystem,
-	type MkdirOptions,
-	type RmOptions,
+import type {
+	CommandContext,
+	CpOptions,
+	FileContent,
+	FsStat,
+	IFileSystem,
+	MkdirOptions,
+	RmOptions,
 } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
@@ -116,16 +116,10 @@ const SIMPLE_EXTENSION_GLOB_REGEX = /^\*\.([a-z0-9][a-z0-9_-]*)$/iu;
 const SEARCH_EXACT_SINGLE_TOKEN_REGEX = /^\S+$/u;
 const SEARCH_EXACT_PUNCTUATION_TOKEN_REGEX = /[-_.:@]/u;
 const SHELL_ARG_SAFE_UNQUOTED_REGEX = /^[A-Za-z0-9_/:.,=+@-]+$/;
-const COMMAND_LOOKUP_PATH_REGEX = /^\/(?:usr\/)?bin\/([^/]+)$/u;
 const LISTING_PAGE_LIMIT_MAX = 200;
 const BASH_REGEX_PATTERN_MAX_LENGTH = 200;
 const textEncoder = new TextEncoder();
 
-const DISABLED_NATIVE_JUST_BASH_COMMANDS = new Set<string>(["file"]);
-export const bash_ALLOWED_COMMANDS = getCommandNames().filter(
-	(command): command is CommandName => !DISABLED_NATIVE_JUST_BASH_COMMANDS.has(command),
-);
-const ALLOWED_COMMAND_NAMES = new Set<string>(bash_ALLOWED_COMMANDS);
 /**
  * In-memory LRU cache for stored pagination cursors. `value_store` remains the
  * durable fallback when this per-runtime cache is empty.
@@ -732,12 +726,27 @@ export type bash_PluginSourceMount = {
 };
 
 /**
- * The app file tree, agent-only external mount, and per-plugin source mount
+ * One synced GitHub source exposed as a read-only mount at `/.mounts/<name>`, backed by the
+ * commit-keyed tree `/<name>/<commitSha>/...` in the reserved `GLOBAL`/`GITHUB` scope. The sha
+ * is pinned once per bash run and never appears in shell paths.
+ */
+export type bash_ExternalSourceMount = {
+	name: string;
+	commitSha: string;
+	fs: bash_DbFilesFs;
+};
+
+/**
+ * The app file tree, per-external-source mount, and per-plugin source mount
  * db-files roots available to Bash commands.
  */
 export type bash_DbFilesRoots = {
 	app: bash_DbFilesRoot;
-	externalMounts: bash_DbFilesRoot;
+	externalMounts: {
+		currentWorkspacePath: string;
+		/** Synced sources keyed by mount name; empty when nothing has finished a sync. */
+		mounts: Map<string, bash_ExternalSourceMount>;
+	};
 	plugins: {
 		currentWorkspacePath: string;
 		/** Enabled installations keyed by plugin name; empty when nothing is installed. */
@@ -777,26 +786,64 @@ export function bash_resolve_db_files_shell_path(
 	const normalized = bash_normalize_path(shellPath);
 
 	if (bash_is_path_under(bash_EXTERNAL_MOUNTS_ROOT, normalized)) {
-		const renderShellPath = (dbFilesPath: string) =>
-			bash_db_files_path_to_current_workspace_path(dbFilesRoots.externalMounts.currentWorkspacePath, dbFilesPath);
-		const base = {
-			fs: dbFilesRoots.externalMounts.fs,
-			ctxData: dbFilesRoots.externalMounts.fs.ctxData,
-			basePath: dbFilesRoots.externalMounts.currentWorkspacePath,
-			renderShellPath,
-		} as const;
+		const mountsRootPath = dbFilesRoots.externalMounts.currentWorkspacePath;
+		const mountsRelativePath = bash_current_workspace_path_to_db_files_path(mountsRootPath, normalized);
+		const mountName = mountsRelativePath?.split("/").filter(Boolean)[0];
+		const mount = mountName == null ? undefined : dbFilesRoots.externalMounts.mounts.get(mountName);
 
-		// External mount content is stored as `/<mount-name>/<relative-path>`;
-		// `/.mounts` itself maps to the synthetic reserved-scope root.
-		const dbFilesPath = bash_current_workspace_path_to_db_files_path(
-			dbFilesRoots.externalMounts.currentWorkspacePath,
-			normalized,
-		);
-		if (dbFilesPath == null || dbFilesPath === "/") {
-			return { ...base, kind: "external_mounts_root", dbFilesPath: "/" };
+		// `/.mounts` itself has no single stored tree: each synced source is its own commit-keyed
+		// mount. Commands that need a listing fall through to `MountableFs` (dbFilesPath stays
+		// null); indexed commands guard this kind and fan out or print scoping guidance.
+		if (mountsRelativePath === "/" || mountsRelativePath == null) {
+			return {
+				kind: "external_mounts_root",
+				fs: dbFilesRoots.app.fs,
+				ctxData: dbFilesRoots.app.fs.ctxData,
+				dbFilesPath: null,
+				basePath: mountsRootPath,
+				renderShellPath: (dbFilesPath: string) =>
+					bash_db_files_path_to_current_workspace_path(mountsRootPath, dbFilesPath),
+			};
 		}
 
-		return { ...base, kind: "external_mount", dbFilesPath };
+		// Unknown or not-yet-synced mount names resolve as plain non-db paths so commands fall
+		// through to `MountableFs` and report ordinary ENOENT without leaking source configuration.
+		if (mount == null || mountName == null) {
+			return {
+				kind: "outside_db_files",
+				fs: dbFilesRoots.app.fs,
+				ctxData: dbFilesRoots.app.fs.ctxData,
+				dbFilesPath: null,
+				basePath: dbFilesRoots.app.currentWorkspacePath,
+				renderShellPath: (dbFilesPath: string) =>
+					bash_db_files_path_to_current_workspace_path(dbFilesRoots.app.currentWorkspacePath, dbFilesPath),
+			};
+		}
+
+		// `/.mounts/<name>/rest` maps to the commit-keyed stored tree `/<name>/<commitSha>/rest`
+		// in the reserved `GLOBAL`/`GITHUB` scope; the renderer strips the commit prefix back off.
+		const basePath = `${mountsRootPath}/${mountName}`;
+		const commitRootPath = `/${mount.name}/${mount.commitSha}`;
+		const mountRelativePath = bash_current_workspace_path_to_db_files_path(basePath, normalized) ?? "/";
+		const dbFilesPath = mountRelativePath === "/" ? commitRootPath : `${commitRootPath}${mountRelativePath}`;
+		const renderShellPath = (renderDbFilesPath: string) => {
+			const normalizedDbFilesPath = bash_normalize_path(renderDbFilesPath);
+			const relativePath =
+				normalizedDbFilesPath === commitRootPath
+					? "/"
+					: normalizedDbFilesPath.startsWith(`${commitRootPath}/`)
+						? normalizedDbFilesPath.slice(commitRootPath.length)
+						: normalizedDbFilesPath;
+			return bash_db_files_path_to_current_workspace_path(basePath, relativePath);
+		};
+		return {
+			kind: "external_mount",
+			fs: mount.fs,
+			ctxData: mount.fs.ctxData,
+			dbFilesPath,
+			basePath,
+			renderShellPath,
+		};
 	}
 
 	if (bash_is_path_under(bash_PLUGINS_MOUNT_ROOT, normalized)) {
@@ -1447,664 +1494,68 @@ export function bash_plugins_fan_out_db_files_path(mount: bash_PluginSourceMount
 	return `/${mount.pluginName}${relativePath}`;
 }
 
-// #endregion shared command helpers
-
-// #region builtin command delegation
-
 /**
- * Builds argv for delegating part of an app-aware command to the original built-in.
+ * Paginate one indexed query per synced external mount, in mount-name order, as a
+ * single continuous page stream rooted at `/.mounts`.
  *
- * App-file pagination options and original operands are removed. The caller
- * passes only the built-in operands that should remain, usually the original
- * operand text so delegated output keeps normal shell path formatting.
+ * Sibling of `bash_plugins_fan_out_paginate`: mounts become the fan-out sources
+ * (name key + commit-sha fingerprint, so a resync invalidates in-flight cursors).
  */
-export function bash_command_build_builtin_delegation_args(
-	args: string[],
-	builtinOperands: string[],
-	options: {
-		optionsWithValues: ReadonlySet<string>;
-		pathsPosition: "beforeOptions" | "afterOptions";
-	},
-) {
-	const builtinArgs: string[] = [];
-	const shortOptionsWithValues = [...options.optionsWithValues].filter(
-		(option) => option.startsWith("-") && !option.startsWith("--"),
-	);
-	let optionsEnded = false;
-
-	for (let index = 0; index < args.length; index++) {
-		const arg = args[index];
-		if (optionsEnded) {
-			continue;
-		}
-		if (arg === "--") {
-			optionsEnded = true;
-			builtinArgs.push(arg);
-			continue;
-		}
-		if (arg === "--limit" || arg === "--cursor") {
-			index++;
-			continue;
-		}
-		if (arg.startsWith("--limit=") || arg.startsWith("--cursor=")) {
-			continue;
-		}
-
-		const equalsIndex = arg.indexOf("=");
-		const optionName = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
-		if (options.optionsWithValues.has(optionName)) {
-			builtinArgs.push(arg);
-			if (equalsIndex === -1 && index + 1 < args.length) {
-				builtinArgs.push(args[index + 1]);
-				index++;
-			}
-			continue;
-		}
-
-		if (
-			arg.startsWith("-") &&
-			!arg.startsWith("--") &&
-			shortOptionsWithValues.some((option) => arg.startsWith(option) && arg.length > option.length)
-		) {
-			builtinArgs.push(arg);
-			continue;
-		}
-
-		if (arg.startsWith("-") && arg !== "-") {
-			builtinArgs.push(arg);
-		}
-	}
-
-	if (options.pathsPosition === "beforeOptions") {
-		return [...builtinOperands, ...builtinArgs];
-	}
-	return [...builtinArgs, ...builtinOperands];
-}
-
-/**
- * Run one Just Bash built-in command through an isolated Bash instance.
- *
- * Custom app-aware commands registered by the outer shell intentionally shadow
- * several built-ins. Calling `ctx.exec(...)` from those overrides would resolve
- * back to the override and recurse, so this helper creates a clean nested shell
- * whose command registry contains only the requested built-in command.
- *
- * Examples: app-aware `ls`, `find`, `tree`, `cat`, `stat`, `touch`, `rm`,
- * `cp`, `mv`, and `tee` call this after their app-path checks pass.
- */
-export async function bash_delegate_builtin_command(args: {
-	command: CommandName;
-	args: string[];
-	commandCtx: CommandContext;
-	cwd?: string;
+export async function bash_external_mounts_fan_out_paginate<TItem>(args: {
+	command: string;
+	externalMounts: bash_DbFilesRoots["externalMounts"];
+	/** Resolved raw cursor payload from `bash_cursor_id_resolve`, or null for the first page. */
+	cursor: string | null;
+	limit: number;
+	runPage: (pageArgs: {
+		mount: bash_ExternalSourceMount;
+		innerCursor: string | null;
+		numItems: number;
+	}) => Promise<{ items: TItem[]; continueCursor: string; isDone: boolean }>;
 }) {
-	// Custom commands shadow built-ins, so delegate through a clean nested Bash
-	// instance instead of ctx.exec, which would recurse into the calling override.
-	const env = Object.fromEntries(args.commandCtx.env);
-	const cwd = args.cwd ?? args.commandCtx.cwd;
-	const inner = new Bash({
-		fs: args.commandCtx.fs,
-		cwd,
-		env,
-		commands: [args.command],
-		executionLimits: args.commandCtx.limits,
+	const fanOut = await pagination_fan_out_paginate({
+		// Scoping by command rejects cursors created by a different fan-out command.
+		scope: `mounts:${args.command}`,
+		sources: [...args.externalMounts.mounts.values()]
+			.sort((a, b) => (a.name < b.name ? -1 : 1))
+			.map((mount) => ({ key: mount.name, fingerprint: mount.commitSha, source: mount })),
+		cursor: args.cursor,
+		limit: args.limit,
+		runPage: (pageArgs) =>
+			args.runPage({ mount: pageArgs.source, innerCursor: pageArgs.innerCursor, numItems: pageArgs.numItems }),
 	});
-	return await inner.exec([args.command, ...args.args.map(bash_shell_arg_quote)].join(" "), {
-		cwd,
-		stdin: args.commandCtx.stdin as unknown as string,
-		stdinKind: "bytes",
-		env: {
-			...env,
-			PWD: cwd,
-		},
-	});
-}
-
-// #endregion builtin command delegation
-
-// #region native just bash tmp command
-
-/**
- * Returns whether a path is in the direct-access surface for Native Just Bash
- * commands: `/`, `/dev`, `/dev/null`, `/dev/zero`, `/tmp`, or a descendant of `/tmp`.
- *
- * Synthetic command lookup paths are handled separately.
- */
-function is_native_just_bash_tmp_path(path: string) {
-	const normalizedPath = bash_normalize_path(path);
-	return (
-		normalizedPath === "/" ||
-		normalizedPath === "/dev" ||
-		normalizedPath === bash_DEV_NULL_PATH ||
-		normalizedPath === bash_DEV_ZERO_PATH ||
-		normalizedPath === bash_TMP_MOUNT ||
-		normalizedPath.startsWith(`${bash_TMP_MOUNT}/`)
-	);
-}
-
-/**
- * Returns whether a path is one of the synthetic command lookup directories
- * exposed to Native Just Bash: `/bin`, `/usr`, or `/usr/bin`.
- */
-function is_native_just_bash_command_lookup_directory(path: string) {
-	const normalizedPath = bash_normalize_path(path);
-	return normalizedPath === "/bin" || normalizedPath === "/usr" || normalizedPath === "/usr/bin";
-}
-
-/**
- * Returns the allowed command name for synthetic executable paths such as
- * `/bin/sort` or `/usr/bin/sort`; returns `null` for non-command paths or
- * disabled Just Bash commands.
- */
-function native_just_bash_command_lookup_name(path: string) {
-	const normalizedPath = bash_normalize_path(path);
-	const match = COMMAND_LOOKUP_PATH_REGEX.exec(normalizedPath);
-	if (!match) {
-		return null;
-	}
-	return ALLOWED_COMMAND_NAMES.has(match[1]) ? match[1] : null;
-}
-
-function native_just_bash_tmp_command_path_app_operand(
-	args: string[],
-	ctx: CommandContext,
-	currentWorkspacePath: string,
-) {
-	for (const arg of args) {
-		if (arg.startsWith("-")) {
-			continue;
-		}
-		const resolvedPath = bash_resolve_path(ctx.cwd, arg);
-		const isPathLike =
-			arg === "." ||
-			arg === ".." ||
-			arg.startsWith("/") ||
-			arg.startsWith("./") ||
-			arg.startsWith("../") ||
-			arg.includes("/");
-		if (isPathLike && bash_is_path_under_current_workspace_path(currentWorkspacePath, resolvedPath)) {
-			return resolvedPath;
-		}
-	}
-	return null;
-}
-
-function native_just_bash_tmp_command_rg_app_operand(args: string[], ctx: CommandContext, currentWorkspacePath: string) {
-	let pattern: string | null = null;
-	for (const arg of args) {
-		if (arg.startsWith("-")) {
-			continue;
-		}
-		if (pattern == null) {
-			pattern = arg;
-			continue;
-		}
-		const resolvedPath = bash_resolve_path(ctx.cwd, arg);
-		const isPathLike =
-			arg === "." ||
-			arg === ".." ||
-			arg.startsWith("/") ||
-			arg.startsWith("./") ||
-			arg.startsWith("../") ||
-			arg.includes("/");
-		if (isPathLike && bash_is_path_under_current_workspace_path(currentWorkspacePath, resolvedPath)) {
-			return { pattern, path: resolvedPath };
-		}
-	}
-	return null;
-}
-
-function native_just_bash_tmp_command_app_hint_path(
-	args: string[],
-	ctx: CommandContext,
-	currentWorkspacePath: string,
-	stderr: string,
-) {
-	let hasExplicitScratchOperand = false;
-	for (const arg of args) {
-		if (arg.startsWith("-")) {
-			continue;
-		}
-		const resolvedPath = bash_resolve_path(ctx.cwd, arg);
-		if (is_native_just_bash_tmp_path(resolvedPath)) {
-			hasExplicitScratchOperand = true;
-			continue;
-		}
-		const isPathLike =
-			arg === "." ||
-			arg === ".." ||
-			arg.startsWith("/") ||
-			arg.startsWith("./") ||
-			arg.startsWith("../") ||
-			arg.includes("/");
-		if (isPathLike && bash_is_path_under_current_workspace_path(currentWorkspacePath, resolvedPath)) {
-			return resolvedPath;
-		}
-	}
-	if (stderr.includes(currentWorkspacePath)) {
-		return currentWorkspacePath;
-	}
-	const hasStdin = ctx.stdin != null && String(ctx.stdin).length > 0;
-	if (!hasStdin && !hasExplicitScratchOperand && bash_is_path_under_current_workspace_path(currentWorkspacePath, ctx.cwd)) {
-		return ctx.cwd;
-	}
-	return null;
-}
-
-/**
- * Run a Native Just Bash command through the `/tmp`-restricted filesystem view.
- *
- * This is used for Just Bash built-ins that have not been made app-file-aware:
- * they can process `/tmp` paths and stdin, but cannot directly operate on
- * db-backed paths under `currentWorkspacePath`. It keeps direct operands away
- * from the app tree, permits `/tmp`, `/dev/null`, `/dev/zero`, and synthetic command lookup
- * paths, and adds app-file guidance when the command likely failed because it
- * tried to touch the mounted app file tree directly.
- *
- * Examples: `sort`, `uniq`, `cut`, `awk`, `sed`, `du`, `diff`, `rg`, `rev`,
- * `tac`, `nl`, `base64`, `jq`, and `sha256sum` run through this path.
- */
-export async function bash_delegate_native_just_bash_tmp_command(
-	command: CommandName,
-	args: string[],
-	ctx: CommandContext,
-	currentWorkspacePath: string,
-) {
-	const env = Object.fromEntries(ctx.env);
-	const cwd = is_native_just_bash_tmp_path(ctx.cwd) ? ctx.cwd : bash_TMP_MOUNT;
-	const directRgOperand =
-		command === "rg" ? native_just_bash_tmp_command_rg_app_operand(args, ctx, currentWorkspacePath) : null;
-
-	// ln is pre-checked too: just-bash's catch-all sanitizer rewrites /home…|/tmp… substrings
-	// to <path>, so a thrown NativeJustBashTmpCommandAccessError loses every concrete path by the time
-	// the model sees it. Rejecting before the inner shell keeps the message intact.
-	const directPathOperand =
-		command === "du" || command === "diff" || command === "ln"
-			? native_just_bash_tmp_command_path_app_operand(args, ctx, currentWorkspacePath)
-			: null;
-	const directAppOperand = directRgOperand?.path ?? directPathOperand;
-
-	if (directAppOperand != null) {
-		const appOperandError =
-			new NativeJustBashTmpCommandAccessError(currentWorkspacePath, directAppOperand).message +
-			(command === "du"
-				? `du: app-mount paths do not expose POSIX disk usage. Try: stat ${bash_shell_arg_quote(directAppOperand)} && find ${bash_shell_arg_quote(directAppOperand)} -type f --limit 20\n`
-				: "") +
-			(directRgOperand != null
-				? `rg: app paths do not support direct Native Just Bash rg. Try: grep ${bash_shell_arg_quote(directRgOperand.pattern)} ${bash_shell_arg_quote(directRgOperand.path)}\n`
-				: "");
-		return {
-			stdout: "",
-			stderr: appOperandError,
-			exitCode: bash_COMMAND_EXIT_FAILURE,
-			env: {
-				...env,
-				PWD: ctx.cwd,
+	if (fanOut._nay) {
+		return Result({
+			_nay: {
+				message:
+					fanOut._nay.message === "listing changed"
+						? `${args.command}: the mount listing changed since this cursor was created; ` +
+							"rerun the command without --cursor to restart from a consistent listing."
+						: `${args.command}: --cursor does not belong to a ${bash_EXTERNAL_MOUNTS_ROOT} listing.\n` +
+							"Copy the exact Next page command from the previous output, or rerun without --cursor.",
 			},
-		};
+		});
 	}
-
-	const inner = new Bash({
-		fs: new RestrictedNativeJustBashTmpCommandFs(ctx.fs, currentWorkspacePath, ctx.cwd),
-		cwd,
-		env,
-		commands: [...bash_ALLOWED_COMMANDS],
-		executionLimits: ctx.limits,
-	});
-
-	const result = await inner.exec([command, ...args.map(bash_shell_arg_quote)].join(" "), {
-		cwd,
-		stdin: ctx.stdin as unknown as string,
-		stdinKind: "bytes",
-		env: {
-			...env,
-			PWD: cwd,
-		},
-	});
-
-	const guidancePath = native_just_bash_tmp_command_app_hint_path(args, ctx, currentWorkspacePath, result.stderr);
-	if (result.exitCode !== 0 && guidancePath != null && !result.stderr.includes("db-backed")) {
-		return {
-			...result,
-			stderr: `${result.stderr}${new NativeJustBashTmpCommandAccessError(currentWorkspacePath, guidancePath).message}`,
-		};
-	}
-	return result;
+	return fanOut;
 }
 
 /**
- * Means a Native Just Bash /tmp command tried to access the db-backed app file tree.
+ * Map a stored mount-tree path `/<name>/<commitSha>/rest` to the fan-out
+ * db-files shape `/<name>/rest`, which the `external_mounts_root` resolution's
+ * `renderShellPath` turns into `/.mounts/<name>/rest`.
  */
-class NativeJustBashTmpCommandAccessError extends Error {
-	constructor(currentWorkspacePath: string, path: string) {
-		const normalizedPath = bash_normalize_path(path);
-		const dbFilesPath =
-			bash_current_workspace_path_to_db_files_path(currentWorkspacePath, normalizedPath) ?? normalizedPath;
-		super(
-			`Native Just Bash /tmp commands cannot access app files directly: '${normalizedPath}'.\n` +
-				`The app file tree at '${currentWorkspacePath}' is db-backed, so Native Just Bash /tmp commands can use /tmp paths or stdin but not direct app-file operands.\n` +
-				`For app path '${dbFilesPath}', use app-aware commands such as search, find, grep, cat, head, tail, wc, stat, or tree. To process one readable app file with Native Just Bash /tmp tools, pipe it through cat or copy it first: cp ${bash_shell_arg_quote(normalizedPath)} /tmp/<name>\n`,
-		);
-		this.name = "NativeJustBashTmpCommandAccessError";
-	}
+export function bash_external_mounts_fan_out_db_files_path(mount: bash_ExternalSourceMount, storedPath: string) {
+	const commitRootPath = `/${mount.name}/${mount.commitSha}`;
+	const relativePath =
+		storedPath === commitRootPath
+			? ""
+			: storedPath.startsWith(`${commitRootPath}/`)
+				? storedPath.slice(commitRootPath.length)
+				: storedPath;
+	return `/${mount.name}${relativePath}`;
 }
 
-/**
- * Restricted filesystem view for Native Just Bash /tmp commands.
- *
- * This is not the `/tmp` storage implementation; `BashTmpFs` owns that. This
- * wrapper sits in front of the full mounted shell filesystem for nested Native Just Bash
- * commands, allows `/tmp`, `/dev/null`, `/dev/zero`, and command lookup paths, and rejects
- * direct access to the db-backed app file tree with a targeted error.
- *
- * Synthetic paths are entries this wrapper reports even though they are not
- * persisted in the mounted filesystem: `/bin`, `/usr`, `/usr/bin`, executable
- * command-name files under `/bin` and `/usr/bin`, plus `/dev`, `/dev/null`, and `/dev/zero`.
- * They exist only to satisfy Just Bash command lookup and null-device behavior.
- */
-class RestrictedNativeJustBashTmpCommandFs implements IFileSystem {
-	constructor(
-		private readonly fs: IFileSystem,
-		private readonly currentWorkspacePath: string,
-		private readonly commandCwd: string,
-	) {}
-
-	async readFile(path: string, options?: Parameters<IFileSystem["readFile"]>[1]) {
-		const normalizedPath = bash_normalize_path(path);
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-		return await this.fs.readFile(normalizedPath, options);
-	}
-
-	async readFileBuffer(path: string) {
-		const normalizedPath = bash_normalize_path(path);
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-		return await this.fs.readFileBuffer(normalizedPath);
-	}
-
-	async writeFile(path: string, content: FileContent, options?: Parameters<IFileSystem["writeFile"]>[2]) {
-		const normalizedPath = bash_normalize_path(path);
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-		await this.fs.writeFile(normalizedPath, content, options);
-	}
-
-	async appendFile(path: string, content: FileContent, options?: Parameters<IFileSystem["appendFile"]>[2]) {
-		const normalizedPath = bash_normalize_path(path);
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-		await this.fs.appendFile(normalizedPath, content, options);
-	}
-
-	async exists(path: string) {
-		const normalizedPath = bash_normalize_path(path);
-
-		// Synthetic command lookup paths exist so Just Bash PATH resolution can probe them.
-		if (
-			is_native_just_bash_command_lookup_directory(normalizedPath) ||
-			native_just_bash_command_lookup_name(normalizedPath) != null
-		) {
-			return true;
-		}
-
-		// Native Just Bash commands are limited to synthetic lookup paths, /dev, and /tmp.
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			return false;
-		}
-		return normalizedPath === "/dev" || normalizedPath === bash_DEV_ZERO_PATH || (await this.fs.exists(normalizedPath));
-	}
-
-	async stat(path: string): Promise<FsStat> {
-		const normalizedPath = bash_normalize_path(path);
-
-		// Synthetic lookup folders must stat as directories so Just Bash can search PATH.
-		if (is_native_just_bash_command_lookup_directory(normalizedPath)) {
-			return {
-				isFile: false,
-				isDirectory: true,
-				isSymbolicLink: false,
-				mode: 0o755,
-				size: 0,
-				mtime: new Date(),
-			};
-		}
-
-		// Synthetic lookup entries must stat as executable files so command resolution succeeds.
-		if (native_just_bash_command_lookup_name(normalizedPath) != null) {
-			return {
-				isFile: true,
-				isDirectory: false,
-				isSymbolicLink: false,
-				mode: 0o755,
-				size: 0,
-				mtime: new Date(),
-			};
-		}
-
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-
-		// /dev is synthetic; the mounted filesystem only owns device files and /tmp contents.
-		if (normalizedPath === "/dev") {
-			return {
-				isFile: false,
-				isDirectory: true,
-				isSymbolicLink: false,
-				mode: 0o755,
-				size: 0,
-				mtime: new Date(),
-			};
-		}
-		if (normalizedPath === bash_DEV_ZERO_PATH) {
-			return {
-				isFile: true,
-				isDirectory: false,
-				isSymbolicLink: false,
-				mode: 0o666,
-				size: bash_DEV_ZERO_BYTE_COUNT,
-				mtime: new Date(),
-			};
-		}
-		return await this.fs.stat(normalizedPath);
-	}
-
-	async mkdir(path: string, options?: MkdirOptions) {
-		const normalizedPath = bash_normalize_path(path);
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-		await this.fs.mkdir(normalizedPath, options);
-	}
-
-	async readdir(path: string) {
-		const normalizedPath = bash_normalize_path(path);
-		if (normalizedPath === "/usr") {
-			return ["bin"];
-		}
-		if (normalizedPath === "/bin" || normalizedPath === "/usr/bin") {
-			// Return only native Just Bash commands here. App-only custom commands
-			// are available to the outer shell, but not as executable files inside
-			// the restricted Native Just Bash /tmp view.
-			return bash_ALLOWED_COMMANDS.toSorted();
-		}
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-		if (normalizedPath === "/") {
-			return ["dev", "tmp"];
-		}
-		if (normalizedPath === "/dev") {
-			return ["null", "zero"];
-		}
-		return await this.fs.readdir(normalizedPath);
-	}
-
-	async rm(path: string, options?: RmOptions) {
-		const normalizedPath = bash_normalize_path(path);
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-		await this.fs.rm(normalizedPath, options);
-	}
-
-	async cp(src: string, dest: string, options?: CpOptions) {
-		const normalizedSrc = bash_normalize_path(src);
-		if (!is_native_just_bash_tmp_path(normalizedSrc)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedSrc);
-		}
-
-		const normalizedDest = bash_normalize_path(dest);
-		if (!is_native_just_bash_tmp_path(normalizedDest)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedDest);
-		}
-
-		await this.fs.cp(normalizedSrc, normalizedDest, options);
-	}
-
-	async mv(src: string, dest: string) {
-		const normalizedSrc = bash_normalize_path(src);
-		if (!is_native_just_bash_tmp_path(normalizedSrc)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedSrc);
-		}
-
-		const normalizedDest = bash_normalize_path(dest);
-		if (!is_native_just_bash_tmp_path(normalizedDest)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedDest);
-		}
-
-		await this.fs.mv(normalizedSrc, normalizedDest);
-	}
-
-	resolvePath(base: string, path: string) {
-		if (path.startsWith("/")) {
-			return bash_normalize_path(path);
-		}
-		// The nested shell may run from `/tmp`, but relative operands typed from
-		// the app tree should still resolve against the outer command cwd so the
-		// app-file guard rejects them instead of treating them as scratch paths.
-		const basePath = is_native_just_bash_tmp_path(this.commandCwd) ? base : this.commandCwd;
-		return bash_resolve_path(basePath, path);
-	}
-
-	getAllPaths() {
-		const paths = new Set(["/", "/dev", bash_DEV_NULL_PATH, bash_DEV_ZERO_PATH, bash_TMP_MOUNT]);
-		for (const path of this.fs.getAllPaths()) {
-			const normalizedPath = bash_normalize_path(path);
-			if (normalizedPath === bash_TMP_MOUNT || normalizedPath.startsWith(`${bash_TMP_MOUNT}/`)) {
-				paths.add(normalizedPath);
-			}
-		}
-		return [...paths].sort();
-	}
-
-	async chmod(path: string, mode: number) {
-		const normalizedPath = bash_normalize_path(path);
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-		await this.fs.chmod(normalizedPath, mode);
-	}
-
-	async symlink(target: string, linkPath: string) {
-		const normalizedLinkPath = bash_normalize_path(linkPath);
-		if (!is_native_just_bash_tmp_path(normalizedLinkPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedLinkPath);
-		}
-
-		const resolvedTarget = target.startsWith("/")
-			? bash_normalize_path(target)
-			: bash_resolve_path(bash_normalize_path(`${normalizedLinkPath}/..`), target);
-		if (!is_native_just_bash_tmp_path(resolvedTarget)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, resolvedTarget);
-		}
-
-		await this.fs.symlink(target, normalizedLinkPath);
-	}
-
-	async link(existingPath: string, newPath: string) {
-		const normalizedExistingPath = bash_normalize_path(existingPath);
-		if (!is_native_just_bash_tmp_path(normalizedExistingPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedExistingPath);
-		}
-
-		const normalizedNewPath = bash_normalize_path(newPath);
-		if (!is_native_just_bash_tmp_path(normalizedNewPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedNewPath);
-		}
-
-		await this.fs.link(normalizedExistingPath, normalizedNewPath);
-	}
-
-	async readlink(path: string) {
-		const normalizedPath = bash_normalize_path(path);
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-		return await this.fs.readlink(normalizedPath);
-	}
-
-	async lstat(path: string) {
-		const normalizedPath = bash_normalize_path(path);
-		if (
-			is_native_just_bash_command_lookup_directory(normalizedPath) ||
-			native_just_bash_command_lookup_name(normalizedPath) != null
-		) {
-			return await this.stat(normalizedPath);
-		}
-
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-
-		if (normalizedPath === "/dev" || normalizedPath === bash_DEV_ZERO_PATH) {
-			return await this.stat(normalizedPath);
-		}
-
-		return await this.fs.lstat(normalizedPath);
-	}
-
-	async realpath(path: string) {
-		const normalizedPath = bash_normalize_path(path);
-		if (
-			is_native_just_bash_command_lookup_directory(normalizedPath) ||
-			native_just_bash_command_lookup_name(normalizedPath) != null
-		) {
-			return normalizedPath;
-		}
-		if (normalizedPath === bash_DEV_ZERO_PATH) {
-			return normalizedPath;
-		}
-
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-
-		const realPath = await this.fs.realpath(normalizedPath);
-		const normalizedRealPath = bash_normalize_path(realPath);
-		if (!is_native_just_bash_tmp_path(normalizedRealPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedRealPath);
-		}
-
-		return normalizedRealPath;
-	}
-
-	async utimes(path: string, atime: Date, mtime: Date) {
-		const normalizedPath = bash_normalize_path(path);
-		if (!is_native_just_bash_tmp_path(normalizedPath)) {
-			throw new NativeJustBashTmpCommandAccessError(this.currentWorkspacePath, normalizedPath);
-		}
-		await this.fs.utimes(normalizedPath, atime, mtime);
-	}
-}
-
-// #endregion native just bash tmp command
-
+// #endregion shared command helpers
 // #region reader helpers
 
 /**

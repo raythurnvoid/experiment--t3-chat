@@ -3,28 +3,8 @@ import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_get_by_path_Result, files_nodes_list_subtree_Result } from "../convex/files_nodes.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import {
-	bash_APP_MOUNT_PATH,
-	bash_clamp_listing_page_limit,
-	bash_command_build_builtin_delegation_args,
-	bash_create_glob_syntax_unsupported_message,
-	bash_cursor_id_create,
-	bash_cursor_id_resolve,
-	bash_delegate_builtin_command,
-	bash_GLOB_METACHARACTER_REGEX,
-	bash_LISTING_DEFAULT_LIMIT,
-	bash_LISTING_MAX_LIMIT,
-	bash_parse_limit,
-	bash_plugins_fan_out_db_files_path,
-	bash_plugins_fan_out_paginate,
-	bash_read_option_value,
-	bash_resolve_path,
-	bash_shell_arg_quote,
-	bash_resolve_db_files_shell_path,
-	bash_COMMAND_EXIT_FAILURE,
-	bash_COMMAND_EXIT_USAGE,
-	type bash_DbFilesRoots,
-} from "./bash-utils.ts";
+import { bash_APP_MOUNT_PATH, bash_clamp_listing_page_limit, bash_create_glob_syntax_unsupported_message, bash_cursor_id_create, bash_cursor_id_resolve, bash_GLOB_METACHARACTER_REGEX, bash_LISTING_DEFAULT_LIMIT, bash_LISTING_MAX_LIMIT, bash_parse_limit, bash_external_mounts_fan_out_db_files_path, bash_external_mounts_fan_out_paginate, bash_plugins_fan_out_db_files_path, bash_plugins_fan_out_paginate, bash_read_option_value, bash_resolve_path, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 const BUILTIN_OPTIONS_WITH_VALUES = new Set(["-L", "-P", "-I", "--filelimit", "-o"]);
 
@@ -251,6 +231,103 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			};
 		}
 
+		// The `/.mounts` root spans one commit-keyed indexed tree per synced mount. Fan out one
+		// subtree listing per mount, in name order, under a composite cursor.
+		if (pathResolution.kind === "external_mounts_root") {
+			if (dbFilesRoots.externalMounts.mounts.size === 0) {
+				return {
+					stdout: "",
+					stderr: `tree: ${target.absoluteShellPath}: No such file or directory\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
+			if (parsed._yay.unsupportedDbFilesOption != null) {
+				return {
+					stdout: "",
+					stderr:
+						`tree: unsupported option ${parsed._yay.unsupportedDbFilesOption} for db-files paths under ${bash_APP_MOUNT_PATH} or /.mounts\n` +
+						"Usage: tree [PATH] [--limit N] [--cursor CURSOR]\n",
+					exitCode: bash_COMMAND_EXIT_USAGE,
+				};
+			}
+
+			let mountsCursor: string | null = null;
+			if (parsed._yay.cursor != null) {
+				const resolvedCursor = await bash_cursor_id_resolve(ctx, parsed._yay.cursor);
+				if (resolvedCursor._nay) {
+					return {
+						stdout: "",
+						stderr: `${resolvedCursor._nay.message}\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				}
+				mountsCursor = resolvedCursor._yay;
+			}
+
+			// Each mount page includes its commit-root folder doc, which renders as the
+			// `/.mounts/<name>/` branch line, so no synthetic entries are needed.
+			const fanOut = await bash_external_mounts_fan_out_paginate({
+				command: "tree",
+				externalMounts: dbFilesRoots.externalMounts,
+				cursor: mountsCursor,
+				limit: bash_clamp_listing_page_limit(parsed._yay.limit),
+				runPage: async (pageArgs) => {
+					const pageResult = (await ctx.runQuery(internal.files_nodes.list_subtree, {
+						organizationId: pageArgs.mount.fs.ctxData.organizationId,
+						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
+						folderPath: `/${pageArgs.mount.name}/${pageArgs.mount.commitSha}`,
+						numItems: pageArgs.numItems,
+						cursor: pageArgs.innerCursor,
+					})) as files_nodes_list_subtree_Result;
+					return {
+						items: pageResult.page.map((item) => ({
+							path: bash_external_mounts_fan_out_db_files_path(pageArgs.mount, item.path),
+							kind: item.kind,
+						})),
+						continueCursor: pageResult.continueCursor,
+						isDone: pageResult.isDone,
+					};
+				},
+			});
+			if (fanOut._nay) {
+				return {
+					stdout: "",
+					stderr: `${fanOut._nay.message}\n`,
+					exitCode: bash_COMMAND_EXIT_FAILURE,
+				};
+			}
+
+			const lines = [target.absoluteShellPath];
+			for (const item of fanOut._yay.items) {
+				const segments = item.path.split("/").filter(Boolean);
+				if (segments.length === 0) {
+					continue;
+				}
+				const prefix = segments.length === 1 ? "|-- " : `${"|   ".repeat(segments.length - 1)}|-- `;
+				lines.push(`${prefix}${segments.at(-1)}${item.kind === "folder" ? "/" : ""}`);
+			}
+			if (!fanOut._yay.isDone && fanOut._yay.continueCursor != null) {
+				lines.push(
+					"",
+					build_continuation({
+						target: target.absoluteShellPath,
+						limit: parsed._yay.limit,
+						cursor: await bash_cursor_id_create(ctx, fanOut._yay.continueCursor),
+					}),
+				);
+				if (parsed._yay.cursor != null) {
+					lines.push(
+						"Note: this output is already a continuation page; if the user asked for exactly one continuation, stop here. Run another Next page only if the user asks for more.",
+					);
+				}
+			}
+			return {
+				stdout: `${lines.join("\n")}\n`,
+				stderr: "",
+				exitCode: 0,
+			};
+		}
+
 		// Non-db-files paths are normal Just Bash filesystem paths. Delegate them so native
 		// `tree` behavior is preserved outside the app file tree and external mounts.
 		if (target.dbFilesPath == null) {
@@ -301,12 +378,10 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			cursor = resolvedCursor._yay;
 		}
 
-		// The `/.mounts` root spans every materialized mount: its content lives at the reserved scope root,
-		// so `target.dbFilesPath` is `"/"` and renders descendants as `/.mounts/<name>/...`.
 		const rootDbFilesPath = target.dbFilesPath;
 
-		// The workspace root and the `/.mounts` root are synthetic and have no files_nodes doc.
-		// Every other app target must resolve to a real files_nodes doc before tree can print it.
+		// The workspace root is synthetic and has no files_nodes doc. Every other target
+		// (app paths, single-mount paths) must resolve to a real files_nodes doc before tree can print it.
 		const dbFilesDoc =
 			rootDbFilesPath === "/"
 				? null

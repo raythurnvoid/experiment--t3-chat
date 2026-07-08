@@ -39,12 +39,14 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { v_result } from "../server/convex-utils.ts";
+import { github_fetch_repo_head, github_fetch_with_retry, github_raw_url } from "../server/github.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { crypto_decrypt_secret_value, crypto_encrypt_secret_value, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2_delete_object, r2_fetch_object_from_bucket, r2_put_object } from "./r2.ts";
+import { files_nodes_db_delete_subtree_batch } from "./files_nodes.ts";
 import type { files_nodes_create_file_node_internal_Result } from "./files_nodes.ts";
 import { plugins_runtime_enqueue_manual_run } from "./plugins_runtime.ts";
 
@@ -90,83 +92,18 @@ async function db_authorize_plugin_management(
 
 // #region github import
 
-const PLUGIN_IMPORT_GITHUB_TOKEN = process.env.PLUGIN_IMPORT_GITHUB_TOKEN;
-
-const PLUGIN_IMPORT_USER_AGENT = "t3-chat-plugin-import";
-
-function github_raw_url(args: { owner: string; repo: string; commitSha: string; path: string }) {
-	const path = args.path
-		.split("/")
-		.map((part) => encodeURIComponent(part))
-		.join("/");
-
-	return `https://raw.githubusercontent.com/${args.owner}/${args.repo}/${args.commitSha}/${path}`;
-}
-
-function github_error_message(error: unknown) {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function github_headers(accept?: string) {
-	const headers: Record<string, string> = { "User-Agent": PLUGIN_IMPORT_USER_AGENT };
-	if (accept) {
-		headers.Accept = accept;
-	}
-
-	if (PLUGIN_IMPORT_GITHUB_TOKEN) {
-		headers.Authorization = `Bearer ${PLUGIN_IMPORT_GITHUB_TOKEN}`;
-	}
-
-	return headers;
-}
-
-async function fetch_github_json<T>(url: string, schema: z.ZodSchema<T>) {
-	let response: Response;
-	try {
-		response = await fetch(url, {
-			headers: github_headers("application/vnd.github+json"),
-		});
-	} catch (error) {
-		return Result({ _nay: { message: `GitHub request failed: ${github_error_message(error)}` } });
-	}
-
-	if (!response.ok) {
-		return Result({ _nay: { message: `GitHub request failed with status ${response.status}` } });
-	}
-
-	let json: unknown;
-	try {
-		json = await response.json();
-	} catch (error) {
-		return Result({ _nay: { message: `GitHub response was invalid JSON: ${github_error_message(error)}` } });
-	}
-
-	const parsed = schema.safeParse(json);
-	if (!parsed.success) {
-		return Result({ _nay: { message: parsed.error.issues[0]?.message ?? "GitHub response was invalid" } });
-	}
-
-	return Result({ _yay: parsed.data });
-}
-
 async function fetch_github_text(args: {
 	owner: string;
 	repo: string;
 	commitSha: string;
 	path: string;
 }): Promise<PluginResult<string>> {
-	let response: Response;
-	try {
-		response = await fetch(github_raw_url(args), { headers: github_headers() });
-	} catch (error) {
-		return Result({ _nay: { message: `GitHub file "${args.path}" request failed: ${github_error_message(error)}` } });
+	const response = await github_fetch_with_retry(github_raw_url(args));
+	if (response._nay) {
+		return Result({ _nay: { message: `GitHub file "${args.path}" request failed: ${response._nay.message}` } });
 	}
 
-	if (!response.ok) {
-		return Result({ _nay: { message: `GitHub file "${args.path}" failed with status ${response.status}` } });
-	}
-
-	const text = await response.text();
+	const text = await response._yay.text();
 	if (files_get_utf8_byte_size(text) > files_MAX_TEXT_CONTENT_BYTES) {
 		return Result({ _nay: { message: `GitHub file "${args.path}" is too large` } });
 	}
@@ -180,18 +117,12 @@ async function fetch_github_bytes(args: {
 	commitSha: string;
 	path: string;
 }): Promise<PluginResult<ArrayBuffer>> {
-	let response: Response;
-	try {
-		response = await fetch(github_raw_url(args), { headers: github_headers() });
-	} catch (error) {
-		return Result({ _nay: { message: `GitHub file "${args.path}" request failed: ${github_error_message(error)}` } });
+	const response = await github_fetch_with_retry(github_raw_url(args));
+	if (response._nay) {
+		return Result({ _nay: { message: `GitHub file "${args.path}" request failed: ${response._nay.message}` } });
 	}
 
-	if (!response.ok) {
-		return Result({ _nay: { message: `GitHub file "${args.path}" failed with status ${response.status}` } });
-	}
-
-	const buffer = await response.arrayBuffer();
+	const buffer = await response._yay.arrayBuffer();
 	if (buffer.byteLength > files_MAX_TEXT_CONTENT_BYTES) {
 		return Result({ _nay: { message: `GitHub file "${args.path}" is too large` } });
 	}
@@ -798,23 +729,13 @@ async function publish_version_from_github(
 	const source = args.source;
 
 	// Publishing always builds from the default-branch HEAD; every GitHub fetch below is pinned to that commit.
-	const repo = await fetch_github_json(
-		`https://api.github.com/repos/${source.owner}/${source.repo}`,
-		z.object({ default_branch: z.string().min(1) }),
-	);
-	if (repo._nay) {
-		return Result({ _nay: { message: repo._nay.message } });
+	const head = await github_fetch_repo_head({ owner: source.owner, repo: source.repo });
+	if (head._nay) {
+		return Result({ _nay: { message: head._nay.message } });
 	}
 
-	const sourceDefaultBranch = repo._yay.default_branch;
-	const commit = await fetch_github_json(
-		`https://api.github.com/repos/${source.owner}/${source.repo}/commits/${encodeURIComponent(sourceDefaultBranch)}`,
-		z.object({ sha: z.string().min(1) }),
-	);
-	if (commit._nay) {
-		return Result({ _nay: { message: commit._nay.message } });
-	}
-	const sourceCommitSha = commit._yay.sha;
+	const sourceDefaultBranch = head._yay.defaultBranch;
+	const sourceCommitSha = head._yay.commitSha;
 
 	// dist/bonobo.plugin.json declares the plugin identity and describes the build output (backend,
 	// pages, shipped files); it is the single file the publish reads besides what it lists.
@@ -1018,7 +939,7 @@ export const publish_version = action({
 				source: authorized._yay,
 			});
 		} catch (error) {
-			published = Result({ _nay: { message: github_error_message(error) } });
+			published = Result({ _nay: { message: error instanceof Error ? error.message : String(error) } });
 		}
 
 		// Publish feedback must outlive the ~4s toast (a first-publish rejection has no plugin page
@@ -2535,144 +2456,8 @@ function version_r2_keys(version: Doc<"plugins_versions">) {
  * `file_stats`, metadata docs (defensive), and R2 asset (object + doc, gated on `r2Key`) BEFORE the
  * node doc itself, so a crash never orphans children. Asset and node deletion are one budget unit
  * pair so a node never commits with a missing asset reference. Mirrors
- * `github_sources.delete_mount_content_batch`, minus the sync-run supersede gate.
+ * `github_mounts.clear_pending_root_batch`, minus the sync-run supersede gate.
  */
-async function db_delete_plugin_source_tree_batch(
-	ctx: MutationCtx,
-	args: {
-		treePathPrefix: string;
-		batchSize: number;
-	},
-) {
-	const lower = args.treePathPrefix;
-	const upper = `${args.treePathPrefix}\uffff`;
-
-	let deletedCount = 0;
-	while (deletedCount < args.batchSize) {
-		const node = await ctx.db
-			.query("files_nodes")
-			.withIndex("by_organization_workspace_treePath", (q) =>
-				q
-					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-					.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
-					.gte("treePath", lower)
-					.lt("treePath", upper),
-			)
-			.order("desc")
-			.first();
-		if (!node) {
-			break;
-		}
-
-		const remainingPlainTextChunks = args.batchSize - deletedCount;
-		const plainTextChunks = await ctx.db
-			.query("files_plain_text_chunks")
-			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-				q
-					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-					.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
-					.eq("fileNodeId", node._id),
-			)
-			.take(remainingPlainTextChunks);
-		for (const chunk of plainTextChunks) {
-			await ctx.db.delete("files_plain_text_chunks", chunk._id);
-			deletedCount++;
-		}
-		if (plainTextChunks.length > 0) {
-			continue;
-		}
-
-		const remainingMarkdownChunks = args.batchSize - deletedCount;
-		const markdownChunks = await ctx.db
-			.query("files_markdown_chunks")
-			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-				q
-					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-					.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
-					.eq("fileNodeId", node._id),
-			)
-			.take(remainingMarkdownChunks);
-		for (const chunk of markdownChunks) {
-			await ctx.db.delete("files_markdown_chunks", chunk._id);
-			deletedCount++;
-		}
-		if (markdownChunks.length > 0) {
-			continue;
-		}
-
-		const remainingFileStats = args.batchSize - deletedCount;
-		const fileStats = await ctx.db
-			.query("file_stats")
-			.withIndex("by_organization_workspace_fileNode", (q) =>
-				q
-					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-					.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
-					.eq("fileNodeId", node._id),
-			)
-			.take(remainingFileStats);
-		for (const stats of fileStats) {
-			await ctx.db.delete("file_stats", stats._id);
-			deletedCount++;
-		}
-		if (fileStats.length > 0) {
-			continue;
-		}
-
-		const remainingMetadataDocs = args.batchSize - deletedCount;
-		const metadataDocs = await ctx.db
-			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
-				q
-					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-					.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
-					.eq("fileNodeId", node._id),
-			)
-			.take(remainingMetadataDocs);
-		for (const metadataDoc of metadataDocs) {
-			await ctx.db.delete("files_metadata_docs", metadataDoc._id);
-			deletedCount++;
-		}
-		if (metadataDocs.length > 0) {
-			continue;
-		}
-
-		if (node.assetId) {
-			const asset = await ctx.db.get("files_r2_assets", node.assetId);
-			if (asset) {
-				if (deletedCount + 2 > args.batchSize) {
-					break;
-				}
-				if (asset.r2Key) {
-					await r2_delete_object(ctx, asset.r2Key);
-				}
-				await ctx.db.delete("files_r2_assets", asset._id);
-				await ctx.db.delete("files_nodes", node._id);
-				deletedCount += 2;
-				continue;
-			}
-		}
-
-		if (deletedCount >= args.batchSize) {
-			break;
-		}
-		await ctx.db.delete("files_nodes", node._id);
-		deletedCount++;
-	}
-
-	const remaining = await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_treePath", (q) =>
-			q
-				.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-				.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
-				.gte("treePath", lower)
-				.lt("treePath", upper),
-		)
-		.first();
-
-	return { done: remaining === null, deletedCount };
-}
-
 /**
  * Delete one bounded batch of a plugin version's source tree (`/<pluginVersionId>/...` in the
  * reserved `GLOBAL`/`PLUGINS` scope). Drive to `done:true` by calling repeatedly.
@@ -2684,7 +2469,9 @@ export const delete_plugin_source_tree_batch = internalMutation({
 	},
 	returns: v.object({ done: v.boolean(), deletedCount: v.number() }),
 	handler: async (ctx, args) => {
-		return await db_delete_plugin_source_tree_batch(ctx, {
+		return await files_nodes_db_delete_subtree_batch(ctx, {
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 			treePathPrefix: `/${args.pluginVersionId}/`,
 			batchSize: args._test_batchSize ?? 100,
 		});
@@ -2922,7 +2709,9 @@ export const hard_delete_registered_plugin_batch = internalMutation({
 		for (const version of versions) {
 			// Drain the version's source tree in GLOBAL/PLUGINS before the version doc so a
 			// registry hard delete never orphans reserved-scope file rows.
-			const sourceTree = await db_delete_plugin_source_tree_batch(ctx, {
+			const sourceTree = await files_nodes_db_delete_subtree_batch(ctx, {
+				organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+				workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 				treePathPrefix: `/${version._id}/`,
 				batchSize: budget,
 			});

@@ -505,7 +505,7 @@ Every evaluation pass should report:
 
 Agent-only read-only external-source mounts live under `/.mounts/<name>` as a Bash-only read surface. The mount must never appear in the Files sidebar or any public API file route. These scenarios validate the live agent path against a real synced mount.
 
-Fixture: mount `/.mounts/t3-chat` (source `t3-chat`, owner `raythurnvoid` / repo `experiment--t3-chat` @ `main`). For the full eval fixture, sync to terminal `status: "idle"` and confirm `lastCommitSha != null` before running so the repo contents are complete. Bash mount visibility itself is based on top-level folders in the reserved `files_nodes` tree, so a running/error sync may still expose partial materialized files by design. Against a deployment where the GitHub mount code is already pushed, use:
+Fixture: mount `/.mounts/t3-chat` (source `t3-chat`, owner `raythurnvoid` / repo `experiment--t3-chat` @ `main`). For the full eval fixture, sync to terminal `status: "idle"` and confirm `lastCommitSha != null` before running so the repo contents are complete. Bash mount visibility is gated on `lastCommitSha` (the mount serves the immutable commit root `/<name>/<commitSha>/...`), so a mount whose first sync is running or errored exposes nothing, and shell paths never show the commit sha. Against a deployment where the GitHub mount code is already pushed, use:
 
 ```powershell
 Push-Location C:\Users\rt0\Documents\workspace\rt0\t3-chat\packages\app
@@ -516,12 +516,12 @@ $upsertArgs = @{
 	repo = "experiment--t3-chat"
 	ref = "main"
 } | ConvertTo-Json -Compress
-vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable github_sources:upsert_github_source $upsertArgs
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable github_mounts:upsert_mount $upsertArgs
 
 $syncArgs = @{ name = "t3-chat" } | ConvertTo-Json -Compress
-vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable github_sources:trigger_sync $syncArgs
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable github_mounts:trigger_sync $syncArgs
 
-vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable github_sources:get_source_by_name $syncArgs
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable github_mounts:get_mount_by_name $syncArgs
 Pop-Location
 ```
 
@@ -531,7 +531,7 @@ Eight categories, scored per task. 0/1 for binary tasks; 0/2 for tasks needing b
 
 - **C1 Mount discovery (0/1)** — `ls /.mounts` sees `t3-chat/`, `ls /.mounts/t3-chat` names real top-level entries. Fail: invents mount names, treats `/.mounts` as a workspace path, or hallucinates contents.
 - **C2 Repo read (0/2)** — `cat`/`head` a real file (README/AGENTS.md); summary grounded in actual bytes.
-- **C3 Repo search (0/2)** — `grep -R <token> /.mounts/t3-chat` or `search --path /.mounts/t3-chat <token>`; cites real matching path(s). `/.mounts` alone is not a searchable scope — scope to `/.mounts/t3-chat`.
+- **C3 Repo search (0/2)** — `grep -R <token> /.mounts/t3-chat` or `search --path /.mounts/t3-chat <token>`; cites real matching path(s). `search --path /.mounts <token>` also works (fans out across mounts in name order); `meta search` still requires a single-mount scope.
 - **C4 Guard behavior (0/2)** — attempts `touch`/`rm`/`mv` under the mount AND `bash <mountfile>`, `source <mountfile>`, and `. <mountfile>`; reports writes rejected with "read-only mount of an external source" (exit 1), `bash <mountfile>` rejected "not executable through bash" (exit 126), and the `source` and `.` builtins rejected "disabled in this environment" (exit 126); does NOT fall back to write_file. `cp <mountfile> /tmp/...` is allowed (read-out to scratch).
 - **C5 cd persistence (0/2)** — `cd /.mounts/t3-chat && pwd` returns the mount path AND a later command shows `cwd /.mounts/t3-chat`.
 - **C6 Isolation — sidebar + bash root (0/2)** — app-root `ls` does not list the mount; un-prefixed `/t3-chat/...` is "No such file or directory"; the agent states the mount is an agent-only read-only area, not app files. Out-of-band: DOM check confirms `/.mounts` absent from the Files sidebar.

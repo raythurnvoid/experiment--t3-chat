@@ -44,7 +44,7 @@ import {
 } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx, MutationCtx } from "../convex/_generated/server.js";
-import type { Id } from "../convex/_generated/dataModel";
+import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { ai_chat_get_thread_state_Result } from "../convex/ai_chat.ts";
 import type {
 	ai_chat_files_load_thread_tmp_files_Result,
@@ -75,37 +75,8 @@ import { bash_tee_command_create } from "./bash-tee-command.ts";
 import { bash_textgrep_command_create } from "./bash-textgrep-command.ts";
 import { bash_tree_command_create } from "./bash-tree-command.ts";
 import { bash_touch_command_create } from "./bash-touch-command.ts";
-import {
-	bash_ALLOWED_COMMANDS,
-	bash_APP_MOUNT_PATH,
-	bash_EXTERNAL_MOUNTS_ROOT,
-	bash_PLUGINS_MOUNT_ROOT,
-	bash_command_has_disallowed_source_target,
-	bash_delegate_native_just_bash_tmp_command,
-	bash_DEV_NULL_PATH,
-	bash_DEV_ZERO_BYTE_COUNT,
-	bash_DEV_ZERO_PATH,
-	bash_DEV_ZERO_TEXT,
-	bash_get_db_file_byte_size,
-	bash_HOME,
-	bash_normalize_path,
-	bash_READER_FILE_OPERAND_MAX,
-	bash_READ_HEAD_LARGE_FILE_MAX_LINES,
-	bash_READ_INLINE_MAX_BYTES,
-	bash_resolve_path,
-	bash_shell_arg_quote,
-	bash_disallowed_source_target_error,
-	bash_TMP_MOUNT,
-	bash_DbFilesFs,
-	bash_COMMAND_EXIT_FAILURE,
-	bash_COMMAND_EXIT_USAGE,
-	bash_COMMAND_EXIT_CANNOT_EXECUTE,
-	bash_COMMAND_EXIT_NOT_FOUND,
-	bash_TERMINAL_LINE_ENDING_REGEX,
-	bash_SHELL_COMMENT_LINE_REGEX,
-	bash_WHITESPACE_RUN_REGEX,
-	type bash_DbFilesRoots,
-} from "./bash-utils.ts";
+import { bash_APP_MOUNT_PATH, bash_EXTERNAL_MOUNTS_ROOT, bash_PLUGINS_MOUNT_ROOT, bash_command_has_disallowed_source_target, bash_DEV_NULL_PATH, bash_DEV_ZERO_BYTE_COUNT, bash_DEV_ZERO_PATH, bash_DEV_ZERO_TEXT, bash_get_db_file_byte_size, bash_HOME, bash_normalize_path, bash_READER_FILE_OPERAND_MAX, bash_READ_HEAD_LARGE_FILE_MAX_LINES, bash_READ_INLINE_MAX_BYTES, bash_resolve_path, bash_shell_arg_quote, bash_disallowed_source_target_error, bash_TMP_MOUNT, bash_DbFilesFs, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, bash_COMMAND_EXIT_CANNOT_EXECUTE, bash_COMMAND_EXIT_NOT_FOUND, bash_TERMINAL_LINE_ENDING_REGEX, bash_SHELL_COMMENT_LINE_REGEX, bash_WHITESPACE_RUN_REGEX, type bash_DbFilesRoots } from "./bash-utils.ts";
+import { bash_ALLOWED_COMMANDS, bash_delegate_native_just_bash_tmp_command } from "./bash-delegate.ts";
 import { bash_which_command_create } from "./bash-which-command.ts";
 import { bash_xargs_command_create } from "./bash-xargs-command.ts";
 
@@ -832,6 +803,7 @@ async function bash_fs_create(args: {
 	threadId: Id<"ai_chat_threads">;
 	persistedCwd: string;
 	allowDbFilesMkdir: boolean;
+	githubMounts: Doc<"github_mounts">[];
 	pluginSourceMounts: plugins_list_bash_source_mounts_Result;
 }) {
 	// Organization and workspace names are validated slugs, so they are stable shell
@@ -853,22 +825,45 @@ async function bash_fs_create(args: {
 		allowDbFilesMkdir: args.allowDbFilesMkdir,
 	});
 
-	// Read-only external mounts share one reserved-scope (`GLOBAL`/`GITHUB`) filesystem mounted at
-	// `/.mounts`. `MountableFs` strips `/.mounts`, so this FS receives the stored `/<name>/<rel>` path
-	// directly. Mount visibility is whatever top-level folders exist in that reserved files tree.
-	const externalMountsDbFilesFs = new bash_DbFilesFs({
-		ctx: args.ctx,
-		ctxData: {
-			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
-			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
-			organizationName: "GLOBAL",
-			workspaceName: "GITHUB",
-			userId: args.userId,
-		},
-		currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
-		allowDbFilesMkdir: false,
-		readOnlySource: "codebase",
-	});
+	// Each synced GitHub mount doc gets its own read-only mount at `/.mounts/<name>`, backed by the
+	// commit-keyed tree `/<name>/<commitSha>/...` in the reserved `GLOBAL`/`GITHUB` scope. Only
+	// mounts with a finished sync (`lastCommitSha` set) are visible, and the sha is pinned for
+	// this run, so a pointer flip mid-run never tears reads. `MountableFs` synthesizes the
+	// `/.mounts` parent listing from these mount points, so with zero synced mounts `/.mounts`
+	// does not exist at all.
+	const externalMounts = new Map(
+		args.githubMounts.flatMap((mount) => {
+			const commitSha = mount.lastCommitSha;
+			if (commitSha == null) {
+				return [];
+			}
+			const mountWorkspacePath = `${bash_EXTERNAL_MOUNTS_ROOT}/${mount.name}`;
+			const mountFs = new bash_DbFilesFs({
+				ctx: args.ctx,
+				ctxData: {
+					organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+					workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+					organizationName: "GLOBAL",
+					workspaceName: "GITHUB",
+					userId: args.userId,
+				},
+				currentWorkspacePath: mountWorkspacePath,
+				allowDbFilesMkdir: false,
+				dbFilesPathPrefix: `/${mount.name}/${commitSha}`,
+				readOnlySource: "codebase",
+			});
+			return [
+				[
+					mount.name,
+					{
+						name: mount.name,
+						commitSha,
+						fs: mountFs,
+					},
+				] as const,
+			];
+		}),
+	);
 
 	// Each enabled plugin installation gets its own read-only mount at `/.plugins/<pluginName>`,
 	// backed by the version-keyed tree `/<pluginVersionId>/...` in the reserved `GLOBAL`/`PLUGINS`
@@ -906,7 +901,10 @@ async function bash_fs_create(args: {
 		base: new ReadOnlyBaseFs(),
 		mounts: [
 			{ mountPoint: currentWorkspacePath, filesystem: appDbFilesFs },
-			{ mountPoint: bash_EXTERNAL_MOUNTS_ROOT, filesystem: externalMountsDbFilesFs },
+			...Array.from(externalMounts.values(), (mount) => ({
+				mountPoint: mount.fs.currentWorkspacePath,
+				filesystem: mount.fs,
+			})),
 			...Array.from(pluginMounts.values(), (mount) => ({
 				mountPoint: mount.fs.currentWorkspacePath,
 				filesystem: mount.fs,
@@ -922,7 +920,7 @@ async function bash_fs_create(args: {
 		},
 		externalMounts: {
 			currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT,
-			fs: externalMountsDbFilesFs,
+			mounts: externalMounts,
 		},
 		plugins: {
 			currentWorkspacePath: bash_PLUGINS_MOUNT_ROOT,
@@ -1048,14 +1046,16 @@ export async function bash_run_command(
 		allowDbFilesMkdir: boolean;
 	},
 ) {
-	// Plugin source visibility is decided per run: only plugins with an enabled
-	// installation in this workspace appear under `/.plugins`.
-	const [threadState, pluginSourceMounts] = await Promise.all([
+	// Mount visibility is decided per run: only plugins with an enabled installation in this
+	// workspace appear under `/.plugins`, and only GitHub mounts with a finished sync appear
+	// under `/.mounts` (their commit sha is pinned for the whole run).
+	const [threadState, githubMounts, pluginSourceMounts] = await Promise.all([
 		ctx.runQuery(internal.ai_chat.get_thread_state, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			threadId: args.threadId,
 		}) as Promise<ai_chat_get_thread_state_Result>,
+		ctx.runQuery(internal.github_mounts.list_mounts, {}) as Promise<Doc<"github_mounts">[]>,
 		ctx.runQuery(internal.plugins.list_bash_source_mounts, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -1072,6 +1072,7 @@ export async function bash_run_command(
 		threadId: args.threadId,
 		persistedCwd: threadState.bashCwd,
 		allowDbFilesMkdir: args.allowDbFilesMkdir,
+		githubMounts,
 		pluginSourceMounts,
 	});
 
@@ -5375,18 +5376,31 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// committed plain-text chunks (no R2 round-trip), matching how the sync materializes external mount content.
 			const README_TEXT = "# experiment--t3-chat\n\nMounted repo readme.\nZorptelemetry marker line.\n";
 			const GUIDE_TEXT = "guide alpha\nguide beta\n";
+			const MOUNT_COMMIT_SHA = "a".repeat(40);
 
-			// Seed reserved-scope (`GLOBAL`/`GITHUB`) plain-text nodes via the real Phase D path. The Bash
-			// mount root lists top-level folders from files_nodes, so no github_sources metadata is needed.
+			// Seed reserved-scope (`GLOBAL`/`GITHUB`) plain-text nodes via the real Phase D path, under the
+			// commit-keyed root a finished sync would produce. Bash only mounts sources whose
+			// `lastCommitSha` is set, so the source row is part of the fixture.
 			async function seed_github_mount(
 				runner: Awaited<ReturnType<typeof create_bash_runner>>,
 				name: string,
 				files: { path: string; rawText: string }[],
 			) {
+				const inserted = (await runner.t.mutation(internal.github_mounts.upsert_mount, {
+					name,
+					owner: "raythurnvoid",
+					repo: "experiment--t3-chat",
+					ref: "main",
+				})) as { _yay?: { mountId: Id<"github_mounts"> }; _nay?: { message: string } };
+				if (!inserted._yay) {
+					throw new Error(`Failed to seed github mount ${name}: ${inserted._nay?.message}`);
+				}
+				const mountId = inserted._yay.mountId;
+				await runner.t.run((ctx) => ctx.db.patch("github_mounts", mountId, { lastCommitSha: MOUNT_COMMIT_SHA }));
 				for (const file of files) {
 					const created = (await runner.t.action(internal.files_nodes.create_file_node_internal, {
 						workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
-						path: `/${name}${file.path}`,
+						path: `/${name}/${MOUNT_COMMIT_SHA}${file.path}`,
 						rawText: file.rawText,
 					})) as { _yay?: unknown; _nay?: { message: string } };
 					if (!created._yay) {

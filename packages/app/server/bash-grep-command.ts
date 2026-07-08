@@ -7,27 +7,8 @@ import type {
 	files_nodes_text_search_files_Result,
 } from "../convex/files_nodes.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
-import {
-	bash_create_glob_syntax_unsupported_message,
-	bash_cursor_id_create,
-	bash_delegate_native_just_bash_tmp_command,
-	bash_format_multiline_hint,
-	bash_GLOB_METACHARACTER_REGEX,
-	bash_read_option_value,
-	bash_regex_validation_error,
-	bash_resolve_path,
-	bash_search_command_build_continuation,
-	bash_search_command_exact_query_filter,
-	bash_search_command_exact_query_note,
-	bash_search_command_exact_query_summary,
-	bash_shell_arg_quote,
-	bash_resolve_db_files_shell_path,
-	bash_COMMAND_EXIT_FAILURE,
-	bash_COMMAND_EXIT_USAGE,
-	bash_NON_NEGATIVE_INTEGER_REGEX,
-	bash_TERMINAL_LINE_ENDING_REGEX,
-	type bash_DbFilesRoots,
-} from "./bash-utils.ts";
+import { bash_create_glob_syntax_unsupported_message, bash_cursor_id_create, bash_format_multiline_hint, bash_GLOB_METACHARACTER_REGEX, bash_read_option_value, bash_regex_validation_error, bash_resolve_path, bash_search_command_build_continuation, bash_search_command_exact_query_filter, bash_search_command_exact_query_note, bash_search_command_exact_query_summary, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, bash_NON_NEGATIVE_INTEGER_REGEX, bash_TERMINAL_LINE_ENDING_REGEX, type bash_DbFilesRoots } from "./bash-utils.ts";
+import { bash_delegate_native_just_bash_tmp_command } from "./bash-delegate.ts";
 
 const GREP_ATTACHED_CONTEXT_REGEX = /^-([ABC])(\d+)$/u;
 const GREP_LONG_CONTEXT_REGEX = /^--(after-context|before-context|context)=(\d+)$/u;

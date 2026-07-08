@@ -654,9 +654,11 @@ const app_convex_schema = defineSchema({
 
 	/**
 	 * Operational status for read-only external mounts (v1: GitHub repo mirrors). This table's own
-	 * scope is not a file scope, so no reserved-literal union applies.
+	 * scope is not a file scope, so no reserved-literal union applies. Content lives in immutable
+	 * per-commit roots `/<name>/<commitSha>/...` in GLOBAL/GITHUB: sync ingests a fresh root, finalize
+	 * flips `lastCommitSha`, and orphan roots are GC'd.
 	 */
-	github_sources: defineTable({
+	github_mounts: defineTable({
 		/** Mount name exposed as `/.mounts/<name>`. */
 		name: v.string(),
 		owner: v.string(),
@@ -664,6 +666,10 @@ const app_convex_schema = defineSchema({
 		defaultBranch: v.union(v.string(), v.null()),
 		/** Branch name to sync (v1: branch only). */
 		ref: v.string(),
+		/**
+		 * Active-root pointer AND mount-visibility gate: the mount serves `/<name>/<lastCommitSha>/...`;
+		 * null means not mounted (never synced, or wiped).
+		 */
 		lastCommitSha: v.union(v.string(), v.null()),
 		lastTreeSha: v.union(v.string(), v.null()),
 		lastSyncedAt: v.union(v.number(), v.null()),
@@ -687,7 +693,7 @@ const app_convex_schema = defineSchema({
 		 */
 		pendingCommitSha: v.optional(v.string()),
 		/**
-		 * Tree SHA learned at metadata-fetch time for the active sync. Kept on the source doc so the
+		 * Tree SHA learned at metadata-fetch time for the active sync. Kept on the mount doc so the
 		 * last finishing worker can close the run without carrying per-file job metadata.
 		 */
 		pendingTreeSha: v.optional(v.string()),

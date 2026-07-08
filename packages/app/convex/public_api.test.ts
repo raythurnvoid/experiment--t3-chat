@@ -368,6 +368,7 @@ describe("public files API", () => {
 			committedMarkdown: "tenant visible content\n",
 		});
 		const mounted = await t.action(internal.files_nodes.create_file_node_internal, {
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			path: "/t3-chat/README.md",
 			rawText: mountSentinel,
 		});

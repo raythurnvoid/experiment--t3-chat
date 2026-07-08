@@ -13,26 +13,8 @@ import { Result } from "../shared/errors-as-values-utils.ts";
 import { files_node_has_editable_yjs_state } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { bash_sed_command_build_next_page_hint } from "./bash-sed-command.ts";
-import {
-	bash_DbFilesContentUnavailableError,
-	bash_build_unreadable_file_advisory,
-	bash_create_glob_syntax_unsupported_message,
-	bash_delegate_builtin_command,
-	bash_enforce_reader_operand_cap,
-	bash_format_multiline_hint,
-	bash_GLOB_METACHARACTER_REGEX,
-	bash_get_db_file_byte_size,
-	bash_is_path_under_current_workspace_path,
-	bash_READ_HEAD_LARGE_FILE_MAX_LINES,
-	bash_READ_INLINE_MAX_BYTES,
-	bash_resolve_path,
-	bash_shell_arg_quote,
-	bash_resolve_db_files_shell_path,
-	bash_COMMAND_EXIT_FAILURE,
-	bash_COMMAND_EXIT_USAGE,
-	type bash_DbFilesRoots,
-	type bash_DbFilesShellPathResolution,
-} from "./bash-utils.ts";
+import { bash_DbFilesContentUnavailableError, bash_build_unreadable_file_advisory, bash_create_glob_syntax_unsupported_message, bash_enforce_reader_operand_cap, bash_format_multiline_hint, bash_GLOB_METACHARACTER_REGEX, bash_get_db_file_byte_size, bash_is_path_under_current_workspace_path, bash_READ_HEAD_LARGE_FILE_MAX_LINES, bash_READ_INLINE_MAX_BYTES, bash_resolve_path, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots, type bash_DbFilesShellPathResolution } from "./bash-utils.ts";
+import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 const READER_LINE_COUNT_REGEX = /^(\+?)(\d+)$/u;
 const WC_COMBINED_FLAGS_REGEX = /^-[lwmc]{2,}$/u;

@@ -1,12 +1,6 @@
 import { defineCommand } from "just-bash/browser";
-import {
-	bash_current_workspace_path_to_db_files_path,
-	bash_delegate_builtin_command,
-	bash_is_path_under_read_only_mounts,
-	bash_resolve_path,
-	bash_read_only_mount_error,
-	bash_COMMAND_EXIT_FAILURE,
-} from "./bash-utils.ts";
+import { bash_current_workspace_path_to_db_files_path, bash_is_path_under_read_only_mounts, bash_resolve_path, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE } from "./bash-utils.ts";
+import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
  * Extract `rm` operands that might delete app paths.
