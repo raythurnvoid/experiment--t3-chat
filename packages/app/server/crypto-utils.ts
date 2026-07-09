@@ -1,3 +1,4 @@
+import type { LiteralUnion } from "type-fest";
 import { convex_error } from "./convex-utils.ts";
 
 const text_encoder = new TextEncoder();
@@ -7,6 +8,17 @@ export async function crypto_sha256_hex(input: string | BufferSource) {
 	const bytes = typeof input === "string" ? text_encoder.encode(input) : input;
 	const digest = await crypto.subtle.digest("SHA-256", bytes);
 	return Array.from(new Uint8Array(digest))
+		.map((byte) => byte.toString(16).padStart(2, "0"))
+		.join("");
+}
+
+/**
+ * 32 bytes (256 random bits) is the right count for secrets.
+ */
+export function crypto_random_hex(byteCount: LiteralUnion<32, number>) {
+	const bytes = new Uint8Array(byteCount);
+	crypto.getRandomValues(bytes);
+	return Array.from(bytes)
 		.map((byte) => byte.toString(16).padStart(2, "0"))
 		.join("");
 }

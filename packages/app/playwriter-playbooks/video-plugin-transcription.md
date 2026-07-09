@@ -56,7 +56,7 @@ Expected result:
 
 1. Delete the `MISTRAL_API_KEY` secret from the video plugin's publisher panel (respect the `plugins_manage` rate limiter — ~15s between mutations).
 2. Upload `speakers.wav` again (renamed or into a second folder).
-3. Verify: run `failed` with `errorMessage: "Plugin execution failed"` (the runner sanitizes every worker throw — the specific `MISTRAL_API_KEY secret is not configured` message is never persisted); the run's calls show only a single `secretGet` for `MISTRAL_API_KEY` with no writes; **no** `.transcript.md` and no `.summary.md` siblings for this upload (secrets are read before any write).
+3. Verify: run `failed` with an `errorMessage` naming the missing secret — expect the specific `MISTRAL_API_KEY secret is not configured` worker throw (runner error messages are persisted truncated to 500 chars and shown to workspace admins; a generic placeholder here is a regression); the run's calls show only a single `secretGet` for `MISTRAL_API_KEY` with no writes; **no** `.transcript.md` and no `.summary.md` siblings for this upload (secrets are read before any write).
 4. Re-create `MISTRAL_API_KEY` (origins `https://api.mistral.ai`) in the same publisher panel.
 
 ## Cleanup

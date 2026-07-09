@@ -1,5 +1,6 @@
 import { generateObject } from "ai";
 import { openai } from "@ai-sdk/openai";
+import { Workpool } from "@convex-dev/workpool";
 import { v } from "convex/values";
 import type { RegisteredAction, RegisteredMutation, RegisteredQuery } from "convex/server";
 import { omit } from "convex-helpers";
@@ -18,7 +19,7 @@ import {
 	type ActionCtx,
 	type MutationCtx,
 } from "./_generated/server.js";
-import { internal } from "./_generated/api.js";
+import { components, internal } from "./_generated/api.js";
 import app_convex_schema from "./schema.ts";
 import { Result } from "../shared/errors-as-values-utils.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
@@ -48,9 +49,24 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2_delete_object, r2_fetch_object_from_bucket, r2_put_object } from "./r2.ts";
 import { files_nodes_db_delete_subtree_batch } from "./files_nodes.ts";
 import type { files_nodes_create_file_node_internal_Result } from "./files_nodes.ts";
-import { plugins_runtime_enqueue_manual_run } from "./plugins_runtime.ts";
+import { plugins_runtime_db_enqueue_manual_run } from "./plugins_runtime.ts";
 
 const PLUGIN_SECRETS_MAX_BATCH_SIZE = 50;
+
+/**
+ * Workpool handle for plugin event-run executions.
+ *
+ * Hard plugin deletes cancel queued runs through it before deleting their tracking docs.
+ */
+const plugins_runtime_workpool = new Workpool(components.plugins_runtime_workpool, {
+	maxParallelism: 4,
+	retryActionsByDefault: true,
+	defaultRetryBehavior: {
+		initialBackoffMs: 10 * 1000,
+		base: 2,
+		maxAttempts: 3,
+	} as const,
+});
 
 type PluginResult<T> = { _yay: T; _nay?: undefined } | { _nay: { message: string }; _yay?: undefined };
 
@@ -145,12 +161,10 @@ export const register_plugin_version = internalAction({
 		sourceRepositoryUrl: doc(app_convex_schema, "plugins_versions").fields.sourceRepositoryUrl,
 		sourceOwner: doc(app_convex_schema, "plugins_versions").fields.sourceOwner,
 		sourceRepo: doc(app_convex_schema, "plugins_versions").fields.sourceRepo,
-		sourceDefaultBranch: doc(app_convex_schema, "plugins_versions").fields.sourceDefaultBranch,
 		sourceCommitSha: doc(app_convex_schema, "plugins_versions").fields.sourceCommitSha,
 		manifestR2Key: doc(app_convex_schema, "plugins_versions").fields.manifestR2Key,
-		backend: doc(app_convex_schema, "plugins_versions").fields.backend,
+		backendEntrypointFile: doc(app_convex_schema, "plugins_versions").fields.backendEntrypointFile,
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
-		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 		files: doc(app_convex_schema, "plugins_versions").fields.files,
@@ -168,9 +182,7 @@ export const register_plugin_version = internalAction({
 		}
 		const pluginVersionId = registered._yay.pluginVersionId;
 
-		let totalBytes = 0;
 		for (const sourceFile of sourceFiles) {
-			totalBytes += files_get_utf8_byte_size(sourceFile.rawText);
 			// Re-publish of the same (name, version, artifactHash) reuses the version doc, so existing
 			// file rows hit the "This file already exists." continue branch and stay shared.
 			const created = (await ctx.runAction(internal.files_nodes.create_file_node_internal, {
@@ -185,8 +197,6 @@ export const register_plugin_version = internalAction({
 				await ctx.runMutation(internal.plugins.patch_version_source_status, {
 					pluginVersionId,
 					sourceStatus: "error",
-					sourceFileCount: sourceFiles.length,
-					sourceTotalBytes: totalBytes,
 					sourceLastError: created._nay.message,
 				});
 				return Result({ _nay: { message: created._nay.message } });
@@ -196,8 +206,6 @@ export const register_plugin_version = internalAction({
 		await ctx.runMutation(internal.plugins.patch_version_source_status, {
 			pluginVersionId,
 			sourceStatus: "ready",
-			sourceFileCount: sourceFiles.length,
-			sourceTotalBytes: totalBytes,
 			sourceLastError: null,
 		});
 
@@ -221,12 +229,10 @@ export const upsert_plugin = internalMutation({
 		sourceRepositoryUrl: doc(app_convex_schema, "plugins_versions").fields.sourceRepositoryUrl,
 		sourceOwner: doc(app_convex_schema, "plugins_versions").fields.sourceOwner,
 		sourceRepo: doc(app_convex_schema, "plugins_versions").fields.sourceRepo,
-		sourceDefaultBranch: doc(app_convex_schema, "plugins_versions").fields.sourceDefaultBranch,
 		sourceCommitSha: doc(app_convex_schema, "plugins_versions").fields.sourceCommitSha,
 		manifestR2Key: doc(app_convex_schema, "plugins_versions").fields.manifestR2Key,
-		backend: doc(app_convex_schema, "plugins_versions").fields.backend,
+		backendEntrypointFile: doc(app_convex_schema, "plugins_versions").fields.backendEntrypointFile,
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
-		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 		files: doc(app_convex_schema, "plugins_versions").fields.files,
@@ -286,8 +292,6 @@ export const upsert_plugin = internalMutation({
 			// Source files are written after this insert; register_plugin_version patches the
 			// final status, so a crash mid-publish leaves an honest incomplete-snapshot error.
 			sourceStatus: "error",
-			sourceFileCount: 0,
-			sourceTotalBytes: 0,
 			sourceLastError: "Source snapshot incomplete",
 			updatedAt: Date.now(),
 		});
@@ -305,8 +309,6 @@ export const patch_version_source_status = internalMutation({
 	args: {
 		pluginVersionId: v.id("plugins_versions"),
 		sourceStatus: v.union(v.literal("ready"), v.literal("error")),
-		sourceFileCount: v.number(),
-		sourceTotalBytes: v.number(),
 		sourceLastError: v.union(v.string(), v.null()),
 	},
 	returns: v.null(),
@@ -461,7 +463,7 @@ type get_version_review_by_artifact_json_hash_Result =
 /**
  * Gathers the inputs a fresh AI review needs (the review action has no db access): the publisher
  * repository's secret names for the prompt, and the latest passed version's artifact hash + backend
- * R2 key as the diff baseline. Only queried on a review-cache miss.
+ * entrypoint file R2 key as the diff baseline. Only queried on a review-cache miss.
  */
 export const get_ai_review_inputs = internalQuery({
 	args: {
@@ -473,7 +475,7 @@ export const get_ai_review_inputs = internalQuery({
 		previousPassed: v.union(
 			v.object({
 				artifactHash: doc(app_convex_schema, "plugins_versions").fields.artifactHash,
-				backendR2Key: v.union(v.string(), v.null()),
+				backendEntrypointFileR2Key: v.union(v.string(), v.null()),
 			}),
 			v.null(),
 		),
@@ -497,7 +499,10 @@ export const get_ai_review_inputs = internalQuery({
 		return {
 			secretNames: secrets.map((secret) => secret.name),
 			previousPassed: previousPassed
-				? { artifactHash: previousPassed.artifactHash, backendR2Key: previousPassed.backend?.r2Key ?? null }
+				? {
+						artifactHash: previousPassed.artifactHash,
+						backendEntrypointFileR2Key: previousPassed.backendEntrypointFile?.r2Key ?? null,
+					}
 				: null,
 		};
 	},
@@ -633,13 +638,15 @@ export const run_version_review = internalAction({
 			});
 		}
 
-		// Diff against the latest passed version's dist from R2 so the model can focus on the changed lines.
+		// Diff against the latest passed version's backend entrypoint dist from R2 so the model can focus on the changed lines.
 		let diff: { baseArtifactHash: string; patch: string } | null = null;
-		if (context.previousPassed?.backendR2Key) {
-			const previousDist = await r2_fetch_object_from_bucket({ key: context.previousPassed.backendR2Key });
+		if (context.previousPassed?.backendEntrypointFileR2Key) {
+			const previousBackendEntrypointDist = await r2_fetch_object_from_bucket({
+				key: context.previousPassed.backendEntrypointFileR2Key,
+			});
 			diff = {
 				baseArtifactHash: context.previousPassed.artifactHash,
-				patch: createPatch("dist.js", await previousDist.text(), args.distSource),
+				patch: createPatch("dist.js", await previousBackendEntrypointDist.text(), args.distSource),
 			};
 		}
 
@@ -734,11 +741,10 @@ async function publish_version_from_github(
 		return Result({ _nay: { message: head._nay.message } });
 	}
 
-	const sourceDefaultBranch = head._yay.defaultBranch;
 	const sourceCommitSha = head._yay.commitSha;
 
 	// dist/bonobo.plugin.json declares the plugin identity and describes the build output (backend,
-	// pages, shipped files); it is the single file the publish reads besides what it lists.
+	// shipped files); it is the single file the publish reads besides what it lists.
 	const manifestText = await fetch_github_text({
 		owner: source.owner,
 		repo: source.repo,
@@ -768,7 +774,7 @@ async function publish_version_from_github(
 		path: "dist/bonobo.plugin.json",
 	});
 
-	// Download each build file dist/bonobo.plugin.json lists (backend dist, page HTML, assets), verify its pinned hash
+	// Download each build file dist/bonobo.plugin.json lists (backend dist, assets), verify its pinned hash
 	// and byte size, then stage it for upload.
 	const fileResults = await Promise.all(
 		manifest._yay.files.map(async (file) => {
@@ -812,17 +818,22 @@ async function publish_version_from_github(
 		files.push(result._yay);
 	}
 
-	// A backend entry must be one of the files dist/bonobo.plugin.json lists; its dist source is what the review reads.
-	const backendEntry = manifest._yay.backend;
-	let backend: (NonNullable<typeof manifest._yay.backend> & { r2Key: string }) | null = null;
-	let backendDistSource: string | null = null;
-	if (backendEntry) {
-		const backendFile = files.find((file) => file.path === backendEntry.entry);
-		if (!backendFile) {
-			return Result({ _nay: { message: "Plugin backend entry is missing from artifact files" } });
+	// The manifest backend entry must resolve to one listed dist file; that file's source is what the review reads.
+	const backendEntrypoint = manifest._yay.backend;
+	let backendEntrypointFile: (NonNullable<typeof manifest._yay.backend> & { r2Key: string; sha256: string }) | null =
+		null;
+	let backendEntrypointDistSource: string | null = null;
+	if (backendEntrypoint) {
+		const backendEntrypointListedFile = files.find((file) => file.path === backendEntrypoint.entry);
+		if (!backendEntrypointListedFile) {
+			return Result({ _nay: { message: "Plugin backend entrypoint file is missing from artifact files" } });
 		}
-		backend = { ...backendEntry, r2Key: backendFile.r2Key };
-		backendDistSource = text_decoder.decode(backendFile.body);
+		backendEntrypointFile = {
+			...backendEntrypoint,
+			r2Key: backendEntrypointListedFile.r2Key,
+			sha256: backendEntrypointListedFile.sha256,
+		};
+		backendEntrypointDistSource = text_decoder.decode(backendEntrypointListedFile.body);
 	}
 
 	// Review the dist before anything is uploaded or registered; "rejected" blocks the publish.
@@ -830,7 +841,7 @@ async function publish_version_from_github(
 		pluginName: manifest._yay.name,
 		version: manifest._yay.version,
 		artifactHash,
-		distSource: backendDistSource,
+		distSource: backendEntrypointDistSource,
 		capabilities: manifest._yay.capabilities,
 		outboundOrigins: manifest._yay.outboundOrigins,
 		repositoryId: args.repositoryId,
@@ -879,12 +890,10 @@ async function publish_version_from_github(
 		sourceRepositoryUrl: source.repositoryUrl,
 		sourceOwner: source.owner,
 		sourceRepo: source.repo,
-		sourceDefaultBranch,
 		sourceCommitSha,
 		manifestR2Key,
-		backend,
+		backendEntrypointFile,
 		events: manifest._yay.events,
-		pages: manifest._yay.pages,
 		capabilities: manifest._yay.capabilities,
 		outboundOrigins: manifest._yay.outboundOrigins,
 		files: files.map((file) => omit(file, ["body"])),
@@ -1545,7 +1554,6 @@ export const install_version = mutation({
 						pluginName: pluginVersion.name,
 						event: event.type,
 						contentType,
-						status: "enabled",
 						installationCreatedAt,
 						updatedAt: now,
 					}),
@@ -2247,7 +2255,7 @@ export const list_recent_runs = query({
 			updatedAt: doc(app_convex_schema, "plugins_event_runs").fields.updatedAt,
 			startedAt: doc(app_convex_schema, "plugins_event_runs").fields.startedAt,
 			finishedAt: doc(app_convex_schema, "plugins_event_runs").fields.finishedAt,
-			source: v.union(
+			file: v.union(
 				v.object({
 					name: doc(app_convex_schema, "files_nodes").fields.name,
 					path: doc(app_convex_schema, "files_nodes").fields.path,
@@ -2289,9 +2297,9 @@ export const list_recent_runs = query({
 
 		return await Promise.all(
 			runs.map(async (run) => {
-				const [sourceFileNode, sourceAsset] = await Promise.all([
-					ctx.db.get("files_nodes", run.sourceFileNodeId),
-					ctx.db.get("files_r2_assets", run.sourceAssetId),
+				const [fileNode, asset] = await Promise.all([
+					ctx.db.get("files_nodes", run.fileNodeId),
+					ctx.db.get("files_r2_assets", run.assetId),
 				]);
 				return {
 					_id: run._id,
@@ -2309,13 +2317,13 @@ export const list_recent_runs = query({
 					updatedAt: run.updatedAt,
 					...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }),
 					...(run.finishedAt === undefined ? {} : { finishedAt: run.finishedAt }),
-					source:
-						sourceFileNode && sourceAsset
+					file:
+						fileNode && asset
 							? {
-									name: sourceFileNode.name,
-									path: sourceFileNode.path,
-									contentType: sourceFileNode.contentType ?? null,
-									size: sourceAsset.size,
+									name: fileNode.name,
+									path: fileNode.path,
+									contentType: fileNode.contentType ?? null,
+									size: asset.size,
 								}
 							: null,
 				};
@@ -2362,58 +2370,59 @@ export const run_installation_on_files = internalMutation({
 		// the already-pending guard instead of racing itself.
 		const runs: { nodeId: Id<"files_nodes">; runId: Id<"plugins_event_runs"> | null; message: string | null }[] = [];
 		for (const nodeId of args.nodeIds) {
-			const sourceFileNode = await ctx.db.get("files_nodes", nodeId);
-			if (!sourceFileNode || sourceFileNode.archiveOperationId !== undefined) {
+			const fileNode = await ctx.db.get("files_nodes", nodeId);
+			if (!fileNode || fileNode.archiveOperationId !== undefined) {
 				runs.push({ nodeId, runId: null, message: "Not found" });
 				continue;
 			}
 			if (
-				sourceFileNode.organizationId !== installation.organizationId ||
-				sourceFileNode.workspaceId !== installation.workspaceId
+				fileNode.organizationId !== installation.organizationId ||
+				fileNode.workspaceId !== installation.workspaceId
 			) {
 				runs.push({ nodeId, runId: null, message: "File and plugin installation are in different workspaces" });
 				continue;
 			}
 			// Plugins process finished binary uploads only, matching the upload fan-out gate.
 			if (
-				sourceFileNode.kind !== "file" ||
-				sourceFileNode.assetId === undefined ||
-				files_node_has_editable_yjs_state(sourceFileNode)
+				fileNode.kind !== "file" ||
+				fileNode.assetId === undefined ||
+				files_node_has_editable_yjs_state(fileNode)
 			) {
 				runs.push({ nodeId, runId: null, message: "Plugin runs are only supported for uploaded files" });
 				continue;
 			}
-			const contentType = sourceFileNode.contentType?.split(";")[0]?.trim().toLowerCase();
+			// A local is load-bearing here: the undefined-narrowing does not flow into the withIndex
+			// closure through the property access.
+			const contentType = fileNode.contentType;
 			if (!contentType) {
 				runs.push({ nodeId, runId: null, message: "Plugin does not handle this file type" });
 				continue;
 			}
 
-			const [sourceAsset, handlers] = await Promise.all([
-				ctx.db.get("files_r2_assets", sourceFileNode.assetId),
+			const [asset, handlers] = await Promise.all([
+				ctx.db.get("files_r2_assets", fileNode.assetId),
 				// Manual runs reuse the upload handlers' contentType subscriptions for eligibility;
-				// by_scope_event_status_contentType_createdAt_name mirrors the upload fan-out lookup.
+				// by_scope_event_contentType_createdAt_name mirrors the upload fan-out lookup.
 				ctx.db
 					.query("plugins_workspace_event_handlers")
-					.withIndex("by_scope_event_status_contentType_createdAt_name", (q) =>
+					.withIndex("by_scope_event_contentType_createdAt_name", (q) =>
 						q
 							.eq("organizationId", installation.organizationId)
 							.eq("workspaceId", installation.workspaceId)
 							.eq("event", "files.upload.completed")
-							.eq("status", "enabled")
 							.eq("contentType", contentType),
 					)
 					.collect(),
 			]);
-			if (!sourceAsset) {
+			if (!asset) {
 				const errorMessage = "fileNode.assetId points to a missing files_r2_assets doc";
-				const errorData = { fileNodeId: sourceFileNode._id, assetId: sourceFileNode.assetId };
+				const errorData = { fileNodeId: fileNode._id, assetId: fileNode.assetId };
 				console.error(errorMessage, errorData);
 				throw should_never_happen(errorMessage, errorData);
 			}
 			// r2Key is only set once the upload finalizer confirmed the object, so a missing key is a
 			// reachable user state (upload still in flight), not a broken link.
-			if (sourceAsset.kind !== "upload" || !sourceAsset.r2Key) {
+			if (asset.kind !== "upload" || !asset.r2Key) {
 				runs.push({ nodeId, runId: null, message: "File upload is not ready" });
 				continue;
 			}
@@ -2422,9 +2431,9 @@ export const run_installation_on_files = internalMutation({
 				continue;
 			}
 
-			const enqueued = await plugins_runtime_enqueue_manual_run(ctx, {
-				sourceAsset,
-				sourceFileNode,
+			const enqueued = await plugins_runtime_db_enqueue_manual_run(ctx, {
+				asset,
+				fileNode,
 				installation,
 			});
 			if (enqueued._nay) {
@@ -2439,13 +2448,11 @@ export const run_installation_on_files = internalMutation({
 });
 function version_r2_keys(version: Doc<"plugins_versions">) {
 	const r2Keys = new Set<string>([version.manifestR2Key]);
-	if (version.backend) {
-		r2Keys.add(version.backend.r2Key);
+	if (version.backendEntrypointFile) {
+		r2Keys.add(version.backendEntrypointFile.r2Key);
 	}
 	for (const file of version.files) {
-		if (file.r2Key) {
-			r2Keys.add(file.r2Key);
-		}
+		r2Keys.add(file.r2Key);
 	}
 	return r2Keys;
 }
@@ -2648,6 +2655,9 @@ export const hard_delete_registered_plugin_batch = internalMutation({
 					.query("plugins_event_runs")
 					.withIndex("by_installation_updatedAt", (q) => q.eq("installationId", installation._id))
 					.take(budget);
+				await Promise.all(
+					runs.flatMap((run) => (run.workId ? [plugins_runtime_workpool.cancel(ctx, run.workId)] : [])),
+				);
 				for (const run of runs) {
 					await ctx.db.delete("plugins_event_runs", run._id);
 				}

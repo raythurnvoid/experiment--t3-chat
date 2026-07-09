@@ -65,7 +65,7 @@ vp env exec node node_modules/convex/bin/main.js run plugins:run_installation_on
 
 1. On the image plugin's detail page, delete the `OPENAI_API_KEY` secret from the publisher panel's Secrets section. Mind the `plugins_manage` rate limiter (token bucket, capacity 2, 6/min) — space mutations ~15s apart.
 2. Upload `shapes.png` again (renamed via the duplicate-upload dialog, or into a second folder).
-3. Wait for the run to settle, then verify: the run `status` is `failed` with `errorMessage: "Plugin execution failed"` (the runner deliberately sanitizes every worker throw — the specific `OPENAI_API_KEY secret is not configured` message is never persisted), the run's calls show only a single `secretGet` for the missing name with no `writeMarkdown`, and no `.description.md` sibling was created for this upload.
+3. Wait for the run to settle, then verify: the run `status` is `failed` with an `errorMessage` naming the missing secret — expect the specific `OPENAI_API_KEY secret is not configured` worker throw (runner error messages are persisted truncated to 500 chars and shown to workspace admins; a generic placeholder here is a regression), the run's calls show only a single `secretGet` for the missing name with no `writeMarkdown`, and no `.description.md` sibling was created for this upload.
 4. Re-create the `OPENAI_API_KEY` secret exactly as before (origins `https://api.openai.com`) in the same publisher panel and wait ~15s before any further plugin mutations.
 
 ## Cleanup

@@ -89,6 +89,21 @@ const files_upload_conversion_workpool = new Workpool(components.files_upload_co
 });
 
 /**
+ * Workpool handle for plugin event-run executions.
+ *
+ * Workspace purges cancel queued runs before deleting their tracking docs.
+ */
+const plugins_runtime_workpool = new Workpool(components.plugins_runtime_workpool, {
+	maxParallelism: 4,
+	retryActionsByDefault: true,
+	defaultRetryBehavior: {
+		initialBackoffMs: 10 * 1000,
+		base: 2,
+		maxAttempts: 3,
+	} as const,
+});
+
+/**
  * Workpool that runs the deletion request processor.
  *
  * It serializes user, organization, and workspace queue processing so large purges
@@ -488,7 +503,7 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: pluginRunCalls.length };
 	}
 
-	// Plugin runs execute on the upload-conversion workpool component; cancel
+	// Plugin runs execute on the plugins-runtime workpool component; cancel
 	// queued work before deleting the tracking docs.
 	const pluginRuns = await ctx.db
 		.query("plugins_event_runs")
@@ -498,7 +513,7 @@ async function db_purge_organization_workspace_content_batch(
 		.take(batchSize);
 	if (pluginRuns.length > 0) {
 		await Promise.all(
-			pluginRuns.flatMap((doc) => (doc.workId ? [files_upload_conversion_workpool.cancel(ctx, doc.workId)] : [])),
+			pluginRuns.flatMap((doc) => (doc.workId ? [plugins_runtime_workpool.cancel(ctx, doc.workId)] : [])),
 		);
 		await Promise.all(pluginRuns.map((doc) => ctx.db.delete("plugins_event_runs", doc._id)));
 		return { done: false, deletedCount: pluginRuns.length };
@@ -664,7 +679,7 @@ async function db_purge_organization_workspace_content_batch(
 	if (assets.length > 0) {
 		await Promise.all(
 			assets.flatMap((asset) =>
-				asset.conversionWorkId ? [files_upload_conversion_workpool.cancel(ctx, asset.conversionWorkId)] : [],
+				asset.processingWorkId ? [files_upload_conversion_workpool.cancel(ctx, asset.processingWorkId)] : [],
 			),
 		);
 		await Promise.all(assets.flatMap((asset) => (asset.r2Key ? [r2.deleteObject(ctx, asset.r2Key)] : [])));

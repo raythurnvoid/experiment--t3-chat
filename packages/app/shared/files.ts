@@ -158,7 +158,7 @@ export type files_UploadPipelineState =
 	| "terminal";
 
 type files_UploadPipelineAsset = Pick<app_convex_Doc<"files_r2_assets">, "kind" | "r2Key"> & {
-	conversionWorkId?: app_convex_Doc<"files_r2_assets">["conversionWorkId"] | null;
+	processingWorkId?: app_convex_Doc<"files_r2_assets">["processingWorkId"] | null;
 };
 
 // Use asset conversion state as the pipeline signal; editor availability is a separate Yjs outcome.
@@ -168,10 +168,10 @@ export function files_get_upload_pipeline_state(
 	if (!asset) {
 		return "not_applicable";
 	}
-	if (asset.conversionWorkId === null) {
+	if (asset.processingWorkId === null) {
 		return "terminal";
 	}
-	if (asset.conversionWorkId !== undefined) {
+	if (asset.processingWorkId !== undefined) {
 		return "processing";
 	}
 	if (asset.kind === "upload" && !asset.r2Key) {

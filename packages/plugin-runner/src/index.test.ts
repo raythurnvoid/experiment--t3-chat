@@ -265,14 +265,14 @@ describe("dynamic worker loading", () => {
 		expect(onGet).not.toHaveBeenCalled();
 	});
 
-	it("loads immutable artifacts with LOADER.get, stable ids, limits, and runner bindings", async () => {
+	it("loads immutable artifacts with LOADER.get, per-run isolate ids, limits, and runner bindings", async () => {
 		const artifactSource = "SENTINEL_SOURCE";
 		const artifactHash = await sha256_artifact(artifactSource);
 		const hostBinding = {
 			secretGet: async () => "secret-value",
 		};
 		const outboundBinding = { fetch: async () => new Response("outbound-ok") };
-		let stableId: string | undefined;
+		let loaderId: string | undefined;
 		let loaded: Record<string, unknown> | undefined;
 		let entrypointOptions: unknown;
 		let hostProps: unknown;
@@ -289,7 +289,7 @@ describe("dynamic worker loading", () => {
 			make_env({
 				artifactSource,
 				onGet: (id) => {
-					stableId = id;
+					loaderId = id;
 				},
 				onCode: (code) => {
 					loaded = code;
@@ -315,14 +315,14 @@ describe("dynamic worker loading", () => {
 		);
 
 		expect(res.status).toBe(200);
-		expect(stableId).toContain(`plugin:media@0.1.0:${artifactHash}`);
-		expect(stableId).toContain("bonobo-host-v2");
+		const pluginStableId = `plugin:media@0.1.0:${artifactHash}:bonobo-host-v2`;
+		expect(loaderId).toBe(`${pluginStableId}:run_123`);
 		expect(hostProps).toEqual({
-			pluginStableId: stableId,
+			pluginStableId,
 			acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 		});
 		expect(outboundProps).toEqual({
-			pluginStableId: stableId,
+			pluginStableId,
 			pluginRunId: "run_123",
 			host: DEFAULT_HOST,
 			acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
@@ -353,6 +353,19 @@ describe("dynamic worker loading", () => {
 		expect(body.pluginStatus).toBe(202);
 		expect(body.elapsedMs).toEqual(expect.any(Number));
 		expect(body.outputBytes).toBe("plugin-ok".length);
+	});
+
+	it("keys the dynamic worker per run so a cached isolate never carries another run's bindings", async () => {
+		const loaderIds: string[] = [];
+		const env = make_env({ onGet: (id) => loaderIds.push(id) });
+		for (const pluginRunId of ["run_a", "run_b"]) {
+			const res = await handle_request(run_request(await make_run_body({ body: { pluginRunId } })), env, make_ctx());
+			expect(res.status).toBe(200);
+		}
+		expect(loaderIds).toHaveLength(2);
+		expect(loaderIds[0]).toContain(":run_a");
+		expect(loaderIds[1]).toContain(":run_b");
+		expect(loaderIds[0]).not.toBe(loaderIds[1]);
 	});
 
 	it("reports plugin HTTP errors as errored runs", async () => {

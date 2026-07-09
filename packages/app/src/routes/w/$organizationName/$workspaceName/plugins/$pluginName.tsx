@@ -360,7 +360,7 @@ const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props:
 									{run.status}
 								</MyBadge>
 								<span className={"RoutePluginsInstalledRunItem-path" satisfies RoutePluginsInstalledRuns_ClassNames}>
-									{run.source?.path ?? run.event}
+									{run.file?.path ?? run.event}
 								</span>
 							</div>
 							<div className={"RoutePluginsInstalledRunItem-meta" satisfies RoutePluginsInstalledRuns_ClassNames}>

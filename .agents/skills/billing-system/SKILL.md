@@ -185,7 +185,7 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 Image/video upload processing in [r2.ts](../../../packages/app/convex/r2.ts) uses the existing `ai_usage` event family.
 
 - The R2 upload-event mutation gates image/video media work before enqueueing the Workpool action. It resolves the organization payer with the same `billing_pick_billed_user_id` rule used by file saves, then calls `billing_db_check_credits(ctx, { minimumRequiredCents: 1 })`.
-- The media Workpool actions check credits again through `internal.billing.check_credits` before calling OpenAI. If the payer no longer has credits, they clear `conversionWorkId` on the source/output assets and do not generate Markdown.
+- The media Workpool actions check credits again through `internal.billing.check_credits` before calling OpenAI. If the payer no longer has credits, they clear `processingWorkId` on the source/output assets and do not generate Markdown.
 - Image descriptions, video transcripts, and video summaries emit `billing_event("ai_usage")` through `billing_ingest_events` when token usage is non-zero. Deterministic ids use `threadId: "media:<sourceFileNodeId>"` and operation ids such as `"image_description"`, `"video_transcript"`, and `"video_summary"` as the `messageId`/last composite id part.
 - Keep media pricing local to `r2.ts` while pricing remains hardcoded. Do not introduce a shared pricing catalog unless the product rule changes across multiple call sites.
 

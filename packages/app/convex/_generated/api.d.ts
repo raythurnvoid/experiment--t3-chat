@@ -105,6 +105,7 @@ export declare const components: {
   files_upload_conversion_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"files_upload_conversion_workpool">;
   data_deletion_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"data_deletion_workpool">;
   github_mounts_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"github_mounts_workpool">;
+  plugins_runtime_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"plugins_runtime_workpool">;
   rate_limiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rate_limiter">;
   r2: import("@convex-dev/r2/_generated/component.js").ComponentApi<"r2">;
 };

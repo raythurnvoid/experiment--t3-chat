@@ -1855,7 +1855,7 @@ describe("process_workspace_deletion_request", () => {
 
 		const { requestId } = await t.run(async (ctx) => {
 			const now = Date.now();
-			const sourceAssetId = await ctx.db.insert("files_r2_assets", {
+			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				kind: "content",
@@ -1865,7 +1865,7 @@ describe("process_workspace_deletion_request", () => {
 				createdBy: user.userId,
 				updatedAt: now,
 			});
-			const sourceFileNodeId = await ctx.db.insert("files_nodes", {
+			const fileNodeId = await ctx.db.insert("files_nodes", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				path: "/plugin-source.png",
@@ -1879,7 +1879,7 @@ describe("process_workspace_deletion_request", () => {
 				updatedBy: user.userId,
 				updatedAt: now,
 				contentType: "image/png",
-				assetId: sourceAssetId,
+				assetId,
 			});
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
 				name: "media",
@@ -1893,24 +1893,21 @@ describe("process_workspace_deletion_request", () => {
 				sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
 				sourceOwner: "sybill-ai-engineering",
 				sourceRepo: "media-plugin",
-				sourceDefaultBranch: "main",
 				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
 				manifestR2Key: "plugins/media/manifest.json",
-				backend: {
+				backendEntrypointFile: {
 					entry: "dist/backend/worker.js",
 					moduleName: "plugin.js",
 					r2Key: "plugins/media/backend/worker.js",
+					sha256: `sha256:${"b".repeat(64)}`,
 					compatibilityDate: "2026-07-01",
 					compatibilityFlags: ["nodejs_compat"],
 				},
 				events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
-				pages: [],
 				capabilities: ["plugin.secrets.read", "outbound.fetch"],
 				outboundOrigins: [],
 				files: [],
 				sourceStatus: "ready",
-				sourceFileCount: 0,
-				sourceTotalBytes: 0,
 				sourceLastError: null,
 				createdBy: user.userId,
 				updatedAt: now,
@@ -1950,15 +1947,14 @@ describe("process_workspace_deletion_request", () => {
 				pluginName: "media",
 				event: "files.upload.completed",
 				contentType: "image/png",
-				status: "enabled",
 				installationCreatedAt: now,
 				updatedAt: now,
 			});
 			const runId = await ctx.db.insert("plugins_event_runs", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
-				sourceAssetId,
-				sourceFileNodeId,
+				assetId,
+				fileNodeId,
 				actorUserId: user.userId,
 				installationId,
 				pluginVersionId,
@@ -2143,6 +2139,129 @@ describe("process_workspace_deletion_request", () => {
 		expect(after.request?._id).toBe(requestId);
 		expect(after.jobDoc).toBeNull();
 		expect(after.fileNode?._id).toBe(fileNodeId);
+	});
+
+	test("cancels plugin event run workpool items before deleting their run docs", async () => {
+		const t = test_convex();
+		const cancelSpy = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined as never);
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-ws-plugin-run-cancel",
+				displayName: "Workspace Plugin Run Cancel",
+			}),
+		);
+		const workId = "work_workspace_plugin_run_delete" as WorkId;
+
+		const { requestId, runId } = await t.run(async (ctx) => {
+			const now = Date.now();
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				kind: "content",
+				r2Bucket: "test-bucket",
+				r2Key: "content/plugin-run-cancel",
+				size: 12,
+				createdBy: user.userId,
+				updatedAt: now,
+			});
+			const fileNodeId = await ctx.db.insert("files_nodes", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				path: "/plugin-run-cancel.png",
+				treePath: "/plugin-run-cancel.png",
+				pathDepth: 1,
+				name: "plugin-run-cancel.png",
+				kind: "file",
+				lowercaseExtension: "png",
+				parentId: "root",
+				createdBy: user.userId,
+				updatedBy: user.userId,
+				updatedAt: now,
+				contentType: "image/png",
+				assetId,
+			});
+			const pluginVersionId = await ctx.db.insert("plugins_versions", {
+				name: "media",
+				displayName: "Media",
+				version: "0.1.0",
+				description: "Media plugin",
+				reviewStatus: "pending",
+				isLatest: true,
+				runtimeVersion: "1",
+				artifactHash: `sha256:${"a".repeat(64)}`,
+				sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
+				sourceOwner: "sybill-ai-engineering",
+				sourceRepo: "media-plugin",
+				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+				manifestR2Key: "plugins/media/manifest.json",
+				backendEntrypointFile: {
+					entry: "dist/backend/worker.js",
+					moduleName: "plugin.js",
+					r2Key: "plugins/media/backend/worker.js",
+					sha256: `sha256:${"b".repeat(64)}`,
+					compatibilityDate: "2026-07-01",
+					compatibilityFlags: ["nodejs_compat"],
+				},
+				events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
+				capabilities: ["plugin.secrets.read", "outbound.fetch"],
+				outboundOrigins: [],
+				files: [],
+				sourceStatus: "ready",
+				sourceLastError: null,
+				createdBy: user.userId,
+				updatedAt: now,
+			});
+			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				pluginVersionId,
+				pluginName: "media",
+				status: "enabled",
+				acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
+				capabilitiesAcceptedAt: now,
+				acceptedOutboundOrigins: [],
+				outboundOriginsAcceptedAt: now,
+				installedBy: user.userId,
+				updatedBy: user.userId,
+				updatedAt: now,
+			});
+			const runId = await ctx.db.insert("plugins_event_runs", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				assetId,
+				fileNodeId,
+				actorUserId: user.userId,
+				installationId,
+				pluginVersionId,
+				event: "files.upload.completed",
+				eventId: "plugin:run-cancel-test",
+				status: "queued",
+				workId,
+				acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
+				expiresAt: now + 30 * 60 * 1000,
+				hostCallCount: 0,
+				hostWriteCount: 0,
+				errorMessage: null,
+				updatedAt: now,
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				scope: "workspace",
+			});
+			return { requestId, runId };
+		});
+
+		await data_deletion_test_process_workspace_request_until_done(t, {
+			requestId,
+			batchSize: 5,
+		});
+
+		const runAfter = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+
+		expect(cancelSpy).toHaveBeenCalledWith(expect.anything(), workId);
+		expect(runAfter).toBeNull();
 	});
 });
 

@@ -646,7 +646,11 @@ const app_convex_schema = defineSchema({
 		r2Key: v.optional(v.string()),
 		size: v.number(),
 		etag: v.optional(v.string()),
-		conversionWorkId: v.optional(v.union(vWorkId, v.null())),
+		/**
+		 * Content-processing state: undefined = not decided yet, a work id = processing in
+		 * flight (cancellable), null = settled with nothing pending.
+		 **/
+		processingWorkId: v.optional(v.union(vWorkId, v.null())),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		updatedAt: v.number(),
@@ -745,21 +749,34 @@ const app_convex_schema = defineSchema({
 		version: v.string(),
 		description: v.string(),
 		reviewStatus: v.union(v.literal("pending"), v.literal("passed"), v.literal("rejected"), v.literal("flagged")),
-		/** True only on the newest-created doc for this name: publish order stands in for version order. */
+		/**
+		 * True only on the newest-created doc for this name:
+		 * publish order stands in for version order.
+		 **/
 		isLatest: v.boolean(),
+		/**
+		 * Runtime contract this version was built against. Unread today, but
+		 * kept so dispatch can tell old plugins apart if the runtime ever
+		 * makes a breaking change.
+		 **/
 		runtimeVersion: v.literal("1"),
 		artifactHash: v.string(),
 		sourceRepositoryUrl: v.string(),
 		sourceOwner: v.string(),
 		sourceRepo: v.string(),
-		sourceDefaultBranch: v.string(),
 		sourceCommitSha: v.string(),
 		manifestR2Key: v.string(),
-		backend: v.union(
+		/**
+		 * Pointer to the executable dist among `files`,
+		 * plus Worker isolate config;
+		 * null = no server-side code.
+		 **/
+		backendEntrypointFile: v.union(
 			v.object({
 				entry: v.string(),
 				moduleName: v.string(),
 				r2Key: v.string(),
+				sha256: v.string(),
 				compatibilityDate: v.string(),
 				compatibilityFlags: v.array(v.string()),
 			}),
@@ -771,16 +788,10 @@ const app_convex_schema = defineSchema({
 				contentTypes: v.array(v.string()),
 			}),
 		),
-		pages: v.array(
-			v.object({
-				name: v.string(),
-				displayName: v.string(),
-				html: v.string(),
-				assets: v.array(v.string()),
-			}),
-		),
 		capabilities: v.array(plugins_capability_validator),
-		/** Exact https origins the plugin's code declares it calls; consented at install. */
+		/**
+		 * Exact https origins the plugin's code declares it calls; consented at install.
+		 **/
 		outboundOrigins: v.array(v.string()),
 		files: v.array(
 			v.object({
@@ -788,13 +799,14 @@ const app_convex_schema = defineSchema({
 				sha256: v.string(),
 				bytes: v.number(),
 				contentType: v.string(),
-				r2Key: v.optional(v.string()),
+				r2Key: v.string(),
 			}),
 		),
-		/** Source snapshot bookkeeping for the `/<pluginVersionId>/...` tree in GLOBAL/PLUGINS. */
+		/**
+		 * Source snapshot bookkeeping for the `/<pluginVersionId>/...`
+		 * tree in GLOBAL/PLUGINS.
+		 **/
 		sourceStatus: v.union(v.literal("ready"), v.literal("error")),
-		sourceFileCount: v.number(),
-		sourceTotalBytes: v.number(),
 		sourceLastError: v.union(v.string(), v.null()),
 		createdBy: v.id("users"),
 		updatedAt: v.number(),
@@ -814,9 +826,14 @@ const app_convex_schema = defineSchema({
 		mechanicalFindings: v.array(v.string()),
 		aiFindings: v.array(v.string()),
 		model: v.string(),
-		/** Artifact hash of the previous passed version when the AI review was diff-based. */
+		/**
+		 * Artifact hash of the previous passed
+		 * version when the AI review was diff-based.
+		 **/
 		diffBaseArtifactHash: v.optional(v.string()),
-		/** Verdict time: a fresh verdict overwrites the doc and refreshes this. */
+		/**
+		 * Verdict time: a fresh verdict overwrites the doc and refreshes this.
+		 **/
 		updatedAt: v.number(),
 	})
 		.index("by_artifactHash", ["artifactHash"])
@@ -866,16 +883,14 @@ const app_convex_schema = defineSchema({
 		pluginName: v.string(),
 		event: v.literal("files.upload.completed"),
 		contentType: v.string(),
-		status: v.union(v.literal("enabled"), v.literal("disabled")),
 		/** The owning installation's `_creationTime`, denormalized for dispatch order in the scope index. */
 		installationCreatedAt: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_scope_event_status_contentType_createdAt_name", [
+		.index("by_scope_event_contentType_createdAt_name", [
 			"organizationId",
 			"workspaceId",
 			"event",
-			"status",
 			"contentType",
 			"installationCreatedAt",
 			"pluginName",
@@ -886,8 +901,9 @@ const app_convex_schema = defineSchema({
 	plugins_event_runs: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		sourceAssetId: v.id("files_r2_assets"),
-		sourceFileNodeId: v.id("files_nodes"),
+		// The uploaded file the event fired for; plugin-written outputs land in output*.
+		assetId: v.id("files_r2_assets"),
+		fileNodeId: v.id("files_nodes"),
 		actorUserId: v.id("users"),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
@@ -913,7 +929,7 @@ const app_convex_schema = defineSchema({
 		startedAt: v.optional(v.number()),
 		finishedAt: v.optional(v.number()),
 	})
-		.index("by_sourceAsset_event_installation", ["sourceAssetId", "event", "installationId"])
+		.index("by_asset_event_installation", ["assetId", "event", "installationId"])
 		.index("by_organization_workspace_event_status_updatedAt", [
 			"organizationId",
 			"workspaceId",
@@ -924,7 +940,8 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_updatedAt", ["organizationId", "workspaceId", "updatedAt"])
 		.index("by_work", ["workId"])
 		.index("by_hostTokenHash", ["hostTokenHash"])
-		.index("by_installation_updatedAt", ["installationId", "updatedAt"]),
+		.index("by_installation_updatedAt", ["installationId", "updatedAt"])
+		.index("by_status_expiresAt", ["status", "expiresAt"]),
 
 	plugins_event_run_calls: defineTable({
 		organizationId: v.id("organizations"),

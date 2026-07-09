@@ -1949,7 +1949,7 @@ export const create_upload_node = mutation({
 			});
 		}
 
-		const sourceAssetId = await ctx.db.insert("files_r2_assets", {
+		const assetId = await ctx.db.insert("files_r2_assets", {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			kind: "upload",
@@ -1958,10 +1958,10 @@ export const create_upload_node = mutation({
 			createdBy: membership.userId,
 			updatedAt: now,
 		});
-		const sourceAssetR2Key = r2_create_asset_key({
+		const assetR2Key = r2_create_asset_key({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			assetId: sourceAssetId,
+			assetId,
 		});
 
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
@@ -1972,19 +1972,19 @@ export const create_upload_node = mutation({
 			path: args.filename,
 			kind: "file",
 			contentType: args.contentType,
-			assetId: sourceAssetId,
+			assetId,
 			now,
 		});
 		if (nodeIdResult._nay) {
 			return Result({ _nay: nodeIdResult._nay });
 		}
 
-		const signedUpload = await r2_generate_upload_url(sourceAssetR2Key);
+		const signedUpload = await r2_generate_upload_url(assetR2Key);
 		const headers: Record<string, string> = args.contentType ? { "Content-Type": args.contentType } : {};
 
 		return Result({
 			_yay: {
-				assetId: sourceAssetId,
+				assetId,
 				nodeId: nodeIdResult._yay,
 				url: signedUpload.url,
 				headers,

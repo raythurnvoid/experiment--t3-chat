@@ -18,6 +18,7 @@ app.use(workpool, { name: "files_content_materialization_workpool" });
 app.use(workpool, { name: "files_upload_conversion_workpool" });
 app.use(workpool, { name: "data_deletion_workpool" });
 app.use(workpool, { name: "github_mounts_workpool" });
+app.use(workpool, { name: "plugins_runtime_workpool" });
 app.use(rateLimiter, { name: "rate_limiter" });
 app.use(r2);
 

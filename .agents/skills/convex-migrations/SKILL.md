@@ -50,7 +50,7 @@ Migration Progress:
 - [ ] Tighten schema (remove legacy field / enforce required new field)
 ```
 
-## Two-phase rollout (default)
+## Two-phase rollout (default for backfills)
 
 ### Phase A: Compatibility
 
@@ -63,6 +63,33 @@ Migration Progress:
 1. New field becomes required.
 2. Old field removed from schema and code paths.
 
+## Field rename rollout (three pushes, default for renames)
+
+A rename is a copy, not a symbol rename. Every push deploys schema + code atomically and
+validates ALL existing docs against the schema, so each step below must typecheck and validate on
+its own:
+
+1. **Push A** — add the new field to the schema as `v.optional(...)` with the same value shape as
+   the old field. Add the backfill migration + runner in the same push. Code still reads/writes
+   the old field.
+2. **Run the backfill** — `pnpx convex run migrations:run_backfill_<table>_<new_field>`. Copy the
+   old value verbatim: `null` is a value and must copy; only `undefined` means absent. Spot-check
+   with `pnpx convex data <table>`.
+3. **Push B** — make the new field mandatory, make the old field `v.optional(...)` (comment it as
+   legacy), and rename every code usage: args validators (`doc(...).fields.<new>`), all reads and
+   writes, and every `ctx.db.insert` seed in `*.test.ts` and harness files (grep `<old_field>:`
+   across `packages/app` — seeds hide outside `convex/` too, e.g. `server/bash.ts`). Add the strip
+   migration in THIS push — it cannot typecheck earlier, because its destructure+replace omits a
+   field the phase-A schema still requires.
+4. **Run the strip** — `pnpx convex run migrations:run_remove_<table>_<old_field>` removes the old
+   field from all docs.
+5. **Push C** — delete the old field from the schema. This push's full-table validation doubles as
+   verification: it fails if any doc still carries the field.
+
+Run tsc and the affected vitest suites before each push. Do NOT rename keys in external file
+formats the DB field mirrors (e.g. a plugin manifest key) — map old→new at the parse boundary
+instead.
+
 ## Code templates
 
 ### `convex.config.ts` wiring
@@ -74,24 +101,58 @@ app.use(migrations);
 
 ### `convex/migrations.ts` skeleton
 
+This repo already defines the shared instance near the top of `packages/app/convex/migrations.ts` — reuse it:
+
 ```ts
-import { Migrations } from "@convex-dev/migrations";
-import { components, internal } from "./_generated/api.js";
-import type { DataModel } from "./_generated/dataModel.js";
-
-export const migrations = new Migrations<DataModel>(components.migrations);
-
-export const migrate_example = migrations.define({
-	table: "your_table",
-	migrateOne: () => ({
-		newField: "value",
-		old_field: undefined,
-	}),
+const app_migrations = new Migrations<DataModel>(components.migrations, {
+	internalMutation,
 });
 
-export const run = migrations.runner();
-export const run_migrate_example = migrations.runner(internal.migrations.migrate_example);
+// Backfill: patch the new field, prefer an existing new value (idempotent re-runs).
+export const backfill_example = app_migrations.define({
+	table: "your_table",
+	migrateOne: async (ctx, doc) => {
+		if (doc.newField !== undefined) {
+			return;
+		}
+		await ctx.db.patch("your_table", doc._id, { newField: "value" });
+	},
+});
+
+export const run = app_migrations.runner();
+export const run_backfill_example = app_migrations.runner(internal.migrations.backfill_example);
 ```
+
+### Legacy cast types (migrations must compile at every schema phase)
+
+Migrations stay in `migrations.ts` permanently, but the schema keeps moving. Never reference a
+legacy field through `Doc<...>` directly — once the field leaves the schema the migration stops
+compiling, and returning `{ old_field: undefined }` from `migrateOne` fails tsc for the same
+reason. Define an Omit-based cast type (see `LegacyVersionReview` / `LegacyPluginsVersion` in
+`migrations.ts`) and strip fields with destructure + `ctx.db.replace`:
+
+```ts
+type LegacyPluginsVersion = Omit<Doc<"plugins_versions">, "backend"> & {
+	/** Renamed to backendEntrypointFile; docs were copied over then stripped. */
+	backend?: Doc<"plugins_versions">["backendEntrypointFile"];
+};
+
+export const remove_plugins_versions_backend = app_migrations.define({
+	table: "plugins_versions",
+	migrateOne: async (ctx, version) => {
+		const legacy = version as LegacyPluginsVersion;
+		if (legacy.backend === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, backend: _backend, ...next } = legacy;
+		await ctx.db.replace("plugins_versions", _id, next);
+	},
+});
+```
+
+Typing the legacy field as `Doc<...>["<newField>"]` keeps the value shape single-sourced from the
+schema and compiles in every phase.
 
 ## CLI workflow
 

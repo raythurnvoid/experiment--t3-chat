@@ -274,15 +274,6 @@ const event_schema = z
 	})
 	.strict();
 
-const page_schema = z
-	.object({
-		name: z.string().min(1),
-		displayName: z.string().min(1),
-		html: module_path_schema,
-		assets: z.array(module_path_schema),
-	})
-	.strict();
-
 const manifest_file_schema = z
 	.object({
 		path: module_path_schema,
@@ -315,7 +306,8 @@ const manifest_schema = z
 			.strict()
 			.optional(),
 		events: z.array(event_schema),
-		pages: z.array(page_schema),
+		/** Plugin UI pages were never built. Ignored; tolerated so already-published manifests still parse. */
+		pages: z.array(z.unknown()).optional(),
 		capabilities: z.array(z.enum(CAPABILITIES)),
 		outboundOrigins: z.array(z.string()),
 		files: z.array(manifest_file_schema),

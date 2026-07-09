@@ -270,18 +270,17 @@ async function install_upload_plugin(
 		sourceRepositoryUrl: `https://github.com/bonobo/${args.name}-plugin`,
 		sourceOwner: "bonobo",
 		sourceRepo: `${args.name}-plugin`,
-		sourceDefaultBranch: "main",
 		sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
 		manifestR2Key: `plugins/${args.name}/manifest.json`,
-		backend: {
+		backendEntrypointFile: {
 			entry: "dist/backend/worker.js",
 			moduleName: "plugin.js",
 			r2Key: `plugins/${args.name}/backend/worker.js`,
+			sha256: `sha256:${"b".repeat(64)}`,
 			compatibilityDate: "2026-07-01",
 			compatibilityFlags: ["nodejs_compat"],
 		},
 		events: [{ type: "files.upload.completed", contentTypes: args.contentTypes }],
-		pages: [],
 		capabilities: ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: [],
 		files: [
@@ -655,14 +654,14 @@ describe("r2 asset content", () => {
 		if (upload._nay) {
 			throw new Error(upload._nay.message);
 		}
-		const sourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		if (!sourceAsset) {
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!asset) {
 			throw new Error("Expected upload asset");
 		}
-		const sourceAssetR2Key = expected_asset_key({
+		const assetR2Key = expected_asset_key({
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			assetId: sourceAsset._id,
+			assetId: asset._id,
 		});
 		const pluginRunnerRequests: Record<string, unknown>[] = [];
 		stub_r2_and_modal_fetch({
@@ -682,7 +681,7 @@ describe("r2 asset content", () => {
 				});
 				expect(sourceUrlResponse.status).toBe(200);
 				expect(((await sourceUrlResponse.json()) as { url: string }).url).toContain(
-					encodeURIComponent(sourceAssetR2Key),
+					encodeURIComponent(assetR2Key),
 				);
 
 				const writeResponse = await t.fetch("/api/plugins/v1/write-markdown", {
@@ -716,9 +715,9 @@ describe("r2 asset content", () => {
 				attempts: 1,
 				event: {
 					action: "PutObject",
-					bucket: sourceAsset.r2Bucket,
+					bucket: asset.r2Bucket,
 					object: {
-						key: sourceAssetR2Key,
+						key: assetR2Key,
 						size: 4096,
 						eTag: "etag_1",
 					},
@@ -729,9 +728,9 @@ describe("r2 asset content", () => {
 		expect(response.status).toBe(204);
 
 		const uploadedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		expect(uploadedAsset?.r2Key).toBe(sourceAssetR2Key);
+		expect(uploadedAsset?.r2Key).toBe(assetR2Key);
 		expect(uploadedAsset?.etag).toBe("etag_1");
-		expect(uploadedAsset?.conversionWorkId).toBeNull();
+		expect(uploadedAsset?.processingWorkId).toBeNull();
 		const pendingOutput = await t.run(async (ctx) =>
 			get_active_file_node_by_path(ctx, {
 				organizationId: db.organizationId,
@@ -745,13 +744,13 @@ describe("r2 asset content", () => {
 			membershipId: db.membershipId,
 			fileNodeId: upload._yay.nodeId,
 		});
-		expect(signedDownload._yay?.url).toContain(encodeURIComponent(sourceAssetR2Key));
+		expect(signedDownload._yay?.url).toContain(encodeURIComponent(assetR2Key));
 
 		const pluginRun = await t.run(async (ctx) =>
 			ctx.db
 				.query("plugins_event_runs")
-				.withIndex("by_sourceAsset_event_installation", (q) =>
-					q.eq("sourceAssetId", upload._yay.assetId).eq("event", "files.upload.completed"),
+				.withIndex("by_asset_event_installation", (q) =>
+					q.eq("assetId", upload._yay.assetId).eq("event", "files.upload.completed"),
 				)
 				.unique(),
 		);
@@ -766,19 +765,19 @@ describe("r2 asset content", () => {
 		});
 
 		const docs = await t.run(async (ctx) => {
-			const sourceNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			const outputNode = await get_active_file_node_by_path(ctx, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				path: "/event.pdf.md",
 			});
 			const outputAsset = outputNode?.assetId ? await ctx.db.get("files_r2_assets", outputNode.assetId) : null;
-			const nextSourceAsset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+			const nextAsset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
 
-			return { sourceNode, outputNode, outputAsset, nextSourceAsset };
+			return { fileNode, outputNode, outputAsset, nextAsset };
 		});
 
-		expect(docs.sourceNode?.assetId).toBe(upload._yay.assetId);
+		expect(docs.fileNode?.assetId).toBe(upload._yay.assetId);
 		expect(docs.outputNode).toMatchObject({
 			name: "event.pdf.md",
 			contentType: "text/markdown;charset=utf-8",
@@ -786,7 +785,7 @@ describe("r2 asset content", () => {
 		});
 		expect(docs.outputAsset?.kind).toBe("content");
 		expect(docs.outputAsset?.r2Key ? r2_text(docs.outputAsset.r2Key) : null).toContain("PLUGIN_PDF_E2E_2026");
-		expect(docs.nextSourceAsset?.conversionWorkId).toBeNull();
+		expect(docs.nextAsset?.processingWorkId).toBeNull();
 		expect(pluginRunnerRequests).toHaveLength(1);
 		expect(pluginRunnerRequests[0]).toMatchObject({
 			pluginName: "pdf",
@@ -817,9 +816,9 @@ describe("r2 asset content", () => {
 				attempts: 1,
 				event: {
 					action: "PutObject",
-					bucket: sourceAsset.r2Bucket,
+					bucket: asset.r2Bucket,
 					object: {
-						key: sourceAssetR2Key,
+						key: assetR2Key,
 						size: 4096,
 						eTag: "etag_2",
 					},
@@ -832,7 +831,7 @@ describe("r2 asset content", () => {
 
 		const duplicateAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		expect(duplicateAsset?.etag).toBe("etag_2");
-		expect(duplicateAsset?.conversionWorkId).toBeNull();
+		expect(duplicateAsset?.processingWorkId).toBeNull();
 	});
 
 	test("R2 events create and finalize an image description Markdown sibling", async () => {
@@ -890,14 +889,14 @@ describe("r2 asset content", () => {
 		if (upload._nay) {
 			throw new Error(upload._nay.message);
 		}
-		const sourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		if (!sourceAsset) {
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!asset) {
 			throw new Error("Expected upload asset");
 		}
-		const sourceAssetR2Key = expected_asset_key({
+		const assetR2Key = expected_asset_key({
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			assetId: sourceAsset._id,
+			assetId: asset._id,
 		});
 
 		const response = await t.fetch("/api/r2/event", {
@@ -911,9 +910,9 @@ describe("r2 asset content", () => {
 				attempts: 1,
 				event: {
 					action: "PutObject",
-					bucket: sourceAsset.r2Bucket,
+					bucket: asset.r2Bucket,
 					object: {
-						key: sourceAssetR2Key,
+						key: assetR2Key,
 						size: 4096,
 						eTag: "etag_image",
 					},
@@ -935,8 +934,8 @@ describe("r2 asset content", () => {
 		const pluginRun = await t.run(async (ctx) =>
 			ctx.db
 				.query("plugins_event_runs")
-				.withIndex("by_sourceAsset_event_installation", (q) =>
-					q.eq("sourceAssetId", upload._yay.assetId).eq("event", "files.upload.completed"),
+				.withIndex("by_asset_event_installation", (q) =>
+					q.eq("assetId", upload._yay.assetId).eq("event", "files.upload.completed"),
 				)
 				.unique(),
 		);
@@ -972,7 +971,7 @@ describe("r2 asset content", () => {
 			},
 		});
 		const processedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		expect(processedAsset?.conversionWorkId).toBeNull();
+		expect(processedAsset?.processingWorkId).toBeNull();
 		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
 		expect(completedRun).toMatchObject({ status: "succeeded", hostWriteCount: 1 });
 	});
@@ -1008,14 +1007,14 @@ describe("r2 asset content", () => {
 		if (upload._nay) {
 			throw new Error(upload._nay.message);
 		}
-		const sourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		if (!sourceAsset) {
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!asset) {
 			throw new Error("Expected upload asset");
 		}
-		const sourceAssetR2Key = expected_asset_key({
+		const assetR2Key = expected_asset_key({
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			assetId: sourceAsset._id,
+			assetId: asset._id,
 		});
 		const pluginRunnerRequests: Record<string, unknown>[] = [];
 		stub_r2_and_modal_fetch({
@@ -1059,9 +1058,9 @@ describe("r2 asset content", () => {
 				attempts: 1,
 				event: {
 					action: "PutObject",
-					bucket: sourceAsset.r2Bucket,
+					bucket: asset.r2Bucket,
 					object: {
-						key: sourceAssetR2Key,
+						key: assetR2Key,
 						size: 4096,
 						eTag: "etag_video",
 					},
@@ -1092,8 +1091,8 @@ describe("r2 asset content", () => {
 		const pluginRun = await t.run(async (ctx) =>
 			ctx.db
 				.query("plugins_event_runs")
-				.withIndex("by_sourceAsset_event_installation", (q) =>
-					q.eq("sourceAssetId", upload._yay.assetId).eq("event", "files.upload.completed"),
+				.withIndex("by_asset_event_installation", (q) =>
+					q.eq("assetId", upload._yay.assetId).eq("event", "files.upload.completed"),
 				)
 				.unique(),
 		);
@@ -1138,7 +1137,7 @@ describe("r2 asset content", () => {
 			},
 		});
 		const processedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		expect(processedAsset?.conversionWorkId).toBeNull();
+		expect(processedAsset?.processingWorkId).toBeNull();
 		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
 		expect(completedRun).toMatchObject({ status: "succeeded", hostWriteCount: 2 });
 
@@ -1152,14 +1151,14 @@ describe("r2 asset content", () => {
 		if (audioUpload._nay) {
 			throw new Error(audioUpload._nay.message);
 		}
-		const audioSourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", audioUpload._yay.assetId));
-		if (!audioSourceAsset) {
+		const audioAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", audioUpload._yay.assetId));
+		if (!audioAsset) {
 			throw new Error("Expected upload asset");
 		}
-		const audioSourceAssetR2Key = expected_asset_key({
+		const audioAssetR2Key = expected_asset_key({
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			assetId: audioSourceAsset._id,
+			assetId: audioAsset._id,
 		});
 
 		const audioResponse = await t.fetch("/api/r2/event", {
@@ -1173,9 +1172,9 @@ describe("r2 asset content", () => {
 				attempts: 1,
 				event: {
 					action: "PutObject",
-					bucket: audioSourceAsset.r2Bucket,
+					bucket: audioAsset.r2Bucket,
 					object: {
-						key: audioSourceAssetR2Key,
+						key: audioAssetR2Key,
 						size: 4096,
 						eTag: "etag_audio",
 					},
@@ -1188,8 +1187,8 @@ describe("r2 asset content", () => {
 		const audioPluginRun = await t.run(async (ctx) =>
 			ctx.db
 				.query("plugins_event_runs")
-				.withIndex("by_sourceAsset_event_installation", (q) =>
-					q.eq("sourceAssetId", audioUpload._yay.assetId).eq("event", "files.upload.completed"),
+				.withIndex("by_asset_event_installation", (q) =>
+					q.eq("assetId", audioUpload._yay.assetId).eq("event", "files.upload.completed"),
 				)
 				.unique(),
 		);
@@ -1245,17 +1244,17 @@ describe("r2 asset content", () => {
 		if (upload._nay) {
 			throw new Error(upload._nay.message);
 		}
-		const sourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		if (!sourceAsset) {
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!asset) {
 			throw new Error("Expected upload asset");
 		}
-		const sourceAssetR2Key = expected_asset_key({
+		const assetR2Key = expected_asset_key({
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			assetId: sourceAsset._id,
+			assetId: asset._id,
 		});
 		const markdownContent = "# Uploaded\n\nMarkdown body";
-		r2Objects.set(sourceAssetR2Key, new TextEncoder().encode(markdownContent));
+		r2Objects.set(assetR2Key, new TextEncoder().encode(markdownContent));
 
 		const response = await t.fetch("/api/r2/event", {
 			method: "POST",
@@ -1268,9 +1267,9 @@ describe("r2 asset content", () => {
 				attempts: 1,
 				event: {
 					action: "PutObject",
-					bucket: sourceAsset.r2Bucket,
+					bucket: asset.r2Bucket,
 					object: {
-						key: sourceAssetR2Key,
+						key: assetR2Key,
 						size: 1024,
 						eTag: "etag_markdown",
 					},
@@ -1281,29 +1280,29 @@ describe("r2 asset content", () => {
 		expect(response.status).toBe(204);
 
 		const uploadedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		expect(uploadedAsset?.conversionWorkId).toBe("work_asset_refactor");
+		expect(uploadedAsset?.processingWorkId).toBe("work_asset_refactor");
 
 		await asUser.action(internal.r2.finalize_uploaded_markdown_file, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			sourceAssetId: upload._yay.assetId,
+			assetId: upload._yay.assetId,
 		});
 
 		const docs = await t.run(async (ctx) => {
-			const sourceNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
-			const sourceAsset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
-			const contentAsset = sourceNode?.assetId ? await ctx.db.get("files_r2_assets", sourceNode.assetId) : null;
+			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+			const contentAsset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
 
-			return { sourceNode, sourceAsset, contentAsset };
+			return { fileNode, asset, contentAsset };
 		});
 
-		expect(docs.sourceNode?.assetId).not.toBe(upload._yay.assetId);
-		expect(docs.sourceNode?.contentType).toBe("text/markdown;charset=utf-8");
-		expect(docs.sourceNode?.yjsSnapshotId).toEqual(expect.any(String));
-		expect(docs.sourceNode?.yjsLastSequenceId).toEqual(expect.any(String));
+		expect(docs.fileNode?.assetId).not.toBe(upload._yay.assetId);
+		expect(docs.fileNode?.contentType).toBe("text/markdown;charset=utf-8");
+		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
+		expect(docs.fileNode?.yjsLastSequenceId).toEqual(expect.any(String));
 		expect(docs.contentAsset?.kind).toBe("content");
 		expect(docs.contentAsset?.r2Key ? r2_text(docs.contentAsset.r2Key) : null).toBe(markdownContent);
-		expect(docs.sourceAsset?.conversionWorkId).toBeNull();
+		expect(docs.asset?.processingWorkId).toBeNull();
 	});
 
 	test("R2 events do not infer PDF conversion from the filename", async () => {
@@ -1325,14 +1324,14 @@ describe("r2 asset content", () => {
 		if (upload._nay) {
 			throw new Error(upload._nay.message);
 		}
-		const sourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		if (!sourceAsset) {
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!asset) {
 			throw new Error("Expected upload asset");
 		}
-		const sourceAssetR2Key = expected_asset_key({
+		const assetR2Key = expected_asset_key({
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			assetId: sourceAsset._id,
+			assetId: asset._id,
 		});
 		enqueueActionSpy.mockClear();
 
@@ -1347,9 +1346,9 @@ describe("r2 asset content", () => {
 				attempts: 1,
 				event: {
 					action: "PutObject",
-					bucket: sourceAsset.r2Bucket,
+					bucket: asset.r2Bucket,
 					object: {
-						key: sourceAssetR2Key,
+						key: assetR2Key,
 						size: 1024,
 						eTag: "etag_not_pdf",
 					},
@@ -1360,17 +1359,17 @@ describe("r2 asset content", () => {
 		expect(response.status).toBe(204);
 
 		const docs = await t.run(async (ctx) => {
-			const nextSourceAsset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+			const nextAsset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
 			const generated = await get_active_file_node_by_path(ctx, {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				path: "/not-a-pdf.pdf.md",
 			});
-			return { nextSourceAsset, generated };
+			return { nextAsset, generated };
 		});
 
 		expect(enqueueActionSpy).not.toHaveBeenCalled();
-		expect(docs.nextSourceAsset?.conversionWorkId).toBeNull();
+		expect(docs.nextAsset?.processingWorkId).toBeNull();
 		expect(docs.generated).toBeNull();
 	});
 
@@ -1415,14 +1414,14 @@ describe("r2 asset content", () => {
 				treePath: "/collision.pdf.md",
 			}),
 		);
-		const sourceAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		if (!sourceAsset) {
+		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+		if (!asset) {
 			throw new Error("Expected upload asset");
 		}
-		const sourceAssetR2Key = expected_asset_key({
+		const assetR2Key = expected_asset_key({
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
-			assetId: sourceAsset._id,
+			assetId: asset._id,
 		});
 		stub_r2_and_modal_fetch({
 			onPluginRunnerRequest: async (body) => {
@@ -1457,9 +1456,9 @@ describe("r2 asset content", () => {
 				attempts: 1,
 				event: {
 					action: "PutObject",
-					bucket: sourceAsset.r2Bucket,
+					bucket: asset.r2Bucket,
 					object: {
-						key: sourceAssetR2Key,
+						key: assetR2Key,
 						size: 4096,
 						eTag: "etag_collision",
 					},
@@ -1472,8 +1471,8 @@ describe("r2 asset content", () => {
 		const pluginRun = await t.run(async (ctx) =>
 			ctx.db
 				.query("plugins_event_runs")
-				.withIndex("by_sourceAsset_event_installation", (q) =>
-					q.eq("sourceAssetId", upload._yay.assetId).eq("event", "files.upload.completed"),
+				.withIndex("by_asset_event_installation", (q) =>
+					q.eq("assetId", upload._yay.assetId).eq("event", "files.upload.completed"),
 				)
 				.unique(),
 		);
@@ -1485,7 +1484,7 @@ describe("r2 asset content", () => {
 		});
 
 		const docs = await t.run(async (ctx) => {
-			const source = await ctx.db.get("files_nodes", upload._yay.nodeId);
+			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			const oldGenerated = await ctx.db.get("files_nodes", existingGeneratedId);
 			const activeGeneratedAtPath = await get_active_file_node_by_path(ctx, {
 				organizationId: db.organizationId,
@@ -1495,11 +1494,11 @@ describe("r2 asset content", () => {
 			const activeGeneratedAsset = activeGeneratedAtPath?.assetId
 				? await ctx.db.get("files_r2_assets", activeGeneratedAtPath.assetId)
 				: null;
-			return { source, oldGenerated, activeGeneratedAtPath, activeGeneratedAsset };
+			return { fileNode, oldGenerated, activeGeneratedAtPath, activeGeneratedAsset };
 		});
 
 		expect(docs.oldGenerated?.archiveOperationId).toEqual(expect.any(String));
-		expect(docs.source?.assetId).toBe(upload._yay.assetId);
+		expect(docs.fileNode?.assetId).toBe(upload._yay.assetId);
 		expect(docs.activeGeneratedAtPath?.name).toBe("collision.pdf.md");
 		expect(docs.activeGeneratedAtPath?._id).not.toBe(existingGeneratedId);
 		expect(docs.activeGeneratedAtPath).toMatchObject({

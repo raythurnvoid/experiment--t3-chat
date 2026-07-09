@@ -75,7 +75,35 @@ import { bash_tee_command_create } from "./bash-tee-command.ts";
 import { bash_textgrep_command_create } from "./bash-textgrep-command.ts";
 import { bash_tree_command_create } from "./bash-tree-command.ts";
 import { bash_touch_command_create } from "./bash-touch-command.ts";
-import { bash_APP_MOUNT_PATH, bash_EXTERNAL_MOUNTS_ROOT, bash_PLUGINS_MOUNT_ROOT, bash_command_has_disallowed_source_target, bash_DEV_NULL_PATH, bash_DEV_ZERO_BYTE_COUNT, bash_DEV_ZERO_PATH, bash_DEV_ZERO_TEXT, bash_get_db_file_byte_size, bash_HOME, bash_normalize_path, bash_READER_FILE_OPERAND_MAX, bash_READ_HEAD_LARGE_FILE_MAX_LINES, bash_READ_INLINE_MAX_BYTES, bash_resolve_path, bash_shell_arg_quote, bash_disallowed_source_target_error, bash_TMP_MOUNT, bash_DbFilesFs, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, bash_COMMAND_EXIT_CANNOT_EXECUTE, bash_COMMAND_EXIT_NOT_FOUND, bash_TERMINAL_LINE_ENDING_REGEX, bash_SHELL_COMMENT_LINE_REGEX, bash_WHITESPACE_RUN_REGEX, type bash_DbFilesRoots } from "./bash-utils.ts";
+import {
+	bash_APP_MOUNT_PATH,
+	bash_EXTERNAL_MOUNTS_ROOT,
+	bash_PLUGINS_MOUNT_ROOT,
+	bash_command_has_disallowed_source_target,
+	bash_DEV_NULL_PATH,
+	bash_DEV_ZERO_BYTE_COUNT,
+	bash_DEV_ZERO_PATH,
+	bash_DEV_ZERO_TEXT,
+	bash_get_db_file_byte_size,
+	bash_HOME,
+	bash_normalize_path,
+	bash_READER_FILE_OPERAND_MAX,
+	bash_READ_HEAD_LARGE_FILE_MAX_LINES,
+	bash_READ_INLINE_MAX_BYTES,
+	bash_resolve_path,
+	bash_shell_arg_quote,
+	bash_disallowed_source_target_error,
+	bash_TMP_MOUNT,
+	bash_DbFilesFs,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	bash_COMMAND_EXIT_CANNOT_EXECUTE,
+	bash_COMMAND_EXIT_NOT_FOUND,
+	bash_TERMINAL_LINE_ENDING_REGEX,
+	bash_SHELL_COMMENT_LINE_REGEX,
+	bash_WHITESPACE_RUN_REGEX,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 import { bash_ALLOWED_COMMANDS, bash_delegate_native_just_bash_tmp_command } from "./bash-delegate.ts";
 import { bash_which_command_create } from "./bash-which-command.ts";
 import { bash_xargs_command_create } from "./bash-xargs-command.ts";
@@ -5653,24 +5681,21 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 						sourceRepositoryUrl: `https://github.com/bonobo/${pluginName}-plugin`,
 						sourceOwner: "bonobo",
 						sourceRepo: `${pluginName}-plugin`,
-						sourceDefaultBranch: "main",
 						sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
 						manifestR2Key: `plugins/${pluginName}/manifest.json`,
-						backend: {
+						backendEntrypointFile: {
 							entry: "dist/backend/worker.js",
 							moduleName: "plugin.js",
 							r2Key: `plugins/${pluginName}/backend/worker.js`,
+							sha256: `sha256:${"b".repeat(64)}`,
 							compatibilityDate: "2026-07-01",
 							compatibilityFlags: ["nodejs_compat"],
 						},
 						events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
-						pages: [],
 						capabilities: [],
 						outboundOrigins: [],
 						files: [],
 						sourceStatus: "ready",
-						sourceFileCount: files.length,
-						sourceTotalBytes: files.reduce((total, file) => total + file.rawText.length, 0),
 						sourceLastError: null,
 						createdBy: runner.seeded.userId,
 						updatedAt: now,

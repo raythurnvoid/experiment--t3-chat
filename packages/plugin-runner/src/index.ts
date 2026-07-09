@@ -241,7 +241,9 @@ function sanitize_error(error: unknown): { name: string; message: string } {
 		const e = error as { name?: unknown; message?: unknown };
 		return {
 			name: typeof e.name === "string" ? e.name : "Error",
-			message: "Plugin execution failed",
+			// The plugin's own failure reason is forwarded for workspace admins; secret values the
+			// run fetched are masked at the response site, and the host truncates to the same cap.
+			message: typeof e.message === "string" && e.message ? e.message.slice(0, 500) : "Plugin execution failed",
 		};
 	}
 	return { name: "Error", message: "Plugin execution failed" };
@@ -792,7 +794,12 @@ async function handle_run(request: Request, env: Env, ctx?: PluginRunnerContext)
 				outboundOrigins: validated.body.outboundOrigins,
 			},
 		});
-		const worker = env.LOADER.get(pluginStableId, () => ({
+		// The loader reuses workers with the same id, and this worker is built with run-specific
+		// values inside (the run's host token, capabilities, and allowed outbound origins via
+		// BONOBO_RPC and globalOutbound). If the id were shared across runs, a later run would
+		// execute with an earlier run's token and permissions. So the id includes the run id:
+		// one worker per run. Sharing is only safe once nothing run-specific is built in here.
+		const worker = env.LOADER.get(`${pluginStableId}:${validated.body.pluginRunId}`, () => ({
 			compatibilityDate: COMPAT_DATE,
 			compatibilityFlags: ["nodejs_compat"],
 			mainModule: ENTRY_MODULE,
@@ -872,8 +879,8 @@ async function handle_run(request: Request, env: Env, ctx?: PluginRunnerContext)
 			status: "errored",
 			elapsedMs,
 		});
-		// Defense in depth: sanitize_error genericizes messages, but a plugin can set
-		// error.name to arbitrary text that could carry a secret.
+		// Plugin-thrown names and messages are forwarded as-is, so any secret values the run
+		// fetched must be masked before they leave the worker.
 		const runSecretValues = RUN_SECRET_VALUES.get(validated.body.pluginRunId);
 		return json_response(
 			{

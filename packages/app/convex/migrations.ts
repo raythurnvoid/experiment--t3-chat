@@ -50,6 +50,28 @@ type LegacyVersionReview = Omit<Doc<"plugins_version_reviews">, "updatedAt"> & {
 	updatedAt?: number;
 };
 
+type LegacyPluginsVersion = Omit<Doc<"plugins_versions">, "backend"> & {
+	/** Renamed to backendEntrypointFile; docs were copied over then stripped. */
+	backend?: Doc<"plugins_versions">["backendEntrypointFile"];
+};
+
+type LegacyPluginsVersionUnusedFields = Omit<
+	Doc<"plugins_versions">,
+	"pages" | "sourceDefaultBranch" | "sourceFileCount" | "sourceTotalBytes"
+> & {
+	/** Removed: plugin UI pages were never built. */
+	pages?: Array<{ name: string; displayName: string; html: string; assets: string[] }>;
+	/** Removed: unread publish/source-snapshot bookkeeping. */
+	sourceDefaultBranch?: string;
+	sourceFileCount?: number;
+	sourceTotalBytes?: number;
+};
+
+type LegacyPluginsEventHandlerStatus = Omit<Doc<"plugins_workspace_event_handlers">, "status"> & {
+	/** Removed: never toggled after insert; installation.status is the authoritative enable state. */
+	status?: "enabled" | "disabled";
+};
+
 type LegacyOrganizationWithOwner = Omit<Doc<"organizations">, "_id" | "_creationTime" | "ownerUserId"> & {
 	_id: Id<"organizations">;
 	_creationTime: number;
@@ -72,6 +94,11 @@ type FileNodeReferenceTable =
 type LegacyFileNodeReferenceDoc<TableName extends FileNodeReferenceTable> = Omit<Doc<TableName>, "fileNodeId"> & {
 	fileNodeId?: Id<"files_nodes">;
 	nodeId?: Id<"files_nodes">;
+};
+
+type LegacyFilesR2AssetConversionWorkId = Omit<Doc<"files_r2_assets">, "conversionWorkId"> & {
+	/** Renamed to processingWorkId: it gates the whole post-upload pipeline, not just content conversion. */
+	conversionWorkId?: Doc<"files_r2_assets">["processingWorkId"];
 };
 
 type RebrandCleanupTableName = Exclude<TableNames, "users" | "users_anagraphics">;
@@ -491,6 +518,20 @@ export const rename_file_snapshots_file_node_id = app_migrations.define({
 	migrateOne: (_ctx, snapshot) => rename_legacy_node_id_to_file_node_id(snapshot),
 });
 
+export const rename_files_r2_assets_conversion_work_id = app_migrations.define({
+	table: "files_r2_assets",
+	migrateOne: async (ctx, asset) => {
+		const legacyAsset = asset as LegacyFilesR2AssetConversionWorkId;
+		// `in` check: the stored value may legitimately be null, which is a settled state to copy over.
+		if (!("conversionWorkId" in legacyAsset)) {
+			return;
+		}
+
+		const { _id, _creationTime, conversionWorkId, ...next } = legacyAsset;
+		await ctx.db.replace("files_r2_assets", _id, { ...next, processingWorkId: conversionWorkId });
+	},
+});
+
 export const backfill_files_nodes_path_depth = app_migrations.define({
 	table: "files_nodes",
 	migrateOne: async (ctx, fileNode) => {
@@ -603,6 +644,19 @@ export const remove_plugins_workspace_event_handlers_created_at = app_migrations
 	},
 });
 
+export const remove_plugins_workspace_event_handlers_status = app_migrations.define({
+	table: "plugins_workspace_event_handlers",
+	migrateOne: async (ctx, handler) => {
+		const legacyHandler = handler as LegacyPluginsEventHandlerStatus;
+		if (legacyHandler.status === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, status: _status, ...next } = legacyHandler;
+		await ctx.db.replace("plugins_workspace_event_handlers", _id, next);
+	},
+});
+
 export const remove_plugins_event_runs_created_at = app_migrations.define({
 	table: "plugins_event_runs",
 	migrateOne: async (ctx, run) => {
@@ -661,6 +715,89 @@ export const backfill_plugins_versions_is_latest = app_migrations.define({
 		}
 
 		await ctx.db.patch("plugins_versions", version._id, { isLatest });
+	},
+});
+
+export const backfill_plugins_versions_backend_entrypoint_file = app_migrations.define({
+	table: "plugins_versions",
+	migrateOne: async (ctx, version) => {
+		// The backend pointer was renamed backendEntrypointFile; copy it over verbatim (null included).
+		const legacy = version as LegacyPluginsVersion;
+		if (legacy.backendEntrypointFile !== undefined || legacy.backend === undefined) {
+			return;
+		}
+
+		await ctx.db.patch("plugins_versions", version._id, { backendEntrypointFile: legacy.backend });
+	},
+});
+
+export const remove_plugins_versions_backend = app_migrations.define({
+	table: "plugins_versions",
+	migrateOne: async (ctx, version) => {
+		const legacy = version as LegacyPluginsVersion;
+		if (legacy.backend === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, backend: _backend, ...next } = legacy;
+		await ctx.db.replace("plugins_versions", _id, next);
+	},
+});
+
+export const remove_plugins_versions_unused_fields = app_migrations.define({
+	table: "plugins_versions",
+	migrateOne: async (ctx, version) => {
+		const legacy = version as LegacyPluginsVersionUnusedFields;
+		if (
+			legacy.pages === undefined &&
+			legacy.sourceDefaultBranch === undefined &&
+			legacy.sourceFileCount === undefined &&
+			legacy.sourceTotalBytes === undefined
+		) {
+			return;
+		}
+
+		const {
+			_id,
+			_creationTime,
+			pages: _pages,
+			sourceDefaultBranch: _sourceDefaultBranch,
+			sourceFileCount: _sourceFileCount,
+			sourceTotalBytes: _sourceTotalBytes,
+			...next
+		} = legacy;
+		await ctx.db.replace("plugins_versions", _id, next);
+	},
+});
+
+export const backfill_plugins_versions_backend_entrypoint_file_sha256 = app_migrations.define({
+	table: "plugins_versions",
+	migrateOne: async (ctx, version) => {
+		const backendEntrypointFile = version.backendEntrypointFile;
+		if (backendEntrypointFile === null || backendEntrypointFile.sha256 !== undefined) {
+			return;
+		}
+
+		const backendEntrypointListedFile = version.files.find((file) => file.r2Key === backendEntrypointFile.r2Key);
+		if (backendEntrypointListedFile === undefined) {
+			return;
+		}
+
+		await ctx.db.patch("plugins_versions", version._id, {
+			backendEntrypointFile: { ...backendEntrypointFile, sha256: backendEntrypointListedFile.sha256 },
+		});
+	},
+});
+
+export const backfill_plugins_versions_runtime_version = app_migrations.define({
+	table: "plugins_versions",
+	migrateOne: async (ctx, version) => {
+		// A briefly-deployed removal stripped the stamp; every existing doc was published against runtime "1".
+		if (version.runtimeVersion !== undefined) {
+			return;
+		}
+
+		await ctx.db.patch("plugins_versions", version._id, { runtimeVersion: "1" });
 	},
 });
 
@@ -822,6 +959,9 @@ export const run_rename_materialization_jobs_file_node_id = app_migrations.runne
 export const run_rename_file_snapshots_file_node_id = app_migrations.runner(
 	internal.migrations.rename_file_snapshots_file_node_id,
 );
+export const run_rename_files_r2_assets_conversion_work_id = app_migrations.runner(
+	internal.migrations.rename_files_r2_assets_conversion_work_id,
+);
 export const run_backfill_files_nodes_path_depth = app_migrations.runner(
 	internal.migrations.backfill_files_nodes_path_depth,
 );
@@ -846,6 +986,9 @@ export const run_remove_plugins_workspace_installations_created_at = app_migrati
 export const run_remove_plugins_workspace_event_handlers_created_at = app_migrations.runner(
 	internal.migrations.remove_plugins_workspace_event_handlers_created_at,
 );
+export const run_remove_plugins_workspace_event_handlers_status = app_migrations.runner(
+	internal.migrations.remove_plugins_workspace_event_handlers_status,
+);
 export const run_remove_plugins_event_runs_created_at = app_migrations.runner(
 	internal.migrations.remove_plugins_event_runs_created_at,
 );
@@ -857,4 +1000,19 @@ export const run_backfill_plugins_version_reviews_updated_at = app_migrations.ru
 );
 export const run_backfill_plugins_versions_is_latest = app_migrations.runner(
 	internal.migrations.backfill_plugins_versions_is_latest,
+);
+export const run_backfill_plugins_versions_backend_entrypoint_file = app_migrations.runner(
+	internal.migrations.backfill_plugins_versions_backend_entrypoint_file,
+);
+export const run_remove_plugins_versions_backend = app_migrations.runner(
+	internal.migrations.remove_plugins_versions_backend,
+);
+export const run_remove_plugins_versions_unused_fields = app_migrations.runner(
+	internal.migrations.remove_plugins_versions_unused_fields,
+);
+export const run_backfill_plugins_versions_backend_entrypoint_file_sha256 = app_migrations.runner(
+	internal.migrations.backfill_plugins_versions_backend_entrypoint_file_sha256,
+);
+export const run_backfill_plugins_versions_runtime_version = app_migrations.runner(
+	internal.migrations.backfill_plugins_versions_runtime_version,
 );

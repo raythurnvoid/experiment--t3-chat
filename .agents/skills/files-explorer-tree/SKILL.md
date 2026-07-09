@@ -50,7 +50,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Generated Markdown outputs are normal visible file nodes created as siblings of the uploaded source during R2 event processing. PDF uploads create `<source-name>.md`; image uploads create `<source-name>.description.md`; video uploads create `<source-name>.summary.md` and `<source-name>.transcript.md`.
 - Assets are the single R2 object metadata record for source binaries, live Markdown, compacted Yjs snapshots, and version snapshot Markdown. Owners point to assets; assets do not own relationships between source files and generated outputs.
 - Source/conversion metadata stays in DB/R2 metadata, not visible generated Markdown.
-- Upload status is derived in the UI from the selected node and its asset: missing `r2Key` is waiting for upload, `conversionWorkId` means processing, and `null` means terminal.
+- Upload status is derived in the UI from the selected node and its asset: missing `r2Key` is waiting for upload, `processingWorkId` means processing, and `null` means terminal.
 - R2 asset keys use `organizations/<organizationId>/workspaces/<workspaceId>/assets/<assetId>` for every asset kind. Convex uses `files_r2_assets.kind` to decide upload finalization behavior.
 - Upload max is 50 MiB; converted Markdown max is 900,000 bytes.
 
@@ -177,7 +177,7 @@ Tree-item components:
 6. Backend returns a signed R2 PUT URL and optional content-type header for the upload asset key.
 7. Browser uploads the binary directly to R2.
 8. R2 object-create events under the asset prefix flow through the upload finalizer Worker to Convex.
-9. Convex parses the deterministic asset key from the R2 event, ignores non-upload asset kinds, patches `r2Key`/`etag`/`size` for upload assets, queues upload processing, and stores `conversionWorkId` on the asset.
+9. Convex parses the deterministic asset key from the R2 event, ignores non-upload asset kinds, patches `r2Key`/`etag`/`size` for upload assets, queues upload processing, and stores `processingWorkId` on the asset.
 10. For Markdown uploads, Convex reads the uploaded Markdown from R2, creates the normal Markdown asset, Yjs snapshot, chunks, and version snapshot, then patches the visible node into the same shape as an app-created Markdown file.
 11. For PDF MIME uploads, Convex creates a generated sibling placeholder for `<source filename>.md`, archiving active name conflicts for that planned output name.
 12. For image MIME uploads, Convex credit-gates media work, creates `<source filename>.description.md`, then an R2 Workpool action sends a short-lived signed R2 URL to OpenAI vision and writes the generated description as editable Markdown.

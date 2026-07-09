@@ -9,7 +9,7 @@ import { internal } from "../convex/_generated/api.js";
 import { public_api_SCOPE_FILES_LIST, public_api_SCOPE_FILES_READ } from "../convex/public_api.ts";
 import { files_READ_RANGE_MAX_LINES } from "../convex/files_nodes.ts";
 import { path_name_of, server_path_normalize, server_path_parent_of } from "./server-utils.ts";
-import { crypto_sha256_hex } from "./crypto-utils.ts";
+import { crypto_random_hex, crypto_sha256_hex } from "./crypto-utils.ts";
 import { minimatch } from "minimatch";
 import { files_ROOT_ID, files_get_normalized_node_path_segments } from "./files.ts";
 import { bash_EXTERNAL_MOUNTS_ROOT, bash_PLUGINS_MOUNT_ROOT, bash_is_path_under } from "./bash-utils.ts";
@@ -1503,14 +1503,6 @@ const ai_chat_tool_execute_code_runner_error_schema = z.object({
 	error: z.object({ message: z.string().optional() }).optional(),
 });
 
-function ai_chat_tool_execute_code_random_token() {
-	const bytes = new Uint8Array(32);
-	crypto.getRandomValues(bytes);
-	return Array.from(bytes)
-		.map((byte) => byte.toString(16).padStart(2, "0"))
-		.join("");
-}
-
 function ai_chat_tool_execute_code_app_origin() {
 	const origin = process.env.VITE_CONVEX_HTTP_URL?.trim() || process.env.CONVEX_SITE_URL?.trim();
 	if (!origin) {
@@ -1631,7 +1623,7 @@ export function ai_chat_tool_create_execute_code(
 			const url = `${baseUrl.replace(/\/$/u, "")}/internal/execute-code`;
 			const appOrigin = ai_chat_tool_execute_code_app_origin();
 			const executionId = crypto.randomUUID();
-			const publicApiGrantToken = ai_chat_tool_execute_code_random_token();
+			const publicApiGrantToken = crypto_random_hex(32);
 			await ctx.runMutation(internal.public_api.create_grant, {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,

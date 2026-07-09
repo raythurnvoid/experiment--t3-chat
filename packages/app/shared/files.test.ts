@@ -176,13 +176,13 @@ describe("files_get_upload_pipeline_state", () => {
 		[
 			[null, "not_applicable"],
 			[{ kind: "content", r2Key: "content-key" }, "not_applicable"],
-			[{ kind: "content", conversionWorkId: "work_1" as WorkId }, "processing"],
-			[{ kind: "content", conversionWorkId: null }, "terminal"],
+			[{ kind: "content", processingWorkId: "work_1" as WorkId }, "processing"],
+			[{ kind: "content", processingWorkId: null }, "terminal"],
 			[{ kind: "upload" }, "waiting_for_upload"],
-			[{ kind: "upload", conversionWorkId: null }, "terminal"],
+			[{ kind: "upload", processingWorkId: null }, "terminal"],
 			[{ kind: "upload", r2Key: "upload-key" }, "pending_processing"],
-			[{ kind: "upload", r2Key: "upload-key", conversionWorkId: "work_1" as WorkId }, "processing"],
-			[{ kind: "upload", r2Key: "upload-key", conversionWorkId: null }, "terminal"],
+			[{ kind: "upload", r2Key: "upload-key", processingWorkId: "work_1" as WorkId }, "processing"],
+			[{ kind: "upload", r2Key: "upload-key", processingWorkId: null }, "terminal"],
 		] satisfies Array<
 			[Parameters<typeof files_get_upload_pipeline_state>[0], ReturnType<typeof files_get_upload_pipeline_state>]
 		>,

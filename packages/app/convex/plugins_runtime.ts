@@ -5,14 +5,7 @@ import { v } from "convex/values";
 import { z } from "zod";
 
 import { components, internal } from "./_generated/api.js";
-import {
-	httpAction,
-	internalAction,
-	internalMutation,
-	internalQuery,
-	type ActionCtx,
-	type MutationCtx,
-} from "./_generated/server.js";
+import { httpAction, internalAction, internalMutation, type ActionCtx, type MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
@@ -27,7 +20,7 @@ import {
 	files_node_has_editable_yjs_state,
 } from "../server/files.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
-import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	create_generated_markdown_output_node,
 	type r2_finalize_uploaded_media_markdown_outputs_Result,
@@ -42,82 +35,53 @@ import {
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
-const HOST_TOKEN_TTL_MS = 15 * 60 * 1000;
-const RUN_TTL_MS = 30 * 60 * 1000;
+// 10 minutes. The real execution ceiling is the Convex action timeout plus the runner request
+// timeout below; the TTL only needs to cover queue wait on top of that. Runs past it are
+// refused/reaped.
+const RUN_TTL_MS = 10 * 60 * 1000;
+// 3 minutes.
+const RUNNER_REQUEST_TIMEOUT_MS = 3 * 60 * 1000;
 const MAX_HOST_CALLS = 20;
-const UPLOAD_EVENT_SETTLE_DELAY_MS = 15 * 1000;
+const RUNNER_ERROR_MESSAGE_MAX_CHARS = 500;
+// 30 days.
+const RUN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const RUN_REAP_BATCH_SIZE = 50;
+const RUN_CLEANUP_BATCH_SIZE = 50;
 
 const UPLOAD_COMPLETED_EVENT_TYPE = "files.upload.completed" as const;
 const RUN_REQUESTED_EVENT_TYPE = "files.run.requested" as const;
 
-function real_upload_source_scope(sourceAsset: Doc<"files_r2_assets">) {
-	const { organizationId, workspaceId, createdBy } = sourceAsset;
-	if (
-		organizationId === organizations_GLOBAL_ORGANIZATION_ID ||
-		organizations_is_reserved_workspace_id(workspaceId) ||
-		createdBy === users_SYSTEM_AUTHOR
-	) {
-		return null;
-	}
-	return { organizationId, workspaceId, createdBy };
-}
-
-const plugin_event_execution_workpool = new Workpool(components.files_upload_conversion_workpool, {
-	maxParallelism: 1,
+/**
+ * Finite attempts on purpose: the executor catches everything and finishes the run failed, so a
+ * retry only fires on a genuine crash (OOM/timeout) — the retried attempt then fails fast because
+ * start_event_run refuses a run that is already "running".
+ */
+const plugin_event_execution_workpool = new Workpool(components.plugins_runtime_workpool, {
+	maxParallelism: 4,
 	retryActionsByDefault: true,
 	defaultRetryBehavior: {
-		initialBackoffMs: 60 * 1000,
-		base: 1.2,
-		maxAttempts: Number.POSITIVE_INFINITY,
+		initialBackoffMs: 10 * 1000,
+		base: 2,
+		maxAttempts: 3,
 	} as const,
 });
 
-function normalize_external_base_url(value: string) {
-	return value.endsWith("/") ? value.slice(0, -1) : value;
+if (!process.env.PLUGIN_RUNNER_URL) {
+	throw new Error("PLUGIN_RUNNER_URL is not set in Convex env");
 }
+const PLUGIN_RUNNER_URL = process.env.PLUGIN_RUNNER_URL;
 
-function runner_url() {
-	if (!process.env.PLUGIN_RUNNER_URL) {
-		throw new Error("PLUGIN_RUNNER_URL is not set in Convex env");
-	}
-	return normalize_external_base_url(process.env.PLUGIN_RUNNER_URL);
+if (!process.env.PLUGIN_RUNNER_SECRET) {
+	throw new Error("PLUGIN_RUNNER_SECRET is not set in Convex env");
 }
+const PLUGIN_RUNNER_SECRET = process.env.PLUGIN_RUNNER_SECRET;
 
-function runner_secret() {
-	if (!process.env.PLUGIN_RUNNER_SECRET) {
-		throw new Error("PLUGIN_RUNNER_SECRET is not set in Convex env");
-	}
-	return process.env.PLUGIN_RUNNER_SECRET;
+if (!process.env.VITE_CONVEX_HTTP_URL) {
+	throw new Error("VITE_CONVEX_HTTP_URL is not set in Convex env");
 }
+const HOST_ORIGIN = process.env.VITE_CONVEX_HTTP_URL;
 
-function host_origin() {
-	if (!process.env.VITE_CONVEX_HTTP_URL) {
-		throw new Error("VITE_CONVEX_HTTP_URL is not set in Convex env");
-	}
-	return normalize_external_base_url(process.env.VITE_CONVEX_HTTP_URL);
-}
-
-function normalize_content_type(value: string | undefined) {
-	return value?.split(";")[0]?.trim().toLowerCase() ?? null;
-}
-
-function backend_artifact_hash(version: Doc<"plugins_versions">) {
-	if (!version.backend) {
-		return null;
-	}
-
-	return (
-		version.files.find((file) => file.r2Key === version.backend?.r2Key)?.sha256 ??
-		version.files.find((file) => file.path === version.backend?.entry)?.sha256 ??
-		version.artifactHash
-	);
-}
-
-function create_host_token() {
-	return `${crypto.randomUUID()}.${crypto.randomUUID()}`;
-}
-
-function bearer_token(request: Request) {
+function get_bearer_token(request: Request) {
 	const header = request.headers.get("Authorization");
 	const prefix = "Bearer ";
 	if (!header?.startsWith(prefix)) {
@@ -126,7 +90,7 @@ function bearer_token(request: Request) {
 	return header.slice(prefix.length);
 }
 
-function markdown_output_name(path: string | undefined) {
+function parse_markdown_output_name(path: string | undefined) {
 	if (!path) {
 		return Result({ _nay: { message: "Output is not available" } });
 	}
@@ -139,21 +103,691 @@ function markdown_output_name(path: string | undefined) {
 	) {
 		return Result({ _nay: { message: "Output path is invalid" } });
 	}
+
 	const normalized = files_normalize_name("file", path);
 	if (normalized._nay) {
 		return Result({ _nay: { message: "Output path is invalid" } });
 	}
+
 	return Result({ _yay: normalized._yay });
 }
 
-async function clear_run_processing_assets(ctx: MutationCtx, run: Doc<"plugins_event_runs">) {
+/**
+ * Convex db.patch treats an explicit `undefined` value as "unset this field", so an optional
+ * patch field that may already hold a value written earlier must be omitted entirely rather
+ * than passed as undefined. Inserts and function args don't need this: the serializer drops
+ * undefined fields there.
+ */
+function pick_defined_props<T extends Record<string, unknown>>(obj: T) {
+	return Object.fromEntries(Object.entries(obj).filter(([, value]) => value !== undefined)) as {
+		[K in keyof T]?: Exclude<T[K], undefined>;
+	};
+}
+
+/**
+ * The single decision point for plugin dispatch on a finalized upload: checks eligibility itself
+ * and enqueues one run per enabled installation subscribed to the upload's content type.
+ * Ineligible uploads (non-file node, reserved tenant scope, missing content type, nothing
+ * subscribed, already-dispatched event) are a normal `enqueued: 0` outcome, not an error. The
+ * upload's own pipeline state (`processingWorkId`) is the caller's concern, not this function's.
+ */
+export async function plugins_runtime_db_enqueue_upload_completed_runs(
+	ctx: MutationCtx,
+	args: {
+		asset: Doc<"files_r2_assets">;
+		fileNode: Doc<"files_nodes">;
+		eventId: string;
+	},
+) {
+	if (
+		args.fileNode.assetId !== args.asset._id ||
+		args.fileNode.kind !== "file" ||
+		files_node_has_editable_yjs_state(args.fileNode)
+	) {
+		return { enqueued: 0 };
+	}
+	if (!args.asset.r2Key) {
+		const errorMessage = "asset.r2Key is not set for plugin upload event";
+		console.error(errorMessage, { assetId: args.asset._id });
+		throw should_never_happen(errorMessage, { assetId: args.asset._id });
+	}
+	// Plugin runs fire only for real tenant uploads: assets in the global organization, in a
+	// reserved workspace (e.g. plugin source mounts), or created by the system are not user uploads.
+	const { organizationId, workspaceId, createdBy } = args.asset;
+	if (
+		organizationId === organizations_GLOBAL_ORGANIZATION_ID ||
+		organizations_is_reserved_workspace_id(workspaceId) ||
+		createdBy === users_SYSTEM_AUTHOR
+	) {
+		return { enqueued: 0 };
+	}
+
+	const contentType = args.fileNode.contentType;
+	if (!contentType) {
+		return { enqueued: 0 };
+	}
+
+	// Check what installed plugins can be triggered on this upload.
+	const handlers = await ctx.db
+		.query("plugins_workspace_event_handlers")
+		.withIndex("by_scope_event_contentType_createdAt_name", (q) =>
+			q
+				.eq("organizationId", organizationId)
+				.eq("workspaceId", workspaceId)
+				.eq("event", UPLOAD_COMPLETED_EVENT_TYPE)
+				.eq("contentType", contentType),
+		)
+		.collect();
+
+	// Load each handler's installation and version and drop the ones that can no longer run
+	// (disabled installation, version without a backend).
+	const candidateReads = await Promise.all(
+		handlers.map(async (handler) => {
+			const [installation, version] = await Promise.all([
+				ctx.db.get("plugins_workspace_installations", handler.installationId),
+				ctx.db.get("plugins_versions", handler.pluginVersionId),
+			]);
+			return { installation, version };
+		}),
+	);
+	const candidates: Array<{
+		installation: Doc<"plugins_workspace_installations">;
+		version: Doc<"plugins_versions">;
+	}> = [];
+	for (const { installation, version } of candidateReads) {
+		if (!installation || !version || installation.status !== "enabled" || !version.backendEntrypointFile) {
+			continue;
+		}
+		candidates.push({ installation, version });
+	}
+
 	const now = Date.now();
-	if (run.outputAssetId) {
-		await ctx.db.patch("files_r2_assets", run.outputAssetId, {
-			conversionWorkId: null,
+	let enqueued = 0;
+	for (const candidate of candidates) {
+		// Skip if this installation already ran for this upload: an asset is uploaded only once, so
+		// a second upload-completed event can only be an R2 redelivery (with a fresh event id).
+		// Note: this dedupe on (asset, installation) only works for once-per-asset events; a
+		// repeatable event (e.g. a future file edit) must dedupe on a per-occurrence key instead.
+		const existingRun = await ctx.db
+			.query("plugins_event_runs")
+			.withIndex("by_asset_event_installation", (q) =>
+				q
+					.eq("assetId", args.asset._id)
+					.eq("event", UPLOAD_COMPLETED_EVENT_TYPE)
+					.eq("installationId", candidate.installation._id),
+			)
+			.first();
+		if (existingRun) {
+			continue;
+		}
+
+		// Create a run with a work id that allows the queued work to be cancelled later.
+		const runId = await ctx.db.insert("plugins_event_runs", {
+			organizationId,
+			workspaceId,
+			assetId: args.asset._id,
+			fileNodeId: args.fileNode._id,
+			actorUserId: createdBy,
+			installationId: candidate.installation._id,
+			pluginVersionId: candidate.version._id,
+			event: UPLOAD_COMPLETED_EVENT_TYPE,
+			eventId: composite_id("plugin", "upload_completed", args.eventId, String(candidate.installation._id)),
+			status: "queued",
+			acceptedCapabilities: candidate.installation.acceptedCapabilities,
+			expiresAt: now + RUN_TTL_MS,
+			hostCallCount: 0,
+			hostWriteCount: 0,
+			errorMessage: null,
 			updatedAt: now,
 		});
+		const workId = await plugin_event_execution_workpool.enqueueAction(
+			ctx,
+			internal.plugins_runtime.execute_upload_completed_event_run,
+			{
+				runId,
+			},
+		);
+		await ctx.db.patch("plugins_event_runs", runId, {
+			workId,
+			updatedAt: now,
+		});
+		enqueued += 1;
 	}
+
+	return { enqueued };
+}
+
+export async function plugins_runtime_db_enqueue_manual_run(
+	ctx: MutationCtx,
+	args: {
+		asset: Doc<"files_r2_assets">;
+		fileNode: Doc<"files_nodes">;
+		installation: Doc<"plugins_workspace_installations">;
+	},
+) {
+	const version = await ctx.db.get("plugins_versions", args.installation.pluginVersionId);
+	if (!version) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	if (!version.backendEntrypointFile) {
+		return Result({ _nay: { message: "Plugin cannot process files" } });
+	}
+
+	// Manual runs never dedupe by eventId, but at most one live run may exist per
+	// installation+file across both trigger sources. Expired queued/running docs
+	// (start_event_run refuses them) must not block a re-run forever.
+	const now = Date.now();
+	for (const event of [UPLOAD_COMPLETED_EVENT_TYPE, RUN_REQUESTED_EVENT_TYPE] as const) {
+		const recentRuns = await ctx.db
+			.query("plugins_event_runs")
+			.withIndex("by_asset_event_installation", (q) =>
+				q.eq("assetId", args.asset._id).eq("event", event).eq("installationId", args.installation._id),
+			)
+			.order("desc")
+			.take(5);
+		if (recentRuns.some((run) => (run.status === "queued" || run.status === "running") && run.expiresAt > now)) {
+			return Result({ _nay: { message: "A run for this plugin is already pending for this file" } });
+		}
+	}
+
+	const runId = await ctx.db.insert("plugins_event_runs", {
+		organizationId: args.installation.organizationId,
+		workspaceId: args.installation.workspaceId,
+		assetId: args.asset._id,
+		fileNodeId: args.fileNode._id,
+		// Unlike the upload path (asset creator), admin-triggered manual runs attribute output writes
+		// to the plugin's installer.
+		actorUserId: args.installation.installedBy,
+		installationId: args.installation._id,
+		pluginVersionId: version._id,
+		event: RUN_REQUESTED_EVENT_TYPE,
+		eventId: composite_id("plugin", "run_requested", crypto.randomUUID(), String(args.installation._id)),
+		status: "queued",
+		acceptedCapabilities: args.installation.acceptedCapabilities,
+		expiresAt: now + RUN_TTL_MS,
+		hostCallCount: 0,
+		hostWriteCount: 0,
+		errorMessage: null,
+		updatedAt: now,
+	});
+
+	const workId = await plugin_event_execution_workpool.enqueueAction(
+		ctx,
+		internal.plugins_runtime.execute_upload_completed_event_run,
+		{
+			runId,
+		},
+	);
+	await ctx.db.patch("plugins_event_runs", runId, {
+		workId,
+		updatedAt: now,
+	});
+
+	return Result({ _yay: { runId } });
+}
+
+export const start_event_run = internalMutation({
+	args: {
+		runId: v.id("plugins_event_runs"),
+		hostTokenHash: v.string(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			run: doc(app_convex_schema, "plugins_event_runs"),
+			asset: doc(app_convex_schema, "files_r2_assets"),
+			fileNode: doc(app_convex_schema, "files_nodes"),
+			installation: doc(app_convex_schema, "plugins_workspace_installations"),
+			version: doc(app_convex_schema, "plugins_versions"),
+			outboundOrigins: v.array(v.string()),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const run = await ctx.db.get("plugins_event_runs", args.runId);
+		if (!run) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (run.status !== "queued") {
+			// A "running" run here means a previous executor attempt crashed mid-run and the
+			// workpool retried; the retry must not restart the run.
+			return Result({ _nay: { message: run.status === "running" ? "Run was interrupted" : "Not found" } });
+		}
+		if (run.expiresAt <= Date.now()) {
+			return Result({ _nay: { message: "Run expired" } });
+		}
+
+		const [asset, fileNode, installation, version] = await Promise.all([
+			ctx.db.get("files_r2_assets", run.assetId),
+			ctx.db.get("files_nodes", run.fileNodeId),
+			ctx.db.get("plugins_workspace_installations", run.installationId),
+			ctx.db.get("plugins_versions", run.pluginVersionId),
+		]);
+		if (!asset || !fileNode || !installation || !version || !version.backendEntrypointFile) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		// Per-run egress allowlist: consented artifact origins plus the secret origins of the
+		// version's source repository claim (no claim contributes no extra origins).
+		const repository = await ctx.db
+			.query("plugins_publisher_repositories")
+			.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", version.sourceRepositoryUrl))
+			.first();
+		const publisherSecrets = repository
+			? await ctx.db
+					.query("plugins_publisher_repository_secrets")
+					.withIndex("by_repository_name", (q) => q.eq("repositoryId", repository._id))
+					.take(100)
+			: [];
+		const outboundOrigins = [
+			...new Set([
+				...installation.acceptedOutboundOrigins,
+				...publisherSecrets.flatMap((secret) => secret.allowedOrigins),
+			]),
+		];
+
+		const now = Date.now();
+		await ctx.db.patch("plugins_event_runs", run._id, {
+			status: "running",
+			hostTokenHash: args.hostTokenHash,
+			// The host token stays valid for the life of the run; a shorter TTL would silently cut
+			// off host access mid-run for plugins that outlive it.
+			hostTokenExpiresAt: run.expiresAt,
+			startedAt: now,
+			updatedAt: now,
+		});
+
+		const patchedRun = await ctx.db.get("plugins_event_runs", run._id);
+		if (!patchedRun) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		return Result({
+			_yay: {
+				run: patchedRun,
+				asset,
+				fileNode,
+				installation,
+				version,
+				outboundOrigins,
+			},
+		});
+	},
+});
+
+type start_event_run_Result =
+	typeof start_event_run extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const finish_event_run = internalMutation({
+	args: {
+		runId: v.id("plugins_event_runs"),
+		// "failed" reports a hard failure the executor already classified (start refused, backend
+		// missing, runner unreachable). "runner_response" hands over the raw runner outcome and the
+		// success/failure classification happens here, in the same transaction that reads the host
+		// calls — the executor must not classify from a completion-state query that can go stale
+		// between read and write.
+		outcome: v.union(
+			v.object({
+				kind: v.literal("failed"),
+				errorMessage: v.string(),
+			}),
+			v.object({
+				kind: v.literal("runner_response"),
+				runnerOk: v.boolean(),
+				runnerHttpStatus: v.number(),
+				bodyStatus: v.union(v.literal("succeeded"), v.literal("errored")),
+				runnerErrorMessage: v.union(v.string(), v.null()),
+				pluginStatus: v.optional(v.number()),
+				runnerElapsedMs: v.optional(v.number()),
+				runnerOutputBytes: v.optional(v.number()),
+				runnerOutputTruncated: v.optional(v.boolean()),
+			}),
+		),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const run = await ctx.db.get("plugins_event_runs", args.runId);
+		if (!run || (run.status !== "queued" && run.status !== "running")) {
+			return null;
+		}
+
+		const now = Date.now();
+		if (args.outcome.kind === "failed") {
+			console.error("Plugin event run failed", { runId: run._id, errorMessage: args.outcome.errorMessage });
+			await ctx.db.patch("plugins_event_runs", run._id, {
+				status: "failed",
+				errorMessage: args.outcome.errorMessage,
+				finishedAt: now,
+				updatedAt: now,
+			});
+			if (run.outputAssetId) {
+				await ctx.db.patch("files_r2_assets", run.outputAssetId, {
+					processingWorkId: null,
+					updatedAt: now,
+				});
+			}
+			return null;
+		}
+
+		const outcome = args.outcome;
+		const calls = await ctx.db
+			.query("plugins_event_run_calls")
+			.withIndex("by_run_sequence", (q) => q.eq("runId", run._id))
+			.take(MAX_HOST_CALLS);
+		const succeededWriteCount = calls.filter(
+			(call) => call.operation === "writeMarkdown" && call.status === "succeeded",
+		).length;
+		const startedCallCount = calls.filter((call) => call.status === "started").length;
+		const pluginStatusIsOk =
+			outcome.pluginStatus === undefined || (outcome.pluginStatus >= 200 && outcome.pluginStatus < 300);
+		const succeeded =
+			outcome.runnerOk &&
+			outcome.bodyStatus === "succeeded" &&
+			succeededWriteCount > 0 &&
+			startedCallCount === 0 &&
+			pluginStatusIsOk;
+		const errorMessage = succeeded
+			? null
+			: outcome.pluginStatus !== undefined && (outcome.pluginStatus < 200 || outcome.pluginStatus >= 300)
+				? `Plugin returned status ${outcome.pluginStatus}`
+				: outcome.runnerErrorMessage
+					? outcome.runnerErrorMessage
+					: startedCallCount
+						? "Plugin left host calls unfinished"
+						: outcome.runnerOk && outcome.bodyStatus === "succeeded"
+							? "Plugin produced no Markdown output"
+							: `Plugin runner failed with status ${outcome.runnerHttpStatus}`;
+		if (!succeeded) {
+			console.error("Plugin event run failed", { runId: run._id, errorMessage });
+		}
+		await ctx.db.patch("plugins_event_runs", run._id, {
+			status: succeeded ? "succeeded" : "failed",
+			errorMessage,
+			runnerHttpStatus: outcome.runnerHttpStatus,
+			runnerElapsedMs: outcome.runnerElapsedMs,
+			pluginStatus: outcome.pluginStatus,
+			runnerOutputBytes: outcome.runnerOutputBytes,
+			runnerOutputTruncated: outcome.runnerOutputTruncated,
+			finishedAt: now,
+			updatedAt: now,
+		});
+		if (!succeeded && run.outputAssetId) {
+			await ctx.db.patch("files_r2_assets", run.outputAssetId, {
+				processingWorkId: null,
+				updatedAt: now,
+			});
+		}
+
+		return null;
+	},
+});
+
+export const reap_expired_event_runs = internalMutation({
+	args: {
+		_test_now: v.optional(v.number()),
+		batchSize: v.optional(v.number()),
+		_test_disableReschedule: v.optional(v.boolean()),
+	},
+	returns: v.object({
+		reapedCount: v.number(),
+		done: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const now = args._test_now ?? Date.now();
+		const batchSize = Math.max(1, Math.min(args.batchSize ?? RUN_REAP_BATCH_SIZE, RUN_REAP_BATCH_SIZE));
+		let reapedCount = 0;
+		for (const status of ["queued", "running"] as const) {
+			if (reapedCount >= batchSize) {
+				break;
+			}
+			const expiredRuns = await ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_status_expiresAt", (q) => q.eq("status", status).lte("expiresAt", now))
+				.take(batchSize - reapedCount);
+			for (const run of expiredRuns) {
+				if (run.workId) {
+					await plugin_event_execution_workpool.cancel(ctx, run.workId);
+				}
+				await ctx.db.patch("plugins_event_runs", run._id, {
+					status: "failed",
+					errorMessage: "Run expired",
+					finishedAt: now,
+					updatedAt: now,
+				});
+				if (run.outputAssetId) {
+					await ctx.db.patch("files_r2_assets", run.outputAssetId, {
+						processingWorkId: null,
+						updatedAt: now,
+					});
+				}
+			}
+			reapedCount += expiredRuns.length;
+		}
+		const done = reapedCount < batchSize;
+		if (!done && !args._test_disableReschedule) {
+			await ctx.scheduler.runAfter(0, internal.plugins_runtime.reap_expired_event_runs, {
+				batchSize: args.batchSize,
+				_test_now: args._test_now,
+			});
+		}
+		return { reapedCount, done };
+	},
+});
+
+export const cleanup_old_event_runs = internalMutation({
+	args: {
+		_test_now: v.optional(v.number()),
+		batchSize: v.optional(v.number()),
+		_test_disableReschedule: v.optional(v.boolean()),
+	},
+	returns: v.object({
+		deletedCount: v.number(),
+		done: v.boolean(),
+	}),
+	handler: async (ctx, args) => {
+		const now = args._test_now ?? Date.now();
+		// expiresAt is enqueue time + RUN_TTL_MS, which makes it a fine age proxy for retention.
+		const cutoff = now - RUN_RETENTION_MS;
+		const batchSize = Math.max(1, Math.min(args.batchSize ?? RUN_CLEANUP_BATCH_SIZE, RUN_CLEANUP_BATCH_SIZE));
+		let deletedCount = 0;
+		for (const status of ["succeeded", "failed"] as const) {
+			if (deletedCount >= batchSize) {
+				break;
+			}
+			const oldRuns = await ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_status_expiresAt", (q) => q.eq("status", status).lte("expiresAt", cutoff))
+				.take(batchSize - deletedCount);
+			for (const run of oldRuns) {
+				const calls = await ctx.db
+					.query("plugins_event_run_calls")
+					.withIndex("by_run_sequence", (q) => q.eq("runId", run._id))
+					.take(MAX_HOST_CALLS);
+				await Promise.all(calls.map((call) => ctx.db.delete("plugins_event_run_calls", call._id)));
+				await ctx.db.delete("plugins_event_runs", run._id);
+			}
+			deletedCount += oldRuns.length;
+		}
+		const done = deletedCount < batchSize;
+		if (!done && !args._test_disableReschedule) {
+			await ctx.scheduler.runAfter(0, internal.plugins_runtime.cleanup_old_event_runs, {
+				batchSize: args.batchSize,
+				_test_now: args._test_now,
+			});
+		}
+		return { deletedCount, done };
+	},
+});
+
+// Executes both upload-triggered and manually requested runs; keep the historical name because
+// pending workpool items persist the function reference by name across deploys.
+export const execute_upload_completed_event_run = internalAction({
+	args: {
+		runId: v.id("plugins_event_runs"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const hostToken = crypto_random_hex(32);
+		const started = (await ctx.runMutation(internal.plugins_runtime.start_event_run, {
+			runId: args.runId,
+			hostTokenHash: await crypto_sha256_hex(hostToken),
+		})) as start_event_run_Result;
+		if (started._nay) {
+			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
+				runId: args.runId,
+				outcome: { kind: "failed", errorMessage: started._nay.message },
+			});
+			return null;
+		}
+
+		const backendEntrypointFile = started._yay.version.backendEntrypointFile;
+		if (!backendEntrypointFile) {
+			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
+				runId: args.runId,
+				outcome: { kind: "failed", errorMessage: "Plugin backend is missing" },
+			});
+			return null;
+		}
+
+		// A hung runner request would otherwise hold the action until the Convex action timeout
+		// kills it, which reads as a crash (workpool retry + reaper) instead of a labeled failure.
+		const abortController = new AbortController();
+		const abortTimer = setTimeout(() => abortController.abort(), RUNNER_REQUEST_TIMEOUT_MS);
+		try {
+			const runnerResponse = await fetch(`${PLUGIN_RUNNER_URL}/internal/plugin-runner/run`, {
+				method: "POST",
+				signal: abortController.signal,
+				headers: {
+					Authorization: `Bearer ${PLUGIN_RUNNER_SECRET}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					pluginId: started._yay.version.name,
+					pluginName: started._yay.version.name,
+					pluginVersion: started._yay.version.version,
+					pluginRunId: String(started._yay.run._id),
+					artifactKey: backendEntrypointFile.r2Key,
+					// Runner wire field; must be the backend entrypoint file's pinned sha256 (runner
+					// re-hashes the downloaded dist and refuses on mismatch), never version.artifactHash.
+					artifactHash: backendEntrypointFile.sha256,
+					host: {
+						origin: HOST_ORIGIN,
+						token: hostToken,
+					},
+					acceptedCapabilities: started._yay.run.acceptedCapabilities,
+					outboundOrigins: started._yay.outboundOrigins,
+					input: {
+						event: started._yay.run.event,
+						eventId: started._yay.run.eventId,
+						organizationId: String(started._yay.run.organizationId),
+						workspaceId: String(started._yay.run.workspaceId),
+						actorUserId: String(started._yay.run.actorUserId),
+						source: {
+							fileNodeId: String(started._yay.fileNode._id),
+							assetId: String(started._yay.asset._id),
+							name: started._yay.fileNode.name,
+							contentType: started._yay.fileNode.contentType ?? null,
+							size: started._yay.asset.size,
+						},
+					},
+				}),
+			});
+			const runnerBody = await parse_runner_response(runnerResponse);
+			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
+				runId: args.runId,
+				outcome: {
+					kind: "runner_response",
+					runnerOk: runnerResponse.ok,
+					runnerHttpStatus: runnerResponse.status,
+					bodyStatus: runnerBody.status,
+					runnerErrorMessage: runnerBody.errorMessage ?? null,
+					pluginStatus: runnerBody.pluginStatus,
+					runnerElapsedMs: runnerBody.elapsedMs,
+					runnerOutputBytes: runnerBody.outputBytes,
+					runnerOutputTruncated: runnerBody.outputTruncated,
+				},
+			});
+			return null;
+		} catch (error) {
+			const timedOut = error instanceof Error && error.name === "AbortError";
+			console.error("Plugin event run threw", {
+				runId: args.runId,
+				errorMessage: error instanceof Error ? error.message : String(error),
+			});
+			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
+				runId: args.runId,
+				outcome: {
+					kind: "failed",
+					errorMessage: timedOut ? "Plugin runner request timed out" : "Plugin runner request failed",
+				},
+			});
+			return null;
+		} finally {
+			clearTimeout(abortTimer);
+		}
+	},
+});
+
+async function parse_runner_response(response: Response) {
+	const text = await response.text();
+	try {
+		const json = JSON.parse(text);
+		const parsed = z
+			.object({
+				status: z.union([z.literal("succeeded"), z.literal("errored")]),
+				pluginStatus: z.number().optional(),
+				elapsedMs: z.number().optional(),
+				outputBytes: z.number().optional(),
+				outputTruncated: z.boolean().optional(),
+				error: z
+					.object({
+						message: z.string(),
+					})
+					.optional(),
+			})
+			.safeParse(json);
+		if (!parsed.success) {
+			const errorOnly = z.object({ error: z.object({ message: z.string() }) }).safeParse(json);
+			if (errorOnly.success) {
+				return {
+					status: "errored" as const,
+					errorMessage: errorOnly.data.error.message.slice(0, RUNNER_ERROR_MESSAGE_MAX_CHARS),
+				};
+			}
+			return { status: "errored" as const, errorMessage: "Plugin runner returned an invalid response" };
+		}
+		return {
+			status: parsed.data.status,
+			// The plugin's own truncated error message is persisted for workspace admins; plugin
+			// authors own the risk of secrets embedded in their exception messages.
+			errorMessage: parsed.data.error ? parsed.data.error.message.slice(0, RUNNER_ERROR_MESSAGE_MAX_CHARS) : undefined,
+			pluginStatus: parsed.data.pluginStatus,
+			elapsedMs: parsed.data.elapsedMs,
+			outputBytes: parsed.data.outputBytes,
+			outputTruncated: parsed.data.outputTruncated,
+		};
+	} catch {
+		return { status: "errored" as const, errorMessage: "Plugin runner returned invalid JSON" };
+	}
+}
+
+// #region host calls
+
+async function db_get_running_run_by_host_token(
+	ctx: MutationCtx,
+	args: { hostTokenHash: string; pluginRunId: string },
+) {
+	const run = await ctx.db
+		.query("plugins_event_runs")
+		.withIndex("by_hostTokenHash", (q) => q.eq("hostTokenHash", args.hostTokenHash))
+		.unique();
+	if (!run || run.status !== "running" || !run.hostTokenExpiresAt || run.hostTokenExpiresAt <= Date.now()) {
+		return null;
+	}
+	if (String(run._id) !== args.pluginRunId) {
+		return null;
+	}
+	return run;
 }
 
 async function insert_host_call(
@@ -186,392 +820,22 @@ async function insert_host_call(
 		sequence: args.sequence,
 		operation: args.operation,
 		status: args.status,
-		...(args.outputPath === undefined ? {} : { outputPath: args.outputPath }),
-		...(args.outputOverwrite === undefined ? {} : { outputOverwrite: args.outputOverwrite }),
-		...(args.markdownBytes === undefined ? {} : { markdownBytes: args.markdownBytes }),
-		...(args.expiresInSeconds === undefined ? {} : { expiresInSeconds: args.expiresInSeconds }),
-		...(args.secretName === undefined ? {} : { secretName: args.secretName }),
-		...(args.systemBytes === undefined ? {} : { systemBytes: args.systemBytes }),
-		...(args.promptBytes === undefined ? {} : { promptBytes: args.promptBytes }),
-		...(args.includeSourceImage === undefined ? {} : { includeSourceImage: args.includeSourceImage }),
-		...(args.maxOutputTokens === undefined ? {} : { maxOutputTokens: args.maxOutputTokens }),
-		...(args.requestBytes === undefined ? {} : { requestBytes: args.requestBytes }),
+		outputPath: args.outputPath,
+		outputOverwrite: args.outputOverwrite,
+		markdownBytes: args.markdownBytes,
+		expiresInSeconds: args.expiresInSeconds,
+		secretName: args.secretName,
+		systemBytes: args.systemBytes,
+		promptBytes: args.promptBytes,
+		includeSourceImage: args.includeSourceImage,
+		maxOutputTokens: args.maxOutputTokens,
+		requestBytes: args.requestBytes,
 		errorMessage: args.errorMessage,
 		startedAt: args.now,
 		...(args.status === "started" ? {} : { finishedAt: args.now, elapsedMs: 0 }),
 		updatedAt: args.now,
 	});
 }
-
-export const enqueue_upload_completed_runs = internalMutation({
-	args: {
-		sourceAssetId: v.id("files_r2_assets"),
-		sourceFileNodeId: v.id("files_nodes"),
-		eventId: v.string(),
-		contentType: v.string(),
-	},
-	returns: v_result({ _yay: v.object({ enqueued: v.number() }) }),
-	handler: async (ctx, args) => {
-		const [sourceAsset, sourceFileNode] = await Promise.all([
-			ctx.db.get("files_r2_assets", args.sourceAssetId),
-			ctx.db.get("files_nodes", args.sourceFileNodeId),
-		]);
-		if (
-			!sourceAsset ||
-			!sourceFileNode ||
-			sourceFileNode.assetId !== sourceAsset._id ||
-			sourceFileNode.kind !== "file" ||
-			files_node_has_editable_yjs_state(sourceFileNode)
-		) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (!sourceAsset.r2Key) {
-			const errorMessage = "sourceAsset.r2Key is not set for plugin upload event";
-			console.error(errorMessage, { sourceAssetId: sourceAsset._id });
-			throw should_never_happen(errorMessage, { sourceAssetId: sourceAsset._id });
-		}
-		const sourceScope = real_upload_source_scope(sourceAsset);
-		if (!sourceScope) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		const contentType = normalize_content_type(args.contentType);
-		if (!contentType) {
-			await ctx.db.patch("files_r2_assets", sourceAsset._id, { conversionWorkId: null, updatedAt: Date.now() });
-			return Result({ _yay: { enqueued: 0 } });
-		}
-
-		const handlers = await ctx.db
-			.query("plugins_workspace_event_handlers")
-			.withIndex("by_scope_event_status_contentType_createdAt_name", (q) =>
-				q
-					.eq("organizationId", sourceScope.organizationId)
-					.eq("workspaceId", sourceScope.workspaceId)
-					.eq("event", UPLOAD_COMPLETED_EVENT_TYPE)
-					.eq("status", "enabled")
-					.eq("contentType", contentType),
-			)
-			.collect();
-
-		// Hydrate every handler's installation and version in one batch; eligibility is checked after.
-		const candidateReads = await Promise.all(
-			handlers.map(async (handler) => {
-				const [installation, version] = await Promise.all([
-					ctx.db.get("plugins_workspace_installations", handler.installationId),
-					ctx.db.get("plugins_versions", handler.pluginVersionId),
-				]);
-				return { handler, installation, version };
-			}),
-		);
-		const candidates: Array<{
-			handler: Doc<"plugins_workspace_event_handlers">;
-			installation: Doc<"plugins_workspace_installations">;
-			version: Doc<"plugins_versions">;
-			artifactHash: string;
-		}> = [];
-		for (const { handler, installation, version } of candidateReads) {
-			if (!installation || !version || installation.status !== "enabled" || !version.backend) {
-				continue;
-			}
-			const artifactHash = backend_artifact_hash(version);
-			if (!artifactHash) {
-				console.error("Enabled upload plugin version has no executable backend artifact hash", {
-					pluginVersionId: version._id,
-				});
-				continue;
-			}
-			candidates.push({ handler, installation, version, artifactHash });
-		}
-
-		if (candidates.length === 0) {
-			console.error("No enabled plugin handler found for upload event", {
-				sourceAssetId: sourceAsset._id,
-				contentType,
-			});
-			await ctx.db.patch("files_r2_assets", sourceAsset._id, { conversionWorkId: null, updatedAt: Date.now() });
-			return Result({ _yay: { enqueued: 0 } });
-		}
-
-		const now = Date.now();
-		let enqueued = 0;
-		for (const candidate of candidates) {
-			const existingRun = await ctx.db
-				.query("plugins_event_runs")
-				.withIndex("by_sourceAsset_event_installation", (q) =>
-					q
-						.eq("sourceAssetId", sourceAsset._id)
-						.eq("event", UPLOAD_COMPLETED_EVENT_TYPE)
-						.eq("installationId", candidate.installation._id),
-				)
-				.first();
-			if (existingRun) {
-				continue;
-			}
-
-			const runId = await ctx.db.insert("plugins_event_runs", {
-				organizationId: sourceScope.organizationId,
-				workspaceId: sourceScope.workspaceId,
-				sourceAssetId: sourceAsset._id,
-				sourceFileNodeId: sourceFileNode._id,
-				actorUserId: sourceScope.createdBy,
-				installationId: candidate.installation._id,
-				pluginVersionId: candidate.version._id,
-				event: UPLOAD_COMPLETED_EVENT_TYPE,
-				eventId: composite_id("plugin", "upload_completed", args.eventId, String(candidate.installation._id)),
-				status: "queued",
-				acceptedCapabilities: candidate.installation.acceptedCapabilities,
-				expiresAt: now + RUN_TTL_MS,
-				hostCallCount: 0,
-				hostWriteCount: 0,
-				errorMessage: null,
-				updatedAt: now,
-			});
-
-			const workId = await plugin_event_execution_workpool.enqueueAction(
-				ctx,
-				internal.plugins_runtime.execute_upload_completed_event_run,
-				{
-					runId,
-				},
-				{ runAfter: UPLOAD_EVENT_SETTLE_DELAY_MS },
-			);
-			await ctx.db.patch("plugins_event_runs", runId, {
-				workId,
-				updatedAt: now,
-			});
-			enqueued += 1;
-		}
-
-		await ctx.db.patch("files_r2_assets", sourceAsset._id, { conversionWorkId: null, updatedAt: now });
-
-		return Result({ _yay: { enqueued } });
-	},
-});
-
-export async function plugins_runtime_enqueue_manual_run(
-	ctx: MutationCtx,
-	args: {
-		sourceAsset: Doc<"files_r2_assets">;
-		sourceFileNode: Doc<"files_nodes">;
-		installation: Doc<"plugins_workspace_installations">;
-	},
-) {
-	const version = await ctx.db.get("plugins_versions", args.installation.pluginVersionId);
-	if (!version) {
-		return Result({ _nay: { message: "Not found" } });
-	}
-	if (!version.backend) {
-		return Result({ _nay: { message: "Plugin cannot process files" } });
-	}
-	const artifactHash = backend_artifact_hash(version);
-	if (!artifactHash) {
-		return Result({ _nay: { message: "Plugin backend artifact hash is missing" } });
-	}
-
-	// Manual runs never dedupe by eventId, but at most one live run may exist per
-	// installation+file across both trigger sources. Expired queued/running docs
-	// (start_event_run refuses them) must not block a re-run forever.
-	const now = Date.now();
-	for (const event of [UPLOAD_COMPLETED_EVENT_TYPE, RUN_REQUESTED_EVENT_TYPE] as const) {
-		const recentRuns = await ctx.db
-			.query("plugins_event_runs")
-			.withIndex("by_sourceAsset_event_installation", (q) =>
-				q.eq("sourceAssetId", args.sourceAsset._id).eq("event", event).eq("installationId", args.installation._id),
-			)
-			.order("desc")
-			.take(5);
-		if (recentRuns.some((run) => (run.status === "queued" || run.status === "running") && run.expiresAt > now)) {
-			return Result({ _nay: { message: "A run for this plugin is already pending for this file" } });
-		}
-	}
-
-	const runId = await ctx.db.insert("plugins_event_runs", {
-		organizationId: args.installation.organizationId,
-		workspaceId: args.installation.workspaceId,
-		sourceAssetId: args.sourceAsset._id,
-		sourceFileNodeId: args.sourceFileNode._id,
-		// Unlike the upload path (asset creator), admin-triggered manual runs attribute output writes
-		// to the plugin's installer.
-		actorUserId: args.installation.installedBy,
-		installationId: args.installation._id,
-		pluginVersionId: version._id,
-		event: RUN_REQUESTED_EVENT_TYPE,
-		eventId: composite_id("plugin", "run_requested", crypto.randomUUID(), String(args.installation._id)),
-		status: "queued",
-		acceptedCapabilities: args.installation.acceptedCapabilities,
-		expiresAt: now + RUN_TTL_MS,
-		hostCallCount: 0,
-		hostWriteCount: 0,
-		errorMessage: null,
-		updatedAt: now,
-	});
-
-	// No R2 settle delay for manual runs: the asset's r2Key was confirmed long ago.
-	const workId = await plugin_event_execution_workpool.enqueueAction(
-		ctx,
-		internal.plugins_runtime.execute_upload_completed_event_run,
-		{
-			runId,
-		},
-	);
-	await ctx.db.patch("plugins_event_runs", runId, {
-		workId,
-		updatedAt: now,
-	});
-
-	return Result({ _yay: { runId } });
-}
-
-export const start_event_run = internalMutation({
-	args: {
-		runId: v.id("plugins_event_runs"),
-		hostTokenHash: v.string(),
-		hostTokenExpiresAt: v.number(),
-	},
-	returns: v_result({
-		_yay: v.object({
-			run: doc(app_convex_schema, "plugins_event_runs"),
-			sourceAsset: doc(app_convex_schema, "files_r2_assets"),
-			sourceFileNode: doc(app_convex_schema, "files_nodes"),
-			installation: doc(app_convex_schema, "plugins_workspace_installations"),
-			version: doc(app_convex_schema, "plugins_versions"),
-			artifactHash: v.string(),
-			outboundOrigins: v.array(v.string()),
-		}),
-	}),
-	handler: async (ctx, args) => {
-		const run = await ctx.db.get("plugins_event_runs", args.runId);
-		if (!run || run.status !== "queued" || run.expiresAt <= Date.now()) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		const [sourceAsset, sourceFileNode, installation, version] = await Promise.all([
-			ctx.db.get("files_r2_assets", run.sourceAssetId),
-			ctx.db.get("files_nodes", run.sourceFileNodeId),
-			ctx.db.get("plugins_workspace_installations", run.installationId),
-			ctx.db.get("plugins_versions", run.pluginVersionId),
-		]);
-		if (!sourceAsset || !sourceFileNode || !installation || !version || !version.backend) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		const artifactHash = backend_artifact_hash(version);
-		if (!artifactHash) {
-			return Result({ _nay: { message: "Plugin backend artifact hash is missing" } });
-		}
-
-		// Per-run egress allowlist: consented artifact origins plus the secret origins of the
-		// version's source repository claim (no claim contributes no extra origins).
-		const repository = await ctx.db
-			.query("plugins_publisher_repositories")
-			.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", version.sourceRepositoryUrl))
-			.first();
-		const publisherSecrets = repository
-			? await ctx.db
-					.query("plugins_publisher_repository_secrets")
-					.withIndex("by_repository_name", (q) => q.eq("repositoryId", repository._id))
-					.take(100)
-			: [];
-		const outboundOrigins = [
-			...new Set([
-				...installation.acceptedOutboundOrigins,
-				...publisherSecrets.flatMap((secret) => secret.allowedOrigins),
-			]),
-		];
-
-		const now = Date.now();
-		await ctx.db.patch("plugins_event_runs", run._id, {
-			status: "running",
-			hostTokenHash: args.hostTokenHash,
-			hostTokenExpiresAt: args.hostTokenExpiresAt,
-			startedAt: now,
-			updatedAt: now,
-		});
-
-		const patchedRun = await ctx.db.get("plugins_event_runs", run._id);
-		if (!patchedRun) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		return Result({
-			_yay: { run: patchedRun, sourceAsset, sourceFileNode, installation, version, artifactHash, outboundOrigins },
-		});
-	},
-});
-
-type start_event_run_Result =
-	typeof start_event_run extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-export const finish_event_run = internalMutation({
-	args: {
-		runId: v.id("plugins_event_runs"),
-		status: v.union(v.literal("succeeded"), v.literal("failed")),
-		errorMessage: v.union(v.string(), v.null()),
-		runnerHttpStatus: v.optional(v.number()),
-		runnerElapsedMs: v.optional(v.number()),
-		pluginStatus: v.optional(v.number()),
-		runnerOutputBytes: v.optional(v.number()),
-		runnerOutputTruncated: v.optional(v.boolean()),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const run = await ctx.db.get("plugins_event_runs", args.runId);
-		if (!run) {
-			return null;
-		}
-
-		const now = Date.now();
-		await ctx.db.patch("plugins_event_runs", run._id, {
-			status: args.status,
-			errorMessage: args.errorMessage,
-			...(args.runnerHttpStatus === undefined ? {} : { runnerHttpStatus: args.runnerHttpStatus }),
-			...(args.runnerElapsedMs === undefined ? {} : { runnerElapsedMs: args.runnerElapsedMs }),
-			...(args.pluginStatus === undefined ? {} : { pluginStatus: args.pluginStatus }),
-			...(args.runnerOutputBytes === undefined ? {} : { runnerOutputBytes: args.runnerOutputBytes }),
-			...(args.runnerOutputTruncated === undefined ? {} : { runnerOutputTruncated: args.runnerOutputTruncated }),
-			finishedAt: now,
-			updatedAt: now,
-		});
-		if (args.status === "failed") {
-			await clear_run_processing_assets(ctx, run);
-		}
-
-		return null;
-	},
-});
-
-export const get_run_completion_state = internalQuery({
-	args: {
-		runId: v.id("plugins_event_runs"),
-	},
-	returns: v.union(
-		v.object({
-			status: doc(app_convex_schema, "plugins_event_runs").fields.status,
-			hostWriteCount: v.number(),
-			succeededWriteCount: v.number(),
-			startedCallCount: v.number(),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		const run = await ctx.db.get("plugins_event_runs", args.runId);
-		if (!run) {
-			return null;
-		}
-		const calls = await ctx.db
-			.query("plugins_event_run_calls")
-			.withIndex("by_run_sequence", (q) => q.eq("runId", run._id))
-			.take(MAX_HOST_CALLS);
-		return {
-			status: run.status,
-			hostWriteCount: run.hostWriteCount,
-			succeededWriteCount: calls.filter((call) => call.operation === "writeMarkdown" && call.status === "succeeded")
-				.length,
-			startedCallCount: calls.filter((call) => call.status === "started").length,
-		};
-	},
-});
 
 async function patch_host_call_finished(
 	ctx: MutationCtx,
@@ -594,20 +858,192 @@ async function patch_host_call_finished(
 	await ctx.db.patch("plugins_event_run_calls", call._id, {
 		status: args.status,
 		errorMessage: args.errorMessage,
-		...(args.temporaryUrlExpiresAt === undefined ? {} : { temporaryUrlExpiresAt: args.temporaryUrlExpiresAt }),
-		...(args.secretFound === undefined ? {} : { secretFound: args.secretFound }),
-		...(args.secretTier === undefined ? {} : { secretTier: args.secretTier }),
-		...(args.modelId === undefined ? {} : { modelId: args.modelId }),
-		...(args.sourceBytes === undefined ? {} : { sourceBytes: args.sourceBytes }),
-		...(args.requestBytes === undefined ? {} : { requestBytes: args.requestBytes }),
-		...(args.responseBytes === undefined ? {} : { responseBytes: args.responseBytes }),
-		...(args.responseStatus === undefined ? {} : { responseStatus: args.responseStatus }),
-		...(args.outputTextBytes === undefined ? {} : { outputTextBytes: args.outputTextBytes }),
+		...pick_defined_props({
+			temporaryUrlExpiresAt: args.temporaryUrlExpiresAt,
+			secretFound: args.secretFound,
+			secretTier: args.secretTier,
+			modelId: args.modelId,
+			sourceBytes: args.sourceBytes,
+			requestBytes: args.requestBytes,
+			responseBytes: args.responseBytes,
+			responseStatus: args.responseStatus,
+			outputTextBytes: args.outputTextBytes,
+		}),
 		finishedAt: now,
 		elapsedMs: now - call.startedAt,
 		updatedAt: now,
 	});
 }
+
+export const claim_host_call = internalMutation({
+	args: {
+		hostTokenHash: v.string(),
+		pluginRunId: v.string(),
+		requiredCapabilities: doc(app_convex_schema, "plugins_workspace_installations").fields.acceptedCapabilities,
+		operation: v.union(
+			v.literal("writeMarkdown"),
+			v.literal("sourceTemporaryUrl"),
+			v.literal("secretGet"),
+			v.literal("outboundFetch"),
+		),
+		outputPath: v.optional(v.string()),
+		outputOverwrite: v.optional(v.union(v.literal("replace"), v.literal("fail"))),
+		markdownBytes: v.optional(v.number()),
+		expiresInSeconds: v.optional(v.number()),
+		secretName: v.optional(v.string()),
+		systemBytes: v.optional(v.number()),
+		promptBytes: v.optional(v.number()),
+		includeSourceImage: v.optional(v.boolean()),
+		maxOutputTokens: v.optional(v.number()),
+		requestBytes: v.optional(v.number()),
+	},
+	returns: v_result({
+		_yay: v.object({
+			run: doc(app_convex_schema, "plugins_event_runs"),
+			asset: doc(app_convex_schema, "files_r2_assets"),
+			fileNode: doc(app_convex_schema, "files_nodes"),
+			outputFileNode: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
+			outputAssetId: v.union(v.id("files_r2_assets"), v.null()),
+			callId: v.id("plugins_event_run_calls"),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const run = await db_get_running_run_by_host_token(ctx, args);
+		if (!run) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+		const now = Date.now();
+		if (run.hostCallCount >= MAX_HOST_CALLS) {
+			return Result({ _nay: { message: "Plugin host call limit exceeded" } });
+		}
+		const sequence = run.hostCallCount + 1;
+		const fail_claim = async (message: string) => {
+			await insert_host_call(ctx, {
+				run,
+				sequence,
+				operation: args.operation,
+				status: "failed",
+				errorMessage: message,
+				now,
+				outputPath: args.outputPath,
+				outputOverwrite: args.outputOverwrite,
+				markdownBytes: args.markdownBytes,
+				expiresInSeconds: args.expiresInSeconds,
+				secretName: args.secretName,
+				systemBytes: args.systemBytes,
+				promptBytes: args.promptBytes,
+				includeSourceImage: args.includeSourceImage,
+				maxOutputTokens: args.maxOutputTokens,
+				requestBytes: args.requestBytes,
+			});
+			await ctx.db.patch("plugins_event_runs", run._id, {
+				hostCallCount: sequence,
+				updatedAt: now,
+			});
+			return Result({ _nay: { message } });
+		};
+		for (const capability of args.requiredCapabilities) {
+			if (!run.acceptedCapabilities.includes(capability)) {
+				return await fail_claim("Permission denied");
+			}
+		}
+		const outputName = args.operation === "writeMarkdown" ? parse_markdown_output_name(args.outputPath) : null;
+		if (outputName?._nay) {
+			return await fail_claim(outputName._nay.message);
+		}
+		const outputPath = outputName?._yay;
+
+		const [asset, fileNode] = await Promise.all([
+			ctx.db.get("files_r2_assets", run.assetId),
+			ctx.db.get("files_nodes", run.fileNodeId),
+		]);
+		if (
+			!asset ||
+			!fileNode ||
+			asset.organizationId !== run.organizationId ||
+			asset.workspaceId !== run.workspaceId ||
+			fileNode.organizationId !== run.organizationId ||
+			fileNode.workspaceId !== run.workspaceId
+		) {
+			return await fail_claim("Not found");
+		}
+
+		let writableOutputFileNode: Doc<"files_nodes"> | null = null;
+		let writableOutputAssetId: Id<"files_r2_assets"> | null = null;
+		if (args.operation === "writeMarkdown") {
+			if (!outputPath) {
+				return await fail_claim("Output is not available");
+			}
+			const output = await create_generated_markdown_output_node(ctx, {
+				fileNode,
+				name: outputPath,
+				overwrite: args.outputOverwrite,
+				now,
+			});
+			if (output._nay) {
+				return await fail_claim(output._nay.message);
+			}
+			writableOutputFileNode = await ctx.db.get("files_nodes", output._yay.nodeId);
+			if (!writableOutputFileNode) {
+				// Unreachable: the node was inserted in this same transaction.
+				throw should_never_happen("writeMarkdown output node missing after create", { nodeId: output._yay.nodeId });
+			}
+			writableOutputAssetId = output._yay.assetId;
+		}
+
+		const callId = await insert_host_call(ctx, {
+			run,
+			sequence,
+			operation: args.operation,
+			status: "started",
+			errorMessage: null,
+			now,
+			outputPath: args.operation === "writeMarkdown" ? outputPath : args.outputPath,
+			outputOverwrite: args.outputOverwrite,
+			markdownBytes: args.markdownBytes,
+			expiresInSeconds: args.expiresInSeconds,
+			secretName: args.secretName,
+			systemBytes: args.systemBytes,
+			promptBytes: args.promptBytes,
+			includeSourceImage: args.includeSourceImage,
+			maxOutputTokens: args.maxOutputTokens,
+			requestBytes: args.requestBytes,
+		});
+
+		await ctx.db.patch("plugins_event_runs", run._id, {
+			hostCallCount: sequence,
+			hostWriteCount: run.hostWriteCount + (args.operation === "writeMarkdown" ? 1 : 0),
+			...(args.operation === "writeMarkdown" && writableOutputFileNode && writableOutputAssetId
+				? {
+						outputFileNodeId: writableOutputFileNode._id,
+						outputAssetId: writableOutputAssetId,
+					}
+				: {}),
+			updatedAt: now,
+		});
+
+		const patchedRun = await ctx.db.get("plugins_event_runs", run._id);
+		if (!patchedRun) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		return Result({
+			_yay: {
+				run: patchedRun,
+				asset,
+				fileNode,
+				outputFileNode: writableOutputFileNode,
+				outputAssetId: writableOutputAssetId,
+				callId,
+			},
+		});
+	},
+});
+
+type claim_host_call_Result =
+	typeof claim_host_call extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 export const finish_host_call = internalMutation({
 	args: {
@@ -665,15 +1101,8 @@ export const finish_runner_host_call = internalMutation({
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const run = await ctx.db
-			.query("plugins_event_runs")
-			.withIndex("by_hostTokenHash", (q) => q.eq("hostTokenHash", args.hostTokenHash))
-			.unique();
-		const now = Date.now();
-		if (!run || run.status !== "running" || !run.hostTokenExpiresAt || run.hostTokenExpiresAt <= now) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		if (String(run._id) !== args.pluginRunId) {
+		const run = await db_get_running_run_by_host_token(ctx, args);
+		if (!run) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
@@ -703,190 +1132,6 @@ export const finish_runner_host_call = internalMutation({
 
 type finish_runner_host_call_Result =
 	typeof finish_runner_host_call extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-export const claim_host_call = internalMutation({
-	args: {
-		hostTokenHash: v.string(),
-		pluginRunId: v.string(),
-		requiredCapabilities: doc(app_convex_schema, "plugins_workspace_installations").fields.acceptedCapabilities,
-		operation: v.union(
-			v.literal("writeMarkdown"),
-			v.literal("sourceTemporaryUrl"),
-			v.literal("secretGet"),
-			v.literal("outboundFetch"),
-		),
-		outputPath: v.optional(v.string()),
-		outputOverwrite: v.optional(v.union(v.literal("replace"), v.literal("fail"))),
-		markdownBytes: v.optional(v.number()),
-		expiresInSeconds: v.optional(v.number()),
-		secretName: v.optional(v.string()),
-		systemBytes: v.optional(v.number()),
-		promptBytes: v.optional(v.number()),
-		includeSourceImage: v.optional(v.boolean()),
-		maxOutputTokens: v.optional(v.number()),
-		requestBytes: v.optional(v.number()),
-	},
-	returns: v_result({
-		_yay: v.object({
-			run: doc(app_convex_schema, "plugins_event_runs"),
-			sourceAsset: doc(app_convex_schema, "files_r2_assets"),
-			sourceFileNode: doc(app_convex_schema, "files_nodes"),
-			outputFileNode: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
-			outputAssetId: v.union(v.id("files_r2_assets"), v.null()),
-			callId: v.id("plugins_event_run_calls"),
-		}),
-	}),
-	handler: async (ctx, args) => {
-		const run = await ctx.db
-			.query("plugins_event_runs")
-			.withIndex("by_hostTokenHash", (q) => q.eq("hostTokenHash", args.hostTokenHash))
-			.unique();
-		const now = Date.now();
-		if (!run || run.status !== "running" || !run.hostTokenExpiresAt || run.hostTokenExpiresAt <= now) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		if (String(run._id) !== args.pluginRunId) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-		if (run.hostCallCount >= MAX_HOST_CALLS) {
-			return Result({ _nay: { message: "Plugin host call limit exceeded" } });
-		}
-		const sequence = run.hostCallCount + 1;
-		const fail_claim = async (message: string) => {
-			await insert_host_call(ctx, {
-				run,
-				sequence,
-				operation: args.operation,
-				status: "failed",
-				errorMessage: message,
-				now,
-				outputPath: args.outputPath,
-				outputOverwrite: args.outputOverwrite,
-				markdownBytes: args.markdownBytes,
-				expiresInSeconds: args.expiresInSeconds,
-				secretName: args.secretName,
-				systemBytes: args.systemBytes,
-				promptBytes: args.promptBytes,
-				includeSourceImage: args.includeSourceImage,
-				maxOutputTokens: args.maxOutputTokens,
-				requestBytes: args.requestBytes,
-			});
-			await ctx.db.patch("plugins_event_runs", run._id, {
-				hostCallCount: sequence,
-				updatedAt: now,
-			});
-			return Result({ _nay: { message } });
-		};
-		for (const capability of args.requiredCapabilities) {
-			if (!run.acceptedCapabilities.includes(capability)) {
-				return await fail_claim("Permission denied");
-			}
-		}
-		const outputName = args.operation === "writeMarkdown" ? markdown_output_name(args.outputPath) : null;
-		if (outputName?._nay) {
-			return await fail_claim(outputName._nay.message);
-		}
-		const outputPath = outputName?._yay;
-
-		const [sourceAsset, sourceFileNode] = await Promise.all([
-			ctx.db.get("files_r2_assets", run.sourceAssetId),
-			ctx.db.get("files_nodes", run.sourceFileNodeId),
-		]);
-		if (
-			!sourceAsset ||
-			!sourceFileNode ||
-			sourceAsset.organizationId !== run.organizationId ||
-			sourceAsset.workspaceId !== run.workspaceId ||
-			sourceFileNode.organizationId !== run.organizationId ||
-			sourceFileNode.workspaceId !== run.workspaceId
-		) {
-			return await fail_claim("Not found");
-		}
-
-		let writableOutputFileNode: Doc<"files_nodes"> | null = null;
-		let writableOutputAssetId: Id<"files_r2_assets"> | null = null;
-		if (args.operation === "writeMarkdown") {
-			if (!outputPath) {
-				return await fail_claim("Output is not available");
-			}
-			const output = await create_generated_markdown_output_node(ctx, {
-				sourceFileNode,
-				name: outputPath,
-				overwrite: args.outputOverwrite,
-				now,
-			});
-			if (output._nay) {
-				return await fail_claim(output._nay.message);
-			}
-			writableOutputFileNode = await ctx.db.get("files_nodes", output._yay.nodeId);
-			writableOutputAssetId = output._yay.assetId;
-		}
-
-		if (
-			args.operation === "writeMarkdown" &&
-			(!writableOutputFileNode ||
-				!writableOutputAssetId ||
-				writableOutputFileNode.organizationId !== run.organizationId ||
-				writableOutputFileNode.workspaceId !== run.workspaceId ||
-				writableOutputFileNode.kind !== "file" ||
-				writableOutputFileNode.assetId !== writableOutputAssetId)
-		) {
-			return await fail_claim("Not found");
-		}
-
-		const callId = await insert_host_call(ctx, {
-			run,
-			sequence,
-			operation: args.operation,
-			status: "started",
-			errorMessage: null,
-			now,
-			outputPath: args.operation === "writeMarkdown" ? outputPath : args.outputPath,
-			outputOverwrite: args.outputOverwrite,
-			markdownBytes: args.markdownBytes,
-			expiresInSeconds: args.expiresInSeconds,
-			secretName: args.secretName,
-			systemBytes: args.systemBytes,
-			promptBytes: args.promptBytes,
-			includeSourceImage: args.includeSourceImage,
-			maxOutputTokens: args.maxOutputTokens,
-			requestBytes: args.requestBytes,
-		});
-
-		await ctx.db.patch("plugins_event_runs", run._id, {
-			hostCallCount: sequence,
-			hostWriteCount: run.hostWriteCount + (args.operation === "writeMarkdown" ? 1 : 0),
-			...(args.operation === "writeMarkdown" && writableOutputFileNode && writableOutputAssetId
-				? {
-						outputFileNodeId: writableOutputFileNode._id,
-						outputAssetId: writableOutputAssetId,
-					}
-				: {}),
-			updatedAt: now,
-		});
-
-		const patchedRun = await ctx.db.get("plugins_event_runs", run._id);
-		if (!patchedRun) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		return Result({
-			_yay: {
-				run: patchedRun,
-				sourceAsset,
-				sourceFileNode,
-				outputFileNode: writableOutputFileNode,
-				outputAssetId: writableOutputAssetId,
-				callId,
-			},
-		});
-	},
-});
-
-type claim_host_call_Result =
-	typeof claim_host_call extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -923,16 +1168,17 @@ export const host_write_markdown = internalAction({
 
 		try {
 			const output = await write_uploaded_media_markdown_output_objects(ctx, {
-				sourceFileNode: claimed._yay.sourceFileNode,
+				fileNode: claimed._yay.fileNode,
 				outputFileNode: claimed._yay.outputFileNode,
 				outputAssetId: claimed._yay.outputAssetId,
 				markdownContent: args.markdown,
 			});
 			const finalized = (await ctx.runMutation(internal.r2.finalize_uploaded_media_markdown_outputs, {
+				pluginRunId: claimed._yay.run._id,
 				organizationId: claimed._yay.run.organizationId,
 				workspaceId: claimed._yay.run.workspaceId,
 				userId: claimed._yay.run.actorUserId,
-				sourceAssetId: claimed._yay.run.sourceAssetId,
+				assetId: claimed._yay.run.assetId,
 				outputs: [output],
 			})) as r2_finalize_uploaded_media_markdown_outputs_Result;
 			if (finalized._nay) {
@@ -986,7 +1232,7 @@ export const host_source_temporary_url = internalAction({
 		if (claimed._nay) {
 			return Result({ _nay: { message: claimed._nay.message } });
 		}
-		if (!claimed._yay.sourceAsset.r2Key) {
+		if (!claimed._yay.asset.r2Key) {
 			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
 				callId: claimed._yay.callId,
 				status: "failed",
@@ -997,7 +1243,7 @@ export const host_source_temporary_url = internalAction({
 
 		try {
 			const url = await r2_get_download_url({
-				key: claimed._yay.sourceAsset.r2Key,
+				key: claimed._yay.asset.r2Key,
 				options: { expiresIn },
 			});
 			const expiresAt = Date.now() + expiresIn * 1000;
@@ -1094,177 +1340,16 @@ type host_secret_get_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-// Executes both upload-triggered and manually requested runs; keep the historical name because
-// pending workpool items persist the function reference by name across deploys.
-export const execute_upload_completed_event_run = internalAction({
-	args: {
-		runId: v.id("plugins_event_runs"),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const hostToken = create_host_token();
-		const started = (await ctx.runMutation(internal.plugins_runtime.start_event_run, {
-			runId: args.runId,
-			hostTokenHash: await crypto_sha256_hex(hostToken),
-			hostTokenExpiresAt: Date.now() + HOST_TOKEN_TTL_MS,
-		})) as start_event_run_Result;
-		if (started._nay) {
-			console.error("Failed to start plugin event run", { runId: args.runId, message: started._nay.message });
-			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
-				runId: args.runId,
-				status: "failed",
-				errorMessage: started._nay.message,
-			});
-			return null;
-		}
-
-		const backend = started._yay.version.backend;
-		if (!backend) {
-			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
-				runId: args.runId,
-				status: "failed",
-				errorMessage: "Plugin backend is missing",
-			});
-			return null;
-		}
-
-		try {
-			const runnerResponse = await fetch(`${runner_url()}/internal/plugin-runner/run`, {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${runner_secret()}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					pluginId: started._yay.version.name,
-					pluginName: started._yay.version.name,
-					pluginVersion: started._yay.version.version,
-					pluginRunId: String(started._yay.run._id),
-					artifactKey: backend.r2Key,
-					artifactHash: started._yay.artifactHash,
-					host: {
-						origin: host_origin(),
-						token: hostToken,
-					},
-					acceptedCapabilities: started._yay.run.acceptedCapabilities,
-					outboundOrigins: started._yay.outboundOrigins,
-					input: {
-						event: started._yay.run.event,
-						eventId: started._yay.run.eventId,
-						organizationId: String(started._yay.run.organizationId),
-						workspaceId: String(started._yay.run.workspaceId),
-						actorUserId: String(started._yay.run.actorUserId),
-						source: {
-							fileNodeId: String(started._yay.sourceFileNode._id),
-							assetId: String(started._yay.sourceAsset._id),
-							name: started._yay.sourceFileNode.name,
-							contentType: started._yay.sourceFileNode.contentType ?? null,
-							size: started._yay.sourceAsset.size,
-						},
-					},
-				}),
-			});
-			const runnerBody = await parse_runner_response(runnerResponse);
-			const completionState = await ctx.runQuery(internal.plugins_runtime.get_run_completion_state, {
-				runId: args.runId,
-			});
-			if (
-				runnerResponse.ok &&
-				runnerBody.status === "succeeded" &&
-				completionState?.succeededWriteCount &&
-				completionState.startedCallCount === 0
-			) {
-				const pluginStatusIsOk =
-					runnerBody.pluginStatus === undefined || (runnerBody.pluginStatus >= 200 && runnerBody.pluginStatus < 300);
-				if (pluginStatusIsOk) {
-					await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
-						runId: args.runId,
-						status: "succeeded",
-						errorMessage: null,
-						runnerHttpStatus: runnerResponse.status,
-						runnerElapsedMs: runnerBody.elapsedMs,
-						pluginStatus: runnerBody.pluginStatus,
-						runnerOutputBytes: runnerBody.outputBytes,
-						runnerOutputTruncated: runnerBody.outputTruncated,
-					});
-					return null;
-				}
-			}
-
-			const errorMessage =
-				runnerBody.pluginStatus !== undefined && (runnerBody.pluginStatus < 200 || runnerBody.pluginStatus >= 300)
-					? `Plugin returned status ${runnerBody.pluginStatus}`
-					: runnerBody.errorMessage
-						? runnerBody.errorMessage
-						: completionState?.startedCallCount
-							? "Plugin left host calls unfinished"
-							: runnerResponse.ok && runnerBody.status === "succeeded"
-								? "Plugin produced no Markdown output"
-								: `Plugin runner failed with status ${runnerResponse.status}`;
-			console.error("Plugin event run failed", { runId: args.runId, errorMessage });
-			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
-				runId: args.runId,
-				status: "failed",
-				errorMessage,
-				runnerHttpStatus: runnerResponse.status,
-				runnerElapsedMs: runnerBody.elapsedMs,
-				pluginStatus: runnerBody.pluginStatus,
-				runnerOutputBytes: runnerBody.outputBytes,
-				runnerOutputTruncated: runnerBody.outputTruncated,
-			});
-			return null;
-		} catch (error) {
-			const errorMessage = "Plugin runner request failed";
-			console.error("Plugin event run threw", {
-				runId: args.runId,
-				errorName: error instanceof Error ? error.name : typeof error,
-			});
-			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
-				runId: args.runId,
-				status: "failed",
-				errorMessage,
-			});
-			return null;
-		}
-	},
-});
-
-async function parse_runner_response(response: Response) {
-	const text = await response.text();
-	try {
-		const json = JSON.parse(text);
-		const parsed = z
-			.object({
-				status: z.union([z.literal("succeeded"), z.literal("errored")]),
-				pluginStatus: z.number().optional(),
-				elapsedMs: z.number().optional(),
-				outputBytes: z.number().optional(),
-				outputTruncated: z.boolean().optional(),
-				error: z
-					.object({
-						message: z.string(),
-					})
-					.optional(),
-			})
-			.safeParse(json);
-		if (!parsed.success) {
-			const errorOnly = z.object({ error: z.object({ message: z.string() }) }).safeParse(json);
-			if (errorOnly.success) {
-				return { status: "errored" as const, errorMessage: "Plugin runner failed" };
-			}
-			return { status: "errored" as const, errorMessage: "Plugin runner returned an invalid response" };
-		}
-		return {
-			status: parsed.data.status,
-			errorMessage: parsed.data.error ? "Plugin execution failed" : undefined,
-			pluginStatus: parsed.data.pluginStatus,
-			elapsedMs: parsed.data.elapsedMs,
-			outputBytes: parsed.data.outputBytes,
-			outputTruncated: parsed.data.outputTruncated,
-		};
-	} catch {
-		return { status: "errored" as const, errorMessage: "Plugin runner returned invalid JSON" };
+async function parse_host_route_auth_and_body<Body>(request: Request, bodyValidator: z.ZodSchema<Body>) {
+	const token = get_bearer_token(request);
+	if (!token) {
+		return { ok: false as const, response: { status: 401, body: { message: "Unauthorized" } } as const };
 	}
+	const body = await server_request_json_parse_and_validate(request, bodyValidator);
+	if (body._nay) {
+		return { ok: false as const, response: { status: 400, body: { message: body._nay.message } } as const };
+	}
+	return { ok: true as const, token, body: body._yay };
 }
 
 export function plugins_runtime_http_routes(router: RouterForConvexModules) {
@@ -1281,21 +1366,16 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 							})
 							.strict();
 						const handler = async (ctx: ActionCtx, request: Request) => {
-							const token = bearer_token(request);
-							if (!token) {
-								return { status: 401, body: { message: "Unauthorized" } } as const;
-							}
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return { status: 400, body: { message: body._nay.message } } as const;
+							const auth = await parse_host_route_auth_and_body(request, bodyValidator);
+							if (!auth.ok) {
+								return auth.response;
 							}
 							const result = (await ctx.runMutation(internal.plugins_runtime.claim_host_call, {
-								hostTokenHash: await crypto_sha256_hex(token),
-								pluginRunId: body._yay.pluginRunId,
+								hostTokenHash: await crypto_sha256_hex(auth.token),
+								pluginRunId: auth.body.pluginRunId,
 								requiredCapabilities: ["outbound.fetch"],
-								operation: body._yay.operation,
-								requestBytes: body._yay.requestBytes,
+								operation: auth.body.operation,
+								requestBytes: auth.body.requestBytes,
 							})) as claim_host_call_Result;
 							if (result._nay) {
 								return { status: 400, body: { message: result._nay.message } } as const;
@@ -1343,27 +1423,22 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 							})
 							.strict();
 						const handler = async (ctx: ActionCtx, request: Request) => {
-							const token = bearer_token(request);
-							if (!token) {
-								return { status: 401, body: { message: "Unauthorized" } } as const;
-							}
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return { status: 400, body: { message: body._nay.message } } as const;
+							const auth = await parse_host_route_auth_and_body(request, bodyValidator);
+							if (!auth.ok) {
+								return auth.response;
 							}
 							const result = (await ctx.runMutation(internal.plugins_runtime.finish_runner_host_call, {
-								hostTokenHash: await crypto_sha256_hex(token),
-								pluginRunId: body._yay.pluginRunId,
-								callId: body._yay.callId,
-								status: body._yay.status,
-								errorMessage: body._yay.errorMessage ?? null,
-								modelId: body._yay.modelId,
-								sourceBytes: body._yay.sourceBytes,
-								requestBytes: body._yay.requestBytes,
-								responseBytes: body._yay.responseBytes,
-								responseStatus: body._yay.responseStatus,
-								outputTextBytes: body._yay.outputTextBytes,
+								hostTokenHash: await crypto_sha256_hex(auth.token),
+								pluginRunId: auth.body.pluginRunId,
+								callId: auth.body.callId,
+								status: auth.body.status,
+								errorMessage: auth.body.errorMessage ?? null,
+								modelId: auth.body.modelId,
+								sourceBytes: auth.body.sourceBytes,
+								requestBytes: auth.body.requestBytes,
+								responseBytes: auth.body.responseBytes,
+								responseStatus: auth.body.responseStatus,
+								outputTextBytes: auth.body.outputTextBytes,
 							})) as finish_runner_host_call_Result;
 							if (result._nay) {
 								return { status: 400, body: { message: result._nay.message } } as const;
@@ -1405,21 +1480,16 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 							})
 							.strict();
 						const handler = async (ctx: ActionCtx, request: Request) => {
-							const token = bearer_token(request);
-							if (!token) {
-								return { status: 401, body: { message: "Unauthorized" } } as const;
-							}
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return { status: 400, body: { message: body._nay.message } } as const;
+							const auth = await parse_host_route_auth_and_body(request, bodyValidator);
+							if (!auth.ok) {
+								return auth.response;
 							}
 							const result = (await ctx.runAction(internal.plugins_runtime.host_write_markdown, {
-								hostToken: token,
-								pluginRunId: body._yay.pluginRunId,
-								markdown: body._yay.markdown,
-								path: body._yay.path,
-								overwrite: body._yay.overwrite,
+								hostToken: auth.token,
+								pluginRunId: auth.body.pluginRunId,
+								markdown: auth.body.markdown,
+								path: auth.body.path,
+								overwrite: auth.body.overwrite,
 							})) as host_write_markdown_Result;
 							if (result._nay) {
 								return { status: 400, body: { message: result._nay.message } } as const;
@@ -1464,19 +1534,14 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 							})
 							.strict();
 						const handler = async (ctx: ActionCtx, request: Request) => {
-							const token = bearer_token(request);
-							if (!token) {
-								return { status: 401, body: { message: "Unauthorized" } } as const;
-							}
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return { status: 400, body: { message: body._nay.message } } as const;
+							const auth = await parse_host_route_auth_and_body(request, bodyValidator);
+							if (!auth.ok) {
+								return auth.response;
 							}
 							const result = (await ctx.runAction(internal.plugins_runtime.host_source_temporary_url, {
-								hostToken: token,
-								pluginRunId: body._yay.pluginRunId,
-								expiresInSeconds: body._yay.expiresInSeconds,
+								hostToken: auth.token,
+								pluginRunId: auth.body.pluginRunId,
+								expiresInSeconds: auth.body.expiresInSeconds,
 							})) as host_source_temporary_url_Result;
 							if (result._nay) {
 								return { status: 400, body: { message: result._nay.message } } as const;
@@ -1516,19 +1581,14 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 							})
 							.strict();
 						const handler = async (ctx: ActionCtx, request: Request) => {
-							const token = bearer_token(request);
-							if (!token) {
-								return { status: 401, body: { message: "Unauthorized" } } as const;
-							}
-
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
-								return { status: 400, body: { message: body._nay.message } } as const;
+							const auth = await parse_host_route_auth_and_body(request, bodyValidator);
+							if (!auth.ok) {
+								return auth.response;
 							}
 							const result = (await ctx.runAction(internal.plugins_runtime.host_secret_get, {
-								hostToken: token,
-								pluginRunId: body._yay.pluginRunId,
-								name: body._yay.name,
+								hostToken: auth.token,
+								pluginRunId: auth.body.pluginRunId,
+								name: auth.body.name,
 							})) as host_secret_get_Result;
 							if (result._nay) {
 								return { status: 400, body: { message: result._nay.message } } as const;
@@ -1559,3 +1619,5 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 		}))(),
 	};
 }
+
+// #endregion host calls

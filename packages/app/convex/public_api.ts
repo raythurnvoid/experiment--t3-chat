@@ -18,7 +18,7 @@ import { access_control_db_has_permission } from "./access_control.ts";
 import { rate_limiter_limit_by_key, rate_limiter_http_client_key } from "./rate_limiter.ts";
 import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_path_normalize,
@@ -66,14 +66,6 @@ function get_bearer_token(request: Request) {
 	return token.length > 0 ? token : null;
 }
 
-function random_hex(byteCount: number) {
-	const bytes = new Uint8Array(byteCount);
-	crypto.getRandomValues(bytes);
-	return Array.from(bytes)
-		.map((byte) => byte.toString(16).padStart(2, "0"))
-		.join("");
-}
-
 function timing_safe_equal(left: string, right: string) {
 	const leftBytes = TEXT_ENCODER.encode(left);
 	const rightBytes = TEXT_ENCODER.encode(right);
@@ -92,13 +84,13 @@ function is_plausible_bearer_token(token: string) {
 
 async function create_credential_secret(ctx: MutationCtx) {
 	for (let attempt = 0; attempt < 5; attempt += 1) {
-		const keyId = `${CREDENTIAL_KEY_PREFIX}${random_hex(CREDENTIAL_KEY_ID_BYTES)}`;
+		const keyId = `${CREDENTIAL_KEY_PREFIX}${crypto_random_hex(CREDENTIAL_KEY_ID_BYTES)}`;
 		const existing = await ctx.db
 			.query("api_credentials")
 			.withIndex("by_keyId", (q) => q.eq("keyId", keyId))
 			.first();
 		if (!existing) {
-			const secret = random_hex(CREDENTIAL_SECRET_BYTES);
+			const secret = crypto_random_hex(CREDENTIAL_SECRET_BYTES);
 			return {
 				keyId,
 				secret,

@@ -6,6 +6,31 @@ These extend the base Convex guidance in [../SKILL.md](../SKILL.md) with pattern
 
 Use **doc/docs** when referring to entries in Convex tables in code comments, tests, and project guidance. Avoid **row/rows** unless quoting a Convex API field name, a database-neutral external source, or an existing identifier that must not be renamed.
 
+# Environment variables: module-level consts, never accessor functions
+
+Read required env vars once at module level, into a plain const, and throw at module root when they are missing. Never wrap the read in a `get_x()` / `x()` accessor function — a module-root throw fails the deploy immediately, while a function defers the failure to the first request that happens to call it.
+
+```ts
+// Correct — deploy fails immediately if unset (users.ts, r2.ts, data_deletion.ts, plugins_runtime.ts).
+if (!process.env.PLUGIN_RUNNER_URL) {
+	throw new Error("PLUGIN_RUNNER_URL is not set in Convex env");
+}
+const PLUGIN_RUNNER_URL = normalize_external_base_url(process.env.PLUGIN_RUNNER_URL);
+
+// Wrong — hides the missing var until some request calls it.
+function runner_url() {
+	if (!process.env.PLUGIN_RUNNER_URL) {
+		throw new Error("PLUGIN_RUNNER_URL is not set in Convex env");
+	}
+	return normalize_external_base_url(process.env.PLUGIN_RUNNER_URL);
+}
+```
+
+- Derivations of the value (normalizing a URL, `as` narrowing like `POLAR_SERVER`) happen once at module level too, on the const.
+- No non-null assertions: guard with `if (!process.env.X) throw`, never `process.env.X!`.
+- Tests provide these vars in `setup-env.test.ts` **before** modules load, so module-level reads are test-safe; add new required vars there.
+- Exceptions: deliberately optional vars stay module-level consts without a throw (`GITHUB_TOKEN_IMPORT`) or feature-gate at call time with a user-facing "unavailable" error (`EXA_API_KEY`, `CODE_EXECUTION_RUNNER_URL` in server-ai-tools.ts) — do not convert those to module-root throws. Cross-runtime modules under `shared/` that also run in the browser cannot hard-read `process.env` at module root (see `is_convex_runtime` in shared-utils.ts). `NODE_ENV` checks are runtime checks, not config reads.
+
 # HTTP routes typing pattern (this repo)
 
 This codebase defines HTTP routes using a “route builder” pattern that keeps runtime behavior and types in one place.

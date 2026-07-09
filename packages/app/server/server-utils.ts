@@ -7,10 +7,15 @@ import { path_extract_segments_from, should_never_happen } from "../shared/share
 
 export * from "../shared/shared-utils.ts";
 
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS!;
-if (!ALLOWED_ORIGINS) {
+if (!process.env.ALLOWED_ORIGINS) {
 	throw new Error("`ALLOWED_ORIGINS` env var is not set");
 }
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS;
+
+if (!process.env.VITE_CONVEX_HTTP_URL) {
+	throw new Error("`VITE_CONVEX_HTTP_URL` env var is not set");
+}
+const ANONYMOUS_USERS_JWT_ISSUER = process.env.VITE_CONVEX_HTTP_URL;
 
 type ConvexCtx = GenericMutationCtx<any> | GenericQueryCtx<any> | GenericActionCtx<any>;
 
@@ -56,7 +61,7 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 
 	const identity = userIdentityResult._yay;
 
-	const isAnonymous = identity.issuer === process.env.VITE_CONVEX_HTTP_URL;
+	const isAnonymous = identity.issuer === ANONYMOUS_USERS_JWT_ISSUER;
 
 	if (isAnonymous) {
 		const userId = identity.subject as Id<"users">;
