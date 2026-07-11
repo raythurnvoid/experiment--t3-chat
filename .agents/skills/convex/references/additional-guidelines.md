@@ -39,16 +39,31 @@ When you add or modify a Convex HTTP endpoint, follow this structure:
 
 - Define routes inside a `*_http_routes(router)` function that **returns an object** shaped like:
   - `{ [pathLiteral]: { [methodLiteral]: { pathParams, searchParams, headers, body, response } } }`
-- Use a **literal** `path` and **literal** `method` (usually via small IIFEs + `as const`) so TypeScript keeps them as exact strings.
+- Keep every endpoint as an explicit property in `api_schemas_Main`. The duplication is deliberate:
+  IDE navigation from a schema use should land on the exact entry for that endpoint. Its property key
+  and its indexed `ReturnType` path must match the actual registered route; never declare a
+  schema-only alias for a route that does not exist.
+- Use a **literal** `path` and **literal** `method` via small IIFEs + `as const` so TypeScript keeps them as exact strings.
+- Treat the outer path IIFE as a group. Put every method IIFE for that path inside its computed
+  `[path]` object, so adding `GET` and `POST` for one path does not repeat the path definition.
 - Use **computed keys** (`[path]`, `[method]`) so the returned object is keyed by the exact path/method.
 - Implement a local `handler` function that returns `{ status, body, headers? }`.
+- Keep every returned `status` literal narrow with `as const`; widening one status to `number`
+  collapses the response schema into a numeric index signature.
 - Register the real endpoint with `router.route({ path, method, handler: httpAction(...) })`.
 - For the type schema, return a typed object whose `response` is derived from the handler:
   - `response: api_schemas_BuildResponseSpecFromHandler<typeof handler>`
+- Keep the response-spec helper's small, localized `@ts-expect-error` annotations. They document
+  TypeScript's inability to prove the generic handler indexed accesses and are preferable here to
+  more complicated conditional-type machinery at every route.
+- Request types may remain explicit or be derived from the runtime validator (`z.infer<...>`, or the
+  successful branch of a hand-rolled validator). Response bodies and headers must be inferred from
+  the handler rather than restated manually.
 
 Why this is type-safe:
 
-- `api_schemas_Main` is built from `ReturnType<typeof *_http_routes>[path]`, so the schema is inferred from the route definitions.
+- Each explicit `api_schemas_Main` entry indexes `ReturnType<typeof *_http_routes>` at that same path,
+  preserving direct IDE navigation while deriving the endpoint schema from the route definition.
 - The `response` type is inferred from what the handler can return (status/body/headers), so changing the handler automatically updates the API types.
 
 ## Example (template)

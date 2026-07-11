@@ -9,7 +9,7 @@ import type {
 	files_nodes_read_file_line_range_Result,
 	files_nodes_read_file_tail_lines_Result,
 } from "../convex/files_nodes.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { files_node_has_editable_yjs_state } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { bash_sed_command_build_next_page_hint } from "./bash-sed-command.ts";

@@ -4590,7 +4590,6 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				ciphertext: new TextEncoder().encode("ciphertext").buffer,
 				nonce: new TextEncoder().encode("nonce").buffer,
 				valuePreview: "configured",
-				allowedOrigins: ["https://api.openai.com"],
 				updatedAt: now,
 			});
 			const deletedReviewId = await ctx.db.insert("plugins_version_reviews", {
@@ -4617,7 +4616,6 @@ describe("finalize_user_deletion_data plugins publisher", () => {
 				ciphertext: new TextEncoder().encode("ciphertext").buffer,
 				nonce: new TextEncoder().encode("nonce").buffer,
 				valuePreview: "configured",
-				allowedOrigins: [],
 				updatedAt: now,
 			});
 			const unrelatedReviewId = await ctx.db.insert("plugins_version_reviews", {

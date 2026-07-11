@@ -98,7 +98,7 @@ import {
 } from "@/lib/utils.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { dom_clear_text_selection } from "@/lib/dom-utils.ts";
-import { Result } from "@/lib/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { useGlobalEventList } from "@/lib/global-event.tsx";
 import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
 import {

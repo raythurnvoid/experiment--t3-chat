@@ -26,7 +26,7 @@ import type {
 } from "../convex/files_nodes.ts";
 import type { files_pending_updates_get_by_file_node_Result } from "../convex/files_pending_updates.ts";
 import type { get_asset_by_id_Result } from "../convex/r2.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, files_node_has_editable_yjs_state } from "../shared/files.ts";
 import { LruCache, math_clamp, path_name_of, should_never_happen } from "../shared/shared-utils.ts";
 import { organizations_is_reserved_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";

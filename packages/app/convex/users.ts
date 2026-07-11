@@ -13,7 +13,8 @@ import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
 import { internal } from "./_generated/api.js";
 import { type RouteSpec } from "convex/server";
-import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
+import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
+import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import type { RouterForConvexModules } from "./http.ts";
 import app_convex_schema from "./schema.ts";
 import { doc } from "convex-helpers/validators";
@@ -22,7 +23,7 @@ import {
 	users_create_anonymouse_user_display_name,
 	users_create_fallback_display_name,
 } from "../shared/users.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { convex_error, v_result } from "../server/convex-utils.ts";

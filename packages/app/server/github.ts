@@ -3,7 +3,7 @@
 // serves anonymous rate limits (60 requests/hour per IP).
 
 import { z } from "zod";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { delay } from "../shared/async-utils.ts";
 
 const GITHUB_TOKEN_IMPORT = process.env.GITHUB_TOKEN_IMPORT;

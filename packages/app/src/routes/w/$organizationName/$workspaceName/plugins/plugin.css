@@ -823,14 +823,9 @@
 
 	.RoutePluginsPluginPublisherSecrets-form {
 		display: grid;
-		grid-template-columns: minmax(0, 200px) minmax(0, 1fr) minmax(0, 1fr) auto;
+		grid-template-columns: minmax(0, 200px) minmax(0, 1fr) auto;
 		align-items: end;
 		gap: 8px;
-	}
-
-	.RoutePluginsPluginPublisherSecrets-error {
-		font-size: 13px;
-		color: var(--color-destructive);
 	}
 
 	.RoutePluginsPluginPublisherSecrets-env {
@@ -858,7 +853,7 @@
 
 	.RoutePluginsPluginPublisherSecretItem {
 		display: grid;
-		grid-template-columns: minmax(0, 220px) minmax(0, 1fr) auto auto;
+		grid-template-columns: minmax(0, 1fr) auto;
 		align-items: center;
 		gap: 12px;
 
@@ -896,12 +891,6 @@
 		color: var(--color-fg-07);
 	}
 
-	.RoutePluginsPluginPublisherSecretItem-origins {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		min-width: 0;
-	}
 	/* #endregion publisher secrets */
 
 	@media (max-width: 640px) {

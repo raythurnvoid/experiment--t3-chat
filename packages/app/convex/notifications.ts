@@ -4,7 +4,7 @@ import { internalMutation, mutation, query } from "./_generated/server.js";
 import app_convex_schema from "./schema.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 
 /**
  * A user can only have up to 500 notifications, older will be deleted.

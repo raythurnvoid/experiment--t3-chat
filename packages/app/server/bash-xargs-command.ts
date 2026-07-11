@@ -1,5 +1,5 @@
 import { defineCommand, type CommandContext } from "just-bash/browser";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import {
 	bash_shell_arg_quote,
 	bash_COMMAND_EXIT_FAILURE,

@@ -7,7 +7,19 @@
 // - Operational logs include only metadata, never artifact source, input, output, or secrets.
 // - Auth uses `Authorization: Bearer <PLUGIN_RUNNER_SECRET>` for the Phase 0 internal endpoint.
 
+// Carries the ambient Cloudflare types along for programs that import this module's exported
+// types (the host imports pluginRunnerApiSchema) without this package's tsconfig.
+/// <reference path="./cloudflare-runtime.d.ts" />
+
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { z } from "zod";
+
+import { Result } from "common/errors-as-values-utils.ts";
+import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
+import {
+	type cloudflare_workers_RouteHandler,
+	type cloudflare_workers_RouteHandlerArgs,
+} from "common/cloudflare-workers.ts";
 
 type DynamicWorkerLimits = {
 	cpuMs: number;
@@ -114,19 +126,6 @@ const COMPAT_DATE = "2026-07-01";
 const ENTRY_MODULE = "bonobo-plugin-wrapper.js";
 const PLUGIN_MODULE = "plugin.js";
 const PLUGIN_WRAPPER_VERSION = "bonobo-host-v2";
-const REQUEST_FIELDS = new Set([
-	"pluginId",
-	"pluginName",
-	"pluginVersion",
-	"artifactKey",
-	"artifactHash",
-	"pluginRunId",
-	"input",
-	"host",
-	"acceptedCapabilities",
-	"outboundOrigins",
-]);
-
 // Decrypted secret values tracked per run so run output and errors can be masked.
 // This cannot live on the BonoboHost instance: the host is reached via a loopback binding
 // and workerd constructs a new instance per RPC call, so per-instance state does not
@@ -341,152 +340,103 @@ async function response_text_limited(response: Response) {
 	return { text, truncated: false };
 }
 
-function validate_stable_id_part(value: unknown, field: string, maxLength: number) {
-	if (typeof value !== "string" || value.length === 0 || value.length > maxLength) {
-		return { ok: false as const, message: `${field} is required` };
-	}
-	if (!/^[A-Za-z0-9._@/-]+$/u.test(value) || value.includes(":")) {
-		return { ok: false as const, message: `${field} is invalid` };
-	}
-	return { ok: true as const, value };
-}
-
-function validate_artifact_hash(value: unknown) {
-	if (typeof value !== "string") {
-		return { ok: false as const, message: "artifactHash is required" };
-	}
-	const match = /^sha256:([a-f0-9]{64})$/iu.exec(value);
-	if (!match) {
-		return { ok: false as const, message: "artifactHash must be sha256:<hex>" };
-	}
-	return { ok: true as const, value: `sha256:${match[1].toLowerCase()}` };
-}
-
-function validate_host_runtime(value: unknown) {
-	if (!is_record(value)) {
-		return { ok: false as const, message: "host is required" };
-	}
-	const originValue = value.origin;
-	if (typeof originValue !== "string" || originValue.length === 0 || originValue.length > 2048) {
-		return { ok: false as const, message: "host.origin is required" };
-	}
-	if (typeof value.token !== "string" || value.token.length === 0 || value.token.length > 4096) {
-		return { ok: false as const, message: "host.token is required" };
-	}
-
-	let url: URL;
-	try {
-		url = new URL(originValue);
-	} catch {
-		return { ok: false as const, message: "host.origin is invalid" };
-	}
-	const localHost = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1";
-	if (url.protocol !== "https:" && !(url.protocol === "http:" && localHost)) {
-		return { ok: false as const, message: "host.origin must be HTTPS" };
-	}
-	return { ok: true as const, value: { origin: url.origin, token: value.token } satisfies HostRuntime };
-}
-
-function validate_accepted_capabilities(value: unknown) {
-	if (value === undefined) return { ok: true as const, value: [] };
-	if (!Array.isArray(value)) {
-		return { ok: false as const, message: "acceptedCapabilities must be an array" };
-	}
-	const capabilities = [];
-	for (const capability of value) {
-		if (typeof capability !== "string" || capability.length === 0 || capability.length > 128) {
-			return { ok: false as const, message: "acceptedCapabilities contains an invalid value" };
-		}
-		capabilities.push(capability);
-	}
-	return { ok: true as const, value: capabilities };
-}
-
-function validate_outbound_origins(value: unknown) {
-	if (!Array.isArray(value)) {
-		return { ok: false as const, message: "outboundOrigins must be an array" };
-	}
-	if (value.length > 32) {
-		return { ok: false as const, message: "outboundOrigins contains too many entries" };
-	}
-	const origins = [];
-	for (const origin of value) {
-		if (typeof origin !== "string" || origin.length === 0 || origin.length > 256) {
-			return { ok: false as const, message: "outboundOrigins contains an invalid value" };
-		}
+const HOST_RUNTIME_SCHEMA = z
+	.object(
+		{
+			origin: z
+				.string({ error: "host.origin is required" })
+				.min(1, "host.origin is required")
+				.max(2048, "host.origin is required"),
+			token: z
+				.string({ error: "host.token is required" })
+				.min(1, "host.token is required")
+				.max(4096, "host.token is required"),
+		},
+		{ error: "host is required" },
+	)
+	.transform((value, ctx) => {
 		let url: URL;
 		try {
-			url = new URL(origin);
+			url = new URL(value.origin);
 		} catch {
-			return { ok: false as const, message: "outboundOrigins contains an invalid value" };
+			ctx.addIssue({ code: "custom", message: "host.origin is invalid" });
+			return z.NEVER;
 		}
-		// Each entry must be exactly an https origin: no path, userinfo, query, hash, or default port.
-		if (url.protocol !== "https:" || url.origin !== origin) {
-			return { ok: false as const, message: "outboundOrigins entries must be https origins" };
+		const localHost = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1";
+		if (url.protocol !== "https:" && !(url.protocol === "http:" && localHost)) {
+			ctx.addIssue({ code: "custom", message: "host.origin must be HTTPS" });
+			return z.NEVER;
 		}
-		origins.push(origin);
-	}
-	return { ok: true as const, value: origins };
-}
+		return { origin: url.origin, token: value.token } satisfies HostRuntime;
+	});
 
-function validate_request_body(body: unknown) {
-	if (!is_record(body)) {
-		return { ok: false as const, status: 400, code: "invalid_request", message: "Request body must be an object" };
-	}
-	for (const key of Object.keys(body)) {
-		if (!REQUEST_FIELDS.has(key)) {
-			return { ok: false as const, status: 400, code: "invalid_request", message: `Unknown field: ${key}` };
-		}
-	}
-	if (typeof body.pluginId !== "string" || body.pluginId.length === 0 || body.pluginId.length > 128) {
-		return { ok: false as const, status: 400, code: "invalid_request", message: "pluginId is required" };
-	}
-	const pluginName = validate_stable_id_part(body.pluginName, "pluginName", 128);
-	if (!pluginName.ok) {
-		return { ok: false as const, status: 400, code: "invalid_request", message: pluginName.message };
-	}
-	const pluginVersion = validate_stable_id_part(body.pluginVersion, "pluginVersion", 64);
-	if (!pluginVersion.ok) {
-		return { ok: false as const, status: 400, code: "invalid_request", message: pluginVersion.message };
-	}
-	if (typeof body.artifactKey !== "string" || body.artifactKey.length === 0) {
-		return { ok: false as const, status: 400, code: "invalid_request", message: "artifactKey is required" };
-	}
-	const artifactHash = validate_artifact_hash(body.artifactHash);
-	if (!artifactHash.ok) {
-		return { ok: false as const, status: 400, code: "invalid_request", message: artifactHash.message };
-	}
-	const pluginRunId = body.pluginRunId;
-	if (typeof pluginRunId !== "string" || pluginRunId.length === 0 || pluginRunId.length > 128) {
-		return { ok: false as const, status: 400, code: "invalid_request", message: "pluginRunId is required" };
-	}
-	const host = validate_host_runtime(body.host);
-	if (!host.ok) {
-		return { ok: false as const, status: 400, code: "invalid_request", message: host.message };
-	}
-	const acceptedCapabilities = validate_accepted_capabilities(body.acceptedCapabilities);
-	if (!acceptedCapabilities.ok) {
-		return { ok: false as const, status: 400, code: "invalid_request", message: acceptedCapabilities.message };
-	}
-	const outboundOrigins = validate_outbound_origins(body.outboundOrigins);
-	if (!outboundOrigins.ok) {
-		return { ok: false as const, status: 400, code: "invalid_request", message: outboundOrigins.message };
-	}
-	return {
-		ok: true as const,
-		body: {
-			pluginId: body.pluginId,
-			pluginName: pluginName.value,
-			pluginVersion: pluginVersion.value,
-			artifactKey: body.artifactKey,
-			artifactHash: artifactHash.value,
-			pluginRunId,
-			input: body.input,
-			host: host.value,
-			acceptedCapabilities: acceptedCapabilities.value,
-			outboundOrigins: outboundOrigins.value,
-		},
-	};
+const RUN_REQUEST_SCHEMA = z.strictObject({
+	pluginId: z.string({ error: "pluginId is required" }).min(1, "pluginId is required").max(128, "pluginId is required"),
+	pluginName: z
+		.string({ error: "pluginName is required" })
+		.min(1, "pluginName is required")
+		.max(128, "pluginName is required")
+		.regex(/^[A-Za-z0-9._@/-]+$/u, "pluginName is invalid"),
+	pluginVersion: z
+		.string({ error: "pluginVersion is required" })
+		.min(1, "pluginVersion is required")
+		.max(64, "pluginVersion is required")
+		.regex(/^[A-Za-z0-9._@/-]+$/u, "pluginVersion is invalid"),
+	artifactKey: z.string({ error: "artifactKey is required" }).min(1, "artifactKey is required"),
+	artifactHash: z
+		.string({ error: "artifactHash is required" })
+		.regex(/^sha256:[a-f0-9]{64}$/iu, "artifactHash must be sha256:<hex>")
+		.transform((value) => value.toLowerCase()),
+	pluginRunId: z
+		.string({ error: "pluginRunId is required" })
+		.min(1, "pluginRunId is required")
+		.max(128, "pluginRunId is required"),
+	input: z.unknown(),
+	host: HOST_RUNTIME_SCHEMA,
+	acceptedCapabilities: z
+		.array(
+			z
+				.string({ error: "acceptedCapabilities contains an invalid value" })
+				.min(1, "acceptedCapabilities contains an invalid value")
+				.max(128, "acceptedCapabilities contains an invalid value"),
+			{ error: "acceptedCapabilities must be an array" },
+		)
+		.default([]),
+	outboundOrigins: z
+		.array(
+			z
+				.string({ error: "outboundOrigins contains an invalid value" })
+				.min(1, "outboundOrigins contains an invalid value")
+				.max(256, "outboundOrigins contains an invalid value"),
+			{ error: "outboundOrigins must be an array" },
+		)
+		.max(32, "outboundOrigins contains too many entries")
+		.superRefine((entries, ctx) => {
+			for (const origin of entries) {
+				let url: URL;
+				try {
+					url = new URL(origin);
+				} catch {
+					ctx.addIssue({ code: "custom", message: "outboundOrigins contains an invalid value" });
+					return;
+				}
+				// Each entry must be exactly an https origin: no path, userinfo, query, hash, or default port.
+				if (url.protocol !== "https:" || url.origin !== origin) {
+					ctx.addIssue({ code: "custom", message: "outboundOrigins entries must be https origins" });
+					return;
+				}
+			}
+		}),
+});
+
+// Messages come from the curated strings attached to the schema; never pass zod default text
+// through — runner errors are persisted by the host and must not echo received values.
+function validation_error_message(error: z.ZodError): string {
+	const issue = error.issues[0];
+	if (!issue) return "Request body is invalid";
+	if (issue.code === "unrecognized_keys") return `Unknown field: ${issue.keys[0]}`;
+	if (issue.code === "invalid_type" && issue.path.length === 0) return "Request body must be an object";
+	return issue.message;
 }
 
 function log_plugin_execution(fields: Record<string, string | number | boolean>): void {
@@ -516,11 +466,11 @@ function parse_host_call_context(value: unknown) {
 	if (typeof pluginRunId !== "string" || pluginRunId.length === 0 || pluginRunId.length > 128) {
 		throw new Error("Host call pluginRunId is invalid");
 	}
-	const host = validate_host_runtime(value.host);
-	if (!host.ok) {
+	const host = HOST_RUNTIME_SCHEMA.safeParse(value.host);
+	if (!host.success) {
 		throw new Error("Host call runtime is invalid");
 	}
-	return { pluginRunId, host: host.value };
+	return { pluginRunId, host: host.data };
 }
 
 function require_capability(acceptedCapabilities: string[], capability: string) {
@@ -728,197 +678,278 @@ export class BonoboOutbound extends WorkerEntrypoint<Env, BonoboOutboundProps> {
 	}
 }
 
-async function handle_run(request: Request, env: Env, ctx?: PluginRunnerContext) {
-	const raw = await read_bounded_text(request);
-	if (!raw.ok) {
-		return json_response({ error: { code: "body_too_large", message: "Request body too large" } }, 413);
-	}
+type RouteHandlerArgs = cloudflare_workers_RouteHandlerArgs<Env, PluginRunnerContext>;
+type RouteHandler = cloudflare_workers_RouteHandler<Env, PluginRunnerContext>;
 
-	let body: unknown;
-	try {
-		body = JSON.parse(raw.text);
-	} catch {
-		return json_response({ error: { code: "invalid_json", message: "Invalid JSON" } }, 400);
-	}
+// This object is both the runtime dispatch table and the schema type source: each entry is the
+// handler function with the request/response spec phantom-intersected onto its type (the spec
+// fields don't exist at runtime, only the function does). Every response is inferred from its
+// handler's literal status/body union.
+//
+// The schema is only as precise as the handlers, and nothing guards that precision: a status
+// widened to number (e.g. threaded through a variable instead of returned `as const`) collapses
+// the response spec into a numeric index, and an `any` body silently turns consumers' `satisfies`
+// checks into no-ops. Keep statuses literal and bodies precisely typed.
+const routes = {
+	"/health": {
+		GET: ((/* iife */) => {
+			const handler = () => ({ status: 200, body: { ok: true } }) as const;
+			return handler as typeof handler & {
+				pathParams: {};
+				searchParams: {};
+				headers: {};
+				body: never;
+				response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+			};
+		})(),
+	},
+	"/internal/plugin-runner/run": {
+		POST: ((/* iife */) => {
+			const handler = async ({ request, env, ctx }: RouteHandlerArgs) => {
+				if (!(await is_authorized(request, env))) {
+					return { status: 401, body: Result({ _nay: { name: "unauthorized", message: "Unauthorized" } }) } as const;
+				}
+				if (env.PLUGIN_RUNNER_DISABLED === "true") {
+					return {
+						status: 503,
+						body: Result({ _nay: { name: "disabled", message: "Plugin runner is disabled" } }),
+					} as const;
+				}
 
-	const validated = validate_request_body(body);
-	if (!validated.ok) {
-		return json_response({ error: { code: validated.code, message: validated.message } }, validated.status);
-	}
+				const raw = await read_bounded_text(request);
+				if (!raw.ok) {
+					return {
+						status: 413,
+						body: Result({ _nay: { name: "body_too_large", message: "Request body too large" } }),
+					} as const;
+				}
 
-	const prefix = env.PLUGIN_RUNNER_ARTIFACT_PREFIX ?? "plugins/";
-	if (!validated.body.artifactKey.startsWith(prefix)) {
-		return json_response(
-			{ error: { code: "invalid_artifact_key", message: "Artifact key is outside the plugin prefix" } },
-			400,
-		);
-	}
-	if (!ctx?.exports?.BonoboHost || !ctx.exports.BonoboOutbound) {
-		return json_response({ error: { code: "misconfigured", message: "Runner entrypoint bindings are unavailable" } }, 503);
-	}
+				let body: unknown;
+				try {
+					body = JSON.parse(raw.text);
+				} catch {
+					return { status: 400, body: Result({ _nay: { name: "invalid_json", message: "Invalid JSON" } }) } as const;
+				}
 
-	const startedAt = Date.now();
-	const artifactKeyHash = await sha256_hex(validated.body.artifactKey);
-	const pluginStableId = build_plugin_stable_id(validated.body);
-	const pluginStableIdHash = await sha256_hex(pluginStableId);
-	try {
-		// The run token is plugin-visible via env.BONOBO.host.token, so mask it in outputs
-		// exactly like secret values.
-		track_run_secret_value(validated.body.pluginRunId, validated.body.host.token);
-		const artifact = await env.PLUGIN_ARTIFACTS.get(validated.body.artifactKey);
-		if (!artifact) {
-			return json_response({ error: { code: "artifact_not_found", message: "Artifact not found" } }, 404);
-		}
+				const validated = RUN_REQUEST_SCHEMA.safeParse(body);
+				if (!validated.success) {
+					return {
+						status: 400,
+						body: Result({ _nay: { name: "invalid_request", message: validation_error_message(validated.error) } }),
+					} as const;
+				}
 
-		const artifactRead = await read_r2_artifact(artifact);
-		if (!artifactRead.ok) {
-			return json_response({ error: { code: "artifact_too_large", message: "Artifact too large" } }, 413);
-		}
-		const actualArtifactHash = `sha256:${await sha256_hex_bytes(artifactRead.bytes)}`;
-		if (actualArtifactHash !== validated.body.artifactHash) {
-			return json_response({ error: { code: "artifact_hash_mismatch", message: "Artifact hash mismatch" } }, 400);
-		}
+				const prefix = env.PLUGIN_RUNNER_ARTIFACT_PREFIX ?? "plugins/";
+				if (!validated.data.artifactKey.startsWith(prefix)) {
+					return {
+						status: 400,
+						body: Result({
+							_nay: { name: "invalid_artifact_key", message: "Artifact key is outside the plugin prefix" },
+						}),
+					} as const;
+				}
+				if (!ctx?.exports?.BonoboHost || !ctx.exports.BonoboOutbound) {
+					return {
+						status: 503,
+						body: Result({ _nay: { name: "misconfigured", message: "Runner entrypoint bindings are unavailable" } }),
+					} as const;
+				}
 
-		const hostBinding = ctx.exports.BonoboHost({
-			props: {
-				pluginStableId,
-				acceptedCapabilities: validated.body.acceptedCapabilities,
-			},
-		});
-		const outboundBinding = ctx.exports.BonoboOutbound({
-			props: {
-				pluginStableId,
-				pluginRunId: validated.body.pluginRunId,
-				host: validated.body.host,
-				acceptedCapabilities: validated.body.acceptedCapabilities,
-				outboundOrigins: validated.body.outboundOrigins,
-			},
-		});
-		// The loader reuses workers with the same id, and this worker is built with run-specific
-		// values inside (the run's host token, capabilities, and allowed outbound origins via
-		// BONOBO_RPC and globalOutbound). If the id were shared across runs, a later run would
-		// execute with an earlier run's token and permissions. So the id includes the run id:
-		// one worker per run. Sharing is only safe once nothing run-specific is built in here.
-		const worker = env.LOADER.get(`${pluginStableId}:${validated.body.pluginRunId}`, () => ({
-			compatibilityDate: COMPAT_DATE,
-			compatibilityFlags: ["nodejs_compat"],
-			mainModule: ENTRY_MODULE,
-			modules: {
-				[ENTRY_MODULE]: PLUGIN_WRAPPER_SOURCE,
-				[PLUGIN_MODULE]: artifactRead.source,
-			},
-			env: {
-				BONOBO_RPC: hostBinding,
-			},
-			globalOutbound: outboundBinding,
-			limits: DYNAMIC_WORKER_LIMITS,
-		}));
-		const pluginResponse = await worker
-			.getEntrypoint(null, {
-				props: {
-					pluginRunId: validated.body.pluginRunId,
-					host: validated.body.host,
-					acceptedCapabilities: validated.body.acceptedCapabilities,
-				},
-				limits: DYNAMIC_WORKER_LIMITS,
-			})
-			.fetch(
-				new Request("https://plugin.local/__bonobo/run", {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify(build_plugin_event(validated.body.input, validated.body.pluginRunId)),
-				}),
-			);
-		const output = await response_text_limited(pluginResponse);
-		const elapsedMs = Date.now() - startedAt;
-		log_plugin_execution({
-			pluginRunId: validated.body.pluginRunId,
-			pluginId: validated.body.pluginId,
-			artifactKeyHash: artifactKeyHash.slice(0, 16),
-			pluginStableIdHash: pluginStableIdHash.slice(0, 16),
-			status: pluginResponse.status,
-			elapsedMs,
-		});
+				const startedAt = Date.now();
+				const artifactKeyHash = await sha256_hex(validated.data.artifactKey);
+				const pluginStableId = build_plugin_stable_id(validated.data);
+				const pluginStableIdHash = await sha256_hex(pluginStableId);
+				try {
+					// The run token is plugin-visible via env.BONOBO.host.token, so mask it in outputs
+					// exactly like secret values.
+					track_run_secret_value(validated.data.pluginRunId, validated.data.host.token);
+					const artifact = await env.PLUGIN_ARTIFACTS.get(validated.data.artifactKey);
+					if (!artifact) {
+						return {
+							status: 404,
+							body: Result({ _nay: { name: "artifact_not_found", message: "Artifact not found" } }),
+						} as const;
+					}
 
-		if (!pluginResponse.ok) {
-			return json_response(
-				{
-					status: "errored",
-					pluginRunId: validated.body.pluginRunId,
-					pluginStatus: pluginResponse.status,
-					elapsedMs,
-					outputBytes: byte_length(output.text),
-					outputTruncated: output.truncated,
-					error: { name: "PluginResponseError", message: `Plugin returned status ${pluginResponse.status}` },
-				},
-				200,
-			);
-		}
+					const artifactRead = await read_r2_artifact(artifact);
+					if (!artifactRead.ok) {
+						return {
+							status: 413,
+							body: Result({ _nay: { name: "artifact_too_large", message: "Artifact too large" } }),
+						} as const;
+					}
+					const actualArtifactHash = `sha256:${await sha256_hex_bytes(artifactRead.bytes)}`;
+					if (actualArtifactHash !== validated.data.artifactHash) {
+						return {
+							status: 400,
+							body: Result({ _nay: { name: "artifact_hash_mismatch", message: "Artifact hash mismatch" } }),
+						} as const;
+					}
 
-		const maskedOutput = mask_secret_values(output.text, RUN_SECRET_VALUES.get(validated.body.pluginRunId));
-		return json_response(
-			{
-				status: "succeeded",
-				pluginRunId: validated.body.pluginRunId,
-				pluginStatus: pluginResponse.status,
-				elapsedMs,
-				outputBytes: byte_length(maskedOutput),
-				output: maskedOutput,
-				outputTruncated: output.truncated,
-			},
-			200,
-		);
-	} catch (error) {
-		const sanitized = sanitize_error(error);
-		const elapsedMs = Date.now() - startedAt;
-		log_plugin_execution({
-			pluginRunId: validated.body.pluginRunId,
-			pluginId: validated.body.pluginId,
-			artifactKeyHash: artifactKeyHash.slice(0, 16),
-			pluginStableIdHash: pluginStableIdHash.slice(0, 16),
-			status: "errored",
-			elapsedMs,
-		});
-		// Plugin-thrown names and messages are forwarded as-is, so any secret values the run
-		// fetched must be masked before they leave the worker.
-		const runSecretValues = RUN_SECRET_VALUES.get(validated.body.pluginRunId);
-		return json_response(
-			{
-				status: "errored",
-				pluginRunId: validated.body.pluginRunId,
-				elapsedMs,
-				error: {
-					name: mask_secret_values(sanitized.name, runSecretValues),
-					message: mask_secret_values(sanitized.message, runSecretValues),
-				},
-			},
-			200,
-		);
-	} finally {
-		RUN_SECRET_VALUES.delete(validated.body.pluginRunId);
-	}
-}
+					const hostBinding = ctx.exports.BonoboHost({
+						props: {
+							pluginStableId,
+							acceptedCapabilities: validated.data.acceptedCapabilities,
+						},
+					});
+					const outboundBinding = ctx.exports.BonoboOutbound({
+						props: {
+							pluginStableId,
+							pluginRunId: validated.data.pluginRunId,
+							host: validated.data.host,
+							acceptedCapabilities: validated.data.acceptedCapabilities,
+							outboundOrigins: validated.data.outboundOrigins,
+						},
+					});
+					// The loader reuses workers with the same id, and this worker is built with run-specific
+					// values inside (the run's host token, capabilities, and allowed outbound origins via
+					// BONOBO_RPC and globalOutbound). If the id were shared across runs, a later run would
+					// execute with an earlier run's token and permissions. So the id includes the run id:
+					// one worker per run. Sharing is only safe once nothing run-specific is built in here.
+					const worker = env.LOADER.get(`${pluginStableId}:${validated.data.pluginRunId}`, () => ({
+						compatibilityDate: COMPAT_DATE,
+						compatibilityFlags: ["nodejs_compat"],
+						mainModule: ENTRY_MODULE,
+						modules: {
+							[ENTRY_MODULE]: PLUGIN_WRAPPER_SOURCE,
+							[PLUGIN_MODULE]: artifactRead.source,
+						},
+						env: {
+							BONOBO_RPC: hostBinding,
+						},
+						globalOutbound: outboundBinding,
+						limits: DYNAMIC_WORKER_LIMITS,
+					}));
+					const pluginResponse = await worker
+						.getEntrypoint(null, {
+							props: {
+								pluginRunId: validated.data.pluginRunId,
+								host: validated.data.host,
+								acceptedCapabilities: validated.data.acceptedCapabilities,
+							},
+							limits: DYNAMIC_WORKER_LIMITS,
+						})
+						.fetch(
+							new Request("https://plugin.local/__bonobo/run", {
+								method: "POST",
+								headers: { "Content-Type": "application/json" },
+								body: JSON.stringify(build_plugin_event(validated.data.input, validated.data.pluginRunId)),
+							}),
+						);
+					const output = await response_text_limited(pluginResponse);
+					const elapsedMs = Date.now() - startedAt;
+					log_plugin_execution({
+						pluginRunId: validated.data.pluginRunId,
+						pluginId: validated.data.pluginId,
+						artifactKeyHash: artifactKeyHash.slice(0, 16),
+						pluginStableIdHash: pluginStableIdHash.slice(0, 16),
+						status: pluginResponse.status,
+						elapsedMs,
+					});
 
-export async function handle_request(request: Request, env: Env, ctx?: PluginRunnerContext): Promise<Response> {
-	const url = new URL(request.url);
+					if (!pluginResponse.ok) {
+						return {
+							status: 200,
+							body: Result({
+								_nay: {
+									name: "PluginResponseError",
+									message: `Plugin returned status ${pluginResponse.status}`,
+									data: {
+										pluginRunId: validated.data.pluginRunId,
+										pluginStatus: pluginResponse.status,
+										elapsedMs,
+										outputBytes: byte_length(output.text),
+										outputTruncated: output.truncated,
+									},
+								},
+							}),
+						} as const;
+					}
 
-	if (request.method === "GET" && url.pathname === "/health") {
-		return json_response({ ok: true }, 200);
-	}
+					const maskedOutput = mask_secret_values(output.text, RUN_SECRET_VALUES.get(validated.data.pluginRunId));
+					return {
+						status: 200,
+						body: Result({
+							_yay: {
+								pluginRunId: validated.data.pluginRunId,
+								pluginStatus: pluginResponse.status,
+								elapsedMs,
+								outputBytes: byte_length(maskedOutput),
+								output: maskedOutput,
+								outputTruncated: output.truncated,
+							},
+						}),
+					} as const;
+				} catch (error) {
+					const sanitized = sanitize_error(error);
+					const elapsedMs = Date.now() - startedAt;
+					log_plugin_execution({
+						pluginRunId: validated.data.pluginRunId,
+						pluginId: validated.data.pluginId,
+						artifactKeyHash: artifactKeyHash.slice(0, 16),
+						pluginStableIdHash: pluginStableIdHash.slice(0, 16),
+						status: "errored",
+						elapsedMs,
+					});
+					// Plugin-thrown names and messages are forwarded as-is, so any secret values the run
+					// fetched must be masked before they leave the worker.
+					const runSecretValues = RUN_SECRET_VALUES.get(validated.data.pluginRunId);
+					return {
+						status: 200,
+						body: Result({
+							_nay: {
+								name: mask_secret_values(sanitized.name, runSecretValues),
+								message: mask_secret_values(sanitized.message, runSecretValues),
+								data: {
+									pluginRunId: validated.data.pluginRunId,
+									elapsedMs,
+									// The plugin threw instead of responding, so these metrics do not exist. The explicit
+									// undefined keys (dropped by JSON.stringify) keep every _nay data the same shape in
+									// the inferred wire type, so the host can read them off any failure.
+									pluginStatus: undefined,
+									outputBytes: undefined,
+									outputTruncated: undefined,
+								},
+							},
+						}),
+					} as const;
+				} finally {
+					RUN_SECRET_VALUES.delete(validated.data.pluginRunId);
+				}
+			};
+			return handler as typeof handler & {
+				pathParams: {};
+				searchParams: {};
+				headers: { Authorization: string };
+				body: z.input<typeof RUN_REQUEST_SCHEMA>;
+				response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+			};
+		})(),
+	},
+};
 
-	if (request.method === "POST" && url.pathname === "/internal/plugin-runner/run") {
-		if (!(await is_authorized(request, env))) {
-			return json_response({ error: { code: "unauthorized", message: "Unauthorized" } }, 401);
-		}
-		if (env.PLUGIN_RUNNER_DISABLED === "true") {
-			return json_response({ error: { code: "disabled", message: "Plugin runner is disabled" } }, 503);
-		}
-		return await handle_run(request, env, ctx);
-	}
+export type pluginRunnerApiSchema = typeof routes;
 
-	return json_response({ error: { code: "not_found", message: "Not found" } }, 404);
-}
+type RunnerRunResponses = pluginRunnerApiSchema["/internal/plugin-runner/run"]["POST"]["response"];
+
+/**
+ * Wire shape of the run endpoint's JSON body: _yay carries the run result, while _nay carries
+ * the failure (with run metrics under data once the plugin ran). A plugin failure is still
+ * HTTP 200 — non-200 means the runner itself refused or broke.
+ */
+type RunnerRunResult = RunnerRunResponses[keyof RunnerRunResponses]["body"];
 
 export default {
-	fetch: handle_request,
+	async fetch(request: Request, env: Env, ctx?: PluginRunnerContext): Promise<Response> {
+		const url = new URL(request.url);
+
+		// @ts-expect-error arbitrary request strings can't index the literal-keyed routes table
+		const handler: RouteHandler | undefined = routes[url.pathname]?.[request.method];
+		if (!handler) {
+			return json_response(Result({ _nay: { name: "not_found", message: "Not found" } }) satisfies RunnerRunResult, 404);
+		}
+
+		const result = await handler({ request, env, ctx });
+		return json_response(result.body, result.status);
+	},
 };

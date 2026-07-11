@@ -16,7 +16,7 @@ import {
 	access_control_db_ensure_user_permission_grant,
 	access_control_db_has_permission,
 } from "./access_control.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { organizations_DESCRIPTION_MAX_LENGTH, organizations_NAME_MAX_LENGTH } from "../shared/organizations.ts";
 import { files_get_utf8_byte_size } from "../server/files.ts";

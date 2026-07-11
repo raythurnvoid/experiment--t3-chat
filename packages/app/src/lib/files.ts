@@ -17,7 +17,7 @@ import type { usePresenceList, usePresenceSessions, usePresenceSessionsData } fr
 import { objects_equal_deep } from "./object.ts";
 import { editor as monaco_editor } from "monaco-editor";
 import { app_convex, type app_convex_Doc, type app_convex_Id, app_convex_api } from "@/lib/app-convex-client.ts";
-import { Result } from "./errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { applyUpdate, Doc as YDoc } from "yjs";
 
 export * from "../../shared/files.ts";

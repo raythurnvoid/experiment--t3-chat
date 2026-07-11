@@ -36,7 +36,8 @@ import {
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
 import { v, type Infer } from "convex/values";
-import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
+import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
+import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import {
 	date_get_week_start_timestamp,
 	date_get_day_start_timestamp,
@@ -68,7 +69,7 @@ import {
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 import { minimatch } from "minimatch";
-import { Result, Result_all } from "../shared/errors-as-values-utils.ts";
+import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import {

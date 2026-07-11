@@ -24,7 +24,8 @@ import {
 	TypeValidationError,
 } from "ai";
 import { z } from "zod";
-import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
+import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
+import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import {
 	server_convex_get_user_fallback_to_anonymous,
 	server_request_json_parse_and_validate,
@@ -46,7 +47,7 @@ import {
 } from "../server/server-ai-tools.ts";
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
-import { Result } from "../src/lib/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { billing_event } from "../server/billing.ts";
 import { billing_ingest_events } from "./billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";

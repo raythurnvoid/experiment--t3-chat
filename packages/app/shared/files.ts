@@ -19,7 +19,7 @@ import { composite_id, is_browser, path_extract_segments_from, should_never_happ
 import { CommentsExtension } from "@liveblocks/react-tiptap";
 import { generateJSON as tiptap_generateJSON_server } from "@tiptap/html/server";
 import { generateJSON as tiptap_generateJSON_browser } from "@tiptap/html";
-import { Result } from "./errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import type { app_convex_Doc, app_convex_Id } from "./app-convex.ts";
 import type { Merge } from "type-fest";
 

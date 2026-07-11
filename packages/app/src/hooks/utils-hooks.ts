@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, type SetStateAction, type Dispatch } from "react";
 import { tuple } from "../lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
-import { Result } from "../lib/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 
 /**
  * A hook that returns a ref that is updated with the latest value of the passed parameter.

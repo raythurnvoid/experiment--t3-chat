@@ -10,5 +10,9 @@
 		"tail": "pnpx wrangler tail",
 		"typecheck": "pnpm --dir ../app exec tsc --project ../plugin-runner/tsconfig.json --noEmit",
 		"test": "pnpm --dir ../app exec vitest run --config ../plugin-runner/vitest.config.mjs"
+	},
+	"dependencies": {
+		"common": "workspace:*",
+		"zod": "4.3.5"
 	}
 }

@@ -1,6 +1,6 @@
 import { ConvexReactClient } from "convex/react";
 import type { FunctionArgs, FunctionReference, FunctionReturnType } from "convex/server";
-import { Result } from "./errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 
 export type {
 	FunctionArgs as app_convex_FunctionArgs,

@@ -35,7 +35,19 @@ Schema to store all api types grouped by api path for easy lookup.
 
 # Suggestions and rules
 
-## Avoid referencing values internally, instead prefer duplicating code and define types in a single block.
+## Explicit main-schema entries
+- Keep every endpoint as an explicit property in `api_schemas_Main`. This duplication is intentional:
+  IDE navigation from a schema use should land on the exact entry that defines that endpoint.
+- The explicit property key and the path indexed from its route function's `ReturnType` must be the
+  same path, and that path must be registered at runtime. Do not add schema-only aliases for routes
+  that do not exist.
+
+## Route-definition grouping
+- In each `*_http_routes` function, group first by a path IIFE and then place one or more method
+  IIFEs inside that path. Multiple methods for one path share the path group instead of repeating it.
+- Use the same `path`, `method`, and `handler` values for runtime registration and the computed schema keys.
+- Infer `response` from the handler's literal `{ status, body, headers? }` return union. Keep every
+  status literal narrow with `as const`.
 
 ## Data types to use in special scenarios
 - Use `never` if the request body, response body, search params, path params are not supposed to be sent.
@@ -69,7 +81,6 @@ type api_schemas_<GroupNameInPascalCase>_<api_path_in_snake_case>_body_schema =
 ```
 */
 
-import type { Promisable } from "type-fest";
 import type { ai_chat_http_routes } from "../convex/ai_chat.ts";
 import type { files_http_routes } from "../convex/files_nodes.ts";
 import type { public_api_http_routes } from "../convex/public_api.ts";
@@ -110,8 +121,6 @@ type _Validation = //
 export interface api_schemas_Main {
 	"/.well-known/jwks.json": ReturnType<typeof users_http_routes>["/.well-known/jwks.json"];
 
-	"/api/auth/jwks": ReturnType<typeof users_http_routes>["/.well-known/jwks.json"];
-
 	"/api/auth/anonymous": ReturnType<typeof users_http_routes>["/api/auth/anonymous"];
 
 	"/api/auth/resolve-user": ReturnType<typeof users_http_routes>["/api/auth/resolve-user"];
@@ -148,25 +157,5 @@ export interface api_schemas_Main {
 }
 
 export type api_schemas_Main_Path = keyof api_schemas_Main;
-
-// @ts-expect-error
-type AllHandlerStatuses<T> = Awaited<ReturnType<T>>["status"];
-// @ts-expect-error
-type HandlerResponseByStatus<T, S> = Extract<Awaited<ReturnType<T>>, { status: S }>;
-
-export type api_schemas_BuildResponseSpecFromHandler<
-	T extends (...args: any[]) => Promisable<{
-		status: number;
-		body: unknown;
-		headers?: Record<string, string>;
-	}>,
-> = {
-	[status in AllHandlerStatuses<T>]: {
-		headers: HandlerResponseByStatus<T, status>["headers"] extends Record<string, string>
-			? HandlerResponseByStatus<T, status>["headers"]
-			: Record<string, string>;
-		body: HandlerResponseByStatus<T, status>["body"];
-	};
-};
 
 // #endregion Main Schema

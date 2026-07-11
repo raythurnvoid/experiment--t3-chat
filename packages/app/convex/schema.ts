@@ -735,8 +735,6 @@ const app_convex_schema = defineSchema({
 		ciphertext: v.bytes(),
 		nonce: v.bytes(),
 		valuePreview: v.string(),
-		/** Exact https origins this secret may travel to; unioned into the per-run outbound allowlist of this repository's plugins. */
-		allowedOrigins: v.array(v.string()),
 		updatedAt: v.number(),
 		lastUsedAt: v.optional(v.number()),
 	})

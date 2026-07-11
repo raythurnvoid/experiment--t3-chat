@@ -49,11 +49,7 @@ import {
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_datetime } from "@/lib/date.ts";
-import {
-	plugins_consent_diff,
-	plugins_validate_origin,
-	plugins_parse_env_text,
-} from "../../../../../../shared/plugins.ts";
+import { plugins_consent_diff, plugins_parse_env_text } from "../../../../../../shared/plugins.ts";
 
 type RoutePlugins_Installation = app_convex_FunctionReturnType<
 	typeof app_convex_api.plugins.list_installations
@@ -707,36 +703,17 @@ type RoutePluginsPluginPublisherSecrets_ClassNames =
 	| "RoutePluginsPluginPublisherSecrets-title"
 	| "RoutePluginsPluginPublisherSecrets-description"
 	| "RoutePluginsPluginPublisherSecrets-form"
-	| "RoutePluginsPluginPublisherSecrets-error"
 	| "RoutePluginsPluginPublisherSecrets-env"
 	| "RoutePluginsPluginPublisherSecrets-empty"
 	| "RoutePluginsPluginPublisherSecrets-list"
 	| "RoutePluginsPluginPublisherSecretItem"
 	| "RoutePluginsPluginPublisherSecretItem-identity"
 	| "RoutePluginsPluginPublisherSecretItem-name"
-	| "RoutePluginsPluginPublisherSecretItem-meta"
-	| "RoutePluginsPluginPublisherSecretItem-origins";
+	| "RoutePluginsPluginPublisherSecretItem-meta";
 
 type RoutePluginsPluginPublisher_Secret = app_convex_FunctionReturnType<
 	typeof app_convex_api.plugins.list_publisher_repository_secrets
 >[number];
-
-function origins_from_text(text: string) {
-	return text
-		.split(/[\n,]/)
-		.map((part) => part.trim())
-		.filter(Boolean);
-}
-
-function origins_validation_error(rawOrigins: string[]) {
-	for (const raw of rawOrigins) {
-		const origin = plugins_validate_origin(raw);
-		if (origin._nay) {
-			return `${raw}: ${origin._nay.message}`;
-		}
-	}
-	return "";
-}
 
 type RoutePluginsPluginPublisherSecretRow_Props = {
 	repositoryId: app_convex_Id<"plugins_publisher_repositories">;
@@ -747,45 +724,7 @@ const RoutePluginsPluginPublisherSecretRow = memo(function RoutePluginsPluginPub
 	props: RoutePluginsPluginPublisherSecretRow_Props,
 ) {
 	const { repositoryId, secret } = props;
-	const [originsText, setOriginsText] = useState(secret.allowedOrigins.join(", "));
-	const [originsError, setOriginsError] = useState("");
 	const [saving, setSaving] = useState(false);
-
-	const handleSaveOrigins = useFn(() => {
-		const rawOrigins = origins_from_text(originsText);
-		const validationError = origins_validation_error(rawOrigins);
-		if (validationError) {
-			setOriginsError(validationError);
-			return;
-		}
-		setOriginsError("");
-
-		setSaving(true);
-		app_convex
-			.mutation(app_convex_api.plugins.update_publisher_repository_secret_origins, {
-				repositoryId,
-				name: secret.name,
-				allowedOrigins: rawOrigins,
-			})
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`Allowed origins for ${secret.name} updated`);
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPluginPublisher.handleSaveOrigins] Failed to update allowed origins:", {
-					error,
-					name: secret.name,
-				});
-				toast.error("Failed to update allowed origins");
-			})
-			.finally(() => {
-				setSaving(false);
-			});
-	});
 
 	const handleDelete = useFn(() => {
 		setSaving(true);
@@ -834,46 +773,6 @@ const RoutePluginsPluginPublisherSecretRow = memo(function RoutePluginsPluginPub
 					{secret.lastUsedAt === null ? "" : ` · used ${format_datetime(secret.lastUsedAt)}`}
 				</span>
 			</div>
-			<div
-				className={
-					"RoutePluginsPluginPublisherSecretItem-origins" satisfies RoutePluginsPluginPublisherSecrets_ClassNames
-				}
-			>
-				<MyInput>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputControl
-							value={originsText}
-							placeholder="https://api.example.com"
-							aria-label={`Allowed origins for ${secret.name}`}
-							aria-describedby={originsError ? `RoutePluginsPluginPublisherSecretItem-error-${secret._id}` : undefined}
-							disabled={saving}
-							onChange={(event) => setOriginsText(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-				{originsError ? (
-					<div
-						className={
-							"RoutePluginsPluginPublisherSecrets-error" satisfies RoutePluginsPluginPublisherSecrets_ClassNames
-						}
-						id={`RoutePluginsPluginPublisherSecretItem-error-${secret._id}`}
-						role="alert"
-					>
-						{originsError}
-					</div>
-				) : null}
-			</div>
-			<MyButton
-				variant="secondary"
-				disabled={saving}
-				aria-label={`Save allowed origins for ${secret.name}`}
-				onClick={handleSaveOrigins}
-			>
-				<Save aria-hidden />
-				Save origins
-			</MyButton>
 			<MyButton
 				variant="ghost_destructive"
 				aria-label={`Delete secret ${secret.name}`}
@@ -897,8 +796,6 @@ const RoutePluginsPluginPublisherSecrets = memo(function RoutePluginsPluginPubli
 	const secrets = useQuery(app_convex_api.plugins.list_publisher_repository_secrets, { repositoryId });
 	const [name, setName] = useState("");
 	const [value, setValue] = useState("");
-	const [originsText, setOriginsText] = useState("");
-	const [originsError, setOriginsError] = useState("");
 	const [envText, setEnvText] = useState("");
 	const [saving, setSaving] = useState(false);
 
@@ -907,13 +804,6 @@ const RoutePluginsPluginPublisherSecrets = memo(function RoutePluginsPluginPubli
 		if (!name.trim() || !value) {
 			return;
 		}
-		const rawOrigins = origins_from_text(originsText);
-		const validationError = origins_validation_error(rawOrigins);
-		if (validationError) {
-			setOriginsError(validationError);
-			return;
-		}
-		setOriginsError("");
 
 		setSaving(true);
 		app_convex
@@ -921,7 +811,6 @@ const RoutePluginsPluginPublisherSecrets = memo(function RoutePluginsPluginPubli
 				repositoryId,
 				name,
 				value,
-				allowedOrigins: rawOrigins,
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -932,7 +821,6 @@ const RoutePluginsPluginPublisherSecrets = memo(function RoutePluginsPluginPubli
 				toast.success(`Secret ${name.trim()} saved`);
 				setName("");
 				setValue("");
-				setOriginsText("");
 			})
 			.catch((error) => {
 				console.error("[RoutePluginsPluginPublisher.handleSaveSecret] Failed to save secret:", {
@@ -993,8 +881,9 @@ const RoutePluginsPluginPublisherSecrets = memo(function RoutePluginsPluginPubli
 					"RoutePluginsPluginPublisherSecrets-description" satisfies RoutePluginsPluginPublisherSecrets_ClassNames
 				}
 			>
-				These secrets belong to this plugin's repository and are available to it in every workspace that installs it. A
-				secret can only travel to the exact https origins you allow here.
+				These secrets belong to this plugin's repository and are available to it in every workspace that installs it.
+				The plugin can only send requests to the outbound origins its manifest declares, which every workspace
+				consents to at install.
 			</p>
 
 			<form
@@ -1030,34 +919,11 @@ const RoutePluginsPluginPublisherSecrets = memo(function RoutePluginsPluginPubli
 					</MyInputArea>
 					<MyInputBox />
 				</MyInput>
-				<MyInput>
-					<MyInputLabel>Allowed origins</MyInputLabel>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputControl
-							value={originsText}
-							placeholder="https://api.example.com, https://files.example.com"
-							aria-describedby={originsError ? "RoutePluginsPluginPublisherSecrets-error" : undefined}
-							disabled={saving}
-							onChange={(event) => setOriginsText(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
 				<MyButton type="submit" disabled={saving || !name.trim() || !value}>
 					<Save aria-hidden />
 					{saving ? "Saving..." : "Save"}
 				</MyButton>
 			</form>
-			{originsError ? (
-				<div
-					className={"RoutePluginsPluginPublisherSecrets-error" satisfies RoutePluginsPluginPublisherSecrets_ClassNames}
-					id="RoutePluginsPluginPublisherSecrets-error"
-					role="alert"
-				>
-					{originsError}
-				</div>
-			) : null}
 
 			<div className={"RoutePluginsPluginPublisherSecrets-env" satisfies RoutePluginsPluginPublisherSecrets_ClassNames}>
 				<MyInput>

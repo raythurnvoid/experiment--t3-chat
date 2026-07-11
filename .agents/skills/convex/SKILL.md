@@ -380,7 +380,9 @@ export const exampleQuery = query({
 
 The sections above describe Convex itself. For conventions specific to this repository, read [references/additional-guidelines.md](references/additional-guidelines.md) before writing or modifying Convex code under `packages/app/convex/**`. It covers:
 
-- **HTTP route builder typing pattern** — `*_http_routes(router)` returning a typed `{ [path]: { [method]: { pathParams, searchParams, headers, body, response } } }` schema with literal path/method via small IIFEs.
+- **HTTP route builder typing pattern** — explicit `api_schemas_Main` entries for IDE navigation,
+  grouped path/method IIFEs, runtime registration from the same literals, and responses inferred from
+  each handler's literal return union.
 - **Errors-as-values `Result` contract** — `_yay` / `_nay` branches, `v_result(...)` validators, and the fail-fast `Result_all` + `Promise.all` loop pattern for concurrent work.
 - **Throw vs return rules** — when to prefer `_nay` / `null` over `throw new Error`, and when to use `convex_error` instead of raw `Error`.
 - **Membership-scoped handlers** — `membershipId` arg ordering, the `Unauthorized` / `Not found` flow, and write ordering so `_nay` returns do not leave partial writes behind.

@@ -2,7 +2,7 @@ import { defineCommand } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_get_by_path_Result, files_nodes_text_search_files_Result } from "../convex/files_nodes.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { files_chunk_BITMASK_FLAGS, files_chunk_has_bitmask_flag } from "./files-markdown-chunking-mastra.ts";
 import {
 	bash_clamp_listing_page_limit,

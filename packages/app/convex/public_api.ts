@@ -16,7 +16,8 @@ import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
 import { access_control_db_has_permission } from "./access_control.ts";
 import { rate_limiter_limit_by_key, rate_limiter_http_client_key } from "./rate_limiter.ts";
-import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
+import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
+import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import {
@@ -24,7 +25,7 @@ import {
 	server_path_normalize,
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
 export const public_api_SCOPE_FILES_LIST = "files:list";

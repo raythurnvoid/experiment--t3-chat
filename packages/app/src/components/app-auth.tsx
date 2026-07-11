@@ -1,7 +1,7 @@
 import { useAuth } from "@clerk/clerk-react";
 import { createContext, use, useEffect, useRef, type ReactNode } from "react";
 import { toast } from "sonner";
-import { Result } from "../lib/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { type app_convex_Id } from "../lib/app-convex-client.ts";
 import { create_deferred } from "../lib/async.ts";
 import { app_fetch_auth_anonymous, app_fetch_auth_resolve_user } from "../lib/fetch.ts";

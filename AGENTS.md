@@ -571,7 +571,7 @@ const rootElement = document.getElementById("root");
 
 ## Errors as values (`Result`) pattern
 
-This codebase uses the `Result` helper from `packages/app/shared/errors-as-values-utils.ts` for recoverable errors.
+This codebase uses the `Result` helper from `packages/common/src/errors-as-values-utils.ts` for recoverable errors.
 
 Return `Result` values with explicit success/failure branches:
 

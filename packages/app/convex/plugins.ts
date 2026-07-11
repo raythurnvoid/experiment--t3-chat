@@ -21,7 +21,7 @@ import {
 } from "./_generated/server.js";
 import { components, internal } from "./_generated/api.js";
 import app_convex_schema from "./schema.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import {
 	plugins_RUNTIME_VERSION,
@@ -1171,7 +1171,6 @@ export const list_publisher_repository_secrets = query({
 			_id: v.id("plugins_publisher_repository_secrets"),
 			name: doc(app_convex_schema, "plugins_publisher_repository_secrets").fields.name,
 			valuePreview: doc(app_convex_schema, "plugins_publisher_repository_secrets").fields.valuePreview,
-			allowedOrigins: doc(app_convex_schema, "plugins_publisher_repository_secrets").fields.allowedOrigins,
 			updatedAt: doc(app_convex_schema, "plugins_publisher_repository_secrets").fields.updatedAt,
 			lastUsedAt: v.union(v.number(), v.null()),
 		}),
@@ -1196,7 +1195,6 @@ export const list_publisher_repository_secrets = query({
 			_id: secret._id,
 			name: secret.name,
 			valuePreview: secret.valuePreview,
-			allowedOrigins: secret.allowedOrigins,
 			updatedAt: secret.updatedAt,
 			lastUsedAt: secret.lastUsedAt ?? null,
 		}));
@@ -1209,8 +1207,6 @@ async function db_upsert_publisher_repository_secret(
 		repository: Doc<"plugins_publisher_repositories">;
 		name: string;
 		value: string;
-		/** Omitted means keep the existing origins (or none for a new secret). */
-		allowedOrigins?: string[];
 		now: number;
 	},
 ) {
@@ -1225,7 +1221,6 @@ async function db_upsert_publisher_repository_secret(
 			ciphertext: encrypted.ciphertext,
 			nonce: encrypted.nonce,
 			valuePreview: "configured",
-			...(args.allowedOrigins === undefined ? {} : { allowedOrigins: args.allowedOrigins }),
 			updatedAt: args.now,
 		});
 
@@ -1239,7 +1234,6 @@ async function db_upsert_publisher_repository_secret(
 		ciphertext: encrypted.ciphertext,
 		nonce: encrypted.nonce,
 		valuePreview: "configured",
-		allowedOrigins: args.allowedOrigins ?? [],
 		updatedAt: args.now,
 	});
 }
@@ -1249,7 +1243,6 @@ export const upsert_publisher_repository_secret = mutation({
 		repositoryId: v.id("plugins_publisher_repositories"),
 		name: v.string(),
 		value: v.string(),
-		allowedOrigins: v.array(v.string()),
 	},
 	returns: v_result({ _yay: v.object({ secretId: v.id("plugins_publisher_repository_secrets") }) }),
 	handler: async (ctx, args) => {
@@ -1277,7 +1270,6 @@ export const upsert_publisher_repository_secret = mutation({
 				repository,
 				name: args.name,
 				value: args.value,
-				allowedOrigins: args.allowedOrigins,
 				now: Date.now(),
 			});
 		} catch (error) {
@@ -1337,48 +1329,6 @@ export const upsert_publisher_repository_secrets = mutation({
 		}
 
 		return Result({ _yay: { count: secrets.size } });
-	},
-});
-
-export const update_publisher_repository_secret_origins = mutation({
-	args: {
-		repositoryId: v.id("plugins_publisher_repositories"),
-		name: v.string(),
-		allowedOrigins: v.array(v.string()),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth || userAuth.kind !== "signed_in") {
-			return Result({ _nay: { message: "Sign in to publish plugins" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
-		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
-		if (!repository) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-		if (repository.ownerUserId !== userAuth.id) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const existing = await ctx.db
-			.query("plugins_publisher_repository_secrets")
-			.withIndex("by_repository_name", (q) => q.eq("repositoryId", args.repositoryId).eq("name", args.name))
-			.first();
-		if (!existing) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		await ctx.db.patch("plugins_publisher_repository_secrets", existing._id, {
-			allowedOrigins: args.allowedOrigins,
-			updatedAt: Date.now(),
-		});
-		return Result({ _yay: null });
 	},
 });
 
@@ -2181,18 +2131,18 @@ export const list_run_calls = query({
 		if (authorization._nay) {
 			return [];
 		}
-		const [installation, run] = await Promise.all([
+		const [installation, pluginRun] = await Promise.all([
 			ctx.db.get("plugins_workspace_installations", args.installationId),
 			ctx.db.get("plugins_event_runs", args.runId),
 		]);
 		if (
 			!installation ||
-			!run ||
+			!pluginRun ||
 			installation.organizationId !== authorization._yay.membership.organizationId ||
 			installation.workspaceId !== authorization._yay.membership.workspaceId ||
-			run.organizationId !== installation.organizationId ||
-			run.workspaceId !== installation.workspaceId ||
-			run.installationId !== installation._id
+			pluginRun.organizationId !== installation.organizationId ||
+			pluginRun.workspaceId !== installation.workspaceId ||
+			pluginRun.installationId !== installation._id
 		) {
 			return [];
 		}
@@ -2651,18 +2601,20 @@ export const hard_delete_registered_plugin_batch = internalMutation({
 				if (budget <= 0) {
 					return { done: false, deleted };
 				}
-				const runs = await ctx.db
+				const pluginRuns = await ctx.db
 					.query("plugins_event_runs")
 					.withIndex("by_installation_updatedAt", (q) => q.eq("installationId", installation._id))
 					.take(budget);
 				await Promise.all(
-					runs.flatMap((run) => (run.workId ? [plugins_runtime_workpool.cancel(ctx, run.workId)] : [])),
+					pluginRuns.flatMap((pluginRun) =>
+						pluginRun.workId ? [plugins_runtime_workpool.cancel(ctx, pluginRun.workId)] : [],
+					),
 				);
-				for (const run of runs) {
-					await ctx.db.delete("plugins_event_runs", run._id);
+				for (const pluginRun of pluginRuns) {
+					await ctx.db.delete("plugins_event_runs", pluginRun._id);
 				}
-				deleted += runs.length;
-				budget -= runs.length;
+				deleted += pluginRuns.length;
+				budget -= pluginRuns.length;
 				if (budget <= 0) {
 					return { done: false, deleted };
 				}

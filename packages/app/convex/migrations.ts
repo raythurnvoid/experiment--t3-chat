@@ -72,6 +72,11 @@ type LegacyPluginsEventHandlerStatus = Omit<Doc<"plugins_workspace_event_handler
 	status?: "enabled" | "disabled";
 };
 
+type LegacyPluginsPublisherSecretAllowedOrigins = Omit<Doc<"plugins_publisher_repository_secrets">, "allowedOrigins"> & {
+	/** Removed: outbound origins come solely from the version manifest, consented at install. */
+	allowedOrigins?: string[];
+};
+
 type LegacyOrganizationWithOwner = Omit<Doc<"organizations">, "_id" | "_creationTime" | "ownerUserId"> & {
 	_id: Id<"organizations">;
 	_creationTime: number;
@@ -657,6 +662,19 @@ export const remove_plugins_workspace_event_handlers_status = app_migrations.def
 	},
 });
 
+export const remove_plugins_publisher_repository_secrets_allowed_origins = app_migrations.define({
+	table: "plugins_publisher_repository_secrets",
+	migrateOne: async (ctx, secret) => {
+		const legacySecret = secret as LegacyPluginsPublisherSecretAllowedOrigins;
+		if (legacySecret.allowedOrigins === undefined) {
+			return;
+		}
+
+		const { _id, _creationTime, allowedOrigins: _allowedOrigins, ...next } = legacySecret;
+		await ctx.db.replace("plugins_publisher_repository_secrets", _id, next);
+	},
+});
+
 export const remove_plugins_event_runs_created_at = app_migrations.define({
 	table: "plugins_event_runs",
 	migrateOne: async (ctx, run) => {
@@ -988,6 +1006,9 @@ export const run_remove_plugins_workspace_event_handlers_created_at = app_migrat
 );
 export const run_remove_plugins_workspace_event_handlers_status = app_migrations.runner(
 	internal.migrations.remove_plugins_workspace_event_handlers_status,
+);
+export const run_remove_plugins_publisher_repository_secrets_allowed_origins = app_migrations.runner(
+	internal.migrations.remove_plugins_publisher_repository_secrets_allowed_origins,
 );
 export const run_remove_plugins_event_runs_created_at = app_migrations.runner(
 	internal.migrations.remove_plugins_event_runs_created_at,

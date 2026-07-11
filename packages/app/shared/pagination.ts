@@ -1,6 +1,6 @@
 // Generic pagination helpers shared across features.
 
-import { Result } from "./errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 
 /**
  * Composite cursor for `pagination_fan_out_paginate`.

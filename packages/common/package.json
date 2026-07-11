@@ -1,0 +1,19 @@
+{
+	"name": "common",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"exports": {
+		"./*": "./src/*"
+	},
+	"scripts": {
+		"typecheck": "pnpm --dir ../app exec tsc --project ../common/tsconfig.json --noEmit",
+		"test": "pnpm --dir ../app exec vitest run --config ../common/vitest.config.mjs"
+	},
+	"dependencies": {
+		"type-fest": "^5.1.0"
+	},
+	"devDependencies": {
+		"vitest": "^3.2.4"
+	}
+}

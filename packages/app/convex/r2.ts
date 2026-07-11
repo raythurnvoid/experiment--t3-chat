@@ -21,7 +21,7 @@ import {
 	server_request_json_parse_and_validate,
 } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -41,7 +41,8 @@ import {
 } from "../server/files.ts";
 import app_convex_schema from "./schema.ts";
 import type { RouterForConvexModules } from "./http.ts";
-import { type api_schemas_BuildResponseSpecFromHandler, type api_schemas_Main_Path } from "../shared/api-schemas.ts";
+import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
+import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
 import {
 	db_insert_file_text_content,
 	db_patch_file_chunks_scope,
@@ -747,9 +748,9 @@ export const finalize_uploaded_media_markdown_outputs = internalMutation({
 	handler: async (ctx, args) => {
 		const now = Date.now();
 		// This mutation is where plugin outputs become visible, so it is the transaction that
-		// must refuse a run the reaper or a duplicate finish already terminalized.
-		const run = await ctx.db.get("plugins_event_runs", args.pluginRunId);
-		if (!run || run.status !== "running" || run.expiresAt <= now) {
+		// must refuse a run the expiry cron or a duplicate finish already terminalized.
+		const pluginRun = await ctx.db.get("plugins_event_runs", args.pluginRunId);
+		if (!pluginRun || pluginRun.status !== "running" || pluginRun.expiresAt <= now) {
 			return Result({ _nay: { name: "nay", message: "Run expired" } });
 		}
 		const asset = await ctx.db.get("files_r2_assets", args.assetId);

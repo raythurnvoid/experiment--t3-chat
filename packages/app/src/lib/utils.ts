@@ -2,7 +2,7 @@ import { clsx, type ClassValue } from "clsx";
 import type { CSSProperties } from "react";
 import { twMerge } from "tailwind-merge";
 import type { Primitive } from "type-fest";
-import { Result } from "./errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 
 export * from "../../shared/shared-utils.ts";
 export { delay } from "../../shared/async-utils.ts";

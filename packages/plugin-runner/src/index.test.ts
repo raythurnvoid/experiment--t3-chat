@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { BonoboHost, BonoboOutbound, DYNAMIC_WORKER_LIMITS, LIMITS, handle_request, type Env } from "./index";
+import worker, { BonoboHost, BonoboOutbound, DYNAMIC_WORKER_LIMITS, LIMITS, type Env } from "./index";
 
 const URL_BASE = "https://plugin-runner.internal";
 const DEFAULT_ARTIFACT_SOURCE = "export default { fetch: () => new Response('ok') };";
@@ -154,104 +154,104 @@ function mock_host_fetch(handler?: (request: Request) => Response | Promise<Resp
 
 describe("routing", () => {
 	it("returns ok for GET /health", async () => {
-		const res = await handle_request(new Request(`${URL_BASE}/health`), make_env());
+		const res = await worker.fetch(new Request(`${URL_BASE}/health`), make_env());
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ ok: true });
 	});
 
 	it("returns 404 for unknown routes", async () => {
-		const res = await handle_request(new Request(`${URL_BASE}/nope`), make_env());
+		const res = await worker.fetch(new Request(`${URL_BASE}/nope`), make_env());
 		expect(res.status).toBe(404);
 	});
 });
 
 describe("auth + kill switch", () => {
 	it("rejects requests without a valid bearer token", async () => {
-		const res = await handle_request(run_request(await make_run_body(), {}), make_env());
+		const res = await worker.fetch(run_request(await make_run_body(), {}), make_env());
 		expect(res.status).toBe(401);
 	});
 
 	it("rejects requests with the wrong bearer token", async () => {
-		const res = await handle_request(run_request(await make_run_body(), { Authorization: "Bearer wrong" }), make_env());
+		const res = await worker.fetch(run_request(await make_run_body(), { Authorization: "Bearer wrong" }), make_env());
 		expect(res.status).toBe(401);
 	});
 
 	it("returns 503 when PLUGIN_RUNNER_DISABLED is set", async () => {
-		const res = await handle_request(run_request(await make_run_body()), make_env({ disabled: true }));
+		const res = await worker.fetch(run_request(await make_run_body()), make_env({ disabled: true }));
 		expect(res.status).toBe(503);
-		expect((await res.json()).error.code).toBe("disabled");
+		expect((await res.json())._nay.name).toBe("disabled");
 	});
 });
 
 describe("validation", () => {
 	it("rejects invalid JSON", async () => {
-		const res = await handle_request(run_request("{nope"), make_env());
+		const res = await worker.fetch(run_request("{nope"), make_env());
 		expect(res.status).toBe(400);
-		expect((await res.json()).error.code).toBe("invalid_json");
+		expect((await res.json())._nay.name).toBe("invalid_json");
 	});
 
 	it("rejects a non-object body", async () => {
-		const res = await handle_request(run_request(JSON.stringify([1, 2, 3])), make_env());
+		const res = await worker.fetch(run_request(JSON.stringify([1, 2, 3])), make_env());
 		expect(res.status).toBe(400);
-		expect((await res.json()).error.code).toBe("invalid_request");
+		expect((await res.json())._nay.name).toBe("invalid_request");
 	});
 
 	it("requires artifactHash", async () => {
-		const res = await handle_request(
+		const res = await worker.fetch(
 			run_request(await make_run_body({ body: { artifactHash: undefined } })),
 			make_env(),
 		);
 		expect(res.status).toBe(400);
-		expect((await res.json()).error.message).toContain("artifactHash");
+		expect((await res.json())._nay.message).toContain("artifactHash");
 	});
 
 	it("requires outboundOrigins", async () => {
-		const res = await handle_request(
+		const res = await worker.fetch(
 			run_request(await make_run_body({ body: { outboundOrigins: undefined } })),
 			make_env(),
 		);
 		expect(res.status).toBe(400);
-		expect((await res.json()).error.message).toContain("outboundOrigins");
+		expect((await res.json())._nay.message).toContain("outboundOrigins");
 	});
 
 	it("rejects outboundOrigins entries that are not exact https origins", async () => {
 		for (const outboundOrigins of [["https://modal.example/convert"], ["http://modal.example"], "https://modal.example"]) {
-			const res = await handle_request(run_request(await make_run_body({ body: { outboundOrigins } })), make_env());
+			const res = await worker.fetch(run_request(await make_run_body({ body: { outboundOrigins } })), make_env());
 			expect(res.status).toBe(400);
-			expect((await res.json()).error.message).toContain("outboundOrigins");
+			expect((await res.json())._nay.message).toContain("outboundOrigins");
 		}
 	});
 
 	it("rejects an artifact key outside the configured prefix", async () => {
-		const res = await handle_request(
+		const res = await worker.fetch(
 			run_request(await make_run_body({ body: { artifactKey: "other/media.js" } })),
 			make_env(),
 		);
 		expect(res.status).toBe(400);
-		expect((await res.json()).error.code).toBe("invalid_artifact_key");
+		expect((await res.json())._nay.name).toBe("invalid_artifact_key");
 	});
 
 	it("returns 503 when ctx.exports does not provide BonoboHost", async () => {
-		const res = await handle_request(run_request(await make_run_body()), make_env());
+		const res = await worker.fetch(run_request(await make_run_body()), make_env());
 		expect(res.status).toBe(503);
-		expect((await res.json()).error.code).toBe("misconfigured");
+		expect((await res.json())._nay.name).toBe("misconfigured");
 	});
 
 	it("returns 404 for a missing R2 object", async () => {
-		const res = await handle_request(
+		const res = await worker.fetch(
 			run_request(await make_run_body()),
 			make_env({ artifactSource: null }),
 			make_ctx(),
 		);
 		expect(res.status).toBe(404);
-		expect((await res.json()).error.code).toBe("artifact_not_found");
+		expect((await res.json())._nay.name).toBe("artifact_not_found");
 	});
 });
 
 describe("dynamic worker loading", () => {
 	it("rejects artifact hash mismatches before calling the loader", async () => {
 		const onGet = vi.fn();
-		const res = await handle_request(
+		const res = await worker.fetch(
 			run_request(
 				await make_run_body({
 					body: { artifactHash: await sha256_artifact("different source") },
@@ -261,7 +261,7 @@ describe("dynamic worker loading", () => {
 			make_ctx(),
 		);
 		expect(res.status).toBe(400);
-		expect((await res.json()).error.code).toBe("artifact_hash_mismatch");
+		expect((await res.json())._nay.name).toBe("artifact_hash_mismatch");
 		expect(onGet).not.toHaveBeenCalled();
 	});
 
@@ -279,7 +279,7 @@ describe("dynamic worker loading", () => {
 		let outboundProps: unknown;
 		let pluginEvent: unknown;
 
-		const res = await handle_request(
+		const res = await worker.fetch(
 			run_request(
 				await make_run_body({
 					artifactSource,
@@ -350,16 +350,16 @@ describe("dynamic worker loading", () => {
 			pluginRunId: "run_123",
 		});
 		const body = await res.json();
-		expect(body.pluginStatus).toBe(202);
-		expect(body.elapsedMs).toEqual(expect.any(Number));
-		expect(body.outputBytes).toBe("plugin-ok".length);
+		expect(body._yay.pluginStatus).toBe(202);
+		expect(body._yay.elapsedMs).toEqual(expect.any(Number));
+		expect(body._yay.outputBytes).toBe("plugin-ok".length);
 	});
 
 	it("keys the dynamic worker per run so a cached isolate never carries another run's bindings", async () => {
 		const loaderIds: string[] = [];
 		const env = make_env({ onGet: (id) => loaderIds.push(id) });
 		for (const pluginRunId of ["run_a", "run_b"]) {
-			const res = await handle_request(run_request(await make_run_body({ body: { pluginRunId } })), env, make_ctx());
+			const res = await worker.fetch(run_request(await make_run_body({ body: { pluginRunId } })), env, make_ctx());
 			expect(res.status).toBe(200);
 		}
 		expect(loaderIds).toHaveLength(2);
@@ -369,7 +369,7 @@ describe("dynamic worker loading", () => {
 	});
 
 	it("reports plugin HTTP errors as errored runs", async () => {
-		const res = await handle_request(
+		const res = await worker.fetch(
 			run_request(await make_run_body()),
 			make_env({
 				onPluginRequest: async () => new Response("plugin failed", { status: 500 }),
@@ -380,19 +380,21 @@ describe("dynamic worker loading", () => {
 		expect(res.status).toBe(200);
 		const body = await res.json();
 		expect(body).toMatchObject({
-			status: "errored",
-			pluginStatus: 500,
-			outputBytes: "plugin failed".length,
-			error: { name: "PluginResponseError", message: "Plugin returned status 500" },
+			_nay: {
+				name: "PluginResponseError",
+				message: "Plugin returned status 500",
+				data: { pluginStatus: 500, outputBytes: "plugin failed".length },
+			},
 		});
-		expect(body.output).toBeUndefined();
+		expect(body._yay).toBeUndefined();
+		expect(JSON.stringify(body)).not.toContain("plugin failed");
 	});
 
 	it("does not log tokens, source, input, output, or raw artifact keys", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const artifactSource = "SENTINEL_SOURCE";
 		try {
-			await handle_request(
+			await worker.fetch(
 				run_request(
 					await make_run_body({
 						artifactSource,
@@ -663,7 +665,7 @@ describe("secret masking", () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { fetchSpy } = fetch_secret_during_run("super-secret-value-123");
 		try {
-			const res = await handle_request(
+			const res = await worker.fetch(
 				run_request(await make_run_body()),
 				make_env({
 					onPluginRequest: async () => {
@@ -675,9 +677,8 @@ describe("secret masking", () => {
 			);
 			expect(res.status).toBe(200);
 			const body = await res.json();
-			expect(body.status).toBe("succeeded");
-			expect(body.output).toContain("***");
-			expect(body.output).not.toContain("super-secret-value-123");
+			expect(body._yay.output).toContain("***");
+			expect(body._yay.output).not.toContain("super-secret-value-123");
 			const logs = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
 			expect(logs).not.toContain("super-secret-value-123");
 		} finally {
@@ -687,7 +688,7 @@ describe("secret masking", () => {
 	});
 
 	it("masks the plugin-visible run token in plugin output", async () => {
-		const res = await handle_request(
+		const res = await worker.fetch(
 			run_request(await make_run_body()),
 			make_env({
 				onPluginRequest: async () => new Response(`token=${DEFAULT_HOST.token} done`),
@@ -695,14 +696,13 @@ describe("secret masking", () => {
 			make_ctx(),
 		);
 		const body = await res.json();
-		expect(body.status).toBe("succeeded");
-		expect(body.output).toBe("token=*** done");
+		expect(body._yay.output).toBe("token=*** done");
 	});
 
 	it("does not mask secrets shorter than the minimum length", async () => {
 		const { fetchSpy } = fetch_secret_during_run("abc12");
 		try {
-			const res = await handle_request(
+			const res = await worker.fetch(
 				run_request(await make_run_body()),
 				make_env({
 					onPluginRequest: async () => {
@@ -713,8 +713,7 @@ describe("secret masking", () => {
 				make_ctx(),
 			);
 			const body = await res.json();
-			expect(body.status).toBe("succeeded");
-			expect(body.output).toBe("token=abc12 done");
+			expect(body._yay.output).toBe("token=abc12 done");
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -723,7 +722,7 @@ describe("secret masking", () => {
 	it("clears tracked secrets when the run finishes", async () => {
 		const { fetchSpy } = fetch_secret_during_run("super-secret-value-123");
 		try {
-			const first = await handle_request(
+			const first = await worker.fetch(
 				run_request(await make_run_body()),
 				make_env({
 					onPluginRequest: async () => {
@@ -733,18 +732,18 @@ describe("secret masking", () => {
 				}),
 				make_ctx(),
 			);
-			expect((await first.json()).output).toBe("token=***");
+			expect((await first.json())._yay.output).toBe("token=***");
 
 			// Same pluginRunId, but this plugin never calls secretGet: an unmasked echo proves
 			// the per-run set was deleted at the end of the first run.
-			const second = await handle_request(
+			const second = await worker.fetch(
 				run_request(await make_run_body()),
 				make_env({
 					onPluginRequest: async () => new Response("token=super-secret-value-123"),
 				}),
 				make_ctx(),
 			);
-			expect((await second.json()).output).toBe("token=super-secret-value-123");
+			expect((await second.json())._yay.output).toBe("token=super-secret-value-123");
 		} finally {
 			fetchSpy.mockRestore();
 		}

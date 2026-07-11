@@ -1,5 +1,5 @@
 import type { GenericActionCtx, GenericMutationCtx, GenericQueryCtx } from "convex/server";
-import { Result, Result_try_promise } from "../shared/errors-as-values-utils.ts";
+import { Result, Result_try_promise } from "common/errors-as-values-utils.ts";
 import type z from "zod";
 import type { Id } from "../convex/_generated/dataModel";
 import { users_create_anonymouse_user_display_name, users_create_fallback_display_name } from "../shared/users.ts";

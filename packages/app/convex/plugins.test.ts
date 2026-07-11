@@ -1211,11 +1211,12 @@ describe("plugins Phase 0", () => {
 			async () =>
 				new Response(
 					JSON.stringify({
-						status: "succeeded",
-						pluginStatus: 500,
-						elapsedMs: 12,
-						outputBytes: 13,
-						outputTruncated: false,
+						_yay: {
+							pluginStatus: 500,
+							elapsedMs: 12,
+							outputBytes: 13,
+							outputTruncated: false,
+						},
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				),
@@ -1245,7 +1246,7 @@ describe("plugins Phase 0", () => {
 		});
 		vi.mocked(fetch).mockImplementation(
 			async () =>
-				new Response(JSON.stringify({ status: "errored" }), {
+				new Response(JSON.stringify({ _nay: { name: "internal_error", message: "Runner exploded" } }), {
 					status: 500,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -1256,7 +1257,7 @@ describe("plugins Phase 0", () => {
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		expect(run).toMatchObject({
 			status: "failed",
-			errorMessage: "Plugin runner failed with status 500",
+			errorMessage: "Runner exploded",
 			runnerHttpStatus: 500,
 		});
 	});
@@ -1337,14 +1338,14 @@ describe("plugins Phase 0", () => {
 			}),
 		);
 
-		const claimed = await t.mutation(internal.plugins_runtime.claim_host_call, {
+		const started = await t.mutation(internal.plugins_runtime.start_host_call, {
 			hostTokenHash,
 			pluginRunId: String(runId),
 			requiredCapabilities: [],
 			operation: "sourceTemporaryUrl",
 		});
 
-		expect(claimed).toMatchObject({ _nay: { message: "Unauthorized" } });
+		expect(started).toMatchObject({ _nay: { message: "Unauthorized" } });
 	});
 
 	test("does not mark a run succeeded without a completed markdown write", async () => {
@@ -1398,11 +1399,12 @@ describe("plugins Phase 0", () => {
 			async () =>
 				new Response(
 					JSON.stringify({
-						status: "succeeded",
-						pluginStatus: 200,
-						elapsedMs: 12,
-						outputBytes: 2,
-						outputTruncated: false,
+						_yay: {
+							pluginStatus: 200,
+							elapsedMs: 12,
+							outputBytes: 2,
+							outputTruncated: false,
+						},
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				),
@@ -1445,7 +1447,7 @@ describe("plugins Phase 0", () => {
 		});
 		vi.mocked(fetch).mockImplementation(
 			async () =>
-				new Response(JSON.stringify({ status: "succeeded", pluginStatus: 200 }), {
+				new Response(JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				}),
@@ -1512,9 +1514,7 @@ describe("plugins Phase 0", () => {
 			async () =>
 				new Response(
 					JSON.stringify({
-						status: "errored",
-						error: { name: "Error", message: "sk-runtime-secret" },
-						elapsedMs: 12,
+						_nay: { name: "Error", message: "sk-runtime-secret", data: { elapsedMs: 12 } },
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				),
@@ -1560,9 +1560,7 @@ describe("plugins Phase 0", () => {
 			async () =>
 				new Response(
 					JSON.stringify({
-						status: "errored",
-						error: { name: "Error", message: "x".repeat(600) },
-						elapsedMs: 12,
+						_nay: { name: "Error", message: "x".repeat(600), data: { elapsedMs: 12 } },
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				),
@@ -1574,32 +1572,32 @@ describe("plugins Phase 0", () => {
 		expect(longRun?.errorMessage).toBe("x".repeat(500));
 	});
 
-	test("reaps expired queued and running runs", async () => {
+	test("fails expired queued and running runs", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		await t.run((ctx) =>
 			ctx.db.patch("files_r2_assets", fixture.upload.assetId, { processingWorkId: "work_expired_run" as never }),
 		);
 		const expiredQueuedRunId = await insert_event_run(t, fixture, {
-			eventId: "plugin:reap-expired-queued",
+			eventId: "plugin:expiry-expired-queued",
 			status: "queued",
 			expiresAt: Date.now() - 1000,
 			outputAssetId: fixture.upload.assetId,
 		});
 		const expiredRunningRunId = await insert_event_run(t, fixture, {
-			eventId: "plugin:reap-expired-running",
+			eventId: "plugin:expiry-expired-running",
 			status: "running",
 			expiresAt: Date.now() - 1000,
 		});
 		const freshRunId = await insert_event_run(t, fixture, {
-			eventId: "plugin:reap-fresh",
+			eventId: "plugin:expiry-fresh",
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
 		});
 
-		const reaped = await t.mutation(internal.plugins_runtime.reap_expired_event_runs, {});
+		const result = await t.mutation(internal.plugins_runtime.fail_expired_event_runs, {});
 
-		expect(reaped).toEqual({ reapedCount: 2, done: true });
+		expect(result).toEqual({ failedCount: 2, done: true });
 		const [expiredQueued, expiredRunning, fresh] = await t.run((ctx) =>
 			Promise.all([
 				ctx.db.get("plugins_event_runs", expiredQueuedRunId),
@@ -1616,63 +1614,63 @@ describe("plugins Phase 0", () => {
 		expect(asset?.processingWorkId).toBeNull();
 	});
 
-	test("does not resurrect a reaped run when its executor fires", async () => {
+	test("does not resurrect an expired-failed run when its executor fires", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const runId = await insert_event_run(t, fixture, {
-			eventId: "plugin:reaped-then-executed",
+			eventId: "plugin:expired-then-executed",
 			status: "queued",
 			expiresAt: Date.now() - 1000,
 		});
-		await t.mutation(internal.plugins_runtime.reap_expired_event_runs, {});
-		const reapedRun = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(reapedRun).toMatchObject({ status: "failed", errorMessage: "Run expired" });
-		expect(reapedRun?.finishedAt).toBeDefined();
+		await t.mutation(internal.plugins_runtime.fail_expired_event_runs, {});
+		const expiredRun = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+		expect(expiredRun).toMatchObject({ status: "failed", errorMessage: "Run expired" });
+		expect(expiredRun?.finishedAt).toBeDefined();
 
-		// The reaped run is terminal: start refuses it, the executor reports the refusal as a
+		// The expired-failed run is terminal: start refuses it, the executor reports the refusal as a
 		// "failed" finish, and the terminal gate must drop that duplicate without touching the doc.
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run).toEqual(reapedRun);
+		expect(run).toEqual(expiredRun);
 	});
 
-	test("reap batch reschedule stops when disabled", async () => {
+	test("expiry batch reschedule stops when disabled", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		for (const suffix of ["a", "b", "c"]) {
 			await insert_event_run(t, fixture, {
-				eventId: `plugin:reap-batch-${suffix}`,
+				eventId: `plugin:expiry-batch-${suffix}`,
 				status: "queued",
 				expiresAt: Date.now() - 1000,
 			});
 		}
 
-		const first = await t.mutation(internal.plugins_runtime.reap_expired_event_runs, {
+		const first = await t.mutation(internal.plugins_runtime.fail_expired_event_runs, {
 			batchSize: 2,
 			_test_disableReschedule: true,
 		});
-		expect(first).toEqual({ reapedCount: 2, done: false });
+		expect(first).toEqual({ failedCount: 2, done: false });
 		const runsAfterFirst = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		expect(runsAfterFirst.filter((run) => run.status === "queued")).toHaveLength(1);
 
-		const second = await t.mutation(internal.plugins_runtime.reap_expired_event_runs, { batchSize: 2 });
-		expect(second).toEqual({ reapedCount: 1, done: true });
+		const second = await t.mutation(internal.plugins_runtime.fail_expired_event_runs, { batchSize: 2 });
+		expect(second).toEqual({ failedCount: 1, done: true });
 	});
 
-	test("reap continues through the backlog via reschedule", async () => {
+	test("expiry sweep continues through the backlog via reschedule", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		for (const suffix of ["a", "b", "c"]) {
 			await insert_event_run(t, fixture, {
-				eventId: `plugin:reap-backlog-${suffix}`,
+				eventId: `plugin:expiry-backlog-${suffix}`,
 				status: "queued",
 				expiresAt: Date.now() - 1000,
 			});
 		}
 
-		const first = await t.mutation(internal.plugins_runtime.reap_expired_event_runs, { batchSize: 2 });
-		expect(first).toEqual({ reapedCount: 2, done: false });
+		const first = await t.mutation(internal.plugins_runtime.fail_expired_event_runs, { batchSize: 2 });
+		expect(first).toEqual({ failedCount: 2, done: false });
 		await drain_scheduled_work(t);
 
 		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
@@ -2067,7 +2065,6 @@ describe("plugins publisher secrets", () => {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
-			allowedOrigins: ["https://api.openai.com"],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
@@ -2078,7 +2075,6 @@ describe("plugins publisher secrets", () => {
 			expect.objectContaining({
 				name: "OPENAI_API_KEY",
 				valuePreview: "configured",
-				allowedOrigins: ["https://api.openai.com"],
 				lastUsedAt: null,
 			}),
 		]);
@@ -2107,7 +2103,6 @@ describe("plugins publisher secrets", () => {
 				repositoryId: foreignRepositoryId,
 				name: "OPENAI_API_KEY",
 				value: "sk-publisher-secret",
-				allowedOrigins: [],
 			}),
 		).toEqual({ _nay: { message: "Unauthorized" } });
 		expect(
@@ -2117,13 +2112,6 @@ describe("plugins publisher secrets", () => {
 			}),
 		).toEqual({ _nay: { message: "Unauthorized" } });
 		refill_manage_rate_limit();
-		expect(
-			await asOwner.mutation(api.plugins.update_publisher_repository_secret_origins, {
-				repositoryId: foreignRepositoryId,
-				name: "OPENAI_API_KEY",
-				allowedOrigins: [],
-			}),
-		).toEqual({ _nay: { message: "Unauthorized" } });
 		expect(
 			await asOwner.mutation(api.plugins.delete_publisher_repository_secret, {
 				repositoryId: foreignRepositoryId,
@@ -2142,7 +2130,6 @@ describe("plugins publisher secrets", () => {
 				repositoryId: removedRepositoryId,
 				name: "OPENAI_API_KEY",
 				value: "sk-publisher-secret",
-				allowedOrigins: [],
 			}),
 		).toEqual({ _nay: { message: "Not found" } });
 		expect(
@@ -2165,20 +2152,12 @@ describe("plugins publisher secrets", () => {
 				repositoryId,
 				name: "OPENAI_API_KEY",
 				value: "sk-publisher-secret",
-				allowedOrigins: [],
 			}),
 		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
 		expect(
 			await asAnonymous.mutation(api.plugins.upsert_publisher_repository_secrets, {
 				repositoryId,
 				secrets: [{ name: "OPENAI_API_KEY", value: "sk-publisher-secret" }],
-			}),
-		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
-		expect(
-			await asAnonymous.mutation(api.plugins.update_publisher_repository_secret_origins, {
-				repositoryId,
-				name: "OPENAI_API_KEY",
-				allowedOrigins: ["https://api.openai.com"],
 			}),
 		).toEqual({ _nay: { message: "Sign in to publish plugins" } });
 		expect(
@@ -2199,7 +2178,7 @@ describe("plugins publisher secrets", () => {
 		expect(secrets).toEqual([]);
 	});
 
-	test(".env batch upsert preserves existing allowed origins and updates values", async () => {
+	test(".env batch upsert updates values and creates missing secrets", async () => {
 		const t = test_convex();
 		const ownerUserId = await create_publisher_user(t);
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
@@ -2209,7 +2188,6 @@ describe("plugins publisher secrets", () => {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-old-secret",
-			allowedOrigins: ["https://api.openai.com"],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
@@ -2228,10 +2206,7 @@ describe("plugins publisher secrets", () => {
 		expect(batch._yay.count).toBe(2);
 
 		const listed = await asOwner.query(api.plugins.list_publisher_repository_secrets, { repositoryId });
-		expect(listed.map((secret) => ({ name: secret.name, allowedOrigins: secret.allowedOrigins }))).toEqual([
-			{ name: "MODAL_TOKEN", allowedOrigins: [] },
-			{ name: "OPENAI_API_KEY", allowedOrigins: ["https://api.openai.com"] },
-		]);
+		expect(listed.map((secret) => secret.name)).toEqual(["MODAL_TOKEN", "OPENAI_API_KEY"]);
 
 		const secret = await get_publisher_repository_secret_doc(t, repositoryId, "OPENAI_API_KEY");
 		const decrypted = await t.action(internal.plugins.decrypt_secret_for_runtime, {
@@ -2251,7 +2226,6 @@ describe("plugins publisher secrets", () => {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
-			allowedOrigins: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
@@ -2304,7 +2278,6 @@ describe("plugins publisher secrets", () => {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
-			allowedOrigins: [],
 		});
 		if (savedPublisher._nay) {
 			throw new Error(savedPublisher._nay.message);
@@ -2344,7 +2317,6 @@ describe("plugins publisher secrets", () => {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
-			allowedOrigins: ["https://api.openai.com"],
 		});
 		if (savedPublisher._nay) {
 			throw new Error(savedPublisher._nay.message);
@@ -2395,7 +2367,6 @@ describe("plugins publisher secrets", () => {
 				repositoryId: otherRepositoryId,
 				name: "OPENAI_API_KEY",
 				value: "sk-unrelated-secret",
-				allowedOrigins: [],
 			});
 		if (savedOther._nay) {
 			throw new Error(savedOther._nay.message);
@@ -2410,7 +2381,7 @@ describe("plugins publisher secrets", () => {
 		expect(resolved).toBeNull();
 	});
 
-	test("updates and deletes publisher secrets for the owner", async () => {
+	test("deletes publisher secrets for the owner", async () => {
 		const t = test_convex();
 		const ownerUserId = await create_publisher_user(t);
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId });
@@ -2420,28 +2391,10 @@ describe("plugins publisher secrets", () => {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
-			allowedOrigins: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
 		}
-
-		const updated = await asOwner.mutation(api.plugins.update_publisher_repository_secret_origins, {
-			repositoryId,
-			name: "OPENAI_API_KEY",
-			allowedOrigins: ["https://api.openai.com"],
-		});
-		expect(updated).toEqual({ _yay: null });
-		const secret = await get_publisher_repository_secret_doc(t, repositoryId, "OPENAI_API_KEY");
-		expect(secret.allowedOrigins).toEqual(["https://api.openai.com"]);
-
-		refill_manage_rate_limit();
-		const missingUpdate = await asOwner.mutation(api.plugins.update_publisher_repository_secret_origins, {
-			repositoryId,
-			name: "MODAL_TOKEN",
-			allowedOrigins: [],
-		});
-		expect(missingUpdate).toEqual({ _nay: { message: "Not found" } });
 
 		const deleted = await asOwner.mutation(api.plugins.delete_publisher_repository_secret, {
 			repositoryId,
@@ -2462,7 +2415,6 @@ describe("plugins publisher secrets", () => {
 			repositoryId,
 			name: "OPENAI_API_KEY",
 			value: "sk-publisher-secret",
-			allowedOrigins: [],
 		});
 		if (saved._nay) {
 			throw new Error(saved._nay.message);
@@ -2471,7 +2423,6 @@ describe("plugins publisher secrets", () => {
 			repositoryId: otherRepositoryId,
 			name: "MODAL_TOKEN",
 			value: "modal-secret",
-			allowedOrigins: [],
 		});
 		if (savedOther._nay) {
 			throw new Error(savedOther._nay.message);
@@ -2622,70 +2573,21 @@ describe("plugins outbound origins consent", () => {
 		expect(installation?.acceptedOutboundOrigins).toEqual(["https://api.openai.com"]);
 	});
 
-	test("sends the runner exactly the consented origins plus the source repository's secret origins", async () => {
+	test("sends the runner exactly the consented outbound origins", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId, {
-			outboundOrigins: ["https://api.openai.com"],
-		});
-		// Claims by the same owner: one on the version's source repository, one on an unrelated repository.
-		const [repositoryId, unrelatedRepositoryId] = await t.run(async (ctx) => {
-			return [
-				await ctx.db.insert("plugins_publisher_repositories", {
-					ownerUserId: membership.userId,
-					repositoryUrl: "https://github.com/bonobo/media-plugin",
-					owner: "bonobo",
-					repo: "media-plugin",
-				}),
-				await ctx.db.insert("plugins_publisher_repositories", {
-					ownerUserId: membership.userId,
-					repositoryUrl: "https://github.com/bonobo/other-plugin",
-					owner: "bonobo",
-					repo: "other-plugin",
-				}),
-			];
+			outboundOrigins: ["https://api.openai.com", "https://transformer.example.com"],
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
-			acceptedOutboundOrigins: ["https://api.openai.com"],
+			acceptedOutboundOrigins: ["https://api.openai.com", "https://transformer.example.com"],
 		});
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
-		}
-		// Overlapping publisher origin proves the payload allowlist is deduplicated.
-		const savedPublisher = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
-			repositoryId,
-			name: "TRANSFORMER_SECRET",
-			value: "sk-transformer-secret",
-			allowedOrigins: ["https://api.openai.com", "https://transformer.example.com"],
-		});
-		if (savedPublisher._nay) {
-			throw new Error(savedPublisher._nay.message);
-		}
-		refill_manage_rate_limit();
-		// The same owner's secrets on other repositories must contribute no origins.
-		const savedUnrelated = await asOwner.mutation(api.plugins.upsert_publisher_repository_secret, {
-			repositoryId: unrelatedRepositoryId,
-			name: "UNRELATED_SECRET",
-			value: "sk-unrelated-secret",
-			allowedOrigins: ["https://unrelated.example.com"],
-		});
-		if (savedUnrelated._nay) {
-			throw new Error(savedUnrelated._nay.message);
-		}
-		refill_manage_rate_limit();
-		// Installation secrets must contribute no origins to the allowlist.
-		const savedInstallation = await asOwner.mutation(api.plugins.upsert_installation_secret, {
-			membershipId: membership.membershipId,
-			installationId: installed._yay.installationId,
-			name: "OPENAI_API_KEY",
-			value: "sk-installation-secret",
-		});
-		if (savedInstallation._nay) {
-			throw new Error(savedInstallation._nay.message);
 		}
 		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
 			membershipId: membership.membershipId,
@@ -2726,11 +2628,12 @@ describe("plugins outbound origins consent", () => {
 			async () =>
 				new Response(
 					JSON.stringify({
-						status: "succeeded",
-						pluginStatus: 500,
-						elapsedMs: 12,
-						outputBytes: 0,
-						outputTruncated: false,
+						_yay: {
+							pluginStatus: 500,
+							elapsedMs: 12,
+							outputBytes: 0,
+							outputTruncated: false,
+						},
 					}),
 					{ status: 200, headers: { "Content-Type": "application/json" } },
 				),
@@ -4195,7 +4098,6 @@ describe("plugins admin hard delete", () => {
 					ciphertext: new TextEncoder().encode(`${name}-publisher-cipher`).buffer,
 					nonce: new TextEncoder().encode("nonce").buffer,
 					valuePreview: "configured",
-					allowedOrigins: [],
 					updatedAt: now,
 				});
 				await ctx.db.insert("plugins_version_reviews", {

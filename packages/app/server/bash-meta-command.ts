@@ -3,7 +3,7 @@ import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
 import type { files_metadata_get_by_path_Result, files_metadata_search_Result } from "../convex/files_metadata.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import type { files_metadata_SearchPlan } from "../shared/files-metadata.ts";
 import {
 	bash_cursor_id_create,

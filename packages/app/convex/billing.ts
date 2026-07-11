@@ -20,7 +20,7 @@ import { components, internal } from "./_generated/api.js";
 import type { DataModel, Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
 import { action, internalAction, internalMutation, internalQuery, query } from "./_generated/server.js";
-import { Result, Result_try_async } from "../shared/errors-as-values-utils.ts";
+import { Result, Result_try_async } from "common/errors-as-values-utils.ts";
 import {
 	billing_PRODUCTS,
 	billing_get_plan_change_kind,

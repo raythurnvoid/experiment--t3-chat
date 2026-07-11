@@ -1,6 +1,6 @@
 import { MDocument } from "@mastra/rag";
 import { files_tiptap_markdown_to_plain_text as files_tiptap_markdown_to_plain_text } from "./files.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "./server-utils.ts";
 import { create_line_start_offsets, get_line_number_from_offset } from "./files-line-offsets.ts";
 

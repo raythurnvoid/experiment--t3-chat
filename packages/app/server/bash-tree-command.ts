@@ -2,7 +2,7 @@ import { defineCommand } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_get_by_path_Result, files_nodes_list_subtree_Result } from "../convex/files_nodes.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { bash_APP_MOUNT_PATH, bash_clamp_listing_page_limit, bash_create_glob_syntax_unsupported_message, bash_cursor_id_create, bash_cursor_id_resolve, bash_GLOB_METACHARACTER_REGEX, bash_LISTING_DEFAULT_LIMIT, bash_LISTING_MAX_LIMIT, bash_parse_limit, bash_external_mounts_fan_out_db_files_path, bash_external_mounts_fan_out_paginate, bash_plugins_fan_out_db_files_path, bash_plugins_fan_out_paginate, bash_read_option_value, bash_resolve_path, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_command_build_builtin_delegation_args, bash_delegate_builtin_command } from "./bash-delegate.ts";
 

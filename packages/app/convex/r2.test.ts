@@ -176,7 +176,7 @@ function stub_r2_and_modal_fetch(
 				const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 				return (
 					(await onPluginRunnerRequest?.(body)) ??
-					new Response(JSON.stringify({ status: "succeeded" }), {
+					new Response(JSON.stringify({ _yay: {} }), {
 						status: 200,
 						headers: { "Content-Type": "application/json" },
 					})
@@ -697,7 +697,7 @@ describe("r2 asset content", () => {
 					}),
 				});
 				expect(writeResponse.status).toBe(200);
-				return new Response(JSON.stringify({ status: "succeeded" }), {
+				return new Response(JSON.stringify({ _yay: {} }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				});
@@ -867,7 +867,7 @@ describe("r2 asset content", () => {
 					}),
 				});
 				expect(writeResponse.status).toBe(200);
-				return new Response(JSON.stringify({ status: "succeeded" }), {
+				return new Response(JSON.stringify({ _yay: {} }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				});
@@ -1040,7 +1040,7 @@ describe("r2 asset content", () => {
 					});
 					expect(writeResponse.status).toBe(200);
 				}
-				return new Response(JSON.stringify({ status: "succeeded" }), {
+				return new Response(JSON.stringify({ _yay: {} }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				});
@@ -1439,7 +1439,7 @@ describe("r2 asset content", () => {
 					}),
 				});
 				expect(writeResponse.status).toBe(200);
-				return new Response(JSON.stringify({ status: "succeeded" }), {
+				return new Response(JSON.stringify({ _yay: {} }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				});

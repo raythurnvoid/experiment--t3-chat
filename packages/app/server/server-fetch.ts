@@ -1,5 +1,5 @@
 import type { LiteralUnion } from "type-fest";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { delay } from "../shared/async-utils.ts";
 
 type server_fetch_json_Args = Omit<RequestInit, "body" | "headers" | "method" | "keepalive" | "signal"> & {

@@ -2,7 +2,7 @@ import type { api_schemas_Main_Path, api_schemas_Main } from "./api-schemas.ts";
 import type { LiteralUnion } from "type-fest";
 import { AppAuthProvider } from "../components/app-auth.tsx";
 import { delay, should_never_happen } from "./utils.ts";
-import { Result } from "./errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 
 const convex_http_url = import.meta.env
 	? (import.meta.env.VITE_CONVEX_HTTP_URL as string)

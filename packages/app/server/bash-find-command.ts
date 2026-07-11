@@ -7,7 +7,7 @@ import type {
 	files_nodes_list_subtree_Result,
 	files_nodes_search_paths_Result,
 } from "../convex/files_nodes.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { files_ROOT_ID } from "../shared/files.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { bash_APP_MOUNT_PATH, bash_clamp_listing_page_limit, bash_create_glob_syntax_unsupported_message, bash_cursor_id_create, bash_cursor_id_resolve, bash_GLOB_METACHARACTER_REGEX, bash_HOME, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_LISTING_DEFAULT_LIMIT, bash_LISTING_MAX_LIMIT, bash_normalize_path, bash_parse_limit, bash_parse_simple_extension_glob, bash_external_mounts_fan_out_db_files_path, bash_external_mounts_fan_out_paginate, bash_plugins_fan_out_db_files_path, bash_plugins_fan_out_paginate, bash_read_option_value, bash_resolve_path, bash_shell_arg_quote, bash_resolve_db_files_shell_path, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, bash_NON_NEGATIVE_INTEGER_REGEX, type bash_DbFilesRoots } from "./bash-utils.ts";

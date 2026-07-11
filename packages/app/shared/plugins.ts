@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { Result } from "./errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { organizations_name_autofix_and_validate } from "./organizations.ts";
 
 export const plugins_RUNTIME_VERSION = "1";

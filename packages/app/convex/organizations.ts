@@ -4,7 +4,7 @@ import { internalQuery, mutation, query, type MutationCtx, type QueryCtx } from 
 import type { Id } from "./_generated/dataModel";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import {
 	organizations_DEFAULT_WORKSPACE_NAME,

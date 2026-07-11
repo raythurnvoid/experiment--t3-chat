@@ -29,8 +29,8 @@ crons.cron(
 // Once daily at 06:00 UTC — organization/content purge plus eligible hard user-account deletes.
 crons.cron("unified delayed data deletion pipeline", "0 6 * * *", internal.data_deletion.enqueue_deletion_requests_processing, {});
 
-// Once hourly — terminalize plugin runs whose executor died (crash/deploy) past their TTL.
-crons.cron("reap expired plugin event runs", "0 * * * *", internal.plugins_runtime.reap_expired_event_runs, {});
+// Once hourly — fail plugin runs whose executor died (crash/deploy) past their TTL.
+crons.cron("fail expired plugin event runs", "0 * * * *", internal.plugins_runtime.fail_expired_event_runs, {});
 
 // Once daily at 06:30 UTC — delete terminal plugin runs and their host-call rows past retention.
 crons.cron("cleanup old plugin event runs", "30 6 * * *", internal.plugins_runtime.cleanup_old_event_runs, {});

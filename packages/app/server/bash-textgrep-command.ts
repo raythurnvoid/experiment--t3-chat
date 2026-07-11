@@ -6,7 +6,7 @@ import type {
 	files_nodes_match_plain_text_file_lines_Result,
 	files_nodes_text_search_files_Result,
 } from "../convex/files_nodes.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import {
 	bash_create_glob_syntax_unsupported_message,
 	bash_cursor_id_create,

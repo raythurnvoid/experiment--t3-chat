@@ -6,9 +6,9 @@
 		"lib": ["ES2022", "DOM", "WebWorker"],
 		"strict": true,
 		"skipLibCheck": true,
-		"types": ["@types/node"],
+		"types": [],
 		"noEmit": true,
 		"allowImportingTsExtensions": true
 	},
-	"include": ["src/index.ts", "src/cloudflare-runtime.d.ts"]
+	"include": ["src"]
 }

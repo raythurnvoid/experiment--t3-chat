@@ -1,4 +1,4 @@
-import { Result } from "./errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 
 // #region names
 export const organizations_DEFAULT_ORGANIZATION_NAME = "personal";

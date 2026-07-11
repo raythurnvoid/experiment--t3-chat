@@ -33,7 +33,7 @@ import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 } from "../shared/organizations.ts";
-import { Result } from "../shared/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { github_codeload_url, github_fetch_repo_head, github_fetch_with_retry } from "../server/github.ts";

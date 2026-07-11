@@ -79,6 +79,8 @@ export default defineConfig({
 			"@convex-dev/rate-limiter",
 			"@convex-dev/r2",
 
+			"common",
+
 			"novel",
 
 			"@liveblocks/react-tiptap",
