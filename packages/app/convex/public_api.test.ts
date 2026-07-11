@@ -353,6 +353,103 @@ describe("public files API", () => {
 		expect(afterRevoke.status).toBe(401);
 	});
 
+	test("writes Markdown files and issues download URLs with a user API key", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-write" });
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-write",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Files writer",
+			scopes: ["files:list", "files:read", "files:write", "files:download"],
+		});
+		expect(created._nay).toBeUndefined();
+		const credential = created._yay!.credential;
+
+		for (const body of [
+			{ path: "notes/report.md", content: "# Report" },
+			{ path: "/", content: "# Report" },
+			{ path: "/notes/report.txt", content: "# Report" },
+			{ path: "/notes/report.md", content: "" },
+		]) {
+			const response = await t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify(body),
+			});
+			expect(response.status).toBe(400);
+		}
+
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/notes/report.md", content: "# Report\n\nWritten via the public API\n" }),
+		});
+		expect(written.status).toBe(200);
+		const writtenBody = (await written.json()) as { path: string; nodeId: string; contentType: string };
+		expect(writtenBody).toEqual({
+			path: "/notes/report.md",
+			nodeId: expect.any(String),
+			contentType: "text/markdown;charset=utf-8",
+		});
+
+		const listResponse = await t.fetch("/api/v1/files/list", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/notes" }),
+		});
+		expect(listResponse.status).toBe(200);
+		const listBody = (await listResponse.json()) as { items: Array<{ path: string; nodeId: string }> };
+		expect(listBody.items).toEqual([expect.objectContaining({ path: "/notes/report.md", nodeId: writtenBody.nodeId })]);
+
+		const readResponse = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/notes/report.md" }),
+		});
+		expect(readResponse.status).toBe(200);
+		expect(((await readResponse.json()) as { content: string }).content).toContain("Written via the public API");
+
+		const conflict = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/notes/report.md", content: "# Replacement", overwrite: "fail" }),
+		});
+		expect(conflict.status).toBe(409);
+		expect(((await conflict.json()) as { message: string }).message).toBe("A file already exists at this path");
+
+		const replaced = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/notes/report.md", content: "# Replacement\n\nReplaced via the public API\n" }),
+		});
+		expect(replaced.status).toBe(200);
+		const replacedBody = (await replaced.json()) as { nodeId: string };
+		expect(replacedBody.nodeId).not.toBe(writtenBody.nodeId);
+
+		const download = await t.fetch("/api/v1/files/download-url", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ fileNodeId: replacedBody.nodeId, expiresInSeconds: 60 }),
+		});
+		expect(download.status).toBe(200);
+		const downloadBody = (await download.json()) as { fileNodeId: string; url: string; expiresAt: number };
+		expect(downloadBody.fileNodeId).toBe(replacedBody.nodeId);
+		expect(downloadBody.expiresAt).toBeGreaterThan(Date.now());
+		const downloaded = await fetch(downloadBody.url);
+		expect(downloaded.status).toBe(200);
+		expect(await downloaded.text()).toContain("Replaced via the public API");
+
+		// Every published write consumed its stage; nothing is left for the cleanup cron.
+		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
+		expect(stages).toEqual([]);
+	});
+
 	test("keeps public file routes scoped to tenant files and excludes reserved GLOBAL/GITHUB mounts", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
@@ -620,6 +717,48 @@ describe("public files API", () => {
 		expect(publicListWithGrantToken.status).toBe(200);
 	});
 
+	test("refuses writes and download URLs without the matching scope or principal kind", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-write-scope" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-write-scope",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Read only",
+			scopes: ["files:list", "files:read"],
+		});
+		expect(created._nay).toBeUndefined();
+
+		const grantToken = "9".repeat(64);
+		await seed_public_api_grant({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			token: grantToken,
+		});
+
+		// Read-only credentials miss the scope; grants are the wrong principal kind entirely.
+		for (const token of [created._yay!.credential, grantToken]) {
+			const writeResponse = await t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers: auth_headers(token),
+				body: JSON.stringify({ path: "/blocked.md", content: "# Blocked" }),
+			});
+			expect(writeResponse.status).toBe(403);
+
+			const downloadResponse = await t.fetch("/api/v1/files/download-url", {
+				method: "POST",
+				headers: auth_headers(token),
+				body: JSON.stringify({ fileNodeId: "some-node" }),
+			});
+			expect(downloadResponse.status).toBe(403);
+		}
+	});
+
 	test("requires request-time file read permission", async () => {
 		const t = test_convex();
 		const owner = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-owner" });
@@ -756,5 +895,17 @@ describe("public files API", () => {
 		}
 
 		expect(lastStatus).toBe(429);
+	});
+
+	test("returns 404 for the retired plugin host routes", async () => {
+		const t = test_convex();
+		for (const path of ["/api/plugins/v1/write-markdown", "/api/plugins/v1/source-temporary-url"]) {
+			const response = await t.fetch(path, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			expect(response.status).toBe(404);
+		}
 	});
 });

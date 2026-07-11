@@ -147,6 +147,7 @@ Current purge coverage includes:
 - `ai_chat_files_content`, `ai_chat_files`
 - `ai_chat_threads_messages_aisdk_5`, `ai_chat_threads_state`, `ai_chat_threads`
 - `api_credentials`, `public_api_grants`
+- `public_api_file_write_stages` via `public_api_db_cleanup_file_write_stage`, before the calls/runs/assets passes: staged asset docs have no `r2Key` yet, so the stage cleanup derives the R2 object keys itself and deletes the objects before their asset docs
 - `plugins_event_run_calls`, `plugins_event_runs` with `plugins_runtime_workpool` run cancellation (plugin event runs execute on that dedicated component; R2 asset `processingWorkId` jobs stay on `files_upload_conversion_workpool`), `plugins_workspace_event_handlers`, `plugins_workspace_installation_secrets`, `plugins_workspace_installations`
 - `chat_messages`
 - `files_metadata_docs`

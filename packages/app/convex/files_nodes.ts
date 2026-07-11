@@ -1943,7 +1943,7 @@ export const create_upload_node = mutation({
 				});
 			}
 
-			await db_archive_nodes(ctx, {
+			await files_nodes_db_archive_nodes(ctx, {
 				nodeIds: [existingNode._id],
 				updatedBy: userAuth.id,
 				now,
@@ -2324,7 +2324,7 @@ export const move_nodes = mutation({
 });
 
 // #region Archive nodes
-async function db_archive_nodes(
+export async function files_nodes_db_archive_nodes(
 	ctx: MutationCtx,
 	args: {
 		nodeIds: Array<Id<"files_nodes">>;
@@ -2448,7 +2448,7 @@ export const archive_nodes = mutation({
 			}
 		}
 
-		await db_archive_nodes(ctx, {
+		await files_nodes_db_archive_nodes(ctx, {
 			nodeIds: [...nodeIdsToArchive],
 			updatedBy: userAuth.id,
 			now: Date.now(),

@@ -1963,8 +1963,8 @@ describe("process_workspace_deletion_request", () => {
 				status: "succeeded",
 				acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 				expiresAt: now + 30 * 60 * 1000,
-				hostCallCount: 1,
-				hostWriteCount: 1,
+				apiCallCount: 1,
+				outputWriteCount: 1,
 				errorMessage: null,
 				updatedAt: now,
 			});
@@ -1975,15 +1975,57 @@ describe("process_workspace_deletion_request", () => {
 				installationId,
 				pluginVersionId,
 				sequence: 1,
-				operation: "writeMarkdown",
+				kind: "api_request",
+				route: "/api/v1/files/write",
 				status: "succeeded",
-				outputPath: "plugin-source.png.description.md",
-				outputOverwrite: "replace",
-				markdownBytes: 12,
+				responseStatus: 200,
+				requestBytes: 12,
 				errorMessage: null,
 				startedAt: now,
 				finishedAt: now,
 				elapsedMs: 0,
+				updatedAt: now,
+			});
+			// An unpublished staged write: its asset docs have no r2Key, so only the stage purge
+			// block can reach the R2 objects.
+			const stagedContentAssetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				kind: "content",
+				r2Bucket: "test-bucket",
+				size: 12,
+				createdBy: user.userId,
+				updatedAt: now,
+			});
+			const stagedYjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				kind: "yjs_snapshot",
+				r2Bucket: "test-bucket",
+				size: 12,
+				createdBy: user.userId,
+				updatedAt: now,
+			});
+			const stagedContentSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				size: 12,
+				createdBy: user.userId,
+				updatedAt: now,
+			});
+			await ctx.db.insert("public_api_file_write_stages", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				userId: user.userId,
+				runId,
+				path: "/plugin-source.png.description.md",
+				overwrite: "replace",
+				contentAssetId: stagedContentAssetId,
+				yjsSnapshotAssetId: stagedYjsSnapshotAssetId,
+				contentSnapshotAssetId: stagedContentSnapshotAssetId,
+				expiresAt: now + 15 * 60 * 1000,
 				updatedAt: now,
 			});
 			const requestId = await data_deletion_db_request(ctx, {
@@ -2001,16 +2043,17 @@ describe("process_workspace_deletion_request", () => {
 		});
 
 		const remaining = await t.run(async (ctx) => {
-			const [calls, runs, eventHandlers, secrets, installations] = await Promise.all([
+			const [calls, runs, eventHandlers, secrets, installations, stages] = await Promise.all([
 				ctx.db.query("plugins_event_run_calls").collect(),
 				ctx.db.query("plugins_event_runs").collect(),
 				ctx.db.query("plugins_workspace_event_handlers").collect(),
 				ctx.db.query("plugins_workspace_installation_secrets").collect(),
 				ctx.db.query("plugins_workspace_installations").collect(),
+				ctx.db.query("public_api_file_write_stages").collect(),
 			]);
 			const inWorkspace = (doc: { organizationId: string; workspaceId: string }) =>
 				doc.organizationId === user.defaultOrganizationId && doc.workspaceId === user.defaultWorkspaceId;
-			return [calls, runs, eventHandlers, secrets, installations].reduce(
+			return [calls, runs, eventHandlers, secrets, installations, stages].reduce(
 				(total, docs) => total + docs.filter(inWorkspace).length,
 				0,
 			);
@@ -2239,8 +2282,8 @@ describe("process_workspace_deletion_request", () => {
 				workId,
 				acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 				expiresAt: now + 30 * 60 * 1000,
-				hostCallCount: 0,
-				hostWriteCount: 0,
+				apiCallCount: 0,
+				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: now,
 			});

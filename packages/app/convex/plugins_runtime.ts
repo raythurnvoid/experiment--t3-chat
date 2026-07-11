@@ -1,16 +1,19 @@
 /**
  * Plugin run execution. Life of a run: enqueued (upload event or manual request) → picked up by
- * the workpool executor → claimed by start_event_run, which issues a per-run host token →
+ * the workpool executor → claimed by start_event_run, which issues a per-run `plr_` API token →
  * executed by POSTing to the plugin runner → settled by finish_event_run. While running, the
- * plugin calls back into the host HTTP routes below to write output, fetch its source file, and
- * read secrets.
+ * plugin authenticates against the public `/api/v1/*` machine API as a `plugin_run` service
+ * principal (resolved in public_api.ts) to download its source file and write Markdown outputs.
  *
- * Two credentials: PLUGIN_RUNNER_SECRET authenticates Convex → runner requests; the per-run host
- * token (stored hashed on the run) authenticates plugin → host calls back into Convex.
+ * Three credentials: PLUGIN_RUNNER_SECRET authenticates Convex → runner requests; the per-run
+ * `plr_` token (stored hashed on the run) authenticates plugin → public API calls; and the
+ * runner-internal /api/internal/plugins/host/* routes below additionally require
+ * PLUGIN_RUNNER_HOST_SECRET, so plugin code can never forge the runner-only secret and outbound
+ * telemetry calls.
  */
 import { Workpool } from "@convex-dev/workpool";
 import { doc } from "convex-helpers/validators";
-import type { RegisteredAction, RegisteredMutation, RouteSpec } from "convex/server";
+import type { RegisteredMutation, RouteSpec } from "convex/server";
 import { v } from "convex/values";
 import { z } from "zod";
 
@@ -22,23 +25,15 @@ import type { RouterForConvexModules } from "./http.ts";
 import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import { type api_schemas_BuildResponseSpecFromHandler, type pluginRunnerApiSchema } from "common/api-schemas.ts";
 import { Result, Result_try_promise } from "common/errors-as-values-utils.ts";
-import { files_normalize_name } from "../shared/files.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
-import {
-	files_MAX_TEXT_CONTENT_BYTES,
-	files_get_utf8_byte_size,
-	files_node_has_editable_yjs_state,
-} from "../server/files.ts";
+import { files_node_has_editable_yjs_state } from "../server/files.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
-import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
-import {
-	create_generated_markdown_output_node,
-	type r2_finalize_uploaded_media_markdown_outputs_Result,
-	r2_get_download_url,
-	write_uploaded_media_markdown_output_objects,
-} from "./r2.ts";
+import { crypto_random_hex, crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import type { plugins_decrypt_secret_for_runtime_Result } from "./plugins.ts";
+// Type-only import: public_api.ts value-imports this module, so a value import here would be a
+// runtime cycle.
+import type { public_api_resolve_principal_Result } from "./public_api.ts";
 import { plugins_validate_secret_name } from "../shared/plugins.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -52,7 +47,8 @@ import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 const RUN_TTL_MS = 10 * 60 * 1000;
 // 3 minutes.
 const RUNNER_REQUEST_TIMEOUT_MS = 3 * 60 * 1000;
-const MAX_HOST_CALLS = 20;
+// One shared transactional quota across every plugin-consuming call, whatever the route.
+const MAX_API_CALLS = 20;
 const RUNNER_ERROR_MESSAGE_MAX_CHARS = 500;
 // 30 days.
 const RUN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -87,6 +83,14 @@ if (!process.env.PLUGIN_RUNNER_SECRET) {
 }
 const PLUGIN_RUNNER_SECRET = process.env.PLUGIN_RUNNER_SECRET;
 
+// Distinct from PLUGIN_RUNNER_SECRET on purpose: this one proves a host call came from the
+// trusted runner shell (not from plugin code holding only its run token), so the two secrets
+// must be rotatable independently.
+if (!process.env.PLUGIN_RUNNER_HOST_SECRET) {
+	throw new Error("PLUGIN_RUNNER_HOST_SECRET is not set in Convex env");
+}
+const PLUGIN_RUNNER_HOST_SECRET = process.env.PLUGIN_RUNNER_HOST_SECRET;
+
 if (!process.env.VITE_CONVEX_HTTP_URL) {
 	throw new Error("VITE_CONVEX_HTTP_URL is not set in Convex env");
 }
@@ -101,27 +105,18 @@ function get_bearer_token(request: Request) {
 	return header.slice(prefix.length);
 }
 
-function parse_markdown_output_name(path: string | undefined) {
-	if (!path) {
-		return Result({ _nay: { message: "Output is not available" } });
-	}
-	if (
-		path !== path.trim() ||
-		path.includes("/") ||
-		path.includes("\\") ||
-		path.startsWith(".") ||
-		!path.toLowerCase().endsWith(".md")
-	) {
-		return Result({ _nay: { message: "Output path is invalid" } });
-	}
+/**
+ * Cached SHA-256 of the secret: the auth check compares this fixed-length digest against the
+ * digest of the presented token so the constant-time compare leaks nothing about secret length.
+ */
+const get_plugin_runner_host_secret_hash = ((/* iife */) => {
+	let hashPromise: Promise<string> | undefined;
 
-	const normalized = files_normalize_name("file", path);
-	if (normalized._nay) {
-		return Result({ _nay: { message: "Output path is invalid" } });
-	}
-
-	return Result({ _yay: normalized._yay });
-}
+	return function get_plugin_runner_host_secret_hash() {
+		hashPromise ??= crypto_sha256_hex(PLUGIN_RUNNER_HOST_SECRET);
+		return hashPromise;
+	};
+})();
 
 /**
  * Convex db.patch treats an explicit `undefined` value as "unset this field", so an optional
@@ -250,8 +245,8 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 			status: "queued",
 			acceptedCapabilities: candidate.installation.acceptedCapabilities,
 			expiresAt: now + RUN_TTL_MS,
-			hostCallCount: 0,
-			hostWriteCount: 0,
+			apiCallCount: 0,
+			outputWriteCount: 0,
 			errorMessage: null,
 			updatedAt: now,
 		});
@@ -326,8 +321,8 @@ export async function plugins_runtime_db_enqueue_manual_run(
 		status: "queued",
 		acceptedCapabilities: args.installation.acceptedCapabilities,
 		expiresAt: now + RUN_TTL_MS,
-		hostCallCount: 0,
-		hostWriteCount: 0,
+		apiCallCount: 0,
+		outputWriteCount: 0,
 		errorMessage: null,
 		updatedAt: now,
 	});
@@ -350,7 +345,7 @@ export async function plugins_runtime_db_enqueue_manual_run(
 export const start_event_run = internalMutation({
 	args: {
 		runId: v.id("plugins_event_runs"),
-		hostTokenHash: v.string(),
+		apiTokenHash: v.string(),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -389,10 +384,10 @@ export const start_event_run = internalMutation({
 		const now = Date.now();
 		await ctx.db.patch("plugins_event_runs", pluginRun._id, {
 			status: "running",
-			hostTokenHash: args.hostTokenHash,
-			// The host token stays valid for the life of the run; a shorter TTL would silently cut
-			// off host access mid-run for plugins that outlive it.
-			hostTokenExpiresAt: pluginRun.expiresAt,
+			apiTokenHash: args.apiTokenHash,
+			// The API token stays valid for the life of the run; a shorter TTL would silently cut
+			// off API access mid-run for plugins that outlive it.
+			apiTokenExpiresAt: pluginRun.expiresAt,
 			startedAt: now,
 			updatedAt: now,
 		});
@@ -423,14 +418,50 @@ type start_event_run_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+/**
+ * Terminalization side effects shared by finish_event_run and the expiry cron: any call the
+ * plugin left started is settled failed, and any write stage it left unpublished is scheduled for
+ * cleanup. Bounded by the 20-call invariant (calls and stages both descend from consumed
+ * call slots).
+ */
+async function db_terminalize_run_leftovers(ctx: MutationCtx, args: { runId: Id<"plugins_event_runs">; now: number }) {
+	const [calls, stages] = await Promise.all([
+		ctx.db
+			.query("plugins_event_run_calls")
+			.withIndex("by_run_sequence", (q) => q.eq("runId", args.runId))
+			.take(MAX_API_CALLS),
+		ctx.db
+			.query("public_api_file_write_stages")
+			.withIndex("by_run", (q) => q.eq("runId", args.runId))
+			.collect(),
+	]);
+	await Promise.all([
+		...calls
+			.filter((call) => call.status === "started")
+			.map((call) =>
+				ctx.db.patch("plugins_event_run_calls", call._id, {
+					status: "failed",
+					errorCode: "run_ended",
+					errorMessage: "Run ended before the call finished",
+					finishedAt: args.now,
+					elapsedMs: args.now - call.startedAt,
+					updatedAt: args.now,
+				}),
+			),
+		...stages.map((stage) =>
+			ctx.scheduler.runAfter(0, internal.public_api.cleanup_file_write_stage, { stageId: stage._id }),
+		),
+	]);
+}
+
 export const finish_event_run = internalMutation({
 	args: {
 		runId: v.id("plugins_event_runs"),
 		// "failed" reports a hard failure the executor already classified (start refused, backend
 		// missing, runner unreachable). "runner_response" hands over the raw runner outcome and the
-		// success/failure classification happens here, in the same transaction that reads the host
-		// calls — the executor must not classify from a completion-state query that can go stale
-		// between read and write.
+		// success/failure classification happens here, in the same transaction that reads the run's
+		// calls — the executor must not classify from a completion-state query that can go
+		// stale between read and write.
 		outcome: v.union(
 			v.object({
 				kind: v.literal("failed"),
@@ -466,24 +497,28 @@ export const finish_event_run = internalMutation({
 		if (outcome.kind === "failed") {
 			errorMessage = outcome.errorMessage;
 		} else {
-			const calls = await ctx.db
-				.query("plugins_event_run_calls")
-				.withIndex("by_run_sequence", (q) => q.eq("runId", pluginRun._id))
-				.take(MAX_HOST_CALLS);
-			const succeededWriteCount = calls.filter(
-				(call) => call.operation === "writeMarkdown" && call.status === "succeeded",
-			).length;
+			const [calls, stages] = await Promise.all([
+				ctx.db
+					.query("plugins_event_run_calls")
+					.withIndex("by_run_sequence", (q) => q.eq("runId", pluginRun._id))
+					.take(MAX_API_CALLS),
+				ctx.db
+					.query("public_api_file_write_stages")
+					.withIndex("by_run", (q) => q.eq("runId", pluginRun._id))
+					.collect(),
+			]);
 			const startedCallCount = calls.filter((call) => call.status === "started").length;
 			const pluginStatusIsOk =
 				outcome.pluginStatus === undefined || (outcome.pluginStatus >= 200 && outcome.pluginStatus < 300);
 
-			// A clean runner exit is not enough: the plugin must also have written at least one
-			// Markdown output and left no host call unfinished.
+			// A clean runner exit is not enough: the plugin must also have published at least one
+			// output, left no API call unfinished, and left no staged write unpublished.
 			succeeded =
 				outcome.runnerOk &&
 				outcome.bodyStatus === "succeeded" &&
-				succeededWriteCount > 0 &&
+				pluginRun.outputWriteCount > 0 &&
 				startedCallCount === 0 &&
+				stages.length === 0 &&
 				pluginStatusIsOk;
 
 			errorMessage = succeeded
@@ -493,10 +528,12 @@ export const finish_event_run = internalMutation({
 					: outcome.runnerErrorMessage
 						? outcome.runnerErrorMessage
 						: startedCallCount
-							? "Plugin left host calls unfinished"
-							: outcome.runnerOk && outcome.bodyStatus === "succeeded"
-								? "Plugin produced no Markdown output"
-								: `Plugin runner failed with status ${outcome.runnerHttpStatus}`;
+							? "Plugin left API calls unfinished"
+							: stages.length
+								? "Plugin left an output write unpublished"
+								: outcome.runnerOk && outcome.bodyStatus === "succeeded"
+									? "Plugin produced no Markdown output"
+									: `Plugin runner failed with status ${outcome.runnerHttpStatus}`;
 		}
 
 		if (!succeeded) {
@@ -507,6 +544,9 @@ export const finish_event_run = internalMutation({
 			ctx.db.patch("plugins_event_runs", pluginRun._id, {
 				status: succeeded ? "succeeded" : "failed",
 				errorMessage,
+				// Terminal runs must not authenticate: explicit undefined unsets both token fields.
+				apiTokenHash: undefined,
+				apiTokenExpiresAt: undefined,
 				...(outcome.kind === "runner_response"
 					? {
 							runnerHttpStatus: outcome.runnerHttpStatus,
@@ -519,10 +559,7 @@ export const finish_event_run = internalMutation({
 				finishedAt: now,
 				updatedAt: now,
 			}),
-			// Settle the failed run's output placeholder so the file stops showing as processing.
-			...(!succeeded && pluginRun.outputAssetId
-				? [ctx.db.patch("files_r2_assets", pluginRun.outputAssetId, { processingWorkId: null, updatedAt: now })]
-				: []),
+			db_terminalize_run_leftovers(ctx, { runId: pluginRun._id, now }),
 		]);
 
 		return null;
@@ -569,13 +606,13 @@ export const fail_expired_event_runs = internalMutation({
 					ctx.db.patch("plugins_event_runs", pluginRun._id, {
 						status: "failed",
 						errorMessage: "Run expired",
+						// Terminal runs must not authenticate: explicit undefined unsets both token fields.
+						apiTokenHash: undefined,
+						apiTokenExpiresAt: undefined,
 						finishedAt: now,
 						updatedAt: now,
 					}),
-					// Settle the failed run's output placeholder so the file stops showing as processing.
-					...(pluginRun.outputAssetId
-						? [ctx.db.patch("files_r2_assets", pluginRun.outputAssetId, { processingWorkId: null, updatedAt: now })]
-						: []),
+					db_terminalize_run_leftovers(ctx, { runId: pluginRun._id, now }),
 				]),
 			);
 
@@ -596,7 +633,7 @@ export const fail_expired_event_runs = internalMutation({
 });
 
 /**
- * Daily cron: deletes terminal (succeeded/failed) runs and their host-call telemetry rows past
+ * Daily cron: deletes terminal (succeeded/failed) runs and their call telemetry docs past
  * the 30-day retention window. Output files are user data and are kept. Only terminal runs are
  * eligible, so this relies on fail_expired_event_runs to settle stuck runs — without it, a
  * crashed run would stay live forever and escape retention.
@@ -629,12 +666,12 @@ export const cleanup_old_event_runs = internalMutation({
 				.take(batchSize - deletedCount);
 			await Promise.all(
 				oldPluginRuns.map(async (pluginRun) => {
-					// take(MAX_HOST_CALLS) is exact, not a truncation: start_host_call refuses over-quota
-					// claims before inserting, so a run can never have more call rows than that.
+					// take(MAX_API_CALLS) is exact, not a truncation: consume_run_api_call refuses
+					// over-quota claims before inserting, so a run can never have more call docs.
 					const calls = await ctx.db
 						.query("plugins_event_run_calls")
 						.withIndex("by_run_sequence", (q) => q.eq("runId", pluginRun._id))
-						.take(MAX_HOST_CALLS);
+						.take(MAX_API_CALLS);
 					await Promise.all(calls.map((call) => ctx.db.delete("plugins_event_run_calls", call._id)));
 					await ctx.db.delete("plugins_event_runs", pluginRun._id);
 				}),
@@ -664,10 +701,12 @@ export const execute_upload_completed_event_run = internalAction({
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
-		const hostToken = crypto_random_hex(32);
+		// The `plr_` prefix routes the token to the plugin-run arm of the public API resolver; the
+		// complete token is hashed, so a leaked hash is useless without the prefix-bearing original.
+		const apiToken = `plr_${crypto_random_hex(32)}`;
 		const startResult = (await ctx.runMutation(internal.plugins_runtime.start_event_run, {
 			runId: args.runId,
-			hostTokenHash: await crypto_sha256_hex(hostToken),
+			apiTokenHash: await crypto_sha256_hex(apiToken),
 		})) as start_event_run_Result;
 		if (startResult._nay) {
 			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
@@ -708,11 +747,12 @@ export const execute_upload_completed_event_run = internalAction({
 					// Runner wire field; must be the backend entrypoint file's pinned sha256 (runner
 					// re-hashes the downloaded dist and refuses on mismatch), never version.artifactHash.
 					artifactHash: backendEntrypointFile.sha256,
-					// Where the plugin calls back into this host, and the plaintext token it must present
-					// there. This is the token's only copy outside the runner; Convex keeps just its hash.
+					// Where the plugin calls back into this host's public API, and the plaintext token it
+					// must present there. This is the token's only copy outside the runner; Convex keeps
+					// just its hash.
 					host: {
 						origin: HOST_ORIGIN,
-						token: hostToken,
+						token: apiToken,
 					},
 					// The rules the runner enforces while the plugin executes: what it may do, and the
 					// only origins it may fetch from.
@@ -730,6 +770,9 @@ export const execute_upload_completed_event_run = internalAction({
 							fileNodeId: String(startResult._yay.fileNode._id),
 							assetId: String(startResult._yay.asset._id),
 							name: startResult._yay.fileNode.name,
+							// Absolute path so plugins can construct exact sibling output paths for
+							// /api/v1/files/write.
+							path: startResult._yay.fileNode.path,
 							contentType: startResult._yay.fileNode.contentType ?? null,
 							size: startResult._yay.asset.size,
 						},
@@ -818,163 +861,56 @@ export const execute_upload_completed_event_run = internalAction({
 	},
 });
 
-// #region host calls
+// #region run calls
 
-async function db_get_running_run_by_host_token(
-	ctx: MutationCtx,
-	args: { hostTokenHash: string; pluginRunId: string },
-) {
-	const pluginRun = await ctx.db
-		.query("plugins_event_runs")
-		.withIndex("by_hostTokenHash", (q) => q.eq("hostTokenHash", args.hostTokenHash))
-		.unique();
-	if (
-		!pluginRun ||
-		pluginRun.status !== "running" ||
-		!pluginRun.hostTokenExpiresAt ||
-		pluginRun.hostTokenExpiresAt <= Date.now()
-	) {
-		return null;
-	}
-
-	// The token hash already resolves the run uniquely; this only binds the caller's claimed run id
-	// to the token it presented.
-	if (String(pluginRun._id) !== args.pluginRunId) {
-		return null;
-	}
-
-	return pluginRun;
-}
-
-export const start_host_call = internalMutation({
+/**
+ * The single transactional gate for the shared 20-call plugin quota: revalidates the live run and
+ * its installation, allocates the next sequence, and inserts the started call atomically, so
+ * concurrent mixed-route calls can never exceed the quota or reuse a sequence.
+ *
+ * Source-node archival is deliberately NOT rechecked here (resolve_principal covers it): an
+ * archive landing in the resolve→consume gap lets at most one in-flight ephemeral call through.
+ * Only durable output needs the transactional archival recheck, which publish_file_write does.
+ */
+export const consume_run_api_call = internalMutation({
 	args: {
-		hostTokenHash: v.string(),
-		pluginRunId: v.string(),
-		requiredCapabilities: doc(app_convex_schema, "plugins_workspace_installations").fields.acceptedCapabilities,
-		operation: v.union(
-			v.literal("writeMarkdown"),
-			v.literal("sourceTemporaryUrl"),
-			v.literal("secretGet"),
-			v.literal("outboundFetch"),
-		),
-		outputPath: v.optional(v.string()),
-		outputOverwrite: v.optional(v.union(v.literal("replace"), v.literal("fail"))),
-		markdownBytes: v.optional(v.number()),
-		expiresInSeconds: v.optional(v.number()),
-		secretName: v.optional(v.string()),
-		systemBytes: v.optional(v.number()),
-		promptBytes: v.optional(v.number()),
-		includeSourceImage: v.optional(v.boolean()),
-		maxOutputTokens: v.optional(v.number()),
+		runId: v.id("plugins_event_runs"),
+		kind: doc(app_convex_schema, "plugins_event_run_calls").fields.kind,
+		route: v.string(),
 		requestBytes: v.optional(v.number()),
 	},
 	returns: v_result({
 		_yay: v.object({
-			pluginRun: doc(app_convex_schema, "plugins_event_runs"),
-			asset: doc(app_convex_schema, "files_r2_assets"),
-			fileNode: doc(app_convex_schema, "files_nodes"),
-			outputFileNode: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
-			outputAssetId: v.union(v.id("files_r2_assets"), v.null()),
 			callId: v.id("plugins_event_run_calls"),
+			sequence: v.number(),
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const pluginRun = await db_get_running_run_by_host_token(ctx, args);
-		if (!pluginRun) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
 		const now = Date.now();
-		if (pluginRun.hostCallCount >= MAX_HOST_CALLS) {
-			return Result({ _nay: { message: "Plugin host call limit exceeded" } });
-		}
-		const sequence = pluginRun.hostCallCount + 1;
-
-		// A failed claim still records a telemetry row and consumes a sequence slot toward
-		// MAX_HOST_CALLS: failed attempts burn quota too.
-		const fail_claim = async (message: string) => {
-			await ctx.db.insert("plugins_event_run_calls", {
-				organizationId: pluginRun.organizationId,
-				workspaceId: pluginRun.workspaceId,
-				runId: pluginRun._id,
-				installationId: pluginRun.installationId,
-				pluginVersionId: pluginRun.pluginVersionId,
-				sequence,
-				operation: args.operation,
-				status: "failed",
-				outputPath: args.outputPath,
-				outputOverwrite: args.outputOverwrite,
-				markdownBytes: args.markdownBytes,
-				expiresInSeconds: args.expiresInSeconds,
-				secretName: args.secretName,
-				systemBytes: args.systemBytes,
-				promptBytes: args.promptBytes,
-				includeSourceImage: args.includeSourceImage,
-				maxOutputTokens: args.maxOutputTokens,
-				requestBytes: args.requestBytes,
-				errorMessage: message,
-				startedAt: now,
-				finishedAt: now,
-				elapsedMs: 0,
-				updatedAt: now,
-			});
-			await ctx.db.patch("plugins_event_runs", pluginRun._id, {
-				hostCallCount: sequence,
-				updatedAt: now,
-			});
-			return Result({ _nay: { message } });
-		};
-
-		for (const capability of args.requiredCapabilities) {
-			if (!pluginRun.acceptedCapabilities.includes(capability)) {
-				return await fail_claim("Permission denied");
-			}
-		}
-
-		const outputName = args.operation === "writeMarkdown" ? parse_markdown_output_name(args.outputPath) : null;
-		if (outputName?._nay) {
-			return await fail_claim(outputName._nay.message);
-		}
-		const outputPath = outputName?._yay;
-
-		const [asset, fileNode] = await Promise.all([
-			ctx.db.get("files_r2_assets", pluginRun.assetId),
-			ctx.db.get("files_nodes", pluginRun.fileNodeId),
-		]);
+		const pluginRun = await ctx.db.get("plugins_event_runs", args.runId);
 		if (
-			!asset ||
-			!fileNode ||
-			asset.organizationId !== pluginRun.organizationId ||
-			asset.workspaceId !== pluginRun.workspaceId ||
-			fileNode.organizationId !== pluginRun.organizationId ||
-			fileNode.workspaceId !== pluginRun.workspaceId
+			!pluginRun ||
+			pluginRun.status !== "running" ||
+			!pluginRun.apiTokenExpiresAt ||
+			pluginRun.apiTokenExpiresAt <= now
 		) {
-			return await fail_claim("Not found");
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		let writableOutputFileNode: Doc<"files_nodes"> | null = null;
-		let writableOutputAssetId: Id<"files_r2_assets"> | null = null;
-		if (args.operation === "writeMarkdown") {
-			if (!outputPath) {
-				return await fail_claim("Output is not available");
-			}
-			const output = await create_generated_markdown_output_node(ctx, {
-				fileNode,
-				name: outputPath,
-				overwrite: args.outputOverwrite,
-				now,
-			});
-			if (output._nay) {
-				return await fail_claim(output._nay.message);
-			}
-			writableOutputFileNode = await ctx.db.get("files_nodes", output._yay.nodeId);
-			if (!writableOutputFileNode) {
-				// Unreachable: the node was inserted in this same transaction.
-				throw should_never_happen("writeMarkdown output node missing after create", { nodeId: output._yay.nodeId });
-			}
-			writableOutputAssetId = output._yay.assetId;
+		const installation = await ctx.db.get("plugins_workspace_installations", pluginRun.installationId);
+		if (
+			!installation ||
+			installation.status !== "enabled" ||
+			installation.pluginVersionId !== pluginRun.pluginVersionId
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
+		if (pluginRun.apiCallCount >= MAX_API_CALLS) {
+			return Result({ _nay: { message: "Plugin API call limit exceeded" } });
+		}
+
+		const sequence = pluginRun.apiCallCount + 1;
 		const callId = await ctx.db.insert("plugins_event_run_calls", {
 			organizationId: pluginRun.organizationId,
 			workspaceId: pluginRun.workspaceId,
@@ -982,80 +918,44 @@ export const start_host_call = internalMutation({
 			installationId: pluginRun.installationId,
 			pluginVersionId: pluginRun.pluginVersionId,
 			sequence,
-			operation: args.operation,
+			kind: args.kind,
+			route: args.route,
 			status: "started",
-			outputPath: args.operation === "writeMarkdown" ? outputPath : args.outputPath,
-			outputOverwrite: args.outputOverwrite,
-			markdownBytes: args.markdownBytes,
-			expiresInSeconds: args.expiresInSeconds,
-			secretName: args.secretName,
-			systemBytes: args.systemBytes,
-			promptBytes: args.promptBytes,
-			includeSourceImage: args.includeSourceImage,
-			maxOutputTokens: args.maxOutputTokens,
-			requestBytes: args.requestBytes,
+			...(args.requestBytes === undefined ? {} : { requestBytes: args.requestBytes }),
 			errorMessage: null,
 			startedAt: now,
 			updatedAt: now,
 		});
-
 		await ctx.db.patch("plugins_event_runs", pluginRun._id, {
-			hostCallCount: sequence,
-			hostWriteCount: pluginRun.hostWriteCount + (args.operation === "writeMarkdown" ? 1 : 0),
-			// Park the output ids on the run so the failure paths (finish_event_run,
-			// fail_expired_event_runs) can settle the output placeholder's processingWorkId.
-			...(args.operation === "writeMarkdown" && writableOutputFileNode && writableOutputAssetId
-				? {
-						outputFileNodeId: writableOutputFileNode._id,
-						outputAssetId: writableOutputAssetId,
-					}
-				: {}),
+			apiCallCount: sequence,
 			updatedAt: now,
 		});
 
-		const patchedPluginRun = await ctx.db.get("plugins_event_runs", pluginRun._id);
-		if (!patchedPluginRun) {
-			// Unreachable: the run was patched in this same transaction.
-			throw should_never_happen("plugins_event_runs doc missing right after patch", { runId: pluginRun._id });
-		}
-
-		return Result({
-			_yay: {
-				pluginRun: patchedPluginRun,
-				asset,
-				fileNode,
-				outputFileNode: writableOutputFileNode,
-				outputAssetId: writableOutputAssetId,
-				callId,
-			},
-		});
+		return Result({ _yay: { callId, sequence } });
 	},
 });
 
-type start_host_call_Result =
-	typeof start_host_call extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+export type plugins_runtime_consume_run_api_call_Result =
+	typeof consume_run_api_call extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
-export const finish_host_call = internalMutation({
+/** Trusted-caller settle for call ids this backend minted itself (no run binding check). */
+export const finish_run_call = internalMutation({
 	args: {
 		callId: v.id("plugins_event_run_calls"),
 		status: v.union(v.literal("succeeded"), v.literal("failed")),
+		errorCode: v.optional(v.string()),
 		errorMessage: v.union(v.string(), v.null()),
-		temporaryUrlExpiresAt: v.optional(v.number()),
-		secretFound: v.optional(v.boolean()),
-		secretTier: v.optional(v.union(v.literal("installation"), v.literal("publisher"))),
-		modelId: v.optional(v.string()),
-		sourceBytes: v.optional(v.number()),
+		responseStatus: v.optional(v.number()),
 		requestBytes: v.optional(v.number()),
 		responseBytes: v.optional(v.number()),
-		responseStatus: v.optional(v.number()),
-		outputTextBytes: v.optional(v.number()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const call = await ctx.db.get("plugins_event_run_calls", args.callId);
-		if (!call) {
+		// A late or duplicate finish is a no-op: only a started call settles.
+		if (!call || call.status !== "started") {
 			return null;
 		}
 
@@ -1064,15 +964,10 @@ export const finish_host_call = internalMutation({
 			status: args.status,
 			errorMessage: args.errorMessage,
 			...pick_defined_props({
-				temporaryUrlExpiresAt: args.temporaryUrlExpiresAt,
-				secretFound: args.secretFound,
-				secretTier: args.secretTier,
-				modelId: args.modelId,
-				sourceBytes: args.sourceBytes,
+				errorCode: args.errorCode,
+				responseStatus: args.responseStatus,
 				requestBytes: args.requestBytes,
 				responseBytes: args.responseBytes,
-				responseStatus: args.responseStatus,
-				outputTextBytes: args.outputTextBytes,
 			}),
 			finishedAt: now,
 			elapsedMs: now - call.startedAt,
@@ -1083,289 +978,115 @@ export const finish_host_call = internalMutation({
 	},
 });
 
-export const finish_runner_host_call = internalMutation({
+/** Wire-facing settle: the call id arrives from the runner, so it must belong to the run. */
+export const finish_runner_call = internalMutation({
 	args: {
-		hostTokenHash: v.string(),
-		pluginRunId: v.string(),
+		runId: v.id("plugins_event_runs"),
 		callId: v.string(),
 		status: v.union(v.literal("succeeded"), v.literal("failed")),
 		errorMessage: v.union(v.string(), v.null()),
-		modelId: v.optional(v.string()),
-		sourceBytes: v.optional(v.number()),
 		requestBytes: v.optional(v.number()),
 		responseBytes: v.optional(v.number()),
 		responseStatus: v.optional(v.number()),
-		outputTextBytes: v.optional(v.number()),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		const pluginRun = await db_get_running_run_by_host_token(ctx, args);
-		if (!pluginRun) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
 		const callId = ctx.db.normalizeId("plugins_event_run_calls", args.callId);
 		if (!callId) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 		const call = await ctx.db.get("plugins_event_run_calls", callId);
-		if (!call || call.runId !== pluginRun._id || call.status !== "started") {
+		if (!call || call.runId !== args.runId) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		const now = Date.now();
-		await ctx.db.patch("plugins_event_run_calls", call._id, {
-			status: args.status,
-			errorMessage: args.errorMessage,
-			...pick_defined_props({
-				modelId: args.modelId,
-				sourceBytes: args.sourceBytes,
-				requestBytes: args.requestBytes,
-				responseBytes: args.responseBytes,
-				responseStatus: args.responseStatus,
-				outputTextBytes: args.outputTextBytes,
-			}),
-			finishedAt: now,
-			elapsedMs: now - call.startedAt,
-			updatedAt: now,
-		});
-
-		return Result({ _yay: null });
-	},
-});
-
-type finish_runner_host_call_Result =
-	typeof finish_runner_host_call extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-export const host_write_markdown = internalAction({
-	args: {
-		hostToken: v.string(),
-		pluginRunId: v.string(),
-		markdown: v.string(),
-		path: v.optional(v.string()),
-		overwrite: v.optional(v.union(v.literal("replace"), v.literal("fail"))),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const markdownBytes = files_get_utf8_byte_size(args.markdown);
-		if (args.markdown.length === 0 || files_MAX_TEXT_CONTENT_BYTES < markdownBytes) {
-			return Result({ _nay: { message: "Markdown output is too large" } });
-		}
-
-		const started = (await ctx.runMutation(internal.plugins_runtime.start_host_call, {
-			hostTokenHash: await crypto_sha256_hex(args.hostToken),
-			pluginRunId: args.pluginRunId,
-			requiredCapabilities: [],
-			operation: "writeMarkdown",
-			outputPath: args.path,
-			outputOverwrite: args.overwrite,
-			markdownBytes,
-		})) as start_host_call_Result;
-		if (started._nay) {
-			return Result({ _nay: { message: started._nay.message } });
-		}
-		if (!started._yay.outputFileNode || !started._yay.outputAssetId) {
-			return Result({ _nay: { message: "Output is not available" } });
-		}
-
-		try {
-			const output = await write_uploaded_media_markdown_output_objects(ctx, {
-				fileNode: started._yay.fileNode,
-				outputFileNode: started._yay.outputFileNode,
-				outputAssetId: started._yay.outputAssetId,
-				markdownContent: args.markdown,
+		// A late or duplicate finish is a no-op: only a started call settles.
+		if (call.status === "started") {
+			const now = Date.now();
+			await ctx.db.patch("plugins_event_run_calls", call._id, {
+				status: args.status,
+				errorMessage: args.errorMessage,
+				...pick_defined_props({
+					responseStatus: args.responseStatus,
+					requestBytes: args.requestBytes,
+					responseBytes: args.responseBytes,
+				}),
+				finishedAt: now,
+				elapsedMs: now - call.startedAt,
+				updatedAt: now,
 			});
-
-			const finalized = (await ctx.runMutation(internal.r2.finalize_uploaded_media_markdown_outputs, {
-				pluginRunId: started._yay.pluginRun._id,
-				organizationId: started._yay.pluginRun.organizationId,
-				workspaceId: started._yay.pluginRun.workspaceId,
-				userId: started._yay.pluginRun.actorUserId,
-				assetId: started._yay.pluginRun.assetId,
-				outputs: [output],
-			})) as r2_finalize_uploaded_media_markdown_outputs_Result;
-			if (finalized._nay) {
-				await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-					callId: started._yay.callId,
-					status: "failed",
-					errorMessage: finalized._nay.message,
-				});
-				return Result({ _nay: { message: finalized._nay.message } });
-			}
-
-			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-				callId: started._yay.callId,
-				status: "succeeded",
-				errorMessage: null,
-			});
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-				callId: started._yay.callId,
-				status: "failed",
-				errorMessage: message,
-			});
-			return Result({ _nay: { message } });
 		}
 
 		return Result({ _yay: null });
 	},
 });
 
-type host_write_markdown_Result =
-	typeof host_write_markdown extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
+type finish_runner_call_Result =
+	typeof finish_runner_call extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
-export const host_source_temporary_url = internalAction({
-	args: {
-		hostToken: v.string(),
-		pluginRunId: v.string(),
-		expiresInSeconds: v.optional(v.number()),
-	},
-	returns: v_result({ _yay: v.object({ url: v.string(), expiresAt: v.number() }) }),
-	handler: async (ctx, args) => {
-		const expiresIn = Math.min(Math.max(args.expiresInSeconds ?? 15 * 60, 1), 15 * 60);
+// #endregion run calls
 
-		const started = (await ctx.runMutation(internal.plugins_runtime.start_host_call, {
-			hostTokenHash: await crypto_sha256_hex(args.hostToken),
-			pluginRunId: args.pluginRunId,
-			requiredCapabilities: [],
-			operation: "sourceTemporaryUrl",
-			expiresInSeconds: expiresIn,
-		})) as start_host_call_Result;
-		if (started._nay) {
-			return Result({ _nay: { message: started._nay.message } });
-		}
-		if (!started._yay.asset.r2Key) {
-			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-				callId: started._yay.callId,
-				status: "failed",
-				errorMessage: "Source upload is not available",
-			});
-			return Result({ _nay: { message: "Source upload is not available" } });
-		}
+// #region runner host routes
 
-		try {
-			const url = await r2_get_download_url({
-				key: started._yay.asset.r2Key,
-				options: { expiresIn },
-			});
-			const expiresAt = Date.now() + expiresIn * 1000;
-			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-				callId: started._yay.callId,
-				status: "succeeded",
-				errorMessage: null,
-				temporaryUrlExpiresAt: expiresAt,
-			});
-			return Result({ _yay: { url, expiresAt } });
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-				callId: started._yay.callId,
-				status: "failed",
-				errorMessage: message,
-			});
-			return Result({ _nay: { message } });
-		}
-	},
-});
+/** Route label persisted on outbound-fetch calls (there is no public API path to record). */
+const OUTBOUND_CALL_ROUTE = "outbound";
 
-type host_source_temporary_url_Result =
-	typeof host_source_temporary_url extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
+function get_runner_authorization_token(request: Request) {
+	const header = request.headers.get("X-Bonobo-Runner-Authorization");
+	const prefix = "Bearer ";
+	if (!header?.startsWith(prefix)) {
+		return null;
+	}
+	const token = header.slice(prefix.length).trim();
+	return token.length > 0 ? token : null;
+}
 
-export const host_secret_get = internalAction({
-	args: {
-		hostToken: v.string(),
-		pluginRunId: v.string(),
-		name: v.string(),
-	},
-	returns: v_result({ _yay: v.union(v.string(), v.null()) }),
-	handler: async (ctx, args) => {
-		const name = plugins_validate_secret_name(args.name);
-		if (name._nay) {
-			return Result({ _nay: { message: name._nay.message } });
-		}
+/**
+ * Dual auth for the runner-internal host routes: the trusted runner shell proves itself with
+ * PLUGIN_RUNNER_HOST_SECRET — checked in constant time BEFORE the plugin bearer is resolved, so
+ * plugin code holding only its run token can neither reach these routes nor probe them — and the
+ * `plr_` bearer identifies the plugin_run principal through the shared public API resolver.
+ * Every auth failure is the fixed "Unauthorized" literal; any other `_nay` message is a
+ * body-validation error. Callers own the status mapping (401 / 400).
+ */
+async function authorize_runner_host_request<Body>(ctx: ActionCtx, request: Request, bodyValidator: z.ZodSchema<Body>) {
+	const runnerToken = get_runner_authorization_token(request);
+	if (
+		!runnerToken ||
+		!crypto_timing_safe_equal(await crypto_sha256_hex(runnerToken), await get_plugin_runner_host_secret_hash())
+	) {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
 
-		const started = (await ctx.runMutation(internal.plugins_runtime.start_host_call, {
-			hostTokenHash: await crypto_sha256_hex(args.hostToken),
-			pluginRunId: args.pluginRunId,
-			requiredCapabilities: ["plugin.secrets.read"],
-			operation: "secretGet",
-			secretName: name._yay,
-		})) as start_host_call_Result;
-		if (started._nay) {
-			return Result({ _nay: { message: started._nay.message } });
-		}
-
-		const resolved = await ctx.runMutation(internal.plugins.get_secret_for_runtime, {
-			organizationId: started._yay.pluginRun.organizationId,
-			workspaceId: started._yay.pluginRun.workspaceId,
-			installationId: started._yay.pluginRun.installationId,
-			name: name._yay,
-		});
-		if (!resolved) {
-			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-				callId: started._yay.callId,
-				status: "succeeded",
-				errorMessage: null,
-				secretFound: false,
-			});
-			return Result({ _yay: null });
-		}
-
-		const decrypted = (await ctx.runAction(internal.plugins.decrypt_secret_for_runtime, {
-			resolved,
-		})) as plugins_decrypt_secret_for_runtime_Result;
-		if (decrypted._nay) {
-			await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-				callId: started._yay.callId,
-				status: "failed",
-				errorMessage: decrypted._nay.message,
-				secretFound: true,
-				secretTier: resolved.tier,
-			});
-			return Result({ _nay: { message: decrypted._nay.message } });
-		}
-
-		await ctx.runMutation(internal.plugins_runtime.finish_host_call, {
-			callId: started._yay.callId,
-			status: "succeeded",
-			errorMessage: null,
-			secretFound: true,
-			secretTier: resolved.tier,
-		});
-		return Result({ _yay: decrypted._yay });
-	},
-});
-
-type host_secret_get_Result =
-	typeof host_secret_get extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-async function parse_host_route_auth_and_body<Body>(request: Request, bodyValidator: z.ZodSchema<Body>) {
 	const token = get_bearer_token(request);
 	if (!token) {
-		return { ok: false as const, response: { status: 401, body: { message: "Unauthorized" } } as const };
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
+	const resolved: public_api_resolve_principal_Result = await ctx.runQuery(internal.public_api.resolve_principal, {
+		presented: token,
+		now: Date.now(),
+	});
+	if (resolved._nay || resolved._yay.kind !== "plugin_run") {
+		return Result({ _nay: { message: "Unauthorized" } });
 	}
 
 	const body = await server_request_json_parse_and_validate(request, bodyValidator);
 	if (body._nay) {
-		return { ok: false as const, response: { status: 400, body: { message: body._nay.message } } as const };
+		return Result({ _nay: { message: body._nay.message } });
 	}
 
-	return { ok: true as const, token, body: body._yay };
+	return Result({ _yay: { principal: resolved._yay, body: body._yay } });
 }
 
 /**
- * The /api/internal/plugins/host/* routes are called by the runner itself (telemetry bracketing
- * around a plugin's outbound fetch); the /api/plugins/v1/* routes are called by the plugin SDK to
- * perform host operations.
+ * Runner-internal routes, callable only by the runner shell (dual auth: PLUGIN_RUNNER_HOST_SECRET
+ * plus the run's `plr_` bearer). Plugins themselves talk to the public /api/v1/* routes instead:
+ * these three exist for telemetry bracketing around a plugin's outbound fetch and for secret
+ * resolution, which never leaves the runner shell. The fetch itself never touches this backend,
+ * hence the bracket: claim consumes the quota slot BEFORE the shell performs the fetch (plugin
+ * code can't race past the limit), and finish settles the ledger row with the outcome after.
  */
 export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 	return {
@@ -1375,28 +1096,46 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 					[method]: (() => {
 						const bodyValidator = z
 							.object({
-								pluginRunId: z.string(),
-								operation: z.literal("outboundFetch"),
 								requestBytes: z.number().int().min(0).optional(),
 							})
 							.strict();
 						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await parse_host_route_auth_and_body(request, bodyValidator);
-							if (!auth.ok) {
-								return auth.response;
-							}
-							const result = (await ctx.runMutation(internal.plugins_runtime.start_host_call, {
-								hostTokenHash: await crypto_sha256_hex(auth.token),
-								pluginRunId: auth.body.pluginRunId,
-								requiredCapabilities: ["outbound.fetch"],
-								operation: auth.body.operation,
-								requestBytes: auth.body.requestBytes,
-							})) as start_host_call_Result;
-							if (result._nay) {
-								return { status: 400, body: { message: result._nay.message } } as const;
+							const auth = await authorize_runner_host_request(ctx, request, bodyValidator);
+							if (auth._nay) {
+								if (auth._nay.message === "Unauthorized") {
+									return { status: 401, body: { message: auth._nay.message } } as const;
+								}
+								return { status: 400, body: { message: auth._nay.message } } as const;
 							}
 
-							return { status: 200, body: { callId: String(result._yay.callId) } } as const;
+							const consumed: plugins_runtime_consume_run_api_call_Result = await ctx.runMutation(
+								internal.plugins_runtime.consume_run_api_call,
+								{
+									runId: auth._yay.principal.runId,
+									kind: "outbound_fetch",
+									route: OUTBOUND_CALL_ROUTE,
+									requestBytes: auth._yay.body.requestBytes,
+								},
+							);
+							if (consumed._nay) {
+								if (consumed._nay.message === "Plugin API call limit exceeded") {
+									return { status: 429, body: { message: consumed._nay.message } } as const;
+								}
+								return { status: 401, body: { message: consumed._nay.message } } as const;
+							}
+
+							if (!auth._yay.principal.scopes.includes("outbound:fetch")) {
+								await ctx.runMutation(internal.plugins_runtime.finish_run_call, {
+									callId: consumed._yay.callId,
+									status: "failed",
+									errorCode: "permission_denied",
+									errorMessage: "Permission denied",
+									responseStatus: 403,
+								});
+								return { status: 403, body: { message: "Permission denied" } } as const;
+							}
+
+							return { status: 200, body: { callId: String(consumed._yay.callId) } } as const;
 						};
 
 						router.route({
@@ -1411,7 +1150,7 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 						return {} as {
 							pathParams: {};
 							searchParams: {};
-							headers: { Authorization: string };
+							headers: { Authorization: string; "X-Bonobo-Runner-Authorization": string };
 							body: z.infer<typeof bodyValidator>;
 							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
 						};
@@ -1425,38 +1164,38 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 					[method]: (() => {
 						const bodyValidator = z
 							.object({
-								pluginRunId: z.string(),
 								callId: z.string().min(1),
 								status: z.union([z.literal("succeeded"), z.literal("failed")]),
 								errorMessage: z.string().max(1000).nullable().optional(),
-								modelId: z.string().max(256).optional(),
-								sourceBytes: z.number().int().min(0).optional(),
 								requestBytes: z.number().int().min(0).optional(),
 								responseBytes: z.number().int().min(0).optional(),
 								responseStatus: z.number().int().min(100).max(599).optional(),
-								outputTextBytes: z.number().int().min(0).optional(),
 							})
 							.strict();
 						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await parse_host_route_auth_and_body(request, bodyValidator);
-							if (!auth.ok) {
-								return auth.response;
+							const auth = await authorize_runner_host_request(ctx, request, bodyValidator);
+							if (auth._nay) {
+								if (auth._nay.message === "Unauthorized") {
+									return { status: 401, body: { message: auth._nay.message } } as const;
+								}
+								return { status: 400, body: { message: auth._nay.message } } as const;
 							}
-							const result = (await ctx.runMutation(internal.plugins_runtime.finish_runner_host_call, {
-								hostTokenHash: await crypto_sha256_hex(auth.token),
-								pluginRunId: auth.body.pluginRunId,
-								callId: auth.body.callId,
-								status: auth.body.status,
-								errorMessage: auth.body.errorMessage ?? null,
-								modelId: auth.body.modelId,
-								sourceBytes: auth.body.sourceBytes,
-								requestBytes: auth.body.requestBytes,
-								responseBytes: auth.body.responseBytes,
-								responseStatus: auth.body.responseStatus,
-								outputTextBytes: auth.body.outputTextBytes,
-							})) as finish_runner_host_call_Result;
+
+							// Settling an already-claimed call consumes no quota slot.
+							const result: finish_runner_call_Result = await ctx.runMutation(
+								internal.plugins_runtime.finish_runner_call,
+								{
+									runId: auth._yay.principal.runId,
+									callId: auth._yay.body.callId,
+									status: auth._yay.body.status,
+									errorMessage: auth._yay.body.errorMessage ?? null,
+									requestBytes: auth._yay.body.requestBytes,
+									responseBytes: auth._yay.body.responseBytes,
+									responseStatus: auth._yay.body.responseStatus,
+								},
+							);
 							if (result._nay) {
-								return { status: 400, body: { message: result._nay.message } } as const;
+								return { status: 404, body: { message: result._nay.message } } as const;
 							}
 
 							return { status: 200, body: { ok: true } } as const;
@@ -1474,110 +1213,7 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 						return {} as {
 							pathParams: {};
 							searchParams: {};
-							headers: { Authorization: string };
-							body: z.infer<typeof bodyValidator>;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-		...((path = "/api/plugins/v1/write-markdown" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: (() => {
-						const bodyValidator = z
-							.object({
-								pluginRunId: z.string(),
-								markdown: z.string(),
-								path: z.string().min(1).max(512).optional(),
-								overwrite: z.union([z.literal("replace"), z.literal("fail")]).optional(),
-							})
-							.strict();
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await parse_host_route_auth_and_body(request, bodyValidator);
-							if (!auth.ok) {
-								return auth.response;
-							}
-							const result = (await ctx.runAction(internal.plugins_runtime.host_write_markdown, {
-								hostToken: auth.token,
-								pluginRunId: auth.body.pluginRunId,
-								markdown: auth.body.markdown,
-								path: auth.body.path,
-								overwrite: auth.body.overwrite,
-							})) as host_write_markdown_Result;
-							if (result._nay) {
-								return { status: 400, body: { message: result._nay.message } } as const;
-							}
-
-							return { status: 200, body: { ok: true } } as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: {};
-							searchParams: {};
-							headers: { Authorization: string };
-							body: z.infer<typeof bodyValidator>;
-							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
-						};
-					})(),
-				}))(),
-			},
-		}))(),
-		...((path = "/api/plugins/v1/source-temporary-url" as const satisfies api_schemas_Main_Path) => ({
-			[path]: {
-				...((method = "POST" as const satisfies RouteSpec["method"]) => ({
-					[method]: (() => {
-						const bodyValidator = z
-							.object({
-								pluginRunId: z.string(),
-								expiresInSeconds: z
-									.number()
-									.int()
-									.min(1)
-									.max(15 * 60)
-									.optional(),
-							})
-							.strict();
-						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await parse_host_route_auth_and_body(request, bodyValidator);
-							if (!auth.ok) {
-								return auth.response;
-							}
-							const result = (await ctx.runAction(internal.plugins_runtime.host_source_temporary_url, {
-								hostToken: auth.token,
-								pluginRunId: auth.body.pluginRunId,
-								expiresInSeconds: auth.body.expiresInSeconds,
-							})) as host_source_temporary_url_Result;
-							if (result._nay) {
-								return { status: 400, body: { message: result._nay.message } } as const;
-							}
-
-							return { status: 200, body: result._yay } as const;
-						};
-
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const result = await handler(ctx, request);
-								return Response.json(result.body, result);
-							}),
-						});
-
-						return {} as {
-							pathParams: {};
-							searchParams: {};
-							headers: { Authorization: string };
+							headers: { Authorization: string; "X-Bonobo-Runner-Authorization": string };
 							body: z.infer<typeof bodyValidator>;
 							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
 						};
@@ -1591,25 +1227,97 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 					[method]: (() => {
 						const bodyValidator = z
 							.object({
-								pluginRunId: z.string(),
 								name: z.string().min(1).max(128),
 							})
 							.strict();
 						const handler = async (ctx: ActionCtx, request: Request) => {
-							const auth = await parse_host_route_auth_and_body(request, bodyValidator);
-							if (!auth.ok) {
-								return auth.response;
-							}
-							const result = (await ctx.runAction(internal.plugins_runtime.host_secret_get, {
-								hostToken: auth.token,
-								pluginRunId: auth.body.pluginRunId,
-								name: auth.body.name,
-							})) as host_secret_get_Result;
-							if (result._nay) {
-								return { status: 400, body: { message: result._nay.message } } as const;
+							const auth = await authorize_runner_host_request(ctx, request, bodyValidator);
+							if (auth._nay) {
+								if (auth._nay.message === "Unauthorized") {
+									return { status: 401, body: { message: auth._nay.message } } as const;
+								}
+								return { status: 400, body: { message: auth._nay.message } } as const;
 							}
 
-							return { status: 200, body: { value: result._yay } } as const;
+							const consumed: plugins_runtime_consume_run_api_call_Result = await ctx.runMutation(
+								internal.plugins_runtime.consume_run_api_call,
+								{
+									runId: auth._yay.principal.runId,
+									kind: "api_request",
+									route: path,
+								},
+							);
+							if (consumed._nay) {
+								if (consumed._nay.message === "Plugin API call limit exceeded") {
+									return { status: 429, body: { message: consumed._nay.message } } as const;
+								}
+								return { status: 401, body: { message: consumed._nay.message } } as const;
+							}
+
+							const finish = async (finishArgs: {
+								status: "succeeded" | "failed";
+								responseStatus: number;
+								errorCode?: string;
+								errorMessage: string | null;
+							}) => {
+								await ctx.runMutation(internal.plugins_runtime.finish_run_call, {
+									callId: consumed._yay.callId,
+									status: finishArgs.status,
+									errorCode: finishArgs.errorCode,
+									errorMessage: finishArgs.errorMessage,
+									responseStatus: finishArgs.responseStatus,
+								});
+							};
+
+							if (!auth._yay.principal.scopes.includes("secrets:read")) {
+								await finish({
+									status: "failed",
+									responseStatus: 403,
+									errorCode: "permission_denied",
+									errorMessage: "Permission denied",
+								});
+								return { status: 403, body: { message: "Permission denied" } } as const;
+							}
+
+							const name = plugins_validate_secret_name(auth._yay.body.name);
+							if (name._nay) {
+								await finish({
+									status: "failed",
+									responseStatus: 400,
+									errorCode: "invalid_input",
+									errorMessage: name._nay.message,
+								});
+								return { status: 400, body: { message: name._nay.message } } as const;
+							}
+
+							const resolved = await ctx.runMutation(internal.plugins.get_secret_for_runtime, {
+								organizationId: auth._yay.principal.organizationId,
+								workspaceId: auth._yay.principal.workspaceId,
+								installationId: auth._yay.principal.installationId,
+								name: name._yay,
+							});
+							if (!resolved) {
+								// A missing secret is a successful lookup, not a failure.
+								await finish({ status: "succeeded", responseStatus: 200, errorMessage: null });
+								return { status: 200, body: { value: null } } as const;
+							}
+
+							const decrypted = (await ctx.runAction(internal.plugins.decrypt_secret_for_runtime, {
+								resolved,
+							})) as plugins_decrypt_secret_for_runtime_Result;
+							if (decrypted._nay) {
+								// Curated literal: raw decrypt errors never reach the call or the plugin.
+								await finish({
+									status: "failed",
+									responseStatus: 500,
+									errorCode: "storage_failure",
+									errorMessage: "Failed to read secret",
+								});
+								return { status: 500, body: { message: "Failed to read secret" } } as const;
+							}
+
+							await finish({ status: "succeeded", responseStatus: 200, errorMessage: null });
+							return { status: 200, body: { value: decrypted._yay } } as const;
 						};
 
 						router.route({
@@ -1624,7 +1332,7 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 						return {} as {
 							pathParams: {};
 							searchParams: {};
-							headers: { Authorization: string };
+							headers: { Authorization: string; "X-Bonobo-Runner-Authorization": string };
 							body: z.infer<typeof bodyValidator>;
 							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
 						};
@@ -1635,4 +1343,4 @@ export function plugins_runtime_http_routes(router: RouterForConvexModules) {
 	};
 }
 
-// #endregion host calls
+// #endregion runner host routes

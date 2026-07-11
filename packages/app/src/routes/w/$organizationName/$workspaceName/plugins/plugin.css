@@ -138,6 +138,14 @@
 		padding: 18px;
 	}
 
+	.RoutePluginsPluginConsentModal-baseline {
+		margin: 0;
+
+		font-size: 13px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+
 	.RoutePluginsPluginConsentModal-sectionTitle {
 		font-size: 12px;
 		font-weight: 600;

@@ -46,6 +46,7 @@ function make_ctx(opts?: {
 
 function make_env(opts?: {
 	secret?: string;
+	hostSecret?: string;
 	disabled?: boolean;
 	artifactSource?: string | null;
 	onGet?: (id: string) => void;
@@ -57,6 +58,7 @@ function make_env(opts?: {
 		opts && "artifactSource" in opts && opts.artifactSource !== undefined ? opts.artifactSource : DEFAULT_ARTIFACT_SOURCE;
 	return {
 		PLUGIN_RUNNER_SECRET: opts?.secret ?? "test-secret",
+		PLUGIN_RUNNER_HOST_SECRET: opts?.hostSecret ?? "test-host-secret",
 		PLUGIN_RUNNER_DISABLED: opts?.disabled ? "true" : undefined,
 		PLUGIN_RUNNER_ARTIFACT_PREFIX: "plugins/",
 		PLUGIN_ARTIFACTS: {
@@ -315,10 +317,12 @@ describe("dynamic worker loading", () => {
 		);
 
 		expect(res.status).toBe(200);
-		const pluginStableId = `plugin:media@0.1.0:${artifactHash}:bonobo-host-v2`;
+		const pluginStableId = `plugin:media@0.1.0:${artifactHash}:bonobo-host-v3`;
 		expect(loaderId).toBe(`${pluginStableId}:run_123`);
 		expect(hostProps).toEqual({
 			pluginStableId,
+			pluginRunId: "run_123",
+			host: DEFAULT_HOST,
 			acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 		});
 		expect(outboundProps).toEqual({
@@ -333,6 +337,10 @@ describe("dynamic worker loading", () => {
 		expect((loaded?.env as Record<string, unknown>)?.BONOBO_RPC).toBe(hostBinding);
 		expect((loaded?.modules as Record<string, string>)?.["plugin.js"]).toBe(artifactSource);
 		expect((loaded?.modules as Record<string, string>)?.["bonobo-plugin-wrapper.js"]).toContain("secrets");
+		// The wrapper forwards only the secret name; run identity/host must come from entrypoint props.
+		expect((loaded?.modules as Record<string, string>)?.["bonobo-plugin-wrapper.js"]).toContain(
+			"host.secretGet({ name })",
+		);
 		expect((loaded?.modules as Record<string, string>)?.["bonobo-plugin-wrapper.js"]).toContain("apiOrigin");
 		expect((loaded?.modules as Record<string, string>)?.["bonobo-plugin-wrapper.js"]).not.toContain("writeMarkdown");
 		expect((loaded?.modules as Record<string, string>)?.["bonobo-plugin-wrapper.js"]).not.toContain("sourceBase64");
@@ -344,6 +352,10 @@ describe("dynamic worker loading", () => {
 			},
 			limits: DYNAMIC_WORKER_LIMITS,
 		});
+		// The runner host secret is reachable only from the trusted outer classes: it must never be
+		// baked into the dynamic worker's code, env, or entrypoint props.
+		expect(JSON.stringify(loaded)).not.toContain("test-host-secret");
+		expect(JSON.stringify(entrypointOptions)).not.toContain("test-host-secret");
 		expect(pluginEvent).toEqual({
 			type: "files.upload.completed",
 			source: { name: "photo.png" },
@@ -407,6 +419,7 @@ describe("dynamic worker loading", () => {
 				),
 				make_env({
 					artifactSource,
+					hostSecret: "SENTINEL_RUNNER_HOST_SECRET",
 					onPluginRequest: async () => new Response("SENTINEL_OUTPUT"),
 				}),
 				make_ctx(),
@@ -416,6 +429,7 @@ describe("dynamic worker loading", () => {
 			expect(logs).not.toContain("SENTINEL_INPUT");
 			expect(logs).not.toContain("SENTINEL_OUTPUT");
 			expect(logs).not.toContain("SENTINEL_HOST_TOKEN");
+			expect(logs).not.toContain("SENTINEL_RUNNER_HOST_SECRET");
 			expect(logs).not.toContain("SECRET_ARTIFACT_KEY");
 			expect(logs).toContain("plugin_runner");
 		} finally {
@@ -435,49 +449,60 @@ describe("BonoboHost", () => {
 		try {
 			const result = await BonoboHost.prototype.secretGet.call(
 				{
+					env: { PLUGIN_RUNNER_HOST_SECRET: "test-host-secret" },
 					ctx: {
 						props: {
-							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v2",
+							pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v3",
+							pluginRunId: "run_123",
+							host: DEFAULT_HOST,
 							acceptedCapabilities: ["plugin.secrets.read"],
 						},
 					},
 				} as unknown as BonoboHost,
-				{ host: DEFAULT_HOST, pluginRunId: "run_123", name: "OPENAI_API_KEY" },
+				// A rogue host/pluginRunId in the input must be ignored: run identity and the host
+				// origin/token come from trusted props only.
+				{ host: { origin: "https://evil.example", token: "stolen" }, pluginRunId: "run_forged", name: "OPENAI_API_KEY" },
 			);
 			expect(result).toBe("openai-secret");
 			const request = fetchSpy.mock.calls[0]?.[0] as Request;
 			expect(request.url).toBe("https://app.example/api/internal/plugins/host/secret-get");
+			// Dual auth: the run token plus the runner-only host secret.
 			expect(request.headers.get("Authorization")).toBe("Bearer host-token");
+			expect(request.headers.get("X-Bonobo-Runner-Authorization")).toBe("Bearer test-host-secret");
+			// The host derives the run from the bearer token, so the body carries only the secret name.
 			const body = await request.clone().json();
-			expect(body).toEqual({ pluginRunId: "run_123", name: "OPENAI_API_KEY" });
+			expect(body).toEqual({ name: "OPENAI_API_KEY" });
 			expect(JSON.stringify(body)).not.toContain("host-token");
 
 			await expect(
 				BonoboHost.prototype.secretGet.call(
 					{
+						env: { PLUGIN_RUNNER_HOST_SECRET: "test-host-secret" },
 						ctx: {
 							props: {
-								pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v2",
+								pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v3",
+								pluginRunId: "run_123",
+								host: DEFAULT_HOST,
 								acceptedCapabilities: [],
 							},
 						},
 					} as unknown as BonoboHost,
-					{ host: DEFAULT_HOST, pluginRunId: "run_123", name: "OPENAI_API_KEY" },
+					{ name: "OPENAI_API_KEY" },
 				),
 			).rejects.toThrow("Missing capability");
 		} finally {
 			fetchSpy.mockRestore();
 		}
 	});
-
 });
 
 describe("BonoboOutbound", () => {
 	function outbound_self(overrides?: { acceptedCapabilities?: string[]; outboundOrigins?: string[] }) {
 		return {
+			env: { PLUGIN_RUNNER_HOST_SECRET: "test-host-secret" },
 			ctx: {
 				props: {
-					pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v2",
+					pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v3",
 					pluginRunId: "run_123",
 					host: DEFAULT_HOST,
 					acceptedCapabilities: ["outbound.fetch"],
@@ -491,10 +516,10 @@ describe("BonoboOutbound", () => {
 	it("passes host-origin requests through without accounting or a capability gate", async () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("host-ok", { status: 200 }));
 		try {
-			const request = new Request(`${DEFAULT_HOST.origin}/api/plugins/v1/write-markdown`, {
+			const request = new Request(`${DEFAULT_HOST.origin}/api/v1/files/write`, {
 				method: "POST",
 				headers: { Authorization: `Bearer ${DEFAULT_HOST.token}`, "Content-Type": "application/json" },
-				body: JSON.stringify({ pluginRunId: "run_123", markdown: "# Out" }),
+				body: JSON.stringify({ path: "/uploads/photo.png.description.md", content: "# Out" }),
 			});
 			const response = await BonoboOutbound.prototype.fetch.call(
 				outbound_self({ acceptedCapabilities: [], outboundOrigins: [] }),
@@ -503,7 +528,34 @@ describe("BonoboOutbound", () => {
 			expect(response.status).toBe(200);
 			expect(await response.text()).toBe("host-ok");
 			expect(fetchSpy).toHaveBeenCalledTimes(1);
-			expect(fetch_request(fetchSpy.mock.calls[0]![0]).url).toBe(`${DEFAULT_HOST.origin}/api/plugins/v1/write-markdown`);
+			const forwarded = fetch_request(fetchSpy.mock.calls[0]![0]);
+			expect(forwarded.url).toBe(`${DEFAULT_HOST.origin}/api/v1/files/write`);
+			// The pass-through keeps the plugin's own headers and never adds the runner host secret.
+			expect(forwarded.headers.get("X-Bonobo-Runner-Authorization")).toBe(null);
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	it("never attaches the runner host secret to plugin calls against the runner-only host routes", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 401 }));
+		try {
+			// A malicious plugin can reach the runner-only paths through the host-origin pass-through
+			// and even send its own forged runner header, but the real secret is unreachable from the
+			// dynamic worker, so the forged value is all that arrives at the host.
+			const request = new Request(`${DEFAULT_HOST.origin}/api/internal/plugins/host/claim-runner-call`, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${DEFAULT_HOST.token}`,
+					"X-Bonobo-Runner-Authorization": "Bearer forged-value",
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ requestBytes: 0 }),
+			});
+			const response = await BonoboOutbound.prototype.fetch.call(outbound_self(), request);
+			expect(response.status).toBe(401);
+			const forwarded = fetch_request(fetchSpy.mock.calls[0]![0]);
+			expect(forwarded.headers.get("X-Bonobo-Runner-Authorization")).toBe("Bearer forged-value");
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -544,13 +596,16 @@ describe("BonoboOutbound", () => {
 			expect(response.headers.get("Content-Type")).toBe("text/plain");
 			expect(await response.text()).toBe("service-ok");
 			expect(fetchSpy).toHaveBeenCalledTimes(3);
+			// Claim/finish authenticate with the run token plus the runner host secret; the bodies
+			// carry no pluginRunId because the host derives the run from the bearer token.
+			for (const hostRequest of [hostRequests[0]!, hostRequests[1]!]) {
+				expect(hostRequest.headers.get("Authorization")).toBe(`Bearer ${DEFAULT_HOST.token}`);
+				expect(hostRequest.headers.get("X-Bonobo-Runner-Authorization")).toBe("Bearer test-host-secret");
+			}
 			expect(await hostRequests[0]!.clone().json()).toEqual({
-				pluginRunId: "run_123",
-				operation: "outboundFetch",
 				requestBytes: 2,
 			});
-			expect(await hostRequests[1]!.clone().json()).toMatchObject({
-				pluginRunId: "run_123",
+			expect(await hostRequests[1]!.clone().json()).toEqual({
 				callId: "call_1",
 				status: "succeeded",
 				errorMessage: null,
@@ -622,11 +677,11 @@ describe("BonoboOutbound", () => {
 			await expect(
 				BonoboOutbound.prototype.fetch.call(outbound_self(), new Request("https://modal.example/huge")),
 			).rejects.toThrow("size limit");
-			expect(await hostRequests[1]!.clone().json()).toMatchObject({
-				pluginRunId: "run_123",
+			expect(await hostRequests[1]!.clone().json()).toEqual({
 				callId: "call_1",
 				status: "failed",
 				errorMessage: "Outbound fetch failed",
+				requestBytes: 0,
 			});
 		} finally {
 			fetchSpy.mockRestore();
@@ -649,15 +704,18 @@ describe("secret masking", () => {
 	function plugin_secret_get() {
 		return BonoboHost.prototype.secretGet.call(
 			{
+				env: { PLUGIN_RUNNER_HOST_SECRET: "test-host-secret" },
 				ctx: {
 					props: {
-						pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v2",
+						pluginStableId: "plugin:media@0.1.0:sha256:abc:bonobo-host-v3",
+						pluginRunId: "run_123",
+						host: DEFAULT_HOST,
 						acceptedCapabilities: ["plugin.secrets.read"],
 						outboundOrigins: [],
 					},
 				},
 			} as unknown as BonoboHost,
-			{ host: DEFAULT_HOST, pluginRunId: "run_123", name: "OPENAI_API_KEY" },
+			{ name: "OPENAI_API_KEY" },
 		);
 	}
 

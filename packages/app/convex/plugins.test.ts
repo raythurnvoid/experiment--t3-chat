@@ -160,7 +160,6 @@ describe("plugins Phase 0", () => {
 			eventId: string;
 			status: "queued" | "running" | "succeeded" | "failed";
 			expiresAt: number;
-			outputAssetId?: Id<"files_r2_assets">;
 			finishedAt?: number;
 		},
 	) {
@@ -178,15 +177,85 @@ describe("plugins Phase 0", () => {
 				status: args.status,
 				acceptedCapabilities: fixture.installation.acceptedCapabilities,
 				expiresAt: args.expiresAt,
-				hostCallCount: 0,
-				hostWriteCount: 0,
+				apiCallCount: 0,
+				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: Date.now(),
-				...(args.outputAssetId === undefined ? {} : { outputAssetId: args.outputAssetId }),
 				...(args.finishedAt === undefined ? {} : { finishedAt: args.finishedAt }),
 			}),
 		);
 	}
+
+	// A running run reachable through the host/public API with a live `plr_` token. `tokenSeed` is a
+	// single hex char repeated to a valid 64-hex token, so a test needing two runs passes distinct seeds.
+	async function start_running_plugin_run(
+		t: ReturnType<typeof test_convex>,
+		args?: {
+			acceptedCapabilities?: plugins_Capability[];
+			tokenSeed?: string;
+			filename?: string;
+			contentType?: string;
+			expiresInMs?: number;
+		},
+	) {
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId);
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: membership.membershipId,
+			parentId: "root",
+			filename: args?.filename ?? "photo.png",
+			contentType: args?.contentType ?? "image/png",
+			size: 1024,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const runId = await t.run((ctx) =>
+			ctx.db.insert("plugins_event_runs", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				assetId: upload._yay.assetId,
+				fileNodeId: upload._yay.nodeId,
+				actorUserId: membership.userId,
+				installationId: installed._yay.installationId,
+				pluginVersionId: registered.pluginVersionId,
+				event: "files.upload.completed",
+				eventId: `plugin:run-${args?.tokenSeed ?? "e"}`,
+				status: "queued",
+				acceptedCapabilities: args?.acceptedCapabilities ?? ["plugin.secrets.read", "outbound.fetch"],
+				expiresAt: Date.now() + (args?.expiresInMs ?? 30 * 60 * 1000),
+				apiCallCount: 0,
+				outputWriteCount: 0,
+				errorMessage: null,
+				updatedAt: Date.now(),
+			}),
+		);
+		const apiToken = `plr_${(args?.tokenSeed ?? "e").repeat(64)}`;
+		const started = await t.mutation(internal.plugins_runtime.start_event_run, {
+			runId,
+			apiTokenHash: await crypto_sha256_hex(apiToken),
+		});
+		// A refused start would leave the run token-less and make 401 assertions pass vacuously.
+		if (started._nay) {
+			throw new Error(started._nay.message);
+		}
+		return { membership, asOwner, installed, upload: upload._yay, runId, apiToken };
+	}
+
+	const runner_host_headers = (apiToken: string) => ({
+		"Authorization": `Bearer ${apiToken}`,
+		"X-Bonobo-Runner-Authorization": `Bearer ${process.env.PLUGIN_RUNNER_HOST_SECRET}`,
+		"Content-Type": "application/json",
+	});
 
 	test("rejects unsupported backend limit fields in manifests", () => {
 		const manifest = {
@@ -464,26 +533,26 @@ describe("plugins Phase 0", () => {
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				hostCallCount: 0,
-				hostWriteCount: 0,
+				apiCallCount: 0,
+				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
 		});
-		const hostToken = "host-token-secret-test";
+		const apiToken = `plr_${"a".repeat(64)}`;
 		await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await crypto_sha256_hex(hostToken),
+			apiTokenHash: await crypto_sha256_hex(apiToken),
 		});
 
 		const response = await t.fetch("/api/internal/plugins/host/secret-get", {
 			method: "POST",
 			headers: {
-				Authorization: `Bearer ${hostToken}`,
+				"Authorization": `Bearer ${apiToken}`,
+				"X-Bonobo-Runner-Authorization": `Bearer ${process.env.PLUGIN_RUNNER_HOST_SECRET}`,
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({
-				pluginRunId: runId,
 				name: "OPENAI_API_KEY",
 			}),
 		});
@@ -491,7 +560,7 @@ describe("plugins Phase 0", () => {
 		expect(await response.json()).toEqual({ value: "sk-runtime-secret" });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run?.hostCallCount).toBe(1);
+		expect(run?.apiCallCount).toBe(1);
 		const calls = await t.run((ctx) =>
 			ctx.db
 				.query("plugins_event_run_calls")
@@ -501,13 +570,16 @@ describe("plugins Phase 0", () => {
 		expect(calls).toHaveLength(1);
 		expect(calls[0]).toMatchObject({
 			sequence: 1,
-			operation: "secretGet",
+			kind: "api_request",
+			route: "/api/internal/plugins/host/secret-get",
 			status: "succeeded",
-			secretName: "OPENAI_API_KEY",
-			secretFound: true,
+			responseStatus: 200,
 			errorMessage: null,
 		});
+		// Calls carry route-level telemetry only: no secret names, values, or tokens.
 		expect(JSON.stringify(calls)).not.toContain("sk-runtime-secret");
+		expect(JSON.stringify(calls)).not.toContain("OPENAI_API_KEY");
+		expect(JSON.stringify(calls)).not.toContain(apiToken);
 	});
 
 	test("records runner-local host call telemetry without storing raw payloads", async () => {
@@ -551,27 +623,57 @@ describe("plugins Phase 0", () => {
 				status: "queued",
 				acceptedCapabilities: ["outbound.fetch"],
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				hostCallCount: 0,
-				hostWriteCount: 0,
+				apiCallCount: 0,
+				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
 		});
-		const hostToken = "host-token-runner-call-test";
+		const apiToken = `plr_${"b".repeat(64)}`;
 		await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await crypto_sha256_hex(hostToken),
+			apiTokenHash: await crypto_sha256_hex(apiToken),
 		});
+
+		// Dual auth: the plugin bearer alone can never reach runner-internal routes.
+		const forged = await t.fetch("/api/internal/plugins/host/claim-runner-call", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ requestBytes: 3 }),
+		});
+		expect(forged.status).toBe(401);
+		const wrongRunnerSecret = await t.fetch("/api/internal/plugins/host/claim-runner-call", {
+			method: "POST",
+			headers: {
+				"Authorization": `Bearer ${apiToken}`,
+				"X-Bonobo-Runner-Authorization": "Bearer not-the-runner-secret",
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ requestBytes: 3 }),
+		});
+		expect(wrongRunnerSecret.status).toBe(401);
+		// The runner secret alone is equally useless without the run's bearer.
+		const missingBearer = await t.fetch("/api/internal/plugins/host/claim-runner-call", {
+			method: "POST",
+			headers: {
+				"X-Bonobo-Runner-Authorization": `Bearer ${process.env.PLUGIN_RUNNER_HOST_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ requestBytes: 3 }),
+		});
+		expect(missingBearer.status).toBe(401);
 
 		const claimed = await t.fetch("/api/internal/plugins/host/claim-runner-call", {
 			method: "POST",
 			headers: {
-				Authorization: `Bearer ${hostToken}`,
+				"Authorization": `Bearer ${apiToken}`,
+				"X-Bonobo-Runner-Authorization": `Bearer ${process.env.PLUGIN_RUNNER_HOST_SECRET}`,
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({
-				pluginRunId: runId,
-				operation: "outboundFetch",
 				requestBytes: 3,
 			}),
 		});
@@ -580,11 +682,11 @@ describe("plugins Phase 0", () => {
 		const finished = await t.fetch("/api/internal/plugins/host/finish-runner-call", {
 			method: "POST",
 			headers: {
-				Authorization: `Bearer ${hostToken}`,
+				"Authorization": `Bearer ${apiToken}`,
+				"X-Bonobo-Runner-Authorization": `Bearer ${process.env.PLUGIN_RUNNER_HOST_SECRET}`,
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({
-				pluginRunId: runId,
 				callId: claimedBody.callId,
 				status: "succeeded",
 				errorMessage: null,
@@ -594,9 +696,25 @@ describe("plugins Phase 0", () => {
 			}),
 		});
 		expect(finished.status).toBe(200);
+		// A duplicate finish settles idempotently instead of erroring or rewriting the doc.
+		const finishedAgain = await t.fetch("/api/internal/plugins/host/finish-runner-call", {
+			method: "POST",
+			headers: {
+				"Authorization": `Bearer ${apiToken}`,
+				"X-Bonobo-Runner-Authorization": `Bearer ${process.env.PLUGIN_RUNNER_HOST_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				callId: claimedBody.callId,
+				status: "failed",
+				errorMessage: "late duplicate",
+			}),
+		});
+		expect(finishedAgain.status).toBe(200);
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run?.hostCallCount).toBe(1);
+		// The failed forgeries consumed nothing; only the real claim burned a quota slot.
+		expect(run?.apiCallCount).toBe(1);
 		const calls = await t.run((ctx) =>
 			ctx.db
 				.query("plugins_event_run_calls")
@@ -606,7 +724,8 @@ describe("plugins Phase 0", () => {
 		expect(calls).toHaveLength(1);
 		expect(calls[0]).toMatchObject({
 			sequence: 1,
-			operation: "outboundFetch",
+			kind: "outbound_fetch",
+			route: "outbound",
 			status: "succeeded",
 			requestBytes: 3,
 			responseBytes: 23,
@@ -614,6 +733,7 @@ describe("plugins Phase 0", () => {
 			errorMessage: null,
 		});
 		expect(JSON.stringify(calls)).not.toContain("AQID");
+		expect(JSON.stringify(calls)).not.toContain(apiToken);
 		const visibleCalls = await asOwner.query(api.plugins.list_run_calls, {
 			membershipId: membership.membershipId,
 			installationId: installed._yay.installationId,
@@ -622,13 +742,203 @@ describe("plugins Phase 0", () => {
 		expect(visibleCalls).toHaveLength(1);
 		expect(visibleCalls[0]).toMatchObject({
 			sequence: 1,
-			operation: "outboundFetch",
+			kind: "outbound_fetch",
+			route: "outbound",
 			status: "succeeded",
 			requestBytes: 3,
 			responseBytes: 23,
 			responseStatus: 200,
 		});
 		expect(JSON.stringify(visibleCalls)).not.toContain("AQID");
+	});
+
+	test("rejects host API calls once the shared 20-call run quota is exhausted", async () => {
+		const t = test_convex();
+		const { runId, apiToken } = await start_running_plugin_run(t, {
+			acceptedCapabilities: ["outbound.fetch"],
+			tokenSeed: "a",
+		});
+		// Drive the run to the ceiling; the 21st call is refused before it can allocate a sequence
+		// or insert a call, so nothing about the quota can be bypassed by racing routes.
+		await t.run((ctx) => ctx.db.patch("plugins_event_runs", runId, { apiCallCount: 20 }));
+
+		const rejected = await t.fetch("/api/internal/plugins/host/claim-runner-call", {
+			method: "POST",
+			headers: runner_host_headers(apiToken),
+			body: JSON.stringify({ requestBytes: 1 }),
+		});
+		expect(rejected.status).toBe(429);
+
+		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+		expect(run?.apiCallCount).toBe(20);
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(calls).toHaveLength(0);
+	});
+
+	test("denies secret-get to a plugin run without the secrets.read capability", async () => {
+		const t = test_convex();
+		const { runId, apiToken } = await start_running_plugin_run(t, {
+			acceptedCapabilities: ["outbound.fetch"],
+			tokenSeed: "b",
+		});
+		const response = await t.fetch("/api/internal/plugins/host/secret-get", {
+			method: "POST",
+			headers: runner_host_headers(apiToken),
+			body: JSON.stringify({ name: "OPENAI_API_KEY" }),
+		});
+		expect(response.status).toBe(403);
+
+		// A disallowed call still burns a quota slot and leaves exactly one settled, failed call.
+		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+		expect(run?.apiCallCount).toBe(1);
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			status: "failed",
+			responseStatus: 403,
+			route: "/api/internal/plugins/host/secret-get",
+		});
+	});
+
+	test("denies an outbound claim to a plugin run without the outbound.fetch capability", async () => {
+		const t = test_convex();
+		const { runId, apiToken } = await start_running_plugin_run(t, {
+			acceptedCapabilities: ["plugin.secrets.read"],
+			tokenSeed: "c",
+		});
+		const response = await t.fetch("/api/internal/plugins/host/claim-runner-call", {
+			method: "POST",
+			headers: runner_host_headers(apiToken),
+			body: JSON.stringify({ requestBytes: 1 }),
+		});
+		expect(response.status).toBe(403);
+
+		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+		expect(run?.apiCallCount).toBe(1);
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({ status: "failed", responseStatus: 403, route: "outbound" });
+	});
+
+	test("rejects a user API key presented to the runner-internal host routes", async () => {
+		const t = test_convex();
+		const { membership, asOwner } = await start_running_plugin_run(t, { tokenSeed: "d" });
+		// Credential management requires a Clerk-backed user; the base membership mock leaves it null.
+		await t.run((ctx) => ctx.db.patch("users", membership.userId, { clerkUserId: `clerk-${membership.userId}` }));
+		const created = await asOwner.mutation(api.public_api.api_credential_create, {
+			membershipId: membership.membershipId,
+			name: "Files key",
+			scopes: ["files:read"],
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		// A valid runner secret plus a real user API key still fails: only `plugin_run` principals may
+		// reach these routes, so a user key can never resolve secrets or claim outbound accounting.
+		const response = await t.fetch("/api/internal/plugins/host/secret-get", {
+			method: "POST",
+			headers: {
+				"Authorization": `Bearer ${created._yay.credential}`,
+				"X-Bonobo-Runner-Authorization": `Bearer ${process.env.PLUGIN_RUNNER_HOST_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ name: "OPENAI_API_KEY" }),
+		});
+		expect(response.status).toBe(401);
+	});
+
+	test("rejects a well-formed but unknown plugin run token", async () => {
+		const t = test_convex();
+		await start_running_plugin_run(t, { tokenSeed: "e" });
+		// Same shape as a real token (plr_ + 64 hex) but no matching run hash: 401, not a 500.
+		const unknownToken = `plr_${"f".repeat(64)}`;
+		const response = await t.fetch("/api/internal/plugins/host/secret-get", {
+			method: "POST",
+			headers: {
+				"Authorization": `Bearer ${unknownToken}`,
+				"X-Bonobo-Runner-Authorization": `Bearer ${process.env.PLUGIN_RUNNER_HOST_SECRET}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ name: "OPENAI_API_KEY" }),
+		});
+		expect(response.status).toBe(401);
+	});
+
+	test("revokes a run token when its triggering upload is archived", async () => {
+		const t = test_convex();
+		const { runId, upload, apiToken } = await start_running_plugin_run(t, { tokenSeed: "1" });
+		// Deleting the source folder/file archives the node; a run whose authority outlived its
+		// upload must not keep writing, or publishing beside it would resurrect the deleted parent.
+		await t.run((ctx) => ctx.db.patch("files_nodes", upload.nodeId, { archiveOperationId: "op_test_archive" }));
+
+		const response = await t.fetch("/api/internal/plugins/host/secret-get", {
+			method: "POST",
+			headers: runner_host_headers(apiToken),
+			body: JSON.stringify({ name: "OPENAI_API_KEY" }),
+		});
+		expect(response.status).toBe(401);
+
+		// The rejection happens at principal resolution, before any quota slot is consumed.
+		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+		expect(run?.apiCallCount).toBe(0);
+	});
+
+	test("stops authenticating a run token after the run reaches a terminal state", async () => {
+		const t = test_convex();
+		const { runId, apiToken } = await start_running_plugin_run(t, { tokenSeed: "2" });
+		await t.mutation(internal.plugins_runtime.finish_event_run, {
+			runId,
+			outcome: {
+				kind: "runner_response",
+				runnerOk: true,
+				runnerHttpStatus: 200,
+				bodyStatus: "succeeded",
+				runnerErrorMessage: null,
+			},
+		});
+
+		// The terminal transition clears the token hash/expiry, so the same bearer no longer resolves.
+		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+		expect(run?.apiTokenHash).toBeUndefined();
+		expect(run?.apiTokenExpiresAt).toBeUndefined();
+
+		const reuse = await t.fetch("/api/internal/plugins/host/secret-get", {
+			method: "POST",
+			headers: runner_host_headers(apiToken),
+			body: JSON.stringify({ name: "OPENAI_API_KEY" }),
+		});
+		expect(reuse.status).toBe(401);
+	});
+
+	test("refuses a download URL when the run token is in its final second", async () => {
+		const t = test_convex();
+		const { runId, upload, apiToken } = await start_running_plugin_run(t, { tokenSeed: "3" });
+		// Alive enough to authenticate, but under the 1s signing granularity: any URL would
+		// have to outlive the token, so the route must refuse instead of flooring the TTL up.
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_event_runs", runId, { apiTokenExpiresAt: Date.now() + 900, updatedAt: Date.now() }),
+		);
+		const response = await t.fetch("/api/v1/files/download-url", {
+			method: "POST",
+			headers: { "Authorization": `Bearer ${apiToken}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ fileNodeId: String(upload.nodeId) }),
+		});
+		expect(response.status).toBe(401);
 	});
 
 	test("enqueues multiple upload plugins without storing plugin work ids on the source asset", async () => {
@@ -808,37 +1118,37 @@ describe("plugins Phase 0", () => {
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				hostCallCount: 0,
-				hostWriteCount: 0,
+				apiCallCount: 0,
+				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
 		});
-		const hostToken = "host-token-overwrite-test";
+		const apiToken = `plr_${"c".repeat(64)}`;
 		await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await crypto_sha256_hex(hostToken),
+			apiTokenHash: await crypto_sha256_hex(apiToken),
 		});
 
-		const response = await t.fetch("/api/plugins/v1/write-markdown", {
+		const response = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers: {
-				Authorization: `Bearer ${hostToken}`,
+				Authorization: `Bearer ${apiToken}`,
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({
-				pluginRunId: runId,
-				path: "existing.md",
-				markdown: "# New",
+				path: "/existing.md",
+				content: "# New",
 				overwrite: "fail",
 			}),
 		});
 
-		expect(response.status).toBe(400);
-		expect(await response.json()).toEqual({ message: "Output path already exists" });
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ message: "A file already exists at this path" });
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run?.hostCallCount).toBe(1);
-		expect(run?.hostWriteCount).toBe(0);
+		// The failed constraint still burned a quota slot.
+		expect(run?.apiCallCount).toBe(1);
+		expect(run?.outputWriteCount).toBe(0);
 		const calls = await t.run((ctx) =>
 			ctx.db
 				.query("plugins_event_run_calls")
@@ -848,15 +1158,16 @@ describe("plugins Phase 0", () => {
 		expect(calls).toHaveLength(1);
 		expect(calls[0]).toMatchObject({
 			sequence: 1,
-			operation: "writeMarkdown",
+			kind: "api_request",
+			route: "/api/v1/files/write",
 			status: "failed",
-			outputPath: "existing.md",
-			outputOverwrite: "fail",
-			markdownBytes: 5,
-			errorMessage: "Output path already exists",
+			responseStatus: 409,
+			errorCode: "conflict",
+			errorMessage: "A file already exists at this path",
 		});
 		expect(calls[0]?.finishedAt).toBeDefined();
-		expect(calls[0]?.elapsedMs).toBe(0);
+		// No unpublished stage survives a conflict rejection.
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
 	});
 
 	test("rejects plugin markdown outputs outside a simple markdown filename", async () => {
@@ -900,53 +1211,81 @@ describe("plugins Phase 0", () => {
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				hostCallCount: 0,
-				hostWriteCount: 0,
+				apiCallCount: 0,
+				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
 		});
-		const hostToken = "host-token-unsafe-output-test";
+		const apiToken = `plr_${"d".repeat(64)}`;
 		await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await crypto_sha256_hex(hostToken),
+			apiTokenHash: await crypto_sha256_hex(apiToken),
 		});
 
-		const response = await t.fetch("/api/plugins/v1/write-markdown", {
+		const relativeTraversal = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers: {
-				Authorization: `Bearer ${hostToken}`,
+				Authorization: `Bearer ${apiToken}`,
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({
-				pluginRunId: runId,
 				path: "../escaped/unsafe.md",
-				markdown: "# New",
+				content: "# New",
 				overwrite: "replace",
 			}),
 		});
+		expect(relativeTraversal.status).toBe(400);
+		expect(await relativeTraversal.json()).toEqual({ message: "Path must be absolute." });
 
-		expect(response.status).toBe(400);
-		expect(await response.json()).toEqual({ message: "Output path is invalid" });
+		// An absolute path outside the source file's parent violates the sibling constraint.
+		const escapedSibling = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				path: "/escaped/unsafe.md",
+				content: "# New",
+				overwrite: "replace",
+			}),
+		});
+		expect(escapedSibling.status).toBe(403);
+		expect(await escapedSibling.json()).toEqual({ message: "Permission denied" });
+
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run?.hostCallCount).toBe(1);
-		expect(run?.hostWriteCount).toBe(0);
+		// Both rejected attempts burned quota slots.
+		expect(run?.apiCallCount).toBe(2);
+		expect(run?.outputWriteCount).toBe(0);
 		const calls = await t.run((ctx) =>
 			ctx.db
 				.query("plugins_event_run_calls")
 				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
 				.collect(),
 		);
-		expect(calls).toHaveLength(1);
+		expect(calls).toHaveLength(2);
 		expect(calls[0]).toMatchObject({
 			sequence: 1,
-			operation: "writeMarkdown",
+			kind: "api_request",
+			route: "/api/v1/files/write",
 			status: "failed",
-			errorMessage: "Output path is invalid",
+			responseStatus: 400,
+			errorCode: "invalid_input",
+			errorMessage: "Path must be absolute.",
+		});
+		expect(calls[1]).toMatchObject({
+			sequence: 2,
+			kind: "api_request",
+			route: "/api/v1/files/write",
+			status: "failed",
+			responseStatus: 403,
+			errorCode: "permission_denied",
+			errorMessage: "Permission denied",
 		});
 	});
 
-	test("normalizes plugin markdown output names before writing files", async () => {
+	test("requires already-normalized plugin markdown output names", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
@@ -987,33 +1326,52 @@ describe("plugins Phase 0", () => {
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				hostCallCount: 0,
-				hostWriteCount: 0,
+				apiCallCount: 0,
+				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
 		});
-		const hostToken = "host-token-normalized-output-test";
+		const apiToken = `plr_${"e".repeat(64)}`;
 		await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await crypto_sha256_hex(hostToken),
+			apiTokenHash: await crypto_sha256_hex(apiToken),
 		});
 
-		const response = await t.fetch("/api/plugins/v1/write-markdown", {
+		// The public write API never rewrites names: a non-normalized basename is rejected instead
+		// of silently slugified, so the path a plugin requests is exactly the path that exists.
+		const rejected = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers: {
-				Authorization: `Bearer ${hostToken}`,
+				Authorization: `Bearer ${apiToken}`,
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({
-				pluginRunId: runId,
-				path: "Plugin Live Image 20260702T011841Z.png.description.md",
-				markdown: "# Description",
+				path: "/Plugin Live Image 20260702T011841Z.png.description.md",
+				content: "# Description",
 				overwrite: "replace",
 			}),
 		});
+		expect(rejected.status).toBe(400);
+		expect(await rejected.json()).toEqual({ message: "Path must end in a valid Markdown (.md) file name." });
 
+		const response = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				path: "/plugin-live-image-20260702t011841z.png.description.md",
+				content: "# Description",
+				overwrite: "replace",
+			}),
+		});
 		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			path: "/plugin-live-image-20260702t011841z.png.description.md",
+			contentType: "text/markdown;charset=utf-8",
+		});
 		const output = await t.run((ctx) =>
 			ctx.db
 				.query("files_nodes")
@@ -1034,13 +1392,22 @@ describe("plugins Phase 0", () => {
 				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
 				.collect(),
 		);
-		expect(calls).toHaveLength(1);
+		expect(calls).toHaveLength(2);
 		expect(calls[0]).toMatchObject({
 			sequence: 1,
-			operation: "writeMarkdown",
+			kind: "api_request",
+			route: "/api/v1/files/write",
+			status: "failed",
+			responseStatus: 400,
+			errorCode: "invalid_input",
+		});
+		expect(calls[1]).toMatchObject({
+			sequence: 2,
+			kind: "api_request",
+			route: "/api/v1/files/write",
 			status: "succeeded",
-			outputPath: "plugin-live-image-20260702t011841z.png.description.md",
-			markdownBytes: 13,
+			responseStatus: 200,
+			requestBytes: 13,
 			errorMessage: null,
 		});
 	});
@@ -1086,37 +1453,39 @@ describe("plugins Phase 0", () => {
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				hostCallCount: 0,
-				hostWriteCount: 0,
+				apiCallCount: 0,
+				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
 		});
-		const hostToken = "host-token-multiple-output-test";
+		const apiToken = `plr_${"f".repeat(64)}`;
 		await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await crypto_sha256_hex(hostToken),
+			apiTokenHash: await crypto_sha256_hex(apiToken),
 		});
 
 		for (const output of [
-			{ path: "video.transcript.md", markdown: "# Transcript\n\nHello from the transcript." },
-			{ path: "video.summary.md", markdown: "# Summary\n\nThe video is summarized here." },
+			{ path: "/video.transcript.md", content: "# Transcript\n\nHello from the transcript." },
+			{ path: "/video.summary.md", content: "# Summary\n\nThe video is summarized here." },
 		]) {
-			const response = await t.fetch("/api/plugins/v1/write-markdown", {
+			const response = await t.fetch("/api/v1/files/write", {
 				method: "POST",
 				headers: {
-					Authorization: `Bearer ${hostToken}`,
+					Authorization: `Bearer ${apiToken}`,
 					"Content-Type": "application/json",
 				},
 				body: JSON.stringify({
-					pluginRunId: runId,
 					path: output.path,
-					markdown: output.markdown,
+					content: output.content,
 					overwrite: "replace",
 				}),
 			});
 			expect(response.status).toBe(200);
-			expect(await response.json()).toEqual({ ok: true });
+			expect(await response.json()).toMatchObject({
+				path: output.path,
+				contentType: "text/markdown;charset=utf-8",
+			});
 		}
 
 		const transcript = await t.query(internal.files_nodes.read_file_content_from_chunks, {
@@ -1137,26 +1506,27 @@ describe("plugins Phase 0", () => {
 		expect(summary?.content).toBe("# Summary\n\nThe video is summarized here.");
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run?.hostWriteCount).toBe(2);
-		if (!run?.outputFileNodeId) {
-			throw new Error("Expected latest output file id");
-		}
-		const latestOutput = await t.run((ctx) => ctx.db.get("files_nodes", run.outputFileNodeId!));
-		expect(latestOutput?.path).toBe("/video.summary.md");
+		expect(run?.apiCallCount).toBe(2);
+		expect(run?.outputWriteCount).toBe(2);
 		const calls = await t.run((ctx) =>
 			ctx.db
 				.query("plugins_event_run_calls")
 				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
 				.collect(),
 		);
-		expect(calls.map((call) => [call.sequence, call.operation, call.status, call.outputPath])).toEqual([
-			[1, "writeMarkdown", "succeeded", "video.transcript.md"],
-			[2, "writeMarkdown", "succeeded", "video.summary.md"],
+		expect(calls.map((call) => [call.sequence, call.kind, call.status])).toEqual([
+			[1, "api_request", "succeeded"],
+			[2, "api_request", "succeeded"],
 		]);
-		expect(calls.map((call) => call.markdownBytes)).toEqual([40, 40]);
-		expect(calls.every((call) => call.finishedAt !== undefined && call.elapsedMs !== undefined)).toBe(true);
+		expect(calls.map((call) => call.route)).toEqual(["/api/v1/files/write", "/api/v1/files/write"]);
+		expect(calls.map((call) => call.requestBytes)).toEqual([40, 40]);
+		expect(calls.every((call) => call.finishedAt !== undefined && call.elapsedMs !== undefined)).toBe(
+			true,
+		);
 		expect(JSON.stringify(calls)).not.toContain("Hello from the transcript");
 		expect(JSON.stringify(calls)).not.toContain("The video is summarized here");
+		// Every stage was published; none remain to reap.
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
 	});
 
 	test("marks a run failed when the runner reports a non-2xx plugin status", async () => {
@@ -1201,8 +1571,8 @@ describe("plugins Phase 0", () => {
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				hostCallCount: 1,
-				hostWriteCount: 1,
+				apiCallCount: 1,
+				outputWriteCount: 1,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
@@ -1285,67 +1655,221 @@ describe("plugins Phase 0", () => {
 		});
 	});
 
-	test("refuses to finalize outputs for a terminal run", async () => {
-		const t = test_convex();
-		const fixture = await install_plugin_with_upload_asset(t);
-		const failedRunId = await insert_event_run(t, fixture, {
-			eventId: "plugin:finalize-terminal-run-test",
-			status: "running",
-			expiresAt: Date.now() + 30 * 60 * 1000,
-		});
-		await t.run((ctx) => ctx.db.patch("plugins_event_runs", failedRunId, { status: "failed", updatedAt: Date.now() }));
-
-		const refused = await t.mutation(internal.r2.finalize_uploaded_media_markdown_outputs, {
-			organizationId: fixture.membership.organizationId,
-			workspaceId: fixture.membership.workspaceId,
-			userId: fixture.membership.userId,
-			assetId: fixture.upload.assetId,
-			pluginRunId: failedRunId,
-			outputs: [],
-		});
-		expect(refused).toMatchObject({ _nay: { message: "Run expired" } });
-
-		const runningRunId = await insert_event_run(t, fixture, {
-			eventId: "plugin:finalize-running-run-test",
-			status: "running",
-			expiresAt: Date.now() + 30 * 60 * 1000,
-		});
-		const finalized = await t.mutation(internal.r2.finalize_uploaded_media_markdown_outputs, {
-			organizationId: fixture.membership.organizationId,
-			workspaceId: fixture.membership.workspaceId,
-			userId: fixture.membership.userId,
-			assetId: fixture.upload.assetId,
-			pluginRunId: runningRunId,
-			outputs: [],
-		});
-		expect(finalized).toEqual({ _yay: null });
-	});
-
-	test("refuses host calls once the token expires", async () => {
+	test("refuses to publish a staged write once the run is terminal", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const runId = await insert_event_run(t, fixture, {
-			eventId: "plugin:expired-host-token-test",
+			eventId: "plugin:publish-terminal-run-test",
 			status: "running",
 			expiresAt: Date.now() + 30 * 60 * 1000,
 		});
-		const hostTokenHash = await crypto_sha256_hex("expired-token-test");
-		await t.run((ctx) =>
+		await t.run(async (ctx) =>
 			ctx.db.patch("plugins_event_runs", runId, {
-				hostTokenHash,
-				hostTokenExpiresAt: Date.now() - 1000,
+				apiTokenHash: await crypto_sha256_hex(`plr_${"2".repeat(64)}`),
+				apiTokenExpiresAt: Date.now() + 30 * 60 * 1000,
+				updatedAt: Date.now(),
+			}),
+		);
+		const consumed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
+			runId,
+			kind: "api_request",
+			route: "/api/v1/files/write",
+		});
+		if (consumed._nay) {
+			throw new Error(consumed._nay.message);
+		}
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: fixture.membership.organizationId,
+			workspaceId: fixture.membership.workspaceId,
+			userId: fixture.membership.userId,
+			principalRef: { kind: "plugin_run", runId, callId: consumed._yay.callId },
+			path: "/expired.png.md",
+			overwrite: "replace",
+			contentSize: 5,
+			yjsSnapshotSize: 5,
+		});
+		if (prepared._nay) {
+			throw new Error(prepared._nay.message);
+		}
+
+		// The run dies between staging and publishing: the output must never become visible.
+		await t.run((ctx) => ctx.db.patch("plugins_event_runs", runId, { status: "failed", updatedAt: Date.now() }));
+		const published = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: prepared._yay.stageId,
+			content: "# New",
+		});
+		expect(published).toMatchObject({ _nay: { message: "Unauthenticated" } });
+
+		// Atomicity: the staged path never became a visible node — no placeholder is left behind.
+		const stagedNode = await t.run((ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", fixture.membership.organizationId)
+						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("path", "/expired.png.md")
+						.eq("archiveOperationId", undefined),
+				)
+				.unique(),
+		);
+		expect(stagedNode).toBeNull();
+
+		await t.mutation(internal.public_api.cleanup_file_write_stage, { stageId: prepared._yay.stageId });
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+		// Cleanup settled the consumed call as failed.
+		const call = await t.run((ctx) => ctx.db.get("plugins_event_run_calls", consumed._yay.callId));
+		expect(call).toMatchObject({ status: "failed", errorCode: "unpublished_write" });
+	});
+
+	test("reaps only expired staged writes and their orphaned asset docs", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		const runId = await insert_event_run(t, fixture, {
+			eventId: "plugin:reap-expired-stage-test",
+			status: "running",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		await t.run(async (ctx) =>
+			ctx.db.patch("plugins_event_runs", runId, {
+				apiTokenHash: await crypto_sha256_hex(`plr_${"5".repeat(64)}`),
+				apiTokenExpiresAt: Date.now() + 30 * 60 * 1000,
+				updatedAt: Date.now(),
+			}),
+		);
+		const consumed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
+			runId,
+			kind: "api_request",
+			route: "/api/v1/files/write",
+		});
+		if (consumed._nay) {
+			throw new Error(consumed._nay.message);
+		}
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: fixture.membership.organizationId,
+			workspaceId: fixture.membership.workspaceId,
+			userId: fixture.membership.userId,
+			principalRef: { kind: "plugin_run", runId, callId: consumed._yay.callId },
+			path: "/expired.png.md",
+			overwrite: "replace",
+			contentSize: 5,
+			yjsSnapshotSize: 5,
+		});
+		if (prepared._nay) {
+			throw new Error(prepared._nay.message);
+		}
+
+		// A not-yet-expired stage is left alone: the cron only reaps past-TTL stages.
+		const notYet = await t.mutation(internal.public_api.cleanup_expired_file_write_stages, {
+			_test_now: Date.now(),
+			_test_disableReschedule: true,
+		});
+		expect(notYet).toMatchObject({ deletedCount: 0, done: true });
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toHaveLength(1);
+
+		// A crashed action leaves the stage past its TTL; the cron reaps the stage and its asset docs.
+		await t.run((ctx) =>
+			ctx.db.patch("public_api_file_write_stages", prepared._yay.stageId, { expiresAt: Date.now() - 1000 }),
+		);
+		const reaped = await t.mutation(internal.public_api.cleanup_expired_file_write_stages, {
+			_test_now: Date.now(),
+			_test_disableReschedule: true,
+		});
+		expect(reaped).toMatchObject({ deletedCount: 1, done: true });
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+		const assets = await t.run((ctx) =>
+			Promise.all([
+				ctx.db.get("files_r2_assets", prepared._yay.contentAssetId),
+				ctx.db.get("files_r2_assets", prepared._yay.yjsSnapshotAssetId),
+				ctx.db.get("files_r2_assets", prepared._yay.contentSnapshotAssetId),
+			]),
+		);
+		expect(assets).toEqual([null, null, null]);
+		const call = await t.run((ctx) => ctx.db.get("plugins_event_run_calls", consumed._yay.callId));
+		expect(call).toMatchObject({ status: "failed", errorCode: "unpublished_write" });
+	});
+
+	test("returns 404 when a plugin requests a download URL for a node other than its source", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		const runId = await insert_event_run(t, fixture, {
+			eventId: "plugin:download-foreign-node-test",
+			status: "running",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		const apiToken = `plr_${"6".repeat(64)}`;
+		await t.run(async (ctx) =>
+			ctx.db.patch("plugins_event_runs", runId, {
+				apiTokenHash: await crypto_sha256_hex(apiToken),
+				apiTokenExpiresAt: Date.now() + 30 * 60 * 1000,
 				updatedAt: Date.now(),
 			}),
 		);
 
-		const started = await t.mutation(internal.plugins_runtime.start_host_call, {
-			hostTokenHash,
-			pluginRunId: String(runId),
-			requiredCapabilities: [],
-			operation: "sourceTemporaryUrl",
+		// A sibling upload in the same workspace the plugin was never triggered for.
+		const asOwner = t.withIdentity(user_identity(fixture.membership.userId));
+		const foreign = await asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: fixture.membership.membershipId,
+			parentId: "root",
+			filename: "other.png",
+			contentType: "image/png",
+			size: 1024,
 		});
+		if (foreign._nay) {
+			throw new Error(foreign._nay.message);
+		}
 
-		expect(started).toMatchObject({ _nay: { message: "Unauthorized" } });
+		const auth_headers = { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" };
+		const foreignDownload = await t.fetch("/api/v1/files/download-url", {
+			method: "POST",
+			headers: auth_headers,
+			body: JSON.stringify({ fileNodeId: foreign._yay.nodeId }),
+		});
+		expect(foreignDownload.status).toBe(404);
+
+		const unknownDownload = await t.fetch("/api/v1/files/download-url", {
+			method: "POST",
+			headers: auth_headers,
+			body: JSON.stringify({ fileNodeId: "not-a-real-node" }),
+		});
+		expect(unknownDownload.status).toBe(404);
+		// The exact-source 200 path (which signs a real R2 URL) is covered hermetically in r2.test.ts.
+	});
+
+	test("refuses plugin API calls once the run token expires", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		const runId = await insert_event_run(t, fixture, {
+			eventId: "plugin:expired-api-token-test",
+			status: "running",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		const apiToken = `plr_${"1".repeat(64)}`;
+		await t.run(async (ctx) =>
+			ctx.db.patch("plugins_event_runs", runId, {
+				apiTokenHash: await crypto_sha256_hex(apiToken),
+				apiTokenExpiresAt: Date.now() - 1000,
+				updatedAt: Date.now(),
+			}),
+		);
+
+		const consumed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
+			runId,
+			kind: "api_request",
+			route: "/api/v1/files/write",
+		});
+		expect(consumed).toMatchObject({ _nay: { message: "Unauthenticated" } });
+
+		// The expired bearer is equally dead at the HTTP surface.
+		const response = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ path: "/expired.png.md", content: "# New" }),
+		});
+		expect(response.status).toBe(401);
 	});
 
 	test("does not mark a run succeeded without a completed markdown write", async () => {
@@ -1389,8 +1913,9 @@ describe("plugins Phase 0", () => {
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				hostCallCount: 1,
-				hostWriteCount: 1,
+				// API calls happened, but none of them published an output.
+				apiCallCount: 1,
+				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
@@ -1421,24 +1946,25 @@ describe("plugins Phase 0", () => {
 		});
 	});
 
-	test("marks a run failed when host calls are left unfinished", async () => {
+	test("marks a run failed when API calls are left unfinished", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const runId = await insert_event_run(t, fixture, {
-			eventId: "plugin:unfinished-host-call-test",
+			eventId: "plugin:unfinished-api-call-test",
 			status: "queued",
 			expiresAt: Date.now() + 30 * 60 * 1000,
 		});
-		await t.run(async (ctx) => {
+		const callId = await t.run(async (ctx) => {
 			const now = Date.now();
-			await ctx.db.insert("plugins_event_run_calls", {
+			return await ctx.db.insert("plugins_event_run_calls", {
 				organizationId: fixture.membership.organizationId,
 				workspaceId: fixture.membership.workspaceId,
 				runId,
 				installationId: fixture.installationId,
 				pluginVersionId: fixture.installation.pluginVersionId,
 				sequence: 1,
-				operation: "writeMarkdown",
+				kind: "outbound_fetch",
+				route: "outbound",
 				status: "started",
 				errorMessage: null,
 				startedAt: now,
@@ -1458,8 +1984,15 @@ describe("plugins Phase 0", () => {
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		expect(run).toMatchObject({
 			status: "failed",
-			errorMessage: "Plugin left host calls unfinished",
+			errorMessage: "Plugin left API calls unfinished",
 			runnerHttpStatus: 200,
+		});
+		// Terminalization settles the dangling call with a curated literal.
+		const call = await t.run((ctx) => ctx.db.get("plugins_event_run_calls", callId));
+		expect(call).toMatchObject({
+			status: "failed",
+			errorCode: "run_ended",
+			errorMessage: "Run ended before the call finished",
 		});
 	});
 
@@ -1504,8 +2037,8 @@ describe("plugins Phase 0", () => {
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				hostCallCount: 0,
-				hostWriteCount: 0,
+				apiCallCount: 0,
+				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
@@ -1550,8 +2083,8 @@ describe("plugins Phase 0", () => {
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				hostCallCount: 0,
-				hostWriteCount: 0,
+				apiCallCount: 0,
+				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
@@ -1575,14 +2108,10 @@ describe("plugins Phase 0", () => {
 	test("fails expired queued and running runs", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
-		await t.run((ctx) =>
-			ctx.db.patch("files_r2_assets", fixture.upload.assetId, { processingWorkId: "work_expired_run" as never }),
-		);
 		const expiredQueuedRunId = await insert_event_run(t, fixture, {
 			eventId: "plugin:expiry-expired-queued",
 			status: "queued",
 			expiresAt: Date.now() - 1000,
-			outputAssetId: fixture.upload.assetId,
 		});
 		const expiredRunningRunId = await insert_event_run(t, fixture, {
 			eventId: "plugin:expiry-expired-running",
@@ -1609,9 +2138,10 @@ describe("plugins Phase 0", () => {
 		expect(expiredQueued?.finishedAt).toBeDefined();
 		expect(expiredRunning).toMatchObject({ status: "failed", errorMessage: "Run expired" });
 		expect(expiredRunning?.finishedAt).toBeDefined();
+		// Terminal runs must not authenticate.
+		expect(expiredRunning?.apiTokenHash).toBeUndefined();
+		expect(expiredRunning?.apiTokenExpiresAt).toBeUndefined();
 		expect(fresh).toMatchObject({ status: "queued", errorMessage: null });
-		const asset = await t.run((ctx) => ctx.db.get("files_r2_assets", fixture.upload.assetId));
-		expect(asset?.processingWorkId).toBeNull();
 	});
 
 	test("does not resurrect an expired-failed run when its executor fires", async () => {
@@ -1680,7 +2210,7 @@ describe("plugins Phase 0", () => {
 		}
 	});
 
-	test("cleans up old terminal runs and their host calls", async () => {
+	test("cleans up old terminal runs and their calls", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const oldRunId = await insert_event_run(t, fixture, {
@@ -1698,7 +2228,8 @@ describe("plugins Phase 0", () => {
 					installationId: fixture.installationId,
 					pluginVersionId: fixture.installation.pluginVersionId,
 					sequence,
-					operation: "writeMarkdown",
+					kind: "api_request",
+					route: "/api/v1/files/write",
 					status: "failed",
 					errorMessage: null,
 					startedAt: now,
@@ -1740,26 +2271,26 @@ describe("plugins Phase 0", () => {
 		expect(run).toMatchObject({ status: "succeeded", errorMessage: null });
 	});
 
-	test("host token stays valid for the life of the run", async () => {
+	test("API token stays valid for the life of the run", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const expiresAt = Date.now() + 30 * 60 * 1000;
 		const runId = await insert_event_run(t, fixture, {
-			eventId: "plugin:host-token-ttl",
+			eventId: "plugin:api-token-ttl",
 			status: "queued",
 			expiresAt,
 		});
 
 		const started = await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await crypto_sha256_hex("host-token-ttl-test"),
+			apiTokenHash: await crypto_sha256_hex(`plr_${"3".repeat(64)}`),
 		});
 		if (started._nay) {
 			throw new Error(started._nay.message);
 		}
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
-		expect(run?.hostTokenExpiresAt).toBe(expiresAt);
+		expect(run?.apiTokenExpiresAt).toBe(expiresAt);
 	});
 
 	test("marks a retried run as interrupted", async () => {
@@ -1773,7 +2304,7 @@ describe("plugins Phase 0", () => {
 
 		const started = await t.mutation(internal.plugins_runtime.start_event_run, {
 			runId,
-			hostTokenHash: await crypto_sha256_hex("t"),
+			apiTokenHash: await crypto_sha256_hex(`plr_${"4".repeat(64)}`),
 		});
 
 		expect(started).toEqual({ _nay: { message: "Run was interrupted" } });
@@ -2618,8 +3149,8 @@ describe("plugins outbound origins consent", () => {
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				hostCallCount: 0,
-				hostWriteCount: 0,
+				apiCallCount: 0,
+				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
@@ -3487,8 +4018,8 @@ describe("plugins uninstall_version", () => {
 				status: "succeeded",
 				acceptedCapabilities: installation.acceptedCapabilities,
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				hostCallCount: 1,
-				hostWriteCount: 1,
+				apiCallCount: 1,
+				outputWriteCount: 1,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
@@ -4028,8 +4559,8 @@ describe("plugins run_installation_on_files", () => {
 			event: "files.run.requested",
 			status: "queued",
 			acceptedCapabilities: installation.acceptedCapabilities,
-			hostCallCount: 0,
-			hostWriteCount: 0,
+			apiCallCount: 0,
+			outputWriteCount: 0,
 			errorMessage: null,
 		});
 		expect(run.eventId.startsWith("run_requested::")).toBe(true);
@@ -4138,8 +4669,8 @@ describe("plugins admin hard delete", () => {
 				status: "succeeded",
 				acceptedCapabilities: media_plugin_consent.acceptedCapabilities,
 				expiresAt: now + 30 * 60 * 1000,
-				hostCallCount: 2,
-				hostWriteCount: 1,
+				apiCallCount: 2,
+				outputWriteCount: 1,
 				errorMessage: null,
 				updatedAt: now,
 			});
@@ -4151,7 +4682,8 @@ describe("plugins admin hard delete", () => {
 					installationId: installedMedia._yay.installationId,
 					pluginVersionId: media.pluginVersionId,
 					sequence,
-					operation: "writeMarkdown",
+					kind: "api_request",
+					route: "/api/v1/files/write",
 					status: "succeeded",
 					errorMessage: null,
 					startedAt: now,

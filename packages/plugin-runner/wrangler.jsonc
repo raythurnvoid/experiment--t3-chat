@@ -11,6 +11,7 @@
 	"secrets": {
 		"required": [
 			"PLUGIN_RUNNER_SECRET",
+			"PLUGIN_RUNNER_HOST_SECRET",
 			"OPENAI_API_KEY",
 			"MODAL_FILE_CONVERTER_URL",
 			"MODAL_TOKEN",

@@ -361,8 +361,8 @@ const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props:
 							</div>
 							<div className={"RoutePluginsInstalledRunItem-meta" satisfies RoutePluginsInstalledRuns_ClassNames}>
 								{format_datetime(run.updatedAt)} · runner {run.runnerHttpStatus ?? "n/a"} · plugin{" "}
-								{run.pluginStatus ?? "n/a"} · {format_run_duration(run.runnerElapsedMs)} · calls {run.hostCallCount},
-								writes {run.hostWriteCount}
+								{run.pluginStatus ?? "n/a"} · {format_run_duration(run.runnerElapsedMs)} · calls {run.apiCallCount},
+								writes {run.outputWriteCount}
 							</div>
 							{run.errorMessage ? (
 								<div className={"RoutePluginsInstalledRunItem-error" satisfies RoutePluginsInstalledRuns_ClassNames}>
@@ -1116,6 +1116,7 @@ type RoutePluginsPlugin_ClassNames =
 	| "RoutePluginsPluginHero-description"
 	| "RoutePluginsPluginHero-actions"
 	| "RoutePluginsPluginConsentModal"
+	| "RoutePluginsPluginConsentModal-baseline"
 	| "RoutePluginsPluginConsentModal-sectionTitle"
 	| "RoutePluginsPluginConsentModal-list"
 	| "RoutePluginsPluginConsentModal-item"
@@ -1248,6 +1249,11 @@ function RoutePluginsPlugin() {
 							{plugin.name}@{plugin.version} · {plugin.publisherDisplayName ?? "unknown publisher"}
 						</MyModalDescription>
 					</MyModalHeader>
+
+					{/* Platform baseline every plugin receives: static copy, not a manifest capability or consent set. */}
+					<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
+						Every plugin can read the triggering upload and create Markdown files beside it.
+					</p>
 
 					<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
 						This plugin can use these capabilities

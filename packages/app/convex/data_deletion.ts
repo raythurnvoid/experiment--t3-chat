@@ -25,6 +25,7 @@ import {
 	access_control_organization_role_permission_grants,
 } from "./access_control.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
+import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const WORKSPACE_CONTENT_PURGE_BATCH_SIZE = 100;
@@ -490,6 +491,22 @@ async function db_purge_organization_workspace_content_batch(
 	if (publicApiGrants.length > 0) {
 		await Promise.all(publicApiGrants.map((doc) => ctx.db.delete("public_api_grants", doc._id)));
 		return { done: false, deletedCount: publicApiGrants.length };
+	}
+
+	// Unpublished write stages own R2 objects whose asset docs have no r2Key yet, so the stage
+	// cleanup (which derives the object keys itself) must run before the assets purge below —
+	// the assets pass only deletes objects for docs with an r2Key set.
+	const fileWriteStages = await ctx.db
+		.query("public_api_file_write_stages")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (fileWriteStages.length > 0) {
+		for (const stage of fileWriteStages) {
+			await public_api_db_cleanup_file_write_stage(ctx, stage);
+		}
+		return { done: false, deletedCount: fileWriteStages.length };
 	}
 
 	const pluginRunCalls = await ctx.db

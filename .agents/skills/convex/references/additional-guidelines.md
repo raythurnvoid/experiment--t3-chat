@@ -489,7 +489,7 @@ type upsert_plugin_Result =
 ```
 
 - Use `RegisteredQuery` / `RegisteredAction` for queries and actions; import them as types from `"convex/server"`.
-- Keep the type non-exported when the cast site is in the same module. For cross-module casts, export it with the module prefix (`files_nodes_create_file_node_internal_Result`, `r2_finalize_uploaded_media_markdown_outputs_Result`) and import it type-only — type imports do not create runtime cycles.
+- Keep the type non-exported when the cast site is in the same module. For cross-module casts, export it with the module prefix (`files_nodes_create_file_node_internal_Result`, `r2_get_data_for_public_download_url_Result`) and import it type-only — type imports do not create runtime cycles.
 - Derive related payload types by indexing instead of redefining them, for example `NonNullable<get_owned_publisher_repository_Result["_yay"]>` for a validated-scope parameter.
 - The derived union preserves `_yay`/`_nay` narrowing. After converting a cast, delete the dead code the inline shape was hiding: `|| !x._yay` halves, `?? "fallback message"` branches, and `x._yay ?? null` when `_yay` already includes `null`.
 - If the compiler then reports `_nay` as `never`, the callee cannot fail — delete the error handling, and if nothing reads the result, drop the cast and the result variable entirely.

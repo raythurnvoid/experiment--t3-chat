@@ -32,7 +32,15 @@ crons.cron("unified delayed data deletion pipeline", "0 6 * * *", internal.data_
 // Once hourly — fail plugin runs whose executor died (crash/deploy) past their TTL.
 crons.cron("fail expired plugin event runs", "0 * * * *", internal.plugins_runtime.fail_expired_event_runs, {});
 
-// Once daily at 06:30 UTC — delete terminal plugin runs and their host-call rows past retention.
+// Once hourly — reap staged file writes that were never published (crashed action, dead caller).
+crons.cron(
+	"cleanup expired file write stages",
+	"30 * * * *",
+	internal.public_api.cleanup_expired_file_write_stages,
+	{},
+);
+
+// Once daily at 06:30 UTC — delete terminal plugin runs and their call docs past retention.
 crons.cron("cleanup old plugin event runs", "30 6 * * *", internal.plugins_runtime.cleanup_old_event_runs, {});
 
 export default crons;

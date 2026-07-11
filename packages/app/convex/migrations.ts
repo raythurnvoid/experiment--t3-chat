@@ -38,8 +38,7 @@ type PluginsLegacyCreatedAtTable =
 	| "plugins_versions"
 	| "plugins_workspace_installations"
 	| "plugins_workspace_event_handlers"
-	| "plugins_event_runs"
-	| "plugins_event_run_calls";
+	| "plugins_event_runs";
 
 type PluginsDocWithLegacyCreatedAt<TableName extends PluginsLegacyCreatedAtTable> = Doc<TableName> & {
 	createdAt?: number;
@@ -688,19 +687,6 @@ export const remove_plugins_event_runs_created_at = app_migrations.define({
 	},
 });
 
-export const remove_plugins_event_run_calls_created_at = app_migrations.define({
-	table: "plugins_event_run_calls",
-	migrateOne: async (ctx, call) => {
-		const legacyCall = call as PluginsDocWithLegacyCreatedAt<"plugins_event_run_calls">;
-		if (legacyCall.createdAt === undefined) {
-			return;
-		}
-
-		const { _id, _creationTime, createdAt: _createdAt, ...next } = legacyCall;
-		await ctx.db.replace("plugins_event_run_calls", _id, next);
-	},
-});
-
 export const backfill_plugins_version_reviews_updated_at = app_migrations.define({
 	table: "plugins_version_reviews",
 	migrateOne: async (ctx, review) => {
@@ -1012,9 +998,6 @@ export const run_remove_plugins_publisher_repository_secrets_allowed_origins = a
 );
 export const run_remove_plugins_event_runs_created_at = app_migrations.runner(
 	internal.migrations.remove_plugins_event_runs_created_at,
-);
-export const run_remove_plugins_event_run_calls_created_at = app_migrations.runner(
-	internal.migrations.remove_plugins_event_run_calls_created_at,
 );
 export const run_backfill_plugins_version_reviews_updated_at = app_migrations.runner(
 	internal.migrations.backfill_plugins_version_reviews_updated_at,

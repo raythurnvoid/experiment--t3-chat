@@ -6,17 +6,31 @@ Route: an already-open Playwriter-enabled `/w/:organizationName/:workspaceName/f
 
 ## Scope
 
-Covers the flows that regress when the image plugin worker, publisher secrets, consent/origin sets, or the plugin runner change: upload event fan-out, secret resolution, presigned source URL, outbound fetch to `api.openai.com`, and Markdown sibling writes. Content quality is asserted, not just file existence.
+Covers the flows that regress when the image plugin worker, publisher secrets, consent/origin sets, or the plugin runner change: install consent (exact capability/origin sets plus the fixed baseline disclosure), upload event fan-out, secret resolution, the source download URL (`/api/v1/files/download-url`), outbound fetch to `api.openai.com`, and Markdown sibling writes (`/api/v1/files/write`). Content quality is asserted, not just file existence.
 
 ## Preflight
 
-1. Confirm the dev app is running and the `image` plugin is installed and enabled (gallery shows `Reinstall`, or check `plugins_workspace_installations` via the Convex CLI).
+1. Confirm the dev app is running and the `image` plugin is installed and enabled (the gallery card shows an `Installed` badge, or check `plugins_workspace_installations` via the Convex CLI).
 2. Confirm the `OPENAI_API_KEY` publisher secret exists for the image plugin's repository (Secrets section of the publisher panel on the plugin's detail page, `/w/:organizationName/:workspaceName/plugins/image`).
 3. Create a Playwriter session and install the app harness (see `r2-file-content-regression.md` Preflight; same commands).
 4. Warm the Convex dev deployment first — cold starts can exceed 60s and look like a hung upload.
 5. Use one unique folder per run, for example `aaa-pw-image-<timestamp>`; archive it during cleanup.
 
 Fixture: `.agents/skills/app-playwriter-harness/assets/files/shapes.png` — a red circle, a blue square, a green triangle, and the text `BONOBO QA IMAGE` on white (registered in `references/files.md`).
+
+## Install Cycle And Consent
+
+Exercise uninstall → reinstall through the plugin detail page (`/w/:organizationName/:workspaceName/plugins/image`) so the exact-set consent flow and installation secrets are covered, not just an already-installed plugin. Mind the `plugins_manage` rate limiter (token bucket, capacity 2, 6/min) — space install/uninstall mutations ~15s apart.
+
+1. On the detail page, record whether an installation-level `OPENAI_API_KEY` override exists in the installed section's Secrets list (`.RoutePluginsInstalledSecrets`). Uninstalling deletes installation secrets, so any override must be restored after reinstall.
+2. Uninstall via the installed section's `Uninstall image` button (aria-label on the `.RoutePluginsInstalled` title row). The installed section unmounts reactively; no navigation happens.
+3. Click `Install` in the hero actions to open the consent modal (`.RoutePluginsPluginConsentModal`) and verify:
+   - The fixed baseline disclosure (`.RoutePluginsPluginConsentModal-baseline`) reads `Every plugin can read the triggering upload and create Markdown files beside it.` — static copy shown for every plugin, independent of the manifest.
+   - `This plugin can use these capabilities` lists exactly `plugin.secrets.read` and `outbound.fetch`.
+   - `And send requests to these origins` lists exactly `https://api.openai.com`.
+   - Keyboard focus moves into the dialog (`Cancel` is the first tabbable control); both `Escape` and `Cancel` close the modal without installing.
+4. Re-open the modal and click `Accept and install` — install submits the accepted capability and origin arrays exactly as listed (exact-set consent). The hero button flips to `Reinstall` once `list_installations` updates.
+5. Restore the installation-level `OPENAI_API_KEY` through the installed section's Secrets form from a secure known value (never echo it into logs), and confirm the publisher-repository fallback secret still exists in the publisher panel.
 
 ## Upload And Generated Description
 
@@ -42,9 +56,14 @@ vp env exec node node_modules/convex/bin/main.js data plugins_event_run_calls --
 
 Expected result:
 
-- The latest `image` run has `status: "succeeded"`.
-- Its run calls contain only `secretGet`, `sourceTemporaryUrl`, `outboundFetch`, and `writeMarkdown` operations — never `transcribeAudio` or `generateText`.
-- Outbound calls target `https://api.openai.com` only.
+- The latest `image` run has `status: "succeeded"`, `outputWriteCount` of 1, and an `apiCallCount` covering every call below (one shared 20-call quota per run).
+- The plugin detail page's Recent runs row shows the same aggregates (`calls N, writes 1`).
+- Its calls are only the expected set, with none left in `started` status:
+  - `api_request` on `/api/v1/files/download-url` (source download URL),
+  - `api_request` on `/api/internal/plugins/host/secret-get` (`OPENAI_API_KEY`),
+  - `outbound_fetch` with route `outbound` (call docs persist only bytes/status, never target URLs; the consent set limits outbound to `https://api.openai.com`),
+  - `api_request` on `/api/v1/files/write` (the Markdown sibling).
+- No request/response bodies, bearer tokens, signed URLs, or secret values appear in call docs.
 
 ## On-Demand Run
 
@@ -58,24 +77,24 @@ vp env exec node node_modules/convex/bin/main.js run plugins:run_installation_on
 ```
 
 3. The call returns `{ "_yay": { "runs": [{ "nodeId": "...", "runId": "...", "message": null }] } }`. Invoking it again while that run is pending must instead return the entry with `runId: null` and `message: "A run for this plugin is already pending for this file"`.
-4. On the plugin detail page (`/w/:organizationName/:workspaceName/plugins/image`), verify the newest run row shows event `files.run.requested` (upload-triggered rows keep `files.upload.completed`) and reaches `status: "succeeded"`.
+4. Verify the newest run reaches `status: "succeeded"` on the plugin detail page (`/w/:organizationName/:workspaceName/plugins/image`), and confirm via the runs CLI readback that its event is `files.run.requested` (upload-triggered runs keep `files.upload.completed`; the run row itself shows the file path, not the event, when the file still exists).
 5. Verify the `shapes.png.description.md` sibling was replaced (the plugin writes with `overwrite: "replace"`): its content still describes the fixture subjects per the expectations above.
 
 ## Negative Test (Missing Secret)
 
 1. On the image plugin's detail page, delete the `OPENAI_API_KEY` secret from the publisher panel's Secrets section. Mind the `plugins_manage` rate limiter (token bucket, capacity 2, 6/min) — space mutations ~15s apart.
 2. Upload `shapes.png` again (renamed via the duplicate-upload dialog, or into a second folder).
-3. Wait for the run to settle, then verify: the run `status` is `failed` with an `errorMessage` naming the missing secret — expect the specific `OPENAI_API_KEY secret is not configured` worker throw (runner error messages are persisted truncated to 500 chars and shown to workspace admins; a generic placeholder here is a regression), the run's calls show only a single `secretGet` for the missing name with no `writeMarkdown`, and no `.description.md` sibling was created for this upload.
-4. Re-create the `OPENAI_API_KEY` secret exactly as before (origins `https://api.openai.com`) in the same publisher panel and wait ~15s before any further plugin mutations.
+3. Wait for the run to settle, then verify: the run `status` is `failed` with an `errorMessage` naming the missing secret — expect the specific `OPENAI_API_KEY secret is not configured` worker throw (runner error messages are persisted truncated to 500 chars and shown to workspace admins; a generic placeholder here is a regression), the run's calls show only a single secret-get `api_request` with no `/api/v1/files/write` call, and no `.description.md` sibling was created for this upload. Note the secret-get call itself settles `succeeded` (a missing secret is a successful lookup returning `value: null`), and call docs never persist the requested secret name — the missing name is only observable in the run's `errorMessage`.
+4. Re-create the `OPENAI_API_KEY` secret exactly as before in the same publisher panel and wait ~15s before any further plugin mutations (outbound origins come from the plugin manifest, not the secret).
 
 ## Cleanup
 
 1. Archive `aaa-pw-image-<timestamp>` and any negative-test folders.
-2. Confirm the `OPENAI_API_KEY` secret was restored in the image plugin's publisher panel (secrets are per repository, so the video plugin's own `OPENAI_API_KEY` is unaffected).
+2. Confirm the `OPENAI_API_KEY` secret was restored in the image plugin's publisher panel (secrets are per repository, so the video plugin's own `OPENAI_API_KEY` is unaffected), and that any installation-level override recorded before the install cycle was restored too.
 3. Record skipped steps with the real blocker, not as pass.
 
 ## Failure Triage
 
 - No sibling appears: check the latest `plugins_event_runs` row first — a `failed` run with a message beats staring at the tree. Then check upload finalizer/R2/Convex env config.
 - Run stuck `pending`: Convex cold start or the plugin runner deployment; warm the deployment and re-check before assuming a code bug.
-- Description exists but misses subjects: open the run calls to confirm the outbound call actually hit OpenAI (status 200) and the model used is `gpt-4.1-mini`; a vague description on this fixture is a real content regression, not a flake.
+- Description exists but misses subjects: open the run calls to confirm the `outbound_fetch` succeeded (status 200) — calls persist neither target URLs nor bodies, so the model (`gpt-4.1-mini`, pinned in the plugin worker source) is not observable from telemetry; a vague description on this fixture is a real content regression, not a flake.

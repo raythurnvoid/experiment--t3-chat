@@ -6,6 +6,9 @@
 //   every other origin is gated on the `outbound.fetch` capability and the per-run origin allowlist.
 // - Operational logs include only metadata, never artifact source, input, output, or secrets.
 // - Auth uses `Authorization: Bearer <PLUGIN_RUNNER_SECRET>` for the Phase 0 internal endpoint.
+// - Trusted runner-to-host calls (secret-get, outbound claim/finish) attach
+//   `X-Bonobo-Runner-Authorization: Bearer <PLUGIN_RUNNER_HOST_SECRET>` alongside the run token.
+//   The secret stays in the outer runner classes and never reaches the dynamic worker.
 
 // Carries the ambient Cloudflare types along for programs that import this module's exported
 // types (the host imports pluginRunnerApiSchema) without this package's tsconfig.
@@ -81,11 +84,17 @@ type R2BucketBinding = {
 
 type BonoboHostProps = {
 	pluginStableId: string;
+	// Host origin/token come from trusted props (set by the runner at binding construction), never
+	// from RPC input, so the runner host secret can only ever be sent to the real host origin.
+	pluginRunId: string;
+	host: HostRuntime;
 	acceptedCapabilities: string[];
 };
 
 type BonoboOutboundProps = {
 	pluginStableId: string;
+	// Kept for run identity even though outbound claim/finish bodies no longer carry it (the host
+	// derives the run from the bearer run token).
 	pluginRunId: string;
 	host: HostRuntime;
 	acceptedCapabilities: string[];
@@ -103,6 +112,7 @@ export type Env = {
 	LOADER: PluginWorkerLoader;
 	PLUGIN_ARTIFACTS: R2BucketBinding;
 	PLUGIN_RUNNER_SECRET: string;
+	PLUGIN_RUNNER_HOST_SECRET: string;
 	PLUGIN_RUNNER_ARTIFACT_PREFIX?: string;
 	PLUGIN_RUNNER_DISABLED?: string;
 };
@@ -125,7 +135,7 @@ const TEXT_DECODER = new TextDecoder();
 const COMPAT_DATE = "2026-07-01";
 const ENTRY_MODULE = "bonobo-plugin-wrapper.js";
 const PLUGIN_MODULE = "plugin.js";
-const PLUGIN_WRAPPER_VERSION = "bonobo-host-v2";
+const PLUGIN_WRAPPER_VERSION = "bonobo-host-v3";
 // Decrypted secret values tracked per run so run output and errors can be masked.
 // This cannot live on the BonoboHost instance: the host is reached via a loopback binding
 // and workerd constructs a new instance per RPC call, so per-instance state does not
@@ -155,6 +165,9 @@ function mask_secret_values(text: string, values: ReadonlySet<string> | undefine
 	return masked;
 }
 
+// Runner-only host routes. Calls authenticate with both the run token (`Authorization`) and the
+// runner host secret (`X-Bonobo-Runner-Authorization`); the host derives the run from the bearer
+// run token, so these request bodies carry no pluginRunId.
 const HOST_API_PATHS = {
 	claimRunnerCall: "/api/internal/plugins/host/claim-runner-call",
 	finishRunnerCall: "/api/internal/plugins/host/finish-runner-call",
@@ -171,7 +184,7 @@ export default class BonoboPluginEntrypoint extends WorkerEntrypoint {
     const pluginEnv = Object.freeze({
       BONOBO: Object.freeze({
         secrets: Object.freeze({
-          get: (name) => host.secretGet({ pluginRunId: props.pluginRunId, host: props.host, name }),
+          get: (name) => host.secretGet({ name }),
         }),
         host: Object.freeze({ apiOrigin: props.host.origin, token: props.host.token }),
       }),
@@ -458,21 +471,6 @@ function host_call_url(host: HostRuntime, path: string) {
 	return new URL(path, host.origin).href;
 }
 
-function parse_host_call_context(value: unknown) {
-	if (!is_record(value)) {
-		throw new Error("Host call input must be an object");
-	}
-	const pluginRunId = value.pluginRunId;
-	if (typeof pluginRunId !== "string" || pluginRunId.length === 0 || pluginRunId.length > 128) {
-		throw new Error("Host call pluginRunId is invalid");
-	}
-	const host = HOST_RUNTIME_SCHEMA.safeParse(value.host);
-	if (!host.success) {
-		throw new Error("Host call runtime is invalid");
-	}
-	return { pluginRunId, host: host.data };
-}
-
 function require_capability(acceptedCapabilities: string[], capability: string) {
 	if (!acceptedCapabilities.includes(capability)) {
 		throw new Error(`Missing capability: ${capability}`);
@@ -483,6 +481,7 @@ async function post_host_json(input: {
 	host: HostRuntime;
 	path: string;
 	token: string;
+	runnerHostSecret: string;
 	pluginStableId: string;
 	body: Record<string, unknown>;
 }) {
@@ -492,6 +491,7 @@ async function post_host_json(input: {
 			headers: {
 				"Content-Type": "application/json",
 				Authorization: `Bearer ${input.token}`,
+				"X-Bonobo-Runner-Authorization": `Bearer ${input.runnerHostSecret}`,
 				"X-Bonobo-Plugin-Stable-Id": input.pluginStableId,
 			},
 			body: JSON.stringify(input.body),
@@ -512,21 +512,22 @@ async function post_host_json(input: {
 	return responseBody;
 }
 
+// The claim route brackets exactly one outbound fetch, so the host's strict body validator
+// accepts only `requestBytes` — the call kind is fixed server-side, and any extra field is a
+// 400. The claimed call id settles later through finish_runner_call.
 async function claim_runner_call(input: {
 	host: HostRuntime;
-	pluginRunId: string;
+	runnerHostSecret: string;
 	pluginStableId: string;
-	operation: "outboundFetch";
 	requestBytes: number;
 }) {
 	const result = await post_host_json({
 		host: input.host,
 		path: HOST_API_PATHS.claimRunnerCall,
 		token: input.host.token,
+		runnerHostSecret: input.runnerHostSecret,
 		pluginStableId: input.pluginStableId,
 		body: {
-			pluginRunId: input.pluginRunId,
-			operation: input.operation,
 			requestBytes: input.requestBytes,
 		},
 	});
@@ -538,7 +539,7 @@ async function claim_runner_call(input: {
 
 async function finish_runner_call(input: {
 	host: HostRuntime;
-	pluginRunId: string;
+	runnerHostSecret: string;
 	pluginStableId: string;
 	callId: string;
 	status: "succeeded" | "failed";
@@ -551,9 +552,9 @@ async function finish_runner_call(input: {
 		host: input.host,
 		path: HOST_API_PATHS.finishRunnerCall,
 		token: input.host.token,
+		runnerHostSecret: input.runnerHostSecret,
 		pluginStableId: input.pluginStableId,
 		body: {
-			pluginRunId: input.pluginRunId,
 			callId: input.callId,
 			status: input.status,
 			errorMessage: input.errorMessage,
@@ -566,7 +567,7 @@ async function finish_runner_call(input: {
 
 export class BonoboHost extends WorkerEntrypoint<Env, BonoboHostProps> {
 	async secretGet(input: unknown): Promise<unknown> {
-		const { pluginRunId, host } = parse_host_call_context(input);
+		const { pluginRunId, host } = this.ctx.props;
 		require_capability(this.ctx.props.acceptedCapabilities, "plugin.secrets.read");
 		if (!is_record(input)) throw new Error("Host call input must be an object");
 		const name = input.name;
@@ -577,9 +578,9 @@ export class BonoboHost extends WorkerEntrypoint<Env, BonoboHostProps> {
 			host,
 			path: HOST_API_PATHS.secretGet,
 			token: host.token,
+			runnerHostSecret: this.env.PLUGIN_RUNNER_HOST_SECRET,
 			pluginStableId: this.ctx.props.pluginStableId,
 			body: {
-				pluginRunId,
 				name,
 			},
 		});
@@ -598,7 +599,7 @@ export class BonoboHost extends WorkerEntrypoint<Env, BonoboHostProps> {
 // every other origin is gated on the `outbound.fetch` capability and the per-run origin allowlist.
 export class BonoboOutbound extends WorkerEntrypoint<Env, BonoboOutboundProps> {
 	async fetch(request: Request): Promise<Response> {
-		const { pluginStableId, pluginRunId, host } = this.ctx.props;
+		const { pluginStableId, host } = this.ctx.props;
 		const url = new URL(request.url);
 		if (url.origin === host.origin) {
 			return await fetch(request);
@@ -618,9 +619,8 @@ export class BonoboOutbound extends WorkerEntrypoint<Env, BonoboOutboundProps> {
 		const requestBytes = requestBody ? requestBody.byteLength : 0;
 		const callId = await claim_runner_call({
 			host,
-			pluginRunId,
+			runnerHostSecret: this.env.PLUGIN_RUNNER_HOST_SECRET,
 			pluginStableId,
-			operation: "outboundFetch",
 			requestBytes,
 		});
 		try {
@@ -648,7 +648,7 @@ export class BonoboOutbound extends WorkerEntrypoint<Env, BonoboOutboundProps> {
 			);
 			await finish_runner_call({
 				host,
-				pluginRunId,
+				runnerHostSecret: this.env.PLUGIN_RUNNER_HOST_SECRET,
 				pluginStableId,
 				callId,
 				status: "succeeded",
@@ -666,7 +666,7 @@ export class BonoboOutbound extends WorkerEntrypoint<Env, BonoboOutboundProps> {
 		} catch (error) {
 			await finish_runner_call({
 				host,
-				pluginRunId,
+				runnerHostSecret: this.env.PLUGIN_RUNNER_HOST_SECRET,
 				pluginStableId,
 				callId,
 				status: "failed",
@@ -789,6 +789,8 @@ const routes = {
 					const hostBinding = ctx.exports.BonoboHost({
 						props: {
 							pluginStableId,
+							pluginRunId: validated.data.pluginRunId,
+							host: validated.data.host,
 							acceptedCapabilities: validated.data.acceptedCapabilities,
 						},
 					});

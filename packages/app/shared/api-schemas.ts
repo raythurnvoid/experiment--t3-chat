@@ -135,6 +135,10 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/read-many": ReturnType<typeof public_api_http_routes>["/api/v1/files/read-many"];
 
+	"/api/v1/files/write": ReturnType<typeof public_api_http_routes>["/api/v1/files/write"];
+
+	"/api/v1/files/download-url": ReturnType<typeof public_api_http_routes>["/api/v1/files/download-url"];
+
 	"/api/files/contextual-prompt": ReturnType<typeof files_http_routes>["/api/files/contextual-prompt"];
 
 	"/api/r2/event": ReturnType<typeof r2_http_routes>["/api/r2/event"];
@@ -146,12 +150,6 @@ export interface api_schemas_Main {
 	"/api/internal/plugins/host/finish-runner-call": ReturnType<
 		typeof plugins_runtime_http_routes
 	>["/api/internal/plugins/host/finish-runner-call"];
-
-	"/api/plugins/v1/write-markdown": ReturnType<typeof plugins_runtime_http_routes>["/api/plugins/v1/write-markdown"];
-
-	"/api/plugins/v1/source-temporary-url": ReturnType<
-		typeof plugins_runtime_http_routes
-	>["/api/plugins/v1/source-temporary-url"];
 
 	"/api/internal/plugins/host/secret-get": ReturnType<typeof plugins_runtime_http_routes>["/api/internal/plugins/host/secret-get"];
 }

@@ -13,6 +13,23 @@ export async function crypto_sha256_hex(input: string | BufferSource) {
 }
 
 /**
+ * Constant-time for equal-length inputs: no partial-prefix match changes the timing. The loop
+ * still walks the longer input, so comparing a caller-controlled probe against a raw secret can
+ * leak the secret's length; callers guarding a secret should compare fixed-length digests (hash
+ * both sides first) so length carries no information.
+ */
+export function crypto_timing_safe_equal(left: string, right: string) {
+	const leftBytes = text_encoder.encode(left);
+	const rightBytes = text_encoder.encode(right);
+	let difference = leftBytes.length ^ rightBytes.length;
+	const maxLength = Math.max(leftBytes.length, rightBytes.length);
+	for (let index = 0; index < maxLength; index += 1) {
+		difference |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
+	}
+	return difference === 0;
+}
+
+/**
  * 32 bytes (256 random bits) is the right count for secrets.
  */
 export function crypto_random_hex(byteCount: LiteralUnion<32, number>) {

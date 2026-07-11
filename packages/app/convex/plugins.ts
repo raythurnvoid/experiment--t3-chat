@@ -50,6 +50,7 @@ import { r2_delete_object, r2_fetch_object_from_bucket, r2_put_object } from "./
 import { files_nodes_db_delete_subtree_batch } from "./files_nodes.ts";
 import type { files_nodes_create_file_node_internal_Result } from "./files_nodes.ts";
 import { plugins_runtime_db_enqueue_manual_run } from "./plugins_runtime.ts";
+import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
 
 const PLUGIN_SECRETS_MAX_BATCH_SIZE = 50;
 
@@ -2094,25 +2095,14 @@ export const list_run_calls = query({
 			_id: v.id("plugins_event_run_calls"),
 			runId: doc(app_convex_schema, "plugins_event_run_calls").fields.runId,
 			sequence: doc(app_convex_schema, "plugins_event_run_calls").fields.sequence,
-			operation: doc(app_convex_schema, "plugins_event_run_calls").fields.operation,
+			kind: doc(app_convex_schema, "plugins_event_run_calls").fields.kind,
+			route: doc(app_convex_schema, "plugins_event_run_calls").fields.route,
 			status: doc(app_convex_schema, "plugins_event_run_calls").fields.status,
-			errorMessage: doc(app_convex_schema, "plugins_event_run_calls").fields.errorMessage,
-			outputPath: doc(app_convex_schema, "plugins_event_run_calls").fields.outputPath,
-			outputOverwrite: doc(app_convex_schema, "plugins_event_run_calls").fields.outputOverwrite,
-			markdownBytes: doc(app_convex_schema, "plugins_event_run_calls").fields.markdownBytes,
-			expiresInSeconds: doc(app_convex_schema, "plugins_event_run_calls").fields.expiresInSeconds,
-			secretName: doc(app_convex_schema, "plugins_event_run_calls").fields.secretName,
-			secretFound: doc(app_convex_schema, "plugins_event_run_calls").fields.secretFound,
-			secretTier: doc(app_convex_schema, "plugins_event_run_calls").fields.secretTier,
-			modelId: doc(app_convex_schema, "plugins_event_run_calls").fields.modelId,
-			systemBytes: doc(app_convex_schema, "plugins_event_run_calls").fields.systemBytes,
-			promptBytes: doc(app_convex_schema, "plugins_event_run_calls").fields.promptBytes,
-			outputTextBytes: doc(app_convex_schema, "plugins_event_run_calls").fields.outputTextBytes,
-			includeSourceImage: doc(app_convex_schema, "plugins_event_run_calls").fields.includeSourceImage,
-			maxOutputTokens: doc(app_convex_schema, "plugins_event_run_calls").fields.maxOutputTokens,
+			responseStatus: doc(app_convex_schema, "plugins_event_run_calls").fields.responseStatus,
 			requestBytes: doc(app_convex_schema, "plugins_event_run_calls").fields.requestBytes,
 			responseBytes: doc(app_convex_schema, "plugins_event_run_calls").fields.responseBytes,
-			responseStatus: doc(app_convex_schema, "plugins_event_run_calls").fields.responseStatus,
+			errorCode: doc(app_convex_schema, "plugins_event_run_calls").fields.errorCode,
+			errorMessage: doc(app_convex_schema, "plugins_event_run_calls").fields.errorMessage,
 			startedAt: doc(app_convex_schema, "plugins_event_run_calls").fields.startedAt,
 			finishedAt: doc(app_convex_schema, "plugins_event_run_calls").fields.finishedAt,
 			elapsedMs: doc(app_convex_schema, "plugins_event_run_calls").fields.elapsedMs,
@@ -2147,8 +2137,8 @@ export const list_run_calls = query({
 			return [];
 		}
 
-		// The by_run_sequence index already yields the calls in sequence order. Calls per run are
-		// capped at plugins_runtime MAX_HOST_CALLS, so collect() is bounded.
+		// The by_run_sequence index already yields the calls in sequence order. Calls per
+		// run are capped at plugins_runtime MAX_API_CALLS, so collect() is bounded.
 		const calls = await ctx.db
 			.query("plugins_event_run_calls")
 			.withIndex("by_run_sequence", (q) => q.eq("runId", args.runId))
@@ -2157,25 +2147,14 @@ export const list_run_calls = query({
 			_id: call._id,
 			runId: call.runId,
 			sequence: call.sequence,
-			operation: call.operation,
+			kind: call.kind,
+			route: call.route,
 			status: call.status,
-			errorMessage: call.errorMessage,
-			...(call.outputPath === undefined ? {} : { outputPath: call.outputPath }),
-			...(call.outputOverwrite === undefined ? {} : { outputOverwrite: call.outputOverwrite }),
-			...(call.markdownBytes === undefined ? {} : { markdownBytes: call.markdownBytes }),
-			...(call.expiresInSeconds === undefined ? {} : { expiresInSeconds: call.expiresInSeconds }),
-			...(call.secretName === undefined ? {} : { secretName: call.secretName }),
-			...(call.secretFound === undefined ? {} : { secretFound: call.secretFound }),
-			...(call.secretTier === undefined ? {} : { secretTier: call.secretTier }),
-			...(call.modelId === undefined ? {} : { modelId: call.modelId }),
-			...(call.systemBytes === undefined ? {} : { systemBytes: call.systemBytes }),
-			...(call.promptBytes === undefined ? {} : { promptBytes: call.promptBytes }),
-			...(call.outputTextBytes === undefined ? {} : { outputTextBytes: call.outputTextBytes }),
-			...(call.includeSourceImage === undefined ? {} : { includeSourceImage: call.includeSourceImage }),
-			...(call.maxOutputTokens === undefined ? {} : { maxOutputTokens: call.maxOutputTokens }),
+			...(call.responseStatus === undefined ? {} : { responseStatus: call.responseStatus }),
 			...(call.requestBytes === undefined ? {} : { requestBytes: call.requestBytes }),
 			...(call.responseBytes === undefined ? {} : { responseBytes: call.responseBytes }),
-			...(call.responseStatus === undefined ? {} : { responseStatus: call.responseStatus }),
+			...(call.errorCode === undefined ? {} : { errorCode: call.errorCode }),
+			errorMessage: call.errorMessage,
 			startedAt: call.startedAt,
 			...(call.finishedAt === undefined ? {} : { finishedAt: call.finishedAt }),
 			...(call.elapsedMs === undefined ? {} : { elapsedMs: call.elapsedMs }),
@@ -2194,8 +2173,8 @@ export const list_recent_runs = query({
 			event: doc(app_convex_schema, "plugins_event_runs").fields.event,
 			eventId: doc(app_convex_schema, "plugins_event_runs").fields.eventId,
 			status: doc(app_convex_schema, "plugins_event_runs").fields.status,
-			hostCallCount: doc(app_convex_schema, "plugins_event_runs").fields.hostCallCount,
-			hostWriteCount: doc(app_convex_schema, "plugins_event_runs").fields.hostWriteCount,
+			apiCallCount: doc(app_convex_schema, "plugins_event_runs").fields.apiCallCount,
+			outputWriteCount: doc(app_convex_schema, "plugins_event_runs").fields.outputWriteCount,
 			errorMessage: doc(app_convex_schema, "plugins_event_runs").fields.errorMessage,
 			runnerHttpStatus: doc(app_convex_schema, "plugins_event_runs").fields.runnerHttpStatus,
 			runnerElapsedMs: doc(app_convex_schema, "plugins_event_runs").fields.runnerElapsedMs,
@@ -2256,8 +2235,8 @@ export const list_recent_runs = query({
 					event: run.event,
 					eventId: run.eventId,
 					status: run.status,
-					hostCallCount: run.hostCallCount,
-					hostWriteCount: run.hostWriteCount,
+					apiCallCount: run.apiCallCount,
+					outputWriteCount: run.outputWriteCount,
 					errorMessage: run.errorMessage,
 					...(run.runnerHttpStatus === undefined ? {} : { runnerHttpStatus: run.runnerHttpStatus }),
 					...(run.runnerElapsedMs === undefined ? {} : { runnerElapsedMs: run.runnerElapsedMs }),
@@ -2580,9 +2559,10 @@ export const hard_delete_registered_plugin_batch = internalMutation({
 			return { done: true, deleted };
 		}
 
-		// Child docs before parents: run calls -> runs -> handlers -> installation
-		// secrets -> installations -> reviews -> mounts -> versions -> repo claims
-		// (each claim's publisher secrets cascade right before the claim itself).
+		// Child docs before parents: run calls -> runs (each run's unpublished write stages
+		// drain right before its doc) -> handlers -> installation secrets -> installations ->
+		// reviews -> mounts -> versions -> repo claims (each claim's publisher secrets cascade
+		// right before the claim itself).
 		for (const version of versions) {
 			const installations = await ctx.db
 				.query("plugins_workspace_installations")
@@ -2611,6 +2591,16 @@ export const hard_delete_registered_plugin_batch = internalMutation({
 					),
 				);
 				for (const pluginRun of pluginRuns) {
+					// Unpublished write stages hold R2 objects with no files_nodes doc, so they must be
+					// cleaned (objects included) before their run doc disappears.
+					const stages = await ctx.db
+						.query("public_api_file_write_stages")
+						.withIndex("by_run", (q) => q.eq("runId", pluginRun._id))
+						.collect();
+					for (const stage of stages) {
+						await public_api_db_cleanup_file_write_stage(ctx, stage);
+					}
+					deleted += stages.length;
 					await ctx.db.delete("plugins_event_runs", pluginRun._id);
 				}
 				deleted += pluginRuns.length;

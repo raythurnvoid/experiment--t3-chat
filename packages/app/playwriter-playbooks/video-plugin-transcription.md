@@ -48,16 +48,16 @@ vp env exec node node_modules/convex/bin/main.js data plugins_event_run_calls --
 
 Expected result:
 
-- Both `video` runs `succeeded`.
-- Run calls contain only `secretGet`, `sourceTemporaryUrl`, `outboundFetch`, and `writeMarkdown` — never `transcribeAudio`.
-- The wav run's outbound calls hit `api.mistral.ai` and `api.openai.com` only; the mp4 run additionally hits the Modal origin (extract POST). Host-call budget stays well under 20.
+- Both `video` runs `succeeded` with `outputWriteCount` of 2 (transcript + summary), and none of their calls left in `started` status.
+- Calls contain only `api_request` entries on `/api/v1/files/download-url`, `/api/internal/plugins/host/secret-get`, and `/api/v1/files/write`, plus `outbound_fetch` entries — transcription and summaries are plugin-owned outbound calls, never a host AI operation.
+- Outbound call docs record only bytes/status (route `outbound`), never target URLs; the consent set limits the wav run's outbound to `api.mistral.ai` and `api.openai.com`, and the mp4 run adds the Modal origin (extract POST). `apiCallCount` stays well under the shared 20-call run quota.
 
 ## Negative Test (Missing Secret)
 
 1. Delete the `MISTRAL_API_KEY` secret from the video plugin's publisher panel (respect the `plugins_manage` rate limiter — ~15s between mutations).
 2. Upload `speakers.wav` again (renamed or into a second folder).
-3. Verify: run `failed` with an `errorMessage` naming the missing secret — expect the specific `MISTRAL_API_KEY secret is not configured` worker throw (runner error messages are persisted truncated to 500 chars and shown to workspace admins; a generic placeholder here is a regression); the run's calls show only a single `secretGet` for `MISTRAL_API_KEY` with no writes; **no** `.transcript.md` and no `.summary.md` siblings for this upload (secrets are read before any write).
-4. Re-create `MISTRAL_API_KEY` (origins `https://api.mistral.ai`) in the same publisher panel.
+3. Verify: run `failed` with an `errorMessage` naming the missing secret — expect the specific `MISTRAL_API_KEY secret is not configured` worker throw (runner error messages are persisted truncated to 500 chars and shown to workspace admins; a generic placeholder here is a regression); the run's calls show only a single secret-get `api_request` with no `/api/v1/files/write` call (the secret-get call settles `succeeded` — a missing secret is a successful lookup returning `value: null` — and call docs never persist the requested secret name; the missing name is only observable in the run's `errorMessage`); **no** `.transcript.md` and no `.summary.md` siblings for this upload (secrets are read before any write).
+4. Re-create `MISTRAL_API_KEY` in the same publisher panel (outbound origins come from the plugin manifest, not the secret).
 
 ## Cleanup
 
@@ -68,6 +68,6 @@ Expected result:
 ## Failure Triage
 
 - Transcript missing but summary logic suspected: transcript is written **before** the summary call — a lone `.transcript.md` with a `failed` run means the OpenAI summary stage failed; no files at all means the failure was at secrets/Modal/Mistral.
-- Only the mp4 path fails: check Modal (`/health`, then the extract POST status in run calls — 401 token, 413 size, 422 ffmpeg). The wav path bypasses Modal entirely.
+- Only the mp4 path fails: check Modal (`/health`, then the extract POST status on the run's `outbound_fetch` calls — 401 token, 413 size, 422 ffmpeg). The wav path bypasses Modal entirely.
 - Single-speaker transcript on this fixture: confirm the Mistral request included `diarize=true` and `timestamp_granularities=segment`; segments come back EMPTY if granularities are omitted (worker then falls back to unlabeled sections — that fallback appearing here is a regression).
 - Run stuck `pending`: Convex cold start or runner deployment, same as the image playbook.

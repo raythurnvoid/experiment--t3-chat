@@ -176,7 +176,7 @@ function stub_r2_and_modal_fetch(
 				const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 				return (
 					(await onPluginRunnerRequest?.(body)) ??
-					new Response(JSON.stringify({ _yay: {} }), {
+					new Response(JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }), {
 						status: 200,
 						headers: { "Content-Type": "application/json" },
 					})
@@ -664,40 +664,44 @@ describe("r2 asset content", () => {
 			assetId: asset._id,
 		});
 		const pluginRunnerRequests: Record<string, unknown>[] = [];
+		let downloadRequestedAt = 0;
+		let downloadUrlExpiresAt = 0;
 		stub_r2_and_modal_fetch({
 			onPluginRunnerRequest: async (body) => {
 				pluginRunnerRequests.push(body);
 				const host = body.host as { token: string };
-				const sourceUrlResponse = await t.fetch("/api/plugins/v1/source-temporary-url", {
+				const source = (body.input as { source: { fileNodeId: string; path: string } }).source;
+				downloadRequestedAt = Date.now();
+				const downloadResponse = await t.fetch("/api/v1/files/download-url", {
 					method: "POST",
 					headers: {
 						Authorization: `Bearer ${host.token}`,
 						"Content-Type": "application/json",
 					},
 					body: JSON.stringify({
-						pluginRunId: body.pluginRunId,
-						expiresInSeconds: 60,
+						fileNodeId: source.fileNodeId,
+						// The 15-minute request ceiling exceeds the 10-minute run-token life: clamp must win.
+						expiresInSeconds: 900,
 					}),
 				});
-				expect(sourceUrlResponse.status).toBe(200);
-				expect(((await sourceUrlResponse.json()) as { url: string }).url).toContain(
-					encodeURIComponent(assetR2Key),
-				);
+				expect(downloadResponse.status).toBe(200);
+				const downloadBody = (await downloadResponse.json()) as { url: string; expiresAt: number };
+				expect(downloadBody.url).toContain(encodeURIComponent(assetR2Key));
+				downloadUrlExpiresAt = downloadBody.expiresAt;
 
-				const writeResponse = await t.fetch("/api/plugins/v1/write-markdown", {
+				const writeResponse = await t.fetch("/api/v1/files/write", {
 					method: "POST",
 					headers: {
 						Authorization: `Bearer ${host.token}`,
 						"Content-Type": "application/json",
 					},
 					body: JSON.stringify({
-						pluginRunId: body.pluginRunId,
-						path: "event.pdf.md",
-						markdown: "# Plugin PDF extraction\n\nPLUGIN_PDF_E2E_2026",
+						path: `${source.path}.md`,
+						content: "# Plugin PDF extraction\n\nPLUGIN_PDF_E2E_2026",
 					}),
 				});
 				expect(writeResponse.status).toBe(200);
-				return new Response(JSON.stringify({ _yay: {} }), {
+				return new Response(JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				});
@@ -757,12 +761,17 @@ describe("r2 asset content", () => {
 		if (!pluginRun) {
 			throw new Error("Expected plugin event run");
 		}
-		expect(pluginRun.outputAssetId).toBeUndefined();
 		expect(pluginRun.status).toBe("queued");
 
 		await asUser.action(internal.plugins_runtime.execute_upload_completed_event_run, {
 			runId: pluginRun._id,
 		});
+
+		// The signed URL never outlives the run token: the 900s request was clamped to the token's
+		// remaining life (run expiresAt doubles as apiTokenExpiresAt at start_event_run).
+		expect(downloadUrlExpiresAt).toBeGreaterThan(0);
+		expect(downloadUrlExpiresAt).toBeLessThan(downloadRequestedAt + 900 * 1000);
+		expect(downloadUrlExpiresAt).toBeLessThanOrEqual(pluginRun.expiresAt + 1000);
 
 		const docs = await t.run(async (ctx) => {
 			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
@@ -796,12 +805,14 @@ describe("r2 asset content", () => {
 				event: "files.upload.completed",
 				source: {
 					name: "event.pdf",
+					path: "/event.pdf",
 					contentType: "application/pdf",
 				},
 			},
 		});
 		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
-		expect(completedRun).toMatchObject({ status: "succeeded", hostWriteCount: 1 });
+		// One download-url call plus one write call against the shared quota, one published output.
+		expect(completedRun).toMatchObject({ status: "succeeded", apiCallCount: 2, outputWriteCount: 1 });
 
 		enqueueActionSpy.mockClear();
 
@@ -854,20 +865,20 @@ describe("r2 asset content", () => {
 			onPluginRunnerRequest: async (body) => {
 				pluginRunnerRequests.push(body);
 				const host = body.host as { token: string };
-				const writeResponse = await t.fetch("/api/plugins/v1/write-markdown", {
+				const source = (body.input as { source: { path: string } }).source;
+				const writeResponse = await t.fetch("/api/v1/files/write", {
 					method: "POST",
 					headers: {
 						Authorization: `Bearer ${host.token}`,
 						"Content-Type": "application/json",
 					},
 					body: JSON.stringify({
-						pluginRunId: body.pluginRunId,
-						path: "photo.png.description.md",
-						markdown: "# Plugin image description\n\nPLUGIN_IMAGE_E2E_2026",
+						path: `${source.path}.description.md`,
+						content: "# Plugin image description\n\nPLUGIN_IMAGE_E2E_2026",
 					}),
 				});
 				expect(writeResponse.status).toBe(200);
-				return new Response(JSON.stringify({ _yay: {} }), {
+				return new Response(JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				});
@@ -942,7 +953,6 @@ describe("r2 asset content", () => {
 		if (!pluginRun) {
 			throw new Error("Expected plugin event run");
 		}
-		expect(pluginRun.outputAssetId).toBeUndefined();
 		expect(pluginRun.status).toBe("queued");
 
 		await asUser.action(internal.plugins_runtime.execute_upload_completed_event_run, {
@@ -973,7 +983,7 @@ describe("r2 asset content", () => {
 		const processedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		expect(processedAsset?.processingWorkId).toBeNull();
 		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
-		expect(completedRun).toMatchObject({ status: "succeeded", hostWriteCount: 1 });
+		expect(completedRun).toMatchObject({ status: "succeeded", apiCallCount: 1, outputWriteCount: 1 });
 	});
 
 	test("R2 events create and finalize video summary and transcript Markdown siblings", async () => {
@@ -1021,26 +1031,25 @@ describe("r2 asset content", () => {
 			onPluginRunnerRequest: async (body) => {
 				pluginRunnerRequests.push(body);
 				const host = body.host as { token: string };
-				const source = (body.input as { source: { name: string } }).source;
-				for (const [path, markdown] of [
-					[`${source.name}.transcript.md`, "# Plugin transcript\n\nPLUGIN_VIDEO_TRANSCRIPT_E2E_2026"],
-					[`${source.name}.summary.md`, "# Plugin summary\n\nPLUGIN_VIDEO_SUMMARY_E2E_2026"],
+				const source = (body.input as { source: { path: string } }).source;
+				for (const [path, content] of [
+					[`${source.path}.transcript.md`, "# Plugin transcript\n\nPLUGIN_VIDEO_TRANSCRIPT_E2E_2026"],
+					[`${source.path}.summary.md`, "# Plugin summary\n\nPLUGIN_VIDEO_SUMMARY_E2E_2026"],
 				] as const) {
-					const writeResponse = await t.fetch("/api/plugins/v1/write-markdown", {
+					const writeResponse = await t.fetch("/api/v1/files/write", {
 						method: "POST",
 						headers: {
 							Authorization: `Bearer ${host.token}`,
 							"Content-Type": "application/json",
 						},
 						body: JSON.stringify({
-							pluginRunId: body.pluginRunId,
 							path,
-							markdown,
+							content,
 						}),
 					});
 					expect(writeResponse.status).toBe(200);
 				}
-				return new Response(JSON.stringify({ _yay: {} }), {
+				return new Response(JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				});
@@ -1099,7 +1108,6 @@ describe("r2 asset content", () => {
 		if (!pluginRun) {
 			throw new Error("Expected plugin event run");
 		}
-		expect(pluginRun.outputAssetId).toBeUndefined();
 		expect(pluginRun.status).toBe("queued");
 
 		await asUser.action(internal.plugins_runtime.execute_upload_completed_event_run, {
@@ -1139,7 +1147,7 @@ describe("r2 asset content", () => {
 		const processedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		expect(processedAsset?.processingWorkId).toBeNull();
 		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
-		expect(completedRun).toMatchObject({ status: "succeeded", hostWriteCount: 2 });
+		expect(completedRun).toMatchObject({ status: "succeeded", apiCallCount: 2, outputWriteCount: 2 });
 
 		const audioUpload = await asUser.mutation(api.files_nodes.create_upload_node, {
 			membershipId: db.membershipId,
@@ -1222,7 +1230,7 @@ describe("r2 asset content", () => {
 			},
 		});
 		const completedAudioRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", audioPluginRun._id));
-		expect(completedAudioRun).toMatchObject({ status: "succeeded", hostWriteCount: 2 });
+		expect(completedAudioRun).toMatchObject({ status: "succeeded", apiCallCount: 2, outputWriteCount: 2 });
 	});
 
 	test("finalizes uploaded Markdown into editable content and marks the upload terminal", async () => {
@@ -1426,20 +1434,20 @@ describe("r2 asset content", () => {
 		stub_r2_and_modal_fetch({
 			onPluginRunnerRequest: async (body) => {
 				const host = body.host as { token: string };
-				const writeResponse = await t.fetch("/api/plugins/v1/write-markdown", {
+				const source = (body.input as { source: { path: string } }).source;
+				const writeResponse = await t.fetch("/api/v1/files/write", {
 					method: "POST",
 					headers: {
 						Authorization: `Bearer ${host.token}`,
 						"Content-Type": "application/json",
 					},
 					body: JSON.stringify({
-						pluginRunId: body.pluginRunId,
-						path: "collision.pdf.md",
-						markdown: "# Collision replacement\n\nPLUGIN_COLLISION_E2E_2026",
+						path: `${source.path}.md`,
+						content: "# Collision replacement\n\nPLUGIN_COLLISION_E2E_2026",
 					}),
 				});
 				expect(writeResponse.status).toBe(200);
-				return new Response(JSON.stringify({ _yay: {} }), {
+				return new Response(JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }), {
 					status: 200,
 					headers: { "Content-Type": "application/json" },
 				});

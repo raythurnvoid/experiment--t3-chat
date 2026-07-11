@@ -156,7 +156,9 @@ const app_convex_schema = defineSchema({
 		keyId: v.string(),
 		obfuscatedValue: v.string(),
 		secretHash: v.string(),
-		scopes: v.array(v.union(v.literal("files:list"), v.literal("files:read"))),
+		scopes: v.array(
+			v.union(v.literal("files:list"), v.literal("files:read"), v.literal("files:write"), v.literal("files:download")),
+		),
 		createdAt: v.number(),
 		revokedAt: v.union(v.number(), v.null()),
 		lastUsedAt: v.union(v.number(), v.null()),
@@ -166,6 +168,36 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
 		.index("by_organization_workspace_user_revokedAt", ["organizationId", "workspaceId", "userId", "revokedAt"])
 		.index("by_user", ["userId"]),
+
+	/**
+	 * In-flight `/api/v1/files/write` staging doc. Created with the asset docs before any R2 write,
+	 * deleted atomically by the publish mutation. A surviving stage marks an unpublished write whose
+	 * R2 objects and asset docs are safe to delete; publication deletes the stage first, so cleanup
+	 * can never remove a published output. No `files_nodes` doc exists until publication.
+	 */
+	public_api_file_write_stages: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		/** Authoring user: the credential owner, or the plugin run's actorUserId. */
+		userId: v.id("users"),
+		/** Present only for plugin_run writes; failure cleanup settles the linked started call. */
+		runId: v.optional(v.id("plugins_event_runs")),
+		callId: v.optional(v.id("plugins_event_run_calls")),
+		/** Present only for user_api_key writes; publication revalidates the credential. */
+		credentialId: v.optional(v.id("api_credentials")),
+		/** Normalized absolute target path; parents are resolved again at publication. */
+		path: v.string(),
+		overwrite: v.union(v.literal("replace"), v.literal("fail")),
+		contentAssetId: v.id("files_r2_assets"),
+		yjsSnapshotAssetId: v.id("files_r2_assets"),
+		contentSnapshotAssetId: v.id("files_r2_assets"),
+		/** Stages older than this are crashed writes; the cleanup cron deletes them and their assets. */
+		expiresAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_run", ["runId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 	// #endregion public api
 
 	// #region value store
@@ -899,7 +931,7 @@ const app_convex_schema = defineSchema({
 	plugins_event_runs: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		// The uploaded file the event fired for; plugin-written outputs land in output*.
+		// The uploaded file the event fired for; plugin-written outputs are ordinary Markdown siblings.
 		assetId: v.id("files_r2_assets"),
 		fileNodeId: v.id("files_nodes"),
 		actorUserId: v.id("users"),
@@ -909,14 +941,12 @@ const app_convex_schema = defineSchema({
 		eventId: v.string(),
 		status: v.union(v.literal("queued"), v.literal("running"), v.literal("succeeded"), v.literal("failed")),
 		workId: v.optional(vWorkId),
-		outputFileNodeId: v.optional(v.id("files_nodes")),
-		outputAssetId: v.optional(v.id("files_r2_assets")),
-		hostTokenHash: v.optional(v.string()),
-		hostTokenExpiresAt: v.optional(v.number()),
+		apiTokenHash: v.optional(v.string()),
+		apiTokenExpiresAt: v.optional(v.number()),
 		acceptedCapabilities: v.array(plugins_capability_validator),
 		expiresAt: v.number(),
-		hostCallCount: v.number(),
-		hostWriteCount: v.number(),
+		apiCallCount: v.number(),
+		outputWriteCount: v.number(),
 		errorMessage: v.union(v.string(), v.null()),
 		runnerHttpStatus: v.optional(v.number()),
 		runnerElapsedMs: v.optional(v.number()),
@@ -937,10 +967,16 @@ const app_convex_schema = defineSchema({
 		])
 		.index("by_organization_workspace_updatedAt", ["organizationId", "workspaceId", "updatedAt"])
 		.index("by_work", ["workId"])
-		.index("by_hostTokenHash", ["hostTokenHash"])
+		.index("by_apiTokenHash", ["apiTokenHash"])
 		.index("by_installation_updatedAt", ["installationId", "updatedAt"])
 		.index("by_status_expiresAt", ["status", "expiresAt"]),
 
+	/**
+	 * Per-run call ledger: one doc per consumed quota slot, whether a host API request or an
+	 * outbound fetch. Stores only curated telemetry (route, status, byte counts, timing). Never
+	 * store request or response bodies, bearer tokens, signed URLs, secret values, or raw
+	 * provider/library errors.
+	 */
 	plugins_event_run_calls: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -948,31 +984,14 @@ const app_convex_schema = defineSchema({
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		sequence: v.number(),
-		operation: v.union(
-			v.literal("writeMarkdown"),
-			v.literal("sourceTemporaryUrl"),
-			v.literal("secretGet"),
-			v.literal("outboundFetch"),
-		),
+		kind: v.union(v.literal("api_request"), v.literal("outbound_fetch")),
+		/** Public API route for `api_request`; the literal "outbound" for `outbound_fetch`. */
+		route: v.string(),
 		status: v.union(v.literal("started"), v.literal("succeeded"), v.literal("failed")),
-		outputPath: v.optional(v.string()),
-		outputOverwrite: v.optional(v.union(v.literal("replace"), v.literal("fail"))),
-		markdownBytes: v.optional(v.number()),
-		expiresInSeconds: v.optional(v.number()),
-		temporaryUrlExpiresAt: v.optional(v.number()),
-		secretName: v.optional(v.string()),
-		secretFound: v.optional(v.boolean()),
-		secretTier: v.optional(v.union(v.literal("installation"), v.literal("publisher"))),
-		systemBytes: v.optional(v.number()),
-		promptBytes: v.optional(v.number()),
-		includeSourceImage: v.optional(v.boolean()),
-		maxOutputTokens: v.optional(v.number()),
-		modelId: v.optional(v.string()),
-		sourceBytes: v.optional(v.number()),
+		responseStatus: v.optional(v.number()),
 		requestBytes: v.optional(v.number()),
 		responseBytes: v.optional(v.number()),
-		responseStatus: v.optional(v.number()),
-		outputTextBytes: v.optional(v.number()),
+		errorCode: v.optional(v.string()),
 		errorMessage: v.union(v.string(), v.null()),
 		startedAt: v.number(),
 		finishedAt: v.optional(v.number()),
