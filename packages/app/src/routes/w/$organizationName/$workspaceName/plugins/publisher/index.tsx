@@ -305,6 +305,7 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 // #region root
 type RoutePluginsPublisher_ClassNames =
 	| "RoutePluginsPublisher"
+	| "RoutePluginsPublisher-content"
 	| "RoutePluginsPublisher-loading"
 	| "RoutePluginsPublisherHeader"
 	| "RoutePluginsPublisherHeader-title"
@@ -334,10 +335,12 @@ function RoutePluginsPublisher() {
 				role="status"
 				aria-live="polite"
 			>
-				{breadcrumb}
-				<div className={"RoutePluginsPublisher-loading" satisfies RoutePluginsPublisher_ClassNames}>
-					<Store aria-hidden />
-					Loading publisher...
+				<div className={"RoutePluginsPublisher-content" satisfies RoutePluginsPublisher_ClassNames}>
+					{breadcrumb}
+					<div className={"RoutePluginsPublisher-loading" satisfies RoutePluginsPublisher_ClassNames}>
+						<Store aria-hidden />
+						Loading publisher...
+					</div>
 				</div>
 			</main>
 		);
@@ -345,39 +348,43 @@ function RoutePluginsPublisher() {
 
 	return (
 		<main className={"RoutePluginsPublisher" satisfies RoutePluginsPublisher_ClassNames}>
-			{breadcrumb}
+			<div className={"RoutePluginsPublisher-content" satisfies RoutePluginsPublisher_ClassNames}>
+				{breadcrumb}
 
-			<header className={"RoutePluginsPublisherHeader" satisfies RoutePluginsPublisher_ClassNames}>
-				<div>
-					<h1 className={"RoutePluginsPublisherHeader-title" satisfies RoutePluginsPublisher_ClassNames}>Publisher</h1>
-					<p className={"RoutePluginsPublisherHeader-description" satisfies RoutePluginsPublisher_ClassNames}>
-						{auth.isAnonymous
-							? "Sign in to publish plugins."
-							: "Claim a GitHub repository to publish it as a plugin. Published plugins open their plugin page, where you manage versions, review verdicts, and secrets."}
-					</p>
-				</div>
-				{auth.isAnonymous === false && anagraphic ? (
-					<div className={"RoutePluginsPublisherIdentity" satisfies RoutePluginsPublisher_ClassNames}>
-						<Store aria-hidden />
-						<div className={"RoutePluginsPublisherIdentity-text" satisfies RoutePluginsPublisher_ClassNames}>
-							<span className={"RoutePluginsPublisherIdentity-name" satisfies RoutePluginsPublisher_ClassNames}>
-								{anagraphic.displayName}
-							</span>
-							{anagraphic.email ? (
-								<span className={"RoutePluginsPublisherIdentity-email" satisfies RoutePluginsPublisher_ClassNames}>
-									{anagraphic.email}
-								</span>
-							) : null}
-						</div>
+				<header className={"RoutePluginsPublisherHeader" satisfies RoutePluginsPublisher_ClassNames}>
+					<div>
+						<h1 className={"RoutePluginsPublisherHeader-title" satisfies RoutePluginsPublisher_ClassNames}>
+							Publisher
+						</h1>
+						<p className={"RoutePluginsPublisherHeader-description" satisfies RoutePluginsPublisher_ClassNames}>
+							{auth.isAnonymous
+								? "Sign in to publish plugins."
+								: "Claim a GitHub repository to publish it as a plugin. Published plugins open their plugin page, where you manage versions, review verdicts, and secrets."}
+						</p>
 					</div>
-				) : null}
-			</header>
+					{auth.isAnonymous === false && anagraphic ? (
+						<div className={"RoutePluginsPublisherIdentity" satisfies RoutePluginsPublisher_ClassNames}>
+							<Store aria-hidden />
+							<div className={"RoutePluginsPublisherIdentity-text" satisfies RoutePluginsPublisher_ClassNames}>
+								<span className={"RoutePluginsPublisherIdentity-name" satisfies RoutePluginsPublisher_ClassNames}>
+									{anagraphic.displayName}
+								</span>
+								{anagraphic.email ? (
+									<span className={"RoutePluginsPublisherIdentity-email" satisfies RoutePluginsPublisher_ClassNames}>
+										{anagraphic.email}
+									</span>
+								) : null}
+							</div>
+						</div>
+					) : null}
+				</header>
 
-			{auth.isAnonymous ? (
-				<RoutePluginsPublisherSignIn />
-			) : (
-				<RoutePluginsPublisherPlugins repositories={repositories ?? []} />
-			)}
+				{auth.isAnonymous ? (
+					<RoutePluginsPublisherSignIn />
+				) : (
+					<RoutePluginsPublisherPlugins repositories={repositories ?? []} />
+				)}
+			</div>
 		</main>
 	);
 }

@@ -6,22 +6,22 @@ import {
 	ChevronRight,
 	Clock3,
 	Download,
+	Ellipsis,
 	GitBranch,
 	History,
 	KeyRound,
 	Puzzle,
 	Save,
 	ShieldCheck,
-	Store,
 	Trash2,
 	UploadCloud,
-	Zap,
 } from "lucide-react";
-import { memo, useState, type FormEvent } from "react";
+import { memo, useState, type ClipboardEvent, type FormEvent } from "react";
 import { toast } from "sonner";
 
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
+import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -29,8 +29,17 @@ import {
 	MyInputBox,
 	MyInputControl,
 	MyInputLabel,
-	MyInputTextAreaControl,
 } from "@/components/my-input.tsx";
+import {
+	MyMenu,
+	MyMenuItem,
+	MyMenuItemContent,
+	MyMenuItemContentIcon,
+	MyMenuItemContentPrimary,
+	MyMenuPopover,
+	MyMenuPopoverContent,
+	MyMenuTrigger,
+} from "@/components/my-menu.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -38,7 +47,9 @@ import {
 	MyModalHeader,
 	MyModalHeading,
 	MyModalPopover,
+	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
+import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
@@ -49,7 +60,12 @@ import {
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_datetime } from "@/lib/date.ts";
-import { plugins_consent_diff, plugins_parse_env_text } from "../../../../../../shared/plugins.ts";
+import { cn } from "@/lib/utils.ts";
+import {
+	plugins_consent_diff,
+	plugins_parse_env_text,
+	plugins_validate_secret_name,
+} from "../../../../../../shared/plugins.ts";
 
 type RoutePlugins_Installation = app_convex_FunctionReturnType<
 	typeof app_convex_api.plugins.list_installations
@@ -63,56 +79,104 @@ type RoutePlugins_PublisherPlugin = NonNullable<
 	app_convex_FunctionReturnType<typeof app_convex_api.plugins.get_publisher_plugin>
 >;
 
-// #region installed secrets
-type RoutePluginsInstalledSecrets_ClassNames =
-	| "RoutePluginsInstalledSecrets"
-	| "RoutePluginsInstalledSecrets-title"
-	| "RoutePluginsInstalledSecrets-description"
-	| "RoutePluginsInstalledSecrets-form"
-	| "RoutePluginsInstalledSecrets-env"
-	| "RoutePluginsInstalledSecrets-empty"
-	| "RoutePluginsInstalledSecrets-list"
-	| "RoutePluginsInstalledSecretItem"
-	| "RoutePluginsInstalledSecretItem-identity"
-	| "RoutePluginsInstalledSecretItem-name"
-	| "RoutePluginsInstalledSecretItem-meta";
+// #region secrets
+type RoutePluginsPluginSecretsModalPanel_ClassNames =
+	| "RoutePluginsPluginSecretsModalPanel"
+	| "RoutePluginsPluginSecretsModalPanel-note"
+	| "RoutePluginsPluginSecretsModalPanel-empty"
+	| "RoutePluginsPluginSecretsModalPanel-list"
+	| "RoutePluginsPluginSecretsModalPanel-form"
+	| "RoutePluginsPluginSecretsModalPanel-hint"
+	| "RoutePluginsPluginSecretItem"
+	| "RoutePluginsPluginSecretItem-identity"
+	| "RoutePluginsPluginSecretItem-name"
+	| "RoutePluginsPluginSecretItem-name-overridden"
+	| "RoutePluginsPluginSecretItem-meta";
 
-type RoutePluginsInstalledSecrets_Props = {
-	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	installationId: app_convex_Id<"plugins_workspace_installations">;
+type RoutePluginsPluginSecretsModalPanel_Props = {
+	target:
+		| {
+				scope: "workspace";
+				membershipId: app_convex_Id<"organizations_workspaces_users">;
+				installationId: app_convex_Id<"plugins_workspace_installations">;
+				// Upserts require plugin.secrets.read on the installed version, but listing and deleting
+				// deliberately do not, so leftover secrets stay removable after an upgrade drops the capability.
+				canAdd: boolean;
+				// Same-name plugin secrets are shadowed by these rows at runtime.
+				pluginSecretNames: Set<string>;
+		  }
+		| {
+				scope: "plugin";
+				repositoryId: app_convex_Id<"plugins_publisher_repositories">;
+				// Same-name workspace secrets shadow these rows at runtime; empty when that scope is not visible.
+				workspaceSecretNames: Set<string>;
+		  };
+	secrets:
+		| Array<
+				| app_convex_FunctionReturnType<typeof app_convex_api.plugins.list_installation_secrets>[number]
+				| app_convex_FunctionReturnType<typeof app_convex_api.plugins.list_publisher_repository_secrets>[number]
+		  >
+		| undefined;
+	// Only the bare (untabbed) panel takes initial focus; with tabs the tab list is first-tabbable.
+	autoFocusName: boolean;
 };
 
-const RoutePluginsInstalledSecrets = memo(function RoutePluginsInstalledSecrets(
-	props: RoutePluginsInstalledSecrets_Props,
+const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecretsModalPanel(
+	props: RoutePluginsPluginSecretsModalPanel_Props,
 ) {
-	const { membershipId, installationId } = props;
-	const secrets = useQuery(app_convex_api.plugins.list_installation_secrets, { membershipId, installationId });
+	const { target, secrets, autoFocusName } = props;
 	const [name, setName] = useState("");
 	const [value, setValue] = useState("");
-	const [envText, setEnvText] = useState("");
 	const [saving, setSaving] = useState(false);
+	const [deleting, setDeleting] = useState(false);
+
+	const scopeLabel = target.scope === "workspace" ? "Workspace" : "Plugin";
+	const canAdd = target.scope === "plugin" || target.canAdd;
 
 	const handleSaveSecret = useFn((event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
-		if (!name.trim() || !value) {
+		if (saving || deleting || !name.trim() || !value) {
+			return;
+		}
+
+		// Validating locally spares a doomed round-trip and a plugins_manage rate-limit token.
+		const validName = plugins_validate_secret_name(name);
+		if (validName._nay) {
+			toast.error(validName._nay.message);
 			return;
 		}
 
 		setSaving(true);
-		app_convex
-			.mutation(app_convex_api.plugins.upsert_installation_secret, { membershipId, installationId, name, value })
+		const upsert: Promise<
+			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.upsert_installation_secret>
+			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.upsert_publisher_repository_secret>
+		> =
+			target.scope === "workspace"
+				? app_convex.mutation(app_convex_api.plugins.upsert_installation_secret, {
+						membershipId: target.membershipId,
+						installationId: target.installationId,
+						name: validName._yay,
+						value,
+					})
+				: app_convex.mutation(app_convex_api.plugins.upsert_publisher_repository_secret, {
+						repositoryId: target.repositoryId,
+						name: validName._yay,
+						value,
+					});
+		upsert
 			.then((result) => {
 				if (result._nay) {
 					toast.error(result._nay.message);
 					return;
 				}
 
-				toast.success(`Secret ${name.trim()} saved`);
-				setName("");
-				setValue("");
+				toast.success(`${scopeLabel} secret ${validName._yay} saved`);
+				// The inputs stay enabled during the save, so only clear what the user has not retyped since.
+				setName((current) => (current === name ? "" : current));
+				setValue((current) => (current === value ? "" : current));
 			})
 			.catch((error) => {
-				console.error("[RoutePluginsPlugin.handleSaveSecret] Failed to save secret:", { error, installationId });
+				console.error("[RoutePluginsPlugin.handleSaveSecret] Failed to save secret:", { error, scope: target.scope });
 				toast.error("Failed to save secret");
 			})
 			.finally(() => {
@@ -120,31 +184,69 @@ const RoutePluginsInstalledSecrets = memo(function RoutePluginsInstalledSecrets(
 			});
 	});
 
-	const handleImportEnv = useFn(() => {
-		const parsed = plugins_parse_env_text(envText);
-		if (parsed._nay) {
-			toast.error(parsed._nay.message);
+	// Pasting .env-style text into either field saves every KEY=value line into this panel's scope.
+	// A single KEY=value line only auto-fills the two fields from the Name input, so one-line values
+	// that happen to contain "=" (base64, connection strings) paste normally into Value.
+	const handleEnvPaste = useFn((event: ClipboardEvent<HTMLInputElement>, field: "name" | "value") => {
+		const text = event.clipboardData.getData("text");
+		const parsed = plugins_parse_env_text(text);
+		if (parsed._nay || !parsed._yay[0]) {
+			// The single-line input silently joins pasted lines, and values are write-only after saving,
+			// so a mangled multi-line value could never be discovered — reject it instead.
+			if (field === "value" && text.trim().includes("\n")) {
+				event.preventDefault();
+				toast.error("Multi-line values are not supported");
+			}
+
+			return;
+		}
+
+		const first = parsed._yay[0];
+		if (!text.trim().includes("\n")) {
+			if (field === "value") {
+				return;
+			}
+
+			event.preventDefault();
+			setName(first.name);
+			setValue(first.value);
+			return;
+		}
+
+		event.preventDefault();
+		if (saving || deleting) {
 			return;
 		}
 
 		setSaving(true);
-		app_convex
-			.mutation(app_convex_api.plugins.upsert_installation_secrets, {
-				membershipId,
-				installationId,
-				secrets: parsed._yay,
-			})
+		const upsert: Promise<
+			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.upsert_installation_secrets>
+			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.upsert_publisher_repository_secrets>
+		> =
+			target.scope === "workspace"
+				? app_convex.mutation(app_convex_api.plugins.upsert_installation_secrets, {
+						membershipId: target.membershipId,
+						installationId: target.installationId,
+						secrets: parsed._yay,
+					})
+				: app_convex.mutation(app_convex_api.plugins.upsert_publisher_repository_secrets, {
+						repositoryId: target.repositoryId,
+						secrets: parsed._yay,
+					});
+		upsert
 			.then((result) => {
 				if (result._nay) {
 					toast.error(result._nay.message);
 					return;
 				}
 
-				toast.success(`Saved ${result._yay.count} secrets`);
-				setEnvText("");
+				toast.success(`Saved ${result._yay.count} ${target.scope} secret${result._yay.count === 1 ? "" : "s"}`);
+				// The inputs stay enabled during the import, so only clear what the user has not retyped since.
+				setName((current) => (current === name ? "" : current));
+				setValue((current) => (current === value ? "" : current));
 			})
 			.catch((error) => {
-				console.error("[RoutePluginsPlugin.handleImportEnv] Failed to import secrets:", { error, installationId });
+				console.error("[RoutePluginsPlugin.handleEnvPaste] Failed to import secrets:", { error, scope: target.scope });
 				toast.error("Failed to import secrets");
 			})
 			.finally(() => {
@@ -153,143 +255,338 @@ const RoutePluginsInstalledSecrets = memo(function RoutePluginsInstalledSecrets(
 	});
 
 	const handleDeleteSecret = useFn((secretName: string) => {
-		setSaving(true);
-		app_convex
-			.mutation(app_convex_api.plugins.delete_installation_secret, { membershipId, installationId, name: secretName })
+		setDeleting(true);
+		const remove: Promise<
+			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.delete_installation_secret>
+			| app_convex_FunctionReturnType<typeof app_convex_api.plugins.delete_publisher_repository_secret>
+		> =
+			target.scope === "workspace"
+				? app_convex.mutation(app_convex_api.plugins.delete_installation_secret, {
+						membershipId: target.membershipId,
+						installationId: target.installationId,
+						name: secretName,
+					})
+				: app_convex.mutation(app_convex_api.plugins.delete_publisher_repository_secret, {
+						repositoryId: target.repositoryId,
+						name: secretName,
+					});
+		remove
 			.then((result) => {
 				if (result._nay) {
 					toast.error(result._nay.message);
 					return;
 				}
 
-				toast.success(`Secret ${secretName} deleted`);
+				toast.success(`${scopeLabel} secret ${secretName} deleted`);
 			})
 			.catch((error) => {
-				console.error("[RoutePluginsPlugin.handleDeleteSecret] Failed to delete secret:", { error, installationId });
+				console.error("[RoutePluginsPlugin.handleDeleteSecret] Failed to delete secret:", {
+					error,
+					scope: target.scope,
+				});
 				toast.error("Failed to delete secret");
 			})
 			.finally(() => {
-				setSaving(false);
+				setDeleting(false);
 			});
 	});
 
 	return (
-		<section className={"RoutePluginsInstalledSecrets" satisfies RoutePluginsInstalledSecrets_ClassNames}>
-			<h3 className={"RoutePluginsInstalledSecrets-title" satisfies RoutePluginsInstalledSecrets_ClassNames}>
-				<KeyRound aria-hidden />
-				Secrets
-			</h3>
-			<p className={"RoutePluginsInstalledSecrets-description" satisfies RoutePluginsInstalledSecrets_ClassNames}>
-				These values are provided to this plugin when it runs in this workspace.
-			</p>
-
-			<form
-				className={"RoutePluginsInstalledSecrets-form" satisfies RoutePluginsInstalledSecrets_ClassNames}
-				onSubmit={handleSaveSecret}
+		<div className={"RoutePluginsPluginSecretsModalPanel" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}>
+			<p
+				className={"RoutePluginsPluginSecretsModalPanel-note" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
 			>
-				<MyInput>
-					<MyInputLabel>Name</MyInputLabel>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputControl
-							value={name}
-							placeholder="OPENAI_API_KEY"
-							disabled={saving}
-							required
-							onChange={(event) => setName(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-				<MyInput>
-					<MyInputLabel>Value</MyInputLabel>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputControl
-							value={value}
-							type="password"
-							autoComplete="off"
-							disabled={saving}
-							required
-							onChange={(event) => setValue(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-				<MyButton type="submit" disabled={saving || !name.trim() || !value}>
-					<Save aria-hidden />
-					{saving ? "Saving..." : "Save"}
-				</MyButton>
-			</form>
-
-			<div className={"RoutePluginsInstalledSecrets-env" satisfies RoutePluginsInstalledSecrets_ClassNames}>
-				<MyInput>
-					<MyInputLabel>Paste .env</MyInputLabel>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputTextAreaControl
-							value={envText}
-							placeholder={"MODAL_TOKEN=...\nOPENAI_API_KEY=..."}
-							rows={3}
-							disabled={saving}
-							onChange={(event) => setEnvText(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-				<MyButton disabled={saving || envText.trim().length === 0} onClick={handleImportEnv}>
-					{saving ? "Importing..." : "Import .env"}
-				</MyButton>
-			</div>
+				{target.scope === "workspace"
+					? "Stored for this workspace only. A workspace secret overrides a plugin secret with the same name at runtime."
+					: "Runtime defaults for every workspace that installs this plugin."}
+			</p>
 
 			{secrets === undefined ? (
 				<div
-					className={"RoutePluginsInstalledSecrets-empty" satisfies RoutePluginsInstalledSecrets_ClassNames}
+					className={
+						"RoutePluginsPluginSecretsModalPanel-empty" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+					}
 					role="status"
 				>
 					Loading secrets...
 				</div>
 			) : secrets.length === 0 ? (
-				<div className={"RoutePluginsInstalledSecrets-empty" satisfies RoutePluginsInstalledSecrets_ClassNames}>
-					No secrets configured.
+				<div
+					className={
+						"RoutePluginsPluginSecretsModalPanel-empty" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+					}
+				>
+					{target.scope === "workspace" ? "No workspace secrets yet." : "No plugin secrets yet."}
 				</div>
 			) : (
-				<div className={"RoutePluginsInstalledSecrets-list" satisfies RoutePluginsInstalledSecrets_ClassNames}>
-					{secrets.map((secret) => (
-						<div
-							key={secret._id}
-							className={"RoutePluginsInstalledSecretItem" satisfies RoutePluginsInstalledSecrets_ClassNames}
-						>
+				<div
+					className={
+						"RoutePluginsPluginSecretsModalPanel-list" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+					}
+				>
+					{secrets.map((secret) => {
+						const overridden = target.scope === "plugin" && target.workspaceSecretNames.has(secret.name);
+						const overrides = target.scope === "workspace" && target.pluginSecretNames.has(secret.name);
+						return (
 							<div
-								className={"RoutePluginsInstalledSecretItem-identity" satisfies RoutePluginsInstalledSecrets_ClassNames}
+								key={secret._id}
+								className={"RoutePluginsPluginSecretItem" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames}
 							>
-								<span
-									className={"RoutePluginsInstalledSecretItem-name" satisfies RoutePluginsInstalledSecrets_ClassNames}
+								<div
+									className={
+										"RoutePluginsPluginSecretItem-identity" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+									}
 								>
-									{secret.name}
-								</span>
-								<span
-									className={"RoutePluginsInstalledSecretItem-meta" satisfies RoutePluginsInstalledSecrets_ClassNames}
+									<span
+										className={cn(
+											"RoutePluginsPluginSecretItem-name" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames,
+											overridden &&
+												("RoutePluginsPluginSecretItem-name-overridden" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames),
+										)}
+									>
+										{secret.name}
+									</span>
+									<span
+										className={
+											"RoutePluginsPluginSecretItem-meta" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+										}
+									>
+										{`Updated ${format_datetime(secret.updatedAt)}${
+											"lastUsedAt" in secret && secret.lastUsedAt !== null
+												? ` · last used ${format_datetime(secret.lastUsedAt)}`
+												: ""
+										}${overridden ? " · overridden in this workspace" : ""}${
+											overrides ? " · overrides the plugin default" : ""
+										}`}
+									</span>
+								</div>
+								<MyButton
+									variant="ghost_destructive"
+									tooltip={`Delete ${target.scope} secret ${secret.name}`}
+									disabled={saving || deleting}
+									onClick={() => handleDeleteSecret(secret.name)}
 								>
-									{secret.valuePreview} · updated {format_datetime(secret.updatedAt)}
-								</span>
+									<Trash2 aria-hidden />
+								</MyButton>
 							</div>
-							<MyButton
-								variant="ghost_destructive"
-								aria-label={`Delete secret ${secret.name}`}
-								disabled={saving}
-								onClick={() => handleDeleteSecret(secret.name)}
-							>
-								<Trash2 aria-hidden />
-							</MyButton>
-						</div>
-					))}
+						);
+					})}
 				</div>
 			)}
+
+			{canAdd ? (
+				<>
+					<form
+						className={
+							"RoutePluginsPluginSecretsModalPanel-form" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+						}
+						onSubmit={handleSaveSecret}
+					>
+						<MyInput>
+							<MyInputLabel>Name</MyInputLabel>
+							<MyInputBackground />
+							<MyInputArea>
+								<MyInputControl
+									value={name}
+									placeholder="OPENAI_API_KEY"
+									autoFocus={autoFocusName}
+									required
+									onChange={(event) => setName(event.currentTarget.value)}
+									onPaste={(event) => handleEnvPaste(event, "name")}
+								/>
+							</MyInputArea>
+							<MyInputBox />
+						</MyInput>
+						<MyInput>
+							<MyInputLabel>Value</MyInputLabel>
+							<MyInputBackground />
+							<MyInputArea>
+								<MyInputControl
+									value={value}
+									type="password"
+									autoComplete="off"
+									required
+									onChange={(event) => setValue(event.currentTarget.value)}
+									onPaste={(event) => handleEnvPaste(event, "value")}
+								/>
+							</MyInputArea>
+							<MyInputBox />
+						</MyInput>
+						<MyButton type="submit" disabled={saving || deleting || !name.trim() || !value}>
+							<Save aria-hidden />
+							{saving ? "Saving..." : "Save"}
+						</MyButton>
+					</form>
+					<p
+						className={
+							"RoutePluginsPluginSecretsModalPanel-hint" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+						}
+					>
+						Paste .env-style text into Name to import several secrets at once.
+					</p>
+				</>
+			) : (
+				<p
+					className={
+						"RoutePluginsPluginSecretsModalPanel-note" satisfies RoutePluginsPluginSecretsModalPanel_ClassNames
+					}
+				>
+					The installed version does not request secret access, so new secrets cannot be added.
+				</p>
+			)}
+		</div>
+	);
+});
+
+type RoutePluginsPluginSecretsModal_ClassNames = "RoutePluginsPluginSecretsModal";
+
+type RoutePluginsPluginSecretsModal_Props = {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	installationId: app_convex_Id<"plugins_workspace_installations"> | null;
+	installationCanAdd: boolean;
+	publisherRepositoryId: app_convex_Id<"plugins_publisher_repositories"> | null;
+	onClose: () => void;
+};
+
+const RoutePluginsPluginSecretsModal = memo(function RoutePluginsPluginSecretsModal(
+	props: RoutePluginsPluginSecretsModal_Props,
+) {
+	const { membershipId, installationCanAdd, onClose } = props;
+	// Snapshot at mount: a reactive flip of either id would re-parent the panel between the bare and
+	// tabbed positions, remounting it and wiping half-typed input.
+	const [{ installationId, publisherRepositoryId }] = useState(() => ({
+		installationId: props.installationId,
+		publisherRepositoryId: props.publisherRepositoryId,
+	}));
+	const workspaceSecrets = useQuery(
+		app_convex_api.plugins.list_installation_secrets,
+		installationId ? { membershipId, installationId } : "skip",
+	);
+	const pluginSecrets = useQuery(
+		app_convex_api.plugins.list_publisher_repository_secrets,
+		publisherRepositoryId ? { repositoryId: publisherRepositoryId } : "skip",
+	);
+
+	const workspacePanel = installationId ? (
+		<RoutePluginsPluginSecretsModalPanel
+			target={{
+				scope: "workspace",
+				membershipId,
+				installationId,
+				canAdd: installationCanAdd,
+				pluginSecretNames: new Set((pluginSecrets ?? []).map((secret) => secret.name)),
+			}}
+			secrets={workspaceSecrets}
+			autoFocusName={!publisherRepositoryId}
+		/>
+	) : null;
+	const pluginPanel = publisherRepositoryId ? (
+		<RoutePluginsPluginSecretsModalPanel
+			target={{
+				scope: "plugin",
+				repositoryId: publisherRepositoryId,
+				workspaceSecretNames: new Set((workspaceSecrets ?? []).map((secret) => secret.name)),
+			}}
+			secrets={pluginSecrets}
+			autoFocusName={!installationId}
+		/>
+	) : null;
+
+	return (
+		<MyModal
+			open
+			setOpen={(open) => {
+				if (!open) {
+					onClose();
+				}
+			}}
+		>
+			<MyModalPopover className={"RoutePluginsPluginSecretsModal" satisfies RoutePluginsPluginSecretsModal_ClassNames}>
+				<MyModalHeader>
+					<MyModalHeading>Manage secrets</MyModalHeading>
+					<MyModalDescription>
+						Values this plugin can read at runtime. Values are write-only and never shown after saving.
+					</MyModalDescription>
+				</MyModalHeader>
+				<MyModalScrollableArea>
+					{workspacePanel && pluginPanel ? (
+						// The tab doubles as the scope picker; workspace first so an inattentive add stays local.
+						<MyTabs defaultSelectedId="workspace">
+							<MyTabsList aria-label="Secret scope">
+								<MyTabsTab id="workspace">Workspace secrets</MyTabsTab>
+								<MyTabsTab id="plugin">Plugin secrets</MyTabsTab>
+							</MyTabsList>
+							<MyTabsPanels>
+								<MyTabsPanel tabId="workspace">{workspacePanel}</MyTabsPanel>
+								<MyTabsPanel tabId="plugin">{pluginPanel}</MyTabsPanel>
+							</MyTabsPanels>
+						</MyTabs>
+					) : (
+						(workspacePanel ?? pluginPanel)
+					)}
+				</MyModalScrollableArea>
+				<MyModalCloseTrigger />
+			</MyModalPopover>
+		</MyModal>
+	);
+});
+
+type RoutePluginsPluginSecrets_ClassNames =
+	| "RoutePluginsPluginSecrets"
+	| "RoutePluginsPluginSecrets-header"
+	| "RoutePluginsPluginSecrets-title"
+	| "RoutePluginsPluginSecrets-description";
+
+type RoutePluginsPluginSecrets_Props = {
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	installationId: app_convex_Id<"plugins_workspace_installations"> | null;
+	installationCanAdd: boolean;
+	publisherRepositoryId: app_convex_Id<"plugins_publisher_repositories"> | null;
+};
+
+const RoutePluginsPluginSecrets = memo(function RoutePluginsPluginSecrets(props: RoutePluginsPluginSecrets_Props) {
+	const { membershipId, installationId, installationCanAdd, publisherRepositoryId } = props;
+	const [managing, setManaging] = useState(false);
+	// A non-publisher install without plugin.secrets.read only needs this section while leftover
+	// secrets from a previous version remain deletable, so peek at the list in that rare case.
+	// `managing` keeps the section (and the modal mounted inside it) alive while the user deletes
+	// the last leftover; the section leaves once the modal closes.
+	const leftoverSecrets = useQuery(
+		app_convex_api.plugins.list_installation_secrets,
+		installationId && !installationCanAdd && !publisherRepositoryId ? { membershipId, installationId } : "skip",
+	);
+	if (installationId && !installationCanAdd && !publisherRepositoryId && !leftoverSecrets?.length && !managing) {
+		return null;
+	}
+
+	return (
+		<section className={"RoutePluginsPluginSecrets" satisfies RoutePluginsPluginSecrets_ClassNames}>
+			<header className={"RoutePluginsPluginSecrets-header" satisfies RoutePluginsPluginSecrets_ClassNames}>
+				<h2 className={"RoutePluginsPluginSecrets-title" satisfies RoutePluginsPluginSecrets_ClassNames}>
+					<KeyRound aria-hidden />
+					Secrets
+				</h2>
+				<p className={"RoutePluginsPluginSecrets-description" satisfies RoutePluginsPluginSecrets_ClassNames}>
+					Values this plugin can read at runtime.
+				</p>
+			</header>
+			<MyButton variant="outline" onClick={() => setManaging(true)}>
+				Manage secrets
+			</MyButton>
+			{/* Mounted per open so form state resets and the secret queries only subscribe while managing. */}
+			{managing ? (
+				<RoutePluginsPluginSecretsModal
+					membershipId={membershipId}
+					installationId={installationId}
+					installationCanAdd={installationCanAdd}
+					publisherRepositoryId={publisherRepositoryId}
+					onClose={() => setManaging(false)}
+				/>
+			) : null}
 		</section>
 	);
 });
-// #endregion installed secrets
+// #endregion secrets
 
 // #region installed runs
 type RoutePluginsInstalledRuns_ClassNames =
@@ -297,6 +594,7 @@ type RoutePluginsInstalledRuns_ClassNames =
 	| "RoutePluginsInstalledRuns-summary"
 	| "RoutePluginsInstalledRuns-chevron"
 	| "RoutePluginsInstalledRuns-title"
+	| "RoutePluginsInstalledRuns-description"
 	| "RoutePluginsInstalledRuns-empty"
 	| "RoutePluginsInstalledRuns-list"
 	| "RoutePluginsInstalledRunItem"
@@ -326,11 +624,14 @@ const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props:
 					className={"RoutePluginsInstalledRuns-chevron" satisfies RoutePluginsInstalledRuns_ClassNames}
 					aria-hidden
 				/>
-				<h3 className={"RoutePluginsInstalledRuns-title" satisfies RoutePluginsInstalledRuns_ClassNames}>
+				<h2 className={"RoutePluginsInstalledRuns-title" satisfies RoutePluginsInstalledRuns_ClassNames}>
 					<Clock3 aria-hidden />
-					Recent runs
-				</h3>
+					Activity
+				</h2>
 			</summary>
+			<p className={"RoutePluginsInstalledRuns-description" satisfies RoutePluginsInstalledRuns_ClassNames}>
+				Latest executions in this workspace.
+			</p>
 
 			{runs === undefined ? (
 				<div className={"RoutePluginsInstalledRuns-empty" satisfies RoutePluginsInstalledRuns_ClassNames} role="status">
@@ -338,7 +639,7 @@ const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props:
 				</div>
 			) : runs.length === 0 ? (
 				<div className={"RoutePluginsInstalledRuns-empty" satisfies RoutePluginsInstalledRuns_ClassNames}>
-					No runs recorded.
+					No activity yet.
 				</div>
 			) : (
 				<div className={"RoutePluginsInstalledRuns-list" satisfies RoutePluginsInstalledRuns_ClassNames}>
@@ -360,9 +661,9 @@ const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props:
 								</span>
 							</div>
 							<div className={"RoutePluginsInstalledRunItem-meta" satisfies RoutePluginsInstalledRuns_ClassNames}>
-								{format_datetime(run.updatedAt)} · runner {run.runnerHttpStatus ?? "n/a"} · plugin{" "}
-								{run.pluginStatus ?? "n/a"} · {format_run_duration(run.runnerElapsedMs)} · calls {run.apiCallCount},
-								writes {run.outputWriteCount}
+								{format_datetime(run.updatedAt)} · {format_run_duration(run.runnerElapsedMs)} · {run.apiCallCount} API
+								call{run.apiCallCount === 1 ? "" : "s"} · {run.outputWriteCount} file
+								{run.outputWriteCount === 1 ? "" : "s"} written
 							</div>
 							{run.errorMessage ? (
 								<div className={"RoutePluginsInstalledRunItem-error" satisfies RoutePluginsInstalledRuns_ClassNames}>
@@ -378,299 +679,268 @@ const RoutePluginsInstalledRuns = memo(function RoutePluginsInstalledRuns(props:
 });
 // #endregion installed runs
 
-// #region installed
-type RoutePluginsInstalled_ClassNames =
-	| "RoutePluginsInstalled"
-	| "RoutePluginsInstalled-titleRow"
-	| "RoutePluginsInstalled-title"
-	| "RoutePluginsInstalled-name"
-	| "RoutePluginsInstalled-meta"
-	| "RoutePluginsInstalledEvents"
-	| "RoutePluginsInstalledEvents-summary"
-	| "RoutePluginsInstalledEvents-chevron"
-	| "RoutePluginsInstalledEvents-title"
-	| "RoutePluginsInstalledEvents-count"
-	| "RoutePluginsInstalledEvents-description"
-	| "RoutePluginsInstalledEvents-empty"
-	| "RoutePluginsInstalledEvents-list"
-	| "RoutePluginsInstalledEvents-item";
+// #region access and automation
+type RoutePluginsPluginAccess_ClassNames =
+	| "RoutePluginsPluginAccess"
+	| "RoutePluginsPluginAccess-header"
+	| "RoutePluginsPluginAccess-title"
+	| "RoutePluginsPluginAccess-description"
+	| "RoutePluginsPluginAccess-group"
+	| "RoutePluginsPluginAccess-group-title"
+	| "RoutePluginsPluginAccess-list"
+	| "RoutePluginsPluginAccess-item"
+	| "RoutePluginsPluginAccess-empty"
+	| "RoutePluginsPluginAccess-trigger"
+	| "RoutePluginsPluginAccess-trigger-name"
+	| "RoutePluginsPluginAccess-trigger-types";
 
-type RoutePluginsInstalled_Props = {
-	membershipId: app_convex_Id<"organizations_workspaces_users">;
-	item: RoutePlugins_Installation;
+type RoutePluginsPluginAccess_Props = {
+	plugin: RoutePlugins_PublishedPlugin;
+	handlers: RoutePlugins_Installation["handlers"] | null;
 };
 
-const RoutePluginsInstalled = memo(function RoutePluginsInstalled(props: RoutePluginsInstalled_Props) {
-	const { membershipId, item } = props;
-	const { installation, version, handlers } = item;
-	const [uninstalling, setUninstalling] = useState(false);
+function format_access_label(value: string) {
+	return value
+		.split(/[._]/)
+		.map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+		.join(" ");
+}
 
-	const handleUninstall = useFn(() => {
-		setUninstalling(true);
-		app_convex
-			.mutation(app_convex_api.plugins.uninstall_version, { membershipId, installationId: installation._id })
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				// No navigation: list_installations updates reactively, unmounting this section.
-				toast.success(`Uninstalled ${installation.pluginName}`);
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsInstalled.handleUninstall] Failed to uninstall plugin:", {
-					error,
-					installationId: installation._id,
-				});
-				toast.error("Failed to uninstall plugin");
-			})
-			.finally(() => {
-				setUninstalling(false);
-			});
-	});
+const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: RoutePluginsPluginAccess_Props) {
+	const { plugin, handlers } = props;
+	const handlersByEvent = handlers?.reduce<Record<string, string[]>>((groups, handler) => {
+		const contentTypes = groups[handler.event] ?? [];
+		contentTypes.push(handler.contentType);
+		groups[handler.event] = contentTypes;
+		return groups;
+	}, {});
 
 	return (
-		<section className={"RoutePluginsInstalled" satisfies RoutePluginsInstalled_ClassNames}>
-			<div className={"RoutePluginsInstalled-titleRow" satisfies RoutePluginsInstalled_ClassNames}>
-				<h2 className={"RoutePluginsInstalled-title" satisfies RoutePluginsInstalled_ClassNames}>
-					<span className={"RoutePluginsInstalled-name" satisfies RoutePluginsInstalled_ClassNames}>
-						Installed in this workspace
-					</span>
-					<MyBadge variant={installation.status === "enabled" ? "secondary" : "outline"}>
-						{installation.status === "enabled" ? "Enabled" : "Disabled"}
-					</MyBadge>
+		<section className={"RoutePluginsPluginAccess" satisfies RoutePluginsPluginAccess_ClassNames}>
+			<header className={"RoutePluginsPluginAccess-header" satisfies RoutePluginsPluginAccess_ClassNames}>
+				<h2 className={"RoutePluginsPluginAccess-title" satisfies RoutePluginsPluginAccess_ClassNames}>
+					<ShieldCheck aria-hidden />
+					Access & automation
 				</h2>
-				<MyButton
-					variant="ghost_destructive"
-					aria-label={`Uninstall ${installation.pluginName}`}
-					tooltip="Uninstall"
-					disabled={uninstalling}
-					onClick={handleUninstall}
-				>
-					<Trash2 aria-hidden />
-				</MyButton>
-			</div>
-			<div className={"RoutePluginsInstalled-meta" satisfies RoutePluginsInstalled_ClassNames}>
-				{installation.pluginName}@{version.version} · {version.sourceOwner}/{version.sourceRepo}@
-				{version.sourceCommitSha.slice(0, 8)}
-			</div>
-			<RoutePluginsInstalledSecrets membershipId={membershipId} installationId={installation._id} />
+				<p className={"RoutePluginsPluginAccess-description" satisfies RoutePluginsPluginAccess_ClassNames}>
+					What this plugin can access and when it runs.
+				</p>
+			</header>
 
-			<details className={"RoutePluginsInstalledEvents" satisfies RoutePluginsInstalled_ClassNames}>
-				<summary className={"RoutePluginsInstalledEvents-summary" satisfies RoutePluginsInstalled_ClassNames}>
-					<ChevronRight
-						className={"RoutePluginsInstalledEvents-chevron" satisfies RoutePluginsInstalled_ClassNames}
-						aria-hidden
-					/>
-					<h3 className={"RoutePluginsInstalledEvents-title" satisfies RoutePluginsInstalled_ClassNames}>
-						<Zap aria-hidden />
-						Events
-					</h3>
-					<span className={"RoutePluginsInstalledEvents-count" satisfies RoutePluginsInstalled_ClassNames}>
-						{handlers.length}
-					</span>
-				</summary>
-				{handlers.length === 0 ? (
-					<div className={"RoutePluginsInstalledEvents-empty" satisfies RoutePluginsInstalled_ClassNames}>
-						No active events.
+			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
+				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
+					Capabilities
+				</h3>
+				{plugin.capabilities.length === 0 ? (
+					<div className={"RoutePluginsPluginAccess-empty" satisfies RoutePluginsPluginAccess_ClassNames}>
+						No elevated capabilities.
 					</div>
 				) : (
-					<>
-						<p className={"RoutePluginsInstalledEvents-description" satisfies RoutePluginsInstalled_ClassNames}>
-							This plugin runs when any of these events happen in this workspace.
-						</p>
-						<ul className={"RoutePluginsInstalledEvents-list" satisfies RoutePluginsInstalled_ClassNames}>
-							{handlers.map((handler) => (
+					<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
+						{plugin.capabilities.map((capability) => (
+							<li
+								key={capability}
+								className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
+								title={capability}
+							>
+								{format_access_label(capability)}
+							</li>
+						))}
+					</ul>
+				)}
+			</section>
+
+			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
+				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
+					Network access
+				</h3>
+				{plugin.outboundOrigins.length === 0 ? (
+					<div className={"RoutePluginsPluginAccess-empty" satisfies RoutePluginsPluginAccess_ClassNames}>
+						No external network access.
+					</div>
+				) : (
+					<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
+						{plugin.outboundOrigins.map((origin) => (
+							<li
+								key={origin}
+								className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
+							>
+								{origin}
+							</li>
+						))}
+					</ul>
+				)}
+			</section>
+
+			{handlersByEvent ? (
+				<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
+					<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
+						Triggers
+					</h3>
+					{Object.keys(handlersByEvent).length === 0 ? (
+						<div className={"RoutePluginsPluginAccess-empty" satisfies RoutePluginsPluginAccess_ClassNames}>
+							No active triggers.
+						</div>
+					) : (
+						<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
+							{Object.entries(handlersByEvent).map(([event, contentTypes]) => (
 								<li
-									key={`${handler.event}:${handler.contentType}`}
-									className={"RoutePluginsInstalledEvents-item" satisfies RoutePluginsInstalled_ClassNames}
+									key={event}
+									className={"RoutePluginsPluginAccess-trigger" satisfies RoutePluginsPluginAccess_ClassNames}
 								>
-									{handler.event}:{handler.contentType}
+									<span
+										className={"RoutePluginsPluginAccess-trigger-name" satisfies RoutePluginsPluginAccess_ClassNames}
+									>
+										{format_access_label(event)}
+									</span>
+									<span
+										className={"RoutePluginsPluginAccess-trigger-types" satisfies RoutePluginsPluginAccess_ClassNames}
+									>
+										{contentTypes.join(", ")}
+									</span>
 								</li>
 							))}
 						</ul>
-					</>
-				)}
-			</details>
-
-			<RoutePluginsInstalledRuns membershipId={membershipId} installationId={installation._id} />
+					)}
+				</section>
+			) : null}
 		</section>
 	);
 });
-// #endregion installed
+// #endregion access and automation
 
-// #region publisher versions
+// #region publisher releases
 function review_badge_variant(status: "passed" | "rejected" | "flagged" | "pending") {
 	return status === "rejected" ? "destructive" : status === "flagged" ? "outline" : "secondary";
 }
 
-type RoutePluginsPluginPublisherVersions_ClassNames =
-	| "RoutePluginsPluginPublisherVersions"
-	| "RoutePluginsPluginPublisherVersions-title"
-	| "RoutePluginsPluginPublisherVersions-description"
-	| "RoutePluginsPluginPublisherVersions-empty"
-	| "RoutePluginsPluginPublisherVersions-list"
-	| "RoutePluginsPluginPublisherVersionItem"
-	| "RoutePluginsPluginPublisherVersionItem-version"
-	| "RoutePluginsPluginPublisherVersionItem-meta";
+type RoutePluginsPluginPublisherReleases_ClassNames =
+	| "RoutePluginsPluginPublisherReleases"
+	| "RoutePluginsPluginPublisherReleases-title"
+	| "RoutePluginsPluginPublisherReleases-empty"
+	| "RoutePluginsPluginPublisherReleases-list"
+	| "RoutePluginsPluginPublisherReleaseItem"
+	| "RoutePluginsPluginPublisherReleaseItem-header"
+	| "RoutePluginsPluginPublisherReleaseItem-name"
+	| "RoutePluginsPluginPublisherReleaseItem-meta"
+	| "RoutePluginsPluginPublisherReleaseItem-findings"
+	| "RoutePluginsPluginPublisherReleaseItem-note";
 
-type RoutePluginsPluginPublisherVersions_Props = {
+type RoutePluginsPluginPublisherReleases_Props = {
 	versions: RoutePlugins_PublisherPlugin["versions"];
-};
-
-const RoutePluginsPluginPublisherVersions = memo(function RoutePluginsPluginPublisherVersions(
-	props: RoutePluginsPluginPublisherVersions_Props,
-) {
-	const { versions } = props;
-
-	return (
-		<section className={"RoutePluginsPluginPublisherVersions" satisfies RoutePluginsPluginPublisherVersions_ClassNames}>
-			<h3
-				className={"RoutePluginsPluginPublisherVersions-title" satisfies RoutePluginsPluginPublisherVersions_ClassNames}
-			>
-				<History aria-hidden />
-				Published versions
-				{versions.length === 0 ? null : <MyBadge variant="default">{versions.length}</MyBadge>}
-			</h3>
-			<p
-				className={
-					"RoutePluginsPluginPublisherVersions-description" satisfies RoutePluginsPluginPublisherVersions_ClassNames
-				}
-			>
-				Every publish registers a new immutable version built from a commit of this repository.
-			</p>
-
-			{versions.length === 0 ? (
-				<div
-					className={
-						"RoutePluginsPluginPublisherVersions-empty" satisfies RoutePluginsPluginPublisherVersions_ClassNames
-					}
-				>
-					Nothing published yet. Use the Publish button above to build and register the first version.
-				</div>
-			) : (
-				<div
-					className={
-						"RoutePluginsPluginPublisherVersions-list" satisfies RoutePluginsPluginPublisherVersions_ClassNames
-					}
-				>
-					{versions.map((version) => (
-						<div
-							key={version._id}
-							className={
-								"RoutePluginsPluginPublisherVersionItem" satisfies RoutePluginsPluginPublisherVersions_ClassNames
-							}
-						>
-							<span
-								className={
-									"RoutePluginsPluginPublisherVersionItem-version" satisfies RoutePluginsPluginPublisherVersions_ClassNames
-								}
-							>
-								{version.name}@{version.version}
-							</span>
-							<span
-								className={
-									"RoutePluginsPluginPublisherVersionItem-meta" satisfies RoutePluginsPluginPublisherVersions_ClassNames
-								}
-							>
-								{version.sourceCommitSha.slice(0, 8)} · {format_datetime(version._creationTime)}
-							</span>
-							<MyBadge variant={review_badge_variant(version.reviewStatus)}>{version.reviewStatus}</MyBadge>
-						</div>
-					))}
-				</div>
-			)}
-		</section>
-	);
-});
-// #endregion publisher versions
-
-// #region publisher reviews
-type RoutePluginsPluginPublisherReviews_ClassNames =
-	| "RoutePluginsPluginPublisherReviews"
-	| "RoutePluginsPluginPublisherReviews-title"
-	| "RoutePluginsPluginPublisherReviews-description"
-	| "RoutePluginsPluginPublisherReviews-empty"
-	| "RoutePluginsPluginPublisherReviews-list"
-	| "RoutePluginsPluginPublisherReviewItem"
-	| "RoutePluginsPluginPublisherReviewItem-header"
-	| "RoutePluginsPluginPublisherReviewItem-name"
-	| "RoutePluginsPluginPublisherReviewItem-meta"
-	| "RoutePluginsPluginPublisherReviewItem-findings"
-	| "RoutePluginsPluginPublisherReviewItem-note";
-
-type RoutePluginsPluginPublisherReviews_Props = {
 	reviews: RoutePlugins_PublisherPlugin["reviews"];
 };
 
-const RoutePluginsPluginPublisherReviews = memo(function RoutePluginsPluginPublisherReviews(
-	props: RoutePluginsPluginPublisherReviews_Props,
+const RoutePluginsPluginPublisherReleases = memo(function RoutePluginsPluginPublisherReleases(
+	props: RoutePluginsPluginPublisherReleases_Props,
 ) {
-	const { reviews } = props;
+	const { versions, reviews } = props;
+	const reviewsByArtifactHash = new Map(reviews.map((review) => [review.artifactHash, review]));
+	const releases: Array<{
+		artifactHash: string;
+		name: string;
+		version: string;
+		sourceCommitSha: string | null;
+		publishedAt: number | null;
+		reviewStatus: "passed" | "rejected" | "flagged" | "pending";
+		review: RoutePlugins_PublisherPlugin["reviews"][number] | null;
+	}> = versions.map((version) => {
+		const review = reviewsByArtifactHash.get(version.artifactHash) ?? null;
+		return {
+			artifactHash: version.artifactHash,
+			name: version.name,
+			version: version.version,
+			sourceCommitSha: version.sourceCommitSha,
+			publishedAt: version._creationTime,
+			reviewStatus: review?.status ?? version.reviewStatus,
+			review,
+		};
+	});
+	const publishedArtifactHashes = new Set(versions.map((version) => version.artifactHash));
+	for (const review of reviews) {
+		if (!publishedArtifactHashes.has(review.artifactHash)) {
+			releases.push({
+				artifactHash: review.artifactHash,
+				name: review.pluginName,
+				version: review.version,
+				sourceCommitSha: null,
+				publishedAt: null,
+				reviewStatus: review.status,
+				review,
+			});
+		}
+	}
+	releases.sort(
+		(a, b) =>
+			Math.max(b.publishedAt ?? 0, b.review?.updatedAt ?? 0) - Math.max(a.publishedAt ?? 0, a.review?.updatedAt ?? 0),
+	);
 
 	return (
-		<section className={"RoutePluginsPluginPublisherReviews" satisfies RoutePluginsPluginPublisherReviews_ClassNames}>
-			<h3
-				className={"RoutePluginsPluginPublisherReviews-title" satisfies RoutePluginsPluginPublisherReviews_ClassNames}
+		<section className={"RoutePluginsPluginPublisherReleases" satisfies RoutePluginsPluginPublisherReleases_ClassNames}>
+			<h2
+				className={"RoutePluginsPluginPublisherReleases-title" satisfies RoutePluginsPluginPublisherReleases_ClassNames}
 			>
-				<ShieldCheck aria-hidden />
-				Review verdicts
-				{reviews.length === 0 ? null : <MyBadge variant="default">{reviews.length}</MyBadge>}
-			</h3>
-			<p
-				className={
-					"RoutePluginsPluginPublisherReviews-description" satisfies RoutePluginsPluginPublisherReviews_ClassNames
-				}
-			>
-				Every published version is reviewed before it is registered. Rejected versions are not registered, and flagged
-				versions are registered but cannot be installed.
-			</p>
-
-			{reviews.length === 0 ? (
+				<History aria-hidden />
+				Release history
+			</h2>
+			{releases.length === 0 ? (
 				<div
-					className={"RoutePluginsPluginPublisherReviews-empty" satisfies RoutePluginsPluginPublisherReviews_ClassNames}
+					className={
+						"RoutePluginsPluginPublisherReleases-empty" satisfies RoutePluginsPluginPublisherReleases_ClassNames
+					}
 				>
-					No versions reviewed yet.
+					Nothing published yet. Use the Publish button above to build and review the first version.
 				</div>
 			) : (
 				<div
-					className={"RoutePluginsPluginPublisherReviews-list" satisfies RoutePluginsPluginPublisherReviews_ClassNames}
+					className={
+						"RoutePluginsPluginPublisherReleases-list" satisfies RoutePluginsPluginPublisherReleases_ClassNames
+					}
 				>
-					{reviews.map((review) => {
-						const findings = [...review.mechanicalFindings, ...review.aiFindings];
+					{releases.map((release) => {
+						const findings = release.review ? [...release.review.mechanicalFindings, ...release.review.aiFindings] : [];
 						return (
 							<div
-								key={review._id}
+								key={release.artifactHash}
 								className={
-									"RoutePluginsPluginPublisherReviewItem" satisfies RoutePluginsPluginPublisherReviews_ClassNames
+									"RoutePluginsPluginPublisherReleaseItem" satisfies RoutePluginsPluginPublisherReleases_ClassNames
 								}
 							>
 								<div
 									className={
-										"RoutePluginsPluginPublisherReviewItem-header" satisfies RoutePluginsPluginPublisherReviews_ClassNames
+										"RoutePluginsPluginPublisherReleaseItem-header" satisfies RoutePluginsPluginPublisherReleases_ClassNames
 									}
 								>
 									<span
 										className={
-											"RoutePluginsPluginPublisherReviewItem-name" satisfies RoutePluginsPluginPublisherReviews_ClassNames
+											"RoutePluginsPluginPublisherReleaseItem-name" satisfies RoutePluginsPluginPublisherReleases_ClassNames
 										}
 									>
-										{review.pluginName}@{review.version}
+										{release.name}@{release.version}
 									</span>
 									<span
 										className={
-											"RoutePluginsPluginPublisherReviewItem-meta" satisfies RoutePluginsPluginPublisherReviews_ClassNames
+											"RoutePluginsPluginPublisherReleaseItem-meta" satisfies RoutePluginsPluginPublisherReleases_ClassNames
 										}
 									>
-										{review.model === "none" ? "mechanical checks" : review.model} · {format_datetime(review.updatedAt)}
+										{release.publishedAt
+											? `published ${format_datetime(release.publishedAt)}${release.sourceCommitSha ? ` · ${release.sourceCommitSha.slice(0, 8)}` : ""}${
+													release.review
+														? release.review.model === "none"
+															? " · mechanical checks"
+															: ` · reviewed by ${release.review.model}`
+														: " · review pending"
+												}`
+											: release.review
+												? `not published · reviewed ${format_datetime(release.review.updatedAt)} · ${release.review.model === "none" ? "mechanical checks" : release.review.model}`
+												: "not published · review pending"}
 									</span>
-									<MyBadge variant={review_badge_variant(review.status)}>{review.status}</MyBadge>
+									<MyBadge variant={review_badge_variant(release.reviewStatus)}>{release.reviewStatus}</MyBadge>
 								</div>
 								{findings.length === 0 ? null : (
 									<ul
 										className={
-											"RoutePluginsPluginPublisherReviewItem-findings" satisfies RoutePluginsPluginPublisherReviews_ClassNames
+											"RoutePluginsPluginPublisherReleaseItem-findings" satisfies RoutePluginsPluginPublisherReleases_ClassNames
 										}
 									>
 										{findings.map((finding, index) => (
@@ -678,10 +948,10 @@ const RoutePluginsPluginPublisherReviews = memo(function RoutePluginsPluginPubli
 										))}
 									</ul>
 								)}
-								{review.status === "flagged" ? (
+								{release.reviewStatus === "flagged" ? (
 									<div
 										className={
-											"RoutePluginsPluginPublisherReviewItem-note" satisfies RoutePluginsPluginPublisherReviews_ClassNames
+											"RoutePluginsPluginPublisherReleaseItem-note" satisfies RoutePluginsPluginPublisherReleases_ClassNames
 										}
 									>
 										Installs of this version are blocked until the verdict is cleared.
@@ -695,416 +965,12 @@ const RoutePluginsPluginPublisherReviews = memo(function RoutePluginsPluginPubli
 		</section>
 	);
 });
-// #endregion publisher reviews
-
-// #region publisher secrets
-type RoutePluginsPluginPublisherSecrets_ClassNames =
-	| "RoutePluginsPluginPublisherSecrets"
-	| "RoutePluginsPluginPublisherSecrets-title"
-	| "RoutePluginsPluginPublisherSecrets-description"
-	| "RoutePluginsPluginPublisherSecrets-form"
-	| "RoutePluginsPluginPublisherSecrets-env"
-	| "RoutePluginsPluginPublisherSecrets-empty"
-	| "RoutePluginsPluginPublisherSecrets-list"
-	| "RoutePluginsPluginPublisherSecretItem"
-	| "RoutePluginsPluginPublisherSecretItem-identity"
-	| "RoutePluginsPluginPublisherSecretItem-name"
-	| "RoutePluginsPluginPublisherSecretItem-meta";
-
-type RoutePluginsPluginPublisher_Secret = app_convex_FunctionReturnType<
-	typeof app_convex_api.plugins.list_publisher_repository_secrets
->[number];
-
-type RoutePluginsPluginPublisherSecretRow_Props = {
-	repositoryId: app_convex_Id<"plugins_publisher_repositories">;
-	secret: RoutePluginsPluginPublisher_Secret;
-};
-
-const RoutePluginsPluginPublisherSecretRow = memo(function RoutePluginsPluginPublisherSecretRow(
-	props: RoutePluginsPluginPublisherSecretRow_Props,
-) {
-	const { repositoryId, secret } = props;
-	const [saving, setSaving] = useState(false);
-
-	const handleDelete = useFn(() => {
-		setSaving(true);
-		app_convex
-			.mutation(app_convex_api.plugins.delete_publisher_repository_secret, { repositoryId, name: secret.name })
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`Secret ${secret.name} deleted`);
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPluginPublisher.handleDelete] Failed to delete secret:", {
-					error,
-					name: secret.name,
-				});
-				toast.error("Failed to delete secret");
-			})
-			.finally(() => {
-				setSaving(false);
-			});
-	});
-
-	return (
-		<div className={"RoutePluginsPluginPublisherSecretItem" satisfies RoutePluginsPluginPublisherSecrets_ClassNames}>
-			<div
-				className={
-					"RoutePluginsPluginPublisherSecretItem-identity" satisfies RoutePluginsPluginPublisherSecrets_ClassNames
-				}
-			>
-				<span
-					className={
-						"RoutePluginsPluginPublisherSecretItem-name" satisfies RoutePluginsPluginPublisherSecrets_ClassNames
-					}
-				>
-					{secret.name}
-				</span>
-				<span
-					className={
-						"RoutePluginsPluginPublisherSecretItem-meta" satisfies RoutePluginsPluginPublisherSecrets_ClassNames
-					}
-				>
-					{secret.valuePreview} · updated {format_datetime(secret.updatedAt)}
-					{secret.lastUsedAt === null ? "" : ` · used ${format_datetime(secret.lastUsedAt)}`}
-				</span>
-			</div>
-			<MyButton
-				variant="ghost_destructive"
-				aria-label={`Delete secret ${secret.name}`}
-				disabled={saving}
-				onClick={handleDelete}
-			>
-				<Trash2 aria-hidden />
-			</MyButton>
-		</div>
-	);
-});
-
-type RoutePluginsPluginPublisherSecrets_Props = {
-	repositoryId: app_convex_Id<"plugins_publisher_repositories">;
-};
-
-const RoutePluginsPluginPublisherSecrets = memo(function RoutePluginsPluginPublisherSecrets(
-	props: RoutePluginsPluginPublisherSecrets_Props,
-) {
-	const { repositoryId } = props;
-	const secrets = useQuery(app_convex_api.plugins.list_publisher_repository_secrets, { repositoryId });
-	const [name, setName] = useState("");
-	const [value, setValue] = useState("");
-	const [envText, setEnvText] = useState("");
-	const [saving, setSaving] = useState(false);
-
-	const handleSaveSecret = useFn((event: FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		if (!name.trim() || !value) {
-			return;
-		}
-
-		setSaving(true);
-		app_convex
-			.mutation(app_convex_api.plugins.upsert_publisher_repository_secret, {
-				repositoryId,
-				name,
-				value,
-			})
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`Secret ${name.trim()} saved`);
-				setName("");
-				setValue("");
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPluginPublisher.handleSaveSecret] Failed to save secret:", {
-					error,
-					name,
-				});
-				toast.error("Failed to save secret");
-			})
-			.finally(() => {
-				setSaving(false);
-			});
-	});
-
-	const handleImportEnv = useFn(() => {
-		const parsed = plugins_parse_env_text(envText);
-		if (parsed._nay) {
-			toast.error(parsed._nay.message);
-			return;
-		}
-
-		setSaving(true);
-		app_convex
-			.mutation(app_convex_api.plugins.upsert_publisher_repository_secrets, {
-				repositoryId,
-				secrets: parsed._yay,
-			})
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`Saved ${result._yay.count} secrets`);
-				setEnvText("");
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPluginPublisher.handleImportEnv] Failed to import secrets:", {
-					error,
-				});
-				toast.error("Failed to import secrets");
-			})
-			.finally(() => {
-				setSaving(false);
-			});
-	});
-
-	return (
-		<section className={"RoutePluginsPluginPublisherSecrets" satisfies RoutePluginsPluginPublisherSecrets_ClassNames}>
-			<h3
-				className={"RoutePluginsPluginPublisherSecrets-title" satisfies RoutePluginsPluginPublisherSecrets_ClassNames}
-			>
-				<KeyRound aria-hidden />
-				Secrets
-				{secrets === undefined || secrets.length === 0 ? null : <MyBadge variant="default">{secrets.length}</MyBadge>}
-			</h3>
-			<p
-				className={
-					"RoutePluginsPluginPublisherSecrets-description" satisfies RoutePluginsPluginPublisherSecrets_ClassNames
-				}
-			>
-				These secrets belong to this plugin's repository and are available to it in every workspace that installs it.
-				The plugin can only send requests to the outbound origins its manifest declares, which every workspace
-				consents to at install.
-			</p>
-
-			<form
-				className={"RoutePluginsPluginPublisherSecrets-form" satisfies RoutePluginsPluginPublisherSecrets_ClassNames}
-				onSubmit={handleSaveSecret}
-			>
-				<MyInput>
-					<MyInputLabel>Name</MyInputLabel>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputControl
-							value={name}
-							placeholder="OPENAI_API_KEY"
-							disabled={saving}
-							required
-							onChange={(event) => setName(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-				<MyInput>
-					<MyInputLabel>Value</MyInputLabel>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputControl
-							value={value}
-							type="password"
-							autoComplete="off"
-							disabled={saving}
-							required
-							onChange={(event) => setValue(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-				<MyButton type="submit" disabled={saving || !name.trim() || !value}>
-					<Save aria-hidden />
-					{saving ? "Saving..." : "Save"}
-				</MyButton>
-			</form>
-
-			<div className={"RoutePluginsPluginPublisherSecrets-env" satisfies RoutePluginsPluginPublisherSecrets_ClassNames}>
-				<MyInput>
-					<MyInputLabel>Paste .env</MyInputLabel>
-					<MyInputBackground />
-					<MyInputArea>
-						<MyInputTextAreaControl
-							value={envText}
-							placeholder={"MODAL_TOKEN=...\nOPENAI_API_KEY=..."}
-							rows={3}
-							disabled={saving}
-							onChange={(event) => setEnvText(event.currentTarget.value)}
-						/>
-					</MyInputArea>
-					<MyInputBox />
-				</MyInput>
-				<MyButton disabled={saving || envText.trim().length === 0} onClick={handleImportEnv}>
-					{saving ? "Importing..." : "Import .env"}
-				</MyButton>
-			</div>
-
-			{secrets === undefined ? (
-				<div
-					className={"RoutePluginsPluginPublisherSecrets-empty" satisfies RoutePluginsPluginPublisherSecrets_ClassNames}
-					role="status"
-				>
-					Loading secrets...
-				</div>
-			) : secrets.length === 0 ? (
-				<div
-					className={"RoutePluginsPluginPublisherSecrets-empty" satisfies RoutePluginsPluginPublisherSecrets_ClassNames}
-				>
-					No secrets configured.
-				</div>
-			) : (
-				<div
-					className={"RoutePluginsPluginPublisherSecrets-list" satisfies RoutePluginsPluginPublisherSecrets_ClassNames}
-				>
-					{secrets.map((secret) => (
-						<RoutePluginsPluginPublisherSecretRow key={secret._id} repositoryId={repositoryId} secret={secret} />
-					))}
-				</div>
-			)}
-		</section>
-	);
-});
-// #endregion publisher secrets
-
-// #region publisher
-type RoutePluginsPluginPublisher_ClassNames =
-	| "RoutePluginsPluginPublisher"
-	| "RoutePluginsPluginPublisher-titleRow"
-	| "RoutePluginsPluginPublisher-title"
-	| "RoutePluginsPluginPublisher-actions"
-	| "RoutePluginsPluginPublisher-meta"
-	| "RoutePluginsPluginPublisher-repoLink"
-	| "RoutePluginsPluginPublisher-lastAttempt"
-	| "RoutePluginsPluginPublisher-lastAttemptMessage";
-
-type RoutePluginsPluginPublisher_Props = {
-	details: RoutePlugins_PublisherPlugin;
-};
-
-const RoutePluginsPluginPublisher = memo(function RoutePluginsPluginPublisher(
-	props: RoutePluginsPluginPublisher_Props,
-) {
-	const { details } = props;
-	const [publishing, setPublishing] = useState(false);
-	const [removing, setRemoving] = useState(false);
-
-	const handlePublish = useFn(() => {
-		setPublishing(true);
-		app_convex
-			.action(app_convex_api.plugins.publish_version, { repositoryId: details.repository._id })
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`Published commit ${result._yay.sourceCommitSha.slice(0, 8)}`);
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPluginPublisher.handlePublish] Failed to publish plugin:", {
-					error,
-					repositoryId: details.repository._id,
-				});
-				toast.error("Failed to publish plugin");
-			})
-			.finally(() => {
-				setPublishing(false);
-			});
-	});
-
-	const handleRemove = useFn(() => {
-		setRemoving(true);
-		app_convex
-			.mutation(app_convex_api.plugins.remove_repository, { repositoryId: details.repository._id })
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				// No navigation: get_publisher_plugin goes null once the claim is gone, hiding this panel.
-				toast.success("Repository claim removed");
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPluginPublisher.handleRemove] Failed to remove repository claim:", {
-					error,
-					repositoryId: details.repository._id,
-				});
-				toast.error("Failed to remove repository claim");
-			})
-			.finally(() => {
-				setRemoving(false);
-			});
-	});
-
-	return (
-		<section className={"RoutePluginsPluginPublisher" satisfies RoutePluginsPluginPublisher_ClassNames}>
-			<div className={"RoutePluginsPluginPublisher-titleRow" satisfies RoutePluginsPluginPublisher_ClassNames}>
-				<h2 className={"RoutePluginsPluginPublisher-title" satisfies RoutePluginsPluginPublisher_ClassNames}>
-					<Store aria-hidden />
-					Publisher
-				</h2>
-				<div className={"RoutePluginsPluginPublisher-actions" satisfies RoutePluginsPluginPublisher_ClassNames}>
-					<MyButton disabled={publishing || removing} onClick={handlePublish}>
-						<UploadCloud aria-hidden />
-						{publishing ? "Publishing..." : "Publish"}
-					</MyButton>
-					<MyButton
-						variant="ghost_destructive"
-						aria-label={`Remove claim on ${details.repository.owner}/${details.repository.repo}`}
-						tooltip="Remove claim"
-						disabled={publishing || removing}
-						onClick={handleRemove}
-					>
-						<Trash2 aria-hidden />
-					</MyButton>
-				</div>
-			</div>
-			<div className={"RoutePluginsPluginPublisher-meta" satisfies RoutePluginsPluginPublisher_ClassNames}>
-				<a
-					className={"RoutePluginsPluginPublisher-repoLink" satisfies RoutePluginsPluginPublisher_ClassNames}
-					href={details.repository.repositoryUrl}
-					target="_blank"
-					rel="noreferrer"
-				>
-					<GitBranch aria-hidden />
-					{details.repository.owner}/{details.repository.repo}
-				</a>
-				<span>Publish builds and registers the default-branch HEAD.</span>
-			</div>
-			{details.repository.lastPublishAttempt ? (
-				<div className={"RoutePluginsPluginPublisher-lastAttempt" satisfies RoutePluginsPluginPublisher_ClassNames}>
-					<MyBadge variant={details.repository.lastPublishAttempt.status === "succeeded" ? "secondary" : "destructive"}>
-						{details.repository.lastPublishAttempt.status}
-					</MyBadge>
-					<span
-						className={
-							"RoutePluginsPluginPublisher-lastAttemptMessage" satisfies RoutePluginsPluginPublisher_ClassNames
-						}
-					>
-						Last publish {format_datetime(details.repository.lastPublishAttempt.at)} ·{" "}
-						{details.repository.lastPublishAttempt.message}
-					</span>
-				</div>
-			) : null}
-
-			<RoutePluginsPluginPublisherVersions versions={details.versions} />
-			<RoutePluginsPluginPublisherReviews reviews={details.reviews} />
-			<RoutePluginsPluginPublisherSecrets repositoryId={details.repository._id} />
-		</section>
-	);
-});
-// #endregion publisher
+// #endregion publisher releases
 
 // #region root
 type RoutePluginsPlugin_ClassNames =
 	| "RoutePluginsPlugin"
+	| "RoutePluginsPlugin-content"
 	| "RoutePluginsPlugin-loading"
 	| "RoutePluginsPlugin-missing"
 	| "RoutePluginsPluginHero"
@@ -1112,9 +978,13 @@ type RoutePluginsPlugin_ClassNames =
 	| "RoutePluginsPluginHero-info"
 	| "RoutePluginsPluginHero-titleRow"
 	| "RoutePluginsPluginHero-title"
+	| "RoutePluginsPluginHero-statuses"
 	| "RoutePluginsPluginHero-meta"
+	| "RoutePluginsPluginHero-repoLink"
 	| "RoutePluginsPluginHero-description"
 	| "RoutePluginsPluginHero-actions"
+	| "RoutePluginsPluginHero-actions-buttons"
+	| "RoutePluginsPluginHero-action-note"
 	| "RoutePluginsPluginConsentModal"
 	| "RoutePluginsPluginConsentModal-baseline"
 	| "RoutePluginsPluginConsentModal-sectionTitle"
@@ -1132,6 +1002,90 @@ function RoutePluginsPlugin() {
 	const publisherPlugin = useQuery(app_convex_api.plugins.get_publisher_plugin, { pluginName });
 	const [consenting, setConsenting] = useState(false);
 	const [installing, setInstalling] = useState(false);
+	const [uninstalling, setUninstalling] = useState(false);
+	const [publishing, setPublishing] = useState(false);
+	const [removing, setRemoving] = useState(false);
+
+	const handleUninstall = useFn((installation: RoutePlugins_Installation["installation"]) => {
+		setUninstalling(true);
+		app_convex
+			.mutation(app_convex_api.plugins.uninstall_version, { membershipId, installationId: installation._id })
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+
+				// No navigation: list_installations updates reactively, swapping the hero action back to Install.
+				toast.success(`Uninstalled ${installation.pluginName}`);
+			})
+			.catch((error) => {
+				console.error("[RoutePluginsPlugin.handleUninstall] Failed to uninstall plugin:", {
+					error,
+					installationId: installation._id,
+				});
+				toast.error("Failed to uninstall plugin");
+			})
+			.finally(() => {
+				setUninstalling(false);
+			});
+	});
+
+	const handlePublish = useFn(() => {
+		if (!publisherPlugin) {
+			return;
+		}
+
+		const repositoryId = publisherPlugin.repository._id;
+		setPublishing(true);
+		app_convex
+			.action(app_convex_api.plugins.publish_version, { repositoryId })
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+
+				toast.success(`Published commit ${result._yay.sourceCommitSha.slice(0, 8)}`);
+			})
+			.catch((error) => {
+				console.error("[RoutePluginsPlugin.handlePublish] Failed to publish plugin:", { error, repositoryId });
+				toast.error("Failed to publish plugin");
+			})
+			.finally(() => {
+				setPublishing(false);
+			});
+	});
+
+	const handleRemoveClaim = useFn(() => {
+		if (!publisherPlugin) {
+			return;
+		}
+
+		const repositoryId = publisherPlugin.repository._id;
+		setRemoving(true);
+		app_convex
+			.mutation(app_convex_api.plugins.remove_repository, { repositoryId })
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+
+				// No navigation: get_publisher_plugin goes null once the claim is gone, hiding the publisher UI.
+				toast.success("Repository claim removed");
+			})
+			.catch((error) => {
+				console.error("[RoutePluginsPlugin.handleRemoveClaim] Failed to remove repository claim:", {
+					error,
+					repositoryId,
+				});
+				toast.error("Failed to remove repository claim");
+			})
+			.finally(() => {
+				setRemoving(false);
+			});
+	});
 
 	const handleAcceptAndInstall = useFn((plugin: RoutePlugins_PublishedPlugin) => {
 		setInstalling(true);
@@ -1168,10 +1122,12 @@ function RoutePluginsPlugin() {
 	if (plugins === undefined || installations === undefined) {
 		return (
 			<main className={"RoutePluginsPlugin" satisfies RoutePluginsPlugin_ClassNames} role="status" aria-live="polite">
-				{breadcrumb}
-				<div className={"RoutePluginsPlugin-loading" satisfies RoutePluginsPlugin_ClassNames}>
-					<Puzzle aria-hidden />
-					Loading plugin...
+				<div className={"RoutePluginsPlugin-content" satisfies RoutePluginsPlugin_ClassNames}>
+					{breadcrumb}
+					<div className={"RoutePluginsPlugin-loading" satisfies RoutePluginsPlugin_ClassNames}>
+						<Puzzle aria-hidden />
+						Loading plugin...
+					</div>
 				</div>
 			</main>
 		);
@@ -1181,9 +1137,11 @@ function RoutePluginsPlugin() {
 	if (plugin === null) {
 		return (
 			<main className={"RoutePluginsPlugin" satisfies RoutePluginsPlugin_ClassNames}>
-				{breadcrumb}
-				<div className={"RoutePluginsPlugin-missing" satisfies RoutePluginsPlugin_ClassNames}>
-					No published plugin is named "{pluginName}".
+				<div className={"RoutePluginsPlugin-content" satisfies RoutePluginsPlugin_ClassNames}>
+					{breadcrumb}
+					<div className={"RoutePluginsPlugin-missing" satisfies RoutePluginsPlugin_ClassNames}>
+						No published plugin is named "{pluginName}".
+					</div>
 				</div>
 			</main>
 		);
@@ -1197,115 +1155,212 @@ function RoutePluginsPlugin() {
 			: null,
 		target: { capabilities: plugin.capabilities, outboundOrigins: plugin.outboundOrigins },
 	});
+	// Installed-and-current shows only Uninstall; reinstalling means uninstalling and installing again.
+	const installAction = installedVersion ? "Update" : "Install";
+	const installProgress = installAction === "Update" ? "Updating..." : "Installing...";
+	const showInstall = !installedVersion || installedVersion.version !== plugin.version;
+	const installationBlocked = plugin.reviewStatus === "rejected" || plugin.reviewStatus === "flagged";
+	// Upserts require plugin.secrets.read on the installed version, but listing and deleting deliberately
+	// do not — leftover secrets must stay reachable after an upgrade drops the capability.
+	const secretsInstallationId = installedItem ? installedItem.installation._id : null;
+	const secretsCanAdd = installedVersion?.capabilities.includes("plugin.secrets.read") ?? false;
 
 	return (
 		<main className={"RoutePluginsPlugin" satisfies RoutePluginsPlugin_ClassNames}>
-			{breadcrumb}
+			<div className={"RoutePluginsPlugin-content" satisfies RoutePluginsPlugin_ClassNames}>
+				{breadcrumb}
 
-			<header className={"RoutePluginsPluginHero" satisfies RoutePluginsPlugin_ClassNames}>
-				<Puzzle aria-hidden className={"RoutePluginsPluginHero-icon" satisfies RoutePluginsPlugin_ClassNames} />
-				<div className={"RoutePluginsPluginHero-info" satisfies RoutePluginsPlugin_ClassNames}>
-					<div className={"RoutePluginsPluginHero-titleRow" satisfies RoutePluginsPlugin_ClassNames}>
-						<h1 className={"RoutePluginsPluginHero-title" satisfies RoutePluginsPlugin_ClassNames}>
-							{plugin.displayName}
-						</h1>
-						{plugin.reviewStatus !== "passed" ? (
-							<MyBadge variant={plugin.reviewStatus === "rejected" ? "destructive" : "outline"}>
-								{plugin.reviewStatus}
-							</MyBadge>
+				<header className={"RoutePluginsPluginHero" satisfies RoutePluginsPlugin_ClassNames}>
+					<Puzzle aria-hidden className={"RoutePluginsPluginHero-icon" satisfies RoutePluginsPlugin_ClassNames} />
+					<div className={"RoutePluginsPluginHero-info" satisfies RoutePluginsPlugin_ClassNames}>
+						<div className={"RoutePluginsPluginHero-titleRow" satisfies RoutePluginsPlugin_ClassNames}>
+							<h1 className={"RoutePluginsPluginHero-title" satisfies RoutePluginsPlugin_ClassNames}>
+								{plugin.displayName}
+							</h1>
+							{plugin.reviewStatus !== "passed" || installedItem ? (
+								<div className={"RoutePluginsPluginHero-statuses" satisfies RoutePluginsPlugin_ClassNames}>
+									{plugin.reviewStatus !== "passed" ? (
+										<MyBadge variant={plugin.reviewStatus === "rejected" ? "destructive" : "outline"}>
+											{plugin.reviewStatus}
+										</MyBadge>
+									) : null}
+									{installedItem ? (
+										<MyBadge variant={installedItem.installation.status === "enabled" ? "secondary" : "outline"}>
+											{installedItem.installation.status === "enabled" ? "Installed" : "Disabled"}
+										</MyBadge>
+									) : null}
+								</div>
+							) : null}
+						</div>
+						<div className={"RoutePluginsPluginHero-meta" satisfies RoutePluginsPlugin_ClassNames}>
+							<span>Version {plugin.version}</span>
+							{installedVersion && installedVersion.version !== plugin.version ? (
+								<span>Installed version {installedVersion.version}</span>
+							) : null}
+							<span>Published by {plugin.publisherDisplayName ?? "unknown publisher"}</span>
+							{publisherPlugin ? (
+								<a
+									className={"RoutePluginsPluginHero-repoLink" satisfies RoutePluginsPlugin_ClassNames}
+									href={publisherPlugin.repository.repositoryUrl}
+									target="_blank"
+									rel="noreferrer"
+								>
+									<GitBranch aria-hidden />
+									{publisherPlugin.repository.owner}/{publisherPlugin.repository.repo}
+								</a>
+							) : null}
+						</div>
+						<p className={"RoutePluginsPluginHero-description" satisfies RoutePluginsPlugin_ClassNames}>
+							{plugin.description.trim().length > 0 ? plugin.description : "No description provided."}
+						</p>
+					</div>
+					<div className={"RoutePluginsPluginHero-actions" satisfies RoutePluginsPlugin_ClassNames}>
+						<div className={"RoutePluginsPluginHero-actions-buttons" satisfies RoutePluginsPlugin_ClassNames}>
+							{publisherPlugin ? (
+								<MyButton
+									variant={showInstall ? "outline" : "default"}
+									disabled={publishing || removing}
+									onClick={handlePublish}
+								>
+									<UploadCloud aria-hidden />
+									{publishing ? "Publishing..." : "Publish"}
+								</MyButton>
+							) : null}
+							{showInstall ? (
+								<MyButton disabled={installing || installationBlocked} onClick={() => setConsenting(true)}>
+									<Download aria-hidden />
+									{installAction}
+								</MyButton>
+							) : null}
+							{installedItem ? (
+								<MyButton
+									variant="ghost_destructive"
+									disabled={uninstalling}
+									onClick={() => handleUninstall(installedItem.installation)}
+								>
+									<Trash2 aria-hidden />
+									{uninstalling ? "Uninstalling..." : "Uninstall"}
+								</MyButton>
+							) : null}
+							{publisherPlugin ? (
+								<MyMenu placement="bottom-end">
+									<MyMenuTrigger>
+										<MyIconButton variant="ghost" tooltip="More actions" disabled={removing}>
+											<MyIconButtonIcon>
+												<Ellipsis />
+											</MyIconButtonIcon>
+										</MyIconButton>
+									</MyMenuTrigger>
+									<MyMenuPopover>
+										<MyMenuPopoverContent>
+											<MyMenuItem variant="destructive" disabled={publishing || removing} onClick={handleRemoveClaim}>
+												<MyMenuItemContent>
+													<MyMenuItemContentIcon>
+														<Trash2 />
+													</MyMenuItemContentIcon>
+													<MyMenuItemContentPrimary>
+														{removing ? "Removing claim..." : "Remove claim"}
+													</MyMenuItemContentPrimary>
+												</MyMenuItemContent>
+											</MyMenuItem>
+										</MyMenuPopoverContent>
+									</MyMenuPopover>
+								</MyMenu>
+							) : null}
+						</div>
+						{installationBlocked && showInstall ? (
+							<p className={"RoutePluginsPluginHero-action-note" satisfies RoutePluginsPlugin_ClassNames}>
+								Installation is blocked by this release's review verdict.
+							</p>
 						) : null}
 					</div>
-					<div className={"RoutePluginsPluginHero-meta" satisfies RoutePluginsPlugin_ClassNames}>
-						<span>
-							{plugin.name}@{plugin.version}
-						</span>
-						<span>{plugin.publisherDisplayName ?? "unknown publisher"}</span>
-					</div>
-					<p className={"RoutePluginsPluginHero-description" satisfies RoutePluginsPlugin_ClassNames}>
-						{plugin.description.trim().length > 0 ? plugin.description : "No description provided."}
-					</p>
-				</div>
-				<div className={"RoutePluginsPluginHero-actions" satisfies RoutePluginsPlugin_ClassNames}>
-					<MyButton
-						variant={installedVersion?.version === plugin.version ? "outline" : "default"}
-						disabled={installing || plugin.reviewStatus === "rejected" || plugin.reviewStatus === "flagged"}
-						onClick={() => setConsenting(true)}
-					>
-						<Download aria-hidden />
-						{installedVersion?.version === plugin.version ? "Reinstall" : installedVersion ? "Update" : "Install"}
-					</MyButton>
-				</div>
-			</header>
+				</header>
 
-			{installedItem ? <RoutePluginsInstalled membershipId={membershipId} item={installedItem} /> : null}
+				{secretsInstallationId || publisherPlugin ? (
+					<RoutePluginsPluginSecrets
+						membershipId={membershipId}
+						installationId={secretsInstallationId}
+						installationCanAdd={secretsCanAdd}
+						publisherRepositoryId={publisherPlugin?.repository._id ?? null}
+					/>
+				) : null}
+				<RoutePluginsPluginAccess plugin={plugin} handlers={installedItem?.handlers ?? null} />
 
-			{publisherPlugin ? <RoutePluginsPluginPublisher details={publisherPlugin} /> : null}
+				{publisherPlugin ? (
+					<RoutePluginsPluginPublisherReleases versions={publisherPlugin.versions} reviews={publisherPlugin.reviews} />
+				) : null}
+				{installedItem ? (
+					<RoutePluginsInstalledRuns membershipId={membershipId} installationId={installedItem.installation._id} />
+				) : null}
 
-			<MyModal open={consenting} setOpen={setConsenting}>
-				<MyModalPopover className={"RoutePluginsPluginConsentModal" satisfies RoutePluginsPlugin_ClassNames}>
-					<MyModalHeader>
-						<MyModalHeading>Install {plugin.displayName}</MyModalHeading>
-						<MyModalDescription>
-							{plugin.name}@{plugin.version} · {plugin.publisherDisplayName ?? "unknown publisher"}
-						</MyModalDescription>
-					</MyModalHeader>
+				<MyModal open={consenting} setOpen={setConsenting}>
+					<MyModalPopover className={"RoutePluginsPluginConsentModal" satisfies RoutePluginsPlugin_ClassNames}>
+						<MyModalHeader>
+							<MyModalHeading>
+								{installAction} {plugin.displayName}
+							</MyModalHeading>
+							<MyModalDescription>
+								{plugin.name}@{plugin.version} · {plugin.publisherDisplayName ?? "unknown publisher"}
+							</MyModalDescription>
+						</MyModalHeader>
 
-					{/* Platform baseline every plugin receives: static copy, not a manifest capability or consent set. */}
-					<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
-						Every plugin can read the triggering upload and create Markdown files beside it.
-					</p>
+						{/* Platform baseline every plugin receives: static copy, not a manifest capability or consent set. */}
+						<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
+							Every plugin can read the triggering upload and create Markdown files beside it.
+						</p>
 
-					<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
-						This plugin can use these capabilities
-					</div>
-					<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
-						{plugin.capabilities.map((capability) => (
-							<li
-								key={capability}
-								className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
-							>
-								{capability}
-								{installedVersion && consentDiff.newCapabilities.includes(capability) ? (
-									<MyBadge variant="secondary">new</MyBadge>
-								) : null}
-							</li>
-						))}
-					</ul>
-					<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
-						And send requests to these origins
-					</div>
-					{plugin.outboundOrigins.length === 0 ? (
-						<div className={"RoutePluginsPluginConsentModal-empty" satisfies RoutePluginsPlugin_ClassNames}>
-							No outbound origins requested.
+						<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
+							This plugin can use these capabilities
 						</div>
-					) : (
 						<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
-							{plugin.outboundOrigins.map((origin) => (
+							{plugin.capabilities.map((capability) => (
 								<li
-									key={origin}
+									key={capability}
 									className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
 								>
-									{origin}
-									{installedVersion && consentDiff.newOutboundOrigins.includes(origin) ? (
+									{capability}
+									{installedVersion && consentDiff.newCapabilities.includes(capability) ? (
 										<MyBadge variant="secondary">new</MyBadge>
 									) : null}
 								</li>
 							))}
 						</ul>
-					)}
+						<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
+							And send requests to these origins
+						</div>
+						{plugin.outboundOrigins.length === 0 ? (
+							<div className={"RoutePluginsPluginConsentModal-empty" satisfies RoutePluginsPlugin_ClassNames}>
+								No outbound origins requested.
+							</div>
+						) : (
+							<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
+								{plugin.outboundOrigins.map((origin) => (
+									<li
+										key={origin}
+										className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
+									>
+										{origin}
+										{installedVersion && consentDiff.newOutboundOrigins.includes(origin) ? (
+											<MyBadge variant="secondary">new</MyBadge>
+										) : null}
+									</li>
+								))}
+							</ul>
+						)}
 
-					<div className={"RoutePluginsPluginConsentModal-actions" satisfies RoutePluginsPlugin_ClassNames}>
-						<MyButton variant="ghost" disabled={installing} onClick={() => setConsenting(false)}>
-							Cancel
-						</MyButton>
-						<MyButton disabled={installing} onClick={() => handleAcceptAndInstall(plugin)}>
-							<Download aria-hidden />
-							{installing ? "Installing..." : "Accept and install"}
-						</MyButton>
-					</div>
-					<MyModalCloseTrigger />
-				</MyModalPopover>
-			</MyModal>
+						<div className={"RoutePluginsPluginConsentModal-actions" satisfies RoutePluginsPlugin_ClassNames}>
+							<MyButton variant="ghost" disabled={installing} onClick={() => setConsenting(false)}>
+								Cancel
+							</MyButton>
+							<MyButton disabled={installing} onClick={() => handleAcceptAndInstall(plugin)}>
+								<Download aria-hidden />
+								{installing ? installProgress : `Accept and ${installAction.toLowerCase()}`}
+							</MyButton>
+						</div>
+						<MyModalCloseTrigger />
+					</MyModalPopover>
+				</MyModal>
+			</div>
 		</main>
 	);
 }

@@ -148,7 +148,7 @@ const MainSidebarAccountControlMenu = memo(function MainSidebarAccountControlMen
 	} = props;
 
 	return (
-		<MyMenuPopover placement="top-start" gutter={6}>
+		<MyMenuPopover gutter={6}>
 			<MyMenuPopoverContent
 				className={"MainSidebarAccountControlMenu" satisfies MainSidebarAccountControlMenu_ClassNames}
 			>
@@ -319,7 +319,7 @@ export const MainAppSidebarAccountControl = memo(function MainAppSidebarAccountC
 	});
 
 	return (
-		<MyMenu>
+		<MyMenu placement="top-start">
 			<div className={"MainAppSidebarAccountControl" satisfies MainAppSidebarAccountControl_ClassNames}>
 				<MyMenuTrigger>
 					<MainAppSidebarAccountControlTrigger

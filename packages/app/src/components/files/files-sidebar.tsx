@@ -933,7 +933,8 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 
 // #region tree item secondary content
 type FilesSidebarTreeItemSecondaryContent_ClassNames =
-	"FilesSidebarTreeItemSecondaryContent" | "FilesSidebarTreeItemSecondaryContent-text";
+	| "FilesSidebarTreeItemSecondaryContent"
+	| "FilesSidebarTreeItemSecondaryContent-text";
 
 type FilesSidebarTreeItemSecondaryContent_Props = {
 	secondaryText: string;
@@ -1498,7 +1499,9 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 // #region tree drop zone area
 type FilesSidebarTreeDropZoneArea_ClassNames =
-	"FilesSidebarTreeDropZoneArea" | "FilesSidebarTreeDropZoneArea-root" | "FilesSidebarTreeDropZoneArea-folder";
+	| "FilesSidebarTreeDropZoneArea"
+	| "FilesSidebarTreeDropZoneArea-root"
+	| "FilesSidebarTreeDropZoneArea-folder";
 
 type FilesSidebarTreeDropZoneArea_CssVars = {
 	"--FilesSidebarTreeDropZoneArea-top": string;
@@ -2112,7 +2115,7 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 	});
 
 	return (
-		<MyMenu>
+		<MyMenu placement="bottom-end">
 			<MyMenuTrigger>
 				<MyIconButton
 					className={cn(
@@ -2132,7 +2135,6 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 				{...({
 					"data-files-sidebar-tree-context": "",
 				} satisfies Partial<CustomAttributes>)}
-				placement="bottom-end"
 				unmountOnHide
 			>
 				<MyMenuPopoverContent>

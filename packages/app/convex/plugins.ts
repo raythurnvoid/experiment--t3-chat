@@ -28,6 +28,7 @@ import {
 	plugins_dist_review_mechanical_findings,
 	plugins_parse_github_repository_url,
 	plugins_validate_manifest,
+	plugins_validate_secret_name,
 } from "../shared/plugins.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
@@ -1257,6 +1258,11 @@ export const upsert_publisher_repository_secret = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
+		const name = plugins_validate_secret_name(args.name);
+		if (name._nay) {
+			return name;
+		}
+
 		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
 		if (!repository) {
 			return Result({ _nay: { message: "Not found" } });
@@ -1269,7 +1275,7 @@ export const upsert_publisher_repository_secret = mutation({
 		try {
 			secretId = await db_upsert_publisher_repository_secret(ctx, {
 				repository,
-				name: args.name,
+				name: name._yay,
 				value: args.value,
 				now: Date.now(),
 			});
@@ -1311,7 +1317,15 @@ export const upsert_publisher_repository_secrets = mutation({
 		}
 
 		// Dedupe by name (last one wins) so the parallel upserts below never race on the same doc.
-		const secrets = new Map(args.secrets.map((input) => [input.name, input.value]));
+		const secrets = new Map<string, string>();
+		for (const input of args.secrets) {
+			const name = plugins_validate_secret_name(input.name);
+			if (name._nay) {
+				return name;
+			}
+
+			secrets.set(name._yay, input.value);
+		}
 
 		const now = Date.now();
 		try {
@@ -1852,11 +1866,16 @@ export const upsert_installation_secret = mutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
+		const name = plugins_validate_secret_name(args.name);
+		if (name._nay) {
+			return name;
+		}
+
 		let secretId: Id<"plugins_workspace_installation_secrets">;
 		try {
 			secretId = await db_upsert_installation_secret(ctx, {
 				installation,
-				name: args.name,
+				name: name._yay,
 				value: args.value,
 				userId: userAuth.id,
 				now: Date.now(),
@@ -1911,7 +1930,15 @@ export const upsert_installation_secrets = mutation({
 		}
 
 		// Dedupe by name (last one wins) so repeated names collapse to a single upsert.
-		const secrets = new Map(args.secrets.map((input) => [input.name, input.value]));
+		const secrets = new Map<string, string>();
+		for (const input of args.secrets) {
+			const name = plugins_validate_secret_name(input.name);
+			if (name._nay) {
+				return name;
+			}
+
+			secrets.set(name._yay, input.value);
+		}
 
 		const now = Date.now();
 		try {
@@ -2312,11 +2339,7 @@ export const run_installation_on_files = internalMutation({
 				continue;
 			}
 			// Plugins process finished binary uploads only, matching the upload fan-out gate.
-			if (
-				fileNode.kind !== "file" ||
-				fileNode.assetId === undefined ||
-				files_node_has_editable_yjs_state(fileNode)
-			) {
+			if (fileNode.kind !== "file" || fileNode.assetId === undefined || files_node_has_editable_yjs_state(fileNode)) {
 				runs.push({ nodeId, runId: null, message: "Plugin runs are only supported for uploaded files" });
 				continue;
 			}

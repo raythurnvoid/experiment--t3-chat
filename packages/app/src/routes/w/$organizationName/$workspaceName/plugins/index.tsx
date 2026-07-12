@@ -25,7 +25,10 @@ type RoutePlugins_Installation = app_convex_FunctionReturnType<
 
 // #region gallery
 type RoutePluginsGallery_ClassNames =
-	"RoutePluginsGallery" | "RoutePluginsGallery-search" | "RoutePluginsGallery-empty" | "RoutePluginsGallery-grid";
+	| "RoutePluginsGallery"
+	| "RoutePluginsGallery-search"
+	| "RoutePluginsGallery-empty"
+	| "RoutePluginsGallery-grid";
 
 type RoutePluginsGallery_Props = {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
@@ -101,6 +104,7 @@ const RoutePluginsGallery = memo(function RoutePluginsGallery(props: RoutePlugin
 // #region root
 type RoutePlugins_ClassNames =
 	| "RoutePlugins"
+	| "RoutePlugins-content"
 	| "RoutePlugins-loading"
 	| "RoutePluginsHeader"
 	| "RoutePluginsHeader-title"
@@ -115,10 +119,12 @@ function RoutePlugins() {
 	if (installations === undefined) {
 		return (
 			<main className={"RoutePlugins" satisfies RoutePlugins_ClassNames} role="status" aria-live="polite">
-				{breadcrumb}
-				<div className={"RoutePlugins-loading" satisfies RoutePlugins_ClassNames}>
-					<Puzzle aria-hidden />
-					Loading plugins...
+				<div className={"RoutePlugins-content" satisfies RoutePlugins_ClassNames}>
+					{breadcrumb}
+					<div className={"RoutePlugins-loading" satisfies RoutePlugins_ClassNames}>
+						<Puzzle aria-hidden />
+						Loading plugins...
+					</div>
 				</div>
 			</main>
 		);
@@ -126,28 +132,30 @@ function RoutePlugins() {
 
 	return (
 		<main className={"RoutePlugins" satisfies RoutePlugins_ClassNames}>
-			{breadcrumb}
+			<div className={"RoutePlugins-content" satisfies RoutePlugins_ClassNames}>
+				{breadcrumb}
 
-			<header className={"RoutePluginsHeader" satisfies RoutePlugins_ClassNames}>
-				<div>
-					<h1 className={"RoutePluginsHeader-title" satisfies RoutePlugins_ClassNames}>Plugins</h1>
-					<p className={"RoutePluginsHeader-description" satisfies RoutePlugins_ClassNames}>
-						Browse published plugins and open a plugin page to install and manage it.
-					</p>
-				</div>
-				<MyLink
-					variant="button-outline"
-					to="/w/$organizationName/$workspaceName/plugins/publisher"
-					params={{ organizationName, workspaceName }}
-				>
-					<MyLinkIcon aria-hidden>
-						<Store />
-					</MyLinkIcon>
-					Publisher
-				</MyLink>
-			</header>
+				<header className={"RoutePluginsHeader" satisfies RoutePlugins_ClassNames}>
+					<div>
+						<h1 className={"RoutePluginsHeader-title" satisfies RoutePlugins_ClassNames}>Plugins</h1>
+						<p className={"RoutePluginsHeader-description" satisfies RoutePlugins_ClassNames}>
+							Browse published plugins and open a plugin page to install and manage it.
+						</p>
+					</div>
+					<MyLink
+						variant="button-outline"
+						to="/w/$organizationName/$workspaceName/plugins/publisher"
+						params={{ organizationName, workspaceName }}
+					>
+						<MyLinkIcon aria-hidden>
+							<Store />
+						</MyLinkIcon>
+						Publisher
+					</MyLink>
+				</header>
 
-			<RoutePluginsGallery membershipId={membershipId} installations={installations} />
+				<RoutePluginsGallery membershipId={membershipId} installations={installations} />
+			</div>
 		</main>
 	);
 }

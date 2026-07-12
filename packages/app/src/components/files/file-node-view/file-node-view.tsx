@@ -94,10 +94,7 @@ import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { FilesSidebar } from "../files-sidebar.tsx";
 
-function get_breadcrumb_path(
-	fileNodesList: files_VisibleTreeNode[] | undefined,
-	nodeId: string | null | undefined,
-) {
+function get_breadcrumb_path(fileNodesList: files_VisibleTreeNode[] | undefined, nodeId: string | null | undefined) {
 	if (!fileNodesList || !nodeId || nodeId === files_ROOT_ID) {
 		return [];
 	}
@@ -977,7 +974,7 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 					{singleCandidate.label}
 				</MyButton>
 			) : (
-				<MyMenu>
+				<MyMenu placement="bottom-start">
 					<MyMenuTrigger>
 						<MyButton
 							className={
@@ -997,7 +994,7 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 							Download
 						</MyButton>
 					</MyMenuTrigger>
-					<MyMenuPopover placement="bottom-start">
+					<MyMenuPopover>
 						<MyMenuPopoverContent>
 							{downloadCandidates.map((downloadCandidate) => (
 								<MyMenuItem
@@ -1600,7 +1597,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 					"FileNodeViewFolderExplorer-cell-actions" satisfies FileNodeViewFolderExplorerRow_ClassNames,
 				)}
 			>
-				<MyMenu>
+				<MyMenu placement="bottom-end">
 					<MyMenuTrigger>
 						<MyIconButton
 							className={"FileNodeViewFolderExplorer-more-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
@@ -1614,7 +1611,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 							</MyIconButtonIcon>
 						</MyIconButton>
 					</MyMenuTrigger>
-					<MyMenuPopover placement="bottom-end" unmountOnHide>
+					<MyMenuPopover unmountOnHide>
 						<MyMenuPopoverContent>
 							<MyMenuItem
 								variant="destructive"
@@ -2127,7 +2124,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			}
 
 			handleNavigatePendingUpdates({
-			nodeId: pendingUpdates[0].fileNodeId,
+				nodeId: pendingUpdates[0].fileNodeId,
 				forceDiffEditor: true,
 			});
 			return;

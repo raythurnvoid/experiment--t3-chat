@@ -11,26 +11,17 @@ const EVENT_TYPES = ["files.upload.completed"] as const;
 const CAPABILITIES = ["plugin.secrets.read", "outbound.fetch"] as const;
 export type plugins_Capability = (typeof CAPABILITIES)[number];
 
-const SHA256_REGEX = /^sha256:[a-f0-9]{64}$/u;
-const SEMVER_REGEX = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u;
-const MODULE_PATH_REGEX = /^[A-Za-z0-9._/-]+$/u;
-const SECRET_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/u;
-const GITHUB_OWNER_REGEX = /^[A-Za-z0-9-]{1,39}$/u;
-const GITHUB_REPO_REGEX = /^[A-Za-z0-9._-]{1,100}$/u;
-// Manifest paths are stored and joined verbatim, so require an already-normalized
-// relative path: no leading/trailing/duplicate slashes and no "." / ".." segments.
-const module_path_schema = z
-	.string()
-	.regex(MODULE_PATH_REGEX)
-	.refine(
-		(path) => path.split("/").every((segment) => segment && segment !== "." && segment !== ".."),
-		"Path must be a normalized relative path",
-	);
+// Shared by env text parsing and the dist review scan.
+const NEWLINE_REGEX = /\r?\n/u;
 
 // Plugin names share the organization/workspace slug rules.
 function autofix_and_validate_name(raw: string) {
 	return organizations_name_autofix_and_validate(raw);
 }
+
+// #region secret names
+
+const SECRET_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
 export function plugins_validate_secret_name(raw: string) {
 	const name = raw.trim();
@@ -41,6 +32,8 @@ export function plugins_validate_secret_name(raw: string) {
 
 	return Result({ _yay: name });
 }
+
+// #endregion secret names
 
 export function plugins_validate_origin(raw: string) {
 	const trimmed = raw.trim();
@@ -78,9 +71,20 @@ export function plugins_consent_diff(args: {
 	};
 }
 
+// #region env text
+
+// Strips the invisible byte-order mark some editors put at the start of a file.
+const BOM_REGEX = /^\uFEFF/u;
+// Escape sequences unquoted from double-quoted .env values.
+const ESCAPED_NEWLINE_REGEX = /\\n/gu;
+const ESCAPED_CARRIAGE_RETURN_REGEX = /\\r/gu;
+const ESCAPED_TAB_REGEX = /\\t/gu;
+const ESCAPED_QUOTE_REGEX = /\\"/gu;
+const ESCAPED_BACKSLASH_REGEX = /\\\\/gu;
+
 export function plugins_parse_env_text(raw: string) {
 	const secrets = new Map<string, string>();
-	const lines = raw.replace(/^\uFEFF/u, "").split(/\r?\n/u);
+	const lines = raw.replace(BOM_REGEX, "").split(NEWLINE_REGEX);
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index]!;
 		const trimmed = line.trim();
@@ -108,11 +112,11 @@ export function plugins_parse_env_text(raw: string) {
 			value = value.slice(1, -1);
 			if (quote === '"') {
 				value = value
-					.replace(/\\n/gu, "\n")
-					.replace(/\\r/gu, "\r")
-					.replace(/\\t/gu, "\t")
-					.replace(/\\"/gu, '"')
-					.replace(/\\\\/gu, "\\");
+					.replace(ESCAPED_NEWLINE_REGEX, "\n")
+					.replace(ESCAPED_CARRIAGE_RETURN_REGEX, "\r")
+					.replace(ESCAPED_TAB_REGEX, "\t")
+					.replace(ESCAPED_QUOTE_REGEX, '"')
+					.replace(ESCAPED_BACKSLASH_REGEX, "\\");
 			}
 		}
 
@@ -124,12 +128,21 @@ export function plugins_parse_env_text(raw: string) {
 	});
 }
 
+// #endregion env text
+
+// #region github repository
+
+const GITHUB_OWNER_REGEX = /^[A-Za-z0-9-]{1,39}$/u;
+const GITHUB_REPO_REGEX = /^[A-Za-z0-9._-]{1,100}$/u;
+const GITHUB_SSH_URL_REGEX = /^git@github\.com:([^/]+)\/(.+)$/u;
+const GIT_SUFFIX_REGEX = /\.git$/u;
+
 export function plugins_parse_github_repository_url(raw: string) {
 	const value = raw.trim();
 	let owner: string;
 	let repo: string;
 
-	const sshMatch = /^git@github\.com:([^/]+)\/(.+)$/u.exec(value);
+	const sshMatch = GITHUB_SSH_URL_REGEX.exec(value);
 	if (sshMatch) {
 		owner = sshMatch[1]!;
 		repo = sshMatch[2]!;
@@ -151,7 +164,7 @@ export function plugins_parse_github_repository_url(raw: string) {
 		repo = parts[1]!;
 	}
 
-	repo = repo.replace(/\.git$/u, "");
+	repo = repo.replace(GIT_SUFFIX_REGEX, "");
 	if (!GITHUB_OWNER_REGEX.test(owner) || !GITHUB_REPO_REGEX.test(repo) || repo === "." || repo === "..") {
 		return Result({ _nay: { message: "Repository URL has an invalid owner or repo" } });
 	}
@@ -165,17 +178,27 @@ export function plugins_parse_github_repository_url(raw: string) {
 	});
 }
 
+// #endregion github repository
+
+// #region dist review
+
 // Thresholds calibrated against the first-party plugin readable dists (max line 278,
 // avg line 33, single-char identifier share 0.072) vs the same worker minified
 // with esbuild (max line 3228, avg 316, share 0.482).
-const dist_max_line_length = 1000;
-const dist_max_avg_line_length = 200;
-const dist_max_single_char_identifier_share = 0.3;
-const dist_max_hex_unicode_escape_density = 0.01;
-const dist_base64_literal_min_length = 256;
+const MAX_LINE_LENGTH = 1000;
+const MAX_AVG_LINE_LENGTH = 200;
+const MAX_SINGLE_CHAR_IDENTIFIER_SHARE = 0.3;
+const MAX_HEX_UNICODE_ESCAPE_DENSITY = 0.01;
+const BASE64_LITERAL_MIN_LENGTH = 256;
+
+const IDENTIFIER_REGEX = /[$A-Za-z_][$\w]*/gu;
+const HEX_UNICODE_ESCAPE_REGEX = /\\[xu]/gu;
+const FUNCTION_CONSTRUCTOR_REGEX = /\bFunction\s*\(/u;
+const BASE64_LITERAL_REGEX = new RegExp(`["'\`][A-Za-z0-9+/]{${BASE64_LITERAL_MIN_LENGTH},}={0,2}["'\`]`, "u");
+
 // Words that match the identifier regex but are language syntax, not names the
 // author chose; excluding them keeps the single-char share meaningful.
-const dist_js_keywords = new Set([
+const JS_KEYWORDS = new Set([
 	"const",
 	"let",
 	"var",
@@ -221,51 +244,93 @@ const dist_js_keywords = new Set([
 	"from",
 ]);
 
+/**
+ * Static readability checks on a plugin's backend dist source, run before publish.
+ * Plugin dists must ship as plain readable JavaScript so they can be reviewed;
+ * this catches the mechanical signs of minified or obfuscated code (very long
+ * lines, mostly single-character names, dense escape sequences, huge base64
+ * blobs, the Function constructor) without spending an AI review call.
+ *
+ * Returns one human-readable message per failed check; an empty array means
+ * the source passed. Any finding rejects the version.
+ */
 export function plugins_dist_review_mechanical_findings(source: string) {
 	const findings: string[] = [];
 
-	const lines = source.split(/\r?\n/u).filter((line) => line.trim().length > 0);
+	// Blank lines are dropped so they don't drag the average down.
+	const lines = source.split(NEWLINE_REGEX).filter((line) => line.trim().length > 0);
+
+	// Minifiers pack whole programs onto one line; readable code stays well under the limit.
 	const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
-	if (longestLine > dist_max_line_length) {
+	if (longestLine > MAX_LINE_LENGTH) {
 		findings.push(
-			`Longest line is ${longestLine} characters (limit ${dist_max_line_length}); the dist must be plain readable JavaScript, not minified`,
-		);
-	}
-	const avgLineLength = lines.length > 0 ? lines.reduce((sum, line) => sum + line.length, 0) / lines.length : 0;
-	if (avgLineLength > dist_max_avg_line_length) {
-		findings.push(
-			`Average line length is ${Math.round(avgLineLength)} characters (limit ${dist_max_avg_line_length}); the dist must be plain readable JavaScript, not minified`,
+			`Longest line is ${longestLine} characters (limit ${MAX_LINE_LENGTH}); the dist must be plain readable JavaScript, not minified`,
 		);
 	}
 
-	const identifiers = (source.match(/[$A-Za-z_][$\w]*/gu) ?? []).filter((word) => !dist_js_keywords.has(word));
+	// The average catches minified output that was split across a few still-long lines.
+	const avgLineLength = lines.length > 0 ? lines.reduce((sum, line) => sum + line.length, 0) / lines.length : 0;
+	if (avgLineLength > MAX_AVG_LINE_LENGTH) {
+		findings.push(
+			`Average line length is ${Math.round(avgLineLength)} characters (limit ${MAX_AVG_LINE_LENGTH}); the dist must be plain readable JavaScript, not minified`,
+		);
+	}
+
+	// Minifiers rename variables to a, b, c...; a high share of single-character
+	// names means the original names are gone. Keywords are excluded because the
+	// author didn't choose them.
+	const identifiers = (source.match(IDENTIFIER_REGEX) ?? []).filter((word) => !JS_KEYWORDS.has(word));
 	const singleCharShare =
 		identifiers.length > 0 ? identifiers.filter((word) => word.length === 1).length / identifiers.length : 0;
-	if (singleCharShare > dist_max_single_char_identifier_share) {
+	if (singleCharShare > MAX_SINGLE_CHAR_IDENTIFIER_SHARE) {
 		findings.push(
-			`${Math.round(singleCharShare * 100)}% of identifiers are a single character (limit ${dist_max_single_char_identifier_share * 100}%); the dist must keep readable identifier names`,
+			`${Math.round(singleCharShare * 100)}% of identifiers are a single character (limit ${MAX_SINGLE_CHAR_IDENTIFIER_SHARE * 100}%); the dist must keep readable identifier names`,
 		);
 	}
 
-	const escapeCount = (source.match(/\\[xu]/gu) ?? []).length;
-	if (source.length > 0 && escapeCount / source.length > dist_max_hex_unicode_escape_density) {
+	// Lots of \x/\u escapes usually means strings were encoded to hide their contents.
+	const escapeCount = (source.match(HEX_UNICODE_ESCAPE_REGEX) ?? []).length;
+	if (source.length > 0 && escapeCount / source.length > MAX_HEX_UNICODE_ESCAPE_DENSITY) {
 		findings.push(
 			`Dist is dense with \\x/\\u escape sequences (${escapeCount} escapes); encoded strings look obfuscated`,
 		);
 	}
 
-	if (new RegExp(`["'\`][A-Za-z0-9+/]{${dist_base64_literal_min_length},}={0,2}["'\`]`, "u").test(source)) {
+	// A giant base64 string literal is a common way to smuggle code or assets past review.
+	if (BASE64_LITERAL_REGEX.test(source)) {
 		findings.push(
-			`Dist contains a base64-looking string literal of ${dist_base64_literal_min_length}+ characters; ship code and assets as plain files instead`,
+			`Dist contains a base64-looking string literal of ${BASE64_LITERAL_MIN_LENGTH}+ characters; ship code and assets as plain files instead`,
 		);
 	}
 
-	if (/\bFunction\s*\(/u.test(source)) {
+	// Code built from strings at runtime can't be reviewed, so ban the Function constructor.
+	if (FUNCTION_CONSTRUCTOR_REGEX.test(source)) {
 		findings.push("Dist uses the Function constructor; dynamically-assembled code is not allowed");
 	}
 
 	return findings;
 }
+
+// #endregion dist review
+
+// #region manifest
+
+const SHA256_REGEX = /^sha256:[a-f0-9]{64}$/u;
+const SEMVER_REGEX = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u;
+const MODULE_PATH_REGEX = /^[A-Za-z0-9._/-]+$/u;
+const COMPATIBILITY_DATE_REGEX = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
+
+/**
+ * Manifest paths are stored and joined verbatim, so require an already-normalized
+ * relative path: no leading/trailing/duplicate slashes and no "." / ".." segments.
+ */
+const module_path_schema = z
+	.string()
+	.regex(MODULE_PATH_REGEX)
+	.refine(
+		(path) => path.split("/").every((segment) => segment && segment !== "." && segment !== ".."),
+		"Path must be a normalized relative path",
+	);
 
 const event_schema = z
 	.object({
@@ -300,7 +365,7 @@ const manifest_schema = z
 			.object({
 				entry: module_path_schema,
 				moduleName: module_path_schema,
-				compatibilityDate: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u),
+				compatibilityDate: z.string().regex(COMPATIBILITY_DATE_REGEX),
 				compatibilityFlags: z.array(z.string().min(1)),
 			})
 			.strict()
@@ -352,3 +417,5 @@ export function plugins_validate_manifest(input: unknown) {
 	}
 	return Result({ _yay: parsed.data });
 }
+
+// #endregion manifest

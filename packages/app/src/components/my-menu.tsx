@@ -287,8 +287,9 @@ export const MyMenuPopoverContent = memo(function MyMenuPopoverContent(props: My
 // #region popover
 export type MyMenuPopover_ClassNames = "MyMenuPopover";
 
+// Placement deliberately lives on MyMenu (the Ariakit provider): Ariakit.Menu silently ignores a
+// placement prop, so accepting it here would let call sites set one that never applies.
 export type MyMenuPopover_Props = Ariakit.MenuProps & {
-	placement?: string;
 	gutter?: number;
 };
 
