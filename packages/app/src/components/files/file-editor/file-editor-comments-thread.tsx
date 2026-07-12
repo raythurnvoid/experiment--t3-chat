@@ -28,7 +28,7 @@ import { useRenderPromise } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 
-const comment_id_pattern = /^[a-z0-9]{32}$/;
+const COMMENT_ID_PATTERN = /^[a-z0-9]{32}$/;
 
 // #region filter input
 export type FileEditorCommentsFilterInput_ClassNames = "FileEditorCommentsFilterInput";
@@ -84,7 +84,7 @@ FileEditorCommentsFilterInput.filterThreads = <TThread extends { id: string; con
 	if (!normalizedQuery) return threads.slice();
 
 	const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
-	const isIdQuery = tokens.length > 0 && tokens.every((t) => comment_id_pattern.test(t));
+	const isIdQuery = tokens.length > 0 && tokens.every((t) => COMMENT_ID_PATTERN.test(t));
 	const idSet = isIdQuery ? new Set(tokens) : null;
 
 	return threads.filter((thread) => {

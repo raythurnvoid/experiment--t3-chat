@@ -56,7 +56,7 @@ export function organizations_name_autofix(raw: string, options?: organizations_
 }
 
 /** Letters, digits (not first char), single hyphens between segments; min length enforced separately. */
-const organization_workspace_name_regex = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const ORGANIZATION_WORKSPACE_NAME_REGEX = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 /**
  * Validate an organization or workspace name after autofix (or whenever the string is already normalized).
@@ -100,7 +100,7 @@ export function organizations_name_validate(name: string) {
 		});
 	}
 
-	if (!organization_workspace_name_regex.test(trimmed)) {
+	if (!ORGANIZATION_WORKSPACE_NAME_REGEX.test(trimmed)) {
 		return Result({
 			_nay: {
 				name: "nay",

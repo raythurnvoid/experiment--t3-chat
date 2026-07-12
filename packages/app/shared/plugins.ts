@@ -11,17 +11,17 @@ const EVENT_TYPES = ["files.upload.completed"] as const;
 const CAPABILITIES = ["plugin.secrets.read", "outbound.fetch"] as const;
 export type plugins_Capability = (typeof CAPABILITIES)[number];
 
-const sha256_regex = /^sha256:[a-f0-9]{64}$/u;
-const semver_regex = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u;
-const module_path_regex = /^[A-Za-z0-9._/-]+$/u;
-const secret_name_regex = /^[A-Za-z_][A-Za-z0-9_]*$/u;
-const github_owner_regex = /^[A-Za-z0-9-]{1,39}$/u;
-const github_repo_regex = /^[A-Za-z0-9._-]{1,100}$/u;
+const SHA256_REGEX = /^sha256:[a-f0-9]{64}$/u;
+const SEMVER_REGEX = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u;
+const MODULE_PATH_REGEX = /^[A-Za-z0-9._/-]+$/u;
+const SECRET_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+const GITHUB_OWNER_REGEX = /^[A-Za-z0-9-]{1,39}$/u;
+const GITHUB_REPO_REGEX = /^[A-Za-z0-9._-]{1,100}$/u;
 // Manifest paths are stored and joined verbatim, so require an already-normalized
 // relative path: no leading/trailing/duplicate slashes and no "." / ".." segments.
 const module_path_schema = z
 	.string()
-	.regex(module_path_regex)
+	.regex(MODULE_PATH_REGEX)
 	.refine(
 		(path) => path.split("/").every((segment) => segment && segment !== "." && segment !== ".."),
 		"Path must be a normalized relative path",
@@ -35,7 +35,7 @@ function autofix_and_validate_name(raw: string) {
 export function plugins_validate_secret_name(raw: string) {
 	const name = raw.trim();
 
-	if (!secret_name_regex.test(name)) {
+	if (!SECRET_NAME_REGEX.test(name)) {
 		return Result({ _nay: { message: "Secret names must use env key syntax" } });
 	}
 
@@ -152,7 +152,7 @@ export function plugins_parse_github_repository_url(raw: string) {
 	}
 
 	repo = repo.replace(/\.git$/u, "");
-	if (!github_owner_regex.test(owner) || !github_repo_regex.test(repo) || repo === "." || repo === "..") {
+	if (!GITHUB_OWNER_REGEX.test(owner) || !GITHUB_REPO_REGEX.test(repo) || repo === "." || repo === "..") {
 		return Result({ _nay: { message: "Repository URL has an invalid owner or repo" } });
 	}
 
@@ -277,7 +277,7 @@ const event_schema = z
 const manifest_file_schema = z
 	.object({
 		path: module_path_schema,
-		sha256: z.string().regex(sha256_regex),
+		sha256: z.string().regex(SHA256_REGEX),
 		bytes: z.number().int().nonnegative(),
 		contentType: z.string().min(1),
 		r2Key: z.string().optional(),
@@ -289,7 +289,7 @@ const manifest_schema = z
 		schemaVersion: z.literal(MANIFEST_SCHEMA_VERSION),
 		name: z.string(),
 		displayName: z.string().min(1),
-		version: z.string().regex(semver_regex),
+		version: z.string().regex(SEMVER_REGEX),
 		description: z.string(),
 		compatibility: z
 			.object({
