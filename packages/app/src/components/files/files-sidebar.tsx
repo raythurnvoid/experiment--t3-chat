@@ -135,6 +135,7 @@ type DropZone =
 
 type DropZoneRow = {
 	id: string;
+	parentId: string;
 	kind: files_TreeItem["kind"];
 	depth: number;
 	hasPlaceholderRow: boolean;
@@ -1365,28 +1366,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		itemProps.onDrop?.(event);
 	});
 
-	const handleExternalFileDragOverCapture = useFn<ComponentProps<"div">["onDragOverCapture"]>((event) => {
-		if (itemData.kind !== "file" || !has_file_drop(event.dataTransfer)) {
-			return;
-		}
-
-		// Keep external file drops from being reparented to the file's parent by Headless Tree's sibling fallback.
-		event.preventDefault();
-		event.stopPropagation();
-		event.dataTransfer.dropEffect = "none";
-	});
-
-	const handleExternalFileDropCapture = useFn<ComponentProps<"div">["onDropCapture"]>((event) => {
-		if (itemData.kind !== "file" || !has_file_drop(event.dataTransfer)) {
-			return;
-		}
-
-		event.preventDefault();
-		event.stopPropagation();
-		event.dataTransfer.dropEffect = "none";
-		toast.error("Drop files onto a folder or the root.");
-	});
-
 	return (
 		<>
 			<div
@@ -1403,8 +1382,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					"data-files-sidebar-tree-context": "",
 					"data-file-id": itemId,
 				} satisfies Partial<CustomAttributes & FilesSidebarTreeItem_CustomAttributes>)}
-				onDragOverCapture={handleExternalFileDragOverCapture}
-				onDropCapture={handleExternalFileDropCapture}
 			>
 				<FilesSidebarTreeItemPrimaryAction
 					itemProps={itemProps}
@@ -1580,7 +1557,7 @@ function get_tree_drop_zone(args: {
 	activeDropTargetId: string | null;
 	isDraggingOverRootZone: boolean;
 }) {
-	if (args.isDraggingOverRootZone) {
+	if (args.isDraggingOverRootZone || args.activeDropTargetId === files_ROOT_ID) {
 		return { kind: "root" } satisfies DropZone;
 	}
 
@@ -1643,7 +1620,7 @@ function get_tree_drop_zone_item_ids(args: {
 	activeDropTargetId: string | null;
 	isDraggingOverRootZone: boolean;
 }) {
-	if (args.isDraggingOverRootZone) {
+	if (args.isDraggingOverRootZone || args.activeDropTargetId === files_ROOT_ID) {
 		return new Set(args.rows.map((row) => row.id));
 	}
 
@@ -1700,9 +1677,18 @@ function get_tree_drag_hover_state(args: {
 	}
 
 	const hoveredRow = args.rows.find((row) => row.id === args.hoveredItemId);
+	if (!hoveredRow) {
+		return {
+			isDraggingOverRootZone: false,
+			activeExternalFileDropTargetId: null,
+		};
+	}
+
+	// File rows resolve to their containing folder so drops never dead-end on a file.
+	const targetId = hoveredRow.kind === "folder" ? hoveredRow.id : hoveredRow.parentId;
 	return {
-		isDraggingOverRootZone: false,
-		activeExternalFileDropTargetId: hoveredRow?.kind === "folder" ? hoveredRow.id : null,
+		isDraggingOverRootZone: targetId === files_ROOT_ID,
+		activeExternalFileDropTargetId: targetId === files_ROOT_ID ? null : targetId,
 	};
 }
 
@@ -1770,13 +1756,14 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 
 	const [isDraggingOverRootZone, setIsDraggingOverRootZone] = useState(false);
 	const isDraggingOverRootZoneRef = useRef(false);
-	// Use undefined to fall back to Headless Tree, and null to suppress stale targets over invalid file rows.
+	// Use undefined to fall back to Headless Tree, and null to suppress stale targets while drops are blocked.
 	const [activeExternalFileDropTargetId, setActiveExternalFileDropTargetId] = useState<string | null | undefined>(
 		undefined,
 	);
 
 	const activeExternalFileDropTargetIdRef = useRef<string | null | undefined>(undefined);
-	const headlessActiveDropTargetId = tree().getState().dnd?.draggingOverItem?.getId() ?? null;
+	// Use the resolved drag target (not the hovered item) so file hovers highlight their containing folder.
+	const headlessActiveDropTargetId = tree().getState().dnd?.dragTarget?.item.getId() ?? null;
 	const activeDropTargetId =
 		activeExternalFileDropTargetId === undefined ? headlessActiveDropTargetId : activeExternalFileDropTargetId;
 	const dropZoneRows = renderedTreeItems.map((item) => {
@@ -1784,6 +1771,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 
 		return {
 			id: item.getId(),
+			parentId: item.getParent()?.getId() ?? files_ROOT_ID,
 			kind: itemData.kind,
 			depth: item.getItemMeta().level,
 			hasPlaceholderRow:
@@ -3249,16 +3237,20 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const canDragForeignDragObjectOver = useFn<
 		NonNullable<Parameters<typeof useTree<files_TreeItem>>[0]["canDragForeignDragObjectOver"]>
 	>((dataTransfer, target) => {
+		// Drops on file rows land in their containing folder (Headless Tree resolves the real target on drop),
+		// so gate the drag-over on the parent instead of rejecting the file row.
+		const effectiveTarget =
+			target.item.getItemData().kind === "folder" ? target : { item: target.item.getParent() ?? target.item };
 		return (
 			can_receive_file_drop({
 				dataTransfer,
-				target,
+				target: effectiveTarget,
 				isBusy,
 				isUploadingFile,
 			}) ||
 			can_receive_file_node_drop({
 				dataTransfer,
-				target,
+				target: effectiveTarget,
 				isBusy,
 				isUploadingFile,
 			})
@@ -4429,12 +4421,14 @@ if (import.meta.vitest) {
 
 	const test_drop_zone_row = (args: {
 		id: string;
+		parentId?: string;
 		kind: files_TreeItem["kind"];
 		depth: number;
 		hasPlaceholderRow?: boolean;
 	}): DropZoneRow => {
 		return {
 			id: args.id,
+			parentId: args.parentId ?? files_ROOT_ID,
 			kind: args.kind,
 			depth: args.depth,
 			hasPlaceholderRow: args.hasPlaceholderRow ?? false,
@@ -4635,6 +4629,13 @@ if (import.meta.vitest) {
 					isDraggingOverRootZone: true,
 				}),
 			).toEqual({ kind: "root" });
+			expect(
+				get_tree_drop_zone({
+					rows: [],
+					activeDropTargetId: files_ROOT_ID,
+					isDraggingOverRootZone: false,
+				}),
+			).toEqual({ kind: "root" });
 		});
 
 		test("returns no drop zone when nothing valid is targeted", () => {
@@ -4750,6 +4751,13 @@ if (import.meta.vitest) {
 					isDraggingOverRootZone: true,
 				}),
 			).toEqual(new Set(["folder", "child", "sibling"]));
+			expect(
+				get_tree_drop_zone_item_ids({
+					rows,
+					activeDropTargetId: files_ROOT_ID,
+					isDraggingOverRootZone: false,
+				}),
+			).toEqual(new Set(["folder", "child", "sibling"]));
 		});
 
 		test("returns a folder row and visible descendants until depth returns", () => {
@@ -4792,8 +4800,9 @@ if (import.meta.vitest) {
 	describe("get_tree_drag_hover_state", () => {
 		const rows = [
 			test_drop_zone_row({ id: "folder-a", kind: "folder", depth: 0 }),
-			test_drop_zone_row({ id: "folder-b", kind: "folder", depth: 1 }),
-			test_drop_zone_row({ id: "file-b", kind: "file", depth: 2 }),
+			test_drop_zone_row({ id: "folder-b", parentId: "folder-a", kind: "folder", depth: 1 }),
+			test_drop_zone_row({ id: "file-b", parentId: "folder-b", kind: "file", depth: 2 }),
+			test_drop_zone_row({ id: "file-root", kind: "file", depth: 0 }),
 		];
 
 		const get_external_file_hover_state = (hoveredItemId: string | null) => {
@@ -4807,7 +4816,7 @@ if (import.meta.vitest) {
 			});
 		};
 
-		test("re-arms a folder target after hovering over an invalid child file row", () => {
+		test("resolves hovered file rows to their containing folder", () => {
 			expect(get_external_file_hover_state("folder-a")).toEqual({
 				isDraggingOverRootZone: false,
 				activeExternalFileDropTargetId: "folder-a",
@@ -4818,11 +4827,15 @@ if (import.meta.vitest) {
 			});
 			expect(get_external_file_hover_state("file-b")).toEqual({
 				isDraggingOverRootZone: false,
+				activeExternalFileDropTargetId: "folder-b",
+			});
+			expect(get_external_file_hover_state("file-root")).toEqual({
+				isDraggingOverRootZone: true,
 				activeExternalFileDropTargetId: null,
 			});
-			expect(get_external_file_hover_state("folder-b")).toEqual({
+			expect(get_external_file_hover_state("unknown-row")).toEqual({
 				isDraggingOverRootZone: false,
-				activeExternalFileDropTargetId: "folder-b",
+				activeExternalFileDropTargetId: null,
 			});
 		});
 
