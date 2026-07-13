@@ -33,7 +33,7 @@ Prefer a slightly less elegant implementation that matches the module over a cle
 3. Read at least two nearby or similar implementations before editing.
 4. Write down the local pattern in concrete terms, then edit to that pattern.
 5. Split the review lens when the diff is broad: organization first, comments second, naming third.
-6. Re-read the final diff as a style review, not only a correctness review.
+6. Re-read the final diff as a style review, not only a correctness review. Check JSDoc layout and the empty lines between logical chunks.
 7. Remove changes that are merely personal taste.
 8. Run the vocabulary audit for broad changes.
 9. Run the smallest focused verification that covers the touched surface.
@@ -67,7 +67,9 @@ Use this checklist before accepting a patch.
 - **Errors:** Match the local boundary. Use Result `_nay` where the surrounding code does; use structured `console.error(errorMessage, errorData)` plus `should_never_happen(errorMessage, errorData)` for impossible Convex invariants.
 - **Indexes:** Name Convex indexes from the indexed fields in order. If the full name is too long, abbreviate the least domain-important field consistently and keep the main domain term readable.
 - **Comments:** Add comments only for non-obvious intent, gotchas, or external-system behavior. Do not narrate obvious code. Use concrete nouns from the code instead of vague abstractions. Use JSDoc only when the comment documents the symbol immediately below it. For module-level notes, file overview comments, and section headers, use ordinary `//` comments instead of orphan `/** ... */` blocks.
+- **JSDoc layout:** Use multi-line JSDoc by default, including one-sentence docs. Keep a single-line JSDoc only for a very short label when the compact form makes a tight group of small symbols easier to scan. Reasons, lifecycles, constraints, warnings, wrapped text, and tags always use the multi-line form. When unsure, use multi-line JSDoc.
 - **Comment placement:** Put comments that explain a branch or loop before the `if`, `for`, or `while` block so the intent remains visible when the block is collapsed in the IDE. Keep comments inside the block only when they explain a specific statement inside it.
+- **Vertical spacing:** Use one empty line between different logical chunks, such as configuration, validation, reads, calculations, writes, and the final result. Keep the statements that complete one small step together. Do not add an empty line after every statement.
 - **Retry helpers:** When an option changes retry acceptance, add a short JSDoc to the helper. Name the exact value being waited for, why a weaker condition is insufficient, and which external system can return stale data.
 - **Tests:** Put tests under the same `describe(...)` grouping and naming rhythm as the file already uses. Test public behavior unless a private helper is already naturally exposed by an existing pattern.
 - **Docs/specs:** Update durable skills or README/spec files only when product behavior, architecture, or agent-facing workflows changed.
@@ -180,6 +182,8 @@ Before finishing a uniformity pass, answer these questions:
 - Did it add an abstraction the file would not normally add?
 - Did it move code away from the nearest similar pattern?
 - Did tests prove behavior rather than private implementation details?
+- Are JSDoc blocks multi-line by default, with every single-line exception clearly helping scanability?
+- Do empty lines show the logical chunks without splitting statements that belong to one step?
 - Did the vocabulary audit warn about terms that should be replaced?
 - Did verification cover the edited surface without running unnecessary suites?
 

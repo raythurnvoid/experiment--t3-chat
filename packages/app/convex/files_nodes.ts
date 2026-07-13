@@ -8,12 +8,12 @@ import {
 	action,
 	internalAction,
 	internalQuery,
-	mutation,
 	query,
 	type QueryCtx,
 	type MutationCtx,
 	type ActionCtx,
 	internalMutation,
+	mutation,
 } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -1223,9 +1223,28 @@ export const create_file_node = internalMutation({
 		archiveOperationId: v.optional(v.string()),
 		textContent: v.string(),
 		readOnly: v.boolean(),
+		mountId: v.optional(v.id("github_mounts")),
+		syncRunId: v.optional(v.string()),
 	},
 	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
 	handler: async (ctx, args) => {
+		if ((args.mountId == null) !== (args.syncRunId == null)) {
+			return Result({ _nay: { message: "External mount sync run requires mountId and syncRunId" } });
+		}
+		if (args.mountId != null && args.syncRunId != null) {
+			// Recheck inside the node-creation transaction. The mount may be replaced
+			// after the action's first check.
+			const mount = await ctx.db.get("github_mounts", args.mountId);
+			if (
+				!mount ||
+				mount.status !== "running" ||
+				mount.syncRunId !== args.syncRunId ||
+				mount.pendingCommitSha == null ||
+				!args.path.startsWith(`/${mount.name}/${mount.pendingCommitSha}/`)
+			) {
+				return Result({ _nay: { message: "External mount sync was superseded" } });
+			}
+		}
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: args.userId,
 			organizationId: args.organizationId,
@@ -1635,6 +1654,8 @@ export const create_file_node_internal = internalAction({
 					contentType: "text/plain;charset=utf-8" satisfies files_ContentType,
 					textContent: args.rawText,
 					readOnly: true,
+					mountId: args.mountId,
+					syncRunId: args.syncRunId,
 				})) as create_file_node_Result;
 			} catch (error) {
 				lastCreateError = error;

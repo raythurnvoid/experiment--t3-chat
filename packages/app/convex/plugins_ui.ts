@@ -10,6 +10,9 @@
  * - Secret values never reach plugin frontends: `plugin_ui` principals never get `secrets:read`
  *   or `outbound:fetch`, no matter what the installation accepted. Only the plugin backend can
  *   read secrets (plr_ runs via the runner host routes).
+ * - Reviewed frontend code is trusted with its UI token and granted workspace data. The sandbox
+ *   isolates the host app, but page navigation can send granted data away before the host sees the
+ *   next load and revokes the session; that revocation is cleanup, not an egress guarantee.
  * - Assets are served publicly under an immutable version id. That is fine because dists carry
  *   no tenant data and are already public: anyone can browse them as source in GLOBAL/PLUGINS.
  */
@@ -71,6 +74,7 @@ export const mint_page_session = mutation({
 			token: v.string(),
 			expiresAt: v.number(),
 			pluginVersionId: v.id("plugins_versions"),
+			sessionId: v.id("plugins_ui_sessions"),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -106,14 +110,19 @@ export const mint_page_session = mutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
-		if (!version || (version.pages ?? []).length === 0) {
+		if (
+			!version ||
+			version.sourceStatus !== "ready" ||
+			version.reviewStatus !== "passed" ||
+			version.pages.length === 0
+		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
 		const now = Date.now();
 		const expiresAt = now + SESSION_TTL_MS;
 		const token = `plu_${crypto_random_hex(32)}`;
-		await ctx.db.insert("plugins_ui_sessions", {
+		const sessionId = await ctx.db.insert("plugins_ui_sessions", {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			installationId: installation._id,
@@ -125,7 +134,118 @@ export const mint_page_session = mutation({
 		});
 
 		// The plaintext token is returned exactly once; only its hash is stored.
-		return Result({ _yay: { token, expiresAt, pluginVersionId: installation.pluginVersionId } });
+		return Result({ _yay: { token, expiresAt, pluginVersionId: installation.pluginVersionId, sessionId } });
+	},
+});
+
+/**
+ * Rotates the bearer token for an open plugin page so the page can keep working past the
+ * 30-minute token lifetime. The SDK calls this shortly before expiry or after a 401 response.
+ *
+ * The existing session doc is updated instead of creating another session. This keeps one session
+ * to revoke and makes the previous token stop working immediately. Refresh succeeds only while the
+ * current user still owns the session and the same plugin version remains enabled in the workspace.
+ */
+export const refresh_page_session = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		sessionId: v.id("plugins_ui_sessions"),
+	},
+	returns: v_result({
+		_yay: v.object({
+			token: v.string(),
+			expiresAt: v.number(),
+			pluginVersionId: v.id("plugins_versions"),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const session = await ctx.db.get("plugins_ui_sessions", args.sessionId);
+		if (
+			!session ||
+			session.userId !== userAuth.id ||
+			session.organizationId !== membership.organizationId ||
+			session.workspaceId !== membership.workspaceId
+		) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+		const installation = await ctx.db.get("plugins_workspace_installations", session.installationId);
+		if (
+			!installation ||
+			installation.status !== "enabled" ||
+			installation.pluginVersionId !== session.pluginVersionId ||
+			installation.organizationId !== session.organizationId ||
+			installation.workspaceId !== session.workspaceId
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		const rateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "plugins_ui_session_mint",
+			key: userAuth.id,
+		});
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const now = Date.now();
+		const expiresAt = now + SESSION_TTL_MS;
+		const token = `plu_${crypto_random_hex(32)}`;
+		// Rotate the hash on the same session so the old plaintext token stops resolving immediately.
+		await ctx.db.patch("plugins_ui_sessions", session._id, {
+			tokenHash: await crypto_sha256_hex(token),
+			createdAt: now,
+			expiresAt,
+		});
+
+		return Result({ _yay: { token, expiresAt, pluginVersionId: session.pluginVersionId } });
+	},
+});
+
+export const revoke_page_session = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		sessionId: v.id("plugins_ui_sessions"),
+	},
+	returns: v_result({ _yay: v.object({}) }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const session = await ctx.db.get("plugins_ui_sessions", args.sessionId);
+		// Revocation is idempotent because cleanup or a prior request may already have removed the session.
+		if (!session) {
+			return Result({ _yay: {} });
+		}
+		if (
+			session.userId !== userAuth.id ||
+			session.organizationId !== membership.organizationId ||
+			session.workspaceId !== membership.workspaceId
+		) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		await ctx.db.delete("plugins_ui_sessions", session._id);
+		return Result({ _yay: {} });
 	},
 });
 
@@ -175,15 +295,19 @@ export const list_ui_pages = query({
 		const entries = await Promise.all(
 			installations.map(async (installation) => {
 				const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
-				const pages = version?.pages ?? [];
-				if (!version || pages.length === 0) {
+				if (
+					!version ||
+					version.sourceStatus !== "ready" ||
+					version.reviewStatus !== "passed" ||
+					version.pages.length === 0
+				) {
 					return null;
 				}
 				return {
 					pluginName: installation.pluginName,
 					displayName: version.displayName,
 					pluginVersionId: version._id,
-					pages,
+					pages: version.pages,
 				};
 			}),
 		);
@@ -204,7 +328,7 @@ export const get_ui_asset = internalQuery({
 			return null;
 		}
 		const version = await ctx.db.get("plugins_versions", pluginVersionId);
-		if (!version || version.reviewStatus !== "passed") {
+		if (!version || version.sourceStatus !== "ready" || version.reviewStatus !== "passed") {
 			return null;
 		}
 		const file = version.files.find((file) => file.path === args.path);

@@ -5,8 +5,8 @@ export default defineConfig({
 		environment: "happy-dom",
 		environmentOptions: {
 			happyDOM: {
-				// bonobo_ui_connect reads parentOrigin/pageId from the embedding iframe URL.
-				url: "https://plugin.test/?parentOrigin=https://host.test&pageId=main",
+				// Plugin pages use their immutable asset URL; bridge state arrives only by postMessage.
+				url: "https://plugin.test/dist/frontend/index.html",
 			},
 		},
 		restoreMocks: true,

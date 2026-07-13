@@ -757,27 +757,33 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 						No UI pages.
 					</div>
 				) : (
-					<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
-						{plugin.pages.map((page) => (
-							<li
-								key={page.id}
-								className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
-							>
-								{page.title}
-								{page.navItem ? ` — sidebar item: ${page.navItem.label}` : ""}
-							</li>
-						))}
-					</ul>
+					<>
+						<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
+							{plugin.pages.map((page) => (
+								<li
+									key={page.id}
+									className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
+								>
+									{page.title}
+									{page.navItem ? ` — sidebar item: ${page.navItem.label}` : ""}
+								</li>
+							))}
+						</ul>
+						<p className={"RoutePluginsPluginAccess-description" satisfies RoutePluginsPluginAccess_ClassNames}>
+							Plugin pages are trusted with the data their capabilities expose. The sandbox protects the
+							host app, but a page can send exposed data away by navigating.
+						</p>
+					</>
 				)}
 			</section>
 
 			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
 				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
-					Network access
+					Backend network access
 				</h3>
 				{plugin.outboundOrigins.length === 0 ? (
 					<div className={"RoutePluginsPluginAccess-empty" satisfies RoutePluginsPluginAccess_ClassNames}>
-						No external network access.
+						No backend outbound origins.
 					</div>
 				) : (
 					<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
@@ -1350,7 +1356,7 @@ function RoutePluginsPlugin() {
 							<>
 								{/* One-line explanation doubles as the section title, like the other consent sections. */}
 								<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
-									This plugin adds pages to your workspace sidebar
+									This plugin includes these workspace pages
 								</div>
 								<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
 									{plugin.pages.map((page) => (
@@ -1363,14 +1369,19 @@ function RoutePluginsPlugin() {
 										</li>
 									))}
 								</ul>
+								{/* Reviewed page code is trusted; the iframe is host isolation, not data containment. */}
+								<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
+									Plugin pages are trusted with the data their capabilities expose. A page can send that data away by
+									navigating, even when no backend origin is listed.
+								</p>
 							</>
 						) : null}
 						<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
-							And send requests to these origins
+							Backend requests can go to these origins
 						</div>
 						{plugin.outboundOrigins.length === 0 ? (
 							<div className={"RoutePluginsPluginConsentModal-empty" satisfies RoutePluginsPlugin_ClassNames}>
-								No outbound origins requested.
+								No backend outbound origins requested.
 							</div>
 						) : (
 							<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>

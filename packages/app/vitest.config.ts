@@ -66,7 +66,8 @@ export default defineConfig({
 							inline: ["convex-test", "@tiptap/extension-collaboration"],
 						},
 					},
-					setupFiles: ["./convex/setup.test.ts"],
+					// Preload only environment values; helper imports would load app modules before per-file mocks.
+					setupFiles: ["./convex/setup-env.test.ts"],
 				},
 			},
 		],

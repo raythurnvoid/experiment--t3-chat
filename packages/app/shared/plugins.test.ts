@@ -81,11 +81,28 @@ describe("plugins_validate_origin", () => {
 			_nay: { message: "Origin must be a valid URL" },
 		});
 	});
+
+	test("bounds the complete normalized origin string", () => {
+		const labels = ["a".repeat(63), "b".repeat(63), "c".repeat(63)];
+		const atLimit = `https://${[...labels, "d".repeat(55)].join(".")}`;
+		const overLimit = `https://${[...labels, "d".repeat(56)].join(".")}`;
+		expect(atLimit).toHaveLength(255);
+		expect(plugins_validate_origin(atLimit)).toEqual({ _yay: atLimit });
+		expect(overLimit).toHaveLength(256);
+		expect(plugins_validate_origin(overLimit)).toEqual({
+			_nay: { message: "Origins must be at most 255 characters" },
+		});
+	});
 });
 
 describe("plugins_validate_manifest", () => {
 	function manifest_json(
-		args: { outboundOrigins?: string[]; duplicateFilePath?: boolean; nonDistFilePath?: boolean } = {},
+		args: {
+			events?: Array<{ type: "files.upload.completed"; contentTypes: string[] }>;
+			outboundOrigins?: string[];
+			duplicateFilePath?: boolean;
+			nonDistFilePath?: boolean;
+		} = {},
 	) {
 		return {
 			schemaVersion: 1,
@@ -94,7 +111,7 @@ describe("plugins_validate_manifest", () => {
 			version: "0.1.0",
 			description: "Image and video markdown generation",
 			compatibility: { bonoboPluginRuntime: "1" },
-			events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
+			events: args.events ?? [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 			pages: [],
 			capabilities: ["plugin.secrets.read", "outbound.fetch"],
 			outboundOrigins: args.outboundOrigins ?? [],
@@ -159,6 +176,84 @@ describe("plugins_validate_manifest", () => {
 				manifest_json({ outboundOrigins: ["https://api.openai.com", "https://api.openai.com"] }),
 			),
 		).toEqual({ _nay: { message: 'Plugin manifest has duplicate outbound origin "https://api.openai.com"' } });
+	});
+
+	test("bounds event and outbound-origin fan-out", () => {
+		const contentTypes = Array.from({ length: 32 }, (_, index) => `application/x-test-${index}`);
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					events: [
+						{ type: "files.upload.completed", contentTypes },
+						{ type: "files.upload.completed", contentTypes: contentTypes.map((type) => `${type}-other`) },
+					],
+					outboundOrigins: Array.from({ length: 16 }, (_, index) => `https://api-${index}.example.com`),
+				}),
+			),
+		).toMatchObject({ _yay: expect.any(Object) });
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					events: [
+						{ type: "files.upload.completed", contentTypes },
+						{
+							type: "files.upload.completed",
+							contentTypes: contentTypes.map((type) => `${type}-other`),
+						},
+						{ type: "files.upload.completed", contentTypes: ["application/x-over-limit"] },
+					],
+				}),
+			),
+		).toEqual({
+			_nay: { message: "Plugin manifest declares more than 64 event content-type subscriptions" },
+		});
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					events: [
+						{
+							type: "files.upload.completed",
+							contentTypes: [...contentTypes, "application/x-over-limit"],
+						},
+					],
+				}),
+			),
+		).toEqual({ _nay: { message: "Plugin events can declare at most 32 content types" } });
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					events: Array.from({ length: 9 }, (_, index) => ({
+						type: "files.upload.completed" as const,
+						contentTypes: [`application/x-event-${index}`],
+					})),
+				}),
+			),
+		).toEqual({ _nay: { message: "Plugin manifests can declare at most 8 events" } });
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					outboundOrigins: Array.from({ length: 17 }, (_, index) => `https://api-${index}.example.com`),
+				}),
+			),
+		).toEqual({ _nay: { message: "Plugin manifests can declare at most 16 outbound origins" } });
+	});
+
+	test("rejects duplicate event subscriptions and overlong secret names", () => {
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					events: [
+						{ type: "files.upload.completed", contentTypes: ["image/png"] },
+						{ type: "files.upload.completed", contentTypes: ["image/png"] },
+					],
+				}),
+			),
+		).toEqual({
+			_nay: { message: 'Plugin manifest has duplicate files.upload.completed content type "image/png"' },
+		});
+		expect(plugins_parse_env_text(`${"A".repeat(129)}=value`)).toEqual({
+			_nay: { message: "Line 1: Secret names must be at most 128 characters" },
+		});
 	});
 });
 
@@ -243,5 +338,12 @@ describe("plugins_dist_review_mechanical_findings", () => {
 			expect.stringContaining("Function constructor"),
 		]);
 	});
-});
 
+	test("keeps JavaScript-only checks out of non-JavaScript text", () => {
+		expect(
+			plugins_dist_review_mechanical_findings('main::before { content: "Function(return 1)"; }\n', {
+				javaScript: false,
+			}),
+		).toEqual([]);
+	});
+});

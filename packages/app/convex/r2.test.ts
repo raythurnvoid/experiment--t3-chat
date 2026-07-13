@@ -16,22 +16,26 @@ import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
 
-vi.mock("ai", () => ({
-	generateText: vi.fn(async (args: { messages?: unknown }) => {
-		const prompt = JSON.stringify(args.messages);
-		return {
-			text: prompt.includes("Summarize the uploaded video") ? "Video summary body" : "Image description body",
-			totalUsage: {
-				inputTokens: 100,
-				outputTokens: 20,
-			},
-		};
-	}),
-	smoothStream: vi.fn(() => undefined),
-	streamText: vi.fn(() => ({
-		toUIMessageStreamResponse: vi.fn(() => new Response(null, { status: 200 })),
-	})),
-}));
+vi.mock("ai", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("ai")>();
+	return {
+		...actual,
+		generateText: vi.fn(async (args: { messages?: unknown }) => {
+			const prompt = JSON.stringify(args.messages);
+			return {
+				text: prompt.includes("Summarize the uploaded video") ? "Video summary body" : "Image description body",
+				totalUsage: {
+					inputTokens: 100,
+					outputTokens: 20,
+				},
+			};
+		}),
+		smoothStream: vi.fn(() => undefined),
+		streamText: vi.fn(() => ({
+			toUIMessageStreamResponse: vi.fn(() => new Response(null, { status: 200 })),
+		})),
+	};
+});
 
 const r2Objects = new Map<string, Uint8Array>();
 let enqueueActionSpy: MockInstance;
@@ -176,10 +180,13 @@ function stub_r2_and_modal_fetch(
 				const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 				return (
 					(await onPluginRunnerRequest?.(body)) ??
-					new Response(JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }), {
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					})
+					new Response(
+						JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }),
+						{
+							status: 200,
+							headers: { "Content-Type": "application/json" },
+						},
+					)
 				);
 			}
 
@@ -260,7 +267,26 @@ async function install_upload_plugin(
 		contentTypes: string[];
 	},
 ) {
+	const repositoryId = await t.run(async (ctx) => {
+		const repositoryUrl = `https://github.com/bonobo/${args.name}-plugin`;
+		const existing = await ctx.db
+			.query("plugins_publisher_repositories")
+			.withIndex("by_ownerUser_repositoryUrl", (q) =>
+				q.eq("ownerUserId", args.userId).eq("repositoryUrl", repositoryUrl),
+			)
+			.first();
+		return (
+			existing?._id ??
+			(await ctx.db.insert("plugins_publisher_repositories", {
+				ownerUserId: args.userId,
+				repositoryUrl,
+				owner: "bonobo",
+				repo: `${args.name}-plugin`,
+			}))
+		);
+	});
 	const registered = await t.action(internal.plugins.register_plugin_version, {
+		repositoryId,
 		name: args.name,
 		displayName: args.displayName,
 		version: "0.1.0",
@@ -281,6 +307,7 @@ async function install_upload_plugin(
 			compatibilityFlags: ["nodejs_compat"],
 		},
 		events: [{ type: "files.upload.completed", contentTypes: args.contentTypes }],
+		pages: [],
 		capabilities: ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: [],
 		files: [
@@ -672,22 +699,24 @@ describe("r2 asset content", () => {
 				const host = body.host as { token: string };
 				const source = (body.input as { source: { fileNodeId: string; path: string } }).source;
 				downloadRequestedAt = Date.now();
-				const downloadResponse = await t.fetch("/api/v1/files/download-url", {
+				const downloadResponse = await t.fetch("/api/v1/files/download-urls", {
 					method: "POST",
 					headers: {
 						Authorization: `Bearer ${host.token}`,
 						"Content-Type": "application/json",
 					},
 					body: JSON.stringify({
-						fileNodeId: source.fileNodeId,
+						fileNodeIds: [source.fileNodeId],
 						// The 15-minute request ceiling exceeds the 10-minute run-token life: clamp must win.
 						expiresInSeconds: 900,
 					}),
 				});
 				expect(downloadResponse.status).toBe(200);
-				const downloadBody = (await downloadResponse.json()) as { url: string; expiresAt: number };
-				expect(downloadBody.url).toContain(encodeURIComponent(assetR2Key));
-				downloadUrlExpiresAt = downloadBody.expiresAt;
+				const downloadBody = (await downloadResponse.json()) as {
+					items: Array<{ url: string; expiresAt: number }>;
+				};
+				expect(downloadBody.items[0]?.url).toContain(encodeURIComponent(assetR2Key));
+				downloadUrlExpiresAt = downloadBody.items[0]!.expiresAt;
 
 				const writeResponse = await t.fetch("/api/v1/files/write", {
 					method: "POST",
@@ -701,10 +730,13 @@ describe("r2 asset content", () => {
 					}),
 				});
 				expect(writeResponse.status).toBe(200);
-				return new Response(JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				});
+				return new Response(
+					JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }),
+					{
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
 			},
 		});
 
@@ -811,7 +843,7 @@ describe("r2 asset content", () => {
 			},
 		});
 		const completedRun = await t.run(async (ctx) => ctx.db.get("plugins_event_runs", pluginRun._id));
-		// One download-url call plus one write call against the shared quota, one published output.
+		// One download-urls call plus one write call against the shared quota, one published output.
 		expect(completedRun).toMatchObject({ status: "succeeded", apiCallCount: 2, outputWriteCount: 1 });
 
 		enqueueActionSpy.mockClear();
@@ -878,10 +910,13 @@ describe("r2 asset content", () => {
 					}),
 				});
 				expect(writeResponse.status).toBe(200);
-				return new Response(JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				});
+				return new Response(
+					JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }),
+					{
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
 			},
 		});
 		const asUser = t.withIdentity({
@@ -1049,10 +1084,13 @@ describe("r2 asset content", () => {
 					});
 					expect(writeResponse.status).toBe(200);
 				}
-				return new Response(JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				});
+				return new Response(
+					JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }),
+					{
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
 			},
 		});
 
@@ -1447,10 +1485,13 @@ describe("r2 asset content", () => {
 					}),
 				});
 				expect(writeResponse.status).toBe(200);
-				return new Response(JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }), {
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				});
+				return new Response(
+					JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }),
+					{
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
 			},
 		});
 		const response = await t.fetch("/api/r2/event", {

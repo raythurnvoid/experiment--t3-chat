@@ -63,6 +63,11 @@ if (!process.env.OPENAI_API_KEY) {
 	process.env.OPENAI_API_KEY = "OPENAI_API_KEY_TEST";
 }
 
+// The app requires this value, so tests set their own endpoint.
+if (!process.env.OPENAI_BASE_URL) {
+	process.env.OPENAI_BASE_URL = "https://api.openai.test/v1";
+}
+
 if (!process.env.CLOUDFLARE_EVENTS_SECRET) {
 	process.env.CLOUDFLARE_EVENTS_SECRET = "CLOUDFLARE_EVENTS_SECRET_TEST";
 }

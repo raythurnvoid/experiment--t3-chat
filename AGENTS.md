@@ -431,6 +431,16 @@ Treat code as a liability and keep the implementation as direct as the problem a
 - Prefer inline local code over a helper when the helper does not remove real complexity, hide a necessary external-system detail, or enable meaningful reuse.
 - When adding any abstraction, be ready to explain the concrete benefit in the current change.
 
+## Clean-slate development
+
+This product is not in production. Build the current design directly instead of preserving obsolete behavior.
+
+- Do not add backward-compatibility branches, legacy parsers, dual reads or writes, optional old fields, version adapters, migration shims, or fallback routes unless the user explicitly requires continuity with deployed production data.
+- When a breaking schema or contract change conflicts with disposable development data, prefer deleting that data and regenerating the current derived content over carrying compatibility code.
+- Load the `dev-data-reset`, `data-deletion`, and `plugin-system` skills before a destructive reset or plugin recovery. Follow their readback gates rather than improvising deletion order.
+- Never delete a `users` doc whose `clerkUserId` is non-null during a development reset. Use the data-only purge mode so the Clerk identity, profile, Polar customer/billing state, and default tenant remain attached to the same user doc. Anonymous or non-Clerk users may be fully deleted.
+- Rebuild plugin registry data from the current source repositories and trusted deployment secrets. Never scrape, print, log, or copy provider tokens from browser pages; use existing deployment environment values, provider-supported credential issuance, or explicit user-provided values.
+
 ## Trust application invariants
 
 When changing application code, default to trusting the product invariants enforced by the app's public queries, mutations, routes, and other supported entrypoints.
@@ -573,6 +583,26 @@ Write comments and JSDoc for a reader who is not an eloquent native English spea
 // A crash between the uploads below and registration must not orphan bucket objects: durably
 // record the exact keys and schedule their cleanup in one mutation before the first put.
 ```
+
+### JSDoc layout
+
+Use multi-line JSDoc by default, even when the text is one sentence. The extra space makes the documented symbol easier to find and review.
+
+```ts
+/**
+ * Explain the symbol in plain language.
+ */
+```
+
+Use a single-line JSDoc only when it is a very short label and the compact form makes a tight group of small symbols easier to scan. Do not use a single line for a reason, lifecycle, constraint, warning, or any text that may wrap. When unsure, use the multi-line form.
+
+### Vertical spacing and code chunks
+
+Use one empty line between different logical chunks of code. Examples of chunks are configuration, validation, reads, calculations, writes, and the final result.
+
+Keep statements together when they complete one small step. For example, keep an environment-variable guard with the constant it validates. Do not add an empty line after every statement.
+
+Before finishing an edit, read each changed area with its nearby code. Check that empty lines make the steps easy to see and that no dense block hides a change of purpose. A formatter cannot make this judgment for you.
 
 ## Global DOM ids: `AppElementId` + `satisfies`
 

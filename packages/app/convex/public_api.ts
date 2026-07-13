@@ -63,6 +63,13 @@ const FILES_READ_MAX_BYTES = 128_000;
 const FILES_READ_MANY_MAX_ITEMS = 50;
 const FILES_READ_MANY_MAX_CONTENT_BYTES = 384_000;
 const FILES_DOWNLOAD_URL_MAX_TTL_SECONDS = 15 * 60;
+// The signer timestamps after our pre-sign check, so leave one full second inside plugin authority.
+const FILES_DOWNLOAD_URL_SIGNING_MARGIN_SECONDS = 1;
+// Must stay <= the public_api_principal bucket capacity: a batch charges one unit per URL.
+const FILES_DOWNLOAD_URLS_MAX_ITEMS = 20;
+// Keep unauthenticated validation work small while still allowing a truncated client batch.
+const FILES_DOWNLOAD_URLS_MAX_REQUEST_ITEMS = 100;
+const FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES = 32_000;
 
 const TEXT_ENCODER = new TextEncoder();
 const CREDENTIAL_KEY_PREFIX = "pk_";
@@ -77,6 +84,31 @@ const PUBLIC_API_GRANT_CLEANUP_BATCH_SIZE = 100;
 // Stages only need to outlive one write action; anything older is a crashed write.
 const FILE_WRITE_STAGE_TTL_MS = 15 * 60 * 1000;
 const FILE_WRITE_STAGE_CLEANUP_BATCH_SIZE = 25;
+
+/** Stops buffering an unauthenticated request as soon as it crosses the route limit. */
+async function read_request_text_bounded(request: Request, maxBytes: number) {
+	if (!request.body) return "";
+	const reader = request.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let byteLength = 0;
+	for (;;) {
+		const { value, done } = await reader.read();
+		if (done) break;
+		byteLength += value.byteLength;
+		if (byteLength > maxBytes) {
+			await reader.cancel();
+			return null;
+		}
+		chunks.push(value);
+	}
+	const bytes = new Uint8Array(byteLength);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return new TextDecoder().decode(bytes);
+}
 
 type Scope =
 	| typeof public_api_SCOPE_FILES_LIST
@@ -232,7 +264,12 @@ async function has_workspace_asset_permission(
 		ctx.db.get("organizations", args.organizationId),
 		ctx.db.get("organizations_workspaces", args.workspaceId),
 	]);
-	if (!organization || !workspace || !organization.defaultWorkspaceId || workspace.organizationId !== organization._id) {
+	if (
+		!organization ||
+		!workspace ||
+		!organization.defaultWorkspaceId ||
+		workspace.organizationId !== organization._id
+	) {
 		return false;
 	}
 
@@ -246,6 +283,26 @@ async function has_workspace_asset_permission(
 		permission: args.permission,
 		userId: args.userId,
 	});
+}
+
+/**
+ * Both asset ACL facts at once: resolve_principal returns these instead of judging the route's
+ * requiredUserPermission itself, so its result stays cacheable per token (verdicts live in
+ * public_api_resolve_live_principal). Revoking a role invalidates the cached facts immediately.
+ */
+async function get_workspace_asset_permissions(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+	},
+) {
+	const [read, write] = await Promise.all([
+		has_workspace_asset_permission(ctx, { ...args, permission: "asset.read" }),
+		has_workspace_asset_permission(ctx, { ...args, permission: "asset.write" }),
+	]);
+	return { read, write };
 }
 
 // Public API grants
@@ -582,12 +639,16 @@ export const api_credential_rotate = mutation({
 
 // Principal resolution
 
+/**
+ * Facts only, keyed on the presented token alone so Convex can cache the result: identity,
+ * tenancy, scopes, expiry timestamps, and asset ACL facts. The two verdicts that depend on the
+ * caller's clock and route — token expiry and requiredUserPermission — are applied by
+ * public_api_resolve_live_principal; never call this directly from a route. Liveness checks
+ * (revocation, disable, uninstall, membership loss) are writes, so they invalidate the cache.
+ */
 export const resolve_principal = internalQuery({
 	args: {
 		presented: v.string(),
-		now: v.number(),
-		// Route-level ACL for user principals (grants and API keys); plugin runs never use user ACLs.
-		requiredUserPermission: v.optional(v.union(v.literal("asset.read"), v.literal("asset.write"))),
 	},
 	returns: v_result({
 		_yay: v.union(
@@ -596,6 +657,8 @@ export const resolve_principal = internalQuery({
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
 				userId: v.id("users"),
+				expiresAt: v.number(),
+				assetPermissions: v.object({ read: v.boolean(), write: v.boolean() }),
 				scopes: grant_scopes_validator,
 				principalKey: v.string(),
 				credentialId: v.null(),
@@ -606,6 +669,7 @@ export const resolve_principal = internalQuery({
 				organizationId: v.id("organizations"),
 				workspaceId: v.id("organizations_workspaces"),
 				userId: v.id("users"),
+				assetPermissions: v.object({ read: v.boolean(), write: v.boolean() }),
 				scopes: user_credential_scopes_validator,
 				principalKey: v.string(),
 				credentialId: v.id("api_credentials"),
@@ -637,6 +701,7 @@ export const resolve_principal = internalQuery({
 				pluginVersionId: v.id("plugins_versions"),
 				sessionId: v.id("plugins_ui_sessions"),
 				sessionExpiresAt: v.number(),
+				assetPermissions: v.object({ read: v.boolean(), write: v.boolean() }),
 				scopes: plugin_ui_scopes_validator,
 				principalKey: v.string(),
 				credentialId: v.null(),
@@ -651,12 +716,7 @@ export const resolve_principal = internalQuery({
 				.query("plugins_event_runs")
 				.withIndex("by_apiTokenHash", (q) => q.eq("apiTokenHash", apiTokenHash))
 				.unique();
-			if (
-				!pluginRun ||
-				pluginRun.status !== "running" ||
-				!pluginRun.apiTokenExpiresAt ||
-				pluginRun.apiTokenExpiresAt <= args.now
-			) {
+			if (!pluginRun || pluginRun.status !== "running" || !pluginRun.apiTokenExpiresAt) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 
@@ -725,7 +785,7 @@ export const resolve_principal = internalQuery({
 				.query("plugins_ui_sessions")
 				.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
 				.unique();
-			if (!session || session.expiresAt <= args.now) {
+			if (!session) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
 
@@ -761,17 +821,11 @@ export const resolve_principal = internalQuery({
 			if (!membership) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
-			if (
-				args.requiredUserPermission &&
-				!(await has_workspace_asset_permission(ctx, {
-					organizationId: session.organizationId,
-					workspaceId: session.workspaceId,
-					userId: session.userId,
-					permission: args.requiredUserPermission,
-				}))
-			) {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
+			const assetPermissions = await get_workspace_asset_permissions(ctx, {
+				organizationId: session.organizationId,
+				workspaceId: session.workspaceId,
+				userId: session.userId,
+			});
 
 			// Workspace file reads are consent-gated; UI sessions never get secrets or outbound scopes.
 			const scopes: Infer<typeof plugin_ui_scopes_validator> = installation.acceptedCapabilities.includes(
@@ -790,8 +844,10 @@ export const resolve_principal = internalQuery({
 					pluginVersionId: session.pluginVersionId,
 					sessionId: session._id,
 					sessionExpiresAt: session.expiresAt,
+					assetPermissions,
 					scopes,
-					principalKey: `plugin_ui:${session._id}`,
+					// Keep one rate-limit identity across token rotation and fresh iframe sessions.
+					principalKey: `plugin_ui:${session.organizationId}:${session.workspaceId}:${session.userId}:${session.installationId}`,
 					credentialId: null,
 					pathPrefix: null,
 				},
@@ -842,17 +898,11 @@ export const resolve_principal = internalQuery({
 			if (!membership) {
 				return Result({ _nay: { message: "Unauthenticated" } });
 			}
-			if (
-				args.requiredUserPermission &&
-				!(await has_workspace_asset_permission(ctx, {
-					organizationId: credential.organizationId,
-					workspaceId: credential.workspaceId,
-					userId: credential.userId,
-					permission: args.requiredUserPermission,
-				}))
-			) {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
+			const assetPermissions = await get_workspace_asset_permissions(ctx, {
+				organizationId: credential.organizationId,
+				workspaceId: credential.workspaceId,
+				userId: credential.userId,
+			});
 
 			return Result({
 				_yay: {
@@ -860,6 +910,7 @@ export const resolve_principal = internalQuery({
 					organizationId: credential.organizationId,
 					workspaceId: credential.workspaceId,
 					userId: credential.userId,
+					assetPermissions,
 					scopes: credential.scopes,
 					principalKey: credential.keyId,
 					credentialId: credential._id,
@@ -873,7 +924,7 @@ export const resolve_principal = internalQuery({
 			.query("public_api_grants")
 			.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
 			.first();
-		if (!grant || grant.expiresAt <= args.now) {
+		if (!grant) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
@@ -890,17 +941,11 @@ export const resolve_principal = internalQuery({
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		if (
-			args.requiredUserPermission &&
-			!(await has_workspace_asset_permission(ctx, {
-				organizationId: grant.organizationId,
-				workspaceId: grant.workspaceId,
-				userId: grant.userId,
-				permission: args.requiredUserPermission,
-			}))
-		) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
+		const assetPermissions = await get_workspace_asset_permissions(ctx, {
+			organizationId: grant.organizationId,
+			workspaceId: grant.workspaceId,
+			userId: grant.userId,
+		});
 
 		return Result({
 			_yay: {
@@ -908,6 +953,8 @@ export const resolve_principal = internalQuery({
 				organizationId: grant.organizationId,
 				workspaceId: grant.workspaceId,
 				userId: grant.userId,
+				expiresAt: grant.expiresAt,
+				assetPermissions,
 				scopes: grant.scopes,
 				principalKey: grant.principalKey,
 				credentialId: null,
@@ -923,6 +970,52 @@ export type public_api_resolve_principal_Result =
 		: never;
 
 type Principal = NonNullable<public_api_resolve_principal_Result["_yay"]>;
+
+/**
+ * The verdict half of principal resolution: resolve_principal returns cacheable facts, this
+ * applies the checks that vary per call — token expiry against the caller's clock and the
+ * route's required user ACL (plugin runs never use user ACLs). Every route authorization goes
+ * through here, except plugins_runtime's runner-host route, which applies the plugin_run
+ * expiry inline because a value import from this module would be a runtime cycle.
+ */
+export async function public_api_resolve_live_principal(
+	ctx: ActionCtx,
+	args: {
+		presented: string;
+		now: number;
+		requiredUserPermission?: "asset.read" | "asset.write";
+	},
+) {
+	const resolved: public_api_resolve_principal_Result = await ctx.runQuery(internal.public_api.resolve_principal, {
+		presented: args.presented,
+	});
+	if (resolved._nay) {
+		return resolved;
+	}
+
+	const principal = resolved._yay;
+	const expiresAt =
+		principal.kind === "plugin_run"
+			? principal.apiTokenExpiresAt
+			: principal.kind === "plugin_ui"
+				? principal.sessionExpiresAt
+				: principal.kind === "public_api_grant"
+					? principal.expiresAt
+					: null;
+	if (expiresAt != null && expiresAt <= args.now) {
+		return Result({ _nay: { message: "Unauthenticated" } });
+	}
+
+	if (args.requiredUserPermission && principal.kind !== "plugin_run") {
+		const allowed =
+			args.requiredUserPermission === "asset.read" ? principal.assetPermissions.read : principal.assetPermissions.write;
+		if (!allowed) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+	}
+
+	return resolved;
+}
 
 // Route authorization
 
@@ -1014,6 +1107,44 @@ function is_principal_kind_allowed<K extends PrincipalKind>(
 	return kinds.includes(principal.kind);
 }
 
+function has_same_download_authority(
+	initial: Extract<Principal, { kind: "user_api_key" | "plugin_run" | "plugin_ui" }>,
+	current: Principal,
+) {
+	const currentScopes: readonly Scope[] = current.scopes;
+	if (
+		initial.organizationId !== current.organizationId ||
+		initial.workspaceId !== current.workspaceId ||
+		!currentScopes.includes(public_api_SCOPE_FILES_DOWNLOAD)
+	) {
+		return false;
+	}
+
+	switch (initial.kind) {
+		case "user_api_key":
+			return (
+				current.kind === "user_api_key" &&
+				current.credentialId === initial.credentialId &&
+				current.userId === initial.userId
+			);
+		case "plugin_run":
+			return (
+				current.kind === "plugin_run" &&
+				current.runId === initial.runId &&
+				current.installationId === initial.installationId &&
+				current.pluginVersionId === initial.pluginVersionId
+			);
+		case "plugin_ui":
+			return (
+				current.kind === "plugin_ui" &&
+				current.sessionId === initial.sessionId &&
+				current.userId === initial.userId &&
+				current.installationId === initial.installationId &&
+				current.pluginVersionId === initial.pluginVersionId
+			);
+	}
+}
+
 async function authorize_request<K extends PrincipalKind>(
 	ctx: ActionCtx,
 	request: Request,
@@ -1040,7 +1171,7 @@ async function authorize_request<K extends PrincipalKind>(
 		return { _nay: { status: 401, body: { message: "Unauthenticated" } } } as const;
 	}
 
-	const resolved: public_api_resolve_principal_Result = await ctx.runQuery(internal.public_api.resolve_principal, {
+	const resolved = await public_api_resolve_live_principal(ctx, {
 		presented: token,
 		now: Date.now(),
 		requiredUserPermission: args.requiredUserPermission,
@@ -1151,7 +1282,7 @@ async function authorize_request<K extends PrincipalKind>(
 		credentialId,
 		now,
 	});
-	return { _yay: { principal, pluginCallId } } as const;
+	return { _yay: { principal, pluginCallId, presentedToken: token } } as const;
 }
 
 // Staged file writes
@@ -1615,7 +1746,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 
 							const body = await server_request_json_parse_and_validate(request, bodyValidator);
 							if (body._nay) {
-								return { status: 400, body: body._nay } as const;
+								return { status: 400, body: { message: body._nay.message } } as const;
 							}
 
 							const requestedPath = server_path_normalize(body._yay.path ?? "/");
@@ -1722,7 +1853,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 
 							const body = await server_request_json_parse_and_validate(request, bodyValidator);
 							if (body._nay) {
-								return { status: 400, body: body._nay } as const;
+								return { status: 400, body: { message: body._nay.message } } as const;
 							}
 
 							const requestedPath = server_path_normalize(body._yay.path);
@@ -1819,7 +1950,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 
 							const body = await server_request_json_parse_and_validate(request, bodyValidator);
 							if (body._nay) {
-								return { status: 400, body: body._nay } as const;
+								return { status: 400, body: { message: body._nay.message } } as const;
 							}
 
 							const requestedPaths = body._yay.paths
@@ -2032,7 +2163,10 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							}
 							// Plugins may only create Markdown siblings of their triggering file; the same
 							// constraint is revalidated transactionally at prepare and publish time.
-							if (principal.kind === "plugin_run" && server_path_parent_of(requestedPath) !== principal.outputParentPath) {
+							if (
+								principal.kind === "plugin_run" &&
+								server_path_parent_of(requestedPath) !== principal.outputParentPath
+							) {
 								return {
 									status: 403,
 									body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
@@ -2065,16 +2199,19 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								principalRef = { kind: "user_api_key", credentialId: principal.credentialId };
 							}
 
-							const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
-								organizationId: principal.organizationId,
-								workspaceId: principal.workspaceId,
-								userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
-								principalRef,
-								path: requestedPath,
-								overwrite,
-								contentSize: contentBytes,
-								yjsSnapshotSize: snapshotUpdate._yay.byteLength,
-							});
+							const prepared: prepare_file_write_Result = await ctx.runMutation(
+								internal.public_api.prepare_file_write,
+								{
+									organizationId: principal.organizationId,
+									workspaceId: principal.workspaceId,
+									userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
+									principalRef,
+									path: requestedPath,
+									overwrite,
+									contentSize: contentBytes,
+									yjsSnapshotSize: snapshotUpdate._yay.byteLength,
+								},
+							);
 							if (prepared._nay) {
 								if (prepared._nay.message === "Permission denied") {
 									return {
@@ -2126,15 +2263,22 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 									stageId,
 									path: requestedPath,
 								});
-								const failBody = await fail({ status: 500, message: "Failed to write file", errorCode: "storage_failure" });
+								const failBody = await fail({
+									status: 500,
+									message: "Failed to write file",
+									errorCode: "storage_failure",
+								});
 								await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
 								return { status: 500, body: failBody } as const;
 							}
 
-							const published: publish_file_write_Result = await ctx.runMutation(internal.public_api.publish_file_write, {
-								stageId,
-								content: body._yay.content,
-							});
+							const published: publish_file_write_Result = await ctx.runMutation(
+								internal.public_api.publish_file_write,
+								{
+									stageId,
+									content: body._yay.content,
+								},
+							);
 							if (published._nay) {
 								// Conflict is the fallback: structural 409s pass their specific message through,
 								// while the auth and storage failures use fixed literals.
@@ -2209,12 +2353,12 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 			},
 		}))(),
 
-		...((/* iife */ path = "/api/v1/files/download-url" as const satisfies api_schemas_Main_Path) => ({
+		...((/* iife */ path = "/api/v1/files/download-urls" as const satisfies api_schemas_Main_Path) => ({
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
 					[method]: ((/* iife */) => {
 						const bodyValidator = z.object({
-							fileNodeId: z.string().min(1),
+							fileNodeIds: z.array(z.string().min(1)).min(1).max(FILES_DOWNLOAD_URLS_MAX_REQUEST_ITEMS),
 							expiresInSeconds: z.number().int().min(1).max(FILES_DOWNLOAD_URL_MAX_TTL_SECONDS).optional(),
 						});
 
@@ -2224,6 +2368,29 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 						type Body = z.infer<typeof bodyValidator>;
 
 						const handler = async (ctx: ActionCtx, request: Request) => {
+							const declaredBytes = Number(request.headers.get("content-length"));
+							if (Number.isFinite(declaredBytes) && declaredBytes > FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES) {
+								return { status: 400, body: { message: "Request body is too large" } } as const;
+							}
+							const bodyText = await read_request_text_bounded(request, FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES);
+							if (bodyText === null) {
+								return { status: 400, body: { message: "Request body is too large" } } as const;
+							}
+							let bodyJson: unknown;
+							try {
+								bodyJson = JSON.parse(bodyText);
+							} catch {
+								return { status: 400, body: { message: "Failed to parse request body as JSON" } } as const;
+							}
+							const body = bodyValidator.safeParse(bodyJson);
+							if (!body.success) {
+								return { status: 400, body: { message: "Request body validation failed" } } as const;
+							}
+							// Duplicate ids never consume principal capacity or start file work.
+							if (new Set(body.data.fileNodeIds).size !== body.data.fileNodeIds.length) {
+								return { status: 400, body: { message: "fileNodeIds must be unique" } } as const;
+							}
+
 							const auth = await authorize_request(ctx, request, {
 								requiredScope: public_api_SCOPE_FILES_DOWNLOAD,
 								allowedKinds: ["user_api_key", "plugin_run", "plugin_ui"],
@@ -2235,6 +2402,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							}
 							const principal = auth._yay.principal;
 							const pluginCallId = auth._yay.pluginCallId;
+							const presentedToken = auth._yay.presentedToken;
 
 							const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
 								await settle_plugin_call_best_effort(ctx, {
@@ -2247,128 +2415,190 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								return { message: failArgs.message };
 							};
 
-							const body = await server_request_json_parse_and_validate(request, bodyValidator);
-							if (body._nay) {
+							// A backend plugin can request only its triggering upload, but it uses the same
+							// array request and response as every other plugin.
+							if (
+								principal.kind === "plugin_run" &&
+								(body.data.fileNodeIds.length !== 1 || body.data.fileNodeIds[0] !== String(principal.sourceFileNodeId))
+							) {
 								return {
-									status: 400,
-									body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
+									status: 404,
+									body: await fail({ status: 404, message: "Not found", errorCode: "not_found" }),
 								} as const;
 							}
 
-							// The URL TTL is the smallest of the requested TTL, the ceiling, and (for
-							// plugin principals) the time left on the token — a signed URL must never
-							// outlive the token that requested it. A token in its final second gets no URL
-							// at all: rounding up to 1s would let the URL outlive the token.
+							const fileNodeIds = body.data.fileNodeIds.slice(0, FILES_DOWNLOAD_URLS_MAX_ITEMS);
+							const truncated = body.data.fileNodeIds.length > fileNodeIds.length;
+
+							// authorize_request charged one slot for the request; the rest of the batch
+							// charges here so N URLs cost the same principal budget as N single calls.
+							if (fileNodeIds.length > 1) {
+								const batchRateLimit = await rate_limiter_limit_by_key(ctx, {
+									name: "public_api_principal",
+									key: `${principal.kind}:${principal.principalKey}:${path}`,
+									count: fileNodeIds.length - 1,
+								});
+								if (batchRateLimit) {
+									return {
+										status: 429,
+										body: { message: batchRateLimit.message, retryAfterMs: batchRateLimit.retryAfterMs },
+									} as const;
+								}
+							}
+
+							// Per-node queries keep each file in its own Convex cache entry, so one changed
+							// file invalidates only its own result.
+							const datas: r2_get_data_for_public_download_url_Result[] = await Promise.all(
+								fileNodeIds.map((fileNodeId) =>
+									ctx.runQuery(internal.r2.get_data_for_public_download_url, {
+										organizationId: principal.organizationId,
+										workspaceId: principal.workspaceId,
+										fileNodeId,
+									}),
+								),
+							);
+
+							if (
+								principal.kind === "plugin_run" &&
+								(!datas[0] || datas[0].asset._id !== principal.sourceAssetId || !datas[0].asset.r2Key)
+							) {
+								return {
+									status: 404,
+									body: await fail({ status: 404, message: "Not found", errorCode: "not_found" }),
+								} as const;
+							}
+
+							await Promise.all(
+								datas.map(async (data) => {
+									if (
+										principal.kind === "plugin_run" ||
+										!data ||
+										!data.materializationState ||
+										data.materializationState.yjsLastSequenceDoc.lastSequence <=
+											data.materializationState.yjsSnapshotDoc.sequence
+									) {
+										return;
+									}
+									// Try to update the committed Markdown asset, but still allow downloading
+									// the current R2 asset if this fails.
+									const materialized = await ctx.runAction(internal.files_nodes.materialize_file_content, {
+										organizationId: principal.organizationId,
+										workspaceId: principal.workspaceId,
+										nodeId: data.fileNode._id,
+										userId: principal.userId,
+										targetSequence: data.materializationState.yjsLastSequenceDoc.lastSequence,
+									});
+									if (materialized._nay) {
+										console.warn("Failed to materialize Markdown before public download", {
+											fileNodeId: data.fileNode._id,
+											nay: materialized._nay,
+										});
+									}
+								}),
+							);
+
+							// Materialization can be slow. Resolve the exact bearer again so every URL uses
+							// the authority that remains when this all-or-nothing batch starts signing.
+							const signingAuthority = await public_api_resolve_live_principal(ctx, {
+								presented: presentedToken,
+								now: Date.now(),
+								requiredUserPermission: "asset.read",
+							});
+							if (signingAuthority._nay) {
+								const status = signingAuthority._nay.message === "Permission denied" ? 403 : 401;
+								return {
+									status,
+									body: await fail({
+										status,
+										message: signingAuthority._nay.message,
+										errorCode: status === 403 ? "permission_denied" : "unauthenticated",
+									}),
+								} as const;
+							}
+							if (!has_same_download_authority(principal, signingAuthority._yay)) {
+								return {
+									status: 401,
+									body: await fail({ status: 401, message: "Unauthenticated", errorCode: "unauthenticated" }),
+								} as const;
+							}
+
+							const preSignAt = Date.now();
 							let expiresIn = Math.min(
-								body._yay.expiresInSeconds ?? FILES_DOWNLOAD_URL_MAX_TTL_SECONDS,
+								body.data.expiresInSeconds ?? FILES_DOWNLOAD_URL_MAX_TTL_SECONDS,
 								FILES_DOWNLOAD_URL_MAX_TTL_SECONDS,
 							);
 							const principalAuthorityExpiresAt =
-								principal.kind === "plugin_run"
-									? principal.apiTokenExpiresAt
-									: principal.kind === "plugin_ui"
-										? principal.sessionExpiresAt
+								signingAuthority._yay.kind === "plugin_run"
+									? signingAuthority._yay.apiTokenExpiresAt
+									: signingAuthority._yay.kind === "plugin_ui"
+										? signingAuthority._yay.sessionExpiresAt
 										: null;
 							if (principalAuthorityExpiresAt != null) {
-								const remainingSeconds = Math.floor((principalAuthorityExpiresAt - Date.now()) / 1000);
+								const remainingSeconds =
+									Math.floor((principalAuthorityExpiresAt - preSignAt) / 1000) -
+									FILES_DOWNLOAD_URL_SIGNING_MARGIN_SECONDS;
 								if (remainingSeconds < 1) {
 									return {
 										status: 401,
-										body: await fail({ status: 401, message: "Unauthenticated", errorCode: "unauthenticated" }),
+										body: await fail({
+											status: 401,
+											message: "Unauthenticated",
+											errorCode: "unauthenticated",
+										}),
 									} as const;
 								}
 								expiresIn = Math.min(expiresIn, remainingSeconds);
 							}
 
-							// Plugins may only download their exact triggering file; anything else is hidden.
-							if (principal.kind === "plugin_run" && body._yay.fileNodeId !== String(principal.sourceFileNodeId)) {
-								return {
-									status: 404,
-									body: await fail({ status: 404, message: "Not found", errorCode: "not_found" }),
-								} as const;
-							}
-
-							const data: r2_get_data_for_public_download_url_Result = await ctx.runQuery(
-								internal.r2.get_data_for_public_download_url,
-								{
-									organizationId: principal.organizationId,
-									workspaceId: principal.workspaceId,
-									fileNodeId: body._yay.fileNodeId,
-								},
-							);
-							if (!data) {
-								return {
-									status: 404,
-									body: await fail({ status: 404, message: "Not found", errorCode: "not_found" }),
-								} as const;
-							}
-							// The run signs its original source asset only: a replaced source is gone, never
-							// silently swapped for the node's newer asset.
-							if (principal.kind === "plugin_run" && data.asset._id !== principal.sourceAssetId) {
-								return {
-									status: 404,
-									body: await fail({ status: 404, message: "Not found", errorCode: "not_found" }),
-								} as const;
-							}
-
-							if (
-								principal.kind !== "plugin_run" &&
-								data.materializationState &&
-								data.materializationState.yjsLastSequenceDoc.lastSequence >
-									data.materializationState.yjsSnapshotDoc.sequence
-							) {
-								// Try to update the committed Markdown asset, but still allow downloading the
-								// current R2 asset if this fails.
-								const materialized = await ctx.runAction(internal.files_nodes.materialize_file_content, {
-									organizationId: principal.organizationId,
-									workspaceId: principal.workspaceId,
-									nodeId: data.fileNode._id,
-									userId: principal.userId,
-									targetSequence: data.materializationState.yjsLastSequenceDoc.lastSequence,
-								});
-								if (materialized._nay) {
-									console.warn("Failed to materialize Markdown before public download", {
-										fileNodeId: data.fileNode._id,
-										nay: materialized._nay,
-									});
-								}
-							}
-
-							if (!data.asset.r2Key) {
-								return {
-									status: 404,
-									body: await fail({ status: 404, message: "Not found", errorCode: "not_found" }),
-								} as const;
-							}
-
-							const url = await r2_get_download_url({
-								key: data.asset.r2Key,
-								options: { expiresIn },
-							});
-							const expiresAt = Date.now() + expiresIn * 1000;
-
-							if (principal.kind === "plugin_run" || principal.kind === "plugin_ui") {
-								// Check the plugin principal again after signing: if it was revoked while this
-								// request ran, the live URL must not be returned.
-								const token = get_bearer_token(request);
-								const revalidated: public_api_resolve_principal_Result | null = token
-									? await ctx.runQuery(internal.public_api.resolve_principal, {
-											presented: token,
-											now: Date.now(),
-										})
-									: null;
-								const revalidatedPrincipal = revalidated && !revalidated._nay ? revalidated._yay : null;
-								const stillAuthorized =
-									principal.kind === "plugin_run"
-										? revalidatedPrincipal?.kind === "plugin_run" && revalidatedPrincipal.runId === principal.runId
-										: revalidatedPrincipal?.kind === "plugin_ui" &&
-											revalidatedPrincipal.sessionId === principal.sessionId;
-								if (!stillAuthorized) {
+							const signed = await Promise.all(
+								datas.map(async (data, index) => {
+									const fileNodeId = fileNodeIds[index];
+									if (!data || !data.asset.r2Key) {
+										return { fileNodeId, url: null };
+									}
 									return {
-										status: 401,
-										body: await fail({ status: 401, message: "Unauthenticated", errorCode: "unauthenticated" }),
-									} as const;
+										fileNodeId,
+										url: await r2_get_download_url({ key: data.asset.r2Key, options: { expiresIn } }),
+									};
+								}),
+							);
+							const expiresAt = Math.min(
+								preSignAt + expiresIn * 1000,
+								principalAuthorityExpiresAt ?? Number.POSITIVE_INFINITY,
+							);
+							const items: Array<{ fileNodeId: string; url: string; expiresAt: number }> = [];
+							const errors: Array<{ fileNodeId: string; message: string }> = [];
+							for (const entry of signed) {
+								if (entry.url) {
+									items.push({ fileNodeId: entry.fileNodeId, url: entry.url, expiresAt });
+								} else {
+									errors.push({ fileNodeId: entry.fileNodeId, message: "Not found" });
 								}
+							}
+
+							// All URLs share one request authority. Recheck it after signing so an ACL,
+							// tenant, installation, or session change suppresses the whole batch.
+							const revalidated = await public_api_resolve_live_principal(ctx, {
+								presented: presentedToken,
+								now: Date.now(),
+								requiredUserPermission: "asset.read",
+							});
+							if (revalidated._nay) {
+								const status = revalidated._nay.message === "Permission denied" ? 403 : 401;
+								return {
+									status,
+									body: await fail({
+										status,
+										message: revalidated._nay.message,
+										errorCode: status === 403 ? "permission_denied" : "unauthenticated",
+									}),
+								} as const;
+							}
+							if (!has_same_download_authority(principal, revalidated._yay)) {
+								return {
+									status: 401,
+									body: await fail({ status: 401, message: "Unauthenticated", errorCode: "unauthenticated" }),
+								} as const;
 							}
 
 							await settle_plugin_call_best_effort(ctx, {
@@ -2377,19 +2607,17 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								responseStatus: 200,
 							});
 
-							console.info("Public API download URL issued", {
+							console.info("Public API download URLs issued", {
 								principalKind: principal.kind,
 								principalKey: principal.principalKey,
-								fileNodeId: body._yay.fileNodeId,
+								count: items.length,
+								errorCount: errors.length,
+								truncated,
 							});
 
 							return {
 								status: 200,
-								body: {
-									fileNodeId: body._yay.fileNodeId,
-									url,
-									expiresAt,
-								},
+								body: { items, errors, truncated },
 								headers: { "Cache-Control": "no-store" },
 							} as const;
 						};

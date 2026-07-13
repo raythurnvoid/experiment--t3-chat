@@ -1,8 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { Workpool, type WorkId } from "@convex-dev/workpool";
-import { customersDelete } from "@polar-sh/sdk/funcs/customersDelete.js";
-import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
-import { UnexpectedClientError } from "@polar-sh/sdk/models/errors/httpclienterrors.js";
 import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
@@ -16,38 +13,26 @@ import { billing_PRODUCTS } from "../shared/billing.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 
-const polarWebhookMocks = vi.hoisted(() => ({
-	validateEvent: vi.fn(),
-}));
-
-vi.mock("@polar-sh/sdk/core.js", () => ({
-	PolarCore: class PolarCoreMock {
-		constructor(_args: unknown) {}
-	},
-}));
-
-vi.mock("@polar-sh/sdk/funcs/subscriptionsRevoke.js", () => ({
-	subscriptionsRevoke: vi.fn(),
-}));
-
-vi.mock("@polar-sh/sdk/funcs/customersDelete.js", () => ({
-	customersDelete: vi.fn(),
-}));
-
-const customersDeleteMock = vi.mocked(customersDelete);
-const subscriptionsRevokeMock = vi.mocked(subscriptionsRevoke);
-
-vi.mock("@polar-sh/sdk/webhooks", () => ({
-	WebhookVerificationError: class WebhookVerificationError extends Error {},
-	validateEvent: polarWebhookMocks.validateEvent,
-}));
-
 afterEach(() => {
 	vi.restoreAllMocks();
-	customersDeleteMock.mockReset();
-	polarWebhookMocks.validateEvent.mockReset();
-	subscriptionsRevokeMock.mockReset();
 });
+
+function users_test_remote_delete_response(input: string | URL | Request) {
+	const url = input instanceof Request ? input.url : String(input);
+	if (url.startsWith("https://api.clerk.com/")) {
+		return new Response(null, { status: 200 });
+	}
+
+	// A missing Polar resource is a successful idempotent delete in the app helpers.
+	return new Response(JSON.stringify({ error: "ResourceNotFound", detail: "Deleted by an earlier request" }), {
+		status: 404,
+		headers: { "Content-Type": "application/json" },
+	});
+}
+
+function users_test_fetch_url(input: string | URL | Request) {
+	return input instanceof Request ? input.url : String(input);
+}
 
 async function users_test_bootstrap_user(
 	ctx: MutationCtx,
@@ -1000,10 +985,12 @@ describe("list_current_user_account_deletion_blocking_organizations", () => {
 		expect(blockers.map((blocker) => blocker.organization.name)).toEqual(["owned-blocker"]);
 		expect(blockers[0]?.organization._id).toBe(organizations.ownedOrganization.organizationId);
 		expect(blockers[0]?.defaultWorkspace._id).toBe(organizations.ownedOrganization.defaultWorkspaceId);
-		expect(blockers.some((blocker) => blocker.organization._id === organizations.sharedOrganization.organizationId)).toBe(false);
-		expect(blockers.some((blocker) => blocker.organization._id === organizations.workspaceScopedOrganization.organizationId)).toBe(
-			false,
-		);
+		expect(
+			blockers.some((blocker) => blocker.organization._id === organizations.sharedOrganization.organizationId),
+		).toBe(false);
+		expect(
+			blockers.some((blocker) => blocker.organization._id === organizations.workspaceScopedOrganization.organizationId),
+		).toBe(false);
 	});
 });
 
@@ -1066,7 +1053,10 @@ describe("delete_current_user_account", () => {
 				ctx.db
 					.query("access_control_role_assignments")
 					.withIndex("by_organization_workspace_role_user", (q) =>
-						q.eq("organizationId", organization.organizationId).eq("workspaceId", organization.defaultWorkspaceId).eq("role", "owner"),
+						q
+							.eq("organizationId", organization.organizationId)
+							.eq("workspaceId", organization.defaultWorkspaceId)
+							.eq("role", "owner"),
 					)
 					.first(),
 				ctx.db
@@ -1107,7 +1097,9 @@ describe("delete_current_user_account", () => {
 						.first(),
 					ctx.db
 						.query("data_deletion_requests")
-						.withIndex("by_organization_scope", (q) => q.eq("organizationId", organization.organizationId).eq("scope", "organization"))
+						.withIndex("by_organization_scope", (q) =>
+							q.eq("organizationId", organization.organizationId).eq("scope", "organization"),
+						)
 						.collect(),
 				]);
 
@@ -1201,13 +1193,13 @@ describe("delete_current_user_account", () => {
 					.collect(),
 				ctx.db
 					.query("data_deletion_requests")
-					.withIndex("by_organization_scope", (q) => q.eq("organizationId", organization.organizationId).eq("scope", "organization"))
+					.withIndex("by_organization_scope", (q) =>
+						q.eq("organizationId", organization.organizationId).eq("scope", "organization"),
+					)
 					.collect(),
 				ctx.db
 					.query("quotas")
-					.withIndex("by_user_quotaName", (q) =>
-						q.eq("userId", seeded.userId).eq("quotaName", "extra_organizations"),
-					)
+					.withIndex("by_user_quotaName", (q) => q.eq("userId", seeded.userId).eq("quotaName", "extra_organizations"))
 					.first(),
 			]);
 
@@ -1992,7 +1984,6 @@ describe("delete_current_user_account", () => {
 			expect(after.request).toBeNull();
 			expect(after.memberships.every((membership) => membership.active !== false)).toBe(true);
 			expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
-			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -2045,7 +2036,7 @@ describe("hard_delete_user_now", () => {
 			.mockResolvedValue("work_hard_delete" as never);
 
 		try {
-			await t.action(internal.users.hard_delete_user_now, {
+			const result = await t.action(internal.users.hard_delete_user_now, {
 				userId: seeded.userId,
 			});
 
@@ -2125,9 +2116,9 @@ describe("hard_delete_user_now", () => {
 				};
 			});
 
+			expect(result).toBeNull();
 			expect(fetchSpy).not.toHaveBeenCalled();
 			expect(enqueueActionSpy).not.toHaveBeenCalled();
-			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
 			expect(after.user?.deletedAt).toBeUndefined();
 			expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete");
 			expect(after.user?.defaultOrganizationId).toBe(seeded.defaultOrganizationId);
@@ -2148,7 +2139,7 @@ describe("hard_delete_user_now", () => {
 		}
 	});
 
-	test("fully purges the Polar customer and clears any scheduled billing cancellation when purgeUserMod removes the user record", async () => {
+	test("requests Polar customer deletion and clears any scheduled billing cancellation when purgeUserMod removes the user record", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -2171,20 +2162,10 @@ describe("hard_delete_user_now", () => {
 			updatedAt: 77_777,
 		});
 
-		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response(null, {
-				status: 200,
-			}),
-		);
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async (input) => users_test_remote_delete_response(input));
 		const cancelSpy = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined);
-		subscriptionsRevokeMock.mockResolvedValue({
-			ok: true,
-			value: undefined as never,
-		});
-		customersDeleteMock.mockResolvedValue({
-			ok: true,
-			value: undefined as never,
-		});
 
 		try {
 			await t.action(internal.users.hard_delete_user_now, {
@@ -2220,46 +2201,16 @@ describe("hard_delete_user_now", () => {
 			});
 
 			expect(cancelSpy).toHaveBeenCalledWith(expect.anything(), "work_hard_delete_delete_polar_existing");
-			expect(customersDeleteMock).toHaveBeenCalledWith(expect.anything(), {
-				id: "cust_users_hard_delete_delete_polar",
-				anonymize: false,
-			});
+			expect(fetchSpy.mock.calls.map(([input]) => users_test_fetch_url(input))).toEqual([
+				expect.stringContaining("/v1/subscriptions/sub_users_hard_delete_delete_polar"),
+				expect.stringContaining("/v1/customers/cust_users_hard_delete_delete_polar?anonymize=false"),
+				"https://api.clerk.com/v1/users/clerk-user-hard-delete-delete-polar",
+			]);
 			expect(after.user).toBeNull();
 			expect(after.customer?.id).toBe("cust_users_hard_delete_delete_polar");
 			expect(after.subscriptions).toHaveLength(1);
 			expect(after.customerSubscriptions).toHaveLength(1);
 			expect(after.billingJob).toBeNull();
-
-			polarWebhookMocks.validateEvent.mockReturnValue({
-				type: "customer.deleted",
-				timestamp: new Date("2026-01-03T00:00:00.000Z"),
-				data: {
-					id: "cust_users_hard_delete_delete_polar",
-				},
-			});
-			const webhookResponse = await t.fetch("/polar/events", {
-				method: "POST",
-				body: JSON.stringify({ fake: true }),
-			});
-			const afterWebhook = await t.run(async (ctx) => {
-				const [customer, customerSubscriptions] = await Promise.all([
-					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-						userId: seeded.userId,
-					}),
-					ctx.runQuery(components.polar.lib.listCustomerSubscriptions, {
-						customerId: "cust_users_hard_delete_delete_polar",
-					}),
-				]);
-
-				return {
-					customer,
-					customerSubscriptions,
-				};
-			});
-
-			expect(webhookResponse.status).toBe(202);
-			expect(afterWebhook.customer).toBeNull();
-			expect(afterWebhook.customerSubscriptions).toHaveLength(0);
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -2300,19 +2251,9 @@ describe("hard_delete_user_now", () => {
 			]),
 		);
 
-		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response(null, {
-				status: 200,
-			}),
-		);
-		subscriptionsRevokeMock.mockResolvedValue({
-			ok: true,
-			value: undefined as never,
-		});
-		customersDeleteMock.mockResolvedValue({
-			ok: true,
-			value: undefined as never,
-		});
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async (input) => users_test_remote_delete_response(input));
 
 		try {
 			await t.action(internal.users.hard_delete_user_now, {
@@ -2371,14 +2312,16 @@ describe("hard_delete_user_now", () => {
 					method: "DELETE",
 				}),
 			);
-			expect(subscriptionsRevokeMock).toHaveBeenCalledWith(expect.anything(), {
-				id: "sub_users_hard_delete_purge",
-			});
+			expect(fetchSpy.mock.calls.map(([input]) => users_test_fetch_url(input))).toEqual([
+				expect.stringContaining("/v1/subscriptions/sub_users_hard_delete_purge"),
+				expect.stringContaining("/v1/customers/cust_users_hard_delete_purge?anonymize=false"),
+				"https://api.clerk.com/v1/users/clerk-user-hard-delete-purge",
+			]);
 			expect(after.user).toBeNull();
 			expect(after.anagraphic).toBeNull();
-			expect(after.requests).toHaveLength(0);
-			expect(after.organization).toBeNull();
-			expect(after.workspace).toBeNull();
+			expect(after.requests).toHaveLength(1);
+			expect(after.organization?._id).toBe(seeded.defaultOrganizationId);
+			expect(after.workspace?._id).toBe(seeded.defaultWorkspaceId);
 			expect(after.snapshots).toHaveLength(0);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_purge");
 			expect(after.subscriptions).toHaveLength(1);
@@ -2432,26 +2375,27 @@ describe("hard_delete_user_now", () => {
 			});
 
 			const after = await t.run(async (ctx) => {
-				const [user, requests, organization, workspace, snapshots, customer, subscriptions, billingJob] = await Promise.all([
-					ctx.db.get("users", seeded.userId),
-					ctx.db.query("data_deletion_requests").collect(),
-					ctx.db.get("organizations", seeded.defaultOrganizationId),
-					ctx.db.get("organizations_workspaces", seeded.defaultWorkspaceId),
-					ctx.db
-						.query("billing_usage_snapshots")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
-						.collect(),
-					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-						userId: seeded.userId,
-					}),
-					ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
-						userId: seeded.userId,
-					}),
-					ctx.db
-						.query("billing_cancel_polar_subscription_jobs")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
-						.first(),
-				]);
+				const [user, requests, organization, workspace, snapshots, customer, subscriptions, billingJob] =
+					await Promise.all([
+						ctx.db.get("users", seeded.userId),
+						ctx.db.query("data_deletion_requests").collect(),
+						ctx.db.get("organizations", seeded.defaultOrganizationId),
+						ctx.db.get("organizations_workspaces", seeded.defaultWorkspaceId),
+						ctx.db
+							.query("billing_usage_snapshots")
+							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.collect(),
+						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+							userId: seeded.userId,
+						}),
+						ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
+							userId: seeded.userId,
+						}),
+						ctx.db
+							.query("billing_cancel_polar_subscription_jobs")
+							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.first(),
+					]);
 
 				return {
 					user,
@@ -2480,12 +2424,16 @@ describe("hard_delete_user_now", () => {
 					onComplete: internal.billing.complete_polar_subscription_period_end_cancellation,
 				},
 			);
-			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
+			expect(enqueueActionSpy).toHaveBeenCalledWith(
+				expect.anything(),
+				internal.data_deletion.process_deletion_requests,
+				{},
+			);
 			expect(after.user?.deletedAt).toBeTypeOf("number");
 			expect(after.user?.clerkUserId).toBeNull();
-			expect(after.requests).toHaveLength(0);
-			expect(after.organization).toBeNull();
-			expect(after.workspace).toBeNull();
+			expect(after.requests).toHaveLength(1);
+			expect(after.organization?._id).toBe(seeded.defaultOrganizationId);
+			expect(after.workspace?._id).toBe(seeded.defaultWorkspaceId);
 			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_404");
 			expect(after.subscriptions).toHaveLength(1);
@@ -2495,7 +2443,7 @@ describe("hard_delete_user_now", () => {
 		}
 	});
 
-	test("throws before local deletion starts when Clerk deletion fails during auth purge", async () => {
+	test("keeps the local tombstone when Clerk deletion fails during auth purge", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -2568,8 +2516,8 @@ describe("hard_delete_user_now", () => {
 				};
 			});
 
-			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
-			expect(after.user?.deletedAt).toBeUndefined();
+			expect(after.user?.deletedAt).toBeTypeOf("number");
+			expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete-failure");
 			expect(after.requests).toHaveLength(0);
 			expect(after.organization?._id).toBe(seeded.defaultOrganizationId);
 			expect(after.workspace?._id).toBe(seeded.defaultWorkspaceId);
@@ -2581,7 +2529,78 @@ describe("hard_delete_user_now", () => {
 		}
 	});
 
-	test("throws before local deletion starts when immediate subscription revoke fails during purge", async () => {
+	test("stops before Clerk deletion when period-end cancellation cannot be enqueued", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-cancellation-failure",
+				displayName: "Hard Delete Cancellation Failure User",
+			}),
+		);
+		await users_test_seed_product(t, {
+			polarProductId: "users_hard_delete_cancellation_failure_product",
+		});
+		await users_test_seed_subscription(t, {
+			userId: seeded.userId,
+			customerId: "cust_users_hard_delete_cancellation_failure",
+			subscriptionId: "sub_users_hard_delete_cancellation_failure",
+			polarProductId: "users_hard_delete_cancellation_failure_product",
+		});
+		await t.mutation(internal.billing.upsert_cancel_polar_subscription_job, {
+			userId: seeded.userId,
+			jobId: "work_hard_delete_cancellation_failure_existing" as WorkId,
+			updatedAt: 66_666,
+		});
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async (input) => users_test_remote_delete_response(input));
+		const cancelSpy = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined);
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockRejectedValue(new Error("workpool unavailable"));
+
+		try {
+			await expect(
+				t.action(internal.users.hard_delete_user_now, {
+					userId: seeded.userId,
+					purgeUserMod: "data_and_auth",
+				}),
+			).rejects.toThrow("workpool unavailable");
+
+			const after = await t.run(async (ctx) => {
+				const [user, billingJob, activeMembership] = await Promise.all([
+					ctx.db.get("users", seeded.userId),
+					ctx.db
+						.query("billing_cancel_polar_subscription_jobs")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.first(),
+					ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_active_user_organization_workspace", (q) =>
+							q
+								.eq("active", true)
+								.eq("userId", seeded.userId)
+								.eq("organizationId", seeded.defaultOrganizationId)
+								.eq("workspaceId", seeded.defaultWorkspaceId),
+						)
+						.first(),
+				]);
+				return { user, billingJob, activeMembership };
+			});
+
+			expect(fetchSpy).not.toHaveBeenCalled();
+			expect(cancelSpy).toHaveBeenCalledWith(
+				expect.anything(),
+				"work_hard_delete_cancellation_failure_existing",
+			);
+			expect(after.user?.deletedAt).toBeTypeOf("number");
+			expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete-cancellation-failure");
+			expect(after.billingJob?.jobId).toBe("work_hard_delete_cancellation_failure_existing");
+			expect(after.activeMembership).toBeNull();
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	test("tombstones locally before immediate subscription revoke during purge", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -2591,6 +2610,11 @@ describe("hard_delete_user_now", () => {
 		);
 		await users_test_seed_product(t, {
 			polarProductId: "users_hard_delete_polar_failure_product",
+		});
+		await t.mutation(internal.billing.upsert_cancel_polar_subscription_job, {
+			userId: seeded.userId,
+			jobId: "work_hard_delete_polar_failure" as WorkId,
+			updatedAt: 44_443,
 		});
 		await users_test_seed_subscription(t, {
 			userId: seeded.userId,
@@ -2608,15 +2632,11 @@ describe("hard_delete_user_now", () => {
 			}),
 		);
 
-		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response(null, {
-				status: 200,
-			}),
-		);
-		subscriptionsRevokeMock.mockResolvedValue({
-			ok: false,
-			error: new UnexpectedClientError("polar revoke exploded"),
-		});
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(new Response(null, { status: 200 }))
+			.mockResolvedValueOnce(new Response(null, { status: 400 }));
+		const cancelSpy = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined);
 
 		try {
 			await expect(
@@ -2627,22 +2647,27 @@ describe("hard_delete_user_now", () => {
 			).rejects.toThrow("Failed to revoke Polar subscription");
 
 			const after = await t.run(async (ctx) => {
-				const [user, requests, organization, workspace, snapshots, customer, subscriptions] = await Promise.all([
-					ctx.db.get("users", seeded.userId),
-					ctx.db.query("data_deletion_requests").collect(),
-					ctx.db.get("organizations", seeded.defaultOrganizationId),
-					ctx.db.get("organizations_workspaces", seeded.defaultWorkspaceId),
-					ctx.db
-						.query("billing_usage_snapshots")
-						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
-						.collect(),
-					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-						userId: seeded.userId,
-					}),
-					ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
-						userId: seeded.userId,
-					}),
-				]);
+				const [user, requests, organization, workspace, snapshots, customer, subscriptions, billingJob] =
+					await Promise.all([
+						ctx.db.get("users", seeded.userId),
+						ctx.db.query("data_deletion_requests").collect(),
+						ctx.db.get("organizations", seeded.defaultOrganizationId),
+						ctx.db.get("organizations_workspaces", seeded.defaultWorkspaceId),
+						ctx.db
+							.query("billing_usage_snapshots")
+							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.collect(),
+						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+							userId: seeded.userId,
+						}),
+						ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
+							userId: seeded.userId,
+						}),
+						ctx.db
+							.query("billing_cancel_polar_subscription_jobs")
+							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+							.first(),
+					]);
 
 				return {
 					user,
@@ -2652,11 +2677,15 @@ describe("hard_delete_user_now", () => {
 					snapshots,
 					customer,
 					subscriptions,
+					billingJob,
 				};
 			});
 
-			expect(fetchSpy).toHaveBeenCalledTimes(1);
-			expect(after.user?.deletedAt).toBeUndefined();
+			expect(fetchSpy.mock.calls.map(([input]) => users_test_fetch_url(input))).toEqual([
+				expect.stringContaining("/v1/subscriptions/sub_users_hard_delete_polar_failure"),
+			]);
+			expect(cancelSpy).not.toHaveBeenCalled();
+			expect(after.user?.deletedAt).toBeTypeOf("number");
 			expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete-polar-failure");
 			expect(after.requests).toHaveLength(0);
 			expect(after.organization?._id).toBe(seeded.defaultOrganizationId);
@@ -2664,12 +2693,13 @@ describe("hard_delete_user_now", () => {
 			expect(after.snapshots).toHaveLength(1);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_polar_failure");
 			expect(after.subscriptions).toHaveLength(1);
+			expect(after.billingJob?.jobId).toBe("work_hard_delete_polar_failure");
 		} finally {
 			fetchSpy.mockRestore();
 		}
 	});
 
-	test("throws before local deletion starts when Polar customer deletion fails during purge", async () => {
+	test("tombstones locally before Polar customer deletion during purge", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
 			users_test_bootstrap_user(ctx, {
@@ -2681,16 +2711,17 @@ describe("hard_delete_user_now", () => {
 			id: "cust_users_hard_delete_delete_polar_failure",
 			userId: seeded.userId,
 		});
-
-		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-			new Response(null, {
-				status: 200,
-			}),
-		);
-		customersDeleteMock.mockResolvedValue({
-			ok: false,
-			error: new UnexpectedClientError("polar customer delete exploded"),
+		await t.mutation(internal.billing.upsert_cancel_polar_subscription_job, {
+			userId: seeded.userId,
+			jobId: "work_hard_delete_delete_polar_failure" as WorkId,
+			updatedAt: 55_554,
 		});
+
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(new Response(null, { status: 200 }))
+			.mockResolvedValueOnce(new Response(null, { status: 400 }));
+		const cancelSpy = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined);
 
 		try {
 			await expect(
@@ -2701,7 +2732,7 @@ describe("hard_delete_user_now", () => {
 			).rejects.toThrow("Failed to delete Polar customer");
 
 			const after = await t.run(async (ctx) => {
-				const [user, requests, organization, workspace, customer] = await Promise.all([
+				const [user, requests, organization, workspace, customer, billingJob] = await Promise.all([
 					ctx.db.get("users", seeded.userId),
 					ctx.db.query("data_deletion_requests").collect(),
 					ctx.db.get("organizations", seeded.defaultOrganizationId),
@@ -2709,6 +2740,10 @@ describe("hard_delete_user_now", () => {
 					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
 						userId: seeded.userId,
 					}),
+					ctx.db
+						.query("billing_cancel_polar_subscription_jobs")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.first(),
 				]);
 
 				return {
@@ -2717,19 +2752,20 @@ describe("hard_delete_user_now", () => {
 					organization,
 					workspace,
 					customer,
+					billingJob,
 				};
 			});
 
-			expect(fetchSpy).toHaveBeenCalledTimes(1);
-			expect(customersDeleteMock).toHaveBeenCalledWith(expect.anything(), {
-				id: "cust_users_hard_delete_delete_polar_failure",
-				anonymize: false,
-			});
-			expect(after.user?.deletedAt).toBeUndefined();
+			expect(fetchSpy.mock.calls.map(([input]) => users_test_fetch_url(input))).toEqual([
+				expect.stringContaining("/v1/customers/cust_users_hard_delete_delete_polar_failure?anonymize=false"),
+			]);
+			expect(cancelSpy).not.toHaveBeenCalled();
+			expect(after.user?.deletedAt).toBeTypeOf("number");
 			expect(after.requests).toHaveLength(0);
 			expect(after.organization?._id).toBe(seeded.defaultOrganizationId);
 			expect(after.workspace?._id).toBe(seeded.defaultWorkspaceId);
 			expect(after.customer?.id).toBe("cust_users_hard_delete_delete_polar_failure");
+			expect(after.billingJob?.jobId).toBe("work_hard_delete_delete_polar_failure");
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -2831,7 +2867,6 @@ describe("hard_delete_user_now", () => {
 
 			expect(fetchSpy).not.toHaveBeenCalled();
 			expect(enqueueActionSpy).not.toHaveBeenCalled();
-			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
 			expect(after.user?.deletedAt).toBeUndefined();
 			expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete-initialized");
 			expect(after.user?.defaultOrganizationId).toBe(seeded.defaultOrganizationId);
@@ -2882,7 +2917,7 @@ describe("hard_delete_user_now", () => {
 
 		expect(after.user).toBeNull();
 		expect(after.anagraphic).toBeNull();
-		expect(after.requests).toHaveLength(0);
+		expect(after.requests).toHaveLength(1);
 	});
 
 	test("throws when purging the tombstone of a non-deleted user", async () => {
@@ -3025,32 +3060,42 @@ describe("hard_delete_user_now", () => {
 			});
 
 			const after = await t.run(async (ctx) => {
-				const [user, anonymousToken, requests, organization, workspace, files, snapshots, customer, subscriptions, billingJob] =
-					await Promise.all([
-						ctx.db.get("users", seeded.userId),
-						ctx.db.get("users_anon_tokens", anonymousTokenId),
-						ctx.db.query("data_deletion_requests").collect(),
-						ctx.db.get("organizations", seeded.defaultOrganizationId),
-						ctx.db.get("organizations_workspaces", seeded.defaultWorkspaceId),
-						ctx.db
-							.query("files_nodes")
-							.collect()
-							.then((rows) => rows.filter((row) => row.organizationId === seeded.defaultOrganizationId)),
-						ctx.db
-							.query("billing_usage_snapshots")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
-							.collect(),
-						ctx.runQuery(components.polar.lib.getCustomerByUserId, {
-							userId: seeded.userId,
-						}),
-						ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
-							userId: seeded.userId,
-						}),
-						ctx.db
-							.query("billing_cancel_polar_subscription_jobs")
-							.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
-							.first(),
-					]);
+				const [
+					user,
+					anonymousToken,
+					requests,
+					organization,
+					workspace,
+					files,
+					snapshots,
+					customer,
+					subscriptions,
+					billingJob,
+				] = await Promise.all([
+					ctx.db.get("users", seeded.userId),
+					ctx.db.get("users_anon_tokens", anonymousTokenId),
+					ctx.db.query("data_deletion_requests").collect(),
+					ctx.db.get("organizations", seeded.defaultOrganizationId),
+					ctx.db.get("organizations_workspaces", seeded.defaultWorkspaceId),
+					ctx.db
+						.query("files_nodes")
+						.collect()
+						.then((rows) => rows.filter((row) => row.organizationId === seeded.defaultOrganizationId)),
+					ctx.db
+						.query("billing_usage_snapshots")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.collect(),
+					ctx.runQuery(components.polar.lib.getCustomerByUserId, {
+						userId: seeded.userId,
+					}),
+					ctx.runQuery(components.polar.lib.listAllUserSubscriptions, {
+						userId: seeded.userId,
+					}),
+					ctx.db
+						.query("billing_cancel_polar_subscription_jobs")
+						.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+						.first(),
+				]);
 
 				return {
 					user,
@@ -3068,7 +3113,6 @@ describe("hard_delete_user_now", () => {
 
 			expect(fetchSpy).not.toHaveBeenCalled();
 			expect(enqueueActionSpy).not.toHaveBeenCalled();
-			expect(subscriptionsRevokeMock).not.toHaveBeenCalled();
 			expect(after.user?.deletedAt).toBeUndefined();
 			expect(after.user?.clerkUserId).toBeNull();
 			expect(after.user?.anonymousAuthToken).toBe(anonymousTokenId);

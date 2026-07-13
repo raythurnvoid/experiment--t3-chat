@@ -6161,6 +6161,56 @@ describe("external/system mount text materialization (Phase D)", () => {
 		"final line with no trailing newline",
 	].join("\n");
 
+	test("rejects a mount write atomically after the mount is deleted", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) => {
+			const mountId = await ctx.db.insert("github_mounts", {
+				name: "reset-race",
+				owner: "owner",
+				repo: "repo",
+				defaultBranch: "main",
+				ref: "main",
+				lastCommitSha: null,
+				lastTreeSha: null,
+				lastSyncedAt: null,
+				status: "running",
+				startedAt: Date.now(),
+				producerFinishedAt: null,
+				finishedAt: null,
+				lastError: null,
+				syncRunId: "reset-race-run",
+				pendingCommitSha: "abc123",
+			});
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+				workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+				kind: "content",
+				r2Bucket: "test-files-bucket",
+				size: 4,
+				createdBy: users_SYSTEM_AUTHOR,
+				updatedAt: Date.now(),
+			});
+			await ctx.db.delete("github_mounts", mountId);
+			return { mountId, assetId };
+		});
+
+		const result = await t.mutation(internal.files_nodes.create_file_node, {
+			userId: users_SYSTEM_AUTHOR,
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+			parentId: files_ROOT_ID,
+			path: "/reset-race/abc123/file.txt",
+			contentType: "text/plain;charset=utf-8",
+			assetId: seeded.assetId,
+			textContent: "test",
+			readOnly: true,
+			mountId: seeded.mountId,
+			syncRunId: "reset-race-run",
+		});
+		expect(result._nay?.message).toBe("External mount sync was superseded");
+		expect(await t.run((ctx) => ctx.db.query("files_nodes").first())).toBeNull();
+	});
+
 	test("materializes a SYSTEM-authored reserved-scope text node readable byte-identical", async () => {
 		const t = test_convex();
 		const r2Objects = install_r2_object_capture();

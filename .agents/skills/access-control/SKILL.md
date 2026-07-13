@@ -141,7 +141,8 @@ Rules:
 - the new owner must be an active member of the organization default workspace
 - the new owner must have an available `extra_organizations` quota slot
 - transfer releases one old-owner extra-organization quota unit and consumes one new-owner quota unit
-- transfer patches `organizations.ownerUserId`, deletes existing owner assignments for that organization default workspace, gives the old owner a `member` assignment, and gives the new owner the mirrored `owner` assignment
+- transfer patches `organizations.ownerUserId`, deletes existing owner assignments and the new owner's previous default-workspace role, gives the old owner a `member` assignment, and gives the new owner the single mirrored `owner` assignment
+- auth-removing user finalization transfers each surviving shared organization to its first remaining active default-workspace member before the old owner is removed; it moves the quota charge and replaces that member's previous role with `owner`
 
 Quota details live in `../quotas/SKILL.md`.
 Account-deletion resolution flow details live in `../auth-system/SKILL.md`. Account management blocks deletion while the user still owns non-personal organizations, links to the regular organization Users page for ownership transfer, and may call `organizations.delete_organization` after explicit organization-delete confirmation.

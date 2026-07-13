@@ -92,25 +92,38 @@ export interface BonoboUploadCompletedEvent {
 }
 
 /**
- * Request body for `POST {host.apiOrigin}/api/v1/files/download-url`
- * (`Authorization: Bearer host.token`). Plugin runs may request only the triggering upload's
- * `source.fileNodeId`; anything else responds `404`. `expiresInSeconds` accepts 1–900 and
- * defaults to 900; values above 900 are rejected with `400`, not clamped. The granted TTL is
- * then clamped to the remaining run-token lifetime.
+ * Request body for `POST {host.apiOrigin}/api/v1/files/download-urls`
+ * (`Authorization: Bearer host.token`). Backend plugin runs must pass an array containing only
+ * the triggering upload's `source.fileNodeId`; anything else responds `404`.
+ * `expiresInSeconds` accepts 1–900 and defaults to 900. The granted TTL is clamped to the
+ * remaining run-token lifetime.
  */
-export interface BonoboFilesDownloadUrlRequest {
-	fileNodeId: string;
+export interface BonoboFilesDownloadUrlsRequest {
+	fileNodeIds: string[];
 	expiresInSeconds?: number;
 }
 
 /**
- * Response body of `POST {host.apiOrigin}/api/v1/files/download-url` — a presigned download URL
- * for the requested file. `expiresAt` is Unix epoch milliseconds.
+ * One successful file in {@link BonoboFilesDownloadUrlsResponse}. `expiresAt` is Unix epoch
+ * milliseconds.
  */
-export interface BonoboFilesDownloadUrlResponse {
+export interface BonoboFilesDownloadUrlItem {
 	fileNodeId: string;
 	url: string;
 	expiresAt: number;
+}
+
+/** One file the host could not sign in {@link BonoboFilesDownloadUrlsResponse}. */
+export interface BonoboFilesDownloadUrlError {
+	fileNodeId: string;
+	message: string;
+}
+
+/** Response body of `POST {host.apiOrigin}/api/v1/files/download-urls`. */
+export interface BonoboFilesDownloadUrlsResponse {
+	items: BonoboFilesDownloadUrlItem[];
+	errors: BonoboFilesDownloadUrlError[];
+	truncated: boolean;
 }
 
 /**

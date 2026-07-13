@@ -11,6 +11,7 @@ import {
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
+import { customersList } from "@polar-sh/sdk/funcs/customersList.js";
 import { eventsIngest } from "@polar-sh/sdk/funcs/eventsIngest.js";
 import { subscriptionsCreate } from "@polar-sh/sdk/funcs/subscriptionsCreate.js";
 import { subscriptionsRevoke } from "@polar-sh/sdk/funcs/subscriptionsRevoke.js";
@@ -37,6 +38,10 @@ vi.mock("@polar-sh/sdk/funcs/customersCreate.js", () => ({
 	customersCreate: vi.fn(),
 }));
 
+vi.mock("@polar-sh/sdk/funcs/customersList.js", () => ({
+	customersList: vi.fn(),
+}));
+
 vi.mock("@polar-sh/sdk/funcs/customersGetState.js", () => ({
 	customersGetState: vi.fn(),
 }));
@@ -54,6 +59,7 @@ vi.mock("@polar-sh/sdk/funcs/subscriptionsUpdate.js", () => ({
 }));
 
 const customersCreateMock = vi.mocked(customersCreate);
+const customersListMock = vi.mocked(customersList);
 const eventsIngestMock = vi.mocked(eventsIngest);
 const subscriptionsCreateMock = vi.mocked(subscriptionsCreate);
 const subscriptionsRevokeMock = vi.mocked(subscriptionsRevoke);
@@ -337,7 +343,7 @@ async function seed_organization_billing_scope(
 		});
 		const ownerMembership = await test_mocks_fill_db_with.membership(ctx, {
 			userId: ownerId,
-			organizationName: `billing-organization-${suffix}`,
+			organizationName: `billing-org-${suffix}`,
 			workspaceName: "home",
 		});
 		await ctx.db.patch("organizations", ownerMembership.organizationId, {
@@ -565,6 +571,8 @@ function create_polar_customer_state(args: {
 
 beforeEach(() => {
 	customersCreateMock.mockReset();
+	// Most bootstrap tests start without a surviving Polar customer.
+	customersListMock.mockReset().mockResolvedValue({ ok: true, value: { result: { items: [] } } } as never);
 	eventsIngestMock.mockReset();
 	subscriptionsCreateMock.mockReset();
 	subscriptionsRevokeMock.mockReset();

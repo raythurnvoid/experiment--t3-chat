@@ -1358,28 +1358,79 @@ async function db_finalize_deleted_user(
 
 	const organizationsToDelete = [];
 
-	// Return only fully empty organizations here. The caller owns the actual
-	// organization purge so it can keep the surrounding request bookkeeping local.
+	// Return fully empty organizations to the caller for purge. Shared organizations
+	// stay in place, and ownership moves here before the deleted owner disappears.
 	for (const organizationId of affectedOrganizationIds) {
 		const organization = await ctx.db.get("organizations", organizationId);
 		if (!organization) {
 			continue;
 		}
 
-		const remainingMemberships = await ctx.db
+		const defaultWorkspaceId = organization.defaultWorkspaceId;
+		if (!defaultWorkspaceId) {
+			const errorMessage = "organization.defaultWorkspaceId is not set";
+			const errorData = { organizationId: organization._id };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+
+		// Organization membership lives on the default workspace. This one lookup
+		// tells us whether the organization is empty and who can become its owner.
+		const remainingMembership = await ctx.db
 			.query("organizations_workspaces_users")
 			.withIndex("by_active_organization_workspace_user", (q) =>
-				q.eq("active", true).eq("organizationId", organizationId),
+				q.eq("active", true).eq("organizationId", organization._id).eq("workspaceId", defaultWorkspaceId),
 			)
 			.first();
-		if (remainingMemberships) {
+		if (!remainingMembership) {
+			organizationsToDelete.push({
+				organizationId: organization._id,
+			});
 			continue;
 		}
 
-		organizationsToDelete.push({
-			organizationId: organization._id,
-		});
+		if (!organization.default && organization.ownerUserId === user._id) {
+			const [nextOwnerQuota, nextOwnerAssignments] = await Promise.all([
+				quotas_db_get(ctx, {
+					quotaName: "extra_organizations",
+					userId: remainingMembership.userId,
+				}),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_organization_workspace_user_role", (q) =>
+						q
+							.eq("organizationId", organization._id)
+							.eq("workspaceId", defaultWorkspaceId)
+							.eq("userId", remainingMembership.userId),
+					)
+					.collect(),
+			]);
+
+			await Promise.all(
+				nextOwnerAssignments.map((assignment) => ctx.db.delete("access_control_role_assignments", assignment._id)),
+			);
+			await Promise.all([
+				ctx.db.patch("organizations", organization._id, {
+					ownerUserId: remainingMembership.userId,
+					updatedAt: args.now,
+				}),
+				// The deleted owner's quota doc is already gone. Charge the organization
+				// to the surviving owner so persisted quota usage remains accurate.
+				ctx.db.patch("quotas", nextOwnerQuota._id, {
+					usedCount: nextOwnerQuota.usedCount + 1,
+					updatedAt: args.now,
+				}),
+				access_control_db_ensure_role_assignment(ctx, {
+					organizationId: organization._id,
+					workspaceId: defaultWorkspaceId,
+					userId: remainingMembership.userId,
+					role: "owner",
+					now: args.now,
+				}),
+			]);
+		}
 	}
+
 	return { organizationsToDelete };
 }
 
@@ -1469,6 +1520,27 @@ export const list_deletion_request_ids_by_scope = internalQuery({
 		}
 
 		return ids;
+	},
+});
+
+/**
+ * Moves a failed resource request behind the other work that was already due.
+ *
+ * The request stays eligible and retryable; only its place in the existing
+ * `eligibleAt` index changes so repeated provider failures cannot block the queue.
+ */
+export const move_failed_deletion_request_to_queue_tail = internalMutation({
+	args: {
+		requestId: v.id("data_deletion_requests"),
+		attemptedAt: v.number(),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await ctx.db.patch("data_deletion_requests", args.requestId, {
+			eligibleAt: args.attemptedAt,
+		});
+
+		return null;
 	},
 });
 
@@ -1741,8 +1813,8 @@ type process_workspace_deletion_request_Result =
  * ids, profile, billing state, and default tenant: the `personal` organization
  * plus the `home` workspace.
  *
- * Each call deletes only a limited number of docs, so callers should invoke it
- * again when it returns `done: false`.
+ * Each call deletes only a limited number of docs. The parent admin action repeats
+ * it and schedules the same user/mode when another action window is needed.
  */
 export const hard_delete_user_data = internalMutation({
 	args: {
@@ -1854,13 +1926,6 @@ export const hard_delete_user_data = internalMutation({
 					};
 					console.error(errorMessage, errorData);
 					throw should_never_happen(errorMessage, errorData);
-					// await ctx.db.insert("organizations_workspaces_users", {
-					// 	organizationId: organization._id,
-					// 	workspaceId: workspace._id,
-					// 	userId: user._id,
-					// 	active: true,
-					// 	updatedAt: now,
-					// });
 				}
 			}
 
@@ -1920,17 +1985,6 @@ export const hard_delete_user_data = internalMutation({
 			};
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
-			// Previous repair fallback, intentionally kept commented while we verify
-			// this invariant in tests/logs. Do not re-enable without deciding that
-			// missing default tenant docs should be repaired during data reset.
-			// const created = await db_create_default_organization_and_workspace_for_user(ctx, {
-			// 	userId: user._id,
-			// 	now,
-			// });
-			// defaultTenant = {
-			// 	organizationId: created.organizationId,
-			// 	defaultWorkspaceId: created.defaultWorkspaceId,
-			// };
 		}
 
 		// Commit the usable account state before deleting data. This keeps auth,
@@ -2254,35 +2308,38 @@ export const hard_delete_user_data = internalMutation({
 });
 
 /**
- * Deletes a deleted user's remaining plugin UI page sessions, one batch per run, rescheduling
- * itself until none remain. It only needs the userId — not the user doc or the queued user
- * request — so it keeps working after the admin path has removed those. Running it with nothing
- * left to delete is a no-op.
+ * Tombstones a user and deletes one batch of their plugin UI sessions.
+ *
+ * The admin action repeats this mutation before calling external providers. This keeps the
+ * local account authoritative and ensures no user-owned session is left after hard deletion.
  */
-export const drain_deleted_user_plugin_ui_sessions = internalMutation({
+export const prepare_user_for_hard_deletion = internalMutation({
 	args: {
 		userId: v.id("users"),
 		_test_batchSize: v.optional(v.number()),
 	},
-	returns: v.object({
-		done: v.boolean(),
-		deletedCount: v.number(),
-	}),
+	returns: v.boolean(),
 	handler: async (ctx, args) => {
+		const user = await ctx.db.get("users", args.userId);
+		if (!user) {
+			return true;
+		}
+
+		if (user.deletedAt == null) {
+			await db_prepare_user_for_deletion(ctx, {
+				user,
+				now: Date.now(),
+			});
+		}
+
 		const batchSize = batch_size(args);
 		const deletedCount = await db_drain_user_plugin_ui_sessions_batch(ctx, {
 			userId: args.userId,
 			batchSize,
 		});
-		// A full batch may mean more sessions remain; keep going until a short batch shows the end.
-		if (deletedCount >= batchSize) {
-			await ctx.scheduler.runAfter(0, internal.data_deletion.drain_deleted_user_plugin_ui_sessions, {
-				userId: args.userId,
-				_test_batchSize: args._test_batchSize,
-			});
-			return { done: false, deletedCount };
-		}
-		return { done: true, deletedCount };
+
+		// A short batch proves that no sessions remain.
+		return deletedCount < batchSize;
 	},
 });
 
@@ -2299,7 +2356,6 @@ export const finalize_user_deletion_data = internalMutation({
 		userId: v.id("users"),
 		deleteUserAuth: v.optional(v.boolean()),
 		deleteBillingState: v.optional(v.boolean()),
-		_test_batchSize: v.optional(v.number()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -2309,28 +2365,10 @@ export const finalize_user_deletion_data = internalMutation({
 		}
 
 		const now = Date.now();
-
-		// A user can have any number of plugin UI sessions. This transaction deletes one batch and,
-		// if more remain, schedules the userId-keyed continuation to delete the rest (never the
-		// queued request path). That keeps this admin finalize bounded, and
-		// `db_finalize_deleted_user` never has to read sessions.
-		const batchSize = batch_size(args);
-		const drainedSessions = await db_drain_user_plugin_ui_sessions_batch(ctx, {
-			userId: user._id,
-			batchSize,
-		});
-		if (drainedSessions >= batchSize) {
-			await ctx.scheduler.runAfter(0, internal.data_deletion.drain_deleted_user_plugin_ui_sessions, {
-				userId: user._id,
-				_test_batchSize: args._test_batchSize,
-			});
-		}
-
-		// Run the reversible phase-1 tombstone inline because the admin path
-		// does not wait for the delayed user deletion request.
+		// Finalization is idempotent, so direct admin callers may pass either a live or tombstoned user.
 		await db_prepare_user_for_deletion(ctx, {
 			user,
-			now: now,
+			now,
 		});
 		const deleteUserRes = await db_finalize_deleted_user(ctx, {
 			userId: user._id,
@@ -2352,10 +2390,21 @@ export const finalize_user_deletion_data = internalMutation({
 			}
 		}
 
-		await db_delete_data_deletion_requests(ctx, {
-			scope: "user",
-			userId: user._id,
-		});
+		// This admin path is immediate. Remove its user request and make every
+		// already-queued organization or workspace purge eligible for the worker now.
+		const deletionRequests = await ctx.db
+			.query("data_deletion_requests")
+			.withIndex("by_user", (q) => q.eq("userId", user._id))
+			.collect();
+		await Promise.all(
+			deletionRequests.flatMap((request) =>
+				request.scope === "user"
+					? [ctx.db.delete("data_deletion_requests", request._id)]
+					: request.eligibleAt > now
+						? [ctx.db.patch("data_deletion_requests", request._id, { eligibleAt: now })]
+						: [],
+			),
+		);
 
 		return null;
 	},
@@ -2463,6 +2512,10 @@ async function run_deletion_request_batches(
 			} catch (error) {
 				hadFailure = true;
 				shouldReschedule = true;
+				await ctx.runMutation(internal.data_deletion.move_failed_deletion_request_to_queue_tail, {
+					requestId,
+					attemptedAt: test_now ?? Date.now(),
+				});
 				console.error("Failed to process organization deletion request", {
 					error,
 					requestId,
@@ -2502,6 +2555,10 @@ async function run_deletion_request_batches(
 			} catch (error) {
 				hadFailure = true;
 				shouldReschedule = true;
+				await ctx.runMutation(internal.data_deletion.move_failed_deletion_request_to_queue_tail, {
+					requestId,
+					attemptedAt: test_now ?? Date.now(),
+				});
 				console.error("Failed to process workspace deletion request", {
 					error,
 					requestId,
@@ -2535,26 +2592,6 @@ async function run_deletion_request_batches(
 
 	return { shouldReschedule, steps };
 }
-
-export const run_process_deletion_requests_once = internalAction({
-	args: {
-		/**
-		 * Internal simulated wall time (ms) for listing and per-request mutations used by tests.
-		 *
-		 * Omit in normal production flows; downstream handlers use `Date.now()`.
-		 */
-		_test_now: v.optional(v.number()),
-		_test_batchSize: v.optional(v.number()),
-		_test_disableReschedule: v.optional(v.boolean()),
-	},
-	returns: v.object({
-		shouldReschedule: v.boolean(),
-		steps: v.number(),
-	}),
-	handler: async (ctx, args) => {
-		return await run_deletion_request_batches(ctx, args);
-	},
-});
 
 export const process_deletion_requests = internalAction({
 	args: {

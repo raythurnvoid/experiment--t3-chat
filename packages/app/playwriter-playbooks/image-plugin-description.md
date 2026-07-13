@@ -6,7 +6,7 @@ Route: an already-open Playwriter-enabled `/w/:organizationName/:workspaceName/f
 
 ## Scope
 
-Covers the flows that regress when the image plugin worker, publisher secrets, consent/origin sets, or the plugin runner change: install consent (exact capability/origin sets plus the fixed baseline disclosure), upload event fan-out, secret resolution, the source download URL (`/api/v1/files/download-url`), outbound fetch to `api.openai.com`, and Markdown sibling writes (`/api/v1/files/write`). Content quality is asserted, not just file existence.
+Covers the flows that regress when the image plugin worker, publisher secrets, consent/origin sets, or the plugin runner change: install consent (exact capability/origin sets plus the fixed baseline disclosure), upload event fan-out, secret resolution, the source download URL (`/api/v1/files/download-urls`), outbound fetch to `api.openai.com`, and Markdown sibling writes (`/api/v1/files/write`). Content quality is asserted, not just file existence.
 
 ## Preflight
 
@@ -59,7 +59,7 @@ Expected result:
 - The latest `image` run has `status: "succeeded"`, `outputWriteCount` of 1, and an `apiCallCount` covering every call below (one shared 20-call quota per run).
 - The plugin detail page's Recent runs row shows the same aggregates (`calls N, writes 1`).
 - Its calls are only the expected set, with none left in `started` status:
-  - `api_request` on `/api/v1/files/download-url` (source download URL),
+  - `api_request` on `/api/v1/files/download-urls` (source download URL),
   - `api_request` on `/api/internal/plugins/host/secret-get` (`OPENAI_API_KEY`),
   - `outbound_fetch` with route `outbound` (call docs persist only bytes/status, never target URLs; the consent set limits outbound to `https://api.openai.com`),
   - `api_request` on `/api/v1/files/write` (the Markdown sibling).

@@ -49,7 +49,7 @@ vp env exec node node_modules/convex/bin/main.js data plugins_event_run_calls --
 Expected result:
 
 - Both `video` runs `succeeded` with `outputWriteCount` of 2 (transcript + summary), and none of their calls left in `started` status.
-- Calls contain only `api_request` entries on `/api/v1/files/download-url`, `/api/internal/plugins/host/secret-get`, and `/api/v1/files/write`, plus `outbound_fetch` entries — transcription and summaries are plugin-owned outbound calls, never a host AI operation.
+- Calls contain only `api_request` entries on `/api/v1/files/download-urls`, `/api/internal/plugins/host/secret-get`, and `/api/v1/files/write`, plus `outbound_fetch` entries — transcription and summaries are plugin-owned outbound calls, never a host AI operation.
 - Outbound call docs record only bytes/status (route `outbound`), never target URLs; the consent set limits the wav run's outbound to `api.mistral.ai` and `api.openai.com`, and the mp4 run adds the Modal origin (extract POST). `apiCallCount` stays well under the shared 20-call run quota.
 
 ## Negative Test (Missing Secret)

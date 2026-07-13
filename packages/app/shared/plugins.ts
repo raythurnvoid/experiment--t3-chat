@@ -11,9 +11,6 @@ const EVENT_TYPES = ["files.upload.completed"] as const;
 const CAPABILITIES = ["plugin.secrets.read", "outbound.fetch", "workspace.files.read"] as const;
 export type plugins_Capability = (typeof CAPABILITIES)[number];
 
-/** Bumped when the host<->iframe postMessage handshake changes shape. */
-export const plugins_UI_PAGES_PROTOCOL_VERSION = 1;
-
 // Shared by env text parsing and the dist review scan.
 const NEWLINE_REGEX = /\r?\n/u;
 
@@ -25,9 +22,13 @@ function autofix_and_validate_name(raw: string) {
 // #region secret names
 
 const SECRET_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+const MAX_SECRET_NAME_LENGTH = 128;
 
 export function plugins_validate_secret_name(raw: string) {
 	const name = raw.trim();
+	if (name.length > MAX_SECRET_NAME_LENGTH) {
+		return Result({ _nay: { message: `Secret names must be at most ${MAX_SECRET_NAME_LENGTH} characters` } });
+	}
 
 	if (!SECRET_NAME_REGEX.test(name)) {
 		return Result({ _nay: { message: "Secret names must use env key syntax" } });
@@ -38,8 +39,15 @@ export function plugins_validate_secret_name(raw: string) {
 
 // #endregion secret names
 
+const MAX_OUTBOUND_ORIGIN_LENGTH = 255;
+
 export function plugins_validate_origin(raw: string) {
 	const trimmed = raw.trim();
+	if (trimmed.length > MAX_OUTBOUND_ORIGIN_LENGTH) {
+		return Result({
+			_nay: { message: `Origins must be at most ${MAX_OUTBOUND_ORIGIN_LENGTH} characters` },
+		});
+	}
 	let url: URL;
 	try {
 		url = new URL(trimmed);
@@ -248,8 +256,8 @@ const JS_KEYWORDS = new Set([
 ]);
 
 /**
- * Static readability checks on a plugin's backend dist source, run before publish.
- * Plugin dists must ship as plain readable JavaScript so they can be reviewed;
+ * Static readability checks on a plugin dist source file, run before publish.
+ * Plugin dists must ship as plain readable text so they can be reviewed;
  * this catches the mechanical signs of minified or obfuscated code (very long
  * lines, mostly single-character names, dense escape sequences, huge base64
  * blobs, the Function constructor) without spending an AI review call.
@@ -257,8 +265,9 @@ const JS_KEYWORDS = new Set([
  * Returns one human-readable message per failed check; an empty array means
  * the source passed. Any finding rejects the version.
  */
-export function plugins_dist_review_mechanical_findings(source: string) {
+export function plugins_dist_review_mechanical_findings(source: string, options?: { javaScript?: boolean }) {
 	const findings: string[] = [];
+	const readableKind = options?.javaScript === false ? "text" : "JavaScript";
 
 	// Blank lines are dropped so they don't drag the average down.
 	const lines = source.split(NEWLINE_REGEX).filter((line) => line.trim().length > 0);
@@ -267,7 +276,7 @@ export function plugins_dist_review_mechanical_findings(source: string) {
 	const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
 	if (longestLine > MAX_LINE_LENGTH) {
 		findings.push(
-			`Longest line is ${longestLine} characters (limit ${MAX_LINE_LENGTH}); the dist must be plain readable JavaScript, not minified`,
+			`Longest line is ${longestLine} characters (limit ${MAX_LINE_LENGTH}); the dist must be plain readable ${readableKind}, not minified`,
 		);
 	}
 
@@ -275,20 +284,22 @@ export function plugins_dist_review_mechanical_findings(source: string) {
 	const avgLineLength = lines.length > 0 ? lines.reduce((sum, line) => sum + line.length, 0) / lines.length : 0;
 	if (avgLineLength > MAX_AVG_LINE_LENGTH) {
 		findings.push(
-			`Average line length is ${Math.round(avgLineLength)} characters (limit ${MAX_AVG_LINE_LENGTH}); the dist must be plain readable JavaScript, not minified`,
+			`Average line length is ${Math.round(avgLineLength)} characters (limit ${MAX_AVG_LINE_LENGTH}); the dist must be plain readable ${readableKind}, not minified`,
 		);
 	}
 
 	// Minifiers rename variables to a, b, c...; a high share of single-character
 	// names means the original names are gone. Keywords are excluded because the
 	// author didn't choose them.
-	const identifiers = (source.match(IDENTIFIER_REGEX) ?? []).filter((word) => !JS_KEYWORDS.has(word));
-	const singleCharShare =
-		identifiers.length > 0 ? identifiers.filter((word) => word.length === 1).length / identifiers.length : 0;
-	if (singleCharShare > MAX_SINGLE_CHAR_IDENTIFIER_SHARE) {
-		findings.push(
-			`${Math.round(singleCharShare * 100)}% of identifiers are a single character (limit ${MAX_SINGLE_CHAR_IDENTIFIER_SHARE * 100}%); the dist must keep readable identifier names`,
-		);
+	if (options?.javaScript !== false) {
+		const identifiers = (source.match(IDENTIFIER_REGEX) ?? []).filter((word) => !JS_KEYWORDS.has(word));
+		const singleCharShare =
+			identifiers.length > 0 ? identifiers.filter((word) => word.length === 1).length / identifiers.length : 0;
+		if (singleCharShare > MAX_SINGLE_CHAR_IDENTIFIER_SHARE) {
+			findings.push(
+				`${Math.round(singleCharShare * 100)}% of identifiers are a single character (limit ${MAX_SINGLE_CHAR_IDENTIFIER_SHARE * 100}%); the dist must keep readable identifier names`,
+			);
+		}
 	}
 
 	// Lots of \x/\u escapes usually means strings were encoded to hide their contents.
@@ -307,7 +318,7 @@ export function plugins_dist_review_mechanical_findings(source: string) {
 	}
 
 	// Code built from strings at runtime can't be reviewed, so ban the Function constructor.
-	if (FUNCTION_CONSTRUCTOR_REGEX.test(source)) {
+	if (options?.javaScript !== false && FUNCTION_CONSTRUCTOR_REGEX.test(source)) {
 		findings.push("Dist uses the Function constructor; dynamically-assembled code is not allowed");
 	}
 
@@ -328,6 +339,10 @@ const COMPATIBILITY_DATE_REGEX = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
 const MAX_FILES = 64;
 const MAX_PAGES = 16;
 const MAX_NAV_ITEMS = 8;
+const MAX_EVENTS = 8;
+const MAX_CONTENT_TYPES_PER_EVENT = 32;
+const MAX_EXPANDED_EVENT_CONTENT_TYPES = 64;
+const MAX_OUTBOUND_ORIGINS = 16;
 const MAX_FILE_PATH_LENGTH = 512;
 const MAX_CONTENT_TYPE_LENGTH = 255;
 // Matches files_MAX_TEXT_CONTENT_BYTES: every artifact file must fit the app's text-content cap.
@@ -352,7 +367,18 @@ const module_path_schema = z
 const event_schema = z
 	.object({
 		type: z.enum(EVENT_TYPES),
-		contentTypes: z.array(z.string().min(1)).min(1),
+		contentTypes: z
+			.array(
+				z
+					.string()
+					.min(1)
+					.max(MAX_CONTENT_TYPE_LENGTH, `Event content types must be at most ${MAX_CONTENT_TYPE_LENGTH} characters`),
+			)
+			.min(1)
+			.max(
+				MAX_CONTENT_TYPES_PER_EVENT,
+				`Plugin events can declare at most ${MAX_CONTENT_TYPES_PER_EVENT} content types`,
+			),
 	})
 	.strict();
 
@@ -417,10 +443,12 @@ const manifest_schema = z
 			})
 			.strict()
 			.optional(),
-		events: z.array(event_schema),
+		events: z.array(event_schema).max(MAX_EVENTS, `Plugin manifests can declare at most ${MAX_EVENTS} events`),
 		pages: z.array(page_schema).max(MAX_PAGES).optional(),
 		capabilities: z.array(z.enum(CAPABILITIES)),
-		outboundOrigins: z.array(z.string()),
+		outboundOrigins: z
+			.array(z.string())
+			.max(MAX_OUTBOUND_ORIGINS, `Plugin manifests can declare at most ${MAX_OUTBOUND_ORIGINS} outbound origins`),
 		files: z.array(manifest_file_schema).max(MAX_FILES),
 	})
 	.strict();
@@ -436,6 +464,27 @@ export function plugins_validate_manifest(input: unknown) {
 	}
 	if (name._yay !== parsed.data.name) {
 		return Result({ _nay: { message: "Plugin name must already be normalized" } });
+	}
+	const eventSubscriptions = new Set<string>();
+	let expandedEventSubscriptionCount = 0;
+	for (const event of parsed.data.events) {
+		for (const contentType of event.contentTypes) {
+			const subscription = `${event.type}\u0000${contentType}`;
+			if (eventSubscriptions.has(subscription)) {
+				return Result({
+					_nay: { message: `Plugin manifest has duplicate ${event.type} content type "${contentType}"` },
+				});
+			}
+			eventSubscriptions.add(subscription);
+			expandedEventSubscriptionCount += 1;
+			if (expandedEventSubscriptionCount > MAX_EXPANDED_EVENT_CONTENT_TYPES) {
+				return Result({
+					_nay: {
+						message: `Plugin manifest declares more than ${MAX_EXPANDED_EVENT_CONTENT_TYPES} event content-type subscriptions`,
+					},
+				});
+			}
+		}
 	}
 	const outboundOrigins = new Set<string>();
 	for (const origin of parsed.data.outboundOrigins) {

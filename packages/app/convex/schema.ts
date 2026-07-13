@@ -760,9 +760,8 @@ const app_convex_schema = defineSchema({
 		.index("by_repositoryUrl", ["repositoryUrl"]),
 
 	/**
-	 * Publisher secrets scoped to one claimed repository; runtime resolution follows the
-	 * running version's sourceRepositoryUrl to its claim. `ownerUserId` stays for auth
-	 * checks and user data deletion.
+	 * Publisher secrets scoped to one claimed repository. Runtime resolution also matches the
+	 * claim owner to the immutable version creator, so a later claimant cannot supply secrets.
 	 */
 	plugins_publisher_repository_secrets: defineTable({
 		ownerUserId: v.id("users"),
@@ -788,12 +787,6 @@ const app_convex_schema = defineSchema({
 		 * publish order stands in for version order.
 		 **/
 		isLatest: v.boolean(),
-		/**
-		 * Runtime contract this version was built against. Unread today, but
-		 * kept so dispatch can tell old plugins apart if the runtime ever
-		 * makes a breaking change.
-		 **/
-		runtimeVersion: v.literal("1"),
 		artifactHash: v.string(),
 		sourceRepositoryUrl: v.string(),
 		sourceOwner: v.string(),
@@ -822,20 +815,14 @@ const app_convex_schema = defineSchema({
 				contentTypes: v.array(v.string()),
 			}),
 		),
-		/**
-		 * UI pages declared in the manifest, rendered in sandboxed iframes. A page with a non-null
-		 * navItem gets a main-sidebar entry once the plugin is installed and enabled. Versions
-		 * published before pages existed have no field here; that is treated as [].
-		 */
-		pages: v.optional(
-			v.array(
-				v.object({
-					id: v.string(),
-					title: v.string(),
-					entry: v.string(),
-					navItem: v.union(v.object({ label: v.string(), icon: v.union(v.string(), v.null()) }), v.null()),
-				}),
-			),
+		/** UI pages declared in the manifest; an empty array means this version has no frontend page. */
+		pages: v.array(
+			v.object({
+				id: v.string(),
+				title: v.string(),
+				entry: v.string(),
+				navItem: v.union(v.object({ label: v.string(), icon: v.union(v.string(), v.null()) }), v.null()),
+			}),
 		),
 		capabilities: v.array(plugins_capability_validator),
 		/**
@@ -851,20 +838,20 @@ const app_convex_schema = defineSchema({
 				r2Key: v.string(),
 			}),
 		),
-		/**
-		 * Source snapshot bookkeeping for the `/<pluginVersionId>/...`
-		 * tree in GLOBAL/PLUGINS.
-		 **/
-		sourceStatus: v.union(v.literal("ready"), v.literal("error")),
+		/** Publication visibility for the `/<pluginVersionId>/...` source tree in GLOBAL/PLUGINS. */
+		sourceStatus: v.union(v.literal("preparing"), v.literal("failed"), v.literal("ready")),
 		sourceLastError: v.union(v.string(), v.null()),
 		createdBy: v.id("users"),
 		updatedAt: v.number(),
 	})
 		.index("by_isLatest_name", ["isLatest", "name"])
 		.index("by_name", ["name"])
+		.index("by_name_reviewStatus_sourceStatus", ["name", "reviewStatus", "sourceStatus"])
+		.index("by_name_sourceStatus", ["name", "sourceStatus"])
 		.index("by_name_version", ["name", "version"])
 		.index("by_name_version_artifactHash", ["name", "version", "artifactHash"])
-		.index("by_sourceRepositoryUrl", ["sourceRepositoryUrl"]),
+		.index("by_sourceRepositoryUrl", ["sourceRepositoryUrl"])
+		.index("by_sourceRepositoryUrl_createdBy_sourceStatus", ["sourceRepositoryUrl", "createdBy", "sourceStatus"]),
 
 	plugins_version_reviews: defineTable({
 		createdBy: v.id("users"),
@@ -881,12 +868,13 @@ const app_convex_schema = defineSchema({
 		 **/
 		diffBaseArtifactHash: v.optional(v.string()),
 		/**
-		 * Verdict time: a fresh verdict overwrites the doc and refreshes this.
+		 * Time the first terminal verdict for this exact artifact was stored.
 		 **/
 		updatedAt: v.number(),
 	})
 		.index("by_artifactHash", ["artifactHash"])
-		.index("by_createdBy_pluginName", ["createdBy", "pluginName"]),
+		.index("by_createdBy_pluginName", ["createdBy", "pluginName"])
+		.index("by_pluginName", ["pluginName"]),
 
 	plugins_workspace_installations: defineTable({
 		organizationId: v.id("organizations"),
@@ -988,6 +976,7 @@ const app_convex_schema = defineSchema({
 		.index("by_work", ["workId"])
 		.index("by_apiTokenHash", ["apiTokenHash"])
 		.index("by_installation_updatedAt", ["installationId", "updatedAt"])
+		.index("by_pluginVersion", ["pluginVersionId"])
 		.index("by_status_expiresAt", ["status", "expiresAt"]),
 
 	/**
@@ -1019,7 +1008,8 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_run_sequence", ["runId", "sequence"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
-		.index("by_installation", ["installationId"]),
+		.index("by_installation", ["installationId"])
+		.index("by_pluginVersion", ["pluginVersionId"]),
 
 	/**
 	 * Short-lived plugin-UI bearer sessions (`plu_` tokens, stored hashed). Every call rechecks
@@ -1054,12 +1044,17 @@ const app_convex_schema = defineSchema({
 		pluginName: v.string(),
 		version: v.string(),
 		artifactHash: v.string(),
+		/** Fresh id embedded in every key, making one attempt's uploads impossible to share or delete from another. */
+		uploadId: v.string(),
 		/** At most 65 object keys: 64 manifest-capped files plus dist/bonobo.plugin.json. */
 		r2Keys: v.array(v.string()),
-		/** Cleanup never runs before this deadline, so a concurrent publish of the same artifact can finish. */
+		/** Cleanup never runs before this deadline, giving the owning publish action time to finish. */
 		cleanupAt: v.number(),
 		updatedAt: v.number(),
-	}).index("by_cleanupAt", ["cleanupAt"]),
+	})
+		.index("by_cleanupAt", ["cleanupAt"])
+		.index("by_pluginName", ["pluginName"]),
+
 	// #endregion plugins
 
 	// #region chat messages

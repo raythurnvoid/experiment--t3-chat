@@ -1,5 +1,5 @@
 import { R2 } from "@convex-dev/r2";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -12,7 +12,11 @@ import {
 import { r2_create_asset_key } from "./r2.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
-import { organizations_GLOBAL_GITHUB_WORKSPACE_ID, organizations_GLOBAL_ORGANIZATION_ID } from "../shared/organizations.ts";
+import {
+	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+	organizations_GLOBAL_ORGANIZATION_ID,
+} from "../shared/organizations.ts";
+import type { api_schemas_Main } from "../shared/api-schemas.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 const r2Objects = new Map<string, string | ArrayBuffer>();
@@ -45,6 +49,25 @@ function install_r2_object_reads() {
 			return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
 		}),
 	);
+}
+
+function defer_download_url() {
+	let markStarted: (() => void) | null = null;
+	let release: (() => void) | null = null;
+	const started = new Promise<void>((resolve) => {
+		markStarted = resolve;
+	});
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const signerExpiresIn: number[] = [];
+	vi.spyOn(R2.prototype, "getUrl").mockImplementation(async (key: string, options?: { expiresIn?: number }) => {
+		signerExpiresIn.push(options?.expiresIn ?? 900);
+		markStarted?.();
+		await gate;
+		return `https://r2.test/object?key=${encodeURIComponent(key)}`;
+	});
+	return { started, release: () => release?.(), signerExpiresIn };
 }
 
 function auth_headers(token: string) {
@@ -259,6 +282,56 @@ async function seed_markdown_file(args: {
 }
 
 describe("public files API", () => {
+	test("returns only the public validation message for malformed request bodies", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-validation" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-validation",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Validation key",
+			scopes: ["files:list", "files:read", "files:write", "files:download"],
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
+		for (const [path, body] of [
+			["/api/v1/files/list", { limit: 0 }],
+			["/api/v1/files/read", { path: "/file.md", maxBytes: 0 }],
+			["/api/v1/files/read-many", { paths: [] }],
+			["/api/v1/files/write", { path: 42, content: "" }],
+			["/api/v1/files/download-urls", { fileNodeIds: [] }],
+		] as const) {
+			const response = await t.fetch(path, {
+				method: "POST",
+				headers: auth_headers(created._yay.credential),
+				body: JSON.stringify(body),
+			});
+			expect(response.status).toBe(400);
+			expect(await response.json()).toEqual({ message: "Request body validation failed" });
+		}
+
+		const invalidJson = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(created._yay.credential),
+			body: "{",
+		});
+		expect(invalidJson.status).toBe(400);
+		expect(await invalidJson.json()).toEqual({ message: "Failed to parse request body as JSON" });
+
+		type PublicValidationError =
+			| api_schemas_Main["/api/v1/files/list"]["POST"]["response"][400]["body"]
+			| api_schemas_Main["/api/v1/files/read"]["POST"]["response"][400]["body"]
+			| api_schemas_Main["/api/v1/files/read-many"]["POST"]["response"][400]["body"]
+			| api_schemas_Main["/api/v1/files/write"]["POST"]["response"][400]["body"]
+			| api_schemas_Main["/api/v1/files/download-urls"]["POST"]["response"][400]["body"];
+		expectTypeOf<PublicValidationError>().toMatchTypeOf<{ message: string }>();
+	});
+
 	test("creates an API credential, reads files, updates usage, and revokes access", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
@@ -432,22 +505,63 @@ describe("public files API", () => {
 		const replacedBody = (await replaced.json()) as { nodeId: string };
 		expect(replacedBody.nodeId).not.toBe(writtenBody.nodeId);
 
-		const download = await t.fetch("/api/v1/files/download-url", {
+		const download = await t.fetch("/api/v1/files/download-urls", {
 			method: "POST",
 			headers: auth_headers(credential),
-			body: JSON.stringify({ fileNodeId: replacedBody.nodeId, expiresInSeconds: 60 }),
+			body: JSON.stringify({ fileNodeIds: [replacedBody.nodeId], expiresInSeconds: 60 }),
 		});
 		expect(download.status).toBe(200);
-		const downloadBody = (await download.json()) as { fileNodeId: string; url: string; expiresAt: number };
-		expect(downloadBody.fileNodeId).toBe(replacedBody.nodeId);
-		expect(downloadBody.expiresAt).toBeGreaterThan(Date.now());
-		const downloaded = await fetch(downloadBody.url);
+		const downloadBody = (await download.json()) as {
+			items: Array<{ fileNodeId: string; url: string; expiresAt: number }>;
+		};
+		expect(downloadBody.items[0]?.fileNodeId).toBe(replacedBody.nodeId);
+		expect(downloadBody.items[0]?.expiresAt).toBeGreaterThan(Date.now());
+		const downloaded = await fetch(downloadBody.items[0]!.url);
 		expect(downloaded.status).toBe(200);
 		expect(await downloaded.text()).toContain("Replaced via the public API");
 
 		// Every published write consumed its stage; nothing is left for the cleanup cron.
 		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
 		expect(stages).toEqual([]);
+	});
+
+	test("suppresses a signed url when its user API key is revoked during signing", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-signing-revoke" });
+		const nodeId = await seed_markdown_file({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/revoked.md",
+			committedMarkdown: "# Revoke during signing\n",
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-signing-revoke",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Signing revoke",
+			scopes: ["files:download"],
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const signing = defer_download_url();
+
+		const responsePromise = t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(created._yay.credential),
+			body: JSON.stringify({ fileNodeIds: [nodeId] }),
+		});
+		await signing.started;
+		await t.run((ctx) => ctx.db.patch("api_credentials", created._yay.credentialId, { revokedAt: Date.now() }));
+		signing.release();
+
+		const response = await responsePromise;
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({ message: "Unauthenticated" });
 	});
 
 	test("keeps public file routes scoped to tenant files and excludes reserved GLOBAL/GITHUB mounts", async () => {
@@ -750,10 +864,10 @@ describe("public files API", () => {
 			});
 			expect(writeResponse.status).toBe(403);
 
-			const downloadResponse = await t.fetch("/api/v1/files/download-url", {
+			const downloadResponse = await t.fetch("/api/v1/files/download-urls", {
 				method: "POST",
 				headers: auth_headers(token),
-				body: JSON.stringify({ fileNodeId: "some-node" }),
+				body: JSON.stringify({ fileNodeIds: ["some-node"] }),
 			});
 			expect(downloadResponse.status).toBe(403);
 		}

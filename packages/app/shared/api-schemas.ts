@@ -137,7 +137,7 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/write": ReturnType<typeof public_api_http_routes>["/api/v1/files/write"];
 
-	"/api/v1/files/download-url": ReturnType<typeof public_api_http_routes>["/api/v1/files/download-url"];
+	"/api/v1/files/download-urls": ReturnType<typeof public_api_http_routes>["/api/v1/files/download-urls"];
 
 	"/api/files/contextual-prompt": ReturnType<typeof files_http_routes>["/api/files/contextual-prompt"];
 
@@ -151,7 +151,9 @@ export interface api_schemas_Main {
 		typeof plugins_runtime_http_routes
 	>["/api/internal/plugins/host/finish-runner-call"];
 
-	"/api/internal/plugins/host/secret-get": ReturnType<typeof plugins_runtime_http_routes>["/api/internal/plugins/host/secret-get"];
+	"/api/internal/plugins/host/secret-get": ReturnType<
+		typeof plugins_runtime_http_routes
+	>["/api/internal/plugins/host/secret-get"];
 }
 
 export type api_schemas_Main_Path = keyof api_schemas_Main;

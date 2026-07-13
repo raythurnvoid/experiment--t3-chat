@@ -1856,12 +1856,25 @@ describe("access_control.transfer_organization_ownership", () => {
 		expect(created._yay).toBeTruthy();
 
 		await t.run(async (ctx) => {
-			await ctx.db.insert("organizations_workspaces_users", {
-				organizationId: created._yay!.organizationId,
-				workspaceId: created._yay!.defaultWorkspaceId,
-				userId: newOwnerId,
-				active: true,
-			});
+			const now = Date.now();
+			await Promise.all([
+				ctx.db.insert("organizations_workspaces_users", {
+					organizationId: created._yay!.organizationId,
+					workspaceId: created._yay!.defaultWorkspaceId,
+					userId: newOwnerId,
+					active: true,
+					updatedAt: now,
+				}),
+				// Invited organization members already have a member role before transfer.
+				ctx.db.insert("access_control_role_assignments", {
+					organizationId: created._yay!.organizationId,
+					workspaceId: created._yay!.defaultWorkspaceId,
+					userId: newOwnerId,
+					role: "member",
+					createdAt: now,
+					updatedAt: now,
+				}),
+			]);
 		});
 
 		const transferResult = await owner.mutation(api.access_control.transfer_organization_ownership, {
@@ -1871,7 +1884,15 @@ describe("access_control.transfer_organization_ownership", () => {
 		expect(transferResult._yay).toBeNull();
 
 		const afterTransfer = await t.run(async (ctx) => {
-			const [organization, ownerRoles, oldOwnerMemberRole, oldOwnerQuota, newOwnerQuota, oldOwnerHomeMembership] =
+			const [
+				organization,
+				ownerRoles,
+				newOwnerRoles,
+				oldOwnerMemberRole,
+				oldOwnerQuota,
+				newOwnerQuota,
+				oldOwnerHomeMembership,
+			] =
 				await Promise.all([
 					ctx.db.get("organizations", created._yay!.organizationId),
 					ctx.db
@@ -1881,6 +1902,15 @@ describe("access_control.transfer_organization_ownership", () => {
 								.eq("organizationId", created._yay!.organizationId)
 								.eq("workspaceId", created._yay!.defaultWorkspaceId)
 								.eq("role", "owner"),
+							)
+							.collect(),
+					ctx.db
+						.query("access_control_role_assignments")
+						.withIndex("by_organization_workspace_user_role", (q) =>
+							q
+								.eq("organizationId", created._yay!.organizationId)
+								.eq("workspaceId", created._yay!.defaultWorkspaceId)
+								.eq("userId", newOwnerId),
 						)
 						.collect(),
 					ctx.db
@@ -1907,12 +1937,21 @@ describe("access_control.transfer_organization_ownership", () => {
 						.first(),
 				]);
 
-			return { organization, ownerRoles, oldOwnerMemberRole, oldOwnerQuota, newOwnerQuota, oldOwnerHomeMembership };
+			return {
+				organization,
+				ownerRoles,
+				newOwnerRoles,
+				oldOwnerMemberRole,
+				oldOwnerQuota,
+				newOwnerQuota,
+				oldOwnerHomeMembership,
+			};
 		});
 
 		expect(afterTransfer.organization?.ownerUserId).toBe(newOwnerId);
 		expect(afterTransfer.ownerRoles).toHaveLength(1);
 		expect(afterTransfer.ownerRoles[0]?.userId).toBe(newOwnerId);
+		expect(afterTransfer.newOwnerRoles.map((assignment) => assignment.role)).toEqual(["owner"]);
 		expect(afterTransfer.oldOwnerMemberRole?.userId).toBe(ownerId);
 		expect(afterTransfer.oldOwnerQuota?.usedCount).toBe(0);
 		expect(afterTransfer.newOwnerQuota?.usedCount).toBe(1);

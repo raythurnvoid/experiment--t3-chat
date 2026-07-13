@@ -22,23 +22,15 @@ Use this skill for live Convex control-plane or data-plane operations. Also load
 
 ## Windows CLI Invocation
 
-Run Convex commands from `packages/app` through Vite Plus and prefer the local PowerShell shim:
+Run Convex commands from `packages/app` through Vite Plus and the installed Node CLI. This direct invocation preserves JSON arguments on this machine:
 
 ```powershell
 Push-Location C:\Users\rt0\Documents\workspace\rt0\t3-chat\packages\app
-vp env exec --node 24.16.0 powershell -NoProfile -Command "& .\node_modules\.bin\convex.ps1 run --typecheck disable --codegen disable <module:function> '<json args>'"
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable <module:function> '<json args>'
 Pop-Location
 ```
 
-Avoid `pnpm exec convex run ...` for JSON args in PowerShell unless you have verified argv first. On this machine, the `pnpm.CMD` path stripped JSON quotes before Convex parsed args. In one nested `vp env exec powershell -Command ...` path, `convex.ps1` also stripped JSON quotes; a direct Node CLI invocation preserved JSON:
-
-```powershell
-Push-Location C:\Users\rt0\Documents\workspace\rt0\t3-chat\packages\app
-vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable <module:function> '{"userId":"...","purgeUserMod":"data"}'
-Pop-Location
-```
-
-If the shim reports a JSON parse error such as unquoted keys or values, switch to the direct Node invocation and first verify it with a read-only function.
+Do not route JSON args through `pnpm.CMD`, `convex.ps1`, or a nested `powershell -Command`; those paths have stripped JSON quotes on this machine. If Convex reports unquoted keys or values, the function did not run. Fix the direct Node argument and verify it with a read-only function before retrying a write.
 
 Do not use `npm`, `npx`, Bun, or `bunx`. If a one-off Convex package executable is needed outside an installed workspace binary, use `pnpx`.
 
@@ -60,7 +52,7 @@ $argsJson = @{
 	purgeUserMod = "data"
 } | ConvertTo-Json -Compress
 
-vp env exec --node 24.16.0 powershell -NoProfile -Command "& .\node_modules\.bin\convex.ps1 run --typecheck disable --codegen disable users:hard_delete_user_now '$argsJson'"
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable users:hard_delete_user_now $argsJson
 ```
 
 If Convex reports a JSON parse error such as unquoted keys or values, stop and fix argument passing before retrying. A parse error means the function did not run.
@@ -90,9 +82,11 @@ Arguments:
 
 Use `"data"` when the user wants to wipe app data while keeping the account usable. Use `"data_and_auth"` for account deletion that keeps the final tombstone. Use `"data_auth_and_user_record"` only when the user explicitly wants the final user record purged too.
 
+The action returns `null`. One successful invocation per user is enough: it schedules the same user and mode when bounded user-local work remains, and it hands queued organization/workspace cleanup to the existing Workpool. If the invocation fails on Clerk, Polar, or another external dependency, correct that problem and retry the same user and mode. Record the reset start time and each successful user/mode invocation. Before writing replacement data, inspect only `hard_delete_user_now` scheduled rows created since that start time. Require no `pending` or `inProgress` row. A failed row remains unresolved unless a later explicit invocation for the same user and mode succeeded and left no later pending or running continuation. Scheduled history persists for seven days, so an older or superseded failed row does not fail the new reset. Verify `data_deletion_requests` is empty and confirm the target tables are still empty on a second readback.
+
 ## Remove A Registered Plugin
 
-Workspace members can uninstall a plugin from its plugin detail page (`plugins.uninstall_version`): that deletes the workspace's event handlers, installation secrets, and installation doc, and keeps event runs/run calls as history. Registry-level removal remains the internal-only admin flow in `packages/app/convex/plugins.ts`. It targets one plugin name and hard-deletes its versions, version reviews, per-version source trees (`/<pluginVersionId>/...` file nodes, chunks, stats, metadata docs, and R2 assets in the reserved GLOBAL/PLUGINS scope), workspace installations (all workspaces and all versions), event handlers, installation secrets, event runs, run calls, the publisher repository claim(s) backing the plugin, and the R2 artifact objects (manifest, artifact, bundled files). Publisher secrets (`plugins_publisher_repository_secrets`) are scoped to one repository claim and cascade with it: deleting a claim deletes its secrets, and the preview counts them as `publisherSecrets`.
+Workspace members can uninstall a plugin from its plugin detail page (`plugins.uninstall_version`): that deletes the workspace's event handlers, installation secrets, and installation doc, and keeps event runs/run calls as version-owned history. Registry-level removal remains the internal-only admin flow in `packages/app/convex/plugins.ts`. It targets one plugin name and hard-deletes its versions, reviews (including rejected first publishes with no version), interrupted-upload cleanup attempts and keys, per-version source trees (`/<pluginVersionId>/...` in GLOBAL/PLUGINS), workspace installations and children, version-owned run history, repository claims backing registered versions, and exact R2 artifact objects.
 
 Run preview → delete → preview readback from `packages/app`:
 
@@ -104,30 +98,32 @@ vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codeg
 Pop-Location
 ```
 
-The preview returns per-table counts (including `sourceFileNodes`, the reserved-scope file nodes across the plugin's version trees) plus the number of R2 artifact keys; expect nonzero counts before the delete and all-zero after. `hard_delete_registered_plugin_now` throws if an unusually large plugin exhausts its batch budget; rerun it until the preview readback is all-zero. R2 object deletion is best effort: individual failures are logged and do not block the registry delete. The hard delete sweeps each version's GLOBAL/PLUGINS source tree before deleting the version doc, so registry removal leaves no orphan reserved-scope file rows.
+The preview returns per-table counts (including `publishCleanupAttempts` and `sourceFileNodes`) plus the distinct known R2 keys; expect nonzero counts before the delete and all-zero after. Claim/secret counts include only claims this name cleanup can delete: claims shared with another plugin name or reclaimed by another user stay for their rightful owner or the later reset-wide repository-id step. `hard_delete_registered_plugin_now` throws if an unusually large plugin exhausts its batch budget; rerun it until the preview is all-zero. An R2 deletion failure aborts the mutation and leaves the owning version or cleanup attempt retryable.
+
+A claim can exist before its manifest reveals a plugin name. After all name-scoped previews are zero, delete each remaining exported claim id with:
+
+```powershell
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:hard_delete_publisher_repository_now '{"repositoryId":"<id>"}'
+```
+
+This idempotent mutation deletes that claim and its publisher secrets only. Do not run it before name-scoped cleanup.
 
 ## Dev Reset Preserving Clerk Users
 
 For a dev-environment reset where signed-in accounts should keep auth and Polar billing:
 
 1. Confirm the target deployment is not production.
-2. Enumerate `users` docs with a read-only admin path or Convex data read after confirming the available source/API. Do not infer user ids from auth provider ids.
-3. For every user with a non-null `clerkUserId`, run `users:hard_delete_user_now` with `purgeUserMod: "data"`. This deletes app/tenant content while preserving the `users` doc, Clerk/anonymous auth state, anagraphic/profile, billing/customer state, and a usable default tenant.
-4. For every user without a `clerkUserId`, run `users:hard_delete_user_now` with `purgeUserMod: "data_auth_and_user_record"`. This removes disposable anonymous/local user data, auth state, billing state, and the final local user doc.
-5. Verify with a separate readback pass: Clerk-backed user ids should still return user docs, non-Clerk user ids should return `null`, preserved user docs should still have their Clerk id, and reset-owned tenant content should be gone.
-6. Expired `public_api_grants` docs are normally removed by the daily Convex cron via `public_api:cleanup_expired_grants_until_done`. If an older deployment or interrupted reset leaves a backlog, run that function with `{}` and read back the table again. Use `public_api:cleanup_expired_grants` only when you intentionally want one bounded batch. Both functions delete only grants whose `expiresAt` is already in the past.
+2. Record the reset start time. Enumerate every `users` doc with `data users --format jsonArray --limit 1000`. If the result contains exactly 1000 docs, double the limit until the returned count is below it. Do not infer user ids from auth provider ids. Record the completion time of each successful user/mode invocation.
+3. First, for every user with a non-null `clerkUserId`, successfully invoke `users:hard_delete_user_now` with `purgeUserMod: "data"`.
+4. Then, for every user without a `clerkUserId`, successfully invoke it with `purgeUserMod: "data_auth_and_user_record"`.
+5. Poll `data_deletion_requests` until it is empty. The successful auth-removing calls already enqueue the Workpool. Do not enqueue a second worker while one is queued or running. A manual `data_deletion:enqueue_deletion_requests_processing` call is recovery only after logs and repeated readback show that the queue has stopped and no worker remains.
+6. Inspect `hard_delete_user_now` scheduled rows created since the reset started and require no `pending` or `inProgress` continuation. Investigate and retry a failed user/mode pair; a later successful explicit retry resolves that failure when it leaves no later pending or running continuation. Ignore older or superseded failed history. Then verify Clerk-backed user docs and their Clerk/Polar links remain while non-Clerk user docs are gone.
 
-Do not use `"data_auth_and_user_record"` for Clerk-backed users unless the user explicitly wants to destroy the local account and billing identity.
-
-Reset gotchas observed on this deployment:
-
-- Organization deletion is queued through `data_deletion_requests` and drained by `data_deletion:run_process_deletion_requests_once`. If a readback shows orphan organizations lingering after user purges and the table still has rows, run that function manually (repeat until it returns `shouldReschedule: false` and the table is empty) instead of re-deleting users.
-- Plugin publishes materialize version-keyed source trees under the virtual global tenant (`organizations_GLOBAL_ORGANIZATION_ID` "GLOBAL" / `organizations_GLOBAL_PLUGINS_WORKSPACE_ID` "PLUGINS") at `/<pluginVersionId>/...`. User/tenant purges do not touch them, but `plugins:hard_delete_registered_plugin_now` sweeps each version's tree, so a registry wipe leaves no orphans. If a version doc was ever deleted outside that flow, drain the leftover tree with `plugins:delete_plugin_source_tree_batch` (`{"pluginVersionId":"<id>"}`, rerun until `done: true`) and verify with a count over `files_nodes.by_organization_workspace_treePath` for GLOBAL/PLUGINS.
-- For staged wipes, deploy a temporary `admin_wipe.ts` module with a read-only preview (counts per table + per-user summary) and bounded batch deletes; run preview → writes → preview readback, then delete the module and redeploy so the admin surface does not linger.
+The existing user deletion logic deletes an organization only after its last active user is removed. It preserves shared organizations that still have an active user. Do not add a separate all-users or shared-organization deletion function. Follow `../dev-data-reset/SKILL.md` for plugin cleanup and reseeding.
 
 ## Data Readback Via `convex data`
 
-`convex data <table> --limit N` truncates columns to the terminal width, which silently hides ids and long fields. Pipe through `Out-String -Width 500` (PowerShell) or read a small `--limit` before drawing conclusions. `--help` cannot be reached through `vp env exec` (vp swallows the flag); consult the Convex docs instead.
+`convex data <table> --limit N` truncates columns to the terminal width, which silently hides ids and long fields. Prefer `--format jsonArray` for exact values. The command returns at most the requested limit and JSON output does not warn when more docs exist, so increase the limit whenever the returned count equals it. Pass CLI help through Vite Plus with `vp env exec -- node node_modules/convex/bin/main.js <command> --help`.
 
 ## Verification
 
@@ -135,7 +131,7 @@ Use the smallest readback that proves the requested state:
 
 ```powershell
 $argsJson = @{ userId = "<users id>" } | ConvertTo-Json -Compress
-& .\node_modules\.bin\convex.ps1 run --typecheck disable --codegen disable users:get $argsJson
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable users:get $argsJson
 ```
 
 Interpret readback carefully:
@@ -148,11 +144,12 @@ For bulk operations, track successes and failures explicitly, then perform a sep
 
 ## Environment And Logs
 
-Avoid broad `convex env list` unless necessary because it can print secrets. Prefer:
+Do not use `convex env get` or `convex env list` in agent workflows because they print secret values. Read non-secret deployment URLs from `packages/app/.env.local`. Confirm reset recovery secrets through a trusted operator channel without copying values into captured output.
+
+Logs remain available through the local CLI:
 
 ```powershell
-& .\node_modules\.bin\convex.ps1 env get VITE_CONVEX_HTTP_URL
-& .\node_modules\.bin\convex.ps1 logs --history 100 --success
+vp env exec node node_modules/convex/bin/main.js logs --history 100 --success
 ```
 
 When reporting results, summarize which deployment and function were used. Do not paste secrets into the final answer.

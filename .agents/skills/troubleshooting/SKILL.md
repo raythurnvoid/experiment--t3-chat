@@ -46,7 +46,7 @@ pnpx convex logs --history 100 --jsonl
 pnpx convex logs --deployment-name <deployment-name> --history 100 --success
 ```
 
-If `convex logs` behaves like a stream and does not return promptly, use a bounded shell timeout and fall back to:
+`convex logs` never exits on its own, and piping it through `Select-String` buffers indefinitely — nothing is written until the stream ends. Capture history by redirecting all streams to a file from a background task, waiting a few seconds, stopping the task, and reading the file (`convex logs --history 300 *> logs.txt`). If that is unavailable, use a bounded shell timeout and fall back to:
 
 ```powershell
 pnpx convex data <table> --limit 20 --order desc --format json
@@ -64,6 +64,18 @@ pnpx convex env list
 Use `env list` only when necessary, because it can print secrets. In final answers and issue notes, summarize which variables were present instead of copying secret values.
 
 Manual boundary replay is useful when a queue or webhook should have called a Convex HTTP route but durable state did not change. Use the real object key/request payload from durable state, a unique synthetic message id, and the configured shared secret. Treat replay as a diagnostic mutation: only do it when duplicate handling is expected or when the target route is safe to retry.
+
+## Convex HTTP Action Latency
+
+When an HTTP route is slow (hundreds of ms to seconds), decompose before guessing:
+
+1. Split network from server with a cheap unauthenticated probe. A 404 on a prefix route (routing + one `runQuery` + full round trip) establishes the floor — on this machine against the dev deployment it is ~100 ms. If the real route takes ~1 s, the difference lives in the handler chain, not the network. On this machine curl's `%{time_total}` works but `%{time_starttransfer}`/`%{time_appconnect}` report 0 and exit code 43.
+2. Count the `ctx.runQuery`/`ctx.runMutation` calls in the handler path. Each is a separately dispatched, strictly sequential transaction; latency scales with hop count, not query complexity. Auth chains (e.g. `authorize_request` in `packages/app/convex/public_api.ts`) typically cost a resolve query, a rate-limiter charge, per-route data hops, and any revalidation — all serial.
+3. Expect rate-limiter contention under client bursts. Each charge is a component mutation against one token-bucket document per key; concurrent requests from the same principal on the same route serialize (and OCC-retry) on that document. A client-side concurrency pool multiplies this.
+4. Do not expect the query cache to absorb repetition. It is keyed by (function, args): passing `now: Date.now()` as an arg defeats caching on every call, and mutations never cache. The remedy is the facts/verdicts split: keep timestamps out of query args, return expiry and permission facts, and apply the time/ACL verdicts action-side (see `public_api_resolve_live_principal` in `packages/app/convex/public_api.ts`). Revocation-style writes invalidate cached facts immediately either way — time is the only stale axis.
+5. Read wave patterns from log timestamps. `console.*` lines in `H(...)` entries from `convex logs --history` carry completion times: completions arriving in groups equal to the client's pool size, with constant spacing, give the per-call round trip directly.
+
+Dev deployments add per-invocation overhead over provisioned prod; re-measure there before optimizing further.
 
 ## Cloudflare Wrangler
 

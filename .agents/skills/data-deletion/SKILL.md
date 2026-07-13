@@ -36,7 +36,7 @@ Use this skill as the canonical map for the deletion system. Also load:
 - `data_deletion_db_request`: creates or reuses exactly one queue doc for the requested user, organization, or workspace scope.
 - `db_prepare_user_for_deletion`: phase 1 for a user. It tombstones the user, deactivates memberships, and removes presence.
 - `db_drain_user_plugin_ui_sessions_batch`: deletes one bounded batch of a user's `plugins_ui_sessions` docs via `by_user`. Both user-deletion paths drain these to zero before `db_finalize_deleted_user`, which therefore never reads them.
-- `drain_deleted_user_plugin_ui_sessions`: idempotent continuation for the direct admin path, keyed by userId and independent of the user doc and the queued request, so it keeps draining after the tombstone is purged.
+- `prepare_user_for_hard_deletion`: tombstones the user and drains one bounded plugin UI session batch before the admin action calls Clerk or Polar.
 - `db_finalize_deleted_user`: phase 2 for a tombstoned user. It deletes user-scoped docs and returns organizations that became empty.
 - `db_purge_organization_workspace_content_batch`: deletes tenant content for one `(organizationId, workspaceId)` in bounded batches.
 - `db_delete_workspace_structure_batch`: deletes workspace notifications, memberships, access-control docs, and then the workspace doc after content is gone.
@@ -178,10 +178,16 @@ When adding a new purge target:
 `users.hard_delete_user_now` has three modes:
 
 - `"data"`: data-only reset. Preserve `users`, auth ids, anonymous auth, anagraphic/profile, billing state, default `personal` organization, and default `home` workspace. Clear the user-scope deletion request. Purge content from the preserved home workspace. Delete extra personal workspaces, and delete non-default organizations/workspaces only when the reset user is the only active participant in that tenant scope.
-- `"data_and_auth"`: delete tenant/user data and auth state, attempt Clerk deletion, remove anonymous auth tokens, keep the final tombstoned user doc, preserve `billing_usage_snapshots`, schedule period-end subscription cancellation, and drain or schedule queued tenant purge requests.
+- `"data_and_auth"`: tombstone locally, drain user sessions, schedule period-end subscription cancellation, delete Clerk auth, finalize local user data/auth, keep the tombstone and `billing_usage_snapshots`, then hand queued tenant purge requests to the Workpool.
+- `"data_auth_and_user_record"`: tombstone locally, drain user sessions, revoke the paid subscription, delete the Polar customer, delete Clerk auth, finalize local data/auth/billing state, hand queued tenant purge requests to the Workpool, then purge the local tombstone.
 
-Both auth-removing modes finalize through `finalize_user_deletion_data`, which drains one bounded `plugins_ui_sessions` batch in-transaction and, when the batch comes back full, schedules the `drain_deleted_user_plugin_ui_sessions` continuation. The continuation is deliberately not routed through the queued-deletion request: the admin path does not wait for retention, and the userId key keeps it working after the tombstone purge.
-- `"data_auth_and_user_record"`: delete tenant/user data and auth state, revoke paid subscription immediately, delete the Polar customer immediately, delete `billing_usage_snapshots`, drain or schedule queued tenant purge requests, then purge the local tombstone.
+Both auth-removing modes call `prepare_user_for_hard_deletion` before any external provider. The action repeats bounded session batches and, when needed, schedules the same user and mode to continue. External cleanup and finalization start only after no user sessions remain. A provider failure therefore leaves a local tombstone with the provider ids needed for an idempotent retry.
+
+Because this admin path is immediate, finalization removes its user-scope request and makes every existing organization/workspace request created by that user eligible immediately. The ordinary deletion worker then drains those resource requests without waiting for their original retention date. Requests created by other users are not changed.
+
+The action returns `null`; completion is not a caller-driven batching contract. One successful invocation per user is enough: it schedules the same user and mode when bounded user-local work remains. If an external provider makes the invocation fail, fix the provider problem and retry the same user and mode. After finalization, the action asks the existing Workpool to process any tenant requests; it never runs the global queue inline. Reset automation must finish the scheduled-action, queue, and table readback gates before it starts reseeding.
+
+For a disposable development-data reset, enumerate every user and inspect `clerkUserId` before choosing the mode. Process all Clerk-backed users first, followed by users without Clerk ids, so a preserved member is reset before a local-only owner is removed. A non-null `clerkUserId` always requires `"data"`: never delete that `users` doc, because it is the stable local identity that keeps Clerk and Polar customer/billing state connected. Use `"data_auth_and_user_record"` for users without a Clerk id. The ordinary deletion logic decides tenant cleanup: it deletes an organization only when no active user remains and preserves it when another user still belongs to it. If the removed user owned that surviving organization, finalization transfers ownership, its mirrored role, and its quota charge to a remaining active member. Do not add a special deployment-wide organization delete. See `../dev-data-reset/SKILL.md` for the full wipe and plugin reseed procedure.
 
 For data-only reset, treat missing or inconsistent default tenant state as an invariant error. Do not recreate default pointers as a silent repair path unless the product rule changes.
 
@@ -192,13 +198,14 @@ For data-only reset, treat missing or inconsistent default tenant state as an in
 - Each worker run has a limited mutation-step budget.
 - Processing order is user requests, then organization requests, then workspace requests.
 - Each request is attempted independently; one failure should be logged and should not stop the whole batch.
+- A failed organization/workspace request moves to the back of the already-due queue before the next Workpool pass. It stays eligible and retryable, while later tenant cleanup can continue.
 - If work remains, enqueue another Workpool action instead of letting one action run unbounded.
 - Tests may pass `_test_now`, `_test_batchSize`, and `_test_disableReschedule`; do not use those in production flows.
 
 # Batching Boundaries
 
 - Workspace content purge, workspace structure deletion, organization deletion, and the Workpool loop are explicitly bounded and retryable.
-- Plugin UI session deletion is bounded on all three paths: per-installation batches in the workspace purge, per-pass `by_user` batches in the queued user path, and the scheduled userId-keyed continuation in the direct admin path.
+- Plugin UI session deletion is bounded on all three paths: per-installation batches in workspace purge, per-pass `by_user` batches in the queued user path, and repeated `prepare_user_for_hard_deletion` batches in the direct admin action.
 - `process_workspace_deletion_request` deletes content only; `db_delete_workspace_batch` deletes content and structure.
 - `db_finalize_deleted_user` currently finalizes user-scoped docs in one mutation after loading them with bounded-by-user queries. If user-scoped memberships, grants, pending updates, auth docs, quota docs, or billing snapshots can grow beyond one safe mutation, split user finalization into its own batched phases before relying on it for large accounts.
 

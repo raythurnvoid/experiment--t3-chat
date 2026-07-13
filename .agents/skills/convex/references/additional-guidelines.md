@@ -515,7 +515,7 @@ export const upsert_version_review = internalMutation({
 });
 ```
 
-- Leave out only what the handler derives itself: timestamps, constants (`runtimeVersion`, literal storage ids), and fields initialized by the handler (`sourceStatus` bookkeeping on insert).
+- Leave out only what the handler derives itself: timestamps, literal storage ids, and fields initialized by the handler (`sourceStatus` bookkeeping on insert).
 - Nested object fields work the same way: `doc(app_convex_schema, "plugins_publisher_repositories").fields.lastPublishAttempt.fields.status`.
 - Spread `{ ...args }` into the insert/patch so a new schema field surfaces as a validation error instead of being silently dropped.
 - Name patch-or-insert mutations `upsert_*` (`upsert_plugin`, `upsert_version_review`).

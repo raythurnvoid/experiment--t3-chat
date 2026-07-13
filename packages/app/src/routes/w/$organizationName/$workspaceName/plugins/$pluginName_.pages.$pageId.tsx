@@ -3,14 +3,14 @@ import "./plugin-page.css";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { Puzzle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { MyButton } from "@/components/my-button.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { plugins_UI_PAGES_PROTOCOL_VERSION } from "../../../../../../shared/plugins.ts";
+import type { Id } from "../../../../../../convex/_generated/dataModel.ts";
 
 const CONVEX_HTTP_URL = import.meta.env.VITE_CONVEX_HTTP_URL as string;
 
@@ -25,154 +25,323 @@ type RoutePluginsPluginPage_ClassNames =
 	| "RoutePluginsPluginPage-error"
 	| "RoutePluginsPluginPage-frame";
 
-function RoutePluginsPluginPage() {
-	const { pluginName, pageId } = Route.useParams();
-	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
-	const uiPages = useQuery(app_convex_api.plugins_ui.list_ui_pages, { membershipId });
+type RefreshResponse =
+	| {
+			type: "bonobo:token";
+			bridgeNonce: string;
+			requestId: string;
+			token: string;
+			tokenExpiresAt: number;
+	  }
+	| {
+			type: "bonobo:token-error";
+			bridgeNonce: string;
+			requestId: string;
+			message: string;
+	  };
+
+function is_refresh_request_id(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && value.length <= 64;
+}
+
+function RoutePluginsPluginPageFrame(props: {
+	membershipId: Id<"organizations_workspaces_users">;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+	pluginName: string;
+	pluginVersionId: Id<"plugins_versions">;
+	pageId: string;
+	pageTitle: string;
+	entry: string;
+	onError: (message: string) => void;
+}) {
 	const iframeRef = useRef<HTMLIFrameElement | null>(null);
-	const frameLoadCountRef = useRef(0);
-	const retryButtonRef = useRef<HTMLButtonElement | null>(null);
-	const [sessionError, setSessionError] = useState<string | null>(null);
-	// Incremented by Retry. It keys the iframe so each attempt gets a fresh document, and re-runs
-	// the bridge effect so the deadline timer restarts and the message handler subscribes again.
-	const [attempt, setAttempt] = useState(0);
+	const [bridgeNonce] = useState(() => crypto.randomUUID());
 
-	const plugin = uiPages?.find((item) => item.pluginName === pluginName) ?? null;
-	const page = plugin?.pages.find((item) => item.id === pageId) ?? null;
-	const pageTitle = page?.title ?? null;
-
-	// The effect depends on these scalars on purpose: page content never changes for a given
-	// (pluginVersionId, pageId), so the bridge only re-subscribes when the rendered page actually
-	// changes, not every time the query delivers a new result object.
-	const pluginVersionId = plugin?.pluginVersionId ?? null;
-	useEffect(() => {
-		if (!pluginVersionId || pageId === undefined || pageTitle === null) {
+	// Attach the message and load listeners before assigning src so the first page event cannot be missed.
+	useLayoutEffect(() => {
+		const iframeNode = iframeRef.current;
+		const iframeWindow = iframeNode?.contentWindow;
+		if (!iframeNode || !iframeWindow) {
+			props.onError("Failed to start the plugin page frame");
 			return;
 		}
 
-		// A stale error from a previously rendered page would keep the new page's iframe unmounted.
-		setSessionError(null);
-		// This effect runs after commit but before the new src's load event, so a legitimate page
-		// switch starts the count from zero again.
-		frameLoadCountRef.current = 0;
+		const iframeSrc = `${CONVEX_HTTP_URL}/plugins-ui/${props.pluginVersionId}/${props.entry}`;
+		let cancelled = false;
+		let loadCount = 0;
+		let sessionId: Id<"plugins_ui_sessions"> | null = null;
+		let revokeStarted = false;
+		let mintStarted = false;
+		let initMessage: unknown = null;
+		let refreshInFlight: { requestId: string; promise: Promise<RefreshResponse> } | null = null;
+		let lastRefreshResponse: RefreshResponse | null = null;
 
-		// Startup deadline: if the asset service is down or the sandbox hangs, the page must show a
-		// retryable error instead of loading forever. The timer is cleared only once bonobo:init is
-		// posted (not already on bonobo:ready), so a hung session mint is covered too. The
-		// functional update keeps an earlier, more specific error (mint failure, self-navigation)
-		// from being overwritten.
 		const startupDeadline = setTimeout(() => {
-			setSessionError((current) => current ?? "The plugin page did not start in time");
+			if (!cancelled) {
+				cancelled = true;
+				props.onError("The plugin page did not start in time");
+			}
 		}, PAGE_STARTUP_DEADLINE_MS);
 
-		let cancelled = false;
-
-		const post_to_iframe = (message: unknown) => {
-			// The sandboxed document has an opaque origin, so no concrete targetOrigin can ever
-			// match it — "*" is the only option. This stays safe because we only post on the
-			// contentWindow of our own iframe.
-			iframeRef.current?.contentWindow?.postMessage(message, "*");
+		const revoke_session = (id: Id<"plugins_ui_sessions"> | null) => {
+			if (!id || revokeStarted) {
+				return;
+			}
+			revokeStarted = true;
+			void app_convex
+				.mutation(app_convex_api.plugins_ui.revoke_page_session, {
+					membershipId: props.membershipId,
+					sessionId: id,
+				})
+				.catch((error) => {
+					console.error("[RoutePluginsPluginPage] Failed to revoke page session:", {
+						error,
+						pluginName: props.pluginName,
+					});
+				});
 		};
 
-		const mint_session = () =>
-			app_convex.mutation(app_convex_api.plugins_ui.mint_page_session, { membershipId, pluginName });
+		const post_to_iframe = (message: unknown) => {
+			if (cancelled || iframeRef.current !== iframeNode) {
+				return;
+			}
+			// The sandboxed document has an opaque origin, so no concrete targetOrigin can match it.
+			iframeWindow.postMessage(message, "*");
+		};
 
-		const handle_message = (event: MessageEvent) => {
-			// The sandboxed (allow-scripts, no allow-same-origin) document has an opaque origin, so
-			// event.origin is the string "null" and cannot identify the sender. The only reliable
-			// check is that event.source is our iframe's contentWindow; everything else is dropped
-			// silently.
-			if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) {
+		const token_error = (requestId: string, message: string): RefreshResponse => ({
+			type: "bonobo:token-error",
+			bridgeNonce,
+			requestId,
+			message,
+		});
+
+		const handle_ready = () => {
+			// The SDK repeats ready until init arrives, so replay the same init instead of minting again.
+			if (initMessage) {
+				post_to_iframe(initMessage);
+				return;
+			}
+			if (mintStarted) {
 				return;
 			}
 
+			mintStarted = true;
+			const mintPromise = app_convex.mutation(app_convex_api.plugins_ui.mint_page_session, {
+				membershipId: props.membershipId,
+				pluginName: props.pluginName,
+			});
+			void mintPromise
+				.then((result) => {
+					if (cancelled || iframeRef.current !== iframeNode) {
+						// A mint can finish after Retry or unmount. Revoke it instead of posting to a stale frame.
+						if (result._yay) {
+							revoke_session(result._yay.sessionId);
+						}
+						return;
+					}
+					if (result._nay) {
+						cancelled = true;
+						props.onError(result._nay.message);
+						return;
+					}
+					if (result._yay.pluginVersionId !== props.pluginVersionId) {
+						revoke_session(result._yay.sessionId);
+						cancelled = true;
+						props.onError("The installed plugin version changed while the page was starting");
+						return;
+					}
+
+					sessionId = result._yay.sessionId;
+					initMessage = {
+						type: "bonobo:init",
+						bridgeNonce,
+						apiOrigin: CONVEX_HTTP_URL,
+						token: result._yay.token,
+						tokenExpiresAt: result._yay.expiresAt,
+						context: {
+							pluginName: props.pluginName,
+							pageId: props.pageId,
+							pageTitle: props.pageTitle,
+							organizationId: props.organizationId,
+							workspaceId: props.workspaceId,
+						},
+					};
+					post_to_iframe(initMessage);
+					clearTimeout(startupDeadline);
+				})
+				.catch((error) => {
+					console.error("[RoutePluginsPluginPage] Failed to mint page session:", {
+						error,
+						pluginName: props.pluginName,
+					});
+					if (!cancelled) {
+						cancelled = true;
+						props.onError("Failed to start the plugin page session");
+					}
+				});
+		};
+
+		const handle_refresh = (requestId: string) => {
+			if (!sessionId) {
+				post_to_iframe(token_error(requestId, "The plugin page session is not ready"));
+				return;
+			}
+			// Replayed ids receive the same answer, while a different concurrent id is rejected.
+			if (lastRefreshResponse?.requestId === requestId) {
+				post_to_iframe(lastRefreshResponse);
+				return;
+			}
+			if (refreshInFlight) {
+				if (refreshInFlight.requestId === requestId) {
+					void refreshInFlight.promise.then(post_to_iframe);
+				} else {
+					post_to_iframe(token_error(requestId, "Another session refresh is in progress"));
+				}
+				return;
+			}
+
+			const currentSessionId = sessionId;
+			const promise: Promise<RefreshResponse> = app_convex
+				.mutation(app_convex_api.plugins_ui.refresh_page_session, {
+					membershipId: props.membershipId,
+					sessionId: currentSessionId,
+				})
+				.then((result) => {
+					if (result._nay) {
+						return token_error(requestId, result._nay.message);
+					}
+					if (result._yay.pluginVersionId !== props.pluginVersionId) {
+						return token_error(requestId, "The installed plugin version changed");
+					}
+					return {
+						type: "bonobo:token",
+						bridgeNonce,
+						requestId,
+						token: result._yay.token,
+						tokenExpiresAt: result._yay.expiresAt,
+					} satisfies RefreshResponse;
+				})
+				.catch((error) => {
+					console.error("[RoutePluginsPluginPage] Failed to refresh page session:", {
+						error,
+						pluginName: props.pluginName,
+					});
+					return token_error(requestId, "Failed to refresh the session");
+				});
+			refreshInFlight = { requestId, promise };
+			void promise.then((response) => {
+				if (refreshInFlight?.promise === promise) {
+					refreshInFlight = null;
+					lastRefreshResponse = response;
+				}
+				post_to_iframe(response);
+			});
+		};
+
+		const handle_message = (event: MessageEvent) => {
+			// Trust only this iframe's opaque-origin WindowProxy; refresh messages also need its nonce.
+			if (cancelled || event.source !== iframeWindow || event.origin !== "null") {
+				return;
+			}
 			const data: unknown = event.data;
 			if (typeof data !== "object" || data === null) {
 				return;
 			}
-			const message = data as { type?: unknown; protocolVersion?: unknown; requestId?: unknown };
-
-			if (message.type === "bonobo:ready" && message.protocolVersion === plugins_UI_PAGES_PROTOCOL_VERSION) {
-				mint_session()
-					.then((result) => {
-						if (cancelled) {
-							return;
-						}
-						if (result._nay) {
-							// Without a session the page cannot call the API at all, so replace the iframe
-							// with the error instead of posting anything.
-							setSessionError(result._nay.message);
-							return;
-						}
-
-						post_to_iframe({
-							type: "bonobo:init",
-							protocolVersion: plugins_UI_PAGES_PROTOCOL_VERSION,
-							apiOrigin: CONVEX_HTTP_URL,
-							token: result._yay.token,
-							tokenExpiresAt: result._yay.expiresAt,
-							context: { pluginName, pageId, pageTitle, organizationId, workspaceId },
-						});
-						clearTimeout(startupDeadline);
-					})
-					.catch((error) => {
-						console.error("[RoutePluginsPluginPage] Failed to mint page session:", { error, pluginName });
-						if (!cancelled) {
-							setSessionError("Failed to start the plugin page session");
-						}
-					});
-				return;
+			const message = data as {
+				type?: unknown;
+				bridgeNonce?: unknown;
+				requestId?: unknown;
+			};
+			if (message.type === "bonobo:ready") {
+				handle_ready();
+			} else if (
+				message.type === "bonobo:token-refresh-request" &&
+				message.bridgeNonce === bridgeNonce &&
+				is_refresh_request_id(message.requestId)
+			) {
+				handle_refresh(message.requestId);
 			}
+		};
 
-			if (message.type === "bonobo:token-refresh-request" && typeof message.requestId === "string") {
-				const requestId = message.requestId;
-				mint_session()
-					.then((result) => {
-						if (cancelled) {
-							return;
-						}
-						if (result._nay) {
-							post_to_iframe({ type: "bonobo:token-error", requestId, message: result._nay.message });
-							return;
-						}
-
-						post_to_iframe({
-							type: "bonobo:token",
-							requestId,
-							token: result._yay.token,
-							tokenExpiresAt: result._yay.expiresAt,
-						});
-					})
-					.catch((error) => {
-						console.error("[RoutePluginsPluginPage] Failed to refresh page session:", { error, pluginName });
-						if (!cancelled) {
-							post_to_iframe({ type: "bonobo:token-error", requestId, message: "Failed to refresh the session" });
-						}
-					});
-				return;
+		const handle_load = () => {
+			loadCount += 1;
+			// The first load is the assigned asset. Any later load is page-controlled navigation.
+			if (loadCount > 1 && !cancelled) {
+				cancelled = true;
+				clearTimeout(startupDeadline);
+				revoke_session(sessionId);
+				props.onError("The plugin page navigated away and was stopped");
 			}
-
-			// Unknown message types are ignored: newer plugin SDKs may speak a newer protocol.
 		};
 
 		window.addEventListener("message", handle_message);
+		iframeNode.addEventListener("load", handle_load);
+		// src is assigned last, after every guard above is active.
+		if (iframeNode.getAttribute("src") !== iframeSrc) {
+			iframeNode.setAttribute("src", iframeSrc);
+		}
+
 		return () => {
 			cancelled = true;
 			clearTimeout(startupDeadline);
 			window.removeEventListener("message", handle_message);
+			iframeNode.removeEventListener("load", handle_load);
+			revoke_session(sessionId);
 		};
-	}, [membershipId, organizationId, workspaceId, pluginName, pageId, pageTitle, pluginVersionId, attempt]);
+	}, [
+		bridgeNonce,
+		props.entry,
+		props.membershipId,
+		props.onError,
+		props.organizationId,
+		props.pageId,
+		props.pageTitle,
+		props.pluginName,
+		props.pluginVersionId,
+		props.workspaceId,
+	]);
+
+	return (
+		<iframe
+			ref={iframeRef}
+			className={"RoutePluginsPluginPage-frame" satisfies RoutePluginsPluginPage_ClassNames}
+			title={props.pageTitle}
+			sandbox="allow-scripts"
+			referrerPolicy="no-referrer"
+		/>
+	);
+}
+
+function RoutePluginsPluginPage() {
+	const { pluginName, pageId } = Route.useParams();
+	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
+	const uiPages = useQuery(app_convex_api.plugins_ui.list_ui_pages, { membershipId });
+	const retryButtonRef = useRef<HTMLButtonElement | null>(null);
+	const [sessionError, setSessionError] = useState<{ frameKey: string; message: string } | null>(null);
+	// Incremented by Retry. It keys the iframe so each attempt gets a fresh document, and re-runs
+	// the bridge effect so the deadline timer restarts and the message listener attaches again.
+	const [attempt, setAttempt] = useState(0);
+
+	const plugin = uiPages?.find((item) => item.pluginName === pluginName) ?? null;
+	const page = plugin?.pages.find((item) => item.id === pageId) ?? null;
+
+	const pluginVersionId = plugin?.pluginVersionId ?? null;
+	// Any tenant, version, page, or Retry change creates a new iframe and bridge nonce.
+	const frameKey = `${membershipId}:${pluginVersionId ?? "missing"}:${pageId ?? "missing"}:${attempt}`;
+	const activeSessionError = sessionError?.frameKey === frameKey ? sessionError.message : null;
+	const handleFrameError = useCallback((message: string) => setSessionError({ frameKey, message }), [frameKey]);
 
 	// The error replaces the iframe (and any focus that was inside it), so move focus to the one
 	// available action.
 	useEffect(() => {
-		if (sessionError !== null) {
+		if (activeSessionError !== null) {
 			retryButtonRef.current?.focus();
 		}
-	}, [sessionError]);
+	}, [activeSessionError]);
 
 	const handleRetry = useFn(() => {
-		setSessionError(null);
 		setAttempt((current) => current + 1);
 	});
 
@@ -210,39 +379,28 @@ function RoutePluginsPluginPage() {
 		);
 	}
 
-	// The session token travels exclusively over postMessage; only public identifiers go in the URL.
-	const iframeSrc = `${CONVEX_HTTP_URL}/plugins-ui/${plugin.pluginVersionId}/${page.entry}?parentOrigin=${encodeURIComponent(window.location.origin)}&pageId=${page.id}`;
-
 	return (
 		<main className={"RoutePluginsPluginPage" satisfies RoutePluginsPluginPage_ClassNames}>
 			{breadcrumb}
-			{sessionError ? (
+			{activeSessionError ? (
 				<div className={"RoutePluginsPluginPage-error" satisfies RoutePluginsPluginPage_ClassNames} role="alert">
-					{sessionError}
+					{activeSessionError}
 					<MyButton ref={retryButtonRef} onClick={handleRetry}>
 						Retry
 					</MyButton>
 				</div>
 			) : (
-				<iframe
-					key={attempt}
-					ref={iframeRef}
-					className={"RoutePluginsPluginPage-frame" satisfies RoutePluginsPluginPage_ClassNames}
-					title={page.title}
-					sandbox="allow-scripts"
-					src={iframeSrc}
-					onLoad={() => {
-						frameLoadCountRef.current += 1;
-						// Only the sandboxed document itself can navigate the frame (we never change
-						// src, and it has no allow-top-navigation). After such a navigation the frame
-						// may host a foreign document that still passes the event.source check, so
-						// unmount the iframe before it can ask for tokens. What remains: the document
-						// keeps the token it already had until it expires; the per-call liveness
-						// checks and the 30-minute expiry limit that.
-						if (frameLoadCountRef.current > 1) {
-							setSessionError("The plugin page navigated away and was stopped");
-						}
-					}}
+				<RoutePluginsPluginPageFrame
+					key={frameKey}
+					membershipId={membershipId}
+					organizationId={organizationId}
+					workspaceId={workspaceId}
+					pluginName={pluginName}
+					pluginVersionId={plugin.pluginVersionId}
+					pageId={pageId}
+					pageTitle={page.title}
+					entry={page.entry}
+					onError={handleFrameError}
 				/>
 			)}
 		</main>

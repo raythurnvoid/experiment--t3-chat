@@ -307,7 +307,9 @@ async function users_db_list_account_deletion_blocking_organizations(ctx: QueryC
 				ctx.db.get("organizations_workspaces", organization.defaultWorkspaceId),
 				ctx.db
 					.query("data_deletion_requests")
-					.withIndex("by_organization_scope", (q) => q.eq("organizationId", organization._id).eq("scope", "organization"))
+					.withIndex("by_organization_scope", (q) =>
+						q.eq("organizationId", organization._id).eq("scope", "organization"),
+					)
 					.first(),
 			]);
 			// Treat an organization already queued through `delete_organization` as resolved for account deletion.
@@ -1251,6 +1253,13 @@ export const purge_deleted_user_tombstone = internalMutation({
 	},
 });
 
+/**
+ * Admin reset or hard delete for one user.
+ *
+ * One successful call owns its bounded user-local continuations. Auth-removing modes tombstone
+ * before calling providers, then hand any tenant requests to the existing deletion Workpool.
+ * Retry the same user and mode only when an external provider makes this action fail.
+ */
 export const hard_delete_user_now = internalAction({
 	args: {
 		userId: v.id("users"),
@@ -1282,6 +1291,7 @@ export const hard_delete_user_now = internalAction({
 				}
 			}
 			if (!args._test_disableReschedule) {
+				// Continue the same user and mode. Reset readback must finish before plugin reseeding starts.
 				await ctx.scheduler.runAfter(0, internal.users.hard_delete_user_now, {
 					userId: user._id,
 					purgeUserMod: "data",
@@ -1291,10 +1301,68 @@ export const hard_delete_user_now = internalAction({
 		}
 
 		const currentSubscription = await billing_polar.getCurrentSubscription(ctx, { userId: user._id });
-		const purgeAuth = purgeUserMod === "data_and_auth" || purgeUserMod === "data_auth_and_user_record";
 		const purgeUserRecord = purgeUserMod === "data_auth_and_user_record";
 
-		if (purgeAuth && user.clerkUserId) {
+		let prepared = false;
+		for (let step = 0; step < 25; step += 1) {
+			prepared = await ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+				userId: user._id,
+				_test_batchSize: args._test_batchSize,
+			});
+			if (prepared) {
+				break;
+			}
+		}
+		if (!prepared) {
+			if (!args._test_disableReschedule) {
+				await ctx.scheduler.runAfter(0, internal.users.hard_delete_user_now, {
+					userId: user._id,
+					purgeUserMod,
+				});
+			}
+			return null;
+		}
+
+		if (purgeUserRecord && currentSubscription) {
+			const revokeSubscriptionResult = await billing_action_revoke_polar_subscription({
+				subscriptionId: currentSubscription.id,
+			});
+			if (revokeSubscriptionResult._nay) {
+				// Provider SDK errors are not Convex values and must not cross this action boundary.
+				throw convex_error({
+					message: "Failed to revoke Polar subscription",
+				});
+			}
+		}
+
+		if (purgeUserRecord) {
+			const deletePolarCustomerResult = await billing_action_delete_polar_customer_by_user_id(ctx, {
+				userId: user._id,
+			});
+			if (deletePolarCustomerResult._nay) {
+				// Keep the provider SDK error out of the serializable public error payload.
+				throw convex_error({
+					message: "Failed to delete Polar customer",
+				});
+			}
+		}
+
+		if (purgeUserRecord) {
+			// Keep the scheduled cancellation until every Polar delete succeeds. It remains
+			// the retry safety net when revoke or customer deletion fails partway through.
+			await billing_action_cancel_scheduled_polar_subscription_period_end_cancellation(ctx, {
+				userId: user._id,
+			});
+		}
+
+		if (!purgeUserRecord && currentSubscription) {
+			await billing_action_schedule_polar_subscription_period_end_cancellation(ctx, {
+				userId: user._id,
+				subscriptionId: currentSubscription.id,
+			});
+		}
+
+		if (user.clerkUserId) {
 			const clerkDeleteUserResult = await delete_clerk_account({
 				clerkUserId: user.clerkUserId,
 			});
@@ -1306,69 +1374,17 @@ export const hard_delete_user_now = internalAction({
 			}
 		}
 
-		if (purgeUserRecord) {
-			await billing_action_cancel_scheduled_polar_subscription_period_end_cancellation(ctx, {
-				userId: user._id,
-			});
-		}
-
-		if (purgeUserRecord && currentSubscription) {
-			const revokeSubscriptionResult = await billing_action_revoke_polar_subscription({
-				subscriptionId: currentSubscription.id,
-			});
-			if (revokeSubscriptionResult._nay) {
-				throw convex_error({
-					message: "Failed to revoke Polar subscription",
-					cause: revokeSubscriptionResult._nay,
-				});
-			}
-		}
-
-		if (purgeUserRecord) {
-			const deletePolarCustomerResult = await billing_action_delete_polar_customer_by_user_id(ctx, {
-				userId: user._id,
-			});
-			if (deletePolarCustomerResult._nay) {
-				throw convex_error({
-					message: "Failed to delete Polar customer",
-					cause: deletePolarCustomerResult._nay,
-				});
-			}
-		}
-
-		if (!purgeUserRecord && currentSubscription) {
-			await billing_action_schedule_polar_subscription_period_end_cancellation(ctx, {
-				userId: user._id,
-				subscriptionId: currentSubscription.id,
-			}).catch((error) => {
-				console.error("Failed to schedule Polar subscription period-end cancellation after local hard delete", {
-					error,
-					subscriptionId: currentSubscription.id,
-					userId: user._id,
-				});
-			});
-		}
-
 		await ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
 			userId: user._id,
-			deleteUserAuth: purgeAuth,
+			deleteUserAuth: true,
 			deleteBillingState: purgeUserRecord,
 		});
-		let hasDeletionRequests = false;
-		for (let step = 0; step < 40; step += 1) {
-			await ctx.runAction(internal.data_deletion.run_process_deletion_requests_once, {
-				_test_batchSize: args._test_batchSize,
-				_test_disableReschedule: true,
-			});
-			hasDeletionRequests = await ctx.runQuery(internal.data_deletion.has_deletion_requests_for_user, {
-				userId: user._id,
-			});
-			if (!hasDeletionRequests) {
-				break;
-			}
-		}
+		const hasDeletionRequests = await ctx.runQuery(internal.data_deletion.has_deletion_requests_for_user, {
+			userId: user._id,
+		});
 		if (hasDeletionRequests && !args._test_disableReschedule) {
-			await ctx.scheduler.runAfter(0, internal.data_deletion.enqueue_deletion_requests_processing, {});
+			// The Workpool is the only owner once tenant cleanup has been queued.
+			await ctx.runAction(internal.data_deletion.enqueue_deletion_requests_processing, {});
 		}
 
 		if (purgeUserRecord) {

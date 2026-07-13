@@ -544,12 +544,28 @@ export const transfer_organization_ownership = mutation({
 			throw should_never_happen(errorMessage, errorData);
 		}
 
-		const [ownerAssignments, newOwnerUser, newOwnerHomeMembership, currentOwnerQuota, newOwnerQuota] =
+		const [
+			ownerAssignments,
+			newOwnerAssignments,
+			newOwnerUser,
+			newOwnerHomeMembership,
+			currentOwnerQuota,
+			newOwnerQuota,
+		] =
 			await Promise.all([
 				ctx.db
 					.query("access_control_role_assignments")
 					.withIndex("by_organization_workspace_role_user", (q) =>
 						q.eq("organizationId", args.organizationId).eq("workspaceId", defaultWorkspaceId).eq("role", "owner"),
+					)
+					.collect(),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_organization_workspace_user_role", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", defaultWorkspaceId)
+							.eq("userId", args.newOwnerUserId),
 					)
 					.collect(),
 				ctx.db.get("users", args.newOwnerUserId),
@@ -586,9 +602,12 @@ export const transfer_organization_ownership = mutation({
 			});
 		}
 
-		await Promise.all(
-			ownerAssignments.map((ownerAssignment) => ctx.db.delete("access_control_role_assignments", ownerAssignment._id)),
-		);
+		// Replace the invited member's current default-workspace role. One user must
+		// have only one role at this scope after becoming the organization owner.
+		await Promise.all([
+			...ownerAssignments.map((assignment) => ctx.db.delete("access_control_role_assignments", assignment._id)),
+			...newOwnerAssignments.map((assignment) => ctx.db.delete("access_control_role_assignments", assignment._id)),
+		]);
 
 		await Promise.all([
 			ctx.db.patch("organizations", organization._id, {

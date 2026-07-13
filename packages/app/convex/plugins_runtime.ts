@@ -1066,9 +1066,13 @@ async function authorize_runner_host_request<Body>(ctx: ActionCtx, request: Requ
 	}
 	const resolved: public_api_resolve_principal_Result = await ctx.runQuery(internal.public_api.resolve_principal, {
 		presented: token,
-		now: Date.now(),
 	});
 	if (resolved._nay || resolved._yay.kind !== "plugin_run") {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
+	// Expiry verdict applied inline (the import-cycle note above rules out
+	// public_api_resolve_live_principal here); this route only accepts plugin_run.
+	if (resolved._yay.apiTokenExpiresAt <= Date.now()) {
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
 

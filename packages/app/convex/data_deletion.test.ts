@@ -142,7 +142,6 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		description: "Workspace media gallery",
 		reviewStatus: "passed",
 		isLatest: true,
-		runtimeVersion: "1",
 		artifactHash: `sha256:${"a".repeat(64)}`,
 		sourceRepositoryUrl: "https://github.com/bonobo/gallery-plugin",
 		sourceOwner: "bonobo",
@@ -152,6 +151,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		backendEntrypointFile: null,
 		events: [],
 		capabilities: ["workspace.files.read"],
+		pages: [],
 		outboundOrigins: [],
 		files: [],
 		sourceStatus: "ready",
@@ -745,14 +745,12 @@ async function data_deletion_test_hard_delete_user_now_data_until_idle(
 	t: ReturnType<typeof test_convex>,
 	args: { userId: Id<"users">; batchSize?: number },
 ) {
-	for (let i = 0; i < 10; i += 1) {
-		await t.action(internal.users.hard_delete_user_now, {
-			userId: args.userId,
-			purgeUserMod: "data",
-			_test_batchSize: args.batchSize,
-			_test_disableReschedule: true,
-		});
-	}
+	await t.action(internal.users.hard_delete_user_now, {
+		userId: args.userId,
+		purgeUserMod: "data",
+		_test_batchSize: args.batchSize,
+	});
+	await data_deletion_test_finish_immediate_scheduled_functions(t);
 }
 
 describe("data_deletion_db_request", () => {
@@ -1456,7 +1454,6 @@ describe("process_user_deletion_request", () => {
 				description: "Workspace media gallery",
 				reviewStatus: "passed",
 				isLatest: true,
-				runtimeVersion: "1",
 				artifactHash: `sha256:${"a".repeat(64)}`,
 				sourceRepositoryUrl: "https://github.com/bonobo/gallery-plugin",
 				sourceOwner: "bonobo",
@@ -1466,6 +1463,7 @@ describe("process_user_deletion_request", () => {
 				backendEntrypointFile: null,
 				events: [],
 				capabilities: ["workspace.files.read"],
+				pages: [],
 				outboundOrigins: [],
 				files: [],
 				sourceStatus: "ready",
@@ -2097,7 +2095,6 @@ describe("process_workspace_deletion_request", () => {
 				description: "Media plugin",
 				reviewStatus: "pending",
 				isLatest: true,
-				runtimeVersion: "1",
 				artifactHash: `sha256:${"a".repeat(64)}`,
 				sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
 				sourceOwner: "sybill-ai-engineering",
@@ -2114,6 +2111,7 @@ describe("process_workspace_deletion_request", () => {
 				},
 				events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 				capabilities: ["plugin.secrets.read", "outbound.fetch"],
+				pages: [],
 				outboundOrigins: [],
 				files: [],
 				sourceStatus: "ready",
@@ -2510,7 +2508,6 @@ describe("process_workspace_deletion_request", () => {
 				description: "Media plugin",
 				reviewStatus: "pending",
 				isLatest: true,
-				runtimeVersion: "1",
 				artifactHash: `sha256:${"a".repeat(64)}`,
 				sourceRepositoryUrl: "https://github.com/sybill-ai-engineering/media-plugin",
 				sourceOwner: "sybill-ai-engineering",
@@ -2527,6 +2524,7 @@ describe("process_workspace_deletion_request", () => {
 				},
 				events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
 				capabilities: ["plugin.secrets.read", "outbound.fetch"],
+				pages: [],
 				outboundOrigins: [],
 				files: [],
 				sourceStatus: "ready",
@@ -3156,10 +3154,27 @@ describe("hard_delete_user_data", () => {
 		});
 
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
-		await data_deletion_test_hard_delete_user_now_data_until_idle(t, {
+		const result = await t.action(internal.users.hard_delete_user_now, {
 			userId: user.userId,
-			batchSize: 5,
+			purgeUserMod: "data",
+			_test_batchSize: 1,
 		});
+		const scheduledContinuations = await t.run(async (ctx) =>
+			(await ctx.db.system.query("_scheduled_functions").collect()).filter(
+				(job) => job.state.kind === "pending" && job.name.includes("hard_delete_user_now"),
+			),
+		);
+		expect(result).toBeNull();
+		expect(scheduledContinuations).toHaveLength(1);
+		await data_deletion_test_finish_immediate_scheduled_functions(t);
+		const unfinishedContinuations = await t.run(async (ctx) =>
+			(await ctx.db.system.query("_scheduled_functions").collect()).filter(
+				(job) =>
+					(job.state.kind === "pending" || job.state.kind === "inProgress") &&
+					job.name.includes("hard_delete_user_now"),
+			),
+		);
+		expect(unfinishedContinuations).toHaveLength(0);
 
 		const after = await t.run(async (ctx) => {
 			const [
@@ -3534,6 +3549,200 @@ describe("hard_delete_user_data", () => {
 });
 
 describe("finalize_user_deletion_data", () => {
+	test("keeps a shared organization when its Clerk member is reset before its local owner is removed", async () => {
+		const t = test_convex();
+		const owner = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: null,
+				displayName: "Anonymous Shared Owner",
+			}),
+		);
+		const collaborator = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-shared-owner-successor",
+				displayName: "Shared Owner Successor",
+			}),
+		);
+		const shared = await t.run(async (ctx) => {
+			const created = await organizations_db_create(ctx, {
+				userId: owner.userId,
+				name: "shared-owner-removal",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
+			const extraWorkspace = await organizations_db_create_workspace(ctx, {
+				userId: owner.userId,
+				organizationId: created._yay.organizationId,
+				name: "future-purge",
+				description: "",
+				now: Date.now(),
+			});
+			if (extraWorkspace._nay) {
+				throw new Error(extraWorkspace._nay.message);
+			}
+
+			const now = Date.now();
+			await Promise.all([
+				ctx.db.insert("organizations_workspaces_users", {
+					organizationId: created._yay.organizationId,
+					workspaceId: created._yay.defaultWorkspaceId,
+					userId: collaborator.userId,
+					active: true,
+					updatedAt: now,
+				}),
+				ctx.db.insert("access_control_role_assignments", {
+					organizationId: created._yay.organizationId,
+					workspaceId: created._yay.defaultWorkspaceId,
+					userId: collaborator.userId,
+					role: "member",
+					createdAt: now,
+					updatedAt: now,
+				}),
+				ctx.db.insert("organizations_workspaces_users", {
+					organizationId: created._yay.organizationId,
+					workspaceId: extraWorkspace._yay.workspaceId,
+					userId: collaborator.userId,
+					active: true,
+					updatedAt: now,
+				}),
+				ctx.db.insert("access_control_role_assignments", {
+					organizationId: created._yay.organizationId,
+					workspaceId: extraWorkspace._yay.workspaceId,
+					userId: collaborator.userId,
+					role: "member",
+					createdAt: now,
+					updatedAt: now,
+				}),
+				data_deletion_test_seed_page(ctx, {
+					userId: owner.userId,
+					organizationId: created._yay.organizationId,
+					workspaceId: created._yay.defaultWorkspaceId,
+					tag: "shared-owner-content",
+				}),
+				data_deletion_test_seed_page(ctx, {
+					userId: owner.userId,
+					organizationId: created._yay.organizationId,
+					workspaceId: extraWorkspace._yay.workspaceId,
+					tag: "shared-owner-future-content",
+				}),
+			]);
+			const futureWorkspaceRequestId = await data_deletion_db_request(ctx, {
+				userId: owner.userId,
+				organizationId: created._yay.organizationId,
+				workspaceId: extraWorkspace._yay.workspaceId,
+				scope: "workspace",
+			});
+
+			return {
+				...created._yay,
+				extraWorkspaceId: extraWorkspace._yay.workspaceId,
+				futureWorkspaceRequestId,
+			};
+		});
+
+		// The reset processes Clerk-backed users first, so their shared membership
+		// remains available when the local-only owner is removed next.
+		await data_deletion_test_hard_delete_user_now_data_until_idle(t, {
+			userId: collaborator.userId,
+		});
+		// A forced deletion handoff preserves the shared organization even when
+		// the successor is already at the normal organization creation limit.
+		const collaboratorQuotaMax = await t.run(async (ctx) => {
+			const quota = await ctx.db
+				.query("quotas")
+				.withIndex("by_user_quotaName", (q) =>
+					q.eq("userId", collaborator.userId).eq("quotaName", "extra_organizations"),
+				)
+				.unique();
+			if (!quota) {
+				throw new Error("Expected collaborator organization quota");
+			}
+			await ctx.db.patch("quotas", quota._id, { usedCount: quota.maxCount });
+			return quota.maxCount;
+		});
+		const deletionResult = await t.action(internal.users.hard_delete_user_now, {
+			userId: owner.userId,
+			purgeUserMod: "data_auth_and_user_record",
+			_test_disableReschedule: true,
+		});
+		await data_deletion_test_run_worker_until_idle(t);
+
+		const after = await t.run(async (ctx) => {
+			const [
+				deletedOwner,
+				organization,
+				collaboratorMembership,
+				collaboratorRoles,
+				collaboratorQuota,
+				futureWorkspaceRequest,
+				defaultWorkspaceFiles,
+				futureWorkspaceFiles,
+			] = await Promise.all([
+				ctx.db.get("users", owner.userId),
+				ctx.db.get("organizations", shared.organizationId),
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_active_user_organization_workspace", (q) =>
+						q
+							.eq("active", true)
+							.eq("userId", collaborator.userId)
+							.eq("organizationId", shared.organizationId)
+							.eq("workspaceId", shared.defaultWorkspaceId),
+					)
+					.first(),
+				ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_organization_workspace_user_role", (q) =>
+						q
+							.eq("organizationId", shared.organizationId)
+							.eq("workspaceId", shared.defaultWorkspaceId)
+							.eq("userId", collaborator.userId),
+					)
+					.collect(),
+				ctx.db
+					.query("quotas")
+					.withIndex("by_user_quotaName", (q) =>
+						q.eq("userId", collaborator.userId).eq("quotaName", "extra_organizations"),
+					)
+					.unique(),
+				ctx.db.get("data_deletion_requests", shared.futureWorkspaceRequestId),
+				ctx.db
+					.query("files_nodes")
+					.collect()
+					.then((files) => files.filter((file) => file.workspaceId === shared.defaultWorkspaceId)),
+				ctx.db
+					.query("files_nodes")
+					.collect()
+					.then((files) => files.filter((file) => file.workspaceId === shared.extraWorkspaceId)),
+			]);
+
+			return {
+				deletedOwner,
+				organization,
+				collaboratorMembership,
+				collaboratorRoles,
+				collaboratorQuota,
+				futureWorkspaceRequest,
+				defaultWorkspaceFiles,
+				futureWorkspaceFiles,
+			};
+		});
+
+		expect(deletionResult).toBeNull();
+		expect(after.deletedOwner).toBeNull();
+		expect(after.organization?.ownerUserId).toBe(collaborator.userId);
+		expect(after.collaboratorMembership).not.toBeNull();
+		expect(after.collaboratorRoles.map((assignment) => assignment.role)).toEqual(["owner"]);
+		expect(after.collaboratorQuota?.usedCount).toBe(collaboratorQuotaMax + 1);
+		expect(after.futureWorkspaceRequest).toBeNull();
+		expect(after.defaultWorkspaceFiles).toHaveLength(1);
+		expect(after.futureWorkspaceFiles).toHaveLength(0);
+	});
+
 	test("directly purges local data and only clears matching request rows", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
@@ -3619,7 +3828,7 @@ describe("finalize_user_deletion_data", () => {
 				scope: "workspace",
 			});
 			const unrelatedWorkspaceRequestId = await data_deletion_db_request(ctx, {
-				userId: deletedUser.userId,
+				userId: unrelatedUser.userId,
 				organizationId: unrelatedOrganization.organizationId,
 				workspaceId: unrelatedOrganization.defaultWorkspaceId,
 				scope: "workspace",
@@ -3702,7 +3911,7 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.unrelatedWorkspaceRequest?._id).toBe(requestIds.unrelatedWorkspaceRequestId);
 	});
 
-	test("drains plugin UI sessions in bounded batches through the scheduled continuation", async () => {
+	test("prepares hard deletion by tombstoning first and draining plugin UI sessions in bounded batches", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -3719,16 +3928,14 @@ describe("finalize_user_deletion_data", () => {
 			}),
 		);
 
-		await t.run((ctx) =>
-			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
+		const firstResult = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
 				userId: deletedUser.userId,
 				_test_batchSize: 2,
 			}),
 		);
 
-		// The finalize transaction deletes one batch of sessions and still completes the user
-		// finalization without reading the remaining ones.
-		const afterFinalize = await t.run(async (ctx) => {
+		const afterFirstBatch = await t.run(async (ctx) => {
 			const [sessions, user, userRequests] = await Promise.all([
 				ctx.db
 					.query("plugins_ui_sessions")
@@ -3743,13 +3950,32 @@ describe("finalize_user_deletion_data", () => {
 			]);
 			return { sessionCount: sessions.length, user, userRequests };
 		});
-		expect(afterFinalize.sessionCount).toBe(3);
-		expect(afterFinalize.user?.deletedAt).toBeTypeOf("number");
-		expect(afterFinalize.user?.defaultOrganizationId).toBeUndefined();
-		// The remaining sessions are handled by the userId-keyed continuation, never by a queued user request.
-		expect(afterFinalize.userRequests).toHaveLength(0);
+		expect(firstResult).toBe(false);
+		expect(afterFirstBatch.sessionCount).toBe(3);
+		expect(afterFirstBatch.user?.deletedAt).toBeTypeOf("number");
+		expect(afterFirstBatch.user?.defaultOrganizationId).toBe(deletedUser.defaultOrganizationId);
+		expect(afterFirstBatch.userRequests).toHaveLength(0);
 
-		await data_deletion_test_finish_immediate_scheduled_functions(t);
+		const secondResult = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+				userId: deletedUser.userId,
+				_test_batchSize: 2,
+			}),
+		);
+		const thirdResult = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+				userId: deletedUser.userId,
+				_test_batchSize: 2,
+			}),
+		);
+		expect(secondResult).toBe(false);
+		expect(thirdResult).toBe(true);
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
+				userId: deletedUser.userId,
+			}),
+		);
 
 		const remainingSessions = await t.run((ctx) =>
 			ctx.db
@@ -4218,6 +4444,247 @@ describe("enqueue_deletion_requests_processing", () => {
 					requestId,
 				}),
 			);
+		} finally {
+			consoleErrorSpy.mockRestore();
+		}
+	});
+
+	test("moves persistent workspace failures behind later tenant cleanup", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-workspace-fairness",
+				displayName: "Workspace Fairness",
+			}),
+		);
+		const seeded = await t.run(async (ctx) => {
+			const eligibleAt = Date.now();
+			const failureRequestIds: Array<Id<"data_deletion_requests">> = [];
+
+			for (let i = 0; i < 25; i += 1) {
+				const workspaceId = await ctx.db.insert("organizations_workspaces", {
+					organizationId: user.defaultOrganizationId,
+					name: `fair-ws-${i}`,
+					description: "",
+					default: false,
+					updatedAt: eligibleAt,
+				});
+				await ctx.db.insert("files_r2_assets", {
+					organizationId: user.defaultOrganizationId,
+					workspaceId,
+					kind: "content",
+					r2Bucket: "test-bucket",
+					r2Key: `content/workspace-fairness-fail-${i}`,
+					size: 1,
+					createdBy: user.userId,
+					updatedAt: eligibleAt,
+				});
+				failureRequestIds.push(
+					await ctx.db.insert("data_deletion_requests", {
+						userId: user.userId,
+						organizationId: user.defaultOrganizationId,
+						workspaceId,
+						scope: "workspace",
+						eligibleAt,
+					}),
+				);
+			}
+
+			// This ordinary empty workspace is request 26. It must not wait behind
+			// the failing R2-backed workspaces forever.
+			const successWorkspaceId = await ctx.db.insert("organizations_workspaces", {
+				organizationId: user.defaultOrganizationId,
+				name: "fair-ws-success",
+				description: "",
+				default: false,
+				updatedAt: eligibleAt,
+			});
+			const successRequestId = await ctx.db.insert("data_deletion_requests", {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: successWorkspaceId,
+				scope: "workspace",
+				eligibleAt,
+			});
+
+			return {
+				eligibleAt,
+				failureRequestIds,
+				successRequestId,
+				successWorkspaceId,
+				testNow: eligibleAt + 1,
+			};
+		});
+
+		vi.spyOn(R2.prototype, "deleteObject").mockImplementation(async (_ctx, key) => {
+			if (key.includes("workspace-fairness-fail")) {
+				throw new Error("R2 unavailable");
+			}
+		});
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const first = await t.action(internal.data_deletion.process_deletion_requests, {
+				_test_now: seeded.testNow,
+				_test_disableReschedule: true,
+			});
+			const afterFirst = await t.run(async (ctx) => ({
+				failures: await Promise.all(
+					seeded.failureRequestIds.map((requestId) => ctx.db.get("data_deletion_requests", requestId)),
+				),
+				success: await ctx.db.get("data_deletion_requests", seeded.successRequestId),
+			}));
+
+			expect(first.steps).toBe(25);
+			expect(afterFirst.failures.every((request) => request?.eligibleAt === seeded.testNow)).toBe(true);
+			expect(afterFirst.success?.eligibleAt).toBe(seeded.eligibleAt);
+
+			const second = await t.action(internal.data_deletion.process_deletion_requests, {
+				_test_now: seeded.testNow,
+				_test_disableReschedule: true,
+			});
+			const afterSecond = await t.run(async (ctx) => ({
+				failureRequests: await Promise.all(
+					seeded.failureRequestIds.map((requestId) => ctx.db.get("data_deletion_requests", requestId)),
+				),
+				failureAssets: await ctx.db
+					.query("files_r2_assets")
+					.withIndex("by_organization_workspace", (q) => q.eq("organizationId", user.defaultOrganizationId))
+					.collect(),
+				successRequest: await ctx.db.get("data_deletion_requests", seeded.successRequestId),
+				successWorkspace: await ctx.db.get("organizations_workspaces", seeded.successWorkspaceId),
+			}));
+
+			expect(second.steps).toBe(25);
+			expect(afterSecond.failureRequests.every((request) => request !== null)).toBe(true);
+			expect(afterSecond.failureAssets).toHaveLength(25);
+			expect(afterSecond.successRequest).toBeNull();
+			expect(afterSecond.successWorkspace?._id).toBe(seeded.successWorkspaceId);
+		} finally {
+			consoleErrorSpy.mockRestore();
+		}
+	});
+
+	test("moves persistent organization failures behind later tenant cleanup", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-organization-fairness",
+				displayName: "Organization Fairness",
+			}),
+		);
+		const seeded = await t.run(async (ctx) => {
+			const eligibleAt = Date.now();
+			const failureRequestIds: Array<Id<"data_deletion_requests">> = [];
+			const failureOrganizationIds: Array<Id<"organizations">> = [];
+
+			for (let i = 0; i < 25; i += 1) {
+				const organizationId = await ctx.db.insert("organizations", {
+					name: `fair-org-${i}`,
+					description: "",
+					default: false,
+					billingMode: "user",
+					ownerUserId: user.userId,
+					updatedAt: eligibleAt,
+				});
+				const workspaceId = await ctx.db.insert("organizations_workspaces", {
+					organizationId,
+					name: `fair-org-ws-${i}`,
+					description: "",
+					default: true,
+					updatedAt: eligibleAt,
+				});
+				await ctx.db.insert("files_r2_assets", {
+					organizationId,
+					workspaceId,
+					kind: "content",
+					r2Bucket: "test-bucket",
+					r2Key: `content/organization-fairness-fail-${i}`,
+					size: 1,
+					createdBy: user.userId,
+					updatedAt: eligibleAt,
+				});
+				failureOrganizationIds.push(organizationId);
+				failureRequestIds.push(
+					await ctx.db.insert("data_deletion_requests", {
+						userId: user.userId,
+						organizationId,
+						scope: "organization",
+						eligibleAt,
+					}),
+				);
+			}
+
+			// This ordinary empty organization is request 26. It must not wait
+			// behind the failing R2-backed organizations forever.
+			const successOrganizationId = await ctx.db.insert("organizations", {
+				name: "fair-org-complete",
+				description: "",
+				default: false,
+				billingMode: "user",
+				ownerUserId: user.userId,
+				updatedAt: eligibleAt,
+			});
+			const successRequestId = await ctx.db.insert("data_deletion_requests", {
+				userId: user.userId,
+				organizationId: successOrganizationId,
+				scope: "organization",
+				eligibleAt,
+			});
+
+			return {
+				eligibleAt,
+				failureOrganizationIds,
+				failureRequestIds,
+				successOrganizationId,
+				successRequestId,
+				testNow: eligibleAt + 1,
+			};
+		});
+
+		vi.spyOn(R2.prototype, "deleteObject").mockImplementation(async (_ctx, key) => {
+			if (key.includes("organization-fairness-fail")) {
+				throw new Error("R2 unavailable");
+			}
+		});
+		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const first = await t.action(internal.data_deletion.process_deletion_requests, {
+				_test_now: seeded.testNow,
+				_test_disableReschedule: true,
+			});
+			const afterFirst = await t.run(async (ctx) => ({
+				failures: await Promise.all(
+					seeded.failureRequestIds.map((requestId) => ctx.db.get("data_deletion_requests", requestId)),
+				),
+				success: await ctx.db.get("data_deletion_requests", seeded.successRequestId),
+			}));
+
+			expect(first.steps).toBe(25);
+			expect(afterFirst.failures.every((request) => request?.eligibleAt === seeded.testNow)).toBe(true);
+			expect(afterFirst.success?.eligibleAt).toBe(seeded.eligibleAt);
+
+			const second = await t.action(internal.data_deletion.process_deletion_requests, {
+				_test_now: seeded.testNow,
+				_test_disableReschedule: true,
+			});
+			const afterSecond = await t.run(async (ctx) => ({
+				failureRequests: await Promise.all(
+					seeded.failureRequestIds.map((requestId) => ctx.db.get("data_deletion_requests", requestId)),
+				),
+				failureOrganizations: await Promise.all(
+					seeded.failureOrganizationIds.map((organizationId) => ctx.db.get("organizations", organizationId)),
+				),
+				failureAssets: await ctx.db.query("files_r2_assets").collect(),
+				successOrganization: await ctx.db.get("organizations", seeded.successOrganizationId),
+				successRequest: await ctx.db.get("data_deletion_requests", seeded.successRequestId),
+			}));
+
+			expect(second.steps).toBe(25);
+			expect(afterSecond.failureRequests.every((request) => request !== null)).toBe(true);
+			expect(afterSecond.failureOrganizations.every((organization) => organization !== null)).toBe(true);
+			expect(afterSecond.failureAssets).toHaveLength(25);
+			expect(afterSecond.successOrganization).toBeNull();
+			expect(afterSecond.successRequest).toBeNull();
 		} finally {
 			consoleErrorSpy.mockRestore();
 		}

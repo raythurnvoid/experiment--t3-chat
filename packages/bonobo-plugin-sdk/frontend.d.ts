@@ -1,11 +1,10 @@
 /**
- * Sent by the page to `window.parent` (targetOrigin pinned to `parentOrigin`) once the connect
- * listener is installed. It tells the host the page is ready to receive
- * {@link BonoboUiInitMessage}.
+ * Sent by the page to `window.parent` with `targetOrigin: "*"` once the connect listener is
+ * installed. It contains no secret and tells the host the page is ready to receive
+ * {@link BonoboUiInitMessage} from the direct parent.
  */
 export interface BonoboUiReadyMessage {
 	type: "bonobo:ready";
-	protocolVersion: 1;
 }
 
 /**
@@ -14,6 +13,7 @@ export interface BonoboUiReadyMessage {
  */
 export interface BonoboUiTokenRefreshRequestMessage {
 	type: "bonobo:token-refresh-request";
+	bridgeNonce: string;
 	requestId: string;
 }
 
@@ -28,14 +28,14 @@ export interface BonoboUiPageContext {
 
 /**
  * The host's answer to {@link BonoboUiReadyMessage}: it delivers the short-lived scoped bearer
- * token (`plu_...`) and the page context. Like every host → page message, it is trusted only
- * when `event.origin === parentOrigin && event.source === window.parent`. The token travels
- * over postMessage only and is never placed in a URL. `tokenExpiresAt` is Unix epoch
+ * token (`plu_...`) and the page context. The first init is trusted only from `window.parent`;
+ * its exact `event.origin` and `bridgeNonce` are pinned for every later host message. The token
+ * travels over postMessage only and is never placed in a URL. `tokenExpiresAt` is Unix epoch
  * milliseconds.
  */
 export interface BonoboUiInitMessage {
 	type: "bonobo:init";
-	protocolVersion: 1;
+	bridgeNonce: string;
 	apiOrigin: string;
 	token: string;
 	tokenExpiresAt: number;
@@ -48,6 +48,7 @@ export interface BonoboUiInitMessage {
  */
 export interface BonoboUiTokenMessage {
 	type: "bonobo:token";
+	bridgeNonce: string;
 	requestId: string;
 	token: string;
 	tokenExpiresAt: number;
@@ -56,6 +57,7 @@ export interface BonoboUiTokenMessage {
 /** The host's failure answer to {@link BonoboUiTokenRefreshRequestMessage}. */
 export interface BonoboUiTokenErrorMessage {
 	type: "bonobo:token-error";
+	bridgeNonce: string;
 	requestId: string;
 	message: string;
 }
@@ -64,7 +66,7 @@ export interface BonoboUiTokenErrorMessage {
  * The connected plugin-page client resolved by {@link bonobo_ui_connect}. With the
  * `workspace.files.read` capability the UI token carries the `files:list`, `files:read`, and
  * `files:download` scopes for `POST /api/v1/files/list`, `POST /api/v1/files/read`, and
- * `POST /api/v1/files/download-url`. UI tokens are always rejected on `/api/v1/files/write`.
+ * `POST /api/v1/files/download-urls`. UI tokens are always rejected on `/api/v1/files/write`.
  */
 export interface BonoboUiFrontendClient {
 	/** The {@link BonoboUiInitMessage} context. */
@@ -79,7 +81,7 @@ export interface BonoboUiFrontendClient {
 	/**
 	 * Asks the host for a fresh token ({@link BonoboUiTokenRefreshRequestMessage}). Concurrent
 	 * callers share one in-flight request. Rejects when the host answers with
-	 * {@link BonoboUiTokenErrorMessage}.
+	 * {@link BonoboUiTokenErrorMessage} or does not answer within 10 seconds.
 	 */
 	refreshToken(): Promise<string>;
 	/**
@@ -101,16 +103,15 @@ export interface BonoboUiFrontendClient {
 /**
  * Connects the page to the embedding host app. It installs one shared `message` listener (for
  * init and token responses), posts {@link BonoboUiReadyMessage} to `window.parent`, and resolves
- * with the client when the host's {@link BonoboUiInitMessage} (protocol v1) arrives.
+ * with the client when the host's {@link BonoboUiInitMessage} arrives.
  * `bonobo:init` messages after the first are ignored.
  *
- * Reads `parentOrigin` and `pageId` from the query params the host appends to the iframe URL,
- * and throws when `parentOrigin` is missing — that means the page was not embedded by the
- * Bonobo host app.
+ * Ready messages contain no secret and are retried until the host answers or the document
+ * unloads. The host owns the startup deadline and replaces a failed frame; the SDK does not run
+ * a competing timeout.
  *
- * Security: outgoing messages are posted to `window.parent` with exactly
- * `targetOrigin: parentOrigin`. Incoming messages are accepted only when
- * `event.origin === parentOrigin` and `event.source === window.parent`; everything else —
- * including unknown `type` values — is silently ignored.
+ * After init, outgoing messages are posted to the exact recorded parent origin. Incoming refresh
+ * messages require that origin, `window.parent`, and the init nonce; everything else is silently
+ * ignored.
  */
 export function bonobo_ui_connect(): Promise<BonoboUiFrontendClient>;

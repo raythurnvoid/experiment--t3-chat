@@ -54,12 +54,7 @@ type LegacyPluginsVersion = Omit<Doc<"plugins_versions">, "backend"> & {
 	backend?: Doc<"plugins_versions">["backendEntrypointFile"];
 };
 
-type LegacyPluginsVersionUnusedFields = Omit<
-	Doc<"plugins_versions">,
-	"pages" | "sourceDefaultBranch" | "sourceFileCount" | "sourceTotalBytes"
-> & {
-	/** Removed: plugin UI pages were never built. */
-	pages?: Array<{ name: string; displayName: string; html: string; assets: string[] }>;
+type LegacyPluginsVersionUnusedFields = Doc<"plugins_versions"> & {
 	/** Removed: unread publish/source-snapshot bookkeeping. */
 	sourceDefaultBranch?: string;
 	sourceFileCount?: number;
@@ -71,7 +66,10 @@ type LegacyPluginsEventHandlerStatus = Omit<Doc<"plugins_workspace_event_handler
 	status?: "enabled" | "disabled";
 };
 
-type LegacyPluginsPublisherSecretAllowedOrigins = Omit<Doc<"plugins_publisher_repository_secrets">, "allowedOrigins"> & {
+type LegacyPluginsPublisherSecretAllowedOrigins = Omit<
+	Doc<"plugins_publisher_repository_secrets">,
+	"allowedOrigins"
+> & {
 	/** Removed: outbound origins come solely from the version manifest, consented at install. */
 	allowedOrigins?: string[];
 };
@@ -753,7 +751,6 @@ export const remove_plugins_versions_unused_fields = app_migrations.define({
 	migrateOne: async (ctx, version) => {
 		const legacy = version as LegacyPluginsVersionUnusedFields;
 		if (
-			legacy.pages === undefined &&
 			legacy.sourceDefaultBranch === undefined &&
 			legacy.sourceFileCount === undefined &&
 			legacy.sourceTotalBytes === undefined
@@ -764,7 +761,6 @@ export const remove_plugins_versions_unused_fields = app_migrations.define({
 		const {
 			_id,
 			_creationTime,
-			pages: _pages,
 			sourceDefaultBranch: _sourceDefaultBranch,
 			sourceFileCount: _sourceFileCount,
 			sourceTotalBytes: _sourceTotalBytes,
@@ -790,18 +786,6 @@ export const backfill_plugins_versions_backend_entrypoint_file_sha256 = app_migr
 		await ctx.db.patch("plugins_versions", version._id, {
 			backendEntrypointFile: { ...backendEntrypointFile, sha256: backendEntrypointListedFile.sha256 },
 		});
-	},
-});
-
-export const backfill_plugins_versions_runtime_version = app_migrations.define({
-	table: "plugins_versions",
-	migrateOne: async (ctx, version) => {
-		// A briefly-deployed removal stripped the stamp; every existing doc was published against runtime "1".
-		if (version.runtimeVersion !== undefined) {
-			return;
-		}
-
-		await ctx.db.patch("plugins_versions", version._id, { runtimeVersion: "1" });
 	},
 });
 
@@ -1016,7 +1000,4 @@ export const run_remove_plugins_versions_unused_fields = app_migrations.runner(
 );
 export const run_backfill_plugins_versions_backend_entrypoint_file_sha256 = app_migrations.runner(
 	internal.migrations.backfill_plugins_versions_backend_entrypoint_file_sha256,
-);
-export const run_backfill_plugins_versions_runtime_version = app_migrations.runner(
-	internal.migrations.backfill_plugins_versions_runtime_version,
 );
