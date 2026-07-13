@@ -43,4 +43,15 @@ crons.cron(
 // Once daily at 06:30 UTC — delete terminal plugin runs and their call docs past retention.
 crons.cron("cleanup old plugin event runs", "30 6 * * *", internal.plugins_runtime.cleanup_old_event_runs, {});
 
+// Once daily at 06:45 UTC — delete expired plugin UI page sessions.
+crons.cron("cleanup expired plugin ui sessions", "45 6 * * *", internal.plugins_ui.cleanup_expired_ui_sessions, {});
+
+// Once hourly — clean up files uploaded by interrupted publishes whose scheduled cleanup run never happened (crash, failed retry).
+crons.cron(
+	"cleanup stale plugin publish artifacts",
+	"15 * * * *",
+	internal.plugins.schedule_due_publish_artifact_cleanup_attempts,
+	{},
+);
+
 export default crons;

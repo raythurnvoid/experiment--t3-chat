@@ -57,6 +57,8 @@ const rate_limiter_CONFIG = {
 	files_tree_write: STRICT_WRITE,
 	files_yjs_push_update: STRICT_WRITE,
 	plugins_manage: STRICT_AUTH_OR_BILLING,
+	// Initial mint plus occasional refresh per open plugin page; token TTL is 30 minutes.
+	plugins_ui_session_mint: STRICT_WRITE,
 	// Each fresh plugin artifact review is a system-billed model call; cached artifact hashes bypass this.
 	plugins_publish_review: {
 		kind: "token bucket",

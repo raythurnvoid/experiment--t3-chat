@@ -9,7 +9,11 @@ import {
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
-const plugins_capability_validator = v.union(v.literal("plugin.secrets.read"), v.literal("outbound.fetch"));
+const plugins_capability_validator = v.union(
+	v.literal("plugin.secrets.read"),
+	v.literal("outbound.fetch"),
+	v.literal("workspace.files.read"),
+);
 
 const app_convex_schema = defineSchema({
 	// #region ai
@@ -818,6 +822,21 @@ const app_convex_schema = defineSchema({
 				contentTypes: v.array(v.string()),
 			}),
 		),
+		/**
+		 * UI pages declared in the manifest, rendered in sandboxed iframes. A page with a non-null
+		 * navItem gets a main-sidebar entry once the plugin is installed and enabled. Versions
+		 * published before pages existed have no field here; that is treated as [].
+		 */
+		pages: v.optional(
+			v.array(
+				v.object({
+					id: v.string(),
+					title: v.string(),
+					entry: v.string(),
+					navItem: v.union(v.object({ label: v.string(), icon: v.union(v.string(), v.null()) }), v.null()),
+				}),
+			),
+		),
 		capabilities: v.array(plugins_capability_validator),
 		/**
 		 * Exact https origins the plugin's code declares it calls; consented at install.
@@ -1001,6 +1020,46 @@ const app_convex_schema = defineSchema({
 		.index("by_run_sequence", ["runId", "sequence"])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"])
 		.index("by_installation", ["installationId"]),
+
+	/**
+	 * Short-lived plugin-UI bearer sessions (`plu_` tokens, stored hashed). Every call rechecks
+	 * that the installation is still enabled on the same version and that the minting user is
+	 * still a member, so disabling, uninstalling, or upgrading revokes outstanding tokens on its
+	 * own.
+	 */
+	plugins_ui_sessions: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginVersionId: v.id("plugins_versions"),
+		userId: v.id("users"),
+		tokenHash: v.string(),
+		createdAt: v.number(),
+		expiresAt: v.number(),
+	})
+		.index("by_tokenHash", ["tokenHash"])
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_installation", ["installationId"])
+		.index("by_user", ["userId"]),
+
+	/**
+	 * One doc per publish, created before the publish uploads anything: it lists the keys the
+	 * publish is about to write, and a cleanup run is scheduled together with it. A successful
+	 * publish removes it after registering the version. A doc still here past `cleanupAt` means
+	 * the publish was interrupted: cleanup deletes its keys in bounded batches, keeping any key a
+	 * registered `(name, version, artifactHash)` version owns.
+	 */
+	plugins_publish_artifact_cleanup_attempts: defineTable({
+		repositoryId: v.id("plugins_publisher_repositories"),
+		pluginName: v.string(),
+		version: v.string(),
+		artifactHash: v.string(),
+		/** At most 65 object keys: 64 manifest-capped files plus dist/bonobo.plugin.json. */
+		r2Keys: v.array(v.string()),
+		/** Cleanup never runs before this deadline, so a concurrent publish of the same artifact can finish. */
+		cleanupAt: v.number(),
+		updatedAt: v.number(),
+	}).index("by_cleanupAt", ["cleanupAt"]),
 	// #endregion plugins
 
 	// #region chat messages

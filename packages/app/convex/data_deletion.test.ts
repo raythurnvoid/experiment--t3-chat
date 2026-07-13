@@ -125,6 +125,70 @@ async function data_deletion_test_seed_page(
 	} as const;
 }
 
+async function data_deletion_test_seed_plugin_ui_sessions(
+	ctx: MutationCtx,
+	args: {
+		userId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		sessionCount: number;
+	},
+) {
+	const now = Date.now();
+	const pluginVersionId = await ctx.db.insert("plugins_versions", {
+		name: "gallery",
+		displayName: "Gallery",
+		version: "0.1.0",
+		description: "Workspace media gallery",
+		reviewStatus: "passed",
+		isLatest: true,
+		runtimeVersion: "1",
+		artifactHash: `sha256:${"a".repeat(64)}`,
+		sourceRepositoryUrl: "https://github.com/bonobo/gallery-plugin",
+		sourceOwner: "bonobo",
+		sourceRepo: "gallery-plugin",
+		sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+		manifestR2Key: "plugins/gallery/manifest.json",
+		backendEntrypointFile: null,
+		events: [],
+		capabilities: ["workspace.files.read"],
+		outboundOrigins: [],
+		files: [],
+		sourceStatus: "ready",
+		sourceLastError: null,
+		createdBy: args.userId,
+		updatedAt: now,
+	});
+	const installationId = await ctx.db.insert("plugins_workspace_installations", {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		pluginVersionId,
+		pluginName: "gallery",
+		status: "enabled",
+		acceptedCapabilities: ["workspace.files.read"],
+		capabilitiesAcceptedAt: now,
+		acceptedOutboundOrigins: [],
+		outboundOriginsAcceptedAt: now,
+		installedBy: args.userId,
+		updatedBy: args.userId,
+		updatedAt: now,
+	});
+	for (let i = 0; i < args.sessionCount; i += 1) {
+		await ctx.db.insert("plugins_ui_sessions", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			installationId,
+			pluginVersionId,
+			userId: args.userId,
+			tokenHash: `${i}`.padStart(64, "0"),
+			createdAt: now,
+			expiresAt: now + 30 * 60 * 1000,
+		});
+	}
+
+	return { installationId } as const;
+}
+
 async function data_deletion_test_seed_workspace_content_bulk(
 	ctx: MutationCtx,
 	args: {
@@ -1382,7 +1446,59 @@ describe("process_user_deletion_request", () => {
 				updatedAt: Date.now(),
 			});
 
-			return created._yay;
+			// A plugin UI session for the deleted user in the shared org: user finalize must delete
+			// it through the by_user index while the collaborator's installation itself survives.
+			const now = Date.now();
+			const pluginVersionId = await ctx.db.insert("plugins_versions", {
+				name: "gallery",
+				displayName: "Gallery",
+				version: "0.1.0",
+				description: "Workspace media gallery",
+				reviewStatus: "passed",
+				isLatest: true,
+				runtimeVersion: "1",
+				artifactHash: `sha256:${"a".repeat(64)}`,
+				sourceRepositoryUrl: "https://github.com/bonobo/gallery-plugin",
+				sourceOwner: "bonobo",
+				sourceRepo: "gallery-plugin",
+				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+				manifestR2Key: "plugins/gallery/manifest.json",
+				backendEntrypointFile: null,
+				events: [],
+				capabilities: ["workspace.files.read"],
+				outboundOrigins: [],
+				files: [],
+				sourceStatus: "ready",
+				sourceLastError: null,
+				createdBy: collaborator.userId,
+				updatedAt: now,
+			});
+			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				organizationId: created._yay.organizationId,
+				workspaceId: created._yay.defaultWorkspaceId,
+				pluginVersionId,
+				pluginName: "gallery",
+				status: "enabled",
+				acceptedCapabilities: ["workspace.files.read"],
+				capabilitiesAcceptedAt: now,
+				acceptedOutboundOrigins: [],
+				outboundOriginsAcceptedAt: now,
+				installedBy: collaborator.userId,
+				updatedBy: collaborator.userId,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_ui_sessions", {
+				organizationId: created._yay.organizationId,
+				workspaceId: created._yay.defaultWorkspaceId,
+				installationId,
+				pluginVersionId,
+				userId: deletedUser.userId,
+				tokenHash: "f".repeat(64),
+				createdAt: now,
+				expiresAt: now + 30 * 60 * 1000,
+			});
+
+			return { ...created._yay, installationId };
 		});
 
 		await t.run(async (ctx) => {
@@ -1441,6 +1557,8 @@ describe("process_user_deletion_request", () => {
 				sharedPages,
 				personalPages,
 				snapshots,
+				uiSessions,
+				sharedInstallation,
 			] = await Promise.all([
 				ctx.db.get("users", deletedUser.userId),
 				ctx.db.get("users_anagraphics", deletedUser.anagraphicId),
@@ -1489,6 +1607,11 @@ describe("process_user_deletion_request", () => {
 					.query("billing_usage_snapshots")
 					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
 					.collect(),
+				ctx.db
+					.query("plugins_ui_sessions")
+					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+					.collect(),
+				ctx.db.get("plugins_workspace_installations", sharedOrganization.installationId),
 			]);
 
 			return {
@@ -1507,6 +1630,8 @@ describe("process_user_deletion_request", () => {
 				sharedPages,
 				personalPages,
 				snapshots,
+				uiSessions,
+				sharedInstallation,
 			};
 		});
 
@@ -1528,6 +1653,90 @@ describe("process_user_deletion_request", () => {
 		expect(afterUserDeletion.purgeRequests).toHaveLength(0);
 		expect(afterUserDeletion.sharedPages).toHaveLength(1);
 		expect(afterUserDeletion.snapshots).toHaveLength(1);
+		expect(afterUserDeletion.uiSessions).toHaveLength(0);
+		expect(afterUserDeletion.sharedInstallation).not.toBeNull();
+	});
+
+	test("drains plugin UI sessions in bounded batches before finalizing the queued user", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-session-drain",
+				displayName: "Session Drain",
+			}),
+		);
+		await t.run((ctx) =>
+			data_deletion_test_seed_plugin_ui_sessions(ctx, {
+				userId: deletedUser.userId,
+				organizationId: deletedUser.defaultOrganizationId,
+				workspaceId: deletedUser.defaultWorkspaceId,
+				sessionCount: 5,
+			}),
+		);
+
+		const requestId = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.init_user_deletion, {
+				userId: deletedUser.userId,
+				nowTs: 10_001,
+			}),
+		);
+		if (!requestId) {
+			throw new Error("Expected a queued user deletion request");
+		}
+		const test_now = await t.run(async (ctx) => {
+			const request = await ctx.db.get("data_deletion_requests", requestId);
+			if (!request) {
+				throw new Error("Expected the queued user request doc");
+			}
+			return request.eligibleAt + 1;
+		});
+
+		// Two sessions per pass: the request must stay queued (done: false) until all sessions are deleted.
+		const passes = [];
+		for (let i = 0; i < 3; i += 1) {
+			passes.push(
+				await t.run((ctx) =>
+					ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
+						requestId,
+						_test_now: test_now,
+						_test_batchSize: 2,
+					}),
+				),
+			);
+		}
+		expect(passes).toEqual([
+			{ done: false, deletedCount: 2 },
+			{ done: false, deletedCount: 2 },
+			{ done: false, deletedCount: 1 },
+		]);
+
+		// Finalization has not run while the drain was in progress.
+		const beforeFinalize = await t.run((ctx) => ctx.db.get("users", deletedUser.userId));
+		expect(beforeFinalize?.defaultOrganizationId).toBeDefined();
+
+		const finalPass = await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
+				requestId,
+				_test_now: test_now,
+				_test_batchSize: 2,
+			}),
+		);
+		expect(finalPass).toEqual({ done: true, deletedCount: 1 });
+
+		const after = await t.run(async (ctx) => {
+			const [sessions, request, user] = await Promise.all([
+				ctx.db
+					.query("plugins_ui_sessions")
+					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+					.collect(),
+				ctx.db.get("data_deletion_requests", requestId),
+				ctx.db.get("users", deletedUser.userId),
+			]);
+			return { sessions, request, user };
+		});
+		expect(after.sessions).toHaveLength(0);
+		expect(after.request).toBeNull();
+		expect(after.user?.defaultOrganizationId).toBeUndefined();
 	});
 
 	test("clears user quota docs when the queued request runs after the user doc is gone", async () => {
@@ -1950,6 +2159,16 @@ describe("process_workspace_deletion_request", () => {
 				installationCreatedAt: now,
 				updatedAt: now,
 			});
+			await ctx.db.insert("plugins_ui_sessions", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				installationId,
+				pluginVersionId,
+				userId: user.userId,
+				tokenHash: "e".repeat(64),
+				createdAt: now,
+				expiresAt: now + 30 * 60 * 1000,
+			});
 			const runId = await ctx.db.insert("plugins_event_runs", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
@@ -2043,23 +2262,84 @@ describe("process_workspace_deletion_request", () => {
 		});
 
 		const remaining = await t.run(async (ctx) => {
-			const [calls, runs, eventHandlers, secrets, installations, stages] = await Promise.all([
+			const [calls, runs, eventHandlers, secrets, uiSessions, installations, stages] = await Promise.all([
 				ctx.db.query("plugins_event_run_calls").collect(),
 				ctx.db.query("plugins_event_runs").collect(),
 				ctx.db.query("plugins_workspace_event_handlers").collect(),
 				ctx.db.query("plugins_workspace_installation_secrets").collect(),
+				ctx.db.query("plugins_ui_sessions").collect(),
 				ctx.db.query("plugins_workspace_installations").collect(),
 				ctx.db.query("public_api_file_write_stages").collect(),
 			]);
 			const inWorkspace = (doc: { organizationId: string; workspaceId: string }) =>
 				doc.organizationId === user.defaultOrganizationId && doc.workspaceId === user.defaultWorkspaceId;
-			return [calls, runs, eventHandlers, secrets, installations, stages].reduce(
+			return [calls, runs, eventHandlers, secrets, uiSessions, installations, stages].reduce(
 				(total, docs) => total + docs.filter(inWorkspace).length,
 				0,
 			);
 		});
 
 		expect(remaining).toBe(0);
+	});
+
+	test("drains plugin UI sessions in bounded batches before deleting their installation", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-ws-session-drain",
+				displayName: "Workspace Session Drain",
+			}),
+		);
+		const seeded = await t.run((ctx) =>
+			data_deletion_test_seed_plugin_ui_sessions(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				sessionCount: 5,
+			}),
+		);
+		const requestId = await t.run((ctx) =>
+			data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				scope: "workspace",
+			}),
+		);
+
+		// Each pass deletes at most one batch of sessions, and the installation is deleted only
+		// after the last session, so a crash between passes never leaves sessions without their
+		// installation.
+		let previousSessionCount = 5;
+		for (let i = 0; i < 300; i += 1) {
+			const result = await t.run((ctx) =>
+				ctx.runMutation(internal.data_deletion.process_workspace_deletion_request, {
+					requestId,
+					_test_batchSize: 2,
+				}),
+			);
+			const afterPass = await t.run(async (ctx) => {
+				const [sessions, installation] = await Promise.all([
+					ctx.db
+						.query("plugins_ui_sessions")
+						.withIndex("by_installation", (q) => q.eq("installationId", seeded.installationId))
+						.collect(),
+					ctx.db.get("plugins_workspace_installations", seeded.installationId),
+				]);
+				return { sessionCount: sessions.length, hasInstallation: installation !== null };
+			});
+			expect(afterPass.sessionCount).toBeGreaterThanOrEqual(previousSessionCount - 2);
+			previousSessionCount = afterPass.sessionCount;
+			if (!afterPass.hasInstallation) {
+				expect(afterPass.sessionCount).toBe(0);
+			}
+			if (result.done) {
+				expect(afterPass.sessionCount).toBe(0);
+				expect(afterPass.hasInstallation).toBe(false);
+				return;
+			}
+		}
+		throw new Error("Workspace deletion request did not finish");
 	});
 
 	test("leaves R2 asset rows retryable when object deletion fails", async () => {
@@ -3420,6 +3700,64 @@ describe("finalize_user_deletion_data", () => {
 		expect(after.organizationRequest).toBeNull();
 		expect(after.workspaceRequest).toBeNull();
 		expect(after.unrelatedWorkspaceRequest?._id).toBe(requestIds.unrelatedWorkspaceRequestId);
+	});
+
+	test("drains plugin UI sessions in bounded batches through the scheduled continuation", async () => {
+		const t = test_convex();
+		const deletedUser = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-session-drain",
+				displayName: "Hard Delete Session Drain",
+			}),
+		);
+		await t.run((ctx) =>
+			data_deletion_test_seed_plugin_ui_sessions(ctx, {
+				userId: deletedUser.userId,
+				organizationId: deletedUser.defaultOrganizationId,
+				workspaceId: deletedUser.defaultWorkspaceId,
+				sessionCount: 5,
+			}),
+		);
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
+				userId: deletedUser.userId,
+				_test_batchSize: 2,
+			}),
+		);
+
+		// The finalize transaction deletes one batch of sessions and still completes the user
+		// finalization without reading the remaining ones.
+		const afterFinalize = await t.run(async (ctx) => {
+			const [sessions, user, userRequests] = await Promise.all([
+				ctx.db
+					.query("plugins_ui_sessions")
+					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+					.collect(),
+				ctx.db.get("users", deletedUser.userId),
+				ctx.db
+					.query("data_deletion_requests")
+					.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+					.collect()
+					.then((requests) => requests.filter((request) => request.scope === "user")),
+			]);
+			return { sessionCount: sessions.length, user, userRequests };
+		});
+		expect(afterFinalize.sessionCount).toBe(3);
+		expect(afterFinalize.user?.deletedAt).toBeTypeOf("number");
+		expect(afterFinalize.user?.defaultOrganizationId).toBeUndefined();
+		// The remaining sessions are handled by the userId-keyed continuation, never by a queued user request.
+		expect(afterFinalize.userRequests).toHaveLength(0);
+
+		await data_deletion_test_finish_immediate_scheduled_functions(t);
+
+		const remainingSessions = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_ui_sessions")
+				.withIndex("by_user", (q) => q.eq("userId", deletedUser.userId))
+				.collect(),
+		);
+		expect(remainingSessions).toHaveLength(0);
 	});
 
 	test("finishes a user whose scheduled deletion was already initialized and preserves billing snapshots by default", async () => {

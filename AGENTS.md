@@ -551,6 +551,29 @@ Use imperative second-person voice ("Keep...", "Use...", "Guard...") rather than
 // Keeps one cleanup task per row and replaces the older scheduled run whenever the row changes.
 ```
 
+### Comment wording: plain language
+
+Write comments and JSDoc for a reader who is not an eloquent native English speaker and does not have the whole module context in mind. Keep commenting the "why" (see above), but say it in plain language.
+
+- Use short sentences with a plain subject-verb-object shape. Split a multi-fact sentence into separate sentences instead of chaining facts with semicolons, colons, or em-dashes.
+- Use simple everyday words: "delete" over "reclaim"/"drain"/"sweep", "files" over "objects", "never happened" over "was lost" — unless the technical term is the precise domain term the code also uses.
+- Name the actor and the action instead of a compressed noun phrase: "the publish records the keys it is about to write", not "durably record the exact keys".
+- Spell out cause and effect as a small story: "If X crashes between A and B, Y would happen. So we do Z." The reader should not have to reconstruct the failure scenario from one packed clause.
+- Do not invent shorthand or metaphors ("crash-shaped exit", "yanked out from under", "the overflow rides the continuation").
+- Do not assume the reader knows what a referenced mechanism does; give one short clause of context ("the cron fallback picks this attempt up again after the deadline").
+- Plain does not mean longer. Keep comments concise by dropping asides that are already explained at the site where they matter, not by compressing sentences.
+
+```ts
+// ✅ Good
+// If the publish crashes between the uploads below and registration, the uploaded files must
+// not stay in the bucket forever. So before the first upload, one mutation records the exact
+// keys and schedules their cleanup.
+
+// ❌ Bad
+// A crash between the uploads below and registration must not orphan bucket objects: durably
+// record the exact keys and schedule their cleanup in one mutation before the first put.
+```
+
 ## Global DOM ids: `AppElementId` + `satisfies`
 
 When selecting a DOM element by a global static id (non-dynamic id), the id must be declared in `AppElementId` and used with `satisfies AppElementId` at the call site.

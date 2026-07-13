@@ -3183,6 +3183,127 @@ describe("plugins outbound origins consent", () => {
 	});
 });
 
+describe("plugins manifest limits", () => {
+	function manifest_file(index: number, overrides: Record<string, unknown> = {}) {
+		return {
+			path: `dist/file-${index}.js`,
+			sha256: `sha256:${"a".repeat(64)}`,
+			bytes: 1,
+			contentType: "application/javascript",
+			...overrides,
+		};
+	}
+
+	function manifest_page(index: number, overrides: Record<string, unknown> = {}) {
+		return { id: `page-${index}`, title: `Page ${index}`, entry: "dist/ui/index.html", ...overrides };
+	}
+
+	function manifest_json(overrides: { files?: unknown[]; pages?: unknown[]; capabilities?: string[] } = {}) {
+		return {
+			schemaVersion: 1,
+			name: "media",
+			displayName: "Media",
+			version: "0.1.0",
+			description: "Image and video markdown generation",
+			compatibility: { bonoboPluginRuntime: "1" },
+			events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
+			capabilities: overrides.capabilities ?? ["plugin.secrets.read"],
+			outboundOrigins: [],
+			files: overrides.files ?? [manifest_file(0)],
+			...(overrides.pages ? { pages: overrides.pages } : {}),
+		};
+	}
+
+	const html_file = manifest_file(99, { path: "dist/ui/index.html", contentType: "text/html" });
+
+	test("accepts 64 listed files and rejects 65", () => {
+		const files = (count: number) => Array.from({ length: count }, (_, index) => manifest_file(index));
+		expect(plugins_validate_manifest(manifest_json({ files: files(64) }))).toMatchObject({ _yay: expect.any(Object) });
+		expect(plugins_validate_manifest(manifest_json({ files: files(65) }))).toMatchObject({
+			_nay: { message: expect.any(String) },
+		});
+	});
+
+	test("accepts a 512-char file path and rejects 513", () => {
+		const path_of = (length: number) => `dist/${"a".repeat(length - "dist/".length)}`;
+		expect(
+			plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { path: path_of(512) })] })),
+		).toMatchObject({ _yay: expect.any(Object) });
+		expect(
+			plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { path: path_of(513) })] })),
+		).toMatchObject({ _nay: { message: expect.any(String) } });
+	});
+
+	test("accepts a 255-char content type and rejects 256", () => {
+		expect(
+			plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { contentType: "a".repeat(255) })] })),
+		).toMatchObject({ _yay: expect.any(Object) });
+		expect(
+			plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { contentType: "a".repeat(256) })] })),
+		).toMatchObject({ _nay: { message: expect.any(String) } });
+	});
+
+	test("accepts 900000 declared bytes per file and rejects 900001", () => {
+		expect(plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { bytes: 900_000 })] }))).toMatchObject({
+			_yay: expect.any(Object),
+		});
+		expect(plugins_validate_manifest(manifest_json({ files: [manifest_file(0, { bytes: 900_001 })] }))).toMatchObject({
+			_nay: { message: expect.any(String) },
+		});
+	});
+
+	test("accepts exactly 16 MiB of declared artifact bytes and rejects one more byte", () => {
+		const files_summing_to = (target: number) => {
+			const files: Array<Record<string, unknown>> = [];
+			let remaining = target;
+			for (let index = 0; remaining > 0; index += 1) {
+				const bytes = Math.min(remaining, 900_000);
+				files.push(manifest_file(index, { bytes }));
+				remaining -= bytes;
+			}
+			return files;
+		};
+		expect(plugins_validate_manifest(manifest_json({ files: files_summing_to(16 * 1024 * 1024) }))).toMatchObject({
+			_yay: expect.any(Object),
+		});
+		expect(plugins_validate_manifest(manifest_json({ files: files_summing_to(16 * 1024 * 1024 + 1) }))).toEqual({
+			_nay: { message: "Plugin manifest declares more than 16 MiB of artifact bytes" },
+		});
+	});
+
+	test("accepts 16 pages and rejects 17", () => {
+		const pages = (count: number) => Array.from({ length: count }, (_, index) => manifest_page(index));
+		expect(plugins_validate_manifest(manifest_json({ files: [html_file], pages: pages(16) }))).toMatchObject({
+			_yay: expect.any(Object),
+		});
+		expect(plugins_validate_manifest(manifest_json({ files: [html_file], pages: pages(17) }))).toMatchObject({
+			_nay: { message: expect.any(String) },
+		});
+	});
+
+	test("accepts 8 nav items and rejects 9", () => {
+		const pages = (navCount: number) =>
+			Array.from({ length: 16 }, (_, index) =>
+				manifest_page(index, index < navCount ? { navItem: { label: `Nav ${index}` } } : {}),
+			);
+		expect(plugins_validate_manifest(manifest_json({ files: [html_file], pages: pages(8) }))).toMatchObject({
+			_yay: expect.any(Object),
+		});
+		expect(plugins_validate_manifest(manifest_json({ files: [html_file], pages: pages(9) }))).toEqual({
+			_nay: { message: "Plugin manifest declares more than 8 nav items" },
+		});
+	});
+
+	test("rejects duplicate capabilities", () => {
+		expect(
+			plugins_validate_manifest(manifest_json({ capabilities: ["plugin.secrets.read", "outbound.fetch"] })),
+		).toMatchObject({ _yay: expect.any(Object) });
+		expect(
+			plugins_validate_manifest(manifest_json({ capabilities: ["plugin.secrets.read", "plugin.secrets.read"] })),
+		).toEqual({ _nay: { message: 'Plugin manifest has duplicate capability "plugin.secrets.read"' } });
+	});
+});
+
 describe("plugins publish_version", () => {
 	async function insert_claimed_repository(
 		t: ReturnType<typeof test_convex>,
@@ -3346,6 +3467,85 @@ describe("plugins publish_version", () => {
 		return { commitSha, manifestText, workerSource, uploadUrls, githubAuthorizations };
 	}
 
+	/**
+	 * Publish fetch mock for a backend-less manifest listing arbitrary dist files. Delays artifact
+	 * downloads and R2 uploads by `delayMs` and tracks the highest number of concurrent downloads
+	 * and uploads, so tests can check that at most four transfers run at once.
+	 */
+	async function mock_publish_github_fetch_files(args: {
+		files: Array<{ path: string; content: string; contentType: string }>;
+		delayMs?: number;
+	}) {
+		const commitSha = "fedcba9876543210fedcba9876543210fedcba98";
+		const manifestText = JSON.stringify({
+			schemaVersion: 1,
+			name: "media",
+			displayName: "Media",
+			version: "0.2.0",
+			description: "Published media plugin",
+			compatibility: { bonoboPluginRuntime: "1" },
+			events: [{ type: "files.upload.completed", contentTypes: ["image/png"] }],
+			pages: [],
+			capabilities: ["plugin.secrets.read"],
+			outboundOrigins: [],
+			files: await Promise.all(
+				args.files.map(async (file) => ({
+					path: file.path,
+					sha256: await sha256_text(file.content),
+					bytes: file.content.length,
+					contentType: file.contentType,
+				})),
+			),
+		});
+		const delayMs = args.delayMs ?? 0;
+		const contentsByPath = new Map(args.files.map((file) => [file.path, file.content]));
+		const inFlight = { downloads: 0, maxDownloads: 0, uploads: 0, maxUploads: 0 };
+		const uploadUrls: string[] = [];
+
+		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input);
+			if (url === "https://r2.test/upload") {
+				expect(init?.method).toBe("PUT");
+				inFlight.uploads += 1;
+				inFlight.maxUploads = Math.max(inFlight.maxUploads, inFlight.uploads);
+				await new Promise((resolve) => setTimeout(resolve, delayMs));
+				inFlight.uploads -= 1;
+				uploadUrls.push(url);
+				return new Response(null, { status: 200 });
+			}
+			if (url === "https://api.github.com/repos/bonobo/media-plugin") {
+				return new Response(JSON.stringify({ default_branch: "main" }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			if (url === "https://api.github.com/repos/bonobo/media-plugin/commits/main") {
+				return new Response(JSON.stringify({ sha: commitSha, commit: { tree: { sha: "1".repeat(40) } } }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			const rawPrefix = `https://raw.githubusercontent.com/bonobo/media-plugin/${commitSha}/`;
+			if (url.startsWith(rawPrefix)) {
+				const path = decodeURIComponent(url.slice(rawPrefix.length));
+				if (path === "dist/bonobo.plugin.json") {
+					return new Response(manifestText, { status: 200 });
+				}
+				const content = contentsByPath.get(path);
+				if (content !== undefined) {
+					inFlight.downloads += 1;
+					inFlight.maxDownloads = Math.max(inFlight.maxDownloads, inFlight.downloads);
+					await new Promise((resolve) => setTimeout(resolve, delayMs));
+					inFlight.downloads -= 1;
+					return new Response(content, { status: 200 });
+				}
+			}
+			return new Response(null, { status: 404 });
+		});
+
+		return { commitSha, inFlight, uploadUrls };
+	}
+
 	test("publishes a bundled plugin from GitHub, writes R2 artifacts, and registers with the review verdict", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -3420,6 +3620,173 @@ describe("plugins publish_version", () => {
 
 		expect(published).toEqual({ _nay: { message: 'Artifact file byte size mismatch for "dist/backend/worker.js"' } });
 		expect(github.uploadUrls).toEqual([]);
+	});
+
+	test("rejects a declared over-limit manifest before fetching any artifact file", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		// The delta pushes the declared per-file bytes over the 900,000 cap.
+		const github = await mock_publish_github_fetch({ artifactBytesDelta: 900_001 });
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+
+		expect(published).toMatchObject({ _nay: { message: expect.any(String) } });
+		const workerFetches = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("dist/backend/worker.js"));
+		expect(workerFetches).toEqual([]);
+		expect(github.uploadUrls).toEqual([]);
+		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
+		expect(versions).toEqual([]);
+	});
+
+	test("stops streaming an artifact file at the declared byte bound", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const github = await mock_publish_github_fetch();
+		const base = vi.mocked(fetch).getMockImplementation();
+		if (!base) {
+			throw new Error("Expected the publish fetch mock");
+		}
+		// An endless body: the bounded reader must cancel after the declared bytes, not buffer it all.
+		let pulls = 0;
+		let cancelled = false;
+		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (
+				String(input) ===
+				`https://raw.githubusercontent.com/bonobo/media-plugin/${github.commitSha}/dist/backend/worker.js`
+			) {
+				const body = new ReadableStream({
+					pull(controller) {
+						pulls += 1;
+						controller.enqueue(new Uint8Array(1024));
+					},
+					cancel() {
+						cancelled = true;
+					},
+				});
+				return new Response(body, { status: 200 });
+			}
+			return base(input, init);
+		});
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+
+		expect(published).toEqual({ _nay: { message: 'GitHub file "dist/backend/worker.js" is too large' } });
+		expect(cancelled).toBe(true);
+		expect(pulls).toBeLessThanOrEqual(2);
+		expect(github.uploadUrls).toEqual([]);
+		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
+		expect(versions).toEqual([]);
+	});
+
+	test("caps artifact downloads and uploads at four in flight", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const github = await mock_publish_github_fetch_files({
+			files: Array.from({ length: 12 }, (_, index) => ({
+				path: `dist/assets/asset-${index}.bin`,
+				content: `artifact-content-${index}`,
+				contentType: "application/octet-stream",
+			})),
+			delayMs: 5,
+		});
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		if (published._nay) {
+			throw new Error(published._nay.message);
+		}
+
+		expect(github.inFlight.maxDownloads).toBeGreaterThan(1);
+		expect(github.inFlight.maxDownloads).toBeLessThanOrEqual(4);
+		expect(github.inFlight.maxUploads).toBeGreaterThan(1);
+		expect(github.inFlight.maxUploads).toBeLessThanOrEqual(4);
+		// 12 artifact files plus the manifest; registration adds source-snapshot content puts on top.
+		expect(github.uploadUrls.length).toBeGreaterThanOrEqual(13);
+	});
+
+	test("rejects a publish whose manifest plus text files exceed the snapshot payload limit before any upload", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		// The file alone fits the per-file cap; the manifest text pushes the snapshot over 900,000 bytes.
+		const github = await mock_publish_github_fetch_files({
+			files: [{ path: "dist/notes.txt", content: `${"a".repeat(899_999)}\n`, contentType: "text/plain" }],
+		});
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+
+		expect(published).toEqual({ _nay: { message: "Plugin source snapshot is too large" } });
+		expect(github.uploadUrls).toEqual([]);
+		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
+		expect(versions).toEqual([]);
+	});
+
+	test("records the durable cleanup attempt before the first artifact upload", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const github = await mock_publish_github_fetch();
+		mock_ai_review();
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		// Fail every R2 put: a publish that dies mid-upload must leave the attempt recorded with the exact keys.
+		const base = vi.mocked(fetch).getMockImplementation();
+		if (!base) {
+			throw new Error("Expected the publish fetch mock");
+		}
+		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (String(input) === "https://r2.test/upload") {
+				return new Response(null, { status: 500 });
+			}
+			return base(input, init);
+		});
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+
+		expect(published).toMatchObject({ _nay: { message: expect.any(String) } });
+		const attempts = await t.run((ctx) => ctx.db.query("plugins_publish_artifact_cleanup_attempts").collect());
+		expect(attempts).toMatchObject([
+			{
+				repositoryId,
+				pluginName: "media",
+				version: "0.2.0",
+				artifactHash: await sha256_text(github.manifestText),
+				r2Keys: [
+					`plugins/media/0.2.0/${github.commitSha}/dist/bonobo.plugin.json`,
+					`plugins/media/0.2.0/${github.commitSha}/dist/backend/worker.js`,
+				],
+			},
+		]);
+		// Nothing is deleted before the grace deadline, while a re-publish could still finish.
+		expect(attempts[0].cleanupAt).toBeGreaterThan(Date.now());
+		expect(deleteObjectSpy).not.toHaveBeenCalled();
+		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
+		expect(versions).toEqual([]);
+	});
+
+	test("a successful publish removes the cleanup attempt after registration", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		await mock_publish_github_fetch();
+		mock_ai_review();
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+
+		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		if (published._nay) {
+			throw new Error(published._nay.message);
+		}
+
+		const attempts = await t.run((ctx) => ctx.db.query("plugins_publish_artifact_cleanup_attempts").collect());
+		expect(attempts).toEqual([]);
+		expect(deleteObjectSpy).not.toHaveBeenCalled();
 	});
 
 	test("rejects manifests that still declare the removed publisher field", async () => {
@@ -3951,6 +4318,165 @@ describe("plugins publish_version", () => {
 		// Removing the claim hides the panel data reactively.
 		await t.run((ctx) => ctx.db.delete("plugins_publisher_repositories", repositoryId));
 		expect(await asOwner.query(api.plugins.get_publisher_plugin, { pluginName: "media" })).toBeNull();
+	});
+});
+
+describe("plugins publish artifact cleanup", () => {
+	async function insert_cleanup_attempt(
+		t: ReturnType<typeof test_convex>,
+		args: {
+			ownerUserId: Id<"users">;
+			r2Keys: string[];
+			cleanupAt: number;
+		},
+	) {
+		return await t.run(async (ctx) => {
+			const repositoryId = await ctx.db.insert("plugins_publisher_repositories", {
+				ownerUserId: args.ownerUserId,
+				repositoryUrl: "https://github.com/bonobo/media-plugin",
+				owner: "bonobo",
+				repo: "media-plugin",
+			});
+			return await ctx.db.insert("plugins_publish_artifact_cleanup_attempts", {
+				repositoryId,
+				pluginName: "media",
+				version: "0.1.0",
+				artifactHash: `sha256:${"a".repeat(64)}`,
+				r2Keys: args.r2Keys,
+				cleanupAt: args.cleanupAt,
+				updatedAt: Date.now(),
+			});
+		});
+	}
+
+	test("does nothing before the grace deadline", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const attemptId = await insert_cleanup_attempt(t, {
+			ownerUserId: membership.userId,
+			r2Keys: ["plugins/media/0.1.0/abc/dist/backend/worker.js"],
+			cleanupAt: Date.now() + 60 * 60 * 1000,
+		});
+
+		const result = await t.mutation(internal.plugins.run_publish_artifact_cleanup_attempt, { attemptId });
+
+		expect(result).toEqual({ done: false, deletedCount: 0 });
+		expect(deleteObjectSpy).not.toHaveBeenCalled();
+		const attempt = await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", attemptId));
+		expect(attempt?.r2Keys).toEqual(["plugins/media/0.1.0/abc/dist/backend/worker.js"]);
+	});
+
+	test("keeps keys the registered version owns and removes the attempt", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		// register_media_plugin registers media 0.1.0 with the same artifactHash the attempt carries.
+		await register_media_plugin(t, membership.userId);
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const attemptId = await insert_cleanup_attempt(t, {
+			ownerUserId: membership.userId,
+			r2Keys: ["plugins/media/manifest.json", "plugins/media/backend/worker.js"],
+			cleanupAt: Date.now() - 1000,
+		});
+
+		const result = await t.mutation(internal.plugins.run_publish_artifact_cleanup_attempt, { attemptId });
+
+		expect(result).toEqual({ done: true, deletedCount: 0 });
+		expect(deleteObjectSpy).not.toHaveBeenCalled();
+		expect(await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", attemptId))).toBeNull();
+	});
+
+	test("deletes only keys the registered version does not own", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		await register_media_plugin(t, membership.userId);
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const attemptId = await insert_cleanup_attempt(t, {
+			ownerUserId: membership.userId,
+			r2Keys: ["plugins/media/manifest.json", "plugins/media/0.1.0/stale/dist/extra.js"],
+			cleanupAt: Date.now() - 1000,
+		});
+
+		const result = await t.mutation(internal.plugins.run_publish_artifact_cleanup_attempt, { attemptId });
+
+		expect(result).toEqual({ done: true, deletedCount: 1 });
+		expect(deleteObjectSpy).toHaveBeenCalledTimes(1);
+		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/0.1.0/stale/dist/extra.js");
+		expect(await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", attemptId))).toBeNull();
+	});
+
+	test("reclaims an interrupted publish ten keys per run until empty", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const keys = Array.from({ length: 25 }, (_, index) => `plugins/media/0.1.0/dead/dist/chunk-${index}.js`);
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const attemptId = await insert_cleanup_attempt(t, {
+			ownerUserId: membership.userId,
+			r2Keys: keys,
+			cleanupAt: Date.now() - 1000,
+		});
+
+		const first = await t.mutation(internal.plugins.run_publish_artifact_cleanup_attempt, { attemptId });
+		expect(first).toEqual({ done: false, deletedCount: 10 });
+
+		// The run rescheduled itself; the remaining batches are deleted through the scheduler.
+		await drain_scheduled_work(t);
+		expect(await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", attemptId))).toBeNull();
+		expect(deleteObjectSpy).toHaveBeenCalledTimes(25);
+		for (const key of keys) {
+			expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), key);
+		}
+	});
+
+	test("keeps the batch and retries when object deletion fails", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const keys = ["plugins/media/0.1.0/dead/dist/a.js", "plugins/media/0.1.0/dead/dist/b.js"];
+		vi.spyOn(R2.prototype, "deleteObject")
+			.mockRejectedValueOnce(new Error("bucket unavailable"))
+			.mockResolvedValue(undefined);
+		const attemptId = await insert_cleanup_attempt(t, {
+			ownerUserId: membership.userId,
+			r2Keys: keys,
+			cleanupAt: Date.now() - 1000,
+		});
+
+		const failed = await t.mutation(internal.plugins.run_publish_artifact_cleanup_attempt, { attemptId });
+		expect(failed).toEqual({ done: false, deletedCount: 0 });
+		const attempt = await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", attemptId));
+		expect(attempt?.r2Keys).toEqual(keys);
+
+		// The scheduled retry re-runs the same batch; deleting the same key twice is harmless.
+		const retried = await t.mutation(internal.plugins.run_publish_artifact_cleanup_attempt, { attemptId });
+		expect(retried).toEqual({ done: true, deletedCount: 2 });
+		expect(await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", attemptId))).toBeNull();
+	});
+
+	test("the cron schedules only attempts past their deadline", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const dueAttemptId = await insert_cleanup_attempt(t, {
+			ownerUserId: membership.userId,
+			r2Keys: ["plugins/media/0.1.0/dead/dist/due.js"],
+			cleanupAt: Date.now() - 1000,
+		});
+		const futureAttemptId = await insert_cleanup_attempt(t, {
+			ownerUserId: membership.userId,
+			r2Keys: ["plugins/media/0.1.0/live/dist/pending.js"],
+			cleanupAt: Date.now() + 60 * 60 * 1000,
+		});
+
+		await t.mutation(internal.plugins.schedule_due_publish_artifact_cleanup_attempts, {});
+		await drain_scheduled_work(t);
+
+		expect(await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", dueAttemptId))).toBeNull();
+		const futureAttempt = await t.run((ctx) =>
+			ctx.db.get("plugins_publish_artifact_cleanup_attempts", futureAttemptId),
+		);
+		expect(futureAttempt?.r2Keys).toEqual(["plugins/media/0.1.0/live/dist/pending.js"]);
+		expect(deleteObjectSpy).toHaveBeenCalledTimes(1);
+		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/0.1.0/dead/dist/due.js");
 	});
 });
 
@@ -4656,6 +5182,16 @@ describe("plugins admin hard delete", () => {
 				updatedBy: membership.userId,
 				updatedAt: now,
 			});
+			await ctx.db.insert("plugins_ui_sessions", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installedMedia._yay.installationId,
+				pluginVersionId: media.pluginVersionId,
+				userId: membership.userId,
+				tokenHash: "e".repeat(64),
+				createdAt: now,
+				expiresAt: now + 30 * 60 * 1000,
+			});
 			const runId = await ctx.db.insert("plugins_event_runs", {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -4703,6 +5239,7 @@ describe("plugins admin hard delete", () => {
 			installations: 1,
 			eventHandlers: 2,
 			installationSecrets: 1,
+			uiSessions: 1,
 			eventRuns: 1,
 			eventRunCalls: 2,
 			publisherRepositoryClaims: 1,
@@ -4727,6 +5264,7 @@ describe("plugins admin hard delete", () => {
 			installations: 0,
 			eventHandlers: 0,
 			installationSecrets: 0,
+			uiSessions: 0,
 			eventRuns: 0,
 			eventRunCalls: 0,
 			publisherRepositoryClaims: 0,
@@ -4756,6 +5294,7 @@ describe("plugins admin hard delete", () => {
 		const handlers = await t.run((ctx) => ctx.db.query("plugins_workspace_event_handlers").collect());
 		expect(handlers.map((handler) => handler.pluginName)).toEqual(["media-alt"]);
 		expect(await t.run((ctx) => ctx.db.query("plugins_workspace_installation_secrets").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_ui_sessions").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("plugins_event_run_calls").collect())).toEqual([]);
 		const claims = await t.run((ctx) => ctx.db.query("plugins_publisher_repositories").collect());

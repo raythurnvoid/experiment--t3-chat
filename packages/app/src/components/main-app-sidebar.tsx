@@ -3,18 +3,34 @@ import "./main-app-sidebar.css";
 import { memo } from "react";
 import type { Ref } from "react";
 import type { LucideIcon } from "lucide-react";
-import { FileText, MessageSquare, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Puzzle, Sun, UserRoundCog, Users } from "lucide-react";
+import {
+	FileText,
+	Film,
+	GalleryVerticalEnd,
+	Image,
+	Images,
+	MessageSquare,
+	Monitor,
+	Moon,
+	PanelLeftClose,
+	PanelLeftOpen,
+	Puzzle,
+	Sun,
+	UserRoundCog,
+	Users,
+} from "lucide-react";
 import { Link, useRouterState, type RegisteredRouter } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import { url_path_chat, url_path_files, url_path_plugins, url_path_users } from "@/lib/urls.ts";
+import { url_path_chat, url_path_files, url_path_plugin_page, url_path_plugins, url_path_users } from "@/lib/urls.ts";
 
 import { cn, compute_fallback_user_name } from "@/lib/utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { useAppLocalStorageStateValue } from "@/lib/storage.ts";
 import { AppHotkeysProvider } from "@/components/app-hotkeys.tsx";
 import { app_presence_GLOBAL_ROOM_ID } from "../../shared/shared-presence-constants.ts";
+import { plugins_PAGE_NAV_ICON_NAMES } from "../../shared/plugins.ts";
 import { app_presence_set_enabled, usePresence, usePresenceEnabled, usePresenceList } from "@/hooks/presence-hooks.ts";
 import { useThemeContext } from "@/components/theme-provider.tsx";
 import { AppAuthProvider } from "@/components/app-auth.tsx";
@@ -116,16 +132,25 @@ type MainAppSidebarItem_Props = {
 	label: string;
 	icon: LucideIcon;
 	tooltip?: string;
+	/** Subpaths matching this do not make the item active — used when a descendant route has its own nav item. */
+	subpathExcludePattern?: RegExp;
 };
 
 const MainAppSidebarItem = memo(function MainAppSidebarItem(props: MainAppSidebarItem_Props) {
-	const { to, label, icon: Icon, tooltip } = props;
+	const { to, label, icon: Icon, tooltip, subpathExcludePattern } = props;
 
 	const pathname = useRouterState<RegisteredRouter, string>({
 		select: (state) => state.location.pathname,
 	});
 
-	const isActive = to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(`${to}/`);
+	const isActive =
+		to === "/"
+			? pathname === "/"
+			: pathname === to ||
+				// Only test the part of the path after `to`: org/workspace names may legitimately
+				// contain the excluded pattern themselves.
+				(pathname.startsWith(`${to}/`) &&
+					!(subpathExcludePattern && subpathExcludePattern.test(pathname.slice(to.length))));
 
 	return (
 		<MySidebarListItem className={"MainAppSidebarItem" satisfies MainAppSidebarItem_ClassNames}>
@@ -371,11 +396,24 @@ type MainAppSidebar_Props = {
 	className?: string;
 };
 
+// Plugin nav items may only use these lucide icons; anything else (or null) falls back to
+// Puzzle. `satisfies` keeps this in exact sync with the SDK-documented name list.
+const PLUGIN_PAGE_NAV_ICONS: Record<string, LucideIcon> = {
+	images: Images,
+	image: Image,
+	film: Film,
+	"gallery-vertical-end": GalleryVerticalEnd,
+} satisfies Record<(typeof plugins_PAGE_NAV_ICON_NAMES)[number], LucideIcon>;
+
+// Plugin pages have their own nav items, so they must not make the Plugins item active.
+const PLUGIN_PAGE_SUBPATH_RE = /\/pages\//;
+
 export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar_Props) {
 	const { ref, id, className } = props;
 
-	const { organizationId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const { membershipId, organizationId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const organizationList = useQuery(app_convex_api.organizations.list);
+	const pluginPages = useQuery(app_convex_api.plugins_ui.list_ui_pages, { membershipId });
 	const organization = organizationList?.organizations.find((organization) => organization._id === organizationId);
 	const showUsersNavigation = organization?.default === false;
 
@@ -456,7 +494,26 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 						label="Plugins"
 						icon={Puzzle}
 						tooltip={mainAppSidebarCollapsed ? "Plugins" : undefined}
+						subpathExcludePattern={PLUGIN_PAGE_SUBPATH_RE}
 					/>
+					{(pluginPages ?? []).flatMap((plugin) =>
+						plugin.pages.map((page) =>
+							page.navItem ? (
+								<MainAppSidebarItem
+									key={`${plugin.pluginName}/${page.id}`}
+									to={url_path_plugin_page({
+										organizationName,
+										workspaceName,
+										pluginName: plugin.pluginName,
+										pageId: page.id,
+									})}
+									label={page.navItem.label}
+									icon={page.navItem.icon ? (PLUGIN_PAGE_NAV_ICONS[page.navItem.icon] ?? Puzzle) : Puzzle}
+									tooltip={mainAppSidebarCollapsed ? page.title : undefined}
+								/>
+							) : null,
+						),
+					)}
 					{/* Personal organizations keep member management out of main nav; direct URLs stay guarded/read-only. */}
 					{showUsersNavigation ? (
 						<MainAppSidebarItem

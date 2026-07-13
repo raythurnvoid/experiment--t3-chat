@@ -71,6 +71,7 @@ const CREDENTIAL_SECRET_BYTES = 32;
 const API_CREDENTIAL_TOKEN_RE = /^pk_[0-9a-f]{32}\.[0-9a-f]{64}$/u;
 const PUBLIC_API_GRANT_TOKEN_RE = /^[0-9a-f]{64}$/u;
 const PLUGIN_RUN_TOKEN_RE = /^plr_[0-9a-f]{64}$/u;
+const PLUGIN_UI_TOKEN_RE = /^plu_[0-9a-f]{64}$/u;
 const PUBLIC_API_GRANT_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_API_GRANT_CLEANUP_BATCH_SIZE = 100;
 // Stages only need to outlive one write action; anything older is a crashed write.
@@ -84,7 +85,7 @@ type Scope =
 	| typeof public_api_SCOPE_FILES_DOWNLOAD
 	| typeof public_api_SCOPE_SECRETS_READ
 	| typeof public_api_SCOPE_OUTBOUND_FETCH;
-type PrincipalKind = "public_api_grant" | "user_api_key" | "plugin_run";
+type PrincipalKind = "public_api_grant" | "user_api_key" | "plugin_run" | "plugin_ui";
 
 const grant_scopes_validator = v.array(
 	v.union(v.literal(public_api_SCOPE_FILES_LIST), v.literal(public_api_SCOPE_FILES_READ)),
@@ -103,6 +104,14 @@ const plugin_run_scopes_validator = v.array(
 		v.literal(public_api_SCOPE_FILES_DOWNLOAD),
 		v.literal(public_api_SCOPE_SECRETS_READ),
 		v.literal(public_api_SCOPE_OUTBOUND_FETCH),
+	),
+);
+// Read-only by design: UI sessions never get write, secrets, or outbound scopes.
+const plugin_ui_scopes_validator = v.array(
+	v.union(
+		v.literal(public_api_SCOPE_FILES_LIST),
+		v.literal(public_api_SCOPE_FILES_READ),
+		v.literal(public_api_SCOPE_FILES_DOWNLOAD),
 	),
 );
 
@@ -127,7 +136,12 @@ function get_bearer_token(request: Request) {
 
 function is_plausible_bearer_token(token: string) {
 	// Reject malformed bearer tokens before credential/grant/run lookup; well-formed tokens still require DB verification.
-	return API_CREDENTIAL_TOKEN_RE.test(token) || PUBLIC_API_GRANT_TOKEN_RE.test(token) || PLUGIN_RUN_TOKEN_RE.test(token);
+	return (
+		API_CREDENTIAL_TOKEN_RE.test(token) ||
+		PUBLIC_API_GRANT_TOKEN_RE.test(token) ||
+		PLUGIN_RUN_TOKEN_RE.test(token) ||
+		PLUGIN_UI_TOKEN_RE.test(token)
+	);
 }
 
 async function create_credential_secret(ctx: MutationCtx) {
@@ -614,6 +628,20 @@ export const resolve_principal = internalQuery({
 				scopes: plugin_run_scopes_validator,
 				principalKey: v.string(),
 			}),
+			v.object({
+				kind: v.literal("plugin_ui"),
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				userId: v.id("users"),
+				installationId: v.id("plugins_workspace_installations"),
+				pluginVersionId: v.id("plugins_versions"),
+				sessionId: v.id("plugins_ui_sessions"),
+				sessionExpiresAt: v.number(),
+				scopes: plugin_ui_scopes_validator,
+				principalKey: v.string(),
+				credentialId: v.null(),
+				pathPrefix: v.null(),
+			}),
 		),
 	}),
 	handler: async (ctx, args) => {
@@ -687,6 +715,85 @@ export const resolve_principal = internalQuery({
 					apiTokenExpiresAt: pluginRun.apiTokenExpiresAt,
 					scopes,
 					principalKey: `plugin_run:${pluginRun._id}`,
+				},
+			});
+		}
+
+		if (PLUGIN_UI_TOKEN_RE.test(args.presented)) {
+			const tokenHash = await crypto_sha256_hex(args.presented);
+			const session = await ctx.db
+				.query("plugins_ui_sessions")
+				.withIndex("by_tokenHash", (q) => q.eq("tokenHash", tokenHash))
+				.unique();
+			if (!session || session.expiresAt <= args.now) {
+				return Result({ _nay: { message: "Unauthenticated" } });
+			}
+
+			// A UI session is only valid while its installation stays as it was: disabling,
+			// uninstalling, or upgrading it (an upgrade changes pluginVersionId) revokes every
+			// outstanding page token.
+			const installation = await ctx.db.get("plugins_workspace_installations", session.installationId);
+			if (
+				!installation ||
+				installation.status !== "enabled" ||
+				installation.pluginVersionId !== session.pluginVersionId ||
+				installation.organizationId !== session.organizationId ||
+				installation.workspaceId !== session.workspaceId
+			) {
+				return Result({ _nay: { message: "Unauthenticated" } });
+			}
+
+			// The page acts on behalf of the minting user: it can never read what that user cannot.
+			const user = await ctx.db.get("users", session.userId);
+			if (!user || user.deletedAt != null) {
+				return Result({ _nay: { message: "Unauthenticated" } });
+			}
+			const membership = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", session.userId)
+						.eq("organizationId", session.organizationId)
+						.eq("workspaceId", session.workspaceId),
+				)
+				.first();
+			if (!membership) {
+				return Result({ _nay: { message: "Unauthenticated" } });
+			}
+			if (
+				args.requiredUserPermission &&
+				!(await has_workspace_asset_permission(ctx, {
+					organizationId: session.organizationId,
+					workspaceId: session.workspaceId,
+					userId: session.userId,
+					permission: args.requiredUserPermission,
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+
+			// Workspace file reads are consent-gated; UI sessions never get secrets or outbound scopes.
+			const scopes: Infer<typeof plugin_ui_scopes_validator> = installation.acceptedCapabilities.includes(
+				"workspace.files.read",
+			)
+				? [public_api_SCOPE_FILES_LIST, public_api_SCOPE_FILES_READ, public_api_SCOPE_FILES_DOWNLOAD]
+				: [];
+
+			return Result({
+				_yay: {
+					kind: "plugin_ui" as const,
+					organizationId: session.organizationId,
+					workspaceId: session.workspaceId,
+					userId: session.userId,
+					installationId: session.installationId,
+					pluginVersionId: session.pluginVersionId,
+					sessionId: session._id,
+					sessionExpiresAt: session.expiresAt,
+					scopes,
+					principalKey: `plugin_ui:${session._id}`,
+					credentialId: null,
+					pathPrefix: null,
 				},
 			});
 		}
@@ -1486,6 +1593,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							recursive: z.boolean().optional(),
 							kind: z.enum(["file", "folder"]).optional(),
 							extension: z.string().optional(),
+							contentTypePrefixes: z.array(z.string().min(1)).max(8).optional(),
 						});
 
 						type SearchParams = never;
@@ -1496,7 +1604,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 						const handler = async (ctx: ActionCtx, request: Request) => {
 							const auth = await authorize_request(ctx, request, {
 								requiredScope: public_api_SCOPE_FILES_LIST,
-								allowedKinds: ["user_api_key", "public_api_grant"],
+								allowedKinds: ["user_api_key", "public_api_grant", "plugin_ui"],
 								requiredUserPermission: "asset.read",
 								route: path,
 							});
@@ -1529,17 +1637,28 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								maxDepth: body._yay.recursive ? undefined : 1,
 							});
 
+							// Filtering happens after pagination: cursor and isDone come from the unfiltered
+							// page, so a filtered page can be short or even empty while isDone is still
+							// false. Clients just keep fetching until isDone.
+							const contentTypePrefixes = body._yay.contentTypePrefixes;
+							const pageItems = contentTypePrefixes
+								? result.page.filter((item) => {
+										const contentType = item.contentType;
+										return contentType != null && contentTypePrefixes.some((prefix) => contentType.startsWith(prefix));
+									})
+								: result.page;
+
 							console.info("Public API files listed", {
 								principalKind: principal.kind,
 								principalKey: principal.principalKey,
-								count: result.page.length,
+								count: pageItems.length,
 								isDone: result.isDone,
 							});
 
 							return {
 								status: 200,
 								body: {
-									items: result.page.map((item) => ({
+									items: pageItems.map((item) => ({
 										path: item.path,
 										name: item.name,
 										kind: item.kind,
@@ -1592,7 +1711,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 						const handler = async (ctx: ActionCtx, request: Request) => {
 							const auth = await authorize_request(ctx, request, {
 								requiredScope: public_api_SCOPE_FILES_READ,
-								allowedKinds: ["user_api_key", "public_api_grant"],
+								allowedKinds: ["user_api_key", "public_api_grant", "plugin_ui"],
 								requiredUserPermission: "asset.read",
 								route: path,
 							});
@@ -2107,7 +2226,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 						const handler = async (ctx: ActionCtx, request: Request) => {
 							const auth = await authorize_request(ctx, request, {
 								requiredScope: public_api_SCOPE_FILES_DOWNLOAD,
-								allowedKinds: ["user_api_key", "plugin_run"],
+								allowedKinds: ["user_api_key", "plugin_run", "plugin_ui"],
 								requiredUserPermission: "asset.read",
 								route: path,
 							});
@@ -2136,16 +2255,22 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								} as const;
 							}
 
-							// TTL is bounded by the request, the ceiling, and (for plugins) the remaining
-							// run-token lifetime: a signed URL must never outlive the authority that minted it.
-							// A token in its final second gets no URL at all — flooring to 1s would sign past
-							// the token's own expiry.
+							// The URL TTL is the smallest of the requested TTL, the ceiling, and (for
+							// plugin principals) the time left on the token — a signed URL must never
+							// outlive the token that requested it. A token in its final second gets no URL
+							// at all: rounding up to 1s would let the URL outlive the token.
 							let expiresIn = Math.min(
 								body._yay.expiresInSeconds ?? FILES_DOWNLOAD_URL_MAX_TTL_SECONDS,
 								FILES_DOWNLOAD_URL_MAX_TTL_SECONDS,
 							);
-							if (principal.kind === "plugin_run") {
-								const remainingSeconds = Math.floor((principal.apiTokenExpiresAt - Date.now()) / 1000);
+							const principalAuthorityExpiresAt =
+								principal.kind === "plugin_run"
+									? principal.apiTokenExpiresAt
+									: principal.kind === "plugin_ui"
+										? principal.sessionExpiresAt
+										: null;
+							if (principalAuthorityExpiresAt != null) {
+								const remainingSeconds = Math.floor((principalAuthorityExpiresAt - Date.now()) / 1000);
 								if (remainingSeconds < 1) {
 									return {
 										status: 401,
@@ -2222,9 +2347,9 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							});
 							const expiresAt = Date.now() + expiresIn * 1000;
 
-							if (principal.kind === "plugin_run") {
-								// Revalidate the run after signing: authority revoked mid-request must not leak
-								// a live URL.
+							if (principal.kind === "plugin_run" || principal.kind === "plugin_ui") {
+								// Check the plugin principal again after signing: if it was revoked while this
+								// request ran, the live URL must not be returned.
 								const token = get_bearer_token(request);
 								const revalidated: public_api_resolve_principal_Result | null = token
 									? await ctx.runQuery(internal.public_api.resolve_principal, {
@@ -2232,12 +2357,13 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 											now: Date.now(),
 										})
 									: null;
-								if (
-									!revalidated ||
-									revalidated._nay ||
-									revalidated._yay.kind !== "plugin_run" ||
-									revalidated._yay.runId !== principal.runId
-								) {
+								const revalidatedPrincipal = revalidated && !revalidated._nay ? revalidated._yay : null;
+								const stillAuthorized =
+									principal.kind === "plugin_run"
+										? revalidatedPrincipal?.kind === "plugin_run" && revalidatedPrincipal.runId === principal.runId
+										: revalidatedPrincipal?.kind === "plugin_ui" &&
+											revalidatedPrincipal.sessionId === principal.sessionId;
+								if (!stillAuthorized) {
 									return {
 										status: 401,
 										body: await fail({ status: 401, message: "Unauthenticated", errorCode: "unauthenticated" }),

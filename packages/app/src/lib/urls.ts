@@ -19,6 +19,15 @@ export function url_path_plugins(args: { organizationName: string; workspaceName
 	return `/w/${args.organizationName}/${args.workspaceName}/plugins`;
 }
 
+export function url_path_plugin_page(args: {
+	organizationName: string;
+	workspaceName: string;
+	pluginName: string;
+	pageId: string;
+}) {
+	return `/w/${args.organizationName}/${args.workspaceName}/plugins/${args.pluginName}/pages/${args.pageId}`;
+}
+
 export function app_tenantPaths_scopeKey(args: { organizationId: string; workspaceId: string }) {
 	return `${args.organizationId}::${args.workspaceId}`;
 }

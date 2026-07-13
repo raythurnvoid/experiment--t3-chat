@@ -24,6 +24,7 @@ import app_convex_schema from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
 import {
+	plugins_MAX_ARTIFACT_BYTES,
 	plugins_RUNTIME_VERSION,
 	plugins_dist_review_mechanical_findings,
 	plugins_parse_github_repository_url,
@@ -54,6 +55,13 @@ import { plugins_runtime_db_enqueue_manual_run } from "./plugins_runtime.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
 
 const PLUGIN_SECRETS_MAX_BATCH_SIZE = 50;
+const ARTIFACT_DOWNLOAD_CONCURRENCY = 4;
+const ARTIFACT_UPLOAD_CONCURRENCY = 4;
+/** How long cleanup waits before deleting an interrupted publish's uploads, so a concurrent publish of the same artifact can finish. */
+const PUBLISH_CLEANUP_GRACE_MS = 60 * 60 * 1000;
+const PUBLISH_CLEANUP_KEYS_PER_RUN = 10;
+const PUBLISH_CLEANUP_RETRY_MS = 5 * 60 * 1000;
+const PUBLISH_CLEANUP_CRON_BATCH_SIZE = 10;
 
 /**
  * Workpool handle for plugin event-run executions.
@@ -108,7 +116,53 @@ async function db_authorize_plugin_management(
 	return Result({ _yay: { membership } });
 }
 
+function version_r2_keys(version: Doc<"plugins_versions">) {
+	const r2Keys = new Set<string>([version.manifestR2Key]);
+	if (version.backendEntrypointFile) {
+		r2Keys.add(version.backendEntrypointFile.r2Key);
+	}
+	for (const file of version.files) {
+		r2Keys.add(file.r2Key);
+	}
+	return r2Keys;
+}
+
 // #region github import
+
+/**
+ * Streams a response body and gives up as soon as the bytes read exceed `maxBytes`, so an
+ * oversized body never fully buffers in memory. Returns null when the body is too big.
+ */
+async function read_response_body_bounded(response: Response, maxBytes: number) {
+	if (!response.body) {
+		const buffer = await response.arrayBuffer();
+		return buffer.byteLength > maxBytes ? null : buffer;
+	}
+
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let totalBytes = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) {
+			break;
+		}
+		totalBytes += value.byteLength;
+		if (totalBytes > maxBytes) {
+			await reader.cancel();
+			return null;
+		}
+		chunks.push(value);
+	}
+
+	const combined = new Uint8Array(totalBytes);
+	let offset = 0;
+	for (const chunk of chunks) {
+		combined.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return combined.buffer;
+}
 
 async function fetch_github_text(args: {
 	owner: string;
@@ -121,12 +175,12 @@ async function fetch_github_text(args: {
 		return Result({ _nay: { message: `GitHub file "${args.path}" request failed: ${response._nay.message}` } });
 	}
 
-	const text = await response._yay.text();
-	if (files_get_utf8_byte_size(text) > files_MAX_TEXT_CONTENT_BYTES) {
+	const bytes = await read_response_body_bounded(response._yay, files_MAX_TEXT_CONTENT_BYTES);
+	if (bytes === null) {
 		return Result({ _nay: { message: `GitHub file "${args.path}" is too large` } });
 	}
 
-	return { _yay: text };
+	return { _yay: text_decoder.decode(bytes) };
 }
 
 async function fetch_github_bytes(args: {
@@ -134,18 +188,19 @@ async function fetch_github_bytes(args: {
 	repo: string;
 	commitSha: string;
 	path: string;
+	maxBytes: number;
 }): Promise<PluginResult<ArrayBuffer>> {
 	const response = await github_fetch_with_retry(github_raw_url(args));
 	if (response._nay) {
 		return Result({ _nay: { message: `GitHub file "${args.path}" request failed: ${response._nay.message}` } });
 	}
 
-	const buffer = await response._yay.arrayBuffer();
-	if (buffer.byteLength > files_MAX_TEXT_CONTENT_BYTES) {
+	const bytes = await read_response_body_bounded(response._yay, args.maxBytes);
+	if (bytes === null) {
 		return Result({ _nay: { message: `GitHub file "${args.path}" is too large` } });
 	}
 
-	return Result({ _yay: buffer });
+	return Result({ _yay: bytes });
 }
 
 // #endregion github import
@@ -167,6 +222,7 @@ export const register_plugin_version = internalAction({
 		manifestR2Key: doc(app_convex_schema, "plugins_versions").fields.manifestR2Key,
 		backendEntrypointFile: doc(app_convex_schema, "plugins_versions").fields.backendEntrypointFile,
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
+		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 		files: doc(app_convex_schema, "plugins_versions").fields.files,
@@ -235,6 +291,7 @@ export const upsert_plugin = internalMutation({
 		manifestR2Key: doc(app_convex_schema, "plugins_versions").fields.manifestR2Key,
 		backendEntrypointFile: doc(app_convex_schema, "plugins_versions").fields.backendEntrypointFile,
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
+		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 		files: doc(app_convex_schema, "plugins_versions").fields.files,
@@ -728,6 +785,172 @@ export const update_last_publish_attempt = internalMutation({
 	},
 });
 
+/**
+ * Deletes the bucket files left behind by a publish that never registered its version. It only
+ * runs after the grace deadline. If a matching version did get registered, the keys that version
+ * owns are live files and are skipped; everything else gets deleted, at most
+ * PUBLISH_CLEANUP_KEYS_PER_RUN keys per run, rescheduling itself until none are left. If a delete
+ * fails, the current batch is kept and retried later.
+ */
+export const run_publish_artifact_cleanup_attempt = internalMutation({
+	args: {
+		attemptId: v.id("plugins_publish_artifact_cleanup_attempts"),
+	},
+	returns: v.object({ done: v.boolean(), deletedCount: v.number() }),
+	handler: async (ctx, args) => {
+		const attempt = await ctx.db.get("plugins_publish_artifact_cleanup_attempts", args.attemptId);
+		// A concurrent run or the registration path can remove the attempt first.
+		if (!attempt) {
+			return { done: true, deletedCount: 0 };
+		}
+
+		// Too early: the grace period gives a concurrent publish of the same artifact time to finish.
+		// The cron fallback picks this attempt up again after the deadline.
+		if (attempt.cleanupAt > Date.now()) {
+			return { done: false, deletedCount: 0 };
+		}
+
+		const registeredVersion = await ctx.db
+			.query("plugins_versions")
+			.withIndex("by_name_version_artifactHash", (q) =>
+				q.eq("name", attempt.pluginName).eq("version", attempt.version).eq("artifactHash", attempt.artifactHash),
+			)
+			.first();
+		const ownedKeys = registeredVersion ? version_r2_keys(registeredVersion) : new Set<string>();
+		const unownedKeys = attempt.r2Keys.filter((r2Key) => !ownedKeys.has(r2Key));
+		if (unownedKeys.length === 0) {
+			// Every remaining key belongs to the registered version: a publish of the same artifact
+			// completed, so the files are live and there is nothing to delete.
+			await ctx.db.delete("plugins_publish_artifact_cleanup_attempts", attempt._id);
+			return { done: true, deletedCount: 0 };
+		}
+
+		const batch = unownedKeys.slice(0, PUBLISH_CLEANUP_KEYS_PER_RUN);
+		try {
+			for (const r2Key of batch) {
+				await r2_delete_object(ctx, r2Key);
+			}
+		} catch (error) {
+			// Keep the whole batch and retry later; deleting an already-deleted key again is harmless.
+			console.error("Publish artifact cleanup failed; retrying", { attemptId: attempt._id, error });
+			await ctx.scheduler.runAfter(PUBLISH_CLEANUP_RETRY_MS, internal.plugins.run_publish_artifact_cleanup_attempt, {
+				attemptId: attempt._id,
+			});
+			return { done: false, deletedCount: 0 };
+		}
+
+		// Owned keys are dropped from the list too, on purpose: they are live files that must never be deleted.
+		const remainingKeys = unownedKeys.slice(batch.length);
+		if (remainingKeys.length > 0) {
+			await ctx.db.patch("plugins_publish_artifact_cleanup_attempts", attempt._id, {
+				r2Keys: remainingKeys,
+				updatedAt: Date.now(),
+			});
+			await ctx.scheduler.runAfter(0, internal.plugins.run_publish_artifact_cleanup_attempt, {
+				attemptId: attempt._id,
+			});
+			return { done: false, deletedCount: batch.length };
+		}
+
+		await ctx.db.delete("plugins_publish_artifact_cleanup_attempts", attempt._id);
+		return { done: true, deletedCount: batch.length };
+	},
+});
+
+/**
+ * A publish first uploads its files to the bucket, then registers the version. If it crashes in
+ * between, those files would sit in the bucket forever. So before uploading, the publish records
+ * here the keys it is about to write and schedules a cleanup run for them. When the publish
+ * succeeds, remove_publish_artifact_cleanup_attempt cancels the cleanup.
+ */
+export const create_publish_artifact_cleanup_attempt = internalMutation({
+	args: {
+		repositoryId: doc(app_convex_schema, "plugins_publish_artifact_cleanup_attempts").fields.repositoryId,
+		pluginName: doc(app_convex_schema, "plugins_publish_artifact_cleanup_attempts").fields.pluginName,
+		version: doc(app_convex_schema, "plugins_publish_artifact_cleanup_attempts").fields.version,
+		artifactHash: doc(app_convex_schema, "plugins_publish_artifact_cleanup_attempts").fields.artifactHash,
+		r2Keys: doc(app_convex_schema, "plugins_publish_artifact_cleanup_attempts").fields.r2Keys,
+	},
+	returns: v.id("plugins_publish_artifact_cleanup_attempts"),
+	handler: async (ctx, args) => {
+		// Insert and schedule in one transaction so the cleanup run exists before the first upload.
+		const now = Date.now();
+		const attemptId = await ctx.db.insert("plugins_publish_artifact_cleanup_attempts", {
+			...args,
+			cleanupAt: now + PUBLISH_CLEANUP_GRACE_MS,
+			updatedAt: now,
+		});
+		await ctx.scheduler.runAfter(PUBLISH_CLEANUP_GRACE_MS, internal.plugins.run_publish_artifact_cleanup_attempt, {
+			attemptId,
+		});
+		return attemptId;
+	},
+});
+
+type create_publish_artifact_cleanup_attempt_Result =
+	typeof create_publish_artifact_cleanup_attempt extends RegisteredMutation<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Called after a publish registers its version: its objects are live now, so the cleanup attempt
+ * is no longer needed. Deletes the attempt only when the registered version owns every key in it;
+ * if the keys differ (a concurrent publish registered from a different commit), the attempt stays
+ * so its objects still get cleaned up.
+ */
+export const remove_publish_artifact_cleanup_attempt = internalMutation({
+	args: {
+		attemptId: v.id("plugins_publish_artifact_cleanup_attempts"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const attempt = await ctx.db.get("plugins_publish_artifact_cleanup_attempts", args.attemptId);
+		if (!attempt) {
+			return null;
+		}
+		const registeredVersion = await ctx.db
+			.query("plugins_versions")
+			.withIndex("by_name_version_artifactHash", (q) =>
+				q.eq("name", attempt.pluginName).eq("version", attempt.version).eq("artifactHash", attempt.artifactHash),
+			)
+			.first();
+		if (!registeredVersion) {
+			return null;
+		}
+		const ownedKeys = version_r2_keys(registeredVersion);
+		if (attempt.r2Keys.every((r2Key) => ownedKeys.has(r2Key))) {
+			await ctx.db.delete("plugins_publish_artifact_cleanup_attempts", attempt._id);
+		}
+		return null;
+	},
+});
+
+/**
+ * Cron fallback. Each attempt normally cleans up through the run scheduled when it was created;
+ * this catches attempts whose scheduled run never happened (crash, failed retry). Schedules at
+ * most PUBLISH_CLEANUP_CRON_BATCH_SIZE attempts per pass.
+ */
+export const schedule_due_publish_artifact_cleanup_attempts = internalMutation({
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
+		const due = await ctx.db
+			.query("plugins_publish_artifact_cleanup_attempts")
+			.withIndex("by_cleanupAt", (q) => q.lte("cleanupAt", Date.now()))
+			.take(PUBLISH_CLEANUP_CRON_BATCH_SIZE);
+		for (const attempt of due) {
+			await ctx.scheduler.runAfter(0, internal.plugins.run_publish_artifact_cleanup_attempt, {
+				attemptId: attempt._id,
+			});
+		}
+		return null;
+	},
+});
+
 async function publish_version_from_github(
 	ctx: ActionCtx,
 	args: {
@@ -776,35 +999,10 @@ async function publish_version_from_github(
 		path: "dist/bonobo.plugin.json",
 	});
 
-	// Download each build file dist/bonobo.plugin.json lists (backend dist, assets), verify its pinned hash
-	// and byte size, then stage it for upload.
-	const fileResults = await Promise.all(
-		manifest._yay.files.map(async (file) => {
-			const fileBytes = await fetch_github_bytes({
-				owner: source.owner,
-				repo: source.repo,
-				commitSha: sourceCommitSha,
-				path: file.path,
-			});
-			if (fileBytes._nay) {
-				return Result({ _nay: { message: fileBytes._nay.message } });
-			}
-			const fileHash = `sha256:${await crypto_sha256_hex(fileBytes._yay)}`;
-			if (fileHash !== file.sha256) {
-				return Result({ _nay: { message: `Artifact file hash mismatch for "${file.path}"` } });
-			}
-			if (fileBytes._yay.byteLength !== file.bytes) {
-				return Result({ _nay: { message: `Artifact file byte size mismatch for "${file.path}"` } });
-			}
-			const r2Key = r2_key({
-				name: manifest._yay.name,
-				version: manifest._yay.version,
-				commitSha: sourceCommitSha,
-				path: file.path,
-			});
-			return Result({ _yay: { ...file, r2Key, body: fileBytes._yay } });
-		}),
-	);
+	// Download each build file dist/bonobo.plugin.json lists (backend dist, assets), verify its
+	// pinned hash and byte size, and stage it for upload. At most ARTIFACT_DOWNLOAD_CONCURRENCY
+	// downloads run at once, each streamed read stops at the declared file size, and a running
+	// total caps the whole artifact.
 	const files: Array<{
 		path: string;
 		sha256: string;
@@ -813,11 +1011,60 @@ async function publish_version_from_github(
 		r2Key: string;
 		body: ArrayBuffer;
 	}> = [];
-	for (const result of fileResults) {
-		if (result._nay) {
-			return Result({ _nay: { message: result._nay.message } });
-		}
-		files.push(result._yay);
+	let downloadFailure: { message: string } | undefined;
+	{
+		let nextFileIndex = 0;
+		let downloadedArtifactBytes = 0;
+		await Promise.all(
+			Array.from({ length: ARTIFACT_DOWNLOAD_CONCURRENCY }, async () => {
+				for (;;) {
+					const fileIndex = nextFileIndex;
+					nextFileIndex += 1;
+					const file = manifest._yay.files.at(fileIndex);
+					if (!file || downloadFailure) {
+						return;
+					}
+					const fileBytes = await fetch_github_bytes({
+						owner: source.owner,
+						repo: source.repo,
+						commitSha: sourceCommitSha,
+						path: file.path,
+						maxBytes: file.bytes,
+					});
+					if (fileBytes._nay) {
+						downloadFailure ??= fileBytes._nay;
+						return;
+					}
+					downloadedArtifactBytes += fileBytes._yay.byteLength;
+					if (downloadedArtifactBytes > plugins_MAX_ARTIFACT_BYTES) {
+						downloadFailure ??= { message: "Plugin artifact files exceed the 16 MiB size limit" };
+						return;
+					}
+					const fileHash = `sha256:${await crypto_sha256_hex(fileBytes._yay)}`;
+					if (fileHash !== file.sha256) {
+						downloadFailure ??= { message: `Artifact file hash mismatch for "${file.path}"` };
+						return;
+					}
+					if (fileBytes._yay.byteLength !== file.bytes) {
+						downloadFailure ??= { message: `Artifact file byte size mismatch for "${file.path}"` };
+						return;
+					}
+					files[fileIndex] = {
+						...file,
+						r2Key: r2_key({
+							name: manifest._yay.name,
+							version: manifest._yay.version,
+							commitSha: sourceCommitSha,
+							path: file.path,
+						}),
+						body: fileBytes._yay,
+					};
+				}
+			}),
+		);
+	}
+	if (downloadFailure) {
+		return Result({ _nay: { message: downloadFailure.message } });
 	}
 
 	// The manifest backend entry must resolve to one listed dist file; that file's source is what the review reads.
@@ -875,11 +1122,50 @@ async function publish_version_from_github(
 		}
 	}
 
-	// The review allowed the publish; persist dist/bonobo.plugin.json and the build files to R2.
-	await Promise.all([
-		r2_put_object(ctx, { key: manifestR2Key, body: manifestText._yay, contentType: "application/json" }),
-		...files.map((file) => r2_put_object(ctx, { key: file.r2Key, body: file.body, contentType: file.contentType })),
-	]);
+	// The snapshot is passed as arguments to the registration action; cap the total so the
+	// payload stays within Convex argument limits.
+	let sourceFilesBytes = 0;
+	for (const sourceFile of sourceFiles) {
+		sourceFilesBytes += files_get_utf8_byte_size(sourceFile.rawText);
+	}
+	if (sourceFilesBytes > files_MAX_TEXT_CONTENT_BYTES) {
+		return Result({ _nay: { message: "Plugin source snapshot is too large" } });
+	}
+
+	// If the publish crashes between the uploads below and registration, the uploaded files must
+	// not stay in the bucket forever. So before the first upload, one mutation records the exact
+	// keys and schedules their cleanup. A failed publish leaves the record until the grace
+	// deadline instead of cleaning up right away, so a concurrent publish of the same artifact
+	// that reuses the same keys does not have its files deleted mid-upload.
+	const cleanupAttemptId = (await ctx.runMutation(internal.plugins.create_publish_artifact_cleanup_attempt, {
+		repositoryId: args.repositoryId,
+		pluginName: manifest._yay.name,
+		version: manifest._yay.version,
+		artifactHash,
+		r2Keys: [manifestR2Key, ...files.map((file) => file.r2Key)],
+	})) as create_publish_artifact_cleanup_attempt_Result;
+
+	// The review allowed the publish: upload dist/bonobo.plugin.json and the build files to R2,
+	// with at most ARTIFACT_UPLOAD_CONCURRENCY uploads running at once.
+	const uploads: Array<{ key: string; body: BodyInit; contentType: string }> = [
+		{ key: manifestR2Key, body: manifestText._yay, contentType: "application/json" },
+		...files.map((file) => ({ key: file.r2Key, body: file.body, contentType: file.contentType })),
+	];
+	{
+		let nextUploadIndex = 0;
+		await Promise.all(
+			Array.from({ length: ARTIFACT_UPLOAD_CONCURRENCY }, async () => {
+				for (;;) {
+					const upload = uploads.at(nextUploadIndex);
+					nextUploadIndex += 1;
+					if (!upload) {
+						return;
+					}
+					await r2_put_object(ctx, upload);
+				}
+			}),
+		);
+	}
 
 	// Registration writes the version docs and the source snapshot tree, making the version visible.
 	const registered = (await ctx.runAction(internal.plugins.register_plugin_version, {
@@ -896,6 +1182,12 @@ async function publish_version_from_github(
 		manifestR2Key,
 		backendEntrypointFile,
 		events: manifest._yay.events,
+		pages: (manifest._yay.pages ?? []).map((page) => ({
+			id: page.id,
+			title: page.title,
+			entry: page.entry,
+			navItem: page.navItem ? { label: page.navItem.label, icon: page.navItem.icon ?? null } : null,
+		})),
 		capabilities: manifest._yay.capabilities,
 		outboundOrigins: manifest._yay.outboundOrigins,
 		files: files.map((file) => omit(file, ["body"])),
@@ -905,6 +1197,11 @@ async function publish_version_from_github(
 	if (registered._nay) {
 		return Result({ _nay: { message: registered._nay.message } });
 	}
+
+	// The registered version owns the exact keys now, so the cleanup attempt has nothing left to do.
+	await ctx.runMutation(internal.plugins.remove_publish_artifact_cleanup_attempt, {
+		attemptId: cleanupAttemptId,
+	});
 
 	return Result({
 		_yay: {
@@ -1566,7 +1863,9 @@ export const uninstall_version = mutation({
 		}
 
 		// Event runs and run calls stay as history; the admin hard-delete flow sweeps them.
-		const [handlers, secrets] = await Promise.all([
+		// UI sessions are deleted together with their installation. Their tokens already stopped
+		// working (the resolver rechecks the installation on every call); this just removes the docs.
+		const [handlers, secrets, uiSessions] = await Promise.all([
 			ctx.db
 				.query("plugins_workspace_event_handlers")
 				.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
@@ -1575,10 +1874,15 @@ export const uninstall_version = mutation({
 				.query("plugins_workspace_installation_secrets")
 				.withIndex("by_installation_name", (q) => q.eq("installationId", installation._id))
 				.collect(),
+			ctx.db
+				.query("plugins_ui_sessions")
+				.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
+				.collect(),
 		]);
 		await Promise.all([
 			...handlers.map((handler) => ctx.db.delete("plugins_workspace_event_handlers", handler._id)),
 			...secrets.map((secret) => ctx.db.delete("plugins_workspace_installation_secrets", secret._id)),
+			...uiSessions.map((session) => ctx.db.delete("plugins_ui_sessions", session._id)),
 			ctx.db.delete("plugins_workspace_installations", installation._id),
 		]);
 
@@ -1689,6 +1993,14 @@ export const list_published_plugins = query({
 			reviewStatus: doc(app_convex_schema, "plugins_versions").fields.reviewStatus,
 			capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 			outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
+			pages: v.array(
+				v.object({
+					id: v.string(),
+					title: v.string(),
+					entry: v.string(),
+					navItem: v.union(v.object({ label: v.string(), icon: v.union(v.string(), v.null()) }), v.null()),
+				}),
+			),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -1726,6 +2038,7 @@ export const list_published_plugins = query({
 					reviewStatus: version.reviewStatus,
 					capabilities: version.capabilities,
 					outboundOrigins: version.outboundOrigins,
+					pages: version.pages ?? [],
 				};
 			}),
 		);
@@ -2398,16 +2711,6 @@ export const run_installation_on_files = internalMutation({
 		return Result({ _yay: { runs } });
 	},
 });
-function version_r2_keys(version: Doc<"plugins_versions">) {
-	const r2Keys = new Set<string>([version.manifestR2Key]);
-	if (version.backendEntrypointFile) {
-		r2Keys.add(version.backendEntrypointFile.r2Key);
-	}
-	for (const file of version.files) {
-		r2Keys.add(file.r2Key);
-	}
-	return r2Keys;
-}
 
 /**
  * Delete one bounded batch of a GLOBAL/PLUGINS files tree: range-scan `files_nodes` by `treePath`
@@ -2448,6 +2751,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		installations: v.number(),
 		eventHandlers: v.number(),
 		installationSecrets: v.number(),
+		uiSessions: v.number(),
 		eventRuns: v.number(),
 		eventRunCalls: v.number(),
 		publisherRepositoryClaims: v.number(),
@@ -2466,6 +2770,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		let installations = 0;
 		let eventHandlers = 0;
 		let installationSecrets = 0;
+		let uiSessions = 0;
 		let eventRuns = 0;
 		let eventRunCalls = 0;
 		for (const version of versions) {
@@ -2500,6 +2805,11 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 					.withIndex("by_installation_name", (q) => q.eq("installationId", installation._id))
 					.collect();
 				installationSecrets += secrets.length;
+				const sessions = await ctx.db
+					.query("plugins_ui_sessions")
+					.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
+					.collect();
+				uiSessions += sessions.length;
 				const runs = await ctx.db
 					.query("plugins_event_runs")
 					.withIndex("by_installation_updatedAt", (q) => q.eq("installationId", installation._id))
@@ -2551,6 +2861,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 			installations,
 			eventHandlers,
 			installationSecrets,
+			uiSessions,
 			eventRuns,
 			eventRunCalls,
 			publisherRepositoryClaims,
@@ -2582,10 +2893,10 @@ export const hard_delete_registered_plugin_batch = internalMutation({
 			return { done: true, deleted };
 		}
 
-		// Child docs before parents: run calls -> runs (each run's unpublished write stages
-		// drain right before its doc) -> handlers -> installation secrets -> installations ->
-		// reviews -> mounts -> versions -> repo claims (each claim's publisher secrets cascade
-		// right before the claim itself).
+		// Child docs before parents: run calls -> runs (each run's unpublished write stages are
+		// deleted just before the run itself) -> handlers -> installation secrets -> ui sessions ->
+		// installations -> reviews -> mounts -> versions -> repo claims (each claim's publisher
+		// secrets are deleted just before the claim itself).
 		for (const version of versions) {
 			const installations = await ctx.db
 				.query("plugins_workspace_installations")
@@ -2652,6 +2963,18 @@ export const hard_delete_registered_plugin_batch = internalMutation({
 				}
 				deleted += secrets.length;
 				budget -= secrets.length;
+				if (budget <= 0) {
+					return { done: false, deleted };
+				}
+				const uiSessions = await ctx.db
+					.query("plugins_ui_sessions")
+					.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
+					.take(budget);
+				for (const session of uiSessions) {
+					await ctx.db.delete("plugins_ui_sessions", session._id);
+				}
+				deleted += uiSessions.length;
+				budget -= uiSessions.length;
 				if (budget <= 0) {
 					return { done: false, deleted };
 				}

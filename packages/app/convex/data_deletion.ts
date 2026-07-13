@@ -558,15 +558,26 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: pluginSecrets.length };
 	}
 
-	const pluginInstallations = await ctx.db
+	const pluginInstallation = await ctx.db
 		.query("plugins_workspace_installations")
 		.withIndex("by_organization_workspace_pluginName", (q) =>
 			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
-		.take(batchSize);
-	if (pluginInstallations.length > 0) {
-		await Promise.all(pluginInstallations.map((doc) => ctx.db.delete("plugins_workspace_installations", doc._id)));
-		return { done: false, deletedCount: pluginInstallations.length };
+		.first();
+	if (pluginInstallation) {
+		// One installation per pass. Its UI sessions are deleted one batch per transaction, and the
+		// installation itself only once no sessions remain — so a crash mid-way never leaves
+		// sessions behind without their installation.
+		const pluginUiSessions = await ctx.db
+			.query("plugins_ui_sessions")
+			.withIndex("by_installation", (q) => q.eq("installationId", pluginInstallation._id))
+			.take(batchSize);
+		if (pluginUiSessions.length > 0) {
+			await Promise.all(pluginUiSessions.map((doc) => ctx.db.delete("plugins_ui_sessions", doc._id)));
+			return { done: false, deletedCount: pluginUiSessions.length };
+		}
+		await ctx.db.delete("plugins_workspace_installations", pluginInstallation._id);
+		return { done: false, deletedCount: 1 };
 	}
 
 	// Legacy chat messages are still workspace-scoped content and are purged with
@@ -1109,6 +1120,23 @@ async function db_prepare_user_for_deletion(
 }
 
 /**
+ * Deletes one batch of a user's plugin UI page sessions. Both user-deletion paths call this until
+ * no sessions remain before running `db_finalize_deleted_user`, so finalize never has to read
+ * them.
+ */
+async function db_drain_user_plugin_ui_sessions_batch(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; batchSize: number },
+) {
+	const sessions = await ctx.db
+		.query("plugins_ui_sessions")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	await Promise.all(sessions.map((doc) => ctx.db.delete("plugins_ui_sessions", doc._id)));
+	return sessions.length;
+}
+
+/**
  * Phase 2 for a tombstoned user.
  *
  * This removes user-scoped docs that can be deleted after retention. It can also
@@ -1477,6 +1505,7 @@ export const process_user_deletion_request = internalMutation({
 		 * Omit in normal production flows (`Date.now()` is used).
 		 */
 		_test_now: v.optional(v.number()),
+		_test_batchSize: v.optional(v.number()),
 	},
 	returns: v.object({
 		done: v.boolean(),
@@ -1520,6 +1549,17 @@ export const process_user_deletion_request = internalMutation({
 				requestId: request._id,
 			});
 			return { done: false, deletedCount: 0 };
+		}
+
+		// A user can have any number of plugin UI sessions, so delete one batch per pass and keep
+		// the request queued (done: false) until none remain. Finalization then never has to read
+		// them all at once.
+		const drainedSessions = await db_drain_user_plugin_ui_sessions_batch(ctx, {
+			userId: user._id,
+			batchSize: batch_size(args),
+		});
+		if (drainedSessions > 0) {
+			return { done: false, deletedCount: drainedSessions };
 		}
 
 		// Finalize the user first to delete the remaining user-owned docs and to
@@ -2214,6 +2254,39 @@ export const hard_delete_user_data = internalMutation({
 });
 
 /**
+ * Deletes a deleted user's remaining plugin UI page sessions, one batch per run, rescheduling
+ * itself until none remain. It only needs the userId — not the user doc or the queued user
+ * request — so it keeps working after the admin path has removed those. Running it with nothing
+ * left to delete is a no-op.
+ */
+export const drain_deleted_user_plugin_ui_sessions = internalMutation({
+	args: {
+		userId: v.id("users"),
+		_test_batchSize: v.optional(v.number()),
+	},
+	returns: v.object({
+		done: v.boolean(),
+		deletedCount: v.number(),
+	}),
+	handler: async (ctx, args) => {
+		const batchSize = batch_size(args);
+		const deletedCount = await db_drain_user_plugin_ui_sessions_batch(ctx, {
+			userId: args.userId,
+			batchSize,
+		});
+		// A full batch may mean more sessions remain; keep going until a short batch shows the end.
+		if (deletedCount >= batchSize) {
+			await ctx.scheduler.runAfter(0, internal.data_deletion.drain_deleted_user_plugin_ui_sessions, {
+				userId: args.userId,
+				_test_batchSize: args._test_batchSize,
+			});
+			return { done: false, deletedCount };
+		}
+		return { done: true, deletedCount };
+	},
+});
+
+/**
  * Internal admin finalization entrypoint for auth-removing hard-delete modes.
  *
  * This runs the user tombstone and finalization immediately instead of waiting
@@ -2226,6 +2299,7 @@ export const finalize_user_deletion_data = internalMutation({
 		userId: v.id("users"),
 		deleteUserAuth: v.optional(v.boolean()),
 		deleteBillingState: v.optional(v.boolean()),
+		_test_batchSize: v.optional(v.number()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
@@ -2235,6 +2309,22 @@ export const finalize_user_deletion_data = internalMutation({
 		}
 
 		const now = Date.now();
+
+		// A user can have any number of plugin UI sessions. This transaction deletes one batch and,
+		// if more remain, schedules the userId-keyed continuation to delete the rest (never the
+		// queued request path). That keeps this admin finalize bounded, and
+		// `db_finalize_deleted_user` never has to read sessions.
+		const batchSize = batch_size(args);
+		const drainedSessions = await db_drain_user_plugin_ui_sessions_batch(ctx, {
+			userId: user._id,
+			batchSize,
+		});
+		if (drainedSessions >= batchSize) {
+			await ctx.scheduler.runAfter(0, internal.data_deletion.drain_deleted_user_plugin_ui_sessions, {
+				userId: user._id,
+				_test_batchSize: args._test_batchSize,
+			});
+		}
 
 		// Run the reversible phase-1 tombstone inline because the admin path
 		// does not wait for the delayed user deletion request.
@@ -2323,6 +2413,7 @@ async function run_deletion_request_batches(
 				const result = (await ctx.runMutation(internal.data_deletion.process_user_deletion_request, {
 					requestId,
 					_test_now: test_now,
+					_test_batchSize: args._test_batchSize,
 				})) as process_user_deletion_request_Result;
 				madeProgress ||= result.deletedCount > 0 || result.done;
 				shouldReschedule ||= !result.done;

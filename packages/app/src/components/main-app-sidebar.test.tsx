@@ -4,10 +4,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { AppTenantContextValue } from "@/lib/app-tenant-context.tsx";
 
-const { tenantContextMock, localStorageSetterMock, useQueryMock } = vi.hoisted(() => ({
+const { tenantContextMock, localStorageSetterMock, useQueryMock, pathnameMock } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	localStorageSetterMock: vi.fn(),
 	useQueryMock: vi.fn(),
+	pathnameMock: vi.fn(),
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -19,7 +20,7 @@ vi.mock("@tanstack/react-router", () => ({
 		);
 	},
 	useRouterState: (args: { select: (state: { location: { pathname: string } }) => string }) =>
-		args.select({ location: { pathname: "/w/team/home/files" } }),
+		args.select({ location: { pathname: pathnameMock() } }),
 }));
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
@@ -36,6 +37,9 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex_api: {
 		organizations: {
 			list: "organizations.list",
+		},
+		plugins_ui: {
+			list_ui_pages: "plugins_ui.list_ui_pages",
 		},
 	},
 }));
@@ -186,9 +190,10 @@ vi.mock("@/components/my-sidebar.tsx", () => ({
 		children?: ReactNode;
 		className?: string;
 		to: string;
+		"data-selected"?: string;
 	}) {
 		return (
-			<a href={props.to} className={props.className}>
+			<a href={props.to} className={props.className} data-selected={props["data-selected"]}>
 				{props.children}
 			</a>
 		);
@@ -221,10 +226,41 @@ function createOrganizationList(args: { organizationIsDefault: boolean }) {
 	};
 }
 
+function createPluginPages() {
+	return [
+		{
+			pluginName: "gallery",
+			displayName: "Gallery",
+			pluginVersionId: "version_1",
+			pages: [
+				{
+					id: "gallery",
+					title: "Gallery",
+					entry: "dist/frontend/index.html",
+					navItem: { label: "Gallery", icon: "images" },
+				},
+			],
+		},
+	];
+}
+
+function mockQueries(args: { organizationIsDefault: boolean; pluginPages?: ReturnType<typeof createPluginPages> }) {
+	useQueryMock.mockImplementation((query: unknown) => {
+		if (query === "organizations.list") {
+			return createOrganizationList({ organizationIsDefault: args.organizationIsDefault });
+		}
+		if (query === "plugins_ui.list_ui_pages") {
+			return args.pluginPages ?? [];
+		}
+		return undefined;
+	});
+}
+
 describe("MainAppSidebar", () => {
 	beforeEach(() => {
 		tenantContextMock.mockReturnValue(createTenantContext());
-		useQueryMock.mockReturnValue(createOrganizationList({ organizationIsDefault: false }));
+		pathnameMock.mockReturnValue("/w/team/home/files");
+		mockQueries({ organizationIsDefault: false });
 	});
 
 	afterEach(() => {
@@ -233,7 +269,7 @@ describe("MainAppSidebar", () => {
 	});
 
 	test("hides Users navigation in the personal organization", () => {
-		useQueryMock.mockReturnValue(createOrganizationList({ organizationIsDefault: true }));
+		mockQueries({ organizationIsDefault: true });
 
 		render(<MainAppSidebar />);
 
@@ -246,5 +282,46 @@ describe("MainAppSidebar", () => {
 		render(<MainAppSidebar />);
 
 		expect(screen.getByText("Users")).not.toBeNull();
+	});
+
+	test("renders a nav item for plugin pages that declare one", () => {
+		mockQueries({ organizationIsDefault: false, pluginPages: createPluginPages() });
+
+		render(<MainAppSidebar />);
+
+		const pageLink = screen.getByText("Gallery").closest("a");
+		expect(pageLink?.getAttribute("href")).toBe("/w/team/home/plugins/gallery/pages/gallery");
+	});
+
+	test("selects only the plugin page item on its route, not Plugins", () => {
+		mockQueries({ organizationIsDefault: false, pluginPages: createPluginPages() });
+		pathnameMock.mockReturnValue("/w/team/home/plugins/gallery/pages/gallery");
+
+		render(<MainAppSidebar />);
+
+		const pageLink = screen.getByText("Gallery").closest("a");
+		const pluginsLink = screen.getByText("Plugins").closest("a");
+		expect(pageLink?.getAttribute("data-selected")).toBe("true");
+		expect(pluginsLink?.getAttribute("data-selected")).toBeNull();
+	});
+
+	test("keeps Plugins selected on the plugin detail route", () => {
+		mockQueries({ organizationIsDefault: false, pluginPages: createPluginPages() });
+		pathnameMock.mockReturnValue("/w/team/home/plugins/gallery");
+
+		render(<MainAppSidebar />);
+
+		const pluginsLink = screen.getByText("Plugins").closest("a");
+		expect(pluginsLink?.getAttribute("data-selected")).toBe("true");
+	});
+
+	test("keeps Plugins selected when the workspace itself is named pages", () => {
+		tenantContextMock.mockReturnValue({ ...createTenantContext(), workspaceName: "pages" });
+		pathnameMock.mockReturnValue("/w/team/pages/plugins/gallery");
+
+		render(<MainAppSidebar />);
+
+		const pluginsLink = screen.getByText("Plugins").closest("a");
+		expect(pluginsLink?.getAttribute("data-selected")).toBe("true");
 	});
 });

@@ -1,0 +1,60 @@
+@layer components {
+	/* #region root */
+	/* Column filling the content area (viewport minus header) so the iframe gets all leftover height. */
+	.RoutePluginsPluginPage {
+		display: flex;
+		flex-direction: column;
+
+		width: 100%;
+		height: 100%;
+	}
+
+	.RoutePluginsPluginPage-loading {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		min-height: 180px;
+
+		color: var(--color-fg-08);
+	}
+
+	.RoutePluginsPluginPage-missing {
+		margin: 24px;
+		padding: 18px;
+		border: 1px dashed var(--color-base-1-07);
+		border-radius: 8px;
+
+		text-align: center;
+		font-size: 13px;
+		color: var(--color-fg-07);
+	}
+
+	.RoutePluginsPluginPage-error {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 12px;
+
+		margin: 24px;
+		padding: 18px;
+		border: 1px dashed var(--color-base-1-07);
+		border-radius: 8px;
+
+		text-align: center;
+		font-size: 13px;
+		color: var(--color-destructive);
+	}
+
+	/* The sandboxed document paints all of its own chrome; the frame is just a hole in the page. */
+	.RoutePluginsPluginPage-frame {
+		display: block;
+		flex: 1;
+
+		width: 100%;
+		height: 100%;
+		border: 0;
+	}
+	/* #endregion root */
+}

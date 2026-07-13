@@ -6,6 +6,7 @@ import { files_http_routes } from "./files_nodes.ts";
 import { public_api_http_routes } from "./public_api.ts";
 import { r2_http_routes } from "./r2.ts";
 import { plugins_runtime_http_routes } from "./plugins_runtime.ts";
+import { plugins_ui_http_routes } from "./plugins_ui.ts";
 import { billing_polar } from "./billing.ts";
 import { users_http_routes } from "./users.ts";
 import { corsRouter } from "convex-helpers/server/cors";
@@ -40,16 +41,26 @@ const appCors = corsRouter(http, {
 	allowedHeaders: ["Authorization", "Content-Type"],
 });
 
+// Sandboxed plugin iframes have an opaque origin, so the browser sends the literal header
+// `Origin: null`. The "null" entry lets them call the bearer-token public API (no cookies;
+// allowCredentials stays false). It has to be added here in code because allowed_origins()
+// URL-parses the env entries and would drop the bare "null" string.
+const appCorsPublicApi = corsRouter(http, {
+	allowedOrigins: [...allowed_origins(), "null"],
+	allowedHeaders: ["Authorization", "Content-Type"],
+});
+
 export type RouterForConvexModules = {
 	route: HttpRouter["route"];
 };
 
 users_http_routes(appCors);
 ai_chat_http_routes(appCors);
-public_api_http_routes(appCors);
+public_api_http_routes(appCorsPublicApi);
 files_http_routes(appCors);
 r2_http_routes(appCors);
 plugins_runtime_http_routes(appCors);
+plugins_ui_http_routes(http);
 
 appCors.route({
 	path: "/getMessagesByAuthor",

@@ -154,3 +154,6 @@
 [submodule "plugins/bonobo-plugin-video"]
 	path = plugins/bonobo-plugin-video
 	url = https://github.com/raythurnvoid/bonobo-plugin-video.git
+[submodule "plugins/bonobo-plugin-gallery"]
+	path = plugins/bonobo-plugin-gallery
+	url = https://github.com/raythurnvoid/bonobo-plugin-gallery.git

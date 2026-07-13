@@ -17,6 +17,7 @@ import { Route as WOrganizationNameWorkspaceNameFilesIndexRouteImport } from './
 import { Route as WOrganizationNameWorkspaceNameChatIndexRouteImport } from './routes/w/$organizationName/$workspaceName/chat/index'
 import { Route as WOrganizationNameWorkspaceNamePluginsPluginNameRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/$pluginName'
 import { Route as WOrganizationNameWorkspaceNamePluginsPublisherIndexRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/publisher/index'
+import { Route as WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/$pluginName_.pages.$pageId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -65,6 +66,12 @@ const WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute =
     path: '/plugins/publisher/',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
+const WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute =
+  WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRouteImport.update({
+    id: '/plugins/$pluginName_/pages/$pageId',
+    path: '/plugins/$pluginName/pages/$pageId',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -75,6 +82,7 @@ export interface FileRoutesByFullPath {
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/users/': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
   '/w/$organizationName/$workspaceName/plugins/publisher/': typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
+  '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId': typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -85,6 +93,7 @@ export interface FileRoutesByTo {
   '/w/$organizationName/$workspaceName/plugins': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/users': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
   '/w/$organizationName/$workspaceName/plugins/publisher': typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
+  '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId': typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -96,6 +105,7 @@ export interface FileRoutesById {
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/users/': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
   '/w/$organizationName/$workspaceName/plugins/publisher/': typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
+  '/w/$organizationName/$workspaceName/plugins/$pluginName_/pages/$pageId': typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -108,6 +118,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/plugins/'
     | '/w/$organizationName/$workspaceName/users/'
     | '/w/$organizationName/$workspaceName/plugins/publisher/'
+    | '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -118,6 +129,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/plugins'
     | '/w/$organizationName/$workspaceName/users'
     | '/w/$organizationName/$workspaceName/plugins/publisher'
+    | '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId'
   id:
     | '__root__'
     | '/'
@@ -128,6 +140,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/plugins/'
     | '/w/$organizationName/$workspaceName/users/'
     | '/w/$organizationName/$workspaceName/plugins/publisher/'
+    | '/w/$organizationName/$workspaceName/plugins/$pluginName_/pages/$pageId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -193,6 +206,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
+    '/w/$organizationName/$workspaceName/plugins/$pluginName_/pages/$pageId': {
+      id: '/w/$organizationName/$workspaceName/plugins/$pluginName_/pages/$pageId'
+      path: '/plugins/$pluginName/pages/$pageId'
+      fullPath: '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
   }
 }
 
@@ -203,6 +223,7 @@ interface WOrganizationNameWorkspaceNameRouteRouteChildren {
   WOrganizationNameWorkspaceNamePluginsIndexRoute: typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   WOrganizationNameWorkspaceNameUsersIndexRoute: typeof WOrganizationNameWorkspaceNameUsersIndexRoute
   WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute: typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
+  WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute: typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute
 }
 
 const WOrganizationNameWorkspaceNameRouteRouteChildren: WOrganizationNameWorkspaceNameRouteRouteChildren =
@@ -219,6 +240,8 @@ const WOrganizationNameWorkspaceNameRouteRouteChildren: WOrganizationNameWorkspa
       WOrganizationNameWorkspaceNameUsersIndexRoute,
     WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute:
       WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute,
+    WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute:
+      WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute,
   }
 
 const WOrganizationNameWorkspaceNameRouteRouteWithChildren =

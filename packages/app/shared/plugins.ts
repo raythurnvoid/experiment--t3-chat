@@ -8,8 +8,11 @@ export const plugins_RUNTIME_VERSION = "1";
 const MANIFEST_SCHEMA_VERSION = 1;
 const EVENT_TYPES = ["files.upload.completed"] as const;
 
-const CAPABILITIES = ["plugin.secrets.read", "outbound.fetch"] as const;
+const CAPABILITIES = ["plugin.secrets.read", "outbound.fetch", "workspace.files.read"] as const;
 export type plugins_Capability = (typeof CAPABILITIES)[number];
+
+/** Bumped when the host<->iframe postMessage handshake changes shape. */
+export const plugins_UI_PAGES_PROTOCOL_VERSION = 1;
 
 // Shared by env text parsing and the dist review scan.
 const NEWLINE_REGEX = /\r?\n/u;
@@ -320,12 +323,26 @@ const SEMVER_REGEX = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u;
 const MODULE_PATH_REGEX = /^[A-Za-z0-9._/-]+$/u;
 const COMPATIBILITY_DATE_REGEX = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u;
 
+// These limits are checked before any file is fetched. Publishing downloads, buffers, and uploads
+// whatever the manifest declares, so without them a huge manifest would mean a huge publish.
+const MAX_FILES = 64;
+const MAX_PAGES = 16;
+const MAX_NAV_ITEMS = 8;
+const MAX_FILE_PATH_LENGTH = 512;
+const MAX_CONTENT_TYPE_LENGTH = 255;
+// Matches files_MAX_TEXT_CONTENT_BYTES: every artifact file must fit the app's text-content cap.
+const MAX_FILE_BYTES = 900_000;
+
+/** Byte cap for the whole artifact. Publishing checks it twice: on the declared sizes, then on the actual downloaded bytes. */
+export const plugins_MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
+
 /**
  * Manifest paths are stored and joined verbatim, so require an already-normalized
  * relative path: no leading/trailing/duplicate slashes and no "." / ".." segments.
  */
 const module_path_schema = z
 	.string()
+	.max(MAX_FILE_PATH_LENGTH)
 	.regex(MODULE_PATH_REGEX)
 	.refine(
 		(path) => path.split("/").every((segment) => segment && segment !== "." && segment !== ".."),
@@ -343,9 +360,39 @@ const manifest_file_schema = z
 	.object({
 		path: module_path_schema,
 		sha256: z.string().regex(SHA256_REGEX),
-		bytes: z.number().int().nonnegative(),
-		contentType: z.string().min(1),
+		bytes: z.number().int().nonnegative().max(MAX_FILE_BYTES),
+		contentType: z.string().min(1).max(MAX_CONTENT_TYPE_LENGTH),
 		r2Key: z.string().optional(),
+	})
+	.strict();
+
+const PAGE_ID_REGEX = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+// Lucide icon names are kebab-case; the app maps them through an allowlist with a fallback.
+const PAGE_NAV_ICON_REGEX = /^[a-z0-9-]{1,64}$/u;
+
+/**
+ * The lucide icon names the app sidebar can render for page nav items. Any other `navItem.icon`
+ * (or none) falls back to the generic Puzzle icon when rendered. Publish never rejects an icon
+ * name, so new names can be added here without breaking already-published manifests. Plain
+ * strings only: Convex code imports this module, so it must never depend on lucide-react.
+ */
+export const plugins_PAGE_NAV_ICON_NAMES = ["images", "image", "film", "gallery-vertical-end"] as const;
+
+const page_nav_item_schema = z
+	.object({
+		label: z.string().min(1).max(40),
+		icon: z.string().regex(PAGE_NAV_ICON_REGEX).optional(),
+	})
+	.strict();
+
+const page_schema = z
+	.object({
+		id: z.string().regex(PAGE_ID_REGEX),
+		title: z.string().min(1).max(80),
+		/** Must match a files[] entry with contentType "text/html"; served into a sandboxed iframe. */
+		entry: module_path_schema,
+		/** Presence is the explicit opt-in for a main-sidebar nav item. */
+		navItem: page_nav_item_schema.optional(),
 	})
 	.strict();
 
@@ -371,11 +418,10 @@ const manifest_schema = z
 			.strict()
 			.optional(),
 		events: z.array(event_schema),
-		/** Plugin UI pages were never built. Ignored; tolerated so already-published manifests still parse. */
-		pages: z.array(z.unknown()).optional(),
+		pages: z.array(page_schema).max(MAX_PAGES).optional(),
 		capabilities: z.array(z.enum(CAPABILITIES)),
 		outboundOrigins: z.array(z.string()),
-		files: z.array(manifest_file_schema),
+		files: z.array(manifest_file_schema).max(MAX_FILES),
 	})
 	.strict();
 
@@ -406,6 +452,7 @@ export function plugins_validate_manifest(input: unknown) {
 		outboundOrigins.add(origin);
 	}
 	const filePaths = new Set<string>();
+	let declaredArtifactBytes = 0;
 	for (const file of parsed.data.files) {
 		if (!file.path.startsWith("dist/")) {
 			return Result({ _nay: { message: `Plugin file "${file.path}" must be under dist/` } });
@@ -414,6 +461,38 @@ export function plugins_validate_manifest(input: unknown) {
 			return Result({ _nay: { message: `Plugin manifest has duplicate file path "${file.path}"` } });
 		}
 		filePaths.add(file.path);
+		declaredArtifactBytes += file.bytes;
+		if (declaredArtifactBytes > plugins_MAX_ARTIFACT_BYTES) {
+			return Result({ _nay: { message: "Plugin manifest declares more than 16 MiB of artifact bytes" } });
+		}
+	}
+	const pageIds = new Set<string>();
+	let navItemCount = 0;
+	for (const page of parsed.data.pages ?? []) {
+		if (pageIds.has(page.id)) {
+			return Result({ _nay: { message: `Plugin manifest has duplicate page id "${page.id}"` } });
+		}
+		pageIds.add(page.id);
+		if (page.navItem) {
+			navItemCount += 1;
+			if (navItemCount > MAX_NAV_ITEMS) {
+				return Result({ _nay: { message: `Plugin manifest declares more than ${MAX_NAV_ITEMS} nav items` } });
+			}
+		}
+		const entryFile = parsed.data.files.find((file) => file.path === page.entry);
+		if (!entryFile) {
+			return Result({ _nay: { message: `Plugin page "${page.id}" entry must be a listed file` } });
+		}
+		if (entryFile.contentType !== "text/html") {
+			return Result({ _nay: { message: `Plugin page "${page.id}" entry must be a text/html file` } });
+		}
+	}
+	const capabilities = new Set<string>();
+	for (const capability of parsed.data.capabilities) {
+		if (capabilities.has(capability)) {
+			return Result({ _nay: { message: `Plugin manifest has duplicate capability "${capability}"` } });
+		}
+		capabilities.add(capability);
 	}
 	return Result({ _yay: parsed.data });
 }

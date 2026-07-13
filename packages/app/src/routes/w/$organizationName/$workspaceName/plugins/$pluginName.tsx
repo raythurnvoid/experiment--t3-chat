@@ -751,6 +751,27 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 			</section>
 
 			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
+				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>Pages</h3>
+				{plugin.pages.length === 0 ? (
+					<div className={"RoutePluginsPluginAccess-empty" satisfies RoutePluginsPluginAccess_ClassNames}>
+						No UI pages.
+					</div>
+				) : (
+					<ul className={"RoutePluginsPluginAccess-list" satisfies RoutePluginsPluginAccess_ClassNames}>
+						{plugin.pages.map((page) => (
+							<li
+								key={page.id}
+								className={"RoutePluginsPluginAccess-item" satisfies RoutePluginsPluginAccess_ClassNames}
+							>
+								{page.title}
+								{page.navItem ? ` — sidebar item: ${page.navItem.label}` : ""}
+							</li>
+						))}
+					</ul>
+				)}
+			</section>
+
+			<section className={"RoutePluginsPluginAccess-group" satisfies RoutePluginsPluginAccess_ClassNames}>
 				<h3 className={"RoutePluginsPluginAccess-group-title" satisfies RoutePluginsPluginAccess_ClassNames}>
 					Network access
 				</h3>
@@ -1325,6 +1346,25 @@ function RoutePluginsPlugin() {
 								</li>
 							))}
 						</ul>
+						{plugin.pages.length > 0 ? (
+							<>
+								{/* One-line explanation doubles as the section title, like the other consent sections. */}
+								<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
+									This plugin adds pages to your workspace sidebar
+								</div>
+								<ul className={"RoutePluginsPluginConsentModal-list" satisfies RoutePluginsPlugin_ClassNames}>
+									{plugin.pages.map((page) => (
+										<li
+											key={page.id}
+											className={"RoutePluginsPluginConsentModal-item" satisfies RoutePluginsPlugin_ClassNames}
+										>
+											{page.title}
+											{page.navItem ? ` — sidebar item: ${page.navItem.label}` : ""}
+										</li>
+									))}
+								</ul>
+							</>
+						) : null}
 						<div className={"RoutePluginsPluginConsentModal-sectionTitle" satisfies RoutePluginsPlugin_ClassNames}>
 							And send requests to these origins
 						</div>
