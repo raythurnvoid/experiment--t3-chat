@@ -20,21 +20,5 @@
     "typescript-eslint": "^8.47.0",
     "yargs": "15.4.1"
   },
-  "pnpm": {
-    "overrides": {
-      "@tiptap/y-tiptap": "3.0.0",
-      "convex": "1.31.7",
-      "marked": "17.0.1",
-      "react": "19.2.4",
-      "react-dom": "19.2.4"
-    },
-    "onlyBuiltDependencies": [
-      "@clerk/shared",
-      "core-js",
-      "core-js-pure",
-      "esbuild",
-      "msw"
-    ]
-  },
   "packageManager": "pnpm@10.33.0"
 }
