@@ -381,7 +381,9 @@
 
 		&:not(:disabled):focus-visible:not(:active) > .FilesSidebarTreeItemPrimaryAction-surface {
 			background: linear-gradient(var(--color-base-1-07), var(--color-base-1-06));
+			/* Inset so the row's content-visibility paint containment can't clip it. */
 			outline: 2px solid var(--color-fg-12);
+			outline-offset: -2px;
 		}
 
 		&:not(:disabled):active > .FilesSidebarTreeItemPrimaryAction-surface {
