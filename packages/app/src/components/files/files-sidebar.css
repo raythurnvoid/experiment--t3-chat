@@ -258,10 +258,11 @@
 	}
 
 	.FilesSidebarTreeDropZoneIndicator {
-		position: absolute;
+		/* Stick to the visible scrollport bottom; absolute would pin it to the bottom of the scrolled content. */
+		position: sticky;
 		bottom: 64px;
-		left: 50%;
-		transform: translateX(-50%);
+		width: fit-content;
+		margin-inline: auto;
 
 		pointer-events: none;
 		contain: layout style paint;
