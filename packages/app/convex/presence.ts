@@ -10,6 +10,10 @@ import { doc } from "convex-helpers/validators";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
+// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
+// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+export const experimental_reuseContext = true;
+
 export const presence = new Presence(components.presence);
 
 function presence_rate_limit_error(rateLimit: { message: string; retryAfterMs: number }) {

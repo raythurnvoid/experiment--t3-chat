@@ -51,6 +51,10 @@ import {
 } from "./r2.ts";
 import { type plugins_runtime_consume_run_api_call_Result } from "./plugins_runtime.ts";
 
+// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
+// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+export const experimental_reuseContext = true;
+
 export const public_api_SCOPE_FILES_LIST = "files:list";
 export const public_api_SCOPE_FILES_READ = "files:read";
 export const public_api_SCOPE_FILES_WRITE = "files:write";

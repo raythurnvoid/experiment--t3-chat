@@ -15,7 +15,7 @@ packages:
 
 overrides:
   "@tiptap/y-tiptap": "3.0.0"
-  convex: "1.31.7"
+  convex: "1.42.2"
   marked: "17.0.1"
   react: "19.2.4"
   react-dom: "19.2.4"

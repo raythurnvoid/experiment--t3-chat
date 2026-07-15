@@ -41,6 +41,10 @@ import {
 } from "./billing.ts";
 import { rate_limiter_http_client_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 
+// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
+// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+export const experimental_reuseContext = true;
+
 if (!process.env.ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM) {
 	throw convex_error({ message: "ANONYMOUS_USERS_JWT_PRIVATE_KEY_PEM is not set in Convex env" });
 }

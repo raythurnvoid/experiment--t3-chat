@@ -13,6 +13,10 @@ import {
 } from "../shared/files-metadata.ts";
 import { organizations_is_reserved_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
 
+// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
+// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+export const experimental_reuseContext = true;
+
 // #region indexed doc writes
 
 function value_doc_payload(value: files_metadata_Value) {

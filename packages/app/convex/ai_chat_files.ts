@@ -5,6 +5,10 @@ import { internalMutation, internalQuery } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import app_convex_schema from "./schema.ts";
 
+// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
+// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+export const experimental_reuseContext = true;
+
 export const load_thread_tmp_files = internalQuery({
 	args: {
 		threadId: v.id("ai_chat_threads"),

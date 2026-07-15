@@ -8,6 +8,10 @@ import { server_convex_get_user_fallback_to_anonymous, should_never_happen } fro
 import { quotas } from "../shared/quotas.ts";
 import app_convex_schema from "./schema.ts";
 
+// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
+// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+export const experimental_reuseContext = true;
+
 export async function quotas_db_get(
 	ctx: QueryCtx | MutationCtx,
 	args:

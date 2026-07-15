@@ -41,6 +41,10 @@ import {
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 
+// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
+// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+export const experimental_reuseContext = true;
+
 // 10 minutes. The real execution ceiling is the Convex action timeout plus the runner request
 // timeout below; the TTL only needs to cover queue wait on top of that. Runs past it are
 // refused at start or failed by the expiry cron.

@@ -158,6 +158,24 @@ async function drain_scheduled_work(t: ReturnType<typeof test_convex>) {
 	}
 }
 
+async function drain_plugin_registry_delete(
+	t: ReturnType<typeof test_convex>,
+	pluginName: string,
+	testBatchSize?: number,
+) {
+	for (let step = 0; step < 1_000; step += 1) {
+		const result = await t.mutation(internal.plugins.hard_delete_plugin_from_registry, {
+			pluginName,
+			_test_batchSize: testBatchSize,
+		});
+		if (result.done) return;
+		if (result.deleted === 0) {
+			throw new Error(`Hard delete of plugin "${pluginName}" is waiting for an active run`);
+		}
+	}
+	throw new Error(`Hard delete of plugin "${pluginName}" did not finish`);
+}
+
 describe("plugins Phase 0", () => {
 	async function install_plugin_with_upload_asset(t: ReturnType<typeof test_convex>) {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -5601,7 +5619,7 @@ describe("plugins uninstall_version", () => {
 		expect(preview.eventRunCalls).toBe(1);
 
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		await t.action(internal.plugins.hard_delete_registered_plugin_now, { pluginName: "media" });
+		await drain_plugin_registry_delete(t, "media");
 		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_event_run_calls", callId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", registered.pluginVersionId))).toBeNull();
@@ -6199,7 +6217,7 @@ describe("plugins admin hard delete", () => {
 		expect(before.versions).toBe(0);
 		expect(before.versionReviews).toBe(1);
 
-		await t.action(internal.plugins.hard_delete_registered_plugin_now, { pluginName: "rejected-only" });
+		await drain_plugin_registry_delete(t, "rejected-only");
 		expect(await t.run((ctx) => ctx.db.get("plugins_version_reviews", seeded.targetReviewId))).toBeNull();
 		expect(
 			await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", seeded.targetRepositoryId)),
@@ -6268,14 +6286,14 @@ describe("plugins admin hard delete", () => {
 		expect(before.publishCleanupAttempts).toBe(1);
 		expect(before.r2ObjectKeys).toBe(2);
 		await expect(
-			t.action(internal.plugins.hard_delete_registered_plugin_now, { pluginName: "interrupted-only" }),
+			t.mutation(internal.plugins.hard_delete_plugin_from_registry, { pluginName: "interrupted-only" }),
 		).rejects.toThrow("R2 unavailable");
 		expect(
 			(await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", seeded.targetAttemptId)))?.r2Keys,
 		).toEqual(seeded.keys);
 
 		deleteObject.mockResolvedValue(undefined);
-		await t.action(internal.plugins.hard_delete_registered_plugin_now, { pluginName: "interrupted-only" });
+		await drain_plugin_registry_delete(t, "interrupted-only");
 		expect(
 			await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", seeded.targetAttemptId)),
 		).toBeNull();
@@ -6319,7 +6337,7 @@ describe("plugins admin hard delete", () => {
 		expect(preview.publisherSecrets).toBe(0);
 
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		await t.action(internal.plugins.hard_delete_registered_plugin_now, { pluginName: "reclaimed-plugin" });
+		await drain_plugin_registry_delete(t, "reclaimed-plugin");
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", registered.pluginVersionId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", reclaimed.repositoryId))).not.toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repository_secrets", reclaimed.secretId))).not.toBeNull();
@@ -6360,7 +6378,7 @@ describe("plugins admin hard delete", () => {
 		expect(firstPreview.publisherSecrets).toBe(0);
 
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		await t.action(internal.plugins.hard_delete_registered_plugin_now, { pluginName: "shared-name-one" });
+		await drain_plugin_registry_delete(t, "shared-name-one");
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", first.pluginVersionId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", second.pluginVersionId))).not.toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", first.repositoryId))).not.toBeNull();
@@ -6371,7 +6389,7 @@ describe("plugins admin hard delete", () => {
 		});
 		expect(secondPreview.publisherRepositoryClaims).toBe(1);
 		expect(secondPreview.publisherSecrets).toBe(1);
-		await t.action(internal.plugins.hard_delete_registered_plugin_now, { pluginName: "shared-name-two" });
+		await drain_plugin_registry_delete(t, "shared-name-two");
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", first.repositoryId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repository_secrets", secretId))).toBeNull();
 	});
@@ -6424,14 +6442,14 @@ describe("plugins admin hard delete", () => {
 		const deleteObject = vi.spyOn(R2.prototype, "deleteObject").mockRejectedValueOnce(new Error("R2 unavailable"));
 
 		await expect(
-			t.mutation(internal.plugins.hard_delete_registered_plugin_batch, { pluginName: "r2-retry" }),
+			t.mutation(internal.plugins.hard_delete_plugin_from_registry, { pluginName: "r2-retry" }),
 		).rejects.toThrow("R2 unavailable");
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", fixture.pluginVersionId))).not.toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", fixture.repositoryId))).not.toBeNull();
 
 		deleteObject.mockResolvedValue(undefined);
 		for (let step = 0; step < 5; step += 1) {
-			const result = await t.mutation(internal.plugins.hard_delete_registered_plugin_batch, {
+			const result = await t.mutation(internal.plugins.hard_delete_plugin_from_registry, {
 				pluginName: "r2-retry",
 			});
 			if (result.done) break;
@@ -6500,7 +6518,7 @@ describe("plugins admin hard delete", () => {
 		});
 		const deleteObject = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 
-		await t.action(internal.plugins.hard_delete_registered_plugin_now, { pluginName: "secret-batch" });
+		await drain_plugin_registry_delete(t, "secret-batch");
 
 		expect(deleteObject).toHaveBeenCalledTimes(2);
 		expect(deleteObject).toHaveBeenCalledWith(expect.anything(), "plugins/secret-batch/manifest.json");
@@ -6562,7 +6580,7 @@ describe("plugins admin hard delete", () => {
 		let done = false;
 		for (let step = 0; step < 250 && !done; step += 1) {
 			done = (
-				await t.mutation(internal.plugins.hard_delete_registered_plugin_batch, {
+				await t.mutation(internal.plugins.hard_delete_plugin_from_registry, {
 					pluginName: "large-delete",
 				})
 			).done;
@@ -6625,14 +6643,12 @@ describe("plugins admin hard delete", () => {
 			}),
 		);
 		const cancelSpy = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined);
-		await expect(t.action(internal.plugins.hard_delete_registered_plugin_now, { pluginName: "media" })).rejects.toThrow(
-			'Hard delete of plugin "media" is waiting for an active run; retry later',
-		);
-		expect(cancelSpy).toHaveBeenCalledTimes(1);
-		const waiting = await t.mutation(internal.plugins.hard_delete_registered_plugin_batch, {
+		const waiting = await t.mutation(internal.plugins.hard_delete_plugin_from_registry, {
 			pluginName: "media",
 		});
 		expect(waiting.done).toBe(false);
+		expect(waiting.deleted).toBe(0);
+		expect(cancelSpy).toHaveBeenCalledTimes(1);
 		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).not.toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", media.pluginVersionId))).not.toBeNull();
 		const consumed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
@@ -6651,7 +6667,7 @@ describe("plugins admin hard delete", () => {
 		});
 		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toMatchObject({ status: "failed" });
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		await t.action(internal.plugins.hard_delete_registered_plugin_now, { pluginName: "media" });
+		await drain_plugin_registry_delete(t, "media");
 		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_versions", media.pluginVersionId))).toBeNull();
 	});
@@ -6805,11 +6821,8 @@ describe("plugins admin hard delete", () => {
 		});
 
 		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		// A tiny batch size forces multiple mutation batches through the action loop.
-		await t.action(internal.plugins.hard_delete_registered_plugin_now, {
-			pluginName: "media",
-			_test_batchSize: 3,
-		});
+		// A tiny batch size forces multiple mutation calls.
+		await drain_plugin_registry_delete(t, "media", 3);
 
 		const previewAfter = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
 			pluginName: "media",

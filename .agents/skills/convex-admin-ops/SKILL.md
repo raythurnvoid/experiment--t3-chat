@@ -93,12 +93,12 @@ Run preview → delete → preview readback from `packages/app`:
 ```powershell
 Push-Location C:\Users\rt0\Documents\workspace\rt0\t3-chat\packages\app
 vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:preview_hard_delete_registered_plugin '{"pluginName":"<name>"}'
-vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:hard_delete_registered_plugin_now '{"pluginName":"<name>"}'
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:hard_delete_plugin_from_registry '{"pluginName":"<name>"}'
 vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable plugins:preview_hard_delete_registered_plugin '{"pluginName":"<name>"}'
 Pop-Location
 ```
 
-The preview returns per-table counts (including `publishCleanupAttempts` and `sourceFileNodes`) plus the distinct known R2 keys; expect nonzero counts before the delete and all-zero after. Claim/secret counts include only claims this name cleanup can delete: claims shared with another plugin name or reclaimed by another user stay for their rightful owner or the later reset-wide repository-id step. `hard_delete_registered_plugin_now` throws if an unusually large plugin exhausts its batch budget; rerun it until the preview is all-zero. An R2 deletion failure aborts the mutation and leaves the owning version or cleanup attempt retryable.
+The delete command performs one bounded pass. Repeat the same command until it returns `done: true`, then run the preview again. If it returns `{ done: false, deleted: 0 }`, an active plugin run is finishing; wait and retry. The preview returns per-table counts (including `publishCleanupAttempts` and `sourceFileNodes`) plus the distinct known R2 keys; expect nonzero counts before the delete and all-zero after. Claim/secret counts include only claims this name cleanup can delete: claims shared with another plugin name or reclaimed by another user stay for their rightful owner or the later reset-wide repository-id step. An R2 deletion failure aborts the mutation and leaves the owning version or cleanup attempt retryable.
 
 A claim can exist before its manifest reveals a plugin name. After all name-scoped previews are zero, delete each remaining exported claim id with:
 

@@ -48,6 +48,10 @@ import {
 	files_nodes_create_yjs_snapshot_update_from_markdown,
 } from "./files_nodes.ts";
 
+// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
+// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+export const experimental_reuseContext = true;
+
 if (!process.env.R2_BUCKET_FILES) {
 	throw convex_error({ message: "R2_BUCKET_FILES is not set in Convex env" });
 }

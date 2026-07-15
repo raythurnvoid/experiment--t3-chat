@@ -27,6 +27,10 @@ import {
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
 
+// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
+// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+export const experimental_reuseContext = true;
+
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const WORKSPACE_CONTENT_PURGE_BATCH_SIZE = 100;
 

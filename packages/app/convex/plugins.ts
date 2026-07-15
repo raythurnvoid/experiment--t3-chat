@@ -53,6 +53,10 @@ import type { files_nodes_create_file_node_internal_Result } from "./files_nodes
 import { plugins_runtime_db_enqueue_manual_run } from "./plugins_runtime.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
 
+// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
+// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+export const experimental_reuseContext = true;
+
 const PLUGIN_SECRETS_MAX_BATCH_SIZE = 50;
 const PUBLISHER_SECRETS_MAX_COUNT = 64;
 const ARTIFACT_DOWNLOAD_CONCURRENCY = 4;
@@ -3448,7 +3452,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 	},
 });
 
-export const hard_delete_registered_plugin_batch = internalMutation({
+export const hard_delete_plugin_from_registry = internalMutation({
 	args: {
 		pluginName: v.string(),
 		_test_batchSize: v.optional(v.number()),
@@ -3613,41 +3617,6 @@ export const hard_delete_registered_plugin_batch = internalMutation({
 		}
 
 		return { done: true, deleted: 0 };
-	},
-});
-
-type hard_delete_registered_plugin_batch_Result =
-	typeof hard_delete_registered_plugin_batch extends RegisteredMutation<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
-		? Awaited<ReturnValue>
-		: never;
-
-export const hard_delete_registered_plugin_now = internalAction({
-	args: {
-		pluginName: v.string(),
-		_test_batchSize: v.optional(v.number()),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		let done = false;
-		for (let step = 0; step < 50 && !done; step += 1) {
-			const result = (await ctx.runMutation(internal.plugins.hard_delete_registered_plugin_batch, {
-				pluginName: args.pluginName,
-				_test_batchSize: args._test_batchSize,
-			})) as hard_delete_registered_plugin_batch_Result;
-			done = result.done;
-			if (!done && result.deleted === 0) {
-				throw new Error(`Hard delete of plugin "${args.pluginName}" is waiting for an active run; retry later`);
-			}
-		}
-		if (!done) {
-			throw new Error(`Hard delete of plugin "${args.pluginName}" did not finish in 50 batches; run it again`);
-		}
-
-		return null;
 	},
 });
 

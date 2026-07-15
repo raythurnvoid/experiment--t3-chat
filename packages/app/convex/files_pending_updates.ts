@@ -42,6 +42,10 @@ import { r2_fetch_object_from_bucket } from "./r2.ts";
 import { files_metadata_db_delete_pending, files_metadata_db_replace_pending } from "./files_metadata.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
+// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
+// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+export const experimental_reuseContext = true;
+
 function files_pending_update_encode_yjs_state_update(args: { yjsDoc: YDoc }) {
 	return files_u8_to_array_buffer(encodeStateAsUpdate(args.yjsDoc));
 }

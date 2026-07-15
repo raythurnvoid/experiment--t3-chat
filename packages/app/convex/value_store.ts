@@ -1,6 +1,10 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server.js";
 
+// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
+// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+export const experimental_reuseContext = true;
+
 const VALUE_STORE_TTL_MS = 24 * 60 * 60 * 1000;
 const VALUE_STORE_CLEANUP_BATCH_SIZE = 1000;
 

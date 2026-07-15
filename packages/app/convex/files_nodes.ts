@@ -107,6 +107,16 @@ import {
 	r2_delete_object,
 } from "./r2.ts";
 
+// Convex evaluates this module's whole import graph on every invocation in a fresh V8
+// context (~250ms here: tiptap/yjs, markdown chunker, ai SDK, zod). This experimental,
+// undocumented backend flag reuses the context, so warm invocations pay a few ms instead.
+// The cold cost comes back on every deploy and context eviction, and if a Convex update
+// drops the flag the regression is SILENT — re-check with the perf-profiling skill probes.
+// It does NOT apply to http actions (verified 2026-07-15; see http.ts).
+// NEVER keep mutable module-level state in this module (or its imports): with context
+// reuse it leaks across invocations and potentially across users.
+export const experimental_reuseContext = true;
+
 const files_content_materialization_workpool = new Workpool(components.files_content_materialization_workpool, {
 	maxParallelism: 1,
 	retryActionsByDefault: true,
