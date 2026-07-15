@@ -1800,21 +1800,23 @@ async function action_create_markdown_node(
 	};
 
 	try {
-		await r2_put_object(ctx, {
-			key: markdownR2Key,
-			body: args.markdownContent,
-			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-		});
-		await r2_put_object(ctx, {
-			key: yjsSnapshotR2Key,
-			body: snapshotUpdate._yay,
-			contentType: "application/octet-stream" satisfies files_ContentType,
-		});
-		await r2_put_object(ctx, {
-			key: versionSnapshotR2Key,
-			body: args.markdownContent,
-			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-		});
+		await Promise.all([
+			r2_put_object(ctx, {
+				key: markdownR2Key,
+				body: args.markdownContent,
+				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			}),
+			r2_put_object(ctx, {
+				key: yjsSnapshotR2Key,
+				body: snapshotUpdate._yay,
+				contentType: "application/octet-stream" satisfies files_ContentType,
+			}),
+			r2_put_object(ctx, {
+				key: versionSnapshotR2Key,
+				body: args.markdownContent,
+				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			}),
+		]);
 	} catch (error) {
 		await cleanupCreatedAssets();
 		console.error("Failed to write initial Markdown file assets", {
