@@ -189,6 +189,10 @@
 	.FilesSidebarTree {
 		flex: 1;
 		padding-block: 2px;
+
+		/* Column flex so the drop zone indicator can push itself to the panel bottom. */
+		display: flex;
+		flex-direction: column;
 	}
 
 	.FilesSidebarTree-empty-state {
@@ -258,9 +262,10 @@
 	}
 
 	.FilesSidebarTreeDropZoneIndicator {
-		/* Stick to the visible scrollport bottom; absolute would pin it to the bottom of the scrolled content. */
+		/* Rest at the tree bottom (margin-top auto); sticky keeps it on the visible scrollport bottom when the tree overflows. */
 		position: sticky;
-		bottom: 64px;
+		bottom: 16px;
+		margin-top: auto;
 		width: fit-content;
 		margin-inline: auto;
 

@@ -2246,7 +2246,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 						<div className={cn("FilesSidebarTopSection-actions-group" satisfies FilesSidebarTopSection_ClassNames)}>
 							<MyIconButton
 								className={cn("FilesSidebarTopSection-actions-icon-button" satisfies FilesSidebarTopSection_ClassNames)}
-								variant="secondary"
+								variant="ghost-highlightable"
 								tooltip="Clear"
 								onClick={onClearSelectionClick}
 								disabled={isBusy}
