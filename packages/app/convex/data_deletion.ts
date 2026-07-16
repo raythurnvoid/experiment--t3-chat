@@ -234,6 +234,12 @@ export async function data_deletion_db_request(
  * This is used after membership cleanup leaves an existing user without their
  * default organization. Data reset paths do not silently repair a broken preserved
  * default tenant.
+ *
+ * This is a local variant of `organizations_db_create` and exists for two reasons:
+ * - `organizations.ts` imports this module, so importing it back would create an
+ *   import cycle.
+ * - Cleanup must never fail halfway: this inserts the docs directly and skips the
+ *   name validation and quota checks that the sign-up path goes through.
  */
 async function db_create_default_organization_and_workspace_for_user(
 	ctx: MutationCtx,
@@ -315,11 +321,22 @@ async function db_create_default_organization_and_workspace_for_user(
 		});
 	}
 
+	// Seeding the README needs an action (R2 writes), so it runs right after this mutation.
+	await ctx.scheduler.runAfter(0, internal.files_nodes.create_home_file, {
+		organizationId,
+		workspaceId: defaultWorkspaceId,
+		userId: args.userId,
+	});
+
 	return { organizationId, defaultWorkspaceId };
 }
 
 /**
  * Ensures membership cleanup does not leave an existing user without a default organization.
+ *
+ * Local variant of `organizations_db_ensure_default_organization_and_workspace_for_user`.
+ * See `db_create_default_organization_and_workspace_for_user` for why this module keeps
+ * its own copy.
  */
 async function db_ensure_default_organization_and_workspace_for_user(
 	ctx: MutationCtx,

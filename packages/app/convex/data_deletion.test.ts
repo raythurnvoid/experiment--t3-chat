@@ -5,7 +5,7 @@ import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { presence } from "./presence.ts";
-import { test_convex } from "./setup.test.ts";
+import { test_convex, test_mocks_cancel_pending_home_file_seeds } from "./setup.test.ts";
 import { data_deletion_db_request } from "./data_deletion.ts";
 
 const test = baseTest.sequential;
@@ -71,6 +71,8 @@ async function data_deletion_test_bootstrap_user(
 	if (!user?.defaultOrganizationId || !user.defaultWorkspaceId || !user.anagraphic) {
 		throw new Error("Failed to bootstrap user");
 	}
+
+	await test_mocks_cancel_pending_home_file_seeds(ctx);
 
 	return {
 		userId,
@@ -3144,6 +3146,10 @@ describe("hard_delete_user_data", () => {
 		});
 
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
+		// Finish the README seeds scheduled by the workspace creations above so the
+		// fetch assertion below only observes the reset flow.
+		await data_deletion_test_finish_immediate_scheduled_functions(t);
+		fetchSpy.mockClear();
 		const result = await t.action(internal.users.hard_delete_user_now, {
 			userId: user.userId,
 			purgeUserMod: "data",

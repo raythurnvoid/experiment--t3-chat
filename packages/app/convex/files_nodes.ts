@@ -253,35 +253,6 @@ function derive_tree_path_for_file_node(path: string, kind: Doc<"files_nodes">["
 	return kind === "folder" && path !== "/" ? `${path}/` : path;
 }
 
-function is_home_file(fileNode: Pick<Doc<"files_nodes">, "path" | "kind">): boolean;
-function is_home_file(fileNode: Pick<Doc<"files_nodes">, "parentId" | "name" | "kind">): boolean;
-function is_home_file(fileNode: Partial<Pick<Doc<"files_nodes">, "path" | "parentId" | "name" | "kind">>) {
-	return (
-		fileNode.kind === "file" &&
-		(fileNode.path === `/${"README.md" satisfies files_SpecialFileName}` ||
-			(fileNode.parentId === files_ROOT_ID && fileNode.name === ("README.md" satisfies files_SpecialFileName)))
-	);
-}
-
-async function db_get_home_file(
-	ctx: QueryCtx | MutationCtx,
-	args: { organizationId: Doc<"files_nodes">["organizationId"]; workspaceId: Doc<"files_nodes">["workspaceId"] },
-) {
-	const homeFileNode = await ctx.db
-		.query("files_nodes")
-		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
-			q
-				.eq("organizationId", args.organizationId)
-				.eq("workspaceId", args.workspaceId)
-				.eq("parentId", files_ROOT_ID)
-				.eq("name", "README.md" satisfies files_SpecialFileName)
-				.eq("archiveOperationId", undefined),
-		)
-		.first();
-
-	return homeFileNode?.kind === "file" ? homeFileNode : null;
-}
-
 /** -1 in any file_stats count means the content cannot be processed (non-markdown / binary). */
 const files_STATS_UNPROCESSABLE = -1;
 
@@ -1972,11 +1943,6 @@ export const rename_node = mutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (is_home_file(fileNode)) {
-			// Ignore rename requests for home file
-			return Result({ _yay: null });
-		}
-
 		const pathSegments = path_extract_segments_from(args.path);
 		// Resolve the target first so simple and nested renames share one conflict/write path.
 		let targetParentId = fileNode.parentId;
@@ -2188,11 +2154,6 @@ export const move_nodes = mutation({
 			) {
 				continue;
 			}
-			if (is_home_file(fileNode)) {
-				// Skip move requests for home file
-				continue;
-			}
-
 			const movedPath = path_join(targetParentPath, fileNode.name);
 			fileNodesToMove.push({ itemId, fileNode, movedPath });
 		}
@@ -2360,11 +2321,6 @@ export const archive_nodes = mutation({
 		const nodeIdsToArchive = new Set<Id<"files_nodes">>();
 
 		for (const fileNode of fileNodes._yay) {
-			if (is_home_file(fileNode)) {
-				// Ignore archive requests for home file
-				continue;
-			}
-
 			if (fileNode.archiveOperationId !== undefined) {
 				continue;
 			}
@@ -2467,11 +2423,6 @@ export const unarchive_nodes = mutation({
 		const topMostSharedAncestorsByPath = new Map<string, Doc<"files_nodes">>();
 		for (const fileNode of fileNodesToUnarchive) {
 			if (!fileNode) {
-				continue;
-			}
-
-			// Ignore unarchive requests for home file.
-			if (is_home_file(fileNode)) {
 				continue;
 			}
 
@@ -5938,118 +5889,32 @@ export const create_file_by_path = internalAction({
 
 // #region home file
 
-export const get_home_file = query({
+/**
+ * Seeds the initial README.md for a freshly created workspace. Scheduled from the
+ * workspace-creation mutations; after that the file is a normal file (rename, move,
+ * archive all work on it).
+ */
+export const create_home_file = internalAction({
 	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-	},
-	returns: v.union(
-		v.object({
-			file: doc(app_convex_schema, "files_nodes"),
-		}),
-		v.null(),
-	),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			throw convex_error({ message: "Unauthenticated" });
-		}
-		const membership = await organizations_db_get_membership(ctx, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return null;
-		}
-
-		const homeFileNode = await db_get_home_file(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-		});
-
-		if (!homeFileNode) {
-			return null;
-		}
-
-		return {
-			file: homeFileNode,
-		};
-	},
-});
-
-export const get_data_for_create_home_file = internalQuery({
-	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
-		membershipId: v.id("organizations_workspaces_users"),
 	},
-	returns: v.union(
-		v.object({
-			membership: doc(app_convex_schema, "organizations_workspaces_users"),
-			homeFile: v.union(doc(app_convex_schema, "files_nodes"), v.null()),
-		}),
-		v.null(),
-	),
+	returns: v.null(),
 	handler: async (ctx, args) => {
-		const membership = await organizations_db_get_membership(ctx, {
+		const result = await action_create_markdown_node(ctx, {
 			userId: args.userId,
-			membershipId: args.membershipId,
-		});
-		if (!membership) {
-			return null;
-		}
-
-		return {
-			membership,
-			homeFile: await db_get_home_file(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-			}),
-		};
-	},
-});
-
-type get_data_for_create_home_file_Result =
-	typeof get_data_for_create_home_file extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
-		? Awaited<ReturnValue>
-		: never;
-
-export const create_home_file = action({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-	},
-	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
-		const data = (await ctx.runQuery(internal.files_nodes.get_data_for_create_home_file, {
-			userId: userAuth.id,
-			membershipId: args.membershipId,
-		})) as get_data_for_create_home_file_Result;
-		if (!data) {
-			return Result({ _nay: { message: "Unauthorized" } });
-		}
-
-		const { membership, homeFile: homeFileNode } = data;
-		if (homeFileNode) {
-			return Result({ _yay: { nodeId: homeFileNode._id } });
-		}
-
-		return await action_create_markdown_node(ctx, {
-			userId: userAuth.id,
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
 			parentId: files_ROOT_ID,
 			path: "README.md" satisfies files_SpecialFileName,
 			// Keep the auto-created home file consistent with user-created Markdown files.
 			markdownContent: files_INITIAL_CONTENT,
 		});
+		if (result._nay) {
+			console.error("[files_nodes.create_home_file] Failed to create home file", { result, args });
+		}
+		return null;
 	},
 });
 

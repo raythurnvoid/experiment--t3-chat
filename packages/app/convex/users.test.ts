@@ -3,7 +3,7 @@ import { Workpool, type WorkId } from "@convex-dev/workpool";
 import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
-import { test_convex } from "./setup.test.ts";
+import { test_convex, test_mocks_cancel_pending_home_file_seeds } from "./setup.test.ts";
 import {
 	organizations_db_create,
 	organizations_db_create_workspace,
@@ -74,6 +74,8 @@ async function users_test_bootstrap_user(
 		throw new Error("Expected bootstrapped user");
 	}
 
+	await test_mocks_cancel_pending_home_file_seeds(ctx);
+
 	return {
 		userId,
 		anagraphicId: user.anagraphic,
@@ -117,6 +119,8 @@ async function users_test_bootstrap_anonymous_user(ctx: MutationCtx, args: { dis
 	if (!user?.anagraphic || !user.defaultOrganizationId || !user.defaultWorkspaceId) {
 		throw new Error("Expected bootstrapped anonymous user");
 	}
+
+	await test_mocks_cancel_pending_home_file_seeds(ctx);
 
 	return {
 		userId,
@@ -965,6 +969,8 @@ describe("list_current_user_account_deletion_blocking_organizations", () => {
 				now,
 			});
 
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+
 			return {
 				ownedOrganization: ownedOrganization._yay,
 				sharedOrganization: sharedOrganization._yay,
@@ -1030,6 +1036,8 @@ describe("delete_current_user_account", () => {
 				userId: collaborator.userId,
 				active: true,
 			});
+
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
 
 			return created._yay;
 		});
@@ -1158,6 +1166,8 @@ describe("delete_current_user_account", () => {
 				throw new Error(created._nay.message);
 			}
 
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+
 			return created._yay;
 		});
 
@@ -1233,6 +1243,8 @@ describe("delete_current_user_account", () => {
 			if (created._nay) {
 				throw new Error(created._nay.message);
 			}
+
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
 
 			return created._yay;
 		});

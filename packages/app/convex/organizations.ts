@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
+import { internal } from "./_generated/api.js";
 import { internalQuery, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
@@ -188,6 +189,13 @@ export async function organizations_db_create(
 		});
 	}
 
+	// Seeding the README needs an action (R2 writes), so it runs right after this mutation.
+	await ctx.scheduler.runAfter(0, internal.files_nodes.create_home_file, {
+		organizationId,
+		workspaceId: defaultWorkspaceId,
+		userId: args.userId,
+	});
+
 	return Result({
 		_yay: {
 			organizationId,
@@ -312,6 +320,13 @@ export async function organizations_db_create_workspace(
 			now: args.now,
 		});
 	}
+
+	// Seeding the README needs an action (R2 writes), so it runs right after this mutation.
+	await ctx.scheduler.runAfter(0, internal.files_nodes.create_home_file, {
+		organizationId: args.organizationId,
+		workspaceId,
+		userId: args.userId,
+	});
 
 	return Result({
 		_yay: {

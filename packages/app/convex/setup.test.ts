@@ -158,6 +158,19 @@ export const test_mocks = {
 	})(),
 };
 
+/**
+ * Workspace creation schedules a README seed action. Cancel it so test
+ * workspaces stay empty and no background action races test assertions.
+ */
+export async function test_mocks_cancel_pending_home_file_seeds(ctx: MutationCtx) {
+	const jobs = await ctx.db.system.query("_scheduled_functions").collect();
+	for (const job of jobs) {
+		if (job.state.kind === "pending" && job.name.includes("create_home_file")) {
+			await ctx.scheduler.cancel(job._id);
+		}
+	}
+}
+
 export const test_mocks_fill_db_with = {
 	membership: async (
 		ctx: MutationCtx,
@@ -202,6 +215,8 @@ export const test_mocks_fill_db_with = {
 				throw new Error("Expected default organization membership after bootstrap");
 			}
 
+			await test_mocks_cancel_pending_home_file_seeds(ctx);
+
 			return {
 				userId,
 				organizationId: user.defaultOrganizationId,
@@ -244,6 +259,8 @@ export const test_mocks_fill_db_with = {
 		if (!membershipId) {
 			throw new Error("Expected organization membership after seed setup");
 		}
+
+		await test_mocks_cancel_pending_home_file_seeds(ctx);
 
 		return {
 			userId,

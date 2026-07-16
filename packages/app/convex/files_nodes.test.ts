@@ -1296,7 +1296,7 @@ test("move_nodes leaves generated siblings independent from the source", async (
 	});
 });
 
-test("home file path stays immutable on rename and move", async () => {
+test("home file can be renamed and moved like any file", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -1329,6 +1329,12 @@ test("home file path stays immutable on rename and move", async () => {
 		path: "renamed-home.md",
 	});
 
+	await t.run(async (ctx) => {
+		const homeFileNode = await ctx.db.get("files_nodes", homeNodeId);
+		expect(homeFileNode?.name).toBe("renamed-home.md");
+		expect(homeFileNode?.path).toBe("/renamed-home.md");
+	});
+
 	await asUser.mutation(api.files_nodes.move_nodes, {
 		itemIds: [homeNodeId],
 		targetParentId: db.files.file_root_1._id,
@@ -1337,9 +1343,50 @@ test("home file path stays immutable on rename and move", async () => {
 
 	await t.run(async (ctx) => {
 		const homeFileNode = await ctx.db.get("files_nodes", homeNodeId);
-		expect(homeFileNode?.name).toBe("README.md");
-		expect(homeFileNode?.path).toBe("/README.md");
-		expect(homeFileNode?.parentId).toBe(files_ROOT_ID);
+		expect(homeFileNode?.name).toBe("renamed-home.md");
+		expect(homeFileNode?.path).toBe(`/${db.files.file_root_1.name}/renamed-home.md`);
+		expect(homeFileNode?.parentId).toBe(db.files.file_root_1._id);
+	});
+});
+
+test("home file can be archived like any file", async () => {
+	const t = test_convex();
+	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: db.userId,
+		name: "Test User",
+	});
+
+	const homeNodeId = await t.run(async (ctx) =>
+		ctx.db.insert("files_nodes", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			createdBy: db.userId,
+			updatedAt: Date.now(),
+			updatedBy: db.userId,
+			parentId: files_ROOT_ID,
+			name: "README.md",
+			kind: "file",
+			path: "/README.md",
+			treePath: "/README.md",
+			pathDepth: 1,
+			lowercaseExtension: "md",
+			archiveOperationId: undefined,
+		}),
+	);
+
+	const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
+		membershipId: db.membershipId,
+		nodeIds: [homeNodeId],
+	});
+	if (archived._nay) {
+		throw new Error(archived._nay.message);
+	}
+
+	await t.run(async (ctx) => {
+		const homeFileNode = await ctx.db.get("files_nodes", homeNodeId);
+		expect(homeFileNode?.archiveOperationId).toBeDefined();
 	});
 });
 
