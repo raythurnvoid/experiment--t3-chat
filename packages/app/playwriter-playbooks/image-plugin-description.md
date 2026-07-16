@@ -36,7 +36,7 @@ Exercise uninstall → reinstall through the plugin detail page (`/w/:organizati
 
 1. Create and open `aaa-pw-image-<timestamp>`, then upload `shapes.png` with the folder selected (file-selected uploads may target root). `Upload file` lives in the sidebar `More options` menu, not on the folder toolbar. A same-name re-upload opens the `File already exists` modal — rename in its `Filename` input and submit `Upload`.
 2. Verify `shapes.png` appears as a normal source node.
-3. Poll the folder explorer for a `shapes.png.description.md` sibling. Allow up to ~3 minutes: upload finalizer → Convex event → runner claim → OpenAI round trip.
+3. Poll the folder explorer for a `shapes.png.description.md` sibling. It appears **empty within seconds** of the run starting (the worker touches the placeholder right after reading its secret) and fills with content later — allow up to ~3 minutes total: upload finalizer → Convex event → runner claim → OpenAI round trip. The fill keeps the same nodeId; a placeholder disappearing and reappearing as a new node is a regression.
 4. Open `shapes.png.description.md` and read the rendered text.
 
 Expected result — all of these must hold:
@@ -59,10 +59,11 @@ Expected result:
 - The latest `image` run has `status: "succeeded"`, `outputWriteCount` of 1, and an `apiCallCount` covering every call below (one shared 20-call quota per run).
 - The plugin detail page's Recent runs row shows the same aggregates (`calls N, writes 1`).
 - Its calls are only the expected set, with none left in `started` status:
-  - `api_request` on `/api/v1/files/download-urls` (source download URL),
   - `api_request` on `/api/internal/plugins/host/secret-get` (`OPENAI_API_KEY`),
+  - `api_request` on `/api/v1/files/touch` (the empty placeholder; does not count as an output write),
+  - `api_request` on `/api/v1/files/download-urls` (source download URL),
   - `outbound_fetch` with route `outbound` (call docs persist only bytes/status, never target URLs; the consent set limits outbound to `https://api.openai.com`),
-  - `api_request` on `/api/v1/files/write` (the Markdown sibling).
+  - `api_request` on `/api/v1/files/write` (the Markdown sibling, filled in place).
 - No request/response bodies, bearer tokens, signed URLs, or secret values appear in call docs.
 
 ## On-Demand Run
@@ -95,6 +96,6 @@ vp env exec node node_modules/convex/bin/main.js run plugins:run_installation_on
 
 ## Failure Triage
 
-- No sibling appears: check the latest `plugins_event_runs` row first — a `failed` run with a message beats staring at the tree. Then check upload finalizer/R2/Convex env config.
+- No sibling appears: check the latest `plugins_event_runs` row first — a `failed` run with a message beats staring at the tree. Then check upload finalizer/R2/Convex env config. An **empty** sibling next to a `failed` run means a mid-run failure (the placeholder is touched before the OpenAI call and stays empty); no sibling at all means the secret read failed (touch runs after it).
 - Run stuck `pending`: Convex cold start or the plugin runner deployment; warm the deployment and re-check before assuming a code bug.
 - Description exists but misses subjects: open the run calls to confirm the `outbound_fetch` succeeded (status 200) — calls persist neither target URLs nor bodies, so the model (`gpt-4.1-mini`, pinned in the plugin worker source) is not observable from telemetry; a vague description on this fixture is a real content regression, not a flake.
