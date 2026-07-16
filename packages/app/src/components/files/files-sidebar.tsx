@@ -48,6 +48,7 @@ import { AssistiveTreeDescription } from "@headless-tree/react";
 import { useTree } from "@headless-tree/react/react-compiler";
 import { useNavigate } from "@tanstack/react-router";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
+import { FilesNameInputControl, files_name_input_select_stem } from "./files-name-input.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -107,11 +108,9 @@ import {
 	files_FILE_NODE_DRAG_DATA_TRANSFER_TYPE,
 	files_clear_node_path_cached_validation_messages,
 	files_create_tree_items_list_from_nodes,
-	files_find_file_stem_end_index,
 	files_get_default_node_name,
 	files_get_node_path_validation,
 	files_is_node,
-	files_normalize_name_input,
 	files_normalize_name,
 	files_normalize_markdown_name,
 	files_normalize_upload_file_name,
@@ -548,49 +547,6 @@ const FilesSidebarTreeItemArrow = memo(function FilesSidebarTreeItemArrow(props:
 // #endregion tree item arrow
 
 // #region tree item title
-function get_protected_markdown_extension_start(args: {
-	kind: files_TreeItem["kind"];
-	value: string;
-	selectionStart: number;
-	selectionEnd: number;
-}) {
-	// Locate the storage extension so live basename edits can ignore the protected suffix.
-	const extensionStart = args.value.length - ".md".length;
-	if (
-		args.kind === "file" &&
-		args.value.endsWith(".md") &&
-		args.selectionStart <= extensionStart &&
-		args.selectionEnd <= extensionStart
-	) {
-		// Ignore `.md` separator adjacency when the edit is fully inside the basename.
-		return extensionStart;
-	}
-
-	// Normalize edits that touch the extension against the full remaining value.
-	return args.value.length;
-}
-
-function normalize_rename_input_value(args: { kind: files_TreeItem["kind"]; value: string }) {
-	if (args.kind === "file" && args.value.endsWith(".md")) {
-		// Preserve the protected Markdown extension and sanitize only the editable basename.
-		const extensionStart = args.value.length - ".md".length;
-		return `${files_normalize_name_input({
-			kind: args.kind,
-			previousText: "",
-			insertedText: args.value.slice(0, extensionStart),
-			nextText: "",
-		})}.md`;
-	}
-
-	// Sanitize the whole current value for folders and non-canonical file drafts.
-	return files_normalize_name_input({
-		kind: args.kind,
-		previousText: "",
-		insertedText: args.value,
-		nextText: "",
-	});
-}
-
 type FilesSidebarTreeItemTitle_ClassNames = "FilesSidebarTreeItemTitle" | "FilesSidebarTreeItemTitle-input";
 
 type FilesSidebarTreeItemTitle_Props = {
@@ -627,73 +583,13 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 		onRenameErrorClear();
 	});
 
-	const syncRenameInputValue = useFn((element: HTMLInputElement, nextValue: string, nextSelectionStart?: number) => {
-		if (element.value !== nextValue) {
-			// Update the DOM immediately because beforeinput/paste handlers prevent the browser default.
-			element.value = nextValue;
-		}
-
-		// Mirror the same value into Headless Tree's controlled renaming state.
-		renameInputProps.onChange({ target: { value: nextValue } });
-
-		if (nextSelectionStart === undefined) {
+	const handleRenameValueChange = useFn((value: string) => {
+		if (!isRenaming) {
 			return;
 		}
 
-		queueMicrotask(() => {
-			if (document.activeElement !== element) {
-				return;
-			}
-
-			// Restore the caret after React and Headless Tree have reconciled the controlled value.
-			const safeSelectionStart = Math.min(nextSelectionStart, element.value.length);
-			element.setSelectionRange(safeSelectionStart, safeSelectionStart);
-		});
-	});
-
-	const replaceRenameInputSelection = useFn((element: HTMLInputElement, insertedText: string) => {
-		// Read the current selection so typed and pasted text replace the same range natively.
-		const selectionStart = element.selectionStart ?? element.value.length;
-		const selectionEnd = element.selectionEnd ?? element.value.length;
-		const nextTextEnd = get_protected_markdown_extension_start({
-			kind,
-			value: element.value,
-			selectionStart,
-			selectionEnd,
-		});
-		const replacementEnd =
-			kind === "file" && selectionEnd === nextTextEnd && insertedText.includes(".")
-				? element.value.length
-				: selectionEnd;
-		// Let full file names such as `foo/bar.md` replace the protected `.md` instead of appending another suffix.
-		// Normalize only the inserted fragment, using the surrounding text for separator adjacency.
-		const normalizedInsertedText = files_normalize_name_input({
-			kind,
-			previousText: element.value.slice(0, selectionStart),
-			insertedText,
-			nextText: element.value.slice(selectionEnd, nextTextEnd),
-		});
-		// Rebuild the full control value with the sanitized replacement.
-		const nextValue =
-			element.value.slice(0, selectionStart) + normalizedInsertedText + element.value.slice(replacementEnd);
-		if (nextValue === element.value) {
-			return;
-		}
-
-		// Place the caret at the end of the inserted normalized fragment.
-		syncRenameInputValue(element, nextValue, selectionStart + normalizedInsertedText.length);
-	});
-
-	const applyRenameInputToControl = useFn((element: HTMLInputElement) => {
-		// Preserve the current caret as closely as possible when the fallback sanitizer rewrites the value.
-		const selectionStart = element.selectionStart ?? element.value.length;
-		const nextValue = normalize_rename_input_value({
-			kind,
-			value: element.value,
-		});
-
-		// Push the fully sanitized fallback value into both DOM and Headless Tree state.
-		syncRenameInputValue(element, nextValue, selectionStart);
+		// Mirror the sanitized value into Headless Tree's controlled renaming state.
+		renameInputProps.onChange({ target: { value } });
 	});
 
 	const handleRenameInputBlur = useFn<NonNullable<ComponentProps<"input">["onBlur"]>>((event) => {
@@ -706,53 +602,6 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 		onRenameErrorClear();
 		renameInputProps.onBlur();
 		dom_clear_text_selection(event.currentTarget);
-	});
-
-	const handleRenameInputBeforeInput = useFn<NonNullable<ComponentProps<"input">["onBeforeInput"]>>((event) => {
-		if (!isRenaming) {
-			return;
-		}
-
-		const nativeEvent = event.nativeEvent as InputEvent;
-		if (nativeEvent.isComposing) {
-			// Wait for compositionend so IME text normalizes as one completed fragment.
-			return;
-		}
-
-		const insertedText = nativeEvent.data;
-		if (insertedText == null || insertedText === "") {
-			// Let non-text beforeinput operations such as deletion use the normal input path.
-			return;
-		}
-
-		// Replace the browser insertion with our sanitized insertion.
-		event.preventDefault();
-		clearRenameInputError(event.currentTarget);
-		replaceRenameInputSelection(event.currentTarget, insertedText);
-	});
-
-	const handleRenameInputPaste = useFn<NonNullable<ComponentProps<"input">["onPaste"]>>((event) => {
-		const pastedText = event.clipboardData.getData("text/plain");
-		if (pastedText === "") {
-			return;
-		}
-
-		// Route pasted text through the same insertion helper because it can contain many characters.
-		event.preventDefault();
-		clearRenameInputError(event.currentTarget);
-		replaceRenameInputSelection(event.currentTarget, pastedText);
-	});
-
-	const handleRenameInputCompositionEnd = useFn<NonNullable<ComponentProps<"input">["onCompositionEnd"]>>((event) => {
-		// Sanitize the whole control after composition mutates the real input.
-		clearRenameInputError(event.currentTarget);
-		applyRenameInputToControl(event.currentTarget);
-	});
-
-	const handleRenameInputChange = useFn<NonNullable<ComponentProps<"input">["onChange"]>>((event) => {
-		// Keep onChange as a fallback for browser paths not covered by beforeinput or paste.
-		clearRenameInputError(event.currentTarget);
-		applyRenameInputToControl(event.currentTarget);
 	});
 
 	useLayoutEffect(() => {
@@ -768,7 +617,7 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 		};
 	}, [isRenaming, renameError]);
 
-	// Keep `.md` outside the initial edit range so ordinary renames preserve the file type.
+	// Keep the extension outside the initial edit range so ordinary renames preserve the file type.
 	useLayoutEffect(() => {
 		if (!isRenaming) {
 			return;
@@ -781,14 +630,7 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 
 		const focusAndSelectInput = () => {
 			inputElement.focus();
-			const selectionEnd =
-				kind === "file" ? files_find_file_stem_end_index({ fileName: inputElement.value }) : inputElement.value.length;
-			if (selectionEnd > 0 && selectionEnd < inputElement.value.length) {
-				inputElement.setSelectionRange(0, selectionEnd);
-				return;
-			}
-
-			inputElement.select();
+			files_name_input_select_stem({ element: inputElement, kind });
 		};
 
 		focusAndSelectInput();
@@ -811,9 +653,10 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 					variant="transparent"
 				>
 					<MyInputBackground />
-					<MyInputControl
+					<FilesNameInputControl
 						{...(isRenaming ? renameInputProps : null)}
 						ref={handleRenameInputRef}
+						kind={kind}
 						className={"FilesSidebarTreeItemTitle-input" satisfies FilesSidebarTreeItemTitle_ClassNames}
 						// Disable the idle input so it cannot receive focus outside rename mode.
 						disabled={!isRenaming}
@@ -824,10 +667,8 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 						aria-label={isRenaming ? `Rename ${title}` : undefined}
 						aria-hidden={isRenaming ? undefined : true}
 						onBlur={handleRenameInputBlur}
-						onBeforeInput={isRenaming ? handleRenameInputBeforeInput : undefined}
-						onChange={isRenaming ? handleRenameInputChange : undefined}
-						onCompositionEnd={isRenaming ? handleRenameInputCompositionEnd : undefined}
-						onPaste={isRenaming ? handleRenameInputPaste : undefined}
+						onEditStart={clearRenameInputError}
+						onValueChange={handleRenameValueChange}
 					/>
 					<MyInputBox />
 				</MyInput>
@@ -2405,9 +2246,21 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 ) {
 	const { draft, isUploading, onClose, onRename, onReplace } = props;
 	const [filename, setFilename] = useState("");
+	const filenameInputRef = useRef<HTMLInputElement | null>(null);
 
 	useEffect(() => {
-		setFilename(draft?.filename ?? "");
+		const nextFilename = draft?.filename ?? "";
+		setFilename(nextFilename);
+
+		const inputElement = filenameInputRef.current;
+		if (!draft || !inputElement) {
+			return;
+		}
+
+		// Match the tree rename input: keep the extension out of the initial selection
+		// so typing replaces only the basename.
+		inputElement.value = nextFilename;
+		files_name_input_select_stem({ element: inputElement, kind: "file" });
 	}, [draft]);
 
 	const {
@@ -2424,10 +2277,6 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 		if (!open && !isUploading) {
 			onClose();
 		}
-	});
-
-	const handleFilenameChange = useFn<ComponentProps<typeof MyInputControl>["onChange"]>((event) => {
-		setFilename(event.currentTarget.value);
 	});
 
 	const handleSubmit = useFn<ComponentProps<"form">["onSubmit"]>((event) => {
@@ -2484,14 +2333,16 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 						>
 							<MyInputBackground />
 							<MyInputArea>
-								<MyInputControl
+								<FilesNameInputControl
+									ref={filenameInputRef}
+									kind="file"
 									autoFocus
 									aria-label="Filename"
 									autoComplete="off"
 									value={filename}
 									disabled={isUploading}
 									validationMessage={invalidFilenameMessage}
-									onChange={handleFilenameChange}
+									onValueChange={setFilename}
 								/>
 							</MyInputArea>
 							<MyInputBox />

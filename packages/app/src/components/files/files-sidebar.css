@@ -118,6 +118,20 @@
 
 		padding: 12px 20px;
 
+		/*
+		MyInput lays children out in a row while MyInputBackground/MyInputBox overlay the whole
+		root, so the helper text would sit beside the control inside the painted box and shrink
+		the real input. Stack the children and stop the painted box at the control height.
+		*/
+		.MyInput {
+			flex-direction: column;
+			align-items: stretch;
+		}
+
+		.MyInput > :is(.MyInputBackground, .MyInputBox) {
+			height: 36px;
+		}
+
 		.MyInputHelperText {
 			color: var(--color-fg-07);
 		}
