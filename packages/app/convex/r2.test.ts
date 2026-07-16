@@ -382,7 +382,7 @@ afterEach(() => {
 });
 
 describe("r2 asset content", () => {
-	test("creates Markdown nodes with Markdown, Yjs, and version snapshot assets", async () => {
+	test("creates Markdown nodes with Yjs and version snapshot assets", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -428,14 +428,9 @@ describe("r2 asset content", () => {
 		});
 
 		expect(docs.node.contentType).toBe("text/markdown;charset=utf-8");
-		expect(docs.markdownAsset?.kind).toBe("content");
-		expect(docs.markdownAsset?.r2Key).toBe(
-			expected_asset_key({
-				organizationId: db.organizationId,
-				workspaceId: db.workspaceId,
-				assetId: docs.markdownAsset?._id ?? "",
-			}),
-		);
+		// Editable files have no content asset row: the node points at its first version snapshot.
+		expect(docs.markdownAsset?.kind).toBe("content_snapshot");
+		expect(docs.markdownAsset?._id).toBe(docs.snapshots[0]?.assetId);
 		expect(docs.markdownAsset?.r2Key ? r2_text(docs.markdownAsset.r2Key) : null).toBe(files_INITIAL_CONTENT);
 		expect(docs.yjsSnapshot?.sequence).toBe(0);
 		expect(docs.yjsAsset?.kind).toBe("yjs_snapshot");
@@ -479,16 +474,13 @@ describe("r2 asset content", () => {
 			if (!node?.assetId || !node.yjsSnapshotId) {
 				throw new Error("Expected Markdown node assets");
 			}
-			const [asset, yjsSnapshotDoc] = await Promise.all([
-				ctx.db.get("files_r2_assets", node.assetId),
-				ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId),
-			]);
+			const yjsSnapshotDoc = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);
 			const yjsSnapshotAsset = yjsSnapshotDoc ? await ctx.db.get("files_r2_assets", yjsSnapshotDoc.assetId) : null;
-			if (!asset?.r2Key || !yjsSnapshotAsset?.r2Key) {
-				throw new Error("Expected Markdown and Yjs snapshot R2 keys");
+			if (!yjsSnapshotAsset?.r2Key) {
+				throw new Error("Expected Yjs snapshot R2 key");
 			}
 
-			return { markdownR2Key: asset.r2Key, yjsSnapshotR2Key: yjsSnapshotAsset.r2Key };
+			return { yjsSnapshotR2Key: yjsSnapshotAsset.r2Key };
 		});
 		const baseSnapshotBytes = r2Objects.get(assets.yjsSnapshotR2Key);
 		if (!baseSnapshotBytes) {
@@ -525,7 +517,6 @@ describe("r2 asset content", () => {
 			throw new Error(pushResult._nay.message);
 		}
 
-		expect(r2_text(assets.markdownR2Key)).toBe(files_INITIAL_CONTENT);
 		const readResult = await asUser.action(internal.files_nodes.get_file_last_available_markdown_content_by_path, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -824,7 +815,8 @@ describe("r2 asset content", () => {
 			contentType: "text/markdown;charset=utf-8",
 			yjsSnapshotId: expect.any(String),
 		});
-		expect(docs.outputAsset?.kind).toBe("content");
+		// Public-API writes stage the content as the file's first version snapshot.
+		expect(docs.outputAsset?.kind).toBe("content_snapshot");
 		expect(docs.outputAsset?.r2Key ? r2_text(docs.outputAsset.r2Key) : null).toContain("PLUGIN_PDF_E2E_2026");
 		expect(docs.nextAsset?.processingWorkId).toBeNull();
 		expect(pluginRunnerRequests).toHaveLength(1);
@@ -1346,7 +1338,8 @@ describe("r2 asset content", () => {
 		expect(docs.fileNode?.contentType).toBe("text/markdown;charset=utf-8");
 		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
 		expect(docs.fileNode?.yjsLastSequenceId).toEqual(expect.any(String));
-		expect(docs.contentAsset?.kind).toBe("content");
+		// The promoted node points at its first version snapshot, not a content asset row.
+		expect(docs.contentAsset?.kind).toBe("content_snapshot");
 		expect(docs.contentAsset?.r2Key ? r2_text(docs.contentAsset.r2Key) : null).toBe(markdownContent);
 		expect(docs.asset?.processingWorkId).toBeNull();
 	});

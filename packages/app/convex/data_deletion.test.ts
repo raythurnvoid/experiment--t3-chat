@@ -2205,15 +2205,6 @@ describe("process_workspace_deletion_request", () => {
 			});
 			// An unpublished staged write: its asset docs have no r2Key, so only the stage purge
 			// block can reach the R2 objects.
-			const stagedContentAssetId = await ctx.db.insert("files_r2_assets", {
-				organizationId: user.defaultOrganizationId,
-				workspaceId: user.defaultWorkspaceId,
-				kind: "content",
-				r2Bucket: "test-bucket",
-				size: 12,
-				createdBy: user.userId,
-				updatedAt: now,
-			});
 			const stagedYjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
@@ -2239,7 +2230,6 @@ describe("process_workspace_deletion_request", () => {
 				runId,
 				path: "/plugin-source.png.description.md",
 				overwrite: "replace",
-				contentAssetId: stagedContentAssetId,
 				yjsSnapshotAssetId: stagedYjsSnapshotAssetId,
 				contentSnapshotAssetId: stagedContentSnapshotAssetId,
 				expiresAt: now + 15 * 60 * 1000,

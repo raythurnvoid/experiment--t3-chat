@@ -1549,7 +1549,8 @@ test("create_markdown_node stores Markdown file properties", async () => {
 	const saved = await t.run(async (ctx) => {
 		const fileNode = await ctx.db.get("files_nodes", createdFile._yay.nodeId);
 		const asset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
-		return { fileNode, asset };
+		const assetKinds = (await ctx.db.query("files_r2_assets").collect()).map((doc) => doc.kind).sort();
+		return { fileNode, asset, assetKinds };
 	});
 	expect(saved.fileNode).toMatchObject({
 		organizationId: db.organizationId,
@@ -1557,14 +1558,18 @@ test("create_markdown_node stores Markdown file properties", async () => {
 		contentType: "text/markdown;charset=utf-8",
 		assetId: saved.asset?._id,
 	});
+	// Editable files have no content asset row: the node points at its first version snapshot.
 	expect(saved.asset).toMatchObject({
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,
-		kind: "content",
+		kind: "content_snapshot",
 		r2Bucket: "test-files-bucket",
 		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
 	});
-	expect(saved.asset?.r2Key).toBe(`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.asset?._id}`);
+	expect(saved.assetKinds).toEqual(["content_snapshot", "yjs_snapshot"]);
+	expect(saved.asset?.r2Key).toBe(
+		`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.asset?._id}`,
+	);
 });
 
 test("create_markdown_node seeds initial Yjs content on the server", async () => {
@@ -1633,7 +1638,7 @@ test("create_markdown_node seeds initial Yjs content on the server", async () =>
 
 	expect(saved.fileNode.contentType).toBe("text/markdown;charset=utf-8");
 	expect(saved.asset).toMatchObject({
-		kind: "content",
+		kind: "content_snapshot",
 		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
 	});
 	expect(saved.lastSequence?.lastSequence).toBe(0);
@@ -1740,10 +1745,13 @@ test("create_markdown_node writes server-seeded initial content to R2", async ()
 		};
 	});
 
+	// Editable files do not store their current content in R2: only the Yjs snapshot and the
+	// version snapshot are uploaded, and the node points at the version snapshot.
 	expect(saved.asset).toMatchObject({
-		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.asset?._id}`,
+		kind: "content_snapshot",
 		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
 	});
+	expect(saved.asset?._id).toBe(saved.versionSnapshot?.assetId);
 	expect(saved.yjsSnapshot?.sequence).toBe(0);
 	expect(saved.yjsSnapshotAsset).toMatchObject({
 		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.yjsSnapshotAsset?._id}`,
@@ -1754,9 +1762,13 @@ test("create_markdown_node writes server-seeded initial content to R2", async ()
 		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.versionSnapshotAsset?._id}`,
 		size: files_get_utf8_byte_size(files_INITIAL_CONTENT),
 	});
-	expect(r2Writes.get(saved.asset!.r2Key!)).toBe(files_INITIAL_CONTENT);
-	expect(r2Writes.get(saved.versionSnapshotAsset!.r2Key!)).toBe(files_INITIAL_CONTENT);
-	expect(r2Writes.has(saved.yjsSnapshotAsset!.r2Key!)).toBe(true);
+	const versionSnapshotR2Key = saved.versionSnapshotAsset?.r2Key;
+	const yjsSnapshotR2Key = saved.yjsSnapshotAsset?.r2Key;
+	if (!versionSnapshotR2Key || !yjsSnapshotR2Key) {
+		throw new Error("Expected version and Yjs snapshot R2 keys");
+	}
+	expect(r2Writes.get(versionSnapshotR2Key)).toBe(files_INITIAL_CONTENT);
+	expect(r2Writes.has(yjsSnapshotR2Key)).toBe(true);
 });
 
 test("create_markdown_node does not publish a file node when initial R2 writes fail", async () => {
@@ -1797,7 +1809,8 @@ test("create_markdown_node does not publish a file node when initial R2 writes f
 	});
 	expect(saved.fileNode).toBeNull();
 	expect(saved.assets).toHaveLength(0);
-	expect(deleteObjectSpy).toHaveBeenCalledTimes(3);
+	// Only the Yjs snapshot and the version snapshot are uploaded: there is no current-content object.
+	expect(deleteObjectSpy).toHaveBeenCalledTimes(2);
 });
 
 test("create_markdown_node cleans up R2 objects when initial metadata sync fails", async () => {
@@ -1841,7 +1854,8 @@ test("create_markdown_node cleans up R2 objects when initial metadata sync fails
 	expect(saved.fileNode).toBeNull();
 	expect(saved.assets).toHaveLength(0);
 	expect(r2Writes.size).toBe(0);
-	expect(deleteObjectSpy).toHaveBeenCalledTimes(3);
+	// Only the Yjs snapshot and the version snapshot are uploaded: there is no current-content object.
+	expect(deleteObjectSpy).toHaveBeenCalledTimes(2);
 });
 
 test("create_markdown_node cleans up R2 assets when duplicate path rejects after uploads", async () => {
@@ -1914,7 +1928,8 @@ test("create_markdown_node cleans up R2 assets when duplicate path rejects after
 
 	expect(afterDuplicate).toEqual(beforeDuplicate);
 	expect(Array.from(r2Writes.keys()).sort()).toEqual(baselineKeys);
-	expect(deleteObjectSpy).toHaveBeenCalledTimes(3);
+	// Only the Yjs snapshot and the version snapshot are uploaded: there is no current-content object.
+	expect(deleteObjectSpy).toHaveBeenCalledTimes(2);
 });
 
 test("create_folder_node creates missing folders for nested folder paths", async () => {
@@ -3283,7 +3298,7 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 	expect(blocked._nay?.message).toBe("Rate limit exceeded");
 });
 
-test("materialize_file_content writes empty Markdown and Yjs snapshots to R2", async () => {
+test("materialize_file_content writes empty version and Yjs snapshots to R2 and no current-content object", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({
@@ -3382,10 +3397,16 @@ test("materialize_file_content writes empty Markdown and Yjs snapshots to R2", a
 	});
 
 	const versionSnapshotAsset = saved.versionSnapshotAssets.find((asset) => asset?.size === 0);
+	// Editable files do not store their current content in R2: materialization uploads the Yjs
+	// and version snapshots and points the node at the fresh version snapshot.
 	expect(saved.asset).toMatchObject({
-		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.asset?._id}`,
+		kind: "content_snapshot",
 		size: 0,
 	});
+	expect(saved.asset?.r2Key).toBe(
+		`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.asset?._id}`,
+	);
+	expect(saved.versionSnapshots.some((snapshot) => snapshot.assetId === saved.asset?._id)).toBe(true);
 	expect(saved.yjsSnapshot?.sequence).toBe(0);
 	expect(saved.yjsSnapshotAsset).toMatchObject({
 		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.yjsSnapshotAsset?._id}`,
@@ -3396,12 +3417,17 @@ test("materialize_file_content writes empty Markdown and Yjs snapshots to R2", a
 		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${versionSnapshotAsset?._id}`,
 		size: 0,
 	});
-	expect(r2Writes.get(saved.asset!.r2Key!)).toBe("");
-	expect(r2Writes.get(versionSnapshotAsset!.r2Key!)).toBe("");
-	expect(r2Writes.has(saved.yjsSnapshotAsset!.r2Key!)).toBe(true);
+	const versionSnapshotR2Key = versionSnapshotAsset?.r2Key;
+	const yjsSnapshotR2Key = saved.yjsSnapshotAsset?.r2Key;
+	if (!versionSnapshotR2Key || !yjsSnapshotR2Key) {
+		throw new Error("Expected version and Yjs snapshot R2 keys");
+	}
+	expect(r2Writes.get(saved.asset?.r2Key ?? "")).toBe("");
+	expect(r2Writes.get(versionSnapshotR2Key)).toBe("");
+	expect(r2Writes.has(yjsSnapshotR2Key)).toBe(true);
 });
 
-test("materialize_file_content writes nonempty Markdown and Yjs snapshots to R2", async () => {
+test("materialize_file_content writes nonempty version and Yjs snapshots to R2 and no current-content object", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -3519,10 +3545,13 @@ test("materialize_file_content writes nonempty Markdown and Yjs snapshots to R2"
 	const versionSnapshotAsset = saved.versionSnapshotAssets.find(
 		(asset) => asset?.size === files_get_utf8_byte_size(markdown),
 	);
+	// Editable files do not store their current content in R2: materialization uploads the Yjs
+	// and version snapshots and points the node at the fresh version snapshot.
 	expect(saved.asset).toMatchObject({
-		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.asset?._id}`,
+		kind: "content_snapshot",
 		size: files_get_utf8_byte_size(markdown),
 	});
+	expect(saved.asset?._id).toBe(versionSnapshotAsset?._id);
 	expect(saved.yjsSnapshot?.sequence).toBe(1);
 	expect(saved.yjsSnapshotAsset).toMatchObject({
 		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${saved.yjsSnapshotAsset?._id}`,
@@ -3533,9 +3562,13 @@ test("materialize_file_content writes nonempty Markdown and Yjs snapshots to R2"
 		r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${versionSnapshotAsset?._id}`,
 		size: files_get_utf8_byte_size(markdown),
 	});
-	expect(r2Writes.get(saved.asset!.r2Key!)).toBe(markdown);
-	expect(r2Writes.get(versionSnapshotAsset!.r2Key!)).toBe(markdown);
-	expect(r2Writes.has(saved.yjsSnapshotAsset!.r2Key!)).toBe(true);
+	const versionSnapshotR2Key = versionSnapshotAsset?.r2Key;
+	const yjsSnapshotR2Key = saved.yjsSnapshotAsset?.r2Key;
+	if (!versionSnapshotR2Key || !yjsSnapshotR2Key) {
+		throw new Error("Expected version and Yjs snapshot R2 keys");
+	}
+	expect(r2Writes.get(versionSnapshotR2Key)).toBe(markdown);
+	expect(r2Writes.has(yjsSnapshotR2Key)).toBe(true);
 });
 
 // Wire R2 so materialization round-trips through an in-memory bucket keyed by the per-file upload key:
@@ -3648,15 +3681,20 @@ async function test_insert_searchable_markdown_file(
 	});
 }
 
-// Recover the exact committed markdown a file's content asset points at (the chunk-read oracle).
+// Get the exact committed markdown for a file, to compare chunk reads against. Editable files
+// do not store their current content in R2, so read the newest version snapshot instead:
+// materialization writes the exact committed markdown there.
 async function test_read_committed_markdown(
 	t: ReturnType<typeof test_convex>,
 	nodeId: Id<"files_nodes">,
 	r2Writes: Map<string, BodyInit>,
 ) {
 	return t.run(async (ctx) => {
-		const fileNode = await ctx.db.get("files_nodes", nodeId);
-		const asset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
+		const snapshots = (await ctx.db.query("files_snapshots").collect()).filter(
+			(snapshot) => snapshot.fileNodeId === nodeId && snapshot.archivedAt <= 0,
+		);
+		const newest = snapshots.sort((a, b) => b._creationTime - a._creationTime)[0];
+		const asset = newest ? await ctx.db.get("files_r2_assets", newest.assetId) : null;
 		return asset?.r2Key ? (r2Writes.get(asset.r2Key) as string | undefined) : undefined;
 	});
 }
@@ -3719,11 +3757,10 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 		throw new Error(materialized._nay.message);
 	}
 
-	// The exact committed markdown the chunker saw is the oracle: the chunk reader must reproduce
-	// the same line ranges as slicing this text directly.
-	const { committed, chunkCount } = await t.run(async (ctx) => {
-		const fileNode = await ctx.db.get("files_nodes", nodeId);
-		const asset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
+	// Compare against the exact committed markdown the chunker saw: materialization writes it to
+	// the version snapshot. The chunk reader must return the same line ranges as slicing that text.
+	const committed = await test_read_committed_markdown(t, nodeId, r2Writes);
+	const chunkCount = await t.run(async (ctx) => {
 		const chunks = await ctx.db
 			.query("files_markdown_chunks")
 			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
@@ -3734,10 +3771,7 @@ test("read_committed_file_chunks_line_range/stats match full-text slicing across
 					.eq("fileNodeId", nodeId),
 			)
 			.collect();
-		return {
-			committed: asset?.r2Key ? (r2Writes.get(asset.r2Key) as string | undefined) : undefined,
-			chunkCount: chunks.length,
-		};
+		return chunks.length;
 	});
 	if (committed === undefined) {
 		throw new Error("Expected committed markdown to be stored in R2");
@@ -5563,11 +5597,10 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 		return { asset };
 	});
 	expect(saved.asset?.size).toBe(files_get_utf8_byte_size(restoredMarkdown));
-	const liveMarkdownR2Key = saved.asset?.r2Key;
-	if (!liveMarkdownR2Key) {
-		throw new Error("Expected restored Markdown asset R2 key");
-	}
-	expect(r2Objects.get(liveMarkdownR2Key)).toBe(restoredMarkdown);
+	// The node now points at a version snapshot with the restored bytes. The backup snapshot
+	// still holds the previous version.
+	expect(saved.asset?.kind).toBe("content_snapshot");
+	expect(r2Objects.get(saved.asset?.r2Key ?? "")).toBe(restoredMarkdown);
 	expect(Array.from(r2Objects.values())).toContain(currentMarkdown);
 	expect(Array.from(r2Objects.values())).toContain(restoredMarkdown);
 });
@@ -5968,8 +6001,10 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		};
 	});
 	expect(yjsUpdates).toHaveLength(1);
+	// The restore points the node at the restored version snapshot.
+	expect(asset?._id).toBe(restoreAssets.restoredSnapshotAssetId);
 	expect(asset).toMatchObject({
-		kind: "content",
+		kind: "content_snapshot",
 		size: files_get_utf8_byte_size(restoredMarkdown),
 	});
 	expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {

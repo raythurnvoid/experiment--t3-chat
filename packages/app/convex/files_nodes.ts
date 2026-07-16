@@ -107,14 +107,8 @@ import {
 	r2_delete_object,
 } from "./r2.ts";
 
-// Convex evaluates this module's whole import graph on every invocation in a fresh V8
-// context (~250ms here: tiptap/yjs, markdown chunker, ai SDK, zod). This experimental,
-// undocumented backend flag reuses the context, so warm invocations pay a few ms instead.
-// The cold cost comes back on every deploy and context eviction, and if a Convex update
-// drops the flag the regression is SILENT — re-check with the perf-profiling skill probes.
-// It does NOT apply to http actions (verified 2026-07-15; see http.ts).
-// NEVER keep mutable module-level state in this module (or its imports): with context
-// reuse it leaks across invocations and potentially across users.
+// Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
+// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
 const files_content_materialization_workpool = new Workpool(components.files_content_materialization_workpool, {
@@ -1278,105 +1272,54 @@ export const create_file_node = internalMutation({
 	},
 });
 
-export async function files_nodes_db_finalize_file_node_creation(
+/**
+ * Final step of creating an editable Markdown file. Editable files have no content asset:
+ * `node.assetId` points at the first version snapshot. This sets r2Key + size on the Yjs
+ * snapshot and version snapshot assets, and inserts the version snapshot in `files_snapshots`.
+ * The arg types only accept real org/workspace ids, so reserved scopes cannot reach this.
+ */
+export async function files_nodes_db_finalize_markdown_node_creation(
 	ctx: MutationCtx,
 	args: {
-		organizationId: Doc<"files_r2_assets">["organizationId"];
-		workspaceId: Doc<"files_r2_assets">["workspaceId"];
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
-		userId?: Id<"users">;
-		contentAssetId: Id<"files_r2_assets">;
-		contentSize: number;
-		yjsSnapshotAssetId?: Id<"files_r2_assets">;
-		yjsSnapshotSize?: number;
-		versionSnapshotAssetId?: Id<"files_r2_assets">;
-		versionSnapshotSize?: number;
+		userId: Id<"users">;
+		yjsSnapshotAssetId: Id<"files_r2_assets">;
+		yjsSnapshotSize: number;
+		versionSnapshotAssetId: Id<"files_r2_assets">;
+		versionSnapshotSize: number;
 	},
 ) {
 	const now = Date.now();
 
-	if ((args.yjsSnapshotAssetId == null) !== (args.yjsSnapshotSize == null)) {
-		const errorMessage = "yjsSnapshotAssetId and yjsSnapshotSize must be set together";
-		const errorData = { nodeId: args.nodeId };
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-
-	if ((args.versionSnapshotAssetId == null) !== (args.versionSnapshotSize == null)) {
-		const errorMessage = "versionSnapshotAssetId and versionSnapshotSize must be set together";
-		const errorData = { nodeId: args.nodeId };
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-
 	await Promise.all([
-		ctx.db.patch("files_r2_assets", args.contentAssetId, {
+		ctx.db.patch("files_r2_assets", args.yjsSnapshotAssetId, {
 			r2Key: r2_create_asset_key({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				assetId: args.contentAssetId,
+				assetId: args.yjsSnapshotAssetId,
 			}),
-			size: args.contentSize,
+			size: args.yjsSnapshotSize,
 			updatedAt: now,
 		}),
-		...((/* iife */) => {
-			if (args.yjsSnapshotAssetId === undefined || args.yjsSnapshotSize === undefined) {
-				return [];
-			}
-			return [
-				ctx.db.patch("files_r2_assets", args.yjsSnapshotAssetId, {
-					r2Key: r2_create_asset_key({
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						assetId: args.yjsSnapshotAssetId,
-					}),
-					size: args.yjsSnapshotSize,
-					updatedAt: now,
-				}),
-			];
-		})(),
-		...((/* iife */) => {
-			if (args.versionSnapshotAssetId === undefined || args.versionSnapshotSize === undefined) {
-				return [];
-			}
-			if (args.userId === undefined) {
-				const errorMessage = "version snapshot userId is not set";
-				const errorData = { nodeId: args.nodeId, versionSnapshotAssetId: args.versionSnapshotAssetId };
-				console.error(errorMessage, errorData);
-				throw should_never_happen(errorMessage, errorData);
-			}
-			if (organizations_is_global_organization_id(args.organizationId)) {
-				const errorMessage = "Version snapshot requires a real organizationId";
-				const errorData = { nodeId: args.nodeId, organizationId: args.organizationId };
-				console.error(errorMessage, errorData);
-				throw should_never_happen(errorMessage, errorData);
-			}
-			if (organizations_is_reserved_workspace_id(args.workspaceId)) {
-				const errorMessage = "Version snapshot requires a real workspaceId";
-				const errorData = { nodeId: args.nodeId, workspaceId: args.workspaceId };
-				console.error(errorMessage, errorData);
-				throw should_never_happen(errorMessage, errorData);
-			}
-			return [
-				ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
-					r2Key: r2_create_asset_key({
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						assetId: args.versionSnapshotAssetId,
-					}),
-					size: args.versionSnapshotSize,
-					updatedAt: now,
-				}),
-				ctx.db.insert("files_snapshots", {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					fileNodeId: args.nodeId,
-					assetId: args.versionSnapshotAssetId,
-					createdBy: args.userId,
-					archivedAt: -1,
-				}),
-			];
-		})(),
+		ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
+			r2Key: r2_create_asset_key({
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetId: args.versionSnapshotAssetId,
+			}),
+			size: args.versionSnapshotSize,
+			updatedAt: now,
+		}),
+		ctx.db.insert("files_snapshots", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			fileNodeId: args.nodeId,
+			assetId: args.versionSnapshotAssetId,
+			createdBy: args.userId,
+			archivedAt: -1,
+		}),
 	]);
 
 	return Result({ _yay: null });
@@ -1423,10 +1366,7 @@ export async function files_nodes_db_delete_subtree_batch(
 		const plainTextChunks = await ctx.db
 			.query("files_plain_text_chunks")
 			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("fileNodeId", node._id),
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
 			.take(remainingPlainTextChunks);
 		for (const chunk of plainTextChunks) {
@@ -1441,10 +1381,7 @@ export async function files_nodes_db_delete_subtree_batch(
 		const markdownChunks = await ctx.db
 			.query("files_markdown_chunks")
 			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("fileNodeId", node._id),
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
 			.take(remainingMarkdownChunks);
 		for (const chunk of markdownChunks) {
@@ -1459,10 +1396,7 @@ export async function files_nodes_db_delete_subtree_batch(
 		const fileStats = await ctx.db
 			.query("file_stats")
 			.withIndex("by_organization_workspace_fileNode", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("fileNodeId", node._id),
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
 			.take(remainingFileStats);
 		for (const stats of fileStats) {
@@ -1477,10 +1411,7 @@ export async function files_nodes_db_delete_subtree_batch(
 		const metadataDocs = await ctx.db
 			.query("files_metadata_docs")
 			.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("fileNodeId", node._id),
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
 			.take(remainingMetadataDocs);
 		for (const metadataDoc of metadataDocs) {
@@ -1528,22 +1459,20 @@ export async function files_nodes_db_delete_subtree_batch(
 	return { done: remaining === null, deletedCount };
 }
 
-export const finalize_file_node_creation = internalMutation({
+export const finalize_markdown_node_creation = internalMutation({
 	args: {
-		organizationId: doc(app_convex_schema, "files_r2_assets").fields.organizationId,
-		workspaceId: doc(app_convex_schema, "files_r2_assets").fields.workspaceId,
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
-		userId: v.optional(v.id("users")),
-		contentAssetId: v.id("files_r2_assets"),
-		contentSize: v.number(),
-		yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
-		yjsSnapshotSize: v.optional(v.number()),
-		versionSnapshotAssetId: v.optional(v.id("files_r2_assets")),
-		versionSnapshotSize: v.optional(v.number()),
+		userId: v.id("users"),
+		yjsSnapshotAssetId: v.id("files_r2_assets"),
+		yjsSnapshotSize: v.number(),
+		versionSnapshotAssetId: v.id("files_r2_assets"),
+		versionSnapshotSize: v.number(),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
-		return await files_nodes_db_finalize_file_node_creation(ctx, args);
+		return await files_nodes_db_finalize_markdown_node_creation(ctx, args);
 	},
 });
 
@@ -1699,12 +1628,11 @@ export const create_file_node_internal = internalAction({
 			return Result({ _nay: { message: "Failed to create external source file node" } });
 		}
 
-		await ctx.runMutation(internal.files_nodes.finalize_file_node_creation, {
-			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
-			workspaceId: args.workspaceId,
-			nodeId: createdNodeId,
-			contentAssetId: assetId,
-			contentSize: byteSize,
+		// Set r2Key + size on the content asset. The node already points at this asset.
+		await ctx.runMutation(internal.r2.patch_asset, {
+			assetId,
+			r2Key,
+			size: byteSize,
 		});
 
 		return Result({ _yay: { nodeId: createdNodeId } });
@@ -1751,14 +1679,7 @@ async function action_create_markdown_node(
 		return snapshotUpdate;
 	}
 
-	const [markdownAssetId, yjsSnapshotAssetId, versionSnapshotAssetId] = (await Promise.all([
-		ctx.runMutation(internal.r2.insert_asset, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			kind: "content",
-			size: files_get_utf8_byte_size(args.markdownContent),
-			createdBy: args.userId,
-		}),
+	const [yjsSnapshotAssetId, versionSnapshotAssetId] = (await Promise.all([
 		ctx.runMutation(internal.r2.insert_asset, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -1773,13 +1694,8 @@ async function action_create_markdown_node(
 			size: files_get_utf8_byte_size(args.markdownContent),
 			createdBy: args.userId,
 		}),
-	])) as [Id<"files_r2_assets">, Id<"files_r2_assets">, Id<"files_r2_assets">];
+	])) as [Id<"files_r2_assets">, Id<"files_r2_assets">];
 
-	const markdownR2Key = r2_create_asset_key({
-		organizationId: args.organizationId,
-		workspaceId: args.workspaceId,
-		assetId: markdownAssetId,
-	});
 	const yjsSnapshotR2Key = r2_create_asset_key({
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -1791,21 +1707,19 @@ async function action_create_markdown_node(
 		assetId: versionSnapshotAssetId,
 	});
 
-	const assetIds = [markdownAssetId, yjsSnapshotAssetId, versionSnapshotAssetId];
+	const assetIds = [yjsSnapshotAssetId, versionSnapshotAssetId];
 	const cleanupCreatedAssets = async () => {
 		await ctx.runMutation(internal.files_nodes.cleanup_file_node_creation_assets, {
 			assetIds,
-			r2Keys: [markdownR2Key, yjsSnapshotR2Key, versionSnapshotR2Key],
+			r2Keys: [yjsSnapshotR2Key, versionSnapshotR2Key],
 		});
 	};
 
+	// Editable files do not store their current content in R2. Reads use the committed chunks.
+	// We only upload the Yjs snapshot and the first version snapshot. The node points at the
+	// version snapshot: the newest snapshot always holds the file's current bytes.
 	try {
 		await Promise.all([
-			r2_put_object(ctx, {
-				key: markdownR2Key,
-				body: args.markdownContent,
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-			}),
 			r2_put_object(ctx, {
 				key: yjsSnapshotR2Key,
 				body: snapshotUpdate._yay,
@@ -1821,7 +1735,6 @@ async function action_create_markdown_node(
 		await cleanupCreatedAssets();
 		console.error("Failed to write initial Markdown file assets", {
 			error,
-			markdownAssetId,
 			yjsSnapshotAssetId,
 			versionSnapshotAssetId,
 		});
@@ -1835,7 +1748,7 @@ async function action_create_markdown_node(
 		parentId: args.parentId,
 		path: args.path,
 		contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-		assetId: markdownAssetId,
+		assetId: versionSnapshotAssetId,
 		yjsSnapshotAssetId,
 		textContent: args.markdownContent,
 		readOnly: false,
@@ -1846,13 +1759,11 @@ async function action_create_markdown_node(
 		return created;
 	}
 
-	await ctx.runMutation(internal.files_nodes.finalize_file_node_creation, {
+	await ctx.runMutation(internal.files_nodes.finalize_markdown_node_creation, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		nodeId: created._yay.nodeId,
 		userId: args.userId,
-		contentAssetId: markdownAssetId,
-		contentSize: files_get_utf8_byte_size(args.markdownContent),
 		yjsSnapshotAssetId,
 		yjsSnapshotSize: snapshotUpdate._yay.byteLength,
 		versionSnapshotAssetId,
@@ -3531,12 +3442,10 @@ export async function db_get_file_content_materialization_db_state(
 			.collect(),
 	]);
 
-	if (
-		!asset ||
-		asset.organizationId !== args.organizationId ||
-		asset.workspaceId !== args.workspaceId ||
-		asset.kind !== "content"
-	) {
+	// Do not check the asset kind here. node.assetId always holds the file's current bytes, but
+	// the kind can vary: usually the newest version snapshot, or an old content row without an
+	// r2Key (old data) until a materialization points the node at a fresh snapshot.
+	if (!asset || asset.organizationId !== args.organizationId || asset.workspaceId !== args.workspaceId) {
 		const errorMessage = "fileNode.assetId points to a missing or mismatched files_r2_assets doc";
 		const errorData = {
 			organizationId: args.organizationId,
@@ -3643,6 +3552,12 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		includePending: v.optional(v.boolean()),
+		/**
+		 * Max byte size for merging the committed chunks below. If the file is bigger, we skip the
+		 * merge and return no `content`, so the caller can reject using `asset.size` without
+		 * loading the file body.
+		 */
+		maxBytes: v.optional(v.number()),
 	},
 	returns: v.union(
 		v.object({
@@ -3771,6 +3686,39 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 					nodeId: fileNode._id,
 				});
 
+		// Editable files do not store their current content in R2. Reads use the committed
+		// chunks. Merge the chunks here, except in two cases: the Yjs log is newer than the
+		// snapshot (the caller rebuilds the content from Yjs), or the content is bigger than the
+		// caller's byte cap.
+		if (
+			(!materializationState ||
+				materializationState.yjsLastSequenceDoc.lastSequence <= materializationState.yjsSnapshotDoc.sequence) &&
+			asset &&
+			(args.maxBytes === undefined || asset.size <= args.maxBytes)
+		) {
+			const chunks = await ctx.db
+				.query("files_markdown_chunks")
+				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+					q
+						.eq("organizationId", organizationId)
+						.eq("workspaceId", workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", fileNode._id),
+				)
+				.collect();
+			const committedContent = chunks.length > 0 ? files_merge_contiguous_chunks(chunks) : asset.size === 0 ? "" : null;
+			if (committedContent != null) {
+				return {
+					content: committedContent,
+					asset: null,
+					nodeId: fileNode._id,
+					displayNodeId: fileNode._id,
+					pendingUpdateId: pendingUpdate?._id ?? null,
+					materializationState: null,
+				};
+			}
+		}
+
 		return {
 			asset,
 			nodeId: fileNode._id,
@@ -3824,6 +3772,7 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
 			includePending: args.includePending,
+			maxBytes: args.maxBytes,
 		})) as get_file_markdown_content_db_state_by_path_Result;
 		if (!contentState) {
 			return null;
@@ -4668,7 +4617,8 @@ async function match_markdown_chunks_list(
 		after: number;
 		match: { kind: "substring"; needle: string; ignoreCase: boolean } | { kind: "regex"; regex: RegExp };
 		window?:
-			{ kind: "lines"; startLine: number; maxLines: number } | { kind: "slice"; startIndex: number; maxChars: number };
+			| { kind: "lines"; startLine: number; maxLines: number }
+			| { kind: "slice"; startIndex: number; maxChars: number };
 	},
 ) {
 	const linesByNumber = new Map<number, { lineNumber: number; line: string; matched: boolean }>();
@@ -6903,14 +6853,10 @@ export const finalize_file_content_materialization = internalMutation({
 
 		const dbWriteResult = Result_all(
 			await Promise.all([
-				ctx.db.patch("files_r2_assets", state.asset._id, {
-					r2Key: r2_create_asset_key({
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						assetId: state.asset._id,
-					}),
-					size: args.markdownSize,
-					updatedAt: now,
+				// Point the node at the new version snapshot. It now holds the file's current
+				// bytes, so downloads sign it and reads use its size as the byte cap.
+				ctx.db.patch("files_nodes", args.nodeId, {
+					assetId: args.versionSnapshotAssetId,
 				}),
 				ctx.db.patch("files_r2_assets", state.yjsSnapshotAsset._id, {
 					r2Key: r2_create_asset_key({
@@ -7027,11 +6973,10 @@ export const materialize_file_content = internalAction({
 			createdBy: args.userId,
 		})) as Id<"files_r2_assets">;
 
-		if (!state.asset.r2Key || !state.yjsSnapshotAsset.r2Key) {
-			const errorMessage = "materialization asset r2Key is not set";
+		if (!state.yjsSnapshotAsset.r2Key) {
+			const errorMessage = "materialization yjsSnapshotAsset r2Key is not set";
 			const errorData = {
 				nodeId: args.nodeId,
-				assetId: state.asset._id,
 				yjsSnapshotAssetId: state.yjsSnapshotAsset._id,
 				versionSnapshotAssetId,
 			};
@@ -7044,12 +6989,9 @@ export const materialize_file_content = internalAction({
 			assetId: versionSnapshotAssetId,
 		});
 
+		// The current markdown lives in the committed chunk tables, not in R2. So we only upload
+		// the Yjs snapshot and the new version snapshot here.
 		await Promise.all([
-			r2_put_object(ctx, {
-				key: state.asset.r2Key,
-				body: reconstructed._yay.markdown,
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-			}),
 			r2_put_object(ctx, {
 				key: state.yjsSnapshotAsset.r2Key,
 				body: reconstructed._yay.snapshotUpdate,
@@ -7204,28 +7146,7 @@ export const restore_snapshot = internalMutation({
 		// Restoring snapshots can be destructive and we defensively store
 		// the current state as a backup snapshot
 		// so the user can revert to it if needed.
-		if (!fileNode.assetId) {
-			const errorMessage = "fileNode.assetId is not set";
-			const errorData = {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				nodeId: args.nodeId,
-				assetId: fileNode.assetId,
-			};
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
-
-		const [, , , , , , restoredYjsSequence] = await Promise.all([
-			ctx.db.patch("files_r2_assets", fileNode.assetId, {
-				r2Key: r2_create_asset_key({
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					assetId: fileNode.assetId,
-				}),
-				size: files_get_utf8_byte_size(args.snapshotMarkdownContent),
-				updatedAt: now,
-			}),
+		const [, , , , , restoredYjsSequence] = await Promise.all([
 			ctx.db.patch("files_r2_assets", args.currentSnapshotAssetId, {
 				r2Key: r2_create_asset_key({
 					organizationId: membership.organizationId,
@@ -7263,6 +7184,9 @@ export const restore_snapshot = internalMutation({
 			}),
 
 			ctx.db.patch("files_nodes", fileNode._id, {
+				// Point the node at the restored snapshot: it now holds the file's current bytes.
+				// The queued materialization will later point it at its own fresh snapshot.
+				assetId: args.restoredSnapshotAssetId,
 				updatedBy: userId,
 				updatedAt: now,
 			}),
@@ -7531,17 +7455,6 @@ export const restore_snapshot_r2 = action({
 			}),
 		])) as [Id<"files_r2_assets">, Id<"files_r2_assets">];
 
-		if (!materializationState.asset.r2Key) {
-			const errorMessage = "restore asset r2Key is not set";
-			const errorData = {
-				nodeId: args.nodeId,
-				assetId: materializationState.asset._id,
-				currentSnapshotAssetId,
-				restoredSnapshotAssetId,
-			};
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
 		const currentSnapshotR2Key = r2_create_asset_key({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -7553,12 +7466,10 @@ export const restore_snapshot_r2 = action({
 			assetId: restoredSnapshotAssetId,
 		});
 
+		// Editable files have no current-content object in R2. The restore mutation replaces the
+		// committed chunks, and the queued materialization refreshes the Yjs snapshot. Only two
+		// version snapshots go to R2: a backup of the current state, and the restored content.
 		await Promise.all([
-			r2_put_object(ctx, {
-				key: materializationState.asset.r2Key,
-				body: snapshotMarkdownContent,
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-			}),
 			r2_put_object(ctx, {
 				key: currentSnapshotR2Key,
 				body: currentContent._yay.markdown,
@@ -7646,6 +7557,14 @@ export const cleanup_old_snapshots = internalMutation({
 			}
 
 			if (keepSnapshot) {
+				continue;
+			}
+
+			// Never delete the snapshot the node points at: it holds the file's current bytes and
+			// must stay downloadable. The newest-first rule alone is not safe here: a restore
+			// writes two snapshots in one transaction, so they share the same creation time.
+			const node = await ctx.db.get("files_nodes", snapshot.fileNodeId);
+			if (node?.assetId === snapshot.assetId) {
 				continue;
 			}
 

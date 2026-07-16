@@ -300,13 +300,21 @@ async function seed_pending_markdown_node(
 	);
 	yjsDoc.destroy();
 
-	const r2Key = await t.run(async (ctx) => {
-		const node = await ctx.db.get("files_nodes", created._yay.nodeId);
-		const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
-		if (!asset?.r2Key) throw new Error("Expected a materialized Markdown asset key");
+	return { nodeId: created._yay.nodeId };
+}
+
+// Editable downloads sign the newest live version snapshot (there is no current-content object
+// in R2). Find the key the signer must have used after the request ran.
+async function get_newest_version_snapshot_r2_key(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {
+	return await t.run(async (ctx) => {
+		const snapshots = (await ctx.db.query("files_snapshots").collect()).filter(
+			(snapshot) => snapshot.fileNodeId === nodeId && snapshot.archivedAt <= 0,
+		);
+		const newest = snapshots.sort((a, b) => b._creationTime - a._creationTime)[0];
+		const asset = newest ? await ctx.db.get("files_r2_assets", newest.assetId) : null;
+		if (!asset?.r2Key) throw new Error("Expected a version snapshot asset key");
 		return asset.r2Key;
 	});
-	return { nodeId: created._yay.nodeId, r2Key };
 }
 
 // Direct seeding sidesteps the per-user files_tree_write rate limit (capacity 2 per test user).
@@ -782,7 +790,8 @@ describe("plugin ui sessions", () => {
 
 		const response = await responsePromise;
 		expect(response.status).toBe(200);
-		const call = signerCalls.slice(callsBeforeRelease).findLast(({ key }) => key === pending.r2Key);
+		const versionSnapshotR2Key = await get_newest_version_snapshot_r2_key(t, pending.nodeId);
+		const call = signerCalls.slice(callsBeforeRelease).findLast(({ key }) => key === versionSnapshotR2Key);
 		expect(call?.expiresIn).toBe(1);
 		const body = await response.json();
 		const expiresAt = body.items[0].expiresAt;

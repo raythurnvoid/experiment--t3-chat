@@ -12,9 +12,9 @@ import { users_http_routes } from "./users.ts";
 import { corsRouter } from "convex-helpers/server/cors";
 import { allowed_origins } from "../server/server-utils.ts";
 
-// NOTE: experimental_reuseContext does NOT work for http actions (verified 2026-07-15:
-// with the flag exported here, every request still paid the full ~250ms module eval).
-// Only queries/mutations benefit; see the flag in files_nodes.ts.
+// NOTE: experimental_reuseContext does NOT work for http actions. Verified 2026-07-15:
+// with the flag exported here, every request still paid the full ~250ms module load.
+// Only queries and mutations benefit; see the flag in files_nodes.ts.
 
 const http = httpRouter();
 

@@ -1956,12 +1956,11 @@ describe("plugins Phase 0", () => {
 		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
 		const assets = await t.run((ctx) =>
 			Promise.all([
-				ctx.db.get("files_r2_assets", prepared._yay.contentAssetId),
 				ctx.db.get("files_r2_assets", prepared._yay.yjsSnapshotAssetId),
 				ctx.db.get("files_r2_assets", prepared._yay.contentSnapshotAssetId),
 			]),
 		);
-		expect(assets).toEqual([null, null, null]);
+		expect(assets).toEqual([null, null]);
 		const call = await t.run((ctx) => ctx.db.get("plugins_event_run_calls", consumed._yay.callId));
 		expect(call).toMatchObject({ status: "failed", errorCode: "unpublished_write" });
 	});

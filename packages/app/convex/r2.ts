@@ -48,8 +48,8 @@ import {
 	files_nodes_create_yjs_snapshot_update_from_markdown,
 } from "./files_nodes.ts";
 
-// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
-// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+// Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
+// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
 if (!process.env.R2_BUCKET_FILES) {
@@ -527,11 +527,15 @@ export const create_signed_download_url = action({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		const { fileNode, asset, materializationState } = data;
+		const { fileNode, materializationState } = data;
+		let asset = data.asset;
 		if (!fileNode.contentType) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
+		// Editable files: node.assetId points at the newest version snapshot. Materialize first
+		// when the Yjs log is newer than the snapshot, or when the asset has no r2Key (old data).
+		// Each materialization stores a fresh snapshot and points the node at it.
 		if (files_node_has_editable_yjs_state(fileNode)) {
 			if (!materializationState) {
 				console.warn("Markdown file materialization state is missing", {
@@ -540,12 +544,15 @@ export const create_signed_download_url = action({
 					yjsSnapshotId: fileNode.yjsSnapshotId,
 					yjsLastSequenceId: fileNode.yjsLastSequenceId,
 				});
-			} else if (materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence) {
-				// Try to update the committed Markdown asset, but still allow downloading the current R2 asset if this fails.
-				const materializeScope = r2_require_real_scope(fileNode.organizationId, fileNode.workspaceId);
+			} else if (
+				materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence ||
+				!asset.r2Key
+			) {
+				const downloadScope = r2_require_real_scope(fileNode.organizationId, fileNode.workspaceId);
+				// Try to store a fresh version snapshot, but still allow downloading the older one if this fails.
 				const materialized = await ctx.runAction(internal.files_nodes.materialize_file_content, {
-					organizationId: materializeScope.organizationId,
-					workspaceId: materializeScope.workspaceId,
+					organizationId: downloadScope.organizationId,
+					workspaceId: downloadScope.workspaceId,
 					nodeId: fileNode._id,
 					userId: userAuth.id,
 					targetSequence: materializationState.yjsLastSequenceDoc.lastSequence,
@@ -555,6 +562,14 @@ export const create_signed_download_url = action({
 						fileNodeId: fileNode._id,
 						nay: materialized._nay,
 					});
+				}
+				const refreshed = (await ctx.runQuery(internal.r2.get_data_for_create_signed_download_url, {
+					userId: userAuth.id,
+					membershipId: args.membershipId,
+					fileNodeId: args.fileNodeId,
+				})) as get_data_for_create_signed_download_url_Result;
+				if (refreshed) {
+					asset = refreshed.asset;
 				}
 			}
 		}
@@ -645,8 +660,6 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 		path: Doc<"files_nodes">["path"];
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 		userId: Id<"users">;
-		markdownAssetId: Id<"files_r2_assets">;
-		markdownSize: number;
 		yjsSnapshotAssetId: Id<"files_r2_assets">;
 		yjsSnapshotSize: number;
 		versionSnapshotAssetId: Id<"files_r2_assets">;
@@ -710,24 +723,15 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 	});
 
 	// Publish the editable file state and clear every asset that represented
-	// this Workpool job.
+	// this Workpool job. The node then points at the version snapshot instead of the upload
+	// asset: the newest snapshot holds an editable file's current bytes.
 	await Promise.all([
 		ctx.db.patch("files_nodes", args.fileNodeId, {
-			assetId: args.markdownAssetId,
+			assetId: args.versionSnapshotAssetId,
 			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
 			yjsSnapshotId,
 			yjsLastSequenceId,
 			updatedBy: args.userId,
-			updatedAt: args.now,
-		}),
-		ctx.db.patch("files_r2_assets", args.markdownAssetId, {
-			r2Key: r2_create_asset_key({
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				assetId: args.markdownAssetId,
-			}),
-			size: args.markdownSize,
-			...(args.processingWorkAssetIds.includes(args.markdownAssetId) ? { processingWorkId: null } : {}),
 			updatedAt: args.now,
 		}),
 		ctx.db.patch("files_r2_assets", args.yjsSnapshotAssetId, {
@@ -748,14 +752,12 @@ async function db_finalize_markdown_file_node_from_r2_assets(
 			size: args.versionSnapshotSize,
 			updatedAt: args.now,
 		}),
-		...args.processingWorkAssetIds
-			.filter((assetId) => assetId !== args.markdownAssetId)
-			.map((assetId) =>
-				ctx.db.patch("files_r2_assets", assetId, {
-					processingWorkId: null,
-					updatedAt: args.now,
-				}),
-			),
+		...args.processingWorkAssetIds.map((assetId) =>
+			ctx.db.patch("files_r2_assets", assetId, {
+				processingWorkId: null,
+				updatedAt: args.now,
+			}),
+		),
 		ctx.db.insert("files_snapshots", {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -777,8 +779,6 @@ export const finalize_markdown_file_node_from_r2_assets = internalMutation({
 		path: doc(app_convex_schema, "files_nodes").fields.path,
 		archiveOperationId: doc(app_convex_schema, "files_nodes").fields.archiveOperationId,
 		userId: v.id("users"),
-		markdownAssetId: v.id("files_r2_assets"),
-		markdownSize: v.number(),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),
 		yjsSnapshotSize: v.number(),
 		versionSnapshotAssetId: v.id("files_r2_assets"),
@@ -895,15 +895,11 @@ export const finalize_uploaded_markdown_file = internalAction({
 			});
 		}
 
-		// Promote Markdown uploads into normal Markdown-owned assets; downstream reads should not distinguish upload vs app-created files.
-		const [markdownAssetId, yjsSnapshotAssetId, versionSnapshotAssetId] = (await Promise.all([
-			ctx.runMutation(internal.r2.insert_asset, {
-				organizationId: fileNode.organizationId,
-				workspaceId: fileNode.workspaceId,
-				kind: "content",
-				size: files_get_utf8_byte_size(markdownContent),
-				createdBy: fileNode.createdBy,
-			}),
+		// Turn Markdown uploads into editable files, so later reads treat them the same as
+		// app-created files. Only the Yjs snapshot and the first version snapshot are created.
+		// The node points at the version snapshot; the original upload asset stays unchanged as
+		// the upload record.
+		const [yjsSnapshotAssetId, versionSnapshotAssetId] = (await Promise.all([
 			ctx.runMutation(internal.r2.insert_asset, {
 				organizationId: fileNode.organizationId,
 				workspaceId: fileNode.workspaceId,
@@ -918,13 +914,8 @@ export const finalize_uploaded_markdown_file = internalAction({
 				size: files_get_utf8_byte_size(markdownContent),
 				createdBy: fileNode.createdBy,
 			}),
-		])) as [Id<"files_r2_assets">, Id<"files_r2_assets">, Id<"files_r2_assets">];
+		])) as [Id<"files_r2_assets">, Id<"files_r2_assets">];
 
-		const markdownR2Key = r2_create_asset_key({
-			organizationId: fileNode.organizationId,
-			workspaceId: fileNode.workspaceId,
-			assetId: markdownAssetId,
-		});
 		const yjsSnapshotR2Key = r2_create_asset_key({
 			organizationId: fileNode.organizationId,
 			workspaceId: fileNode.workspaceId,
@@ -937,11 +928,6 @@ export const finalize_uploaded_markdown_file = internalAction({
 		});
 
 		await Promise.all([
-			r2_put_object(ctx, {
-				key: markdownR2Key,
-				body: markdownContent,
-				contentType: fileNode.contentType,
-			}),
 			r2_put_object(ctx, {
 				key: yjsSnapshotR2Key,
 				body: snapshotUpdate._yay,
@@ -961,8 +947,6 @@ export const finalize_uploaded_markdown_file = internalAction({
 			path: fileNode.path,
 			archiveOperationId: fileNode.archiveOperationId,
 			userId: r2_require_real_author(fileNode.createdBy),
-			markdownAssetId,
-			markdownSize: files_get_utf8_byte_size(markdownContent),
 			yjsSnapshotAssetId,
 			yjsSnapshotSize: snapshotUpdate._yay.byteLength,
 			versionSnapshotAssetId,

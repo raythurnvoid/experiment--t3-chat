@@ -28,8 +28,8 @@ import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2_fetch_object_from_bucket, r2_get_bucket } from "./r2.ts";
 import type { RouterForConvexModules } from "./http.ts";
 
-// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
-// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+// Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
+// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
 // 30 minutes: long enough that an open page rarely refreshes, short enough that a leaked token

@@ -52,7 +52,7 @@ The current agent is a Convex-backed AI chat runtime that streams AI SDK 5 UI me
 - Files node data/query layer: `../../../packages/app/convex/files_nodes.ts`
 - R2 upload/event metadata and source conversion/finalization: `../../../packages/app/convex/r2.ts`
 
-The files system is a db-backed file/folder model scoped by organization/workspace membership. Folders are tree nodes only. Markdown files have Yjs snapshots/updates, R2-backed committed Markdown assets, Markdown chunks, and plain-text chunks. Uploaded source files preserve the original binary in R2; generated Markdown outputs from upload processing are ordinary visible sibling files.
+The files system is a db-backed file/folder model scoped by organization/workspace membership. Folders are tree nodes only. Markdown files have Yjs snapshots/updates, Markdown chunks, and plain-text chunks; committed current content is read from the chunks, and R2 keeps only Yjs and version snapshot objects for editable files. Uploaded source files preserve the original binary in R2; generated Markdown outputs from upload processing are ordinary visible sibling files.
 
 # Main Request Flow
 

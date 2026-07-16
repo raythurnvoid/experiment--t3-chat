@@ -192,8 +192,8 @@ const app_convex_schema = defineSchema({
 		/** Normalized absolute target path; parents are resolved again at publication. */
 		path: v.string(),
 		overwrite: v.union(v.literal("replace"), v.literal("fail")),
-		contentAssetId: v.id("files_r2_assets"),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),
+		/** Staged content. On publish it becomes the file's first version snapshot and the `node.assetId` target. */
 		contentSnapshotAssetId: v.id("files_r2_assets"),
 		/** Stages older than this are crashed writes; the cleanup cron deletes them and their assets. */
 		expiresAt: v.number(),

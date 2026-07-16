@@ -53,8 +53,8 @@ import type { files_nodes_create_file_node_internal_Result } from "./files_nodes
 import { plugins_runtime_db_enqueue_manual_run } from "./plugins_runtime.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
 
-// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
-// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+// Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
+// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
 const PLUGIN_SECRETS_MAX_BATCH_SIZE = 50;

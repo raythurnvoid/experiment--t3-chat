@@ -5,8 +5,8 @@ import { internalMutation, internalQuery } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import app_convex_schema from "./schema.ts";
 
-// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
-// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+// Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
+// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
 export const load_thread_tmp_files = internalQuery({

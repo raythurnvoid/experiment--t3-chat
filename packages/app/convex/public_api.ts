@@ -39,7 +39,7 @@ import {
 	files_nodes_create_yjs_snapshot_update_from_markdown,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_create_node_recursively_at_path,
-	files_nodes_db_finalize_file_node_creation,
+	files_nodes_db_finalize_markdown_node_creation,
 } from "./files_nodes.ts";
 import {
 	r2_create_asset_key,
@@ -51,8 +51,8 @@ import {
 } from "./r2.ts";
 import { type plugins_runtime_consume_run_api_call_Result } from "./plugins_runtime.ts";
 
-// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
-// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+// Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
+// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
 export const public_api_SCOPE_FILES_LIST = "files:list";
@@ -1411,7 +1411,6 @@ export const prepare_file_write = internalMutation({
 	returns: v_result({
 		_yay: v.object({
 			stageId: v.id("public_api_file_write_stages"),
-			contentAssetId: v.id("files_r2_assets"),
 			yjsSnapshotAssetId: v.id("files_r2_assets"),
 			contentSnapshotAssetId: v.id("files_r2_assets"),
 		}),
@@ -1430,7 +1429,9 @@ export const prepare_file_write = internalMutation({
 			return revalidated;
 		}
 
-		const insert_stage_asset = (kind: "content" | "yjs_snapshot" | "content_snapshot", size: number) =>
+		// On publish, the staged content snapshot becomes the file's first version snapshot, and
+		// the node points at it. Editable files have no separate content asset.
+		const insert_stage_asset = (kind: "yjs_snapshot" | "content_snapshot", size: number) =>
 			ctx.db.insert("files_r2_assets", {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
@@ -1440,8 +1441,7 @@ export const prepare_file_write = internalMutation({
 				createdBy: args.userId,
 				updatedAt: now,
 			});
-		const [contentAssetId, yjsSnapshotAssetId, contentSnapshotAssetId] = await Promise.all([
-			insert_stage_asset("content", args.contentSize),
+		const [yjsSnapshotAssetId, contentSnapshotAssetId] = await Promise.all([
 			insert_stage_asset("yjs_snapshot", args.yjsSnapshotSize),
 			insert_stage_asset("content_snapshot", args.contentSize),
 		]);
@@ -1455,14 +1455,13 @@ export const prepare_file_write = internalMutation({
 				: { credentialId: args.principalRef.credentialId }),
 			path: args.path,
 			overwrite: args.overwrite,
-			contentAssetId,
 			yjsSnapshotAssetId,
 			contentSnapshotAssetId,
 			expiresAt: now + FILE_WRITE_STAGE_TTL_MS,
 			updatedAt: now,
 		});
 
-		return Result({ _yay: { stageId, contentAssetId, yjsSnapshotAssetId, contentSnapshotAssetId } });
+		return Result({ _yay: { stageId, yjsSnapshotAssetId, contentSnapshotAssetId } });
 	},
 });
 
@@ -1512,12 +1511,11 @@ export const publish_file_write = internalMutation({
 			return revalidated;
 		}
 
-		const [contentAsset, yjsSnapshotAsset, contentSnapshotAsset] = await Promise.all([
-			ctx.db.get("files_r2_assets", stage.contentAssetId),
+		const [yjsSnapshotAsset, contentSnapshotAsset] = await Promise.all([
 			ctx.db.get("files_r2_assets", stage.yjsSnapshotAssetId),
 			ctx.db.get("files_r2_assets", stage.contentSnapshotAssetId),
 		]);
-		if (!contentAsset || !yjsSnapshotAsset || !contentSnapshotAsset) {
+		if (!yjsSnapshotAsset || !contentSnapshotAsset) {
 			// Unreachable while the stage exists: cleanup deletes the asset docs and the stage together.
 			throw should_never_happen("public_api_file_write_stages doc with missing asset docs", {
 				stageId: stage._id,
@@ -1552,7 +1550,9 @@ export const publish_file_write = internalMutation({
 			path: stage.path,
 			kind: "file",
 			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-			assetId: stage.contentAssetId,
+			// The staged content snapshot holds the file's current bytes. Below it also becomes
+			// the file's first version snapshot.
+			assetId: stage.contentSnapshotAssetId,
 			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
 			textContent: args.content,
 			readOnly: false,
@@ -1563,13 +1563,11 @@ export const publish_file_write = internalMutation({
 			return Result({ _nay: { message: created._nay.message } });
 		}
 
-		await files_nodes_db_finalize_file_node_creation(ctx, {
+		await files_nodes_db_finalize_markdown_node_creation(ctx, {
 			organizationId: stage.organizationId,
 			workspaceId: stage.workspaceId,
 			nodeId: created._yay,
 			userId: stage.userId,
-			contentAssetId: stage.contentAssetId,
-			contentSize: contentAsset.size,
 			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
 			yjsSnapshotSize: yjsSnapshotAsset.size,
 			versionSnapshotAssetId: stage.contentSnapshotAssetId,
@@ -1593,7 +1591,7 @@ export const publish_file_write = internalMutation({
 					status: "succeeded",
 					errorMessage: null,
 					responseStatus: 200,
-					requestBytes: contentAsset.size,
+					requestBytes: contentSnapshotAsset.size,
 					finishedAt: now,
 					elapsedMs: now - call.startedAt,
 					updatedAt: now,
@@ -1620,7 +1618,7 @@ export async function public_api_db_cleanup_file_write_stage(
 	ctx: MutationCtx,
 	stage: Doc<"public_api_file_write_stages">,
 ) {
-	for (const assetId of [stage.contentAssetId, stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId]) {
+	for (const assetId of [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId]) {
 		const asset = await ctx.db.get("files_r2_assets", assetId);
 		if (!asset) {
 			continue;
@@ -2231,7 +2229,6 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 
 							const stageId = prepared._yay.stageId;
 							const stageScope = { organizationId: principal.organizationId, workspaceId: principal.workspaceId };
-							const contentKey = r2_create_asset_key({ ...stageScope, assetId: prepared._yay.contentAssetId });
 							const yjsSnapshotKey = r2_create_asset_key({ ...stageScope, assetId: prepared._yay.yjsSnapshotAssetId });
 							const contentSnapshotKey = r2_create_asset_key({
 								...stageScope,
@@ -2239,16 +2236,11 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							});
 							// Passed to cleanup so objects PUT after run terminalization already swept the
 							// stage (deleting the docs the keys derive from) still get removed from the bucket.
-							const orphanedKeys = [contentKey, yjsSnapshotKey, contentSnapshotKey];
+							const orphanedKeys = [yjsSnapshotKey, contentSnapshotKey];
 							// Every PUT must settle before any cleanup: a fast-failing sibling would otherwise
 							// trigger the key sweep while another PUT is still in flight, and that PUT would
 							// re-create its object after the sweep — an untracked blob no reaper can find.
 							const putResults = await Promise.allSettled([
-								r2_put_object(ctx, {
-									key: contentKey,
-									body: body._yay.content,
-									contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-								}),
 								r2_put_object(ctx, {
 									key: yjsSnapshotKey,
 									body: snapshotUpdate._yay,
@@ -2472,32 +2464,52 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								} as const;
 							}
 
-							await Promise.all(
+							// For every file, the download signs the asset that node.assetId points at.
+							// For editable files that is the newest version snapshot. Materialize first
+							// when the Yjs log is newer than the snapshot, or when the asset has no r2Key
+							// (old data). Each materialization stores a fresh snapshot and points the
+							// node at it. ReadOnly files (uploads, plugin sources) sign their write-once
+							// content asset.
+							const signKeys: Array<string | null> = await Promise.all(
 								datas.map(async (data) => {
+									if (!data) {
+										return null;
+									}
+									const materializationState = data.materializationState;
+									if (principal.kind === "plugin_run" || !materializationState) {
+										return data.asset.r2Key ?? null;
+									}
 									if (
-										principal.kind === "plugin_run" ||
-										!data ||
-										!data.materializationState ||
-										data.materializationState.yjsLastSequenceDoc.lastSequence <=
-											data.materializationState.yjsSnapshotDoc.sequence
+										materializationState.yjsLastSequenceDoc.lastSequence >
+											materializationState.yjsSnapshotDoc.sequence ||
+										!data.asset.r2Key
 									) {
-										return;
-									}
-									// Try to update the committed Markdown asset, but still allow downloading
-									// the current R2 asset if this fails.
-									const materialized = await ctx.runAction(internal.files_nodes.materialize_file_content, {
-										organizationId: principal.organizationId,
-										workspaceId: principal.workspaceId,
-										nodeId: data.fileNode._id,
-										userId: principal.userId,
-										targetSequence: data.materializationState.yjsLastSequenceDoc.lastSequence,
-									});
-									if (materialized._nay) {
-										console.warn("Failed to materialize Markdown before public download", {
-											fileNodeId: data.fileNode._id,
-											nay: materialized._nay,
+										// Try to store a fresh version snapshot, but still allow downloading the
+										// older one if this fails.
+										const materialized = await ctx.runAction(internal.files_nodes.materialize_file_content, {
+											organizationId: principal.organizationId,
+											workspaceId: principal.workspaceId,
+											nodeId: data.fileNode._id,
+											userId: principal.userId,
+											targetSequence: materializationState.yjsLastSequenceDoc.lastSequence,
 										});
+										if (materialized._nay) {
+											console.warn("Failed to materialize Markdown before public download", {
+												fileNodeId: data.fileNode._id,
+												nay: materialized._nay,
+											});
+										}
+										const refreshed: r2_get_data_for_public_download_url_Result = await ctx.runQuery(
+											internal.r2.get_data_for_public_download_url,
+											{
+												organizationId: principal.organizationId,
+												workspaceId: principal.workspaceId,
+												fileNodeId: data.fileNode._id,
+											},
+										);
+										return refreshed?.asset.r2Key ?? null;
 									}
+									return data.asset.r2Key ?? null;
 								}),
 							);
 
@@ -2557,12 +2569,13 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							const signed = await Promise.all(
 								datas.map(async (data, index) => {
 									const fileNodeId = fileNodeIds[index];
-									if (!data || !data.asset.r2Key) {
+									const signKey = signKeys[index];
+									if (!data || !signKey) {
 										return { fileNodeId, url: null };
 									}
 									return {
 										fileNodeId,
-										url: await r2_get_download_url({ key: data.asset.r2Key, options: { expiresIn } }),
+										url: await r2_get_download_url({ key: signKey, options: { expiresIn } }),
 									};
 								}),
 							);

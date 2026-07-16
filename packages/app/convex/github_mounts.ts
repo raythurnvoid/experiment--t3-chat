@@ -40,8 +40,8 @@ import { github_codeload_url, github_fetch_repo_head, github_fetch_with_retry } 
 import { files_MAX_TEXT_CONTENT_BYTES, files_get_utf8_byte_size } from "../shared/files.ts";
 import { files_nodes_db_delete_subtree_batch } from "./files_nodes.ts";
 
-// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
-// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+// Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
+// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
 /** Full mount doc for a per-file job / test to verify lock + status. */

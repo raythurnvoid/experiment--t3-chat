@@ -142,7 +142,7 @@ Pending updates attach to Markdown-backed `files_nodes` docs.
 12. `Discard all` copies staged content into unstaged content.
 13. `Save` flushes pending upserts, then calls `save_file_pending_update`.
 14. `save_file_pending_update` writes only the `staged` diff into the live file Yjs stream through `files_db_yjs_push_update`.
-15. The Yjs push records the transactional update immediately and enqueues the content materialization workpool to compact the latest Markdown/Yjs state, write the committed Markdown asset to R2, refresh chunks, and create a version snapshot.
+15. The Yjs push records the transactional update immediately and enqueues the content materialization workpool to compact the latest Markdown/Yjs state, refresh the committed chunks (the read source for current content — editable files keep no current-content object in R2), write the Yjs snapshot to R2, and create a version snapshot.
 16. The saved-sequence marker is upserted even when the live file already matched the staged branch and no new Yjs packet was inserted.
 17. If `unstaged` now matches the saved live file state, the doc is deleted.
 18. If unresolved edits remain, the doc stays alive with `base` and `staged` advanced to saved live content.

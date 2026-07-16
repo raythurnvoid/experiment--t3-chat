@@ -6,8 +6,8 @@ import { server_convex_get_user_fallback_to_anonymous } from "../server/server-u
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 
-// Reuse the V8 context between invocations to skip the module-eval tax (same flag as
-// files_nodes.ts — see the comment there; no mutable module-level state allowed here).
+// Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
+// Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
 /**
