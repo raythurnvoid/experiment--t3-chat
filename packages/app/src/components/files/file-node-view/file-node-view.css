@@ -243,15 +243,6 @@
 		line-height: 2rem;
 	}
 
-	.FileNodeViewStoredFile-subtitle {
-		margin: 0;
-
-		overflow-wrap: anywhere;
-
-		font-size: 0.875rem;
-		color: var(--gray-600);
-	}
-
 	.FileNodeViewStoredFile-metadata {
 		display: flex;
 		flex-direction: column;
@@ -279,6 +270,11 @@
 
 		font-size: 0.875rem;
 		color: var(--gray-800);
+	}
+
+	.FileNodeViewStoredFile-metadata-skeleton {
+		height: 20px;
+		width: 140px;
 	}
 	/* #endregion stored file */
 

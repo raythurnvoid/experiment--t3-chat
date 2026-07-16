@@ -50,6 +50,7 @@ import {
 	MyMenuTrigger,
 } from "@/components/my-menu.tsx";
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
+import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFn, useRenderPromise } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -83,6 +84,7 @@ import {
 	BookOpen,
 	Download,
 	EllipsisVertical,
+	FileDigit,
 	FilePlus,
 	FileText,
 	Folder,
@@ -93,6 +95,7 @@ import React, { memo, useEffect, useImperativeHandle, useLayoutEffect, useRef, u
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { FilesSidebar } from "../files-sidebar.tsx";
+import { users_SYSTEM_AUTHOR } from "../../../../shared/users.ts";
 
 function get_breadcrumb_path(fileNodesList: files_VisibleTreeNode[] | undefined, nodeId: string | null | undefined) {
 	if (!fileNodesList || !nodeId || nodeId === files_ROOT_ID) {
@@ -444,11 +447,13 @@ type FileNodeViewStoredFile_ClassNames =
 	| "FileNodeViewStoredFile-icon"
 	| "FileNodeViewStoredFile-title-group"
 	| "FileNodeViewStoredFile-title"
-	| "FileNodeViewStoredFile-subtitle"
 	| "FileNodeViewStoredFile-metadata"
 	| "FileNodeViewStoredFile-metadata-row"
 	| "FileNodeViewStoredFile-metadata-label"
-	| "FileNodeViewStoredFile-metadata-value";
+	| "FileNodeViewStoredFile-metadata-value"
+	| "FileNodeViewStoredFile-metadata-skeleton";
+
+const STORED_FILE_METADATA_SKELETON_ROW_COUNT = 8;
 
 type FileNodeViewStoredFile_Props = {
 	node: app_convex_Doc<"files_nodes">;
@@ -466,7 +471,19 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 		membershipId,
 		fileNodeId: node._id,
 	});
+
+	const createdByAnagraphic = useQuery(
+		app_convex_api.users.get_anagraphic,
+		node.createdBy === users_SYSTEM_AUTHOR ? "skip" : { userId: node.createdBy },
+	);
+
+	const updatedByAnagraphic = useQuery(
+		app_convex_api.users.get_anagraphic,
+		node.updatedBy === users_SYSTEM_AUTHOR ? "skip" : { userId: node.updatedBy },
+	);
+
 	const storedFileMetadataIsLoading = asset === undefined;
+
 	const activeUploadStatusText = ((/* iife */) => {
 		if (storedFileMetadataIsLoading) {
 			return null;
@@ -484,18 +501,32 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 				return null;
 		}
 	})();
-	const title = node.name;
-	const subtitle = ((/* iife */) => {
-		if (storedFileMetadataIsLoading) {
-			return "Loading metadata";
-		}
-		if (activeUploadStatusText) {
-			return activeUploadStatusText;
-		}
 
-		return node.contentType ?? "Unknown file type";
-	})();
+	const title = node.name;
 	const storedFileSize = asset?.size;
+
+	// undefined = still loading, hides the details list
+	const createdByDisplayName = ((/* iife */) => {
+		if (node.createdBy === users_SYSTEM_AUTHOR) {
+			return "System";
+		}
+		if (createdByAnagraphic === undefined) {
+			return undefined;
+		}
+		return createdByAnagraphic?.displayName ?? "Unknown";
+	})();
+
+	const updatedByDisplayName = ((/* iife */) => {
+		if (node.updatedBy === users_SYSTEM_AUTHOR) {
+			return "System";
+		}
+		if (updatedByAnagraphic === undefined) {
+			return undefined;
+		}
+		return updatedByAnagraphic?.displayName ?? "Unknown";
+	})();
+
+	const location = node.path.slice(0, node.path.lastIndexOf("/")) || "/";
 
 	return (
 		<>
@@ -511,53 +542,111 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 			<section className={"FileNodeViewStoredFile" satisfies FileNodeViewStoredFile_ClassNames}>
 				<header className={"FileNodeViewStoredFile-header" satisfies FileNodeViewStoredFile_ClassNames}>
 					<MyIcon className={"FileNodeViewStoredFile-icon" satisfies FileNodeViewStoredFile_ClassNames}>
-						<FileText />
+						<FileDigit />
 					</MyIcon>
 					<div className={"FileNodeViewStoredFile-title-group" satisfies FileNodeViewStoredFile_ClassNames}>
 						<h1 className={"FileNodeViewStoredFile-title" satisfies FileNodeViewStoredFile_ClassNames}>{title}</h1>
-						<p className={"FileNodeViewStoredFile-subtitle" satisfies FileNodeViewStoredFile_ClassNames}>
-							{subtitle}
-							{storedFileSize !== undefined ? ` · ${files_format_size(storedFileSize)}` : ""}
-						</p>
 					</div>
 				</header>
 
-				<dl className={"FileNodeViewStoredFile-metadata" satisfies FileNodeViewStoredFile_ClassNames}>
-					<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
-						<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
-							Filename
-						</dt>
-						<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
-							{title}
-						</dd>
-					</div>
-					{activeUploadStatusText ? (
+				{storedFileMetadataIsLoading || createdByDisplayName === undefined || updatedByDisplayName === undefined ? (
+					<dl className={"FileNodeViewStoredFile-metadata" satisfies FileNodeViewStoredFile_ClassNames}>
+						{Array.from({ length: STORED_FILE_METADATA_SKELETON_ROW_COUNT }, (_, index) => (
+							<div
+								key={index}
+								className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}
+							>
+								<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+									<MySkeleton
+										className={"FileNodeViewStoredFile-metadata-skeleton" satisfies FileNodeViewStoredFile_ClassNames}
+									/>
+								</dt>
+								<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+									<MySkeleton
+										className={"FileNodeViewStoredFile-metadata-skeleton" satisfies FileNodeViewStoredFile_ClassNames}
+									/>
+								</dd>
+							</div>
+						))}
+					</dl>
+				) : (
+					<dl className={"FileNodeViewStoredFile-metadata" satisfies FileNodeViewStoredFile_ClassNames}>
 						<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
 							<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
-								Status
+								Filename
 							</dt>
 							<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
-								{activeUploadStatusText}
+								{title}
 							</dd>
 						</div>
-					) : null}
-					<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
-						<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
-							Content type
-						</dt>
-						<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
-							{node.contentType ?? "Unknown"}
-						</dd>
-					</div>
-					<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
-						<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
-							Size
-						</dt>
-						<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
-							{files_format_size(storedFileSize)}
-						</dd>
-					</div>
-				</dl>
+						{activeUploadStatusText ? (
+							<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+								<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+									Status
+								</dt>
+								<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+									{activeUploadStatusText}
+								</dd>
+							</div>
+						) : null}
+						<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+							<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+								Content type
+							</dt>
+							<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+								{node.contentType ?? "Unknown"}
+							</dd>
+						</div>
+						<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+							<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+								Size
+							</dt>
+							<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+								{files_format_size(storedFileSize)}
+							</dd>
+						</div>
+						<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+							<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+								Location
+							</dt>
+							<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+								{location}
+							</dd>
+						</div>
+						<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+							<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+								Created
+							</dt>
+							<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+								{format_relative_time(node._creationTime)}
+							</dd>
+						</div>
+						<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+							<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+								Created by
+							</dt>
+							<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+								{createdByDisplayName}
+							</dd>
+						</div>
+						<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+							<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+								Last edited
+							</dt>
+							<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+								{format_relative_time(node.updatedAt)}
+							</dd>
+						</div>
+						<div className={"FileNodeViewStoredFile-metadata-row" satisfies FileNodeViewStoredFile_ClassNames}>
+							<dt className={"FileNodeViewStoredFile-metadata-label" satisfies FileNodeViewStoredFile_ClassNames}>
+								Last edited by
+							</dt>
+							<dd className={"FileNodeViewStoredFile-metadata-value" satisfies FileNodeViewStoredFile_ClassNames}>
+								{updatedByDisplayName}
+							</dd>
+						</div>
+					</dl>
+				)}
 			</section>
 		</>
 	);
