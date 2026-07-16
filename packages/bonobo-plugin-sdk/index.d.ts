@@ -131,7 +131,8 @@ export interface BonoboFilesDownloadUrlsResponse {
  * (`Authorization: Bearer host.token`). V1 writes Markdown only, and plugin runs may write only
  * siblings of the triggering upload: `path` must be an absolute `.md` path whose parent folder
  * equals `source.path`'s parent folder — any other folder responds `403`. `overwrite` defaults
- * to `"replace"`; `"fail"` responds `409` when `path` already exists.
+ * to `"replace"`; `"fail"` responds `409` when `path` already exists. Writing over an existing
+ * editable Markdown file replaces its content in place and keeps the same `nodeId`.
  */
 export interface BonoboFilesWriteRequest {
 	path: string;
@@ -139,11 +140,28 @@ export interface BonoboFilesWriteRequest {
 	overwrite?: "replace" | "fail";
 }
 
-/** Response body of `POST {host.apiOrigin}/api/v1/files/write` — the created Markdown node. */
+/** Response body of `POST {host.apiOrigin}/api/v1/files/write` — the written Markdown node. */
 export interface BonoboFilesWriteResponse {
 	path: string;
 	nodeId: string;
 	contentType: string;
+}
+
+/**
+ * Request body for `POST {host.apiOrigin}/api/v1/files/touch`
+ * (`Authorization: Bearer host.token`). Creates empty editable Markdown files so users get
+ * immediate feedback about where a run's outputs will land; later `files/write` calls fill the
+ * same nodes in place. Paths follow the same rules as `files/write` (absolute sibling `.md`
+ * paths for plugin runs), at most 8 per call, and the call is idempotent: an already existing
+ * file responds with its node and `created: false`.
+ */
+export interface BonoboFilesTouchRequest {
+	paths: string[];
+}
+
+/** Response body of `POST {host.apiOrigin}/api/v1/files/touch`. */
+export interface BonoboFilesTouchResponse {
+	files: Array<{ path: string; nodeId: string; created: boolean }>;
 }
 
 /** Type of a plugin worker's `export default` — `fetch(request, env, ctx)` with a typed `env.BONOBO`. */

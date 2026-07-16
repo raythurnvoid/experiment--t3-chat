@@ -33,13 +33,22 @@ import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_ROOT_ID,
 	files_get_utf8_byte_size,
+	files_node_has_editable_yjs_state,
+	files_u8_to_array_buffer,
+	files_yjs_compute_diff_update_from_state_vector,
+	files_yjs_doc_update_from_markdown,
 	type files_ContentType,
 } from "../server/files.ts";
+import { encodeStateVector } from "yjs";
 import {
 	files_nodes_create_yjs_snapshot_update_from_markdown,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_create_node_recursively_at_path,
+	files_nodes_db_fill_markdown_node_content,
 	files_nodes_db_finalize_markdown_node_creation,
+	files_nodes_reconstruct_latest_file_content_from_materialization_state,
+	type files_nodes_get_by_path_Result,
+	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
 import {
 	r2_create_asset_key,
@@ -74,6 +83,7 @@ const FILES_DOWNLOAD_URLS_MAX_ITEMS = 20;
 // Keep unauthenticated validation work small while still allowing a truncated client batch.
 const FILES_DOWNLOAD_URLS_MAX_REQUEST_ITEMS = 100;
 const FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES = 32_000;
+const FILES_TOUCH_MAX_PATHS = 8;
 
 const TEXT_ENCODER = new TextEncoder();
 const CREDENTIAL_KEY_PREFIX = "pk_";
@@ -1610,6 +1620,266 @@ type publish_file_write_Result =
 		: never;
 
 /**
+ * Publish a write whose target is an existing editable Markdown file: replace the file's content
+ * in place so the nodeId stays stable for open editors and links. The route computed `fillUpdate`
+ * (a Yjs diff against the doc state it reconstructed) and PUT only the content snapshot object;
+ * the staged Yjs snapshot asset is unused and dropped here.
+ */
+export const publish_file_fill = internalMutation({
+	args: {
+		stageId: v.id("public_api_file_write_stages"),
+		content: v.string(),
+		expectedNodeId: v.id("files_nodes"),
+		fillUpdate: v.optional(v.bytes()),
+	},
+	returns: v_result({
+		_yay: v.object({ nodeId: v.id("files_nodes") }),
+	}),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		const stage = await ctx.db.get("public_api_file_write_stages", args.stageId);
+		if (!stage) {
+			// A cleanup already consumed the stage: the write can no longer be published.
+			return Result({ _nay: { message: "Write was not published" } });
+		}
+
+		const principalRef: Infer<typeof file_write_principal_ref_validator> | null =
+			stage.runId && stage.callId
+				? { kind: "plugin_run", runId: stage.runId, callId: stage.callId }
+				: stage.credentialId
+					? { kind: "user_api_key", credentialId: stage.credentialId }
+					: null;
+		if (!principalRef) {
+			// Unreachable: prepare_file_write always stores exactly one principal reference.
+			throw should_never_happen("public_api_file_write_stages doc without a principal reference", {
+				stageId: stage._id,
+			});
+		}
+
+		const revalidated = await db_revalidate_file_write_principal(ctx, {
+			organizationId: stage.organizationId,
+			workspaceId: stage.workspaceId,
+			userId: stage.userId,
+			principalRef,
+			path: stage.path,
+			now,
+		});
+		if (revalidated._nay) {
+			return revalidated;
+		}
+
+		// The target must still be the exact active editable file the route diffed against.
+		// Anything else (archived, replaced, converted) is a conflict the caller reports as 409.
+		const fileNode = await ctx.db.get("files_nodes", args.expectedNodeId);
+		if (
+			!fileNode ||
+			fileNode.organizationId !== stage.organizationId ||
+			fileNode.workspaceId !== stage.workspaceId ||
+			fileNode.path !== stage.path ||
+			fileNode.archiveOperationId !== undefined ||
+			!files_node_has_editable_yjs_state(fileNode)
+		) {
+			return Result({ _nay: { message: "The file changed during the write" } });
+		}
+
+		const contentSnapshotAsset = await ctx.db.get("files_r2_assets", stage.contentSnapshotAssetId);
+		if (!contentSnapshotAsset) {
+			// Unreachable while the stage exists: cleanup deletes the asset docs and the stage together.
+			throw should_never_happen("public_api_file_write_stages doc with missing asset docs", {
+				stageId: stage._id,
+			});
+		}
+
+		// The fill path never PUT a Yjs snapshot object, so only the staged asset doc exists.
+		const yjsSnapshotAsset = await ctx.db.get("files_r2_assets", stage.yjsSnapshotAssetId);
+		if (yjsSnapshotAsset) {
+			await ctx.db.delete("files_r2_assets", yjsSnapshotAsset._id);
+		}
+
+		const filled = await files_nodes_db_fill_markdown_node_content(ctx, {
+			organizationId: stage.organizationId,
+			workspaceId: stage.workspaceId,
+			fileNode,
+			userId: stage.userId,
+			markdownContent: args.content,
+			contentSnapshotAssetId: stage.contentSnapshotAssetId,
+			contentSize: contentSnapshotAsset.size,
+			fillUpdate: args.fillUpdate,
+		});
+		if (filled._nay) {
+			// Throw so Convex rolls back the snapshot and node writes done above.
+			throw convex_error({ message: "Failed to write file", cause: filled._nay });
+		}
+
+		// Atomic with the fill: the run's output count, the settled call, and the consumed
+		// stage all commit with the replaced content or not at all.
+		const pluginRun = revalidated._yay.pluginRun;
+		if (pluginRun) {
+			await ctx.db.patch("plugins_event_runs", pluginRun._id, {
+				outputWriteCount: pluginRun.outputWriteCount + 1,
+				updatedAt: now,
+			});
+		}
+		if (stage.callId) {
+			const call = await ctx.db.get("plugins_event_run_calls", stage.callId);
+			// A late or duplicate finish is a no-op: only a started call settles.
+			if (call && call.status === "started") {
+				await ctx.db.patch("plugins_event_run_calls", call._id, {
+					status: "succeeded",
+					errorMessage: null,
+					responseStatus: 200,
+					requestBytes: contentSnapshotAsset.size,
+					finishedAt: now,
+					elapsedMs: now - call.startedAt,
+					updatedAt: now,
+				});
+			}
+		}
+		await ctx.db.delete("public_api_file_write_stages", stage._id);
+
+		return Result({ _yay: { nodeId: fileNode._id } });
+	},
+});
+
+type publish_file_fill_Result =
+	typeof publish_file_fill extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Publish a touch: create an empty editable Markdown file at the staged path, or succeed as a
+ * no-op when an active file already owns the path. Touches are placeholder creation, not output
+ * writes — run output counting and plugin call settling stay with the route (one call covers the
+ * whole batch).
+ */
+export const publish_file_touch = internalMutation({
+	args: {
+		stageId: v.id("public_api_file_write_stages"),
+	},
+	returns: v_result({
+		_yay: v.object({ nodeId: v.id("files_nodes"), created: v.boolean() }),
+	}),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		const stage = await ctx.db.get("public_api_file_write_stages", args.stageId);
+		if (!stage) {
+			// A cleanup already consumed the stage: the touch can no longer be published.
+			return Result({ _nay: { message: "Write was not published" } });
+		}
+
+		const principalRef: Infer<typeof file_write_principal_ref_validator> | null =
+			stage.runId && stage.callId
+				? { kind: "plugin_run", runId: stage.runId, callId: stage.callId }
+				: stage.credentialId
+					? { kind: "user_api_key", credentialId: stage.credentialId }
+					: null;
+		if (!principalRef) {
+			// Unreachable: prepare_file_write always stores exactly one principal reference.
+			throw should_never_happen("public_api_file_write_stages doc without a principal reference", {
+				stageId: stage._id,
+			});
+		}
+
+		const revalidated = await db_revalidate_file_write_principal(ctx, {
+			organizationId: stage.organizationId,
+			workspaceId: stage.workspaceId,
+			userId: stage.userId,
+			principalRef,
+			path: stage.path,
+			now,
+		});
+		if (revalidated._nay) {
+			return revalidated;
+		}
+
+		const activeNode = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+				q
+					.eq("organizationId", stage.organizationId)
+					.eq("workspaceId", stage.workspaceId)
+					.eq("path", stage.path)
+					.eq("archiveOperationId", undefined),
+			)
+			.first();
+		if (activeNode) {
+			if (activeNode.kind !== "file") {
+				return Result({ _nay: { message: "A folder already exists at this path" } });
+			}
+
+			// Another writer created the file between the route's check and this publish: the touch
+			// is satisfied. Drop the staged assets and their already-PUT objects, but do not settle
+			// the plugin call here — the route settles it once for the whole batch.
+			for (const assetId of [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId]) {
+				const asset = await ctx.db.get("files_r2_assets", assetId);
+				if (asset) {
+					await r2_delete_object(
+						ctx,
+						r2_create_asset_key({ organizationId: stage.organizationId, workspaceId: stage.workspaceId, assetId }),
+					);
+					await ctx.db.delete("files_r2_assets", assetId);
+				}
+			}
+			await ctx.db.delete("public_api_file_write_stages", stage._id);
+
+			return Result({ _yay: { nodeId: activeNode._id, created: false } });
+		}
+
+		const [yjsSnapshotAsset, contentSnapshotAsset] = await Promise.all([
+			ctx.db.get("files_r2_assets", stage.yjsSnapshotAssetId),
+			ctx.db.get("files_r2_assets", stage.contentSnapshotAssetId),
+		]);
+		if (!yjsSnapshotAsset || !contentSnapshotAsset) {
+			// Unreachable while the stage exists: cleanup deletes the asset docs and the stage together.
+			throw should_never_happen("public_api_file_write_stages doc with missing asset docs", {
+				stageId: stage._id,
+			});
+		}
+
+		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+			userId: stage.userId,
+			organizationId: stage.organizationId,
+			workspaceId: stage.workspaceId,
+			parentId: files_ROOT_ID,
+			path: stage.path,
+			kind: "file",
+			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			// The staged empty content snapshot holds the file's current (empty) bytes. Below it
+			// also becomes the file's first version snapshot.
+			assetId: stage.contentSnapshotAssetId,
+			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
+			textContent: "",
+			readOnly: false,
+			now,
+		});
+		if (created._nay) {
+			// An intermediate segment is owned by a file, or an equivalent structural conflict.
+			return Result({ _nay: { message: created._nay.message } });
+		}
+
+		await files_nodes_db_finalize_markdown_node_creation(ctx, {
+			organizationId: stage.organizationId,
+			workspaceId: stage.workspaceId,
+			nodeId: created._yay,
+			userId: stage.userId,
+			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
+			yjsSnapshotSize: yjsSnapshotAsset.size,
+			versionSnapshotAssetId: stage.contentSnapshotAssetId,
+			versionSnapshotSize: contentSnapshotAsset.size,
+		});
+
+		await ctx.db.delete("public_api_file_write_stages", stage._id);
+
+		return Result({ _yay: { nodeId: created._yay, created: true } });
+	},
+});
+
+type publish_file_touch_Result =
+	typeof publish_file_touch extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
  * Idempotent unpublished-write cleanup: R2 objects first, then the asset docs, then the stage doc,
  * so a crash mid-cleanup leaves the stage behind for a retry. Publication deletes the stage in its
  * own transaction first, so cleanup can never delete a published output.
@@ -2176,18 +2446,6 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							}
 							const overwrite = body._yay.overwrite ?? "replace";
 
-							const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown(body._yay.content);
-							if (snapshotUpdate._nay) {
-								console.error("Failed to build Yjs snapshot for public file write", {
-									nay: snapshotUpdate._nay,
-									path: requestedPath,
-								});
-								return {
-									status: 500,
-									body: await fail({ status: 500, message: "Failed to write file", errorCode: "storage_failure" }),
-								} as const;
-							}
-
 							let principalRef: Infer<typeof file_write_principal_ref_validator>;
 							if (principal.kind === "plugin_run") {
 								if (!pluginCallId) {
@@ -2199,6 +2457,219 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 								principalRef = { kind: "plugin_run", runId: principal.runId, callId: pluginCallId };
 							} else {
 								principalRef = { kind: "user_api_key", credentialId: principal.credentialId };
+							}
+
+							// Decide create-vs-fill before staging. Writing over an existing editable Markdown
+							// file replaces its content in place so the nodeId stays stable for open editors and
+							// links; only non-editable targets (e.g. stored uploads) keep the archive-and-recreate
+							// path in publish_file_write. The publish mutations re-check the node transactionally.
+							const activeNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+								organizationId: principal.organizationId,
+								workspaceId: principal.workspaceId,
+								path: requestedPath,
+							})) as files_nodes_get_by_path_Result;
+							if (activeNode?.kind === "folder") {
+								return {
+									status: 409,
+									body: await fail({
+										status: 409,
+										message: "A folder already exists at this path",
+										errorCode: "conflict",
+									}),
+								} as const;
+							}
+							if (activeNode && overwrite === "fail") {
+								return {
+									status: 409,
+									body: await fail({
+										status: 409,
+										message: "A file already exists at this path",
+										errorCode: "conflict",
+									}),
+								} as const;
+							}
+							// Fill-in-place branch. A null materialization state means the node was archived or
+							// replaced between the two queries; the create path below then handles the write.
+							if (activeNode && files_node_has_editable_yjs_state(activeNode)) {
+								const materializationState = (await ctx.runQuery(
+									internal.files_nodes.get_file_content_materialization_state,
+									{
+										organizationId: principal.organizationId,
+										workspaceId: principal.workspaceId,
+										nodeId: activeNode._id,
+									},
+								)) as get_file_content_materialization_state_Result;
+								if (materializationState) {
+									const currentContent = await files_nodes_reconstruct_latest_file_content_from_materialization_state({
+										state: materializationState,
+									});
+									if (currentContent._nay) {
+										console.error("Failed to reconstruct current file content for public file write", {
+											nay: currentContent._nay,
+											path: requestedPath,
+										});
+										return {
+											status: 500,
+											body: await fail({ status: 500, message: "Failed to write file", errorCode: "storage_failure" }),
+										} as const;
+									}
+
+									// Mirror the snapshot-restore recipe: project the new Markdown into the current
+									// doc and diff against the pre-projection state vector, so open editor sessions
+									// converge on the new content instead of being detached by a node swap.
+									const yjsBeforeStateVector = encodeStateVector(currentContent._yay.yjsDoc);
+									const projectedYjsDoc = files_yjs_doc_update_from_markdown({
+										mut_yjsDoc: currentContent._yay.yjsDoc,
+										markdown: body._yay.content,
+									});
+									if (projectedYjsDoc._nay) {
+										console.error("Failed to project public file write content into the Yjs doc", {
+											nay: projectedYjsDoc._nay,
+											path: requestedPath,
+										});
+										return {
+											status: 500,
+											body: await fail({ status: 500, message: "Failed to write file", errorCode: "storage_failure" }),
+										} as const;
+									}
+									const fillUpdate = files_yjs_compute_diff_update_from_state_vector({
+										yjsDoc: projectedYjsDoc._yay,
+										yjsBeforeStateVector,
+									});
+
+									const prepared: prepare_file_write_Result = await ctx.runMutation(
+										internal.public_api.prepare_file_write,
+										{
+											organizationId: principal.organizationId,
+											workspaceId: principal.workspaceId,
+											userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
+											principalRef,
+											path: requestedPath,
+											overwrite,
+											contentSize: contentBytes,
+											// The fill path never uploads a Yjs snapshot object; publish_file_fill drops
+											// the staged asset doc.
+											yjsSnapshotSize: 0,
+										},
+									);
+									if (prepared._nay) {
+										if (prepared._nay.message === "Permission denied") {
+											return {
+												status: 403,
+												body: await fail({ status: 403, message: prepared._nay.message, errorCode: "permission_denied" }),
+											} as const;
+										}
+										return {
+											status: 401,
+											body: await fail({ status: 401, message: prepared._nay.message, errorCode: "unauthenticated" }),
+										} as const;
+									}
+
+									const contentSnapshotKey = r2_create_asset_key({
+										organizationId: principal.organizationId,
+										workspaceId: principal.workspaceId,
+										assetId: prepared._yay.contentSnapshotAssetId,
+									});
+									try {
+										await r2_put_object(ctx, {
+											key: contentSnapshotKey,
+											body: body._yay.content,
+											contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+										});
+									} catch (error) {
+										console.error("Failed to write staged file object", {
+											error,
+											stageId: prepared._yay.stageId,
+											path: requestedPath,
+										});
+										const failBody = await fail({
+											status: 500,
+											message: "Failed to write file",
+											errorCode: "storage_failure",
+										});
+										await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+											stageId: prepared._yay.stageId,
+											orphanedKeys: [contentSnapshotKey],
+										});
+										return { status: 500, body: failBody } as const;
+									}
+
+									const published: publish_file_fill_Result = await ctx.runMutation(
+										internal.public_api.publish_file_fill,
+										{
+											stageId: prepared._yay.stageId,
+											content: body._yay.content,
+											expectedNodeId: activeNode._id,
+											...(fillUpdate ? { fillUpdate: files_u8_to_array_buffer(fillUpdate) } : {}),
+										},
+									);
+									if (published._nay) {
+										// Conflict is the fallback: structural 409s pass their specific message through,
+										// while the auth and storage failures use fixed literals.
+										const failedStatus =
+											published._nay.message === "Unauthenticated"
+												? 401
+												: published._nay.message === "Permission denied"
+													? 403
+													: published._nay.message === "Write was not published"
+														? 500
+														: 409;
+										const failBody = await fail({
+											status: failedStatus,
+											message: published._nay.message,
+											errorCode:
+												failedStatus === 409
+													? "conflict"
+													: failedStatus === 403
+														? "permission_denied"
+														: failedStatus === 401
+															? "unauthenticated"
+															: "storage_failure",
+										});
+										await ctx.runMutation(internal.public_api.cleanup_file_write_stage, {
+											stageId: prepared._yay.stageId,
+											orphanedKeys: [contentSnapshotKey],
+										});
+										if (failedStatus === 409) {
+											return { status: 409, body: failBody } as const;
+										}
+										if (failedStatus === 403) {
+											return { status: 403, body: failBody } as const;
+										}
+										if (failedStatus === 401) {
+											return { status: 401, body: failBody } as const;
+										}
+										return { status: 500, body: failBody } as const;
+									}
+
+									console.info("Public API file written in place", {
+										principalKind: principal.kind,
+										principalKey: principal.principalKey,
+										bytes: contentBytes,
+									});
+
+									return {
+										status: 200,
+										body: {
+											path: requestedPath,
+											nodeId: published._yay.nodeId,
+											contentType: "text/markdown;charset=utf-8" as const,
+										},
+										headers: { "Cache-Control": "no-store" },
+									} as const;
+								}
+							}
+
+							const snapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown(body._yay.content);
+							if (snapshotUpdate._nay) {
+								console.error("Failed to build Yjs snapshot for public file write", {
+									nay: snapshotUpdate._nay,
+									path: requestedPath,
+								});
+								return {
+									status: 500,
+									body: await fail({ status: 500, message: "Failed to write file", errorCode: "storage_failure" }),
+								} as const;
 							}
 
 							const prepared: prepare_file_write_Result = await ctx.runMutation(
@@ -2324,6 +2795,323 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 									nodeId: published._yay.nodeId,
 									contentType: "text/markdown;charset=utf-8" as const,
 								},
+								headers: { "Cache-Control": "no-store" },
+							} as const;
+						};
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const result = await handler(ctx, request);
+								return Response.json(result.body, result);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+
+		...((/* iife */ path = "/api/v1/files/touch" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						const bodyValidator = z.object({
+							paths: z.array(z.string()).min(1).max(FILES_TOUCH_MAX_PATHS),
+						});
+
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = z.infer<typeof bodyValidator>;
+
+						const handler = async (ctx: ActionCtx, request: Request) => {
+							const auth = await authorize_request(ctx, request, {
+								requiredScope: public_api_SCOPE_FILES_WRITE,
+								allowedKinds: ["user_api_key", "plugin_run"],
+								requiredUserPermission: "asset.write",
+								route: path,
+							});
+							if (auth._nay) {
+								return auth._nay;
+							}
+							const principal = auth._yay.principal;
+							const pluginCallId = auth._yay.pluginCallId;
+
+							// Settles the consumed plugin call and builds the error body in one step; the
+							// caller supplies the matching literal status so the response union stays narrow.
+							const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+								await settle_plugin_call_best_effort(ctx, {
+									callId: pluginCallId,
+									status: "failed",
+									responseStatus: failArgs.status,
+									errorCode: failArgs.errorCode,
+									errorMessage: failArgs.message,
+								});
+								return { message: failArgs.message };
+							};
+
+							const body = await server_request_json_parse_and_validate(request, bodyValidator);
+							if (body._nay) {
+								return {
+									status: 400,
+									body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
+								} as const;
+							}
+
+							// Validate every path with the same rules as /api/v1/files/write before touching
+							// anything, so a bad batch creates no files at all.
+							const requestedPaths: string[] = [];
+							for (const rawPath of body._yay.paths) {
+								if (!rawPath.startsWith("/")) {
+									return {
+										status: 400,
+										body: await fail({ status: 400, message: "Path must be absolute.", errorCode: "invalid_input" }),
+									} as const;
+								}
+								const requestedPath = server_path_normalize(rawPath);
+								if (requestedPath === "/") {
+									return {
+										status: 400,
+										body: await fail({ status: 400, message: "Path must point to a file.", errorCode: "invalid_input" }),
+									} as const;
+								}
+								// Segment-aware: a raw lastIndexOf("/") would split inside an escaped-slash segment and
+								// validate a different name than the segment the node is created with.
+								const name = path_name_of(requestedPath);
+								const normalizedName = files_normalize_name("file", name);
+								if (!name.toLowerCase().endsWith(".md") || normalizedName._nay || normalizedName._yay !== name) {
+									return {
+										status: 400,
+										body: await fail({
+											status: 400,
+											message: "Path must end in a valid Markdown (.md) file name.",
+											errorCode: "invalid_input",
+										}),
+									} as const;
+								}
+								// Intermediate folders are created verbatim on publish; require already-canonical
+								// names so a user-key touch cannot materialize folders (e.g. "..") that the app's
+								// own creation flows would reject.
+								for (const segment of path_extract_segments_from(requestedPath).slice(0, -1)) {
+									const normalizedSegment = files_normalize_name("folder", segment);
+									if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
+										return {
+											status: 400,
+											body: await fail({
+												status: 400,
+												message: "Path contains an invalid folder name.",
+												errorCode: "invalid_input",
+											}),
+										} as const;
+									}
+								}
+								// Plugins may only create Markdown siblings of their triggering file; the same
+								// constraint is revalidated transactionally at prepare and publish time.
+								if (
+									principal.kind === "plugin_run" &&
+									server_path_parent_of(requestedPath) !== principal.outputParentPath
+								) {
+									return {
+										status: 403,
+										body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+									} as const;
+								}
+								requestedPaths.push(requestedPath);
+							}
+							// Compare after normalization: distinct raw paths can collapse to the same file.
+							if (new Set(requestedPaths).size !== requestedPaths.length) {
+								return {
+									status: 400,
+									body: await fail({ status: 400, message: "Paths must be unique.", errorCode: "invalid_input" }),
+								} as const;
+							}
+
+							// Every touched file starts as the same empty doc; build its Yjs snapshot once.
+							const emptySnapshotUpdate = files_nodes_create_yjs_snapshot_update_from_markdown("");
+							if (emptySnapshotUpdate._nay) {
+								console.error("Failed to build the empty Yjs snapshot for public file touch", {
+									nay: emptySnapshotUpdate._nay,
+								});
+								return {
+									status: 500,
+									body: await fail({ status: 500, message: "Failed to touch files", errorCode: "storage_failure" }),
+								} as const;
+							}
+
+							let principalRef: Infer<typeof file_write_principal_ref_validator>;
+							if (principal.kind === "plugin_run") {
+								if (!pluginCallId) {
+									// Unreachable: authorize_request creates the call for plugin principals.
+									throw should_never_happen("plugin_run touch without a consumed call", {
+										runId: principal.runId,
+									});
+								}
+								principalRef = { kind: "plugin_run", runId: principal.runId, callId: pluginCallId };
+							} else {
+								principalRef = { kind: "user_api_key", credentialId: principal.credentialId };
+							}
+
+							const files: Array<{ path: string; nodeId: Id<"files_nodes">; created: boolean }> = [];
+							// Sequential on purpose: sibling paths usually share missing parent folders, and
+							// concurrent publishes would race on the shared folder creation.
+							for (const requestedPath of requestedPaths) {
+								// An active file already satisfies the touch; skip staging entirely. The publish
+								// mutation re-checks the path transactionally, so this pre-check is only an
+								// optimization for the common already-exists case.
+								const activeNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+									organizationId: principal.organizationId,
+									workspaceId: principal.workspaceId,
+									path: requestedPath,
+								})) as files_nodes_get_by_path_Result;
+								if (activeNode?.kind === "folder") {
+									return {
+										status: 409,
+										body: await fail({
+											status: 409,
+											message: "A folder already exists at this path",
+											errorCode: "conflict",
+										}),
+									} as const;
+								}
+								if (activeNode) {
+									files.push({ path: requestedPath, nodeId: activeNode._id, created: false });
+									continue;
+								}
+
+								const prepared: prepare_file_write_Result = await ctx.runMutation(
+									internal.public_api.prepare_file_write,
+									{
+										organizationId: principal.organizationId,
+										workspaceId: principal.workspaceId,
+										userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
+										principalRef,
+										path: requestedPath,
+										overwrite: "fail",
+										contentSize: 0,
+										yjsSnapshotSize: emptySnapshotUpdate._yay.byteLength,
+									},
+								);
+								if (prepared._nay) {
+									if (prepared._nay.message === "Permission denied") {
+										return {
+											status: 403,
+											body: await fail({ status: 403, message: prepared._nay.message, errorCode: "permission_denied" }),
+										} as const;
+									}
+									return {
+										status: 401,
+										body: await fail({ status: 401, message: prepared._nay.message, errorCode: "unauthenticated" }),
+									} as const;
+								}
+
+								const stageId = prepared._yay.stageId;
+								const stageScope = { organizationId: principal.organizationId, workspaceId: principal.workspaceId };
+								const yjsSnapshotKey = r2_create_asset_key({ ...stageScope, assetId: prepared._yay.yjsSnapshotAssetId });
+								const contentSnapshotKey = r2_create_asset_key({
+									...stageScope,
+									assetId: prepared._yay.contentSnapshotAssetId,
+								});
+								// Passed to cleanup so objects PUT after run terminalization already swept the
+								// stage (deleting the docs the keys derive from) still get removed from the bucket.
+								const orphanedKeys = [yjsSnapshotKey, contentSnapshotKey];
+								// Every PUT must settle before any cleanup: a fast-failing sibling would otherwise
+								// trigger the key sweep while another PUT is still in flight, and that PUT would
+								// re-create its object after the sweep — an untracked blob no reaper can find.
+								const putResults = await Promise.allSettled([
+									r2_put_object(ctx, {
+										key: yjsSnapshotKey,
+										body: emptySnapshotUpdate._yay,
+										contentType: "application/octet-stream" satisfies files_ContentType,
+									}),
+									r2_put_object(ctx, {
+										key: contentSnapshotKey,
+										body: "",
+										contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+									}),
+								]);
+								const putFailure = putResults.find((result) => result.status === "rejected");
+								if (putFailure) {
+									console.error("Failed to write staged touch objects", {
+										error: putFailure.reason,
+										stageId,
+										path: requestedPath,
+									});
+									const failBody = await fail({
+										status: 500,
+										message: "Failed to touch files",
+										errorCode: "storage_failure",
+									});
+									await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
+									return { status: 500, body: failBody } as const;
+								}
+
+								const published: publish_file_touch_Result = await ctx.runMutation(
+									internal.public_api.publish_file_touch,
+									{ stageId },
+								);
+								if (published._nay) {
+									// Conflict is the fallback: structural 409s pass their specific message through,
+									// while the auth and storage failures use fixed literals.
+									const failedStatus =
+										published._nay.message === "Unauthenticated"
+											? 401
+											: published._nay.message === "Permission denied"
+												? 403
+												: published._nay.message === "Write was not published"
+													? 500
+													: 409;
+									const failBody = await fail({
+										status: failedStatus,
+										message: published._nay.message,
+										errorCode:
+											failedStatus === 409
+												? "conflict"
+												: failedStatus === 403
+													? "permission_denied"
+													: failedStatus === 401
+														? "unauthenticated"
+														: "storage_failure",
+									});
+									await ctx.runMutation(internal.public_api.cleanup_file_write_stage, { stageId, orphanedKeys });
+									if (failedStatus === 409) {
+										return { status: 409, body: failBody } as const;
+									}
+									if (failedStatus === 403) {
+										return { status: 403, body: failBody } as const;
+									}
+									if (failedStatus === 401) {
+										return { status: 401, body: failBody } as const;
+									}
+									return { status: 500, body: failBody } as const;
+								}
+
+								files.push({ path: requestedPath, nodeId: published._yay.nodeId, created: published._yay.created });
+							}
+
+							await settle_plugin_call_best_effort(ctx, {
+								callId: pluginCallId,
+								status: "succeeded",
+								responseStatus: 200,
+							});
+
+							console.info("Public API files touched", {
+								principalKind: principal.kind,
+								principalKey: principal.principalKey,
+								count: files.length,
+							});
+
+							return {
+								status: 200,
+								body: { files },
 								headers: { "Cache-Control": "no-store" },
 							} as const;
 						};

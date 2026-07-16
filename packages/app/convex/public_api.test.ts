@@ -496,6 +496,8 @@ describe("public files API", () => {
 		expect(conflict.status).toBe(409);
 		expect(((await conflict.json()) as { message: string }).message).toBe("A file already exists at this path");
 
+		// Overwriting an editable Markdown file replaces its content in place: the nodeId stays
+		// stable so open editors and links keep working.
 		const replaced = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers: auth_headers(credential),
@@ -503,7 +505,7 @@ describe("public files API", () => {
 		});
 		expect(replaced.status).toBe(200);
 		const replacedBody = (await replaced.json()) as { nodeId: string };
-		expect(replacedBody.nodeId).not.toBe(writtenBody.nodeId);
+		expect(replacedBody.nodeId).toBe(writtenBody.nodeId);
 
 		const download = await t.fetch("/api/v1/files/download-urls", {
 			method: "POST",
@@ -521,6 +523,122 @@ describe("public files API", () => {
 		expect(await downloaded.text()).toContain("Replaced via the public API");
 
 		// Every published write consumed its stage; nothing is left for the cleanup cron.
+		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
+		expect(stages).toEqual([]);
+	});
+
+	test("touches empty Markdown files and fills them in place", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-touch" });
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-touch",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Files toucher",
+			scopes: ["files:read", "files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		const credential = created._yay!.credential;
+
+		for (const body of [
+			{ paths: [] },
+			{ paths: ["meetings/video.mp4.transcript.md"] },
+			{ paths: ["/meetings/video.mp4.transcript.txt"] },
+			{ paths: ["/meetings/video.mp4.transcript.md", "/meetings/video.mp4.transcript.md"] },
+		]) {
+			const response = await t.fetch("/api/v1/files/touch", {
+				method: "POST",
+				headers: auth_headers(credential),
+				body: JSON.stringify(body),
+			});
+			expect(response.status).toBe(400);
+		}
+
+		const touched = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ paths: ["/meetings/video.mp4.transcript.md", "/meetings/video.mp4.summary.md"] }),
+		});
+		expect(touched.status).toBe(200);
+		const touchedBody = (await touched.json()) as {
+			files: Array<{ path: string; nodeId: string; created: boolean }>;
+		};
+		expect(touchedBody.files).toEqual([
+			{ path: "/meetings/video.mp4.transcript.md", nodeId: expect.any(String), created: true },
+			{ path: "/meetings/video.mp4.summary.md", nodeId: expect.any(String), created: true },
+		]);
+
+		// Touched files read back as empty editable Markdown files.
+		const readEmpty = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/meetings/video.mp4.transcript.md" }),
+		});
+		expect(readEmpty.status).toBe(200);
+		expect(((await readEmpty.json()) as { content: string }).content).toBe("");
+
+		// A repeated touch is an idempotent no-op returning the same nodes.
+		const repeated = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ paths: ["/meetings/video.mp4.transcript.md", "/meetings/video.mp4.summary.md"] }),
+		});
+		expect(repeated.status).toBe(200);
+		const repeatedBody = (await repeated.json()) as {
+			files: Array<{ path: string; nodeId: string; created: boolean }>;
+		};
+		expect(repeatedBody.files).toEqual([
+			{ path: "/meetings/video.mp4.transcript.md", nodeId: touchedBody.files[0]!.nodeId, created: false },
+			{ path: "/meetings/video.mp4.summary.md", nodeId: touchedBody.files[1]!.nodeId, created: false },
+		]);
+
+		// Writing to a touched path fills the placeholder node instead of replacing it.
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/meetings/video.mp4.transcript.md", content: "# Transcript\n\nHello there\n" }),
+		});
+		expect(written.status).toBe(200);
+		expect(((await written.json()) as { nodeId: string }).nodeId).toBe(touchedBody.files[0]!.nodeId);
+
+		const readFilled = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/meetings/video.mp4.transcript.md" }),
+		});
+		expect(readFilled.status).toBe(200);
+		expect(((await readFilled.json()) as { content: string }).content).toContain("Hello there");
+
+		// The fill appended a non-user Yjs update that open editor sessions apply as a remote change.
+		const transcriptNodeId = touchedBody.files[0]!.nodeId as Id<"files_nodes">;
+		const yjsUpdates = await t.run(
+			async (ctx) =>
+				await ctx.db
+					.query("files_yjs_updates")
+					.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+						q
+							.eq("organizationId", db.organizationId)
+							.eq("workspaceId", db.workspaceId)
+							.eq("fileNodeId", transcriptNodeId),
+					)
+					.collect(),
+		);
+		expect(yjsUpdates).toEqual([expect.objectContaining({ origin: { type: "USER_AI_EDIT" } })]);
+
+		// A path blocked by an existing file at an intermediate segment conflicts.
+		const blocked = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ paths: ["/meetings/video.mp4.transcript.md/inner.md"] }),
+		});
+		expect(blocked.status).toBe(409);
+
+		// Every touch consumed or skipped its stage; nothing is left for the cleanup cron.
 		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
 		expect(stages).toEqual([]);
 	});

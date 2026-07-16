@@ -24,7 +24,7 @@ Fixtures (registered in `references/files.md`):
 ## Audio Path (wav → Mistral directly)
 
 1. Upload `speakers.wav` into the run folder (`Upload file` is in the sidebar `More options` menu; a same-name re-upload opens the `File already exists` modal — rename in its `Filename` input and submit `Upload`).
-2. Poll for both siblings: `speakers.wav.transcript.md` and `speakers.wav.summary.md` (allow ~3 minutes).
+2. Poll for both siblings: `speakers.wav.transcript.md` and `speakers.wav.summary.md`. They appear **empty within seconds** of the run starting (the worker touches both placeholders right after reading its secrets) and fill with content later (allow ~3 minutes). The fill keeps the same nodeId — a placeholder disappearing and reappearing as a new node is a regression.
 3. Open the transcript and assert content quality:
    - At least two distinct `## Speaker N` headings (diarization worked).
    - The scripted phrases appear (fuzzy, case-insensitive): quarterly budget, penguin research station, marketing plan, solar bicycle.
@@ -34,7 +34,7 @@ Fixtures (registered in `references/files.md`):
 ## Video Path (mp4 → Modal → Mistral)
 
 1. Upload `speakers.mp4` into the same folder.
-2. Poll for `speakers.mp4.transcript.md` + `speakers.mp4.summary.md`. Video runs add the Modal extraction round trip; allow ~4 minutes.
+2. Poll for `speakers.mp4.transcript.md` + `speakers.mp4.summary.md`. Empty placeholders appear within seconds; video runs add the Modal extraction round trip before the fill, so allow ~4 minutes for content.
 3. Apply the same transcript and summary assertions as the audio path (same underlying audio).
 
 ## Run Telemetry
@@ -48,8 +48,8 @@ vp env exec node node_modules/convex/bin/main.js data plugins_event_run_calls --
 
 Expected result:
 
-- Both `video` runs `succeeded` with `outputWriteCount` of 2 (transcript + summary), and none of their calls left in `started` status.
-- Calls contain only `api_request` entries on `/api/v1/files/download-urls`, `/api/internal/plugins/host/secret-get`, and `/api/v1/files/write`, plus `outbound_fetch` entries — transcription and summaries are plugin-owned outbound calls, never a host AI operation.
+- Both `video` runs `succeeded` with `outputWriteCount` of 2 (transcript + summary — the touch call does not count as an output write), and none of their calls left in `started` status.
+- Calls contain only `api_request` entries on `/api/v1/files/download-urls`, `/api/internal/plugins/host/secret-get`, one `/api/v1/files/touch` (both placeholders in a single batched call), and `/api/v1/files/write`, plus `outbound_fetch` entries — transcription and summaries are plugin-owned outbound calls, never a host AI operation.
 - Outbound call docs record only bytes/status (route `outbound`), never target URLs; the consent set limits the wav run's outbound to `api.mistral.ai` and `api.openai.com`, and the mp4 run adds the Modal origin (extract POST). `apiCallCount` stays well under the shared 20-call run quota.
 
 ## Negative Test (Missing Secret)
@@ -67,7 +67,7 @@ Expected result:
 
 ## Failure Triage
 
-- Transcript missing but summary logic suspected: transcript is written **before** the summary call — a lone `.transcript.md` with a `failed` run means the OpenAI summary stage failed; no files at all means the failure was at secrets/Modal/Mistral.
+- Transcript missing but summary logic suspected: transcript is written **before** the summary call — a filled `.transcript.md` next to an empty `.summary.md` with a `failed` run means the OpenAI summary stage failed. Both siblings empty means the failure was at Modal/Mistral (placeholders are touched before those calls and stay empty on a mid-run failure); **no** siblings at all means a secret read failed (touch runs after all secret reads).
 - Only the mp4 path fails: check Modal (`/health`, then the extract POST status on the run's `outbound_fetch` calls — 401 token, 413 size, 422 ffmpeg). The wav path bypasses Modal entirely.
 - Single-speaker transcript on this fixture: confirm the Mistral request included `diarize=true` and `timestamp_granularities=segment`; segments come back EMPTY if granularities are omitted (worker then falls back to unlabeled sections — that fallback appearing here is a regression).
 - Run stuck `pending`: Convex cold start or runner deployment, same as the image playbook.

@@ -137,6 +137,8 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/write": ReturnType<typeof public_api_http_routes>["/api/v1/files/write"];
 
+	"/api/v1/files/touch": ReturnType<typeof public_api_http_routes>["/api/v1/files/touch"];
+
 	"/api/v1/files/download-urls": ReturnType<typeof public_api_http_routes>["/api/v1/files/download-urls"];
 
 	"/api/files/contextual-prompt": ReturnType<typeof files_http_routes>["/api/files/contextual-prompt"];

@@ -3744,7 +3744,7 @@ export const get_file_last_available_markdown_content_by_path = internalAction({
 				return null;
 			}
 
-			content = await reconstruct_latest_file_content_from_materialization_state({ state: materializationState }).then(
+			content = await files_nodes_reconstruct_latest_file_content_from_materialization_state({ state: materializationState }).then(
 				(reconstructed) => {
 					if (reconstructed._nay) {
 						throw convex_error({
@@ -3907,7 +3907,7 @@ async function files_resolve_readable_content_or_window(
 		materializationState &&
 		materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
 	) {
-		const reconstructed = await reconstruct_latest_file_content_from_materialization_state({
+		const reconstructed = await files_nodes_reconstruct_latest_file_content_from_materialization_state({
 			state: materializationState,
 		});
 		if (reconstructed._nay) {
@@ -5514,7 +5514,7 @@ export const read_file_tail_lines = internalAction({
 			materializationState &&
 			materializationState.yjsLastSequenceDoc.lastSequence > materializationState.yjsSnapshotDoc.sequence
 		) {
-			const reconstructed = await reconstruct_latest_file_content_from_materialization_state({
+			const reconstructed = await files_nodes_reconstruct_latest_file_content_from_materialization_state({
 				state: materializationState,
 			});
 			if (reconstructed._nay) {
@@ -6640,7 +6640,7 @@ async function store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store
 	return snapshotId;
 }
 
-async function reconstruct_latest_file_content_from_materialization_state(args: {
+export async function files_nodes_reconstruct_latest_file_content_from_materialization_state(args: {
 	state: NonNullable<get_file_content_materialization_state_Result>;
 }) {
 	if (!args.state.yjsSnapshotAsset.r2Key) {
@@ -6678,6 +6678,107 @@ async function reconstruct_latest_file_content_from_materialization_state(args: 
 			snapshotUpdate,
 			sequence: args.state.yjsLastSequenceDoc.lastSequence,
 		},
+	});
+}
+
+/**
+ * Replace the current content of an editable Markdown file in place, keeping the same nodeId.
+ * The caller has already validated the node (editable, same scope) and PUT the new content bytes
+ * at the content snapshot asset's deterministic key. `fillUpdate` is a Yjs diff update computed
+ * against the doc state the caller reconstructed; open editors apply it as a remote change.
+ * The caller omits it when the diff is empty (the new content equals the current content).
+ */
+export async function files_nodes_db_fill_markdown_node_content(
+	ctx: MutationCtx,
+	args: {
+		// Editable files only exist in real tenant scopes, so the caller passes the already
+		// scope-checked ids instead of the node's wider reserved-scope union fields.
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		fileNode: Doc<"files_nodes"> & {
+			assetId: NonNullable<Doc<"files_nodes">["assetId"]>;
+			yjsSnapshotId: NonNullable<Doc<"files_nodes">["yjsSnapshotId"]>;
+			yjsLastSequenceId: NonNullable<Doc<"files_nodes">["yjsLastSequenceId"]>;
+		};
+		userId: Id<"users">;
+		markdownContent: string;
+		contentSnapshotAssetId: Id<"files_r2_assets">;
+		contentSize: number;
+		fillUpdate?: ArrayBuffer;
+	},
+) {
+	const now = Date.now();
+	const { organizationId, workspaceId } = args;
+
+	await Promise.all([
+		ctx.db.patch("files_r2_assets", args.contentSnapshotAssetId, {
+			r2Key: r2_create_asset_key({ organizationId, workspaceId, assetId: args.contentSnapshotAssetId }),
+			size: args.contentSize,
+			updatedAt: now,
+		}),
+		// Store the new content as a version snapshot and point the node at it: the newest
+		// snapshot always holds the file's current bytes.
+		store_version_snapshot(ctx, {
+			organizationId,
+			workspaceId,
+			nodeId: args.fileNode._id,
+			assetId: args.contentSnapshotAssetId,
+			userId: args.userId,
+		}),
+		ctx.db.patch("files_nodes", args.fileNode._id, {
+			assetId: args.contentSnapshotAssetId,
+			updatedBy: args.userId,
+			updatedAt: now,
+		}),
+	]);
+
+	let yjsSequence: number;
+	if (args.fillUpdate) {
+		const newSequenceData = await yjs_increment_or_create_last_sequence(ctx, {
+			organizationId,
+			workspaceId,
+			nodeId: args.fileNode._id,
+		});
+		await ctx.db.insert("files_yjs_updates", {
+			organizationId,
+			workspaceId,
+			fileNodeId: args.fileNode._id,
+			sequence: newSequenceData.lastSequence,
+			update: args.fillUpdate,
+			// Non-user origin so open editor sessions apply the update as a remote change.
+			origin: { type: "USER_AI_EDIT" },
+			createdBy: args.userId,
+			createdAt: now,
+		});
+		await enqueue_file_content_materialization(ctx, {
+			organizationId,
+			workspaceId,
+			nodeId: args.fileNode._id,
+			userId: args.userId,
+			targetSequence: newSequenceData.lastSequence,
+			delayMs: 0,
+		});
+		yjsSequence = newSequenceData.lastSequence;
+	} else {
+		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", args.fileNode.yjsLastSequenceId);
+		if (!yjsLastSequenceDoc) {
+			const errorMessage = "fileNode.yjsLastSequenceId points to a missing files_yjs_docs_last_sequences doc";
+			const errorData = {
+				fileNodeId: args.fileNode._id,
+				yjsLastSequenceId: args.fileNode.yjsLastSequenceId,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		yjsSequence = yjsLastSequenceDoc.lastSequence;
+	}
+
+	return await db_replace_file_chunks(ctx, {
+		organizationId,
+		workspaceId,
+		nodeId: args.fileNode._id,
+		yjsSequence,
+		markdownContent: args.markdownContent,
 	});
 }
 
@@ -6824,7 +6925,7 @@ export const materialize_file_content = internalAction({
 			return Result({ _yay: null });
 		}
 
-		const reconstructed = await reconstruct_latest_file_content_from_materialization_state({ state });
+		const reconstructed = await files_nodes_reconstruct_latest_file_content_from_materialization_state({ state });
 		if (reconstructed._nay) {
 			return reconstructed;
 		}
@@ -7274,7 +7375,7 @@ export const restore_snapshot_r2 = action({
 		const snapshotMarkdownContent = await r2_fetch_object_from_bucket({ key: snapshotContent.asset.r2Key }).then(
 			(response) => response.text(),
 		);
-		const currentContent = await reconstruct_latest_file_content_from_materialization_state({
+		const currentContent = await files_nodes_reconstruct_latest_file_content_from_materialization_state({
 			state: materializationState,
 		});
 		if (currentContent._nay) {
