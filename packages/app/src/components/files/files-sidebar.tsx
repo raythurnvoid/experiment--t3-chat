@@ -88,6 +88,7 @@ import {
 	MyModalHeading,
 	MyModalPopover,
 } from "@/components/my-modal.tsx";
+import { useFileNodeActivities } from "@/lib/activities.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import {
 	cn,
@@ -776,16 +777,22 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 // #region tree item secondary content
 type FilesSidebarTreeItemSecondaryContent_ClassNames =
 	| "FilesSidebarTreeItemSecondaryContent"
-	| "FilesSidebarTreeItemSecondaryContent-text";
+	| "FilesSidebarTreeItemSecondaryContent-text"
+	| "FilesSidebarTreeItemSecondaryContent-processing";
 
 type FilesSidebarTreeItemSecondaryContent_Props = {
+	nodeId: app_convex_Id<"files_nodes"> | null;
 	secondaryText: string;
 };
 
 const FilesSidebarTreeItemSecondaryContent = memo(function FilesSidebarTreeItemSecondaryContent(
 	props: FilesSidebarTreeItemSecondaryContent_Props,
 ) {
-	const { secondaryText } = props;
+	const { nodeId, secondaryText } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+
+	const activities = useFileNodeActivities({ membershipId, nodeId });
+	const isProcessing = activities.some((activity) => activity.status === "running");
 
 	return (
 		<div className={"FilesSidebarTreeItemSecondaryContent" satisfies FilesSidebarTreeItemSecondaryContent_ClassNames}>
@@ -796,6 +803,15 @@ const FilesSidebarTreeItemSecondaryContent = memo(function FilesSidebarTreeItemS
 			>
 				{secondaryText}
 			</div>
+			{isProcessing ? (
+				<div
+					className={
+						"FilesSidebarTreeItemSecondaryContent-processing" satisfies FilesSidebarTreeItemSecondaryContent_ClassNames
+					}
+				>
+					Processing
+				</div>
+			) : null}
 		</div>
 	);
 });
@@ -1267,7 +1283,10 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					/>
 				)}
 
-				<FilesSidebarTreeItemSecondaryContent secondaryText={metaText} />
+				<FilesSidebarTreeItemSecondaryContent
+					nodeId={files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : null}
+					secondaryText={metaText}
+				/>
 
 				<FilesSidebarTreeItemActions
 					kind={itemData.kind}

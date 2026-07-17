@@ -592,6 +592,19 @@
 		user-select: none;
 		min-width: 0;
 	}
+
+	.FilesSidebarTreeItemSecondaryContent-processing {
+		display: inline-flex;
+		align-items: center;
+		flex: 0 0 auto;
+		margin-left: 6px;
+
+		font-size: 0.75rem;
+		line-height: 1rem;
+		color: var(--color-accent-08);
+		white-space: nowrap;
+		user-select: none;
+	}
 	/* #endregion tree item secondary content */
 
 	/* #region tree item actions */
