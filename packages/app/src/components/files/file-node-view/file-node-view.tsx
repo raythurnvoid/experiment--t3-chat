@@ -817,6 +817,10 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		setShowAllItems(true);
 	});
 
+	const handleShowLessClick = useFn(() => {
+		setShowAllItems(false);
+	});
+
 	const handleCreateReadmeClick = useFn(() => {
 		setIsCreatingReadme(true);
 		convex
@@ -952,6 +956,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 				onArchiveNode={handleArchiveNode}
 				onMoveFileNodesToParent={handleMoveFileNodesToParent}
 				onShowMoreClick={handleShowMoreClick}
+				canShowLess={showAllItems && childItems.length > FILE_NODE_VIEW_FOLDER_INITIAL_VISIBLE_ITEMS_COUNT}
+				onShowLessClick={handleShowLessClick}
 			/>
 			<FileNodeViewFolderReadme
 				readmeNodeId={readmeNodeId}
@@ -1835,7 +1841,8 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 type FileNodeViewFolderExplorer_ClassNames =
 	| "FileNodeViewFolderExplorer"
 	| "FileNodeViewFolderExplorer-table"
-	| "FileNodeViewFolderExplorer-show-more";
+	| "FileNodeViewFolderExplorer-show-more"
+	| "FileNodeViewFolderExplorer-show-less";
 
 type FileNodeViewFolderExplorer_Props = {
 	visibleChildItems: files_VisibleTreeNode[];
@@ -1854,6 +1861,8 @@ type FileNodeViewFolderExplorer_Props = {
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
 	}) => void;
 	onShowMoreClick: () => void;
+	canShowLess: boolean;
+	onShowLessClick: () => void;
 };
 
 const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(props: FileNodeViewFolderExplorer_Props) {
@@ -1868,6 +1877,8 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		onArchiveNode,
 		onMoveFileNodesToParent,
 		onShowMoreClick,
+		canShowLess,
+		onShowLessClick,
 	} = props;
 
 	if (visibleChildItems.length === 0 && hiddenChildItemsCount <= 0) {
@@ -1910,6 +1921,16 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 					onClick={onShowMoreClick}
 				>
 					Show more
+				</MyButton>
+			)}
+
+			{canShowLess && (
+				<MyButton
+					className={"FileNodeViewFolderExplorer-show-less" satisfies FileNodeViewFolderExplorer_ClassNames}
+					variant="outline"
+					onClick={onShowLessClick}
+				>
+					Show less
 				</MyButton>
 			)}
 		</div>

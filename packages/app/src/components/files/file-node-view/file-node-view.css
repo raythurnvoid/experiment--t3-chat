@@ -637,6 +637,19 @@
 	.FileNodeViewFolderExplorer-show-more {
 		align-self: flex-start;
 	}
+
+	.FileNodeViewFolderExplorer-show-less {
+		align-self: flex-start;
+
+		/*
+		Stick to the bottom of the editor scroll area so the user can collapse
+		the list without scrolling back up. Paint above the table cells, which
+		use z-index 1.
+		*/
+		position: sticky;
+		bottom: 16px;
+		z-index: 1;
+	}
 	/* #endregion folder explorer */
 
 	/* #region folder readme */
