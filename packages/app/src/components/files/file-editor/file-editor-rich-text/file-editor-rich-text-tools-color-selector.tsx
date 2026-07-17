@@ -318,7 +318,7 @@ const FileEditorRichTextToolsColorSelectorInner = memo(function FileEditorRichTe
 		editor,
 		activeColor,
 		activeBackground,
-		buttonVariant = "ghost",
+		buttonVariant = "ghost-highlightable",
 		onColorSelect,
 		onHighlightSelect,
 		setDecorationHighlightOnOpen = false,
@@ -415,7 +415,7 @@ export const FileEditorRichTextToolsColorSelector = memo(function FileEditorRich
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, buttonVariant = "ghost", setDecorationHighlightOnOpen = false } = props;
+	const { editor, buttonVariant = "ghost-highlightable", setDecorationHighlightOnOpen = false } = props;
 
 	// Subscribe to the derived color state so mark changes rerender immediately.
 	const editorState = useEditorState({

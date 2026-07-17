@@ -93,7 +93,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 			className={cn("FileEditorDiffToolbarActions" satisfies FileEditorDiffToolbarActions_ClassNames)}
 		>
 			<MyButton
-				variant="ghost"
+				variant="ghost-highlightable"
 				className={cn("FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames)}
 				aria-label="Save staged changes"
 				disabled={isSaveDisabled}
@@ -107,7 +107,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				Save
 			</MyButton>
 			<MyButton
-				variant="ghost"
+				variant="ghost-highlightable"
 				className={cn("FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames)}
 				aria-label="Sync with live file"
 				disabled={isSyncDisabled}
@@ -121,7 +121,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				Sync
 			</MyButton>
 			<MyButton
-				variant="ghost"
+				variant="ghost-highlightable"
 				className={cn(
 					"FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames,
 					"FileEditorDiffToolbarActions-button-accept-all" satisfies FileEditorDiffToolbarActions_ClassNames,
@@ -138,7 +138,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				Accept all
 			</MyButton>
 			<MyButton
-				variant="ghost"
+				variant="ghost-highlightable"
 				className={cn(
 					"FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames,
 					"FileEditorDiffToolbarActions-button-accept-all-and-save" satisfies FileEditorDiffToolbarActions_ClassNames,
@@ -155,7 +155,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				Accept all + save
 			</MyButton>
 			<MyButton
-				variant="ghost"
+				variant="ghost-highlightable"
 				className={cn(
 					"FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames,
 					"FileEditorDiffToolbarActions-button-discard-all" satisfies FileEditorDiffToolbarActions_ClassNames,

@@ -22,7 +22,7 @@ type FileEditorRichTextToolsMathToggleInner_Props = FileEditorRichTextToolsMathT
 const FileEditorRichTextToolsMathToggleInner = memo(function FileEditorRichTextToolsMathToggleInner(
 	props: FileEditorRichTextToolsMathToggleInner_Props,
 ) {
-	const { editor, buttonVariant = "ghost", isActive } = props;
+	const { editor, buttonVariant = "ghost-highlightable", isActive } = props;
 
 	const handleClick = useFn(() => {
 		if (isActive) {
@@ -62,7 +62,7 @@ export const FileEditorRichTextToolsMathToggle = memo(function FileEditorRichTex
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, buttonVariant = "ghost" } = props;
+	const { editor, buttonVariant = "ghost-highlightable" } = props;
 
 	// Subscribe to the derived math state so mark changes rerender immediately.
 	const isActive = useEditorState({

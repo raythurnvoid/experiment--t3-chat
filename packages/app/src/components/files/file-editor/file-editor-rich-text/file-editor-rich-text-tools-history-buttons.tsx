@@ -25,7 +25,7 @@ const FileEditorRichTextToolsHistoryUndoButton = memo(function FileEditorRichTex
 
 	return (
 		<MyIconButton
-			variant="ghost"
+			variant="ghost-highlightable"
 			tooltip="Undo (Ctrl+Z)"
 			disabled={disabled}
 			onClick={handleClick}
@@ -60,7 +60,7 @@ const FileEditorRichTextToolsHistoryRedoButton = memo(function FileEditorRichTex
 
 	return (
 		<MyIconButton
-			variant="ghost"
+			variant="ghost-highlightable"
 			tooltip="Redo (Ctrl+Y)"
 			disabled={disabled}
 			onClick={handleClick}

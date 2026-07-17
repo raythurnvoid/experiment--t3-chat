@@ -120,7 +120,7 @@ type FileEditorRichTextToolsLinkSetterInner_Props = FileEditorRichTextToolsLinkS
 const FileEditorRichTextToolsLinkSetterInner = memo(function FileEditorRichTextToolsLinkSetterInner(
 	props: FileEditorRichTextToolsLinkSetterInner_Props,
 ) {
-	const { editor, activeHref, isLinkActive, buttonVariant = "ghost", setDecorationHighlightOnOpen = false } = props;
+	const { editor, activeHref, isLinkActive, buttonVariant = "ghost-highlightable", setDecorationHighlightOnOpen = false } = props;
 
 	const [open, setOpen] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
@@ -236,7 +236,7 @@ export const FileEditorRichTextToolsLinkSetter = memo(function FileEditorRichTex
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, buttonVariant = "ghost", setDecorationHighlightOnOpen = false } = props;
+	const { editor, buttonVariant = "ghost-highlightable", setDecorationHighlightOnOpen = false } = props;
 
 	// Subscribe to the derived link state so mark changes rerender immediately.
 	const editorState = useEditorState({

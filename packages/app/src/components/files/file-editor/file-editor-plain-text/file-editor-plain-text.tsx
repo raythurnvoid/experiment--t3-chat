@@ -76,7 +76,7 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 			className={cn("FileEditorPlainTextToolbarActions" satisfies FileEditorPlainTextToolbarActions_ClassNames)}
 		>
 			<MyButton
-				variant="ghost"
+				variant="ghost-highlightable"
 				className={cn(
 					"FileEditorPlainTextToolbarActions-button" satisfies FileEditorPlainTextToolbarActions_ClassNames,
 				)}
@@ -94,7 +94,7 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 				Save
 			</MyButton>
 			<MyButton
-				variant="ghost"
+				variant="ghost-highlightable"
 				className={cn(
 					"FileEditorPlainTextToolbarActions-button" satisfies FileEditorPlainTextToolbarActions_ClassNames,
 				)}

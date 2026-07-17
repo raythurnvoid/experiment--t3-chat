@@ -111,7 +111,7 @@ type FileEditorRichTextToolsTextStylesInner_Props = FileEditorRichTextToolsTextS
 const FileEditorRichTextToolsTextStylesInner = memo(function FileEditorRichTextToolsTextStylesInner(
 	props: FileEditorRichTextToolsTextStylesInner_Props,
 ) {
-	const { editor, buttonVariant = "ghost", itemStates } = props;
+	const { editor, buttonVariant = "ghost-highlightable", itemStates } = props;
 
 	return (
 		<div className={cn("FileEditorRichTextToolsTextStyles" satisfies FileEditorRichTextToolsTextStyles_ClassNames)}>
@@ -136,7 +136,7 @@ export const FileEditorRichTextToolsTextStyles = memo(function FileEditorRichTex
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, buttonVariant = "ghost" } = props;
+	const { editor, buttonVariant = "ghost-highlightable" } = props;
 
 	// Subscribe to the derived text-style states so formatting transactions rerender immediately.
 	const itemActiveStates = useEditorState({

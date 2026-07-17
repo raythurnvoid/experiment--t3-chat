@@ -1022,7 +1022,7 @@ const FileNodeViewToolbarFolderActions = memo(function FileNodeViewToolbarFolder
 		>
 			<MyIconButton
 				className={"FileNodeViewToolbarFolderActions-action" satisfies FileNodeViewToolbarFolderActions_ClassNames}
-				variant="ghost"
+				variant="ghost-highlightable"
 				tooltip="New file"
 				disabled={disabled}
 				onClick={() => onCreateNode("file")}
@@ -1037,7 +1037,7 @@ const FileNodeViewToolbarFolderActions = memo(function FileNodeViewToolbarFolder
 			</MyIconButton>
 			<MyIconButton
 				className={"FileNodeViewToolbarFolderActions-action" satisfies FileNodeViewToolbarFolderActions_ClassNames}
-				variant="ghost"
+				variant="ghost-highlightable"
 				tooltip="New folder"
 				disabled={disabled}
 				onClick={() => onCreateNode("folder")}
@@ -1155,7 +1155,7 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 					className={
 						"FileNodeViewToolbarFileDownloadAction-button" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames
 					}
-					variant="ghost"
+					variant="ghost-highlightable"
 					disabled={isDownloading}
 					aria-busy={downloadingFileNodeId === singleCandidate.fileNodeId}
 					onClick={() => handleDownload(singleCandidate.fileNodeId)}
@@ -1176,7 +1176,7 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 							className={
 								"FileNodeViewToolbarFileDownloadAction-button" satisfies FileNodeViewToolbarFileDownloadAction_ClassNames
 							}
-							variant="ghost"
+							variant="ghost-highlightable"
 							disabled={isDownloading}
 							aria-busy={isDownloading}
 						>

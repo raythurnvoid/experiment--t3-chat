@@ -78,7 +78,7 @@ type FileEditorRichTextToolsCommentInner_Props = FileEditorRichTextToolsComment_
 const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextToolsCommentInner(
 	props: FileEditorRichTextToolsCommentInner_Props,
 ) {
-	const { editor, buttonVariant = "ghost", isSelectionEmpty } = props;
+	const { editor, buttonVariant = "ghost-highlightable", isSelectionEmpty } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -225,7 +225,7 @@ export const FileEditorRichTextToolsComment = memo(function FileEditorRichTextTo
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, buttonVariant = "ghost" } = props;
+	const { editor, buttonVariant = "ghost-highlightable" } = props;
 
 	const editorState = useEditorState({
 		editor,

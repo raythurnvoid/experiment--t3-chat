@@ -182,7 +182,7 @@ type FileEditorRichTextToolsNodeSelectorInner_Props = FileEditorRichTextToolsNod
 const FileEditorRichTextToolsNodeSelectorInner = memo(function FileEditorRichTextToolsNodeSelectorInner(
 	props: FileEditorRichTextToolsNodeSelectorInner_Props,
 ) {
-	const { editor, activeItemName, buttonVariant = "ghost", setDecorationHighlightOnOpen = false } = props;
+	const { editor, activeItemName, buttonVariant = "ghost-highlightable", setDecorationHighlightOnOpen = false } = props;
 
 	const [open, setOpen] = useState(false);
 
@@ -268,7 +268,7 @@ export const FileEditorRichTextToolsNodeSelector = memo(function FileEditorRichT
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, buttonVariant = "ghost", setDecorationHighlightOnOpen = false } = props;
+	const { editor, buttonVariant = "ghost-highlightable", setDecorationHighlightOnOpen = false } = props;
 
 	// Subscribe to the derived active node label so block transforms rerender immediately.
 	const activeItemName = useEditorState({
