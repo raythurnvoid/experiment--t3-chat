@@ -2450,6 +2450,233 @@ describe("plugins Phase 0", () => {
 		});
 	});
 
+	test("lets a plugin run opt into the activity feed and closes it with the run", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		const runId = await insert_event_run(t, fixture, {
+			eventId: "plugin:activity-happy",
+			status: "queued",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		const apiToken = `plr_${"a".repeat(64)}`;
+		await t.mutation(internal.plugins_runtime.start_event_run, {
+			runId,
+			apiTokenHash: await crypto_sha256_hex(apiToken),
+		});
+
+		const response = await t.fetch("/api/v1/activities/start", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		expect(response.status).toBe(200);
+		const responseBody = await response.json();
+		const activityId: Id<"activities"> = responseBody.activityId;
+		expect(activityId).toBeTruthy();
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
+			status: "running",
+			// No title in the request: the host composes it from the plugin and the triggering file.
+			title: "Media plugin · expired.png",
+			errorMessage: null,
+			targets: [],
+			userId: fixture.membership.userId,
+			source: {
+				type: "plugin_run",
+				id: runId,
+				installationId: fixture.installationId,
+				pluginName: "media",
+			},
+		});
+
+		// A touch then a fill of the same output must surface as ONE activity target.
+		const touched = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ paths: ["/expired.png.description.md"] }),
+		});
+		expect(touched.status).toBe(200);
+		const touchedBody = await touched.json();
+		const filled = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ path: "/expired.png.description.md", content: "# Description", overwrite: "replace" }),
+		});
+		expect(filled.status).toBe(200);
+		const withTargets = await t.run((ctx) => ctx.db.get("activities", activityId));
+		expect(withTargets?.targets).toEqual([
+			{ type: "file_node", id: touchedBody.files[0].nodeId, path: "/expired.png.description.md" },
+		]);
+
+		await t.mutation(internal.plugins_runtime.finish_event_run, {
+			runId,
+			outcome: {
+				kind: "runner_response",
+				runnerOk: true,
+				runnerHttpStatus: 200,
+				bodyStatus: "succeeded",
+				runnerErrorMessage: null,
+			},
+		});
+		const finished = await t.run((ctx) => ctx.db.get("activities", activityId));
+		expect(finished).toMatchObject({ status: "succeeded", errorMessage: null });
+		expect(finished?.finishedAt).toBeDefined();
+
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(calls[0]).toMatchObject({
+			sequence: 1,
+			kind: "api_request",
+			route: "/api/v1/activities/start",
+			status: "succeeded",
+			responseStatus: 200,
+		});
+	});
+
+	test("rejects an invalid activity title and a second activity for the same run", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		const runId = await insert_event_run(t, fixture, {
+			eventId: "plugin:activity-conflict",
+			status: "queued",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		const apiToken = `plr_${"b".repeat(64)}`;
+		await t.mutation(internal.plugins_runtime.start_event_run, {
+			runId,
+			apiTokenHash: await crypto_sha256_hex(apiToken),
+		});
+		const start_activity = (body: unknown) =>
+			t.fetch("/api/v1/activities/start", {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${apiToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(body),
+			});
+
+		const invalid = await start_activity({ title: "x".repeat(121) });
+		expect(invalid.status).toBe(400);
+		expect(await t.run((ctx) => ctx.db.query("activities").collect())).toEqual([]);
+
+		const created = await start_activity({ title: "  Describing expired.png  " });
+		expect(created.status).toBe(200);
+		const activityId: Id<"activities"> = (await created.json()).activityId;
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
+			status: "running",
+			title: "Describing expired.png",
+		});
+
+		const duplicate = await start_activity({});
+		expect(duplicate.status).toBe(409);
+		expect(await duplicate.json()).toEqual({ message: "An activity already exists for this run" });
+		expect(await t.run((ctx) => ctx.db.query("activities").collect())).toHaveLength(1);
+
+		await t.mutation(internal.plugins_runtime.finish_event_run, {
+			runId,
+			outcome: { kind: "failed", errorMessage: "Plugin returned status 500" },
+		});
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
+			status: "failed",
+			errorMessage: "Plugin returned status 500",
+		});
+
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(calls.map((call) => [call.sequence, call.status, call.responseStatus, call.errorCode])).toEqual([
+			[1, "failed", 400, "invalid_input"],
+			[2, "succeeded", 200, undefined],
+			[3, "failed", 409, "conflict"],
+		]);
+	});
+
+	test("expiry sweep closes an opted-in activity as failed", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		const runId = await insert_event_run(t, fixture, {
+			eventId: "plugin:activity-expired",
+			status: "queued",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		const apiToken = `plr_${"c".repeat(64)}`;
+		await t.mutation(internal.plugins_runtime.start_event_run, {
+			runId,
+			apiTokenHash: await crypto_sha256_hex(apiToken),
+		});
+		const response = await t.fetch("/api/v1/activities/start", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({}),
+		});
+		expect(response.status).toBe(200);
+		const activityId: Id<"activities"> = (await response.json()).activityId;
+		await t.run((ctx) => ctx.db.patch("plugins_event_runs", runId, { expiresAt: Date.now() - 1000 }));
+
+		await t.mutation(internal.plugins_runtime.fail_expired_event_runs, {});
+
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
+			status: "failed",
+			errorMessage: "Run expired",
+		});
+	});
+
+	test("run retention deletes the run's activity", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		const oldRunId = await insert_event_run(t, fixture, {
+			eventId: "plugin:activity-retention",
+			status: "failed",
+			expiresAt: Date.now() - 31 * 24 * 60 * 60 * 1000,
+		});
+		const activityId = await t.run(async (ctx) => {
+			const now = Date.now();
+			return await ctx.db.insert("activities", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId: fixture.membership.userId,
+				status: "failed",
+				source: {
+					type: "plugin_run",
+					id: oldRunId,
+					installationId: fixture.installationId,
+					pluginName: "media",
+				},
+				title: "Media plugin · expired.png",
+				errorMessage: "Run expired",
+				targets: [],
+				finishedAt: now,
+				archivedAt: 0,
+				updatedAt: now,
+			});
+		});
+
+		const cleaned = await t.mutation(internal.plugins_runtime.cleanup_old_event_runs, {});
+
+		expect(cleaned).toEqual({ deletedCount: 1, done: true });
+		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", oldRunId))).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toBeNull();
+	});
+
 	test("does not overwrite a terminal run on duplicate finish", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);

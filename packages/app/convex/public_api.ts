@@ -15,6 +15,7 @@ import type { RegisteredMutation, RegisteredQuery, RouteSpec } from "convex/serv
 import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
 import { access_control_db_has_permission } from "./access_control.ts";
+import { activities_db_add_target, activities_db_get_by_source_id, activities_db_start } from "./activities.ts";
 import { rate_limiter_limit_by_key, rate_limiter_http_client_key } from "./rate_limiter.ts";
 import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
@@ -70,6 +71,7 @@ export const public_api_SCOPE_FILES_WRITE = "files:write";
 export const public_api_SCOPE_FILES_DOWNLOAD = "files:download";
 export const public_api_SCOPE_SECRETS_READ = "secrets:read";
 export const public_api_SCOPE_OUTBOUND_FETCH = "outbound:fetch";
+export const public_api_SCOPE_ACTIVITIES_WRITE = "activities:write";
 
 const FILES_LIST_MAX_ITEMS = 100;
 const FILES_READ_MAX_BYTES = 128_000;
@@ -84,6 +86,7 @@ const FILES_DOWNLOAD_URLS_MAX_ITEMS = 20;
 const FILES_DOWNLOAD_URLS_MAX_REQUEST_ITEMS = 100;
 const FILES_DOWNLOAD_URLS_MAX_REQUEST_BYTES = 32_000;
 const FILES_TOUCH_MAX_PATHS = 8;
+const ACTIVITIES_TITLE_MAX_CHARS = 120;
 
 const TEXT_ENCODER = new TextEncoder();
 const CREDENTIAL_KEY_PREFIX = "pk_";
@@ -130,7 +133,8 @@ type Scope =
 	| typeof public_api_SCOPE_FILES_WRITE
 	| typeof public_api_SCOPE_FILES_DOWNLOAD
 	| typeof public_api_SCOPE_SECRETS_READ
-	| typeof public_api_SCOPE_OUTBOUND_FETCH;
+	| typeof public_api_SCOPE_OUTBOUND_FETCH
+	| typeof public_api_SCOPE_ACTIVITIES_WRITE;
 type PrincipalKind = "public_api_grant" | "user_api_key" | "plugin_run" | "plugin_ui";
 
 const grant_scopes_validator = v.array(
@@ -150,6 +154,7 @@ const plugin_run_scopes_validator = v.array(
 		v.literal(public_api_SCOPE_FILES_DOWNLOAD),
 		v.literal(public_api_SCOPE_SECRETS_READ),
 		v.literal(public_api_SCOPE_OUTBOUND_FETCH),
+		v.literal(public_api_SCOPE_ACTIVITIES_WRITE),
 	),
 );
 // Read-only by design: UI sessions never get write, secrets, or outbound scopes.
@@ -762,10 +767,12 @@ export const resolve_principal = internalQuery({
 			const outputParentPath =
 				sourceFileNode.parentId === files_ROOT_ID ? "/" : server_path_parent_of(sourceFileNode.path);
 
-			// Platform baseline: download the exact triggering asset, write Markdown siblings.
+			// Platform baseline: download the exact triggering asset, write Markdown siblings, and
+			// opt into the workspace activity feed (self-disclosure, so no extra consent).
 			const scopes: Infer<typeof plugin_run_scopes_validator> = [
 				public_api_SCOPE_FILES_DOWNLOAD,
 				public_api_SCOPE_FILES_WRITE,
+				public_api_SCOPE_ACTIVITIES_WRITE,
 			];
 			if (pluginRun.acceptedCapabilities.includes("plugin.secrets.read")) {
 				scopes.push(public_api_SCOPE_SECRETS_READ);
@@ -1592,6 +1599,11 @@ export const publish_file_write = internalMutation({
 				outputWriteCount: pluginRun.outputWriteCount + 1,
 				updatedAt: now,
 			});
+			await activities_db_add_target(ctx, {
+				sourceId: pluginRun._id,
+				target: { type: "file_node", id: created._yay, path: stage.path },
+				now,
+			});
 		}
 		if (stage.callId) {
 			const call = await ctx.db.get("plugins_event_run_calls", stage.callId);
@@ -1719,6 +1731,11 @@ export const publish_file_fill = internalMutation({
 				outputWriteCount: pluginRun.outputWriteCount + 1,
 				updatedAt: now,
 			});
+			await activities_db_add_target(ctx, {
+				sourceId: pluginRun._id,
+				target: { type: "file_node", id: fileNode._id, path: stage.path },
+				now,
+			});
 		}
 		if (stage.callId) {
 			const call = await ctx.db.get("plugins_event_run_calls", stage.callId);
@@ -1820,6 +1837,15 @@ export const publish_file_touch = internalMutation({
 					await ctx.db.delete("files_r2_assets", assetId);
 				}
 			}
+			// The pre-existing file is still where this run's output will land, so it is a target.
+			const pluginRun = revalidated._yay.pluginRun;
+			if (pluginRun) {
+				await activities_db_add_target(ctx, {
+					sourceId: pluginRun._id,
+					target: { type: "file_node", id: activeNode._id, path: stage.path },
+					now,
+				});
+			}
 			await ctx.db.delete("public_api_file_write_stages", stage._id);
 
 			return Result({ _yay: { nodeId: activeNode._id, created: false } });
@@ -1868,6 +1894,15 @@ export const publish_file_touch = internalMutation({
 			versionSnapshotSize: contentSnapshotAsset.size,
 		});
 
+		const pluginRun = revalidated._yay.pluginRun;
+		if (pluginRun) {
+			await activities_db_add_target(ctx, {
+				sourceId: pluginRun._id,
+				target: { type: "file_node", id: created._yay, path: stage.path },
+				now,
+			});
+		}
+
 		await ctx.db.delete("public_api_file_write_stages", stage._id);
 
 		return Result({ _yay: { nodeId: created._yay, created: true } });
@@ -1876,6 +1911,67 @@ export const publish_file_touch = internalMutation({
 
 type publish_file_touch_Result =
 	typeof publish_file_touch extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Opt the calling plugin run into the workspace activity feed. Activities are strictly opt-in —
+ * a plugin that wants to stay hidden simply never calls this — and one per run. Once created,
+ * the host owns the lifecycle: touch/write publishes append targets, run terminalization closes
+ * a still-running activity with the run outcome, and run retention deletes it.
+ */
+export const start_run_activity = internalMutation({
+	args: {
+		runId: v.id("plugins_event_runs"),
+		title: v.optional(v.string()),
+	},
+	returns: v_result({
+		_yay: v.object({ activityId: v.id("activities") }),
+	}),
+	handler: async (ctx, args) => {
+		const now = Date.now();
+		const pluginRun = await ctx.db.get("plugins_event_runs", args.runId);
+		// Same liveness bar as the staged-write mutations: only a live, unexpired run may act.
+		if (!pluginRun || pluginRun.status !== "running" || !pluginRun.apiTokenExpiresAt || pluginRun.apiTokenExpiresAt <= now) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		if (await activities_db_get_by_source_id(ctx, pluginRun._id)) {
+			return Result({ _nay: { message: "An activity already exists for this run" } });
+		}
+
+		const [version, fileNode] = await Promise.all([
+			ctx.db.get("plugins_versions", pluginRun.pluginVersionId),
+			ctx.db.get("files_nodes", pluginRun.fileNodeId),
+		]);
+		if (!version || !fileNode) {
+			// A live run holds its version through the enabled installation and its source node
+			// through the upload; supported flows never delete either while the run token works.
+			const errorMessage = "pluginRun.pluginVersionId or pluginRun.fileNodeId points to a missing doc";
+			const errorData = { runId: pluginRun._id, versionId: pluginRun.pluginVersionId, fileNodeId: pluginRun.fileNodeId };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+
+		const activityId = await activities_db_start(ctx, {
+			organizationId: pluginRun.organizationId,
+			workspaceId: pluginRun.workspaceId,
+			userId: pluginRun.actorUserId,
+			source: {
+				type: "plugin_run",
+				id: pluginRun._id,
+				installationId: pluginRun.installationId,
+				pluginName: version.name,
+			},
+			title: args.title ?? `${version.displayName} plugin · ${fileNode.name}`,
+			now,
+		});
+
+		return Result({ _yay: { activityId } });
+	},
+});
+
+type start_run_activity_Result =
+	typeof start_run_activity extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -3423,6 +3519,108 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 							return {
 								status: 200,
 								body: { items, errors, truncated },
+								headers: { "Cache-Control": "no-store" },
+							} as const;
+						};
+
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const result = await handler(ctx, request);
+								return Response.json(result.body, result);
+							}),
+						});
+
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<typeof handler>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+
+		...((/* iife */ path = "/api/v1/activities/start" as const satisfies api_schemas_Main_Path) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						const bodyValidator = z.object({
+							title: z.string().trim().min(1).max(ACTIVITIES_TITLE_MAX_CHARS).optional(),
+						});
+
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = Record<string, string>;
+						type Body = z.infer<typeof bodyValidator>;
+
+						const handler = async (ctx: ActionCtx, request: Request) => {
+							const auth = await authorize_request(ctx, request, {
+								requiredScope: public_api_SCOPE_ACTIVITIES_WRITE,
+								allowedKinds: ["plugin_run"],
+								route: path,
+							});
+							if (auth._nay) {
+								return auth._nay;
+							}
+							const principal = auth._yay.principal;
+							const pluginCallId = auth._yay.pluginCallId;
+
+							// Settles the consumed plugin call and builds the error body in one step; the
+							// caller supplies the matching literal status so the response union stays narrow.
+							const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+								await settle_plugin_call_best_effort(ctx, {
+									callId: pluginCallId,
+									status: "failed",
+									responseStatus: failArgs.status,
+									errorCode: failArgs.errorCode,
+									errorMessage: failArgs.message,
+								});
+								return { message: failArgs.message };
+							};
+
+							const body = await server_request_json_parse_and_validate(request, bodyValidator);
+							if (body._nay) {
+								return {
+									status: 400,
+									body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
+								} as const;
+							}
+
+							const started: start_run_activity_Result = await ctx.runMutation(
+								internal.public_api.start_run_activity,
+								{ runId: principal.runId, title: body._yay.title },
+							);
+							if (started._nay) {
+								if (started._nay.message === "An activity already exists for this run") {
+									return {
+										status: 409,
+										body: await fail({ status: 409, message: started._nay.message, errorCode: "conflict" }),
+									} as const;
+								}
+								return {
+									status: 401,
+									body: await fail({ status: 401, message: started._nay.message, errorCode: "unauthenticated" }),
+								} as const;
+							}
+
+							await settle_plugin_call_best_effort(ctx, {
+								callId: pluginCallId,
+								status: "succeeded",
+								responseStatus: 200,
+							});
+
+							console.info("Public API run activity started", {
+								principalKind: principal.kind,
+								principalKey: principal.principalKey,
+							});
+
+							return {
+								status: 200,
+								body: { activityId: started._yay.activityId },
 								headers: { "Cache-Control": "no-store" },
 							} as const;
 						};

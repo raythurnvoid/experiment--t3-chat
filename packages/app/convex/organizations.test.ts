@@ -136,18 +136,10 @@ async function organizations_test_read_organization_extra_workspace_quota_doc(
 }
 
 async function organizations_test_collect_notifications_for_user(ctx: MutationCtx, args: { userId: Id<"users"> }) {
-	return (
-		await Promise.all([
-			ctx.db
-				.query("notifications")
-				.withIndex("by_user_read", (q) => q.eq("userId", args.userId).eq("read", false))
-				.collect(),
-			ctx.db
-				.query("notifications")
-				.withIndex("by_user_read", (q) => q.eq("userId", args.userId).eq("read", true))
-				.collect(),
-		])
-	).flat();
+	return await ctx.db
+		.query("notifications")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.collect();
 }
 
 async function organizations_test_seed_workspace_scoped_rows(
@@ -1470,7 +1462,7 @@ describe("invite_user_to_organization_workspace", () => {
 					.collect(),
 				ctx.db
 					.query("notifications")
-					.withIndex("by_user_read", (q) => q.eq("userId", invitedUserId).eq("read", false))
+					.withIndex("by_user_archivedAt", (q) => q.eq("userId", invitedUserId).eq("archivedAt", 0))
 					.collect(),
 				ctx.db
 					.query("access_control_role_assignments")
@@ -1490,7 +1482,7 @@ describe("invite_user_to_organization_workspace", () => {
 			[created._yay!.defaultWorkspaceId, selectedWorkspace._yay!.workspaceId].sort(),
 		);
 		expect(afterInvite.notifications).toHaveLength(1);
-		expect(afterInvite.notifications[0]?.read).toBe(false);
+		expect(afterInvite.notifications[0]?.archivedAt).toBe(0);
 		expect(afterInvite.notifications[0]?.organizationId).toBe(created._yay!.organizationId);
 		expect(afterInvite.notifications[0]?.workspaceId).toBe(selectedWorkspace._yay!.workspaceId);
 
@@ -1528,7 +1520,7 @@ describe("invite_user_to_organization_workspace", () => {
 					.collect(),
 				ctx.db
 					.query("notifications")
-					.withIndex("by_organization_user_read", (q) =>
+					.withIndex("by_organization_user_archivedAt", (q) =>
 						q.eq("organizationId", created._yay!.organizationId).eq("userId", invitedUserId),
 					)
 					.collect(),
@@ -1607,11 +1599,11 @@ describe("invite_user_to_organization_workspace", () => {
 					.first(),
 				ctx.db
 					.query("notifications")
-					.withIndex("by_organization_user_read", (q) =>
+					.withIndex("by_organization_user_archivedAt", (q) =>
 						q
 							.eq("organizationId", created._yay!.organizationId)
 							.eq("userId", invitedUserId)
-							.eq("read", false),
+							.eq("archivedAt", 0),
 					)
 					.first(),
 			]);
@@ -3169,7 +3161,7 @@ describe("delete_workspace", () => {
 			await ctx.db.insert("notifications", {
 				userId,
 				kind: "organization_workspace_invite",
-				read: false,
+				archivedAt: 0,
 				actorUserId: userId,
 				organizationId: created._yay!.organizationId,
 				workspaceId: extraWorkspace._yay!.workspaceId,
@@ -3385,7 +3377,7 @@ describe("delete_organization", () => {
 			await ctx.db.insert("notifications", {
 				userId: memberId,
 				kind: "organization_workspace_invite",
-				read: false,
+				archivedAt: 0,
 				actorUserId: ownerId,
 				organizationId: created._yay!.organizationId,
 				workspaceId: extraWorkspace._yay!.workspaceId,
@@ -3469,7 +3461,7 @@ describe("delete_organization", () => {
 				ctx.db.query("chat_messages").collect(),
 				ctx.db
 					.query("notifications")
-					.withIndex("by_organization_user_read", (q) => q.eq("organizationId", created._yay!.organizationId))
+					.withIndex("by_organization_user_archivedAt", (q) => q.eq("organizationId", created._yay!.organizationId))
 					.collect(),
 			]);
 

@@ -24,16 +24,16 @@ export const list_current_notifications = query({
 			throw convex_error({ message: "Unauthenticated" });
 		}
 
-		// Return the newest notifications first.
+		// Return the newest notifications first; archived ones (archivedAt > 0) are skipped by the index.
 		return await ctx.db
 			.query("notifications")
-			.withIndex("by_user", (q) => q.eq("userId", userAuth.id))
+			.withIndex("by_user_archivedAt", (q) => q.eq("userId", userAuth.id).eq("archivedAt", 0))
 			.order("desc")
 			.take(NOTIFICATIONS_MAX_PER_USER);
 	},
 });
 
-export const mark_notification_read = mutation({
+export const archive_notification = mutation({
 	args: {
 		notificationId: v.id("notifications"),
 	},
@@ -51,10 +51,11 @@ export const mark_notification_read = mutation({
 			return Result({ _nay: { message: "Notification not found" } });
 		}
 
-		if (!notification.read) {
+		if (notification.archivedAt === 0) {
+			const now = Date.now();
 			await ctx.db.patch("notifications", notification._id, {
-				read: true,
-				updatedAt: Date.now(),
+				archivedAt: now,
+				updatedAt: now,
 			});
 		}
 
@@ -62,7 +63,7 @@ export const mark_notification_read = mutation({
 	},
 });
 
-export const mark_all_notifications_read = mutation({
+export const archive_all_notifications = mutation({
 	args: {},
 	returns: v_result({
 		_yay: v.object({
@@ -75,22 +76,22 @@ export const mark_all_notifications_read = mutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const unread = await ctx.db
+		const active = await ctx.db
 			.query("notifications")
-			.withIndex("by_user_read", (q) => q.eq("userId", userAuth.id).eq("read", false))
+			.withIndex("by_user_archivedAt", (q) => q.eq("userId", userAuth.id).eq("archivedAt", 0))
 			.collect();
 		const now = Date.now();
 
 		await Promise.all(
-			unread.map((notification) =>
+			active.map((notification) =>
 				ctx.db.patch("notifications", notification._id, {
-					read: true,
+					archivedAt: now,
 					updatedAt: now,
 				}),
 			),
 		);
 
-		return Result({ _yay: { count: unread.length } });
+		return Result({ _yay: { count: active.length } });
 	},
 });
 

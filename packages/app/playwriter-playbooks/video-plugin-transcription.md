@@ -49,7 +49,8 @@ vp env exec node node_modules/convex/bin/main.js data plugins_event_run_calls --
 Expected result:
 
 - Both `video` runs `succeeded` with `outputWriteCount` of 2 (transcript + summary — the touch call does not count as an output write), and none of their calls left in `started` status.
-- Calls contain only `api_request` entries on `/api/v1/files/download-urls`, `/api/internal/plugins/host/secret-get`, one `/api/v1/files/touch` (both placeholders in a single batched call), and `/api/v1/files/write`, plus `outbound_fetch` entries — transcription and summaries are plugin-owned outbound calls, never a host AI operation.
+- Calls contain only `api_request` entries on one `/api/v1/activities/start` (always the first call — the plugin opts into the activity feed before reading secrets), `/api/v1/files/download-urls`, `/api/internal/plugins/host/secret-get`, one `/api/v1/files/touch` (both placeholders in a single batched call), and `/api/v1/files/write`, plus `outbound_fetch` entries — transcription and summaries are plugin-owned outbound calls, never a host AI operation.
+- The run's `activities` doc (`vp env exec node node_modules/convex/bin/main.js data activities --limit 5 --order desc`) starts `running` with title `Transcribing <filename>`, gains both placeholder nodes as `targets` from the touch call, and flips to `succeeded` in the same transaction that finishes the run (matching `finishedAt`).
 - Outbound call docs record only bytes/status (route `outbound`), never target URLs; the consent set limits the wav run's outbound to `api.mistral.ai` and `api.openai.com`, and the mp4 run adds the Modal origin (extract POST). `apiCallCount` stays well under the shared 20-call run quota.
 
 ## Negative Test (Missing Secret)
@@ -67,7 +68,7 @@ Expected result:
 
 ## Failure Triage
 
-- Transcript missing but summary logic suspected: transcript is written **before** the summary call — a filled `.transcript.md` next to an empty `.summary.md` with a `failed` run means the OpenAI summary stage failed. Both siblings empty means the failure was at Modal/Mistral (placeholders are touched before those calls and stay empty on a mid-run failure); **no** siblings at all means a secret read failed (touch runs after all secret reads).
+- Transcript missing but summary logic suspected: transcript is written **before** the summary call — a filled `.transcript.md` next to an empty `.summary.md` with a `failed` run means the OpenAI summary stage failed. Both siblings empty means the failure was at Modal/Mistral (placeholders are touched before those calls and stay empty on a mid-run failure); **no** siblings at all means a secret read failed (touch runs after all secret reads — the failed activity with zero `targets` is then the only user-visible trace).
 - Only the mp4 path fails: check Modal (`/health`, then the extract POST status on the run's `outbound_fetch` calls — 401 token, 413 size, 422 ffmpeg). The wav path bypasses Modal entirely.
 - Single-speaker transcript on this fixture: confirm the Mistral request included `diarize=true` and `timestamp_granularities=segment`; segments come back EMPTY if granularities are omitted (worker then falls back to unlabeled sections — that fallback appearing here is a regression).
 - Run stuck `pending`: Convex cold start or runner deployment, same as the image playbook.

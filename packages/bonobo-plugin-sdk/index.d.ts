@@ -164,5 +164,24 @@ export interface BonoboFilesTouchResponse {
 	files: Array<{ path: string; nodeId: string; created: boolean }>;
 }
 
+/**
+ * Request body for `POST {host.apiOrigin}/api/v1/activities/start`
+ * (`Authorization: Bearer host.token`). Opts this run into the host's workspace activity feed —
+ * strictly optional; a plugin that wants to stay invisible simply never calls it. Call it once,
+ * early in the run: a second call responds `409`. `title` is optional display text (1–120
+ * characters after trimming); when omitted the host composes one from the plugin's display name
+ * and the triggering file's name. After opting in, the host tracks the rest automatically: files
+ * the run touches or writes become the activity's targets, and the activity closes with the run's
+ * final outcome.
+ */
+export interface BonoboActivitiesStartRequest {
+	title?: string;
+}
+
+/** Response body of `POST {host.apiOrigin}/api/v1/activities/start`. */
+export interface BonoboActivitiesStartResponse {
+	activityId: string;
+}
+
 /** Type of a plugin worker's `export default` — `fetch(request, env, ctx)` with a typed `env.BONOBO`. */
 export type BonoboPluginHandler = ExportedHandler<BonoboEnv>;

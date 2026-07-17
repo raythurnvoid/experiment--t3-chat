@@ -141,6 +141,8 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/download-urls": ReturnType<typeof public_api_http_routes>["/api/v1/files/download-urls"];
 
+	"/api/v1/activities/start": ReturnType<typeof public_api_http_routes>["/api/v1/activities/start"];
+
 	"/api/files/contextual-prompt": ReturnType<typeof files_http_routes>["/api/files/contextual-prompt"];
 
 	"/api/r2/event": ReturnType<typeof r2_http_routes>["/api/r2/event"];

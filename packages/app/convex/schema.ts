@@ -1057,6 +1057,52 @@ const app_convex_schema = defineSchema({
 
 	// #endregion plugins
 
+	// #region activities
+	/**
+	 * Workspace activity feed: one doc per user-visible unit of background work. Producers write
+	 * activities only inside their own mutations (never from actions), so the activity can never
+	 * drift from the domain state it mirrors. The producer finds its activity through the
+	 * `by_source_id` index and owns its lifecycle, including deleting it on retention.
+	 */
+	activities: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		/** Who triggered the work. Activities are workspace-shared, not a per-user inbox. */
+		userId: v.id("users"),
+		status: v.union(v.literal("running"), v.literal("succeeded"), v.literal("failed")),
+		/** What produced this activity. Wrap in v.union(...) when a second producer variant lands. */
+		source: v.object({
+			type: v.literal("plugin_run"),
+			id: v.id("plugins_event_runs"),
+			installationId: v.id("plugins_workspace_installations"),
+			pluginName: v.string(),
+		}),
+		/** Status-neutral display text, e.g. "Video plugin · speakers.mp4". */
+		title: v.string(),
+		errorMessage: v.union(v.string(), v.null()),
+		/**
+		 * Entities the work touches, appended as the producer creates them; UIs use these to link
+		 * and to decorate rows. Bounded by the producer (plugin runs: the 20-call quota).
+		 */
+		targets: v.array(
+			v.object({
+				type: v.literal("file_node"),
+				id: v.id("files_nodes"),
+				path: v.string(),
+			}),
+		),
+		finishedAt: v.optional(v.number()),
+		/** 0 = not archived; the dismiss time once a user dismisses a finished activity. Archived items stay for producers. */
+		archivedAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_organization_workspace_archivedAt_updatedAt", ["organizationId", "workspaceId", "archivedAt", "updatedAt"])
+		// The producer→activity link lives only here (no back-link on the producer doc): the
+		// producer finds its activity through this index, and its absence means "never opted in".
+		.index("by_source_id", ["source.id"]),
+
+	// #endregion activities
+
 	// #region chat messages
 	/**
 	 * Chat messages table - a single table that represents both threads and messages.
@@ -1326,15 +1372,16 @@ const app_convex_schema = defineSchema({
 	notifications: defineTable({
 		userId: v.id("users"),
 		kind: v.literal("organization_workspace_invite"),
-		read: v.boolean(),
+		/** 0 = not archived; the dismiss time once the user archives it. Mandatory so indexes can filter on it. */
+		archivedAt: v.number(),
 		actorUserId: v.id("users"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		updatedAt: v.number(),
 	})
 		.index("by_user", ["userId"])
-		.index("by_user_read", ["userId", "read"])
-		.index("by_organization_user_read", ["organizationId", "userId", "read"])
+		.index("by_user_archivedAt", ["userId", "archivedAt"])
+		.index("by_organization_user_archivedAt", ["organizationId", "userId", "archivedAt"])
 		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"]),
 
 	// #endregion users

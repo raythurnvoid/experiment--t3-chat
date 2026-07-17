@@ -1,16 +1,15 @@
-/**
- * Plugin run execution. Life of a run: enqueued (upload event or manual request) → picked up by
- * the workpool executor → claimed by start_event_run, which issues a per-run `plr_` API token →
- * executed by POSTing to the plugin runner → settled by finish_event_run. While running, the
- * plugin authenticates against the public `/api/v1/*` machine API as a `plugin_run` service
- * principal (resolved in public_api.ts) to download its source file and write Markdown outputs.
- *
- * Three credentials: PLUGIN_RUNNER_SECRET authenticates Convex → runner requests; the per-run
- * `plr_` token (stored hashed on the run) authenticates plugin → public API calls; and the
- * runner-internal /api/internal/plugins/host/* routes below additionally require
- * PLUGIN_RUNNER_HOST_SECRET, so plugin code can never forge the runner-only secret and outbound
- * telemetry calls.
- */
+// Plugin run execution. Life of a run: enqueued (upload event or manual request) → picked up by
+// the workpool executor → claimed by start_event_run, which issues a per-run `plr_` API token →
+// executed by POSTing to the plugin runner → settled by finish_event_run. While running, the
+// plugin authenticates against the public `/api/v1/*` machine API as a `plugin_run` service
+// principal (resolved in public_api.ts) to download its source file and write Markdown outputs.
+//
+// Three credentials: PLUGIN_RUNNER_SECRET authenticates Convex → runner requests; the per-run
+// `plr_` token (stored hashed on the run) authenticates plugin → public API calls; and the
+// runner-internal /api/internal/plugins/host/* routes below additionally require
+// PLUGIN_RUNNER_HOST_SECRET, so plugin code can never forge the runner-only secret and outbound
+// telemetry calls.
+
 import { Workpool } from "@convex-dev/workpool";
 import { doc } from "convex-helpers/validators";
 import type { RegisteredMutation, RouteSpec } from "convex/server";
@@ -30,6 +29,7 @@ import { v_result } from "../server/convex-utils.ts";
 import { files_node_has_editable_yjs_state } from "../server/files.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
+import { activities_db_finish, activities_db_get_by_source_id } from "./activities.ts";
 import type { plugins_decrypt_secret_for_runtime_Result } from "./plugins.ts";
 // Type-only import: public_api.ts value-imports this module, so a value import here would be a
 // runtime cycle.
@@ -563,6 +563,12 @@ export const finish_event_run = internalMutation({
 				finishedAt: now,
 				updatedAt: now,
 			}),
+			activities_db_finish(ctx, {
+				sourceId: pluginRun._id,
+				status: succeeded ? "succeeded" : "failed",
+				errorMessage,
+				now,
+			}),
 			db_terminalize_run_leftovers(ctx, { runId: pluginRun._id, now }),
 		]);
 
@@ -615,6 +621,12 @@ export const fail_expired_event_runs = internalMutation({
 						apiTokenExpiresAt: undefined,
 						finishedAt: now,
 						updatedAt: now,
+					}),
+					activities_db_finish(ctx, {
+						sourceId: pluginRun._id,
+						status: "failed",
+						errorMessage: "Run expired",
+						now,
 					}),
 					db_terminalize_run_leftovers(ctx, { runId: pluginRun._id, now }),
 				]),
@@ -677,6 +689,11 @@ export const cleanup_old_event_runs = internalMutation({
 						.withIndex("by_run_sequence", (q) => q.eq("runId", pluginRun._id))
 						.take(MAX_API_CALLS);
 					await Promise.all(calls.map((call) => ctx.db.delete("plugins_event_run_calls", call._id)));
+					// The run owns its activity's lifecycle, so retention deletes them together.
+					const activity = await activities_db_get_by_source_id(ctx, pluginRun._id);
+					if (activity) {
+						await ctx.db.delete("activities", activity._id);
+					}
 					await ctx.db.delete("plugins_event_runs", pluginRun._id);
 				}),
 			);

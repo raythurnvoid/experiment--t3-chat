@@ -912,7 +912,7 @@ export const invite_user_to_organization_workspace = mutation({
 			ctx.db.insert("notifications", {
 				userId: userIdToAdd,
 				kind: "organization_workspace_invite",
-				read: false,
+				archivedAt: 0,
 				actorUserId: userAuth.id,
 				organizationId: organization._id,
 				workspaceId: workspace._id,
@@ -1000,24 +1000,15 @@ export const remove_user_from_organization = mutation({
 
 		await Promise.all([
 			// Remove invite notifications for the organization access the user is losing.
-			Promise.all([
-				ctx.db
-					.query("notifications")
-					.withIndex("by_organization_user_read", (q) =>
-						q.eq("organizationId", organization._id).eq("userId", args.userIdToRemove).eq("read", false),
-					)
-					.collect(),
-				ctx.db
-					.query("notifications")
-					.withIndex("by_organization_user_read", (q) =>
-						q.eq("organizationId", organization._id).eq("userId", args.userIdToRemove).eq("read", true),
-					)
-					.collect(),
-			]).then((notificationsByReadState) =>
-				Promise.all(
-					notificationsByReadState.flat().map((notification) => ctx.db.delete("notifications", notification._id)),
+			ctx.db
+				.query("notifications")
+				.withIndex("by_organization_user_archivedAt", (q) =>
+					q.eq("organizationId", organization._id).eq("userId", args.userIdToRemove),
+				)
+				.collect()
+				.then((notifications) =>
+					Promise.all(notifications.map((notification) => ctx.db.delete("notifications", notification._id))),
 				),
-			),
 			ctx.db
 				.query("organizations_workspaces_users")
 				.withIndex("by_active_user_organization_workspace", (q) =>
@@ -1461,7 +1452,7 @@ export const delete_organization = mutation({
 			// Remove every invite notification tied to the organization being deleted.
 			ctx.db
 				.query("notifications")
-				.withIndex("by_organization_user_read", (q) => q.eq("organizationId", organization._id))
+				.withIndex("by_organization_user_archivedAt", (q) => q.eq("organizationId", organization._id))
 				.collect()
 				.then((notifications) =>
 					Promise.all(notifications.map((notification) => ctx.db.delete("notifications", notification._id))),

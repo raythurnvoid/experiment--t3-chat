@@ -47,7 +47,7 @@ async function notifications_test_seed_target(ctx: MutationCtx) {
 async function notifications_test_insert(
 	ctx: MutationCtx,
 	args: NotificationsTestTarget & {
-		read?: boolean;
+		archivedAt?: number;
 		userId: Id<"users">;
 		updatedAt?: number;
 	},
@@ -55,7 +55,7 @@ async function notifications_test_insert(
 	return await ctx.db.insert("notifications", {
 		userId: args.userId,
 		kind: "organization_workspace_invite",
-		read: args.read ?? false,
+		archivedAt: args.archivedAt ?? 0,
 		actorUserId: args.otherUserId,
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -64,18 +64,10 @@ async function notifications_test_insert(
 }
 
 async function notifications_test_collect_for_user(ctx: MutationCtx, args: { userId: Id<"users"> }) {
-	return (
-		await Promise.all([
-			ctx.db
-				.query("notifications")
-				.withIndex("by_user_read", (q) => q.eq("userId", args.userId).eq("read", false))
-				.collect(),
-			ctx.db
-				.query("notifications")
-				.withIndex("by_user_read", (q) => q.eq("userId", args.userId).eq("read", true))
-				.collect(),
-		])
-	).flat();
+	return await ctx.db
+		.query("notifications")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.collect();
 }
 
 function notifications_test_identity(userId: Id<"users">) {
@@ -88,7 +80,7 @@ function notifications_test_identity(userId: Id<"users">) {
 }
 
 describe("list_current_notifications", () => {
-	test("lists only the current user's notifications in descending creation order", async () => {
+	test("lists only the current user's unarchived notifications in descending creation order", async () => {
 		const t = test_convex();
 		const target = await t.run(notifications_test_seed_target);
 		const olderNotificationId = await t.run((ctx) =>
@@ -96,6 +88,9 @@ describe("list_current_notifications", () => {
 		);
 		const newerNotificationId = await t.run((ctx) =>
 			notifications_test_insert(ctx, { ...target, userId: target.userId }),
+		);
+		await t.run((ctx) =>
+			notifications_test_insert(ctx, { ...target, userId: target.userId, archivedAt: Date.now() }),
 		);
 		await t.run((ctx) => notifications_test_insert(ctx, { ...target, userId: target.otherUserId }));
 		const asUser = t.withIdentity(notifications_test_identity(target.userId));
@@ -196,8 +191,8 @@ describe("list_current_notifications", () => {
 	});
 });
 
-describe("mark_notification_read", () => {
-	test("marks one notification read only for the owner", async () => {
+describe("archive_notification", () => {
+	test("archives one notification only for the owner", async () => {
 		const t = test_convex();
 		const target = await t.run(notifications_test_seed_target);
 		const [ownNotificationId, otherNotificationId] = await t.run(async (ctx) =>
@@ -208,10 +203,10 @@ describe("mark_notification_read", () => {
 		);
 		const asUser = t.withIdentity(notifications_test_identity(target.userId));
 
-		const ownResult = await asUser.mutation(api.notifications.mark_notification_read, {
+		const ownResult = await asUser.mutation(api.notifications.archive_notification, {
 			notificationId: ownNotificationId,
 		});
-		const otherResult = await asUser.mutation(api.notifications.mark_notification_read, {
+		const otherResult = await asUser.mutation(api.notifications.archive_notification, {
 			notificationId: otherNotificationId,
 		});
 
@@ -223,26 +218,26 @@ describe("mark_notification_read", () => {
 				ctx.db.get("notifications", otherNotificationId),
 			]),
 		);
-		expect(rows[0]?.read).toBe(true);
-		expect(rows[1]?.read).toBe(false);
+		expect(rows[0]?.archivedAt).toBeGreaterThan(0);
+		expect(rows[1]?.archivedAt).toBe(0);
 	});
 });
 
-describe("mark_all_notifications_read", () => {
-	test("marks all unread current-user notifications read", async () => {
+describe("archive_all_notifications", () => {
+	test("archives all unarchived current-user notifications", async () => {
 		const t = test_convex();
 		const target = await t.run(notifications_test_seed_target);
 		await t.run(async (ctx) =>
 			Promise.all([
 				notifications_test_insert(ctx, { ...target, userId: target.userId }),
 				notifications_test_insert(ctx, { ...target, userId: target.userId }),
-				notifications_test_insert(ctx, { ...target, userId: target.userId, read: true }),
+				notifications_test_insert(ctx, { ...target, userId: target.userId, archivedAt: 1 }),
 				notifications_test_insert(ctx, { ...target, userId: target.otherUserId }),
 			]),
 		);
 		const asUser = t.withIdentity(notifications_test_identity(target.userId));
 
-		const result = await asUser.mutation(api.notifications.mark_all_notifications_read, {});
+		const result = await asUser.mutation(api.notifications.archive_all_notifications, {});
 
 		expect(result._yay?.count).toBe(2);
 		const rows = await t.run(async (ctx) => {
@@ -253,8 +248,8 @@ describe("mark_all_notifications_read", () => {
 
 			return { userNotifications, otherNotifications };
 		});
-		expect(rows.userNotifications.every((notification) => notification.read)).toBe(true);
-		expect(rows.otherNotifications[0]?.read).toBe(false);
+		expect(rows.userNotifications.every((notification) => notification.archivedAt > 0)).toBe(true);
+		expect(rows.otherNotifications[0]?.archivedAt).toBe(0);
 	});
 });
 

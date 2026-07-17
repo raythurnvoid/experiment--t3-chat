@@ -959,7 +959,7 @@ async function db_delete_organization_batch(
 	// chunks before deleting the organization doc.
 	const notifications = await ctx.db
 		.query("notifications")
-		.withIndex("by_organization_user_read", (q) => q.eq("organizationId", args.organizationId))
+		.withIndex("by_organization_user_archivedAt", (q) => q.eq("organizationId", args.organizationId))
 		.take(args.batchSize);
 	if (notifications.length > 0) {
 		await Promise.all(notifications.map((doc) => ctx.db.delete("notifications", doc._id)));
