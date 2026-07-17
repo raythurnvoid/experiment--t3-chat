@@ -18,6 +18,7 @@ import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyButtonGroup, MyButtonGroupItem } from "@/components/my-button-group.tsx";
+import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { MyGridTable, MyGridTableBody, MyGridTableCell, MyGridTableRow } from "@/components/my-grid-table.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import {
@@ -50,9 +51,12 @@ import {
 	MyMenuTrigger,
 } from "@/components/my-menu.tsx";
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
+import { MySeparator } from "@/components/my-separator.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
+import { MySpinner } from "@/components/my-spinner.tsx";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFn, useRenderPromise } from "@/hooks/utils-hooks.ts";
+import { useFileNodeActivities } from "@/lib/activities.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
@@ -82,6 +86,7 @@ import { useConvex, useQuery } from "convex/react";
 import {
 	Archive,
 	BookOpen,
+	CircleAlert,
 	Download,
 	EllipsisVertical,
 	FileDigit,
@@ -335,6 +340,106 @@ const FileNodeViewHeaderPortal = memo(function FileNodeViewHeaderPortal(props: F
 	return headerPortalElement ? createPortal(<FileNodeViewHeader {...props} />, headerPortalElement) : null;
 });
 // #endregion header
+
+// #region top floating status
+type FileNodeViewTopFloating_ClassNames =
+	| "FileNodeViewTopFloating"
+	| "FileNodeViewTopFloating-activity"
+	| "FileNodeViewTopFloating-activity-icon"
+	| "FileNodeViewTopFloating-activity-icon-failed"
+	| "FileNodeViewTopFloating-activity-message";
+
+type FileNodeViewTopFloating_Props = {
+	nodeId: app_convex_Id<"files_nodes"> | null;
+	pendingSlot: React.ReactNode;
+};
+
+// The single floating surface of the sticky row: the node's activity status and the
+// pending-updates controls, split by a separator like the toolbar. Subscribes to one node's
+// activities slice, so the parent view never re-renders on feed traffic.
+const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: FileNodeViewTopFloating_Props) {
+	const { nodeId, pendingSlot } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const convex = useConvex();
+
+	const activities = useFileNodeActivities({ membershipId, nodeId });
+	// Slices come newest first; a rerun in progress wins over an older failure.
+	const activity =
+		activities.find((item) => item.status === "running") ??
+		activities.find((item) => item.status === "failed") ??
+		null;
+
+	const handleDismiss = useFn((activityId: app_convex_Id<"activities">) => {
+		convex
+			.mutation(app_convex_api.activities.archive_activity, { membershipId, activityId })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[FileNodeViewTopFloating.handleDismiss] Failed to archive activity", { result });
+				}
+			})
+			.catch((error) => {
+				console.error("[FileNodeViewTopFloating.handleDismiss] Unexpected archive error", {
+					error,
+					activityId,
+				});
+			});
+	});
+
+	if (!activity && !pendingSlot) {
+		return null;
+	}
+
+	// "" means the producer set no per-target text; fall back to the activity title.
+	const targetMessage = activity ? activity.targets.find((target) => target.id === nodeId)?.message || undefined : undefined;
+	const message = activity
+		? activity.status === "running"
+			? (targetMessage ?? activity.title)
+			: (activity.errorMessage ?? targetMessage ?? activity.title)
+		: null;
+
+	return (
+		<MyFloatingSurface
+			className={"FileNodeViewTopFloating" satisfies FileNodeViewTopFloating_ClassNames}
+			role="status"
+			aria-live="polite"
+		>
+			{activity ? (
+				<div className={"FileNodeViewTopFloating-activity" satisfies FileNodeViewTopFloating_ClassNames}>
+					{activity.status === "running" ? (
+						<MySpinner
+							className={"FileNodeViewTopFloating-activity-icon" satisfies FileNodeViewTopFloating_ClassNames}
+							size="16px"
+							aria-label="Running"
+						/>
+					) : (
+						<MyIcon
+							className={cn(
+								"FileNodeViewTopFloating-activity-icon" satisfies FileNodeViewTopFloating_ClassNames,
+								"FileNodeViewTopFloating-activity-icon-failed" satisfies FileNodeViewTopFloating_ClassNames,
+							)}
+						>
+							<CircleAlert />
+						</MyIcon>
+					)}
+					<span
+						className={"FileNodeViewTopFloating-activity-message" satisfies FileNodeViewTopFloating_ClassNames}
+						title={activity.title}
+					>
+						{message}
+					</span>
+					{activity.status === "failed" ? (
+						<MyButton variant="ghost" onClick={() => handleDismiss(activity._id)}>
+							Dismiss
+						</MyButton>
+					) : null}
+				</div>
+			) : null}
+			{activity && pendingSlot ? <MySeparator orientation="vertical" /> : null}
+			{pendingSlot}
+		</MyFloatingSurface>
+	);
+});
+// #endregion top floating status
 
 // #region file editor
 type FileNodeViewFileEditor_Props = {
@@ -2242,17 +2347,25 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		handleNavigatePendingUpdatesDirection("next");
 	});
 
-	const topStickyFloatingSlot = hasPendingUpdates ? (
-		<FileEditorPendingUpdatesFloating
-			updatedAt={currentPendingUpdate?.updatedAt}
-			showReviewButton={hasCurrentPendingUpdates && effectiveView !== "diff_editor"}
-			reviewPagerLabel={reviewPagerLabel}
-			canNavigate={canNavigatePendingUpdates}
-			onReviewChanges={handleReviewPendingUpdates}
-			onNavigatePrevious={handleNavigatePendingUpdatesPrevious}
-			onNavigateNext={handleNavigatePendingUpdatesNext}
+	// One shared floating surface; the component hides itself when there is nothing to show.
+	const topStickyFloatingSlot = (
+		<FileNodeViewTopFloating
+			nodeId={resolvedNode?.kind === "file" ? resolvedNode._id : null}
+			pendingSlot={
+				hasPendingUpdates ? (
+					<FileEditorPendingUpdatesFloating
+						updatedAt={currentPendingUpdate?.updatedAt}
+						showReviewButton={hasCurrentPendingUpdates && effectiveView !== "diff_editor"}
+						reviewPagerLabel={reviewPagerLabel}
+						canNavigate={canNavigatePendingUpdates}
+						onReviewChanges={handleReviewPendingUpdates}
+						onNavigatePrevious={handleNavigatePendingUpdatesPrevious}
+						onNavigateNext={handleNavigatePendingUpdatesNext}
+					/>
+				) : null
+			}
 		/>
-	) : null;
+	);
 
 	const handleArchive = useFn<React.ComponentProps<typeof FilesSidebar>["onArchive"]>((itemId) => {
 		// When the selected node is archived, leave the user on the root folder instead of a stale node id.

@@ -2513,7 +2513,7 @@ describe("plugins Phase 0", () => {
 		expect(filled.status).toBe(200);
 		const withTargets = await t.run((ctx) => ctx.db.get("activities", activityId));
 		expect(withTargets?.targets).toEqual([
-			{ type: "file_node", id: touchedBody.files[0].nodeId, path: "/expired.png.description.md" },
+			{ type: "file_node", id: touchedBody.files[0].nodeId, path: "/expired.png.description.md", message: "" },
 		]);
 
 		await t.mutation(internal.plugins_runtime.finish_event_run, {

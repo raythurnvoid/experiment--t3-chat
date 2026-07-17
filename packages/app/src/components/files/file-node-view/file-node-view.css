@@ -74,13 +74,18 @@
 		top: calc(44px + var(--app-scrollbar-w) + 1px);
 		z-index: 25;
 
-		display: grid;
+		/* Right-aligned row so the activity pill and the pending-updates pill sit side by side. */
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 8px;
 		/*
-		Keep a real 40px centering box for the pending-updates pill.
+		Keep a real 40px centering box for the floating pills.
 		The route safe area reserves this 40px plus 4px of extra spacing.
 		*/
 		height: 40px;
 		margin-bottom: -40px;
+		padding: 0 16px;
 		contain: size layout style;
 		pointer-events: none;
 
@@ -277,6 +282,46 @@
 		width: 140px;
 	}
 	/* #endregion stored file */
+
+	/* #region top floating status */
+	.FileNodeViewTopFloating {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		height: 40px;
+		min-width: 0;
+		/* Vertical padding insets the stretched separator, like the toolbar actions row. */
+		padding: 4px 8px;
+	}
+
+	.FileNodeViewTopFloating-activity {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+
+		/* Let the message shrink and ellipsize when the pending-updates controls sit next to it. */
+		flex: 0 1 auto;
+		min-width: 0;
+		max-width: 480px;
+	}
+
+	.FileNodeViewTopFloating-activity-icon {
+		flex: 0 0 auto;
+
+		color: var(--color-accent-08);
+	}
+
+	.FileNodeViewTopFloating-activity-icon-failed {
+		color: var(--color-red-09);
+	}
+
+	.FileNodeViewTopFloating-activity-message {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* #endregion top floating status */
 
 	/* #region folder */
 	.FileNodeViewFolder {

@@ -1089,6 +1089,8 @@ const app_convex_schema = defineSchema({
 				type: v.literal("file_node"),
 				id: v.id("files_nodes"),
 				path: v.string(),
+				/** Per-target display text (e.g. "Writing the transcript"); "" = none, UIs fall back to the activity title. */
+				message: v.string(),
 			}),
 		),
 		finishedAt: v.optional(v.number()),
