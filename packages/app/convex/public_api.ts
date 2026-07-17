@@ -15,7 +15,12 @@ import type { RegisteredMutation, RegisteredQuery, RouteSpec } from "convex/serv
 import { z } from "zod";
 import type { RouterForConvexModules } from "./http.ts";
 import { access_control_db_has_permission } from "./access_control.ts";
-import { activities_db_add_target, activities_db_get_by_source_id, activities_db_start } from "./activities.ts";
+import {
+	ACTIVITIES_TIMEOUT_MAX_MS,
+	activities_db_add_target,
+	activities_db_get_by_source_id,
+	activities_db_start,
+} from "./activities.ts";
 import { rate_limiter_limit_by_key, rate_limiter_http_client_key } from "./rate_limiter.ts";
 import { type api_schemas_Main_Path } from "../shared/api-schemas.ts";
 import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
@@ -1923,7 +1928,10 @@ type publish_file_touch_Result =
 export const start_run_activity = internalMutation({
 	args: {
 		runId: v.id("plugins_event_runs"),
-		title: v.optional(v.string()),
+		/** "" = no custom title; the host composes one from the plugin and the triggering file. */
+		title: v.string(),
+		/** Caller-predicted duration; the route's validator caps it at ACTIVITIES_TIMEOUT_MAX_MS. */
+		timeoutMs: v.number(),
 	},
 	returns: v_result({
 		_yay: v.object({ activityId: v.id("activities") }),
@@ -1962,7 +1970,8 @@ export const start_run_activity = internalMutation({
 				installationId: pluginRun.installationId,
 				pluginName: version.name,
 			},
-			title: args.title ?? `${version.displayName} plugin · ${fileNode.name}`,
+			title: args.title || `${version.displayName} plugin · ${fileNode.name}`,
+			timeoutAt: now + args.timeoutMs,
 			now,
 		});
 
@@ -3549,7 +3558,12 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
 					[method]: ((/* iife */) => {
 						const bodyValidator = z.object({
-							title: z.string().trim().min(1).max(ACTIVITIES_TITLE_MAX_CHARS).optional(),
+							// "" (after trimming) = no custom title; the host composes one from the plugin's
+							// display name and the triggering file's name.
+							title: z.string().trim().max(ACTIVITIES_TITLE_MAX_CHARS),
+							// The caller must predict how long its work takes; the timeout cron closes the
+							// activity as "timeout" once this much time passes without a finish.
+							timeoutMs: z.number().int().min(1).max(ACTIVITIES_TIMEOUT_MAX_MS),
 						});
 
 						type SearchParams = never;
@@ -3592,7 +3606,7 @@ export function public_api_http_routes(router: RouterForConvexModules) {
 
 							const started: start_run_activity_Result = await ctx.runMutation(
 								internal.public_api.start_run_activity,
-								{ runId: principal.runId, title: body._yay.title },
+								{ runId: principal.runId, title: body._yay.title, timeoutMs: body._yay.timeoutMs },
 							);
 							if (started._nay) {
 								if (started._nay.message === "An activity already exists for this run") {

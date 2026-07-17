@@ -124,6 +124,10 @@
 		color: var(--color-red-09);
 	}
 
+	.AppNotificationsActivityItem-icon-status-timeout {
+		color: var(--color-red-09);
+	}
+
 	.AppNotificationsActivityItem-title-group {
 		display: flex;
 		flex-direction: column;

@@ -366,7 +366,7 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 	// Slices come newest first; a rerun in progress wins over an older failure.
 	const activity =
 		activities.find((item) => item.status === "running") ??
-		activities.find((item) => item.status === "failed") ??
+		activities.find((item) => item.status === "failed" || item.status === "timeout") ??
 		null;
 
 	const handleDismiss = useFn((activityId: app_convex_Id<"activities">) => {
@@ -394,7 +394,9 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 	const message = activity
 		? activity.status === "running"
 			? (targetMessage ?? activity.title)
-			: (activity.errorMessage ?? targetMessage ?? activity.title)
+			: activity.status === "timeout"
+				? "Timed out"
+				: (activity.errorMessage ?? targetMessage ?? activity.title)
 		: null;
 
 	return (
@@ -427,7 +429,7 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 					>
 						{message}
 					</span>
-					{activity.status === "failed" ? (
+					{activity.status !== "running" ? (
 						<MyButton variant="ghost" onClick={() => handleDismiss(activity._id)}>
 							Dismiss
 						</MyButton>

@@ -2470,7 +2470,7 @@ describe("plugins Phase 0", () => {
 				Authorization: `Bearer ${apiToken}`,
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify({}),
+			body: JSON.stringify({ title: "", timeoutMs: 60_000 }),
 		});
 		expect(response.status).toBe(200);
 		const responseBody = await response.json();
@@ -2478,7 +2478,7 @@ describe("plugins Phase 0", () => {
 		expect(activityId).toBeTruthy();
 		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
 			status: "running",
-			// No title in the request: the host composes it from the plugin and the triggering file.
+			// Empty title in the request: the host composes it from the plugin and the triggering file.
 			title: "Media plugin · expired.png",
 			errorMessage: null,
 			targets: [],
@@ -2545,7 +2545,7 @@ describe("plugins Phase 0", () => {
 		});
 	});
 
-	test("rejects an invalid activity title and a second activity for the same run", async () => {
+	test("rejects invalid activity input and a second activity for the same run", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
 		const runId = await insert_event_run(t, fixture, {
@@ -2568,11 +2568,18 @@ describe("plugins Phase 0", () => {
 				body: JSON.stringify(body),
 			});
 
-		const invalid = await start_activity({ title: "x".repeat(121) });
+		const invalid = await start_activity({ title: "x".repeat(121), timeoutMs: 60_000 });
 		expect(invalid.status).toBe(400);
+		// title and timeoutMs are both mandatory; timeoutMs is capped at 5 minutes.
+		const missingTimeout = await start_activity({ title: "Describing expired.png" });
+		expect(missingTimeout.status).toBe(400);
+		const missingTitle = await start_activity({ timeoutMs: 60_000 });
+		expect(missingTitle.status).toBe(400);
+		const timeoutTooLong = await start_activity({ title: "", timeoutMs: 5 * 60 * 1000 + 1 });
+		expect(timeoutTooLong.status).toBe(400);
 		expect(await t.run((ctx) => ctx.db.query("activities").collect())).toEqual([]);
 
-		const created = await start_activity({ title: "  Describing expired.png  " });
+		const created = await start_activity({ title: "  Describing expired.png  ", timeoutMs: 60_000 });
 		expect(created.status).toBe(200);
 		const activityId: Id<"activities"> = (await created.json()).activityId;
 		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({
@@ -2580,7 +2587,7 @@ describe("plugins Phase 0", () => {
 			title: "Describing expired.png",
 		});
 
-		const duplicate = await start_activity({});
+		const duplicate = await start_activity({ title: "", timeoutMs: 60_000 });
 		expect(duplicate.status).toBe(409);
 		expect(await duplicate.json()).toEqual({ message: "An activity already exists for this run" });
 		expect(await t.run((ctx) => ctx.db.query("activities").collect())).toHaveLength(1);
@@ -2602,8 +2609,11 @@ describe("plugins Phase 0", () => {
 		);
 		expect(calls.map((call) => [call.sequence, call.status, call.responseStatus, call.errorCode])).toEqual([
 			[1, "failed", 400, "invalid_input"],
-			[2, "succeeded", 200, undefined],
-			[3, "failed", 409, "conflict"],
+			[2, "failed", 400, "invalid_input"],
+			[3, "failed", 400, "invalid_input"],
+			[4, "failed", 400, "invalid_input"],
+			[5, "succeeded", 200, undefined],
+			[6, "failed", 409, "conflict"],
 		]);
 	});
 
@@ -2626,7 +2636,7 @@ describe("plugins Phase 0", () => {
 				Authorization: `Bearer ${apiToken}`,
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify({}),
+			body: JSON.stringify({ title: "", timeoutMs: 60_000 }),
 		});
 		expect(response.status).toBe(200);
 		const activityId: Id<"activities"> = (await response.json()).activityId;
@@ -2638,6 +2648,41 @@ describe("plugins Phase 0", () => {
 			status: "failed",
 			errorMessage: "Run expired",
 		});
+	});
+
+	test("timeout cron closes an overdue running activity", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		const runId = await insert_event_run(t, fixture, {
+			eventId: "plugin:activity-timeout",
+			status: "queued",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		const apiToken = `plr_${"d".repeat(64)}`;
+		await t.mutation(internal.plugins_runtime.start_event_run, {
+			runId,
+			apiTokenHash: await crypto_sha256_hex(apiToken),
+		});
+		const response = await t.fetch("/api/v1/activities/start", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({ title: "", timeoutMs: 60_000 }),
+		});
+		expect(response.status).toBe(200);
+		const activityId: Id<"activities"> = (await response.json()).activityId;
+
+		// Not overdue yet: the sweep leaves it running.
+		await t.mutation(internal.activities.timeout_stale_activities, {});
+		expect(await t.run((ctx) => ctx.db.get("activities", activityId))).toMatchObject({ status: "running" });
+
+		await t.run((ctx) => ctx.db.patch("activities", activityId, { timeoutAt: Date.now() - 1000 }));
+		await t.mutation(internal.activities.timeout_stale_activities, {});
+		const timedOut = await t.run((ctx) => ctx.db.get("activities", activityId));
+		expect(timedOut).toMatchObject({ status: "timeout", errorMessage: null });
+		expect(timedOut?.finishedAt).toBeDefined();
 	});
 
 	test("run retention deletes the run's activity", async () => {
@@ -2664,6 +2709,7 @@ describe("plugins Phase 0", () => {
 				title: "Media plugin · expired.png",
 				errorMessage: "Run expired",
 				targets: [],
+				timeoutAt: now,
 				finishedAt: now,
 				archivedAt: 0,
 				updatedAt: now,

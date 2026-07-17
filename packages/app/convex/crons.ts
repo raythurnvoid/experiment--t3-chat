@@ -54,4 +54,7 @@ crons.cron(
 	{},
 );
 
+// Every 5 minutes — close running activities past their caller-set deadline as "timeout".
+crons.cron("timeout stale activities", "*/5 * * * *", internal.activities.timeout_stale_activities, {});
+
 export default crons;

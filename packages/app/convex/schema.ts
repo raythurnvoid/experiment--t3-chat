@@ -1069,7 +1069,8 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		/** Who triggered the work. Activities are workspace-shared, not a per-user inbox. */
 		userId: v.id("users"),
-		status: v.union(v.literal("running"), v.literal("succeeded"), v.literal("failed")),
+		/** "timeout" = the deadline cron closed it because the producer never finished it in time. */
+		status: v.union(v.literal("running"), v.literal("succeeded"), v.literal("failed"), v.literal("timeout")),
 		/** What produced this activity. Wrap in v.union(...) when a second producer variant lands. */
 		source: v.object({
 			type: v.literal("plugin_run"),
@@ -1093,6 +1094,8 @@ const app_convex_schema = defineSchema({
 				message: v.string(),
 			}),
 		),
+		/** Caller-set deadline (at most 5 minutes after start); past it, the cron closes the activity as "timeout". */
+		timeoutAt: v.number(),
 		finishedAt: v.optional(v.number()),
 		/** 0 = not archived; the dismiss time once a user dismisses a finished activity. Archived items stay for producers. */
 		archivedAt: v.number(),
@@ -1101,7 +1104,9 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_archivedAt_updatedAt", ["organizationId", "workspaceId", "archivedAt", "updatedAt"])
 		// The producer→activity link lives only here (no back-link on the producer doc): the
 		// producer finds its activity through this index, and its absence means "never opted in".
-		.index("by_source_id", ["source.id"]),
+		.index("by_source_id", ["source.id"])
+		// The timeout cron scans only overdue running activities through this index.
+		.index("by_status_timeoutAt", ["status", "timeoutAt"]),
 
 	// #endregion activities
 

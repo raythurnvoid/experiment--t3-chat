@@ -9,7 +9,7 @@ import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import type { ExcludeStrict } from "type-fest";
 import type { Doc } from "./_generated/dataModel.js";
-import { mutation, query, type MutationCtx } from "./_generated/server.js";
+import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server.js";
 import { organizations_db_get_membership } from "./organizations.ts";
 import app_convex_schema from "./schema.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -20,6 +20,9 @@ import { Result } from "common/errors-as-values-utils.ts";
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
+/** The longest an activity may run before the timeout cron closes it. */
+export const ACTIVITIES_TIMEOUT_MAX_MS = 5 * 60 * 1000;
+
 export async function activities_db_start(
 	ctx: MutationCtx,
 	args: {
@@ -29,6 +32,8 @@ export async function activities_db_start(
 		source: Doc<"activities">["source"];
 		/** Status-neutral display text, e.g. "Video plugin · speakers.mp4". */
 		title: Doc<"activities">["title"];
+		/** Caller-predicted deadline; must be at most ACTIVITIES_TIMEOUT_MAX_MS after now. */
+		timeoutAt: Doc<"activities">["timeoutAt"];
 		now: number;
 	},
 ) {
@@ -41,6 +46,7 @@ export async function activities_db_start(
 		title: args.title,
 		errorMessage: null,
 		targets: [],
+		timeoutAt: args.timeoutAt,
 		archivedAt: 0,
 		updatedAt: args.now,
 	});
@@ -212,5 +218,28 @@ export const archive_all_activities = mutation({
 		);
 
 		return Result({ _yay: { count: finished.length } });
+	},
+});
+
+/** Cron: close running activities past their deadline, so a dead producer never leaves one running forever. */
+export const timeout_stale_activities = internalMutation({
+	args: {},
+	returns: v.object({
+		count: v.number(),
+	}),
+	handler: async (ctx) => {
+		const now = Date.now();
+		const stale = await ctx.db
+			.query("activities")
+			.withIndex("by_status_timeoutAt", (q) => q.eq("status", "running").lte("timeoutAt", now))
+			.collect();
+
+		await Promise.all(
+			stale.map((activity) =>
+				ctx.db.patch("activities", activity._id, { status: "timeout", finishedAt: now, updatedAt: now }),
+			),
+		);
+
+		return { count: stale.length };
 	},
 });

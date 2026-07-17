@@ -168,14 +168,21 @@ export interface BonoboFilesTouchResponse {
  * Request body for `POST {host.apiOrigin}/api/v1/activities/start`
  * (`Authorization: Bearer host.token`). Opts this run into the host's workspace activity feed —
  * strictly optional; a plugin that wants to stay invisible simply never calls it. Call it once,
- * early in the run: a second call responds `409`. `title` is optional display text (1–120
- * characters after trimming); when omitted the host composes one from the plugin's display name
- * and the triggering file's name. After opting in, the host tracks the rest automatically: files
- * the run touches or writes become the activity's targets, and the activity closes with the run's
- * final outcome.
+ * early in the run: a second call responds `409`. `title` is required display text (up to 120
+ * characters after trimming); pass `""` to let the host compose one from the plugin's display
+ * name and the triggering file's name. After opting in, the host tracks the rest automatically:
+ * files the run touches or writes become the activity's targets, and the activity closes with
+ * the run's final outcome.
  */
 export interface BonoboActivitiesStartRequest {
-	title?: string;
+	title: string;
+	/**
+	 * Required prediction of how long the run's work takes, in milliseconds (max 5 minutes =
+	 * 300000; larger values respond `400`). Estimate it from the amount of work the run usually
+	 * does. If the run never finishes within this window, the host closes the activity with the
+	 * `timeout` end state.
+	 */
+	timeoutMs: number;
 }
 
 /** Response body of `POST {host.apiOrigin}/api/v1/activities/start`. */

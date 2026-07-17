@@ -225,6 +225,7 @@ type AppNotificationsActivityItem_ClassNames =
 	| "AppNotificationsActivityItem-icon-status-running"
 	| "AppNotificationsActivityItem-icon-status-succeeded"
 	| "AppNotificationsActivityItem-icon-status-failed"
+	| "AppNotificationsActivityItem-icon-status-timeout"
 	| "AppNotificationsActivityItem-title-group"
 	| "AppNotificationsActivityItem-title"
 	| "AppNotificationsActivityItem-dismiss"
@@ -247,7 +248,13 @@ const AppNotificationsActivityItem = memo(function AppNotificationsActivityItem(
 	const { activity, onOpenFile, onArchive } = props;
 
 	const statusLabel =
-		activity.status === "running" ? "Running" : activity.status === "succeeded" ? "Completed" : "Failed";
+		activity.status === "running"
+			? "Running"
+			: activity.status === "succeeded"
+				? "Completed"
+				: activity.status === "timeout"
+					? "Timed out"
+					: "Failed";
 
 	return (
 		<article className={"AppNotificationsActivityItem" satisfies AppNotificationsActivityItem_ClassNames}>
