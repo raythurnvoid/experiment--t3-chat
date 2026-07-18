@@ -85,7 +85,7 @@ export function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdates
 				)}
 			>
 				<MyIconButton
-					variant="ghost-highlightable"
+					variant="ghost-highlightable-alt"
 					tooltip="Previous pending update"
 					className={cn(
 						"FileEditorPendingUpdatesFloating-review-pager-button" satisfies FileEditorPendingUpdatesFloating_ClassNames,
@@ -103,7 +103,7 @@ export function FileEditorPendingUpdatesFloating(props: FileEditorPendingUpdates
 					{reviewPagerLabel}
 				</span>
 				<MyIconButton
-					variant="ghost-highlightable"
+					variant="ghost-highlightable-alt"
 					tooltip="Next pending update"
 					className={cn(
 						"FileEditorPendingUpdatesFloating-review-pager-button" satisfies FileEditorPendingUpdatesFloating_ClassNames,
