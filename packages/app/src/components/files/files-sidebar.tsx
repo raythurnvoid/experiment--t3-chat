@@ -78,7 +78,15 @@ import {
 	MyMenuPopoverContent,
 	MyMenuTrigger,
 	type MyMenuItem_Props,
+	type MyMenuPopover_ClassNames,
 } from "@/components/my-menu.tsx";
+import {
+	MyContextMenu,
+	MyContextMenuButtonTrigger,
+	MyContextMenuPopover,
+	MyContextMenuTrigger,
+	type MyContextMenuTrigger_Props,
+} from "@/components/my-context-menu.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -332,17 +340,46 @@ const FilesSidebarTreeItemSecondaryActionCreateFile = memo(function FilesSidebar
 // #endregion tree item secondary action create file
 
 // #region tree item more action
-type FilesSidebarTreeItemMoreAction_ClassNames =
-	| "FilesSidebarTreeItemMoreAction"
-	| "FilesSidebarTreeItemMoreAction-menu-create-action"
-	| "FilesSidebarTreeItemMoreAction-menu-create-action-visible";
+type FilesSidebarTreeItemMoreAction_ClassNames = "FilesSidebarTreeItemMoreAction";
 
 type FilesSidebarTreeItemMoreAction_Props = {
+	label: string;
+	isPending: boolean;
+	isFocused: boolean;
+};
+
+const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAction(
+	props: FilesSidebarTreeItemMoreAction_Props,
+) {
+	const { label, isPending, isFocused } = props;
+
+	return (
+		<MyContextMenuButtonTrigger tabIndex={isFocused ? 0 : -1}>
+			<MyIconButton
+				className={cn("FilesSidebarTreeItemMoreAction" satisfies FilesSidebarTreeItemMoreAction_ClassNames)}
+				variant="ghost-highlightable"
+				tooltip={"More actions"}
+				disabled={isPending}
+				aria-label={`More actions for ${label}`}
+			>
+				<MyIconButtonIcon>
+					<EllipsisVertical />
+				</MyIconButtonIcon>
+			</MyIconButton>
+		</MyContextMenuButtonTrigger>
+	);
+});
+// #endregion tree item more action
+
+// #region tree item menu popover
+type FilesSidebarTreeItemMenuPopover_ClassNames =
+	| "FilesSidebarTreeItemMenuPopover-create-action"
+	| "FilesSidebarTreeItemMenuPopover-create-action-visible";
+
+type FilesSidebarTreeItemMenuPopover_Props = {
 	kind: files_TreeItem["kind"];
 	label: string;
 	archiveOperationId: string | undefined;
-	isPending: boolean;
-	isFocused: boolean;
 	canRename: boolean;
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
@@ -357,15 +394,13 @@ type FilesSidebarTreeItemMoreAction_Props = {
 	onUnarchive: () => void;
 };
 
-const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAction(
-	props: FilesSidebarTreeItemMoreAction_Props,
+const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPopover(
+	props: FilesSidebarTreeItemMenuPopover_Props,
 ) {
 	const {
 		kind,
 		label,
 		archiveOperationId,
-		isPending,
-		isFocused,
 		canRename,
 		canExpandSubtree,
 		canCollapseSubtree,
@@ -397,121 +432,105 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 	});
 
 	return (
-		<MyMenu>
-			<MyMenuTrigger tabIndex={isFocused ? 0 : -1}>
-				<MyIconButton
-					className={cn("FilesSidebarTreeItemMoreAction" satisfies FilesSidebarTreeItemMoreAction_ClassNames)}
-					variant="ghost-highlightable"
-					tooltip={"More actions"}
-					disabled={isPending}
-					aria-label={`More actions for ${label}`}
-				>
-					<MyIconButtonIcon>
-						<EllipsisVertical />
-					</MyIconButtonIcon>
-				</MyIconButton>
-			</MyMenuTrigger>
-			<MyMenuPopover
-				{...({
-					"data-files-sidebar-tree-context": "",
-				} satisfies Partial<CustomAttributes>)}
-				unmountOnHide
-			>
-				<MyMenuPopoverContent>
-					{kind === "folder" ? (
-						<MyMenuItemsGroup>
-							<MyMenuItem
-								className={cn(
-									"FilesSidebarTreeItemMoreAction-menu-create-action" satisfies FilesSidebarTreeItemMoreAction_ClassNames,
-									expandedFolderActionsVisible &&
-										("FilesSidebarTreeItemMoreAction-menu-create-action-visible" satisfies FilesSidebarTreeItemMoreAction_ClassNames),
-								)}
-								aria-label={`Add file to ${label}`}
-								hideOnClick
-								onClick={onCreateFile}
-							>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<FilePlus />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Add file</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
-							<MyMenuItem
-								className={cn(
-									"FilesSidebarTreeItemMoreAction-menu-create-action" satisfies FilesSidebarTreeItemMoreAction_ClassNames,
-									expandedFolderActionsVisible &&
-										("FilesSidebarTreeItemMoreAction-menu-create-action-visible" satisfies FilesSidebarTreeItemMoreAction_ClassNames),
-								)}
-								aria-label={`Add folder to ${label}`}
-								hideOnClick
-								onClick={onCreateFolder}
-							>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<FolderPlus />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Add folder</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
-						</MyMenuItemsGroup>
-					) : null}
-					<MyMenuItemsGroup separator={kind === "folder"}>
-						<MyMenuItem hideOnClick onClick={onCopy}>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<Copy />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-						<MyMenuItem disabled={!canRename} hideOnClick onClick={handleRenameClick}>
-							<MyMenuItemContent>
-								<MyMenuItemContentIcon>
-									<Edit2 />
-								</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>Rename</MyMenuItemContentPrimary>
-							</MyMenuItemContent>
-						</MyMenuItem>
-					</MyMenuItemsGroup>
-					{kind === "folder" ? (
-						<MyMenuItemsGroup separator>
-							<MyMenuItem disabled={!canExpandSubtree} hideOnClick onClick={onExpandSubtree}>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<CopyPlus />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Expand subtree</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
-							<MyMenuItem disabled={!canCollapseSubtree} hideOnClick onClick={onCollapseSubtree}>
-								<MyMenuItemContent>
-									<MyMenuItemContentIcon>
-										<CopyMinus />
-									</MyMenuItemContentIcon>
-									<MyMenuItemContentPrimary>Collapse subtree</MyMenuItemContentPrimary>
-								</MyMenuItemContent>
-							</MyMenuItem>
-						</MyMenuItemsGroup>
-					) : null}
-					<MyMenuItemsGroup separator>
+		<MyContextMenuPopover
+			{...({
+				"data-files-sidebar-tree-context": "",
+			} satisfies Partial<CustomAttributes>)}
+		>
+			<MyMenuPopoverContent>
+				{kind === "folder" ? (
+					<MyMenuItemsGroup>
 						<MyMenuItem
-							variant={isArchived ? "default" : "destructive"}
+							className={cn(
+								"FilesSidebarTreeItemMenuPopover-create-action" satisfies FilesSidebarTreeItemMenuPopover_ClassNames,
+								expandedFolderActionsVisible &&
+									("FilesSidebarTreeItemMenuPopover-create-action-visible" satisfies FilesSidebarTreeItemMenuPopover_ClassNames),
+							)}
+							aria-label={`Add file to ${label}`}
 							hideOnClick
-							onClick={handleArchiveUnarchiveClick}
+							onClick={onCreateFile}
 						>
 							<MyMenuItemContent>
-								<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
-								<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Archive"}</MyMenuItemContentPrimary>
+								<MyMenuItemContentIcon>
+									<FilePlus />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Add file</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+						<MyMenuItem
+							className={cn(
+								"FilesSidebarTreeItemMenuPopover-create-action" satisfies FilesSidebarTreeItemMenuPopover_ClassNames,
+								expandedFolderActionsVisible &&
+									("FilesSidebarTreeItemMenuPopover-create-action-visible" satisfies FilesSidebarTreeItemMenuPopover_ClassNames),
+							)}
+							aria-label={`Add folder to ${label}`}
+							hideOnClick
+							onClick={onCreateFolder}
+						>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<FolderPlus />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Add folder</MyMenuItemContentPrimary>
 							</MyMenuItemContent>
 						</MyMenuItem>
 					</MyMenuItemsGroup>
-				</MyMenuPopoverContent>
-			</MyMenuPopover>
-		</MyMenu>
+				) : null}
+				<MyMenuItemsGroup separator={kind === "folder"}>
+					<MyMenuItem hideOnClick onClick={onCopy}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Copy />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Copy path</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+					<MyMenuItem disabled={!canRename} hideOnClick onClick={handleRenameClick}>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>
+								<Edit2 />
+							</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>Rename</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+				</MyMenuItemsGroup>
+				{kind === "folder" ? (
+					<MyMenuItemsGroup separator>
+						<MyMenuItem disabled={!canExpandSubtree} hideOnClick onClick={onExpandSubtree}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<CopyPlus />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Expand subtree</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+						<MyMenuItem disabled={!canCollapseSubtree} hideOnClick onClick={onCollapseSubtree}>
+							<MyMenuItemContent>
+								<MyMenuItemContentIcon>
+									<CopyMinus />
+								</MyMenuItemContentIcon>
+								<MyMenuItemContentPrimary>Collapse subtree</MyMenuItemContentPrimary>
+							</MyMenuItemContent>
+						</MyMenuItem>
+					</MyMenuItemsGroup>
+				) : null}
+				<MyMenuItemsGroup separator>
+					<MyMenuItem
+						variant={isArchived ? "default" : "destructive"}
+						hideOnClick
+						onClick={handleArchiveUnarchiveClick}
+					>
+						<MyMenuItemContent>
+							<MyMenuItemContentIcon>{isArchived ? <ArchiveRestore /> : <Archive />}</MyMenuItemContentIcon>
+							<MyMenuItemContentPrimary>{isArchived ? "Restore" : "Archive"}</MyMenuItemContentPrimary>
+						</MyMenuItemContent>
+					</MyMenuItem>
+				</MyMenuItemsGroup>
+			</MyMenuPopoverContent>
+		</MyContextMenuPopover>
 	);
 });
-// #endregion tree item more action
+// #endregion tree item menu popover
 
 // #region tree item arrow
 type FilesSidebarTreeItemArrow_ClassNames = "FilesSidebarTreeItemArrow" | "FilesSidebarTreeItemArrow-icon-button";
@@ -821,49 +840,18 @@ const FilesSidebarTreeItemSecondaryContent = memo(function FilesSidebarTreeItemS
 type FilesSidebarTreeItemActions_ClassNames = "FilesSidebarTreeItemActions";
 
 type FilesSidebarTreeItemActions_Props = {
-	kind: FilesSidebarTreeItemMoreAction_Props["kind"];
 	label: string;
-	archiveOperationId: FilesSidebarTreeItemMoreAction_Props["archiveOperationId"];
 	isPending: boolean;
 	isFocused: boolean;
 	canCreateChildren: boolean;
-	canRename: FilesSidebarTreeItemMoreAction_Props["canRename"];
-	canExpandSubtree: FilesSidebarTreeItemMoreAction_Props["canExpandSubtree"];
-	canCollapseSubtree: FilesSidebarTreeItemMoreAction_Props["canCollapseSubtree"];
-	expandedFolderActionsVisible: FilesSidebarTreeItemMoreAction_Props["expandedFolderActionsVisible"];
 	onCreateFile: FilesSidebarTreeItemSecondaryAction_Props["onClick"];
 	onCreateFolder: FilesSidebarTreeItemSecondaryAction_Props["onClick"];
-	onCopy: FilesSidebarTreeItemMoreAction_Props["onCopy"];
-	onRename: FilesSidebarTreeItemMoreAction_Props["onRename"];
-	onExpandSubtree: FilesSidebarTreeItemMoreAction_Props["onExpandSubtree"];
-	onCollapseSubtree: FilesSidebarTreeItemMoreAction_Props["onCollapseSubtree"];
-	onArchive: FilesSidebarTreeItemMoreAction_Props["onArchive"];
-	onUnarchive: FilesSidebarTreeItemMoreAction_Props["onUnarchive"];
 };
 
 const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 	props: FilesSidebarTreeItemActions_Props,
 ) {
-	const {
-		kind,
-		label,
-		archiveOperationId,
-		isPending,
-		isFocused,
-		canCreateChildren,
-		canRename,
-		canExpandSubtree,
-		canCollapseSubtree,
-		expandedFolderActionsVisible,
-		onCreateFile,
-		onCreateFolder,
-		onCopy,
-		onRename,
-		onExpandSubtree,
-		onCollapseSubtree,
-		onArchive,
-		onUnarchive,
-	} = props;
+	const { label, isPending, isFocused, canCreateChildren, onCreateFile, onCreateFolder } = props;
 
 	return (
 		<div
@@ -889,25 +877,7 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 					/>
 				</>
 			) : null}
-			<FilesSidebarTreeItemMoreAction
-				kind={kind}
-				label={label}
-				archiveOperationId={archiveOperationId}
-				isPending={isPending}
-				isFocused={isFocused}
-				canRename={canRename}
-				canExpandSubtree={canExpandSubtree}
-				canCollapseSubtree={canCollapseSubtree}
-				expandedFolderActionsVisible={expandedFolderActionsVisible}
-				onCreateFile={onCreateFile}
-				onCreateFolder={onCreateFolder}
-				onCopy={onCopy}
-				onRename={onRename}
-				onExpandSubtree={onExpandSubtree}
-				onCollapseSubtree={onCollapseSubtree}
-				onArchive={onArchive}
-				onUnarchive={onUnarchive}
-			/>
+			<FilesSidebarTreeItemMoreAction label={label} isPending={isPending} isFocused={isFocused} />
 		</div>
 	);
 });
@@ -1062,6 +1032,7 @@ type FilesSidebarTreeItem_Props = {
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
+	onCopy: (nodeId: string) => void;
 	onArchive: (nodeId: string) => void;
 	onUnarchive: (nodeId: string) => void;
 };
@@ -1083,6 +1054,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
+		onCopy,
 		onArchive,
 		onUnarchive,
 	} = props;
@@ -1147,13 +1119,11 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		onCreateNode(itemId, "folder");
 	});
 
-	const handleCopyClick = useFn<FilesSidebarTreeItemMoreAction_Props["onCopy"]>(() => {
-		copy_to_clipboard({ text: itemData.path }).catch((error) => {
-			console.error("[FilesSidebarTreeItem.handleCopyClick] Failed to copy path", { error, itemId });
-		});
+	const handleCopyClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopy"]>(() => {
+		onCopy(itemId);
 	});
 
-	const handleRenameClick = useFn<FilesSidebarTreeItemMoreAction_Props["onRename"]>(() => {
+	const handleRenameClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onRename"]>(() => {
 		onStartRename(itemId);
 	});
 
@@ -1161,7 +1131,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		onRenameErrorClear(itemId);
 	});
 
-	const handleExpandSubtreeClick = useFn<FilesSidebarTreeItemMoreAction_Props["onExpandSubtree"]>(() => {
+	const handleExpandSubtreeClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onExpandSubtree"]>(() => {
 		item.expand();
 		// Expand only the immediate children of the item
 		Promise.try(() => item.getTree().loadChildrenIds(itemId))
@@ -1175,7 +1145,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 			});
 	});
 
-	const handleCollapseSubtreeClick = useFn<FilesSidebarTreeItemMoreAction_Props["onCollapseSubtree"]>(() => {
+	const handleCollapseSubtreeClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCollapseSubtree"]>(() => {
 		// Collapse only the immediate children of the item
 		Promise.try(() => item.getTree().loadChildrenIds(itemId))
 			.then(() => {
@@ -1191,12 +1161,21 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 			});
 	});
 
-	const handleArchiveClick = useFn<FilesSidebarTreeItemMoreAction_Props["onArchive"]>(() => {
+	const handleArchiveClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onArchive"]>(() => {
 		onArchive(itemId);
 	});
 
-	const handleUnarchiveClick = useFn<FilesSidebarTreeItemMoreAction_Props["onUnarchive"]>(() => {
+	const handleUnarchiveClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onUnarchive"]>(() => {
 		onUnarchive(itemId);
+	});
+
+	const handleRowContextMenu = useFn<MyContextMenuTrigger_Props["onContextMenu"]>((event) => {
+		if (event.shiftKey) {
+			// Native browser menu.
+			return;
+		}
+
+		item.setFocused();
 	});
 
 	const handleTreeItemArrowClick = useFn<FilesSidebarTreeItemArrow_Props["onClick"]>(() => {
@@ -1225,76 +1204,93 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 	return (
 		<>
-			<div
-				className={cn(
-					"FilesSidebarTreeItem" satisfies FilesSidebarTreeItem_ClassNames,
-					isNavigated && ("FilesSidebarTreeItem-content-navigated" satisfies FilesSidebarTreeItem_ClassNames),
-					isArchived && ("FilesSidebarTreeItem-content-archived" satisfies FilesSidebarTreeItem_ClassNames),
-					isRenaming && ("FilesSidebarTreeItem-content-renaming" satisfies FilesSidebarTreeItem_ClassNames),
-				)}
-				style={sx({
-					"--FilesSidebarTreeItem-content-depth": depth,
-				} satisfies Partial<FilesSidebar_CssVars>)}
-				{...({
-					"data-files-sidebar-tree-context": "",
-					"data-file-id": itemId,
-				} satisfies Partial<CustomAttributes & FilesSidebarTreeItem_CustomAttributes>)}
-			>
-				<FilesSidebarTreeItemPrimaryAction
-					itemProps={itemProps}
-					updatedAt={itemData.updatedAt}
-					updatedByDisplayName={updatedByDisplayName}
-					isPending={isPending}
-					isSelected={isSelected}
-					isDropZoneIncluded={isDropZoneIncluded}
-					isTreeDragging={isTreeDragging}
-					isFocused={isFocused}
-					ariaLabel={label}
-				/>
-
-				<FilesSidebarTreeItemTrack
-					trackFileIds={ancestorIds}
-					trackActiveFileIds={trackActiveFileIds}
-					terminalTrackFileId={terminalTrackFileId}
-					hiddenTrackFileIds={hiddenTrackFileIds}
-				/>
-
-				<FilesSidebarTreeItemPrimaryContent
-					title={itemData.name}
-					kind={itemData.kind}
-					renameInputProps={renameInputProps}
-					isRenaming={isRenaming}
-					renameError={renameError}
-					onRenameErrorClear={handleRenameErrorClear}
-				/>
-
-				{itemData.kind === "folder" ? (
-					<FilesSidebarTreeItemArrow
-						label={label}
-						isExpanded={isExpanded}
-						isPending={isPending}
-						isFocused={isFocused}
-						onClick={handleTreeItemArrowClick}
-					/>
-				) : (
+			<MyContextMenu>
+				<MyContextMenuTrigger onContextMenu={handleRowContextMenu}>
 					<div
-						className={"FilesSidebarTreeItemArrow" satisfies FilesSidebarTreeItemArrow_ClassNames}
-						aria-hidden="true"
-					/>
-				)}
+						className={cn(
+							"FilesSidebarTreeItem" satisfies FilesSidebarTreeItem_ClassNames,
+							isNavigated && ("FilesSidebarTreeItem-content-navigated" satisfies FilesSidebarTreeItem_ClassNames),
+							isArchived && ("FilesSidebarTreeItem-content-archived" satisfies FilesSidebarTreeItem_ClassNames),
+							isRenaming && ("FilesSidebarTreeItem-content-renaming" satisfies FilesSidebarTreeItem_ClassNames),
+						)}
+						style={sx({
+							"--FilesSidebarTreeItem-content-depth": depth,
+						} satisfies Partial<FilesSidebar_CssVars>)}
+						{...({
+							"data-files-sidebar-tree-context": "",
+							"data-file-id": itemId,
+						} satisfies Partial<CustomAttributes & FilesSidebarTreeItem_CustomAttributes>)}
+					>
+						<FilesSidebarTreeItemPrimaryAction
+							itemProps={itemProps}
+							updatedAt={itemData.updatedAt}
+							updatedByDisplayName={updatedByDisplayName}
+							isPending={isPending}
+							isSelected={isSelected}
+							isDropZoneIncluded={isDropZoneIncluded}
+							isTreeDragging={isTreeDragging}
+							isFocused={isFocused}
+							ariaLabel={label}
+						/>
 
-				<FilesSidebarTreeItemSecondaryContent
-					nodeId={files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : null}
-					secondaryText={metaText}
-				/>
+						<FilesSidebarTreeItemTrack
+							trackFileIds={ancestorIds}
+							trackActiveFileIds={trackActiveFileIds}
+							terminalTrackFileId={terminalTrackFileId}
+							hiddenTrackFileIds={hiddenTrackFileIds}
+						/>
 
-				<FilesSidebarTreeItemActions
+						<FilesSidebarTreeItemPrimaryContent
+							title={itemData.name}
+							kind={itemData.kind}
+							renameInputProps={renameInputProps}
+							isRenaming={isRenaming}
+							renameError={renameError}
+							onRenameErrorClear={handleRenameErrorClear}
+						/>
+
+						{itemData.kind === "folder" ? (
+							<FilesSidebarTreeItemArrow
+								label={label}
+								isExpanded={isExpanded}
+								isPending={isPending}
+								isFocused={isFocused}
+								onClick={handleTreeItemArrowClick}
+							/>
+						) : (
+							<div
+								className={"FilesSidebarTreeItemArrow" satisfies FilesSidebarTreeItemArrow_ClassNames}
+								aria-hidden="true"
+							/>
+						)}
+
+						<FilesSidebarTreeItemSecondaryContent
+							nodeId={files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : null}
+							secondaryText={metaText}
+						/>
+
+						<FilesSidebarTreeItemActions
+							label={label}
+							isPending={isPending}
+							isFocused={isFocused}
+							canCreateChildren={itemData.kind === "folder"}
+							onCreateFile={handleCreateFileClick}
+							onCreateFolder={handleCreateFolderClick}
+						/>
+
+						{isNavigated ? (
+							<div
+								className={"FilesSidebarTreeItemNavigatedRail" satisfies FilesSidebarTreeItem_ClassNames}
+								aria-hidden="true"
+							/>
+						) : null}
+					</div>
+				</MyContextMenuTrigger>
+
+				<FilesSidebarTreeItemMenuPopover
 					kind={itemData.kind}
 					label={label}
 					archiveOperationId={itemData.archiveOperationId}
-					isPending={isPending}
-					isFocused={isFocused}
-					canCreateChildren={itemData.kind === "folder"}
 					canRename={canRename}
 					canExpandSubtree={canExpandSubtree}
 					canCollapseSubtree={canCollapseSubtree}
@@ -1308,14 +1304,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 					onArchive={handleArchiveClick}
 					onUnarchive={handleUnarchiveClick}
 				/>
-
-				{isNavigated ? (
-					<div
-						className={"FilesSidebarTreeItemNavigatedRail" satisfies FilesSidebarTreeItem_ClassNames}
-						aria-hidden="true"
-					/>
-				) : null}
-			</div>
+			</MyContextMenu>
 
 			{shouldRenderPlaceholder ? (
 				<FilesSidebarTreeItemPlaceholder
@@ -1576,6 +1565,7 @@ type FilesSidebarTree_Props = {
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
+	onCopy: (nodeId: string) => void;
 	onArchive: (nodeId: string) => void;
 	onUnarchive: (nodeId: string) => void;
 };
@@ -1599,6 +1589,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
+		onCopy,
 		onArchive,
 		onUnarchive,
 	} = props;
@@ -1803,6 +1794,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 								onCreateNode={onCreateNode}
 								onStartRename={onStartRename}
 								onRenameErrorClear={onRenameErrorClear}
+								onCopy={onCopy}
 								onArchive={onArchive}
 								onUnarchive={onUnarchive}
 							/>
@@ -2611,12 +2603,22 @@ function sort_children(args: { children: string[]; itemById: Map<string, files_T
 	});
 }
 
-function is_selection_context_target(target: EventTarget | null) {
+function is_inside_tree_selection_area(target: EventTarget | null) {
 	if (!(target instanceof Element)) {
 		return false;
 	}
 
+	// Tree rows and their menus carry this attribute; interacting inside them keeps the tree selection.
 	return Boolean(target.closest(`[${"data-files-sidebar-tree-context" satisfies keyof CustomAttributes}]`));
+}
+
+function is_tree_context_menu_open() {
+	// An open tree menu means an outside interaction is dismissing it, not leaving the tree.
+	return Boolean(
+		document.querySelector(
+			`.${"MyMenuPopover" satisfies MyMenuPopover_ClassNames}[${"data-files-sidebar-tree-context" satisfies keyof CustomAttributes}]`,
+		),
+	);
 }
 
 function get_tree_items_list_after_optimistic_rename(args: {
@@ -3683,8 +3685,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	useGlobalEventList(
 		FILES_SIDEBAR_SELECTION_CONTEXT_EVENTS,
 		(event) => {
-			// Keep multi-selection scoped to tree work; outside context returns the sidebar to the route-owned row.
-			if (is_selection_context_target(event.target)) {
+			// A click or focus outside the tree selection areas means the user moved on to
+			// other work: drop the multi-selection and select only the open file's row again.
+			if (is_inside_tree_selection_area(event.target)) {
+				return;
+			}
+
+			if (is_tree_context_menu_open()) {
 				return;
 			}
 
@@ -3836,6 +3843,16 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			.finally(() => {
 				setIsCreatingFile(false);
 			});
+	});
+
+	const handleCopy = useFn<FilesSidebarTree_Props["onCopy"]>((nodeId) => {
+		const shouldCopySelectedFiles = selectedNodeIds.has(nodeId);
+		const nodeIdsToCopy = shouldCopySelectedFiles ? selectedNodeIds : new Set([nodeId]);
+		const paths = Array.from(nodeIdsToCopy, (id) => tree().getItemInstance(id).getItemData().path);
+
+		copy_to_clipboard({ text: paths.join("\n") }).catch((error) => {
+			console.error("[FilesSidebar.handleCopy] Failed to copy paths", { error, nodeId });
+		});
 	});
 
 	const handleArchive = useFn<FilesSidebarTree_Props["onArchive"]>((nodeId) => {
@@ -4169,6 +4186,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					onCreateNode={handleCreateNodeClick}
 					onStartRename={handleStartRename}
 					onRenameErrorClear={clearRenameError}
+					onCopy={handleCopy}
 					onArchive={handleArchive}
 					onUnarchive={handleUnarchive}
 				/>
@@ -4458,35 +4476,35 @@ if (import.meta.vitest) {
 		});
 	});
 
-	describe("is_selection_context_target", () => {
-		test("keeps marked elements and their descendants inside selection context", () => {
+	describe("is_inside_tree_selection_area", () => {
+		test("keeps marked elements and their descendants inside the selection area", () => {
 			const element = document.createElement("div");
 			const child = document.createElement("button");
 			element.setAttribute("data-files-sidebar-tree-context" satisfies keyof CustomAttributes, "");
 			element.append(child);
 
-			expect(is_selection_context_target(element)).toBe(true);
-			expect(is_selection_context_target(child)).toBe(true);
+			expect(is_inside_tree_selection_area(element)).toBe(true);
+			expect(is_inside_tree_selection_area(child)).toBe(true);
 		});
 
-		test("treats tree whitespace as outside selection context", () => {
+		test("treats tree whitespace as outside the selection area", () => {
 			const treeElement = document.createElement("div");
 			const whitespaceChild = document.createElement("div");
 			treeElement.className = "FilesSidebarTree" satisfies FilesSidebarTree_ClassNames;
 			treeElement.append(whitespaceChild);
 
-			expect(is_selection_context_target(treeElement)).toBe(false);
-			expect(is_selection_context_target(whitespaceChild)).toBe(false);
+			expect(is_inside_tree_selection_area(treeElement)).toBe(false);
+			expect(is_inside_tree_selection_area(whitespaceChild)).toBe(false);
 		});
 
-		test("treats unrelated sidebar and page interactions as outside selection context", () => {
+		test("treats unrelated sidebar and page elements as outside the selection area", () => {
 			const searchInput = document.createElement("input");
 			searchInput.className = "FilesSidebarSearch" satisfies FilesSidebarSearch_ClassNames;
 			const pageElement = document.createElement("main");
 
-			expect(is_selection_context_target(searchInput)).toBe(false);
-			expect(is_selection_context_target(pageElement)).toBe(false);
-			expect(is_selection_context_target(null)).toBe(false);
+			expect(is_inside_tree_selection_area(searchInput)).toBe(false);
+			expect(is_inside_tree_selection_area(pageElement)).toBe(false);
+			expect(is_inside_tree_selection_area(null)).toBe(false);
 		});
 	});
 

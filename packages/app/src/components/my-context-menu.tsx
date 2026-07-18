@@ -11,7 +11,13 @@ import {
 	type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { ExtractStrict } from "type-fest";
-import { MyMenuPopover, type MyMenu_Props, type MyMenuPopover_Props } from "./my-menu.tsx";
+import {
+	MyMenuPopover,
+	MyMenuTrigger,
+	type MyMenu_Props,
+	type MyMenuPopover_Props,
+	type MyMenuTrigger_Props,
+} from "./my-menu.tsx";
 
 type MyContextMenuAnchorRect = {
 	x?: number;
@@ -54,6 +60,7 @@ function useContextMenuContext() {
 	return context;
 }
 
+// #region root
 const MyContextMenuWindowBlurDismiss = memo(function MyContextMenuWindowBlurDismiss() {
 	const menu = Ariakit.useMenuContext();
 
@@ -83,6 +90,12 @@ export const MyContextMenu = memo(function MyContextMenu(props: MyContextMenu_Pr
 		</Ariakit.MenuProvider>
 	);
 });
+// #endregion root
+
+// #region trigger
+export type MyContextMenuTrigger_CustomAttributes = {
+	"data-my-context-menu-open": "";
+};
 
 export type MyContextMenuTrigger_Props = {
 	children?: Ariakit.RoleProps["render"];
@@ -92,9 +105,14 @@ export const MyContextMenuTrigger = memo(function MyContextMenuTrigger(props: My
 	const { ref, id, className, children, onContextMenu, onKeyDown, ...rest } = props;
 	const context = useContextMenuContext();
 	const menu = Ariakit.useMenuContext();
+	const isMenuOpen = Ariakit.useStoreState(menu, "open") ?? false;
 
-	const showMenu = (anchorRect: MyContextMenuAnchorRect | null) => {
+	const showMenu = (anchorRect: MyContextMenuAnchorRect | null, element: HTMLElement) => {
 		context.setAnchorRect(anchorRect);
+		// Mirror Ariakit's MenuButton.showMenu so Escape and keyboard navigation work when the
+		// menu is opened from this trigger instead of a MenuButton in the same provider.
+		menu?.setDisclosureElement(element);
+		menu?.setAutoFocusOnShow(true);
 		menu?.setInitialFocus("first");
 		menu?.show();
 	};
@@ -110,7 +128,7 @@ export const MyContextMenuTrigger = memo(function MyContextMenuTrigger(props: My
 			event.clientX !== 0 || event.clientY !== 0
 				? { x: event.clientX, y: event.clientY, width: 0, height: 0 }
 				: get_context_menu_keyboard_anchor_rect(event.currentTarget);
-		showMenu(anchorRect);
+		showMenu(anchorRect, event.currentTarget);
 	};
 
 	const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -124,7 +142,7 @@ export const MyContextMenuTrigger = memo(function MyContextMenuTrigger(props: My
 		}
 
 		event.preventDefault();
-		showMenu(get_context_menu_keyboard_anchor_rect(event.currentTarget));
+		showMenu(get_context_menu_keyboard_anchor_rect(event.currentTarget), event.currentTarget);
 	};
 
 	return (
@@ -135,11 +153,51 @@ export const MyContextMenuTrigger = memo(function MyContextMenuTrigger(props: My
 			render={children}
 			onContextMenu={handleContextMenu}
 			onKeyDown={handleKeyDown}
+			// Expose the open state for styling. The menu can be open while the trigger has no
+			// aria-expanded: opening from the keyboard or a sibling MenuButton in the same provider.
+			{...(isMenuOpen ? ({ "data-my-context-menu-open": "" } satisfies MyContextMenuTrigger_CustomAttributes) : null)}
 			{...rest}
 		/>
 	);
 });
+// #endregion trigger
 
+// #region button trigger
+export type MyContextMenuButtonTrigger_Props = MyMenuTrigger_Props;
+
+export const MyContextMenuButtonTrigger = memo(function MyContextMenuButtonTrigger(
+	props: MyContextMenuButtonTrigger_Props,
+) {
+	const { onClick, onKeyDown, ...rest } = props;
+	const context = useContextMenuContext();
+
+	// Clear the right-click cursor rect so the menu anchors to this button.
+	// MenuButton can render as a div or a button, so its handlers take the intersection event type.
+	const handleClick = (event: ReactMouseEvent<HTMLDivElement> & ReactMouseEvent<HTMLButtonElement>) => {
+		onClick?.(event);
+		if (event.defaultPrevented) {
+			return;
+		}
+
+		context.setAnchorRect(null);
+	};
+
+	const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement> & ReactKeyboardEvent<HTMLButtonElement>) => {
+		onKeyDown?.(event);
+		if (event.defaultPrevented) {
+			return;
+		}
+
+		if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+			context.setAnchorRect(null);
+		}
+	};
+
+	return <MyMenuTrigger onClick={handleClick} onKeyDown={handleKeyDown} {...rest} />;
+});
+// #endregion button trigger
+
+// #region popover
 export type MyContextMenuPopover_Props = MyMenuPopover_Props;
 
 export const MyContextMenuPopover = memo(function MyContextMenuPopover(props: MyContextMenuPopover_Props) {
@@ -155,3 +213,4 @@ export const MyContextMenuPopover = memo(function MyContextMenuPopover(props: My
 		/>
 	);
 });
+// #endregion popover

@@ -346,6 +346,29 @@
 			}
 		}
 
+		/*
+		Show the selected look while the row menu is open so the menu target stays visible.
+		MyContextMenuTrigger sets data-my-context-menu-open on the row for both open paths
+		(right-click and the three-dots button). Driven by CSS instead of React row state:
+		updating row state from the menu open/close transition breaks Ariakit's hide and
+		leaves the popover on screen.
+		*/
+		&[data-my-context-menu-open] {
+			color: var(--color-fg-11);
+
+			.FilesSidebarTreeItemSecondaryContent-text {
+				color: var(--color-fg-09);
+			}
+
+			> .FilesSidebarTreeItemPrimaryAction > .FilesSidebarTreeItemPrimaryAction-surface {
+				background: linear-gradient(var(--color-base-1-06), var(--color-base-1-05));
+				box-shadow:
+					inset 0 1px 0 color-mix(in oklch, var(--color-fg-11) 8%, transparent),
+					inset 0 -1px 0 color-mix(in oklch, var(--color-base-1-02) 70%, transparent),
+					0 4px 10px color-mix(in oklch, black 38%, transparent);
+			}
+		}
+
 		&:has(> .FilesSidebarTreeItemPrimaryAction:not(:disabled):active) {
 			color: var(--color-fg-12);
 
@@ -642,15 +665,17 @@
 	.FilesSidebarTreeItemMoreAction {
 		display: inline-flex;
 	}
+	/* #endregion tree item more action */
 
-	.FilesSidebarTreeItemMoreAction-menu-create-action {
+	/* #region tree item menu popover */
+	.FilesSidebarTreeItemMenuPopover-create-action {
 		display: none;
 	}
 
-	.FilesSidebarTreeItemMoreAction-menu-create-action-visible {
+	.FilesSidebarTreeItemMenuPopover-create-action-visible {
 		display: flex;
 	}
-	/* #endregion tree item more action */
+	/* #endregion tree item menu popover */
 
 	/* #region tree item placeholder */
 	.FilesSidebarTreeItemPlaceholder {
