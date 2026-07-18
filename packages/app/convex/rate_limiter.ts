@@ -11,6 +11,13 @@ const STRICT_WRITE = {
 	capacity: 2,
 } as const;
 
+const BULK_FILES_WRITE = {
+	kind: "token bucket",
+	rate: 50,
+	period: MINUTE,
+	capacity: 50,
+} as const;
+
 const STRICT_AI_HTTP = {
 	kind: "token bucket",
 	rate: 4,
@@ -52,9 +59,9 @@ const rate_limiter_CONFIG = {
 	auth_http: STRICT_AUTH_OR_BILLING,
 	billing_action: STRICT_AUTH_OR_BILLING,
 	comments_write: STRICT_WRITE,
-	files_pending_update_write: STRICT_WRITE,
+	files_pending_update_write: BULK_FILES_WRITE,
 	files_snapshot_write: STRICT_WRITE,
-	files_tree_write: STRICT_WRITE,
+	files_tree_write: BULK_FILES_WRITE,
 	files_yjs_push_update: STRICT_WRITE,
 	plugins_manage: STRICT_AUTH_OR_BILLING,
 	// Initial mint plus occasional refresh per open plugin page; token TTL is 30 minutes.
@@ -73,7 +80,7 @@ const rate_limiter_CONFIG = {
 		capacity: 3,
 	},
 	presence_write: STRICT_WRITE,
-	save_file_pending_update: STRICT_WRITE,
+	save_file_pending_update: BULK_FILES_WRITE,
 	organizations_write: STRICT_WRITE,
 } as const;
 

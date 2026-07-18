@@ -235,11 +235,17 @@ const app_convex_schema = defineSchema({
 				replacesNodeId: v.optional(v.id("files_nodes")),
 			}),
 		),
-		/** Copy provenance for the destination node of a pending copy. */
+		/** Copy provenance for the destination node of a pending copy (including `mv -f` replace-moves, which are stored as copies). */
 		copiedFrom: v.optional(
 			v.object({
 				nodeId: v.id("files_nodes"),
 				path: v.string(),
+				/**
+				 * A replace-move (`mv -f` between editable files) is stored as a copy — the source's
+				 * content lands on the destination, which keeps its identity and history — plus this
+				 * flag: accepting also archives the source, turning the copy into a move (mv = cp + rm).
+				 */
+				archivesSourceOnAccept: v.optional(v.boolean()),
 			}),
 		),
 		/**

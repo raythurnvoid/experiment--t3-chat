@@ -20,6 +20,7 @@ import { api, internal } from "./_generated/api.js";
 import {
 	files_db_yjs_push_update,
 	files_nodes_db_apply_pending_move,
+	files_nodes_db_archive_nodes,
 	files_nodes_db_hard_delete_node,
 	files_nodes_db_is_eager_node_safe_to_hard_delete,
 	files_nodes_db_validate_pending_move_target,
@@ -493,15 +494,20 @@ async function files_pending_update_upsert_branch_docs(
 	}
 
 	if (!branchDocsHaveChanges._yay) {
-		// Eager rows (even with a pendingMove) must stay persisted when the content matches the
-		// committed base (empty-source copy, empty write_file): fall through and store base ==
-		// staged == unstaged so the row never loses its yjs fields and the eager destination node
-		// stays discardable. Non-eager rows target a real file, so they delete/degrade like plain rows.
-		if (!args.existingPendingUpdate?.eagerCreated && !args.eagerCreated) {
+		// No-change rows normally delete/degrade, but two kinds must persist: eager rows (empty
+		// write_file / empty-source copy) store base == staged == unstaged so the yjs fields
+		// survive and the eager node stays discardable; `mv -f` replace-moves must exist to
+		// accept, because accepting an identical-content replace still archives the source.
+		if (
+			!args.existingPendingUpdate?.eagerCreated &&
+			!args.eagerCreated &&
+			!args.copiedFrom?.archivesSourceOnAccept &&
+			!args.existingPendingUpdate?.copiedFrom?.archivesSourceOnAccept
+		) {
 			if (args.existingPendingUpdate?.pendingMove) {
-				// Content collapsed back to base while a move proposal sits on the row: degrade to a
-				// pure-move row instead of deleting the move along with the content. Only non-eager
-				// rows can reach here, and without content copiedFrom is stale provenance — clear it.
+				// Content collapsed back to base under a move proposal: degrade to a pure move, keep
+				// the row. Only non-eager, non-replace-move rows reach here, so copiedFrom is stale
+				// provenance — clear it.
 				const now = Date.now();
 				await Promise.all([
 					ctx.db.patch("files_pending_updates", args.existingPendingUpdate._id, {
@@ -601,11 +607,11 @@ async function files_pending_update_upsert_branch_docs(
 				baseYjsUpdate,
 				stagedBranchYjsUpdate,
 				unstagedBranchYjsUpdate,
-				...(args.copiedFrom && !args.existingPendingUpdate.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
+				// The newest structural intent wins: a later cp/mv -f re-records where the content
+				// comes from (and whether accepting archives that source).
+				...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
 				// Never overwrite an existing eagerCreated: its committedSequence stamp must stay immutable.
-				...(args.eagerCreated && !args.existingPendingUpdate.eagerCreated
-					? { eagerCreated: args.eagerCreated }
-					: {}),
+				...(args.eagerCreated && !args.existingPendingUpdate.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
 				...(args.unstagedBranchChanged ? { size: unstagedSize } : {}),
 				updatedAt: now,
 			}),
@@ -659,7 +665,8 @@ async function files_pending_update_upsert_updates(
 
 	// Stamp eager creation with the node's committed last sequence so the hard-delete safety
 	// check compares against an immutable value that later rebases can never bring back in sync.
-	// No resolvable sequence -> no stamp: the row degrades to a plain edit and is never hard-deleted.
+	// No resolvable sequence -> no stamp: the proposal degrades to a plain edit and the node is
+	// never hard-deleted.
 	let eagerCreated: app_convex_Doc<"files_pending_updates">["eagerCreated"];
 	if (args.eagerCreated && file.yjsLastSequenceId) {
 		const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", file.yjsLastSequenceId);
@@ -804,7 +811,9 @@ export const upsert_file_pending_update_in_db = internalMutation({
 		baseYjsUpdate: v.optional(v.bytes()),
 		stagedMarkdown: v.optional(v.string()),
 		unstagedMarkdown: v.string(),
-		copiedFrom: v.optional(v.object({ nodeId: v.id("files_nodes"), path: v.string() })),
+		copiedFrom: v.optional(
+			v.object({ nodeId: v.id("files_nodes"), path: v.string(), archivesSourceOnAccept: v.optional(v.boolean()) }),
+		),
 		/** True when the caller eagerly created the node for this proposal (write_file/cp on a new path). */
 		eagerCreated: v.optional(v.boolean()),
 	},
@@ -910,7 +919,9 @@ export const upsert_file_pending_update_internal_action = internalAction({
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		stagedMarkdown: v.optional(v.string()),
 		unstagedMarkdown: v.string(),
-		copiedFrom: v.optional(v.object({ nodeId: v.id("files_nodes"), path: v.string() })),
+		copiedFrom: v.optional(
+			v.object({ nodeId: v.id("files_nodes"), path: v.string(), archivesSourceOnAccept: v.optional(v.boolean()) }),
+		),
 		/** True when the caller eagerly created the node for this proposal (write_file/cp on a new path). */
 		eagerCreated: v.optional(v.boolean()),
 	},
@@ -1291,15 +1302,15 @@ export const persist_file_pending_update_rebased_state_in_db = internalMutation(
 		}
 
 		if (!branchDocsHaveChanges._yay) {
-			// Eager rows (even with a pendingMove) must stay persisted when the content matches the
-			// base: fall through and store base == staged == unstaged so the row never loses its
-			// yjs fields and the eager destination node stays discardable. Non-eager rows target a
-			// real file, so they delete/degrade like plain rows.
-			if (!existingPendingUpdate?.eagerCreated) {
+			// No-change rows normally delete/degrade, but two kinds must persist: eager rows (empty
+			// write_file / empty-source copy) store base == staged == unstaged so the yjs fields
+			// survive and the eager node stays discardable; `mv -f` replace-moves must exist to
+			// accept, because accepting an identical-content replace still archives the source.
+			if (!existingPendingUpdate?.eagerCreated && !existingPendingUpdate?.copiedFrom?.archivesSourceOnAccept) {
 				if (existingPendingUpdate?.pendingMove) {
-					// Content collapsed back to base while a move proposal sits on the row: degrade to a
-					// pure-move row instead of deleting the move along with the content. Only non-eager
-					// rows can reach here, and without content copiedFrom is stale provenance — clear it.
+					// Content collapsed back to base under a move proposal: degrade to a pure move, keep
+					// the row. Only non-eager, non-replace-move rows reach here, so copiedFrom is stale
+					// provenance — clear it.
 					const now = Date.now();
 					await Promise.all([
 						ctx.db.patch("files_pending_updates", existingPendingUpdate._id, {
@@ -1593,7 +1604,10 @@ export const list_files_pending_updates = query({
 		const filesPendingUpdates = await ctx.db
 			.query("files_pending_updates")
 			.withIndex("by_organization_workspace_user_fileNode", (q) =>
-				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId).eq("userId", userAuth.id),
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("userId", userAuth.id),
 			)
 			.order("asc")
 			.collect();
@@ -1633,6 +1647,37 @@ export const get_file_pending_update_last_sequence_saved = query({
 			.first();
 	},
 });
+
+/**
+ * A replace-move is a copy that must also archive its source when accepted: run on any save
+ * that publishes content. A save that publishes nothing only clears the provenance (the
+ * proposal degrades to a plain edit). No-op when the source is gone, archived, or out of scope.
+ */
+async function archive_replace_source_node(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		copiedFrom: app_convex_Doc<"files_pending_updates">["copiedFrom"];
+		updatedBy: Id<"users">;
+		now: number;
+	},
+) {
+	if (!args.copiedFrom?.archivesSourceOnAccept) {
+		return;
+	}
+	const sourceNode = await ctx.db.get("files_nodes", args.copiedFrom.nodeId);
+	if (
+		!sourceNode ||
+		sourceNode.organizationId !== args.organizationId ||
+		sourceNode.workspaceId !== args.workspaceId ||
+		sourceNode.kind !== "file" ||
+		sourceNode.archiveOperationId !== undefined
+	) {
+		return;
+	}
+	await files_nodes_db_archive_nodes(ctx, { nodeIds: [sourceNode._id], updatedBy: args.updatedBy, now: args.now });
+}
 
 export const save_file_pending_update_in_db = internalMutation({
 	args: {
@@ -1830,11 +1875,21 @@ export const save_file_pending_update_in_db = internalMutation({
 		const nextBaseYjsSequence = newSequence ?? args.baseYjsSequence;
 
 		if (unstagedMatchesSavedBase._yay) {
+			// Archiving touches only the source node, so it runs in parallel with the row writes below.
+			const archiveSourcePromise = archive_replace_source_node(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				copiedFrom: pendingUpdate.copiedFrom,
+				updatedBy: user._id,
+				now,
+			});
+
 			if (pendingUpdate.pendingMove) {
 				// Save publishes the content only; the move proposal survives as a pure-move row.
 				// The content is committed now, so expiry must never hard-delete the node: clear the
 				// eager stamp (and the now-stale copy provenance).
 				await Promise.all([
+					archiveSourcePromise,
 					files_pending_update_upsert_last_sequence_saved(ctx, {
 						organizationId: membership.organizationId,
 						workspaceId: membership.workspaceId,
@@ -1870,6 +1925,7 @@ export const save_file_pending_update_in_db = internalMutation({
 			}
 
 			await Promise.all([
+				archiveSourcePromise,
 				files_pending_update_upsert_last_sequence_saved(ctx, {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
@@ -1910,6 +1966,17 @@ export const save_file_pending_update_in_db = internalMutation({
 		}
 
 		await Promise.all([
+			// A partial save that published nothing (nothing staged) must not complete the move;
+			// the patch below still clears the provenance, so the proposal degrades to a plain edit.
+			diffUpdateForLatestFileYjsDoc
+				? archive_replace_source_node(ctx, {
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						copiedFrom: pendingUpdate.copiedFrom,
+						updatedBy: user._id,
+						now,
+					})
+				: null,
 			ctx.db.patch("files_pending_updates", pendingUpdate._id, {
 				baseYjsSequence: nextBaseYjsSequence,
 				baseYjsUpdate: nextBaseYjsUpdate,

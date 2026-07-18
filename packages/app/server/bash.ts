@@ -5112,19 +5112,92 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(rows).toHaveLength(0);
 		});
 
-		test("proposes a file replace with mv -f", async () => {
+		test("proposes a content replace on the target with mv -f between editable files", async () => {
 			const runner = await create_bash_runner({
-				extraFiles: [{ path: "/reports/readme.md", content: "occupied\n" }],
+				// The pending upsert fetches the target's committed yjs snapshot from R2.
+				extraFiles: [
+					{ path: "/docs/replace-me.md", content: "old target\n", withRealYjsSnapshot: true },
+					{ path: "/reports/readme.md", content: "occupied\n", withRealYjsSnapshot: true },
+				],
 			});
 			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
-			const tutorialId = await get_seeded_node_id(runner, "/docs/tutorial.md");
+			const targetId = await get_seeded_node_id(runner, "/docs/replace-me.md");
 
 			const fileOntoFile = await runner.run(
-				`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/tutorial.md`,
+				`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/replace-me.md`,
 			);
+			expect(fileOntoFile.stderr).toBe("");
 			expect(fileOntoFile.metadata.exitCode).toBe(0);
 			expect(fileOntoFile.stdout).toBe(
-				"pending move created: /docs/readme.md -> /docs/tutorial.md — replaces the existing file when accepted; review in Files\n",
+				"pending replace created: /docs/readme.md -> /docs/replace-me.md — replaces the file's content and archives the source when accepted; review in Files\n",
+			);
+			// The proposal lands on the TARGET node as a content replace; the source has no row.
+			const targetRows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+					.collect(),
+			);
+			expect(targetRows).toHaveLength(1);
+			expect(targetRows[0].copiedFrom).toEqual({
+				nodeId: sourceId,
+				path: "/docs/readme.md",
+				archivesSourceOnAccept: true,
+			});
+			expect(targetRows[0].eagerCreated).toBeUndefined();
+			expect(targetRows[0].pendingMove).toBeUndefined();
+			expect(targetRows[0].unstagedBranchYjsUpdate).toBeDefined();
+			const sourceRows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
+					.collect(),
+			);
+			expect(sourceRows).toHaveLength(0);
+
+			// Readers overlay the pending replacement on the target.
+			const overlayRead = await runner.run(`cat ${test_db_files_mount}/docs/replace-me.md`);
+			expect(overlayRead.metadata.exitCode).toBe(0);
+			expect(overlayRead.stdout).toContain("# Readme");
+
+			// A folder destination replaces its occupant file through the same -f opt-in.
+			const occupantId = await get_seeded_node_id(runner, "/reports/readme.md");
+			const folderDest = await runner.run(`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`);
+			expect(folderDest.metadata.exitCode).toBe(0);
+			expect(folderDest.stdout).toBe(
+				"pending replace created: /docs/readme.md -> /reports/readme.md — replaces the file's content and archives the source when accepted; review in Files\n",
+			);
+			const occupantRows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", occupantId))
+					.collect(),
+			);
+			expect(occupantRows).toHaveLength(1);
+			expect(occupantRows[0].copiedFrom).toMatchObject({ nodeId: sourceId, archivesSourceOnAccept: true });
+
+			// Folders can never replace or be replaced, even with -f.
+			const folderOntoFile = await runner.run(
+				`mv -f ${test_db_files_mount}/docs/nested ${test_db_files_mount}/docs/replace-me.md`,
+			);
+			expect(folderOntoFile.metadata.exitCode).not.toBe(0);
+			expect(folderOntoFile.stderr).toBe(
+				"mv: destination '/docs/replace-me.md' already exists; only a file can replace an existing file with mv -f. Choose a different destination path.\n",
+			);
+		});
+
+		test("keeps the structural replace for mv -f onto a non-editable file", async () => {
+			const runner = await create_bash_runner();
+			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
+			const uploadedId = await get_seeded_node_id(runner, "/uploaded.md");
+
+			// A non-editable target has no version history to keep, so the source row records a
+			// structural replace: accepting archives the target and moves the source onto its path.
+			const result = await runner.run(`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/uploaded.md`);
+			expect(result.stderr).toBe("");
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe(
+				"pending move created: /docs/readme.md -> /uploaded.md — replaces the existing file when accepted; review in Files\n",
 			);
 			const rows = await runner.t.run((ctx) =>
 				ctx.db
@@ -5133,32 +5206,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					.collect(),
 			);
 			expect(rows).toHaveLength(1);
-			expect(rows[0].pendingMove).toMatchObject({ destName: "tutorial.md", replacesNodeId: tutorialId });
-
-			// A folder destination replaces its occupant file through the same -f opt-in.
-			const occupantId = await get_seeded_node_id(runner, "/reports/readme.md");
-			const folderDest = await runner.run(`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`);
-			expect(folderDest.metadata.exitCode).toBe(0);
-			expect(folderDest.stdout).toBe(
-				"pending move created: /docs/readme.md -> /reports/readme.md — replaces the existing file when accepted; review in Files\n",
-			);
-			const replacedRows = await runner.t.run((ctx) =>
-				ctx.db
-					.query("files_pending_updates")
-					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
-					.collect(),
-			);
-			expect(replacedRows).toHaveLength(1);
-			expect(replacedRows[0].pendingMove).toMatchObject({ destName: "readme.md", replacesNodeId: occupantId });
-
-			// Folders can never replace or be replaced, even with -f.
-			const folderOntoFile = await runner.run(
-				`mv -f ${test_db_files_mount}/docs/nested ${test_db_files_mount}/docs/tutorial.md`,
-			);
-			expect(folderOntoFile.metadata.exitCode).not.toBe(0);
-			expect(folderOntoFile.stderr).toBe(
-				"mv: destination '/docs/tutorial.md' already exists; only a file can replace an existing file with mv -f. Choose a different destination path.\n",
-			);
+			expect(rows[0].pendingMove).toMatchObject({ destName: "uploaded.md", replacesNodeId: uploadedId });
 		});
 
 		test("replaces an earlier move proposal and mixes with pending content", async () => {

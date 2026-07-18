@@ -1,5 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ComponentPropsWithRef, ReactNode } from "react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -14,29 +14,32 @@ const { tenantContextMock, useQueryMock, useStableQueryMock, actionMock, mutatio
 		truncatePathForWidthMock: vi.fn((args: { path: string }) => args.path),
 	}));
 
+// Network boundary: the real hooks talk to a live Convex client; tests feed query data directly.
 vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => useQueryMock(...args),
 	useConvex: () => ({ action: actionMock, mutation: mutationMock }),
 }));
 
+// The real useStableQuery routes through convex/react useQuery; mocking it separately lets tests
+// feed the tree query on its own.
 vi.mock("@/hooks/convex-hooks.ts", () => ({
 	useStableQuery: (...args: unknown[]) => useStableQueryMock(...args),
 }));
 
-vi.mock("@/hooks/utils-hooks.ts", () => ({
-	useFn: <T,>(fn: T) => fn,
-}));
-
+// Spy target: tests assert on toast.error calls.
 vi.mock("sonner", () => ({
 	toast: { error: vi.fn() },
 }));
 
+// Provider boundary: the real useContext throws without an AppTenantProvider mounted above.
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
 		useContext: () => tenantContextMock(),
 	},
 }));
 
+// The real module creates a live ConvexReactClient at import (needs VITE_CONVEX_URL), and the
+// codegen'd api object is a Proxy; plain-string function refs keep call assertions readable.
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex_api: {
 		files_pending_updates: {
@@ -52,62 +55,24 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 	},
 }));
 
-// Avoid the headless-tiptap decode: map each branch's stored bytes straight to canned Markdown so the
-// action handlers see deterministic staged/unstaged content. The type guard mirrors the real shared
-// implementation (presence of the 4 Yjs fields).
-vi.mock("@/lib/files.ts", () => ({
-	files_ROOT_ID: "root",
-	files_pending_update_has_yjs_content: (
-		row:
-			| {
-					baseYjsSequence?: unknown;
-					baseYjsUpdate?: unknown;
-					stagedBranchYjsUpdate?: unknown;
-					unstagedBranchYjsUpdate?: unknown;
-			  }
-			| null
-			| undefined,
-	) =>
-		row != null &&
-		row.baseYjsSequence !== undefined &&
-		row.baseYjsUpdate !== undefined &&
-		row.stagedBranchYjsUpdate !== undefined &&
-		row.unstagedBranchYjsUpdate !== undefined,
+// Keep the real module and fake only the expensive headless-tiptap decoders: map each branch's
+// stored fake string straight to canned Markdown so the action handlers see deterministic
+// staged/unstaged content.
+vi.mock("@/lib/files.ts", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@/lib/files.ts")>()),
 	files_yjs_doc_create_from_array_buffer_update: (update: unknown) => update,
 	files_yjs_doc_get_markdown: ({ yjsDoc }: { yjsDoc: unknown }) => ({ _yay: yjsDoc as string }),
 }));
 
+// The real implementation measures text with Pretext font metrics that happy-dom cannot provide;
+// tests also spy on it to assert the measured width/font.
 vi.mock("@/lib/file-paths.ts", () => ({
 	files_truncate_path_for_width: (args: { path: string; width: number; font: string; letterSpacing: number }) =>
 		truncatePathForWidthMock(args),
 }));
 
-vi.mock("@/components/my-button.tsx", () => ({
-	MyButton: function MyButton(props: ComponentPropsWithRef<"button">) {
-		const { children, ...rest } = props;
-		return <button {...rest}>{children}</button>;
-	},
-	MyButtonIcon: function MyButtonIcon(props: { className?: string; children?: ReactNode }) {
-		return <span className={props.className}>{props.children}</span>;
-	},
-}));
-
-vi.mock("@/components/my-icon.tsx", () => ({
-	MyIcon: function MyIcon(props: { className?: string; children?: ReactNode }) {
-		return <span className={props.className}>{props.children}</span>;
-	},
-}));
-
-vi.mock("@/components/my-icon-button.tsx", () => ({
-	MyIconButton: function MyIconButton(props: ComponentPropsWithRef<"button">) {
-		const { children, ...rest } = props;
-		return <button {...rest}>{children}</button>;
-	},
-	MyIconButtonIcon: function MyIconButtonIcon(props: { className?: string; children?: ReactNode }) {
-		return <span className={props.className}>{props.children}</span>;
-	},
-}));
-
+// The real MyLink is a TanStack Router Link and needs a RouterProvider; the stub renders a plain
+// anchor with the resolved href.
 vi.mock("@/components/my-link.tsx", () => ({
 	MyLink: function MyLink(props: {
 		to: string;
@@ -131,17 +96,6 @@ vi.mock("@/components/my-link.tsx", () => ({
 	},
 }));
 
-vi.mock("@/components/monospace-block/monospace-block-diff.tsx", () => ({
-	DiffMonospaceBlock: function DiffMonospaceBlock(props: { diffText: string; className?: string }) {
-		return (
-			<pre role="textbox" aria-label="Diff preview" className={props.className}>
-				{props.diffText}
-			</pre>
-		);
-	},
-}));
-
-import { files_pending_changes_build_rows } from "./file-editor-sidebar-pending-rows.ts";
 import { FileEditorSidebarPending } from "./file-editor-sidebar-pending.tsx";
 
 function makePendingUpdate(args: {
@@ -150,7 +104,7 @@ function makePendingUpdate(args: {
 	staged?: string;
 	unstaged?: string;
 	pendingMove?: { destParentId: string; destName: string; fromPath: string; replacesNodeId?: string };
-	copiedFrom?: { nodeId: string; path: string };
+	copiedFrom?: { nodeId: string; path: string; archivesSourceOnAccept?: boolean };
 	eagerCreated?: { committedSequence: number };
 }): app_convex_Doc<"files_pending_updates"> {
 	return {
@@ -208,138 +162,6 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
-});
-
-describe("files_pending_changes_build_rows", () => {
-	test("sorts rows by path regardless of input order", () => {
-		const updates = [
-			makePendingUpdate({ id: "pu_z", fileNodeId: "node_z", staged: "s", unstaged: "u" }),
-			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
-			makePendingUpdate({ id: "pu_m", fileNodeId: "node_m", staged: "s", unstaged: "u" }),
-		];
-		const nodesById = new Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>([
-			["node_z" as app_convex_Id<"files_nodes">, makeNode({ id: "node_z", path: "zebra/notes.md" })],
-			["node_a" as app_convex_Id<"files_nodes">, makeNode({ id: "node_a", path: "alpha/intro.md" })],
-			["node_m" as app_convex_Id<"files_nodes">, makeNode({ id: "node_m", path: "mid/readme.md" })],
-		]);
-
-		const rows = files_pending_changes_build_rows(updates, nodesById);
-
-		expect(rows.map((row) => row.path)).toEqual(["alpha/intro.md", "mid/readme.md", "zebra/notes.md"]);
-	});
-
-	test("keeps a fallback label when the file node is missing", () => {
-		const updates = [makePendingUpdate({ id: "pu_x", fileNodeId: "node_missing", staged: "s", unstaged: "u" })];
-		const rows = files_pending_changes_build_rows(updates, new Map());
-
-		expect(rows).toHaveLength(1);
-		expect(rows[0]?.path).toBe("(unknown file)");
-	});
-
-	test("derives row kinds from field presence", () => {
-		const pendingMove = { destParentId: "root", destName: "dest.md", fromPath: "/from.md" };
-		const updates = [
-			makePendingUpdate({ id: "pu_content", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
-			makePendingUpdate({ id: "pu_move", fileNodeId: "node_b", pendingMove }),
-			makePendingUpdate({
-				id: "pu_copy",
-				fileNodeId: "node_c",
-				staged: "s",
-				unstaged: "u",
-				copiedFrom: { nodeId: "node_src", path: "/source.md" },
-			}),
-			makePendingUpdate({ id: "pu_mixed", fileNodeId: "node_d", staged: "s", unstaged: "u", pendingMove }),
-		];
-		const nodesById = new Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>([
-			["node_a" as app_convex_Id<"files_nodes">, makeNode({ id: "node_a", path: "/a.md" })],
-			["node_b" as app_convex_Id<"files_nodes">, makeNode({ id: "node_b", path: "/b.md" })],
-			["node_c" as app_convex_Id<"files_nodes">, makeNode({ id: "node_c", path: "/c.md" })],
-			["node_d" as app_convex_Id<"files_nodes">, makeNode({ id: "node_d", path: "/d.md" })],
-		]);
-
-		const rows = files_pending_changes_build_rows(updates, nodesById);
-
-		expect(rows.map((row) => row.kind)).toEqual(["content", "move", "copy", "content_and_move"]);
-	});
-
-	test("resolves the move destination path from the tree", () => {
-		const updates = [
-			makePendingUpdate({
-				id: "pu_root",
-				fileNodeId: "node_a",
-				pendingMove: { destParentId: "root", destName: "a.md", fromPath: "/from/a.md" },
-			}),
-			makePendingUpdate({
-				id: "pu_nested",
-				fileNodeId: "node_b",
-				pendingMove: { destParentId: "node_docs", destName: "b.md", fromPath: "/from/b.md" },
-			}),
-			makePendingUpdate({
-				id: "pu_missing",
-				fileNodeId: "node_c",
-				pendingMove: { destParentId: "node_gone", destName: "c.md", fromPath: "/from/c.md" },
-			}),
-		];
-		const nodesById = new Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>([
-			["node_a" as app_convex_Id<"files_nodes">, makeNode({ id: "node_a", path: "/from/a.md" })],
-			["node_b" as app_convex_Id<"files_nodes">, makeNode({ id: "node_b", path: "/from/b.md" })],
-			["node_c" as app_convex_Id<"files_nodes">, makeNode({ id: "node_c", path: "/from/c.md" })],
-			["node_docs" as app_convex_Id<"files_nodes">, makeNode({ id: "node_docs", path: "/docs", kind: "folder" })],
-		]);
-
-		const rows = files_pending_changes_build_rows(updates, nodesById);
-
-		expect(rows.map((row) => row.moveDestinationPath)).toEqual(["/a.md", "/docs/b.md", "…/c.md"]);
-	});
-
-	test("keeps the node kind and falls back to fromPath when the source node is missing", () => {
-		const updates = [
-			makePendingUpdate({
-				id: "pu_folder",
-				fileNodeId: "node_folder",
-				pendingMove: { destParentId: "root", destName: "archive", fromPath: "/old-archive" },
-			}),
-			makePendingUpdate({
-				id: "pu_gone",
-				fileNodeId: "node_gone",
-				pendingMove: { destParentId: "root", destName: "gone.md", fromPath: "/from/gone.md" },
-			}),
-		];
-		const nodesById = new Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>([
-			[
-				"node_folder" as app_convex_Id<"files_nodes">,
-				makeNode({ id: "node_folder", path: "/old-archive", kind: "folder" }),
-			],
-		]);
-
-		const rows = files_pending_changes_build_rows(updates, nodesById);
-
-		expect(rows[0]?.path).toBe("/from/gone.md");
-		expect(rows[0]?.nodeKind).toBeUndefined();
-		expect(rows[1]?.path).toBe("/old-archive");
-		expect(rows[1]?.nodeKind).toBe("folder");
-	});
-
-	test("marks rows whose proposal created the file as added", () => {
-		const updates = [
-			makePendingUpdate({
-				id: "pu_added",
-				fileNodeId: "node_a",
-				staged: "s",
-				unstaged: "u",
-				eagerCreated: { committedSequence: 0 },
-			}),
-			makePendingUpdate({ id: "pu_edit", fileNodeId: "node_b", staged: "s", unstaged: "u" }),
-		];
-		const nodesById = new Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>([
-			["node_a" as app_convex_Id<"files_nodes">, makeNode({ id: "node_a", path: "/a.md" })],
-			["node_b" as app_convex_Id<"files_nodes">, makeNode({ id: "node_b", path: "/b.md" })],
-		]);
-
-		const rows = files_pending_changes_build_rows(updates, nodesById);
-
-		expect(rows.map((row) => row.isAddedFile)).toEqual([true, false]);
-	});
 });
 
 describe("FileEditorSidebarPending", () => {
@@ -532,6 +354,43 @@ describe("FileEditorSidebarPending", () => {
 		});
 	});
 
+	test("Discard all waits out a rate-limited row and retries it", async () => {
+		vi.useFakeTimers();
+		try {
+			useQueryMock.mockReturnValue([
+				makePendingUpdate({
+					id: "pu_move",
+					fileNodeId: "node_a",
+					pendingMove: { destParentId: "root", destName: "a.md", fromPath: "/a.md" },
+				}),
+			]);
+			useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+			mutationMock.mockReset();
+			mutationMock
+				.mockResolvedValueOnce({ _nay: { message: "Rate limit exceeded" } })
+				.mockResolvedValue({ _yay: null });
+
+			render(<FileEditorSidebarPending />);
+			fireEvent.click(screen.getByText("Discard all"));
+			expect(mutationMock).toHaveBeenCalledTimes(1);
+
+			// Flush the rate-limited result so the 5s retry timer gets scheduled, then fire it.
+			await act(async () => {});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(5_000);
+			});
+
+			expect(mutationMock).toHaveBeenCalledTimes(2);
+			expect(mutationMock).toHaveBeenLastCalledWith("discard_file_pending_structural", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: "node_a",
+				pendingUpdateId: "pu_move",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("move row renders from → dest without an accordion or diff link", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
@@ -600,6 +459,52 @@ describe("FileEditorSidebarPending", () => {
 
 		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaced");
 		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-added")).toBeNull();
+	});
+
+	test("replace-move row shows the from → to label with the Replaced caption and keeps the diff link", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_replace_move",
+				fileNodeId: "node_a",
+				staged: "s",
+				unstaged: "u",
+				copiedFrom: { nodeId: "node_src", path: "/recorded.md", archivesSourceOnAccept: true },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/target.md" }),
+			makeNode({ id: "node_src", path: "/source.md" }),
+		]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		// The live source path wins over the recorded one; source red → target green.
+		const link = screen.getByRole("link", { name: "/source.md → /target.md" });
+		expect(link.getAttribute("href")).toContain("nodeId=node_a");
+		expect(link.getAttribute("href")).toContain("view=diff_editor");
+		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-from")?.textContent).toBe("/source.md");
+		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-to")?.textContent).toBe("/target.md");
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaced");
+		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-added")).toBeNull();
+		expect(container.querySelector("details")).toBeTruthy();
+	});
+
+	test("replace-move row falls back to the recorded source path when the node is gone", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_replace_move",
+				fileNodeId: "node_a",
+				staged: "s",
+				unstaged: "u",
+				copiedFrom: { nodeId: "node_gone", path: "/recorded.md", archivesSourceOnAccept: true },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/target.md" })]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-from")?.textContent).toBe("/recorded.md");
+		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-to")?.textContent).toBe("/target.md");
 	});
 
 	test("plain edit rows show the Modified caption without the green path", () => {

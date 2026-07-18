@@ -1,4 +1,5 @@
 import { R2 } from "@convex-dev/r2";
+import { RateLimiter } from "@convex-dev/rate-limiter";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
 import { api, components, internal } from "./_generated/api.js";
@@ -604,7 +605,7 @@ async function upsert_file_pending_update_internal_for_test(args: {
 	pendingUpdateId?: Id<"files_pending_updates">;
 	stagedMarkdown?: string;
 	unstagedMarkdown: string;
-	copiedFrom?: { nodeId: Id<"files_nodes">; path: string };
+	copiedFrom?: { nodeId: Id<"files_nodes">; path: string; archivesSourceOnAccept?: boolean };
 	eagerCreated?: boolean;
 }) {
 	return await args.t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
@@ -1284,6 +1285,91 @@ describe("upsert_file_pending_update", () => {
 			}),
 		);
 		expect(cleanupTasksAfterDiscard).toHaveLength(0);
+	});
+});
+
+describe("pending update provenance", () => {
+	test("a later replace proposal overwrites the recorded source", async () => {
+		const t = test_convex();
+
+		const sourceA = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/provenance-source-a.md",
+				name: "provenance-source-a.md",
+				markdown: "# Provenance source A",
+			}),
+		);
+		const sourceB = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/provenance-source-b.md",
+				name: "provenance-source-b.md",
+				markdown: "# Provenance source B",
+				membership: {
+					userId: sourceA.userId,
+					organizationId: sourceA.organizationId,
+					workspaceId: sourceA.workspaceId,
+					membershipId: sourceA.membershipId,
+				},
+			}),
+		);
+		const dest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/provenance-dest.md",
+				name: "provenance-dest.md",
+				markdown: "# Provenance dest base",
+				membership: {
+					userId: sourceA.userId,
+					organizationId: sourceA.organizationId,
+					workspaceId: sourceA.workspaceId,
+					membershipId: sourceA.membershipId,
+				},
+			}),
+		);
+
+		const firstCopy = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: dest.organizationId,
+			workspaceId: dest.workspaceId,
+			userId: dest.userId,
+			nodeId: dest.nodeId,
+			unstagedMarkdown: `${sourceA.baseMarkdown}\n\nFrom A`,
+			copiedFrom: { nodeId: sourceA.nodeId, path: "/provenance-source-a.md" },
+		});
+		if (firstCopy._nay) {
+			throw new Error(firstCopy._nay.message);
+		}
+
+		// cp then mv -f onto the same target: the newest structural intent wins the provenance slot.
+		const secondReplace = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: dest.organizationId,
+			workspaceId: dest.workspaceId,
+			userId: dest.userId,
+			nodeId: dest.nodeId,
+			unstagedMarkdown: `${sourceB.baseMarkdown}\n\nFrom B`,
+			copiedFrom: { nodeId: sourceB.nodeId, path: "/provenance-source-b.md", archivesSourceOnAccept: true },
+		});
+		if (secondReplace._nay) {
+			throw new Error(secondReplace._nay.message);
+		}
+
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: dest.userId,
+				nodeId: dest.nodeId,
+			}),
+		);
+		expect(row?.copiedFrom).toEqual({
+			nodeId: sourceB.nodeId,
+			path: "/provenance-source-b.md",
+			archivesSourceOnAccept: true,
+		});
 	});
 });
 
@@ -2580,7 +2666,7 @@ describe("save_file_pending_update", () => {
 		expect(savedMarkdownAfterNoStagedSave).not.toContain("Unresolved only");
 	});
 
-	test("save_file_pending_update returns rate-limit _nay and preserves pending doc when bucket exhausted", async () => {
+	test("save_file_pending_update returns rate-limit _nay and preserves pending doc when the limiter rejects", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -2629,7 +2715,7 @@ describe("save_file_pending_update", () => {
 				nodeId: seeded.nodeId,
 			});
 			if (result._nay) {
-				throw new Error(`Expected pre-exhaust save #${i + 1} to succeed, got: ${result._nay.message}`);
+				throw new Error(`Expected save #${i + 1} to succeed, got: ${result._nay.message}`);
 			}
 
 			const saveMarkdown = `${seeded.baseMarkdown}\n\nStaged change ${i + 1}`;
@@ -2666,6 +2752,10 @@ describe("save_file_pending_update", () => {
 			nodeId: seeded.nodeId,
 		});
 		expect(lastSequenceSavedBeforeBlockedSave?.lastSequenceSaved).toBe(2);
+
+		// The bucket allows a burst of 50, so force the next limiter check to reject instead of
+		// exhausting it with 50 real saves.
+		vi.spyOn(RateLimiter.prototype, "limit").mockResolvedValueOnce({ ok: false, retryAfter: 5_000 } as never);
 
 		const saveResult = await asUser.action(api.ai_chat.save_file_pending_update, {
 			membershipId: seeded.membershipId,
@@ -4828,6 +4918,75 @@ describe("discard_file_pending_structural", () => {
 		});
 	});
 
+	test("discarding a replace-move row keeps both files", async () => {
+		const t = test_convex();
+
+		const source = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/discard-replace-move-source.md",
+				name: "discard-replace-move-source.md",
+				markdown: "# Replace move source",
+			}),
+		);
+		const dest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/discard-replace-move-dest.md",
+				name: "discard-replace-move-dest.md",
+				markdown: "# Replace move dest base",
+				membership: {
+					userId: source.userId,
+					organizationId: source.organizationId,
+					workspaceId: source.workspaceId,
+					membershipId: source.membershipId,
+				},
+			}),
+		);
+		// mv -f between editable files: the replace lives on the TARGET row with the archive flag.
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: dest.organizationId,
+			workspaceId: dest.workspaceId,
+			userId: dest.userId,
+			nodeId: dest.nodeId,
+			unstagedMarkdown: `${source.baseMarkdown}\n\nReplacement content`,
+			copiedFrom: { nodeId: source.nodeId, path: "/discard-replace-move-source.md", archivesSourceOnAccept: true },
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: dest.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
+			membershipId: dest.membershipId,
+			nodeId: dest.nodeId,
+		});
+		if (discarded._nay) {
+			throw new Error(discarded._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			// Nothing moved and nothing was archived: only the proposal row is dropped.
+			const sourceNode = await ctx.db.get("files_nodes", source.nodeId);
+			expect(sourceNode?.archiveOperationId).toBeUndefined();
+			const destNode = await ctx.db.get("files_nodes", dest.nodeId);
+			expect(destNode?.archiveOperationId).toBeUndefined();
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: dest.userId,
+				nodeId: dest.nodeId,
+			});
+			expect(row).toBeNull();
+		});
+	});
+
 	test("keeps the node when content was committed since the copy was proposed", async () => {
 		const t = test_convex();
 
@@ -5660,6 +5819,247 @@ describe("save with structural rows", () => {
 		}
 		expect(row.copiedFrom).toBeUndefined();
 		expect(files_pending_update_has_yjs_content(row)).toBe(true);
+	});
+
+	test("full save on a replace-move row archives the source file", async () => {
+		const t = test_convex();
+
+		const source = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/save-replace-move-source.md",
+				name: "save-replace-move-source.md",
+				markdown: "# Save replace move source",
+			}),
+		);
+		const dest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/save-replace-move-dest.md",
+				name: "save-replace-move-dest.md",
+				markdown: "# Save replace move dest base",
+				membership: {
+					userId: source.userId,
+					organizationId: source.organizationId,
+					workspaceId: source.workspaceId,
+					membershipId: source.membershipId,
+				},
+			}),
+		);
+		const replacementMarkdown = normalize_pending_update_markdown(`${source.baseMarkdown}\n\nReplacement content`);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: dest.organizationId,
+			workspaceId: dest.workspaceId,
+			userId: dest.userId,
+			nodeId: dest.nodeId,
+			stagedMarkdown: replacementMarkdown,
+			unstagedMarkdown: replacementMarkdown,
+			copiedFrom: { nodeId: source.nodeId, path: "/save-replace-move-source.md", archivesSourceOnAccept: true },
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: dest.userId,
+			name: "Test User",
+		});
+		const saved = await asUser.action(api.ai_chat.save_file_pending_update, {
+			membershipId: dest.membershipId,
+			nodeId: dest.nodeId,
+		});
+		if (saved._nay) {
+			throw new Error(saved._nay.message);
+		}
+
+		const committedMarkdown = await t.run((ctx) =>
+			read_file_markdown_from_yjs({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				nodeId: dest.nodeId,
+			}),
+		);
+		expect(committedMarkdown).toContain("Replacement content");
+
+		await t.run(async (ctx) => {
+			// The accepted replace archives the source file (recoverable) and resolves the row.
+			const sourceNode = await ctx.db.get("files_nodes", source.nodeId);
+			expect(sourceNode?.archiveOperationId).toBeDefined();
+			const destNode = await ctx.db.get("files_nodes", dest.nodeId);
+			expect(destNode?.archiveOperationId).toBeUndefined();
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: dest.userId,
+				nodeId: dest.nodeId,
+			});
+			expect(row).toBeNull();
+		});
+	});
+
+	test("an identical-content replace-move row persists and accepting archives the source", async () => {
+		const t = test_convex();
+
+		const source = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/save-same-replace-source.md",
+				name: "save-same-replace-source.md",
+				markdown: "# Same replace content",
+			}),
+		);
+		const dest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/save-same-replace-dest.md",
+				name: "save-same-replace-dest.md",
+				markdown: "# Same replace content",
+				membership: {
+					userId: source.userId,
+					organizationId: source.organizationId,
+					workspaceId: source.workspaceId,
+					membershipId: source.membershipId,
+				},
+			}),
+		);
+		// Identical content collapses to base, but the row must persist: accepting it still
+		// archives the source file, which is the whole point of the mv.
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: dest.organizationId,
+			workspaceId: dest.workspaceId,
+			userId: dest.userId,
+			nodeId: dest.nodeId,
+			stagedMarkdown: dest.baseMarkdown,
+			unstagedMarkdown: dest.baseMarkdown,
+			copiedFrom: { nodeId: source.nodeId, path: "/save-same-replace-source.md", archivesSourceOnAccept: true },
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: dest.userId,
+				nodeId: dest.nodeId,
+			}),
+		);
+		if (!row) {
+			throw new Error("Expected a persisted replace-move row for identical content");
+		}
+		expect(row.copiedFrom).toEqual({
+			nodeId: source.nodeId,
+			path: "/save-same-replace-source.md",
+			archivesSourceOnAccept: true,
+		});
+		expect(files_pending_update_has_yjs_content(row)).toBe(true);
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: dest.userId,
+			name: "Test User",
+		});
+		const saved = await asUser.action(api.ai_chat.save_file_pending_update, {
+			membershipId: dest.membershipId,
+			nodeId: dest.nodeId,
+		});
+		if (saved._nay) {
+			throw new Error(saved._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const sourceNode = await ctx.db.get("files_nodes", source.nodeId);
+			expect(sourceNode?.archiveOperationId).toBeDefined();
+			const rowAfterSave = await read_pending_update_row({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: dest.userId,
+				nodeId: dest.nodeId,
+			});
+			expect(rowAfterSave).toBeNull();
+		});
+	});
+
+	test("a partial save that publishes staged content archives the replace source", async () => {
+		const t = test_convex();
+
+		const source = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/save-partial-replace-source.md",
+				name: "save-partial-replace-source.md",
+				markdown: "# Partial replace source",
+			}),
+		);
+		const dest = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/save-partial-replace-dest.md",
+				name: "save-partial-replace-dest.md",
+				markdown: "# Partial replace dest base",
+				membership: {
+					userId: source.userId,
+					organizationId: source.organizationId,
+					workspaceId: source.workspaceId,
+					membershipId: source.membershipId,
+				},
+			}),
+		);
+		// Staged carries part of the replacement while unstaged has more: the save publishes the
+		// staged part, so the source is archived and the rest stays reviewable.
+		const stagedMarkdown = normalize_pending_update_markdown(`${source.baseMarkdown}\n\nPart one`);
+		const unstagedMarkdown = normalize_pending_update_markdown(`${source.baseMarkdown}\n\nPart one\n\nPart two`);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: dest.organizationId,
+			workspaceId: dest.workspaceId,
+			userId: dest.userId,
+			nodeId: dest.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown,
+			copiedFrom: { nodeId: source.nodeId, path: "/save-partial-replace-source.md", archivesSourceOnAccept: true },
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: dest.userId,
+			name: "Test User",
+		});
+		const saved = await asUser.action(api.ai_chat.save_file_pending_update, {
+			membershipId: dest.membershipId,
+			nodeId: dest.nodeId,
+		});
+		if (saved._nay) {
+			throw new Error(saved._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const sourceNode = await ctx.db.get("files_nodes", source.nodeId);
+			expect(sourceNode?.archiveOperationId).toBeDefined();
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: dest.userId,
+				nodeId: dest.nodeId,
+			});
+			if (!row) {
+				throw new Error("Expected the pending row to survive a partial save");
+			}
+			expect(row.copiedFrom).toBeUndefined();
+			expect(files_pending_update_has_yjs_content(row)).toBe(true);
+		});
 	});
 });
 

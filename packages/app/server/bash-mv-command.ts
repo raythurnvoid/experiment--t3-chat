@@ -2,9 +2,20 @@ import { defineCommand } from "just-bash/browser";
 import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { Id } from "../convex/_generated/dataModel";
-import type { files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
-import type { upsert_file_pending_move_in_db_Result } from "../convex/files_pending_updates.ts";
-import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, files_get_normalized_node_path_segments } from "../shared/files.ts";
+import type {
+	files_nodes_get_by_path_Result,
+	files_nodes_get_file_last_available_markdown_content_by_path_Result,
+} from "../convex/files_nodes.ts";
+import type {
+	upsert_file_pending_move_in_db_Result,
+	upsert_file_pending_update_internal_action_Result,
+} from "../convex/files_pending_updates.ts";
+import {
+	files_ROOT_ID,
+	files_SYNTHETIC_ROOT_FOLDER,
+	files_get_normalized_node_path_segments,
+	files_node_has_editable_yjs_state,
+} from "../shared/files.ts";
 import { organizations_is_global_organization_id, organizations_is_reserved_workspace_id } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { path_join } from "./server-utils.ts";
@@ -181,6 +192,8 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		let destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
 		let destName: string;
 		let intendedDestPath: string;
+		// The active file that `mv -f` would replace at the destination, when there is one.
+		let replaceTargetNode: NonNullable<files_nodes_get_by_path_Result> | null = null;
 		if (destNode) {
 			if (destNode._id === sourceNode._id) {
 				return {
@@ -201,6 +214,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				destParentId = destNode.parentId;
 				destName = destNode.name;
 				intendedDestPath = destNode.path;
+				replaceTargetNode = destNode;
 			} else {
 				// An existing folder destination keeps the source name inside it, like native mv.
 				destParentId = destNode._id;
@@ -230,6 +244,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 							exitCode: bash_COMMAND_EXIT_FAILURE,
 						};
 					}
+					replaceTargetNode = occupant;
 				}
 			}
 		} else {
@@ -270,6 +285,53 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			// The raw name has no path separators, so normalization yields exactly one segment.
 			destName = normalizedDestName.normalizedPathSegments.join("/");
 			intendedDestPath = path_join(destParentPath, destName);
+		}
+
+		// `mv -f` between editable files proposes a copy on the TARGET plus `archivesSourceOnAccept`:
+		// the target keeps its identity and history, and accepting saves the replacement as a new
+		// version and archives the source. Non-editable files (no history to keep) stay structural.
+		if (
+			replaceTargetNode &&
+			files_node_has_editable_yjs_state(sourceNode) &&
+			files_node_has_editable_yjs_state(replaceTargetNode)
+		) {
+			// Copy what the agent sees: the last available markdown, including the calling user's
+			// own pending overlay on the source file.
+			const sourceContent = (await ctx.runAction(
+				internal.files_nodes.get_file_last_available_markdown_content_by_path,
+				{
+					organizationId,
+					workspaceId,
+					userId,
+					path: sourceDbFilesPath,
+				},
+			)) as files_nodes_get_file_last_available_markdown_content_by_path_Result;
+			if (sourceContent) {
+				const upserted = (await ctx.runAction(
+					internal.files_pending_updates.upsert_file_pending_update_internal_action,
+					{
+						organizationId,
+						workspaceId,
+						userId,
+						nodeId: replaceTargetNode._id,
+						unstagedMarkdown: sourceContent.content,
+						copiedFrom: { nodeId: sourceNode._id, path: sourceDbFilesPath, archivesSourceOnAccept: true },
+					},
+				)) as upsert_file_pending_update_internal_action_Result;
+				if (upserted._nay) {
+					return {
+						stdout: "",
+						stderr: `mv: cannot replace '${destOperand}': ${upserted._nay.message}\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				}
+				return {
+					stdout: `pending replace created: ${sourceDbFilesPath} -> ${intendedDestPath} — replaces the file's content and archives the source when accepted; review in Files\n`,
+					stderr: "",
+					exitCode: 0,
+				};
+			}
+			// Unreadable source content: fall through to the structural replace, which still moves the file.
 		}
 
 		const proposed = (await ctx.runMutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {

@@ -127,7 +127,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 					"FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames,
 					"FileEditorDiffToolbarActions-button-accept-all" satisfies FileEditorDiffToolbarActions_ClassNames,
 				)}
-				aria-label="Accept all pending changes"
+				aria-label="Accept all pending changes in this file"
 				disabled={isAcceptAllDisabled}
 				onClick={onClickAcceptAll}
 			>
@@ -161,7 +161,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 					"FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames,
 					"FileEditorDiffToolbarActions-button-discard-all" satisfies FileEditorDiffToolbarActions_ClassNames,
 				)}
-				aria-label="Discard all pending changes"
+				aria-label="Discard all pending changes in this file"
 				disabled={isDiscardAllDisabled}
 				onClick={onClickDiscardAll}
 			>

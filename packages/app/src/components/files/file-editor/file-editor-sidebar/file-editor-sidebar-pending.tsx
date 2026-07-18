@@ -14,22 +14,91 @@ import { MyLink } from "@/components/my-link.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
 import { files_truncate_path_for_width } from "@/lib/file-paths.ts";
 import {
+	files_ROOT_ID,
 	files_pending_update_has_yjs_content,
 	files_yjs_doc_create_from_array_buffer_update,
 	files_yjs_doc_get_markdown,
 } from "@/lib/files.ts";
+import { async_all_settled_with_limit, delay } from "@/lib/async.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { APP_FONT_FAMILY } from "@/lib/ui.tsx";
 import { cn } from "@/lib/utils.ts";
-import {
-	files_pending_changes_build_rows,
-	type FileEditorSidebarPendingRow,
-} from "./file-editor-sidebar-pending-rows.ts";
 
 // Keep these Pretext metrics in sync with `.FileEditorSidebarPending-item-path-text`;
 // duplicating them here avoids `getComputedStyle` during path resize work.
 const PENDING_PATH_FONT = `500 16px ${APP_FONT_FAMILY}`;
 const PENDING_PATH_LETTER_SPACING = 0;
+
+const PENDING_MISSING_PATH_LABEL = "(unknown file)";
+
+type FileEditorSidebarPendingRow = {
+	pendingUpdate: app_convex_Doc<"files_pending_updates">;
+	path: string;
+	kind: "content" | "move" | "copy" | "content_and_move";
+	nodeKind: app_convex_Doc<"files_nodes">["kind"] | undefined;
+	moveDestinationPath: string | undefined;
+	/**
+	 * True for structural `mv -f` replaces (non-editable target): accepting archives the file at
+	 * the destination path. Editable-file replaces use `replaceSourcePath` instead.
+	 */
+	moveReplacesExistingFile: boolean;
+	/** True when the proposal created the file (write_file/cp onto a new path): shown as Added. */
+	isAddedFile: boolean;
+	/**
+	 * Source path of an `mv -f` content replace: accepting puts that file's content on this row's
+	 * file (as a new version) and archives the source. Shown as a "source → target" label.
+	 */
+	replaceSourcePath: string | undefined;
+};
+
+/**
+ * Pair each pending update with its file path and sort by path (the list query returns rows in
+ * creation order). Rows whose file node is missing from `list_tree` keep a fallback label so the
+ * user can still discard them. The row `kind` is derived from field presence: `pendingMove`
+ * marks a move (plus content when the Yjs fields are set), `copiedFrom` marks a copy.
+ */
+function build_pending_rows(
+	pendingUpdates: readonly app_convex_Doc<"files_pending_updates">[],
+	nodesById: Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>,
+): FileEditorSidebarPendingRow[] {
+	return pendingUpdates
+		.map((pendingUpdate) => {
+			const node = nodesById.get(pendingUpdate.fileNodeId);
+			const { pendingMove, copiedFrom } = pendingUpdate;
+
+			const kind = pendingMove
+				? files_pending_update_has_yjs_content(pendingUpdate)
+					? ("content_and_move" as const)
+					: ("move" as const)
+				: copiedFrom
+					? ("copy" as const)
+					: ("content" as const);
+
+			let moveDestinationPath: string | undefined;
+			if (pendingMove) {
+				if (pendingMove.destParentId === files_ROOT_ID) {
+					moveDestinationPath = `/${pendingMove.destName}`;
+				} else {
+					const destParent = nodesById.get(pendingMove.destParentId);
+					moveDestinationPath = destParent ? `${destParent.path}/${pendingMove.destName}` : `…/${pendingMove.destName}`;
+				}
+			}
+
+			return {
+				pendingUpdate,
+				path: node?.path ?? pendingMove?.fromPath ?? PENDING_MISSING_PATH_LABEL,
+				kind,
+				nodeKind: node?.kind,
+				moveDestinationPath,
+				moveReplacesExistingFile: pendingMove?.replacesNodeId != null,
+				isAddedFile: pendingUpdate.eagerCreated != null,
+				replaceSourcePath: copiedFrom?.archivesSourceOnAccept
+					? (nodesById.get(copiedFrom.nodeId)?.path ?? copiedFrom.path)
+					: undefined,
+			};
+		})
+		.sort((left, right) => left.path.localeCompare(right.path));
+}
 
 const PendingPathText = memo(function PendingPathText(props: { path: string; className?: string }) {
 	const { path, className } = props;
@@ -213,6 +282,41 @@ async function files_pending_row_discard(
 	});
 }
 
+/**
+ * Run a bulk action over the rows, at most 5 at a time in FIFO order. The write mutations share
+ * per-user rate limits, so a row that gets "Rate limit exceeded" (the literal from
+ * `rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE`, not importable here because the module is
+ * server-only) waits 5s and retries, up to 6 times, instead of silently staying behind. Returns
+ * the number of rows that still failed.
+ */
+async function files_pending_rows_run_bulk(
+	rows: FileEditorSidebarPendingRow[],
+	run: (pendingUpdate: app_convex_Doc<"files_pending_updates">) => Promise<{ _nay?: { message?: string } | null }>,
+) {
+	const results = await async_all_settled_with_limit(rows, 5, async (row) => {
+		let result = await run(row.pendingUpdate);
+		for (let attempt = 0; result._nay?.message === "Rate limit exceeded" && attempt < 6; attempt++) {
+			await delay(5_000);
+			result = await run(row.pendingUpdate);
+		}
+		return result;
+	});
+
+	let failures = 0;
+	for (const [index, result] of results.entries()) {
+		if (result.status === "rejected") {
+			console.error("[FileEditorSidebarPending] Bulk action failed for a row", {
+				error: result.reason,
+				nodeId: rows[index]?.pendingUpdate.fileNodeId,
+			});
+			failures += 1;
+		} else if (result.value._nay) {
+			failures += 1;
+		}
+	}
+	return failures;
+}
+
 // #region item
 type FileEditorSidebarPendingItem_Props = {
 	pendingUpdate: app_convex_Doc<"files_pending_updates">;
@@ -221,13 +325,15 @@ type FileEditorSidebarPendingItem_Props = {
 	moveDestinationPath: string | undefined;
 	moveReplacesExistingFile: boolean;
 	isAddedFile: boolean;
+	replaceSourcePath: string | undefined;
 	disabled?: boolean;
 };
 
 const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	props: FileEditorSidebarPendingItem_Props,
 ) {
-	const { pendingUpdate, path, kind, moveDestinationPath, moveReplacesExistingFile, isAddedFile, disabled } = props;
+	const { pendingUpdate, path, kind, moveDestinationPath, moveReplacesExistingFile, isAddedFile, replaceSourcePath, disabled } =
+		props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const convex = useConvex();
 
@@ -363,8 +469,8 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	}
 
 	// One-word neutral helper describing what accepting does, always visible. Replace wins the
-	// slot: for mv -f it archives the destination file; a non-eager copy replaces the target's
-	// content. Plain content edits show Modified.
+	// slot: structural mv -f archives the destination; replace-moves and non-eager copies replace
+	// the target's content (a replace-move also archives the source). Plain edits show Modified.
 	const caption = moveReplacesExistingFile
 		? "Replaced"
 		: isAddedFile
@@ -375,8 +481,15 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 					? "Replaced"
 					: "Modified";
 
-	// Mixed rows show the same red → green move label as pure move rows; the link still opens the diff.
-	const rowLabel = kind === "content_and_move" && moveDestinationPath != null ? `${path} → ${moveDestinationPath}` : path;
+	// Mixed rows show the same red → green move label as pure move rows; the link still opens the
+	// diff. Replace-move rows (`mv -f`) show "source → target": the source disappears (red) and
+	// its content lands on the target (green).
+	const rowLabel =
+		kind === "content_and_move" && moveDestinationPath != null
+			? `${path} → ${moveDestinationPath}`
+			: replaceSourcePath != null
+				? `${replaceSourcePath} → ${path}`
+				: path;
 
 	return (
 		<li>
@@ -399,6 +512,8 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 					>
 						{kind === "content_and_move" && moveDestinationPath != null ? (
 							<PendingMoveLabel path={path} moveDestinationPath={moveDestinationPath} />
+						) : replaceSourcePath != null ? (
+							<PendingMoveLabel path={replaceSourcePath} moveDestinationPath={path} />
 						) : (
 							<PendingPathText
 								path={path}
@@ -476,10 +591,10 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	const pendingUpdates = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, { membershipId });
 	const fileNodesList = useStableQuery(app_convex_api.files_nodes.list_tree, { membershipId });
 
-	const rows = useMemo(() => {
+	const rows = ((/* iife */) => {
 		const nodesById = new Map((fileNodesList ?? []).map((node) => [node._id, node] as const));
-		return files_pending_changes_build_rows(pendingUpdates ?? [], nodesById);
-	}, [pendingUpdates, fileNodesList]);
+		return build_pending_rows(pendingUpdates ?? [], nodesById);
+	})();
 
 	const handleAcceptAll = useFn(() => {
 		if (isBulkBusy) return;
@@ -487,10 +602,9 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const results = await Promise.allSettled(
-				rows.map((row) => files_pending_row_accept(convex, membershipId, row.pendingUpdate)),
+			const failures = await files_pending_rows_run_bulk(rows, (pendingUpdate) =>
+				files_pending_row_accept(convex, membershipId, pendingUpdate),
 			);
-			const failures = results.filter((result) => result.status === "rejected" || result.value._nay).length;
 			if (failures > 0) {
 				toast.error(`Failed to accept ${failures} of ${rows.length} pending changes`);
 			}
@@ -510,10 +624,9 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const results = await Promise.allSettled(
-				rows.map((row) => files_pending_row_discard(convex, membershipId, row.pendingUpdate)),
+			const failures = await files_pending_rows_run_bulk(rows, (pendingUpdate) =>
+				files_pending_row_discard(convex, membershipId, pendingUpdate),
 			);
-			const failures = results.filter((result) => result.status === "rejected" || result.value._nay).length;
 			if (failures > 0) {
 				toast.error(`Failed to discard ${failures} of ${rows.length} pending changes`);
 			}
@@ -586,6 +699,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 						moveDestinationPath={row.moveDestinationPath}
 						moveReplacesExistingFile={row.moveReplacesExistingFile}
 						isAddedFile={row.isAddedFile}
+						replaceSourcePath={row.replaceSourcePath}
 						disabled={isBulkBusy}
 					/>
 				))}
@@ -594,3 +708,169 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	);
 });
 // #endregion root
+
+// The NODE_ENV check comes first so client builds erase this block; `import.meta.vitest` is
+// only defined when vitest runs this file.
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, expect, test } = import.meta.vitest;
+
+	const makePendingUpdate = (args: {
+		id: string;
+		fileNodeId: string;
+		staged?: string;
+		unstaged?: string;
+		pendingMove?: { destParentId: string; destName: string; fromPath: string; replacesNodeId?: string };
+		copiedFrom?: { nodeId: string; path: string; archivesSourceOnAccept?: boolean };
+		eagerCreated?: { committedSequence: number };
+	}) =>
+		({
+			_id: args.id,
+			fileNodeId: args.fileNodeId,
+			// Structural-only rows leave all 4 Yjs fields unset, like the server does.
+			...(args.staged != null && args.unstaged != null
+				? {
+						baseYjsSequence: 0,
+						baseYjsUpdate: "",
+						stagedBranchYjsUpdate: args.staged,
+						unstagedBranchYjsUpdate: args.unstaged,
+					}
+				: {}),
+			...(args.pendingMove ? { pendingMove: args.pendingMove } : {}),
+			...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
+			...(args.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
+		}) as unknown as app_convex_Doc<"files_pending_updates">;
+
+	const makeNode = (args: { id: string; path: string; kind?: "file" | "folder" }) =>
+		({
+			_id: args.id,
+			path: args.path,
+			kind: args.kind ?? "file",
+		}) as unknown as app_convex_Doc<"files_nodes">;
+
+	const makeNodesById = (nodes: app_convex_Doc<"files_nodes">[]) =>
+		new Map(nodes.map((node) => [node._id, node] as const));
+
+	describe("build_pending_rows", () => {
+		test("sorts rows by path regardless of input order", () => {
+			const updates = [
+				makePendingUpdate({ id: "pu_z", fileNodeId: "node_z", staged: "s", unstaged: "u" }),
+				makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
+				makePendingUpdate({ id: "pu_m", fileNodeId: "node_m", staged: "s", unstaged: "u" }),
+			];
+			const nodesById = makeNodesById([
+				makeNode({ id: "node_z", path: "zebra/notes.md" }),
+				makeNode({ id: "node_a", path: "alpha/intro.md" }),
+				makeNode({ id: "node_m", path: "mid/readme.md" }),
+			]);
+
+			const rows = build_pending_rows(updates, nodesById);
+
+			expect(rows.map((row) => row.path)).toEqual(["alpha/intro.md", "mid/readme.md", "zebra/notes.md"]);
+		});
+
+		test("keeps a fallback label when the file node is missing", () => {
+			const updates = [makePendingUpdate({ id: "pu_x", fileNodeId: "node_missing", staged: "s", unstaged: "u" })];
+			const rows = build_pending_rows(updates, new Map());
+
+			expect(rows).toHaveLength(1);
+			expect(rows[0]?.path).toBe("(unknown file)");
+		});
+
+		test("derives row kinds from field presence", () => {
+			const pendingMove = { destParentId: files_ROOT_ID, destName: "dest.md", fromPath: "/from.md" };
+			const updates = [
+				makePendingUpdate({ id: "pu_content", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
+				makePendingUpdate({ id: "pu_move", fileNodeId: "node_b", pendingMove }),
+				makePendingUpdate({
+					id: "pu_copy",
+					fileNodeId: "node_c",
+					staged: "s",
+					unstaged: "u",
+					copiedFrom: { nodeId: "node_src", path: "/source.md" },
+				}),
+				makePendingUpdate({ id: "pu_mixed", fileNodeId: "node_d", staged: "s", unstaged: "u", pendingMove }),
+			];
+			const nodesById = makeNodesById([
+				makeNode({ id: "node_a", path: "/a.md" }),
+				makeNode({ id: "node_b", path: "/b.md" }),
+				makeNode({ id: "node_c", path: "/c.md" }),
+				makeNode({ id: "node_d", path: "/d.md" }),
+			]);
+
+			const rows = build_pending_rows(updates, nodesById);
+
+			expect(rows.map((row) => row.kind)).toEqual(["content", "move", "copy", "content_and_move"]);
+		});
+
+		test("resolves the move destination path from the tree", () => {
+			const updates = [
+				makePendingUpdate({
+					id: "pu_root",
+					fileNodeId: "node_a",
+					pendingMove: { destParentId: files_ROOT_ID, destName: "a.md", fromPath: "/from/a.md" },
+				}),
+				makePendingUpdate({
+					id: "pu_nested",
+					fileNodeId: "node_b",
+					pendingMove: { destParentId: "node_docs", destName: "b.md", fromPath: "/from/b.md" },
+				}),
+				makePendingUpdate({
+					id: "pu_missing",
+					fileNodeId: "node_c",
+					pendingMove: { destParentId: "node_gone", destName: "c.md", fromPath: "/from/c.md" },
+				}),
+			];
+			const nodesById = makeNodesById([
+				makeNode({ id: "node_a", path: "/from/a.md" }),
+				makeNode({ id: "node_b", path: "/from/b.md" }),
+				makeNode({ id: "node_c", path: "/from/c.md" }),
+				makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
+			]);
+
+			const rows = build_pending_rows(updates, nodesById);
+
+			expect(rows.map((row) => row.moveDestinationPath)).toEqual(["/a.md", "/docs/b.md", "…/c.md"]);
+		});
+
+		test("keeps the node kind and falls back to fromPath when the source node is missing", () => {
+			const updates = [
+				makePendingUpdate({
+					id: "pu_folder",
+					fileNodeId: "node_folder",
+					pendingMove: { destParentId: files_ROOT_ID, destName: "archive", fromPath: "/old-archive" },
+				}),
+				makePendingUpdate({
+					id: "pu_gone",
+					fileNodeId: "node_gone",
+					pendingMove: { destParentId: files_ROOT_ID, destName: "gone.md", fromPath: "/from/gone.md" },
+				}),
+			];
+			const nodesById = makeNodesById([makeNode({ id: "node_folder", path: "/old-archive", kind: "folder" })]);
+
+			const rows = build_pending_rows(updates, nodesById);
+
+			expect(rows[0]?.path).toBe("/from/gone.md");
+			expect(rows[0]?.nodeKind).toBeUndefined();
+			expect(rows[1]?.path).toBe("/old-archive");
+			expect(rows[1]?.nodeKind).toBe("folder");
+		});
+
+		test("marks rows whose proposal created the file as added", () => {
+			const updates = [
+				makePendingUpdate({
+					id: "pu_added",
+					fileNodeId: "node_a",
+					staged: "s",
+					unstaged: "u",
+					eagerCreated: { committedSequence: 0 },
+				}),
+				makePendingUpdate({ id: "pu_edit", fileNodeId: "node_b", staged: "s", unstaged: "u" }),
+			];
+			const nodesById = makeNodesById([makeNode({ id: "node_a", path: "/a.md" }), makeNode({ id: "node_b", path: "/b.md" })]);
+
+			const rows = build_pending_rows(updates, nodesById);
+
+			expect(rows.map((row) => row.isAddedFile)).toEqual([true, false]);
+		});
+	});
+}

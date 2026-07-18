@@ -4740,7 +4740,7 @@ export const read_file_content_from_chunks = internalQuery({
 				return null;
 			}
 		} else if (args.pendingUpdateId != null) {
-			// External (reserved) rows never have pending docs; an explicit pending view cannot resolve.
+			// External (reserved) nodes never have pending docs; an explicit pending view cannot resolve.
 			return null;
 		}
 
@@ -5456,7 +5456,7 @@ export const match_markdown_file_lines = internalQuery({
 				pendingUpdateId = pendingUpdate?._id ?? null;
 			}
 		} else if (args.pendingUpdateId != null) {
-			// External (reserved) rows never have pending docs; an explicit pending view cannot resolve.
+			// External (reserved) nodes never have pending docs; an explicit pending view cannot resolve.
 			return null;
 		}
 
@@ -5509,7 +5509,7 @@ export const match_markdown_file_lines = internalQuery({
 		}
 
 		// Tenant committed chunks are valid only when the latest Yjs sequence is materialized; external
-		// (reserved) rows have no Yjs/materialization state and read committed chunks by node id.
+		// (reserved) nodes have no Yjs/materialization state and read committed chunks by node id.
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
 			!organizations_is_reserved_workspace_id(args.workspaceId)
@@ -5671,7 +5671,7 @@ export const match_plain_text_file_lines = internalQuery({
 				pendingUpdateId = pendingUpdate?._id ?? null;
 			}
 		} else if (args.pendingUpdateId != null) {
-			// External (reserved) rows never have pending docs; an explicit pending view cannot resolve.
+			// External (reserved) nodes never have pending docs; an explicit pending view cannot resolve.
 			return null;
 		}
 
@@ -5690,7 +5690,7 @@ export const match_plain_text_file_lines = internalQuery({
 		}
 
 		// Tenant committed chunks are valid only when the latest Yjs sequence is materialized; external
-		// (reserved) rows have no Yjs/materialization state and read committed chunks by node id.
+		// (reserved) nodes have no Yjs/materialization state and read committed chunks by node id.
 		if (
 			!organizations_is_global_organization_id(args.organizationId) &&
 			!organizations_is_reserved_workspace_id(args.workspaceId)

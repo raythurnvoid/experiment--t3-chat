@@ -6,6 +6,7 @@ import { app_convex } from "./lib/app-convex-client.ts";
 import { app_router } from "./lib/app-router.ts";
 import { ClerkProvider } from "@clerk/clerk-react";
 import { ThemeProvider } from "./components/theme-provider.tsx";
+import { AppToaster } from "./components/app-toaster.tsx";
 import { ConvexProviderWithAuth } from "convex/react";
 import { AppAuthProvider } from "./components/app-auth.tsx";
 import { AppHotkeysProvider } from "./components/app-hotkeys.tsx";
@@ -23,7 +24,6 @@ declare module "@tanstack/react-router" {
 		router: ReturnType<typeof app_router>;
 	}
 }
-
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
 		<ThemeProvider>
@@ -36,6 +36,7 @@ createRoot(document.getElementById("root")!).render(
 					</AppAuthProvider>
 				</ClerkProvider>
 			</AppHotkeysProvider>
+			<AppToaster />
 		</ThemeProvider>
 	</StrictMode>,
 );
