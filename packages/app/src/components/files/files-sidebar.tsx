@@ -1106,6 +1106,9 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	});
 	const hiddenTrackFileIds = useVal(() => tree_item_get_hidden_track_file_ids_for_descendants(item.getParent()));
 
+	// While the row menu is open, the row shows as selected so the menu target stays visible.
+	const [isMenuOpen, setIsMenuOpen] = useState(false);
+
 	const updatedByDisplayName = displayNameByUserId.get(itemData.updatedBy) ?? "Unknown";
 	const metaText = `${format_relative_time(itemData.updatedAt)} · ${updatedByDisplayName}`;
 	const shouldRenderPlaceholder = !isSearchActive && itemData.kind === "folder" && !hasChildren && isExpanded;
@@ -1204,7 +1207,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 	return (
 		<>
-			<MyContextMenu>
+			<MyContextMenu setOpen={setIsMenuOpen}>
 				<MyContextMenuTrigger onContextMenu={handleRowContextMenu}>
 					<div
 						className={cn(
@@ -1226,7 +1229,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 							updatedAt={itemData.updatedAt}
 							updatedByDisplayName={updatedByDisplayName}
 							isPending={isPending}
-							isSelected={isSelected}
+							isSelected={isSelected || isMenuOpen}
 							isDropZoneIncluded={isDropZoneIncluded}
 							isTreeDragging={isTreeDragging}
 							isFocused={isFocused}
@@ -3606,6 +3609,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 								item.setFocused();
 								if (isModifierClick) {
+									return;
+								}
+
+								if (event.altKey) {
+									// Alt+click selects the row without opening the file.
 									return;
 								}
 

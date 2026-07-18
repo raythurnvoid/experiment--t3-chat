@@ -93,10 +93,6 @@ export const MyContextMenu = memo(function MyContextMenu(props: MyContextMenu_Pr
 // #endregion root
 
 // #region trigger
-export type MyContextMenuTrigger_CustomAttributes = {
-	"data-my-context-menu-open": "";
-};
-
 export type MyContextMenuTrigger_Props = {
 	children?: Ariakit.RoleProps["render"];
 } & Omit<Ariakit.RoleProps, ExtractStrict<keyof Ariakit.RoleProps, "render">>;
@@ -105,7 +101,6 @@ export const MyContextMenuTrigger = memo(function MyContextMenuTrigger(props: My
 	const { ref, id, className, children, onContextMenu, onKeyDown, ...rest } = props;
 	const context = useContextMenuContext();
 	const menu = Ariakit.useMenuContext();
-	const isMenuOpen = Ariakit.useStoreState(menu, "open") ?? false;
 
 	const showMenu = (anchorRect: MyContextMenuAnchorRect | null, element: HTMLElement) => {
 		context.setAnchorRect(anchorRect);
@@ -153,9 +148,6 @@ export const MyContextMenuTrigger = memo(function MyContextMenuTrigger(props: My
 			render={children}
 			onContextMenu={handleContextMenu}
 			onKeyDown={handleKeyDown}
-			// Expose the open state for styling. The menu can be open while the trigger has no
-			// aria-expanded: opening from the keyboard or a sibling MenuButton in the same provider.
-			{...(isMenuOpen ? ({ "data-my-context-menu-open": "" } satisfies MyContextMenuTrigger_CustomAttributes) : null)}
 			{...rest}
 		/>
 	);
