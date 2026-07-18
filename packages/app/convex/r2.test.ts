@@ -6,6 +6,7 @@ import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.t
 import {
 	files_INITIAL_CONTENT,
 	files_ROOT_ID,
+	files_pending_update_has_yjs_content,
 	files_u8_to_array_buffer,
 	files_yjs_compute_diff_update_from_yjs_doc,
 	files_yjs_doc_create_from_array_buffer_update,
@@ -573,8 +574,8 @@ describe("r2 asset content", () => {
 				)
 				.unique(),
 		);
-		if (!pendingUpdate) {
-			throw new Error("Expected pending update");
+		if (!files_pending_update_has_yjs_content(pendingUpdate)) {
+			throw new Error("Expected pending update with content");
 		}
 		const pendingYjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.baseYjsUpdate, {
 			additionalIncrementalArrayBufferUpdates: [pendingUpdate.unstagedBranchYjsUpdate],

@@ -216,15 +216,38 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.string(),
 		fileNodeId: v.id("files_nodes"),
-		baseYjsSequence: v.number(),
-		baseYjsUpdate: v.bytes(),
-		stagedBranchYjsUpdate: v.bytes(),
-		unstagedBranchYjsUpdate: v.bytes(),
+		/** Content proposal branches. The 4 Yjs fields are set together or not at all. */
+		baseYjsSequence: v.optional(v.number()),
+		baseYjsUpdate: v.optional(v.bytes()),
+		stagedBranchYjsUpdate: v.optional(v.bytes()),
+		unstagedBranchYjsUpdate: v.optional(v.bytes()),
+		/** Pending move/rename proposal. Ids are authoritative; `fromPath` is display/conflict metadata only. */
+		pendingMove: v.optional(
+			v.object({
+				destParentId: v.union(v.id("files_nodes"), v.literal("root")),
+				destName: v.string(),
+				fromPath: v.string(),
+			}),
+		),
+		/** Set on the eagerly-created destination node of a pending copy; discard/expiry hard-deletes that node. */
+		copiedFrom: v.optional(
+			v.object({
+				nodeId: v.id("files_nodes"),
+				path: v.string(),
+				/**
+				 * The destination node's committed Yjs last sequence when the copy row was first
+				 * created. Immutable (never re-stamped on later patches/rebases): the hard-delete
+				 * safety check compares it against the current committed sequence.
+				 */
+				committedSequence: v.optional(v.number()),
+			}),
+		),
 		size: v.number(),
 		updatedAt: v.number(),
 	})
 		.index("by_organization_workspace_user_fileNode", ["organizationId", "workspaceId", "userId", "fileNodeId"])
-		.index("by_user_fileNode", ["userId", "fileNodeId"]),
+		.index("by_user_fileNode", ["userId", "fileNodeId"])
+		.index("by_fileNode", ["fileNodeId"]),
 
 	files_pending_updates_last_sequence_saved: defineTable({
 		organizationId: v.id("organizations"),

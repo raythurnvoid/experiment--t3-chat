@@ -132,6 +132,59 @@
 		margin: 0 16px 12px;
 	}
 
+	/* Pure move rows: same layout as the summary, but no accordion so no pointer cursor. */
+	.FileEditorSidebarPending-item-move {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 4px;
+
+		padding: 6px 16px;
+	}
+
+	/* Same MyLink wrapper trick as the summary: grow/clip the <a> so the label truncates. */
+	.FileEditorSidebarPending-item-move > a {
+		flex: 1;
+		min-width: 0;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.FileEditorSidebarPending-item-kind-icon {
+		width: 16px;
+		height: 16px;
+
+		color: var(--color-fg-07);
+	}
+
+	.FileEditorSidebarPending-item-move-label {
+		display: block;
+		min-width: 0;
+
+		/* Keep in sync with `.FileEditorSidebarPending-item-path-text` typography above; move
+		   labels are CSS-truncated only, so they skip the `PENDING_PATH_FONT` measuring pair. */
+		font-size: 16px;
+		font-weight: 500;
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.FileEditorSidebarPending-item-caption {
+		display: block;
+		min-width: 0;
+
+		font-size: 12px;
+		color: var(--color-fg-06);
+
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
 	/* Green accept (per-row + global), mirrors .FileEditorDiffToolbarActions-button-accept-all */
 	.FileEditorSidebarPending-accept {
 		&:not(:disabled) {

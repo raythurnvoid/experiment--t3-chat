@@ -203,6 +203,34 @@ export function files_node_has_editable_yjs_state<Node extends FileNodeFieldsFor
 	);
 }
 
+type FilePendingUpdateFieldsForYjsContent = Pick<
+	app_convex_Doc<"files_pending_updates">,
+	"baseYjsSequence" | "baseYjsUpdate" | "stagedBranchYjsUpdate" | "unstagedBranchYjsUpdate"
+>;
+
+/**
+ * Narrow a pending update row to a content-bearing one. Structural-only rows (pure move)
+ * leave all 4 Yjs fields unset; the 4 fields are set together or not at all.
+ */
+export function files_pending_update_has_yjs_content<
+	Row extends FilePendingUpdateFieldsForYjsContent | null | undefined,
+>(
+	row: Row,
+): row is NonNullable<Row> & {
+	baseYjsSequence: NonNullable<FilePendingUpdateFieldsForYjsContent["baseYjsSequence"]>;
+	baseYjsUpdate: NonNullable<FilePendingUpdateFieldsForYjsContent["baseYjsUpdate"]>;
+	stagedBranchYjsUpdate: NonNullable<FilePendingUpdateFieldsForYjsContent["stagedBranchYjsUpdate"]>;
+	unstagedBranchYjsUpdate: NonNullable<FilePendingUpdateFieldsForYjsContent["unstagedBranchYjsUpdate"]>;
+} {
+	return (
+		row != null &&
+		row.baseYjsSequence !== undefined &&
+		row.baseYjsUpdate !== undefined &&
+		row.stagedBranchYjsUpdate !== undefined &&
+		row.unstagedBranchYjsUpdate !== undefined
+	);
+}
+
 // #region file name normalization
 const FILES_NORMALIZED_DOTTED_NAME_REGEX = /^(?!.*[._-]{2})[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
 const FILES_DIACRITIC_MARKS_REGEX = /\p{Mark}/gu;

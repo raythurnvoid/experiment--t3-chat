@@ -62,6 +62,8 @@ import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
+	files_pending_update_content_of,
+	files_db_cancel_pending_update_cleanup_tasks,
 	type files_ContentType,
 	type files_SpecialFileName,
 	type files_InlineAiModelId,
@@ -1430,6 +1432,206 @@ export async function files_nodes_db_delete_subtree_batch(
 	return { done: remaining === null, deletedCount };
 }
 
+/**
+ * A pending-copy destination may only be hard-deleted while it is still the eager near-empty
+ * node the copy created: no content committed since the proposal (the committed Yjs sequence
+ * still matches the immutable `copiedFrom.committedSequence` stamp) and no other user's pending
+ * row on the node. Anything else means the node became a real file; callers must then drop only
+ * the proposer's row and keep the node.
+ */
+export async function files_nodes_db_is_copy_dest_safe_to_hard_delete(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes">;
+		pendingUpdate: Pick<Doc<"files_pending_updates">, "_id" | "copiedFrom">;
+	},
+) {
+	// Conservative: a copy row without a committed-sequence stamp cannot prove the node is untouched.
+	const committedSequence = args.pendingUpdate.copiedFrom?.committedSequence;
+	if (committedSequence === undefined) {
+		return false;
+	}
+
+	const node = await ctx.db.get("files_nodes", args.nodeId);
+	if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) {
+		// Node already gone: the hard delete no-ops, so running it is safe.
+		return true;
+	}
+	if (!node.yjsLastSequenceId) {
+		return false;
+	}
+
+	const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId);
+	if (!yjsLastSequenceDoc || yjsLastSequenceDoc.lastSequence !== committedSequence) {
+		return false;
+	}
+
+	const pendingUpdatesOnNode = await ctx.db
+		.query("files_pending_updates")
+		.withIndex("by_fileNode", (q) => q.eq("fileNodeId", args.nodeId))
+		.collect();
+	if (pendingUpdatesOnNode.some((row) => row._id !== args.pendingUpdate._id)) {
+		return false;
+	}
+
+	return true;
+}
+
+/**
+ * Hard-delete one FILE node with every dependent doc, every user's pending update rows, and its
+ * R2 assets/objects. Built for pending-copy destination cleanup, not a general delete: copy
+ * destinations are fresh near-empty nodes, so no batching is needed. Missing/mismatched nodes
+ * are a no-op so discard stays idempotent.
+ */
+export async function files_nodes_db_hard_delete_node(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes">;
+	},
+) {
+	const node = await ctx.db.get("files_nodes", args.nodeId);
+	if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) {
+		return;
+	}
+	if (node.kind !== "file") {
+		// Pending-copy destinations are always files; a folder here means a caller bug.
+		const errorMessage = "files_nodes_db_hard_delete_node only supports file nodes";
+		const errorData = { nodeId: args.nodeId, kind: node.kind };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	const [
+		plainTextChunks,
+		markdownChunks,
+		fileStats,
+		metadataDocs,
+		yjsSnapshots,
+		yjsUpdates,
+		yjsLastSequences,
+		materializationJobs,
+		snapshots,
+		pendingUpdates,
+		lastSequenceSavedDocs,
+	] = await Promise.all([
+		// The by-fileNode chunk indexes cover committed AND pending chunk docs.
+		ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			)
+			.collect(),
+		ctx.db
+			.query("files_markdown_chunks")
+			.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			)
+			.collect(),
+		ctx.db
+			.query("file_stats")
+			.withIndex("by_organization_workspace_fileNode", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			)
+			.collect(),
+		ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			)
+			.collect(),
+		ctx.db
+			.query("files_yjs_snapshots")
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			)
+			.collect(),
+		ctx.db
+			.query("files_yjs_updates")
+			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			)
+			.collect(),
+		ctx.db
+			.query("files_yjs_docs_last_sequences")
+			.withIndex("by_organization_workspace_fileNode", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			)
+			.collect(),
+		ctx.db
+			.query("files_content_materialization_jobs")
+			.withIndex("by_organization_workspace_fileNode", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			)
+			.collect(),
+		ctx.db
+			.query("files_snapshots")
+			.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			)
+			.collect(),
+		ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", node._id))
+			.collect(),
+		ctx.db
+			.query("files_pending_updates_last_sequence_saved")
+			.withIndex("by_organization_workspace_fileNode_user", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			)
+			.collect(),
+	]);
+
+	// node.assetId points at the newest version snapshot for editable files, so the same asset id
+	// can appear again in `snapshots`; dedupe before deleting.
+	const assetIds = new Set<Id<"files_r2_assets">>();
+	if (node.assetId) {
+		assetIds.add(node.assetId);
+	}
+	for (const yjsSnapshot of yjsSnapshots) {
+		assetIds.add(yjsSnapshot.assetId);
+	}
+	for (const snapshot of snapshots) {
+		assetIds.add(snapshot.assetId);
+	}
+
+	await Promise.all(
+		pendingUpdates.map((pendingUpdate) =>
+			files_db_cancel_pending_update_cleanup_tasks(ctx, { pendingUpdateId: pendingUpdate._id }),
+		),
+	);
+
+	await Promise.all([
+		...plainTextChunks.map((chunk) => ctx.db.delete("files_plain_text_chunks", chunk._id)),
+		...markdownChunks.map((chunk) => ctx.db.delete("files_markdown_chunks", chunk._id)),
+		...fileStats.map((stats) => ctx.db.delete("file_stats", stats._id)),
+		...metadataDocs.map((metadataDoc) => ctx.db.delete("files_metadata_docs", metadataDoc._id)),
+		...yjsSnapshots.map((yjsSnapshot) => ctx.db.delete("files_yjs_snapshots", yjsSnapshot._id)),
+		...yjsUpdates.map((yjsUpdate) => ctx.db.delete("files_yjs_updates", yjsUpdate._id)),
+		...yjsLastSequences.map((lastSequence) => ctx.db.delete("files_yjs_docs_last_sequences", lastSequence._id)),
+		...materializationJobs.map((job) => ctx.db.delete("files_content_materialization_jobs", job._id)),
+		...snapshots.map((snapshot) => ctx.db.delete("files_snapshots", snapshot._id)),
+		...pendingUpdates.map((pendingUpdate) => ctx.db.delete("files_pending_updates", pendingUpdate._id)),
+		...lastSequenceSavedDocs.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
+	]);
+
+	for (const assetId of assetIds) {
+		const asset = await ctx.db.get("files_r2_assets", assetId);
+		if (!asset) {
+			continue;
+		}
+		if (asset.r2Key) {
+			await r2_delete_object(ctx, asset.r2Key);
+		}
+		await ctx.db.delete("files_r2_assets", asset._id);
+	}
+
+	await ctx.db.delete("files_nodes", node._id);
+}
+
 export const finalize_markdown_node_creation = internalMutation({
 	args: {
 		organizationId: v.id("organizations"),
@@ -1908,6 +2110,130 @@ export const create_upload_node = mutation({
 		});
 	},
 });
+
+/**
+ * Shared proposal-time + accept-time validation for a pending move: the node ids are
+ * authoritative, so the same checks run when the proposal is created and when it is applied.
+ */
+export async function files_nodes_db_validate_pending_move_target(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes">;
+		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+		destName: string;
+	},
+) {
+	const node = await ctx.db.get("files_nodes", args.nodeId);
+	if (
+		!node ||
+		node.organizationId !== args.organizationId ||
+		node.workspaceId !== args.workspaceId ||
+		node.archiveOperationId !== undefined
+	) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+
+	let destParentPath: string;
+	if (args.destParentId === files_ROOT_ID) {
+		destParentPath = "/";
+	} else {
+		const destParent = await ctx.db.get("files_nodes", args.destParentId);
+		if (
+			!destParent ||
+			destParent.organizationId !== args.organizationId ||
+			destParent.workspaceId !== args.workspaceId ||
+			destParent.kind !== "folder" ||
+			destParent.archiveOperationId !== undefined
+		) {
+			return Result({ _nay: { message: "Destination folder is missing" } });
+		}
+		destParentPath = destParent.path;
+	}
+
+	const destPath = path_join(destParentPath, args.destName);
+	if (destPath === node.path) {
+		return Result({ _nay: { message: "Source and destination are the same" } });
+	}
+	if (node.kind === "folder" && destPath.startsWith(`${node.path}/`)) {
+		return Result({ _nay: { message: "Cannot move a folder into itself" } });
+	}
+
+	// Check whether an active sibling already owns the destination name.
+	const activeSiblingConflict = await ctx.db
+		.query("files_nodes")
+		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("parentId", args.destParentId)
+				.eq("name", args.destName)
+				.eq("archiveOperationId", undefined),
+		)
+		.first();
+	if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
+		return Result({ _nay: { message: "Path already exists" } });
+	}
+
+	return Result({ _yay: { node, destParentPath, destPath } });
+}
+
+/**
+ * Apply an accepted pending move. Re-validates, then mirrors `rename_node`'s tail; this helper
+ * owns the denormalized path fan-out (node, file chunk scope, descendant cascade).
+ */
+export async function files_nodes_db_apply_pending_move(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes">;
+		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID;
+		destName: string;
+		updatedBy: Id<"users">;
+	},
+) {
+	const validated = await files_nodes_db_validate_pending_move_target(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		nodeId: args.nodeId,
+		destParentId: args.destParentId,
+		destName: args.destName,
+	});
+	if (validated._nay) {
+		return validated;
+	}
+	const { node, destPath } = validated._yay;
+
+	// Update the node once and then rebase descendants under the new materialized path.
+	const now = Date.now();
+	await ctx.db.patch("files_nodes", args.nodeId, {
+		parentId: args.destParentId,
+		name: args.destName,
+		path: destPath,
+		treePath: derive_tree_path_for_file_node(destPath, node.kind),
+		pathDepth: files_path_depth(destPath),
+		lowercaseExtension: files_lowercase_extension(destPath, node.kind),
+		updatedBy: args.updatedBy,
+		updatedAt: now,
+	});
+	if (node.kind === "file") {
+		await db_patch_file_chunks_scope(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			path: destPath,
+		});
+	}
+	await cascade_file_descendants_path(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		parentId: args.nodeId,
+		parentPath: destPath,
+	});
+	return Result({ _yay: { destPath } });
+}
 
 export const rename_node = mutation({
 	args: {
@@ -3596,11 +3922,14 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 									.eq("fileNodeId", fileNode._id),
 							)
 							.first();
-		if (pendingUpdate) {
+		// Structural-only rows (pure move) carry no content; keep returning their `pendingUpdateId`
+		// below so write_file/edit_file mix onto them, while content resolves from the committed tree.
+		const pendingUpdateContent = pendingUpdate ? files_pending_update_content_of(pendingUpdate) : null;
+		if (pendingUpdate && pendingUpdateContent) {
 			// Rebuild the pending branch from its recorded base so readers see the same document
 			// the pending-update save/rebase flow will later persist.
-			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.baseYjsUpdate, {
-				additionalIncrementalArrayBufferUpdates: [pendingUpdate.unstagedBranchYjsUpdate],
+			const yjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdateContent.baseYjsUpdate, {
+				additionalIncrementalArrayBufferUpdates: [pendingUpdateContent.unstagedBranchYjsUpdate],
 			});
 
 			const markdown = files_yjs_doc_get_markdown({ yjsDoc });
@@ -3629,7 +3958,7 @@ export const get_file_markdown_content_db_state_by_path = internalQuery({
 					)
 			: null;
 
-		const materializationState = pendingUpdate
+		const materializationState = pendingUpdateContent
 			? null
 			: await db_get_file_content_materialization_db_state(ctx, {
 					organizationId,
@@ -4334,7 +4663,9 @@ export const read_file_content_from_chunks = internalQuery({
 						.first();
 				}
 
-				if (pendingUpdate != null) {
+				// Structural-only rows (pure move) have no pending content; fall through to the
+				// committed chunks so reads do not return an empty file behind a pure-move row.
+				if (pendingUpdate != null && files_pending_update_content_of(pendingUpdate) != null) {
 					// Pending chunks are already the markdown text the user sees. Full reads
 					// still honor maxBytes; line reads stream only the overlapping chunks.
 					const chunks = ctx.db
@@ -5865,18 +6196,20 @@ export const create_file_by_path = internalAction({
 		path: v.string(),
 		markdownContent: v.optional(v.string()),
 	},
-	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes") }) }),
-	handler: async (ctx, args): Promise<action_create_markdown_node_Result> => {
+	returns: v_result({ _yay: v.object({ nodeId: v.id("files_nodes"), created: v.boolean() }) }),
+	handler: async (ctx, args) => {
 		const activeFileNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			path: args.path,
 		})) as Doc<"files_nodes"> | null;
 		if (activeFileNode?.kind === "file") {
-			return Result({ _yay: { nodeId: activeFileNode._id } });
+			// `created: false` marks a pre-existing file. Callers that need a fresh node (e.g.
+			// pending-copy destinations, which are later hard-deleted) must treat this as a conflict.
+			return Result({ _yay: { nodeId: activeFileNode._id, created: false } });
 		}
 
-		return await action_create_markdown_node(ctx, {
+		const created = await action_create_markdown_node(ctx, {
 			userId: args.userId,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -5884,8 +6217,18 @@ export const create_file_by_path = internalAction({
 			path: args.path,
 			markdownContent: args.markdownContent ?? "",
 		});
+		if (created._nay) {
+			return created;
+		}
+
+		return Result({ _yay: { nodeId: created._yay.nodeId, created: true } });
 	},
 });
+
+export type files_nodes_create_file_by_path_Result =
+	typeof create_file_by_path extends RegisteredAction<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 // #region home file
 

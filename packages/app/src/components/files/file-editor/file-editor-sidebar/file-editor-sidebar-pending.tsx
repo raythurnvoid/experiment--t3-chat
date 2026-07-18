@@ -1,5 +1,5 @@
 import "./file-editor-sidebar-pending.css";
-import { CheckCheck, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
+import { CheckCheck, ChevronDown, ChevronRight, FileText, Folder, Trash2 } from "lucide-react";
 import { memo, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { createPatch } from "diff";
 import { useConvex, useQuery } from "convex/react";
@@ -9,15 +9,23 @@ import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/a
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
+import { MyIcon } from "@/components/my-icon.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import { MyLink } from "@/components/my-link.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
 import { files_truncate_path_for_width } from "@/lib/file-paths.ts";
-import { files_yjs_doc_create_from_array_buffer_update, files_yjs_doc_get_markdown } from "@/lib/files.ts";
+import {
+	files_pending_update_has_yjs_content,
+	files_yjs_doc_create_from_array_buffer_update,
+	files_yjs_doc_get_markdown,
+} from "@/lib/files.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { APP_FONT_FAMILY } from "@/lib/ui.tsx";
 import { cn } from "@/lib/utils.ts";
-import { files_pending_changes_build_rows } from "./file-editor-sidebar-pending-rows.ts";
+import {
+	files_pending_changes_build_rows,
+	type FileEditorSidebarPendingRow,
+} from "./file-editor-sidebar-pending-rows.ts";
 
 // Keep these Pretext metrics in sync with `.FileEditorSidebarPending-item-path-text`;
 // duplicating them here avoids `getComputedStyle` during path resize work.
@@ -85,6 +93,10 @@ const PendingPathText = memo(function PendingPathText(props: { path: string }) {
 });
 
 function decode_staged_unstaged(pendingUpdate: app_convex_Doc<"files_pending_updates">) {
+	if (!files_pending_update_has_yjs_content(pendingUpdate)) {
+		return Result({ _nay: { message: "Pending update has no content to decode" } });
+	}
+
 	const stagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.stagedBranchYjsUpdate);
 	const stagedMarkdown = files_yjs_doc_get_markdown({ yjsDoc: stagedYjsDoc });
 	if (stagedMarkdown._nay) return stagedMarkdown;
@@ -137,17 +149,67 @@ async function files_pending_discard(
 	});
 }
 
+/**
+ * Accept a pending row per its kind: pure move → apply the move; content/copy → the existing
+ * accept-and-save path; content + move → apply the move first, then accept-and-save the content.
+ */
+async function files_pending_row_accept(
+	convex: ReturnType<typeof useConvex>,
+	membershipId: app_convex_Id<"organizations_workspaces_users">,
+	pendingUpdate: app_convex_Doc<"files_pending_updates">,
+) {
+	if (pendingUpdate.pendingMove) {
+		const moved = await convex.mutation(app_convex_api.files_pending_updates.apply_file_pending_move, {
+			membershipId,
+			nodeId: pendingUpdate.fileNodeId,
+			pendingUpdateId: pendingUpdate._id,
+		});
+		if (moved._nay || !files_pending_update_has_yjs_content(pendingUpdate)) return moved;
+	}
+
+	return await files_pending_accept_and_save(convex, membershipId, pendingUpdate);
+}
+
+/**
+ * Discard a pending row per its kind: content → the existing content-revert upsert; pure move or
+ * copy → the structural discard (a copy discard hard-deletes the eagerly-created destination node,
+ * so the content-revert upsert must never run for it); content + move → revert the content first
+ * (the server degrades the row to a pure move), then discard the move.
+ */
+async function files_pending_row_discard(
+	convex: ReturnType<typeof useConvex>,
+	membershipId: app_convex_Id<"organizations_workspaces_users">,
+	pendingUpdate: app_convex_Doc<"files_pending_updates">,
+) {
+	if (pendingUpdate.pendingMove && files_pending_update_has_yjs_content(pendingUpdate)) {
+		const reverted = await files_pending_discard(convex, membershipId, pendingUpdate);
+		if (reverted._nay) return reverted;
+	} else if (!pendingUpdate.pendingMove && !pendingUpdate.copiedFrom) {
+		return await files_pending_discard(convex, membershipId, pendingUpdate);
+	}
+
+	return await convex.mutation(app_convex_api.files_pending_updates.discard_file_pending_structural, {
+		membershipId,
+		nodeId: pendingUpdate.fileNodeId,
+		pendingUpdateId: pendingUpdate._id,
+	});
+}
+
 // #region item
 type FileEditorSidebarPendingItem_Props = {
 	pendingUpdate: app_convex_Doc<"files_pending_updates">;
 	path: string;
+	kind: FileEditorSidebarPendingRow["kind"];
+	nodeKind: FileEditorSidebarPendingRow["nodeKind"];
+	moveDestinationPath: string | undefined;
+	copiedFromPath: string | undefined;
 	disabled?: boolean;
 };
 
 const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	props: FileEditorSidebarPendingItem_Props,
 ) {
-	const { pendingUpdate, path, disabled } = props;
+	const { pendingUpdate, path, kind, nodeKind, moveDestinationPath, copiedFromPath, disabled } = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 	const convex = useConvex();
 
@@ -177,24 +239,24 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	});
 
 	// `preventDefault()` stops the native <summary> from toggling when the action buttons are clicked.
-	const handleAcceptAndSave = useFn((event: MouseEvent<HTMLButtonElement>) => {
+	const handleAccept = useFn((event: MouseEvent<HTMLButtonElement>) => {
 		event.preventDefault();
 		if (isBusy) return;
 		setIsBusy(true);
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const result = await files_pending_accept_and_save(convex, membershipId, pendingUpdate);
+			const result = await files_pending_row_accept(convex, membershipId, pendingUpdate);
 			if (result._nay) {
-				toast.error(result._nay.message ?? "Failed to save pending changes");
+				toast.error(result._nay.message ?? "Failed to accept pending changes");
 			}
 		})()
 			.catch((error) => {
-				console.error("[FileEditorSidebarPending] Failed to accept and save", {
+				console.error("[FileEditorSidebarPending] Failed to accept", {
 					error,
 					nodeId: pendingUpdate.fileNodeId,
 				});
-				toast.error(error instanceof Error ? error.message : "Failed to save pending changes");
+				toast.error(error instanceof Error ? error.message : "Failed to accept pending changes");
 			})
 			.finally(() => {
 				setIsBusy(false);
@@ -208,7 +270,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const result = await files_pending_discard(convex, membershipId, pendingUpdate);
+			const result = await files_pending_row_discard(convex, membershipId, pendingUpdate);
 			if (result._nay) {
 				toast.error(result._nay.message ?? "Failed to discard pending changes");
 			}
@@ -224,6 +286,68 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 				setIsBusy(false);
 			});
 	});
+
+	// Pure move rows have no content to diff: render a plain row (no accordion, no diff link)
+	// with the source and destination paths in a single truncatable label.
+	if (kind === "move") {
+		const moveLabel = moveDestinationPath != null ? `${path} → ${moveDestinationPath}` : path;
+		return (
+			<li>
+				<div
+					className={cn(
+						"FileEditorSidebarPending-item" satisfies FileEditorSidebarPending_ClassNames,
+						"FileEditorSidebarPending-item-move" satisfies FileEditorSidebarPending_ClassNames,
+					)}
+				>
+					<MyIcon
+						className={cn("FileEditorSidebarPending-item-kind-icon" satisfies FileEditorSidebarPending_ClassNames)}
+					>
+						{nodeKind === "folder" ? <Folder /> : <FileText />}
+					</MyIcon>
+					<MyLink
+						className={cn("FileEditorSidebarPending-item-path" satisfies FileEditorSidebarPending_ClassNames)}
+						to="/w/$organizationName/$workspaceName/files"
+						params={{ organizationName, workspaceName }}
+						search={{ nodeId: pendingUpdate.fileNodeId }}
+						aria-label={moveLabel}
+						title={moveLabel}
+					>
+						<span
+							className={cn("FileEditorSidebarPending-item-move-label" satisfies FileEditorSidebarPending_ClassNames)}
+						>
+							{moveLabel}
+						</span>
+					</MyLink>
+					<span className={cn("FileEditorSidebarPending-item-actions" satisfies FileEditorSidebarPending_ClassNames)}>
+						<MyButton
+							variant="ghost"
+							className={cn("FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames)}
+							aria-busy={isBusy}
+							disabled={isBusy || disabled}
+							onClick={handleAccept}
+						>
+							Accept
+						</MyButton>
+						<MyButton
+							variant="ghost_destructive"
+							aria-busy={isBusy}
+							disabled={isBusy || disabled}
+							onClick={handleDiscard}
+						>
+							Discard
+						</MyButton>
+					</span>
+				</div>
+			</li>
+		);
+	}
+
+	const caption =
+		kind === "copy" && copiedFromPath != null
+			? `Copy of ${copiedFromPath}`
+			: kind === "content_and_move" && moveDestinationPath != null
+				? `Moves to ${moveDestinationPath}`
+				: null;
 
 	return (
 		<li>
@@ -245,14 +369,22 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						title={path}
 					>
 						<PendingPathText path={path} />
+						{caption != null ? (
+							<span
+								className={cn("FileEditorSidebarPending-item-caption" satisfies FileEditorSidebarPending_ClassNames)}
+							>
+								{caption}
+							</span>
+						) : null}
 					</MyLink>
 					<span className={cn("FileEditorSidebarPending-item-actions" satisfies FileEditorSidebarPending_ClassNames)}>
 						<MyButton
 							variant="ghost"
 							className={cn("FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames)}
+							aria-label={kind === "content_and_move" ? "Apply edit and move" : undefined}
 							aria-busy={isBusy}
 							disabled={isBusy || disabled}
-							onClick={handleAcceptAndSave}
+							onClick={handleAccept}
 						>
 							Accept &amp; save
 						</MyButton>
@@ -293,7 +425,11 @@ export type FileEditorSidebarPending_ClassNames =
 	| "FileEditorSidebarPending-item-path"
 	| "FileEditorSidebarPending-item-path-text"
 	| "FileEditorSidebarPending-item-actions"
-	| "FileEditorSidebarPending-item-diff";
+	| "FileEditorSidebarPending-item-diff"
+	| "FileEditorSidebarPending-item-move"
+	| "FileEditorSidebarPending-item-kind-icon"
+	| "FileEditorSidebarPending-item-move-label"
+	| "FileEditorSidebarPending-item-caption";
 
 export const FileEditorSidebarPending = memo(function FileEditorSidebarPending() {
 	const { membershipId } = AppTenantProvider.useContext();
@@ -316,11 +452,9 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const results = await Promise.allSettled(
-				rows.map((row) => files_pending_accept_and_save(convex, membershipId, row.pendingUpdate)),
+				rows.map((row) => files_pending_row_accept(convex, membershipId, row.pendingUpdate)),
 			);
-			const failures = results.filter(
-				(result) => result.status === "rejected" || result.value._nay,
-			).length;
+			const failures = results.filter((result) => result.status === "rejected" || result.value._nay).length;
 			if (failures > 0) {
 				toast.error(`Failed to accept ${failures} of ${rows.length} pending changes`);
 			}
@@ -341,11 +475,9 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
 			const results = await Promise.allSettled(
-				rows.map((row) => files_pending_discard(convex, membershipId, row.pendingUpdate)),
+				rows.map((row) => files_pending_row_discard(convex, membershipId, row.pendingUpdate)),
 			);
-			const failures = results.filter(
-				(result) => result.status === "rejected" || result.value._nay,
-			).length;
+			const failures = results.filter((result) => result.status === "rejected" || result.value._nay).length;
 			if (failures > 0) {
 				toast.error(`Failed to discard ${failures} of ${rows.length} pending changes`);
 			}
@@ -414,6 +546,10 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 						key={row.pendingUpdate._id}
 						pendingUpdate={row.pendingUpdate}
 						path={row.path}
+						kind={row.kind}
+						nodeKind={row.nodeKind}
+						moveDestinationPath={row.moveDestinationPath}
+						copiedFromPath={row.copiedFromPath}
 						disabled={isBulkBusy}
 					/>
 				))}

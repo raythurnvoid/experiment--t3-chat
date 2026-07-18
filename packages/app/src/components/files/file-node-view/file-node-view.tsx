@@ -73,6 +73,7 @@ import {
 	files_get_normalized_node_path_segments,
 	files_get_upload_pipeline_state,
 	files_node_has_editable_yjs_state,
+	files_pending_update_has_yjs_content,
 	type files_EditorView,
 	type files_SpecialFileName,
 	type files_VisibleTreeNode,
@@ -2305,7 +2306,9 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		setToolbarPortalHost(element);
 	});
 
-	const pendingUpdates = allPendingUpdatesResult ?? [];
+	// The pager/floating bar reviews diffs, so count only content-bearing rows; pure moves are
+	// reviewed in the Pending panel only.
+	const pendingUpdates = (allPendingUpdatesResult ?? []).filter(files_pending_update_has_yjs_content);
 	const hasPendingUpdates = pendingUpdates.length > 0;
 	// 44px = 40px for the floating content area plus 4px of spacing.
 	// Keep this reserve visible even without pending updates so folder and file content

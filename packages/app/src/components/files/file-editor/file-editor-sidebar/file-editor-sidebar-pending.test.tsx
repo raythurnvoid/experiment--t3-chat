@@ -4,17 +4,19 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
 
-const { tenantContextMock, useQueryMock, useStableQueryMock, actionMock, truncatePathForWidthMock } = vi.hoisted(() => ({
-	tenantContextMock: vi.fn(),
-	useQueryMock: vi.fn(),
-	useStableQueryMock: vi.fn(),
-	actionMock: vi.fn(),
-	truncatePathForWidthMock: vi.fn((args: { path: string }) => args.path),
-}));
+const { tenantContextMock, useQueryMock, useStableQueryMock, actionMock, mutationMock, truncatePathForWidthMock } =
+	vi.hoisted(() => ({
+		tenantContextMock: vi.fn(),
+		useQueryMock: vi.fn(),
+		useStableQueryMock: vi.fn(),
+		actionMock: vi.fn(),
+		mutationMock: vi.fn(),
+		truncatePathForWidthMock: vi.fn((args: { path: string }) => args.path),
+	}));
 
 vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => useQueryMock(...args),
-	useConvex: () => ({ action: actionMock }),
+	useConvex: () => ({ action: actionMock, mutation: mutationMock }),
 }));
 
 vi.mock("@/hooks/convex-hooks.ts", () => ({
@@ -41,6 +43,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			list_files_pending_updates: "list_files_pending_updates",
 			upsert_file_pending_update: "upsert_file_pending_update",
 			save_file_pending_update: "save_file_pending_update",
+			apply_file_pending_move: "apply_file_pending_move",
+			discard_file_pending_structural: "discard_file_pending_structural",
 		},
 		files_nodes: {
 			list_tree: "list_tree",
@@ -49,8 +53,26 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 }));
 
 // Avoid the headless-tiptap decode: map each branch's stored bytes straight to canned Markdown so the
-// action handlers see deterministic staged/unstaged content.
+// action handlers see deterministic staged/unstaged content. The type guard mirrors the real shared
+// implementation (presence of the 4 Yjs fields).
 vi.mock("@/lib/files.ts", () => ({
+	files_ROOT_ID: "root",
+	files_pending_update_has_yjs_content: (
+		row:
+			| {
+					baseYjsSequence?: unknown;
+					baseYjsUpdate?: unknown;
+					stagedBranchYjsUpdate?: unknown;
+					unstagedBranchYjsUpdate?: unknown;
+			  }
+			| null
+			| undefined,
+	) =>
+		row != null &&
+		row.baseYjsSequence !== undefined &&
+		row.baseYjsUpdate !== undefined &&
+		row.stagedBranchYjsUpdate !== undefined &&
+		row.unstagedBranchYjsUpdate !== undefined,
 	files_yjs_doc_create_from_array_buffer_update: (update: unknown) => update,
 	files_yjs_doc_get_markdown: ({ yjsDoc }: { yjsDoc: unknown }) => ({ _yay: yjsDoc as string }),
 }));
@@ -125,8 +147,10 @@ import { FileEditorSidebarPending } from "./file-editor-sidebar-pending.tsx";
 function makePendingUpdate(args: {
 	id: string;
 	fileNodeId: string;
-	staged: string;
-	unstaged: string;
+	staged?: string;
+	unstaged?: string;
+	pendingMove?: { destParentId: string; destName: string; fromPath: string };
+	copiedFrom?: { nodeId: string; path: string };
 }): app_convex_Doc<"files_pending_updates"> {
 	return {
 		_id: args.id,
@@ -135,21 +159,28 @@ function makePendingUpdate(args: {
 		workspaceId: "workspace_1",
 		userId: "user_1",
 		fileNodeId: args.fileNodeId,
-		baseYjsSequence: 0,
-		baseYjsUpdate: "" as never,
-		stagedBranchYjsUpdate: args.staged as never,
-		unstagedBranchYjsUpdate: args.unstaged as never,
+		// Structural-only rows leave all 4 Yjs fields unset, like the server does.
+		...(args.staged != null && args.unstaged != null
+			? {
+					baseYjsSequence: 0,
+					baseYjsUpdate: "" as never,
+					stagedBranchYjsUpdate: args.staged as never,
+					unstagedBranchYjsUpdate: args.unstaged as never,
+				}
+			: {}),
+		...(args.pendingMove ? { pendingMove: args.pendingMove } : {}),
+		...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
 		size: 0,
 		updatedAt: 1,
 	} as unknown as app_convex_Doc<"files_pending_updates">;
 }
 
-function makeNode(args: { id: string; path: string }): app_convex_Doc<"files_nodes"> {
+function makeNode(args: { id: string; path: string; kind?: "file" | "folder" }): app_convex_Doc<"files_nodes"> {
 	return {
 		_id: args.id,
 		_creationTime: 0,
 		path: args.path,
-		kind: "file",
+		kind: args.kind ?? "file",
 	} as unknown as app_convex_Doc<"files_nodes">;
 }
 
@@ -165,6 +196,8 @@ beforeEach(() => {
 	});
 	actionMock.mockReset();
 	actionMock.mockResolvedValue({ _yay: null });
+	mutationMock.mockReset();
+	mutationMock.mockResolvedValue({ _yay: null });
 	truncatePathForWidthMock.mockReset();
 	truncatePathForWidthMock.mockImplementation((args: { path: string }) => args.path);
 	useQueryMock.mockReset();
@@ -199,6 +232,119 @@ describe("files_pending_changes_build_rows", () => {
 
 		expect(rows).toHaveLength(1);
 		expect(rows[0]?.path).toBe("(unknown file)");
+	});
+
+	test("derives row kinds from field presence", () => {
+		const pendingMove = { destParentId: "root", destName: "dest.md", fromPath: "/from.md" };
+		const updates = [
+			makePendingUpdate({ id: "pu_content", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
+			makePendingUpdate({ id: "pu_move", fileNodeId: "node_b", pendingMove }),
+			makePendingUpdate({
+				id: "pu_copy",
+				fileNodeId: "node_c",
+				staged: "s",
+				unstaged: "u",
+				copiedFrom: { nodeId: "node_src", path: "/source.md" },
+			}),
+			makePendingUpdate({ id: "pu_mixed", fileNodeId: "node_d", staged: "s", unstaged: "u", pendingMove }),
+		];
+		const nodesById = new Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>([
+			["node_a" as app_convex_Id<"files_nodes">, makeNode({ id: "node_a", path: "/a.md" })],
+			["node_b" as app_convex_Id<"files_nodes">, makeNode({ id: "node_b", path: "/b.md" })],
+			["node_c" as app_convex_Id<"files_nodes">, makeNode({ id: "node_c", path: "/c.md" })],
+			["node_d" as app_convex_Id<"files_nodes">, makeNode({ id: "node_d", path: "/d.md" })],
+		]);
+
+		const rows = files_pending_changes_build_rows(updates, nodesById);
+
+		expect(rows.map((row) => row.kind)).toEqual(["content", "move", "copy", "content_and_move"]);
+	});
+
+	test("resolves the move destination path from the tree", () => {
+		const updates = [
+			makePendingUpdate({
+				id: "pu_root",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "root", destName: "a.md", fromPath: "/from/a.md" },
+			}),
+			makePendingUpdate({
+				id: "pu_nested",
+				fileNodeId: "node_b",
+				pendingMove: { destParentId: "node_docs", destName: "b.md", fromPath: "/from/b.md" },
+			}),
+			makePendingUpdate({
+				id: "pu_missing",
+				fileNodeId: "node_c",
+				pendingMove: { destParentId: "node_gone", destName: "c.md", fromPath: "/from/c.md" },
+			}),
+		];
+		const nodesById = new Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>([
+			["node_a" as app_convex_Id<"files_nodes">, makeNode({ id: "node_a", path: "/from/a.md" })],
+			["node_b" as app_convex_Id<"files_nodes">, makeNode({ id: "node_b", path: "/from/b.md" })],
+			["node_c" as app_convex_Id<"files_nodes">, makeNode({ id: "node_c", path: "/from/c.md" })],
+			["node_docs" as app_convex_Id<"files_nodes">, makeNode({ id: "node_docs", path: "/docs", kind: "folder" })],
+		]);
+
+		const rows = files_pending_changes_build_rows(updates, nodesById);
+
+		expect(rows.map((row) => row.moveDestinationPath)).toEqual(["/a.md", "/docs/b.md", "…/c.md"]);
+	});
+
+	test("keeps the node kind and falls back to fromPath when the source node is missing", () => {
+		const updates = [
+			makePendingUpdate({
+				id: "pu_folder",
+				fileNodeId: "node_folder",
+				pendingMove: { destParentId: "root", destName: "archive", fromPath: "/old-archive" },
+			}),
+			makePendingUpdate({
+				id: "pu_gone",
+				fileNodeId: "node_gone",
+				pendingMove: { destParentId: "root", destName: "gone.md", fromPath: "/from/gone.md" },
+			}),
+		];
+		const nodesById = new Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>([
+			[
+				"node_folder" as app_convex_Id<"files_nodes">,
+				makeNode({ id: "node_folder", path: "/old-archive", kind: "folder" }),
+			],
+		]);
+
+		const rows = files_pending_changes_build_rows(updates, nodesById);
+
+		expect(rows[0]?.path).toBe("/from/gone.md");
+		expect(rows[0]?.nodeKind).toBeUndefined();
+		expect(rows[1]?.path).toBe("/old-archive");
+		expect(rows[1]?.nodeKind).toBe("folder");
+	});
+
+	test("resolves the copied-from path live with the recorded path as fallback", () => {
+		const updates = [
+			makePendingUpdate({
+				id: "pu_live",
+				fileNodeId: "node_a",
+				staged: "s",
+				unstaged: "u",
+				copiedFrom: { nodeId: "node_src", path: "/recorded/source.md" },
+			}),
+			makePendingUpdate({
+				id: "pu_fallback",
+				fileNodeId: "node_b",
+				staged: "s",
+				unstaged: "u",
+				copiedFrom: { nodeId: "node_gone", path: "/recorded/gone.md" },
+			}),
+		];
+		const nodesById = new Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>([
+			["node_a" as app_convex_Id<"files_nodes">, makeNode({ id: "node_a", path: "/a.md" })],
+			["node_b" as app_convex_Id<"files_nodes">, makeNode({ id: "node_b", path: "/b.md" })],
+			["node_src" as app_convex_Id<"files_nodes">, makeNode({ id: "node_src", path: "/live/source.md" })],
+		]);
+
+		const rows = files_pending_changes_build_rows(updates, nodesById);
+
+		expect(rows[0]?.copiedFromPath).toBe("/live/source.md");
+		expect(rows[1]?.copiedFromPath).toBe("/recorded/gone.md");
 	});
 });
 
@@ -389,6 +535,315 @@ describe("FileEditorSidebarPending", () => {
 			pendingUpdateId: "pu_b",
 			stagedMarkdown: "STAGED_B",
 			unstagedMarkdown: "STAGED_B",
+		});
+	});
+
+	test("move row renders from → dest without an accordion or diff link", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_move",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "node_docs", destName: "a.md", fromPath: "/a.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/a.md" }),
+			makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
+		]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		const link = screen.getByRole("link", { name: "/a.md → /docs/a.md" });
+		const href = link.getAttribute("href");
+		expect(href).toContain("nodeId=node_a");
+		expect(href).not.toContain("view=diff_editor");
+		expect(link.getAttribute("title")).toBe("/a.md → /docs/a.md");
+		expect(container.querySelector("details")).toBeNull();
+		expect(screen.getByText("Accept")).toBeTruthy();
+	});
+
+	test("copy row shows the Copy of caption and keeps the diff link", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_copy",
+				fileNodeId: "node_a",
+				staged: "s",
+				unstaged: "u",
+				copiedFrom: { nodeId: "node_src", path: "/recorded.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/copy.md" }),
+			makeNode({ id: "node_src", path: "/source.md" }),
+		]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		expect(screen.getByText("Copy of /source.md")).toBeTruthy();
+		const link = screen.getByRole("link", { name: "/copy.md" });
+		expect(link.getAttribute("href")).toContain("view=diff_editor");
+		expect(container.querySelector("details")).toBeTruthy();
+	});
+
+	test("mixed row keeps the content row and shows the Moves to caption", () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_mixed",
+				fileNodeId: "node_a",
+				staged: "s",
+				unstaged: "u",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		expect(screen.getByText("Moves to /b.md")).toBeTruthy();
+		expect(container.querySelector("details")).toBeTruthy();
+		expect(screen.getByText("Accept & save").getAttribute("aria-label")).toBe("Apply edit and move");
+	});
+
+	test("move Accept applies the pending move with a single mutation", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_move",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept"));
+
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock).toHaveBeenCalledWith("apply_file_pending_move", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_move",
+		});
+		expect(actionMock).not.toHaveBeenCalled();
+	});
+
+	test("move Discard issues a single structural discard", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_move",
+				fileNodeId: "node_a",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Discard"));
+
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_move",
+		});
+		expect(actionMock).not.toHaveBeenCalled();
+	});
+
+	test("copy Discard issues only the structural discard, never the content-revert upsert", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_copy",
+				fileNodeId: "node_a",
+				staged: "STAGED_MD",
+				unstaged: "UNSTAGED_MD",
+				copiedFrom: { nodeId: "node_src", path: "/source.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/copy.md" })]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Discard"));
+
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_copy",
+		});
+		expect(actionMock).not.toHaveBeenCalled();
+	});
+
+	test("copy Accept keeps the existing upsert + save pair", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_copy",
+				fileNodeId: "node_a",
+				staged: "STAGED_MD",
+				unstaged: "UNSTAGED_MD",
+				copiedFrom: { nodeId: "node_src", path: "/source.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/copy.md" })]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept & save"));
+
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
+		expect(actionMock).toHaveBeenNthCalledWith(1, "upsert_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_copy",
+			stagedMarkdown: "UNSTAGED_MD",
+			unstagedMarkdown: "UNSTAGED_MD",
+		});
+		expect(actionMock).toHaveBeenNthCalledWith(2, "save_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_copy",
+		});
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("mixed Accept applies the move first, then accepts and saves the content", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_mixed",
+				fileNodeId: "node_a",
+				staged: "STAGED_MD",
+				unstaged: "UNSTAGED_MD",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept & save"));
+
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
+		expect(mutationMock).toHaveBeenCalledTimes(1);
+		expect(mutationMock).toHaveBeenCalledWith("apply_file_pending_move", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_mixed",
+		});
+		expect(actionMock).toHaveBeenNthCalledWith(1, "upsert_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_mixed",
+			stagedMarkdown: "UNSTAGED_MD",
+			unstagedMarkdown: "UNSTAGED_MD",
+		});
+		expect(actionMock).toHaveBeenNthCalledWith(2, "save_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_mixed",
+		});
+		expect(mutationMock.mock.invocationCallOrder[0] ?? 0).toBeLessThan(actionMock.mock.invocationCallOrder[0] ?? 0);
+	});
+
+	test("mixed Discard reverts the content first, then discards the move", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_mixed",
+				fileNodeId: "node_a",
+				staged: "STAGED_MD",
+				unstaged: "UNSTAGED_MD",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Discard"));
+
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(actionMock).toHaveBeenCalledTimes(1);
+		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_mixed",
+			stagedMarkdown: "STAGED_MD",
+			unstagedMarkdown: "STAGED_MD",
+		});
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_mixed",
+		});
+		expect(actionMock.mock.invocationCallOrder[0] ?? 0).toBeLessThan(mutationMock.mock.invocationCallOrder[0] ?? 0);
+	});
+
+	test("Accept all routes each row through its kind dispatcher", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_content", fileNodeId: "node_a", staged: "STAGED_A", unstaged: "UNSTAGED_A" }),
+			makePendingUpdate({
+				id: "pu_move",
+				fileNodeId: "node_b",
+				pendingMove: { destParentId: "root", destName: "c.md", fromPath: "/b.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/a.md" }),
+			makeNode({ id: "node_b", path: "/b.md" }),
+		]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept all"));
+
+		// content row → upsert + save; move row → one mutation
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(2));
+		expect(mutationMock).toHaveBeenCalledTimes(1);
+		expect(mutationMock).toHaveBeenCalledWith("apply_file_pending_move", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_b",
+			pendingUpdateId: "pu_move",
+		});
+		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_content",
+			stagedMarkdown: "UNSTAGED_A",
+			unstagedMarkdown: "UNSTAGED_A",
+		});
+		expect(actionMock).toHaveBeenCalledWith("save_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_content",
+		});
+	});
+
+	test("Discard all routes each row through its kind dispatcher", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_content", fileNodeId: "node_a", staged: "STAGED_A", unstaged: "UNSTAGED_A" }),
+			makePendingUpdate({
+				id: "pu_copy",
+				fileNodeId: "node_b",
+				staged: "STAGED_B",
+				unstaged: "UNSTAGED_B",
+				copiedFrom: { nodeId: "node_src", path: "/source.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/a.md" }),
+			makeNode({ id: "node_b", path: "/b.md" }),
+		]);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Discard all"));
+
+		// content row → content-revert upsert; copy row → one structural discard mutation
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
+		expect(actionMock).toHaveBeenCalledTimes(1);
+		expect(actionMock).toHaveBeenCalledWith("upsert_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_content",
+			stagedMarkdown: "STAGED_A",
+			unstagedMarkdown: "STAGED_A",
+		});
+		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_b",
+			pendingUpdateId: "pu_copy",
 		});
 	});
 });

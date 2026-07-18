@@ -2121,6 +2121,7 @@ test("create_file_by_path can reuse an existing active file", async () => {
 	if (createdFile._nay) {
 		throw new Error("Expected initial file creation to succeed");
 	}
+	expect(createdFile._yay.created).toBe(true);
 
 	const reusedFile = await asUser.action(internal.files_nodes.create_file_by_path, {
 		organizationId: db.organizationId,
@@ -2133,6 +2134,7 @@ test("create_file_by_path can reuse an existing active file", async () => {
 	}
 
 	expect(reusedFile._yay.nodeId).toBe(createdFile._yay.nodeId);
+	expect(reusedFile._yay.created).toBe(false);
 });
 
 describe("files_nodes.get_authorized_by_path", () => {

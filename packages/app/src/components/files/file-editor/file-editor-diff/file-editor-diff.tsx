@@ -23,6 +23,7 @@ import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import {
 	files_monaco_create_editor_model,
 	files_headless_tiptap_editor_create,
+	files_pending_update_has_yjs_content,
 	files_yjs_doc_clone,
 	files_yjs_doc_create_from_array_buffer_update,
 	files_yjs_doc_get_markdown,
@@ -478,6 +479,10 @@ function editor_content_states_match(left: RemoteEditorContentState, right: Remo
 }
 
 function create_editor_content_state_from_pending_update(pendingUpdate: app_convex_Doc<"files_pending_updates">) {
+	if (!files_pending_update_has_yjs_content(pendingUpdate)) {
+		return Result({ _nay: { message: "Pending update has no content" } });
+	}
+
 	const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.baseYjsUpdate);
 	const stagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.stagedBranchYjsUpdate);
 	const unstagedYjsDoc = files_yjs_doc_create_from_array_buffer_update(pendingUpdate.unstagedBranchYjsUpdate);
@@ -1477,11 +1482,15 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const convex = useConvex();
-	const pendingUpdate = useStableQuery(api.files_pending_updates.get_file_pending_update, {
+	const pendingUpdateResult = useStableQuery(api.files_pending_updates.get_file_pending_update, {
 		membershipId,
 		nodeId,
 		pendingUpdateId,
 	});
+	// Structural-only rows (pure move) carry no content to diff: treat them as "no pending update"
+	// so the editor degrades to the plain live-file view. Loading (`undefined`) passes through.
+	const pendingUpdate =
+		pendingUpdateResult && !files_pending_update_has_yjs_content(pendingUpdateResult) ? null : pendingUpdateResult;
 	const pendingUpdateLastSequenceSaved = useQuery(
 		api.files_pending_updates.get_file_pending_update_last_sequence_saved,
 		{

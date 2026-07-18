@@ -9,8 +9,9 @@
  */
 
 import { internal } from "../convex/_generated/api.js";
-import type { Id } from "../convex/_generated/dataModel";
+import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
+import { files_pending_update_has_yjs_content } from "../shared/files.ts";
 import { should_never_happen } from "./server-utils.ts";
 
 export * from "../shared/files.ts";
@@ -164,6 +165,28 @@ export async function files_db_get_pending_update(
 					.first();
 
 	return pendingUpdate;
+}
+
+/**
+ * Return the pending update's content proposal (the 4 Yjs fields, set together or not at all),
+ * or `null` for structural-only rows (pure move).
+ */
+export function files_pending_update_content_of(
+	pendingUpdate: Pick<
+		Doc<"files_pending_updates">,
+		"baseYjsSequence" | "baseYjsUpdate" | "stagedBranchYjsUpdate" | "unstagedBranchYjsUpdate"
+	>,
+) {
+	if (!files_pending_update_has_yjs_content(pendingUpdate)) {
+		return null;
+	}
+
+	return {
+		baseYjsSequence: pendingUpdate.baseYjsSequence,
+		baseYjsUpdate: pendingUpdate.baseYjsUpdate,
+		stagedBranchYjsUpdate: pendingUpdate.stagedBranchYjsUpdate,
+		unstagedBranchYjsUpdate: pendingUpdate.unstagedBranchYjsUpdate,
+	};
 }
 
 export async function files_db_cancel_pending_update_cleanup_tasks(
