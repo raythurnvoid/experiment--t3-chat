@@ -3,24 +3,29 @@ name: app-playwriter-harness
 description: Use Playwriter to inspect, debug, test, and learn this browser app through the user's existing Chrome tabs. Use when working on localhost app flows, /files editor behavior, sidebar/navigation clickability, browser QA, app-specific Playwriter helpers, or durable Markdown memories for repeated browser actions.
 ---
 
-# App Playwriter Harness
+# Keep The Installed Harness Generic
 
-Use this skill when a task needs the live t3-chat app in the user's browser. Keep the installed harness small and generic: use Playwriter directly, add only reusable primitives, and save task-specific workflows as Markdown recipes.
+Use Playwriter directly, add only reusable primitives to the installed harness, and save task-specific workflows as Markdown recipes.
 
-## Organization
-
-- Keep `scripts/install-harness.js` limited to generic browser QA primitives: tab binding, observation, logs, hit testing, generic element inspection, and durable memory writes.
+- Keep `scripts/install-harness.js` limited to generic browser QA primitives: tab binding, observation, logs, hit testing, generic element inspection, and memory-entry proposals.
 - Do not add feature-specific helpers or one-off QA flows to the installed harness. If a helper name contains a feature, component, route, or bug name, it probably belongs in `references/*.md` instead.
 - Put reusable feature recipes in the nearest reference doc, such as `references/files.md` for `/files` behavior or `references/snippets.md` for short copyable commands.
 - Prefer composing generic helpers from docs over growing the helper namespace. Promote a recipe into the harness only when it is broadly reusable across routes and components.
 
-## Start
+# Start
 
-1. Read the installed `playwriter` skill first. If `playwriter` is not on PATH here, use `pnpx playwriter`.
-2. Create an isolated session from the repo root:
+1. Read the installed `playwriter` skill. Before the first Playwriter command in this session, run the CLI documentation through Vite Plus and read its full output. Do not truncate it:
 
 ```powershell
-$sessionOutput = pnpx playwriter session new
+vp env exec pnpx playwriter skill
+```
+
+2. List connected browsers, copy the exact reported key for the browser that exposes the target app tab, and create an isolated session from the repo root:
+
+```powershell
+vp env exec pnpx playwriter browser list
+$browserKey = "<exact KEY from browser list>"
+$sessionOutput = vp env exec pnpx playwriter session new --browser $browserKey
 $session = ($sessionOutput | Select-String -Pattern "Session (\d+) created").Matches.Groups[1].Value
 if (-not $session) { $session = ($sessionOutput | Select-Object -Last 1).Trim() }
 ```
@@ -28,34 +33,34 @@ if (-not $session) { $session = ($sessionOutput | Select-Object -Last 1).Trim() 
 3. Install the helper namespace in that session:
 
 ```powershell
-pnpx playwriter -s $session --% -e "const fs = require('node:fs'); const code = fs.readFileSync('.agents/skills/app-playwriter-harness/scripts/install-harness.js', 'utf8'); await eval(code);"
+vp env exec pnpx playwriter -s $session --% -e "const fs = require('node:fs'); const code = fs.readFileSync('.agents/skills/app-playwriter-harness/scripts/install-harness.js', 'utf8'); await eval(code);"
 ```
 
 4. Bind to the target app tab before acting:
 
 ```powershell
-pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/files' });"
+vp env exec pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/w/personal/home/files' });"
 ```
 
-## Workflow
+# Workflow
 
 - Observe before acting: print the URL and call `state.appPlaywriterHarness.observe(...)` or raw `snapshot({ page: state.page })`.
 - Prefer Playwriter accessibility locators and normal clicks. Do not use `{ force: true }`, `dispatchEvent`, or `element.click()` to bypass blockers.
 - Use `state.appPlaywriterHarness.inspectElement(...)` or `hitTest(...)` for layout and clickability bugs before trying alternate clicks.
-- Use `state.appPlaywriterHarness.latestLogs()` when a UI action fails or the app looks blank.
+- After every navigation, click, submit, or other state-changing action, call `state.appPlaywriterHarness.latestLogs({ sinceLastCall: true })`. This catches logs from the action without installing page listeners. Also check logs when the app looks blank or an action fails.
 - Use `state.appPlaywriterHarness.hitTest({ x, y })` only for layout or clickability bugs where a visible element may be covered.
-- Use `state.appPlaywriterHarness.auditAccessibility({ selector, minTargetSize })` for accessibility sweeps of a route or region: it reports unlabeled controls, hit targets blocked by overlapping elements, targets smaller than `minTargetSize` (default 24px), and interactive controls with negative `tabIndex`.
+- Use `state.appPlaywriterHarness.auditAccessibility({ selector, minTargetSize })` as a quick accessibility screen for a route or region. It reports unlabeled controls, hit targets blocked by overlapping elements, targets smaller than `minTargetSize` (default 24px), and controls with negative `tabIndex` that need review. It is not a full accessibility audit. Also check keyboard access, focus order and management, semantics, labels and errors, contrast, zoom and responsive fit, target size, and reduced motion.
 - For route-specific checks, read the relevant reference recipe and run it with generic helpers instead of adding a new helper function.
 - Keep each execute call focused on one observation or one action, then observe again.
 - Prefer small observe-act-observe scripts over bundled multi-step runners during interactive debugging and eval inspection. Batch only when the user explicitly asks for a runner or the flow is already stable and repeatable.
 
-## Output artifacts
+# Output Artifacts
 
-Write every runner script, screenshot, and scratch file you generate to the personal AI folder `../t3-chat-+personal/+ai/`, grouped under a descriptive `<topic>-YYYY-MM-DD` subfolder. Never write them to the repo's own `tmp/` (it is tracked by git and pollutes status/commits) or to the OS temp dir (invisible to the user). When a runner file must live somewhere the Playwriter sandbox can read it, still put it under `../t3-chat-+personal/+ai/`. Promote a script into `scripts/` here only when it becomes a broadly reusable harness primitive (see Organization above).
+Write every runner script, screenshot, CPU profile artifact, and scratch file to `../t3-chat-+personal/+ai/` under a descriptive `<topic>-YYYY-MM-DD` folder. The Playwriter CLI reads an `-f` runner before sandboxed code runs, so the runner may stay in the personal AI folder even though sandboxed `fs` cannot read sibling paths. Embed dynamic input in that runner or assign it to `state` in a short separate call. Do not create a second input file in the repository or OS temp directory. Use absolute personal-AI paths for Playwright output APIs. If the host cannot write to the personal AI folder, request approval. Promote a runner into `scripts/` only when it becomes a broadly reusable primitive.
 
-## Memories
+# Memories
 
-Use `state.appPlaywriterHarness.appendMemory({ file, title, body })` only for reusable knowledge, such as stable selectors, route behavior, recurring blockers, or proven snippets.
+Use `state.appPlaywriterHarness.proposeMemory({ file, title, body })` only for reusable knowledge, such as stable selectors, route behavior, recurring blockers, or proven snippets. The helper returns a proposed Markdown entry; it does not write the file. Re-read the target reference, check for duplicates and private data, then add the entry with the agent's targeted edit tool.
 
 Allowed memory files:
 
@@ -67,7 +72,7 @@ Allowed memory files:
 
 Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw coordinates, or one-off app state.
 
-## References
+# References
 
 - Read `references/app-map.md` for stable app routes, landmarks, and selectors.
 - Read `references/agent-panel.md` for AI chat / agent panel selectors, the ProseMirror composer recipe, doneness polling, and backgrounded-tab recovery (`scripts/agent-chat-helpers.js` installs `state.qa`).

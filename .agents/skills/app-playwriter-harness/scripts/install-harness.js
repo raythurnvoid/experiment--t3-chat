@@ -1,8 +1,5 @@
 (() => {
-	const fs = require("node:fs");
-	const path = require("node:path");
-
-	const VERSION = "0.4.0";
+	const VERSION = "0.5.0";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	const MEMORY_FILES = new Set([
 		"agent-panel.md",
@@ -93,7 +90,7 @@
 			content = await snapshot({
 				page: targetPage,
 				search,
-				showDiffSinceLastCall: search ? false : false,
+				showDiffSinceLastCall: false,
 			});
 		}
 
@@ -109,118 +106,29 @@
 		return { ...result, content };
 	}
 
-	async function latestLogs({ search = /error|warn|fail/i, count = 30 } = {}) {
+	async function latestLogs({ search = /error|warn|fail/i, count = 30, sinceLastCall = true } = {}) {
 		const targetPage = getHarnessPage();
-		const logs = await getLatestLogs({ page: targetPage, search, count });
+		const logs = await getLatestLogs({ page: targetPage, search, count, sinceLastCall });
 		console.log(logs);
 		return logs;
-	}
-
-	function normalizeSearch(search) {
-		if (!search) return /error|warn|fail/i;
-		if (search instanceof RegExp) return search;
-		return new RegExp(String(search), "i");
-	}
-
-	function stopConsoleCapture() {
-		const capture = state.appPlaywriterHarness?.consoleCapture;
-		if (!capture) {
-			return { stopped: false };
-		}
-
-		capture.page.off("console", capture.consoleListener);
-		capture.page.off("pageerror", capture.pageErrorListener);
-		state.appPlaywriterHarness.consoleCapture = undefined;
-
-		const result = { stopped: true, count: capture.entries.length };
-		console.log(JSON.stringify(result, null, 2));
-		return result;
-	}
-
-	function startConsoleCapture({ search = /error|warn|fail/i } = {}) {
-		stopConsoleCapture();
-
-		const targetPage = getHarnessPage();
-		const searchPattern = normalizeSearch(search);
-		const entries = [];
-		const consoleListener = (msg) => {
-			const entry = {
-				type: msg.type(),
-				text: msg.text(),
-				location: msg.location(),
-				timestamp: new Date().toISOString(),
-			};
-			if (searchPattern.test(entry.text)) entries.push(entry);
-		};
-		const pageErrorListener = (error) => {
-			const entry = {
-				type: "pageerror",
-				text: error?.message || String(error),
-				location: null,
-				timestamp: new Date().toISOString(),
-			};
-			if (searchPattern.test(entry.text)) entries.push(entry);
-		};
-
-		targetPage.on("console", consoleListener);
-		targetPage.on("pageerror", pageErrorListener);
-		state.appPlaywriterHarness.consoleCapture = {
-			page: targetPage,
-			search: String(searchPattern),
-			entries,
-			consoleListener,
-			pageErrorListener,
-		};
-
-		const result = { started: true, search: String(searchPattern), url: targetPage.url() };
-		console.log(JSON.stringify(result, null, 2));
-		return result;
-	}
-
-	function readConsoleCapture({ count = 50 } = {}) {
-		const capture = state.appPlaywriterHarness?.consoleCapture;
-		const entries = capture ? capture.entries.slice(-count) : [];
-		console.log(JSON.stringify(entries, null, 2));
-		return entries;
 	}
 
 	async function authSummary() {
 		const targetPage = getHarnessPage();
 		const result = await targetPage.evaluate(async () => {
-			function readJwtPayload(token) {
-				if (!token) return null;
-				const part = token.split(".")[1];
-				if (!part) return null;
-
-				try {
-					const padded = part.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(part.length / 4) * 4, "=");
-					return JSON.parse(atob(padded));
-				} catch {
-					return null;
-				}
-			}
-
 			const clerk = window.Clerk;
-			let clerkTokenPayload = null;
+			let hasToken = false;
 			if (clerk?.session?.getToken) {
 				const token = await clerk.session.getToken({ template: "convex" }).catch(() => null);
-				clerkTokenPayload = readJwtPayload(token);
+				hasToken = Boolean(token);
 			}
-
-			const authLocalStorageKeys = Object.keys(localStorage)
-				.filter((key) => key.includes("app::auth") || key.toLowerCase().includes("clerk"))
-				.sort();
 
 			return {
 				hasClerk: Boolean(clerk),
 				hasSession: Boolean(clerk?.session),
-				hasToken: Boolean(clerkTokenPayload),
-				external_id: clerkTokenPayload?.external_id || null,
-				sub: clerkTokenPayload?.sub || null,
-				email: clerkTokenPayload?.email || null,
+				hasToken,
 				hasAnonymousUserId: localStorage.getItem("app::auth::anonymous_token_user_id") !== null,
 				hasAnonymousToken: localStorage.getItem("app::auth::anonymous_token") !== null,
-				authLocalStorageKeys,
 			};
 		});
 
@@ -247,13 +155,13 @@
 			search,
 			showDiffSinceLastCall: false,
 		});
-		const consoleEntries = readConsoleCapture({ count: 50 });
+		const logs = await getLatestLogs({ page: targetPage, count: 50, sinceLastCall: true });
 		const result = {
 			label,
 			url: targetPage.url(),
 			title: await targetPage.title().catch(() => ""),
 			observedAt: new Date().toISOString(),
-			consoleEntries,
+			logs,
 			content: String(content).slice(0, 2000),
 		};
 		console.log(JSON.stringify(
@@ -262,7 +170,7 @@
 				url: result.url,
 				title: result.title,
 				observedAt: result.observedAt,
-				consoleEntryCount: consoleEntries.length,
+				logCount: logs.length,
 			},
 			null,
 			2,
@@ -570,10 +478,6 @@
 					}
 					const title = element.getAttribute("title");
 					if (title?.trim()) return title.trim();
-					if (element.tagName === "INPUT" || element.tagName === "TEXTAREA") {
-						const placeholder = element.getAttribute("placeholder");
-						if (placeholder?.trim()) return placeholder.trim();
-					}
 					return element.textContent?.trim().replace(/\s+/g, " ") || "";
 				}
 
@@ -584,6 +488,7 @@
 						className: typeof element.className === "string" ? element.className.slice(0, 120) : "",
 						role: element.getAttribute("role"),
 						name: accessibleName(element).slice(0, 80),
+						placeholder: element.getAttribute("placeholder"),
 					};
 				}
 
@@ -603,7 +508,7 @@
 				const unlabeled = [];
 				const blockedHitTargets = [];
 				const smallTargets = [];
-				const notFocusable = [];
+				const negativeTabIndex = [];
 
 				for (const element of controls) {
 					const described = describeControl(element);
@@ -628,7 +533,7 @@
 					}
 
 					if (element.tabIndex < 0 && !element.disabled && element.getAttribute("aria-hidden") !== "true") {
-						notFocusable.push(described);
+						negativeTabIndex.push(described);
 					}
 				}
 
@@ -639,7 +544,7 @@
 					unlabeled,
 					blockedHitTargets,
 					smallTargets,
-					notFocusable,
+					negativeTabIndex,
 				};
 			},
 			{ selector, minTargetSize },
@@ -649,14 +554,14 @@
 		return result;
 	}
 
-	function appendMemory({ file = "known-hazards.md", title, body }) {
+	function proposeMemory({ file = "known-hazards.md", title, body }) {
 		const normalizedFile = String(file).replace(/^references[\\/]/, "");
 		if (!MEMORY_FILES.has(normalizedFile)) {
 			throw new Error(`Unsupported memory file: ${file}`);
 		}
 
 		if (!title || !body) {
-			throw new Error("appendMemory requires title and body");
+			throw new Error("proposeMemory requires title and body");
 		}
 
 		const bodyText = String(body).trim();
@@ -664,11 +569,11 @@
 			throw new Error("Memory body looks like it may contain a secret; summarize without sensitive values");
 		}
 
-		const targetPath = path.join(SKILL_DIR, "references", normalizedFile);
-		const entry = `\n\n## ${String(title).trim()}\n\n${bodyText}\n`;
-		fs.appendFileSync(targetPath, entry, "utf8");
-		console.log(`Appended memory to ${targetPath}`);
-		return { file: targetPath, title: String(title).trim() };
+		const filePath = `${SKILL_DIR}/references/${normalizedFile}`;
+		const entry = `## ${String(title).trim()}\n\n${bodyText}`;
+		const result = { file: filePath, entry };
+		console.log(JSON.stringify(result, null, 2));
+		return result;
 	}
 
 	state.appPlaywriterHarness = {
@@ -676,21 +581,17 @@
 		page: state.appPlaywriterHarness?.page || state.t3ChatHarness?.page || state.page || page,
 		boundUrl: state.appPlaywriterHarness?.boundUrl || state.t3ChatHarness?.boundUrl,
 		observations: state.appPlaywriterHarness?.observations || state.t3ChatHarness?.observations || [],
-		consoleCapture: state.appPlaywriterHarness?.consoleCapture,
 		tabs,
 		bindOpenTab,
 		observe,
 		latestLogs,
-		startConsoleCapture,
-		readConsoleCapture,
-		stopConsoleCapture,
 		authSummary,
 		waitForUrlIncludes,
 		observeRoute,
 		hitTest,
 		inspectElement,
 		auditAccessibility,
-		appendMemory,
+		proposeMemory,
 	};
 
 	state.t3ChatHarness = state.appPlaywriterHarness;

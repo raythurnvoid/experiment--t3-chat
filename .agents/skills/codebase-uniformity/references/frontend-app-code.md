@@ -9,6 +9,8 @@ Use this reference for `packages/app/src/**` React components and frontend lib u
 - `packages/app/src/lib/dom-utils.ts`
 - `packages/app/src/lib/date.ts`
 - `packages/app/src/lib/currency.ts`
+- `packages/app/src/lib/file-paths.ts`
+- `packages/app/src/lib/file-paths.test.ts`
 - `packages/app/src/lib/files.ts`
 - Nearby component files under `packages/app/src/components/**`
 
@@ -50,8 +52,8 @@ Use this reference for `packages/app/src/**` React components and frontend lib u
 
 ## Public Function Shape
 
-- Multi-argument public functions usually take a single `args` object. Examples include `files_download_blob`, node path validation helpers, and app storage helpers.
-- Do not destructure an `args` object at the top of a function or create aliases only to shorten property access. Keep `args.foo` explicit unless a local value does real work beyond renaming.
+- Multi-argument public functions usually take a single `args` object. Examples include `files_download_blob` and node path validation helpers. Preserve established positional or framework-contract signatures such as `app_local_storage_set_value(key, value)`.
+- Do not destructure an `args` object only to shorten property access or create aliases that only rename fields. Keep `args.foo` explicit for scattered uses. Follow the nearest module when several fields form one local step; current anchors such as `my-focus.ts` intentionally destructure in that case.
 - Prefer behavior verbs already used in nearby code. Reuse established words such as `truncate`, `format`, `normalize`, `validate`, `parse`, `serialize`, and `copy` before coining a new term.
 
 ## Tests

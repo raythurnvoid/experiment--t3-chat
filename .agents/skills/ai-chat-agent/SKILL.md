@@ -16,6 +16,8 @@ Primary:
 - `../../../packages/app/server/bash-grep-command.ts`
 - `../../../packages/app/server/bash-head-tail-wc-command.ts`
 - `../../../packages/app/server/bash-ls-command.ts`
+- `../../../packages/app/server/bash-search-command.ts`
+- `../../../packages/app/server/bash-delegate.ts`
 - `../../../packages/app/server/bash-meta-command.ts`
 - `../../../packages/app/server/bash-mv-command.ts`
 - `../../../packages/app/server/bash-nested-shell-command.ts`
@@ -52,7 +54,7 @@ The current agent is a Convex-backed AI chat runtime that streams AI SDK 5 UI me
 - Files node data/query layer: `../../../packages/app/convex/files_nodes.ts`
 - R2 upload/event metadata and source conversion/finalization: `../../../packages/app/convex/r2.ts`
 
-The files system is a db-backed file/folder model scoped by organization/workspace membership. Folders are tree nodes only. Markdown files have Yjs snapshots/updates, Markdown chunks, and plain-text chunks; committed current content is read from the chunks, and R2 keeps only Yjs and version snapshot objects for editable files. Uploaded source files preserve the original binary in R2; generated Markdown outputs from upload processing are ordinary visible sibling files.
+The files system is a db-backed file/folder model scoped by organization/workspace membership. Folders are tree nodes only. Markdown files have Yjs snapshots/updates, Markdown chunks, and plain-text chunks; committed current content is read from the chunks, and R2 keeps only Yjs and version snapshot objects for editable files. Uploaded source files preserve the original binary in R2. Enabled `files.upload.completed` plugins may create ordinary visible Markdown siblings.
 
 # Main Request Flow
 
@@ -103,7 +105,7 @@ Important limitation:
 
 - These tools operate on db-backed app files, not repo files on disk.
 - `bash` is the active shell interface for the cloud file environment. It is still not the host shell, but `/tmp` exposes the safe Just Bash native-style scratch command surface while the app mount stays db-backed.
-- `bash` mounts app files at the current workspace path `/home/cloud-usr/w/{organizationName}/{workspaceName}`, blocks file writes there, allows Agent-mode folder creation through `mkdir`, and provides durable per-thread scratch space at `/tmp`.
+- `bash` mounts app files at the current workspace path `/home/cloud-usr/w/{organizationName}/{workspaceName}` and provides durable per-thread scratch space at `/tmp`. Direct app writes, redirects, links, and deletes remain read-only. In Agent mode, `mkdir` creates folders, app-to-app `mv` creates pending move or rename proposals, and app-to-app `cp` creates pending copy or replacement proposals. Ask mode rejects these durable app mutations.
 - App-mount limitations apply only to paths under `/home/cloud-usr/w/{organizationName}/{workspaceName}` or the app mount `/home/cloud-usr/w`. Do not describe those limits as global Bash limitations. For commands that touch only `/tmp` paths or stdin, use normal scratch command behavior.
 - Native-style `/tmp` commands use Just Bash's own argument parsing and include safe text/file utilities such as `du`, `diff`, `rg`, `jq`, `base64`, `sha256sum`, `nl`, `rev`, and `tac`; the Unix `file` command is intentionally unavailable.
 - If `file` fails or the user asks for it, do not stop after reporting that it is unavailable; run supported recovery commands such as `stat`, `wc`, `head`, or `cat` on the same `/tmp` path when that answers the request.
@@ -111,7 +113,7 @@ Important limitation:
 - When retrying a `/tmp` command option, prefer doing related scratch work in one call when convenient, but previous `/tmp` files are available in later calls in the same chat.
 - `/tmp` persists across Bash calls in this chat and reloads from Convex if the warm backend runtime cache is gone. It is not shared with new chats and is not app file storage; use app file tools for durable user-visible files.
 - Do not call `/tmp` ephemeral or temporary in a way that implies same-chat data loss. If a fresh chat cannot read a `/tmp` path created in another chat, that is expected evidence of per-chat isolation, not a global Bash failure.
-- The bash internal action lives in `../../../packages/app/convex/bash.ts` as `internal.bash.run`; keep Convex action registration and validators there. The exported `bash_run_command` runner in `../../../packages/app/server/bash.ts` owns thread-state reads/writes, `/tmp` patch mutations, logging, action result shaping, and Just Bash filesystem/runtime construction. Keep `bash_fs_create`, `BashTmpFs`, `ReadOnlyBaseFs`, command factories, helpers, and in-source command tests private there. Shared prefixed path helpers, bash constants, the `cp`/`mv` operand parser, `bash_command_build_builtin_delegation_args`, db-files shell-path resolution helpers, `bash_DbFilesFs`, `bash_DbFilesFsOptions`, and `bash_DbFilesContentUnavailableError` live in `../../../packages/app/server/bash-utils.ts`. The `cat` command lives in `../../../packages/app/server/bash-cat-command.ts`, the `cp` command lives in `../../../packages/app/server/bash-cp-command.ts`, the `find` command lives in `../../../packages/app/server/bash-find-command.ts`, the `grep` command lives in `../../../packages/app/server/bash-grep-command.ts`, the `meta` command and its `meta search --where` parser live in `../../../packages/app/server/bash-meta-command.ts`, the `mv` command lives in `../../../packages/app/server/bash-mv-command.ts`, the nested `bash`/`sh` commands live in `../../../packages/app/server/bash-nested-shell-command.ts`, the `head`/`tail`/`wc` commands live in `../../../packages/app/server/bash-head-tail-wc-command.ts`, the `ls` command lives in `../../../packages/app/server/bash-ls-command.ts`, the `rm` command lives in `../../../packages/app/server/bash-rm-command.ts`, the `sed` command lives in `../../../packages/app/server/bash-sed-command.ts`, the `stat` command lives in `../../../packages/app/server/bash-stat-command.ts`, the `tee` command lives in `../../../packages/app/server/bash-tee-command.ts`, the `textgrep` command lives in `../../../packages/app/server/bash-textgrep-command.ts`, the `touch` command lives in `../../../packages/app/server/bash-touch-command.ts`, the `tree` command lives in `../../../packages/app/server/bash-tree-command.ts`, the `xargs` command lives in `../../../packages/app/server/bash-xargs-command.ts`, and the `which` command lives in `../../../packages/app/server/bash-which-command.ts`. Keep thread-state queries/mutations in default-runtime `ai_chat.ts`.
+- The bash internal action lives in `../../../packages/app/convex/bash.ts` as `internal.bash.run`; keep Convex action registration and validators there. The exported `bash_run_command` runner in `../../../packages/app/server/bash.ts` owns thread-state reads/writes, `/tmp` patch mutations, logging, action result shaping, and Just Bash filesystem/runtime construction. Keep `bash_fs_create`, `BashTmpFs`, `ReadOnlyBaseFs`, command factories, helpers, and in-source command tests private there. Shared path and db-files helpers live in `../../../packages/app/server/bash-utils.ts`; built-in delegation and native scratch behavior live in `../../../packages/app/server/bash-delegate.ts`. The `cat`, `cp`, `find`, `grep`, `head`/`tail`/`wc`, `ls`, `meta`, `mv`, nested-shell, `rm`, `search`, `sed`, `stat`, `tee`, `textgrep`, `touch`, `tree`, `which`, and `xargs` commands live in their matching `bash-*-command.ts` modules. Keep thread-state queries/mutations in default-runtime `ai_chat.ts`.
 - Extracted Bash command modules should preserve the original monolithic function signatures, use no command-region markers, and avoid factory dependency bags.
 - `bash` persists the current working directory through the general `ai_chat.get_thread_state` / `ai_chat.set_thread_state` internal functions. The state doc is stored in `ai_chat_threads_state`, linked from `ai_chat_threads.stateId` and back to `ai_chat_threads_state.threadId`. Thread creation still inserts the legacy `~` marker, but the bash action expands that initial/default marker to the current workspace path `/home/cloud-usr/w/{organizationName}/{workspaceName}`. After `cd`, app paths persist as home-relative values such as `~/w/personal/home/docs`; an explicit home cwd persists as `/home/cloud-usr` so it is not confused with the default marker. Cwd does not live directly on `ai_chat_threads`.
 - The prompt and tool description should tell the model that cwd persists across tool calls in the same chat and that it should use bare or relative commands instead of repeating `cd` when the previous Bash output already shows the desired cwd.
@@ -141,11 +143,11 @@ Important limitation:
 - If metadata field names are unclear, read nearby `README.md` files because folders may document their frontmatter conventions.
 - `grep [-n] [-i] [-F] PATTERN <file>` scans one exact app file over Markdown chunks. Normal single-file `grep` uses regex matching; `-F` / `--fixed-strings` uses literal substring matching. It supports `-c`, `-l`, `-v`, and `-A`/`-B`/`-C N` context. Large-file grep is bounded; if stderr prints `Next scan: grep --start-line ...` or `Next scan: grep --start-index ...`, run that exact command to continue. Multiple-file and app-folder grep still use indexed text search only, because exact regex/substring scans are intentionally limited to one file for performance. For rendered plain-text chunk scans, use `textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file>` for one app file, or `textgrep -R PATTERN <folder>` for a recursive folder scan via indexed full-text search (not exact recursive regex/fixed-string grep, like `grep -R`). Single-file `textgrep` uses regex by default; `-F`/`--fixed-strings` uses literal substring matching, `-v` inverts, `-c` counts, `-l` prints the path; it is plain-text-only and app-file-only. `textgrep -n` and context flags are rejected with a pointer to `grep`, and `textgrep -R -F` is rejected because recursive scans cannot do exact fixed-string matching. Simple `grep -R PATTERN <app-folder>` is recovered through indexed full-text search, but complex or multi-file grep forms are not exact recursive grep; prefer `search --path`.
 - `tree [PATH] [--limit N] [--cursor CURSOR]` renders a paginated app tree page. Native pattern/depth/output flags are unsupported for app paths.
-- `cat [-n] [--] [FILE...]`, `head`, `tail`, `wc`, and `stat` read exact app paths only. `cat -- -file.md` treats `-file.md` as an operand, while `cat -- -` still reads stdin. `wc` supports `-l`, `-w`, `-c`, and `-m`; line/word/character counts may be lower bounds for large files. Large-file continuation and lower-bound notes from `cat`, `head`, `tail`, `sed`, and `wc` are stderr diagnostics, not file content. `cat` unreadable-source advisories are stderr and a nonzero exit; `head`, `tail`, and `wc` may still show readable-sibling advisories as command output.
+- `cat [-n] [--] [FILE...]`, `head`, `tail`, `wc`, and `stat` provide exact reads for app-file operands. They keep their native Just Bash behavior for supported non-app operands such as `/tmp` paths and devices; `cat`, `head`, `tail`, and `wc` also keep stdin behavior. `cat -- -file.md` treats `-file.md` as an operand, while `cat -- -` still reads stdin. `wc` supports `-l`, `-w`, `-c`, and `-m`; line/word/character counts may be lower bounds for large files. Large-file continuation and lower-bound notes from `cat`, `head`, `tail`, `sed`, and `wc` are stderr diagnostics, not file content. `cat` unreadable-source advisories are stderr and a nonzero exit; `head`, `tail`, and `wc` may still show readable-sibling advisories as command output.
 - `sort`, `uniq`, `cut`, `sed`, `awk`, and the broader native-style scratch utilities are stream or `/tmp` processors for app work. Use `cat exact-app-file | sort` or similar pipelines; do not pass app files as direct operands to scratch/native utilities unless that command has an explicit app-aware implementation.
 - Keep Bash commands simple: avoid strict-mode boilerplate such as `set -euo pipefail` because `pipefail` is unsupported, comments inside command strings, and process substitution. For multi-command inspection or eval checks, do not use `set -e` or hide stderr with `2>/dev/null`; later commands and visible stderr should still be observed.
 - Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.
-- App content writes, edits, moves, and deletes are not shell operations. Use `write_file` / `edit_file` for durable content changes; Bash rejects direct app writes except Agent-mode folder creation through `mkdir`. Do not work around app read-only write, move, or delete requests by copying app files to `/tmp` unless the user asked for a scratch copy.
+- Use `write_file` and `edit_file` for authored Markdown changes. Direct app writes, redirects, links, and deletes are not shell operations. Agent-mode app-to-app `mv` and `cp` are reviewable structural proposals, not immediate committed filesystem mutations. App-to-`/tmp` copy remains immediate thread scratch. Do not work around a rejected app write or delete by copying app files to `/tmp` unless the user asked for a scratch copy.
 - Legacy `read_file`, `list_files`, `glob_files`, and `grep_files` tool definitions may remain in the runtime registry for historical message validation, but new generation should prefer `bash` plus `write_file` / `edit_file`.
 - When using the agent itself to create large QA corpora, keep prompts to small batches and verify actual app files after each batch. Assistant summary text can say a batch succeeded even when the model stopped before issuing every requested `write_file` call.
 - The agent does not currently read raw R2 binaries through this toolbelt.
@@ -155,15 +157,14 @@ Important limitation:
 - `execute_code` runs an untrusted JavaScript snippet in an isolated Cloudflare Dynamic Worker (Worker Loader) hosted by the separate `bonobo-senate-code-execution-runner` Worker, reached over HTTP from the Convex action (`CODE_EXECUTION_RUNNER_URL` + `CODE_EXECUTION_RUNNER_SECRET` env). Use it for computation, JSON shaping, parsing, quick algorithmic work, gatewayed fetches, or file-aware calculations that are better expressed in code. The snippet body is `async (input) => { ... }`: it `return`s a JSON-serializable value and may `console.*`; `input` is an opaque optional JSON argument. The app tool creates a short-lived `public_api_grants` doc with explicit file read/list scopes and a nullable path prefix, then passes the token privately to the runner gateway; the snippet sees `fetch` and `process.env.T3_APP_ORIGIN`, not the raw grant token. To read app files, code should `POST` to `${process.env.T3_APP_ORIGIN}/api/v1/files/list` for discovery, `/api/v1/files/read-many` for folder-scale reads, and `/api/v1/files/read` for one-off reads; the runner gateway authorizes those app API requests. Do not pass app file paths or contents through `input`.
 - Public file-read API credentials and public API grants both authorize through `public_api.ts`. `public_api.api_credential_create` creates reveal-once opaque `pk_...` credentials for a membership with explicit scopes (`"files:list"` and/or `"files:read"`) and requires `api.credentials.manage`. Those credentials can call `/api/v1/files/list`, `/api/v1/files/read`, and `/api/v1/files/read-many`; public API grants call the same routes through the runner gateway with the grant token injected outside the snippet. There is intentionally no UI for credential management yet.
 
-# Uploaded Source And Generated Files
+# Uploaded Source And Plugin-Generated Files
 
 - Uploaded source files are visible `files_nodes` docs with an `assetId` pointing to the uploaded source R2 asset.
 - The original uploaded binary is preserved in R2.
-- Successful PDF source-to-Markdown conversion creates a generated Markdown sibling app file such as `<source-name>.md`.
-- Successful image upload processing creates a generated Markdown sibling app file such as `<source-name>.description.md`.
-- Successful video upload processing creates two generated Markdown sibling app files: `<source-name>.summary.md` and `<source-name>.transcript.md`.
-- Image/video generation is orchestrated by Convex. Video frame/audio extraction uses the Cloudflare Media Transformer Worker against private R2; when Cloudflare cannot extract audio and the uploaded MP4 is still within the OpenAI transcription byte cap, Convex falls back to transcribing the original R2 upload directly. Generated transcript/summary/description Markdown is finalized into the same Yjs/chunk/snapshot shape as other editable Markdown files.
-- Upload processing is tracked by `files_r2_assets.processingWorkId`: `undefined` means the upload/output is not accepted into processing yet, a Workpool id means processing is accepted/in flight/retrying, and `null` means terminal. Deterministic converter non-success, such as Modal `413` or `422`, is terminal and leaves generated output placeholders as stored-file/status docs rather than editable Markdown.
+- R2 finalization handles Markdown MIME uploads in the host. Other terminal uploads dispatch `files.upload.completed` to eligible installed plugins.
+- The first-party PDF plugin writes `<source-name>.md`; the image plugin writes `<source-name>.description.md`; the video plugin writes `<source-name>.summary.md` and `<source-name>.transcript.md`. These outputs exist only when the matching plugin is installed, enabled, and able to run with its required secrets.
+- The plugins own provider calls, conversion details, output creation, and their failure behavior. Do not describe the removed host-owned image/video Workpool pipeline as a current Convex invariant.
+- `files_r2_assets.processingWorkId` tracks the host upload/finalization job for the source. Plugin event-run progress is separate.
 - Generated output files are regular visible app files. They can be opened, moved, archived, renamed, searched, and edited independently from the uploaded source file.
 - The generated Markdown stores converted Markdown only; source/conversion metadata stays in db/R2 metadata, not visible frontmatter.
 - Editing generated Markdown does not mutate the original R2 object.
@@ -173,7 +174,7 @@ Important limitation:
 - Bash discovery commands expose generated outputs as ordinary files. Use exact Bash reads such as `cat /home/cloud-usr/w/{organizationName}/{workspaceName}/report.pdf.md` once generated output is finalized.
 - Legacy `read_file("/report.pdf")` does not read generated Markdown; `read_file("/report.pdf.md")` reads the generated output once finalized if a historical validation path still invokes that tool.
 - Native source-file reading is planned for provider-supported files, especially PDFs. The agent should decide when Markdown search/results are enough and when to read the original source file with provider-native capabilities.
-- Original binary download is planned for users but is not implemented today.
+- Original binary access is exposed to authorized plugin runs through short-lived download URLs. Do not infer a user-facing download UI from that backend route.
 
 # Tool Semantics
 
@@ -186,7 +187,7 @@ Important limitation:
 - Does not alias `/` to app files; `/` only exposes normal mount-point directories such as `/home` and `/tmp`.
 - `cat` reads app-file operands from materialized Markdown chunks and preserves the current user's pending-update overlay. It does not fall back to full-content reconstruction for unreadable or unmaterialized files; summarize stderr as an advisory or failure, not file content.
 - Lists direct app children through `files_nodes.list_children`, and folder subtrees through `files_nodes.list_subtree` after exact targets are resolved with `files_nodes.get_by_path`.
-- Treats file writes under the app file tree as read-only; persistent content changes must use `write_file` or `edit_file`.
+- Treats direct content writes under the app file tree as read-only; persistent content changes must use `write_file` or `edit_file`. Agent-mode `mv` and `cp` use pending structural proposals instead of direct writes.
 - Convert bash paths to app paths before calling `write_file` or `edit_file` by removing the current workspace path prefix `/home/cloud-usr/w/{organizationName}/{workspaceName}` while preserving the full remaining suffix. For example, `/home/cloud-usr/w/personal/home/folder/README.md` becomes `/folder/README.md`, never `/README.md`.
 - Creates persistent folders only through `mkdir` under the app file tree in Agent-mode `bash`; Ask-mode `bash` rejects durable folder creation.
 - Provides `/tmp` as writable durable scratch space scoped to the chat thread. `/tmp` persists across later `bash` calls in the same chat and reloads from Convex if the warm backend runtime cache is gone, but a new chat has a separate scratch filesystem. App-mount guards should not prevent `/tmp`-only commands from using native-style scratch utilities.
@@ -305,10 +306,12 @@ Legacy file tools stay documented because old assistant messages may need valida
 Reads:
 
 - `read_file` goes through `get_file_last_available_markdown_content_by_path`.
-- That action resolves the exact Markdown file path and checks `files_pending_updates` for `(organizationId, workspaceId, userId, nodeId)`.
+- That action resolves visible app paths through the current user's pending structural overlay before reading content. Pending destinations are visible, vacated or replaced paths are hidden, and descendants follow a pending folder move.
+- After path resolution, it checks `files_pending_updates` for `(organizationId, workspaceId, userId, fileNodeId)` and overlays the current pending `unstaged` branch when content exists.
 - If a pending update doc exists, it reconstructs Markdown from the pending `unstaged` branch and returns that instead of committed Markdown.
 - Bash exact readers (`cat`, `head`, `tail`, `wc`, `grep`, and pipelines fed by `cat`) use the same pending-aware read path, with chunk/R2 fallbacks only when no pending update doc exists.
 - Read-only mounts (`/.mounts` and `/.plugins`) skip pending-update lookups entirely because reserved-scope files are not editable and never have pending docs.
+- Bash and legacy list/read/search/meta/tree/find surfaces use the same current-user structural path overlay. Other users continue to see the committed tree.
 - Bash `search` queries the unified `files_plain_text_chunks` full-text search docs. Pending docs are user-scoped inside that table, other users' pending chunks are filtered out, and stale committed chunk hits are hidden only for files the acting user has pending edits on. Exact Markdown reads and regex scans use unified `files_markdown_chunks`; the old separate search and pending chunk tables no longer exist.
 - Bash `meta search` queries unified `files_metadata_docs` with the same current-user pending overlay rule as Bash `search`: other users' pending metadata is invisible, and stale committed metadata is hidden for files the acting user has pending edits on.
 
@@ -316,6 +319,7 @@ Writes:
 
 - `write_file` and `edit_file` call action-aware pending-update helpers so the latest R2-backed base Yjs state is resolved before internal mutations write docs.
 - They update the current user's pending `unstaged` branch.
+- Agent-mode app-to-app `mv` stores `pendingMove`. App-to-app `cp` stores `copiedFrom` and may mark a newly created destination as `eagerCreated` so discard or expiry can remove it safely. A replacement proposal records the replaced destination instead of committing over it immediately.
 - The client is expected to open the diff/review UI before live file content changes.
 
 # Current Invariants
@@ -323,14 +327,14 @@ Writes:
 1. The agent operates on db-backed app files, not repo files.
 2. Folder nodes are not content-readable or content-writable by AI file tools.
 3. File reads are user-scoped because pending overlays are user-scoped.
-4. `bash` can read, list, navigate, search app files, and create folders in Agent mode, but file writes under the app file tree fail by design.
-5. `bash` `mkdir` under `/home/cloud-usr/w/{organizationName}/{workspaceName}` is the only AI path that creates persistent folder nodes.
-6. `write_file` and `edit_file` create pending review state, not direct committed writes.
+4. `bash` can read, list, navigate, and search app files. In Agent mode it can create folders and propose app-to-app moves and copies; direct writes, redirects, links, and deletes still fail.
+5. `mkdir`, nested `write_file` paths, and pending copy destinations may create persistent intermediate folders. Do not claim `mkdir` is the only AI path that creates folders.
+6. `write_file`, `edit_file`, app-to-app `mv`, and app-to-app `cp` create pending review state rather than immediately committing the proposed content or structure.
 7. `write_file` passes the already-resolved `userId` into `create_file_by_path`; pending-update docs store the same id.
 8. New generation uses Bash `search` for full-text content search, Bash `meta search` for indexed frontmatter metadata, and Bash `find` for path discovery; legacy `grep_files` / `glob_files` are validation-only surfaces.
 9. Legacy `read_file` output is line-numbered and those prefixes are not valid `edit_file.oldString` input.
 10. Request messages are persisted before generation; assistant responses are persisted after streaming finishes. `thread_messages_add` is idempotent by thread and client-generated message id so finish/abort/retry overlap cannot create duplicate sibling messages.
-11. Current tools do not read raw uploaded R2 binaries; generated Markdown outputs from uploads are ordinary Markdown files whose committed Markdown is also stored in R2.
+11. Current chat file tools do not read raw uploaded R2 binaries; plugin-generated Markdown outputs are ordinary Markdown files whose committed Markdown is also stored in R2.
 12. Source-path reads must preserve the product distinction between the original R2 object and generated editable Markdown outputs.
 13. Generated upload outputs are regular visible files; tools should not apply hidden-file or path-alias behavior.
 14. Client-side failed-send feedback is not persisted; retry keeps the existing failed user message as the final chat message and resubmits it in place from that message's original persisted parent.
@@ -348,13 +352,14 @@ Writes:
 - `bash` can run `pwd`, `ls /home/cloud-usr/w/{organizationName}/{workspaceName}`, `cat /home/cloud-usr/w/{organizationName}/{workspaceName}/<path>`, `search --limit N <content terms>`, and preserves cwd across turns.
 - `/tmp` is durable per-thread scratch. It persists across later `bash` calls in the same chat, reloads from Convex after warm runtime cache loss, and is not app file storage.
 - `bash` file writes under the app file tree fail with a read-only filesystem error.
-- Agent mode can create folders with `bash` `mkdir /home/cloud-usr/w/{organizationName}/{workspaceName}/<folder>` and can call `write_file` and `edit_file`; Ask mode can call `bash` for reads/searches but cannot create folders or call write tools.
-- Bash exact reads, Bash `search`, and legacy `read_file` see the current user's pending unstaged branch when one exists.
-- `write_file` and `edit_file` create pending review state instead of silently saving live content.
+- Agent mode can create folders with `bash` `mkdir`, propose app-to-app moves and copies with `mv` and `cp`, and call `write_file` and `edit_file`; Ask mode can call `bash` for reads/searches but rejects durable app mutations and does not expose the write tools.
+- Bash exact reads, Bash discovery/search surfaces, and legacy file tools see the current user's structural path overlay and pending unstaged content when present.
+- `write_file`, `edit_file`, app-to-app `mv`, and app-to-app `cp` create reviewable pending state instead of silently committing live changes.
+- Accept and discard checks cover pending moves, copies, replacements, eager-created destinations, and mixed content-plus-structure rows.
 - `edit_file` fails on missing/ambiguous single-match replacements.
 - Legacy `grep_files` behaves like regex/line search when validating old tool calls.
 - Uploaded source files are not described as raw-binary-readable until a native source-file tool exists.
-- Generated upload outputs are read, searched, edited, and listed by their actual visible paths, preferably through Bash plus `write_file` / `edit_file`.
+- With the matching upload plugin installed and enabled, generated outputs are read, searched, edited, and listed by their actual visible paths, preferably through Bash plus `write_file` / `edit_file`.
 - Tool descriptions stay aligned with actual behavior.
 
 # TODO / Hardening Backlog
@@ -366,7 +371,7 @@ stdout cap, and per-line display truncation at `files_READ_MAX_LINE_CHARS = 8000
 content written/typed into the workspace.
 
 - [ ] **Cap total written-document size (the real gap).** Uploads are size-capped via
-      `files_MAX_UPLOADS_BYTES` (`convex/files_nodes.ts:1236`), but typed/written Markdown has no
+      `files_MAX_UPLOADS_BYTES` from `shared/files.ts`, but typed/written Markdown has no
       size limit. Add a content-agnostic per-document byte cap at the write choke points
       — `write_file`/`edit_file` (`server/server-ai-tools.ts` → `create_file_by_path` /
       `action_create_markdown_node` / the edit pending-update path in `convex/files_nodes.ts`)

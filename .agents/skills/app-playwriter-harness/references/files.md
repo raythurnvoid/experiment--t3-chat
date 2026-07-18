@@ -1,6 +1,6 @@
 # Files Route Playwriter Notes
 
-Use this file as a quick testing map for `/files`. Keep it short and selector-oriented. If a check needs a large script, write a temporary script during the task instead of pasting it here.
+Use this file as a quick testing map for `/files`. Keep it short and selector-oriented. If a check needs a large script, write a task-specific runner in the personal AI folder instead of pasting it here.
 
 ## Route Basics
 
@@ -25,6 +25,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Sidebar panel: `.FileNodeView-editor-sidebar-panel`.
 - Comments tab: `#app_file_editor_sidebar_tabs_comments`.
 - Agent tab: `#app_file_editor_sidebar_tabs_agent`.
+- Pending tab: `#app_file_editor_sidebar_tabs_pending`.
 
 ### File Node View
 
@@ -60,7 +61,7 @@ Deterministic assets in `.agents/skills/app-playwriter-harness/assets/files/`:
 - Editor mode radios are small native inputs. If a radio locator times out, click the matching `#app_main_header_content label`.
 - Uploaded source files and generated `.md` siblings can share filename prefixes. Use exact role-name locators for per-node actions, such as `getByRole("button", { name: "More actions for qa.pdf", exact: true })`.
 - The folder explorer and sidebar tree can expose duplicate action names. Scope to the owning tree row, folder row, or panel before clicking.
-- Inline create/rename inputs may stop matching by old value after `fill(...)`; re-locate by the new value or use `page.keyboard.press("Enter")` after confirming focus.
+- Inline create/rename inputs may stop matching by old value after `fill(...)`; re-locate by the new value or use `state.page.keyboard.press("Enter")` after confirming focus.
 - Use real drag gestures for drag/drop checks. Do not use `dispatchEvent`, DOM `element.click()`, or forced clicks.
 
 ## High-Value Recipes
@@ -129,6 +130,7 @@ Use this when changing tree focus, context menus, selection, or route sync.
 ### R2 Upload And PDF Siblings
 
 - Fixture: `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf`.
+- Before the check, confirm the PDF plugin is installed for the workspace and its required conversion service settings are configured. Otherwise conversion cannot produce the Markdown sibling.
 - Select the target folder before uploading; file-selected uploads may target root. `Upload file` is a menu item under the sidebar `More options` button, not a standalone toolbar button.
 - After upload prep, the source PDF should appear as a normal tree node.
 - During processing, the source file panel should show pending/processing metadata, not converted Markdown.
@@ -143,6 +145,10 @@ Use this when changing tree focus, context menus, selection, or route sync.
 - Verify a `Bash` disclosure appears for search/read steps, using commands such as `search --limit N <token>` and `cat /home/cloud-usr/w/personal/home/<known-md-path>`.
 - Verify the edit step uses `Edit file` or `Write file`, not a Bash redirect under `/home/cloud-usr/w/personal/home`.
 - Review/apply via `[data-testid="review-changes-button"]`.
+- In Agent mode, ask Bash to `mv` a file to a new path and verify the Pending tab shows a move proposal before acceptance. Test both a rename and a move between folders.
+- Ask Bash to `cp` a file to a new path and to an occupied path. Verify the Pending tab shows the copy or replacement proposal and that committed files stay unchanged until acceptance.
+- For a mixed move plus content proposal, accept it and verify the move is applied before the updated content is saved.
+- Writes, redirects, deletes, and `rm` remain unsupported through Bash. Verify they fail instead of creating a pending proposal.
 
 ### File Agent Just Bash
 
@@ -157,7 +163,7 @@ Use this after changing the AI bash tool, tool rendering, or agent file-access c
 - Ask for files by extension and verify the assistant uses `find -name '*.md' --limit N` or `find -iname '*.MD' --limit N`, not shell glob operands such as `ls *.md`.
 - Ask for files by path prefix and verify the assistant uses `find --prefix <prefix> --limit N`.
 - Ask for only the top-level entries under a folder and verify the assistant uses `find <path> -maxdepth 1`; ask for only the deeper descendants and verify it uses `find <path> -mindepth 2`. `-print` is accepted as a no-op, so `find <path> -print` must not error.
-- Ask it to read many files at once (more than 10 app files or agent-only external mount files in one `cat`/`head`/`tail`/`wc`); verify the bash result reports `Convex-backed file reads are limited to 10 files per command` and the assistant either splits the reads across calls or switches to `search`, instead of batching one giant read.
+- Ask it to read many files at once (more than 10 app files or agent-only external mount files in one `cat`/`head`/`tail`/`wc`); verify the bash result reports `db-backed file reads are limited to 10 files per command` and the assistant either splits the reads across calls or switches to `search`, instead of batching one giant read.
 - For search regressions, use a token known to appear in several Markdown files and verify the result includes every expected path up to the requested limit, not just the top indexed search hit.
 - Send `cd /home/cloud-usr/w/personal/home/<known-folder>` and then a second prompt asking for `pwd`; verify the second bash result uses the persisted cwd.
 - In Agent mode, ask it to create a timestamped folder with `mkdir /home/cloud-usr/w/personal/home/playwriter-ai-chat-qa-<timestamp>`; verify the new turn shows a Bash disclosure and does not show a `create_folder` tool.
@@ -172,7 +178,7 @@ Use this when creating many QA files through the app agent.
 
 - Use fresh chats for each small batch so model context stays clean.
 - Keep each prompt to 3-4 `write_file` paths. Larger batches can make the assistant claim success before every file is actually persisted.
-- After clicking `New chat`, verify the selected `.AiChatThread[data-thread-id]` starts with `ai_thread-` before sending. If the selected tab immediately reverts to an older persisted id, debug the optimistic tab cleanup before continuing.
+- After clicking `New chat`, verify `[aria-label="Open chats"] [role="tab"][aria-selected="true"]` has an id that starts with `ai_thread-` before sending. If it immediately reverts to an older persisted id, debug the optimistic tab cleanup before continuing.
 - Include a unique batch token in every requested file, but treat the Convex file-node query as the source of truth for count and paths.
 - Query actual file nodes after every batch with `app_convex.query(app_convex_api.files_nodes.list_tree, { membershipId })`; do not rely on assistant summary text or visible tool previews for the final count.
 - Repair missing files in separate one-file chats instead of resending a large batch.
@@ -181,7 +187,7 @@ Use this when creating many QA files through the app agent.
 
 Use this after changing chat send, stop, branch, pending-message, or parent-id logic.
 
-- Bind one `/files` tab, open `#app_file_editor_sidebar_tabs_agent`, and capture `/api/chat` requests with `page.route("**/api/chat", ...)`.
+- Bind one `/files` tab, open `#app_file_editor_sidebar_tabs_agent`, and capture `/api/chat` requests with `state.page.route("**/api/chat", ...)`.
 - If a New chat tab id starts with `ai_thread-*` after reload/HMR, first verify it still has an optimistic session. A stored optimistic tab must be rehydrated, dropped, or upgraded before sending; `/api/chat` should receive `clientGeneratedThreadId` for an optimistic chat, never `threadId: "ai_thread-..."`.
 - When a visible user bubble shows `Message failed to send.`, clicking `Retry` should create a new `/api/chat` request for the same text. If no request is captured and the console logs `target-message-not-persisted`, the retry path is treating the failed client-only user message as a persisted branch target instead of replacing it from its original parent.
 - Start a fresh chat with `getByRole("button", { name: "New chat", exact: true })`; the open chat drag handle can otherwise match the same text.
@@ -202,15 +208,12 @@ Use this after changing chat send, stop, branch, pending-message, or parent-id l
 
 ## Script Pattern
 
-For anything longer than a one-liner, prefer a temp file:
+For anything longer than a one-liner, keep the runner in a dated personal AI folder:
 
 ```powershell
-$scriptPath = Join-Path $env:TEMP 'playwriter-files-check.js'
-@'
-await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/files" });
-state.page.setDefaultTimeout(10000);
-// Task-specific checks here.
-state.page.removeAllListeners();
-'@ | Set-Content -LiteralPath $scriptPath -Encoding utf8
-pnpx playwriter -s $session -f $scriptPath --timeout 90000
+$runDirectory = "../t3-chat-+personal/+ai/files-qa-$(Get-Date -Format 'yyyy-MM-dd-HHmmss')"
+New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
+$scriptPath = Join-Path $runDirectory "playwriter-files-check.js"
+# Create this runner with the agent's targeted edit tool. Do not write it with a shell rewrite.
+vp env exec pnpx playwriter -s $session -f $scriptPath --timeout 90000
 ```

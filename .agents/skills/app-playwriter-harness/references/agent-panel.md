@@ -45,15 +45,15 @@ The Stop button blinks out between agent steps (tool-exec gaps), so a single "no
 
 ## Ready-made helpers
 
-`scripts/agent-chat-helpers.js` installs `state.qa` (session-persistent) with `newChat()`, `send(text)`, `waitIdle(ms)`, `waitDone(ms)` (idle + automatic rate-limit retry), `dump()`, and `readTerminal(index)`:
+`scripts/agent-chat-helpers.js` installs `state.qa` (session-persistent) with `newChat()`, `send(text)`, `waitIdle(ms)`, `waitDone(ms)` (idle + automatic rate-limit retry), `dump()`, and `readTerminal(index)`. `newChat()` uses the accessible button and verifies that the app selected a new `ai_thread-*` tab. `waitDone()` throws when retries still fail or the message DOM never settles:
 
 ```powershell
-pnpx playwriter -s $session -f .agents/skills/app-playwriter-harness/scripts/agent-chat-helpers.js
+vp env exec pnpx playwriter -s $session -f .agents/skills/app-playwriter-harness/scripts/agent-chat-helpers.js
 ```
 
 A full scored scenario run is then: `state.qa.newChat()` → `state.qa.send(PROMPT)` → `state.qa.waitDone(280000)` → one `evaluate()` that dumps terminals + final `.AiChatMessage` text. Helper `console.log` output is lost across separate playwriter runs — log returned values from the calling script.
 
-For long Bash-agent eval prompts in PowerShell, prefer writing one temporary JavaScript runner and one temporary prompt file, then run with `-f`. The Playwriter sandbox can read the OS temp directory, but do not rely on PowerShell environment variables being visible inside the sandbox. Keep Playwriter calls sequential; concurrent calls against one session can destabilize the relay.
+For long Bash-agent eval prompts in PowerShell, write one JavaScript runner under `../t3-chat-+personal/+ai/<topic>-YYYY-MM-DD/`, embed the prompt in that runner, and run it with `-f`. The CLI loads the runner before sandbox restrictions apply. Do not create a second prompt file in the repository or OS temp directory. Keep Playwriter calls sequential; concurrent calls against one session can destabilize the relay.
 
 When evaluating through `/files`, the Agent sidebar tab is often more stable than switching to `/chat` because the file tree/editor context stays loaded. After a Convex deploy, reload the `/files` route, click `#app_file_editor_sidebar_tabs_agent`, and wait for `.AiChatComposer-editor-content` before sending the next prompt.
 
@@ -78,10 +78,13 @@ Score as pass only when single-file requests use `grep`, folder/recursive conten
 PowerShell command shape from the repo root:
 
 ```powershell
-$sessionOutput = vp env exec -- pnpx playwriter session new --browser profile:909172d3ee56c25e
+vp env exec pnpx playwriter browser list
+# Choose the exact browser key whose browser exposes the target app tab.
+$browserKey = "<exact KEY from browser list>"
+$sessionOutput = vp env exec pnpx playwriter session new --browser $browserKey
 $session = ($sessionOutput | Select-String -Pattern "Session (\d+) created").Matches.Groups[1].Value
-vp env exec -- pnpx playwriter -s $session -f .agents/skills/app-playwriter-harness/scripts/install-harness.js --timeout 60000
-vp env exec -- pnpx playwriter -s $session -f .agents/skills/app-playwriter-harness/scripts/agent-chat-helpers.js --timeout 60000
+vp env exec pnpx playwriter -s $session -f .agents/skills/app-playwriter-harness/scripts/install-harness.js --timeout 60000
+vp env exec pnpx playwriter -s $session -f .agents/skills/app-playwriter-harness/scripts/agent-chat-helpers.js --timeout 60000
 ```
 
 ## Cat Eval Recipe

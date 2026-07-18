@@ -1,30 +1,83 @@
 // Playwriter script — TEMPLATE. Records a CDP CPU profile around one interaction.
-// Requires state.cdp from a prior getCDPSession (the ui-latency rig sets it up).
+// Before running, set state.perfProfilePath to an absolute .cpuprofile path under
+// ../t3-chat-+personal/+ai/<topic>-YYYY-MM-DD/ and create that folder in PowerShell.
 // Analyze the saved .cpuprofile with analyze-cpu-profile.mjs (same folder).
-const cdp = state.cdp;
-await cdp.send("Profiler.enable");
-await cdp.send("Profiler.setSamplingInterval", { interval: 100 });
-await state.page.evaluate(() => {
-	window.__t = {};
-});
-await cdp.send("Profiler.start");
+if (typeof state.perfProfilePath !== "string") {
+	throw new Error(
+		"Set state.perfProfilePath to an absolute .cpuprofile path under ../t3-chat-+personal/+ai/",
+	);
+}
 
-// ADAPT: the interaction + the in-page signal that it finished
-// (waitForFunction on a window.__t field set by the MutationObserver rig,
-//  NOT a Playwright DOM wait — those are rAF-throttled on backgrounded tabs).
-const btn = state.page.locator('button[aria-label="New folder"]');
-await btn.click();
-await state.page.waitForFunction(() => window.__t && window.__t.rowAt, null, { timeout: 30000, polling: 100 });
+// Keep this template standalone. A prior latency rig owns a different CDP session and page hooks.
+if (typeof state.cleanupLatencyRig === "function") {
+	await state.cleanupLatencyRig();
+}
 
-const { profile } = await cdp.send("Profiler.stop");
-await cdp.send("Profiler.disable");
+const cdp = await getCDPSession({ page: state.page });
+let interactionError;
+let profilerError;
+let profile;
+let profilerStarted = false;
 
-const t = await state.page.evaluate(() => window.__t);
-console.log("t:", JSON.stringify(t));
+try {
+	await cdp.send("Profiler.enable");
+	await cdp.send("Profiler.setSamplingInterval", { interval: 100 });
+	try {
+		await cdp.send("Profiler.start");
+		profilerStarted = true;
 
-const fs = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
-const p = path.join(os.tmpdir(), "interaction.cpuprofile");
-fs.writeFileSync(p, JSON.stringify(profile));
-console.log("profile saved:", p, "nodes:", profile.nodes.length, "samples:", profile.samples.length);
+		// ADAPT: the interaction and the DOM state that means it finished.
+		const btn = state.page.locator('button[aria-label="New folder"]');
+		await btn.click();
+		await state.page.waitForSelector('[aria-label="Add folder to new-folder-1"]', {
+			state: "attached",
+			timeout: 30000,
+		});
+	} catch (error) {
+		interactionError = error;
+	} finally {
+		try {
+			if (profilerStarted) {
+				({ profile } = await cdp.send("Profiler.stop"));
+			}
+		} catch (error) {
+			profilerError = error;
+		} finally {
+			await cdp.send("Profiler.disable").catch((error) => {
+				profilerError ??= error;
+			});
+		}
+	}
+
+	if (!profile) {
+		throw interactionError ?? profilerError ?? new Error("The CPU profiler did not return a profile");
+	}
+
+	const downloadPromise = state.page.waitForEvent("download");
+	await state.page.evaluate((profileJson) => {
+		const url = URL.createObjectURL(new Blob([profileJson], { type: "application/json" }));
+		const link = document.createElement("a");
+		link.href = url;
+		link.download = "interaction.cpuprofile";
+		document.body.append(link);
+		link.click();
+		link.remove();
+		setTimeout(() => URL.revokeObjectURL(url), 0);
+	}, JSON.stringify(profile));
+	const download = await downloadPromise;
+	await download.saveAs(state.perfProfilePath);
+	console.log(
+		"profile saved:",
+		state.perfProfilePath,
+		"nodes:",
+		profile.nodes.length,
+		"samples:",
+		profile.samples.length,
+	);
+
+	if (interactionError) {
+		throw interactionError;
+	}
+} finally {
+	await cdp.detach().catch(() => undefined);
+}

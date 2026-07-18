@@ -3,26 +3,24 @@ name: image-model-visual-verifier
 description: Use the image model as a visual verifier for browser screenshots, design references, generated mockups, and UI implementation checks in this app. Use when Codex needs to compare a current UI screenshot against a desired/reference image, ask what is missing visually, generate an annotated visual-diff report, or translate visual discrepancies into implementation guidance.
 ---
 
-# Image Model Visual Verifier
+# Always Provide A Complete Evidence Packet
 
-Use this skill when visual correctness matters and DOM inspection is not enough. The image model acts as a visual reviewer that compares screenshots and produces readable instructions for Codex to implement.
+The image model does not reliably remember earlier screenshots, generated references, accepted decisions, rejected ideas, or code constraints. Provide every required screenshot, role label, accepted decision, and code constraint in the current prompt.
 
-The image model does not reliably remember earlier screenshots, generated references, accepted decisions, rejected ideas, or code constraints. Always provide the complete packet in the current prompt.
+# Image Backend
 
-## Image Backend: ChatGPT via Playwriter
+Use a callable direct image-generation tool first. A direct generation call is the final action in its turn: the generated report image is the only turn output, and no local report path is guaranteed. Do not inspect, summarize, edit code, or send text after that call. If the task also needs a written verdict or implementation, say before generation that the workflow must continue in a later user turn. Continue only when the report is available as an attached or local image; ask the user to attach it again when it is not available. If no direct tool is callable, read [chatgpt-image-generator](../chatgpt-image-generator/SKILL.md) and follow its continuation-capable ChatGPT browser fallback.
 
-This agent has no native image-generation tool. The verification report image is generated through `chatgpt-image-generator`. Read [chatgpt-image-generator](../chatgpt-image-generator/SKILL.md) and follow its workflow to drive ChatGPT.
-
-ChatGPT-specific must-dos for verification:
+When using the ChatGPT fallback:
 
 - Upload both `REFERENCE` / `DESIRED VERSION` and `CURRENT IMPLEMENTATION` screenshots in the same composer.
 - Open the composer plus menu and select `Create image` before submitting. This is mandatory — without it ChatGPT returns a text comparison instead of a generated report image, which is an invalid verifier run.
 - Prepend `Generate an image:` to the prompt template below, and end the prompt with `Do not answer with only text. The required output is a generated image report.`
 - Repeat the role labels in the prompt text because ChatGPT can invert `REFERENCE` and `CURRENT IMPLEMENTATION`. If the downloaded report inverts the roles or the text is unreadable, start a fresh ChatGPT tab, re-select `Create image`, and regenerate.
-- Save the report and screenshots under `tmp/visual-verification/<run-id>/`, then open the report with the Read tool before translating it into code.
+- Save the report, screenshots, and runners under `../t3-chat-+personal/+ai/visual-verification-YYYY-MM-DD/`, then open the report with your image-view tool before translating it into code.
 - If the generator cannot run (login wall, captcha, Playwriter unavailable), say so plainly instead of inventing a verdict.
 
-## Core Workflow
+# Core Workflow
 
 1. Capture the current implementation.
    - Use Playwriter or the Browser plugin to screenshot the live app.
@@ -41,12 +39,12 @@ ChatGPT-specific must-dos for verification:
    - Request readable callouts and a ranked checklist.
    - Ask for `PASS`, `WARN`, or `FAIL`.
    - Ask what is missing for the current implementation to match the desired version.
-5. Inspect the generated report yourself.
+5. Inspect the generated report with the browser fallback, or in a later turn when a direct-tool report is available as an attached or local image.
    - Open the generated image path.
    - Read the embedded verdict and callouts.
    - If the report is dense, illegible, or role-inverted, regenerate with fewer callouts and larger text.
    - If the report contradicts the live screenshot or computed browser facts, do not implement the hallucinated finding. Re-prompt with the live measurements as ground truth and ask the model to judge only remaining visual gaps.
-6. Translate the report into code.
+6. Translate the report into code. Never do this after a direct image-generation call in the same turn.
    - Treat image-model CSS as approximate visual intent.
    - Map recommendations to this repo's real components, CSS files, and tokens.
    - Implement the smallest local change that matches the accepted visual direction.
@@ -55,7 +53,7 @@ ChatGPT-specific must-dos for verification:
    - Provide the updated live screenshot.
    - Ask only whether the remaining visual differences are acceptable.
 
-## Prompt Template
+# Prompt Template
 
 ```text
 Create a visual verification report image comparing these two screenshots.
@@ -81,7 +79,7 @@ Produce one report image with:
 Do not write production code. Keep code-like notes as approximate styling guidance only.
 ```
 
-## What To Ask The Image Model To Judge
+# What To Ask The Image Model To Judge
 
 - visual hierarchy and attention
 - optical alignment and centering
@@ -95,7 +93,7 @@ Do not write production code. Keep code-like notes as approximate styling guidan
 
 Do not ask the image model to decide final selectors, accessibility semantics, product state validity, or production-ready code.
 
-## Verification Modes
+# Verification Modes
 
 ## Reference Match
 
@@ -147,7 +145,7 @@ Ask:
 - whether the pressed state reads like the same material as the reference, scaled to the current component
 - whether padding or size compensation is needed after border changes
 
-## Guideline Extraction
+# Guideline Extraction
 
 Use after accepting a generated design but before implementing.
 
@@ -159,7 +157,7 @@ Ask for:
 
 Map the guidance to real app tokens and CSS yourself.
 
-## Practical Rules
+# Practical Rules
 
 - Always include screenshots in the current image-model request; do not say "use the previous image".
 - Keep browser screenshots and generated reports in known artifact paths.
@@ -168,13 +166,13 @@ Map the guidance to real app tokens and CSS yourself.
 - When a report is useful but stale because it analyzed the pre-fix screenshot, run a second verifier pass with the post-fix screenshot before declaring success.
 - Ask the model to ignore unrelated page regions.
 - Ask for large readable labels in generated reports.
-- Inspect generated output before summarizing it.
-- Do not stop at image generation; return a written verdict and implementation guidance so the user does not need to read the report image.
+- Inspect generated output before summarizing it when using the browser fallback, or in a later turn when a direct-tool output is inspectable.
+- With the browser fallback, return a written verdict and implementation guidance so the user does not need to read the report image. With the direct tool, generation ends the current turn and written guidance must wait for a later turn.
 - Use image-model reports as visual judgment, not acceptance tests. Verify behavior, keyboard semantics, disabled states, and data changes with Playwriter or code tests when relevant.
 
-## Output Contract
+# Output Contract
 
-When using this skill, return:
+After an inspected browser-fallback run, or in a later turn with an inspectable direct-tool report, return:
 
 - reference image path
 - current screenshot path
@@ -185,3 +183,5 @@ When using this skill, return:
 - implementation changes made or recommended
 - browser verification performed
 - lint, type-check, and test commands run or intentionally skipped
+
+For the direct generation turn itself, return only the generated report image as required by that backend. Do not claim a report path or inspection result.

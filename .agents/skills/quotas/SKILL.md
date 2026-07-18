@@ -53,7 +53,7 @@ description: Persisted per-user and per-organization creation quotas for extra o
 ## User bootstrap
 
 - `users.create_anonymous_user` and signed-in restore/create flows ensure the user quota with `quotas_db_ensure({ quotaName: "extra_organizations", userId })`.
-- `organizations_db_ensure_default_organization_and_workspace_for_user` trusts `users.defaultOrganizationId` when present and creates `personal`/`home` only when missing.
+- `organizations_db_ensure_default_organization_and_workspace_for_user` creates `personal`/`home` when `users.defaultOrganizationId` is absent or points to a missing organization doc. If the pointed organization exists, it does not repair the workspace pointer or memberships.
 - Default provisioning through `organizations_db_create(..., default: true)` does not consume the user extra-organization quota.
 
 ## Organization create
@@ -96,8 +96,8 @@ description: Persisted per-user and per-organization creation quotas for extra o
 - Account-deletion quota behavior is also covered in `packages/app/convex/data_deletion.test.ts` and `packages/app/convex/users.test.ts`.
 - Tests and setup must seed quota docs through `quotas_db_ensure({ quotaName: "extra_organizations", userId })` or the real user bootstrap path before exercising organization/workspace create flows.
 - Focused verification for this feature is:
-	- `pnpm exec vitest run "convex/organizations.test.ts"`
-	- `pnpm exec vitest run "convex/data_deletion.test.ts" "convex/users.test.ts"`
+	- `vp env exec pnpm --dir packages/app exec vitest run convex/organizations.test.ts`
+	- `vp env exec pnpm --dir packages/app exec vitest run convex/data_deletion.test.ts convex/users.test.ts`
 
 # Guardrails
 

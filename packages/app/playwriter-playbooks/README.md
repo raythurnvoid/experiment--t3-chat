@@ -6,20 +6,23 @@ Use these playbooks when `@playwright/test` e2e would be too brittle due to chan
 
 ## How to use
 
-1. Open the target app tab (or let Playwriter open a new one).
-2. Run each snippet step-by-step with Playwriter.
-3. Record pass/fail and notes.
-4. Clean up artifacts (for example resolve test threads) when requested by the playbook.
+1. Load `.agents/skills/app-playwriter-harness/SKILL.md` and its routed references.
+2. Open the target app tab or let Playwriter open a new one.
+3. Run every Playwriter command through `vp env exec pnpx playwriter` from the repository root.
+4. Run each snippet step-by-step with Playwriter.
+5. Record pass/fail and notes.
+6. Clean up artifacts (for example resolve test threads) when requested by the playbook.
 
 ## Conventions
 
 - Use dynamic run IDs in comment/file names.
-- Prefer visible labels first, then DOM-click fallback for flaky actionability.
+- Prefer accessible locators and normal clicks. If actionability fails, inspect and hit-test the blocker; do not bypass it with forced or DOM clicks.
 - Re-open comment threads after refresh before asserting missing replies.
 - Keep snippets small and debuggable; avoid one huge script.
+- Write runners and output under `../t3-chat-+personal/+ai/<topic>-YYYY-MM-DD/`, never in the repository or OS temp directory.
 
 ## Playbooks
 
-- `comment-thread-persistence.md` - create comment + reply, refresh, verify persistence.
-- `files-sidebar-smoke.md` - basic sidebar interaction sanity for `/files`.
 - `r2-file-content-regression.md` - deep R2-backed files, uploads, comments, and agent regression QA.
+
+The other Markdown files in this folder are historical recipes. Their routes, selectors, and command wrappers have not been revalidated against the current harness. Use them only as research until a focused task updates and verifies them.

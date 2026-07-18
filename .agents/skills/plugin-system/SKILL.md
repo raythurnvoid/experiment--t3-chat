@@ -3,11 +3,9 @@ name: plugin-system
 description: Plugin publishing limits, artifact cleanup, plugin UI pages, the Gallery plugin, and SDK/Gallery release mechanics. Use when changing plugin manifest validation (`packages/app/shared/plugins.ts`), the publish pipeline or artifact cleanup (`packages/app/convex/plugins.ts`), plugin UI assets/sessions (`packages/app/convex/plugins_ui.ts`), the plugin page host route, the Gallery plugin (`plugins/bonobo-plugin-gallery`), or the `bonobo-plugin-sdk` package.
 ---
 
-# Scope
+# Required Companion Rules
 
-This skill covers publishing limits, review results, the plugin UI protocol and assets, cleanup lifecycles, Gallery behavior, reset recovery, and release mechanics. The module docblocks remain the closest implementation notes; this file owns the durable cross-module contract.
-
-Also load `../convex/SKILL.md` before changing Convex code, and `../data-deletion/SKILL.md` before changing plugin-related deletion behavior.
+Load `../convex/SKILL.md` before changing Convex code. Load `../data-deletion/SKILL.md` before changing plugin-related deletion behavior. Treat module docblocks as the closest implementation-local notes.
 
 # Manifest and publishing limits
 
@@ -56,9 +54,9 @@ Interrupted publishing must not orphan R2 objects. The lifecycle, all in `packag
 - Successful registration removes the attempt (`remove_publish_artifact_cleanup_attempt`) only once the registered version owns the exact keys.
 - An hourly cron (`schedule_due_publish_artifact_cleanup_attempts`) schedules a bounded number of due attempts as a fallback.
 
-There is no R2 list API in this codebase — cleanup is driven purely off the stored keys.
+Plugin artifact cleanup does not list the bucket. It deletes the exact R2 keys stored on versions and cleanup-attempt rows. Other app areas may use R2 listing for their own jobs; do not generalize this plugin rule to the whole codebase.
 
-Admin registry deletion is name-scoped and requires publishing to be quiescent. Preview and deletion find versions, all reviews by plugin name, cleanup attempts by plugin name, installations, and run/call history by immutable plugin version id. This version-keyed traversal is required because uninstall keeps run history and upgrade can move the live installation to a newer version. Call `hard_delete_plugin_from_registry` repeatedly for one plugin name until it returns `done: true`; a running event run requests cancellation and returns `{ done: false, deleted: 0 }`, so retry after the run reaches a terminal status. For the repository's last version, deletion drains publisher secrets before deleting each exact R2 key once, then removes the claim and version together. Name cleanup deletes a repository claim only when no other plugin version uses that URL and the current claimant is the version creator; it never deletes another user's reclaimed claim. Once a name preview is zero, `hard_delete_publisher_repository_now` removes any remaining claim-only repository and its secrets by repository id; claims cannot carry a plugin name because claiming happens before the manifest is fetched.
+Admin registry deletion is name-scoped and requires publishing to be quiescent. Preview and deletion find versions, all reviews by plugin name, cleanup attempts by plugin name, installations, and run/call history by immutable plugin version id. This version-keyed traversal is required because uninstall keeps run history and upgrade can move the live installation to a newer version. Call `hard_delete_plugin_from_registry` repeatedly for one plugin name until it returns `done: true`; a running event run requests cancellation and returns `{ done: false, deleted: 0 }`, so retry after the run reaches a terminal status. For the repository's last version, deletion drains publisher secrets before deleting each exact R2 key once, then removes the claim and version together. Name cleanup deletes a repository claim only when no other plugin version uses that URL and the current claimant is the version creator; it never deletes another user's reclaimed claim. Once a name preview is zero, `hard_delete_publisher_repository_now` removes any remaining claim-only repository and its secrets by repository id; claims cannot carry a plugin name because claiming happens before the manifest is fetched. Current preview and deletion omit `activities`; deleting a run first can leave its activity permanently unreachable by normal run retention. Do not call registry deletion complete until that implementation and its preview/readback are updated.
 
 # Review pipeline
 
@@ -119,6 +117,18 @@ Git submodule with its own repo (`raythurnvoid/bonobo-plugin-gallery`). `dist/` 
 - Full-artifact review, artifact-hash cache, bounded stored reads, and backend/page classification: `packages/app/convex/plugins.test.ts` plus `packages/app/shared/plugins.test.ts`.
 - Direct asset routes, passed-review gates, rotation/revocation, stable rate identity, expiry cleanup, and session behavior: `packages/app/convex/plugins_ui.test.ts`.
 - Host protocol fields, deadline/Retry/focus, refresh serialization, and stale-generation cancellation: `packages/app/src/routes/w/$organizationName/$workspaceName/plugins/$pluginName_.pages.$pageId.test.tsx`. Real WindowProxy/load ordering still requires Chromium/Playwriter.
-- Gallery scan/media/a11y behavior: `plugins/bonobo-plugin-gallery/src/*.test.ts(x)` (`pnpm run test:once`); SDK handshake/fetchJson: `packages/bonobo-plugin-sdk/frontend.test.ts`.
+- Gallery scan/media/a11y behavior: `plugins/bonobo-plugin-gallery/src/*.test.ts(x)`; SDK handshake/fetchJson: `packages/bonobo-plugin-sdk/frontend.test.ts`.
 
-Focused runs only, through `vp env exec pnpm --dir <package> ...`.
+Use the app workspace for app tests:
+
+```powershell
+vp env exec pnpm --dir packages/app exec vitest run --project convex convex/plugins.test.ts
+vp env exec pnpm --dir packages/app exec vitest run --project src 'src/routes/w/$organizationName/$workspaceName/plugins/$pluginName_.pages.$pageId.test.tsx'
+```
+
+Gallery and SDK are intentionally outside the root workspace. Keep `--ignore-workspace` on their commands:
+
+```powershell
+vp env exec pnpm --dir plugins/bonobo-plugin-gallery --ignore-workspace run test:once
+vp env exec pnpm --dir packages/bonobo-plugin-sdk --ignore-workspace run test:once
+```

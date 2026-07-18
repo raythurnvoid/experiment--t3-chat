@@ -4,8 +4,8 @@ Use this reference when adding, moving, or reviewing tests.
 
 ## Anchors
 
-- Prefer a module-owned test file when a feature has a natural Convex module owner, such as `files_metadata.test.ts` for `convex/files_metadata.ts`.
-- Keep tests beside established fixtures when moving would duplicate large setup. Record that as an intentional tradeoff.
+- Prefer a module-owned test file when a feature has a natural Convex module owner, such as `organizations.test.ts` for `convex/organizations.ts`.
+- Keep tests beside established fixtures when moving would duplicate large setup. Metadata integration tests currently live in `files_nodes.test.ts` because they reuse its file-tree fixtures; record such placement as an intentional tradeoff.
 - Shared utility tests should use top-level `describe("<public_function>")` groups.
 - In-source `bash.ts` command tests should stay under the existing `action_run` group and use behavior-first test names.
 

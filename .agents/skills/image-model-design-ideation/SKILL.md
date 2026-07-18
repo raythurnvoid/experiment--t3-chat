@@ -3,26 +3,22 @@ name: image-model-design-ideation
 description: Use the image model for UI/UX design ideation in this app, including screenshot-based critique, color and CSS token selection, visual alternatives, interaction-state exploration, and extracting implementation guidance from generated references. Use when the user asks to use the image tool/model for product design, compare current UI against available tokens, decide colors/spacing/borders/shadows, or turn generated design guidance into app CSS or component changes.
 ---
 
-# Image Model Design Ideation
-
-Use this skill when the image model should help make or critique a visual product-design decision before implementation.
-
-## Non-Negotiables
+# Non-Negotiables
 
 - Use the image model when the user explicitly asks for it.
 - Tell the user plainly if a prior answer did not actually use the image model.
-- There is no native image tool here. Produce every image through `chatgpt-image-generator` (ChatGPT via Playwriter). If it cannot run, say so instead of pretending an image was generated.
+- Use a callable direct image-generation tool first. If none is callable, load `chatgpt-image-generator` and use ChatGPT through Playwriter. Follow the chosen backend's own output rules. If neither can run, say so instead of pretending an image was generated.
 - Treat every image-model prompt as a complete, fresh design brief. The image model does not reliably remember previous prompts, screenshots, feedback, accepted decisions, rejected ideas, generated images, or code context.
 - Re-read relevant CSS, token files, and components immediately before prompting when the user says values changed.
-- Inspect generated output before summarizing it. If labels are unreadable, crowded, or contradictory, re-prompt with a smaller comparison.
-- Do not stop at image generation. After the generated image is available, continue by inspecting it and returning a written recommendation so the user never has to read the image annotations themselves.
+- With a continuation-capable browser fallback, inspect generated output before summarizing it. If labels are unreadable, crowded, or contradictory, re-prompt with a smaller comparison.
+- A direct image-generation call is the final action in its turn. Do not inspect it, summarize it, claim a local path, edit code, or send text after generation. If the task also needs a written recommendation or implementation, say before generation that the workflow must continue in a later user turn. Continue only when the generated output is available as an attached or local image; ask the user to attach it again when it is not available. This direct-backend rule is the exception to the continuation steps below.
 - Treat image-model guidance as design intent. Map it back to real app tokens, components, and CSS yourself before editing code.
 
-## Image Backend: ChatGPT via Playwriter
+# Image Backend
 
-This agent has no native image-generation tool. Every image in this skill is generated through `chatgpt-image-generator`. Read [chatgpt-image-generator](../chatgpt-image-generator/SKILL.md) and follow its workflow: open a fresh ChatGPT tab in the personal Edge profile, click the composer plus button, select `Create image`, submit the prompt, download the generated image, and inspect the saved file yourself before summarizing. Selecting `Create image` is mandatory — prompt wording alone makes ChatGPT reply with text instead of an image. Save generated images and scratch screenshots under `tmp/design-ideation/<run-id>/`.
+Use a callable direct image-generation tool when available. Its generated image is the only turn output, and it does not guarantee a local artifact path. If no direct tool is callable, read [chatgpt-image-generator](../chatgpt-image-generator/SKILL.md) and follow its continuation-capable browser fallback, including current browser discovery, explicit ChatGPT image mode, download, and inspection. Save browser-fallback images, screenshots, and runners under `../t3-chat-+personal/+ai/image-ideation-YYYY-MM-DD/`.
 
-## Core Workflow
+# Core Workflow
 
 1. Gather the current visual and code context.
    - Use the user's screenshot, a fresh app screenshot, or both.
@@ -40,26 +36,27 @@ This agent has no native image-generation tool. Every image in this skill is gen
 	- Prefer one decision per image, such as divider color, selected-border color, button contrast, spacing density, or hover state.
 	- Generate multiple images when comparing interaction states, competing visual directions, or dense token choices. Do not artificially collapse the exploration into one image when separate variants would make the decision clearer.
 	- When multiple images are useful, separate them by purpose, such as a broad option board first and a focused final-spec board second.
+	- A direct image tool can produce only the terminal output for the current turn. Continue a multi-image direct workflow across later user turns; do not call it and then continue in the same turn.
 	- Use fewer candidates when text readability matters.
 	- Ask for large labels and a concise recommendation.
-4. Inspect and translate.
+4. Inspect and translate with the browser fallback, or in a later turn when the direct output is available as an attached or local image.
    - Open the generated image.
    - Read the visible verdict and callouts.
    - Decide whether the recommendation is coherent with the app's actual tokens and hierarchy.
    - If implementation should change, identify the exact declarations to update.
-5. Report before editing unless the user already asked to proceed.
+5. Report before editing unless the user already asked to proceed. This happens after browser-fallback inspection or in a later turn after direct generation.
    - Always provide the recommendation in normal text; never require the user to read or interpret the generated image.
    - Summarize the image model's recommendation in text.
    - Compare it to current code values.
    - Say whether token definitions need to change or only token usages need to change.
    - Mention generated image paths only when useful.
-6. Implement narrowly when approved.
+6. Implement narrowly when approved. Never implement after a direct image-generation call in the same turn.
    - Re-read touched files first.
    - Change only the accepted CSS/component values.
    - Do not alter token definitions unless the recommendation truly requires a system-wide token change.
    - Verify with `git diff` and a targeted search.
 
-## Prompt Checklist
+# Prompt Checklist
 
 Every prompt for color, spacing, or UI hierarchy should include:
 
@@ -73,7 +70,7 @@ Every prompt for color, spacing, or UI hierarchy should include:
 - hard constraints, such as "do not change layout" or "only choose from existing tokens"
 - expected output: `verdict`, `compare with current`, `recommended token`, `why not the alternatives`, and `implementation note`
 
-## Color And Token Decisions
+# Color And Token Decisions
 
 For token selection tasks:
 
@@ -105,7 +102,7 @@ Prioritize visual hierarchy, clarity, and consistency with nearby borders. Do no
 Make the output readable and include a final implementation note.
 ```
 
-## Interaction And Layout Decisions
+# Interaction And Layout Decisions
 
 For interaction-heavy UI, ask the image model to make explicit policy decisions:
 
@@ -117,11 +114,13 @@ For interaction-heavy UI, ask the image model to make explicit policy decisions:
 
 Use still images for visual policy and browser evidence for motion, timing, and event handling.
 
-## Files Sidebar Selection Marker Lessons
+# Files Sidebar Selection Marker Proposal
 
 When ideating Files sidebar tree selection, do not use bold text as the primary selected/navigated signal. Bold changes text metrics, creates jitter across folder/file names, and competes with dense metadata.
 
-Accepted direction for the current app:
+These are historical/proposed design notes, not the current source contract. Current `files-sidebar.css` uses a 45px row and an elevated selected surface without an accent rail. Confirm the desired product direction before applying the older rail proposal below.
+
+Proposed direction:
 
 - Use a stable row-left accent rail for navigated rows.
 - Keep all row text at regular `font-weight: 400`; do not change font size, row height, or icon spacing.
@@ -137,7 +136,7 @@ Accepted direction for the current app:
 
 For follow-up prompts, ask the image model to show both folder and file navigated states, plus navigated+keyboard-focus combinations, because indentation can make a marker look aligned for one node type and wrong for another.
 
-## Files Sidebar Drop Zone Lessons
+# Files Sidebar Drop Zone Lessons
 
 When ideating Files sidebar drag/drop states, keep the prompt grounded in the real app tokens and current browser screenshots. Include the current row height, folder indentation, root/sidebar borders, tree rails, selected row styling, and the exact `app.css` token values under consideration.
 
@@ -150,7 +149,7 @@ Accepted constraints for the current app:
 - If an upload/drop label can overlap nearby file text, make the indicator itself dark, translucent, and blurred instead of adding a separate outer safe-area layer or reserving extra row height.
 - Ask the image model to call out anti-patterns explicitly when a previous design was rejected, then verify the implementation screenshot against those rejected traits.
 
-## Pressed Surface And Shadow Decisions
+# Pressed Surface And Shadow Decisions
 
 When ideating pressed buttons, icon buttons, cards, tabs, or list items:
 
@@ -160,9 +159,9 @@ When ideating pressed buttons, icon buttons, cards, tabs, or list items:
 - For small icon buttons, verify the target remains the intended size after border or padding changes.
 - Use the closest accepted component state as the visual reference, such as the organization/workspace active list item when aligning other pressed controls.
 
-## Output Contract
+# Output Contract
 
-When using this skill, return:
+After an inspected browser-fallback run, or in a later turn with an inspectable direct-tool output, return:
 
 - whether the image model was used
 - what screenshots and code values were included
@@ -171,3 +170,5 @@ When using this skill, return:
 - the comparison against current code
 - the exact implementation change, if any
 - what lint, type-check, or test commands were run, or that they were skipped
+
+For the direct generation turn itself, return only the generated image as required by that backend. Do not claim that it was inspected or that a local path exists.

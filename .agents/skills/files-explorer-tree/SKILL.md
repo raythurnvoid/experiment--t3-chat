@@ -7,15 +7,21 @@ description: Practical guide for the current Files sidebar (`@headless-tree` + C
 
 Primary:
 
-- `../../../packages/app/src/components/file-node-view/files-sidebar.tsx`
-- `../../../packages/app/src/components/file-node-view/files-sidebar.css`
-- `../../../packages/app/src/components/file-node-view/file-node-view.tsx`
-- `../../../packages/app/src/components/file-node-view/file-node-view.css`
+- `../../../packages/app/src/components/files/files-sidebar.tsx`
+- `../../../packages/app/src/components/files/files-sidebar.css`
+- `../../../packages/app/src/components/files/files-name-input.tsx`
+- `../../../packages/app/src/components/files/file-node-view/file-node-view.tsx`
+- `../../../packages/app/src/components/files/file-node-view/file-node-view.css`
 - `../../../packages/app/src/routes/w/$organizationName/$workspaceName/files/index.tsx`
 - `../../../packages/app/convex/files_nodes.ts`
 - `../../../packages/app/convex/r2.ts`
+- `../../../packages/app/convex/plugins_runtime.ts`
 - `../../../packages/app/shared/files.ts`
 - `../../../packages/app/src/lib/files.ts`
+- `../plugin-system/SKILL.md`
+- `../../../plugins/bonobo-plugin-pdf/README.md`
+- `../../../plugins/bonobo-plugin-image/README.md`
+- `../../../plugins/bonobo-plugin-video/README.md`
 - `../../../packages/app/vendor/headless-tree/packages/core/src/index.ts`
 - `../../../packages/app/vendor/headless-tree/packages/react/src/index.ts`
 - `../../../packages/app/vendor/headless-tree/packages/react/src/react-compiler/index.tsx`
@@ -25,53 +31,51 @@ Primary:
 The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tree` with Convex-backed data.
 
 - Tree engine: `@headless-tree/core` + `@headless-tree/react`
-- Backend data: Convex `files` query/mutations
+- Backend data: Convex `files_nodes` queries and mutations
 - Primary data source: `files_nodes.list_tree`
 - Local state is UI-only (`expandedItems`, search/selection, busy/pending flags) plus derived indexes from query data
 - Prefer Convex mutation `optimisticUpdate` over ad-hoc local mirrored tree state
-- Backend item types: `"root" | "node"`
-- Node kinds: `"folder" | "file"`
+- The client prepends `files_SYNTHETIC_ROOT_FOLDER` to the returned `files_nodes` docs.
+- Root is identified by `files_ROOT_ID`; tree items use `kind: "folder" | "file"`.
 - Placeholder rows are UI-only render artifacts
-- Uploaded source files are normal visible nodes; generated Markdown outputs are normal visible sibling file nodes.
-- Source files open their stored-file/status screen; generated Markdown outputs open directly as ordinary files once finalized.
+- Uploaded source files are normal visible nodes. Non-Markdown sources open their stored-file/status screen. Enabled upload plugins may create normal visible Markdown siblings.
 
 # Data Model And Contracts
 
-- `files_TreeItem` shape is defined in `../../../packages/app/convex/files_nodes.ts`.
-- `files_ROOT_ID` and `files_create_tree_root` are in `../../../packages/app/shared/files.ts` and re-exported by `../../../packages/app/src/lib/files.ts`.
-- Backend returns root/node items only; placeholder rows are client-rendered.
+- `files_TreeItem`, `files_ROOT_ID`, `files_SYNTHETIC_ROOT_FOLDER`, and `files_create_tree_items_list_from_nodes` are defined in `../../../packages/app/shared/files.ts` and re-exported by `../../../packages/app/src/lib/files.ts`.
+- Backend returns visible `files_nodes` docs; the client adds the synthetic root. Placeholder rows are client-rendered.
 - Folder nodes can have children, expand/collapse, and receive drops.
-- File nodes are leaves. Markdown-backed files open in the editor; uploaded source files and pending generated outputs open stored-file/status metadata until they have editable Markdown state.
+- File nodes are leaves. Markdown-backed files, including plugin outputs created through `files/write` or `files/touch`, open in the editor. Uploaded non-Markdown source files open stored-file/status metadata.
 - Clicking a folder opens its folder screen. `FileNodeView` decides whether the selected node renders the folder explorer or the file editor, and folder screens embed an editable child `README.md` when present.
-- Editable Markdown file nodes have `assetId`, a Markdown media type (`text/markdown`, regardless of charset parameters), Yjs rows, Markdown chunks, plain-text chunks, and snapshots. `assetId` points at the newest version snapshot asset (each materialization/restore re-points it): committed current content is read from the Markdown chunks, R2 keeps only the Yjs snapshot and version snapshot objects, and downloads sign the asset `assetId` points at.
+- Editable Markdown file nodes have `assetId`, a Markdown media type (`text/markdown`, regardless of charset parameters), Yjs rows, Markdown chunks, plain-text chunks, and snapshots. `assetId` points at the newest content snapshot asset (each materialization/restore re-points it), while committed current reads use the Markdown chunks. If an editable node came from an uploaded Markdown file, R2 also retains the original upload object.
 - User-created Markdown files and the auto-created home `README.md` are seeded by the Convex create action with `files_INITIAL_CONTENT`; the rich-text editor must not bootstrap initial Yjs content on the client.
 - Uploaded non-Markdown source file nodes create an upload asset immediately, store the source `contentType` on the node, and get `r2Key` on the asset after the R2 object-create event confirms the source object exists.
 - Uploaded Markdown files still upload directly to R2 through the signed PUT path. The R2 event finalizer then promotes the uploaded object into the ordinary editable Markdown shape by creating the Yjs snapshot, chunks, and first version snapshot, and re-points the node at that version snapshot (the upload asset stays as the untouched upload record).
-- Generated Markdown outputs are normal visible file nodes created as siblings of the uploaded source during R2 event processing. PDF uploads create `<source-name>.md`; image uploads create `<source-name>.description.md`; video uploads create `<source-name>.summary.md` and `<source-name>.transcript.md`.
+- For non-Markdown uploads, R2 completion marks the source terminal and dispatches `files.upload.completed` to eligible enabled plugins. Plugins, not R2 event processing, create any sibling Markdown files.
 - Assets are the single R2 object metadata record for source binaries, compacted Yjs snapshots, and version snapshot Markdown. Editable files keep no content-kind asset row: the node's `assetId` is the newest version snapshot asset, whose size doubles as the committed byte size for read caps. Owners point to assets; assets do not own relationships between source files and generated outputs.
 - Source/conversion metadata stays in DB/R2 metadata, not visible generated Markdown.
-- Upload status is derived in the UI from the selected node and its asset: missing `r2Key` is waiting for upload, `processingWorkId` means processing, and `null` means terminal.
+- `files_get_upload_pipeline_state` returns `waiting_for_upload`, `pending_processing`, `processing`, or `terminal` for the source asset. Plugin-run progress is separate and is not represented by the source `processingWorkId`.
 - R2 asset keys use `organizations/<organizationId>/workspaces/<workspaceId>/assets/<assetId>` for every asset kind. Convex uses `files_r2_assets.kind` to decide upload finalization behavior.
 - Upload max is 50 MiB; converted Markdown max is 900,000 bytes.
 
-# Uploaded Source And Generated Files
+# Uploaded Source And Plugin-Generated Files
 
 - Upload creates a visible source file node immediately.
-- While upload/conversion is pending, opening the source shows stored-file status such as waiting or processing.
-- R2 event processing for PDF, image, and video uploads creates visible generated Markdown sibling placeholders before queueing conversion or AI media processing.
-- Opening a generated placeholder before finalization shows stored-file/status metadata. After finalization, opening it renders the normal Markdown editor.
-- Replacing an uploaded source archives only the conflicting source path. Generated output conflicts are handled when the R2 event creates planned output names.
-- Rename, move, archive, and unarchive treat generated outputs as ordinary independent files. Moving a pending generated output after enqueue does not break finalization because the conversion job targets output node ids.
+- R2 completion finalizes Markdown MIME uploads into editable Yjs, chunk, and snapshot state on the source node.
+- Other uploads become terminal stored files, and the host emits `files.upload.completed` to each eligible enabled plugin installation subscribed to the exact content type.
+- Plugin runs track their own queued, running, failed, and terminal state. They do not use the source asset's `processingWorkId`, and they do not create output placeholders before calling the host files API.
+- The first-party PDF plugin writes `<source-name>.md`; the image plugin writes `<source-name>.description.md`; the video/audio plugin writes a transcript and, for video, a summary. Outputs exist only when the matching plugin is installed, enabled, configured with required secrets, and completes the relevant write.
+- Plugin `files/write` or `files/touch` calls create ordinary Markdown sibling files. Image and video flows may touch an empty output before filling it.
+- Rename, move, archive, and unarchive treat source and output nodes independently. Plugin writes derive target paths from `source.path`; do not claim the host finalizes a pre-created output by node id.
 - Archiving a source upload should keep the original R2 object; permanent tenant purge deletes R2 objects for every `files_r2_assets` row before deleting the rows.
 - Browser-side source uploads try to compress static JPEG/PNG/WebP images before `files_nodes.create_upload_node`; keep the original file when compression fails or is not smaller. Animated GIFs must keep the original blob so animation is not destroyed, but still use the image-description generation path.
-- Rich-text image uploads should create visible upload nodes next to the document where the image was inserted and use the same R2 source/generated-output conversion model.
-- If conversion fails, keep the source and generated output placeholders visible in their last durable asset state. Cleanup/recovery for abandoned or failed reservations is intentionally still a TODO.
-- Conversion rerun is not a normal product flow; if a forced rerun is added later, it may overwrite generated outputs by node id.
+- If a plugin fails, the source stays. Outputs already touched or written also stay; a missing-secret failure before the first write creates no output.
+- Manual plugin reruns are supported. Keep detailed plugin execution, permissions, services, and release behavior in `../plugin-system/SKILL.md` and the individual plugin README files.
 
 Known gaps:
 
 - Rich-text image upload currently posts to legacy `/api/upload`; that is not the first-party R2 source/generated-output upload pipeline.
-- Generated Markdown outputs are materialized to R2 using the same asset key shape as every other file asset. Convex keeps Yjs/update rows, chunks, snapshots, and asset pointers on the generated output node.
+- Plugin-generated Markdown outputs use the same normal editable-file lifecycle as other Markdown files after creation.
 
 # Main Components
 
@@ -123,7 +127,7 @@ Tree-item components:
 - Non-modifier click runs primary action for node items.
 - File primary action navigates to the file.
 - Folder primary action navigates to the folder screen.
-- In multi-select mode, selection anchor files active track highlighting.
+- The selection anchor drives active-track highlighting.
 - The current route/navigated row uses a stable row-left accent rail instead of bold text. Keep row labels regular weight so selection does not change text metrics. The rail belongs only to navigated rows. Internal Headless Tree focus and pointer hover are not selection and must not paint the selected row surface after pointer clicks; hover can brighten row text, while `:focus-visible` keeps the keyboard interaction surface. Idle non-selected rows use one quieter foreground shade and brighten to the navigated-row lightness on hover, selected, and navigated states. Keyboard focus must stay as the top visual layer: keep the focus ring continuous, keep the rail visible just inside it, and remove idle title input chrome so row names render as plain text outside rename mode. The disabled title input must inherit the row color; otherwise only icons dim while filenames remain too bright.
 
 ## Create, Rename, Archive, Unarchive
@@ -131,9 +135,9 @@ Tree-item components:
 - Root actions create `New File` and `New Folder`.
 - Folder row actions can create child files and folders.
 - File rows do not show child-creation actions.
-- Default generated names are sibling-aware: `new-file.md`, `new-file-2.md`, `new-folder`, `new-folder-2`.
+- Default generated names are sibling-aware: `new-file.md`, `new-file-1.md`, `new-file-2.md`, and the matching `new-folder`, `new-folder-1`, `new-folder-2` sequence.
 - File and folder create support path-like names: missing parent folders are created first, then the final file/folder is created at that path.
-- File create/rename input canonicalizes path segments in the frontend; backend path creation trusts those segments and only rejects an empty path.
+- File create/rename input canonicalizes path segments in the frontend. Backend recursive creation trusts callers to pass a non-empty normalized path; do not claim it returns a normal empty-path validation result.
 - Rename input filters draft typing/paste/composition through shared live-name normalization: files and folders allow lowercase letters, digits, `/`, `.`, `-`, `_`; adjacent separators are blocked while typing; special file-name casing remains submit-time only.
 - File and folder create/rename reject double-dot names; file names with a non-empty basename and a trailing dot are treated as missing the extension, while invalid extension text such as separators inside the final extension is rejected.
 - Markdown file create/rename then applies the Markdown storage contract: extensionless file names get `.md`, and explicit alternate extensions are rejected.
@@ -144,9 +148,9 @@ Tree-item components:
 - Upload path conflicts open the conflict modal; file conflicts support replace or renamed upload, while folder conflicts block replacement.
 - File create/rename applies special file-name casing after normalization: `readme`, `readme.md`, and `README.md` store as `README.md`.
 - File rename selects the basename by default so `.md` is not included in the initial edit selection.
-- Rename uses `files.rename_node` with Convex `optimisticUpdate` for immediate title feedback.
+- Rename uses `files_nodes.rename_node` with Convex `optimisticUpdate` for immediate title feedback.
 - The selected file/folder path auto-expands in the sidebar after route changes and path-based create/rename moves so the focused row stays visible.
-- Archive/unarchive uses `files.archive_nodes` / `files.unarchive_nodes`.
+- Archive/unarchive uses `files_nodes.archive_nodes` / `files_nodes.unarchive_nodes`.
 
 ## Content Type Checks
 
@@ -162,30 +166,23 @@ Tree-item components:
 - Root and folders can receive drops.
 - Files cannot receive drops.
 - External OS file drops use headless-tree foreign DnD for tree targeting and `file-selector` for browser file extraction, then reuse the existing Upload file pipeline.
-- External file drops are accepted only on the root drop zone, folder rows, and empty-folder placeholders.
-- Dropped browser `File` objects are uploaded through `files_nodes.create_upload_node`, PUT to the signed R2 URL, then processed by the R2 event flow. Markdown media types and `.md` names are canonicalized as Markdown before upload so finalization creates the normal Markdown/Yjs/snapshot rows on the uploaded node.
+- External drops over file rows resolve to the file's containing folder. Root, folder rows, empty-folder placeholders, and file-row parent resolution are accepted targets.
+- Dropped browser `File` objects are uploaded through `files_nodes.create_upload_node`, PUT to the signed R2 URL, then processed by the R2 event flow. Current frontend classification treats a file as Markdown only when `File.type` starts with `text/markdown`; a `.md` filename alone does not make it a Markdown upload.
 - Keep external upload acceptance file-type neutral. Do not add MIME or extension allowlists beyond the existing non-Markdown uploaded-source requirement that a filename has a real extension.
 - Reject multi-file and directory drops in the UI; v1 uploads one file at a time.
 
 ## Upload Lifecycle
 
-1. User uploads one file through the menu or drops one external file onto an accepted target.
-2. Frontend detects Markdown uploads by Markdown media type or `.md` name for upload normalization; backend conversion behavior is based on stored `contentType`, not filename. Static image uploads are prepared with browser `createImageBitmap` + canvas compression before the upload node is created, and the smaller compressed `File` is used only when it is smaller than the original.
-3. Missing extension for non-Markdown uploads or any upload path conflict opens the upload draft modal.
-4. `files_nodes.create_upload_node` validates membership, rate limit, parent folder/root, size, and conflicts.
-5. Backend creates an upload `files_r2_assets` row without `r2Key` and creates the visible source file node with `assetId` and `contentType`.
-6. Backend returns a signed R2 PUT URL and optional content-type header for the upload asset key.
-7. Browser uploads the binary directly to R2.
-8. R2 object-create events under the asset prefix flow through the upload finalizer Worker to Convex.
-9. Convex parses the deterministic asset key from the R2 event, ignores non-upload asset kinds, patches `r2Key`/`etag`/`size` for upload assets, queues upload processing, and stores `processingWorkId` on the asset.
-10. For Markdown uploads, Convex reads the uploaded Markdown from R2, creates the normal Markdown asset, Yjs snapshot, chunks, and version snapshot, then patches the visible node into the same shape as an app-created Markdown file.
-11. For PDF MIME uploads, Convex creates a generated sibling placeholder for `<source filename>.md`, archiving active name conflicts for that planned output name.
-12. For image MIME uploads, Convex credit-gates media work, creates `<source filename>.description.md`, then an R2 Workpool action sends a short-lived signed R2 URL to OpenAI vision and writes the generated description as editable Markdown.
-13. For video MIME uploads, Convex credit-gates media work, creates `<source filename>.summary.md` and `<source filename>.transcript.md`, then asks the Cloudflare Media Transformer Worker to extract sampled frames and bounded M4A audio segments from private R2. Convex transcribes sampled audio with OpenAI, summarizes transcript plus frame samples, and writes both outputs as editable Markdown.
-14. If every Cloudflare audio sample fails and the original uploaded video is still within the OpenAI transcription byte cap, Convex downloads the original R2 object through a signed URL and transcribes that MP4 directly. This covers long compressed videos that exceed Cloudflare Media Transformations' source-duration limit while keeping larger uploads terminal instead of proxying unbounded bytes through Convex.
-15. Modal converts only PDF R2 source objects to Markdown. Do not use Modal for image/video extraction.
-16. Convex writes generated Markdown, compacted Yjs objects, and version snapshots to R2.
-17. Convex patches the exact generated output node ids into editable Markdown files, clears conversion work, and writes chunks/snapshot rows.
+1. The upload menu or external drop receives one file. Directory and multi-file drops are rejected.
+2. The client prepares static images, classifies Markdown from MIME type, normalizes the path, and opens the draft/conflict modal when needed.
+3. `files_nodes.create_upload_node` validates the request and creates the upload asset plus visible source node.
+4. The browser uploads the binary through the signed R2 PUT URL.
+5. The R2 event patches the source asset's key, size, and optional ETag.
+6. Markdown MIME uploads run the host Markdown finalizer, which creates Yjs, chunks, and a content snapshot on the uploaded node. Oversized Markdown stays a stored file.
+7. Other uploads become terminal source files and dispatch eligible `files.upload.completed` plugin runs.
+8. Installed first-party plugins own PDF, image, video, and audio-derived outputs plus their external provider calls.
+9. Plugin-created outputs are ordinary Markdown files. No host-owned output placeholder exists before the plugin writes or touches the path.
+10. Rich-text image upload still uses the legacy `/api/upload` route rather than this Files-sidebar flow.
 
 # Headless-Tree Configuration Highlights
 
@@ -210,7 +207,7 @@ Tree-item components:
 6. Keep pending state split (`isBusy` and `pendingActionNodeIds`) for correct UI gating.
 7. Prefer Convex optimistic updates over manual local tree patching.
 8. Do not let file nodes act as folders.
-9. Keep external file drops on the same upload lifecycle as the Upload file menu action: signed R2 upload first, then Markdown finalization or MIME-based generated output conversion.
+9. Keep external file drops on the same upload lifecycle as the Upload file menu action: signed R2 upload first, host Markdown finalization for Markdown MIME uploads, and plugin-event dispatch for other uploads.
 10. Keep assets focused on R2 object metadata and file nodes focused on tree position, content pointers, snapshots, and archive state.
 
 # Verification Checklist
@@ -225,11 +222,11 @@ Tree-item components:
 - Rename guards and optimistic rename behavior are correct.
 - Archive/unarchive and archived filter/toggle behavior is correct.
 - DnD allows legal moves, blocks drops onto files, and root-zone feedback works.
-- PDF external file drops onto root/folders create normal uploaded source file nodes and visible generated Markdown sibling files through the R2 conversion flow.
-- Static image uploads are compressed in the browser when smaller, remain visible as source files, and create readable `<source>.description.md` siblings.
-- Video uploads remain visible as source files and create readable `<source>.summary.md` and `<source>.transcript.md` siblings.
+- With the matching plugin installed and enabled and its required secrets configured, verify PDF, image, video, and audio-derived outputs.
+- Static image uploads are compressed in the browser only when the result is smaller and always keep a visible source node.
+- Video and audio uploads remain visible as source nodes even when a plugin run fails.
 - Markdown external file drops onto root/folders use the same signed R2 upload path, then finalize into ordinary Markdown file nodes.
-- External file drops onto file rows do not upload to the file's parent.
+- External file drops over a file row upload into that file's containing folder.
 - Multi-file and directory external drops are rejected without creating nodes.
 - Placeholder nodes are never sent to mutations.
 - Normal tree/list/glob results expose uploaded sources and generated outputs as ordinary visible nodes.

@@ -1,41 +1,42 @@
 ---
 name: chatgpt-image-generator
-description: Generate, download, and inspect images through ChatGPT in the user's browser with Playwriter when no direct image-generation tool is callable. Use when you need image-model output — visual mockups, generated reference images, or image-model visual reports — but must use chatgpt.com as the image backend. This is the only image backend available in this repo; there is no native image tool.
+description: Generate, download, and inspect images through ChatGPT in the user's browser with Playwriter when no direct image-generation tool is callable and chatgpt.com must be the image backend.
 ---
 
-# ChatGPT Image Generator
+# Choose The Image Backend
 
-This agent has no native image-generation tool. When you need image-model output, this skill is the backend: drive ChatGPT through Playwriter, attach reference images when available, save the generated image locally, and inspect the downloaded file yourself before using it as a design reference or visual report.
+Use a callable direct image-generation tool first and follow that tool's output rules. Use the ChatGPT browser workflow only when no direct tool is callable. In that fallback, attach reference images when available, save the generated image locally, and inspect it before using it as a design reference or visual report.
 
 The ChatGPT UI changes over time. The selectors below were verified on June 3, 2026. Always use Playwriter `snapshot()` or `getCleanHTML()` to confirm the current UI before relying on them.
 
-## Browser Setup
+# Browser Setup
 
 This repo's Playwriter conventions (see `app-playwriter-harness/references/known-hazards.md`) apply here:
 
-1. Read the `playwriter` skill first and follow its full documentation. The global `playwriter` command may not exist on this machine — use `pnpx playwriter`.
-2. Create sessions from the repo root so the scoped Playwriter filesystem can read and write skill/artifact files. In this repo, run Playwriter through Vite Plus:
+1. Read the `playwriter` skill first and follow its full documentation. The global `playwriter` command may not exist on this machine — use `vp env exec pnpx playwriter`.
+2. List connected browsers and choose the exact full key whose browser has signed-in ChatGPT access. Never copy a stored profile key. Create the session from the repo root and pass the key unchanged:
 
 ```powershell
-$sessionOutput = & "$env:USERPROFILE\.vite-plus\bin\vp.exe" exec -- pnpx playwriter session new
+vp env exec pnpx playwriter browser list
+$browserKey = "<exact KEY from browser list>"
+$sessionOutput = vp env exec pnpx playwriter session new --browser $browserKey
 $session = ($sessionOutput | Select-String -Pattern "Session (\d+) created").Matches.Groups[1].Value
 if (-not $session) { $session = ($sessionOutput | Select-Object -Last 1).Trim() }
 ```
 
-3. Choose the Edge profile explicitly. If multiple Edge profiles are reported, do not use the auto-selected one — pass `--browser profile:<key>`. ChatGPT is logged in under the user's normal browsing profile, which in this repo is the personal Edge profile `profile:909172d3ee56c25e` (the same profile that holds the app tabs). With both profiles connected, the Playwriter MCP fails with "Multiple extensions connected", so use the raw CLI with the explicit profile key for every session.
-4. Always open ChatGPT in a fresh tab with `context.newPage()`.
+3. Always open ChatGPT in a fresh tab with `context.newPage()`.
    - Do this even when another `chatgpt.com` tab already exists.
    - Other agents or the user may be using existing ChatGPT tabs.
    - Fresh Playwriter sessions start with an empty `state` (`{}`) and a bare global `context` (the Playwright BrowserContext), not `state.context`. Bind the page yourself and store it as `state.page` for every later action.
-5. Navigate to `https://chatgpt.com/` and observe the loaded page with `snapshot()`.
-6. If ChatGPT shows a login wall, captcha, or account picker, ask the user to complete it in the browser before continuing.
+4. Navigate to `https://chatgpt.com/` and observe the loaded page with `snapshot()`.
+5. If ChatGPT shows a login wall, captcha, or account picker, ask the user to complete it in the browser before continuing.
 
-In PowerShell, do not pass nontrivial JavaScript through `-e`. PowerShell mangles quotes, backticks (template literals), arrow functions, and object literals. Write the script to a temp file and run it with `-f`:
+In PowerShell, do not pass nontrivial JavaScript through `-e`. Put the runner in the required sibling personal-AI run folder and run it with `-f`. Create or edit the runner with the agent's targeted file-edit tool, not an ad hoc shell rewrite:
 
 ```powershell
-$scriptPath = Join-Path $env:TEMP "chatgpt-image-step.js"
-# write the JS to $scriptPath first, then:
-& "$env:USERPROFILE\.vite-plus\bin\vp.exe" exec -- pnpx playwriter -s $session -f $scriptPath --timeout 200000
+$runDirectory = "../t3-chat-+personal/+ai/chatgpt-image-YYYY-MM-DD"
+$scriptPath = Join-Path $runDirectory "chatgpt-image-step.js"
+vp env exec pnpx playwriter -s $session -f $scriptPath --timeout 200000
 ```
 
 Use this pattern at the start of the workflow (inside the runner file):
@@ -58,7 +59,7 @@ if (!state.page) throw new Error('Exact ChatGPT page not found')
 
 Rebind this way whenever another Playwriter-enabled tab is present and a scoped snapshot or locator appears to drift to the wrong page.
 
-## Generate An Image
+# Generate An Image
 
 1. Open the plus menu from the composer:
 
@@ -97,16 +98,18 @@ Observed send control: `data-testid="send-button"` with accessible name `Send pr
 
 For visual verification reports, the prompt must begin with `Generate an image:` and explicitly say that the required output is a generated image report. Prompt wording alone is not enough; selecting `Create image` is still mandatory.
 
-5. Wait for generation to finish.
+5. Wait for generation to start and finish.
    - During generation, ChatGPT shows `data-testid="stop-button"` with accessible name `Stop answering`.
-   - Wait for that button to detach, then take a fresh snapshot.
+   - First wait briefly for the stop button to appear. Then wait for it to detach and for a generated-image control to appear. A direct `detached` wait can succeed before generation starts.
 
 ```js
+await state.page.getByTestId('stop-button').waitFor({ state: 'visible', timeout: 15000 }).catch(() => {})
 await state.page.getByTestId('stop-button').waitFor({ state: 'detached', timeout: 180000 })
+await state.page.getByRole('button', { name: /Generated image/i }).waitFor({ state: 'visible', timeout: 30000 })
 console.log(await snapshot({ page: state.page, search: /Generated image|Download|Save|Edit image|Share/i, showDiffSinceLastCall: false }))
 ```
 
-## Attach Reference Images
+# Attach Reference Images
 
 When the user asks ChatGPT to use an existing image as input, first resolve every reference image to an absolute local file path.
 
@@ -134,7 +137,7 @@ After attaching the image, select `Create image` from the plus menu if image mod
 
 For multiple variants from the same reference, prefer one fresh ChatGPT conversation per variant. Upload the same reference image for each conversation, submit a variant-specific prompt, and save each generated output separately.
 
-## Download The Image
+# Download The Image
 
 After generation, the assistant turn usually contains:
 
@@ -164,7 +167,7 @@ First try a normal browser download with the `Save` button:
 
 ```js
 const path = require('node:path')
-const outPath = path.resolve('tmp/design-ideation/<run-id>/generated-image.png')
+const outPath = path.resolve('../t3-chat-+personal/+ai/image-ideation-YYYY-MM-DD/generated-image.png')
 const [download] = await Promise.all([
   state.page.waitForEvent('download', { timeout: 30000 }),
   state.page.getByRole('button', { name: 'Save' }).click(),
@@ -172,61 +175,60 @@ const [download] = await Promise.all([
 await download.saveAs(outPath)
 ```
 
-If `download.saveAs()` fails because the relay temp file disappeared, or direct Node `fetch()` returns `403 Forbidden`, fetch the image inside the ChatGPT page context with session credentials and write the bytes locally:
+If the normal Save download fails because the relay file disappeared, fetch the image inside the ChatGPT page context with session credentials, trigger a browser download from that Blob, and save the Playwright download to the same absolute personal-AI path. Do not use sandbox `fs.writeFileSync` for a sibling folder.
 
 ```js
-const result = await state.page.evaluate(async () => {
-  const img = Array.from(document.querySelectorAll('img')).find((node) =>
-    /Generated image/i.test(node.alt),
-  )
-  if (!img) throw new Error('Generated image not found')
-
-  const response = await fetch(img.currentSrc || img.src, { credentials: 'include' })
-  if (!response.ok) throw new Error(`Image fetch failed: ${response.status} ${response.statusText}`)
-
-  const blob = await response.blob()
-  const base64 = await new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onloadend = () => resolve(String(reader.result).split(',')[1])
-    reader.onerror = reject
-    reader.readAsDataURL(blob)
-  })
-
-  return {
-    alt: img.alt,
-    width: img.naturalWidth,
-    height: img.naturalHeight,
-    type: blob.type,
-    base64,
-  }
-})
-
-const fs = require('node:fs')
 const path = require('node:path')
-const outPath = path.resolve('tmp/design-ideation/<run-id>/generated-image.png')
-fs.mkdirSync(path.dirname(outPath), { recursive: true })
-fs.writeFileSync(outPath, Buffer.from(result.base64, 'base64'))
+const outPath = path.resolve('../t3-chat-+personal/+ai/image-ideation-YYYY-MM-DD/generated-image.png')
+
+const [download, imageInfo] = await Promise.all([
+  state.page.waitForEvent('download', { timeout: 30000 }),
+  state.page.evaluate(async () => {
+    const img = Array.from(document.querySelectorAll('img')).find((node) =>
+      /Generated image/i.test(node.alt),
+    )
+    if (!img) throw new Error('Generated image not found')
+
+    const response = await fetch(img.currentSrc || img.src, { credentials: 'include' })
+    if (!response.ok) throw new Error(`Image fetch failed: ${response.status} ${response.statusText}`)
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = 'generated-image.png'
+    document.body.append(anchor)
+    anchor.click()
+    anchor.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+
+    return { alt: img.alt, width: img.naturalWidth, height: img.naturalHeight, type: blob.type }
+  }),
+])
+
+await download.saveAs(outPath)
+console.log(imageInfo)
 ```
 
-Save artifacts under the calling skill's repo-relative run folder, such as `tmp/design-ideation/<run-id>/` for ideation or `tmp/visual-verification/<run-id>/` for verification. Playwriter's Node sandbox and `download.saveAs()` need absolute paths; the session cwd is the repo root, so `path.resolve('tmp/.../file.png')` produces the correct absolute path. Do not create repo-root `artifacts/` folders by default.
+Create a descriptive dated run folder under `../t3-chat-+personal/+ai/` before running the download. Use folders such as `image-ideation-YYYY-MM-DD` or `visual-verification-YYYY-MM-DD`. Playwriter `download.saveAs()` needs an absolute destination, so resolve the sibling path from the repo root. Never use the repository's `tmp/`, a repo-root artifacts folder, `$env:TEMP`, or another OS-temp directory.
 
-## Inspect And Reuse
+# Inspect And Reuse
 
-1. Open the downloaded image yourself with the Read tool (it renders images visually) and confirm the file is readable and matches the requested task.
+1. Open the downloaded image with your image-view tool (Codex: `view_image`) and confirm the file is readable and matches the requested task.
 2. If the output is wrong, re-prompt in the same ChatGPT conversation or start a fresh ChatGPT tab for a clean generation.
 3. Record the saved image path for the user and for follow-up verifier/designer work.
 4. Clean up any Playwriter listeners you add.
 
 Do not close unrelated browser tabs. Only close a page you created when the user asks or when cleanup is clearly safe.
 
-## Output Contract
+# Output Contract
 
-When using this skill, return:
+Return:
 
 - ChatGPT conversation URL
-- browser profile used (e.g. `profile:909172d3ee56c25e`)
+- exact browser key used
 - prompt submitted
 - generated image path
 - whether you inspected the image yourself
-- download method used, such as `Save` download or page-context credential fetch
+- download method used, such as normal Save or page-context Blob download
 - any selector drift, login wall, captcha, or Playwriter issue encountered

@@ -3,13 +3,7 @@ name: auth-system
 description: Auth and account-management system (Clerk + Convex + anonymous JWT) guidelines, including Convex-authoritative account lifecycle, anagraphic-first UI profile data, and planned permissions/upgrade behavior. Use when modifying auth flows, account/profile UI, delete-account behavior, Clerk cleanup, or anonymous upgrade behavior.
 ---
 
-# Overview
-
-Auth and account-management design + implementation notes (Clerk + Convex + anonymous JWT), including current delete-account authority, profile data sourcing, and planned workspaces/organizations/assets privacy model and upgrade migration behavior.
-
-# Auth system (Clerk + Convex + anonymous JWT), and planned permissions model for workspaces/organizations/assets.
-
-# High-level goals (product + security)
+# Product And Security Invariants
 
 ## App-first account authority
 
@@ -24,8 +18,9 @@ Prefer reusing existing generic Convex queries instead of creating narrowly tail
 
 - Convex query results are cached client-side and kept consistent via subscriptions.
 - Reusing the same query + args lets multiple UI surfaces share that cache entry.
-- In this repo, this means profile UIs should prefer `users.get_anagraphic({ userId })` when they only need anagraphic fields, instead of adding a new "current profile" wrapper query.
-- Favor generic, composable queries that can be reused in multiple places over UI-specific "view model" queries.
+- `users.get_anagraphic` is currently a public, unguarded full-document query. It accepts any `users` id and returns `users_anagraphics`, including normalized email. Reuse it only for current-user UI with `auth.userId`.
+- Do not add new cross-user `get_anagraphic` call sites or present it as a safe generic profile query. Existing cross-user call sites are a known privacy gap. Product policy must decide whether email is self-only or visible to authorized co-members before a replacement query's authorization and return shape are documented.
+- Favor generic, composable queries only when their authorization and returned fields are safe for every intended caller.
 
 ## Frictionless onboarding
 
@@ -46,7 +41,7 @@ When an anonymous user signs up (upgrades to a Clerk account), the default behav
 - Only signed-in organization/workspace members can access/edit.
 - Any anonymous/public access must be re-enabled explicitly by the owner after upgrade.
 
-# Current implementation (how auth works today)
+# Current Auth Flow
 
 ## Provider wiring (frontend)
 
@@ -79,7 +74,7 @@ Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={App
 - The frontend calls `/api/auth/anonymous` (or refreshes it) to mint/refresh an anonymous JWT.
 - The JWT subject is the Convex `users` id.
 - The anonymous JWT is stored in `localStorage` and re-used until refreshed/cleared.
-- On anonymous startup, cached anonymous credentials are validated through `/api/auth/anonymous` before the app marks auth loaded. If refresh fails because the token is invalid, stale, or points at a missing/deleted user, the client clears both localStorage keys and calls `/api/auth/anonymous` without a token to mint a fresh anonymous user.
+- On anonymous startup, cached anonymous credentials are validated through `/api/auth/anonymous` before the app marks auth loaded. If refresh fails because the token is invalid, stale, or points at a missing user, the client clears both localStorage keys and calls `/api/auth/anonymous` without a token to mint a fresh anonymous user. The current route does not reject a user only because `deletedAt` is set; see the gap below.
 
 Anonymous token caching keys (frontend):
 
@@ -98,8 +93,15 @@ Routes implemented in: [users.ts](../../../packages/app/convex/users.ts)
 - With `token`: refresh path:
   - extract user id from JWT
   - verify the provided token matches the stored token for that user
-  - issue a new JWT and store it on the user record
+  - return the existing token while it has more than seven days left
+  - otherwise issue a new 30-day JWT and store it on the anonymous-token doc
 - The create path is rate-limited by forwarded client IP headers with a stable fallback before minting a user/token. The refresh path is rate-limited by the resolved anonymous user id before reissuing a token. On deny the route returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
+
+### Known anonymous deletion gap
+
+The current anonymous refresh lookup verifies the token and user id but does not check `users.deletedAt`. `server_convex_get_user_fallback_to_anonymous` also trusts the JWT subject without loading a live user row. A tombstoned anonymous user can therefore keep or refresh a token during the retention period, and handlers that trust only the auth id can still accept account-level writes. The anonymous-to-Clerk upgrade path must also reject a tombstoned anonymous source unless the recovery policy explicitly selects it.
+
+Do not describe a tombstone as anonymous-session revocation. Fix this at the auth and write boundaries: reject deleted anonymous users during refresh and upgrade, require a live user row for anonymous account-level writes, and add focused tests for refresh, upgrade, and a representative write after tombstoning.
 
 Anonymous JWT properties:
 
@@ -118,7 +120,7 @@ Exposes public JWK(s) for the anonymous JWT signing key so JWT verifiers can val
 Purpose: ensure a Clerk identity is linked to a Convex user id, and ensure Clerk `external_id` is set.
 
 - Requires a valid Clerk-authenticated request (`ctx.auth.getUserIdentity()` must exist).
-- If `identity.external_id` already exists and resolves to a live `users` doc, returns it without consuming the auth write rate limit.
+- If `identity.external_id` resolves to a non-tombstoned `users` doc with both default-tenant pointer fields set, returns it without consuming the auth write rate limit. This fast path checks that the pointers are present, not that their target docs exist.
 - If `identity.external_id` is missing or points to a missing `users` doc, the route rate-limits by `identity.external_id` when present, otherwise by the Clerk subject. On deny it returns `429` with `{ message: "Rate limit exceeded", retryAfterMs }`.
 - After the repair/create path is allowed:
   - calls internal mutation `internal.users.resolve_user` to find/create/link the Convex user
@@ -139,23 +141,22 @@ Internal mutation behavior:
 - If a different live user already owns the same normalized email:
   - return a recoverable conflict from `internal.users.resolve_user`
   - the HTTP route surfaces that conflict as `400`
-- If `anonymousUserToken` is provided:
-  - validates token and finds the anonymous user
-  - links that same user record to the Clerk user (canonicalize anonymous into signed-in in place)
-  - preserves the same Convex `users` id across upgrade
-  - preserves the same default organization/workspace in the normal upgrade path, so existing organization/workspace memberships and data stay attached to the upgraded user
-  - may delete other existing users for the same Clerk id so the anonymous record becomes canonical
+- A live Clerk-linked user takes precedence, even when `anonymousUserToken` is supplied.
+- Anonymous upgrade runs only when no live Clerk-linked user and no same-email deleted account was selected. In that case, it validates the token, upgrades the anonymous user in place, preserves the same Convex `users` id, and keeps its default organization/workspace plus attached data.
+- The current upgrade path does not delete another live Clerk-linked user.
+- Product policy has not decided whether a returning Clerk user should keep winning or whether anonymous data should merge into that existing account. If this precedence changes, use full dependent cleanup or an explicit merge; do not rely on raw user-row deletion.
 - If no `anonymousUserToken`:
   - finds or creates a Convex user record for the Clerk user id
 
 ## Root route gating
 
-The root layout waits for both:
+The root layout waits for:
 
 - Convex auth to finish loading (`useConvexAuth().isLoading === false`)
 - App auth provider to finish loading (`auth.isLoaded === true`)
+- for a signed-in user, the current subscription and usage snapshot bootstrap queries to finish
 
-If Convex is authenticated, the main app is rendered; otherwise an unauthenticated view is shown.
+It renders the main app only when App auth and Convex auth are both authenticated. After loading, an unhealthy auth state throws `Failed to start session` to the route error boundary.
 
 ## Account management (current implementation)
 
@@ -232,12 +233,12 @@ Summary:
 - Tables: `organizations`, `organizations_workspaces`, `organizations_workspaces_users`, `access_control_role_assignments`, `access_control_permission_grants`, `notifications`, `data_deletion_requests`; `users.defaultOrganizationId` / `defaultWorkspaceId`.
 - Bootstrap: `create_anonymous_user` and `resolve_user` call `organizations_db_ensure_default_organization_and_workspace_for_user`.
 - The default `personal` organization is private. Invites/member-management writes reject it.
-- Non-personal organization ownership lives in `organizations.ownerUserId`; a mirrored default-workspace owner role assignment remains for role display and access-control compatibility.
+- Organization ownership lives in `organizations.ownerUserId` for default and non-default organizations; a mirrored default-workspace owner role assignment remains for role display and access-control compatibility. Only non-default ownership consumes the extra-organization quota and can be transferred.
 - **Implementation note:** Many app surfaces may still use older hardcoded organization/workspace ids outside this tenancy module—verify callsites.
 
 Authorization helpers in `organizations.ts` call the backend access-control permission checker. Frontend guards and full permission-management UI are intentionally incremental follow-up work.
 
-# Planned functionality (not fully implemented yet)
+# Planned Privacy And Permission Model
 
 ## Workspaces and organizations
 
@@ -274,7 +275,7 @@ Important: “public write” means anyone who knows the asset id can write (sha
 
 Canonical access-control details live in `../access-control/SKILL.md`.
 
-Permissions are represented by allow-only docs in `access_control_permission_grants`. Grants can target roles, specific users, or public access for `organization`, `workspace`, `page`, and `thread` resources.
+Permissions are represented by allow-only docs in `access_control_permission_grants`. Grants can target roles, specific users, or public access for `organization`, `workspace`, `file`, and `thread` resources.
 
 Current roles are `owner`, `admin`, and `member`. The owner is a system role on the organization default workspace with full organization authority; admin/member authority is represented by seeded grant docs. Direct user and public grants allow asset-level access without changing a user’s role.
 
@@ -301,10 +302,6 @@ When the user upgrades by signing up (Clerk-authenticated, linked to Convex user
 
 The owner can later re-publicize assets explicitly.
 
-# Implementation constraints (to follow when modifying this system)
-
-When the user requests changes in this area, you must:
-
 # Preserve the canonical user id design
 
 - The canonical app identity is the Convex `users` document id.
@@ -313,10 +310,13 @@ When the user requests changes in this area, you must:
 
 # Current app user resolution
 
-When a public Convex handler needs the current live app user, resolve auth with `server_convex_get_user_fallback_to_anonymous(ctx)` and then load the `users` row by the returned `id`. Treat both missing pieces as `Unauthenticated`:
+When a public Convex handler needs the current app user, resolve auth with `server_convex_get_user_fallback_to_anonymous(ctx)` and then load the `users` row by the returned `id`. Keep `userAuth.kind` while doing that lookup. Treat these cases as `Unauthenticated`:
 
 - Convex auth returns no usable identity.
 - Convex auth returns a user id, but that id does not resolve to a row in the `users` table.
+- The caller is anonymous and the resolved row has `deletedAt`.
+
+Keep the Clerk rule separate: trust Clerk session invalidation and the signed-in recovery flow. Do not add the anonymous `deletedAt` rejection as a generic guard for Clerk callers.
 
 Reserve `Unauthorized` for a resolved app user who lacks permission for a resource. Use `Not found`, `User not found`, or a more specific message for target resources or target users, not for the current caller principal.
 
@@ -325,16 +325,13 @@ Reserve `Unauthorized` for a resolved app user who lacks permission for a resour
 For `Result`-returning handlers:
 
 ```ts
-const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((user) => {
-	if (!user) {
-		return null;
-	}
-
-	return ctx.runQuery(internal.users.get, {
-		userId: user.id,
-	});
-});
-if (!user) {
+const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+const user = userAuth
+	? await ctx.runQuery(internal.users.get, {
+			userId: userAuth.id,
+		})
+	: null;
+if (!user || (userAuth?.kind === "anonymous" && user.deletedAt !== undefined)) {
 	return Result({
 		_nay: {
 			message: "Unauthenticated",
@@ -346,20 +343,15 @@ if (!user) {
 For query handlers that use Convex errors:
 
 ```ts
-const user = await server_convex_get_user_fallback_to_anonymous(ctx).then((user) => {
-	if (!user) {
-		return null;
-	}
+const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
 
-	return ctx.db.get("users", user.id);
-});
-
-if (!user) {
+if (!user || (userAuth?.kind === "anonymous" && user.deletedAt !== undefined)) {
 	throw convex_error({ message: "Unauthenticated" });
 }
 ```
 
-If a handler intentionally treats a missing/deleted current user row as stale client state or as an idempotent no-op, leave a short comment explaining that product-specific exception at the branch.
+If a handler intentionally treats a missing row or a deleted anonymous user as stale client state or as an idempotent no-op, leave a short comment explaining that product-specific exception at the branch.
 
 # Prefer cache-friendly query composition
 
@@ -387,6 +379,6 @@ If a handler intentionally treats a missing/deleted current user row as stale cl
 - If you change delete-account behavior, update [data_deletion.test.ts](../../../packages/app/convex/data_deletion.test.ts) and [users.test.ts](../../../packages/app/convex/users.test.ts).
 - If you change profile/anagraphic usage or fallback behavior materially, update [users.test.ts](../../../packages/app/convex/users.test.ts).
 
-# TODO / known gaps
+# Known Gaps
 
 - Deleted-account recovery currently supports only the same verified email path. Changed-email recovery or manual account merge is not implemented.

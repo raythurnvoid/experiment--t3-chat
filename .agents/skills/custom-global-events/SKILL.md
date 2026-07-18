@@ -1,126 +1,89 @@
 ---
 name: custom-global-events
-description: Guidelines for creating/using the app’s typed global events system.
+description: Use when adding or changing app-wide custom events, or when subscribing to native window events through global-event.tsx. Covers the typed global_custom_event_* API, useGlobalCustomEvent, and the separate global_event_* native DOM listener helpers.
 ---
 
-# Overview
+# Keep App And Native Events Separate
 
-Global events are used for cross-component communication without React context dependencies, allowing for simple function calls to trigger events across different parts of the application.
+The module has two separate APIs. Do not mix them.
 
-# Global Events Guidelines
+# App Custom Events
 
-Global events are used for cross-component communication without React context dependencies, allowing for simple function calls to trigger events across different parts of the application.
+Declare each app custom event in the map owned by `global_custom_event_Event` in [global-event.tsx](../../../packages/app/src/lib/global-event.tsx). The map is currently empty.
 
-# Overview
-
-The global events system lives at [global-event.tsx](../../../packages/app/src/lib/global-event.tsx) and is built on a typed `Event` subclass (`XCustomEvent`).
-
-It exposes:
-
-- `global_event_Event`: the canonical type map of event keys → `detail` payload types
-- `global_event_dispatch(event, payload)`: dispatch a typed event (works outside React)
-- `global_event_listen(event, handler, options?)`: listen with typed handler (works outside React)
-- `useGlobalEvent(event, handler)`: React hook for subscriptions with stale-closure protection
-
-# Event key naming
-
-Event keys are string literals using the pattern:
-
-(`module::event_name`), for example `ai_chat::open_canvas`.
-
-# How to add or modify an event
-
-When the user requests a new global event, you must:
-
-# Update the event map
-
-Add the new event key to the `global_event_Event` map in [global-event.tsx](../../../packages/app/src/lib/global-event.tsx).
-
-Example:
+This is a template, not a registered current event:
 
 ```ts
-export class global_event_Event extends XCustomEvent<{
-	"ai_chat::open_canvas": {
-		fileId: app_convex_Id<"files">;
-		mode: "diff" | "editor";
-		modifiedContent?: string;
-		threadId: string;
-	};
-	"ai_chat::open_canvas_by_path": {
-		path: string;
-	};
-	"docs::focus_path": {
-		path: string;
+export class global_custom_event_Event extends XCustomEvent<{
+	"feature::changed": {
+		id: string;
 	};
 }> {}
 ```
 
-# Keep all event keys centralized
+Use these helpers for app custom events:
 
-All supported global event keys must be declared in that `global_event_Event` type map. Do not introduce ad-hoc stringly-typed events elsewhere.
+- `global_custom_event_dispatch`
+- `global_custom_event_listen`
+- `useGlobalCustomEvent`
 
-# Use the exported helpers
-
-Prefer `global_event_dispatch` / `global_event_listen` / `useGlobalEvent` rather than calling `window.dispatchEvent(new CustomEvent(...))` directly.
-
-# Usage patterns
-
-## React components
-
-Use `useGlobalEvent(eventName, handler)` to subscribe. The handler receives a typed event object, and the payload is on `event.detail`.
-
-Example (from [canvas.tsx](../../../packages/app/src/components/canvas/canvas.tsx)):
+Handlers receive the typed event object. Read the payload from `event.detail`.
 
 ```ts
-useGlobalEvent("ai_chat::open_canvas", (e) => {
-	const payload = e.detail;
-	// payload.fileId, payload.mode, payload.modifiedContent, payload.threadId
+global_custom_event_dispatch("feature::changed", { id: "example" });
+
+useGlobalCustomEvent("feature::changed", (event) => {
+	console.info(event.detail.id);
 });
 ```
 
-## Non-React code (or manual lifecycle control)
-
-Use `global_event_listen` directly when you need to wire AbortController, or you are outside React.
+For non-React lifecycle control:
 
 ```ts
 const controller = new AbortController();
 
-const cleanup = global_event_listen(
-	"ai_chat::open_canvas_by_path",
-	(e) => {
-		console.info("path:", e.detail.path);
+const cleanup = global_custom_event_listen(
+	"feature::changed",
+	(event) => {
+		console.info(event.detail.id);
 	},
 	{ signal: controller.signal },
 );
 
-// later:
 controller.abort();
 cleanup();
 ```
 
-## Dispatching
+Keep custom keys centralized in `global_custom_event_Event`. Do not dispatch ad hoc `CustomEvent` strings elsewhere.
 
-Use `global_event_dispatch(eventName, payload)` from anywhere client-side.
+No app custom-event keys are currently registered, so production use does not establish a naming convention. For a new typed custom event, use `module::event_name` as the project's recommended convention unless the user defines another convention for that feature.
 
-Example (from [app-ai-chat.tsx](../../../packages/app/src/components/app-ai-chat.tsx)):
+# Native Window Events
+
+Use the non-custom helpers only for built-in DOM events typed by `GlobalEventHandlersEventMap`:
+
+- `global_event_listen`
+- `global_event_listen_all`
+- `useGlobalEvent`
+- `useGlobalEventList`
 
 ```ts
-global_event_dispatch("ai_chat::open_canvas_by_path", { path: args.path });
-```
+useGlobalEvent("keydown", (event) => {
+	console.info(event.key);
+});
 
-# Handler typing and payload access
-
-Handlers receive the typed event object, not the payload directly:
-
-```ts
-useGlobalEvent("ai_chat::open_canvas", (e) => {
-	const payload = e.detail;
+useGlobalEventList(["pointerdown", "focusin"], (event) => {
+	console.info(event.type);
 });
 ```
 
-# Files and references
+Current native-event consumers include:
 
-- Core implementation: [global-event.tsx](../../../packages/app/src/lib/global-event.tsx)
+- [files-sidebar.tsx](../../../packages/app/src/components/files/files-sidebar.tsx)
+- [file-editor-comments-sidebar.tsx](../../../packages/app/src/components/files/file-editor/file-editor-comments-sidebar.tsx)
+- [file-editor-rich-text.tsx](../../../packages/app/src/components/files/file-editor/file-editor-rich-text/file-editor-rich-text.tsx)
+
+# Implementation References
+
 - Typed event base: `XCustomEvent` in [utils.ts](../../../packages/app/src/lib/utils.ts)
-- Hook helper: `useLiveRef` in [utils-hooks.ts](../../../packages/app/src/hooks/utils-hooks.ts)
-- Example consumers: [app-ai-chat.tsx](../../../packages/app/src/components/app-ai-chat.tsx), [canvas.tsx](../../../packages/app/src/components/canvas/canvas.tsx)
+- Stale-closure-safe hook helper: `useLiveRef` in [utils-hooks.ts](../../../packages/app/src/hooks/utils-hooks.ts)

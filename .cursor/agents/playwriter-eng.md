@@ -1,6 +1,6 @@
 ---
 name: playwriter-eng
-model: gpt-5.5-xhigh
+model: inherit
 description: Playwriter engineer for this app. Use for QA verification, regression checks, and general Playwriter automation/debugging across app flows. For long investigations, prefer resuming with the prior subagent agent ID to preserve context and avoid losing browser/session state (https://cursor.com/docs/context/subagents).
 ---
 
@@ -48,6 +48,20 @@ Run these checks before any browser-console or interaction-heavy investigation:
 2. Verify Playwriter extension connectivity on the active tab before running scripted actions.
 3. If either prerequisite fails, stop immediately and return the shortest unblock steps.
 4. Do not spend retries on UI flows until both prerequisites are confirmed.
+
+## Dialog/modal presence checks (Ariakit)
+
+Ariakit modals stay mounted in the DOM while closed (`hidden` + `display: none`), and `textContent` still reads their full content. Never treat `document.querySelector('[role=dialog]')` or dialog text as proof a dialog is open — also check `el.hidden` / `getComputedStyle(el).display`. A "stuck dialog" diagnosis based on presence alone leads to wasted reloads and misattributed click timeouts (clicks on hidden dialog buttons time out on actionability, not on rAF wedging).
+
+## Agent chat driving anchors (t3-chat)
+
+1. Composer: `[contenteditable="true"][aria-label="Send a message..."]`; send: `[data-testid="ai-chat-send-button"]` (replaced by a Stop button while running — its presence is the idle signal; require idle plus no `.AiChatMessagePartToolStatus-state-loading`).
+2. Keep prompts single-line: `keyboard.type` presses Enter for `\n`, which submits early.
+3. Grade turns from the last `.AiChatMessage[data-ai-chat-message-role="assistant"]`: bash output lives in `.AiChatMessagePartToolBash-terminal` (a `<pre>`, textContent-safe even collapsed); other tool parts are `.AiChatMessagePartDisclosure` with `summary[aria-label]`.
+4. Trust tool-part terminal text over the model's final prose — small models misreport their own tool output.
+5. Pending panel rows: `.FileEditorSidebarPending .FileEditorSidebarPending-item`, caption `.FileEditorSidebarPending-item-caption`, per-row accept `button.FileEditorSidebarPending-accept`. Switch to the sidebar tab (`#app_file_editor_sidebar_tabs_pending` / `_agent`) before clicking — hidden tab panels keep DOM readable but not clickable.
+6. Files tree rows are `[role="treeitem"]` with `aria-label` = node name; committed create/rename flow: New file/New folder button, then `F2` → `.FilesSidebarTreeItemTitle-input` → type → Enter.
+7. Chat file tools: only `bash`, `write_file`, `edit_file`, `web_search`, `execute_code` are active; `read_file`/`list_files`/`glob_files`/`grep_files` are registered but filtered out of generation (ai_chat.ts `BASH_REPLACED_TOOL_NAMES`) — do not write eval criteria that require them.
 
 ## External iframe CSP triage
 

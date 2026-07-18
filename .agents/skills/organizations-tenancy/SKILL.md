@@ -29,7 +29,7 @@ description: Organizations, workspaces, default personal/home tenant, membership
 
 - On **user bootstrap** (anonymous create, Clerk resolve/link), the app ensures a **default organization + default workspace** for that user via `organizations_db_ensure_default_organization_and_workspace_for_user` in `packages/app/convex/organizations.ts` (called from `packages/app/convex/users.ts`).
 - **Stored names** (normalized slugs): organization `personal`, workspace `home` (see `DEFAULT_ORGANIZATION_NAME` / `DEFAULT_WORKSPACE_NAME` in `packages/app/convex/organizations.ts`). UI may display title case; API/storage uses these slugs.
-- **User doc cache:** `users.defaultOrganizationId` and `users.defaultWorkspaceId` point at that default tenant. `organizations_db_ensure_default_organization_and_workspace_for_user` is an invariant-establishing helper: if the user already has a default organization pointer, it trusts the existing tenant and does nothing; if no default exists yet, it creates `personal`/`home`. Do not add "repair" behavior for broken pointers or missing memberships here; that would hide a bug elsewhere.
+- **User doc cache:** `users.defaultOrganizationId` and `users.defaultWorkspaceId` point at that default tenant. If the organization pointer is absent or points to a missing organization doc, `organizations_db_ensure_default_organization_and_workspace_for_user` creates a new `personal`/`home` tenant and rewrites both pointers. If the pointed organization exists, the helper returns without validating or repairing the workspace pointer or membership docs.
 - **Exactly one default tenant per user** in normal flows: the UI does not create a second default organization; internal `organizations_db_create(..., default: true)` is for provisioning that tenant. Non-default organizations are created with `default: false`.
 - Default organizations use `billingMode: "user"` and do not expose organization billing management.
 - The default `personal` organization remains private. Invitation/member-management mutations must reject it, and the main nav hides the Users entry for default organizations even though the Users page may render for direct/debug URLs.
@@ -73,11 +73,13 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 
 **Refactoring note:** Only the **primary** default **workspace** is protected from edit across all organizations. Do **not** block editing **all** workspaces in the user’s default `personal` organization based solely on `organization.default`; only the **`home`** (primary) workspace is special.
 
+**Known implementation mismatch:** `delete_workspace` currently accepts either `workspace.update` on the target workspace or `organization.update` on the organization. It does not enforce the declared and seeded `workspace.delete` permission. Product policy has not decided whether to use only `workspace.delete` or keep an organization-level fallback.
+
 # Invitations / adding members
 
-- **`invite_user_to_organization_workspace`:** accepts either `userIdToAdd` or an exact normalized email resolved from `users_anagraphics.by_email` (id wins when both are provided), rejects missing/deleted/current users, rejects default organizations, adds membership and `member` role assignment to the organization `home` workspace, adds membership and `member` role assignment to the selected workspace when different, and creates an unread `notifications` doc for the invited user.
+- **`invite_user_to_organization_workspace`:** accepts either `userIdToAdd` or an exact normalized email resolved from `users_anagraphics.by_email` (id wins when both are provided), rejects missing/deleted/current users, and rejects default organizations. A new invite adds membership and a `member` role assignment to the organization `home` workspace, adds them to the selected workspace when different, and creates one unread `notifications` doc. An idempotent repeated invite returns success without creating another notification.
 - **Default organization:** if `organization.default`, mutations fail with `Cannot add user to default organization`. That blocks inviting into **personal** and into **any workspace under personal** (including `home`), matching “no collaborators on the default tenant.”
-- **Users page:** `/w/$organizationName/$workspaceName/users` composes granular queries: `organizations.list` for the visible organization and workspaces, `organizations.list_organization_workspace_users` for the `home` roster plus per-workspace user ids, `users.get_anagraphic` for profile details, and access-control role queries for badges/actions. The organization `home` workspace remains the organization user roster, invite/remove/transfer actions stay disabled for `personal`, and the main sidebar hides the Users nav item whenever `organization.default === true`; direct URLs may still render this guarded/read-only page.
+- **Users page:** `/w/$organizationName/$workspaceName/users` composes granular queries: `organizations.list` for the visible organization and workspaces, `organizations.list_organization_workspace_users` for the `home` roster plus per-workspace user ids, `users.get_anagraphic` for profile details, and access-control role queries for badges/actions. The organization `home` workspace remains the organization user roster, invite/remove/transfer actions stay disabled for `personal`, and the main sidebar hides the Users nav item whenever `organization.default === true`; direct URLs may still render this guarded/read-only page. `users.get_anagraphic` currently returns the full anagraphic doc, including email, without an auth or membership check. Treat these cross-user calls as a known privacy gap; do not add more until product policy defines the safe fields and membership scope.
 - **Removing/leaving:** `remove_user_from_organization` deletes all active memberships and access-control docs for the target user in that organization, rejects removing the owner, lets a non-owner member remove only themself as an organization leave action, and requires `organization.members.manage` to remove another user.
 - **Notifications:** invite notifications are in-app only in v1; no outbound email is sent. Backend notification listing treats `notifications` docs as the source of truth and lists the current user's docs without rechecking organization membership. `workspaceId` is retained for display/navigation when the originally invited workspace still exists; if that workspace is gone, the UI opens the organization primary/home workspace. Organization member removal, workspace deletion, and organization deletion delete affected invite notifications so invalid docs do not stay visible.
 
@@ -114,7 +116,7 @@ Workspace-scope queue docs are content-only after `organizations.delete_workspac
 
 **Unified cron:** [crons.ts](../../../packages/app/convex/crons.ts) runs **`data_deletion.enqueue_deletion_requests_processing`** daily. The action enqueues the `data_deletion_workpool` Workpool worker (`process_deletion_requests`), which processes eligible `user` requests first, then `organization`, then `workspace`, with a limited mutation-step budget per worker run. If eligible work remains, the worker enqueues a successor Workpool action instead of letting one run grow without a cap.
 
-**Auth identity:** `server_convex_get_user_fallback_to_anonymous` only reads the JWT; it does not load `users` or gate on `deletedAt`. Enforce soft-delete or missing-user rules in specific handlers if required.
+**Auth identity:** `server_convex_get_user_fallback_to_anonymous` only reads the JWT; it does not load `users` or gate on `deletedAt`. This is a current security gap for tombstoned anonymous users. Account-level anonymous writes must load a live user row, but current handlers do not all do so. See [auth-system: Known anonymous deletion gap](../auth-system/SKILL.md#known-anonymous-deletion-gap) before changing an anonymous tenant write.
 
 ## Data-only account reset
 
@@ -122,7 +124,7 @@ Workspace-scope queue docs are content-only after `organizations.delete_workspac
 
 ## Content purge coverage (`process_organization_deletion_request` / `process_workspace_deletion_request`)
 
-**Included (tenant-scoped by organization + workspace):** `files_nodes`, `file_stats`, `files_content_materialization_jobs`, markdown/plain-text/Yjs/snapshot tables, `files_r2_assets` and their R2 objects, `ai_chat_threads`, `ai_chat_threads_state`, `ai_chat_threads_messages_aisdk_5`, `ai_chat_files`, `ai_chat_files_content`, `chat_messages`, `files_pending_updates` (+ chunks / cleanup tasks / last-sequence docs).
+This purge includes pending-update state; AI files, threads, messages, and thread state; public API credentials, grants, and write stages; plugin runs, handlers, installations, secrets, and UI sessions; chat messages; file metadata, chunks, Yjs state, snapshots, stats, materialization jobs, R2 assets and objects; and file nodes last. Treat [data-deletion: Workspace Content Purge Coverage](../data-deletion/SKILL.md#workspace-content-purge-coverage) as the ordered list. It also records the current `activities` cleanup gap; do not describe the purge as exhaustive until that gap is fixed.
 
 **Not present in Convex schema:** there is no `human_thread_messages` table; comments/human threads are not a separate purge target in this codebase today.
 
@@ -137,7 +139,7 @@ Workspace-scope queue docs are content-only after `organizations.delete_workspac
 # Resolution helpers
 
 - **`get_membership_by_organization_workspace_name`:** resolves validated names against the **current user’s** membership docs and returns only the matching membership doc; **first matching** organization+workspace pair wins (no global sort of candidates). UI that needs organization metadata, including `organization.default`, should compose it from `organizations.list` instead of carrying it in tenant context.
-- **`list`:** sorts organizations (default first) and workspaces (primary first, then name / id). Organization docs include `owner`, so UI can label owner-billed organizations without querying billing state.
+- **`list`:** sorts organizations (default first) and workspaces (primary first, then name / id). Organization docs include `ownerUserId`, so UI can label owner-billed organizations without querying billing state.
 
 # Related files
 
@@ -162,6 +164,6 @@ Workspace-scope queue docs are content-only after `organizations.delete_workspac
 - Today, phase 2 still runs after the fixed retention window even if a paid subscription was only scheduled to end at billing-period close.
 - In the future, once long-running plans such as yearly subscriptions exist, phase 2 should wait until subscription end when that is later than retention so paid users do not lose their data before the paid term finishes.
 
-# Auth skill cross-link
+# Keep Account Lifecycle In The Auth Skill
 
-High-level auth, **account deletion**, and **planned** public/private semantics live in `../auth-system/SKILL.md`. For **organization/workspace structure, deletion queues, and data purge**, prefer this skill (section [Organization and workspace deletion and data purge](#organization-and-workspace-deletion-and-data-purge)).
+Use `../auth-system/SKILL.md` for high-level auth, **account deletion**, and **planned** public/private semantics. Use this file for **organization/workspace structure, deletion queues, and data purge**, especially [Organization and workspace deletion and data purge](#organization-and-workspace-deletion-and-data-purge).

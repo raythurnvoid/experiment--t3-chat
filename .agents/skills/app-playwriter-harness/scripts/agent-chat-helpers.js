@@ -1,50 +1,19 @@
 // Reusable QA helpers stored on state.qa (session-persistent).
 state.qa = {
 	async newChat() {
-		const clicked = await state.page
-			.evaluate(() => {
-				const btn =
-					document.querySelector('button[aria-label="New chat"]') ||
-					Array.from(document.querySelectorAll("button")).find(
-						(button) => (button.textContent || "").trim() === "New Chat",
-					);
-				if (!btn) return false;
-				btn.click();
-				return true;
-			})
-			.catch((error) => {
-				if (String(error).includes("Execution context was destroyed")) return true;
-				throw error;
-			});
-		if (!clicked) throw new Error("New Chat button not found");
-		await state.page.waitForTimeout(900);
-		// The sidebar agent keeps every thread as a tab and does NOT reliably auto-select the
-		// freshly-created one, so a send would otherwise land in the previously-selected (accumulated)
-		// thread and answer from its context. Explicitly select the last empty "New chat" tab so the
-		// send isolates into a clean thread.
-		await state.page
-			.evaluate(() => {
-				const emptyTabs = Array.from(document.querySelectorAll('[role="tab"]')).filter(
-					(tab) => (tab.textContent || "").trim() === "New chat",
-				);
-				const target = emptyTabs[emptyTabs.length - 1];
-				if (target) target.click();
-			})
-			.catch((error) => {
-				if (String(error).includes("Execution context was destroyed")) return;
-				throw error;
-			});
-		await state.page.waitForTimeout(700);
-		const tabs = await state.page
-			.evaluate(() => {
-				const list = document.querySelector('[aria-label="Open chats"]');
-				return list ? (list.textContent || "").slice(0, 200) : null;
-			})
-			.catch((error) => {
-				if (String(error).includes("Execution context was destroyed")) return null;
-				throw error;
-			});
-		console.log("newChat → tabs:", tabs);
+		const selectedChatTab = state.page.locator('[aria-label="Open chats"] [role="tab"][aria-selected="true"]');
+		const previousSelectedId = await selectedChatTab.getAttribute("id");
+		await state.page.getByRole("button", { name: "New chat", exact: true }).click();
+		await state.page.waitForFunction(
+			(previousId) => {
+				const selected = document.querySelector('[aria-label="Open chats"] [role="tab"][aria-selected="true"]');
+				return selected?.id.startsWith("ai_thread-") && selected.id !== previousId;
+			},
+			previousSelectedId,
+			{ timeout: 10000 },
+		);
+		const selectedId = await selectedChatTab.getAttribute("id");
+		console.log("newChat → selected optimistic tab:", selectedId);
 	},
 
 	async send(text) {
@@ -110,6 +79,16 @@ state.qa = {
 				.catch(() => undefined);
 			await state.qa.waitIdle(timeoutMs);
 		}
+		const stillFailed = await state.page.evaluate(() =>
+			Boolean(
+				Array.from(document.querySelectorAll('[role="alert"]')).find((el) =>
+					(el.textContent || "").includes("Message failed to send."),
+				),
+			),
+		);
+		if (stillFailed) {
+			throw new Error("waitDone: message still failed after retries");
+		}
 		// waitIdle can return during a brief between-steps lull (the Stop button blinks off after a
 		// tool result, before the next step starts), so the turn may still be streaming — and a
 		// turn that ends without a concluding sentence has no prose to anchor on. Settle on overall
@@ -136,6 +115,9 @@ state.qa = {
 			sig = cur;
 			if (stableStreak >= 2) break;
 			await state.page.waitForTimeout(3000);
+		}
+		if (stableStreak < 2) {
+			throw new Error(`waitDone: message DOM did not settle within ${timeoutMs}ms`);
 		}
 		console.log("waitDone: finished in", Math.round((Date.now() - start) / 1000), "s");
 	},

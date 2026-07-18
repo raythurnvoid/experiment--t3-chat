@@ -1,7 +1,7 @@
-// Usage: node analyze-cpu-profile.mjs path/to/file.cpuprofile
+// Usage: vp env exec node analyze-cpu-profile.mjs path/to/file.cpuprofile
 // Prints self-time per function and per file from a CDP Profiler.stop profile.
 // Generic. To attribute a native getter (e.g. `get scrollX`) to its callers,
-// walk `children` links in `nodes` from the hot node back to calling frames.
+// build a reverse map from every node's `children`, then walk parent ids from the hot node.
 import fs from "node:fs";
 
 const profile = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));

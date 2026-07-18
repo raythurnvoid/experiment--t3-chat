@@ -13,7 +13,7 @@ description: Backend access-control model for organizations, workspaces, roles, 
 - Product flows maintain one role assignment per `(organizationId, workspaceId, userId)`. Role display queries read the first matching doc and do not resolve conflicts between multiple roles at the same scope.
 - Grants are allow-only ACL docs. There are no deny grants.
 - The current roles are `owner`, `admin`, and `member`.
-- `organizations.ownerUserId` is the source of truth for the organization owner user id. `owner` is still a system role, and exactly one mirrored owner assignment should exist on the organization default workspace for each non-default organization that has an owner.
+- `organizations.ownerUserId` is the source of truth for the organization owner user id. `owner` is still a system role, and exactly one mirrored owner assignment should exist on the organization default workspace for every organization in normal flows, including a user's default `personal` organization.
 - `admin` and `member` permissions are data-driven through seeded grant docs. Tightening behavior should change grants/checks, not table shape. Member-management permissions are admin-only; regular members can leave an organization but cannot add or remove other users.
 
 # Tables
@@ -61,6 +61,7 @@ Initial permissions:
 - `workspace.update`
 - `workspace.delete`
 - `workspace.members.manage`
+- `workspace.plugins.manage`
 - `asset.read`
 - `asset.write`
 - `asset.permissions.manage`
@@ -128,7 +129,7 @@ These queries return the assigned role for exactly the requested workspace scope
   - `access_control_db_ensure_public_permission_grant`
 - Permission-grant helpers return the grant id directly, not a `Result`. They are idempotent: they return the existing grant id without patching timestamps for the same principal/resource/permission tuple.
 
-Seeded member grants stay broad for collaboration, but regular members do not receive `organization.members.manage`, `workspace.members.manage`, `organization.roles.manage`, `asset.permissions.manage`, or `api.credentials.manage`. Future product tightening should remove or change grants and then add backend checks where needed.
+Seeded member grants stay broad for collaboration, but regular members do not receive `organization.members.manage`, `workspace.members.manage`, `workspace.plugins.manage`, `organization.roles.manage`, `asset.permissions.manage`, or `api.credentials.manage`. Future product tightening should remove or change grants and then add backend checks where needed.
 
 # Ownership transfer
 
@@ -158,6 +159,8 @@ Current cleanup locations:
 - `organizations.delete_organization`: queues organization content purge, immediately deletes organization memberships and all access-control docs for that organization, and releases the owner's extra-organization quota.
 - `users.list_current_user_account_deletion_blocking_organizations` and `users.delete_current_user_account`: use `organizations.by_ownerUser` to find non-personal organizations where the current user is owner, ignore organizations already queued with an organization deletion request, then block user-facing account deletion until each remaining blocker is transferred or deleted through the normal organization endpoints.
 - `data_deletion.init_user_deletion`: for still-owned non-personal organizations, queues organization deletion and immediately deletes organization memberships and access-control docs for each queued organization.
+
+Known implementation mismatch: `organizations.delete_workspace` currently authorizes either `workspace.update` on the target workspace or `organization.update` on the organization. It does not check the declared and seeded `workspace.delete` permission. Do not treat `workspace.delete` as enforced by this endpoint. Product policy must decide whether deletion should require only `workspace.delete` or retain an organization-level fallback.
 - `data_deletion.process_organization_deletion_request`: deletes remaining access-control docs for the organization before deleting the organization doc and related structure. This is idempotent with earlier immediate cleanup.
 - `data_deletion.process_user_deletion_request`: hard account deletion deletes any remaining role assignments and direct user grants for the deleted user.
 
@@ -200,14 +203,14 @@ Public ACL rows are capability-like access, not user membership.
 
 Public/private upgrade semantics for anonymous users are documented in `../auth-system/SKILL.md`.
 
-# Related skills
+# Load The Skill That Owns Each Adjacent Rule
 
 - `../organizations-tenancy/SKILL.md`: organization/workspace membership, invitations, organization/workspace deletion lifecycle, data purge, and how access-control docs are cleaned during tenant deletion.
 - `../quotas/SKILL.md`: extra-organization quota updates during organization creation, deletion, and ownership transfer.
 - `../auth-system/SKILL.md`: current-user identity, anonymous upgrade behavior, account deletion, and public/private security goals.
 - `../convex/SKILL.md`: Convex handler, validator, query/mutation, Result, and testing conventions.
 
-# Related files
+# Implementation Files
 
 - `packages/app/convex/access_control.ts`
 - `packages/app/shared/access-control.ts`

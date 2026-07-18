@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 const DEFAULT_TERMS = [
 	"projection",
@@ -58,7 +59,12 @@ for (let index = 0; index < args.length; index++) {
 		continue;
 	}
 	if (arg.startsWith("--term=")) {
-		extraTerms.push(arg.slice("--term=".length));
+		const term = arg.slice("--term=".length).trim();
+		if (!term) {
+			console.error("diff-vocabulary-audit: --term requires a value");
+			process.exit(1);
+		}
+		extraTerms.push(term);
 		continue;
 	}
 	pathArgs.push(arg);
@@ -79,6 +85,7 @@ const warnings = [];
 
 if (scanUnstaged) {
 	collect_warnings("unstaged", ["diff", "--unified=0", "--no-ext-diff", "--", ...pathArgs]);
+	collect_untracked_warnings();
 }
 if (scanStaged) {
 	collect_warnings("staged", ["diff", "--cached", "--unified=0", "--no-ext-diff", "--", ...pathArgs]);
@@ -97,7 +104,7 @@ console.log("");
 console.log("Warnings only. Replace vague terms with concrete code nouns when the local context supports it.");
 
 function collect_warnings(scope, gitArgs) {
-	const diff = execFileSync("git", gitArgs, { encoding: "utf8" });
+	const diff = execFileSync("git", gitArgs, { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });
 	let filePath = null;
 	let nextLineNumber = 0;
 
@@ -129,6 +136,27 @@ function collect_warnings(scope, gitArgs) {
 		}
 		if (line.startsWith(" ")) {
 			nextLineNumber++;
+		}
+	}
+}
+
+function collect_untracked_warnings() {
+	const output = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z", "--", ...pathArgs], {
+		encoding: "utf8",
+		maxBuffer: 50 * 1024 * 1024,
+	});
+
+	for (const filePath of output.split("\0").filter(Boolean)) {
+		if (ignoredPathPattern.test(filePath)) continue;
+
+		const lines = readFileSync(filePath, "utf8").split(/\r?\n/u);
+		for (let index = 0; index < lines.length; index++) {
+			const text = lines[index];
+			const textForAudit = text.replace(/`[^`]*`/gu, "");
+			const match = watchedTermPattern.exec(textForAudit);
+			if (match) {
+				warnings.push({ scope: "untracked", path: filePath, lineNumber: index + 1, term: match[0], text });
+			}
 		}
 	}
 }

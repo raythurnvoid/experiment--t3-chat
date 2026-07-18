@@ -33,9 +33,11 @@ function runner_url() {
 
 # HTTP routes typing pattern (this repo)
 
-This codebase defines HTTP routes using a “route builder” pattern that keeps runtime behavior and types in one place.
+This codebase uses a “route builder” pattern for app-owned, exact-path HTTP endpoints that are part of the typed API in `api_schemas_Main`. The pattern keeps runtime behavior and types in one place.
 
-When you add or modify a Convex HTTP endpoint, follow this structure:
+Use the typed builder for app-owned exact-path contracts that belong in `api_schemas_Main`; the consumer does not need to import that type. Register dynamic `pathPrefix` routes directly with `router.route(...)`, and let vendor components use their own route-registration API.
+
+For a typed exact-path endpoint, follow this structure:
 
 - Define routes inside a `*_http_routes(router)` function that **returns an object** shaped like:
   - `{ [pathLiteral]: { [methodLiteral]: { pathParams, searchParams, headers, body, response } } }`
@@ -59,6 +61,8 @@ When you add or modify a Convex HTTP endpoint, follow this structure:
 - Request types may remain explicit or be derived from the runtime validator (`z.infer<...>`, or the
   successful branch of a hand-rolled validator). Response bodies and headers must be inferred from
   the handler rather than restated manually.
+- A TypeScript `Body`, `Headers`, or `SearchParams` alias is not runtime validation. Validate every
+  request field the handler consumes before using it.
 
 Why this is type-safe:
 
@@ -159,8 +163,8 @@ This repository uses an errors-as-values pattern (`Result`) in many Convex helpe
 
 When a Convex function returns a Result-like payload, the `returns` validator must describe both branches:
 
-- `_yay` success object
-- `_nay` error object (API-safe shape, usually `{ name, message }`)
+- `_yay` success value
+- `_nay` error object (usually `{ message }`, with `name` or validated `data` only when a consumer needs it)
 
 Example:
 
@@ -222,7 +226,7 @@ Standard `_nay.message` values for Result-returning handlers:
 
 Validate requested docs at the supported handler boundary that loads them. If a private helper only runs after that handler has already checked existence, scope, and kind, do not repeat those defensive checks inside the helper. Pass the already-validated fields the helper needs, such as `path` or `archiveOperationId`, and trust the caller contract.
 
-The same applies to app-owned client input: APIs serving this app's frontend trust the FE to send well-formed values beyond what the `args` validators enforce. Do not re-validate names, paths, or formats the FE already produced. Keep content validation at genuine trust boundaries: user-typed free text, plugin-supplied values, and vendor webhooks.
+Treat every public Convex function's args as untrusted, including calls from this app's frontend. Argument validators enforce the data shape, but the public boundary must also enforce the auth, tenancy, resource ownership, path, size, and format rules needed for stored data or downstream systems to stay correct. Do not duplicate cosmetic UI normalization unless backend correctness depends on it. Private helpers may trust the validated contract established by their owning public boundary.
 
 If a validated requested resource points to missing server-owned data, treat that as a server bug instead of a user-facing not-found branch. Log the invariant failure with `console.error(errorMessage, errorData)` and then throw `should_never_happen(errorMessage, errorData)` with structured ids for missing linked docs such as file properties, asset docs, content docs, scheduled jobs, or other relationships that supported write paths must keep valid.
 
@@ -262,7 +266,7 @@ When a Convex handler is scoped by a membership doc (for example `membershipId: 
 - Put `membershipId` first in `args` and first in call-site object literals.
 - For mutation handlers that can fail recoverably, use `returns: v_result(...)` and return `Result(...)` instead of throwing.
 - For query handlers, prefer `null` on missing access/resource unless the API explicitly uses `Result`.
-- In membership-scoped handlers, load `user` first, then load `membership`.
+- Resolve the current user and membership before loading the requested resource. Independent reads may start concurrently, but validate the current user before treating the membership as authorized.
 - If `membership` is missing, return `_nay.message = "Unauthorized"` (or `null` for nullable queries).
 - If the membership exists but its organization/default workspace data is missing during authorization setup, log structured ids and return `_nay.message = "Unauthorized"` unless the function boundary is already using exception semantics.
 - After membership succeeds, normalize/load the requested resource.
@@ -276,12 +280,13 @@ Small style rule for these handlers:
 
 - Prefer inlining small repeated `Result({ _nay: ... })` returns and small `ctx.runMutation(..., { messages: [...] })` payloads instead of adding tiny local helper functions/variables only to avoid repetition.
 
-## Public actions own auth and rate limiting
+## Public actions own their auth and any applicable rate limit
 
-Public actions resolve the current user and apply rate limits themselves instead of delegating that to an internal mutation:
+Public actions resolve the current user and apply any rate limit at the public boundary instead of delegating those decisions to an internal mutation:
 
-- Resolve the user in the action with `server_convex_get_user_fallback_to_anonymous(ctx)` and check `kind !== "signed_in"`; it accepts an `ActionCtx`.
-- Call `rate_limiter_limit_by_key(ctx, { name, key: userAuth.id })` directly from the action — it accepts `MutationCtx | ActionCtx`.
+- Resolve the user in the action with `server_convex_get_user_fallback_to_anonymous(ctx)`; it accepts an `ActionCtx`.
+- Require `kind === "signed_in"` only for signed-in-only product features. File and other anonymous-capable flows may accept an authenticated anonymous user.
+- When the endpoint has a rate limit, call `rate_limiter_limit_by_key(ctx, { name, key: userAuth.id })` directly from the action. It accepts `MutationCtx | ActionCtx`.
 - Pass the resolved `userId` into internal queries/mutations as an explicit arg and keep those internal functions pure lookups/writes. Live examples: `billing.generate_checkout_link`, and `plugins.publish_version` calling `plugins.get_owned_publisher_repository`.
 
 Do not bundle auth + rate limiting + a db read into one internal mutation just so the action makes a single call; that turns a read-only lookup into a mutation and buries the auth boundary.
@@ -306,63 +311,17 @@ When defining Convex `args`, `returns`, or small derived payload validators, kee
 - Start with an inline validator and only move it into a separate symbol when there is a very strong reason, such as the user explicitly asking for a reusable validator or an existing production reuse point that genuinely needs the same validator.
 - Prefer the smallest local shape directly inside `args` / `returns`, even for nested `v.object(...)`, `v.array(...)`, `v.union(...)`, and `v.record(...)` payloads.
 
-## Fail-fast concurrent Result loop (Result_all + Promise.all)
+## Concurrent `Result_all` flatten
 
-When processing many items concurrently and each item can fail with `_nay`, prefer this pattern:
-
-```ts
-const results = Result_all(
-	await Promise.all(
-		(function* (/* iife */) {
-			let nayResult = undefined;
-
-			for (const item of items) {
-				yield (async (/* iife */) => {
-					const value = await doStep(item);
-					if (nayResult) return nayResult;
-
-					if (!value) {
-						return (nayResult = Result({
-							_nay: { name: "nay", message: "Item not found", data: { item } },
-						}));
-					}
-
-					return Result({ _yay: value });
-				})();
-			}
-		})(),
-	),
-);
-
-if (results._nay) {
-	return results;
-}
-```
-
-Use this when you want to:
-
-- fan out work concurrently;
-- bubble one `_nay` quickly and consistently;
-- avoid additional expensive work in in-flight tasks after first failure (`if (nayResult) return nayResult`).
-
-Important caveat:
-
-- This does not cancel already started promises; it only short-circuits subsequent logic inside each task.
-- Keep this phase validation-only when possible, and perform related DB writes after the `_nay` check.
-
-## Regular `Result_all` flatten (no fail-fast guard)
-
-Use `Result_all` by itself to convert `Array<Result<...>>` into one `Result`:
+Use `Result_all` after concurrent tasks return expected failures as fulfilled `Result` values. An `_nay` value does not end `Promise.all` early or cancel other tasks. If a task rejects unexpectedly, `Promise.all` rejects early, but the other started tasks keep running.
 
 ```ts
 const results = Result_all(
 	await Promise.all(
 		items.map(async (item) => {
 			const value = await doStep(item);
-			if (!value) {
-				return Result({
-					_nay: { name: "nay", message: "Item not found", data: { item } },
-				});
+			if (value === null) {
+				return Result({ _nay: { message: "Step failed" } });
 			}
 
 			return Result({ _yay: value });
@@ -377,14 +336,12 @@ if (results._nay) {
 const values = results._yay;
 ```
 
-Use this variant when:
+Use this pattern when:
 
 - you want all tasks to run fully;
-- you do not need the shared `nayResult` short-circuit guard inside each task;
 - you still want one flat `Result` at the end.
 
-Outside a Result/null contract, do not throw `_nay.message` directly.
-In Convex code, prefer `convex_error(...)`; outside Convex code, throw an ad hoc message and pass `_nay` via `cause`:
+Outside a `Result`/`null` contract, do not expose `_nay.message` as a thrown message by default. A narrow adapter may use `throw new Error(result._nay.message, { cause: result._nay })` only when the producer documents that message as API-safe or user-facing and the receiving interface intentionally uses `Error.message` as its public contract. Never throw the message string itself. Otherwise, use a stable operation message and preserve `_nay` as structured context. In Convex code, prefer `convex_error(...)`:
 
 ```ts
 if (result._nay) {
@@ -402,30 +359,25 @@ This applies to any mutation flow, not only errors-as-values:
 - Any normal return (including `_nay`, `null`, `{ error: ... }`, etc.) does **not** rollback prior writes in that mutation.
 - Keep validation/fallible non-DB work first, and group DB writes at the end.
 - Avoid early returns between related DB writes unless partial writes are explicitly intended.
-- If a failure branch must rollback all writes, `throw` only when the boundary cannot return `Result` or `null`; prefer `convex_error(...)` over raw `Error` in Convex code.
+- If a failure branch must roll back prior writes, throw. Prefer arranging all fallible work before writes; use `Result` or `null` only when no related prior writes need rollback. Prefer `convex_error(...)` over raw `Error` in Convex code.
 - Exception: explicit cleanup markers in `finally` can be intentional side effects; document this clearly.
 
 ## Type-safe `convex_error` pattern (this repo)
 
-For thrown `convex_error(...)` typing, we attach error metadata to mutation args and extract it on the client.
+Add `_errors` metadata only when a real client catches a thrown `ConvexError` and needs to narrow its message. Result-returning APIs already expose their error contract in `returns`, so do not add `_errors` to them. Keep the validator inline with the owning registration.
 
 Server side (in the mutation file):
 
 ```ts
-function restore_snapshot_error() {
-	return {
-		_errors: v.optional(v.object({ message: v.literal("yjsSnapshotUpdates is not set") })),
-	};
-}
-
-export const restore_snapshot = mutation({
+export const update_example = mutation({
 	args: {
-		// ...real args
-		...({} as ReturnType<typeof restore_snapshot_error>),
+		value: v.string(),
+		_errors: v.optional(v.object({ message: v.literal("Example update failed") })),
 	},
+	returns: v.null(),
 	handler: async (ctx, args) => {
 		throw convex_error({
-			message: "yjsSnapshotUpdates is not set" satisfies NonNullable<(typeof args)["_errors"]>["message"],
+			message: "Example update failed" satisfies NonNullable<(typeof args)["_errors"]>["message"],
 		});
 	},
 });
@@ -548,7 +500,7 @@ When the user requests code that needs to fetch _many_ related documents (e.g. p
 
 This guidance is for server-side code that is already processing a server-owned list inside one query, mutation, or action. Do not use it as a reason to create public batch/list APIs when the client already has stable document ids; in that case, prefer reusable single-id queries so the Convex client cache can share and invalidate each document-shaped result independently.
 
-When weighing a big aggregate query against granular queries, only split when a granular query would have more than one consumer with the same args — and count consumers across the whole system, not just FE components: Convex caches query results server-side too, so `ctx.runQuery` call sites in actions share the same cache. A granular query with a single subscriber buys no sharing and costs an extra auth-gate derivation and loading state.
+When weighing a big aggregate query against granular queries, count consumers across the whole system, not only frontend components. Client subscriptions with the same query and arguments share cached results. Do not assume separate `ctx.runQuery` calls from actions share that client cache unless current primary documentation or a focused measurement proves it. A granular query with one consumer may still cost an extra auth-gate derivation and loading state.
 
 ✅ Prefer concurrent fetches with `Promise.all`:
 
@@ -605,39 +557,48 @@ Treat `.collect()` as a heavy read because it materializes the full result set i
 - Do not use `.take(N)` + JS `.find(...)` for "newest doc matching a predicate": queries stream lazily, so `.order("desc").filter(...).first()` reads only until the first match and has no silent N cap. Reserve `.take(N)` for genuinely bounded top-N reads.
 - When the function needs every doc of a naturally small set (for example a repository's secret names), use `.collect()` and say so; do not add an arbitrary `.take(100)` as a stand-in cap for "all of them".
 
-## Performance: prefix scans via index range (`\uffff` upper bound)
+## Performance: prefix scans via index ranges
 
-To fetch "all docs whose string field starts with `prefix`" without JS filtering, use a range on a regular index: lower bound the prefix, upper bound the prefix plus `"\uffff"` (the max BMP code point, so every extension of the prefix sorts below it):
+Do not use `prefix + "\uffff"` as a general upper bound for a string-prefix scan. `\uffff` is only the largest Basic Multilingual Plane code point. Valid strings can contain supplementary Unicode characters that sort above it, so that bound can silently omit matching docs.
 
-```ts
-.withIndex("by_organization_workspace_slug", (q) =>
-	q.eq("organizationId", wid).eq("workspaceId", pid)
-		.gte("slug", prefix)
-		.lt("slug", `${prefix}\uffff`),
-)
-```
+Use a real exclusive lexicographic successor for the stored key, or validate a restricted stored alphabet at the owning public boundary and derive the bound from that contract. The successor rule must be covered by tests for the full allowed alphabet before it becomes a shared helper or documented pattern.
 
-Use this raw form for true string-prefix scans. For file-tree scans, use the materialized `files_nodes.treePath` key instead of raw `path`: files and root store their canonical path, and non-root folders store `path + "/"`. A range such as `treePath >= "/docs/" && treePath < "/docs/\uffff"` includes the `/docs` folder itself first, includes its descendants, and excludes sibling-prefix paths such as `/docs-archive`.
+For file-tree scans, query the materialized `files_nodes.treePath` key instead of raw `path`. Files and root store their canonical path, and non-root folders store `path + "/"`. Because a descendant prefix ends in `/`, its exclusive upper bound can replace that final slash with `0`: `treePath >= "/docs/" && treePath < "/docs0"`. The differing `/` and `0` characters decide the ordering before any descendant Unicode content, so the range includes the `/docs` folder and all descendants while excluding sibling-prefix paths such as `/docs-archive`.
 
 This only works on regular indexes. Search indexes (`withSearchIndex`) accept exactly one `.search()` plus `.eq()` on `filterFields` — equality only, no `gte`/`lt` — so a prefix constraint on a full-text query cannot ride the search index. Express the same range as a post-index `.filter()` instead (see the next section for what `.filter()` does to pagination):
 
 ```ts
-.withSearchIndex("search_path", (q) => q.search("path", words).eq("organizationId", wid))
-.filter((q) => q.and(q.gte(q.field("treePath"), treePathPrefix), q.lt(q.field("treePath"), `${treePathPrefix}\uffff`)))
+const treePathUpperBound = `${treePathPrefix.slice(0, -1)}0`;
+
+const results = await ctx.db
+	.query("files_nodes")
+	.withSearchIndex("search_path", (q) =>
+		q
+			.search("path", words)
+			.eq("organizationId", organizationId)
+			.eq("workspaceId", workspaceId)
+			.eq("archiveOperationId", undefined),
+	)
+	.filter((q) =>
+		q.and(
+			q.gte(q.field("treePath"), treePathPrefix),
+			q.lt(q.field("treePath"), treePathUpperBound),
+		),
+	);
 ```
 
-See `files_nodes.search_paths_paginated` for a live example.
+Apply this bound when fixing `files_nodes.search_paths`; do not copy its current `\uffff` bound.
 
 ## Pagination: `.filter()` semantics, short pages, and empty pages
 
 `.filter()` is never index-backed: the query scans every doc the index range yields and drops non-matches one by one, exactly like filtering in JS afterwards. What differs is the pagination accounting (verified live against a dev deployment):
 
-- **`.filter()` before `.paginate()`**: `numItems` counts docs that _pass_ the filter. The scan continues past non-matching docs until the page fills, the range ends, or the scan budget runs out (`maximumRowsRead` / `maximumBytesRead` in `paginationOptsValidator`, with server-side defaults). Pages come back full — but at the budget a page can still be short or even empty with `isDone: false` and `pageStatus: "SplitRequired"`. A selective filter over a big table can scan up to the whole budget to fill one page.
+- **`.filter()` before `.paginate()`**: `numItems` counts docs that _pass_ the filter. For regular queries, the scan continues past non-matching docs until the page fills, the range ends, or an enforced `maximumRowsRead` / `maximumBytesRead` budget runs out. At that budget, a page can be short or empty with `isDone: false` and `pageStatus: "SplitRequired"`. Those pagination budget options are not enforced for search queries in the installed Convex version, so do not use them to predict `withSearchIndex(...)` page behavior.
 - **JS post-filter after `.paginate()`**: paginate reads exactly `numItems` docs, then survivors are dropped, so pages thin — possibly to zero — while `isDone` stays false. Per-call reads stay flat and limited.
 
 Rules that follow:
 
-- **Never treat an empty page as "done".** Under either approach an empty page with `isDone: false` is normal; only `isDone` ends pagination. Always continue on `continueCursor`.
+- **Never treat an empty page as "done".** An empty page can follow JS post-filtering or a budget split. Only `isDone` ends pagination; continue with `continueCursor` whenever it is false.
 - Both approaches scan the same docs overall — choose by who pays. Prefer `.filter()` when the consumer wants full pages (fewer round-trips); prefer the JS post-filter only when per-call read cost must stay flat.
 - Either way, `.filter()`/JS filtering is the fallback, not the default: express the predicate on an index (`withIndex` range, search-index `filterFields` equality) whenever the schema allows.
 
@@ -653,20 +614,27 @@ Convex query results are automatically cached by the client and kept consistent 
 - Once the client has stable ids, prefer repeated single-id public queries over public batch/list wrapper queries. Single-id query results are lower-level cache primitives that more screens can reuse, and unrelated writes to one item do not invalidate a larger joined list result.
 - Avoid public list or batch queries whose only job is joining known ids for one UI. Introduce a combined query only when the combined shape is a real shared domain API, when backend authorization requires resolving the data together, or when the client composition has a concrete measured performance problem.
 - Small waterfalls are acceptable when they preserve better cache reuse and query composability.
-- When the UI only needs app-owned profile fields, prefer reusing a generic profile/anagraphic query over creating a "current X view model" query just to reshape the payload.
+- When the UI only needs app-owned profile fields, prefer a reusable query with the correct audience and authorization over creating a "current X view model" query only to reshape the payload.
 
 Practical implication for this repo:
 
-- If both a sidebar and a modal need the same user anagraphic, prefer both calling `users.get_anagraphic({ userId })` instead of introducing a separate `get_current_profile` wrapper just for one of them.
+- For the current user's own profile, reuse the current-user-safe profile query from both surfaces. For another user's profile, use only a public-safe display-profile query that enforces the required tenant or audience scope. Do not add new cross-user calls to `users.get_anagraphic`: it currently has no auth or tenancy check and returns the full anagraphic doc, including email. Treat that endpoint as a known privacy gap until production code is fixed.
 
 # Migrations
 
-When the user asks for a Convex migration, you must implement it as an `internalMutation` in [../../../packages/app/convex/migrations.ts](../../../packages/app/convex/migrations.ts).
+Load the [Convex migrations skill](../../convex-migrations/SKILL.md) before designing or running a migration. It owns the rollout phases, commands, operator checks, and component API details.
 
-Keep migrations safe and repeatable:
+In this repo, add data migrations to [packages/app/convex/migrations.ts](../../../../packages/app/convex/migrations.ts) with the existing `app_migrations` component:
 
-- Always include `args` and `returns` validators.
-- Prefer indexes (`withIndex`) over table scans. If you must scan, keep it small and return counts.
-- Delete related records first, then delete the parent record.
-- Do not rely on querying `undefined` from Convex. If you need “missing optional field” logic, collect and filter in JS.
-- Return a small summary object (counts) so the user can verify what changed.
+- Define each per-doc migration with `app_migrations.define(...)` and make `migrateOne` idempotent.
+- Export a named runner such as `run_backfill_example = app_migrations.runner(internal.migrations.backfill_example)`.
+- Use a hand-written `internalMutation` only for custom work that the component cannot express.
+- The component handles bounded batches. The current `app_migrations` instance does not pass a `schema` option. Use `customRange` only after wiring the app schema into `Migrations`; indexed custom ranges require it.
+- When existing data must remain usable, keep the rollout in separate compatibility, run, and tighten phases. If approved development data is disposable, follow the root clean-slate rule and the `dev-data-reset` skill instead of adding compatibility code. Inspect the target deployment, dry-run risky work, run to completion, and verify stored docs before tightening the schema.
+- Delete children before parents only when the migration actually removes related docs.
+
+From the repository root, run a named migration with:
+
+```powershell
+vp env exec pnpm --dir packages/app exec convex run "migrations:run_<migration_name>"
+```

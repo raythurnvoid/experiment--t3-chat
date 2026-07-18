@@ -3,15 +3,9 @@ name: codebase-uniformity
 description: Code aesthetic and organization alignment for this repository. Use when implementing, reviewing, or polishing changes that must look native to the surrounding codebase, especially after broad feature work, sub-agent patches, new modules, command additions such as `packages/app/server/bash.ts`, Convex backend work, shared utilities, tests, or documentation/spec updates.
 ---
 
-# Codebase Uniformity
+# Derive Style From Local Evidence
 
-Make a change look like it was written by the same engineer, in the same codebase, on the same day.
-
-The goal is not generic cleanliness. The goal is local fit: vocabulary, file shape, helper size, ordering, comments, tests, and error handling should match the closest existing code.
-
-# Core Principle
-
-Derive style from evidence, not preference.
+Make each change look like it was written by the same engineer, in the same codebase, on the same day. Match the closest existing code's vocabulary, file shape, helper size, ordering, comments, tests, and error handling instead of applying generic cleanliness preferences.
 
 Before editing, identify the smallest set of local anchors that already solve similar problems. Let those anchors decide:
 
@@ -44,7 +38,7 @@ Do not start from broad repository-wide style. Start from the file and its neare
 
 Load only the reference that matches the touched surface:
 
-- `references/bash-command.md` for `packages/app/server/bash.ts`, `packages/app/server/bash-cat-command.ts`, `packages/app/server/bash-cp-command.ts`, `packages/app/server/bash-find-command.ts`, `packages/app/server/bash-grep-command.ts`, `packages/app/server/bash-head-tail-wc-command.ts`, `packages/app/server/bash-ls-command.ts`, `packages/app/server/bash-meta-command.ts`, `packages/app/server/bash-mv-command.ts`, `packages/app/server/bash-nested-shell-command.ts`, `packages/app/server/bash-rm-command.ts`, `packages/app/server/bash-sed-command.ts`, `packages/app/server/bash-stat-command.ts`, `packages/app/server/bash-tee-command.ts`, `packages/app/server/bash-textgrep-command.ts`, `packages/app/server/bash-touch-command.ts`, `packages/app/server/bash-tree-command.ts`, `packages/app/server/bash-utils.ts`, `packages/app/server/bash-xargs-command.ts`, and `packages/app/server/bash-which-command.ts`.
+- `references/bash-command.md` for `packages/app/server/bash.ts`, `packages/app/server/bash-delegate.ts`, `packages/app/server/bash-cat-command.ts`, `packages/app/server/bash-cp-command.ts`, `packages/app/server/bash-find-command.ts`, `packages/app/server/bash-grep-command.ts`, `packages/app/server/bash-head-tail-wc-command.ts`, `packages/app/server/bash-ls-command.ts`, `packages/app/server/bash-meta-command.ts`, `packages/app/server/bash-mv-command.ts`, `packages/app/server/bash-nested-shell-command.ts`, `packages/app/server/bash-rm-command.ts`, `packages/app/server/bash-search-command.ts`, `packages/app/server/bash-sed-command.ts`, `packages/app/server/bash-stat-command.ts`, `packages/app/server/bash-tee-command.ts`, `packages/app/server/bash-textgrep-command.ts`, `packages/app/server/bash-touch-command.ts`, `packages/app/server/bash-tree-command.ts`, `packages/app/server/bash-utils.ts`, `packages/app/server/bash-xargs-command.ts`, and `packages/app/server/bash-which-command.ts`.
 - `references/convex-backend.md` for `packages/app/convex/**`.
 - `references/frontend-app-code.md` for `packages/app/src/**` React components and frontend lib utilities.
 - `references/shared-parsers.md` for parser/serializer utilities under `packages/app/shared/**`.
@@ -57,18 +51,18 @@ Use this checklist before accepting a patch.
 
 - **Placement:** Code is inserted beside the nearest similar helper, command, query, mutation, hook, component, or test.
 - **Definition order:** Prefer defining module-private helpers before their users when the file can do so without breaking a stronger local grouping. Avoid leaving a new helper below its first call site.
-- **Names:** Module-private helpers follow local naming. Do not add a file, feature, or domain prefix by default. Prefix symbols when they are exported and need import-site context, or when several owned helpers share one file, such as `search_command_*` in `server/bash.ts`. In a dedicated command module, private helpers can drop the module prefix while exported symbols keep import-site context. Private helpers should stay plainly descriptive unless nearby code has a stronger local convention.
+- **Names:** Module-private helpers follow local naming. Do not add a file, feature, or domain prefix by default. Prefix symbols when they are exported and need import-site context, or when several owned helpers share one file. In a dedicated command module such as `bash-search-command.ts`, private helpers can drop the module prefix while exported symbols keep import-site context. Private helpers should stay plainly descriptive unless nearby code has a stronger local convention.
 - **Regions and ordering:** If the file uses regions or ordered sections, preserve them. Never introduce nested regions. If you add a `// #region`, close it with `// #endregion` before the next region begins; otherwise prefer plain `// Section name` comments. In `bash.ts`, keep command helpers inside the matching command region. Dedicated `bash-*-command.ts` modules do not use command-region markers.
 - **Granularity:** Keep one-off logic inline unless a helper removes real duplication or hides a necessary external-system detail.
 - **Existing dependencies:** Before hand-rolling algorithmic code (diffing, parsing, formatting), check `package.json` and existing usage for a dependency that already does it — for example unified diffs come from `createPatch` in the `diff` package, already used in `server/server-ai-tools.ts` and the file editor.
-- **Prompt literals:** Build long model-prompt strings with `+` concatenation and explicit `\n` line endings, splitting long sentences across readable (~100 char) source lines. Do not assemble prompts as arrays joined with `join("\n")`.
+- **Prompt literals:** Follow the closest owning module. In `ai_chat.ts`, keep one prompt sentence per array entry and join the entries with `"\n"`, matching `TITLE_SYSTEM_PROMPT` and `ai_chat_system_prompt`. Keep `+` concatenation and explicit `\n` line endings where nearby conditional or interpolated prompts use that form. Do not rewrite one valid form into the other as style-only churn.
 - **Types:** Keep one-off callback and object shapes inline unless a named type is exported, reused, recursive, derived from an external API, or gives a real domain concept a name. In extracted Bash command modules, preserve the original `*_command_create` signatures instead of adding dependency object plumbing.
 - **Validators:** In Convex modules, keep one-off `args` and `returns` validators inline at the registered function unless there is real reuse.
 - **Errors:** Match the local boundary. Use Result `_nay` where the surrounding code does; use structured `console.error(errorMessage, errorData)` plus `should_never_happen(errorMessage, errorData)` for impossible Convex invariants.
 - **Indexes:** Name Convex indexes from the indexed fields in order. If the full name is too long, abbreviate the least domain-important field consistently and keep the main domain term readable.
 - **Comments:** Add comments only for non-obvious intent, gotchas, or external-system behavior. Do not narrate obvious code. Use concrete nouns from the code instead of vague abstractions. Use JSDoc only when the comment documents the symbol immediately below it. For module-level notes, file overview comments, and section headers, use ordinary `//` comments instead of orphan `/** ... */` blocks.
 - **JSDoc layout:** Use multi-line JSDoc by default, including one-sentence docs. Keep a single-line JSDoc only for a very short label when the compact form makes a tight group of small symbols easier to scan. Reasons, lifecycles, constraints, warnings, wrapped text, and tags always use the multi-line form. When unsure, use multi-line JSDoc.
-- **Comment placement:** Put comments that explain a branch or loop before the `if`, `for`, or `while` block so the intent remains visible when the block is collapsed in the IDE. Keep comments inside the block only when they explain a specific statement inside it.
+- **Comment placement:** Put comments that explain a branch or loop before the `if`, `else if`, `else`, `for`, or `while` block so the intent remains visible when the block is collapsed in the IDE. Keep comments inside the block only when they explain a specific statement inside it.
 - **Vertical spacing:** Use one empty line between different logical chunks, such as configuration, validation, reads, calculations, writes, and the final result. Keep the statements that complete one small step together. Do not add an empty line after every statement.
 - **Retry helpers:** When an option changes retry acceptance, add a short JSDoc to the helper. Name the exact value being waited for, why a weaker condition is insufficient, and which external system can return stale data.
 - **Tests:** Put tests under the same `describe(...)` grouping and naming rhythm as the file already uses. Test public behavior unless a private helper is already naturally exposed by an existing pattern.
@@ -78,7 +72,7 @@ Use this checklist before accepting a patch.
 
 Code uniformity includes vocabulary. After editing comments, docs, names, and logs:
 
-- Run `vp env exec node .agents/skills/codebase-uniformity/scripts/diff-vocabulary-audit.mjs` to scan staged and unstaged added diff lines. Treat output as warnings, not hard failures.
+- Run `vp env exec node .agents/skills/codebase-uniformity/scripts/diff-vocabulary-audit.mjs --all -- "<touched-paths>"` for a broad change, after replacing the quoted placeholder with one or more real paths. The scoped form also scans matching untracked files and keeps warnings reviewable. Omit the path scope only when a whole-repository diff review is useful. Treat output as warnings, not hard failures.
 - Search for newly introduced terms with `rg`, especially abstract nouns such as `projection`, `data`, `state`, `thing`, `stuff`, `handler`, or `manager`.
 - Replace vague terms with the concrete docs, tables, commands, or values involved, such as `search chunks`, `metadata docs`, `pending docs`, `indexed docs`, or `Yjs branch`.
 - In Convex comments and project guidance, use `doc/docs` for entries in Convex tables. Avoid `row/rows` unless quoting an API field, external source, or fixed identifier.
@@ -87,19 +81,19 @@ Code uniformity includes vocabulary. After editing comments, docs, names, and lo
 
 # Bash Command Code
 
-Treat `packages/app/server/bash.ts`, `packages/app/server/bash-cat-command.ts`, `packages/app/server/bash-cp-command.ts`, `packages/app/server/bash-find-command.ts`, `packages/app/server/bash-grep-command.ts`, `packages/app/server/bash-head-tail-wc-command.ts`, `packages/app/server/bash-ls-command.ts`, `packages/app/server/bash-meta-command.ts`, `packages/app/server/bash-mv-command.ts`, `packages/app/server/bash-nested-shell-command.ts`, `packages/app/server/bash-rm-command.ts`, `packages/app/server/bash-sed-command.ts`, `packages/app/server/bash-stat-command.ts`, `packages/app/server/bash-tee-command.ts`, `packages/app/server/bash-textgrep-command.ts`, `packages/app/server/bash-touch-command.ts`, `packages/app/server/bash-tree-command.ts`, `packages/app/server/bash-utils.ts`, `packages/app/server/bash-xargs-command.ts`, and `packages/app/server/bash-which-command.ts` as their own style island.
+Treat `packages/app/server/bash.ts`, `packages/app/server/bash-delegate.ts`, `packages/app/server/bash-cat-command.ts`, `packages/app/server/bash-cp-command.ts`, `packages/app/server/bash-find-command.ts`, `packages/app/server/bash-grep-command.ts`, `packages/app/server/bash-head-tail-wc-command.ts`, `packages/app/server/bash-ls-command.ts`, `packages/app/server/bash-meta-command.ts`, `packages/app/server/bash-mv-command.ts`, `packages/app/server/bash-nested-shell-command.ts`, `packages/app/server/bash-rm-command.ts`, `packages/app/server/bash-search-command.ts`, `packages/app/server/bash-sed-command.ts`, `packages/app/server/bash-stat-command.ts`, `packages/app/server/bash-tee-command.ts`, `packages/app/server/bash-textgrep-command.ts`, `packages/app/server/bash-touch-command.ts`, `packages/app/server/bash-tree-command.ts`, `packages/app/server/bash-utils.ts`, `packages/app/server/bash-xargs-command.ts`, and `packages/app/server/bash-which-command.ts` as their own style island.
 
 When adding or polishing a command:
 
-- keep option parsing in a `*_command_parse_*_args` helper when several commands share one file; use plain private names like `parse_search_args` inside a dedicated command module
+- keep option parsing in a `*_command_parse_*_args` helper when several commands share one file; use plain private names like `parse_args` inside a dedicated command module
 - keep extracted command modules unregioned; reserve command regions for `server/bash.ts`
 - in extracted Bash command modules, preserve the original `*_command_create` signatures instead of adding dependency object plumbing, and prefix exported command entrypoints with `bash_`, such as `bash_grep_command_*`
 - use existing `read_option_value`, `parse_limit`, cursor helpers, path conversion helpers, and command exit constants
 - print continuation commands in the same `Next page:` style as search/listing commands
 - place formatting helpers before `*_command_create`
 - return `{ stdout, stderr, exitCode }` directly
-- keep command tests in the existing in-source `action_run` group
-- keep `convex/bash.ts` to action registration and validators; `server/bash.ts` exports `bash_run_command` for that action boundary, `server/bash-utils.ts` owns prefixed path helpers, shared bash constants, and the `cp`/`mv` operand parser used by extracted command modules, and `bash_fs_create`, raw filesystem classes, command factories, tmp helpers, and formatting helpers stay module-private unless preserving an original moved signature requires exporting an existing symbol
+- keep command tests in the existing in-source `action_run` group unless a nearby focused test file, such as `bash-meta-command.test.ts`, already owns the behavior
+- keep `convex/bash.ts` to action registration and validators; `server/bash.ts` exports `bash_run_command` for that action boundary; `server/bash-delegate.ts` owns native Just Bash value imports and built-in delegation; `server/bash-utils.ts` owns prefixed path helpers, shared bash constants, db-files helpers, and the `cp`/`mv` operand parser used by extracted command modules; and `bash_fs_create`, raw filesystem classes, command factories, tmp helpers, and formatting helpers stay module-private unless preserving an original moved signature requires exporting an existing symbol
 - verify with a focused `vitest` filter for the command behavior
 
 Do not make app Bash look like host shell code. It is an indexed Convex-backed command surface with native-looking syntax.
@@ -144,7 +138,7 @@ Give each sub-agent:
 - a concrete style goal
 - a disjoint file scope
 - the instruction to inspect local patterns before editing
-- permission to make small edits or report no-op with evidence
+- authority that matches the user's request: report-only for review or investigation tasks, and permission for small edits only when the task authorizes changes
 - a focused verification requirement
 - a reminder not to stage or commit
 
@@ -168,7 +162,7 @@ Do not accept sub-agent output because it sounds confident. Accept it because th
 
 When a review establishes a new canonical pattern:
 
-- Update the domain skill that owns the behavior, such as `ai-chat-agent`, `files-agent-pending-updates`, `convex`, or this skill.
+- When the parent task authorizes documentation changes, update the domain skill that owns the behavior, such as `ai-chat-agent`, `files-agent-pending-updates`, `convex`, or this skill. For a review-only task, report the recommended update without editing.
 - Add or update a short reference file here when the pattern is aesthetic or organizational rather than product behavior.
 - Keep rejected recommendations visible in the final answer when they are likely to recur.
 - Prefer references over adding long examples to `SKILL.md`.

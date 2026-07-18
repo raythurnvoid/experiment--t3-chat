@@ -17,16 +17,17 @@ Use this for the selected-file editor surface under `/files?nodeId=<file-id>`. K
 - Toolbar: `[role="toolbar"][aria-label="Toolbar"]`.
 - Content root: `.FileEditorRichText-editor-content-root`.
 - Editable content: `.FileEditorRichText-editor-content`.
+- Run the destructive typing example below only in a disposable QA file. If the file already has suitable text, select that text instead of replacing the document.
 - To expose the bubble **Comment** button, keep a non-empty selection. Typing after `Control+A` collapses the selection, so reselect text before clicking **Comment**:
 
 ```js
-const editor = page.locator(".FileEditorRichText-editor-content").first();
+const editor = state.page.locator(".FileEditorRichText-editor-content").first();
 await editor.click();
-await page.keyboard.press("Control+A");
-await page.keyboard.type("Playwriter comment anchor text.");
-await page.keyboard.press("Shift+Home");
-await page.getByRole("button", { name: "Comment" }).click();
-await page.getByRole("form", { name: "New document comment" }).waitFor({ state: "visible" });
+await state.page.keyboard.press("Control+A");
+await state.page.keyboard.type("Playwriter comment anchor text.");
+await state.page.keyboard.press("Shift+Home");
+await state.page.getByRole("button", { name: "Comment" }).click();
+await state.page.getByRole("form", { name: "New document comment" }).waitFor({ state: "visible" });
 ```
 
 ## Rich Text Comments
@@ -39,13 +40,13 @@ Use role locators for forms and buttons. For TipTap contenteditable editors, use
 | Sidebar thread reply | `getByRole("form", { name: "Reply to comment" })` | `locator('[contenteditable="true"][aria-label="Reply to comment"]')` | `getByRole("button", { name: "Reply to comment" })` |
 
 ```js
-const newCommentForm = page.getByRole("form", { name: "New document comment" });
+const newCommentForm = state.page.getByRole("form", { name: "New document comment" });
 await newCommentForm.locator('[contenteditable="true"][aria-label="Add comment to selection"]').fill(text);
 await newCommentForm.getByRole("button", { name: "Submit comment" }).click();
 ```
 
 ```js
-const replyForm = page.getByRole("form", { name: "Reply to comment" });
+const replyForm = state.page.getByRole("form", { name: "Reply to comment" });
 await replyForm.locator('[contenteditable="true"][aria-label="Reply to comment"]').fill(text);
 await replyForm.getByRole("button", { name: "Reply to comment" }).click();
 ```
@@ -58,9 +59,9 @@ await replyForm.getByRole("button", { name: "Reply to comment" }).click();
 - Thread summary: `.FileEditorCommentsThread-summary`.
 
 ```js
-await page.locator("#app_file_editor_sidebar_tabs_comments").click();
-await page.locator(".FileEditorCommentsThread-summary").filter({ hasText: threadRootText }).first().click();
-await page.getByRole("form", { name: "Reply to comment" }).waitFor({ state: "visible" });
+await state.page.locator("#app_file_editor_sidebar_tabs_comments").click();
+await state.page.locator(".FileEditorCommentsThread-summary").filter({ hasText: threadRootText }).first().click();
+await state.page.getByRole("form", { name: "Reply to comment" }).waitFor({ state: "visible" });
 ```
 
 ## Plain Text Editor
@@ -76,7 +77,7 @@ await page.getByRole("form", { name: "Reply to comment" }).waitFor({ state: "vis
 - Pending updates banner: `[data-testid="pending-edits-banner"]`.
 - Review changes button: `[data-testid="review-changes-button"]`.
 - Save staged changes: `getByRole("button", { name: "Save staged changes" })`.
-- Accept all: `getByRole("button", { name: "Accept all pending changes" })`.
+- Accept all: `getByRole("button", { name: "Accept all pending changes in this file" })`.
 - Accept all and save: `getByRole("button", { name: "Accept all pending changes and save" })`.
 
 ## Agent Sidebar
@@ -89,11 +90,12 @@ await page.getByRole("form", { name: "Reply to comment" }).waitFor({ state: "vis
 
 - Switch with `#app_file_editor_sidebar_tabs_pending`.
 - Panel region: `getByRole("region", { name: "Pending changes" })` (class `.FileEditorSidebarPending`); empty state is `.FileEditorSidebarPending-empty` ("No pending changes").
-- Each pending file is a `<details class="FileEditorSidebarPending-item">` accordion; click `.FileEditorSidebarPending-item-summary` to expand.
-- File path link: `.FileEditorSidebarPending-item-path` → navigates to `…/files?nodeId=<id>&view=diff_editor`.
-- Per-item actions (scope to the item): `getByRole("button", { name: "Accept & save" })` and `getByRole("button", { name: "Discard" })`.
-- Expanded diff window reuses `DiffMonospaceBlock`: `getByRole("textbox", { name: "Diff preview" })` / `.DiffMonospaceBlock`.
-- Items are sorted by path; **Accept & save** commits and removes the row, **Discard** reverts unstaged→staged (the row disappears when it collapses to base). Both rely on the reactive `list_files_pending_updates` query, so assert via list membership rather than a fixed index.
+- Items are sorted by path. Captions are `Modified`, `Added`, `Moved`, `Replaced`, or `Replaces <name>`.
+- Pure moves are plain `.FileEditorSidebarPending-item-move` rows. Their path links open the moved node without `view=diff_editor`.
+- Content edits, copies, and mixed moves use `<details class="FileEditorSidebarPending-item">`. Click `.FileEditorSidebarPending-item-summary` to expand the `DiffMonospaceBlock` preview. Their path links use `view=diff_editor`.
+- Per-item actions, scoped to the row, are `Accept` and `Discard`. `Accept` applies a pure move directly; content and copy rows save the accepted content; mixed rows apply the move before saving content.
+- `Discard` removes the proposal or restores the committed path/content as required by its kind. Assert the reactive `list_files_pending_updates` result through list membership rather than a fixed index.
+- Bulk actions are `Accept all` and `Discard all`.
 
 ## Helper Recipes
 

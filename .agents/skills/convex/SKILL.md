@@ -6,11 +6,9 @@ description: Convex backend conventions for this codebase covering both base Con
 <!-- Base guidance from https://docs.convex.dev/ai/using-cursor -->
 <!-- Codebase-specific patterns: references/additional-guidelines.md -->
 
-# Convex guidelines
+# Function Registration And Calls
 
-## Function guidelines
-
-### Http endpoint syntax
+## HTTP Endpoint Syntax
 
 - HTTP endpoints are defined in `convex/http.ts` and require an `httpAction` decorator. For example:
 
@@ -30,7 +28,7 @@ http.route({
 
 - HTTP endpoints are always registered at the exact path you specify in the `path` field. For example, if you specify `/api/someRoute`, the endpoint will be registered at `/api/someRoute`.
 
-### Validators
+## Validators
 
 - Inline `args`, `returns`, and small derived payload validators at the function registration site by default. Do not create named validator variables just to shorten a registration; move a validator into its own symbol only when there is a very strong reason such as real production reuse or an explicitly requested shared validator.
 - Do not namespace module-private helpers, types, or constants with the module/file prefix. Prefixes are for exported symbols, where imports need origin context.
@@ -45,8 +43,10 @@ export default mutation({
 	args: {
 		simpleArray: v.array(v.union(v.string(), v.number())),
 	},
+	returns: v.null(),
 	handler: async (ctx, args) => {
 		//...
+		return null;
 	},
 });
 ```
@@ -74,10 +74,11 @@ export default defineSchema({
 ```
 
 - Here are the valid Convex types along with their respective validators:
-  Convex Type | TS/JS type | Example Usage | Validator for argument validation and schemas | Notes |
-  | ----------- | ------------| -----------------------| -----------------------------------------------| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+
+  | Convex Type | TS/JS type | Example Usage | Validator for argument validation and schemas | Notes |
+  | ----------- | ------------ | ----------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
   | Id | string | `doc._id` | `v.id(tableName)` | |
-  | Null | null | `null` | `v.null()` | JavaScript's `undefined` is not a valid Convex value. Functions the return `undefined` or do not return will return `null` when called from a client. Use `null` instead. |
+  | Null | null | `null` | `v.null()` | JavaScript's `undefined` is not a valid Convex value. Functions that return `undefined` or do not return will return `null` when called from a client. Use `null` instead. |
   | Int64 | bigint | `3n` | `v.int64()` | Int64s only support BigInts between -2^63 and 2^63-1. Convex supports `bigint`s in most modern browsers. |
   | Float64 | number | `3.1` | `v.number()` | Convex supports all IEEE-754 double-precision floating point numbers (such as NaNs). Inf and NaN are JSON serialized as strings. |
   | Boolean | boolean | `true` | `v.boolean()` |
@@ -85,16 +86,16 @@ export default defineSchema({
   | Bytes | ArrayBuffer | `new ArrayBuffer(8)` | `v.bytes()` | Convex supports first class bytestrings, passed in as `ArrayBuffer`s. Bytestrings must be smaller than the 1MB total size limit for Convex types. |
   | Array | Array | `[1, 3.2, "abc"]` | `v.array(values)` | Arrays can have at most 8192 values. |
   | Object | Object | `{a: "abc"}` | `v.object({property: value})` | Convex only supports "plain old JavaScript objects" (objects that do not have a custom prototype). Objects can have at most 1024 entries. Field names must be nonempty and not start with "$" or "_". |
-| Record      | Record      | `{"a": "1", "b": "2"}` | `v.record(keys, values)`                       | Records are objects at runtime, but can have dynamic keys. Keys must be only ASCII characters, nonempty, and not start with "$" or "\_". |
+  | Record | Record | `{"a": "1", "b": "2"}` | `v.record(keys, values)` | Records are objects at runtime, but can have dynamic keys. Keys must be only ASCII characters, nonempty, and not start with "$" or "\_". |
 
-### Function registration
+## Function Registration
 
-- Use `internalQuery`, `internalMutation`, and `internalAction` to register internal functions. These functions are private and aren't part of an app's API. They can only be called by other Convex functions. These functions are always imported from `./_generated/server`.
+- Use `internalQuery`, `internalMutation`, and `internalAction` to register internal functions. They are not part of the public client API, so app clients cannot call them directly. Other Convex functions call them through generated `internal` references. Privileged operators can also invoke them through the Convex Dashboard or CLI, so treat operator-callable destructive functions as admin entrypoints and follow the [Convex admin-ops skill](../convex-admin-ops/SKILL.md). These registration helpers are imported from `./_generated/server`.
 - Use `query`, `mutation`, and `action` to register public functions. These functions are part of the public API and are exposed to the public Internet. Do NOT use `query`, `mutation`, or `action` to register sensitive internal functions that should be kept private.
 - You CANNOT register a function through the `api` or `internal` objects.
-- ALWAYS include argument validators for all Convex functions. This includes all of `query`, `internalQuery`, `mutation`, `internalMutation`, `action`, and `internalAction`.
+- ALWAYS include `args` and `returns` validators for all Convex functions. This includes all of `query`, `internalQuery`, `mutation`, `internalMutation`, `action`, and `internalAction`. Use `returns: v.null()` when a function has no result payload.
 
-### Function calling
+## Function Calling
 
 - Use `ctx.runQuery` to call a query from a query, mutation, or action.
 - Use `ctx.runMutation` to call a mutation from a mutation or action.
@@ -104,41 +105,58 @@ export default defineSchema({
 - All of these calls take in a `FunctionReference`. Do NOT try to pass the callee function directly into one of these calls.
 - When using `ctx.runQuery`, `ctx.runMutation`, or `ctx.runAction` to call a function in the same file, specify a type annotation on the return value to work around TypeScript circularity limitations. For example,
 
-```
+```ts
+import type { RegisteredQuery } from "convex/server";
+import { v } from "convex/values";
+import { api } from "./_generated/api";
+import { query } from "./_generated/server";
+
 export const f = query({
-  args: { name: v.string() },
-  handler: async (ctx, args) => {
-    return "Hello " + args.name;
-  },
+	args: { name: v.string() },
+	returns: v.string(),
+	handler: async (_ctx, args) => {
+		return "Hello " + args.name;
+	},
 });
+
+type f_Result =
+	typeof f extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue> ? ReturnValue : never;
 
 export const g = query({
-  args: {},
-  handler: async (ctx, args) => {
-    const result: string = await ctx.runQuery(api.example.f, { name: "Bob" });
-    return null;
-  },
+	args: {},
+	returns: v.null(),
+	handler: async (ctx) => {
+		const result = (await ctx.runQuery(api.example.f, { name: "Bob" })) as f_Result;
+		console.log(result);
+		return null;
+	},
 });
 ```
 
-### Function references
+See [Derived `_Result` types](references/additional-guidelines.md#derived-_result-types-for-internal-call-casts) for the full repository pattern.
+
+## Function References
 
 - Use the `api` object defined by the framework in `convex/_generated/api.ts` to call public functions registered with `query`, `mutation`, or `action`.
 - Use the `internal` object defined by the framework in `convex/_generated/api.ts` to call internal (or private) functions registered with `internalQuery`, `internalMutation`, or `internalAction`.
 - Convex uses file-based routing, so a public function defined in `convex/example.ts` named `f` has a function reference of `api.example.f`.
 - A private function defined in `convex/example.ts` named `g` has a function reference of `internal.example.g`.
-- Functions can also registered within directories nested within the `convex/` folder. For example, a public function `h` defined in `convex/messages/access.ts` has a function reference of `api.messages.access.h`.
+- Functions can also be registered within directories nested within the `convex/` folder. For example, a public function `h` defined in `convex/messages/access.ts` has a function reference of `api.messages.access.h`.
 
-### Pagination
+## Pagination
 
 - Define pagination using the following syntax:
 
 ```ts
 import { v } from "convex/values";
-import { query, mutation } from "./_generated/server";
-import { paginationOptsValidator } from "convex/server";
+import { doc } from "convex-helpers/validators";
+import { paginationOptsValidator, paginationResultValidator } from "convex/server";
+import app_convex_schema from "./schema";
+import { query } from "./_generated/server";
+
 export const listWithExtraArg = query({
 	args: { paginationOpts: paginationOptsValidator, author: v.string() },
+	returns: paginationResultValidator(doc(app_convex_schema, "messages")),
 	handler: async (ctx, args) => {
 		return await ctx.db
 			.query("messages")
@@ -153,12 +171,12 @@ Note: `paginationOpts` is an object with the following properties:
 
 - `numItems`: the maximum number of documents to return (the validator is `v.number()`)
 - `cursor`: the cursor to use to fetch the next page of documents (the validator is `v.union(v.string(), v.null())`)
-- A query that ends in `.paginate()` returns an object that has the following properties:
-- page (contains an array of documents that you fetches)
-- isDone (a boolean that represents whether or not this is the last page of documents)
-- continueCursor (a string that represents the cursor to use to fetch the next page of documents)
+- A query that ends in `.paginate()` returns an object with these main properties:
+  - `page`: the fetched documents
+  - `isDone`: whether this is the last page
+  - `continueCursor`: the cursor for the next page
 
-## Schema guidelines
+# Schema Guidelines
 
 - Always define your schema in `convex/schema.ts`.
 - Always import the schema definition functions from `convex/server`.
@@ -169,7 +187,7 @@ Note: `paginationOpts` is an object with the following properties:
 - Do not store unbounded lists as an array field inside a document (e.g. `v.array(v.object({...}))`). As the array grows it will hit the 1MB document size limit, and every update rewrites the entire document. Instead, create a separate table for the child items with a foreign key back to the parent.
 - Separate high-churn operational data (e.g. heartbeats, online status, typing indicators) from stable profile data. Storing frequently updated fields on a shared document forces every write to contend with reads of the entire document. Instead, create a dedicated table for the high-churn data with a foreign key back to the parent record.
 
-## Authentication guidelines
+# Authentication Guidelines
 
 - Convex supports JWT-based authentication through `convex/auth.config.ts`. ALWAYS create this file when using authentication. Without it, `ctx.auth.getUserIdentity()` will always return `null`.
 - Example `convex/auth.config.ts`:
@@ -187,28 +205,26 @@ export default {
 
 The `domain` must be the issuer URL of the JWT provider. Convex fetches `{domain}/.well-known/openid-configuration` to discover the JWKS endpoint. The `applicationID` is checked against the JWT `aud` (audience) claim.
 
-- Use `ctx.auth.getUserIdentity()` to get the authenticated user's identity in any query, mutation, or action. This returns `null` if the user is not authenticated, or a `UserIdentity` object with fields like `subject`, `issuer`, `name`, `email`, etc. The `subject` field is the unique user identifier.
-- In Convex `UserIdentity`, `tokenIdentifier` is guaranteed and is the canonical stable identifier for the authenticated identity. For any auth-linked database lookup or ownership check, prefer `identity.tokenIdentifier` over `identity.subject`. Do NOT use `identity.subject` alone as a global identity key.
-- NEVER accept a `userId` or any user identifier as a function argument for authorization purposes. Always derive the user identity server-side via `ctx.auth.getUserIdentity()`.
+- Use `ctx.auth.getUserIdentity()` to get the provider identity in any query, mutation, or action. It returns `null` when the caller is not authenticated. A `UserIdentity` guarantees `subject`, `issuer`, and `tokenIdentifier`; `tokenIdentifier` combines the issuer and subject into one external-principal identifier.
+- Do not use `tokenIdentifier` or a Clerk subject as the app's canonical `users` doc id. In this app, signed-in Clerk identities resolve from the JWT `external_id`, while anonymous identities resolve from the JWT `subject`. Use `server_convex_get_user_fallback_to_anonymous(ctx)` at supported handler boundaries. See [Current app user resolution](../auth-system/SKILL.md#current-app-user-resolution).
+- Public functions must not use a caller-supplied user id to authorize the caller; derive the current identity with `ctx.auth.getUserIdentity()`. Internal functions may accept a user id from a trusted server or operator path, such as the current user resolved from auth, a user id reached through an already-authorized Convex relationship, scheduler/workpool context created by server code, or a deliberately operator-invoked internal admin entrypoint. Never forward a client-supplied id into an internal authorization decision.
 - When using an external auth provider with Convex on the client, use `ConvexProviderWithAuth` instead of `ConvexProvider`:
 
 ```tsx
-import { ConvexProviderWithAuth, ConvexReactClient } from "convex/react";
+import { ConvexProviderWithAuth } from "convex/react";
+import { AppAuthProvider } from "./components/app-auth";
+import { app_convex } from "./lib/app-convex-client";
 
-const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
-
-function App({ children }: { children: React.ReactNode }) {
-	return (
-		<ConvexProviderWithAuth client={convex} useAuth={useYourAuthHook}>
-			{children}
-		</ConvexProviderWithAuth>
-	);
-}
+<AppAuthProvider>
+	<ConvexProviderWithAuth client={app_convex} useAuth={AppAuthProvider.useAuth}>
+		<App />
+	</ConvexProviderWithAuth>
+</AppAuthProvider>;
 ```
 
 The `useAuth` prop must return `{ isLoading, isAuthenticated, fetchAccessToken }`. Do NOT use plain `ConvexProvider` when authentication is needed — it will not send tokens with requests.
 
-## Typescript guidelines
+# TypeScript Guidelines
 
 - You can use the helper typescript type `Id` imported from './\_generated/dataModel' to get the type of the id for a given table. For example if there is a table called 'users' you can use `Id<'users'>` to get the type of the id for that table.
 - Use `Doc<"tableName">` from `./_generated/dataModel` to get the full document type for a table.
@@ -217,10 +233,12 @@ The `useAuth` prop must return `{ isLoading, isAuthenticated, fetchAccessToken }
 
 ```ts
 import { query } from "./_generated/server";
-import { Doc, Id } from "./_generated/dataModel";
+import { Id } from "./_generated/dataModel";
+import { v } from "convex/values";
 
 export const exampleQuery = query({
 	args: { userIds: v.array(v.id("users")) },
+	returns: v.record(v.id("users"), v.string()),
 	handler: async (ctx, args) => {
 		const idToUsername: Record<Id<"users">, string> = {};
 		for (const userId of args.userIds) {
@@ -235,41 +253,41 @@ export const exampleQuery = query({
 });
 ```
 
-- Be strict with types, particularly around id's of documents. For example, if a function takes in an id for a document in the 'users' table, take in `Id<'users'>` rather than `string`.
+- Be strict with types, particularly around document ids. For example, if a function takes an id for a document in the `users` table, use `Id<"users">` rather than `string`.
 
-## Full text search guidelines
+# Full-Text Search Guidelines
 
 - A query for "10 messages in channel '#general' that best match the query 'hello hi' in their body" would look like:
 
+```ts
 const messages = await ctx.db
-.query("messages")
-.withSearchIndex("search_body", (q) =>
-q.search("body", "hello hi").eq("channel", "#general"),
-)
-.take(10);
+	.query("messages")
+	.withSearchIndex("search_body", (q) => q.search("body", "hello hi").eq("channel", "#general"))
+	.take(10);
+```
 
-## Query guidelines
+# Query Guidelines
 
-- Do NOT use `filter` in queries. Instead, define an index in the schema and use `withIndex` instead.
-- If the user does not explicitly tell you to return all results from a query you should ALWAYS return a bounded collection instead. So that is instead of using `.collect()` you should use `.take()` or paginate on database queries. This prevents future performance issues when tables grow in an unbounded way.
-- Never use `.collect().length` to count rows. Convex has no built-in count operator, so if you need a count that stays efficient at scale, maintain a denormalized counter in a separate document and update it in your mutations.
-- Convex queries do NOT support `.delete()`. If you need to delete all documents matching a query, use `.take(n)` to read them in batches, iterate over each batch calling `ctx.db.delete(row._id)`, and repeat until no more results are returned.
-- Convex mutations are transactions with limits on the number of documents read and written. If a mutation needs to process more documents than fit in a single transaction (e.g. bulk deletion on a large table), process a batch with `.take(n)` and then call `ctx.scheduler.runAfter(0, api.myModule.myMutation, args)` to schedule itself to continue. This way each invocation stays within transaction limits.
-- Use `.unique()` to get a single document from a query. This method will throw an error if there are multiple documents that match the query.
-- When using async iteration, don't use `.collect()` or `.take(n)` on the result of a query. Instead, use the `for await (const row of query)` syntax.
+- Prefer indexes over `.filter()`. Use `.filter()` only when the predicate cannot be expressed with an index, and follow the pagination semantics in the codebase-specific guidelines.
+- Bound potentially unbounded query results with `.take()` or pagination. `.collect()` is allowed when the function genuinely needs every doc from a naturally small set; document that assumption when it is not obvious.
+- Do not use `.collect().length` for a potentially unbounded count. Convex has no built-in count operator, so maintain a denormalized counter when the count must stay efficient at scale. Collecting and counting is acceptable for a clearly small, naturally bounded or operator-scoped set.
+- Convex queries do NOT support `.delete()`. If you need to delete matching documents, read them in bounded batches and call the current two-argument form, such as `ctx.db.delete("messages", doc._id)`.
+- Convex mutations are transactions with limits on documents read and written. For work larger than one transaction, process a bounded batch in an `internalMutation` and schedule its generated `internal.myModule.myMutation` reference to continue. Do not expose a public continuation only so the scheduler can call it.
+- Prefer `.first()` for ordinary single-document lookups. Use `.unique()` only when duplicate docs must throw by contract.
+- When using async iteration, don't use `.collect()` or `.take(n)` on the result of a query. Instead, use the `for await (const doc of query)` syntax.
 
-### Ordering
+## Ordering
 
 - By default Convex always returns documents in ascending `_creationTime` order.
 - You can use `.order('asc')` or `.order('desc')` to pick whether a query is in ascending or descending order. If the order isn't specified, it defaults to ascending.
 - Document queries that use indexes will be ordered based on the columns in the index and can avoid slow table scans.
 
-## Mutation guidelines
+# Mutation Guidelines
 
 - Use `ctx.db.replace` to fully replace an existing document. This method will throw an error if the document does not exist. Syntax: `await ctx.db.replace('tasks', taskId, { name: 'Buy milk', completed: false })`
 - Use `ctx.db.patch` to shallow merge updates into an existing document. This method will throw an error if the document does not exist. Syntax: `await ctx.db.patch('tasks', taskId, { completed: true })`
 
-## Action guidelines
+# Action Guidelines
 
 - Always add `"use node";` to the top of files containing actions that use Node.js built-in modules.
 - Never add `"use node";` to a file that also exports queries or mutations. Only actions can run in the Node.js runtime; queries and mutations must stay in the default Convex runtime. If you need Node.js built-ins alongside queries or mutations, put the action in a separate file.
@@ -279,9 +297,11 @@ q.search("body", "hello hi").eq("channel", "#general"),
 
 ```ts
 import { action } from "./_generated/server";
+import { v } from "convex/values";
 
 export const exampleAction = action({
 	args: {},
+	returns: v.null(),
 	handler: async (ctx, args) => {
 		console.log("This action does not return anything");
 		return null;
@@ -289,9 +309,9 @@ export const exampleAction = action({
 });
 ```
 
-## Scheduling guidelines
+# Scheduling Guidelines
 
-### Cron guidelines
+## Cron Guidelines
 
 - Only use the `crons.interval` or `crons.cron` methods to schedule cron jobs. Do NOT use the `crons.hourly`, `crons.daily`, or `crons.weekly` helpers.
 - Both cron methods take in a FunctionReference. Do NOT try to pass the function directly into one of these methods.
@@ -299,13 +319,16 @@ export const exampleAction = action({
 
 ```ts
 import { cronJobs } from "convex/server";
+import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction } from "./_generated/server";
 
-const empty = internalAction({
+export const empty = internalAction({
 	args: {},
-	handler: async (ctx, args) => {
+	returns: v.null(),
+	handler: async () => {
 		console.log("empty");
+		return null;
 	},
 });
 
@@ -320,9 +343,9 @@ export default crons;
 - You can register Convex functions within `crons.ts` just like any other file.
 - If a cron calls an internal function, always import the `internal` object from '\_generated/api', even if the internal function is registered in the same file.
 
-## Testing guidelines
+# Testing Guidelines
 
-- Use `convex-test` with `vitest` and `@edge-runtime/vm` to test Convex functions. Always install the latest versions of these packages. Configure vitest with `environment: "edge-runtime"` in `vitest.config.ts`.
+- Use the repo-pinned `convex-test`, `vitest`, and `@edge-runtime/vm` versions. Configure Vitest with `environment: "edge-runtime"`. Add a missing dependency through Vite Plus and `pnpm`; do not upgrade test tooling as part of an unrelated test change.
 
 Test files go inside the `convex/` directory. You must pass a module map from `import.meta.glob` to `convexTest`:
 
@@ -345,16 +368,17 @@ test("some behavior", async () => {
 
 The `modules` argument is required so convex-test can discover and load function files. The `/// <reference types="vite/client" />` directive is needed for TypeScript to recognize `import.meta.glob`.
 
-## File storage guidelines
+# File Storage Guidelines
 
-- The `ctx.storage.getUrl()` method returns a signed URL for a given file. It returns `null` if the file doesn't exist.
+- `ctx.storage.getUrl()` returns a bearer URL for a stored file, or `null` if the file does not exist. Anyone with the URL can reuse it; it does not expire automatically. Deleting the stored file revokes the URL.
 - Do NOT use the deprecated `ctx.storage.getMetadata` call for loading a file's metadata.
 
 Instead, query the `_storage` system table. For example, you can use `ctx.db.system.get` to get an `Id<"_storage">`.
 
-```
+```ts
 import { query } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
+import { v } from "convex/values";
 
 type FileMetadata = {
     _id: Id<"_storage">;
@@ -366,6 +390,7 @@ type FileMetadata = {
 
 export const exampleQuery = query({
     args: { fileId: v.id("_storage") },
+    returns: v.null(),
     handler: async (ctx, args) => {
         const metadata: FileMetadata | null = await ctx.db.system.get("_storage", args.fileId);
         console.log(metadata);
@@ -374,21 +399,21 @@ export const exampleQuery = query({
 });
 ```
 
-- Convex storage stores items as `Blob` objects. You must convert all items to/from a `Blob` when using Convex storage.
+- In actions and HTTP actions, `StorageActionWriter.get()` returns a `Blob` and `store()` accepts a `Blob`. Convert content at those boundaries as needed. Upload URLs, metadata reads, bearer URLs, and deletion use their own storage APIs and do not all pass through `Blob`.
 
-# Codebase-specific guidelines
+# Load Codebase-Specific Rules
 
-The sections above describe Convex itself. For conventions specific to this repository, read [references/additional-guidelines.md](references/additional-guidelines.md) before writing or modifying Convex code under `packages/app/convex/**`. It covers:
+Before writing or modifying Convex code under `packages/app/convex/**`, read [references/additional-guidelines.md](references/additional-guidelines.md) and apply these repository contracts:
 
-- **HTTP route builder typing pattern** — explicit `api_schemas_Main` entries for IDE navigation,
+- **Typed exact-path HTTP route pattern** — explicit `api_schemas_Main` entries for IDE navigation,
   grouped path/method IIFEs, runtime registration from the same literals, and responses inferred from
   each handler's literal return union.
-- **Errors-as-values `Result` contract** — `_yay` / `_nay` branches, `v_result(...)` validators, and the fail-fast `Result_all` + `Promise.all` loop pattern for concurrent work.
+- **Errors-as-values `Result` contract** — `_yay` / `_nay` branches, `v_result(...)` validators, regular `Result_all` flattening after concurrent work, and the rule that an `_nay` value does not end `Promise.all` early or cancel other tasks.
 - **Throw vs return rules** — when to prefer `_nay` / `null` over `throw new Error`, and when to use `convex_error` instead of raw `Error`.
 - **Membership-scoped handlers** — `membershipId` arg ordering, the `Unauthorized` / `Not found` flow, and write ordering so `_nay` returns do not leave partial writes behind.
 - **Type-safe `convex_error` pattern** — attaching `_errors` metadata to mutation args for client-side narrowing via `app_convex_Error`.
 - **Schema-backed validators** — using `doc(app_convex_schema, "...")` instead of redefining shapes with `v.object({...})`, plus `v.id(...)` and `ctx.db.normalizeId(...)` rules.
-- **Query performance patterns** — concurrent fetches with `Promise.all`, `ctx.db.get` over `ctx.db.query` when ids are known, avoiding `collect().find(...)` for single-row lookups.
+- **Query performance patterns** — concurrent fetches with `Promise.all`, `ctx.db.get` over `ctx.db.query` when ids are known, avoiding `collect().find(...)` for single-doc lookups.
 - **Query cache and composition** — favoring stable, composable shared queries over narrowly tailored wrappers.
 - **Vitest testing patterns** — regular `convex-test` coverage plus analyzer-safe in-source tests for private Convex helpers.
-- **Migrations workflow** — `internalMutation` rules in `packages/app/convex/migrations.ts`.
+- **Migrations workflow** — component definitions and named runners in `packages/app/convex/migrations.ts`, with rollout and operator rules in the [Convex migrations skill](../convex-migrations/SKILL.md).

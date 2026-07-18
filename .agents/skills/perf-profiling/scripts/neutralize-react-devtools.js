@@ -1,4 +1,4 @@
-// Playwriter script (run with: pnpx playwriter -s N -f this-file.js)
+// Playwriter script (run with: vp env exec pnpx playwriter -s N -f this-file.js)
 // Stubs the React DevTools extension hook before page scripts run, then reloads.
 // Use before any render-latency measurement or CPU profile: the real hook walks
 // every fiber on commit and pollutes profiles (shows up as huge `get scrollX` self time).

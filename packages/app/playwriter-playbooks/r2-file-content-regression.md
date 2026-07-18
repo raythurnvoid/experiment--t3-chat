@@ -11,15 +11,17 @@ Use this playbook together with the backend test suite. It covers the user-facin
 ## Preflight
 
 1. Confirm the dev app is already running and a `/files` tab is open.
-2. Run `pnpx playwriter skill` before using Playwriter.
+2. Run `vp env exec pnpx playwriter skill` before using Playwriter and read its full output.
 3. Create a Playwriter session and install the app harness:
 
 ```powershell
-$sessionOutput = pnpx playwriter session new
+vp env exec pnpx playwriter browser list
+$browserKey = "<exact KEY from browser list>"
+$sessionOutput = vp env exec pnpx playwriter session new --browser $browserKey
 $session = ($sessionOutput | Select-String -Pattern "Session (\d+) created").Matches.Groups[1].Value
 if (-not $session) { $session = ($sessionOutput | Select-Object -Last 1).Trim() }
-pnpx playwriter -s $session --% -e "const fs = require('node:fs'); const code = fs.readFileSync('.agents/skills/app-playwriter-harness/scripts/install-harness.js', 'utf8'); await eval(code);"
-pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/files' }); await state.appPlaywriterHarness.observe({ label: 'files tab', search: /Files|Agent|Comments|Toolbar|Upload|New file|New folder/i });"
+vp env exec pnpx playwriter -s $session --% -e "const fs = require('node:fs'); const code = fs.readFileSync('.agents/skills/app-playwriter-harness/scripts/install-harness.js', 'utf8'); await eval(code);"
+vp env exec pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/files' }); await state.appPlaywriterHarness.observe({ label: 'files tab', search: /Files|Agent|Comments|Toolbar|Upload|New file|New folder/i });"
 ```
 
 4. Use one unique folder per run, for example `aaa-pw-r2-<timestamp>`, and archive it during cleanup.
@@ -30,10 +32,10 @@ pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab
 Run these before browser QA:
 
 ```powershell
-pnpm --dir packages/app exec vitest run convex/files_nodes.test.ts convex/r2.test.ts convex/files_pending_updates.test.ts convex/data_deletion.test.ts src/lib/liveblocks-yjs-provider.test.ts
-pnpm --dir packages/app run test:once
-pnpm --dir packages/r2-upload-finalizer test
-pnpm --dir packages/app run lint
+vp env exec pnpm --dir packages/app exec vitest run convex/files_nodes.test.ts convex/r2.test.ts convex/files_pending_updates.test.ts convex/data_deletion.test.ts src/lib/liveblocks-yjs-provider.test.ts
+vp env exec pnpm --dir packages/app run test:once
+vp env exec pnpm --dir packages/r2-upload-finalizer test
+vp env exec pnpm --dir packages/app run lint
 ```
 
 Expected result: all commands pass. If the full app test or lint command fails, capture the first failing test/file and stop browser QA only when the failure prevents the app from loading.
